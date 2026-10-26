@@ -181,7 +181,8 @@ fn handle_request(
         | WorkerRequest::ReportBeforeExact(_)
         | WorkerRequest::RefineReport(_)
         | WorkerRequest::ConvertDwg(_)
-        | WorkerRequest::ReadUnderlay(_) => Err(WorkerFailure::invalid_request()),
+        | WorkerRequest::ReadUnderlay(_)
+        | WorkerRequest::WriteUnderlay(_) => Err(WorkerFailure::invalid_request()),
         WorkerRequest::Exception => match backend.exception_probe() {
             Ok(_) => Err(WorkerFailure::code("unexpected_success")),
             Err(error) => Err(WorkerFailure::code(error.code.as_str())),

@@ -534,3 +534,53 @@ fn trim_extend_offset_and_mirror_edit_lines_of_a_drawing() {
     }
     assert_eq!(harness.state().canonical_digest(), digest);
 }
+
+/// Tools > Export drawing to DXF, clicked in a headless window: the wall clicked and
+/// deleted is left out of the DXF written, the axes line stays as the file had it, and the
+/// file the drawing was imported from is unchanged.
+#[test]
+fn tools_export_drawing_writes_the_edited_drawing_as_dxf() {
+    const PLAN: &str = concat!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n",
+        "0\nSECTION\n2\nENTITIES\n",
+        "0\nLINE\n5\nA1\n8\nwalls\n10\n40\n20\n20\n11\n240\n21\n20\n",
+        "0\nLINE\n5\nA2\n8\naxes\n10\n40\n20\n120\n11\n240\n21\n120\n",
+        "0\nENDSEC\n0\nEOF\n",
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("plan.dxf");
+    let output = directory.path().join("edited.dxf");
+    std::fs::write(&source, PLAN).unwrap();
+    let dialogs = dialogs::ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Dxf, &source)
+        .queue_export(&output);
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.dispatch_file_command(AppCommand::ImportDrawingUnderlay);
+    let mut harness = shell_of(app);
+
+    click(&mut harness, Vec3::new(100.0, 20.0, 0.0));
+    press(&mut harness, egui::Key::Delete);
+    assert!(
+        harness
+            .state()
+            .command_enabled(AppCommand::ExportUnderlayDxf)
+    );
+    let digest = harness.state().canonical_digest();
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExportUnderlayDxf);
+
+    let app = harness.state();
+    assert!(app.digest.contains("edited.dxf"), "{}", app.digest);
+    assert_eq!(app.canonical_digest(), digest, "exporting changes nothing");
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), PLAN);
+    let written = std::fs::read_to_string(&output).unwrap();
+    assert!(!written.contains("5\nA1\n"), "{written}");
+    assert!(written.contains("0\nLINE\n5\nA2\n8\naxes\n"), "{written}");
+    let again = ketchup_model::import::read_dxf_underlay(
+        written.as_bytes(),
+        ketchup_model::import::DxfImportOptions::new(None),
+    )
+    .unwrap();
+    assert_eq!(again.lines.segment_count(), 1);
+}

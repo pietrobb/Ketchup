@@ -7,11 +7,17 @@ use std::fmt;
 use std::io::{BufReader, Cursor};
 use std::path::Path;
 
-use ketchup_model::import::{DxfImportError, DxfImportOptions, read_dxf_underlay_from};
+use ketchup_model::import::{
+    DxfImportError, DxfImportOptions, EditedDxfError, read_dxf_underlay_from, write_edited_dxf,
+};
+use ketchup_model::underlay::UnderlayLines;
 
 use crate::WorkerError;
 use crate::program_worker::PROGRAM_WORKER_MEMORY_BYTES;
-use crate::protocol::{UnderlayInput, UnderlayOutcome, UnderlayRead, UnderlayRefusal};
+use crate::protocol::{
+    UnderlayInput, UnderlayOutcome, UnderlayRead, UnderlayRefusal, UnderlayWriteInput,
+    UnderlayWriteOutcome,
+};
 
 /// Reads `input` in the worker process.
 pub(crate) fn read_underlay(input: &UnderlayInput) -> UnderlayOutcome {
@@ -66,6 +72,53 @@ fn read(input: &UnderlayInput) -> Result<UnderlayOutcome, UnderlayRefusal> {
         diagnostics: underlay.diagnostics,
         dwg,
     })))
+}
+
+/// Writes `input`'s drawing back as DXF with its changes, in the worker process; to an
+/// output ending in `.dwg` that DXF written as DWG.
+pub(crate) fn write_underlay(input: &UnderlayWriteInput) -> UnderlayWriteOutcome {
+    write(input).unwrap_or_else(UnderlayWriteOutcome::Refused)
+}
+
+fn write(input: &UnderlayWriteInput) -> Result<UnderlayWriteOutcome, UnderlayRefusal> {
+    let source = std::fs::read(&input.source).map_err(|error| file(&input.source, &error))?;
+    let source = if input.dwg {
+        ketchup_dwg::dwg_to_dxf(&source, usize::MAX)
+            .map_err(|error| UnderlayRefusal::Dwg(error.into()))?
+            .dxf
+    } else {
+        source
+    };
+    let lines = std::fs::read(&input.lines).map_err(|error| file(&input.lines, &error))?;
+    let lines = UnderlayLines::decode(&lines).map_err(|error| UnderlayRefusal::Dxf {
+        report: error.to_string(),
+    })?;
+    let written = write_edited_dxf(
+        &source,
+        DxfImportOptions::new(input.unit_if_unitless),
+        &lines,
+        &input.edits,
+    )
+    .map_err(|error| match error {
+        EditedDxfError::Read(DxfImportError::UnitsRequired) => UnderlayRefusal::UnitsRequired,
+        EditedDxfError::Read(error) => UnderlayRefusal::Dxf {
+            report: error.to_string(),
+        },
+        EditedDxfError::Refused(refusal) => UnderlayRefusal::NotWritten(refusal),
+    })?;
+    let to_dwg = input
+        .output
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("dwg"));
+    let written = if to_dwg {
+        ketchup_dwg::dxf_to_dwg(&written).map_err(|error| UnderlayRefusal::Dwg(error.into()))?
+    } else {
+        written
+    };
+    std::fs::write(&input.output, &written).map_err(|error| file(&input.output, &error))?;
+    Ok(UnderlayWriteOutcome::Written {
+        bytes: written.len() as u64,
+    })
 }
 
 fn file(path: &Path, error: &std::io::Error) -> UnderlayRefusal {

@@ -111,6 +111,7 @@ mod extrusion;
 mod hatch;
 mod objects;
 mod polyline;
+mod rewrite;
 mod style;
 mod text;
 mod underlay;
@@ -121,6 +122,7 @@ use code_page::{CodePage, HighBytes, code_page_encoding, code_page_name, dxf_sou
 use extrusion::{ensure_planar, ensure_planar_ocs, ensure_planar_wcs, extrusion_sign, mirror_ocs};
 use hatch::OrderedFill;
 use polyline::{PolylineVertex, build_polyline_profile, parse_lwpolyline, parse_polyline};
+pub use rewrite::{DxfEditRefusal, EditedDxfError, write_edited_dxf};
 use style::EntityStyle;
 use text::OrderedText;
 pub use underlay::{DxfUnderlay, read_dxf_underlay, read_dxf_underlay_from};

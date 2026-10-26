@@ -38,7 +38,10 @@ impl KetchupApp {
                         || self.picked_joint_id().is_some()
                         || self.picked_underlay_objects().is_some()
                 }
-                AppCommand::DrawIntoUnderlay | AppCommand::TextIntoUnderlay => {
+                AppCommand::DrawIntoUnderlay
+                | AppCommand::TextIntoUnderlay
+                | AppCommand::ExportUnderlayDxf
+                | AppCommand::ExportUnderlayDwg => {
                     self.gesture.underlay_draw.is_some() || self.selected_underlay().is_some()
                 }
                 AppCommand::Deselect => self.deselect_source_plan().is_some(),
@@ -498,6 +501,8 @@ impl KetchupApp {
             AppCommand::About => self.panels.about_open = true,
             AppCommand::MaterialTakeoff => self.takeoff.open = true,
             AppCommand::DrawIntoUnderlay => self.toggle_underlay_draw(),
+            AppCommand::ExportUnderlayDxf => self.export_selected_underlay("dxf"),
+            AppCommand::ExportUnderlayDwg => self.export_selected_underlay("dwg"),
             AppCommand::Select
             | AppCommand::Line
             | AppCommand::Rectangle

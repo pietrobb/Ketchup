@@ -245,9 +245,17 @@ impl Tools {
             "drawing" => {
                 let action = take_action(
                     &mut args,
-                    &["remove", "draw", "move", "trim", "extend", "offset"],
+                    &[
+                        "remove", "draw", "move", "trim", "extend", "offset", "export",
+                    ],
                 )?;
-                self.send(&format!("drawing_{action}"), args, DEFAULT_WAIT)
+                // An export reads the source drawing again in the program worker.
+                let wait = if action == "export" {
+                    OPEN_WAIT
+                } else {
+                    DEFAULT_WAIT
+                };
+                self.send(&format!("drawing_{action}"), args, wait)
             }
             "view" => self.view(args),
             "batch" => self.batch(args),

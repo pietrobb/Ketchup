@@ -5,8 +5,8 @@ use crate::protocol::{
     ANY_FRAME_BYTES, DwgInput, DwgOutcome, EvaluatedProgram, ExportReceipt, Frame, GraphInput,
     MAX_REPLY_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, MeshReceipt, ProgramInput, ProgramOutcome,
     RefineInput, RefineOutcome, ReportOutcome, SourceFile, UnderlayInput, UnderlayOutcome,
-    WorkerFailure, WorkerImportPart, WorkerReply, WorkerRequest, encode_frame, protocol_identity,
-    read_frame,
+    UnderlayWriteInput, UnderlayWriteOutcome, WorkerFailure, WorkerImportPart, WorkerReply,
+    WorkerRequest, encode_frame, protocol_identity, read_frame,
 };
 
 pub(crate) struct WorkerWriteRequest {
@@ -724,6 +724,19 @@ impl ExactWorkerClient {
         }
     }
 
+    pub(crate) fn write_underlay(
+        &mut self,
+        input: UnderlayWriteInput,
+        cancelled: &AtomicBool,
+        timeout: Duration,
+    ) -> Result<UnderlayWriteOutcome, WorkerError> {
+        let request = WorkerRequest::WriteUnderlay(Box::new(input));
+        match self.call(&request, cancelled, timeout)? {
+            WorkerReply::UnderlayWritten(outcome) => Ok(*outcome),
+            reply => self.unexpected(reply),
+        }
+    }
+
     pub fn exception_probe(&mut self) -> Result<String, WorkerError> {
         match self.request_with_timeout(
             &WorkerRequest::Exception,
@@ -884,7 +897,8 @@ impl ExactWorkerClient {
             | WorkerRequest::ReportProgram(_)
             | WorkerRequest::ReportBeforeExact(_)
             | WorkerRequest::RefineReport(_)
-            | WorkerRequest::ReadUnderlay(_) => ANY_FRAME_BYTES,
+            | WorkerRequest::ReadUnderlay(_)
+            | WorkerRequest::WriteUnderlay(_) => ANY_FRAME_BYTES,
             _ => MAX_REQUEST_FRAME_BYTES,
         };
         let frame = encode_frame(request, max_bytes)

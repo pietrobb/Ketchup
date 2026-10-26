@@ -384,7 +384,7 @@ fn read_sections(
 /// The encoding of `source`'s text, as the profile import decides it for the whole file:
 /// UTF-8 (`None`) when all of it is, otherwise the Windows code page its `$DWGCODEPAGE`
 /// names when it is older than DXF 2007, with that name.
-fn text_encoding(
+pub(super) fn text_encoding(
     source: &mut (impl BufRead + Seek),
 ) -> Result<Option<(CodePage, String, bool)>, DxfImportError> {
     source.seek(SeekFrom::Start(0)).map_err(read_error)?;

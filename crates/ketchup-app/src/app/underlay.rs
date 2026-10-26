@@ -194,6 +194,9 @@ pub(crate) struct UnderlayReadTask {
 pub(crate) struct UnderlayImport {
     pub(crate) reading: Option<UnderlayReadTask>,
     unit_choice: Option<(PathBuf, ImportLengthUnit)>,
+    /// The file each underlay imported in this window was read from, so its drawing can
+    /// be written back with its changes.
+    pub(crate) sources: std::collections::HashMap<UnderlayId, PathBuf>,
 }
 
 impl KetchupApp {
@@ -312,6 +315,11 @@ impl KetchupApp {
             .get_mut()
             .insert(key, underlay_extent(&read.lines));
         self.frame_after_import();
+        self.file
+            .activity
+            .underlay
+            .sources
+            .insert(id, path.to_owned());
         self.digest = self.catalog.format(
             "digest-imported-underlay",
             &BTreeMap::from([

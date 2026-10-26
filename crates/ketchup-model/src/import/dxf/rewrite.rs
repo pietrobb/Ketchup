@@ -1,0 +1,1047 @@
+//! A DXF drawing written back with what was changed of it in Kečup as an underlay
+//! ([`crate::underlay::edits`]). The source file's own text is kept byte for byte: its
+//! header, tables, styles, blocks and every entity not changed. The entities taken out are
+//! left out, the moved ones are mapped where they lie, and after the drawing's own come
+//! the copies, with handles of their own, and the shapes drawn, as LINE, LWPOLYLINE, ARC,
+//! CIRCLE and TEXT on their layers. The source must be the drawing the underlay was read
+//! from: it is read again, and its lines must be the underlay's.
+
+use std::fmt;
+use std::io::Cursor;
+use std::ops::Range;
+
+use super::code_page::CodePage;
+use super::text::unicode_escapes;
+use super::underlay::text_encoding;
+use super::{DxfImportError, DxfImportOptions, read_dxf_underlay};
+use crate::import::{ImportLengthUnit, ImportUnitAuthority};
+use crate::underlay::UnderlayLines;
+use crate::underlay::drawn::{AddedObject, DrawnShape, readable_rotation};
+use crate::underlay::edits::UnderlayEdits;
+use crate::underlay::objects::{Affine, apply};
+
+/// The units a drawing that declares none may have been read in.
+const UNITS: [ImportLengthUnit; 9] = [
+    ImportLengthUnit::Millimetre,
+    ImportLengthUnit::Centimetre,
+    ImportLengthUnit::Decimetre,
+    ImportLengthUnit::Metre,
+    ImportLengthUnit::Kilometre,
+    ImportLengthUnit::Inch,
+    ImportLengthUnit::Foot,
+    ImportLengthUnit::Yard,
+    ImportLengthUnit::Mile,
+];
+
+/// Why the edited drawing was not written.
+#[derive(Debug)]
+pub enum EditedDxfError {
+    /// The source drawing does not read as an underlay.
+    Read(DxfImportError),
+    Refused(DxfEditRefusal),
+}
+
+/// Why the changes do not go into the source drawing, with its facts as fields.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum DxfEditRefusal {
+    /// The source drawing is not the one the underlay was read from.
+    NotTheSource,
+    /// The source's groups do not pair up into sections and entities.
+    Malformed,
+    /// A changed object has no handle to find its entity by.
+    NoHandle { object: u32 },
+    /// No entity of the source has the handle of a changed object.
+    HandleMissing { object: u32, handle: u64 },
+    /// A changed object is of a kind, or lies in a plane, that is not mapped yet.
+    NotMappable { object: u32, kind: String },
+}
+
+impl From<DxfEditRefusal> for EditedDxfError {
+    fn from(refusal: DxfEditRefusal) -> Self {
+        Self::Refused(refusal)
+    }
+}
+
+impl fmt::Display for EditedDxfError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Read(error) => write!(formatter, "the source drawing does not read: {error}"),
+            Self::Refused(refusal) => refusal.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for EditedDxfError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Read(error) => Some(error),
+            Self::Refused(refusal) => Some(refusal),
+        }
+    }
+}
+
+impl fmt::Display for DxfEditRefusal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotTheSource => formatter.write_str(
+                "the file is not the drawing the underlay was read from: its lines differ",
+            ),
+            Self::Malformed => formatter
+                .write_str("the source drawing's groups do not pair up into sections and entities"),
+            Self::NoHandle { object } => write!(
+                formatter,
+                "object {object} has no handle in the drawing to find its entity by"
+            ),
+            Self::HandleMissing { object, handle } => write!(
+                formatter,
+                "no entity of the drawing has the handle {handle:X} of object {object}"
+            ),
+            Self::NotMappable { object, kind } => write!(
+                formatter,
+                "object {object} is a {kind} that is not moved or copied in a DXF yet; take it \
+                 out and draw it again, or leave it where it was read"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DxfEditRefusal {}
+
+/// `source`, the drawing `lines` were read from with `options`, written with `edits`. A
+/// drawing that declares no unit may have been read in another unit than `options` gives:
+/// the one its lines match is taken.
+pub fn write_edited_dxf(
+    source: &[u8],
+    options: DxfImportOptions,
+    lines: &UnderlayLines,
+    edits: &UnderlayEdits,
+) -> Result<Vec<u8>, EditedDxfError> {
+    let mut read = read_dxf_underlay(source, options).map_err(EditedDxfError::Read)?;
+    if read.lines != *lines && read.units.authority() == ImportUnitAuthority::UserDeclared {
+        for unit in UNITS {
+            let other = read_dxf_underlay(source, DxfImportOptions::new(Some(unit)))
+                .map_err(EditedDxfError::Read)?;
+            if other.lines == *lines {
+                read = other;
+                break;
+            }
+        }
+    }
+    if read.lines != *lines {
+        return Err(DxfEditRefusal::NotTheSource.into());
+    }
+    let encoding = text_encoding(&mut Cursor::new(source))
+        .map_err(EditedDxfError::Read)?
+        .map(|(encoding, ..)| encoding);
+    let drawing = Drawing::parse(source, encoding)?;
+    let frame = Frame {
+        mm_per_unit: read.units.millimetres_per_unit(),
+        offset_mm: read.offset_mm,
+    };
+    drawing.write(lines, edits, &frame)
+}
+
+/// How the underlay's millimetres lie against the drawing's own units.
+struct Frame {
+    mm_per_unit: f64,
+    offset_mm: [f64; 2],
+}
+
+impl Frame {
+    /// The point of the underlay's lines `point` in the drawing's units.
+    fn point(&self, point: [f64; 2]) -> [f64; 2] {
+        [0, 1].map(|axis| (point[axis] + self.offset_mm[axis]) / self.mm_per_unit)
+    }
+
+    /// `map`, of the underlay's lines, as the map of the drawing's units.
+    fn map(&self, map: &Affine) -> Affine {
+        let [[a, b, x], [c, d, y]] = *map;
+        let [ox, oy] = self.offset_mm;
+        let k = self.mm_per_unit;
+        [
+            [a, b, (x + ox - (a * ox + b * oy)) / k],
+            [c, d, (y + oy - (c * ox + d * oy)) / k],
+        ]
+    }
+}
+
+/// One group of the source: its code, and where its two lines lie.
+struct Pair {
+    code: i32,
+    /// The start of its code line.
+    start: usize,
+    /// Its value line, without the line end.
+    value: Range<usize>,
+    /// Past its value line's end.
+    end: usize,
+}
+
+/// An entity of the ENTITIES section with the vertices or attributes that follow it: the
+/// range of its pairs, and where each of its records starts with that record's name.
+struct Entity {
+    pairs: Range<usize>,
+    records: Vec<(usize, String)>,
+    handle: Option<u64>,
+}
+
+/// The parts of the source that are written anew.
+struct Drawing<'a> {
+    source: &'a [u8],
+    eol: &'static [u8],
+    pairs: Vec<Pair>,
+    entities: Vec<Entity>,
+    /// The pair `ENDSEC` closing the ENTITIES section.
+    entities_end: usize,
+    /// The value pair of `$HANDSEED`.
+    handseed: Option<usize>,
+    /// The handle after every handle of the drawing.
+    next_handle: Option<u64>,
+    /// Whether it is DXF 13 or later: entities carry subclass markers and their owner.
+    subclassed: bool,
+    /// Whether its texts are UTF-8: DXF 2007 or later.
+    utf8: bool,
+    /// The owner (group 330) of the entities of model space.
+    owner: Option<Vec<u8>>,
+    /// Each layer name as read, with the bytes the drawing writes it in.
+    layers: Vec<(String, Vec<u8>)>,
+}
+
+impl<'a> Drawing<'a> {
+    fn parse(source: &'a [u8], encoding: Option<CodePage>) -> Result<Self, EditedDxfError> {
+        let pairs = pairs(source)?;
+        let eol: &'static [u8] = if source
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .is_some_and(|end| end > 0 && source[end - 1] == b'\r')
+        {
+            b"\r\n"
+        } else {
+            b"\n"
+        };
+        let value = |pair: &Pair| source[pair.value.clone()].trim_ascii();
+        let name = |pair: &Pair| String::from_utf8_lossy(value(pair)).to_ascii_uppercase();
+        let decode = |bytes: &[u8]| {
+            let text = encoding
+                .unwrap_or(CodePage::Standard(encoding_rs::UTF_8))
+                .decode(bytes)?;
+            Some(unicode_escapes(text.trim()).into_owned())
+        };
+        let mut drawing = Self {
+            source,
+            eol,
+            pairs: Vec::new(),
+            entities: Vec::new(),
+            entities_end: 0,
+            handseed: None,
+            next_handle: None,
+            subclassed: false,
+            utf8: false,
+            owner: None,
+            layers: Vec::new(),
+        };
+        let mut section = String::new();
+        let mut record = String::new();
+        let mut max_handle = None::<u64>;
+        let mut version = Vec::new();
+        let mut index = 0;
+        while index < pairs.len() {
+            let pair = &pairs[index];
+            match pair.code {
+                0 if name(pair) == "SECTION" => {
+                    let next = pairs.get(index + 1).ok_or(DxfEditRefusal::Malformed)?;
+                    section = name(next);
+                    index += 2;
+                    if section == "ENTITIES" {
+                        index = drawing.parse_entities(&pairs, index)?;
+                    }
+                    continue;
+                }
+                0 => record = name(pair),
+                9 if section == "HEADER" => {
+                    let next = pairs.get(index + 1).ok_or(DxfEditRefusal::Malformed)?;
+                    match name(pair).as_str() {
+                        "$HANDSEED" => drawing.handseed = Some(index + 1),
+                        "$ACADVER" => version = value(next).to_ascii_uppercase(),
+                        _ => {}
+                    }
+                }
+                2 if section == "TABLES" && record == "LAYER" => {
+                    if let Some(name) = decode(value(pair)) {
+                        drawing.layers.push((name, value(pair).to_vec()));
+                    }
+                }
+                _ => {}
+            }
+            if matches!(pair.code, 5 | 105)
+                && let Some(handle) = hex(value(pair))
+            {
+                max_handle = max_handle.max(Some(handle));
+            }
+            index += 1;
+        }
+        if drawing.entities_end == 0 {
+            return Err(DxfEditRefusal::Malformed.into());
+        }
+        for entity in &drawing.entities {
+            max_handle = max_handle.max(entity.handle);
+            for pair in &pairs[entity.pairs.clone()] {
+                if pair.code == 8
+                    && let Some(name) = decode(value(pair))
+                    && !drawing.layers.iter().any(|(known, _)| *known == name)
+                {
+                    drawing.layers.push((name, value(pair).to_vec()));
+                }
+            }
+        }
+        let seed = drawing.handseed.and_then(|index| hex(value(&pairs[index])));
+        drawing.next_handle = match (seed, max_handle) {
+            (None, None) => None,
+            (seed, max) => Some(seed.unwrap_or(0).max(max.map_or(1, |max| max + 1))),
+        };
+        drawing.subclassed = version.as_slice() >= b"AC1012".as_slice();
+        drawing.utf8 = version.as_slice() >= b"AC1021".as_slice();
+        drawing.owner = drawing.entities.iter().find_map(|entity| {
+            let record =
+                &pairs[entity.pairs.start..entity.records.get(1).map_or(entity.pairs.end, |r| r.0)];
+            let paper = record
+                .iter()
+                .any(|pair| pair.code == 67 && value(pair) == b"1");
+            (!paper)
+                .then(|| record.iter().find(|pair| pair.code == 330))
+                .flatten()
+                .map(|pair| value(pair).to_vec())
+        });
+        drawing.pairs = pairs;
+        Ok(drawing)
+    }
+
+    /// Reads the entities from pair `index` on, past the section's start, to its end;
+    /// returns the index past its `ENDSEC`.
+    fn parse_entities(
+        &mut self,
+        pairs: &[Pair],
+        mut index: usize,
+    ) -> Result<usize, EditedDxfError> {
+        let value = |pair: &Pair| self.source[pair.value.clone()].trim_ascii();
+        let name = |pair: &Pair| String::from_utf8_lossy(value(pair)).to_ascii_uppercase();
+        let mut current: Option<Entity> = None;
+        while index < pairs.len() {
+            let pair = &pairs[index];
+            if pair.code != 0 {
+                if current.is_none() {
+                    return Err(DxfEditRefusal::Malformed.into());
+                }
+                if pair.code == 5
+                    && let Some(entity) = current.as_mut()
+                    && entity.records.len() == 1
+                    && entity.handle.is_none()
+                {
+                    entity.handle = hex(value(pair));
+                }
+                index += 1;
+                continue;
+            }
+            let record = name(pair);
+            let follows = current.as_ref().is_some_and(|entity| {
+                let primary = entity.records[0].1.as_str();
+                matches!(record.as_str(), "VERTEX" | "SEQEND")
+                    || (record == "ATTRIB" && primary == "INSERT")
+            });
+            if follows && let Some(entity) = current.as_mut() {
+                entity.records.push((index, record));
+                index += 1;
+                continue;
+            }
+            if let Some(mut entity) = current.take() {
+                entity.pairs.end = index;
+                self.entities.push(entity);
+            }
+            if record == "ENDSEC" {
+                self.entities_end = index;
+                return Ok(index + 1);
+            }
+            current = Some(Entity {
+                pairs: index..index,
+                records: vec![(index, record)],
+                handle: None,
+            });
+            index += 1;
+        }
+        Err(DxfEditRefusal::Malformed.into())
+    }
+
+    fn value(&self, index: usize) -> &[u8] {
+        self.source[self.pairs[index].value.clone()].trim_ascii()
+    }
+
+    fn number(&self, index: usize) -> Result<f64, EditedDxfError> {
+        std::str::from_utf8(self.value(index))
+            .ok()
+            .and_then(|text| text.parse::<f64>().ok())
+            .filter(|value| value.is_finite())
+            .ok_or(DxfEditRefusal::Malformed.into())
+    }
+
+    fn write(
+        &self,
+        lines: &UnderlayLines,
+        edits: &UnderlayEdits,
+        frame: &Frame,
+    ) -> Result<Vec<u8>, EditedDxfError> {
+        let objects = &lines.objects().objects;
+        let read_count = u32::try_from(objects.len()).unwrap_or(u32::MAX);
+        let entity_of = |object: u32| -> Result<usize, EditedDxfError> {
+            let read = objects
+                .get(usize::try_from(object).unwrap_or(usize::MAX))
+                .filter(|read| read.parent.is_none() && read.handle != 0)
+                .ok_or(DxfEditRefusal::NoHandle { object })?;
+            let mut found = self
+                .entities
+                .iter()
+                .enumerate()
+                .filter(|(_, entity)| entity.handle == Some(read.handle));
+            match (found.next(), found.next()) {
+                (Some((index, _)), None) => Ok(index),
+                _ => Err(DxfEditRefusal::HandleMissing {
+                    object,
+                    handle: read.handle,
+                }
+                .into()),
+            }
+        };
+        // Per entity of the drawing: left out, mapped, or kept.
+        let mut replaced = vec![None::<Option<Vec<u8>>>; self.entities.len()];
+        for &object in edits.removed_objects.iter().filter(|id| **id < read_count) {
+            replaced[entity_of(object)?] = Some(None);
+        }
+        for (&object, map) in &edits.moved_objects {
+            if edits.removed_objects.contains(&object) {
+                continue;
+            }
+            let entity = entity_of(object)?;
+            let mapped = self.mapped(object, entity, &frame.map(map), None)?;
+            replaced[entity] = Some(Some(mapped));
+        }
+        // How many objects each object of the drawing is with all it placed: a copy of it
+        // takes as many ids.
+        let mut tree = vec![1_u32; objects.len()];
+        for (index, object) in objects.iter().enumerate().rev() {
+            if let Some(parent) = object
+                .parent
+                .and_then(|parent| usize::try_from(parent).ok())
+                && parent < index
+            {
+                tree[parent] = tree[parent].saturating_add(tree[index]);
+            }
+        }
+        let mut handles = self.next_handle;
+        let mut added = Vec::new();
+        let mut id = read_count;
+        for edit in &edits.added {
+            let first = id;
+            id = id.saturating_add(match edit {
+                AddedObject::Copy { of, .. } => usize::try_from(*of)
+                    .ok()
+                    .and_then(|of| tree.get(of).copied())
+                    .unwrap_or(1),
+                AddedObject::Drawn { .. } => 1,
+            });
+            if edits.removed_objects.contains(&first) {
+                continue;
+            }
+            match edit {
+                AddedObject::Copy { of, map } => {
+                    let entity = entity_of(*of)?;
+                    added.extend(self.mapped(*of, entity, &frame.map(map), Some(&mut handles))?);
+                }
+                AddedObject::Drawn { layer, shape } => {
+                    added.extend(self.drawn(layer, shape, frame, &mut handles));
+                }
+            }
+        }
+        let mut out = Vec::with_capacity(self.source.len() + added.len());
+        let mut copied = 0;
+        let mut splice = |out: &mut Vec<u8>, range: Range<usize>, with: &[u8]| {
+            out.extend_from_slice(&self.source[copied..range.start]);
+            out.extend_from_slice(with);
+            copied = range.end;
+        };
+        let mut edits_at = Vec::new();
+        if let (Some(index), Some(next)) = (self.handseed, handles)
+            && handles != self.next_handle
+        {
+            let mut value = format!("{next:X}").into_bytes();
+            value.extend_from_slice(self.eol);
+            let pair = &self.pairs[index];
+            edits_at.push((pair.value.start..pair.end, value));
+        }
+        for (entity, replaced) in self.entities.iter().zip(replaced) {
+            if let Some(replaced) = replaced {
+                let range =
+                    self.pairs[entity.pairs.start].start..self.pairs[entity.pairs.end - 1].end;
+                edits_at.push((range, replaced.unwrap_or_default()));
+            }
+        }
+        let end = self.pairs[self.entities_end].start;
+        edits_at.push((end..end, added));
+        edits_at.sort_by_key(|(range, _)| range.start);
+        for (range, with) in edits_at {
+            splice(&mut out, range, &with);
+        }
+        out.extend_from_slice(&self.source[copied..]);
+        Ok(out)
+    }
+
+    /// The entity `entity`, of object `object`, mapped by `map`, of the drawing's units;
+    /// as a copy with handles of its own from `handles` when given.
+    fn mapped(
+        &self,
+        object: u32,
+        entity: usize,
+        map: &Affine,
+        mut handles: Option<&mut Option<u64>>,
+    ) -> Result<Vec<u8>, EditedDxfError> {
+        let entity = &self.entities[entity];
+        let mut out = Vec::new();
+        let primary = handles.as_deref_mut().and_then(take_handle);
+        for (index, (start, record)) in entity.records.iter().enumerate() {
+            let end = entity
+                .records
+                .get(index + 1)
+                .map_or(entity.pairs.end, |next| next.0);
+            let own = if index == 0 {
+                primary
+            } else {
+                handles.as_deref_mut().and_then(take_handle)
+            };
+            let mapped = self.mapped_record(object, record, *start..end, map)?;
+            let copy = handles.is_some().then_some((own, primary, entity.handle));
+            self.write_record(&mut out, &mapped, copy);
+        }
+        Ok(out)
+    }
+
+    /// The pairs of one record mapped by `map`.
+    fn mapped_record(
+        &self,
+        object: u32,
+        record: &str,
+        pairs: Range<usize>,
+        map: &Affine,
+    ) -> Result<Vec<Out>, EditedDxfError> {
+        let not_mappable = || DxfEditRefusal::NotMappable {
+            object,
+            kind: record.to_owned(),
+        };
+        let rules = Rules::of(record).ok_or_else(not_mappable)?;
+        let [[a, b, _], [c, d, _]] = *map;
+        let scale = (a * d - b * c).abs().sqrt();
+        let mirrored = a * d - b * c < 0.0;
+        let turn_deg = c.atan2(a).to_degrees();
+        let indices = pairs.clone().collect::<Vec<_>>();
+        // Groups of extended data are the application's own.
+        let own = indices
+            .iter()
+            .position(|index| self.pairs[*index].code >= 1000)
+            .map_or(&indices[..], |end| &indices[..end]);
+        let code_of = |index: usize| self.pairs[index].code;
+        let number_of = |code: i32| -> Result<Option<f64>, EditedDxfError> {
+            own.iter()
+                .find(|index| code_of(**index) == code)
+                .map(|index| self.number(*index))
+                .transpose()
+        };
+        let extrusion = [210, 220, 230].map(number_of);
+        let [ex, ey, ez] = extrusion;
+        let (ex, ey, ez) = (ex?.unwrap_or(0.0), ey?.unwrap_or(0.0), ez?.unwrap_or(1.0));
+        if ex.abs() > 1e-12 || ey.abs() > 1e-12 || (ez - 1.0).abs() > 1e-12 {
+            return Err(not_mappable().into());
+        }
+        if rules.insert && mirrored {
+            let many = |code| number_of(code).map(|count| count.is_some_and(|count| count > 1.0));
+            if many(70)? || many(71)? {
+                return Err(not_mappable().into());
+            }
+        }
+        let mut out = indices
+            .iter()
+            .map(|index| Out::Raw(*index))
+            .collect::<Vec<_>>();
+        let position = |code: i32| own.iter().position(|index| code_of(*index) == code);
+        let mut skip = 0;
+        for (at, &index) in own.iter().enumerate() {
+            if skip > 0 {
+                skip -= 1;
+                continue;
+            }
+            let code = code_of(index);
+            let next = own
+                .get(at + 1)
+                .copied()
+                .filter(|next| code_of(*next) == code + 10);
+            if rules.points.contains(&code) || rules.vectors.contains(&code) {
+                let next = next.ok_or(DxfEditRefusal::Malformed)?;
+                let point = [self.number(index)?, self.number(next)?];
+                let [x, y] = if rules.points.contains(&code) {
+                    apply(map, point)
+                } else {
+                    [a * point[0] + b * point[1], c * point[0] + d * point[1]]
+                };
+                let [x, y] = if rules.direction == Some(code) {
+                    let turned = readable_rotation(map, point[1].atan2(point[0]));
+                    let length = x.hypot(y);
+                    [length * turned.cos(), length * turned.sin()]
+                } else {
+                    [x, y]
+                };
+                out[at] = Out::Set(index, number(x));
+                out[at + 1] = Out::Set(next, number(y));
+                skip = 1;
+            } else if rules.lengths.contains(&code) {
+                out[at] = Out::Set(index, number(self.number(index)? * scale));
+            } else if code == 42 && rules.bulge && mirrored {
+                out[at] = Out::Set(index, number(0.0 - self.number(index)?));
+            }
+        }
+        if rules.arc
+            && let (Some(start), Some(end)) = (position(50), position(51))
+        {
+            let [from, to] = [start, end].map(|at| self.number(own[at]));
+            let (from, to) = (from?, to?);
+            let (from, to) = if mirrored {
+                (turn_deg - to, turn_deg - from)
+            } else {
+                (turn_deg + from, turn_deg + to)
+            };
+            out[start] = Out::Set(own[start], number(from.rem_euclid(360.0)));
+            out[end] = Out::Set(own[end], number(to.rem_euclid(360.0)));
+        }
+        if rules.ellipse
+            && mirrored
+            && let (Some(start), Some(end)) = (position(41), position(42))
+        {
+            let tau = std::f64::consts::TAU;
+            let [from, to] = [start, end].map(|at| self.number(own[at]));
+            let (from, to) = (from?, to?);
+            out[start] = Out::Set(own[start], number((0.0 - to).rem_euclid(tau)));
+            out[end] = Out::Set(own[end], number((0.0 - from).rem_euclid(tau)));
+        }
+        // A group the record lacks goes after the group `after`, in the order set.
+        let mut new = Vec::new();
+        let mut set = |out: &mut Vec<Out>, code: i32, after: i32, value: f64| {
+            if let Some(at) = position(code) {
+                out[at] = Out::Set(own[at], number(value));
+            } else if let Some(at) = position(after) {
+                new.push((at, Out::New(code, number(value))));
+            }
+        };
+        if let Some(code) = rules.rotation
+            && !(rules.direction.is_some() && position(11).is_some())
+        {
+            let rotation = number_of(code)?.unwrap_or(0.0).to_radians();
+            let turned = readable_rotation(map, rotation)
+                .to_degrees()
+                .rem_euclid(360.0);
+            set(&mut out, code, 40, turned);
+        }
+        if rules.insert {
+            let sx = number_of(41)?.unwrap_or(1.0);
+            let sy = number_of(42)?.unwrap_or(1.0);
+            let rotation = number_of(50)?.unwrap_or(0.0);
+            let (rotation, sy) = if mirrored {
+                (turn_deg - rotation, 0.0 - sy)
+            } else {
+                (turn_deg + rotation, sy)
+            };
+            let anchor = if position(30).is_some() { 30 } else { 20 };
+            set(&mut out, 41, anchor, sx * scale);
+            set(&mut out, 42, anchor, sy * scale);
+            set(&mut out, 50, anchor, rotation.rem_euclid(360.0));
+        }
+        // From the last place back, so the places before stay where they are.
+        new.sort_by_key(|(at, _)| *at);
+        for (at, pair) in new.into_iter().rev() {
+            out.insert(at + 1, pair);
+        }
+        Ok(out)
+    }
+
+    /// Writes the pairs `record` to `out`; a copy (`Some((own, primary, original))`) takes
+    /// the handle `own`, and the primary's handle where it named the original's, and
+    /// leaves out the reactors and extension dictionary that are the original's.
+    fn write_record(
+        &self,
+        out: &mut Vec<u8>,
+        record: &[Out],
+        copy: Option<(Option<u64>, Option<u64>, Option<u64>)>,
+    ) {
+        let mut in_group = false;
+        for pair in record {
+            let (index, value) = match pair {
+                Out::Raw(index) => (*index, None),
+                Out::Set(index, value) => (*index, Some(value.as_bytes())),
+                Out::New(code, value) => {
+                    out.extend_from_slice(format!("{code:>3}").as_bytes());
+                    out.extend_from_slice(self.eol);
+                    out.extend_from_slice(value.as_bytes());
+                    out.extend_from_slice(self.eol);
+                    continue;
+                }
+            };
+            let pair = &self.pairs[index];
+            let raw = self.value(index);
+            let mut value = value.map(<[u8]>::to_vec);
+            if let Some((own, primary, original)) = copy {
+                if pair.code == 102 {
+                    in_group = raw.starts_with(b"{");
+                    continue;
+                }
+                if in_group || pair.code == 360 {
+                    continue;
+                }
+                match pair.code {
+                    5 => match own {
+                        Some(handle) => value = Some(format!("{handle:X}").into_bytes()),
+                        None => continue,
+                    },
+                    330 if original.is_some() && hex(raw) == original => {
+                        if let Some(handle) = primary {
+                            value = Some(format!("{handle:X}").into_bytes());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            match value {
+                Some(value) => {
+                    out.extend_from_slice(&self.source[pair.start..pair.value.start]);
+                    out.extend_from_slice(&value);
+                    out.extend_from_slice(self.eol);
+                }
+                None => out.extend_from_slice(&self.source[pair.start..pair.end]),
+            }
+        }
+    }
+
+    /// The entity of `shape`, drawn on `layer`, in the drawing's units.
+    fn drawn(
+        &self,
+        layer: &str,
+        shape: &DrawnShape,
+        frame: &Frame,
+        handles: &mut Option<u64>,
+    ) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut pair = |code: i32, value: &[u8]| {
+            out.extend_from_slice(format!("{code:>3}").as_bytes());
+            out.extend_from_slice(self.eol);
+            out.extend_from_slice(value);
+            out.extend_from_slice(self.eol);
+        };
+        let layer_bytes = self
+            .layers
+            .iter()
+            .find(|(name, _)| name == layer)
+            .map_or_else(|| self.text(layer), |(_, raw)| raw.clone());
+        let head = |pair: &mut dyn FnMut(i32, &[u8]), kind: &str, handles: &mut Option<u64>| {
+            pair(0, kind.as_bytes());
+            if let Some(handle) = take_handle(handles) {
+                pair(5, format!("{handle:X}").as_bytes());
+            }
+            if self.subclassed {
+                if let Some(owner) = &self.owner {
+                    pair(330, owner);
+                }
+                pair(100, b"AcDbEntity");
+            }
+            pair(8, &layer_bytes);
+        };
+        let subclass = |pair: &mut dyn FnMut(i32, &[u8]), name: &str| {
+            if self.subclassed {
+                pair(100, name.as_bytes());
+            }
+        };
+        let point = |pair: &mut dyn FnMut(i32, &[u8]), code: i32, at: [f64; 2]| {
+            let [x, y] = frame.point(at);
+            pair(code, number(x).as_bytes());
+            pair(code + 10, number(y).as_bytes());
+            pair(code + 20, b"0");
+        };
+        let length = |value: f64| number(value / frame.mm_per_unit);
+        match shape {
+            DrawnShape::Polyline { points_mm, closed } if points_mm.len() == 2 && !closed => {
+                head(&mut pair, "LINE", handles);
+                subclass(&mut pair, "AcDbLine");
+                point(&mut pair, 10, points_mm[0]);
+                point(&mut pair, 11, points_mm[1]);
+            }
+            DrawnShape::Polyline { points_mm, closed } if self.subclassed => {
+                head(&mut pair, "LWPOLYLINE", handles);
+                subclass(&mut pair, "AcDbPolyline");
+                pair(90, points_mm.len().to_string().as_bytes());
+                pair(70, if *closed { b"1" } else { b"0" });
+                for at in points_mm {
+                    let [x, y] = frame.point(*at);
+                    pair(10, number(x).as_bytes());
+                    pair(20, number(y).as_bytes());
+                }
+            }
+            DrawnShape::Polyline { points_mm, closed } => {
+                head(&mut pair, "POLYLINE", handles);
+                pair(66, b"1");
+                pair(70, if *closed { b"1" } else { b"0" });
+                point(
+                    &mut pair,
+                    10,
+                    [0.0 - frame.offset_mm[0], 0.0 - frame.offset_mm[1]],
+                );
+                for at in points_mm {
+                    head(&mut pair, "VERTEX", handles);
+                    point(&mut pair, 10, *at);
+                }
+                head(&mut pair, "SEQEND", handles);
+            }
+            DrawnShape::Arc {
+                center_mm,
+                radius_mm,
+                start_deg,
+                end_deg,
+            } => {
+                head(&mut pair, "ARC", handles);
+                subclass(&mut pair, "AcDbCircle");
+                point(&mut pair, 10, *center_mm);
+                pair(40, length(*radius_mm).as_bytes());
+                subclass(&mut pair, "AcDbArc");
+                pair(50, number(start_deg.rem_euclid(360.0)).as_bytes());
+                pair(51, number(end_deg.rem_euclid(360.0)).as_bytes());
+            }
+            DrawnShape::Circle {
+                center_mm,
+                radius_mm,
+            } => {
+                head(&mut pair, "CIRCLE", handles);
+                subclass(&mut pair, "AcDbCircle");
+                point(&mut pair, 10, *center_mm);
+                pair(40, length(*radius_mm).as_bytes());
+            }
+            DrawnShape::Text {
+                anchor_mm,
+                height_mm,
+                rotation_deg,
+                text,
+            } => {
+                head(&mut pair, "TEXT", handles);
+                subclass(&mut pair, "AcDbText");
+                point(&mut pair, 10, *anchor_mm);
+                pair(40, length(*height_mm).as_bytes());
+                pair(1, &self.text(text));
+                pair(50, number(rotation_deg.rem_euclid(360.0)).as_bytes());
+                subclass(&mut pair, "AcDbText");
+            }
+        }
+        out
+    }
+
+    /// `text` as the drawing writes a text: UTF-8 from DXF 2007 on, else what is not
+    /// ASCII as `\U+XXXX`; a `%%` that would be read as a special character is kept as
+    /// written, and what would end the line is a space.
+    fn text(&self, text: &str) -> Vec<u8> {
+        let mut out = String::with_capacity(text.len());
+        let percent = text.contains("%%");
+        for character in text.chars() {
+            match character {
+                '%' if percent => out.push_str("%%%"),
+                character if character.is_control() => out.push(' '),
+                character if character.is_ascii() || self.utf8 => out.push(character),
+                character => match u16::try_from(u32::from(character)) {
+                    Ok(unit) => out.push_str(&format!("\\U+{unit:04X}")),
+                    Err(_) => out.push('?'),
+                },
+            }
+        }
+        out.into_bytes()
+    }
+}
+
+/// One pair written of a record: as read, with a new value, or new.
+enum Out {
+    Raw(usize),
+    Set(usize, String),
+    New(i32, String),
+}
+
+/// What of a record a map changes, by group code.
+struct Rules {
+    /// The X groups of points; Y is the group 10 after.
+    points: &'static [i32],
+    /// The X groups of directions, turned but not moved.
+    vectors: &'static [i32],
+    /// Lengths, scaled.
+    lengths: &'static [i32],
+    /// Group 42 is a bulge, negated by a mirror.
+    bulge: bool,
+    /// Groups 50 and 51 are the angles of an arc.
+    arc: bool,
+    /// Groups 41 and 42 are the parameters of an ellipse's arc.
+    ellipse: bool,
+    /// The group of a text's rotation in degrees, kept readable.
+    rotation: Option<i32>,
+    /// The vector group of a text's direction, which decides over its rotation.
+    direction: Option<i32>,
+    /// An INSERT: groups 41, 42 and 50 are its scales and rotation.
+    insert: bool,
+}
+
+impl Rules {
+    fn of(record: &str) -> Option<Self> {
+        let plain = Self {
+            points: &[],
+            vectors: &[],
+            lengths: &[],
+            bulge: false,
+            arc: false,
+            ellipse: false,
+            rotation: None,
+            direction: None,
+            insert: false,
+        };
+        Some(match record {
+            "LINE" => Self {
+                points: &[10, 11],
+                ..plain
+            },
+            "POINT" => Self {
+                points: &[10],
+                ..plain
+            },
+            "CIRCLE" => Self {
+                points: &[10],
+                lengths: &[40],
+                ..plain
+            },
+            "ARC" => Self {
+                points: &[10],
+                lengths: &[40],
+                arc: true,
+                ..plain
+            },
+            "LWPOLYLINE" => Self {
+                points: &[10],
+                lengths: &[40, 41, 43],
+                bulge: true,
+                ..plain
+            },
+            "POLYLINE" => Self {
+                lengths: &[40, 41],
+                ..plain
+            },
+            "VERTEX" => Self {
+                points: &[10],
+                lengths: &[40, 41],
+                bulge: true,
+                ..plain
+            },
+            "SEQEND" => plain,
+            "TEXT" | "ATTRIB" | "ATTDEF" => Self {
+                points: &[10, 11],
+                lengths: &[40],
+                rotation: Some(50),
+                ..plain
+            },
+            "MTEXT" => Self {
+                points: &[10],
+                vectors: &[11],
+                lengths: &[40, 41, 42, 43],
+                rotation: Some(50),
+                direction: Some(11),
+                ..plain
+            },
+            "INSERT" => Self {
+                points: &[10],
+                lengths: &[44, 45],
+                insert: true,
+                ..plain
+            },
+            "ELLIPSE" => Self {
+                points: &[10],
+                vectors: &[11],
+                ellipse: true,
+                ..plain
+            },
+            "SPLINE" => Self {
+                points: &[10, 11],
+                vectors: &[12, 13],
+                ..plain
+            },
+            "SOLID" | "TRACE" | "3DFACE" => Self {
+                points: &[10, 11, 12, 13],
+                ..plain
+            },
+            _ => return None,
+        })
+    }
+}
+
+/// The next of `handles`, which moves on past it.
+fn take_handle(handles: &mut Option<u64>) -> Option<u64> {
+    let handle = (*handles)?;
+    *handles = handle.checked_add(1);
+    Some(handle)
+}
+
+fn hex(value: &[u8]) -> Option<u64> {
+    u64::from_str_radix(std::str::from_utf8(value).ok()?, 16).ok()
+}
+
+/// `value` as a DXF number: the shortest text that reads back as it, without `-0`.
+fn number(value: f64) -> String {
+    let value = if value == 0.0 { 0.0 } else { value };
+    format!("{value}")
+}
+
+/// The group pairs of `source`, line by line.
+fn pairs(source: &[u8]) -> Result<Vec<Pair>, EditedDxfError> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    while start < source.len() {
+        let end = source[start..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(source.len(), |at| start + at);
+        let content_end = if end > start && source[end - 1] == b'\r' {
+            end - 1
+        } else {
+            end
+        };
+        lines.push((start, content_end, (end + 1).min(source.len())));
+        start = end + 1;
+    }
+    if lines.len() % 2 != 0 {
+        // A last empty line after the end of file is no pair.
+        if lines
+            .last()
+            .is_some_and(|(start, end, _)| source[*start..*end].trim_ascii().is_empty())
+        {
+            lines.pop();
+        } else {
+            return Err(DxfEditRefusal::Malformed.into());
+        }
+    }
+    lines
+        .chunks_exact(2)
+        .map(|pair| {
+            let (code_start, code_end, _) = pair[0];
+            let (value_start, value_end, next) = pair[1];
+            let code = std::str::from_utf8(source[code_start..code_end].trim_ascii())
+                .ok()
+                .and_then(|code| code.parse::<i32>().ok())
+                .ok_or(DxfEditRefusal::Malformed)?;
+            Ok(Pair {
+                code,
+                start: code_start,
+                value: value_start..value_end,
+                end: next,
+            })
+        })
+        .collect()
+}

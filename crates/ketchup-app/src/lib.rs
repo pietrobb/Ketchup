@@ -1048,6 +1048,8 @@ pub enum AppCommand {
     FitUnderlay,
     DrawIntoUnderlay,
     TextIntoUnderlay,
+    ExportUnderlayDxf,
+    ExportUnderlayDwg,
     TrimUnderlayLine,
     ExtendUnderlayLine,
     OffsetUnderlayLine,

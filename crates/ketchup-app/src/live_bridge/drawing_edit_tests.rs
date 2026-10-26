@@ -420,3 +420,120 @@ fn a_client_trims_extends_and_offsets_lines_of_a_drawing() {
     }
     assert_eq!(top_level(&mut bridge, &mut app), before);
 }
+
+/// `drawing action=export`: a drawing with a door taken out, its wall moved and a line drawn
+/// is written as DXF; the file imported again holds the objects of each kind and layer the
+/// edited drawing holds, the file it was imported from is unchanged, and a source that is
+/// not the drawing is refused.
+#[test]
+fn a_client_exports_the_edited_drawing_as_a_dxf_that_imports_as_edited() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("plan.dxf");
+    std::fs::write(&source, DRAWING).unwrap();
+    let (_, mut bridge) = setup();
+    let mut app = KetchupApp::with_catalog_and_initial_box(crate::LocaleCatalog::english(), false);
+    app.selection.clear();
+    let import = |path: &std::path::Path| Request::Import {
+        expected: None,
+        path: path.display().to_string(),
+        unit: None,
+        as_underlay: true,
+    };
+    bridge.execute(&mut app, import(&source), false).unwrap();
+    let objects = top_level(&mut bridge, &mut app);
+    let door = id_of(&objects, "1F");
+    let wall = id_of(&objects, "2A");
+    for (method, arguments) in [
+        ("drawing_remove", json!({"object_ids": [door]})),
+        (
+            "drawing_move",
+            json!({"object_ids": [wall], "by_mm": [0, 300]}),
+        ),
+        (
+            "drawing_draw",
+            json!({"layer": "walls", "shapes": [{"shape": "line", "points_mm": [[0, 1000], [3000, 1000]]}]}),
+        ),
+    ] {
+        bridge
+            .execute(&mut app, ask(method, arguments), false)
+            .unwrap();
+    }
+    let edited = bridge
+        .execute(&mut app, ask("underlay_objects", json!({})), false)
+        .unwrap();
+    let digest = app.canonical_digest();
+
+    let output = directory.path().join("edited.dxf");
+    let answer = bridge
+        .execute(
+            &mut app,
+            ask(
+                "drawing_export",
+                json!({"path": output.display().to_string()}),
+            ),
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        answer["changes"],
+        json!({"removed": 1, "moved": 1, "added": 1}),
+        "{answer}"
+    );
+    assert_eq!(app.canonical_digest(), digest);
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), DRAWING);
+    let written = std::fs::read_to_string(&output).unwrap();
+    // The block the removed door placed stays, as the other door still places it.
+    assert!(written.contains("DOOR_80") && written.contains("1.01 Kitchen"));
+
+    bridge.execute(&mut app, import(&output), false).unwrap();
+    let again = bridge
+        .execute(
+            &mut app,
+            ask("underlay_objects", json!({"underlay_id": 2})),
+            false,
+        )
+        .unwrap();
+    assert_eq!(again["kinds"], edited["kinds"], "{again}\n{edited}");
+    assert_eq!(again["layers"], edited["layers"], "{again}\n{edited}");
+
+    // To a .dwg path the same drawing is written as DWG.
+    let dwg = directory.path().join("edited.dwg");
+    bridge
+        .execute(
+            &mut app,
+            ask(
+                "drawing_export",
+                json!({"underlay_id": 1, "path": dwg.display().to_string()}),
+            ),
+            false,
+        )
+        .unwrap();
+    bridge.execute(&mut app, import(&dwg), false).unwrap();
+    let from_dwg = bridge
+        .execute(
+            &mut app,
+            ask("underlay_objects", json!({"underlay_id": 3})),
+            false,
+        )
+        .unwrap();
+    assert_eq!(from_dwg["kinds"], edited["kinds"], "{from_dwg}\n{edited}");
+
+    // Another drawing named as the source is refused, and nothing is written.
+    let other = directory.path().join("other.dxf");
+    std::fs::write(&other, DRAWING.replace("2630", "2640")).unwrap();
+    let refused = directory.path().join("refused.dxf");
+    assert_eq!(
+        bridge
+            .execute(
+                &mut app,
+                ask(
+                    "drawing_export",
+                    json!({"underlay_id": 1, "path": refused.display().to_string(), "source": other.display().to_string()})
+                ),
+                false
+            )
+            .unwrap_err(),
+        "export_failed"
+    );
+    assert!(!refused.exists());
+}

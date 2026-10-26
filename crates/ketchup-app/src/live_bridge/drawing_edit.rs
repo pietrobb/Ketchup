@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::app::underlay_edit::UnderlayEditError;
+use crate::app::underlay_export::UnderlayExportError;
 use ketchup_model::underlay::drawn::{in_lines, inverse, similarity};
 use ketchup_model::underlay::edits::UnderlayObjectError;
 use ketchup_model::underlay::line_edit::LineEdit;
@@ -272,6 +273,78 @@ impl LiveBridge {
             "new_object_ids": (first..after).collect::<Vec<_>>(),
             "underlay_id": id.0,
             "dirty": app.is_dirty(),
+        }))
+    }
+
+    /// `drawing_export`: the drawing with its changes written to the DXF or DWG file `path`.
+    pub(super) fn drawing_export(
+        app: &mut KetchupApp,
+        request: &Request,
+        ui_busy: bool,
+        cancelled: &AtomicBool,
+    ) -> Result<Value, &'static str> {
+        let Request::DrawingExport {
+            expected,
+            underlay_id,
+            path,
+            source,
+        } = request
+        else {
+            return Err("invalid_request");
+        };
+        Self::guard(app, expected)?;
+        Self::available(app, ui_busy)?;
+        let drawing = Path::new(path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("dxf") || extension.eq_ignore_ascii_case("dwg")
+            });
+        if !drawing || !super::drawings::local_absolute_path(path) {
+            return Err(failure(
+                "invalid_path",
+                "path is a local absolute path ending in .dxf or .dwg.",
+                json!({"path": path}),
+            ));
+        }
+        if let Some(source) = source
+            && !super::drawings::local_absolute_path(source)
+        {
+            return Err(failure(
+                "invalid_path",
+                "source is the local absolute path of the DXF or DWG file the drawing was \
+                 imported from.",
+                json!({"source": source}),
+            ));
+        }
+        let snapshot = app.document.current();
+        let underlay = super::underlay_regions::one_underlay(&snapshot, *underlay_id)?;
+        let id = underlay.id;
+        let edits = &underlay.edits;
+        let changed = json!({
+            "removed": edits.removed_objects.len(),
+            "moved": edits.moved_objects.len(),
+            "added": edits.added.len(),
+        });
+        Self::require_request_authority(cancelled)?;
+        let bytes = app
+            .export_underlay_dxf_to(id, source.as_deref().map(Path::new), Path::new(path))
+            .map_err(|error| {
+                let code = match &error {
+                    UnderlayExportError::NoSource(..) => "invalid_params",
+                    _ => "export_failed",
+                };
+                record_rejection(
+                    &rejected(code).caused_by(error),
+                    json!({"path": path, "underlay_id": id.0}),
+                );
+                code
+            })?;
+        Ok(json!({
+            "path": path,
+            "bytes": bytes,
+            "underlay_id": id.0,
+            "changes": changed,
         }))
     }
 }

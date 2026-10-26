@@ -13,10 +13,11 @@
 pub use crate::protocol::DwgRefusal;
 use crate::protocol::{
     ANY_FRAME_BYTES, DwgInput, DwgOutcome, Frame, MAX_REPLY_FRAME_BYTES, ProgramInput, RefineInput,
-    RefineOutcome, ReportOutcome, UnderlayInput, UnderlayOutcome, UnderlayRead, WorkerFailure,
-    WorkerReply, WorkerRequest, protocol_identity, read_frame, write_frame,
+    RefineOutcome, ReportOutcome, UnderlayInput, UnderlayOutcome, UnderlayRead, UnderlayWriteInput,
+    UnderlayWriteOutcome, WorkerFailure, WorkerReply, WorkerRequest, protocol_identity, read_frame,
+    write_frame,
 };
-use crate::underlay_reading::{UnderlayReadError, read_underlay};
+use crate::underlay_reading::{UnderlayReadError, read_underlay, write_underlay};
 use crate::{ExactWorkerClient, WorkerError, exact_worker_identity, verify_exact_worker_identity};
 use ketchup_dwg::DwgDrawing;
 use ketchup_model::graph::sha256_hex;
@@ -419,6 +420,27 @@ impl ProgramWorker {
         }
     }
 
+    /// Writes the drawing `input` names back as DXF with its changes, in the worker,
+    /// to `input.output`; gives the bytes written.
+    ///
+    /// # Errors
+    /// The drawing or its changes were refused, or the worker was stopped or died.
+    pub fn write_underlay(
+        &mut self,
+        input: UnderlayWriteInput,
+        cancel: &CancelToken,
+    ) -> Result<u64, UnderlayReadError> {
+        let outcome = self
+            .call(cancel, |client| {
+                client.write_underlay(input, cancel.flag(), UNTIL_CANCELLED)
+            })
+            .map_err(Stopped::underlay_error)?;
+        match outcome {
+            UnderlayWriteOutcome::Written { bytes } => Ok(bytes),
+            UnderlayWriteOutcome::Refused(refusal) => Err(UnderlayReadError::Refused(refusal)),
+        }
+    }
+
     /// [`Self::call`] with the time `deadline` has left.
     fn call_by<T>(
         &mut self,
@@ -507,6 +529,9 @@ pub fn run_stdio() {
             }
             Frame::Message(WorkerRequest::ReadUnderlay(input)) => {
                 WorkerReply::Underlay(Box::new(read_underlay(&input)))
+            }
+            Frame::Message(WorkerRequest::WriteUnderlay(input)) => {
+                WorkerReply::UnderlayWritten(Box::new(write_underlay(&input)))
             }
             Frame::Message(_) | Frame::Malformed(_) => {
                 WorkerReply::Failure(WorkerFailure::invalid_request())

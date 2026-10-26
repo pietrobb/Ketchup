@@ -309,7 +309,7 @@ fn scale_of(map: &Affine) -> f64 {
 /// The rotation of a text at `rotation` once mapped by `map`: its baseline's image, turned
 /// round when a mirror would make it read backward, so it stays readable as a drawing's
 /// mirrored text does.
-fn readable_rotation(map: &Affine, rotation: f64) -> f64 {
+pub(crate) fn readable_rotation(map: &Affine, rotation: f64) -> f64 {
     let direction = [rotation.cos(), rotation.sin()];
     let image = [
         map[0][0] * direction[0] + map[0][1] * direction[1],

@@ -144,6 +144,9 @@ pub enum WorkerRequest {
     /// Reads a DXF or DWG drawing as underlay lines. Only the program worker gets it: an
     /// underlay keeps every line it reads, bounded by the worker's limits alone.
     ReadUnderlay(UnderlayInput),
+    /// Writes a drawing read as an underlay back as DXF with what was changed of it. The
+    /// program worker gets it for the same reason: the source is read again whole.
+    WriteUnderlay(Box<UnderlayWriteInput>),
     /// Test hooks: a native exception, a long job, a hard crash and one block of memory.
     Exception,
     Sleep {
@@ -189,6 +192,7 @@ pub enum WorkerReply {
     Refined(Box<RefineOutcome>),
     Dwg(Box<DwgOutcome>),
     Underlay(Box<UnderlayOutcome>),
+    UnderlayWritten(Box<UnderlayWriteOutcome>),
     Failure(WorkerFailure),
     /// The result did not fit one reply frame; the worker stays usable.
     TooLarge {
@@ -365,6 +369,29 @@ pub enum UnderlayOutcome {
     Refused(UnderlayRefusal),
 }
 
+/// A drawing to write back as DXF: the file it was read from, read as [`UnderlayInput`]
+/// read it, its lines as the document keeps them and what was changed of them.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct UnderlayWriteInput {
+    pub source: PathBuf,
+    pub dwg: bool,
+    pub unit_if_unitless: Option<ImportLengthUnit>,
+    /// The underlay's encoded lines, its blob.
+    pub lines: PathBuf,
+    pub edits: ketchup_model::underlay::edits::UnderlayEdits,
+    /// The file written: DXF, or DWG when it ends in `.dwg`.
+    pub output: PathBuf,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub enum UnderlayWriteOutcome {
+    /// The DXF was written to the request's output, `bytes` long.
+    Written {
+        bytes: u64,
+    },
+    Refused(UnderlayRefusal),
+}
+
 /// Why a drawing was not read as an underlay, with its facts as fields.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum UnderlayRefusal {
@@ -382,6 +409,8 @@ pub enum UnderlayRefusal {
         path: PathBuf,
         report: String,
     },
+    /// The changes do not go into the drawing.
+    NotWritten(ketchup_model::import::DxfEditRefusal),
 }
 
 impl std::fmt::Display for UnderlayRefusal {
@@ -391,6 +420,7 @@ impl std::fmt::Display for UnderlayRefusal {
             Self::UnitsRequired => formatter
                 .write_str("the drawing declares no length unit; choose the unit it is drawn in"),
             Self::Dxf { report } => formatter.write_str(report),
+            Self::NotWritten(refusal) => refusal.fmt(formatter),
             Self::File { path, report } => write!(formatter, "{}: {report}", path.display()),
         }
     }
