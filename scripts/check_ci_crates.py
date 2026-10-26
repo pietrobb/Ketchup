@@ -102,7 +102,15 @@ def fails_a_pull_request(text, nightly):
     return True
 
 
-def running_steps(job, nightly=frozenset()):
+def running_steps(job):
+    """The steps of a job that can run: none when the job's own `if:` is false."""
+    head, *steps = STEP.split(job)
+    if NEVER.search(head.split("\n    steps:", 1)[0]):
+        return []
+    return [step for step in steps if not NEVER.search(step)]
+
+
+def pull_request_steps(job, nightly):
     """The steps of a job that can fail a pull request: none when the job's own head cannot."""
     head, *steps = STEP.split(job)
     if not fails_a_pull_request(head.split("\n    steps:", 1)[0], nightly):
@@ -148,7 +156,7 @@ def cargo_crates(workflows, subcommand):
         nightly = nightly_variables(workflow)
         for job in jobs(workflow):
             listed = set(PACKAGE_FLAG.findall("".join(CRATE_LIST.findall(job))))
-            for step in running_steps(job, nightly):
+            for step in pull_request_steps(job, nightly):
                 for name, arguments, test_arguments in CARGO.findall(CONTINUATION.sub(" ", folded(step))):
                     if name != subcommand or (name == "test" and narrowed(test_arguments)):
                         continue
