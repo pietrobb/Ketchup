@@ -192,11 +192,13 @@ fn placed_volumes(dae: &str) -> Vec<f64> {
         .collect()
 }
 
-/// A part placed mirrored keeps its faces turned outward: COLLADA has no rule that a
-/// mirroring matrix turns the winding, so the mirrored part gets its own geometry with
-/// the triangles wound the other way, and both parts enclose +1000 mm³.
+/// A part placed mirrored is an instance of the same component as the unmirrored one,
+/// its outward-wound geometry under the mirroring matrix: Blender 4.2 and SketchUp turn
+/// such faces by the geometry's winding and keep them outward (review 2026-10-24 MF-23,
+/// probed in Blender 4.2), while a geometry of its own wound the other way came in
+/// inside out. Through its matrix alone the mirrored part's triangles enclose −1000 mm³.
 #[test]
-fn a_mirrored_part_keeps_its_faces_turned_outward() {
+fn a_mirrored_part_shares_the_outward_geometry_of_its_component() {
     let mut document = seeded_document(None, None);
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -221,11 +223,25 @@ fn a_mirrored_part_keeps_its_faces_turned_outward() {
         })
         .collect::<Vec<_>>();
     let export = model_dae_export(&snapshot, &instances).unwrap();
-    let volumes = placed_volumes(&export.dae);
+    let mut volumes = placed_volumes(&export.dae);
+    volumes.sort_by(f64::total_cmp);
     assert_eq!(volumes.len(), 2);
-    for volume in volumes {
-        assert!((volume - 1000.0).abs() < 1.0e-6, "signed volume {volume}");
-    }
-    assert_eq!(export.dae.matches("<geometry ").count(), 2);
-    assert!(export.loss_report.contains("mirrored="));
+    assert!((volumes[0] + 1000.0).abs() < 1.0e-6, "mirrored {volumes:?}");
+    assert!(
+        (volumes[1] - 1000.0).abs() < 1.0e-6,
+        "unmirrored {volumes:?}"
+    );
+    assert_eq!(export.dae.matches("<geometry ").count(), 1);
+    assert_eq!(
+        export
+            .dae
+            .matches("<instance_node url=\"#component-0\"/>")
+            .count(),
+        2
+    );
+    assert!(
+        export
+            .loss_report
+            .contains("blender_import_verified=4.2 LTS, mirrored parts face outward")
+    );
 }
