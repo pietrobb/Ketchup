@@ -1904,17 +1904,26 @@ mod tests {
         };
         // The worker is started before anything is timed.
         run(&overlapping(1));
+        let timed = |source: &str| {
+            let started = Instant::now();
+            run(source);
+            started.elapsed()
+        };
         let mut count = 20;
         let (source, checking) = loop {
             let source = overlapping(count);
-            let started = Instant::now();
-            run(&source);
-            let checking = started.elapsed();
+            let checking = timed(&source);
             if checking >= Duration::from_millis(800) {
                 break (source, checking);
             }
             count = count * 3 / 2;
         };
+        // A busy machine only slows a run, so the fastest of three is the least the
+        // evaluation and report take: the check, which also refines, needs about twice
+        // that and cannot fit a deadline set from it, however the load changes between
+        // the runs (review 2026-10-24 TST-22: from one run, a spike during it gave a
+        // deadline the check then fitted).
+        let checking = checking.min(timed(&source)).min(timed(&source));
         // Room for one evaluation and report, not for the refine after them.
         let total = checking * 8 / 5;
         let mut server = Server::new(SessionSettings::default());
