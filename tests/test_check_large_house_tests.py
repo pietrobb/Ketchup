@@ -46,6 +46,28 @@ def test_a_public_helper_is_followed_into_the_other_files_of_its_crate_only(tmp_
     assert checker.violations(tmp_path) == ["crates/a/src/uses.rs:2 pulls_the_house"]
 
 
+def test_a_listing_of_the_examples_reaches_the_house_unless_it_sets_the_house_apart(tmp_path):
+    listing = (
+        "fn examples() -> Vec<PathBuf> {\n"
+        '    read_dir(root.join("../../examples/programs")).collect()\n}\n'
+    )
+    write(tmp_path, "crates/a/tests/golden.rs", (
+        listing
+        + "#[test]\nfn every_example() {\n    check(examples());\n}\n"
+    ))
+    write(tmp_path, "crates/b/tests/round_trip.rs", (
+        'const LARGE: [&str; 2] = ["house-project.star", "tiny-house.star"];\n'
+        "fn examples(large: bool) -> Vec<PathBuf> {\n"
+        '    read_dir(root.join("examples/programs")).filter(|p| LARGE.contains(&p) == large).collect()\n}\n'
+        "#[test]\nfn every_small_example() {\n    check(examples(false));\n}\n"
+        # A listing of another directory, or the path only in a comment, is not the examples.
+        + 'fn fixtures() -> Vec<PathBuf> {\n    // examples/programs is listed elsewhere\n'
+        + '    read_dir("tests/fixtures").collect()\n}\n'
+        + "#[test]\nfn every_fixture() {\n    check(fixtures());\n}\n"
+    ))
+    assert checker.violations(tmp_path) == ["crates/a/tests/golden.rs:5 every_example"]
+
+
 def test_ignored_large_house_perf_and_release_only_tests_and_mentions_pass(tmp_path):
     write(tmp_path, "crates/a/tests/house.rs", (
         HOUSE

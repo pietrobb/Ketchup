@@ -10,7 +10,10 @@ Review 2026-10-18 P3 found unignored ones in `program_evaluation`, `takeoff_hous
 A test reaches the house when its body, a constant it names or a function it
 calls holds `include_str!("…tiny-house.star")`. Functions are followed within
 the file and, for `pub` helpers, across the files of the same crate; a function
-defined in the file shadows one of the same name elsewhere.
+defined in the file shadows one of the same name elsewhere. A function that lists
+`examples/programs` with `read_dir` reaches the house too, unless it names
+`tiny-house.star` (directly or through a constant) to set it apart (review
+2026-10-24 TST-20: the golden test of every example read it in every step).
 """
 
 from __future__ import annotations
@@ -25,6 +28,9 @@ CONSTANT = re.compile(r"\b(?:const|static)\s+(\w+)\s*:[^=]*=\s*include_str!\(\s*
 FUNCTION = re.compile(
     r"((?:^[ \t]*#\[[^\n]*\n|^[ \t]*///[^\n]*\n)*)^[ \t]*(pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)", re.M)
 CALL = re.compile(r"\b(\w+)\s*(?:::<[^>]*>)?\s*\(")
+EXAMPLES = re.compile(r'"[^"\n]*examples/programs[^"\n]*"')
+NAMED = re.compile(r'"[^"\n]*tiny-house\.star"')
+NAMING = re.compile(r'\b(?:const|static)\s+(\w+)\s*:[^=]*=[^;]*"[^"\n]*tiny-house\.star"')
 ALLOWED = ("large_house_", "perf_")
 # A whole-house test run in release by its own nightly step keeps its name.
 RELEASE_ONLY = "release-only"
@@ -86,6 +92,15 @@ def holds_the_house(item: dict, constants: set[str]) -> bool:
     return any(re.search(rf"\b{re.escape(name)}\b", item["code"]) for name in constants)
 
 
+def lists_the_house(item: dict, naming: set[str]) -> bool:
+    """A `read_dir` of `examples/programs` (in code) that does not name the house to set it apart."""
+    def in_code(pattern: re.Pattern) -> bool:
+        return any(item["code"][found.start()] == '"' for found in pattern.finditer(item["body"]))
+    if not re.search(r"\bread_dir\b", item["code"]) or not in_code(EXAMPLES):
+        return False
+    return not (in_code(NAMED) or any(re.search(rf"\b{re.escape(name)}\b", item["code"]) for name in naming))
+
+
 def crate_of(path: Path, root: Path) -> str:
     return path.relative_to(root).parts[1]
 
@@ -97,9 +112,10 @@ def violations(root: Path = ROOT) -> list[str]:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         constants = set(CONSTANT.findall(text))
+        naming = set(NAMING.findall(text))
         items = functions(text)
         for item in items:
-            item["house"] = holds_the_house(item, constants)
+            item["house"] = holds_the_house(item, constants) or lists_the_house(item, naming)
         files[path] = items
     # Follow calls until nothing new reaches the house.
     changed = True

@@ -4,7 +4,8 @@
 //! longer than [`VERBATIM_ITEMS`] keeps its length and its count per `kind`. A
 //! change in the evaluator that moves an example shows up as a readable diff of
 //! that file, without committing megabytes of generated report (review REPO-1).
-//! Regenerate with `KETCHUP_UPDATE_GOLDEN=1 cargo test -p ketchup-program`; set
+//! Regenerate with `KETCHUP_UPDATE_GOLDEN=1 cargo test -p ketchup-program --test
+//! integration -- --include-ignored example_program` (the houses are ignored in a step); set
 //! `KETCHUP_TEST_REPORT_DIR` as well to get the full reports for comparison.
 use ketchup_program::run;
 use serde_json::{Map, Value, json};
@@ -16,7 +17,11 @@ const VERBATIM_ITEMS: usize = 24;
 /// An expected report larger than this has kept a generated report in the repository.
 const EXPECTED_MAX_BYTES: usize = 32 * 1024;
 
-fn examples() -> Vec<PathBuf> {
+/// The two house programs are the large-house documents (AGENTS.md §6): their golden
+/// test is ignored in a step and runs in the full suite.
+const LARGE: [&str; 2] = ["house-project.star", "tiny-house.star"];
+
+fn examples(large: bool) -> Vec<PathBuf> {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/programs");
     let mut programs = std::fs::read_dir(&directory)
         .unwrap_or_else(|error| panic!("{}: {error}", directory.display()))
@@ -24,6 +29,10 @@ fn examples() -> Vec<PathBuf> {
         .filter(|path| {
             path.extension()
                 .is_some_and(|extension| extension == "star")
+                && path
+                    .file_name()
+                    .is_some_and(|name| LARGE.iter().any(|house| name == *house))
+                    == large
         })
         .collect::<Vec<_>>();
     programs.sort();
@@ -74,8 +83,24 @@ fn pretty(value: &Value) -> String {
 
 #[test]
 fn every_example_program_matches_its_expected_report() {
-    let programs = examples();
+    let programs = examples(false);
     assert!(programs.len() >= 3, "the example programs are missing");
+    assert_expected_reports(programs);
+}
+
+#[test]
+#[ignore = "large-house: runs in full suite"]
+fn large_house_example_programs_match_their_expected_reports() {
+    let programs = examples(true);
+    assert_eq!(
+        programs.len(),
+        LARGE.len(),
+        "the house programs are missing"
+    );
+    assert_expected_reports(programs);
+}
+
+fn assert_expected_reports(programs: Vec<PathBuf>) {
     let update = ketchup_test_env::update_golden();
     let mut changed = Vec::new();
     for program in programs {
