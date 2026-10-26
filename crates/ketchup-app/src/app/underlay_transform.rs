@@ -83,7 +83,15 @@ impl KetchupApp {
         let (Some(id), Some(edit)) = (underlay_of(selection), edit) else {
             return false;
         };
-        let Err(error) = plan_underlay_edit(&self.document.current(), id, edit) else {
+        let snapshot = self.document.current();
+        if snapshot
+            .underlay(id)
+            .is_some_and(|underlay| !underlay.lies_flat())
+        {
+            self.refuse_underlay_edit(self.catalog.text("error-underlay-standing"));
+            return true;
+        }
+        let Err(error) = plan_underlay_edit(&snapshot, id, edit) else {
             return false;
         };
         self.refuse_underlay_edit(error.to_string());

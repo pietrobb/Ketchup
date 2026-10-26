@@ -246,14 +246,23 @@ impl Tools {
                 let action = take_action(
                     &mut args,
                     &[
-                        "remove", "draw", "move", "trim", "extend", "offset", "export", "extrude",
+                        "remove",
+                        "draw",
+                        "move",
+                        "trim",
+                        "extend",
+                        "offset",
+                        "export",
+                        "extrude",
+                        "view",
+                        "solid_from_views",
                     ],
                 )?;
                 // An export reads the source drawing again in the program worker; an
-                // extrusion may be planned as a program.
+                // extrusion, or a view a program follows, may be planned as a program.
                 let wait = match action.as_str() {
                     "export" => OPEN_WAIT,
-                    "extrude" => APPLY_PROGRAM_WAIT,
+                    "extrude" | "view" | "solid_from_views" => APPLY_PROGRAM_WAIT,
                     _ => DEFAULT_WAIT,
                 };
                 self.send(&format!("drawing_{action}"), args, wait)

@@ -64,6 +64,8 @@ mod program_edit;
 mod underlay_objects;
 #[path = "underlay_program_tests.rs"]
 mod underlay_program;
+#[path = "underlay_views_tests.rs"]
+mod underlay_views;
 #[test]
 fn z6_named_views_are_orthographic_and_iso_keeps_positive_z_up() {
     let (mut app, mut bridge) = setup();

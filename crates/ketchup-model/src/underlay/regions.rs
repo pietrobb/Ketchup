@@ -74,6 +74,65 @@ pub fn find_regions(
     segments: &[[[f64; 2]; 2]],
     tolerance_mm: f64,
 ) -> Result<Vec<Region>, RegionError> {
+    let (points, edges) = plane_graph(segments, tolerance_mm)?;
+    Ok(faces(&points, &edges))
+}
+
+/// The closed figures the straight pieces `segments` draw, each one region however many
+/// faces the lines inside it split it into: its outline the figure's outer edge, its holes
+/// the outer edges of the figures directly inside it, largest first. A view of a part,
+/// its silhouette, with the edges seen within it ignored.
+///
+/// # Errors
+/// As [`find_regions`].
+pub fn find_figures(
+    segments: &[[[f64; 2]; 2]],
+    tolerance_mm: f64,
+) -> Result<Vec<Region>, RegionError> {
+    let (points, edges) = plane_graph(segments, tolerance_mm)?;
+    let (_, outer) = walks(&points, &edges);
+    let mut figures = outer
+        .iter()
+        .map(|(ring, area, _)| {
+            let mut outline = ring.clone();
+            outline.reverse();
+            Region {
+                bounds: bounds_of(ring),
+                outline,
+                holes: Vec::new(),
+                area_mm2: *area,
+            }
+        })
+        .collect::<Vec<_>>();
+    for (ring, area, owner) in &outer {
+        let probe = ring[0];
+        let around = outer
+            .iter()
+            .enumerate()
+            .filter(|(index, (outline, _, figure))| {
+                figure != owner
+                    && in_box(figures[*index].bounds, probe)
+                    && super::objects::ring_contains(outline, probe)
+            })
+            .min_by(|a, b| a.1.1.total_cmp(&b.1.1))
+            .map(|(index, _)| index);
+        if let Some(index) = around {
+            // Turned as `faces` turns a hole.
+            let mut hole = ring.clone();
+            hole.reverse();
+            figures[index].holes.push(hole);
+            figures[index].area_mm2 -= area;
+        }
+    }
+    figures.sort_by(|a, b| b.area_mm2.total_cmp(&a.area_mm2));
+    Ok(figures)
+}
+
+/// The vertices and edges `segments` make once split where they meet, ends within the
+/// tolerance one vertex, and every edge with a loose end taken away.
+type PlaneGraph = (Vec<[f64; 2]>, Vec<[usize; 2]>);
+
+fn plane_graph(segments: &[[[f64; 2]; 2]], tolerance_mm: f64) -> Result<PlaneGraph, RegionError> {
     if segments.len() > MAX_REGION_SEGMENTS {
         return Err(RegionError::TooManySegments {
             count: segments.len(),
@@ -107,7 +166,7 @@ pub fn find_regions(
     }
     let points = vertices.points;
     let edges = without_loose_ends(points.len(), edges);
-    Ok(faces(&points, &edges))
+    Ok((points, edges))
 }
 
 fn lerp(a: [f64; 2], b: [f64; 2], t: f64) -> [f64; 2] {
@@ -368,6 +427,45 @@ fn bounds_of(ring: &[[f64; 2]]) -> [[f64; 2]; 2] {
 /// The bounded faces of the plane graph of `edges`, each with the outer boundaries of the
 /// other closed figures inside it as holes.
 fn faces(points: &[[f64; 2]], edges: &[[usize; 2]]) -> Vec<Region> {
+    let (bounded, outer) = walks(points, edges);
+    let mut regions = bounded
+        .iter()
+        .map(|(ring, area, _)| Region {
+            bounds: bounds_of(ring),
+            outline: ring.clone(),
+            holes: Vec::new(),
+            area_mm2: *area,
+        })
+        .collect::<Vec<_>>();
+    for (ring, area, owner) in outer {
+        let probe = ring[0];
+        let around = bounded
+            .iter()
+            .enumerate()
+            .filter(|(index, (outline, _, figure))| {
+                *figure != owner
+                    && in_box(regions[*index].bounds, probe)
+                    && super::objects::ring_contains(outline, probe)
+            })
+            .min_by(|a, b| a.1.1.total_cmp(&b.1.1))
+            .map(|(index, _)| index);
+        if let Some(index) = around {
+            let mut hole = ring;
+            hole.reverse();
+            regions[index].holes.push(hole);
+            regions[index].area_mm2 -= area;
+        }
+    }
+    regions.sort_by(|a, b| b.area_mm2.total_cmp(&a.area_mm2));
+    regions
+}
+
+/// A ring walked around a face, its area and the connected figure it belongs to.
+type Walk = (Vec<[f64; 2]>, f64, usize);
+
+/// Every face walk of the plane graph: the bounded faces counterclockwise, and each
+/// figure's outer edge, clockwise, with the area it encloses.
+fn walks(points: &[[f64; 2]], edges: &[[usize; 2]]) -> (Vec<Walk>, Vec<Walk>) {
     // Half-edges 2k (a→b) and 2k+1 (b→a), each vertex's outgoing ones counterclockwise.
     let mut outgoing = vec![Vec::new(); points.len()];
     for (index, [a, b]) in edges.iter().enumerate() {
@@ -433,36 +531,7 @@ fn faces(points: &[[f64; 2]], edges: &[[usize; 2]]) -> Vec<Region> {
             outer.push((ring, -area, owner));
         }
     }
-    let mut regions = bounded
-        .iter()
-        .map(|(ring, area, _)| Region {
-            bounds: bounds_of(ring),
-            outline: ring.clone(),
-            holes: Vec::new(),
-            area_mm2: *area,
-        })
-        .collect::<Vec<_>>();
-    for (ring, area, owner) in outer {
-        let probe = ring[0];
-        let around = bounded
-            .iter()
-            .enumerate()
-            .filter(|(index, (outline, _, figure))| {
-                *figure != owner
-                    && in_box(regions[*index].bounds, probe)
-                    && super::objects::ring_contains(outline, probe)
-            })
-            .min_by(|a, b| a.1.1.total_cmp(&b.1.1))
-            .map(|(index, _)| index);
-        if let Some(index) = around {
-            let mut hole = ring;
-            hole.reverse();
-            regions[index].holes.push(hole);
-            regions[index].area_mm2 -= area;
-        }
-    }
-    regions.sort_by(|a, b| b.area_mm2.total_cmp(&a.area_mm2));
-    regions
+    (bounded, outer)
 }
 
 /// Pieces that run side by side: `a` and `b` index the segments, `gap_mm` is how far
@@ -590,6 +659,27 @@ mod tests {
         assert!(regions[0].contains([80.0, 50.0]));
         assert!(!regions[0].contains([65.0, 65.0]), "in the pillar");
         assert!(regions[1].contains([15.0, 50.0]));
+    }
+
+    #[test]
+    fn a_figure_is_its_outer_edge_whatever_lines_split_it_inside() {
+        let mut lines = square(0.0, 100.0);
+        lines.push([[40.0, 0.0], [40.0, 100.0]]);
+        lines.extend(square(60.0, 70.0));
+        // An island in the pillar: a figure of the pillar's, not of the outline's.
+        lines.extend(square(64.0, 66.0));
+        lines.push([[10.0, 10.0], [20.0, 20.0]]);
+        let figures = find_figures(&lines, 0.01).unwrap();
+        let areas = figures
+            .iter()
+            .map(|r| r.area_mm2.round())
+            .collect::<Vec<_>>();
+        assert_eq!(areas, [9_900.0, 96.0, 4.0]);
+        assert_eq!(figures[0].holes.len(), 1);
+        assert!(figures[0].contains([15.0, 50.0]) && figures[0].contains([80.0, 50.0]));
+        assert!(!figures[0].contains([62.0, 62.0]), "in the pillar");
+        assert!(signed_area(&figures[0].outline) > 0.0);
+        assert!(figures[1].contains([62.0, 62.0]) && !figures[1].contains([65.0, 65.0]));
     }
 
     #[test]

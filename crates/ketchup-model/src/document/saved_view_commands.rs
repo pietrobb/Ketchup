@@ -109,7 +109,7 @@ pub(super) fn validate_underlay(
     if !crate::underlay::placement::within_bounds(&underlay.placement) {
         return Err(CanonicalError::UnderlayPlacementOutOfRange(underlay.id));
     }
-    if !underlay.edits.is_valid() {
+    if !underlay.edits.is_valid() || !underlay.view.is_valid() {
         return Err(CanonicalError::InvalidTransform);
     }
     for layer in &underlay.layers {

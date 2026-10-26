@@ -22,6 +22,7 @@ pub mod regions;
 pub mod snap;
 pub mod style;
 pub mod text;
+pub mod view;
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -64,6 +65,9 @@ pub struct Underlay {
     /// What was changed of its drawing in Kečup; its blob stays as it was read.
     #[serde(default, skip_serializing_if = "edits::UnderlayEdits::is_empty")]
     pub edits: edits::UnderlayEdits,
+    /// The plane it stands on in space; a plan in the ground plane until it is set up.
+    #[serde(default, skip_serializing_if = "view::UnderlayView::is_ground")]
+    pub view: view::UnderlayView,
 }
 
 impl Underlay {
@@ -1279,6 +1283,7 @@ pub fn plan_underlay(
         offset_mm_bits: offset_mm.map(f64::to_bits),
         placement: placement::geo_placement(snapshot, offset_mm),
         edits: edits::UnderlayEdits::default(),
+        view: view::UnderlayView::default(),
     }));
     Ok((CommandBatch::new(commands), id))
 }

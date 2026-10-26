@@ -8,7 +8,7 @@ use super::*;
 use ketchup_model::underlay::object_query::ObjectIndex;
 use ketchup_model::underlay::objects::ObjectDetail;
 use ketchup_model::underlay::regions::{
-    DEFAULT_JOIN_MM, MAX_JOIN_MM, Region, find_regions, parallel_pairs,
+    DEFAULT_JOIN_MM, MAX_JOIN_MM, Region, find_figures, find_regions, parallel_pairs,
 };
 use ketchup_model::underlay::{Underlay, UnderlayId, UnderlayLines};
 
@@ -43,6 +43,7 @@ impl LiveBridge {
             tolerance_mm,
             closing_segments_mm,
             include_outline,
+            whole,
             limit,
             offset,
         } = request
@@ -75,8 +76,12 @@ impl LiveBridge {
         add_closures(&mut segments, underlay, closing_segments_mm)?;
         let scale = underlay.scale();
         // The tolerance is document millimetres; the lines are the underlay's.
-        let mut regions = find_regions(&segments, tolerance / scale)
-            .map_err(|error| failed_because("invalid_params", error))?;
+        let mut regions = if *whole {
+            find_figures(&segments, tolerance / scale)
+        } else {
+            find_regions(&segments, tolerance / scale)
+        }
+        .map_err(|error| failed_because("invalid_params", error))?;
         let area_scale = scale * scale;
         regions.retain(|region| region.area_mm2 * area_scale / 1e6 >= min_area_m2);
         let (texts, ambiguous_texts) =
@@ -213,7 +218,9 @@ impl LiveBridge {
 }
 
 /// The innermost region of the shown (or named) layers of `underlay` that holds the
-/// document point `point`, in the underlay's millimetres.
+/// document point `point`, in the underlay's millimetres; `whole`, the innermost figure
+/// around it, its outer edge whatever lines split it inside ([`find_figures`]).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn region_at(
     snapshot: &Snapshot,
     underlay: &Underlay,
@@ -222,6 +229,7 @@ pub(super) fn region_at(
     point: [f64; 2],
     tolerance_mm: Option<f64>,
     closing_segments_mm: &[[[f64; 2]; 2]],
+    whole: bool,
 ) -> Result<Region, &'static str> {
     if !point.iter().all(|value| value.is_finite()) {
         return Err("invalid_params");
@@ -234,6 +242,7 @@ pub(super) fn region_at(
         layers,
         tolerance_mm,
         closing_segments_mm,
+        whole,
     )?
     .into_iter()
     .filter(|region| region.contains(local))
@@ -274,6 +283,7 @@ pub(super) fn region_labelled(
         layers,
         tolerance_mm,
         closing_segments_mm,
+        false,
     )?;
     let (texts, _) = texts_in(lines, &chosen_text_layers(snapshot, underlay), &regions);
     let holding = |matches: &dyn Fn(&str) -> bool| {
@@ -333,6 +343,7 @@ fn closed_regions(
     layers: Option<&[String]>,
     tolerance_mm: Option<f64>,
     closing_segments_mm: &[[[f64; 2]; 2]],
+    whole: bool,
 ) -> Result<Vec<Region>, &'static str> {
     let tolerance = tolerance_mm.unwrap_or(DEFAULT_JOIN_MM);
     if !(tolerance > 0.0 && tolerance <= MAX_JOIN_MM) {
@@ -344,8 +355,13 @@ fn closed_regions(
         .map(|piece| piece.ends)
         .collect::<Vec<_>>();
     add_closures(&mut segments, underlay, closing_segments_mm)?;
-    find_regions(&segments, tolerance / underlay.scale())
-        .map_err(|error| failed_because("invalid_params", error))
+    let tolerance = tolerance / underlay.scale();
+    if whole {
+        find_figures(&segments, tolerance)
+    } else {
+        find_regions(&segments, tolerance)
+    }
+    .map_err(|error| failed_because("invalid_params", error))
 }
 
 fn add_closures(

@@ -148,6 +148,7 @@ pub(crate) fn underlay_area_outline(
                 point,
                 None,
                 &[],
+                false,
             )?;
             (region.outline, region.holes)
         }
@@ -172,15 +173,15 @@ pub(crate) fn underlay_area_outline(
 }
 
 /// A name neither a section of the window's program nor a part uses yet: `AREA_1`,
-/// `AREA_2`, …
-pub(crate) fn free_area_name(app: &KetchupApp) -> String {
+/// `AREA_2`, … for `stem` `AREA`.
+pub(crate) fn free_name(app: &KetchupApp, stem: &str) -> String {
     let source = app
         .document
         .current_rule_program()
         .map_or("", |program| program.source.as_str());
     let snapshot = app.document.current();
     (1..)
-        .map(|n| format!("AREA_{n}"))
+        .map(|n| format!("{stem}_{n}"))
         .find(|name| {
             !source.contains(&format!("{BEGIN} {name}:"))
                 && snapshot
@@ -226,8 +227,17 @@ pub(super) fn binding_data(
                         point,
                         tolerance_mm,
                         &closing_segments_mm,
+                        binding.whole,
                     )?,
-                    format!("around ({})", point_text(point)),
+                    format!(
+                        "{} ({})",
+                        if binding.whole {
+                            "the whole figure around"
+                        } else {
+                            "around"
+                        },
+                        point_text(point)
+                    ),
                 ),
                 None => {
                     let label = label.unwrap_or_default();
@@ -257,6 +267,7 @@ pub(super) fn binding_data(
                     &region.outline,
                     &region.holes,
                     binding.thickness,
+                    binding.frame,
                 )?,
             )
         }
@@ -270,7 +281,14 @@ pub(super) fn binding_data(
                     underlay.name,
                     measured(underlay, &outline, &holes)
                 ),
-                outline_data(name, underlay, &outline, &holes, binding.thickness)?,
+                outline_data(
+                    name,
+                    underlay,
+                    &outline,
+                    &holes,
+                    binding.thickness,
+                    binding.frame,
+                )?,
             )
         }
         (None, None, None, Some(block)) if binding.thickness.is_none() => (
@@ -302,10 +320,10 @@ pub(super) fn binding_data(
     ))
 }
 
-const BEGIN: &str = "# underlay data";
-const END: &str = "# end of underlay data";
+pub(super) const BEGIN: &str = "# underlay data";
+pub(super) const END: &str = "# end of underlay data";
 
-fn is_identifier(name: &str) -> bool {
+pub(super) fn is_identifier(name: &str) -> bool {
     let mut characters = name.chars();
     characters
         .next()
@@ -336,7 +354,7 @@ pub(super) fn with_data(source: &str, name: &str, written: &str) -> String {
 }
 
 /// A number as the program reads it: to the thousandth of a millimetre, no trailing zeros.
-fn number(value: f64) -> String {
+pub(super) fn number(value: f64) -> String {
     let text = format!("{value:.3}");
     let text = text.trim_end_matches('0').trim_end_matches('.');
     if text == "-0" {
@@ -386,13 +404,16 @@ fn measured(underlay: &Underlay, outline: &[[f64; 2]], holes: &[Vec<[f64; 2]>]) 
 }
 
 /// `NAME` the outline and `NAME_HOLES` its holes, in document millimetres; with a
-/// thickness also the solid `NAME` extruded from them.
+/// thickness also the solid `NAME` extruded from them. `framed`, `NAME_FRAME` instead of
+/// a sketch on the ground: the world point of the outline's origin and the world directions
+/// of its X and Y where the drawing stands as a view.
 fn outline_data(
     name: &str,
     underlay: &Underlay,
     outline: &[[f64; 2]],
     holes: &[Vec<[f64; 2]>],
     thickness: Option<f64>,
+    framed: bool,
 ) -> Result<String, &'static str> {
     if thickness.is_some_and(|value| !(value.is_finite() && value > 0.0)) {
         return Err(invalid(
@@ -421,7 +442,18 @@ fn outline_data(
             ring_text(underlay, hole, "        ")
         ));
     }
-    data.push_str(&format!("]\ncomponent({}, [profile_part({}, points={name}, closed=True)] + [profile_part({} % (i + 1), points=hole, closed=True) for i, hole in enumerate({name}_HOLES)])\n", quoted(&format!("{name}_sketch")), quoted(&format!("{name}/outline")), quoted(&format!("{name}/hole%d"))));
+    if framed {
+        let view = underlay.view.transform();
+        let triple = |[x, y, z]: [f64; 3]| format!("({}, {}, {})", number(x), number(y), number(z));
+        data.push_str(&format!(
+            "]\n{name}_FRAME = ({}, {}, {})\n",
+            triple(view.transform_point([0.0; 3])),
+            triple(view.transform_vector([1.0, 0.0, 0.0])),
+            triple(view.transform_vector([0.0, 1.0, 0.0])),
+        ));
+    } else {
+        data.push_str(&format!("]\ncomponent({}, [profile_part({}, points={name}, closed=True)] + [profile_part({} % (i + 1), points=hole, closed=True) for i, hole in enumerate({name}_HOLES)])\n", quoted(&format!("{name}_sketch")), quoted(&format!("{name}/outline")), quoted(&format!("{name}/hole%d"))));
+    }
     if let Some(thickness) = thickness {
         data.push_str(&format!(
             "{name}_SOLID = extrude({}, profile = {name}, distance = {})\n[cut({name}_SOLID, profile = hole, through = True, name = {} % (i + 1)) for i, hole in enumerate({name}_HOLES)]\n",

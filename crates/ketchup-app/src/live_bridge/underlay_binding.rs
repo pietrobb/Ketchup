@@ -25,6 +25,13 @@ pub(super) struct Binding {
     /// Document millimetres, not scaled with the drawing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thickness: Option<f64>,
+    /// Written with `NAME_FRAME`, where the view the drawing is set up as puts the outline
+    /// in space, for `drawing action=solid_from_views`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub frame: bool,
+    /// The whole figure around `point`, its outer edge, not the innermost region.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub whole: bool,
 }
 
 impl Binding {
@@ -89,6 +96,8 @@ impl Binding {
             handle,
             block,
             thickness,
+            frame: false,
+            whole: false,
         })
     }
 

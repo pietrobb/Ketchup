@@ -33,7 +33,7 @@ fn sheet_of_the_block(app: &mut KetchupApp, bridge: &mut LiveBridge) -> u64 {
 
 /// The first `parts` parts of the new document drawn together on one sheet:
 /// with more than one, the sheet draws them where they lie in the plan.
-fn sheet_of_parts(app: &mut KetchupApp, bridge: &mut LiveBridge, parts: usize) -> u64 {
+pub(super) fn sheet_of_parts(app: &mut KetchupApp, bridge: &mut LiveBridge, parts: usize) -> u64 {
     evaluate_exact(app);
     let instance_paths = app
         .document

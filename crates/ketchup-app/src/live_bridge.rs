@@ -99,6 +99,7 @@ mod underlay_objects;
 pub(crate) mod underlay_program;
 mod underlay_regions;
 mod underlay_snap;
+pub(crate) mod underlay_views;
 mod validator_catalog;
 pub(crate) mod variant_window;
 pub(crate) mod window_edit;
@@ -534,6 +535,26 @@ pub enum Request {
         object_id: Option<u32>,
         height_mm: f64,
     },
+    /// Sets the drawing up as a view of `plane` (`top` lays it back into the ground plane),
+    /// standing `plane_at_mm` along the axis that plane is seen along.
+    DrawingView {
+        #[serde(default)]
+        expected: Option<Stamp>,
+        #[serde(default)]
+        underlay_id: Option<u64>,
+        plane: String,
+        #[serde(default)]
+        plane_at_mm: f64,
+    },
+    /// The solid that drawings set up as views on different planes show together: the
+    /// area each view picks, pulled through all of them, intersected.
+    DrawingSolidFromViews {
+        #[serde(default)]
+        expected: Option<Stamp>,
+        #[serde(default)]
+        name: Option<String>,
+        views: Vec<underlay_views::ViewArea>,
+    },
     /// The endpoint, intersection, midpoint and nearest point of the shown underlay lines
     /// within `radius_mm` of `point_mm`, the length of the line or arc nearest it, and with
     /// `to_mm` the distance from the snap at `point_mm` to the snap at `to_mm`.
@@ -597,6 +618,9 @@ pub enum Request {
         closing_segments_mm: Vec<[[f64; 2]; 2]>,
         #[serde(default)]
         include_outline: Option<bool>,
+        /// Whole figures, each its outer edge, instead of the faces lines split them into.
+        #[serde(default)]
+        whole: bool,
         #[serde(default)]
         limit: Option<usize>,
         #[serde(default)]
@@ -2993,7 +3017,7 @@ impl LiveBridge {
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
                 "limits":{"request_frame_bytes":MAX_REQUEST_FRAME_BYTES,"response_frame_bytes":MAX_RESPONSE_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":limits::BATCH_JOBS},
-                "methods":["status","summary","operations","list_validators","edit_context","query","detail","mass","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","run_plugin","program","program_context","program_piece","patch_program","set_program_params","save_program_variant","use_program_variant","delete_program_variant","export_program_variants","program_report","validate_program","check_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","import","remove_underlay","fit_underlay","drawing_remove","drawing_draw","drawing_move","drawing_trim","drawing_extend","drawing_offset","drawing_export","drawing_extrude","underlay_snap","underlay_objects","underlay_regions","underlay_parallel","program_from_underlay","export","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
+                "methods":["status","summary","operations","list_validators","edit_context","query","detail","mass","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","run_plugin","program","program_context","program_piece","patch_program","set_program_params","save_program_variant","use_program_variant","delete_program_variant","export_program_variants","program_report","validate_program","check_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","import","remove_underlay","fit_underlay","drawing_remove","drawing_draw","drawing_move","drawing_trim","drawing_extend","drawing_offset","drawing_export","drawing_extrude","drawing_view","drawing_solid_from_views","underlay_snap","underlay_objects","underlay_regions","underlay_parallel","program_from_underlay","export","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
             Request::ListValidators {} => Ok(validator_catalog::catalog()),
@@ -3272,6 +3296,12 @@ impl LiveBridge {
             }
             request @ Request::DrawingExtrude { .. } => {
                 self.drawing_extrude(app, &request, ui_busy, cancelled)
+            }
+            request @ Request::DrawingView { .. } => {
+                self.drawing_view(app, &request, ui_busy, cancelled)
+            }
+            request @ Request::DrawingSolidFromViews { .. } => {
+                self.drawing_solid_from_views(app, &request, ui_busy, cancelled)
             }
             request @ Request::UnderlaySnap { .. } => Self::underlay_snap(app, &request),
             request @ Request::UnderlayObjects { .. } => Self::underlay_objects(app, &request),

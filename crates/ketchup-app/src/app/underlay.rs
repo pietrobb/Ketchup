@@ -483,7 +483,7 @@ impl KetchupApp {
             };
             let placement = match dragged {
                 Some((id, edit)) if id == underlay.id => edit.compose(underlay.placement),
-                _ => underlay.placement,
+                _ => underlay.world_transform(),
             };
             draws.push(UnderlayDraw {
                 geometry,
@@ -530,7 +530,9 @@ impl KetchupApp {
                     .flat_map(|[low, high]| {
                         [[low[0], low[1]], [high[0], low[1]], [low[0], high[1]], high]
                     })
-                    .map(|[x, y]| transform_model_point(underlay.placement, Vec3::new(x, y, 0.0)));
+                    .map(|[x, y]| {
+                        transform_model_point(underlay.world_transform(), Vec3::new(x, y, 0.0))
+                    });
                 let [minimum, maximum] = bounds_of(corners)?;
                 Some((minimum, maximum - minimum))
             })

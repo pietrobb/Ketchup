@@ -7,7 +7,7 @@
 
 use crate::live_bridge::take_error_details;
 use crate::live_bridge::underlay_program::{
-    Ring, free_area_name, underlay_area_outline, underlay_extrusion_program,
+    Ring, free_name, underlay_area_outline, underlay_extrusion_program,
 };
 use crate::*;
 use ketchup_application::RuleProgramApplyError;
@@ -105,10 +105,13 @@ impl KetchupApp {
         let snapshot = self.document.current();
         let mut underlays = snapshot
             .underlays()
+            .filter(|underlay| underlay.lies_flat())
             .map(|underlay| underlay.id)
             .collect::<Vec<_>>();
         underlays.reverse();
-        if let Some(selected) = self.selected_underlay() {
+        if let Some(selected) = self.selected_underlay()
+            && underlays.contains(&selected)
+        {
             underlays.retain(|id| *id != selected);
             underlays.insert(0, selected);
         }
@@ -156,7 +159,7 @@ impl KetchupApp {
         if !(height_mm.is_finite() && height_mm > limits::MIN_LENGTH_MM) {
             return Err(AreaPullError::Height);
         }
-        let name = free_area_name(self);
+        let name = free_name(self, "AREA");
         let bound = self.document.current_rule_program().is_some()
             || self.document.current().definitions().next().is_none();
         if bound {

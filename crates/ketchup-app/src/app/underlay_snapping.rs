@@ -134,14 +134,16 @@ impl KetchupApp {
         }
     }
 
-    /// Whether `underlay` and its layer `layer` are shown.
+    /// Whether `underlay` and its layer `layer` are shown where the window's tools reach
+    /// them: in the ground plane, not set up as a view.
     pub(super) fn underlay_layer_shown(
         snapshot: &Snapshot,
         underlay: &Underlay,
         layer: usize,
     ) -> bool {
         let shown = |tag| snapshot.tag(tag).is_some_and(|tag| tag.visible());
-        shown(underlay.tag)
+        underlay.lies_flat()
+            && shown(underlay.tag)
             && underlay
                 .layers
                 .get(layer)

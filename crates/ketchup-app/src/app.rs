@@ -123,6 +123,7 @@ pub(crate) mod underlay_transform;
 #[cfg(test)]
 #[path = "app/underlay_transform_tests.rs"]
 mod underlay_transform_tests;
+mod underlay_view;
 mod viewer_export;
 mod viewer_export_activity;
 pub(crate) mod viewer_settings;

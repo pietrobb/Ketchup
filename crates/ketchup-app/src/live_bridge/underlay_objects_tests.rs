@@ -203,7 +203,7 @@ fn a_client_reads_an_underlay_as_blocks_dimensions_and_texts_not_lines() {
 }
 
 /// A closed polyline on `layer` through `corners`.
-fn outline(layer: &str, corners: &[[f64; 2]]) -> String {
+pub(super) fn outline(layer: &str, corners: &[[f64; 2]]) -> String {
     let points: String = corners
         .iter()
         .map(|[x, y]| format!("10\n{x}\n20\n{y}\n"))
