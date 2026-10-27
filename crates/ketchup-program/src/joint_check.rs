@@ -3,7 +3,7 @@
 //! basis, or as not verified with what is missing (a rating, the load on it).
 //! A joint that holds a member down against lifting is checked for that pull
 //! against the rating's tension_n, bearing or not (an angle bracket); without
-//! tension_n it is listed as not verified. A rating published for a timber
+//! tension_n it is listed as not verified. A rating published for a material
 //! density holds only where every joined part's strength class reaches it.
 
 use crate::loads::{JointLoad, LoadReport, Loads, Tension};
@@ -55,18 +55,18 @@ pub fn not_bearing(design_n: f64) -> String {
     )
 }
 
-/// Why a rating published for a timber density does not hold for a part.
+/// Why a rating published for a material density does not hold for a part.
 #[must_use]
 pub fn density_unknown(part: &str, density: f64) -> String {
     format!(
-        "the rating holds for timber of characteristic density {density} kg/m³ or more; {part} has no timber strength class with rho_k"
+        "the rating holds for a characteristic density of {density} kg/m³ or more; {part} has no strength class with rho_k (timber_strength)"
     )
 }
 
 #[must_use]
 pub fn density_below(part: &str, class: &str, rho_k: f64, density: f64) -> String {
     format!(
-        "the rating holds for timber of characteristic density {density} kg/m³ or more; {part} is {class}, rho_k {rho_k} kg/m³"
+        "the rating holds for a characteristic density of {density} kg/m³ or more; {part} is {class}, rho_k {rho_k} kg/m³"
     )
 }
 

@@ -1778,7 +1778,7 @@ pub struct JointRating {
     /// on the same basis; none published: a pull on it is not verified.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tension_n: Option<f64>,
-    /// Characteristic timber density, kg/m³, the published values hold for;
+    /// Characteristic material density, kg/m³, the published values hold for;
     /// a joined part of lower or unknown density is not verified.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub density_kg_m3: Option<f64>,
