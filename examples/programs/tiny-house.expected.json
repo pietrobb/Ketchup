@@ -1,7 +1,7 @@
 {
   "bom": {
     "cut_list": {
-      "count": 273
+      "count": 281
     },
     "hardware": [
       {
@@ -79,7 +79,7 @@
       }
     ],
     "machining": [],
-    "total_parts": 734
+    "total_parts": 754
   },
   "design": {
     "basis": [
@@ -94,14 +94,14 @@
       "a computed check, not an authorized structural design"
     ],
     "members": {
-      "count": 228
+      "count": 230
     }
   },
   "errors": 0,
   "issues": {
-    "count": 782,
+    "count": 805,
     "kinds": {
-      "collision_unverified": 772,
+      "collision_unverified": 795,
       "group_contact_unverified": 10
     }
   },
@@ -151,8 +151,8 @@
       },
       "hanger:konštrukcia/strop/stropnice/header 1+konštrukcia/strop/stropnice/stud 19": {
         "loads_n": {
-          "imposed": 880.5,
-          "permanent": 231.5
+          "imposed": 874.6,
+          "permanent": 229.7
         },
         "missing": [
           "sneh (snow) has no value"
@@ -160,8 +160,8 @@
       },
       "hanger:konštrukcia/strop/stropnice/header 1+konštrukcia/strop/stropnice/stud 3": {
         "loads_n": {
-          "imposed": 891.3,
-          "permanent": 219.5
+          "imposed": 898.1,
+          "permanent": 221.7
         },
         "missing": [
           "sneh (snow) has no value"
@@ -169,22 +169,22 @@
       },
       "hanger:konštrukcia/strop/stropnice/header 2+konštrukcia/strop/stropnice/stud 10": {
         "loads_n": {
-          "imposed": 78.9,
-          "permanent": 28.2
+          "imposed": 83.1,
+          "permanent": 29.6
         },
         "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/header 2+konštrukcia/strop/stropnice/stud 15": {
         "loads_n": {
-          "imposed": 61.1,
-          "permanent": 22.6
+          "imposed": 56.9,
+          "permanent": 21.5
         },
         "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/sill 1+konštrukcia/strop/stropnice/stud 19": {
         "loads_n": {
-          "imposed": 1267.3,
-          "permanent": 322.0
+          "imposed": 1260.6,
+          "permanent": 319.5
         },
         "missing": [
           "sneh (snow) has no value"
@@ -192,8 +192,8 @@
       },
       "hanger:konštrukcia/strop/stropnice/sill 1+konštrukcia/strop/stropnice/stud 3": {
         "loads_n": {
-          "imposed": 1316.2,
-          "permanent": 302.7
+          "imposed": 1323.5,
+          "permanent": 305.5
         },
         "missing": [
           "sneh (snow) has no value"
@@ -201,8 +201,8 @@
       },
       "hanger:konštrukcia/strop/stropnice/sill 2+konštrukcia/strop/stropnice/stud 10": {
         "loads_n": {
-          "imposed": 231.3,
-          "permanent": 62.6
+          "imposed": 258.8,
+          "permanent": 69.8
         },
         "missing": [
           "sneh (snow) has no value"
@@ -210,8 +210,8 @@
       },
       "hanger:konštrukcia/strop/stropnice/sill 2+konštrukcia/strop/stropnice/stud 15": {
         "loads_n": {
-          "imposed": 130.5,
-          "permanent": 37.7
+          "imposed": 103.4,
+          "permanent": 30.7
         },
         "missing": [
           "sneh (snow) has no value"
@@ -219,8 +219,8 @@
       },
       "hanger:konštrukcia/strop/stropnice/stud 10+konštrukcia/strop/stropnice/sill 1": {
         "loads_n": {
-          "imposed": 607.2,
-          "permanent": 167.5,
+          "imposed": 656.9,
+          "permanent": 176.6,
           "roof": 0.0
         },
         "missing": [
@@ -229,8 +229,8 @@
       },
       "hanger:konštrukcia/strop/stropnice/stud 11+konštrukcia/strop/stropnice/header 1": {
         "loads_n": {
-          "imposed": 238.7,
-          "permanent": 68.7,
+          "imposed": 253.6,
+          "permanent": 70.9,
           "roof": -0.1
         },
         "missing": [
@@ -239,8 +239,8 @@
       },
       "hanger:konštrukcia/strop/stropnice/stud 12+konštrukcia/strop/stropnice/sill 2": {
         "loads_n": {
-          "imposed": 261.3,
-          "permanent": 64.5,
+          "imposed": 253.0,
+          "permanent": 63.7,
           "roof": -0.5
         },
         "missing": [
@@ -249,22 +249,22 @@
       },
       "hanger:konštrukcia/strop/stropnice/stud 13+konštrukcia/strop/stropnice/header 2": {
         "loads_n": {
-          "imposed": 46.2,
-          "permanent": 14.9
+          "imposed": 42.5,
+          "permanent": 14.0
         },
         "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/stud 13+konštrukcia/strop/stropnice/sill 1": {
         "loads_n": {
-          "imposed": 46.2,
-          "permanent": 14.9
+          "imposed": 42.5,
+          "permanent": 14.0
         },
         "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/stud 14+konštrukcia/strop/stropnice/header 1": {
         "loads_n": {
-          "imposed": 313.5,
-          "permanent": 75.8,
+          "imposed": 305.2,
+          "permanent": 75.0,
           "roof": -0.4
         },
         "missing": [
@@ -273,8 +273,8 @@
       },
       "hanger:konštrukcia/strop/stropnice/stud 15+konštrukcia/strop/stropnice/sill 1": {
         "loads_n": {
-          "imposed": 431.5,
-          "permanent": 137.1,
+          "imposed": 412.9,
+          "permanent": 130.2,
           "roof": -0.1
         },
         "missing": [
@@ -284,7 +284,7 @@
       "hanger:konštrukcia/strop/stropnice/stud 16+konštrukcia/strop/stropnice/header 1": {
         "loads_n": {
           "imposed": 187.9,
-          "permanent": 60.9,
+          "permanent": 59.8,
           "roof": -0.2
         },
         "missing": [
@@ -293,8 +293,8 @@
       },
       "hanger:konštrukcia/strop/stropnice/stud 17+konštrukcia/strop/stropnice/sill 1": {
         "loads_n": {
-          "imposed": 660.3,
-          "permanent": 132.8,
+          "imposed": 654.2,
+          "permanent": 134.2,
           "roof": -0.1
         },
         "missing": [
@@ -303,8 +303,8 @@
       },
       "hanger:konštrukcia/strop/stropnice/stud 18+konštrukcia/strop/stropnice/header 1": {
         "loads_n": {
-          "imposed": 391.3,
-          "permanent": 82.2,
+          "imposed": 385.3,
+          "permanent": 82.9,
           "roof": -0.2
         },
         "missing": [
@@ -313,8 +313,8 @@
       },
       "hanger:konštrukcia/strop/stropnice/stud 4+konštrukcia/strop/stropnice/sill 1": {
         "loads_n": {
-          "imposed": 778.0,
-          "permanent": 150.0,
+          "imposed": 712.7,
+          "permanent": 142.9,
           "roof": 0.0
         },
         "missing": [
@@ -323,8 +323,8 @@
       },
       "hanger:konštrukcia/strop/stropnice/stud 5+konštrukcia/strop/stropnice/header 1": {
         "loads_n": {
-          "imposed": 451.3,
-          "permanent": 92.7,
+          "imposed": 415.6,
+          "permanent": 88.6,
           "roof": -0.1
         },
         "missing": [
@@ -333,8 +333,8 @@
       },
       "hanger:konštrukcia/strop/stropnice/stud 6+konštrukcia/strop/stropnice/sill 1": {
         "loads_n": {
-          "imposed": 866.9,
-          "permanent": 170.0,
+          "imposed": 853.6,
+          "permanent": 167.4,
           "roof": 0.0
         },
         "missing": [
@@ -343,8 +343,8 @@
       },
       "hanger:konštrukcia/strop/stropnice/stud 7+konštrukcia/strop/stropnice/header 1": {
         "loads_n": {
-          "imposed": 495.9,
-          "permanent": 104.0,
+          "imposed": 482.8,
+          "permanent": 102.1,
           "roof": -0.1
         },
         "missing": [
@@ -353,8 +353,8 @@
       },
       "hanger:konštrukcia/strop/stropnice/stud 8+konštrukcia/strop/stropnice/sill 1": {
         "loads_n": {
-          "imposed": 781.6,
-          "permanent": 156.8,
+          "imposed": 798.0,
+          "permanent": 159.5,
           "roof": 0.0
         },
         "missing": [
@@ -363,8 +363,8 @@
       },
       "hanger:konštrukcia/strop/stropnice/stud 9+konštrukcia/strop/stropnice/header 1": {
         "loads_n": {
-          "imposed": 454.8,
-          "permanent": 97.1,
+          "imposed": 456.6,
+          "permanent": 97.9,
           "roof": -0.1
         },
         "missing": [
@@ -373,7 +373,7 @@
       }
     },
     "members": {
-      "count": 228
+      "count": 230
     }
   },
   "log": [
@@ -439,14 +439,14 @@
     }
   ],
   "relations": {
-    "count": 6752,
+    "count": 6909,
     "kinds": {
-      "contact": 3588,
-      "gap": 817,
-      "overlap": 1865,
+      "contact": 3682,
+      "gap": 831,
+      "overlap": 1914,
       "touch": 482
     }
   },
   "unused_overrides": [],
-  "warnings": 782
+  "warnings": 805
 }
