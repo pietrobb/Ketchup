@@ -1,6 +1,7 @@
 //! Project drawings of what is visible as a numbered set of sheets: a floor
 //! plan of each storey marking the program's windows and doors, the sections,
-//! the elevations and the schedule of the windows and doors, each sheet an ISO A
+//! the elevations, a shop drawing of each part group the program names and the
+//! schedule of the windows and doors, each sheet an ISO A
 //! format with a frame and a title block, drawn from the exact solids. The set
 //! is written as one vector PDF, or each sheet as a DXF or a DWG of its
 //! visible lines. Hidden layers are left out, so turning off the concept
@@ -13,12 +14,15 @@ use crate::*;
 use ketchup_application::threads::{CosmeticThreadBodyError, ThreadCylinder, cosmetic_thread_body};
 use ketchup_manufacturing::project_drawings::{
     DrawingOpening, DrawingSet, DrawingSetOptions, DrawingSolid, DrawingThread, OpeningSchedule,
-    PlanSheet, ProjectDrawingError, ProjectView, SCALES, SheetTitles, Storey, drawing_set, storeys,
+    PlanSheet, ProjectDrawingError, ProjectView, SCALES, SheetTitles, ShopDrawings, ShopPosition,
+    ShopSheet, Storey, drawing_set, storeys,
 };
 use ketchup_manufacturing::sheet_pdf::PdfInfo;
 use ketchup_manufacturing::title_block::{
     DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM, SheetFormat, SheetSettings, TitleField,
 };
+use ketchup_program::Evaluated;
+use std::sync::Arc;
 
 /// Colour of a solid with no colour of its own.
 const DEFAULT_SOLID_COLOR: [u8; 3] = [190, 190, 190];
@@ -691,6 +695,75 @@ impl KetchupApp {
             .collect()
     }
 
+    /// The evaluation of the document's program, if it has one that runs;
+    /// [`ProjectDrawingsError::ProgramPlanning`] while it is being evaluated.
+    fn drawing_program(&self) -> Result<Option<Arc<Evaluated>>, ProjectDrawingsError> {
+        match self
+            .document
+            .current_rule_program()
+            .map(|program| self.program_evaluations.try_get(program))
+        {
+            None => Ok(None),
+            Some(crate::program_evaluation::Lookup::Ready(evaluation)) => Ok(evaluation.ok()),
+            Some(crate::program_evaluation::Lookup::Pending) => {
+                Err(ProjectDrawingsError::ProgramPlanning)
+            }
+        }
+    }
+
+    /// The name of the solid each program part is drawn as.
+    fn drawing_solid_names(snapshot: &Snapshot) -> BTreeMap<String, String> {
+        snapshot
+            .scene_query()
+            .into_iter()
+            .filter_map(|occurrence| {
+                ketchup_application::rule_program_part_name(snapshot, &occurrence.instance_path)
+                    .map(|name| (name, occurrence.occurrence_name))
+            })
+            .collect()
+    }
+
+    /// The program's shop drawings, titled in the window's language, their
+    /// parts named as the solids they are drawn as.
+    fn drawing_shop(
+        &self,
+        evaluated: Option<&Evaluated>,
+        solid_names: &BTreeMap<String, String>,
+    ) -> ShopDrawings {
+        let sheets = evaluated
+            .map(|evaluated| ketchup_program::shop_drawing::shop_drawings(&evaluated.model))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|drawing| ShopSheet {
+                title: self.catalog.format(
+                    "drawings-sheet-shop",
+                    &BTreeMap::from([("name", drawing.name)]),
+                ),
+                right: drawing.right,
+                up: drawing.up,
+                positions: drawing
+                    .positions
+                    .into_iter()
+                    .map(|position| ShopPosition {
+                        material: position.material,
+                        dimensions_mm: position.dimensions_mm,
+                        count: position.parts.len(),
+                        solids: position
+                            .parts
+                            .iter()
+                            .filter_map(|part| solid_names.get(part).cloned())
+                            .collect(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        ShopDrawings {
+            sheets,
+            columns: ["position", "material", "size", "count"]
+                .map(|column| self.catalog.text(&format!("drawings-shop-{column}"))),
+        }
+    }
+
     /// The program's windows and doors as the drawing set marks and lists
     /// them: one mark per kind and designation, numbered in the order the
     /// designations first come ("W1", "W2", "D1"), so each schedule row is a
@@ -698,19 +771,9 @@ impl KetchupApp {
     /// drawn as.
     fn drawing_openings(
         &self,
-        snapshot: &Snapshot,
-    ) -> Result<OpeningSchedule, ProjectDrawingsError> {
-        let evaluated = match self
-            .document
-            .current_rule_program()
-            .map(|program| self.program_evaluations.try_get(program))
-        {
-            None => None,
-            Some(crate::program_evaluation::Lookup::Ready(evaluation)) => evaluation.ok(),
-            Some(crate::program_evaluation::Lookup::Pending) => {
-                return Err(ProjectDrawingsError::ProgramPlanning);
-            }
-        };
+        evaluated: Option<&Evaluated>,
+        solid_names: &BTreeMap<String, String>,
+    ) -> OpeningSchedule {
         let mut schedule = OpeningSchedule {
             openings: Vec::new(),
             title: self.catalog.text("drawings-sheet-openings"),
@@ -718,16 +781,8 @@ impl KetchupApp {
                 .map(|column| self.catalog.text(&format!("drawings-openings-{column}"))),
         };
         let Some(evaluated) = evaluated else {
-            return Ok(schedule);
+            return schedule;
         };
-        let solid_names = snapshot
-            .scene_query()
-            .into_iter()
-            .filter_map(|occurrence| {
-                ketchup_application::rule_program_part_name(snapshot, &occurrence.instance_path)
-                    .map(|name| (name, occurrence.occurrence_name))
-            })
-            .collect::<BTreeMap<_, _>>();
         let mut types: Vec<(String, String)> = Vec::new();
         for opening in ketchup_program::bom::openings(&evaluated.model) {
             let key = (opening.kind.clone(), opening.designation.clone());
@@ -753,7 +808,7 @@ impl KetchupApp {
                     .collect(),
             });
         }
-        Ok(schedule)
+        schedule
     }
 
     /// The job of the set `request` asks for: all sheets or the plans alone,
@@ -766,7 +821,10 @@ impl KetchupApp {
             .map_err(ProjectDrawingsError::SettingsUnreadable)?;
         let snapshot = self.document.current();
         let solids = self.visible_drawing_solids(&snapshot)?;
-        let openings = self.drawing_openings(&snapshot)?;
+        let evaluated = self.drawing_program()?;
+        let solid_names = Self::drawing_solid_names(&snapshot);
+        let openings = self.drawing_openings(evaluated.as_deref(), &solid_names);
+        let shop = self.drawing_shop(evaluated.as_deref(), &solid_names);
         let annotations = snapshot
             .annotations()
             .iter()
@@ -790,7 +848,7 @@ impl KetchupApp {
             .filter(|view| *view != ProjectView::Plan)
             .map(|view| {
                 let title = match view {
-                    ProjectView::Plan => String::new(),
+                    ProjectView::Plan | ProjectView::Shop => String::new(),
                     ProjectView::LongitudinalSection => {
                         self.catalog.text("drawings-view-longitudinal")
                     }
@@ -836,6 +894,7 @@ impl KetchupApp {
                 scale: request.scale,
                 annotations,
                 openings,
+                shop,
             },
             info,
         })

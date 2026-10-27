@@ -537,3 +537,57 @@ fn bad_build_ups_name_the_problem() {
         assert!(error.message.contains(message), "{source}: {error}");
     }
 }
+
+/// R9-C step 15: each panel is a shop drawing of its pieces, seen with the
+/// panel's length to the right and its height up; identical pieces share a
+/// position, as the cut list groups them.
+#[test]
+fn every_piece_of_a_panel_is_on_its_shop_drawing() {
+    let source = format!(
+        "{WALL}buildup(\"floor\", (0, 0, 3000), (0, 1, 0), (1, 0, 0), 3000, LAYERS, height = 2000)\n"
+    );
+    let model = eval(&source, &[]);
+    let drawings = ketchup_program::shop_drawing::shop_drawings(&model);
+    let rounded = |axis: [f64; 3]| axis.map(f64::round);
+    assert_eq!(
+        drawings
+            .iter()
+            .map(|drawing| (
+                drawing.name.as_str(),
+                rounded(drawing.right),
+                rounded(drawing.up)
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("wall", [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+            ("floor", [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]),
+        ]
+    );
+    let wall = &drawings[0];
+    let mut drawn = wall
+        .positions
+        .iter()
+        .flat_map(|position| position.parts.iter().map(String::as_str))
+        .collect::<Vec<_>>();
+    drawn.sort_unstable();
+    let mut pieces = named(&model, "wall/");
+    pieces.sort_unstable();
+    assert_eq!(drawn, pieces);
+    let bom = ketchup_program::bom(&model);
+    for position in &wall.positions {
+        let row = bom
+            .cut_list
+            .iter()
+            .find(|row| row.parts.contains(&position.parts[0]))
+            .unwrap();
+        assert_eq!(row.material, position.material);
+        assert_eq!(row.dimensions_mm, position.dimensions_mm);
+        assert!(position.parts.iter().all(|part| row.parts.contains(part)));
+    }
+    // The full-height studs are one position.
+    assert!(
+        wall.positions
+            .iter()
+            .any(|position| position.parts.len() > 4)
+    );
+}

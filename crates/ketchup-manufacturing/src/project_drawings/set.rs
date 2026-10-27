@@ -3,13 +3,16 @@
 //! elevations, all at one scale, each sheet on the smallest ISO A format that
 //! holds it (or the format the caller fixes) with its frame and title block.
 //! The title block of every sheet says what the sheet shows and its number in
-//! the set, "n / N". When the model has windows or doors, each plan marks
-//! those of its storey and a last sheet lists them (see [`super::openings`]).
+//! the set, "n / N". After the elevations comes a shop drawing of each group
+//! of parts the caller names, at its own scale (see [`super::shop`]). When the
+//! model has windows or doors, each plan marks those of its storey and a last
+//! sheet lists them (see [`super::openings`]).
 //!
 //! Each sheet is drawn twice: painted far to near for the PDF, and as its
 //! visible lines alone for a DXF, which cannot paint faces over lines.
 
 use super::openings::{OpeningSchedule, draw_schedule, opening_points, schedule_format};
+use super::shop::{PlannedShop, ShopDrawings, ShopSummary, plan_shop};
 use super::visible::{VisibleLine, visible_lines};
 use super::{Annotation, AnnotationCounts};
 use super::{
@@ -75,6 +78,8 @@ pub struct DrawingSetOptions {
     /// like the annotations, by their lowest point), and their schedule is
     /// the last sheet.
     pub openings: OpeningSchedule,
+    /// A sheet per shop drawing, after the elevations, each at its own scale.
+    pub shop: ShopDrawings,
 }
 
 /// What a sheet of the set shows.
@@ -87,6 +92,10 @@ pub enum SheetKind {
     },
     Sections,
     Elevations,
+    /// Shop drawing `drawing` (an index into [`ShopDrawings::sheets`]).
+    Shop {
+        drawing: usize,
+    },
     /// The schedule of windows and doors.
     Openings,
 }
@@ -109,6 +118,8 @@ pub struct SetSheet {
     pub annotations: AnnotationCounts,
     /// The marks of the windows and doors its plan draws, one per opening.
     pub openings: Vec<String>,
+    /// What a shop drawing shows.
+    pub shop: Option<ShopSummary>,
 }
 
 /// The sheets, numbered in order, and the scale 1:`scale` of every view.
@@ -392,7 +403,23 @@ pub fn drawing_set(
         )
     };
 
-    let count = planned.len() + usize::from(schedule_format.is_some());
+    let shops = if options.plan_only {
+        Vec::new()
+    } else {
+        options
+            .shop
+            .sheets
+            .iter()
+            .enumerate()
+            .filter_map(|(drawing, sheet)| {
+                plan_shop(sheet, solids, &options.shop.columns, options.format)
+                    .transpose()
+                    .map(|planned| planned.map(|planned| (drawing, planned)))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+    };
+
+    let count = planned.len() + shops.len() + usize::from(schedule_format.is_some());
     let set_title = options
         .title_block
         .get(&TitleField::Drawing)
@@ -455,7 +482,7 @@ pub fn drawing_set(
             .views
             .views
             .iter()
-            .flat_map(|view| view.openings.iter().map(|(_, mark)| mark.clone()))
+            .flat_map(|view| view.marks.iter().map(|(_, mark)| mark.clone()))
             .collect();
         sheets.push(SetSheet {
             kind: sheet.kind,
@@ -467,7 +494,25 @@ pub fn drawing_set(
             views,
             annotations,
             openings,
+            shop: None,
         });
+    }
+    for (drawing, shop) in shops {
+        let number = sheets.len() + 1;
+        let values = title_values(
+            &shop.title,
+            format!("1:{}", shop.scale),
+            shop.format,
+            number,
+        );
+        sheets.push(shop_sheet(
+            drawing,
+            shop,
+            number,
+            &options.shop.columns,
+            &options.title_labels,
+            &values,
+        )?);
     }
     if let Some(format) = schedule_format {
         let title = if options.openings.title.trim().is_empty() {
@@ -493,7 +538,48 @@ pub fn drawing_set(
             views: Vec::new(),
             annotations: AnnotationCounts::default(),
             openings: Vec::new(),
+            shop: None,
         });
     }
     Ok(DrawingSet { sheets, scale })
+}
+
+/// Shop drawing `drawing` as sheet `number`, its title block filled with `values`.
+fn shop_sheet(
+    drawing: usize,
+    shop: PlannedShop,
+    number: usize,
+    columns: &[String; 4],
+    labels: &BTreeMap<TitleField, String>,
+    values: &TitleBlock,
+) -> Result<SetSheet, ProjectDrawingError> {
+    let blank = || Page {
+        size_mm: shop.format.size_mm(),
+        marks: Vec::new(),
+    };
+    let mut page = blank();
+    shop.draw(&mut page, columns, None);
+    draw_frame_and_title_block(&mut page, shop.format, labels, values)?;
+    let visible = visible_lines(&shop.view);
+    let mut lines = blank();
+    shop.draw(&mut lines, columns, Some(&visible));
+    draw_frame_and_title_block(&mut lines, shop.format, labels, values)?;
+    Ok(SetSheet {
+        kind: SheetKind::Shop { drawing },
+        number,
+        views: vec![ViewSummary {
+            view: ProjectView::Shop,
+            title: shop.title.clone(),
+            cut_solids: 0,
+            cut_at_mm: None,
+            extent_mm: extent(&shop.view).map(|value| (value * 10.0).round() / 10.0),
+        }],
+        title: shop.title,
+        format: shop.format,
+        page,
+        lines,
+        annotations: AnnotationCounts::default(),
+        openings: Vec::new(),
+        shop: Some(shop.summary),
+    })
 }

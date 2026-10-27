@@ -23,6 +23,8 @@ use std::collections::BTreeMap;
 mod annotations;
 mod openings;
 mod set;
+mod shop;
+mod table;
 mod threads;
 mod visible;
 
@@ -33,6 +35,7 @@ pub use openings::{DrawingOpening, OpeningSchedule, ScheduleRow};
 pub use set::{
     DrawingSet, DrawingSetOptions, PlanSheet, SetSheet, SheetKind, SheetTitles, drawing_set,
 };
+pub use shop::{ShopDrawings, ShopPosition, ShopSheet, ShopSummary};
 pub use threads::DrawingThread;
 use threads::ThreadMarks;
 
@@ -63,9 +66,12 @@ pub enum ProjectView {
     Back,
     Left,
     Right,
+    /// A shop drawing: its parts seen square on, along their own z.
+    Shop,
 }
 
 impl ProjectView {
+    /// The views of the building, every one but [`Self::Shop`].
     pub const ALL: [Self; 7] = [
         Self::Plan,
         Self::LongitudinalSection,
@@ -455,8 +461,9 @@ struct DrawnView {
     /// The extent of the solids alone, which the overall dimensions measure.
     solids: Option<([f64; 2], [f64; 2])>,
     annotations: Option<PlanAnnotations>,
-    /// The marks of the windows and doors a plan shows, where they stand.
-    openings: Vec<([f64; 2], String)>,
+    /// Boxed marks where they stand: the windows and doors a plan shows, the
+    /// position numbers of a shop drawing.
+    marks: Vec<([f64; 2], String)>,
     cut_at_mm: Option<f64>,
 }
 
@@ -475,7 +482,7 @@ impl DrawnView {
 
     /// Marks the windows and doors standing at `points` in this view.
     fn mark_openings(&mut self, frame: &ViewFrame, points: &[(String, Point)]) {
-        self.openings = points
+        self.marks = points
             .iter()
             .map(|(mark, point)| (frame.project(*point), mark.clone()))
             .collect();
@@ -599,7 +606,7 @@ fn draw_view(
         max,
         solids: min[0].is_finite().then_some((min, max)),
         annotations: None,
-        openings: Vec::new(),
+        marks: Vec::new(),
         // `cut` is measured along the depth direction, which is ±1 on the
         // world axis the plane is normal to: divide to get that coordinate.
         cut_at_mm: frame.cut.map(|cut| {
@@ -830,7 +837,7 @@ fn draw_view_on_page(
     if let Some(annotations) = &view.annotations {
         annotations.draw(page, at);
     }
-    for (point, mark) in &view.openings {
+    for (point, mark) in &view.marks {
         openings::draw_mark(page, at(*point), mark, visible.is_none());
     }
     let [outer_left, outer_bottom] = at(view.min);
@@ -1973,5 +1980,111 @@ mod tests {
         let plans = drawing_set(&house, &options).unwrap();
         assert_eq!(plans.sheets.len(), 1);
         assert_eq!(plans.sheets[0].openings, ["W1", "D1", "W1"]);
+    }
+
+    /// R9-C step 15: a wall panel 2000 x 2500 framed in 60 x 140 timber,
+    /// a window 600 x 1200 between two of its studs, sheathed with OSB.
+    #[test]
+    fn a_shop_drawing_numbers_every_piece_and_dimensions_the_studs_and_the_opening() {
+        let stud =
+            |name: &str, x: f64, top: f64| cuboid(name, [x, 0.0, 60.0], [x + 60.0, 140.0, top]);
+        let lying =
+            |name: &str, x: [f64; 2], z: f64| cuboid(name, [x[0], 0.0, z], [x[1], 140.0, z + 60.0]);
+        let panel = vec![
+            lying("p/bottom plate", [0.0, 2000.0], 0.0),
+            lying("p/top plate", [0.0, 2000.0], 2440.0),
+            stud("p/stud 1", 0.0, 2440.0),
+            stud("p/stud 2", 600.0, 2440.0),
+            stud("p/stud 3", 1940.0, 2440.0),
+            stud("p/king 1", 840.0, 2000.0),
+            stud("p/king 2", 1500.0, 2000.0),
+            lying("p/header", [840.0, 1560.0], 2000.0),
+            lying("p/sill", [900.0, 1500.0], 740.0),
+            cuboid("p/osb 1", [0.0, -15.0, 0.0], [900.0, 0.0, 2500.0]),
+            cuboid("p/osb 2", [1500.0, -15.0, 0.0], [2000.0, 0.0, 2500.0]),
+        ];
+        let position = |material: &str, dimensions_mm: [f64; 3], solids: &[&str]| ShopPosition {
+            material: material.to_owned(),
+            dimensions_mm,
+            solids: solids.iter().map(|name| format!("p/{name}")).collect(),
+            count: solids.len(),
+        };
+        let mut options = options(&panel, Some(1200.0));
+        options.shop = ShopDrawings {
+            sheets: vec![ShopSheet {
+                title: "Panel p".to_owned(),
+                right: [1.0, 0.0, 0.0],
+                up: [0.0, 0.0, 1.0],
+                positions: vec![
+                    position("C24", [2000.0, 140.0, 60.0], &["bottom plate", "top plate"]),
+                    position(
+                        "C24",
+                        [2380.0, 140.0, 60.0],
+                        &["stud 1", "stud 2", "stud 3"],
+                    ),
+                    position("C24", [1940.0, 140.0, 60.0], &["king 1", "king 2"]),
+                    position("C24", [720.0, 140.0, 60.0], &["header"]),
+                    position("C24", [600.0, 140.0, 60.0], &["sill"]),
+                    position("OSB", [2500.0, 900.0, 15.0], &["osb 1"]),
+                    position("OSB", [2500.0, 500.0, 15.0], &["osb 2"]),
+                ],
+            }],
+            columns: ["Pos.", "Material", "Size", "Count"].map(str::to_owned),
+        };
+        let set = drawing_set(&panel, &options).unwrap();
+        assert_eq!(
+            set.sheets
+                .iter()
+                .map(|sheet| sheet.kind)
+                .collect::<Vec<_>>(),
+            [
+                SheetKind::Plan { storey: 0 },
+                SheetKind::Sections,
+                SheetKind::Elevations,
+                SheetKind::Shop { drawing: 0 },
+            ]
+        );
+        let sheet = sheet_of(&set, SheetKind::Shop { drawing: 0 });
+        let shop = sheet.shop.as_ref().unwrap();
+        // The studs' edges, and between the kings the window's 600.
+        assert_eq!(
+            shop.across,
+            [
+                0.0, 60.0, 600.0, 660.0, 840.0, 900.0, 1500.0, 1560.0, 1940.0, 2000.0
+            ]
+        );
+        // The plates', and the window's sill top at 800 and header at 2000.
+        assert_eq!(
+            shop.up,
+            [0.0, 60.0, 740.0, 800.0, 2000.0, 2060.0, 2440.0, 2500.0]
+        );
+        assert_eq!(
+            shop.marks,
+            ["1", "1", "2", "2", "2", "3", "3", "4", "5", "6", "7"]
+        );
+        for page in [&sheet.page, &sheet.lines] {
+            // Its mark on every piece, and its row in the table.
+            for (number, pieces) in [("1", 2), ("2", 3), ("3", 2), ("4", 1), ("6", 1)] {
+                assert!(text_at(page, number).len() > pieces, "{number}");
+            }
+            let texts = texts(page);
+            for wanted in [
+                "Pos.",
+                "2380 x 140 x 60",
+                "2500 x 900 x 15",
+                "OSB",
+                "4 / 4",
+                "Panel p",
+                "1560",
+            ] {
+                assert!(texts.contains(&wanted), "{wanted}: {texts:?}");
+            }
+        }
+        // Sheet and pieces at a shop scale, not the set's.
+        assert!(set.scale > 20 && sheet.page.texts().any(|text| text == "1:20"));
+        assert!(String::from_utf8_lossy(&set.dxf()[3]).contains("2500 x 500 x 15"));
+
+        options.plan_only = true;
+        assert_eq!(drawing_set(&panel, &options).unwrap().sheets.len(), 1);
     }
 }

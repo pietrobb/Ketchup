@@ -171,6 +171,12 @@ PURCHASED_ITEM = "fabrication.purchased-item.v1"
 SITE_BUILT_ITEM = "fabrication.site-built-item.v1"
 _FABRICATION_ROLES = [TIMBER_MEMBER, MANUFACTURED_ITEM, PURCHASED_ITEM, SITE_BUILT_ITEM]
 
+# Shop drawings: parts with attributes={SHOP_DRAWING: "<sheet>"} are drawn together
+# on a sheet of the drawing set named so, seen along their local z with their local
+# x to the right, each with its position number (identical parts share one) and a
+# table of the positions; buildup() gives it to every piece of its panel.
+SHOP_DRAWING = "drawing:sheet"
+
 def _role(who, role):
     """`role` if it is a fabrication role, else fail naming `who`."""
     if role not in _FABRICATION_ROLES:
@@ -1982,7 +1988,8 @@ def no_window_over(part, tag = "window", margin = 300, height = 1500):
 #     window()/door() results (topic openings): each one in this panel's wall and storey
 #     becomes its opening here, the others are left out.
 #     Pieces are "<name>/<layer>", "<name>/<layer>/stud 3", ... with `tags` plus their
-#     layer's tags. Only extrusions, no booleans: every piece is rebuilt from the numbers.
+#     layer's tags, each on the panel's shop drawing `name` (SHOP_DRAWING).
+#     Only extrusions, no booleans: every piece is rebuilt from the numbers.
 #     Fabrication role (FABRICATION_ROLE): plates, studs, noggins, headers and sills of a
 #     framed layer are TIMBER_MEMBER, a sheet layer's pieces and infill MANUFACTURED_ITEM;
 #     a layer's "role" and "infill_role" change them (a bought panel: PURCHASED_ITEM).
@@ -2112,7 +2119,8 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
 
     def piece(label, poly, at, thickness, material, color, piece_tags, role):
         part = extrude("%s/%s" % (name, label), profile = [[p[0], p[1]] for p in poly], distance = thickness,
-                       material = material, color = color, tags = piece_tags, attributes = {FABRICATION_ROLE: role})
+                       material = material, color = color, tags = piece_tags,
+                       attributes = {FABRICATION_ROLE: role, SHOP_DRAWING: name})
         placed = place(part, origin = vec_add(origin, vec_scale(out, at)), z = out, x = along)
         pieces.append(placed)
         return placed

@@ -33,6 +33,7 @@ pub mod motion;
 mod opposing_holes;
 pub mod path;
 pub mod relations;
+pub mod shop_drawing;
 pub mod source_edit;
 pub mod table;
 pub mod takeoff;

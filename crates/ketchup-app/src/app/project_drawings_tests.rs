@@ -487,6 +487,109 @@ fn the_plan_marks_each_opening_and_the_schedule_sheet_is_the_hardware_list() {
     assert_eq!(set.dxf().len(), set.sheets.len());
 }
 
+/// A 3 m timber-frame wall panel sheathed with OSB, a window 900 x 1200 in it.
+const PANEL: &str = "buildup('wall S', (0, 0, 0), (1, 0, 0), (0, 0, 1), 3000, height = 2500,\n\
+    layers = [{'name': 'frame', 'thickness': 140, 'material': 'C24', 'spacing': 625},\n\
+              {'name': 'osb', 'thickness': 15, 'material': 'OSB'}],\n\
+    openings = [(1000, 800, 900, 1200)])\n";
+
+/// R9-C step 15: the set has a shop drawing of the panel. Every piece carries
+/// its position number, the running dimensions give the edges of every stud
+/// and of the window, and the table counts each position as the program does.
+#[test]
+fn a_panel_has_a_shop_drawing_dimensioning_its_studs_and_its_window() {
+    use ketchup_manufacturing::project_drawings::SheetKind;
+    let mut app = KetchupApp::new();
+    let program = ketchup_model::document::RuleProgramSource {
+        variants: Default::default(),
+        file_name: "panel.star".into(),
+        source: PANEL.into(),
+        overrides: BTreeMap::new(),
+    };
+    app.apply_program_source(program.clone(), true).unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let set = app.project_drawings().unwrap();
+    let evaluated = app.program_evaluations.get_blocking(&program).unwrap();
+    let model = &evaluated.model;
+
+    let shops = set
+        .sheets
+        .iter()
+        .filter(|sheet| matches!(sheet.kind, SheetKind::Shop { .. }))
+        .collect::<Vec<_>>();
+    let [sheet] = shops[..] else {
+        panic!(
+            "one shop drawing: {:?}",
+            set.sheets.iter().map(|s| s.kind).collect::<Vec<_>>()
+        )
+    };
+    assert!(sheet.title.contains("wall S"), "{}", sheet.title);
+    let shop = sheet.shop.as_ref().unwrap();
+    let pieces = model
+        .parts
+        .iter()
+        .filter(|part| part.name.starts_with("wall S/"))
+        .collect::<Vec<_>>();
+    assert_eq!(shop.marks.len(), pieces.len());
+    let edges = |axis: usize, piece: &str| {
+        pieces
+            .iter()
+            .filter(|part| part.name.contains(piece))
+            .flat_map(|part| {
+                let (min, max) = part.world_bounds();
+                [min[axis].round(), max[axis].round()]
+            })
+            .collect::<Vec<_>>()
+    };
+    let studs = edges(0, "/stud ");
+    assert!(studs.len() >= 10, "{studs:?}");
+    for edge in studs.iter().chain(&[1000.0, 1900.0]) {
+        assert!(
+            shop.across.contains(edge),
+            "{edge} not in {:?}",
+            shop.across
+        );
+    }
+    for edge in edges(2, "/header ")
+        .iter()
+        .chain(&edges(2, "/sill "))
+        .chain(&[800.0, 2000.0])
+    {
+        assert!(shop.up.contains(edge), "{edge} not in {:?}", shop.up);
+    }
+
+    let positions = ketchup_program::shop_drawing::shop_drawings(model);
+    let [drawing] = &positions[..] else {
+        panic!("{positions:?}")
+    };
+    assert_eq!(
+        drawing
+            .positions
+            .iter()
+            .map(|position| position.parts.len())
+            .sum::<usize>(),
+        pieces.len()
+    );
+    let texts = sheet.page.texts().collect::<Vec<_>>();
+    // Each table row: position, material, size, count.
+    for (index, position) in drawing.positions.iter().enumerate() {
+        let row = [
+            (index + 1).to_string(),
+            position.material.clone(),
+            position
+                .dimensions_mm
+                .map(|value| format!("{:.0}", value.round()))
+                .join(" x "),
+            position.parts.len().to_string(),
+        ];
+        assert!(
+            texts.windows(4).any(|cells| *cells == row),
+            "{row:?} not in {texts:?}"
+        );
+    }
+    assert_eq!(set.dxf().len(), set.sheets.len());
+}
+
 /// An M5 × 10 bolt 7.3 mm into a plate tapped M5 10 mm deep, turned 37°.
 const SCREWED: &str = "p = box('plate', (20, 20, 12))\n\
     hole(p, 'z+', at = (10, 10), depth = 12, through = True, id = 'a', thread = ('M5', 10))\n\

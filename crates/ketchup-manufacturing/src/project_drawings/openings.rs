@@ -3,6 +3,7 @@
 //! designation it is bought by and how many openings carry it, as the
 //! hardware list counts them.
 
+use super::table::{RULE_MM, draw_table, table_size};
 use super::{DrawingSolid, Point};
 use crate::sheet_pdf::{Anchor, Mark, Page, SheetFont, Stroke};
 use crate::title_block::{SheetFormat, TITLE_BLOCK_MM, drawing_area};
@@ -10,11 +11,6 @@ use serde::Serialize;
 
 const MARK_TEXT_MM: f64 = 3.5;
 const MARK_PAD_MM: f64 = 1.0;
-// not a tolerance: the pen width of a mark's box and of the table rules.
-const RULE_MM: f64 = 0.25;
-const TABLE_TEXT_MM: f64 = 3.5;
-const TABLE_ROW_MM: f64 = 7.0;
-const TABLE_PAD_MM: f64 = 2.0;
 
 /// One window or door: the mark the plans and the schedule show it by, the
 /// designation it is bought by and the names of the solids it is made of.
@@ -135,20 +131,8 @@ pub(super) fn draw_mark(page: &mut Page, at: [f64; 2], text: &str, painted: bool
     );
 }
 
-/// The width of each column: its widest cell, caption included.
-fn column_widths(columns: &[String; 3], rows: &[ScheduleRow]) -> [f64; 3] {
-    let font = SheetFont::standard();
-    let width = |text: &str| font.width_mm(text, TABLE_TEXT_MM) + 2.0 * TABLE_PAD_MM;
-    std::array::from_fn(|column| {
-        rows.iter()
-            .map(|row| width(&row.cells()[column]))
-            .fold(width(&columns[column]), f64::max)
-    })
-}
-
-fn table_height(rows: &[ScheduleRow]) -> f64 {
-    rows.iter()
-        .fold(TABLE_ROW_MM, |height, _| height + TABLE_ROW_MM)
+fn cells(rows: &[ScheduleRow]) -> Vec<Vec<String>> {
+    rows.iter().map(|row| row.cells().to_vec()).collect()
 }
 
 /// The requested format, or the smallest whose drawing area above the title
@@ -158,8 +142,7 @@ pub(super) fn schedule_format(
     rows: &[ScheduleRow],
     requested: Option<SheetFormat>,
 ) -> Option<SheetFormat> {
-    let width = column_widths(columns, rows).iter().sum::<f64>();
-    let height = table_height(rows);
+    let [width, height] = table_size(columns, &cells(rows));
     requested
         .map_or_else(|| SheetFormat::ALL.to_vec(), |format| vec![format])
         .into_iter()
@@ -177,43 +160,5 @@ pub(super) fn draw_schedule(
     columns: &[String; 3],
     rows: &[ScheduleRow],
 ) {
-    let widths = column_widths(columns, rows);
-    let [[left, top], _] = drawing_area(format);
-    let right = left + widths.iter().sum::<f64>();
-    let bottom = top + table_height(rows);
-    let rule = Stroke::solid(RULE_MM);
-    page.rect([left, top], [right, bottom], rule.clone());
-    let mut x = left;
-    for width in &widths[..2] {
-        x += width;
-        page.line(vec![[x, top], [x, bottom]], rule.clone());
-    }
-    let baseline = (TABLE_ROW_MM + TABLE_TEXT_MM) / 2.0;
-    let mut y = top;
-    for (index, cells) in std::iter::once(columns.clone())
-        .chain(rows.iter().map(ScheduleRow::cells))
-        .enumerate()
-    {
-        if index > 0 {
-            page.line(vec![[left, y], [right, y]], rule.clone());
-        }
-        let mut x = left;
-        for (column, text) in cells.iter().enumerate() {
-            let (at, anchor) = if column == 2 && index > 0 {
-                (x + widths[column] - TABLE_PAD_MM, Anchor::End)
-            } else {
-                (x + TABLE_PAD_MM, Anchor::Start)
-            };
-            page.marks.push(Mark::Text {
-                at: [at, y + baseline],
-                text: text.clone(),
-                height_mm: TABLE_TEXT_MM,
-                anchor,
-                angle_deg: 0.0,
-                bold: index == 0,
-            });
-            x += widths[column];
-        }
-        y += TABLE_ROW_MM;
-    }
+    draw_table(page, drawing_area(format)[0], columns, &cells(rows));
 }
