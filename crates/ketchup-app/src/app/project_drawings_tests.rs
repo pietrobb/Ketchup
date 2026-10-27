@@ -524,6 +524,16 @@ fn a_panel_has_a_shop_drawing_dimensioning_its_studs_and_its_window() {
         )
     };
     assert!(sheet.title.contains("wall S"), "{}", sheet.title);
+    // The OSB covers the framing on the side the sheet looks at, so it has a
+    // view of its own beside the framing's, which would otherwise be hidden.
+    assert_eq!(
+        sheet
+            .views
+            .iter()
+            .map(|view| view.title.clone())
+            .collect::<Vec<_>>(),
+        [sheet.title.clone(), format!("{} - OSB", sheet.title)]
+    );
     let shop = sheet.shop.as_ref().unwrap();
     let pieces = model
         .parts

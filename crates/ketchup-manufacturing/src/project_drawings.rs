@@ -2081,8 +2081,55 @@ mod tests {
             }
         }
         // Sheet and pieces at a shop scale, not the set's.
-        assert!(set.scale > 20 && sheet.page.texts().any(|text| text == "1:20"));
+        assert!(set.scale > 25 && sheet.page.texts().any(|text| text == "1:25"));
         assert!(String::from_utf8_lossy(&set.dxf()[3]).contains("2500 x 500 x 15"));
+
+        // The OSB lies in front of the framing, so it gets a view of its own
+        // below: the framing view shows every stud, its edges drawn from plate
+        // to plate (as the DXF carries them) and its number on it.
+        assert_eq!(
+            sheet
+                .views
+                .iter()
+                .map(|view| view.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Panel p", "Panel p - OSB"]
+        );
+        let shop = shop::plan_shop(&options.shop.sheets[0], &panel, &options.shop.columns, None)
+            .unwrap()
+            .unwrap();
+        let views = shop.visible_lines();
+        let drawn = |view: usize, x: f64, from: f64, to: f64| {
+            views[view]
+                .iter()
+                .flat_map(|line| line.points.windows(2))
+                .any(|pair| {
+                    (pair[0][0] - x).abs() < 0.01
+                        && (pair[1][0] - x).abs() < 0.01
+                        && pair[0][1].min(pair[1][1]) <= from + 0.01
+                        && pair[0][1].max(pair[1][1]) >= to - 0.01
+                })
+        };
+        for x in [0.0, 60.0, 600.0, 660.0, 1940.0, 2000.0] {
+            assert!(drawn(0, x, 60.0, 2440.0), "stud edge {x}");
+        }
+        for x in [840.0, 900.0, 1500.0, 1560.0] {
+            assert!(drawn(0, x, 60.0, 2000.0), "king edge {x}");
+        }
+        for x in [0.0, 900.0, 1500.0, 2000.0] {
+            assert!(drawn(1, x, 0.0, 2500.0), "osb edge {x}");
+        }
+        let numbers = |view: &DrawnView| {
+            view.marks
+                .iter()
+                .map(|(_, number)| number.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            numbers(&shop.view),
+            ["1", "1", "2", "2", "2", "3", "3", "4", "5"]
+        );
+        assert_eq!(numbers(&shop.layers[0].1), ["6", "7"]);
 
         options.plan_only = true;
         assert_eq!(drawing_set(&panel, &options).unwrap().sheets.len(), 1);

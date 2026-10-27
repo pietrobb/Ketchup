@@ -560,20 +560,28 @@ fn shop_sheet(
     let mut page = blank();
     shop.draw(&mut page, columns, None);
     draw_frame_and_title_block(&mut page, shop.format, labels, values)?;
-    let visible = visible_lines(&shop.view);
+    let visible = shop.visible_lines();
     let mut lines = blank();
     shop.draw(&mut lines, columns, Some(&visible));
     draw_frame_and_title_block(&mut lines, shop.format, labels, values)?;
+    let summary = |title: &str, view: &DrawnView| ViewSummary {
+        view: ProjectView::Shop,
+        title: title.to_owned(),
+        cut_solids: 0,
+        cut_at_mm: None,
+        extent_mm: extent(view).map(|value| (value * 10.0).round() / 10.0),
+    };
+    let views = std::iter::once(summary(&shop.title, &shop.view))
+        .chain(
+            shop.layers
+                .iter()
+                .map(|(title, layer)| summary(title, layer)),
+        )
+        .collect();
     Ok(SetSheet {
         kind: SheetKind::Shop { drawing },
         number,
-        views: vec![ViewSummary {
-            view: ProjectView::Shop,
-            title: shop.title.clone(),
-            cut_solids: 0,
-            cut_at_mm: None,
-            extent_mm: extent(&shop.view).map(|value| (value * 10.0).round() / 10.0),
-        }],
+        views,
         title: shop.title,
         format: shop.format,
         page,

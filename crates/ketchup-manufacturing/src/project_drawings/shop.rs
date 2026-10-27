@@ -8,6 +8,9 @@
 //!
 //! A member is a part no wider in the view than it is deep, so the sheets
 //! and the infill between members are drawn and numbered but not dimensioned.
+//! The view shows the members and what lies at their depth (infill); a part
+//! wholly in front of or behind them (a covering sheet) would hide them, so
+//! the parts at each other depth get a view of their own below it.
 
 use super::table::{draw_table, table_size};
 use super::visible::VisibleLine;
@@ -19,7 +22,7 @@ use super::{
 use crate::sheet_pdf::{Anchor, Mark, Page, Stroke};
 use crate::title_block::{SheetFormat, TITLE_BLOCK_MM, drawing_area};
 use ketchup_geometry::linalg::{cross, dot, normalize_within};
-use ketchup_model::tolerance::{NEGLIGIBLE, ROUNDING};
+use ketchup_model::tolerance::{HIDDEN_LINE_TOUCH_MM, NEGLIGIBLE, ROUNDING};
 use serde::Serialize;
 
 /// Room around the view on the page, in mm: left for its overall height,
@@ -72,12 +75,16 @@ pub struct ShopSummary {
     pub marks: Vec<String>,
 }
 
-/// A shop drawing laid out: its view and table, format and scale.
+/// A shop drawing laid out: its view, the views of its covering layers (each
+/// with its title), its table, format and scale.
 pub(super) struct PlannedShop {
     pub(super) title: String,
     pub(super) view: DrawnView,
+    pub(super) layers: Vec<(String, DrawnView)>,
     pub(super) format: SheetFormat,
     pub(super) scale: u32,
+    /// The views side by side, else one below the other.
+    beside: bool,
     pub(super) summary: ShopSummary,
     /// The running dimensions in view coordinates.
     chains: [Vec<f64>; 2],
@@ -91,8 +98,8 @@ fn distinct(mut values: Vec<f64>) -> Vec<f64> {
     values
 }
 
-/// The view extent of `solid` in `frame` and how deep it is.
-fn extents(frame: &ViewFrame, solid: &DrawingSolid) -> ([f64; 2], [f64; 2], f64) {
+/// The view extent of `solid` in `frame` and the depths it spans.
+fn extents(frame: &ViewFrame, solid: &DrawingSolid) -> ([f64; 2], [f64; 2], [f64; 2]) {
     let mut min = [f64::INFINITY; 2];
     let mut max = [f64::NEG_INFINITY; 2];
     let mut depth = [f64::INFINITY, f64::NEG_INFINITY];
@@ -105,17 +112,57 @@ fn extents(frame: &ViewFrame, solid: &DrawingSolid) -> ([f64; 2], [f64; 2], f64)
         let along = dot(*point, frame.depth);
         depth = [depth[0].min(along), depth[1].max(along)];
     }
-    (min, max, depth[1] - depth[0])
+    (min, max, depth)
 }
 
-/// The page size the sheet takes at 1:`scale`: view, margins, gap and table.
-fn page_size(view: &DrawnView, table: [f64; 2], scale: u32) -> [f64; 2] {
-    let [width, height] = extent(view).map(|value| value / f64::from(scale));
+/// Whether two depth spans share more than a touching face.
+fn overlap(a: [f64; 2], b: [f64; 2]) -> bool {
+    a[1].min(b[1]) - a[0].max(b[0]) > HIDDEN_LINE_TOUCH_MM
+}
+
+/// The view of the members first, then those of the covering layers.
+fn views<'a>(
+    view: &'a DrawnView,
+    layers: &'a [(String, DrawnView)],
+) -> impl Iterator<Item = &'a DrawnView> {
+    std::iter::once(view).chain(layers.iter().map(|(_, layer)| layer))
+}
+
+/// The views at 1:`scale` side by side (`beside`) or one below the other:
+/// each view's lower-left corner from the top left of the drawing area, and
+/// the size they take with their margins.
+fn arrange<'a>(
+    views: impl Iterator<Item = &'a DrawnView>,
+    scale: u32,
+    beside: bool,
+) -> (Vec<[f64; 2]>, [f64; 2]) {
     let [left, top, right, bottom] = MARGIN_MM;
-    [
-        left + width + right + GAP_MM + table[0],
-        (top + height + bottom).max(table[1]),
-    ]
+    let mut origins = Vec::new();
+    let mut size = [0.0_f64; 2];
+    for view in views {
+        let [width, height] = extent(view).map(|value| value / f64::from(scale));
+        let first = origins.is_empty();
+        let origin = if beside {
+            [
+                if first { 0.0 } else { size[0] + GAP_MM } + left,
+                top + height,
+            ]
+        } else {
+            [left, if first { top } else { size[1] + GAP_MM } + height]
+        };
+        origins.push(origin);
+        size = [
+            size[0].max(origin[0] + width + right),
+            size[1].max(origin[1] + bottom),
+        ];
+    }
+    (origins, size)
+}
+
+/// The page size the sheet takes: the views as arranged, the gap and the
+/// table.
+fn page_size(views: [f64; 2], table: [f64; 2]) -> [f64; 2] {
+    [views[0] + GAP_MM + table[0], views[1].max(table[1])]
 }
 
 fn fits(size: [f64; 2], format: SheetFormat) -> bool {
@@ -124,18 +171,27 @@ fn fits(size: [f64; 2], format: SheetFormat) -> bool {
 }
 
 /// The requested format at the finest scale that holds the sheet, else the
-/// smallest format holding it at 1:[`COARSEST_SCALE`] or finer, else A0.
+/// smallest format holding it at 1:[`COARSEST_SCALE`] or finer, else A0; and
+/// whether its views stand side by side there (else one below the other).
 fn layout(
     view: &DrawnView,
+    layers: &[(String, DrawnView)],
     table: [f64; 2],
     requested: Option<SheetFormat>,
-) -> Result<(SheetFormat, u32), ProjectDrawingError> {
+) -> Result<(SheetFormat, u32, bool), ProjectDrawingError> {
     let finest = |format: SheetFormat, coarsest: u32| {
         SCALES
             .into_iter()
             .filter(|scale| *scale <= coarsest)
-            .find(|scale| fits(page_size(view, table, *scale), format))
-            .map(|scale| (format, scale))
+            .find_map(|scale| {
+                [false, true]
+                    .into_iter()
+                    .find(|beside| {
+                        let (_, size) = arrange(views(view, layers), scale, *beside);
+                        fits(page_size(size, table), format)
+                    })
+                    .map(|beside| (format, scale, beside))
+            })
     };
     let any = SCALES[SCALES.len() - 1];
     match requested {
@@ -149,6 +205,85 @@ fn layout(
         scale: any,
         format: requested,
     })
+}
+
+/// A part the shop drawing draws: its position number and material, its view
+/// extent and the depths it spans.
+struct Piece<'a> {
+    solid: &'a DrawingSolid,
+    number: String,
+    material: &'a str,
+    min: [f64; 2],
+    max: [f64; 2],
+    depth: [f64; 2],
+}
+
+impl Piece<'_> {
+    fn size(&self) -> [f64; 2] {
+        [self.max[0] - self.min[0], self.max[1] - self.min[1]]
+    }
+
+    /// No wider in the view than it is deep: an upright or lying member.
+    fn member(&self) -> bool {
+        let size = self.size();
+        size[0].min(size[1]) <= (self.depth[1] - self.depth[0]) * (1.0 + ROUNDING)
+    }
+}
+
+/// The pieces at the members' depth (all of them when there are no members),
+/// and the others grouped by the depths they share, near to far.
+fn by_depth(pieces: &[Piece]) -> (Vec<usize>, Vec<Vec<usize>>) {
+    let members = pieces
+        .iter()
+        .filter(|piece| piece.member())
+        .map(|piece| piece.depth)
+        .collect::<Vec<_>>();
+    let mut order = (0..pieces.len()).collect::<Vec<_>>();
+    order.sort_by(|a, b| pieces[*a].depth[0].total_cmp(&pieces[*b].depth[0]));
+    let mut framed = Vec::new();
+    let mut groups: Vec<([f64; 2], Vec<usize>)> = Vec::new();
+    for index in order {
+        let depth = pieces[index].depth;
+        if members.is_empty() || members.iter().any(|member| overlap(*member, depth)) {
+            framed.push(index);
+        } else if let Some((span, group)) =
+            groups.last_mut().filter(|(span, _)| overlap(*span, depth))
+        {
+            span[1] = span[1].max(depth[1]);
+            group.push(index);
+        } else {
+            groups.push((depth, vec![index]));
+        }
+    }
+    framed.sort_unstable();
+    for (_, group) in &mut groups {
+        group.sort_unstable();
+    }
+    (framed, groups.into_iter().map(|(_, group)| group).collect())
+}
+
+/// The view of `pieces[indices]`, each with its position number.
+fn piece_view(frame: ViewFrame, pieces: &[Piece], indices: &[usize]) -> DrawnView {
+    let solids = indices
+        .iter()
+        .map(|index| pieces[*index].solid.clone())
+        .collect::<Vec<_>>();
+    let edges = solids.iter().map(solid_edges).collect::<Vec<_>>();
+    let mut view = draw_view(ProjectView::Shop, frame, &solids, &edges);
+    view.marks = indices
+        .iter()
+        .map(|index| {
+            let piece = &pieces[*index];
+            (
+                [
+                    f64::midpoint(piece.min[0], piece.max[0]),
+                    f64::midpoint(piece.min[1], piece.max[1]),
+                ],
+                piece.number.clone(),
+            )
+        })
+        .collect();
+    view
 }
 
 /// Lays out the shop drawing of `sheet` from the `solids` it names; `None`
@@ -171,39 +306,57 @@ pub(super) fn plan_shop(
         depth: cross(up, right),
         cut: None,
     };
-    let mut drawn = Vec::new();
-    let mut numbers = Vec::new();
+    let mut pieces = Vec::new();
     for solid in solids {
         if let Some(index) = sheet
             .positions
             .iter()
             .position(|position| position.solids.contains(&solid.name))
         {
-            drawn.push(solid.clone());
-            numbers.push((index + 1).to_string());
+            let (min, max, depth) = extents(&frame, solid);
+            pieces.push(Piece {
+                solid,
+                number: (index + 1).to_string(),
+                material: &sheet.positions[index].material,
+                min,
+                max,
+                depth,
+            });
         }
     }
-    if drawn.is_empty() {
+    if pieces.is_empty() {
         return Ok(None);
     }
-    let edges = drawn.iter().map(solid_edges).collect::<Vec<_>>();
-    let mut view = draw_view(ProjectView::Shop, frame, &drawn, &edges);
+    let (framed, groups) = by_depth(&pieces);
+    let view = piece_view(frame, &pieces, &framed);
     let Some((low, high)) = view.solids else {
         return Ok(None);
     };
+    let layers = groups
+        .iter()
+        .map(|group| {
+            let mut materials: Vec<&str> = Vec::new();
+            for index in group {
+                if !materials.contains(&pieces[*index].material) {
+                    materials.push(pieces[*index].material);
+                }
+            }
+            (
+                format!("{} - {}", sheet.title, materials.join(", ")),
+                piece_view(frame, &pieces, group),
+            )
+        })
+        .collect::<Vec<_>>();
     let mut chains = [vec![low[0], high[0]], vec![low[1], high[1]]];
-    for (solid, number) in drawn.iter().zip(&numbers) {
-        let (min, max, depth) = extents(&frame, solid);
-        let size = [max[0] - min[0], max[1] - min[1]];
-        if size[0].min(size[1]) <= depth * (1.0 + ROUNDING) {
-            let axis = usize::from(size[1] <= size[0]);
-            chains[axis].extend([min[axis], max[axis]]);
-        }
-        view.marks.push((
-            [f64::midpoint(min[0], max[0]), f64::midpoint(min[1], max[1])],
-            number.clone(),
-        ));
+    for piece in pieces.iter().filter(|piece| piece.member()) {
+        let size = piece.size();
+        let axis = usize::from(size[1] <= size[0]);
+        chains[axis].extend([piece.min[axis], piece.max[axis]]);
     }
+    let numbers = pieces
+        .iter()
+        .map(|piece| piece.number.clone())
+        .collect::<Vec<_>>();
     let chains = chains.map(distinct);
     let rows = sheet
         .positions
@@ -218,7 +371,7 @@ pub(super) fn plan_shop(
             ]
         })
         .collect::<Vec<_>>();
-    let (format, scale) = layout(&view, table_size(columns, &rows), requested)?;
+    let (format, scale, beside) = layout(&view, &layers, table_size(columns, &rows), requested)?;
     let from = |values: &[f64], origin: f64| {
         values
             .iter()
@@ -233,28 +386,45 @@ pub(super) fn plan_shop(
             marks: numbers,
         },
         view,
+        layers,
         format,
         scale,
+        beside,
         chains,
         rows,
     }))
 }
 
 impl PlannedShop {
-    /// Draws the view with its dimensions and the table; with `visible`, the
-    /// view as visible lines alone.
+    /// The visible lines of each view, the members' first.
+    pub(super) fn visible_lines(&self) -> Vec<Vec<VisibleLine>> {
+        views(&self.view, &self.layers)
+            .map(super::visible::visible_lines)
+            .collect()
+    }
+
+    /// Draws the views, the first with its dimensions, and the table; with
+    /// `visible` (per view, as [`Self::visible_lines`] gives them), the views
+    /// as visible lines alone.
     pub(super) fn draw(
         &self,
         page: &mut Page,
         columns: &[String; 4],
-        visible: Option<&[VisibleLine]>,
+        visible: Option<&[Vec<VisibleLine>]>,
     ) {
         let scale = f64::from(self.scale);
         let [[area_left, area_top], _] = drawing_area(self.format);
-        let [left, top, right, _] = MARGIN_MM;
-        let [width, height] = extent(&self.view).map(|value| value / scale);
-        let origin = [area_left + left, area_top + top + height];
-        draw_view_on_page(page, &self.view, &self.title, origin, scale, visible);
+        let (origins, size) = arrange(views(&self.view, &self.layers), self.scale, self.beside);
+        let origins = origins
+            .into_iter()
+            .map(|[x, y]| [area_left + x, area_top + y])
+            .collect::<Vec<_>>();
+        let titles = std::iter::once(&self.title).chain(self.layers.iter().map(|(title, _)| title));
+        for (index, (view, title)) in views(&self.view, &self.layers).zip(titles).enumerate() {
+            let lines = visible.map(|views| views[index].as_slice());
+            draw_view_on_page(page, view, title, origins[index], scale, lines);
+        }
+        let origin = origins[0];
         let min = self.view.min;
         let at = |point: [f64; 2]| {
             [
@@ -310,7 +480,7 @@ impl PlannedShop {
             );
         }
 
-        let table_left = area_left + left + width + right + GAP_MM;
+        let table_left = area_left + size[0] + GAP_MM;
         draw_table(page, [table_left, area_top], columns, &self.rows);
     }
 }
