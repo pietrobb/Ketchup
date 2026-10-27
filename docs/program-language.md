@@ -166,7 +166,9 @@ when an input is missing. It is a computed check, not an authorized structural d
 sheets, kerf=4, trim=10, grain=False)` declare what a material's made parts are
 cut from. Report section `cutting` (`bom.cutting`) then lays them out: lengths
 on bars per cross-section, rectangles guillotine-packed on sheets per thickness
-(`grain=True` keeps a part's grain along the sheet), each bar or sheet shrunk to
+(`grain=True` keeps a part's grain along the sheet; a piece as long or as wide
+as a stock sheet, like a buildup layer's whole board, keeps the sheet's factory
+edges there instead of losing the trim), each bar or sheet shrunk to
 the smallest stock size holding its pieces, with used percent, offcuts and the
 pieces no stock holds and why. It is a heuristic, not a proven optimum. The
 drawing set draws every plan and the takeoff window exports it as CSV or XLSX.

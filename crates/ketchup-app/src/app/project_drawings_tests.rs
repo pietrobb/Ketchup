@@ -502,12 +502,14 @@ fn the_set_carries_a_cutting_plan_of_every_material_with_stock() {
     let mut app = KetchupApp::new();
     // The OSB laid from whole boards (capability review run 349): without
     // "sheet" its wall-high columns fit no sheet and were all left unplanned.
+    // On the documented stock with its default trim (run 352): the boards as
+    // long as the sheet keep its factory edges.
     let panel = PANEL.replace(
         "'material': 'OSB'}",
         "'material': 'OSB', 'sheet': (1250, 2500), 'grain': 'v'}",
     );
     let source = format!(
-        "{panel}bar_stock('C24', [3000, 5000])\nsheet_stock('OSB', [(2500, 1250)], trim = 0, grain = True)\n"
+        "{panel}bar_stock('C24', [3000, 5000])\nsheet_stock('OSB', [(2500, 1250)], grain = True)\n"
     );
     let program = ketchup_model::document::RuleProgramSource {
         variants: Default::default(),

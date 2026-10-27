@@ -311,28 +311,62 @@ fn stock_refuses_what_cannot_be_cut() {
     }
 }
 
-/// A 3000 x 2500 wall framed at 625 with OSB boards 1250 x 2500, grain up.
-fn sheathed_wall(length: f64, openings: &str) -> String {
+/// A wall framed at 625 with OSB boards 1250 x 2500, grain up, on the
+/// documented stock with its default kerf 4 and trim 10.
+fn sheathed_wall(length: f64, height: f64, openings: &str) -> String {
     format!(
-        "buildup('wall', (0, 0, 0), (1, 0, 0), (0, 0, 1), {length}, height = 2500,\n\
+        "buildup('wall', (0, 0, 0), (1, 0, 0), (0, 0, 1), {length}, height = {height},\n\
          layers = [{{'name': 'frame', 'thickness': 140, 'material': 'C24', 'spacing': 625}},\n\
                    {{'name': 'osb', 'thickness': 15, 'material': 'OSB', 'sheet': (1250, 2500), 'grain': 'v'}}],\n\
          openings = [{openings}])\n\
-         sheet_stock('OSB', [(2500, 1250)], trim = 0, grain = True)\n"
+         sheet_stock('OSB', [(2500, 1250)], grain = True)\n"
     )
 }
 
-/// Capability review run 349: a buildup's sheathing came as wall-high columns
-/// (whole walls without openings) wider than any sheet and was all "not
-/// planned". With "sheet" the layer is laid from boards with their joints on
-/// stud centres, and the plan saws every one of them from the stock.
+/// Every piece lies on its sheet a kerf clear of the others and the trim
+/// clear of the sheet's edges, except along a side it spans whole: a whole
+/// board, or one only cut to length, keeps the factory edges there.
+fn assert_cuttable_keeping_factory_edges(layout: &Layout, kerf: f64, trim: f64) {
+    let stock = [layout.stock_mm[0], layout.stock_mm[1]];
+    for (index, piece) in layout.pieces.iter().enumerate() {
+        for axis in 0..2 {
+            let (at, size) = (piece.at_mm[axis], piece.size_mm[axis]);
+            if (size - stock[axis]).abs() < 1e-6 {
+                assert!(at.abs() < 1e-6, "{piece:?}");
+            } else {
+                assert!(at >= trim - 1e-6, "{piece:?}");
+                assert!(
+                    at + size <= stock[axis] - trim + 1e-6,
+                    "{piece:?} on {stock:?}"
+                );
+            }
+        }
+        for other in &layout.pieces[index + 1..] {
+            let apart = (0..2).any(|axis| {
+                piece.at_mm[axis] + piece.size_mm[axis] + kerf <= other.at_mm[axis] + 1e-6
+                    || other.at_mm[axis] + other.size_mm[axis] + kerf <= piece.at_mm[axis] + 1e-6
+            });
+            assert!(apart, "{piece:?} and {other:?} are less than a kerf apart");
+        }
+    }
+}
+
+/// Capability review runs 349 and 352: a buildup's sheathing came as
+/// wall-high columns wider than any sheet and was all "not planned"; then,
+/// laid from boards, the boards as long as the stock sheet still did not fit
+/// it less its default trim. With "sheet" the layer is laid from boards with
+/// their joints on stud centres, and the plan saws every one of them from the
+/// documented stock, whole boards and boards cut only to length keeping the
+/// factory edges.
 #[test]
 fn a_sheathed_buildup_is_cut_from_whole_sheets_with_joints_on_studs() {
-    for (length, openings, window) in [
-        (3000.0, "(1000, 800, 900, 1200)", 900.0 * 1200.0),
-        (4000.0, "", 0.0),
+    for (length, height, openings, window) in [
+        (3000.0, 2500.0, "(1000, 800, 900, 1200)", 900.0 * 1200.0),
+        (4000.0, 2500.0, "", 0.0),
+        (2500.0, 2500.0, "", 0.0),
+        (3000.0, 2400.0, "(1000, 800, 900, 1200)", 900.0 * 1200.0),
     ] {
-        let source = sheathed_wall(length, openings);
+        let source = sheathed_wall(length, height, openings);
         let model = ketchup_program::evaluate("cutting.star", &source, &BTreeMap::new())
             .unwrap_or_else(|error| panic!("{error}"))
             .model;
@@ -349,9 +383,22 @@ fn a_sheathed_buildup_is_cut_from_whole_sheets_with_joints_on_studs() {
             .map(|piece| piece.size_mm[0] * piece.size_mm[1])
             .sum::<f64>();
         assert!(
-            (placed - (length * 2500.0 - window)).abs() < 1e-3,
+            (placed - (length * height - window)).abs() < 1e-3,
             "{length}: {placed}"
         );
+        for layout in &osb.layouts {
+            assert_cuttable_keeping_factory_edges(layout, 4.0, 10.0);
+        }
+        // Each whole 1250 x 2500 board is one whole stock sheet.
+        let whole = (length * height / (1250.0 * 2500.0)).floor();
+        if height == 2500.0 && window == 0.0 {
+            let full = osb
+                .layouts
+                .iter()
+                .filter(|layout| layout.used_percent == 100.0)
+                .count();
+            assert_eq!(full as f64, whole, "{length}: {osb:#?}");
+        }
         // Grain up the wall runs along the sheet's length: every piece lies
         // with its height on the wall along the sheet.
         for piece in osb.layouts.iter().flat_map(|layout| &layout.pieces) {

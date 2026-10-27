@@ -2721,8 +2721,10 @@ IMPOSED_LOADS = {
 #     each part cut to its longest dimension, one plan per cross-section; or sheets
 #     [(length, width), ...], each part a rectangle of its two longer dimensions, one plan
 #     per thickness. kerf: mm per saw cut; trim: mm cut off every edge (each end of a bar)
-#     first. along: a part attribute naming the local axis ("x", "y", "z") that must run
-#     along the sheet's length; parts without it may lie turned.
+#     first, except along a side a sheet piece spans whole (a whole board, or a board only
+#     cut to length): that keeps the factory edges. along: a part attribute naming the
+#     local axis ("x", "y", "z") that must run along the sheet's length; parts without it
+#     may lie turned.
 #   bar_stock(material, lengths, kerf=4, trim=0) and
 #   sheet_stock(material, sheets, kerf=4, trim=10, grain=False): the same for sawn bars
 #     and sheets; grain=True keeps a part's grain (board(grain=), part attribute "grain")
