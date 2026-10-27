@@ -489,6 +489,39 @@ fn the_cutting_plan_exports_every_piece_on_its_sheet() {
     assert!(app.digest.contains("rozkroj.csv"), "{}", app.digest);
 }
 
+/// R9-C step 18: the window exports the quote (MCP report section `quote`):
+/// 2 x 0.096 m2 of board at 25.50 a m2 is 4.90; a program without prices
+/// says so instead of writing an empty quote.
+#[test]
+fn the_quote_exports_priced_lines_and_a_program_without_prices_is_refused() {
+    let mut app = KetchupApp::new();
+    let program = |source: &str| ketchup_model::document::RuleProgramSource {
+        variants: Default::default(),
+        file_name: "quote.star".into(),
+        source: source.into(),
+        overrides: BTreeMap::new(),
+    };
+    let boards = "board(\"a\", (400, 240, 18), material = \"Board\")\n\
+                  board(\"b\", (400, 240, 18), at = (0, 500, 0), material = \"Board\")\n";
+    app.apply_program_source(program(boards), true).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("ponuka.csv");
+    assert!(!app.export_list_to(PartList::Quote, &path));
+    assert!(app.digest.contains("price_list()"), "{}", app.digest);
+    assert!(!path.exists());
+    let priced = format!("{boards}price(\"Board\", 25.5, \"m2\", currency = \"EUR\")\n");
+    app.apply_program_source(program(&priced), true).unwrap();
+    app.value_box.decimal = crate::length_input::DecimalSeparator::Comma;
+    assert!(app.export_list_to(PartList::Quote, &path), "{}", app.digest);
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "\u{feff}kind;item;quantity;unit;unit_price;amount;currency;basis;source;note\n\
+         material;Board;0,192;m2;25,5;4,9;EUR;blanks;;\n\
+         ;total;;;;4,9;EUR;;;\n"
+    );
+    assert!(app.digest.contains("ponuka.csv"), "{}", app.digest);
+}
+
 /// Review 2026-10-09 §5.1 (8) and CSV-1: the cut list is a real table, one row
 /// per group of identical visible parts, with a header; CSV follows the
 /// system's decimal separator (UI-9) and XLSX is a workbook.

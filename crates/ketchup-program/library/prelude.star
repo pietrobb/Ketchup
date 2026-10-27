@@ -2713,6 +2713,39 @@ def sheet_stock(material, sheets, kerf = 4, trim = 10, grain = False):
     attribute along the sheet's length."""
     stock(material, sheets = sheets, kerf = kerf, trim = trim, along = "grain" if grain else None)
 
+#@topic quote: Prices and the quote
+#
+#   price(item, value, per, currency=None, source=None)  (builtin)
+#     the unit price of item, matched by name against what the bill of materials counts:
+#       a material of the made parts, per "m3", "m2", "m" or "piece" (one blank, or one bar
+#         or sheet when stock() is declared for it: the quote then buys the stock its
+#         cutting plan uses, plus at its blank every piece no stock holds);
+#       a bought item of the hardware list (its designation or fastener), per "piece";
+#       a bar grade of the bar schedule (e.g. "B500B"), per "kg", "m" or "piece";
+#       a machining operation ("drill", "pocket"), per "operation".
+#     Every price is in one currency (a second one is refused). Kečup knows no prices: the
+#     program declares them, with source= naming the price list or offer.
+#   price_list(prices, currency=None, source=None): {item: (value, per), ...} at once.
+#   The report's bom.quote (MCP report section "quote") has one line per priced item:
+#   kind (material, hardware, bars, operation), item, quantity, unit, unit_price, amount,
+#   basis (materials: "stock" or "blanks"), then total. Whatever is counted without a price
+#   is in unpriced with the reason (no price, or a unit it is not counted in) and not in the
+#   total; unused_prices names prices that matched nothing (a typo). The material takeoff
+#   window exports it as CSV or XLSX.
+#   Example:
+#     price_list({
+#         "KVH C24": (520, "m3"),
+#         "OSB 3": (9.8, "m2"),
+#         "Simpson SAE380": (4.2, "piece"),
+#         "drill": (0.3, "operation"),
+#     }, currency = "EUR", source = "offer 2026-10")
+
+def price_list(prices, currency = None, source = None):
+    """Unit prices of several items: {item: (value, per)}."""
+    for item, entry in prices.items():
+        value, per = entry
+        price(item, value, per, currency = currency, source = source)
+
 #@topic member_check: Timber member check after EN 1995-1-1 (EC5)
 #
 #   timber_design(materials, service_class=1, classes=TIMBER_CLASSES)

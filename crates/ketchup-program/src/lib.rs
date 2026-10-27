@@ -33,6 +33,7 @@ pub mod model;
 pub mod motion;
 mod opposing_holes;
 pub mod path;
+pub mod quote;
 pub mod relations;
 pub mod shop_drawing;
 pub mod source_edit;

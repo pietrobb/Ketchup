@@ -940,6 +940,30 @@ fn the_cutting_section_lists_every_piece_on_its_bar_and_what_fits_no_stock() {
     assert_eq!(rows[2]["unplaced"]["part"], "c");
 }
 
+/// The report's quote section pages the priced lines, the total, then what
+/// has no price: 3 m of 120 x 60 is 0.0216 m3, at 480 a m3 10.37.
+#[test]
+fn the_quote_section_lists_priced_lines_the_total_and_unpriced_items() {
+    let (mut app, mut bridge) = setup();
+    let source = "member('a', (0, 0, 0), (3000, 0, 0), (60, 120), material = 'KVH')\n\
+        board('p', (500, 500, 18), at = (0, 500, 0), material = 'Board')\n\
+        price('KVH', 480, 'm3', currency = 'EUR')\n";
+    bridge
+        .execute(&mut app, apply_source(source), false)
+        .unwrap();
+    let rows = all_rows(&mut app, &mut bridge, ReportSection::Quote);
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    assert_eq!(rows[0]["item"], "KVH");
+    assert_eq!(rows[0]["quantity"], 0.0216);
+    assert_eq!(rows[0]["unit"], "m3");
+    assert_eq!(rows[0]["amount"], 10.37);
+    assert_eq!(rows[0]["currency"], "EUR");
+    assert_eq!(rows[1]["total"], 10.37);
+    assert_eq!(rows[1]["unpriced_count"], 1);
+    assert_eq!(rows[2]["unpriced"]["item"], "Board");
+    assert_eq!(rows[2]["unpriced"]["reason"], "no price()");
+}
+
 /// #2482: a B500B bar Ø12 x 1000 is 0.888 kg ±1 % both in the bar schedule
 /// (the library's nominal EN 10080 mass, derived; bars are ordered as pieces)
 /// and in inspect mass (the exact solid x steel density). Each is checked on its

@@ -9,6 +9,7 @@ use ketchup_program::ProgramModel;
 use ketchup_program::bom::{bar_schedule_table, bom, hardware_table};
 use ketchup_program::cut_list::cut_list_table;
 use ketchup_program::cutting::cutting_table;
+use ketchup_program::quote::quote_table;
 use ketchup_program::table::DecimalSeparator;
 use ketchup_program::takeoff::{Takeoff, material_takeoff};
 
@@ -19,6 +20,7 @@ pub(crate) enum PartList {
     Hardware,
     BarSchedule,
     CuttingPlan,
+    Quote,
 }
 
 impl PartList {
@@ -29,6 +31,7 @@ impl PartList {
             Self::Hardware => "hardware",
             Self::BarSchedule => "bar-schedule",
             Self::CuttingPlan => "cutting-plan",
+            Self::Quote => "quote",
         }
     }
 }
@@ -191,6 +194,9 @@ impl KetchupApp {
                     PartList::Hardware => hardware_table(&bom(model).hardware),
                     PartList::BarSchedule => bar_schedule_table(&bom(model).bar_schedule),
                     PartList::CuttingPlan => cutting_table(&bom(model).cutting),
+                    PartList::Quote => {
+                        quote_table(&bom(model).quote.ok_or(TakeoffError::NoPrices)?)
+                    }
                 }
             };
             let xlsx = path
@@ -254,6 +260,7 @@ impl KetchupApp {
                             PartList::Hardware,
                             PartList::BarSchedule,
                             PartList::CuttingPlan,
+                            PartList::Quote,
                         ] {
                             for extension in ["csv", "xlsx"] {
                                 let label = format!("takeoff-export-{}-{extension}", list.key());
@@ -293,6 +300,7 @@ impl KetchupApp {
         match error {
             TakeoffError::NoProgram => self.catalog.text("takeoff-no-program"),
             TakeoffError::Planning => self.catalog.text("status-program-planning"),
+            TakeoffError::NoPrices => self.catalog.text("takeoff-no-prices"),
             TakeoffError::Program(error) => error.to_string(),
             TakeoffError::Write(error) => error.to_string(),
         }

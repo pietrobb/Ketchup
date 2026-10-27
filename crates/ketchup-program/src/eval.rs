@@ -1595,6 +1595,7 @@ mod assemblies;
 mod conditions;
 mod continuity;
 mod error_location;
+mod pricing;
 pub use error_location::{CallFrame, ErrorLocation, NumberedLine, Position};
 mod face_cache;
 mod joints;
@@ -2508,6 +2509,7 @@ fn globals() -> Globals {
     .with(machining::builtins)
     .with(assemblies::builtins)
     .with(conditions::builtins)
+    .with(pricing::builtins)
     .with(continuity::builtins)
     .with(joints::builtins)
     .with(support::builtins)
@@ -2961,6 +2963,7 @@ mod tests {
             .with(machining::builtins)
             .with(assemblies::builtins)
             .with(conditions::builtins)
+            .with(pricing::builtins)
             .with(continuity::builtins)
             .with(joints::builtins)
             .with(support::builtins)

@@ -1863,6 +1863,13 @@ pub struct ProgramModel {
     /// Stock the made parts of a material are cut from (`stock()`), by material name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub stock: BTreeMap<String, crate::cutting::Stock>,
+    /// Unit prices (`price()`) of materials, bought items, bar grades and
+    /// machining operations, by their name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub prices: BTreeMap<String, crate::quote::Price>,
+    /// The one currency of the prices, when a `price()` names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub declared_issues: Vec<crate::validate::Issue>,
     /// Sets of tags that are alternative representations (`alternatives()`).

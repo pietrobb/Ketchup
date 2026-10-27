@@ -26,6 +26,7 @@ mod openings;
 mod opposing_holes;
 mod profile_arcs;
 mod program;
+mod quote;
 mod relations;
 mod report_before_exact;
 mod report_material;

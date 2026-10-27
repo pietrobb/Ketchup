@@ -127,6 +127,7 @@ point and outward normal in the part's frame and in the world. An edge gives
 | `text(name, value, at=, height_mm=2.5, tags=)`, `dim(name, a, b, offset_mm=0, height_mm=2.5, tags=)`, `leader(name, value, point=, at=, height_mm=2.5, tags=)`, `polyline(name, points, closed=False, tags=)` | drawing annotations, no parts (never in the cut list, collisions, mass or takeoff): a text at a point, a dimension whose value Kečup measures between two points, an arrow from a point to a text, drawn lines; text height in mm on paper, the dimension offset in model mm; the library's `chain_dim(name, points, offset_mm=)` dimensions neighbouring points |
 | `timber_strength(material, strength_class=, service_class=, glulam=, fm_k=, fv_k=, fc0_k=, fc90_k=, e0_mean=, e0_05=, source=)` | the EC5 characteristic values in N/mm² of one material, behind the library's `timber_design` |
 | `stock(material, lengths=None, sheets=None, kerf=0, trim=0, along=None)` | the stock lengths (bars) or sheets the made parts of a material are cut from, behind the library's `bar_stock` and `sheet_stock` and report section `cutting` |
+| `price(item, value, per, currency=None, source=None)` | the unit price of a material (per `m3`, `m2`, `m`, `piece`), a bought item (`piece`), a bar grade (`kg`, `m`, `piece`) or a machining operation (`operation`), behind the library's `price_list` and report section `quote` |
 
 A box's faces are `x-`, `x+`, `y-`, `y+`, `z-` and `z+` in the part's own
 frame; their coordinates `(u, v)` are measured from the part's minimum corner:
@@ -169,6 +170,16 @@ on bars per cross-section, rectangles guillotine-packed on sheets per thickness
 the smallest stock size holding its pieces, with used percent, offcuts and the
 pieces no stock holds and why. It is a heuristic, not a proven optimum. The
 drawing set draws every plan and the takeoff window exports it as CSV or XLSX.
+
+`price_list({item: (value, per), ...}, currency=, source=)` declares unit
+prices; Kečup has none of its own. Report section `quote` (`bom.quote`) prices
+what the bill of materials counts: a material by its blanks, or by the bars and
+sheets its cutting plan uses when it has stock; bought items per piece; bar
+grades per kg, m or piece; machining operations per operation. Each line has
+quantity, unit, unit price and amount, then the total. Anything counted without
+a price, or priced in a unit it is not counted in, is listed under `unpriced`
+and left out of the total, and `unused_prices` names prices that matched
+nothing. The takeoff window exports the quote as CSV or XLSX.
 
 `distribute(parts, a, b, face=None)` spaces several parts between `a` and `b`
 with equal clear gaps (two shelves between bottom and top make three equal
@@ -227,7 +238,7 @@ value at once; another value in `attributes=` stops the export, which names it.
 
 The file is split into topics by `#@topic id: title` lines (`basics`,
 `placement`, `profiles`, `machining`, `joinery`, `fasteners`, `intent`, `annotations`, `space`, `buildup`,
-`openings`, `loads`, `cutting`, `member_check`, `validation`, `report`). Each
+`openings`, `loads`, `cutting`, `quote`, `member_check`, `validation`, `report`). Each
 topic holds the comments that document its builtins and the helpers that
 belong to it, so an AI reads the index and then only the topics it needs;
 concise topic answers contain signatures, rules and a short example; helper code is

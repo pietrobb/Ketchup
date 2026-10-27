@@ -20,6 +20,7 @@ pub enum ReportSection {
     Hardware,
     BarSchedule,
     Cutting,
+    Quote,
     Machining,
     Relations,
     Issues,
@@ -523,6 +524,23 @@ impl LiveBridge {
     }
 }
 
+fn quote_rows(quote: &ketchup_program::quote::Quote) -> Vec<Value> {
+    let currency = &quote.currency;
+    let lines = quote.lines.iter().map(|line| {
+        let mut row = json!(line);
+        row["currency"] = json!(currency);
+        row
+    });
+    let total = std::iter::once(json!({"total": quote.total, "currency": currency,
+        "unpriced_count": quote.unpriced.len()}));
+    let unpriced = quote.unpriced.iter().map(|item| json!({"unpriced": item}));
+    let unused = quote
+        .unused_prices
+        .iter()
+        .map(|name| json!({"unused_price": name}));
+    lines.chain(total).chain(unpriced).chain(unused).collect()
+}
+
 /// Flatten unbounded nested lists so even one repeated part or heavily machined part can be paged.
 fn report_rows(report: &ketchup_program::Report, section: ReportSection) -> Vec<Value> {
     match section {
@@ -577,6 +595,8 @@ fn report_rows(report: &ketchup_program::Report, section: ReportSection) -> Vec<
                 placed.chain(unplaced).collect::<Vec<_>>()
             })
             .collect(),
+        // The priced lines, the total, then what has no price.
+        ReportSection::Quote => report.bom.quote.iter().flat_map(quote_rows).collect(),
         ReportSection::Machining => report
             .bom
             .machining

@@ -89,6 +89,9 @@ pub struct Bom {
     /// The cut list's parts on the stock declared for their material (`stock()`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cutting: Vec<crate::cutting::CuttingPlan>,
+    /// All of the above at the program's unit prices (`price()`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<crate::quote::Quote>,
 }
 
 pub(crate) fn key(value: f64) -> i64 {
@@ -251,7 +254,7 @@ pub fn bom(model: &ProgramModel) -> Bom {
             .iter()
             .flat_map(|row| row.parts.iter().map(String::as_str)),
     );
-    Bom {
+    let mut bom = Bom {
         cut_list,
         cutting,
         hardware: hardware.into_values().collect(),
@@ -262,7 +265,10 @@ pub fn bom(model: &ProgramModel) -> Bom {
             .iter()
             .filter(|part| model.in_production(part))
             .count(),
-    }
+        quote: None,
+    };
+    bom.quote = crate::quote::quote(model, &bom);
+    bom
 }
 
 /// A window or door the program buys as one item (library `window()`,
