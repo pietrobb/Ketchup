@@ -241,10 +241,10 @@ impl KetchupApp {
         let mut target = solid;
         // A new definition's own body is its first.
         let own_body = BodyId(1);
-        for (index, hole) in area.holes.iter().enumerate() {
+        for (hole, tool) in area.holes.iter().zip(own_body.0 + 1..) {
             let tool_height = height(height_mm + 2.0).ok()?;
             let lowered = Transform::from_translation(0.0, 0.0, -1.0).ok()?;
-            let tool_body = BodyId(own_body.0 + 1 + index as u64);
+            let tool_body = BodyId(tool);
             let [hole_profile, prism, placed, cut] = [(); 4].map(|()| feature_id());
             commands.extend([
                 CanonicalCommand::CreateBody {

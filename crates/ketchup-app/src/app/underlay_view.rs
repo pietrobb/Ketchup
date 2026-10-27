@@ -51,14 +51,16 @@ impl KetchupApp {
             return false;
         };
         let view = UnderlayView { plane, at_mm: 0.0 };
-        let result = plan_underlay_view(&snapshot, id, view)
-            .map_err(|error| error.to_string())
-            .and_then(|batch| {
-                self.apply_batch_with_work_recovery(&batch)
-                    .map_err(|error| error.to_string())
-            });
-        match result {
-            Ok(()) => {
+        // The status line is where the error ends: its text is all that is shown of it.
+        let failure = match plan_underlay_view(&snapshot, id, view) {
+            Ok(batch) => self
+                .apply_batch_with_work_recovery(&batch)
+                .err()
+                .map(|error| error.to_string()),
+            Err(error) => Some(error.to_string()),
+        };
+        match failure {
+            None => {
                 if self.selection.underlay() == Some(id) && plane != ViewPlane::Top {
                     self.selection.clear();
                 }
@@ -71,7 +73,7 @@ impl KetchupApp {
                 );
                 true
             }
-            Err(reason) => {
+            Some(reason) => {
                 self.digest = self.catalog.format(
                     "digest-underlay-view-failed",
                     &BTreeMap::from([("reason", reason)]),

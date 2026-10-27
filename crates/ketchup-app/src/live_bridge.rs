@@ -3278,31 +3278,17 @@ impl LiveBridge {
             request @ Request::FitUnderlay { .. } => {
                 self.fit_underlay(app, &request, ui_busy, cancelled)
             }
-            request @ Request::DrawingRemove { .. } => {
-                self.drawing_remove(app, &request, ui_busy, cancelled)
-            }
-            request @ Request::DrawingDraw { .. } => {
-                self.drawing_draw(app, &request, ui_busy, cancelled)
-            }
-            request @ Request::DrawingMove { .. } => {
-                self.drawing_move(app, &request, ui_busy, cancelled)
-            }
-            request @ (Request::DrawingTrim { .. }
+            request @ (Request::DrawingRemove { .. }
+            | Request::DrawingDraw { .. }
+            | Request::DrawingMove { .. }
+            | Request::DrawingTrim { .. }
             | Request::DrawingExtend { .. }
-            | Request::DrawingOffset { .. }) => {
-                self.drawing_line_edit(app, &request, ui_busy, cancelled)
-            }
-            request @ Request::DrawingExport { .. } => {
-                Self::drawing_export(app, &request, ui_busy, cancelled)
-            }
-            request @ Request::DrawingExtrude { .. } => {
-                self.drawing_extrude(app, &request, ui_busy, cancelled)
-            }
-            request @ Request::DrawingView { .. } => {
-                self.drawing_view(app, &request, ui_busy, cancelled)
-            }
-            request @ Request::DrawingSolidFromViews { .. } => {
-                self.drawing_solid_from_views(app, &request, ui_busy, cancelled)
+            | Request::DrawingOffset { .. }
+            | Request::DrawingExport { .. }
+            | Request::DrawingExtrude { .. }
+            | Request::DrawingView { .. }
+            | Request::DrawingSolidFromViews { .. }) => {
+                self.drawing_request(app, &request, ui_busy, cancelled)
             }
             request @ Request::UnderlaySnap { .. } => Self::underlay_snap(app, &request),
             request @ Request::UnderlayObjects { .. } => Self::underlay_objects(app, &request),

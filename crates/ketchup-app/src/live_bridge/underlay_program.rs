@@ -140,16 +140,16 @@ pub(crate) fn underlay_area_outline(
         .ok_or("entity_not_found")?;
     let (outline, holes) = match (point_mm, object_id) {
         (Some(point), None) => {
-            let region = super::underlay_regions::region_at(
+            let regions = super::underlay_regions::closed_regions(
                 &snapshot,
                 underlay,
                 &lines,
                 None,
-                point,
                 None,
                 &[],
                 false,
             )?;
+            let region = super::underlay_regions::region_at(underlay, regions, point)?;
             (region.outline, region.holes)
         }
         (None, Some(id)) => object_outline(&ObjectIndex::new(&lines), id)?,
@@ -220,14 +220,17 @@ pub(super) fn binding_data(
             let (region, selected) = match point_mm {
                 Some(point) => (
                     super::underlay_regions::region_at(
-                        snapshot,
                         underlay,
-                        &lines,
-                        layers.as_deref(),
+                        super::underlay_regions::closed_regions(
+                            snapshot,
+                            underlay,
+                            &lines,
+                            layers.as_deref(),
+                            tolerance_mm,
+                            &closing_segments_mm,
+                            binding.whole,
+                        )?,
                         point,
-                        tolerance_mm,
-                        &closing_segments_mm,
-                        binding.whole,
                     )?,
                     format!(
                         "{} ({})",

@@ -15,6 +15,30 @@ use ketchup_model::underlay::object_query::{ObjectFilter, ObjectIndex};
 use ketchup_model::underlay::objects::apply;
 
 impl LiveBridge {
+    /// The `drawing_*` methods: each changes an underlay's drawing or builds from it.
+    pub(super) fn drawing_request(
+        &mut self,
+        app: &mut KetchupApp,
+        request: &Request,
+        ui_busy: bool,
+        cancelled: &AtomicBool,
+    ) -> Result<Value, &'static str> {
+        match request {
+            Request::DrawingRemove { .. } => self.drawing_remove(app, request, ui_busy, cancelled),
+            Request::DrawingDraw { .. } => self.drawing_draw(app, request, ui_busy, cancelled),
+            Request::DrawingMove { .. } => self.drawing_move(app, request, ui_busy, cancelled),
+            Request::DrawingExport { .. } => Self::drawing_export(app, request, ui_busy, cancelled),
+            Request::DrawingExtrude { .. } => {
+                self.drawing_extrude(app, request, ui_busy, cancelled)
+            }
+            Request::DrawingView { .. } => self.drawing_view(app, request, ui_busy, cancelled),
+            Request::DrawingSolidFromViews { .. } => {
+                self.drawing_solid_from_views(app, request, ui_busy, cancelled)
+            }
+            _ => self.drawing_line_edit(app, request, ui_busy, cancelled),
+        }
+    }
+
     /// `drawing_remove`: takes `object_ids` out of the underlay's drawing.
     pub(super) fn drawing_remove(
         &mut self,

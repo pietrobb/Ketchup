@@ -250,6 +250,12 @@ pub fn dot2(left: [f64; 2], right: [f64; 2]) -> f64 {
     dot([left[0], left[1], 0.0], [right[0], right[1], 0.0])
 }
 
+/// The difference of two plane points, the vector from `right` to `left`.
+#[must_use]
+pub fn sub2(left: [f64; 2], right: [f64; 2]) -> [f64; 2] {
+    [left[0] - right[0], left[1] - right[1]]
+}
+
 /// The z component of the cross product of two plane vectors (positive when
 /// `right` turns counter-clockwise from `left`).
 #[must_use]

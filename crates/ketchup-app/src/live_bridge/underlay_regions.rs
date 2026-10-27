@@ -217,33 +217,18 @@ impl LiveBridge {
     }
 }
 
-/// The innermost region of the shown (or named) layers of `underlay` that holds the
-/// document point `point`, in the underlay's millimetres; `whole`, the innermost figure
-/// around it, its outer edge whatever lines split it inside ([`find_figures`]).
-#[allow(clippy::too_many_arguments)]
+/// The innermost of `regions` of `underlay` ([`closed_regions`]) that holds the document
+/// point `point`, in the underlay's millimetres.
 pub(super) fn region_at(
-    snapshot: &Snapshot,
     underlay: &Underlay,
-    lines: &UnderlayLines,
-    layers: Option<&[String]>,
+    regions: Vec<Region>,
     point: [f64; 2],
-    tolerance_mm: Option<f64>,
-    closing_segments_mm: &[[[f64; 2]; 2]],
-    whole: bool,
 ) -> Result<Region, &'static str> {
     if !point.iter().all(|value| value.is_finite()) {
         return Err("invalid_params");
     }
     let local = underlay.to_local(point);
-    closed_regions(
-        snapshot,
-        underlay,
-        lines,
-        layers,
-        tolerance_mm,
-        closing_segments_mm,
-        whole,
-    )?
+    regions
     .into_iter()
     .filter(|region| region.contains(local))
     .min_by(|a, b| a.area_mm2.total_cmp(&b.area_mm2))
@@ -336,7 +321,10 @@ fn folded(text: &str) -> String {
         .to_lowercase()
 }
 
-fn closed_regions(
+/// The closed regions of the shown (or named) layers of `underlay`, in its millimetres;
+/// `whole`, its figures instead: each outer edge whatever lines split it inside
+/// ([`find_figures`]).
+pub(super) fn closed_regions(
     snapshot: &Snapshot,
     underlay: &Underlay,
     lines: &UnderlayLines,

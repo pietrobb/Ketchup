@@ -198,8 +198,14 @@ def vec_add(a, b):
 def vec_scale(a, factor):
     return (a[0] * factor, a[1] * factor, a[2] * factor)
 
+def vec_dot(a, b):
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+def vec_cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
 def vec_length(a):
-    return math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2])
+    return math.sqrt(vec_dot(a, a))
 
 def plane_length(dx, dy):
     return math.sqrt(dx * dx + dy * dy)

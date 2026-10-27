@@ -56,7 +56,7 @@ OVERSIZED = {}
 # Modules AGENTS.md §6 forbids to grow, with their size: new code goes into new
 # modules, and an entry is lowered whenever its module shrinks (review UI-7).
 FROZEN_MODULES = {
-    "crates/ketchup-app/src/lib.rs": 2396,
+    "crates/ketchup-app/src/lib.rs": 2382,
     "crates/ketchup-model/src/document.rs": 514,
 }
 
@@ -304,7 +304,7 @@ LINEAR_ALGEBRA = {
     "crates/ketchup-app/src/renderer.rs": 1,
     # 2D wrapper over Affine3::transform_point that checks the coordinate range.
     "crates/ketchup-manufacturing/src/dxf_export.rs": 1,
-    # 2D point difference; linalg has dot2/cross2 but no 2D subtraction.
+    # 2D point difference written before linalg::sub2 existed.
     "crates/ketchup-program/src/contact_polygon.rs": 1,
 }
 

@@ -117,7 +117,7 @@ fn write(input: &UnderlayWriteInput) -> Result<UnderlayWriteOutcome, UnderlayRef
     };
     std::fs::write(&input.output, &written).map_err(|error| file(&input.output, &error))?;
     Ok(UnderlayWriteOutcome::Written {
-        bytes: written.len() as u64,
+        bytes: u64::try_from(written.len()).unwrap_or(u64::MAX),
     })
 }
 

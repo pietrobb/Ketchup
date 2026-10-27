@@ -16,6 +16,7 @@ use super::text::unicode_escapes;
 use super::underlay::text_encoding;
 use super::{DxfImportError, DxfImportOptions, read_dxf_underlay};
 use crate::import::{ImportLengthUnit, ImportUnitAuthority};
+use crate::tolerance::NEGLIGIBLE;
 use crate::underlay::UnderlayLines;
 use crate::underlay::drawn::{AddedObject, DrawnShape, readable_rotation};
 use crate::underlay::edits::UnderlayEdits;
@@ -455,6 +456,14 @@ impl<'a> Drawing<'a> {
             .ok_or(DxfEditRefusal::Malformed.into())
     }
 
+    /// The value of an integer group (a flag, a count, a kind), as the import read it.
+    fn integer(&self, index: usize) -> Result<i64, EditedDxfError> {
+        std::str::from_utf8(self.value(index))
+            .ok()
+            .and_then(|text| text.parse::<i64>().ok())
+            .ok_or(DxfEditRefusal::Malformed.into())
+    }
+
     fn write(
         &self,
         lines: &UnderlayLines,
@@ -747,10 +756,15 @@ impl<'a> Drawing<'a> {
                 .map(|index| self.number(*index))
                 .transpose()
         };
+        let dimension_kind = || -> Result<i64, EditedDxfError> {
+            own.iter()
+                .find(|index| code_of(**index) == 70)
+                .map_or(Ok(0), |index| self.integer(*index))
+        };
         let extrusion = [210, 220, 230].map(number_of);
         let [ex, ey, ez] = extrusion;
         let (ex, ey, ez) = (ex?.unwrap_or(0.0), ey?.unwrap_or(0.0), ez?.unwrap_or(1.0));
-        if ex.abs() > 1e-12 || ey.abs() > 1e-12 || (ez - 1.0).abs() > 1e-12 {
+        if ex.abs() > NEGLIGIBLE || ey.abs() > NEGLIGIBLE || (ez - 1.0).abs() > NEGLIGIBLE {
             return Err(not_mappable().into());
         }
         if rules.insert && mirrored {
@@ -804,7 +818,7 @@ impl<'a> Drawing<'a> {
         }
         if rules.dimension
             && let Some(at) = position(42)
-            && !matches!(number_of(70)?.unwrap_or(0.0) as i64 & 7, 2 | 5)
+            && !matches!(dimension_kind()? & 7, 2 | 5)
         {
             out[at] = Out::Set(own[at], number(self.number(own[at])? * scale));
         }
@@ -890,6 +904,7 @@ impl<'a> Drawing<'a> {
     ) -> Result<(), EditedDxfError> {
         let code = |at: usize| self.pairs[own[at]].code;
         let value = |at: usize| self.number(own[at]);
+        let integer = |at: usize| self.integer(own[at]);
         let set = |out: &mut [Out], at: usize, value: f64| {
             out[at] = Out::Set(own[at], number(value));
         };
@@ -924,8 +939,8 @@ impl<'a> Drawing<'a> {
                 .rev()
                 .find(|at| code(*at) == 97)
                 .ok_or(DxfEditRefusal::Malformed)?;
-            let count = value(sources)?;
-            let source_end = sources + 1 + usize::try_from(count as i64).unwrap_or(usize::MAX);
+            let count = integer(sources)?;
+            let source_end = sources + 1 + usize::try_from(count).unwrap_or(usize::MAX);
             if source_end > end || (sources + 1..source_end).any(|at| code(at) != 330) {
                 return Err(DxfEditRefusal::Malformed.into());
             }
@@ -935,7 +950,7 @@ impl<'a> Drawing<'a> {
                 trailing = source_end;
             }
             let body = start + 1..sources;
-            if value(start)? as i64 & 2 != 0 {
+            if integer(start)? & 2 != 0 {
                 for at in body {
                     match code(at) {
                         10 => xy(out, at, 20, false)?,
@@ -952,7 +967,7 @@ impl<'a> Drawing<'a> {
                 .collect::<Vec<_>>();
             for edge in edges.windows(2) {
                 let edge = edge[0]..edge[1];
-                let kind = value(edge.start)? as i64;
+                let kind = integer(edge.start)?;
                 let find = |wanted: i32| edge.clone().find(|at| code(*at) == wanted);
                 for at in edge.clone() {
                     match (kind, code(at)) {

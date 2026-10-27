@@ -6,6 +6,11 @@
 //! circle's quarter points so that each arc's ends bound it. The ring is in document
 //! millimetres, the drawing's scaled by its placement's scale.
 
+use ketchup_geometry::linalg::{cross2 as cross, dot2, sub2 as sub};
+use ketchup_model::tolerance::{
+    APPROXIMATION, NEGLIGIBLE, UNDERLAY_ARC_OFF_CIRCLE, UNDERLAY_ARC_OFF_CIRCLE_MM,
+    UNDERLAY_ARC_STEP_SLACK,
+};
 use ketchup_model::underlay::arc_chord_step;
 use std::f64::consts::{FRAC_PI_2, TAU};
 
@@ -34,21 +39,13 @@ const MIN_PIECE: f64 = 0.5 * std::f64::consts::PI / 180.0;
 /// The longest chord of a drawn arc of `radius` in a drawing scaled by `scale`: its step as
 /// the import cut it, a small circle's in a few long chords (Ø15 in 20), or [`MAX_STEP`].
 fn max_chord(radius: f64, scale: f64) -> f64 {
-    let step = (arc_chord_step(radius / scale) * (1.0 + 1e-3)).max(MAX_STEP);
+    let step = (arc_chord_step(radius / scale) * (1.0 + UNDERLAY_ARC_STEP_SLACK)).max(MAX_STEP);
     2.0 * radius * (step.min(FRAC_PI_2) / 2.0).sin()
 }
 
 /// How far off its circle a corner of an arc may lie.
 fn tolerance(radius: f64) -> f64 {
-    1e-4 * radius + 1e-3
-}
-
-fn sub(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
-    [a[0] - b[0], a[1] - b[1]]
-}
-
-fn cross(a: [f64; 2], b: [f64; 2]) -> f64 {
-    a[0] * b[1] - a[1] * b[0]
+    UNDERLAY_ARC_OFF_CIRCLE * radius + UNDERLAY_ARC_OFF_CIRCLE_MM
 }
 
 fn distance(a: [f64; 2], b: [f64; 2]) -> f64 {
@@ -60,10 +57,10 @@ fn circle(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> Option<([f64; 2], f64)> {
     let (ab, ac) = (sub(b, a), sub(c, a));
     let d = 2.0 * cross(ab, ac);
     let scale = ab[0].hypot(ab[1]) * ac[0].hypot(ac[1]);
-    if d.abs() <= 1e-12 * scale {
+    if d.abs() <= NEGLIGIBLE * scale {
         return None;
     }
-    let (ab2, ac2) = (ab[0] * ab[0] + ab[1] * ab[1], ac[0] * ac[0] + ac[1] * ac[1]);
+    let (ab2, ac2) = (dot2(ab, ab), dot2(ac, ac));
     let center = [
         a[0] + (ac[1] * ab2 - ab[1] * ac2) / d,
         a[1] + (ab[0] * ac2 - ac[0] * ab2) / d,
@@ -107,10 +104,8 @@ pub(super) fn pieces(ring: &[[f64; 2]], scale: f64) -> Option<Vec<Piece>> {
                     break;
                 }
             }
-            sweep += cross(sub(from, center), sub(to, center)).atan2(
-                (from[0] - center[0]) * (to[0] - center[0])
-                    + (from[1] - center[1]) * (to[1] - center[1]),
-            );
+            let (from, to) = (sub(from, center), sub(to, center));
+            sweep += cross(from, to).atan2(dot2(from, to));
             chords += 1;
         }
         (chords >= MIN_CHORDS).then_some((chords, center, radius, sweep))
@@ -128,7 +123,7 @@ pub(super) fn pieces(ring: &[[f64; 2]], scale: f64) -> Option<Vec<Piece>> {
     if first.is_none()
         && let Some((chords, center, radius, sweep)) = arc_from(0, n)
         && chords == n
-        && (sweep.abs() - TAU).abs() <= 1e-6
+        && (sweep.abs() - TAU).abs() <= APPROXIMATION
     {
         split(&mut pieces, at(0), at(0), center, radius, sweep);
         return Some(pieces);

@@ -4,6 +4,7 @@
 //! into drawing tool puts a TEXT there.
 
 use crate::*;
+use ketchup_model::tolerance::ROUNDING;
 use ketchup_model::underlay::UnderlayId;
 use ketchup_model::underlay::drawn::{DrawnShape, inverse};
 use ketchup_model::underlay::objects::apply;
@@ -319,7 +320,7 @@ fn arc_through(start: [f64; 2], through: [f64; 2], end: [f64; 2]) -> Option<Draw
     let [cx, cy] = end;
     let twice_area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
     let size = (bx - ax).hypot(by - ay).max((cx - ax).hypot(cy - ay));
-    if !twice_area.is_finite() || twice_area.abs() <= 1e-9 * size * size {
+    if !twice_area.is_finite() || twice_area.abs() <= ROUNDING * size * size {
         return None;
     }
     let d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));

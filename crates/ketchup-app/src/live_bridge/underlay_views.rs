@@ -234,10 +234,10 @@ fn intersection(name: &str, views: &[String], planes: &[ViewPlane]) -> String {
         "{BEGIN} {name}: the solid the views {} ({seen}) show, each pulled through the others and intersected. Follows the views.\n\
 def {name}_through(name, outline, holes, frame, tool):
     o, x, y = frame
-    z = (x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2], x[0] * y[1] - x[1] * y[0])
-    a = {name}_LOW[0] * z[0] + {name}_LOW[1] * z[1] + {name}_LOW[2] * z[2]
-    b = {name}_HIGH[0] * z[0] + {name}_HIGH[1] * z[1] + {name}_HIGH[2] * z[2]
-    start = min(a, b) - (o[0] * z[0] + o[1] * z[1] + o[2] * z[2])
+    z = vec_cross(x, y)
+    a = vec_dot({name}_LOW, z)
+    b = vec_dot({name}_HIGH, z)
+    start = min(a, b) - vec_dot(o, z)
     part = extrude(name, profile = outline, distance = max(a, b) - min(a, b), tool = tool)
     for i, hole in enumerate(holes):
         cut(part, profile = hole, through = True, name = name + \"/hole%d\" % (i + 1))

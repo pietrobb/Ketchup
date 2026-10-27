@@ -25,6 +25,35 @@ impl ValidatorSnapshot {
     }
 }
 
+/// The parts a validator finding names: each occurrence id with its label.
+pub(super) fn validator_finding_parts(issue: &serde_json::Value) -> Vec<(OccurrenceId, String)> {
+    let labelled = |id: &serde_json::Value, name: &serde_json::Value| {
+        let id = id.as_u64()?;
+        let label = match name.as_str() {
+            Some(name) => format!("{name} (#{id})"),
+            None => format!("#{id}"),
+        };
+        Some((OccurrenceId(id), label))
+    };
+    let mut parts = Vec::new();
+    parts.extend(labelled(&issue["occurrence_id"], &issue["name"]));
+    parts.extend(labelled(&issue["left_occurrence_id"], &issue["left_name"]));
+    parts.extend(labelled(
+        &issue["right_occurrence_id"],
+        &issue["right_name"],
+    ));
+    if let Some(ids) = issue["occurrence_ids"].as_array() {
+        let names = issue["names"].as_array();
+        for (index, id) in ids.iter().enumerate() {
+            let name = names
+                .and_then(|names| names.get(index))
+                .unwrap_or(&serde_json::Value::Null);
+            parts.extend(labelled(id, name));
+        }
+    }
+    parts
+}
+
 struct ValidatorPanelTask {
     source: ValidatorSnapshot,
     receiver: Receiver<ValidatorPanelReport>,

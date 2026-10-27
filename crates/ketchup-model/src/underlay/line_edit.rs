@@ -7,6 +7,8 @@ use super::edits::{UnderlayObjectError, top_level, with_edits};
 use super::object_query::ObjectIndex;
 use super::{UnderlayId, UnderlayLines, UnderlayPlanError};
 use crate::document::{CommandBatch, Snapshot};
+use crate::tolerance::ROUNDING;
+use ketchup_geometry::linalg::{cross2 as cross, dot2, sub2 as sub};
 
 /// What becomes of a straight line of a drawing.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -25,7 +27,7 @@ pub enum LineEdit {
 }
 
 /// Crossings this close to an end of the line, as a share of its length, are at the end.
-const END: f64 = 1e-9;
+const END: f64 = ROUNDING;
 
 /// One batch, so one Undo step, that trims, extends or offsets the straight line
 /// `object_id` of the drawing of underlay `id`, whose lines as drawn now are `lines`.
@@ -131,8 +133,7 @@ pub fn plan_underlay_line_edit(
 /// Where `point` lies along a → b: 0 at a, 1 at b.
 fn along(a: [f64; 2], b: [f64; 2], point: [f64; 2]) -> f64 {
     let direction = sub(b, a);
-    let squared = direction[0] * direction[0] + direction[1] * direction[1];
-    (sub(point, a)[0] * direction[0] + sub(point, a)[1] * direction[1]) / squared
+    dot2(sub(point, a), direction) / dot2(direction, direction)
 }
 
 /// Where along the endless line through a and b (0 at a, 1 at b) a straight piece of the
@@ -178,12 +179,4 @@ fn crossings(
         }
     }
     found
-}
-
-fn sub(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
-    [a[0] - b[0], a[1] - b[1]]
-}
-
-fn cross(a: [f64; 2], b: [f64; 2]) -> f64 {
-    a[0] * b[1] - a[1] * b[0]
 }

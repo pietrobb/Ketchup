@@ -6,6 +6,7 @@
 
 use crate::document::{CanonicalCommand, CommandBatch, Snapshot, Transform};
 use crate::tolerance::MAX_COORDINATE_MM;
+use ketchup_geometry::linalg::cross;
 
 use super::{Underlay, UnderlayId};
 
@@ -87,11 +88,7 @@ impl UnderlayView {
     #[must_use]
     pub fn transform(&self) -> Transform {
         let (x, y, axis) = self.plane.axes();
-        let z = [
-            x[1] * y[2] - x[2] * y[1],
-            x[2] * y[0] - x[0] * y[2],
-            x[0] * y[1] - x[1] * y[0],
-        ];
+        let z = cross(x, y);
         let mut origin = [0.0; 3];
         origin[axis] = self.at_mm;
         let row = |i: usize| [x[i], y[i], z[i], origin[i]];

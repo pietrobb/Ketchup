@@ -6,6 +6,8 @@
 use super::objects::{Affine, ObjectDetail, ObjectKind, ObjectPart, UnderlayObject, apply};
 use super::{LayerLines, UnderlayFill, UnderlayLines, UnderlayText, add_part, index, push_segment};
 use crate::document::ProfileSegment;
+use crate::tolerance::{NEGLIGIBLE, ROUNDING};
+use ketchup_geometry::linalg::cross2;
 
 /// A shape drawn into a layer, in the millimetres of the underlay's lines.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -108,7 +110,7 @@ impl DrawnShape {
     #[must_use]
     pub fn transformed(&self, map: &Affine) -> Self {
         let scale = scale_of(map);
-        let mirrored = determinant(map) < 0.0;
+        let mirrored = area_scale(map) < 0.0;
         let angle_of = |center: [f64; 2], radius: f64, degrees: f64| {
             let point = [
                 center[0] + radius * degrees.to_radians().cos(),
@@ -233,10 +235,10 @@ pub fn is_similarity(map: &Affine) -> bool {
     let [[a, b, x], [c, d, y]] = *map;
     let finite = [a, b, c, d, x, y].iter().all(|value| value.is_finite());
     let scale = a.hypot(c);
-    let close = |p: f64, q: f64| (p - q).abs() <= 1e-9 * scale.max(1.0);
+    let close = |p: f64, q: f64| (p - q).abs() <= ROUNDING * scale.max(1.0);
     let turn = close(a, d) && close(b, -c);
     let mirror = close(a, -d) && close(b, c);
-    finite && scale > 1e-12 && (turn || mirror)
+    finite && scale > NEGLIGIBLE && (turn || mirror)
 }
 
 /// `outer` after `inner`.
@@ -249,7 +251,7 @@ pub fn then(inner: &Affine, outer: &Affine) -> Affine {
 #[must_use]
 pub fn inverse(map: &Affine) -> Option<Affine> {
     let [[a, b, x], [c, d, y]] = *map;
-    let det = determinant(map);
+    let det = area_scale(map);
     if det.abs() <= f64::MIN_POSITIVE || !det.is_finite() {
         return None;
     }
@@ -298,12 +300,13 @@ pub fn similarity(
     then(&mirrored, &[[1.0, 0.0, by[0]], [0.0, 1.0, by[1]]])
 }
 
-fn determinant(map: &Affine) -> f64 {
-    map[0][0] * map[1][1] - map[0][1] * map[1][0]
+/// How much `map` scales areas, negative when it mirrors.
+fn area_scale(map: &Affine) -> f64 {
+    cross2([map[0][0], map[0][1]], [map[1][0], map[1][1]])
 }
 
 fn scale_of(map: &Affine) -> f64 {
-    determinant(map).abs().sqrt()
+    area_scale(map).abs().sqrt()
 }
 
 /// The rotation of a text at `rotation` once mapped by `map`: its baseline's image, turned
@@ -316,7 +319,7 @@ pub(crate) fn readable_rotation(map: &Affine, rotation: f64) -> f64 {
         map[1][0] * direction[0] + map[1][1] * direction[1],
     ];
     let angle = image[1].atan2(image[0]);
-    if determinant(map) < 0.0 && image[0] < 0.0 {
+    if area_scale(map) < 0.0 && image[0] < 0.0 {
         angle + std::f64::consts::PI
     } else {
         angle

@@ -77,6 +77,15 @@ pub const LOAD_AT_SUPPORT_MM: f64 = 0.5;
 pub const BOUNDARY_CHORD_MM: f64 = 0.001;
 /// The largest distance between an underlay's arc and the chords drawn for it, in mm.
 pub const UNDERLAY_ARC_CHORD_MM: f64 = 0.1;
+/// Relative slack over the step an import cut an underlay's arc into: a chord up to this
+/// much longer, from rounding of its drawn corners, still belongs to the arc.
+pub const UNDERLAY_ARC_STEP_SLACK: f64 = 1.0e-3;
+/// How far off its circle a corner of an underlay's drawn arc may lie, as a fraction of
+/// the radius, on top of [`UNDERLAY_ARC_OFF_CIRCLE_MM`].
+pub const UNDERLAY_ARC_OFF_CIRCLE: f64 = 1.0e-4;
+/// The part of an underlay arc corner's allowed distance off its circle that does not
+/// grow with the radius, in document mm.
+pub const UNDERLAY_ARC_OFF_CIRCLE_MM: f64 = 0.001;
 /// How near, in document mm, a line end of an underlay lies to another line to join it,
 /// unless a question names its own: a drafter's snap gap, well under any drawn thickness.
 pub const UNDERLAY_JOIN_MM: f64 = 1.0;

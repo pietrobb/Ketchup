@@ -160,14 +160,7 @@ fn near(a: [f64; 2], b: [f64; 2]) -> bool {
 
 /// How far `point` is from the straight piece `piece`.
 fn on(point: [f64; 2], [a, b]: [[f64; 2]; 2]) -> f64 {
-    let along = [b[0] - a[0], b[1] - a[1]];
-    let length = along[0] * along[0] + along[1] * along[1];
-    let t = if length > 0.0 {
-        (((point[0] - a[0]) * along[0] + (point[1] - a[1]) * along[1]) / length).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    (point[0] - a[0] - t * along[0]).hypot(point[1] - a[1] - t * along[1])
+    ketchup_geometry::linalg::point_segment_distance2(point, a, b)
 }
 
 /// Whether both draw the same, up to 1e-6 mm.
