@@ -1121,6 +1121,152 @@ fn interrupted(
         .map(|timeout| json!({"reason": "exact_collision_timeout", "timeout_ms": timeout.as_millis()}))
 }
 
+/// Bodies, limits and running totals of the exact worker pass of one report.
+struct ExactTally<'a> {
+    bodies: &'a [Body],
+    scoped: &'a BTreeSet<usize>,
+    tolerance: TolerancePolicy,
+    cancelled: Option<&'a AtomicBool>,
+    deadline: (Instant, Duration),
+    failures: &'a mut Vec<Value>,
+    checked: &'a mut usize,
+    checked_bodies: &'a mut BTreeSet<usize>,
+    issues: &'a mut Vec<Value>,
+    /// Present when the report collects gravity contacts.
+    areas: Option<&'a mut ContactAreas>,
+    facts: Option<&'a mut ExactPairFacts>,
+}
+
+impl ExactTally<'_> {
+    /// Asks the worker for `pairs`. A worker pair answers only for two solids
+    /// that passed the native validity oracle a self-query repeats, so a solid
+    /// in an answered pair needs no self-query. Any worker failure runs the
+    /// check again with every self-query, so the report lists exactly the
+    /// failures it always did.
+    fn ask_worker(
+        &mut self,
+        path: Option<PathBuf>,
+        pairs: Vec<(usize, usize, ExactPairCandidate)>,
+        graphs: Vec<ExactBRepGraph>,
+        sources: ketchup_model::persistence::Blobs,
+    ) {
+        #[cfg(test)]
+        let keep_paired = tests::KEEP_PAIRED_SELF_QUERIES.get();
+        #[cfg(not(test))]
+        let keep_paired = false;
+        if keep_paired {
+            self.run_pass(path, pairs, graphs, sources);
+            return;
+        }
+        let paired = pairs
+            .iter()
+            .filter(|(left, right, _)| left != right)
+            .flat_map(|(left, right, _)| [*left, *right])
+            .collect::<BTreeSet<_>>();
+        let fast = pairs
+            .iter()
+            .filter(|(left, right, _)| left != right || !paired.contains(left))
+            .cloned()
+            .collect::<Vec<_>>();
+        let (failed, checked, issued) = (self.failures.len(), *self.checked, self.issues.len());
+        let areas = self.areas.as_deref().cloned();
+        let facts = self.facts.as_deref().cloned();
+        let timed_out = self.run_pass(path.clone(), fast, graphs.clone(), sources.clone());
+        if self.failures.len() == failed
+            || timed_out
+            || self
+                .cancelled
+                .is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            return;
+        }
+        self.failures.truncate(failed);
+        *self.checked = checked;
+        self.checked_bodies.clear();
+        self.issues.truncate(issued);
+        if let (Some(known), Some(areas)) = (self.areas.as_deref_mut(), areas) {
+            *known = areas;
+        }
+        if let (Some(known), Some(facts)) = (self.facts.as_deref_mut(), facts) {
+            *known = facts;
+        }
+        self.run_pass(path, pairs, graphs, sources);
+    }
+
+    /// One worker pass over `pairs`; true when it ran out of time.
+    fn run_pass(
+        &mut self,
+        path: Option<PathBuf>,
+        pairs: Vec<(usize, usize, ExactPairCandidate)>,
+        graphs: Vec<ExactBRepGraph>,
+        sources: ketchup_model::persistence::Blobs,
+    ) -> bool {
+        // A failed check stops its workers, not the enclosing edit or chat request.
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let tolerance_mm = self.tolerance.linear_mm();
+        let rx = start_pair_batches(
+            path,
+            pairs,
+            graphs,
+            sources,
+            tolerance_mm,
+            cancelled.clone(),
+        );
+        let (started, timeout) = self.deadline;
+        loop {
+            let remaining = timeout.saturating_sub(started.elapsed());
+            match receive_pair_batch(&rx, self.cancelled, &cancelled, remaining) {
+                Ok(Ok(entries)) => self.add_answers(entries),
+                Ok(Err(failure)) => {
+                    self.failures.push(failure.cancel_remaining(&cancelled));
+                    return false;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => return false,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    cancelled.store(true, Ordering::Release);
+                    self.failures.push(json!({"reason": "exact_collision_timeout", "timeout_ms": timeout.as_millis()}));
+                    return true;
+                }
+            }
+        }
+    }
+
+    fn add_answers(&mut self, entries: Vec<(usize, usize, ExactPairAnswer)>) {
+        let bodies = self.bodies;
+        #[cfg(test)]
+        let entries = tests::rejected_by_test(bodies, entries);
+        for (left, right, result) in entries
+            .into_iter()
+            .filter_map(|entry| answered(bodies, entry, self.failures))
+        {
+            let scoped = self.scoped;
+            self.checked_bodies.extend(
+                [left, right]
+                    .into_iter()
+                    .filter(|index| scoped.contains(index)),
+            );
+            if left == right {
+                continue;
+            }
+            *self.checked += 1;
+            if let Some(areas) = self.areas.as_deref_mut() {
+                add_contact_area(areas, bodies, left, right, &result.contact_patches);
+            }
+            let fact = exact_pair(&result);
+            add_pair_fact(
+                self.facts.as_deref_mut(),
+                bodies,
+                (left, right),
+                fact,
+                self.tolerance,
+            );
+            if penetrates_past_contact_fit(&result) {
+                self.issues.push(issue(&bodies[left], &bodies[right], json!({"method": "occt_brep_common_volume", "common_volume_mm3": result.common_volume_mm3, "distance_mm": result.distance_mm})));
+            }
+        }
+    }
+}
+
 fn collision_report(
     snapshot: &Snapshot,
     selection: &AssistantValidationSelection,
@@ -1670,131 +1816,24 @@ fn collision_report(
             ));
         }
         report["hull_decided_pair_count"] = json!(hull_decided);
-        // A worker pair answers only for two solids that passed the native
-        // validity oracle a self-query repeats, so a solid in an answered pair
-        // needs no self-query. Any worker failure runs the check again with every
-        // self-query, so the report lists exactly the failures it always did.
-        #[cfg(test)]
-        let keep_paired = tests::KEEP_PAIRED_SELF_QUERIES.get();
-        #[cfg(not(test))]
-        let keep_paired = false;
-        let paired = pairs
-            .iter()
-            .filter(|(left, right, _)| left != right)
-            .flat_map(|(left, right, _)| [*left, *right])
-            .collect::<BTreeSet<_>>();
-        let fast_pairs = (!keep_paired).then(|| {
-            pairs
-                .iter()
-                .filter(|(left, right, _)| left != right || !paired.contains(left))
-                .cloned()
-                .collect::<Vec<_>>()
-        });
         let path = crate::evaluation::exact_worker_or_installed(worker_path);
-        match (sources, path) {
-            (Err(error), _) => failures.push(json!({"reason": error.code()})),
-            (Ok(_), _) if pairs.is_empty() => {}
-            (Ok(sources), path) => {
-                let request_cancelled = cancellation.as_deref();
-                let restart = fast_pairs.is_some().then(|| {
-                    (
-                        failures.len(),
-                        checked,
-                        issues.len(),
-                        exact_contact_areas.clone(),
-                        pair_facts.as_deref().cloned(),
-                    )
-                });
-                let mut fast = fast_pairs.map(|fast| (fast, graphs.clone(), sources.clone()));
-                let mut full = Some((pairs, graphs, sources));
-                while let Some((pairs, graphs, sources)) = fast.take().or_else(|| full.take()) {
-                    // A failed check stops its workers, not the enclosing edit or chat request.
-                    let cancelled = Arc::new(AtomicBool::new(false));
-                    let mut timed_out = false;
-                    let rx = start_pair_batches(
-                        path.clone(),
-                        pairs,
-                        graphs,
-                        sources,
-                        tolerance.linear_mm(),
-                        cancelled.clone(),
-                    );
-                    loop {
-                        match receive_pair_batch(
-                            &rx,
-                            request_cancelled,
-                            &cancelled,
-                            timeout.saturating_sub(started.elapsed()),
-                        ) {
-                            Ok(Ok(entries)) => {
-                                #[cfg(test)]
-                                let entries = tests::rejected_by_test(&bodies, entries);
-                                for (left, right, result) in entries
-                                    .into_iter()
-                                    .filter_map(|entry| answered(&bodies, entry, &mut failures))
-                                {
-                                    checked_bodies.extend(
-                                        [left, right]
-                                            .into_iter()
-                                            .filter(|index| scoped_indices.contains(index)),
-                                    );
-                                    if left != right {
-                                        checked += 1;
-                                        if collect_gravity_contacts {
-                                            add_contact_area(
-                                                &mut exact_contact_areas,
-                                                &bodies,
-                                                left,
-                                                right,
-                                                &result.contact_patches,
-                                            );
-                                        }
-                                        add_pair_fact(
-                                            pair_facts.as_deref_mut(),
-                                            &bodies,
-                                            (left, right),
-                                            exact_pair(&result),
-                                            tolerance,
-                                        );
-                                        if penetrates_past_contact_fit(&result) {
-                                            issues.push(issue(&bodies[left], &bodies[right], json!({"method": "occt_brep_common_volume", "common_volume_mm3": result.common_volume_mm3, "distance_mm": result.distance_mm})));
-                                        }
-                                    }
-                                }
-                            }
-                            Ok(Err(failure)) => {
-                                failures.push(failure.cancel_remaining(&cancelled));
-                                break;
-                            }
-                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                            Err(mpsc::RecvTimeoutError::Timeout) => {
-                                timed_out = true;
-                                cancelled.store(true, Ordering::Release);
-                                failures.push(json!({"reason": "exact_collision_timeout", "timeout_ms": timeout.as_millis()}));
-                                break;
-                            }
-                        }
-                    }
-                    let Some((failed, pairs_checked, issued, areas, facts)) = &restart else {
-                        break;
-                    };
-                    if full.is_none()
-                        || failures.len() == *failed
-                        || timed_out
-                        || request_cancelled.is_some_and(|flag| flag.load(Ordering::Acquire))
-                    {
-                        break;
-                    }
-                    failures.truncate(*failed);
-                    checked = *pairs_checked;
-                    checked_bodies.clear();
-                    issues.truncate(*issued);
-                    exact_contact_areas.clone_from(areas);
-                    if let (Some(known), Some(facts)) = (pair_facts.as_deref_mut(), facts) {
-                        known.clone_from(facts);
-                    }
-                }
+        match sources {
+            Err(error) => failures.push(json!({"reason": error.code()})),
+            Ok(_) if pairs.is_empty() => {}
+            Ok(sources) => ExactTally {
+                bodies: &bodies,
+                scoped: &scoped_indices,
+                tolerance,
+                cancelled: cancellation.as_deref(),
+                deadline: (started, timeout),
+                failures: &mut failures,
+                checked: &mut checked,
+                checked_bodies: &mut checked_bodies,
+                issues: &mut issues,
+                areas: collect_gravity_contacts.then_some(&mut exact_contact_areas),
+                facts: pair_facts.as_deref_mut(),
             }
+            .ask_worker(path, pairs, graphs, sources),
         }
     } else {
         for (index, body) in bodies.iter().enumerate() {
