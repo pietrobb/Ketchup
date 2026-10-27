@@ -19,6 +19,7 @@ pub enum ReportSection {
     CutList,
     Hardware,
     BarSchedule,
+    Cutting,
     Machining,
     Relations,
     Issues,
@@ -543,6 +544,38 @@ fn report_rows(report: &ketchup_program::Report, section: ReportSection) -> Vec<
             .bar_schedule
             .iter()
             .map(|row| json!(row))
+            .collect(),
+        // One row per piece so a sheet of a thousand pieces still pages.
+        ReportSection::Cutting => report
+            .bom
+            .cutting
+            .iter()
+            .flat_map(|plan| {
+                let head = json!({"material": plan.material, "kind": plan.kind,
+                    "section_mm": plan.section_mm, "kerf_mm": plan.kerf_mm, "trim_mm": plan.trim_mm,
+                    "stock": plan.stock, "plan_used_percent": plan.used_percent});
+                let placed = plan.layouts.iter().enumerate().flat_map({
+                    let head = head.clone();
+                    move |(number, layout)| {
+                        let head = head.clone();
+                        layout.pieces.iter().map(move |piece| {
+                            let mut row = head.clone();
+                            row["stock_no"] = json!(number + 1);
+                            row["stock_mm"] = json!(layout.stock_mm);
+                            row["used_percent"] = json!(layout.used_percent);
+                            row["offcut_mm"] = json!(layout.offcut_mm);
+                            row["piece"] = json!(piece);
+                            row
+                        })
+                    }
+                });
+                let unplaced = plan.unplaced.iter().map(move |piece| {
+                    let mut row = head.clone();
+                    row["unplaced"] = json!(piece);
+                    row
+                });
+                placed.chain(unplaced).collect::<Vec<_>>()
+            })
             .collect(),
         ReportSection::Machining => report
             .bom

@@ -86,6 +86,9 @@ pub struct Bom {
     pub bar_schedule: Vec<BarRow>,
     pub machining: Vec<PartMachining>,
     pub total_parts: usize,
+    /// The cut list's parts on the stock declared for their material (`stock()`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cutting: Vec<crate::cutting::CuttingPlan>,
 }
 
 pub(crate) fn key(value: f64) -> i64 {
@@ -241,8 +244,16 @@ pub fn bom(model: &ProgramModel) -> Bom {
             ..row
         })
         .collect();
+    let cut_list: Vec<CutListRow> = rows.into_values().collect();
+    let cutting = crate::cutting::plans(
+        model,
+        cut_list
+            .iter()
+            .flat_map(|row| row.parts.iter().map(String::as_str)),
+    );
     Bom {
-        cut_list: rows.into_values().collect(),
+        cut_list,
+        cutting,
         hardware: hardware.into_values().collect(),
         bar_schedule,
         machining,

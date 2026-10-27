@@ -5,6 +5,7 @@ mod buildup;
 mod components;
 mod connectivity;
 mod contact_review;
+mod cutting;
 mod document;
 mod drill_material;
 mod exact_shapes;

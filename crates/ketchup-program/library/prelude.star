@@ -2677,6 +2677,42 @@ IMPOSED_LOADS = {
     "H": (0.4, "EN 1991-1-1 table 6.10, category H roofs: recommended 0.4 kN/m2; the national annex may differ"),
 }
 
+#@topic cutting: Stock and cutting plans
+#
+#   stock(material, lengths=None, sheets=None, kerf=0, trim=0, along=None)  (builtin)
+#     the stock the made parts of a material are cut from: bars of the stock lengths (mm),
+#     each part cut to its longest dimension, one plan per cross-section; or sheets
+#     [(length, width), ...], each part a rectangle of its two longer dimensions, one plan
+#     per thickness. kerf: mm per saw cut; trim: mm cut off every edge (each end of a bar)
+#     first. along: a part attribute naming the local axis ("x", "y", "z") that must run
+#     along the sheet's length; parts without it may lie turned.
+#   bar_stock(material, lengths, kerf=4, trim=0) and
+#   sheet_stock(material, sheets, kerf=4, trim=10, grain=False): the same for sawn bars
+#     and sheets; grain=True keeps a part's grain (board(grain=), part attribute "grain")
+#     along the sheet's length (veneered or decor boards, OSB's strong axis).
+#   The report's bom.cutting (MCP report section "cutting") has one plan per material and
+#   cross-section or thickness: kind "lengths" or "sheets", the stock used by size and
+#   count, every bar or sheet (layout) with its pieces (part, at_mm from the stock's corner,
+#   size_mm along and across it, turned when its length runs across the sheet), the used
+#   percent and the pieces that fit no stock (unplaced, with the reason). Largest pieces
+#   first, each into the bar or sheet it fits best (guillotine cuts on sheets); every bar
+#   or sheet then shrinks to the smallest stock size that holds its pieces. A heuristic,
+#   not a proven optimum. Parts of a material without stock are only in the cut list.
+#   The drawing set draws each plan after the shop drawings (every bar or sheet with its
+#   pieces labelled) and the material takeoff window exports it as CSV or XLSX.
+#   Example:
+#     bar_stock("KVH C24", [5000, 13000])
+#     sheet_stock("OSB 3", [(2500, 1250)], grain = True)
+
+def bar_stock(material, lengths, kerf = 4, trim = 0):
+    """Bars of the stock lengths the parts of material are cut to length from."""
+    stock(material, lengths = lengths, kerf = kerf, trim = trim)
+
+def sheet_stock(material, sheets, kerf = 4, trim = 10, grain = False):
+    """Sheets the parts of material are cut from; grain=True keeps each part's grain
+    attribute along the sheet's length."""
+    stock(material, sheets = sheets, kerf = kerf, trim = trim, along = "grain" if grain else None)
+
 #@topic member_check: Timber member check after EN 1995-1-1 (EC5)
 #
 #   timber_design(materials, service_class=1, classes=TIMBER_CLASSES)

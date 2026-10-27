@@ -1860,6 +1860,9 @@ pub struct ProgramModel {
     /// Strength classes of timber materials (`timber_strength()`), by material name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub strength_classes: BTreeMap<String, crate::member_check::TimberClass>,
+    /// Stock the made parts of a material are cut from (`stock()`), by material name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub stock: BTreeMap<String, crate::cutting::Stock>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub declared_issues: Vec<crate::validate::Issue>,
     /// Sets of tags that are alternative representations (`alternatives()`).

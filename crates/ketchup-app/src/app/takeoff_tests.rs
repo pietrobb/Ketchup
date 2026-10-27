@@ -454,6 +454,41 @@ fn hardware_and_bar_schedule_export_the_report_rows() {
     assert!(text.contains("<c r=\"E2\"><v>1000</v></c>"), "{text}");
 }
 
+/// R9-C step 17: the window exports the cutting plan (MCP report section
+/// `cutting`) as the saw's table: the plate cut from a 1250 x 1250 sheet.
+#[test]
+fn the_cutting_plan_exports_every_piece_on_its_sheet() {
+    let mut app = KetchupApp::new();
+    let source = "sheet_stock(\"OSB\", [(2500, 1250), (1250, 1250)], kerf = 4, trim = 10)\n\
+                  board(\"plate\", (600, 400, 18), material = \"OSB\")\n";
+    app.apply_program_source(
+        ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
+            file_name: "sheet.star".into(),
+            source: source.into(),
+            overrides: BTreeMap::new(),
+        },
+        true,
+    )
+    .unwrap();
+    app.value_box.decimal = crate::length_input::DecimalSeparator::Comma;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("rozkroj.csv");
+    assert!(
+        app.export_list_to(PartList::CuttingPlan, &path),
+        "{}",
+        app.digest
+    );
+    // 0.24 of 1.5625 m2; without a grain the plate may lie turned, as
+    // best fits the large sheet it was first placed on.
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "\u{feff}material;kind;section_mm;stock_no;stock_mm;part;at_mm;size_mm;turned;used_percent;offcut_mm;note\n\
+         OSB;sheets;18;1;1250 x 1250;plate;10 x 10;400 x 600;yes;15,4;;\n"
+    );
+    assert!(app.digest.contains("rozkroj.csv"), "{}", app.digest);
+}
+
 /// Review 2026-10-09 §5.1 (8) and CSV-1: the cut list is a real table, one row
 /// per group of identical visible parts, with a header; CSV follows the
 /// system's decimal separator (UI-9) and XLSX is a workbook.

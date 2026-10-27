@@ -8,6 +8,7 @@ use crate::*;
 use ketchup_program::ProgramModel;
 use ketchup_program::bom::{bar_schedule_table, bom, hardware_table};
 use ketchup_program::cut_list::cut_list_table;
+use ketchup_program::cutting::cutting_table;
 use ketchup_program::table::DecimalSeparator;
 use ketchup_program::takeoff::{Takeoff, material_takeoff};
 
@@ -17,6 +18,7 @@ pub(crate) enum PartList {
     CutList,
     Hardware,
     BarSchedule,
+    CuttingPlan,
 }
 
 impl PartList {
@@ -26,6 +28,7 @@ impl PartList {
             Self::CutList => "cut-list",
             Self::Hardware => "hardware",
             Self::BarSchedule => "bar-schedule",
+            Self::CuttingPlan => "cutting-plan",
         }
     }
 }
@@ -168,8 +171,9 @@ impl KetchupApp {
 
     /// Writes `list` as a table: XLSX for a `.xlsx` path, otherwise CSV with
     /// the system's decimal separator. The cut list has the
-    /// counted parts, the hardware list and the bar schedule are the rows the
-    /// program report gives (MCP report sections `hardware`, `bar_schedule`).
+    /// counted parts, the hardware list, the bar schedule and the cutting plan
+    /// are the rows the program report gives (MCP report sections `hardware`,
+    /// `bar_schedule`, `cutting`).
     pub(crate) fn export_list_to(&mut self, list: PartList, path: &Path) -> bool {
         let result = self.material_takeoff().and_then(|_| {
             let snapshot = self.document.current();
@@ -186,6 +190,7 @@ impl KetchupApp {
                     }
                     PartList::Hardware => hardware_table(&bom(model).hardware),
                     PartList::BarSchedule => bar_schedule_table(&bom(model).bar_schedule),
+                    PartList::CuttingPlan => cutting_table(&bom(model).cutting),
                 }
             };
             let xlsx = path
@@ -244,7 +249,12 @@ impl KetchupApp {
                         if ui.button(self.catalog.text("takeoff-export-csv")).clicked() {
                             export = Some(None);
                         }
-                        for list in [PartList::CutList, PartList::Hardware, PartList::BarSchedule] {
+                        for list in [
+                            PartList::CutList,
+                            PartList::Hardware,
+                            PartList::BarSchedule,
+                            PartList::CuttingPlan,
+                        ] {
                             for extension in ["csv", "xlsx"] {
                                 let label = format!("takeoff-export-{}-{extension}", list.key());
                                 if ui.button(self.catalog.text(&label)).clicked() {

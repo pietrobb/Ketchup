@@ -916,6 +916,30 @@ fn standard_fasteners_weigh_their_simplified_steel_body() {
     assert_eq!(report["assembly"]["status"], "complete", "{report}");
 }
 
+/// The report's cutting section pages one row per piece on its bar, then the
+/// pieces no stock holds: 2500 and 3000 share one 6000 bar (2500 + 4 + 3000).
+#[test]
+fn the_cutting_section_lists_every_piece_on_its_bar_and_what_fits_no_stock() {
+    let (mut app, mut bridge) = setup();
+    let source = "bar_stock('KVH', [6000], kerf = 4)\n\
+        member('a', (0, 0, 0), (2500, 0, 0), (60, 120), material = 'KVH')\n\
+        member('b', (0, 200, 0), (3000, 200, 0), (60, 120), material = 'KVH')\n\
+        member('c', (0, 400, 0), (6500, 400, 0), (60, 120), material = 'KVH')\n";
+    bridge
+        .execute(&mut app, apply_source(source), false)
+        .unwrap();
+    let rows = all_rows(&mut app, &mut bridge, ReportSection::Cutting);
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    assert_eq!(rows[0]["piece"]["part"], "b");
+    assert_eq!(rows[1]["piece"]["part"], "a");
+    assert_eq!(rows[1]["piece"]["at_mm"][0], 3004.0);
+    assert_eq!(rows[0]["stock_no"], 1);
+    assert_eq!(rows[0]["stock_mm"][0], 6000.0);
+    assert_eq!(rows[0]["offcut_mm"], 492.0);
+    assert_eq!(rows[0]["kind"], "lengths");
+    assert_eq!(rows[2]["unplaced"]["part"], "c");
+}
+
 /// #2482: a B500B bar Ø12 x 1000 is 0.888 kg ±1 % both in the bar schedule
 /// (the library's nominal EN 10080 mass, derived; bars are ordered as pieces)
 /// and in inspect mass (the exact solid x steel density). Each is checked on its

@@ -4,13 +4,15 @@
 //! holds it (or the format the caller fixes) with its frame and title block.
 //! The title block of every sheet says what the sheet shows and its number in
 //! the set, "n / N". After the elevations comes a shop drawing of each group
-//! of parts the caller names, at its own scale (see [`super::shop`]). When the
+//! of parts the caller names, at its own scale (see [`super::shop`]), then the
+//! cutting plans the caller gives (see [`super::cutting`]). When the
 //! model has windows or doors, each plan marks those of its storey and a last
 //! sheet lists them (see [`super::openings`]).
 //!
 //! Each sheet is drawn twice: painted far to near for the PDF, and as its
 //! visible lines alone for a DXF, which cannot paint faces over lines.
 
+use super::cutting::{CuttingSheet, CuttingSummary, plan_cutting};
 use super::openings::{OpeningSchedule, draw_schedule, opening_points, schedule_format};
 use super::shop::{PlannedShop, ShopDrawings, ShopSummary, plan_shop};
 use super::visible::{VisibleLine, visible_lines};
@@ -80,6 +82,9 @@ pub struct DrawingSetOptions {
     pub openings: OpeningSchedule,
     /// A sheet per shop drawing, after the elevations, each at its own scale.
     pub shop: ShopDrawings,
+    /// The cutting plans, after the shop drawings: each on as many sheets as
+    /// its bars or sheets of stock need, at its own scale.
+    pub cutting: Vec<CuttingSheet>,
 }
 
 /// What a sheet of the set shows.
@@ -95,6 +100,12 @@ pub enum SheetKind {
     /// Shop drawing `drawing` (an index into [`ShopDrawings::sheets`]).
     Shop {
         drawing: usize,
+    },
+    /// Sheet `page` (from 0) of cutting plan `plan` (an index into
+    /// [`DrawingSetOptions::cutting`]).
+    Cutting {
+        plan: usize,
+        page: usize,
     },
     /// The schedule of windows and doors.
     Openings,
@@ -120,6 +131,8 @@ pub struct SetSheet {
     pub openings: Vec<String>,
     /// What a shop drawing shows.
     pub shop: Option<ShopSummary>,
+    /// What a sheet of a cutting plan shows.
+    pub cutting: Option<CuttingSummary>,
 }
 
 /// The sheets, numbered in order, and the scale 1:`scale` of every view.
@@ -419,7 +432,18 @@ pub fn drawing_set(
             .collect::<Result<Vec<_>, _>>()?
     };
 
-    let count = planned.len() + shops.len() + usize::from(schedule_format.is_some());
+    let cuttings = if options.plan_only {
+        Vec::new()
+    } else {
+        let mut cuttings = Vec::new();
+        for (plan, sheet) in options.cutting.iter().enumerate() {
+            cuttings.extend(plan_cutting(plan, sheet, options.format)?);
+        }
+        cuttings
+    };
+
+    let count =
+        planned.len() + shops.len() + cuttings.len() + usize::from(schedule_format.is_some());
     let set_title = options
         .title_block
         .get(&TitleField::Drawing)
@@ -495,6 +519,7 @@ pub fn drawing_set(
             annotations,
             openings,
             shop: None,
+            cutting: None,
         });
     }
     for (drawing, shop) in shops {
@@ -513,6 +538,42 @@ pub fn drawing_set(
             &options.title_labels,
             &values,
         )?);
+    }
+    let mut page_of_plan = 0;
+    for (index, cutting) in cuttings.iter().enumerate() {
+        if index > 0 && cuttings[index - 1].plan != cutting.plan {
+            page_of_plan = 0;
+        }
+        let number = sheets.len() + 1;
+        let values = title_values(
+            &cutting.title,
+            format!("1:{}", cutting.scale),
+            cutting.format,
+            number,
+        );
+        let mut page = Page {
+            size_mm: cutting.format.size_mm(),
+            marks: Vec::new(),
+        };
+        let summary = cutting.draw(&mut page);
+        draw_frame_and_title_block(&mut page, cutting.format, &options.title_labels, &values)?;
+        sheets.push(SetSheet {
+            kind: SheetKind::Cutting {
+                plan: cutting.plan,
+                page: page_of_plan,
+            },
+            number,
+            title: cutting.title.clone(),
+            format: cutting.format,
+            lines: page.clone(),
+            page,
+            views: Vec::new(),
+            annotations: AnnotationCounts::default(),
+            openings: Vec::new(),
+            shop: None,
+            cutting: Some(summary),
+        });
+        page_of_plan += 1;
     }
     if let Some(format) = schedule_format {
         let title = if options.openings.title.trim().is_empty() {
@@ -539,6 +600,7 @@ pub fn drawing_set(
             annotations: AnnotationCounts::default(),
             openings: Vec::new(),
             shop: None,
+            cutting: None,
         });
     }
     Ok(DrawingSet { sheets, scale })
@@ -589,5 +651,6 @@ fn shop_sheet(
         annotations: AnnotationCounts::default(),
         openings: Vec::new(),
         shop: Some(shop.summary),
+        cutting: None,
     })
 }

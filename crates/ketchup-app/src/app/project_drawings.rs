@@ -13,9 +13,9 @@ use crate::app::drawing_sheet_export::SheetFileFormat;
 use crate::*;
 use ketchup_application::threads::{CosmeticThreadBodyError, ThreadCylinder, cosmetic_thread_body};
 use ketchup_manufacturing::project_drawings::{
-    DrawingOpening, DrawingSet, DrawingSetOptions, DrawingSolid, DrawingThread, OpeningSchedule,
-    PlanSheet, ProjectDrawingError, ProjectView, SCALES, SheetTitles, ShopDrawings, ShopPosition,
-    ShopSheet, Storey, drawing_set, storeys,
+    CuttingPiece, CuttingSheet, CuttingStock, DrawingOpening, DrawingSet, DrawingSetOptions,
+    DrawingSolid, DrawingThread, OpeningSchedule, PlanSheet, ProjectDrawingError, ProjectView,
+    SCALES, SheetTitles, ShopDrawings, ShopPosition, ShopSheet, Storey, drawing_set, storeys,
 };
 use ketchup_manufacturing::sheet_pdf::PdfInfo;
 use ketchup_manufacturing::title_block::{
@@ -764,6 +764,77 @@ impl KetchupApp {
         }
     }
 
+    /// The program's cutting plans (the report's bom.cutting) as sheets of
+    /// the set, titled and captioned in the window's language.
+    fn drawing_cutting(&self, evaluated: Option<&Evaluated>) -> Vec<CuttingSheet> {
+        let Some(evaluated) = evaluated else {
+            return Vec::new();
+        };
+        let mm = |values: &[f64]| {
+            values
+                .iter()
+                .map(|value| format!("{}", (value * 10.0).round() / 10.0))
+                .collect::<Vec<_>>()
+                .join(" x ")
+        };
+        ketchup_program::bom::bom(&evaluated.model)
+            .cutting
+            .into_iter()
+            .filter(|plan| !plan.layouts.is_empty())
+            .map(|plan| {
+                let bars = plan.kind == ketchup_program::cutting::StockKind::Lengths;
+                let stock = plan
+                    .layouts
+                    .iter()
+                    .enumerate()
+                    .map(|(index, layout)| CuttingStock {
+                        caption: self.catalog.format(
+                            "drawings-cutting-stock",
+                            &BTreeMap::from([
+                                ("number", (index + 1).to_string()),
+                                ("size", mm(&layout.stock_mm)),
+                                ("used", layout.used_percent.to_string()),
+                            ]),
+                        ),
+                        size_mm: if bars {
+                            [layout.stock_mm[0], plan.section_mm[0]]
+                        } else {
+                            [layout.stock_mm[0], layout.stock_mm[1]]
+                        },
+                        pieces: layout
+                            .pieces
+                            .iter()
+                            .map(|piece| CuttingPiece {
+                                label: format!("{} {}", piece.part, mm(&piece.size_mm)),
+                                at_mm: if bars {
+                                    [piece.at_mm[0], 0.0]
+                                } else {
+                                    [piece.at_mm[0], piece.at_mm[1]]
+                                },
+                                size_mm: if bars {
+                                    [piece.size_mm[0], plan.section_mm[0]]
+                                } else {
+                                    [piece.size_mm[0], piece.size_mm[1]]
+                                },
+                            })
+                            .collect(),
+                    })
+                    .collect();
+                CuttingSheet {
+                    title: self.catalog.format(
+                        "drawings-sheet-cutting",
+                        &BTreeMap::from([
+                            ("material", plan.material.clone()),
+                            ("section", mm(&plan.section_mm)),
+                        ]),
+                    ),
+                    bars,
+                    stock,
+                }
+            })
+            .collect()
+    }
+
     /// The program's windows and doors as the drawing set marks and lists
     /// them: one mark per kind and designation, numbered in the order the
     /// designations first come ("W1", "W2", "D1"), so each schedule row is a
@@ -825,6 +896,7 @@ impl KetchupApp {
         let solid_names = Self::drawing_solid_names(&snapshot);
         let openings = self.drawing_openings(evaluated.as_deref(), &solid_names);
         let shop = self.drawing_shop(evaluated.as_deref(), &solid_names);
+        let cutting = self.drawing_cutting(evaluated.as_deref());
         let annotations = snapshot
             .annotations()
             .iter()
@@ -895,6 +967,7 @@ impl KetchupApp {
                 annotations,
                 openings,
                 shop,
+                cutting,
             },
             info,
         })

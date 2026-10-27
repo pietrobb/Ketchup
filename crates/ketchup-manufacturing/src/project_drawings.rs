@@ -21,6 +21,7 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 mod annotations;
+mod cutting;
 mod openings;
 mod set;
 mod shop;
@@ -30,6 +31,7 @@ mod visible;
 
 use annotations::PlanAnnotations;
 pub use annotations::{AnnotationCounts, annotation_marks};
+pub use cutting::{CuttingPiece, CuttingSheet, CuttingStock, CuttingSummary};
 use ketchup_model::annotation::Annotation;
 pub use openings::{DrawingOpening, OpeningSchedule, ScheduleRow};
 pub use set::{

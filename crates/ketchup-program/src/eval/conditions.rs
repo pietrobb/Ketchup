@@ -297,4 +297,84 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
             .insert(material.to_owned(), class);
         Ok(NoneType)
     }
+
+    /// The stock the made parts of `material` are cut from: bars of the
+    /// stock `lengths` (each part cut to its length, one plan per cross
+    /// section), or `sheets` [(length, width), ...] (one plan per thickness);
+    /// `kerf` mm per saw cut, `trim` mm cut off every edge first. `along`
+    /// names the part attribute whose local axis must run along a sheet's
+    /// length. The report's bom.cutting lays the parts out.
+    fn stock<'v>(
+        #[starlark(require = pos)] material: &str,
+        #[starlark(require = named)] lengths: Option<Value<'v>>,
+        #[starlark(require = named)] sheets: Option<Value<'v>>,
+        #[starlark(require = named)] kerf: Option<Value<'v>>,
+        #[starlark(require = named)] trim: Option<Value<'v>>,
+        #[starlark(require = named)] along: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<NoneType> {
+        let heap = eval.heap();
+        let material = material.trim();
+        if material.is_empty() {
+            anyhow::bail!("stock(): name the material");
+        }
+        let measure = |value: Option<Value<'v>>, what: &str| -> anyhow::Result<f64> {
+            let value = given(value).map_or(Ok(0.0), |v| number(v, what))?;
+            if !value.is_finite() || value < 0.0 {
+                anyhow::bail!("stock({material:?}): {what} must be zero or more mm, got {value}");
+            }
+            Ok(value)
+        };
+        let along = text(along, "stock along")?;
+        let kerf_mm = measure(kerf, "kerf")?;
+        let trim_mm = measure(trim, "trim")?;
+        let (kind, sizes_mm) = match (given(lengths), given(sheets)) {
+            (Some(lengths), None) => (
+                crate::cutting::StockKind::Lengths,
+                items(lengths, heap, "stock lengths")?
+                    .into_iter()
+                    .map(|length| Ok(vec![number(length, "stock length")?]))
+                    .collect::<anyhow::Result<Vec<_>>>()?,
+            ),
+            (None, Some(sheets)) => (
+                crate::cutting::StockKind::Sheets,
+                items(sheets, heap, "stock sheets")?
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, sheet)| {
+                        let [a, b] = numbers::<2>(sheet, heap, &format!("sheets[{index}]"))?;
+                        Ok(vec![a.max(b), a.min(b)])
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?,
+            ),
+            _ => anyhow::bail!("stock({material:?}): give either lengths= or sheets="),
+        };
+        if sizes_mm.is_empty() {
+            anyhow::bail!("stock({material:?}): give at least one size");
+        }
+        for size in &sizes_mm {
+            if size
+                .iter()
+                .any(|side| !side.is_finite() || *side <= 2.0 * trim_mm)
+            {
+                anyhow::bail!(
+                    "stock({material:?}): every size must be longer than twice the trim ({trim_mm} mm), got {size:?}"
+                );
+            }
+        }
+        if kind == crate::cutting::StockKind::Lengths && along.is_some() {
+            anyhow::bail!("stock({material:?}): along= applies to sheets");
+        }
+        state(eval)?.model.borrow_mut().stock.insert(
+            material.to_owned(),
+            crate::cutting::Stock {
+                kind,
+                sizes_mm,
+                kerf_mm,
+                trim_mm,
+                along,
+            },
+        );
+        Ok(NoneType)
+    }
 }

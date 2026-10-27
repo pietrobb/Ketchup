@@ -587,7 +587,7 @@ fn listed(names: &[String]) -> String {
 /// Fields of a program model that hold names of something else than parts:
 /// parameters, materials, attributes, tags and annotations keep their names
 /// and texts in a rename.
-const NOT_PART_NAMES: [&str; 10] = [
+const NOT_PART_NAMES: [&str; 11] = [
     "annotations",
     "params",
     "material",
@@ -597,6 +597,7 @@ const NOT_PART_NAMES: [&str; 10] = [
     "weight_scope",
     "production_scope",
     "strength_classes",
+    "stock",
     "alternative_tags",
 ];
 

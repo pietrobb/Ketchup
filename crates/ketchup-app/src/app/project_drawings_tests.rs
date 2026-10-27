@@ -493,6 +493,107 @@ const PANEL: &str = "buildup('wall S', (0, 0, 0), (1, 0, 0), (0, 0, 1), 3000, he
               {'name': 'osb', 'thickness': 15, 'material': 'OSB'}],\n\
     openings = [(1000, 800, 900, 1200)])\n";
 
+/// R9-C step 17: with stock for its materials, the set ends (before any
+/// schedule) with the cutting plans: every bar and sheet of the report's plan
+/// captioned, and every piece on it labelled or listed as too small.
+#[test]
+fn the_set_carries_a_cutting_plan_of_every_material_with_stock() {
+    use ketchup_manufacturing::project_drawings::SheetKind;
+    let mut app = KetchupApp::new();
+    let source = format!(
+        "{PANEL}bar_stock('C24', [3000, 5000])\nsheet_stock('OSB', [(2500, 1250)], trim = 10)\n"
+    );
+    let program = ketchup_model::document::RuleProgramSource {
+        variants: Default::default(),
+        file_name: "panel.star".into(),
+        source,
+        overrides: BTreeMap::new(),
+    };
+    app.apply_program_source(program.clone(), true).unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let set = app.project_drawings().unwrap();
+    let evaluated = app.program_evaluations.get_blocking(&program).unwrap();
+    let plans = ketchup_program::bom(&evaluated.model).cutting;
+    assert_eq!(
+        plans
+            .iter()
+            .map(|plan| plan.material.as_str())
+            .collect::<Vec<_>>(),
+        ["C24", "OSB"],
+        "{plans:#?}"
+    );
+
+    let kinds = set
+        .sheets
+        .iter()
+        .map(|sheet| sheet.kind)
+        .collect::<Vec<_>>();
+    let first = kinds
+        .iter()
+        .position(|kind| matches!(kind, SheetKind::Cutting { .. }))
+        .unwrap_or_else(|| panic!("no cutting plan: {kinds:?}"));
+    assert!(
+        matches!(kinds[first - 1], SheetKind::Shop { .. }),
+        "{kinds:?}"
+    );
+    let total = format!("{0} / {0}", set.sheets.len());
+    for (index, plan) in plans.iter().enumerate() {
+        let sheets = set
+            .sheets
+            .iter()
+            .filter(|sheet| matches!(sheet.kind, SheetKind::Cutting { plan, .. } if plan == index))
+            .collect::<Vec<_>>();
+        assert!(!sheets.is_empty(), "{}", plan.material);
+        assert!(
+            sheets[0].title.contains(&plan.material),
+            "{}",
+            sheets[0].title
+        );
+        let summaries = sheets
+            .iter()
+            .map(|sheet| sheet.cutting.clone().unwrap())
+            .collect::<Vec<_>>();
+        let captions = summaries
+            .iter()
+            .map(|summary| summary.stock.len())
+            .sum::<usize>();
+        assert_eq!(captions, plan.layouts.len(), "{}", plan.material);
+        let pieces = plan
+            .layouts
+            .iter()
+            .map(|layout| layout.pieces.len())
+            .sum::<usize>();
+        let shown = summaries
+            .iter()
+            .map(|summary| summary.labels + summary.unlabelled.len())
+            .sum::<usize>();
+        assert_eq!(shown, pieces, "{}", plan.material);
+        // Every piece of the plan is labelled with its part name somewhere.
+        let texts = sheets
+            .iter()
+            .flat_map(|sheet| sheet.page.texts())
+            .collect::<Vec<_>>();
+        for piece in plan.layouts.iter().flat_map(|layout| &layout.pieces) {
+            let named = texts
+                .iter()
+                .any(|text| text.starts_with(&format!("{} ", piece.part)))
+                || summaries.iter().any(|summary| {
+                    summary
+                        .unlabelled
+                        .iter()
+                        .any(|label| label.starts_with(&format!("{} ", piece.part)))
+                });
+            assert!(named, "{} is not on the plan", piece.part);
+        }
+    }
+    let last = set.sheets.last().unwrap();
+    assert!(
+        last.page.texts().any(|text| text == total),
+        "numbered n / N"
+    );
+    assert_eq!(set.dxf().len(), set.sheets.len());
+}
+
 /// R9-C step 15: the set has a shop drawing of the panel. Every piece carries
 /// its position number, the running dimensions give the edges of every stud
 /// and of the window, and the table counts each position as the program does.
