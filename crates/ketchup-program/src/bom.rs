@@ -254,6 +254,52 @@ pub fn bom(model: &ProgramModel) -> Bom {
     }
 }
 
+/// A window or door the program buys as one item (library `window()`,
+/// `door()`): its kind by the part tag "window" or "door", the bought item
+/// it is, its designation and its pieces.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Opening {
+    pub kind: String,
+    pub item: String,
+    pub designation: String,
+    pub parts: Vec<String>,
+}
+
+/// The windows and doors among the bought parts [`bom`] counts, in the order
+/// they come; the hardware list has a row per designation counting them.
+#[must_use]
+pub fn openings(model: &ProgramModel) -> Vec<Opening> {
+    let mut openings: Vec<Opening> = Vec::new();
+    for part in model
+        .parts
+        .iter()
+        .filter(|part| model.in_production(part) && part.cut_length_mm().is_none())
+    {
+        let (Some(designation), Some(item)) = (part.designation(), part.bought_item()) else {
+            continue;
+        };
+        let Some(kind) = ["window", "door"]
+            .into_iter()
+            .find(|kind| part.tags.contains(*kind))
+        else {
+            continue;
+        };
+        match openings
+            .iter_mut()
+            .find(|opening| opening.item == item && opening.designation == designation)
+        {
+            Some(opening) => opening.parts.push(part.name.clone()),
+            None => openings.push(Opening {
+                kind: kind.to_owned(),
+                item: item.to_owned(),
+                designation: designation.to_owned(),
+                parts: vec![part.name.clone()],
+            }),
+        }
+    }
+    openings
+}
+
 /// The hardware rows as a table for a spreadsheet: item, count, parts, then
 /// one column per attribute any row has.
 #[must_use]

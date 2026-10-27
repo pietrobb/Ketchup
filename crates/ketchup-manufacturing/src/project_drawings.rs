@@ -1,8 +1,9 @@
 //! Project drawings of a model as a numbered set of sheets at one scale (see
 //! [`drawing_set`]): a floor plan of each storey cut horizontally, a sheet of
-//! the longitudinal and the cross section and a sheet of the four elevations.
-//! The parts the cutting plane passes through are filled and outlined heavily;
-//! each view carries its overall dimensions.
+//! the longitudinal and the cross section and a sheet of the four elevations,
+//! and with windows or doors their schedule. The parts the cutting plane passes
+//! through are filled and outlined heavily; each view carries its overall
+//! dimensions.
 //!
 //! Each sheet is an ISO A format with a frame and a title block in the lower
 //! right corner; the set is written as one vector PDF, and each sheet as a DXF
@@ -20,6 +21,7 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 mod annotations;
+mod openings;
 mod set;
 mod threads;
 mod visible;
@@ -27,6 +29,7 @@ mod visible;
 use annotations::PlanAnnotations;
 pub use annotations::{AnnotationCounts, annotation_marks};
 use ketchup_model::annotation::Annotation;
+pub use openings::{DrawingOpening, OpeningSchedule, ScheduleRow};
 pub use set::{
     DrawingSet, DrawingSetOptions, PlanSheet, SetSheet, SheetKind, SheetTitles, drawing_set,
 };
@@ -452,6 +455,8 @@ struct DrawnView {
     /// The extent of the solids alone, which the overall dimensions measure.
     solids: Option<([f64; 2], [f64; 2])>,
     annotations: Option<PlanAnnotations>,
+    /// The marks of the windows and doors a plan shows, where they stand.
+    openings: Vec<([f64; 2], String)>,
     cut_at_mm: Option<f64>,
 }
 
@@ -466,6 +471,14 @@ impl DrawnView {
             }
         }
         self.annotations = Some(annotations);
+    }
+
+    /// Marks the windows and doors standing at `points` in this view.
+    fn mark_openings(&mut self, frame: &ViewFrame, points: &[(String, Point)]) {
+        self.openings = points
+            .iter()
+            .map(|(mark, point)| (frame.project(*point), mark.clone()))
+            .collect();
     }
 }
 
@@ -586,6 +599,7 @@ fn draw_view(
         max,
         solids: min[0].is_finite().then_some((min, max)),
         annotations: None,
+        openings: Vec::new(),
         // `cut` is measured along the depth direction, which is ±1 on the
         // world axis the plane is normal to: divide to get that coordinate.
         cut_at_mm: frame.cut.map(|cut| {
@@ -815,6 +829,9 @@ fn draw_view_on_page(
     }
     if let Some(annotations) = &view.annotations {
         annotations.draw(page, at);
+    }
+    for (point, mark) in &view.openings {
+        openings::draw_mark(page, at(*point), mark, visible.is_none());
     }
     let [outer_left, outer_bottom] = at(view.min);
     // Overall width below the view and overall height on its left, outside
@@ -1848,5 +1865,113 @@ mod tests {
                 format: None
             })
         );
+    }
+
+    /// R9-C step 14: the plan marks every window and door it shows, and the
+    /// last sheet lists each mark with its designation and how many openings
+    /// carry it; each sheet's DXF carries the same marks and table.
+    #[test]
+    fn the_plan_marks_windows_and_doors_and_the_last_sheet_lists_them() {
+        let mut house = room();
+        // Two equal windows in the south wall, a door in the east wall.
+        house.extend([
+            cuboid("w1/glass", [1000.0, 40.0, 1100.0], [2200.0, 110.0, 2350.0]),
+            cuboid("w2/glass", [3500.0, 40.0, 1100.0], [4700.0, 110.0, 2350.0]),
+            cuboid(
+                "entry/leaf",
+                [5890.0, 1000.0, 200.0],
+                [5960.0, 1900.0, 2300.0],
+            ),
+        ]);
+        let opening = |mark: &str, designation: &str, part: &str| DrawingOpening {
+            mark: mark.to_owned(),
+            designation: designation.to_owned(),
+            parts: vec![part.to_owned()],
+        };
+        let mut options = options(&house, Some(1200.0));
+        options.openings = OpeningSchedule {
+            openings: vec![
+                opening("W1", "window 1200 x 1250", "w1/glass"),
+                opening("D1", "door 900 x 2100", "entry/leaf"),
+                opening("W1", "window 1200 x 1250", "w2/glass"),
+                // Hidden: listed, but no plan shows it.
+                opening("W2", "window 600 x 600", "attic/glass"),
+            ],
+            title: "Windows and doors".to_owned(),
+            columns: ["Mark", "Designation", "Count"].map(str::to_owned),
+        };
+        let set = drawing_set(&house, &options).unwrap();
+        assert_eq!(
+            set.sheets
+                .iter()
+                .map(|sheet| (sheet.kind, sheet.number))
+                .collect::<Vec<_>>(),
+            [
+                (SheetKind::Plan { storey: 0 }, 1),
+                (SheetKind::Sections, 2),
+                (SheetKind::Elevations, 3),
+                (SheetKind::Openings, 4),
+            ]
+        );
+
+        let plan = sheet_of(&set, SheetKind::Plan { storey: 0 });
+        assert_eq!(plan.openings, ["W1", "D1", "W1"]);
+        for page in [&plan.page, &plan.lines] {
+            assert_eq!(text_at(page, "W1").len(), 2);
+            assert_eq!(text_at(page, "D1").len(), 1);
+            assert!(text_at(page, "W2").is_empty());
+        }
+        // The door's mark stands in the middle of its leaf, right of the windows'.
+        let [door] = text_at(&plan.page, "D1")[..] else {
+            panic!("one door mark")
+        };
+        assert!(text_at(&plan.page, "W1").iter().all(|w| w[0] < door[0]));
+
+        assert_eq!(
+            options.openings.rows(),
+            [
+                ScheduleRow {
+                    mark: "W1".to_owned(),
+                    designation: "window 1200 x 1250".to_owned(),
+                    count: 2
+                },
+                ScheduleRow {
+                    mark: "D1".to_owned(),
+                    designation: "door 900 x 2100".to_owned(),
+                    count: 1
+                },
+                ScheduleRow {
+                    mark: "W2".to_owned(),
+                    designation: "window 600 x 600".to_owned(),
+                    count: 1
+                },
+            ]
+        );
+        let schedule = sheet_of(&set, SheetKind::Openings);
+        let texts = texts(&schedule.page);
+        for wanted in [
+            "Mark",
+            "Designation",
+            "Count",
+            "window 1200 x 1250",
+            "door 900 x 2100",
+            "window 600 x 600",
+            "2",
+            "4 / 4",
+            "Windows and doors",
+            "Room <A>",
+        ] {
+            assert!(texts.contains(&wanted), "{wanted}: {texts:?}");
+        }
+        assert_eq!(schedule.lines, schedule.page);
+        let dxf = set.dxf();
+        assert_eq!(dxf.len(), 4);
+        assert!(String::from_utf8_lossy(&dxf[3]).contains("window 1200 x 1250"));
+
+        // The plans alone have no schedule.
+        options.plan_only = true;
+        let plans = drawing_set(&house, &options).unwrap();
+        assert_eq!(plans.sheets.len(), 1);
+        assert_eq!(plans.sheets[0].openings, ["W1", "D1", "W1"]);
     }
 }

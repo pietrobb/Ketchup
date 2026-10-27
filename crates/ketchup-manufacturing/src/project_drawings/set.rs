@@ -3,11 +3,13 @@
 //! elevations, all at one scale, each sheet on the smallest ISO A format that
 //! holds it (or the format the caller fixes) with its frame and title block.
 //! The title block of every sheet says what the sheet shows and its number in
-//! the set, "n / N".
+//! the set, "n / N". When the model has windows or doors, each plan marks
+//! those of its storey and a last sheet lists them (see [`super::openings`]).
 //!
 //! Each sheet is drawn twice: painted far to near for the PDF, and as its
 //! visible lines alone for a DXF, which cannot paint faces over lines.
 
+use super::openings::{OpeningSchedule, draw_schedule, opening_points, schedule_format};
 use super::visible::{VisibleLine, visible_lines};
 use super::{Annotation, AnnotationCounts};
 use super::{
@@ -69,6 +71,10 @@ pub struct DrawingSetOptions {
     /// The annotations; each plan draws those of its storey (from its floor
     /// up to the next storey's floor; the lowest plan also those below it).
     pub annotations: Vec<Annotation>,
+    /// The windows and doors: each plan marks those of its storey (parted
+    /// like the annotations, by their lowest point), and their schedule is
+    /// the last sheet.
+    pub openings: OpeningSchedule,
 }
 
 /// What a sheet of the set shows.
@@ -81,6 +87,8 @@ pub enum SheetKind {
     },
     Sections,
     Elevations,
+    /// The schedule of windows and doors.
+    Openings,
 }
 
 /// One sheet of the set.
@@ -99,6 +107,8 @@ pub struct SetSheet {
     pub views: Vec<ViewSummary>,
     /// The annotations its plan draws (none on the other sheets).
     pub annotations: AnnotationCounts,
+    /// The marks of the windows and doors its plan draws, one per opening.
+    pub openings: Vec<String>,
 }
 
 /// The sheets, numbered in order, and the scale 1:`scale` of every view.
@@ -258,6 +268,7 @@ pub fn drawing_set(
             .unwrap_or_else(|| format!("{view:?}"))
     };
 
+    let opening_points = opening_points(&options.openings.openings, solids);
     let mut planned = Vec::new();
     for (index, plan) in options.plans.iter().enumerate() {
         let (view, frame) = view_frames(min, max, plan.storey.cut_mm, options.plan_only)[0];
@@ -284,6 +295,12 @@ pub fn drawing_set(
         if !annotations.is_empty() {
             drawn.annotate(&frame, &annotations);
         }
+        let marks = opening_points
+            .iter()
+            .filter(|(_, point)| (below..above).contains(&point[2]))
+            .cloned()
+            .collect::<Vec<_>>();
+        drawn.mark_openings(&frame, &marks);
         let (views, titles) = sheet_views(vec![(drawn, plan.view_title.clone())], 1);
         if !views.views.is_empty() {
             planned.push(Planned {
@@ -360,26 +377,44 @@ pub fn drawing_set(
         .map(|sheet| format_at_scale(&sheet.views, options.format, scale))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let count = planned.len();
+    // The schedule of windows and doors goes with the whole set, not the plans alone.
+    let schedule = options.openings.rows();
+    let schedule_format = if options.plan_only || schedule.is_empty() {
+        None
+    } else {
+        Some(
+            schedule_format(&options.openings.columns, &schedule, options.format).ok_or(
+                ProjectDrawingError::DoesNotFit {
+                    scale,
+                    format: options.format,
+                },
+            )?,
+        )
+    };
+
+    let count = planned.len() + usize::from(schedule_format.is_some());
     let set_title = options
         .title_block
         .get(&TitleField::Drawing)
         .map(|title| title.trim().to_owned())
         .filter(|title| !title.is_empty());
-    let mut sheets = Vec::with_capacity(count);
-    for (index, (sheet, format)) in planned.into_iter().zip(formats).enumerate() {
-        let number = index + 1;
+    let title_values = |title: &str, scale: String, format: SheetFormat, number: usize| {
         let mut values = options.title_block.clone();
         values.insert(
             TitleField::Drawing,
-            set_title.as_ref().map_or_else(
-                || sheet.title.clone(),
-                |set| format!("{set} – {}", sheet.title),
-            ),
+            set_title
+                .as_ref()
+                .map_or_else(|| title.to_owned(), |set| format!("{set} – {title}")),
         );
-        values.insert(TitleField::Scale, format!("1:{scale}"));
+        values.insert(TitleField::Scale, scale);
         values.insert(TitleField::Format, format.name().to_owned());
         values.insert(TitleField::Sheet, format!("{number} / {count}"));
+        values
+    };
+    let mut sheets = Vec::with_capacity(count);
+    for (index, (sheet, format)) in planned.into_iter().zip(formats).enumerate() {
+        let number = index + 1;
+        let values = title_values(&sheet.title, format!("1:{scale}"), format, number);
         let blank = || Page {
             size_mm: format.size_mm(),
             marks: Vec::new(),
@@ -416,6 +451,12 @@ pub fn drawing_set(
             .find_map(|view| view.annotations.as_ref())
             .map(|annotations| annotations.counts.clone())
             .unwrap_or_default();
+        let openings = sheet
+            .views
+            .views
+            .iter()
+            .flat_map(|view| view.openings.iter().map(|(_, mark)| mark.clone()))
+            .collect();
         sheets.push(SetSheet {
             kind: sheet.kind,
             number,
@@ -425,6 +466,33 @@ pub fn drawing_set(
             lines,
             views,
             annotations,
+            openings,
+        });
+    }
+    if let Some(format) = schedule_format {
+        let title = if options.openings.title.trim().is_empty() {
+            "Windows and doors".to_owned()
+        } else {
+            options.openings.title.clone()
+        };
+        // A table has no scale.
+        let values = title_values(&title, "–".to_owned(), format, count);
+        let mut page = Page {
+            size_mm: format.size_mm(),
+            marks: Vec::new(),
+        };
+        draw_schedule(&mut page, format, &options.openings.columns, &schedule);
+        draw_frame_and_title_block(&mut page, format, &options.title_labels, &values)?;
+        sheets.push(SetSheet {
+            kind: SheetKind::Openings,
+            number: count,
+            title,
+            format,
+            lines: page.clone(),
+            page,
+            views: Vec::new(),
+            annotations: AnnotationCounts::default(),
+            openings: Vec::new(),
         });
     }
     Ok(DrawingSet { sheets, scale })

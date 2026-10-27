@@ -429,6 +429,64 @@ fn tapped_holes_and_bolts_are_drawn_with_their_threads() {
     assert!(app.project_drawings().is_ok());
 }
 
+/// A 4 m wall with a door and two equal windows cut into it.
+const WALLED: &str = "wall = box('wall', (4000, 200, 2600))\n\
+    door('entry', (0, 200, 0), (1, 0, 0), (0, 0, 1), 200, 200, 0, 900, 2100, cut = wall)\n\
+    window('win', (0, 200, 0), (1, 0, 0), (0, 0, 1), 200, 1400, 900, 1200, 1250, cut = wall)\n\
+    window('win 2', (0, 200, 0), (1, 0, 0), (0, 0, 1), 200, 2750, 900, 1200, 1250, cut = wall)\n";
+
+/// R9-C step 14: the plan marks each window and door, a mark per type, and
+/// the set's last sheet lists every type with the designation and count of
+/// its row in the hardware list; each sheet also goes out as a DXF.
+#[test]
+fn the_plan_marks_each_opening_and_the_schedule_sheet_is_the_hardware_list() {
+    use ketchup_manufacturing::project_drawings::SheetKind;
+    let mut app = KetchupApp::new();
+    let program = ketchup_model::document::RuleProgramSource {
+        variants: Default::default(),
+        file_name: "walled.star".into(),
+        source: WALLED.into(),
+        overrides: BTreeMap::new(),
+    };
+    app.apply_program_source(program.clone(), true).unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let set = app.project_drawings().unwrap();
+
+    let mark = |kind: &str| {
+        app.catalog.format(
+            &format!("drawings-mark-{kind}"),
+            &BTreeMap::from([("number", "1".to_owned())]),
+        )
+    };
+    let (door, window) = (mark("door"), mark("window"));
+    assert_eq!(
+        set.sheets[0].openings,
+        [door.clone(), window.clone(), window.clone()]
+    );
+    for page in [&set.sheets[0].page, &set.sheets[0].lines] {
+        let count = |wanted: &str| page.texts().filter(|text| *text == wanted).count();
+        assert_eq!((count(&door), count(&window)), (1, 2));
+    }
+
+    let schedule = set.sheets.last().unwrap();
+    assert_eq!(schedule.kind, SheetKind::Openings);
+    assert_eq!(schedule.number, set.sheets.len());
+    let total = format!("{0} / {0}", set.sheets.len());
+    let texts = schedule.page.texts().collect::<Vec<_>>();
+    assert!(texts.contains(&total.as_str()), "{texts:?}");
+    let evaluated = app.program_evaluations.get_blocking(&program).unwrap();
+    let hardware = ketchup_program::bom(&evaluated.model).hardware;
+    assert_eq!(hardware.len(), 2, "{hardware:?}");
+    for row in &hardware {
+        let at = texts
+            .iter()
+            .position(|text| *text == row.item)
+            .unwrap_or_else(|| panic!("{} not in the schedule: {texts:?}", row.item));
+        assert_eq!(texts[at + 1], row.count.to_string(), "{}", row.item);
+    }
+    assert_eq!(set.dxf().len(), set.sheets.len());
+}
+
 /// An M5 × 10 bolt 7.3 mm into a plate tapped M5 10 mm deep, turned 37°.
 const SCREWED: &str = "p = box('plate', (20, 20, 12))\n\
     hole(p, 'z+', at = (10, 10), depth = 12, through = True, id = 'a', thread = ('M5', 10))\n\

@@ -1,5 +1,6 @@
 //! Project drawings of what is visible as a numbered set of sheets: a floor
-//! plan of each storey, the sections and the elevations, each sheet an ISO A
+//! plan of each storey marking the program's windows and doors, the sections,
+//! the elevations and the schedule of the windows and doors, each sheet an ISO A
 //! format with a frame and a title block, drawn from the exact solids. The set
 //! is written as one vector PDF, or each sheet as a DXF or a DWG of its
 //! visible lines. Hidden layers are left out, so turning off the concept
@@ -11,8 +12,8 @@ use crate::app::drawing_sheet_export::SheetFileFormat;
 use crate::*;
 use ketchup_application::threads::{CosmeticThreadBodyError, ThreadCylinder, cosmetic_thread_body};
 use ketchup_manufacturing::project_drawings::{
-    DrawingSet, DrawingSetOptions, DrawingSolid, DrawingThread, PlanSheet, ProjectDrawingError,
-    ProjectView, SCALES, SheetTitles, Storey, drawing_set, storeys,
+    DrawingOpening, DrawingSet, DrawingSetOptions, DrawingSolid, DrawingThread, OpeningSchedule,
+    PlanSheet, ProjectDrawingError, ProjectView, SCALES, SheetTitles, Storey, drawing_set, storeys,
 };
 use ketchup_manufacturing::sheet_pdf::PdfInfo;
 use ketchup_manufacturing::title_block::{
@@ -690,6 +691,71 @@ impl KetchupApp {
             .collect()
     }
 
+    /// The program's windows and doors as the drawing set marks and lists
+    /// them: one mark per kind and designation, numbered in the order the
+    /// designations first come ("W1", "W2", "D1"), so each schedule row is a
+    /// row of the hardware list; their pieces named as the solids they are
+    /// drawn as.
+    fn drawing_openings(
+        &self,
+        snapshot: &Snapshot,
+    ) -> Result<OpeningSchedule, ProjectDrawingsError> {
+        let evaluated = match self
+            .document
+            .current_rule_program()
+            .map(|program| self.program_evaluations.try_get(program))
+        {
+            None => None,
+            Some(crate::program_evaluation::Lookup::Ready(evaluation)) => evaluation.ok(),
+            Some(crate::program_evaluation::Lookup::Pending) => {
+                return Err(ProjectDrawingsError::ProgramPlanning);
+            }
+        };
+        let mut schedule = OpeningSchedule {
+            openings: Vec::new(),
+            title: self.catalog.text("drawings-sheet-openings"),
+            columns: ["mark", "designation", "count"]
+                .map(|column| self.catalog.text(&format!("drawings-openings-{column}"))),
+        };
+        let Some(evaluated) = evaluated else {
+            return Ok(schedule);
+        };
+        let solid_names = snapshot
+            .scene_query()
+            .into_iter()
+            .filter_map(|occurrence| {
+                ketchup_application::rule_program_part_name(snapshot, &occurrence.instance_path)
+                    .map(|name| (name, occurrence.occurrence_name))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut types: Vec<(String, String)> = Vec::new();
+        for opening in ketchup_program::bom::openings(&evaluated.model) {
+            let key = (opening.kind.clone(), opening.designation.clone());
+            if !types.contains(&key) {
+                types.push(key.clone());
+            }
+            let number = types
+                .iter()
+                .take_while(|known| **known != key)
+                .filter(|(kind, _)| *kind == opening.kind)
+                .count()
+                + 1;
+            schedule.openings.push(DrawingOpening {
+                mark: self.catalog.format(
+                    &format!("drawings-mark-{}", opening.kind),
+                    &BTreeMap::from([("number", number.to_string())]),
+                ),
+                designation: opening.designation,
+                parts: opening
+                    .parts
+                    .iter()
+                    .filter_map(|part| solid_names.get(part).cloned())
+                    .collect(),
+            });
+        }
+        Ok(schedule)
+    }
+
     /// The job of the set `request` asks for: all sheets or the plans alone,
     /// at the scale it fixes or the one the set picks.
     pub(crate) fn project_drawings_job_for(
@@ -700,6 +766,7 @@ impl KetchupApp {
             .map_err(ProjectDrawingsError::SettingsUnreadable)?;
         let snapshot = self.document.current();
         let solids = self.visible_drawing_solids(&snapshot)?;
+        let openings = self.drawing_openings(&snapshot)?;
         let annotations = snapshot
             .annotations()
             .iter()
@@ -768,6 +835,7 @@ impl KetchupApp {
                 plan_only: request.plan_only,
                 scale: request.scale,
                 annotations,
+                openings,
             },
             info,
         })

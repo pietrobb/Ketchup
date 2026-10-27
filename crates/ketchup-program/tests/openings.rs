@@ -299,6 +299,46 @@ window(\"stair\", (0, 200, 0), (1, 0, 0), (0, 0, 1), 200, 100, 1200, 400, 800, c
     assert_eq!(made, ["wall"]);
 }
 
+/// The drawing set marks and lists the openings (R9-C step 14): one per
+/// window or door with its kind and pieces, as many per designation as the
+/// hardware list counts.
+#[test]
+fn the_openings_are_the_windows_and_doors_the_hardware_list_counts() {
+    let source = format!(
+        "{WALL}
+window(\"win 2\", (0, 200, 2600), (1, 0, 0), (0, 0, 1), 200, 2200, 900, 1200, 1250)"
+    );
+    let (model, issues) = evaluate(&source);
+    assert_eq!(errors(&issues), Vec::<String>::new());
+    let openings = ketchup_program::bom::openings(&model);
+    let summary: Vec<_> = openings
+        .iter()
+        .map(|opening| {
+            (
+                opening.kind.as_str(),
+                opening.item.as_str(),
+                opening.designation.as_str(),
+                opening.parts.len(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("window", "win", "window 1200 x 1250", 5),
+            ("door", "entry", "door 900 x 2100", 5),
+            ("window", "win 2", "window 1200 x 1250", 5),
+        ]
+    );
+    for row in ketchup_program::bom(&model).hardware {
+        let counted = openings
+            .iter()
+            .filter(|opening| opening.designation == row.item)
+            .count();
+        assert_eq!(counted, row.count, "{}", row.item);
+    }
+}
+
 /// PG-21 (review 2026-10-24): the mirrored copies of a window's five pieces kept
 /// its `bought_item`, so two windows were ordered as one.
 #[test]
