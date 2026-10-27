@@ -26,7 +26,7 @@ use ketchup_assistant::sidecar::{
 };
 use ketchup_geometry::linalg::cross;
 use ketchup_geometry::sketch::{
-    PadOperation, PadProfile, PadSpec, SketchConstraintId, SketchEntity, WorkplaneSupport,
+    CutStart, PadOperation, PadProfile, PadSpec, SketchConstraintId, SketchEntity, WorkplaneSupport,
 };
 use ketchup_interaction::Vec3;
 use ketchup_model::assembly_joint::{
@@ -38,10 +38,10 @@ use ketchup_model::cam::{
 };
 use ketchup_model::document::{
     CanonicalCommand, CanonicalError, ClassificationCategoryId, ClassificationDimensionId,
-    CloneDefinitionPlan, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
-    FeatureKind, FeatureParameterTarget, InstancePath, InstancePathStep, LocalGroupId,
-    LocalOccurrenceId, OccurrenceId, ParameterPath, ParameterValueType, ProfileSegment, Snapshot,
-    SpatialPathSegment, TagId, Transform,
+    CloneDefinitionPlan, CommandBatch, DefinitionId, Dimension, DocumentStore,
+    FeatureDependencyGraph, FeatureId, FeatureKind, FeatureParameterTarget, InstancePath,
+    InstancePathStep, LocalGroupId, LocalOccurrenceId, OccurrenceId, ParameterPath,
+    ParameterValueType, ProfileSegment, Snapshot, SpatialPathSegment, TagId, Transform,
 };
 use ketchup_model::drawing::{
     BomItem, BomItems, DrawingBomBalloon, DrawingBomBalloonId, DrawingError, DrawingMargins,
@@ -1308,22 +1308,15 @@ fn delete_owned_physical_pin_joint(
             ));
         }
     }
-    for feature_id in &owned {
-        if graph
-            .dependents(*feature_id)
-            .is_some_and(|dependents| dependents.iter().any(|id| !owned.contains(id)))
-        {
-            return Err(assistant_planning_rejection(
-                "planning.physical_pin_joint_has_foreign_dependents",
-                operation,
-                &format!("feature:{}", feature_id.0),
-                "A manual or separately owned feature depends on this joint's hole chain.",
-                "Remove or rebase the foreign dependent before changing this joint.",
-            ));
-        }
-    }
+    let rebased = rebase_cuts_onto_kept_work(snapshot, &graph, &owned, operation)?;
 
     staged.push(CanonicalCommand::DeletePinJoint { id });
+    for (dependent, target) in rebased {
+        staged.push(CanonicalCommand::SetCutTarget {
+            id: dependent,
+            target,
+        });
+    }
     for feature_id in graph
         .topological_order()
         .iter()
@@ -1333,6 +1326,145 @@ fn delete_owned_physical_pin_joint(
         staged.push(CanonicalCommand::DeleteFeature { id: *feature_id });
     }
     staged.refresh(operation, document_target)
+}
+
+/// Deletes the `targets`; `policy` says whether what refers to them goes too or refuses it.
+fn plan_delete_occurrences(
+    targets: Vec<OccurrenceId>,
+    policy: AssistantCadDeletePolicy,
+    staged: &mut StagedPlanningContext,
+    operation: &str,
+    document_target: &str,
+) -> AssistantPlanningResult<()> {
+    let target_set = targets.iter().copied().collect::<BTreeSet<_>>();
+    let referenced_collections = staged
+        .staged_snapshot()
+        .collections()
+        .filter(|collection| {
+            collection
+                .occurrence_ids()
+                .any(|id| target_set.contains(&id))
+        })
+        .map(|collection| {
+            (
+                collection.id(),
+                collection
+                    .occurrence_ids()
+                    .filter(|id| !target_set.contains(id))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let incident_mates = staged
+        .staged_snapshot()
+        .assembly_mates()
+        .filter(|mate| {
+            target_set.contains(&mate.endpoint_a().occurrence_id())
+                || target_set.contains(&mate.endpoint_b().occurrence_id())
+        })
+        .map(|mate| mate.id())
+        .collect::<Vec<_>>();
+    // A part drilled for a pin joint takes the joint along, and with
+    // it the holes in the part it was joined to.
+    let incident_pin_joints = staged
+        .staged_snapshot()
+        .pin_joints()
+        .filter(|joint| {
+            joint.physical_hole_pairs.is_some()
+                && [&joint.first, &joint.second]
+                    .into_iter()
+                    .any(|face| target_set.contains(&face.instance_path.root_occurrence()))
+        })
+        .map(|joint| joint.id)
+        .collect::<Vec<_>>();
+    if policy == AssistantCadDeletePolicy::RejectIfReferenced
+        && (!referenced_collections.is_empty()
+            || !incident_mates.is_empty()
+            || !incident_pin_joints.is_empty())
+    {
+        let id = targets[0];
+        return Err(assistant_planning_rejection(
+            "planning.cad_delete_referenced",
+            operation,
+            &format!("occurrence:{}", id.0),
+            "The occurrence is referenced by a collection, assembly mate or pin joint.",
+            "Use remove_references only when removing those dependencies is intended.",
+        ));
+    }
+    if policy == AssistantCadDeletePolicy::RemoveReferences {
+        for joint_id in incident_pin_joints {
+            delete_owned_physical_pin_joint(joint_id, staged, operation, document_target)?;
+        }
+        for (collection_id, members) in referenced_collections {
+            staged.push(CanonicalCommand::SetCollectionOccurrences {
+                id: collection_id,
+                occurrence_ids: members,
+            });
+        }
+        for mate_id in incident_mates {
+            staged.push(CanonicalCommand::DeleteAssemblyMate { id: mate_id });
+        }
+    }
+    for id in targets {
+        staged.push(CanonicalCommand::DeleteOccurrence { id });
+    }
+    Ok(())
+}
+
+/// The cuts made after the `owned` hole chain that cut into one of its pockets
+/// (the holes of joints made later on the same part), each with what it cuts
+/// into once the chain goes: what that pocket cut into. So joints come off in
+/// any order. Anything else built on the chain refuses the removal.
+fn rebase_cuts_onto_kept_work(
+    snapshot: &Snapshot,
+    graph: &FeatureDependencyGraph,
+    owned: &BTreeSet<FeatureId>,
+    operation: &str,
+) -> AssistantPlanningResult<Vec<(FeatureId, FeatureId)>> {
+    let cut_target = |id: FeatureId| {
+        snapshot
+            .feature(id)
+            .and_then(|feature| cut_pad(feature.kind()))
+            .and_then(|spec| match &spec.operation {
+                PadOperation::Cut { target, start } if !matches!(start, CutStart::Support(_)) => {
+                    Some(*target)
+                }
+                _ => None,
+            })
+    };
+    let mut rebased = Vec::new();
+    for feature_id in owned {
+        for dependent in graph
+            .dependents(*feature_id)
+            .into_iter()
+            .flatten()
+            .filter(|id| !owned.contains(id))
+        {
+            let only_through_its_target = cut_target(*dependent) == Some(*feature_id)
+                && graph.dependencies(*dependent).is_some_and(|dependencies| {
+                    dependencies
+                        .iter()
+                        .all(|id| id == feature_id || !owned.contains(id))
+                });
+            let mut kept = Some(*feature_id);
+            while let Some(candidate) = kept.filter(|candidate| owned.contains(candidate)) {
+                kept = cut_target(candidate);
+            }
+            match kept.filter(|_| only_through_its_target) {
+                Some(kept) => rebased.push((*dependent, kept)),
+                None => {
+                    return Err(assistant_planning_rejection(
+                        "planning.physical_pin_joint_has_foreign_dependents",
+                        operation,
+                        &format!("feature:{}", feature_id.0),
+                        "A manual or separately owned feature depends on this joint's hole chain.",
+                        "Remove or rebase the foreign dependent before changing this joint.",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(rebased)
 }
 
 fn resolve_assistant_instance_path(
@@ -3397,62 +3529,13 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
             }
             AssistantCadEditOperation::Delete {
                 dependency_policy, ..
-            } => {
-                let target_set = targets.iter().copied().collect::<BTreeSet<_>>();
-                let referenced_collections = staged_planning
-                    .staged_snapshot()
-                    .collections()
-                    .filter(|collection| {
-                        collection
-                            .occurrence_ids()
-                            .any(|id| target_set.contains(&id))
-                    })
-                    .map(|collection| {
-                        (
-                            collection.id(),
-                            collection
-                                .occurrence_ids()
-                                .filter(|id| !target_set.contains(id))
-                                .collect::<Vec<_>>(),
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                let incident_mates = staged_planning
-                    .staged_snapshot()
-                    .assembly_mates()
-                    .filter(|mate| {
-                        target_set.contains(&mate.endpoint_a().occurrence_id())
-                            || target_set.contains(&mate.endpoint_b().occurrence_id())
-                    })
-                    .map(|mate| mate.id())
-                    .collect::<Vec<_>>();
-                if *dependency_policy == AssistantCadDeletePolicy::RejectIfReferenced
-                    && (!referenced_collections.is_empty() || !incident_mates.is_empty())
-                {
-                    let id = targets[0];
-                    return Err(assistant_planning_rejection(
-                        "planning.cad_delete_referenced",
-                        operation_name,
-                        &format!("occurrence:{}", id.0),
-                        "The occurrence is referenced by a collection or assembly mate.",
-                        "Use remove_references only when removing those dependencies is intended.",
-                    ));
-                }
-                if *dependency_policy == AssistantCadDeletePolicy::RemoveReferences {
-                    for (collection_id, members) in referenced_collections {
-                        staged_planning.push(CanonicalCommand::SetCollectionOccurrences {
-                            id: collection_id,
-                            occurrence_ids: members,
-                        });
-                    }
-                    for mate_id in incident_mates {
-                        staged_planning.push(CanonicalCommand::DeleteAssemblyMate { id: mate_id });
-                    }
-                }
-                for id in targets {
-                    staged_planning.push(CanonicalCommand::DeleteOccurrence { id });
-                }
-            }
+            } => plan_delete_occurrences(
+                targets,
+                *dependency_policy,
+                &mut staged_planning,
+                operation_name,
+                &document_target,
+            )?,
             AssistantCadEditOperation::Transform {
                 translation_mm,
                 rotation,

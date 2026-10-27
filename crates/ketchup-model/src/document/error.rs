@@ -68,6 +68,7 @@ pub enum CanonicalError {
     InvalidShaftThread(FeatureId),
     DraftAngleOutOfRange,
     FeatureIsNotProfile(FeatureId),
+    FeatureIsNotCut(FeatureId),
     FeatureDependencyCycle(FeatureId),
     InvalidFeatureSuppression(DefinitionId, BodyId),
     FeatureSuppressionUnchanged(DefinitionId, BodyId),
@@ -271,6 +272,7 @@ impl CanonicalError {
             Self::InvalidShaftThread(..) => "canonical.invalid_shaft_thread",
             Self::DraftAngleOutOfRange => "canonical.draft_angle_out_of_range",
             Self::FeatureIsNotProfile(..) => "canonical.feature_is_not_profile",
+            Self::FeatureIsNotCut(..) => "canonical.feature_is_not_cut",
             Self::FeatureDependencyCycle(..) => "canonical.feature_dependency_cycle",
             Self::InvalidFeatureSuppression(..) => "canonical.invalid_feature_suppression",
             Self::FeatureSuppressionUnchanged(..) => "canonical.feature_suppression_unchanged",
@@ -587,6 +589,9 @@ impl fmt::Display for CanonicalError {
             ),
             Self::FeatureIsNotProfile(id) => {
                 write!(formatter, "feature {} is not a profile", id.0)
+            }
+            Self::FeatureIsNotCut(id) => {
+                write!(formatter, "feature {} is not a cut into another feature", id.0)
             }
             Self::FeatureDependencyCycle(id) => {
                 write!(formatter, "feature dependency cycle at {}", id.0)

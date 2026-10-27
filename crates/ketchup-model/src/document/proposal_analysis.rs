@@ -330,6 +330,9 @@ pub(super) fn authoritative_writes(
             CanonicalCommand::SetFeatureParameter { target, .. } => {
                 writes.insert(AuthoritativeDependency::Feature(target.feature_id));
             }
+            CanonicalCommand::SetCutTarget { id, .. } => {
+                writes.insert(AuthoritativeDependency::Feature(*id));
+            }
             CanonicalCommand::SetHoleThread { .. }
             | CanonicalCommand::SetModeledThreads { .. }
             | CanonicalCommand::SetShaftThread { .. } => {
@@ -796,6 +799,30 @@ fn add_import_dependencies(
     }
 }
 
+/// What suppressing `suppressed` (in place of what is suppressed now) in body
+/// `body_id` of `definition_id` reads.
+fn add_suppression_dependencies(
+    snapshot: &Snapshot,
+    definition_id: DefinitionId,
+    body_id: BodyId,
+    suppressed: &[FeatureId],
+    dependencies: &mut BTreeSet<AuthoritativeDependency>,
+) {
+    dependencies.insert(AuthoritativeDependency::Definition(definition_id));
+    dependencies.insert(AuthoritativeDependency::BodyFeatureSuppression(
+        definition_id,
+        body_id,
+    ));
+    for feature_id in suppressed {
+        add_feature_dependency_closure(snapshot, *feature_id, dependencies);
+    }
+    if let Some(current) = snapshot.suppressed_feature_ids(definition_id, body_id) {
+        for feature_id in current {
+            add_feature_dependency_closure(snapshot, *feature_id, dependencies);
+        }
+    }
+}
+
 pub(super) fn authoritative_dependencies(
     snapshot: &Snapshot,
     batch: &CommandBatch,
@@ -862,21 +889,13 @@ pub(super) fn authoritative_dependencies(
                 definition_id,
                 body_id,
                 suppressed_feature_ids,
-            } => {
-                dependencies.insert(AuthoritativeDependency::Definition(*definition_id));
-                dependencies.insert(AuthoritativeDependency::BodyFeatureSuppression(
-                    *definition_id,
-                    *body_id,
-                ));
-                for feature_id in suppressed_feature_ids {
-                    add_feature_dependency_closure(snapshot, *feature_id, &mut dependencies);
-                }
-                if let Some(current) = snapshot.suppressed_feature_ids(*definition_id, *body_id) {
-                    for feature_id in current {
-                        add_feature_dependency_closure(snapshot, *feature_id, &mut dependencies);
-                    }
-                }
-            }
+            } => add_suppression_dependencies(
+                snapshot,
+                *definition_id,
+                *body_id,
+                suppressed_feature_ids,
+                &mut dependencies,
+            ),
             CanonicalCommand::CreateFeature {
                 id,
                 definition_id,
@@ -897,6 +916,10 @@ pub(super) fn authoritative_dependencies(
                 id,
                 source_feature_id,
                 ..
+            }
+            | CanonicalCommand::SetCutTarget {
+                id,
+                target: source_feature_id,
             } => {
                 add_feature_dependency_closure(snapshot, *id, &mut dependencies);
                 add_feature_dependency_closure(snapshot, *source_feature_id, &mut dependencies);

@@ -308,6 +308,160 @@ fn one_physical_pin_joint_operation_creates_both_hole_rows_atomically() {
 }
 
 #[test]
+fn pin_joints_come_off_in_any_order_and_a_deleted_part_takes_its_joints_along() {
+    let mut document = DocumentStore::new();
+    let panel = |name: &str, translation_mm| {
+        cuboid_part(
+            name.into(),
+            [100.0, 50.0, 18.0],
+            Vec::new(),
+            Vec::new(),
+            translation_mm,
+            None,
+        )
+    };
+    let panels = program(vec![
+        panel("Lower panel", [0.0, 0.0, 0.0]),
+        panel("Upper panel", [0.0, 0.0, 18.0]),
+    ]);
+    let panels = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &panels,
+    )
+    .unwrap();
+    document.apply_batch(&panels).unwrap();
+    let bare = document.current();
+    let face = |occurrence_id, face_z, inward_unit_local| AssistantPinJointFace {
+        instance_path: AssistantInstancePath {
+            root_occurrence_id: occurrence_id,
+            steps: Vec::new(),
+        }
+        .into(),
+        face_origin_local_mm: [0.0, 0.0, face_z],
+        inward_unit_local,
+        bounds_min_local_mm: [0.0, 0.0, 0.0],
+        bounds_max_local_mm: [100.0, 50.0, 18.0],
+    };
+    // Three rows made one after another, each drilled on top of the last.
+    for (index, y) in [12.0, 25.0, 38.0].into_iter().enumerate() {
+        let row = program(vec![AssistantCadEditOperation::CreatePinJoint {
+            joint_id: None,
+            name: format!("Row {index}"),
+            first: face(1, 18.0, [0.0, 0.0, -1.0]),
+            second: face(2, 0.0, [0.0, 0.0, 1.0]),
+            first_center_local_mm: [20.0, y, 18.0],
+            row_unit_first_local: [1.0, 0.0, 0.0],
+            count: 2,
+            spacing_mm: 60.0,
+            pin: AssistantPin {
+                diameter_mm: 8.0,
+                length_mm: 30.0,
+                hole_clearance_mm: 1.0,
+            },
+            holes: AssistantPinHoles::Drill {
+                first_insertion_mm: None,
+            },
+        }]);
+        let row = plan(
+            &document,
+            &BTreeSet::new(),
+            &ExactResultRegistry::default(),
+            &row,
+        )
+        .unwrap();
+        document.apply_batch(&row).unwrap();
+    }
+    let joined = document.current();
+    let undo_before = document.visible_undo_steps();
+    let exact = |snapshot: &Snapshot, id| {
+        let joint = snapshot
+            .pin_joint(ketchup_model::pin_joint::PinJointId(id))
+            .unwrap();
+        ketchup_model::pin_joint::project_pin_joint_contract(snapshot, joint)
+            .unwrap()
+            .pairs
+            .iter()
+            .all(|pair| {
+                pair.physical_probe_coincidence
+                    .as_ref()
+                    .is_some_and(|probe| probe.maximum_endpoint_error_mm == 0.0)
+            })
+    };
+    assert!((1..=3).all(|id| exact(&joined, id)));
+
+    // The first two rows go in the order they were made; the last one stays whole.
+    let delete = program(vec![
+        AssistantCadEditOperation::DeletePhysicalPinJoint { joint_id: 1 },
+        AssistantCadEditOperation::DeletePhysicalPinJoint { joint_id: 2 },
+    ]);
+    let delete = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &delete,
+    )
+    .unwrap_or_else(|error| panic!("{error:?}"));
+    document.apply_batch(&delete).unwrap();
+    assert_eq!(document.visible_undo_steps(), undo_before + 1);
+    let one_left = document.current();
+    assert!(
+        one_left
+            .pin_joint(ketchup_model::pin_joint::PinJointId(1))
+            .is_none()
+    );
+    assert!(
+        one_left
+            .pin_joint(ketchup_model::pin_joint::PinJointId(2))
+            .is_none()
+    );
+    assert!(exact(&one_left, 3));
+    assert_eq!(
+        one_left.features().count(),
+        bare.features().count() + 2 * 2 * 3
+    );
+    document.undo().unwrap();
+    assert_eq!(
+        document.current().canonical_digest(),
+        joined.canonical_digest()
+    );
+
+    // Deleting the upper panel takes every row along, holes in the lower panel too.
+    let delete_part = program(vec![AssistantCadEditOperation::Delete {
+        selector: AssistantCadEntitySelector::Occurrences {
+            occurrence_ids: vec![2],
+        },
+        dependency_policy: AssistantCadDeletePolicy::RemoveReferences,
+    }]);
+    let delete_part = plan(
+        &document,
+        &BTreeSet::new(),
+        &ExactResultRegistry::default(),
+        &delete_part,
+    )
+    .unwrap_or_else(|error| panic!("{error:?}"));
+    document.apply_batch(&delete_part).unwrap();
+    let alone = document.current();
+    assert_eq!(alone.pin_joints().count(), 0);
+    let lower = alone.occurrence(OccurrenceId(1)).unwrap().definition_id();
+    assert_eq!(
+        alone
+            .features()
+            .filter(|feature| feature.definition_id() == lower)
+            .count(),
+        bare.features()
+            .filter(|feature| feature.definition_id() == lower)
+            .count()
+    );
+    document.undo().unwrap();
+    assert_eq!(
+        document.current().canonical_digest(),
+        joined.canonical_digest()
+    );
+}
+
+#[test]
 fn physical_pin_joint_geometry_regressions_fail_closed_without_mutation() {
     let seed = |lower_holes: Vec<AssistantPartHole>, upper_z: f64| {
         let mut document = DocumentStore::new();

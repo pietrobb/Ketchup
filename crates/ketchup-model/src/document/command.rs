@@ -210,6 +210,12 @@ pub enum CanonicalCommand {
     DeleteFeature {
         id: FeatureId,
     },
+    /// Cuts the profile of cut pad `id` into `target` instead: what a cut
+    /// that was cut after a deleted cut cuts into.
+    SetCutTarget {
+        id: FeatureId,
+        target: FeatureId,
+    },
     SetFeatureDimension {
         id: FeatureId,
         dimension: Dimension,

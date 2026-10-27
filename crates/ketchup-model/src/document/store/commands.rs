@@ -97,6 +97,7 @@ impl BatchEdit {
             }
             CanonicalCommand::CreateFeature { .. }
             | CanonicalCommand::DeleteFeature { .. }
+            | CanonicalCommand::SetCutTarget { .. }
             | CanonicalCommand::SetFeatureDimension { .. }
             | CanonicalCommand::SetFeatureParameter { .. }
             | CanonicalCommand::SetHoleThread { .. }

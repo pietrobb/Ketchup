@@ -88,6 +88,47 @@ pub(super) fn apply(
             );
             forget_feature_annotations(&mut edit.product, *id);
         }
+        CanonicalCommand::SetCutTarget { id, target } => {
+            let feature = edit
+                .product
+                .features
+                .get(id)
+                .ok_or(CanonicalError::FeatureNotFound(*id))?;
+            let FeatureKind::Pad(
+                spec @ PadSpec {
+                    operation: PadOperation::Cut { start, .. },
+                    ..
+                },
+            ) = &feature.kind
+            else {
+                return Err(CanonicalError::FeatureIsNotCut(*id));
+            };
+            let target_definition = edit
+                .product
+                .features
+                .get(target)
+                .ok_or(CanonicalError::FeatureNotFound(*target))?
+                .definition_id;
+            if target == id || target_definition != feature.definition_id {
+                return Err(CanonicalError::FeatureIsNotCut(*id));
+            }
+            let kind = FeatureKind::Pad(PadSpec {
+                operation: PadOperation::Cut {
+                    target: *target,
+                    start: start.clone(),
+                },
+                ..spec.clone()
+            });
+            edit.product.features.insert(
+                *id,
+                Arc::new(Feature {
+                    id: *id,
+                    definition_id: feature.definition_id,
+                    name: feature.name.clone(),
+                    kind,
+                }),
+            );
+        }
         CanonicalCommand::SetFeatureDimension { id, dimension } => {
             let feature = edit
                 .product
