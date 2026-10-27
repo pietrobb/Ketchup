@@ -714,6 +714,7 @@ rust::String export_step_native(
       return rust::String("Exact body is unavailable or invalid");
     }
     const std::string native_path(path.data(), path.size());
+    const std::lock_guard<std::mutex> lock(exchange_translation_mutex());
     STEPControl_Writer writer;
     if (writer.Transfer(body.impl().shape, STEPControl_AsIs) != IFSelect_RetDone) {
       return rust::String("STEP writer could not transfer the exact body");
@@ -738,7 +739,7 @@ rust::String export_iges_native(
       return rust::String("Exact body is unavailable or invalid");
     }
     const std::string native_path(path.data(), path.size());
-    const std::lock_guard<std::mutex> lock(iges_translation_mutex());
+    const std::lock_guard<std::mutex> lock(exchange_translation_mutex());
     IGESControl_Writer writer("MM", 1);
     std::size_t solid_count = 0;
     for (TopExp_Explorer explorer(body.impl().shape, TopAbs_SOLID);

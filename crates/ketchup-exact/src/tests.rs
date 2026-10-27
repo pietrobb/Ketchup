@@ -1348,6 +1348,73 @@ fn one_step_xde_document_answers_like_a_parse_per_call() {
     assert!(missing.part(0).is_err());
 }
 
+// OCCT's STEP and IGES translators share one process-wide exchange state:
+// a STEP read beside an IGES write crashed the process (ACCESS_VIOLATION in
+// TKXSBase) in about one run of three.
+#[test]
+fn step_and_iges_translations_side_by_side_all_complete() {
+    let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let box_part = repository
+        .join("corpora/r0/step/self-authored-box.step")
+        .to_string_lossy()
+        .into_owned();
+    let start = std::sync::Arc::new(std::sync::Barrier::new(6));
+    let workers = (0..6)
+        .map(|worker| {
+            let box_part = box_part.clone();
+            let start = start.clone();
+            std::thread::spawn(move || {
+                let backend = ExactBackend::new();
+                start.wait();
+                for round in 0..4 {
+                    if worker % 2 == 0 {
+                        let output = std::env::temp_dir().join(format!(
+                            "ketchup-exchange-side-by-side-{}-{worker}-{round}.iges",
+                            std::process::id()
+                        ));
+                        let parts = vec![StepXdeExportPart {
+                            path: box_part.clone(),
+                            name: "Box".to_owned(),
+                        }];
+                        let nodes = vec![StepXdeExportNode {
+                            parent_id: None,
+                            part_index: Some(0),
+                            name: "Box".to_owned(),
+                            color: None,
+                            transform: [
+                                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                                0.0, 0.0, 1.0,
+                            ],
+                        }];
+                        backend
+                            .export_iges_xde_assembly(&parts, &nodes, output.to_str().unwrap())
+                            .unwrap();
+                        let document = backend.open_iges_xde(output.to_str().unwrap()).unwrap();
+                        assert_eq!(document.manifest().unwrap().parts.len(), 1);
+                        let _ = std::fs::remove_file(&output);
+                    } else {
+                        for missing in [
+                            backend.open_iges_xde("missing.igs").unwrap(),
+                            backend.open_step_xde("missing.step").unwrap(),
+                        ] {
+                            assert!(missing.manifest().is_err());
+                        }
+                        let document = backend.open_step_xde(&box_part).unwrap();
+                        assert_eq!(document.manifest().unwrap().parts.len(), 1);
+                    }
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+}
+
 // Review 2026-10-19 P3 (and 2026-10-18): reading an IGES source failed with
 // "STEP XDE reader could not read the source".
 #[test]
