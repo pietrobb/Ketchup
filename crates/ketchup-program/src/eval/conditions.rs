@@ -259,6 +259,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] e0_mean: Value<'v>,
         #[starlark(require = named)] e0_05: Value<'v>,
         #[starlark(require = named)] source: &str,
+        #[starlark(require = named)] rho_k: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let positive = |value: Value<'v>, what: &str| {
@@ -281,6 +282,9 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
             fc90_k: positive(fc90_k, "fc90_k")?,
             e0_mean: positive(e0_mean, "e0_mean")?,
             e0_05: positive(e0_05, "e0_05")?,
+            rho_k: given(rho_k)
+                .map(|value| positive(value, "rho_k"))
+                .transpose()?,
             source: source.trim().to_owned(),
         };
         if class.source.is_empty() {

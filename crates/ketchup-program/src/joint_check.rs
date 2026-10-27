@@ -2,8 +2,9 @@
 //! its published rating and the load it passes, compared on the rating's
 //! basis, or as not verified with what is missing (a rating, the load on it).
 //! A joint that holds a member down against lifting is checked for that pull
-//! against the rating's tension_n; one that is not bearing is listed as not
-//! verified.
+//! against the rating's tension_n, bearing or not (an angle bracket); without
+//! tension_n it is listed as not verified. A rating published for a timber
+//! density holds only where every joined part's strength class reaches it.
 
 use crate::loads::{JointLoad, LoadReport, Loads, Tension};
 use crate::member_check::{GAMMA_M_CONNECTION, action, kmod, ultimate};
@@ -50,29 +51,60 @@ pub const NO_TENSION_RATING: &str = "it holds the carried part down, but its rat
 #[must_use]
 pub fn not_bearing(design_n: f64) -> String {
     format!(
-        "it holds a member down against {design_n} N of pull (EQU), but only a bearing joint is checked: declare it bearing=True with connector_rating(tension_n=)"
+        "it holds a member down against {design_n} N of pull (EQU), but it has no rating with tension_n: rate it with connector_rating(tension_n=) or connector()"
+    )
+}
+
+/// Why a rating published for a timber density does not hold for a part.
+#[must_use]
+pub fn density_unknown(part: &str, density: f64) -> String {
+    format!(
+        "the rating holds for timber of characteristic density {density} kg/m³ or more; {part} has no timber strength class with rho_k"
+    )
+}
+
+#[must_use]
+pub fn density_below(part: &str, class: &str, rho_k: f64, density: f64) -> String {
+    format!(
+        "the rating holds for timber of characteristic density {density} kg/m³ or more; {part} is {class}, rho_k {rho_k} kg/m³"
     )
 }
 
 /// Utilization and the combination it comes from, on the rating's basis:
 /// an allowable load against the characteristic sum, a characteristic one
 /// as kmod R_k / gamma_M and a design one directly against the design load.
-/// Downward a kind that pulls up relieves the joint and is left out; a pull
-/// is checked against the rating's tension_n. Also what is missing.
+/// Downward (bearing joints only) a kind that pulls up relieves the joint and
+/// is left out; a pull is checked against the rating's tension_n. Also what
+/// is missing.
 fn utilization(
     model: &ProgramModel,
     joint: &Joint,
     rating: &JointRating,
     load: &JointLoad,
-) -> (Option<(f64, String)>, Option<&'static str>) {
+) -> (Option<(f64, String)>, Vec<String>) {
+    let class_of = |name: &String| {
+        let material = model.part(name)?.material.as_ref()?;
+        model.strength_classes.get(material)
+    };
+    let mut missing = Vec::new();
+    if let Some(density) = rating.density_kg_m3 {
+        for name in &joint.parts {
+            match class_of(name).and_then(|class| Some((class, class.rho_k?))) {
+                None => missing.push(density_unknown(name, density)),
+                Some((class, rho_k)) if rho_k < density => {
+                    missing.push(density_below(name, &class.strength_class, rho_k, density))
+                }
+                Some(_) => {}
+            }
+        }
+    }
     let service_class = if rating.basis == "characteristic" {
-        let class = joint.parts.iter().find_map(|name| {
-            let material = model.part(name)?.material.as_ref()?;
-            model.strength_classes.get(material)
-        });
-        match class {
+        match joint.parts.iter().find_map(class_of) {
             Some(class) => Some(class.service_class),
-            None => return (None, Some(NO_SERVICE_CLASS)),
+            None => {
+                missing.push(NO_SERVICE_CLASS.to_owned());
+                return (None, missing);
+            }
         }
     } else {
         None
@@ -93,18 +125,19 @@ fn utilization(
         .iter()
         .map(|(kind, value)| (kind.clone(), value.max(0.0)))
         .collect();
-    if rating.basis == "allowable" {
-        let total: f64 = down.values().sum();
-        offer(total / rating.load_n, "characteristic sum".to_owned());
-    } else {
-        for (value, duration, label) in ultimate(&down) {
-            offer(value.max(0.0) / capacity(rating.load_n, duration), label);
+    if let Some(load_n) = rating.load_n.filter(|_| joint.bearing) {
+        if rating.basis == "allowable" {
+            let total: f64 = down.values().sum();
+            offer(total / load_n, "characteristic sum".to_owned());
+        } else {
+            for (value, duration, label) in ultimate(&down) {
+                offer(value.max(0.0) / capacity(load_n, duration), label);
+            }
         }
     }
-    let mut missing = None;
     if let Some(tension) = &load.tension {
         match rating.tension_n {
-            None => missing = Some(NO_TENSION_RATING),
+            None => missing.push(NO_TENSION_RATING.to_owned()),
             Some(tension_n) if rating.basis == "allowable" => offer(
                 tension.characteristic_n / tension_n,
                 "pull, characteristic: permanent + variable where it lifts".to_owned(),
@@ -141,7 +174,11 @@ pub fn joint_checks(model: &ProgramModel, loads: &LoadReport) -> Vec<JointCheck>
                 return None;
             }
             let mut missing = Vec::new();
-            if let (false, Some(tension)) = (joint.bearing, &tension) {
+            let pull_rated = joint
+                .rating
+                .as_ref()
+                .is_some_and(|rating| rating.tension_n.is_some());
+            if let (false, false, Some(tension)) = (joint.bearing, pull_rated, &tension) {
                 missing.push(not_bearing(tension.design_n));
             } else if joint.rating.is_none() {
                 missing.push(NO_RATING.to_owned());
@@ -163,7 +200,7 @@ pub fn joint_checks(model: &ProgramModel, loads: &LoadReport) -> Vec<JointCheck>
                     }
                     found => checked = found,
                 }
-                missing.extend(lacking.map(str::to_owned));
+                missing.extend(lacking);
             }
             let utilization = checked.as_ref().map(|(u, _)| (u * 1000.0).round() / 1000.0);
             let status = match utilization {
@@ -199,11 +236,12 @@ mod tests {
     #[test]
     fn a_kind_pulling_up_does_not_relieve_the_allowable_load_downward() {
         let rating = JointRating {
-            load_n: 900.0,
+            load_n: Some(900.0),
             basis: "allowable".to_owned(),
             source: "test".to_owned(),
             note: String::new(),
             tension_n: None,
+            density_kg_m3: None,
         };
         let joint = Joint {
             name: "hanger".to_owned(),
@@ -226,7 +264,7 @@ mod tests {
             tension: None,
         };
         let (found, missing) = utilization(&ProgramModel::default(), &joint, &rating, &load);
-        assert_eq!(missing, None);
+        assert!(missing.is_empty(), "{missing:?}");
         // 1000 / 900, not (1000 - 800) / 900.
         let (u, label) = found.expect("rated and loaded");
         assert!((u - 1000.0 / 900.0).abs() < 1e-9, "{u} {label}");

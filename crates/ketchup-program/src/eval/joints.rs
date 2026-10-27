@@ -67,9 +67,27 @@ fn parse_rating<'v>(
             )
         })
     };
-    let load_n = number(field("load_n")?, "rating load_n")?;
-    if !load_n.is_finite() || load_n <= 0.0 {
-        anyhow::bail!("rating load_n must be a positive number of newtons, got {load_n}");
+    let positive = |name: &str| -> anyhow::Result<Option<f64>> {
+        match value.get_attr(name, heap).ok().flatten() {
+            Some(value) if !value.is_none() => {
+                let n = number(value, &format!("rating {name}"))?;
+                if !n.is_finite() || n <= 0.0 {
+                    let unit = if name.ends_with("_n") {
+                        "newtons"
+                    } else {
+                        "kg/m³"
+                    };
+                    anyhow::bail!("rating {name} must be a positive number of {unit}, got {n}");
+                }
+                Ok(Some(n))
+            }
+            _ => Ok(None),
+        }
+    };
+    let load_n = positive("load_n")?;
+    let tension_n = positive("tension_n")?;
+    if load_n.is_none() && tension_n.is_none() {
+        anyhow::bail!("rating gives neither load_n nor tension_n (newtons)");
     }
     let text_field = |name: &str| -> anyhow::Result<String> {
         Ok(field(name)?
@@ -86,24 +104,13 @@ fn parse_rating<'v>(
     if source.is_empty() {
         anyhow::bail!("rating source must name the published table or document");
     }
-    let tension_n = match value.get_attr("tension_n", heap).ok().flatten() {
-        Some(value) if !value.is_none() => {
-            let tension_n = number(value, "rating tension_n")?;
-            if !tension_n.is_finite() || tension_n <= 0.0 {
-                anyhow::bail!(
-                    "rating tension_n must be a positive number of newtons, got {tension_n}"
-                );
-            }
-            Some(tension_n)
-        }
-        _ => None,
-    };
     Ok(Some(JointRating {
         load_n,
         basis,
         source,
         note: text_field("note").unwrap_or_default(),
         tension_n,
+        density_kg_m3: positive("density_kg_m3")?,
     }))
 }
 
@@ -334,10 +341,14 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
     ) -> anyhow::Result<NoneType> {
         let heap = eval.heap();
         let rating = parse_rating(rating, heap)?;
-        if rating.is_some() && !bearing {
-            anyhow::bail!(
-                "joint rating applies to a bearing joint; add bearing=True or leave rating out"
-            );
+        match &rating {
+            Some(rating) if rating.load_n.is_some() && !bearing => anyhow::bail!(
+                "a rating with load_n applies to a bearing joint; add bearing=True, or rate only tension_n for a connector that holds a part down"
+            ),
+            Some(rating) if rating.load_n.is_none() && bearing => {
+                anyhow::bail!("a bearing joint's rating needs load_n, the load it carries down")
+            }
+            _ => {}
         }
         let (a, b) = (part_name(a, heap)?, part_name(b, heap)?);
         let name = text(name, "name")?.unwrap_or_else(|| format!("{kind}:{a}+{b}"));

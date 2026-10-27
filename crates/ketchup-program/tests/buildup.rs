@@ -499,7 +499,7 @@ fn a_floor_layer_gives_its_hangers_the_makers_rating() {
             .joints
             .iter()
             .filter(|joint| joint.kind == "hanger" && joint.bearing)
-            .map(|joint| joint.rating.as_ref().map(|rating| rating.load_n))
+            .map(|joint| joint.rating.as_ref().and_then(|rating| rating.load_n))
             .collect::<Vec<_>>()
     };
     let unrated = hangers(&eval(&floor(""), &[]));
@@ -514,6 +514,29 @@ fn a_floor_layer_gives_its_hangers_the_makers_rating() {
     ));
     assert_eq!(rated.len(), unrated.len());
     assert!(rated.iter().all(|load| *load == Some(4200.0)), "{rated:?}");
+
+    // Review 2026-10-09 §5.2 step 16: a catalogued hanger is rated from the
+    // catalogue, and the program's ratings= override it for the whole panel.
+    let catalogued = floor("").replace("\"H 1\"", "\"SAE380\"");
+    let from_catalogue = hangers(&eval(&catalogued, &[]));
+    assert_eq!(from_catalogue.len(), unrated.len());
+    assert!(
+        from_catalogue.iter().all(|load| *load == Some(22300.0)),
+        "{from_catalogue:?}"
+    );
+    let overridden = hangers(&eval(
+        &catalogued.replace(
+            "height = 3000,",
+            "height = 3000, ratings = connector_ratings({\"SAE380\": connector_rating(\
+             load_n = 9000, basis = \"design\", source = \"engineer's calculation\")}),",
+        ),
+        &[],
+    ));
+    assert_eq!(overridden.len(), unrated.len());
+    assert!(
+        overridden.iter().all(|load| *load == Some(9000.0)),
+        "{overridden:?}"
+    );
 }
 
 #[test]

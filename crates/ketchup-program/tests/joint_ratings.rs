@@ -1,5 +1,6 @@
 use ketchup_program::joint_check::{
-    NO_LOAD, NO_RATING, NO_SERVICE_CLASS, NO_TENSION_RATING, not_bearing,
+    NO_LOAD, NO_RATING, NO_SERVICE_CLASS, NO_TENSION_RATING, density_below, density_unknown,
+    not_bearing,
 };
 use ketchup_program::{Report, run};
 use std::collections::BTreeMap;
@@ -34,7 +35,10 @@ fn an_arunda_joint_carries_its_published_allowable_load_but_stays_unverified_wit
     assert_eq!(check.kind, "Arunda 50 B");
     let rating = check.rating.as_ref().expect("Arunda is rated");
     // 240 kg, the lowest value of the 50 mm template's range.
-    assert!((rating.load_n - 240.0 * 9.81).abs() < 1e-9, "{rating:?}");
+    assert!(
+        (rating.load_n.unwrap() - 240.0 * 9.81).abs() < 1e-9,
+        "{rating:?}"
+    );
     assert_eq!(rating.basis, "allowable");
     assert!(rating.source.contains("arunda.sk"), "{}", rating.source);
     assert!(rating.note.contains("not an ETA or EC5"), "{}", rating.note);
@@ -116,6 +120,129 @@ fn a_rating_needs_a_bearing_joint_a_known_basis_and_a_source() {
     );
     assert!(rejected(&bearing.replace("ETA-00/0000", " ")).contains("rating source must name"));
     assert!(rejected(&bearing.replace("5000", "0")).contains("positive number of newtons"));
+    // A bearing joint needs the load it may carry down, not only a pull.
+    assert!(
+        rejected(&bearing.replace("load_n = 5000", "tension_n = 5000")).contains("needs load_n")
+    );
+    assert!(
+        rejected(&bearing.replace("load_n = 5000", "density_kg_m3 = 350"))
+            .contains("neither load_n nor tension_n")
+    );
+}
+
+/// `hung_source` with the joist on a catalogued connector instead, the header
+/// of `header` timber and the materials of `classes` (timber_design).
+fn hung_on(connector: &str, header: &str, classes: &str) -> Report {
+    let source = hung_source("load_n = 1, basis = \"design\"");
+    let (frame, _) = source.split_once("joint(joist").expect("the hanger");
+    report(&format!(
+        "{}{connector}\n",
+        frame
+            .replace(
+                "timber_design({\"C24\": \"C24\"})",
+                &format!("timber_design({classes})")
+            )
+            .replace(
+                "(120, 2000, 240), grounded = True",
+                &format!("(120, 2000, 240), material = \"{header}\", grounded = True")
+            )
+    ))
+}
+
+/// Review 2026-10-09 §5.2 step 16: a catalogued ETA joist hanger is checked
+/// like any rating, and only where the timber is as dense as the table's.
+#[test]
+fn a_catalogued_joist_hanger_is_checked_on_its_eta_rating_for_dense_enough_timber() {
+    let sae = "connector(joist, header, \"SAE380\")";
+    let check = only_check(&hung_on(sae, "C24", "{\"C24\": \"C24\"}"));
+    assert_eq!(check.kind, "connector");
+    assert_eq!(check.fastener.as_deref(), Some("SAE380"));
+    let rating = check.rating.as_ref().expect("catalogued");
+    assert_eq!(rating.load_n, Some(22300.0));
+    assert_eq!(rating.basis, "characteristic");
+    assert_eq!(rating.density_kg_m3, Some(350.0));
+    assert!(rating.source.contains("ETA-06/0270"), "{}", rating.source);
+    // 1.5 Q against kmod (medium term, 0.8) R1,k / 1.3.
+    let q = check.load_n.as_ref().expect("a load")["imposed"];
+    let expected = 1.5 * q / (0.8 * 22300.0 / 1.3);
+    assert!(
+        (check.utilization.unwrap() - expected).abs() < 0.001,
+        "{check:?}"
+    );
+    assert_eq!(check.status, "pass", "{check:?}");
+
+    // C16 (rho_k 310) is lighter than the C24 (350) the table holds for.
+    let check = only_check(&hung_on(sae, "C24", "{\"C24\": \"C16\"}"));
+    assert_eq!(check.status, "not_verified");
+    assert_eq!(
+        check.missing,
+        [
+            density_below("joist", "C16", 310.0, 350.0),
+            density_below("header", "C16", 310.0, 350.0)
+        ]
+    );
+    // A header of timber with no strength class: its density is unknown.
+    let check = only_check(&hung_on(sae, "spruce", "{\"C24\": \"C24\"}"));
+    assert_eq!(check.status, "not_verified");
+    assert_eq!(check.missing, [density_unknown("header", 350.0)]);
+    // Glulam GL24h (385) is dense enough.
+    let check = only_check(&hung_on(
+        sae,
+        "BSH",
+        "{\"C24\": \"C24\", \"BSH\": \"GL24h\"}",
+    ));
+    assert_eq!(check.status, "pass", "{check:?}");
+
+    assert!(
+        rejected(&format!("{FRAME}connector(joist, header, \"SAE999\")\n"))
+            .contains("no rating for \"SAE999\"")
+    );
+}
+
+/// Review 2026-10-09 §5.2 step 16: an angle bracket is not bearing; its
+/// published pull is still checked, and a program may override the catalogue.
+#[test]
+fn a_catalogued_pair_of_angle_brackets_holds_a_member_down_and_its_rating_can_be_overridden() {
+    let classes = "timber_design({\"C24\": \"C24\"})\n";
+    let abr = |ratings: &str| {
+        only_check(&anchored(&format!(
+            "{classes}connector(beam, post, \"ABR105 pair CNA4.0x35\"{ratings})"
+        )))
+    };
+    let check = abr("");
+    assert_eq!(check.kind, "connector");
+    assert!(check.load_n.is_none(), "not bearing: {check:?}");
+    let rating = check.rating.as_ref().expect("catalogued");
+    assert_eq!(rating.load_n, None);
+    assert_eq!(rating.tension_n, Some(8840.0));
+    assert!(rating.source.contains("ETA-06/0106"), "{}", rating.source);
+    let design = check.tension.as_ref().expect("a pull").design_n;
+    assert!((design - 794.0).abs() < 0.5, "{design}");
+    // Characteristic: kmod of the permanent load that also lifts, 0.6 in
+    // service class 1, over gamma_M 1.3.
+    assert!(
+        (check.utilization.unwrap() - design / (0.6 * 8840.0 / 1.3)).abs() < 0.001,
+        "{check:?}"
+    );
+    assert_eq!(check.status, "pass", "{check:?}");
+    assert!(check.missing.is_empty(), "{:?}", check.missing);
+
+    // The program's own rating replaces the catalogue's.
+    let check = abr(", ratings = connector_ratings({\"ABR105 pair CNA4.0x35\": \
+         connector_rating(tension_n = 500, basis = \"design\", source = \"site pull test\")})");
+    assert_eq!(check.rating.as_ref().unwrap().source, "site pull test");
+    assert!(
+        (check.utilization.unwrap() - design / 500.0).abs() < 0.001,
+        "{check:?}"
+    );
+    assert_eq!(check.status, "fail");
+    // ...and None takes a rating out.
+    assert!(
+        rejected(&format!(
+            "{FRAME}connector(joist, header, \"SAE380\", ratings = connector_ratings({{\"SAE380\": None}}))\n"
+        ))
+        .contains("no rating for \"SAE380\"")
+    );
 }
 
 /// The joist of `FRAME` on a hanger at the header and a post at its far end,

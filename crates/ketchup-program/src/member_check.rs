@@ -27,6 +27,9 @@ pub struct TimberClass {
     pub fc90_k: f64,
     pub e0_mean: f64,
     pub e0_05: f64,
+    /// Characteristic density, kg/m³, when given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rho_k: Option<f64>,
     pub source: String,
 }
 

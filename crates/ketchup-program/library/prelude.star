@@ -910,17 +910,27 @@ def boss(part, face, profile, height, name = "boss"):
 #     bearing=True: the joint carries a's weight into b (a hanger, a joist hanger,
 #     a dovetail): the load path counts it as a support at the fasteners (or the
 #     contact). Without it a joint only holds a part in place and carries nothing.
-#     rating=connector_rating(load_n=, basis=, source=, note="", tension_n=None) on a bearing
-#     joint: the load the whole connection may carry as its maker publishes it; basis
-#     "allowable" (permissible load), "characteristic" (R_k) or "design" (R_d). tension_n is
-#     the published pull on the same basis when the joint holds the carried part down (an
-#     overhang lifting its back end); without it such a pull is not verified. The report's
-#     joints list shows every bearing joint with its rating, or not_verified with what is
-#     missing (a rating, the load on it), and every other joint that holds a member down,
-#     as not_verified: only a bearing joint with tension_n checks the pull. Ratings are data
-#     with a source, never guessed:
-#     CONNECTOR_RATINGS[fastener] holds the published ones (connector_rating_of(name)
-#     gives None for others, e.g. a hanger without a maker's table).
+#     rating=connector_rating(load_n=, basis=, source=, note="", tension_n=None,
+#     density_kg_m3=None): the load the whole connection may carry as its maker publishes
+#     it; basis "allowable" (permissible load), "characteristic" (R_k) or "design" (R_d).
+#     load_n (downward) needs bearing=True. tension_n is the published pull on the same
+#     basis when the joint holds a part down (an overhang lifting its back end, a rafter
+#     on angle brackets); a joint that is not bearing may be rated with tension_n only.
+#     density_kg_m3: the characteristic timber density the values hold for; a joined part
+#     whose timber_strength has a lower or no rho_k leaves the joint not_verified.
+#     The report's joints list shows every bearing joint and every joint that holds a
+#     member down with its rating and utilization, or not_verified with what is missing
+#     (a rating, the load on it, tension_n for a pull). Ratings are data with a source,
+#     never guessed: CONNECTOR_RATINGS[fastener] holds the published ones, Arunda
+#     dovetails, Simpson SAE250/SAE380/SAE500 joist hangers (bearing) and "ABR105 pair
+#     CNA4.0x35"/"... CNA4.0x50" angle brackets (pull only), all characteristic for C24.
+#     connector_ratings({name: connector_rating(...) or None}) is that catalogue with a
+#     program's own ratings over it (another maker, a different nailing), passed as
+#     ratings= to connector(), connector_rating_of() and buildup().
+#   connector(a, b, fastener, ratings=None, fasteners=None, name=None)
+#     a joint(kind="connector") rated from the catalogue: bearing when the rating gives
+#     load_n (a hangs on b), else it holds a down against lifting. Fails for a fastener
+#     with no rating. connector_rating_of(name, ratings=None) gives the rating or None.
 #   arunda(a, b, template="80 B", name=None) -> None
 #     an Arunda routed dovetail (wood to wood, no hardware): carried a hangs on b, rated
 #     from the maker's load table; checks a's width and height against the template.
@@ -974,9 +984,10 @@ DOWELS = {
     "10x50": (10, 50),
 }
 
-def connector_rating(load_n, basis, source, note = "", tension_n = None):
-    """A published load rating of a bearing connection; see joint(rating=)."""
-    return struct(load_n = load_n, basis = basis, source = source, note = note, tension_n = tension_n)
+def connector_rating(load_n = None, basis = None, source = None, note = "", tension_n = None, density_kg_m3 = None):
+    """A published load rating of a connection; see joint(rating=)."""
+    return struct(load_n = load_n, basis = basis, source = source, note = note, tension_n = tension_n,
+                  density_kg_m3 = density_kg_m3)
 
 _ARUNDA_SOURCE = "Arunda load table (HYBOX Slovakia), https://arunda.sk/assets/docs/zatezova-tabulka.pdf"
 
@@ -1001,17 +1012,86 @@ def _arunda_rating(template):
                 "for timber %d-%d mm wide") % (kg, low, high),
     )
 
-# Published ratings by fastener name. A connector missing here has no rating: its joints stay not_verified.
-CONNECTOR_RATINGS = {
-    "Arunda %s %s" % (size, shape): _arunda_rating(size)
-    for size in ["50", "80", "120", "160"]
-    for shape in ["B", "N"]
-    if not (size == "160" and shape == "N")
+_SAE_SOURCE = "ETA-06/0270 (2023-01-06), Annex D34 SAE joist hanger, characteristic capacity with square twist nails, full nailing, timber to timber"
+
+# model: (header nails, joist nails, R1,k in kN) for timber C24, characteristic density 350 kg/m3.
+_SAE = {
+    "SAE250": (12, 7, 13.5),
+    "SAE380": (22, 12, 22.3),
+    "SAE500": (34, 18, 35.0),
 }
 
-def connector_rating_of(fastener):
-    """The published rating of a fastener name, or None when there is none."""
-    return CONNECTOR_RATINGS.get(fastener)
+def _sae_rating(model):
+    header, joist, kn = _SAE[model]
+    return connector_rating(
+        load_n = kn * 1000,
+        basis = "characteristic",
+        source = _SAE_SOURCE,
+        note = ("R1,k downward, %d + %d square twist nails 3.75x30 (header + joist); transverse tension " +
+                "in the timber is not included") % (header, joist),
+        density_kg_m3 = 350,
+    )
+
+_ABR_SOURCE = "Simpson Strong-Tie ABR 105-R technical data sheet (2026-10-21) after ETA-06/0106, timber to timber, full nailing, 2 angle brackets per connection"
+
+# nail: R1,k (lifting) in kN for a pair of ABR105 with 10 + 14 nails, timber C24.
+_ABR105_PAIR = {
+    "CNA4.0x35": 8.84,
+    "CNA4.0x50": 14.33,
+}
+
+def _abr_rating(nail):
+    return connector_rating(
+        tension_n = _ABR105_PAIR[nail] * 1000,
+        basis = "characteristic",
+        source = _ABR_SOURCE,
+        note = ("R1,k lifting for the pair, 10 + 14 %s nails per bracket, the brackets opposite each other; " +
+                "tabulated for b = 75 mm and e = 130 mm; a single bracket carries half only when the " +
+                "held member cannot rotate") % nail,
+        density_kg_m3 = 350,
+    )
+
+# Published ratings by fastener name. A connector missing here has no rating: its joints stay not_verified.
+CONNECTOR_RATINGS = dict(
+    [("Arunda %s %s" % (size, shape), _arunda_rating(size))
+     for size in ["50", "80", "120", "160"]
+     for shape in ["B", "N"]
+     if not (size == "160" and shape == "N")] +
+    [(model, _sae_rating(model)) for model in _SAE] +
+    [("ABR105 pair " + nail, _abr_rating(nail)) for nail in _ABR105_PAIR],
+)
+
+def connector_ratings(overrides = {}):
+    """CONNECTOR_RATINGS with a program's own ratings over it: each entry of overrides
+    replaces the catalogue's rating of that fastener name (or adds one); None removes it."""
+    table = dict(CONNECTOR_RATINGS)
+    for fastener, rating in overrides.items():
+        if rating == None:
+            table.pop(fastener, None)
+        else:
+            table[fastener] = rating
+    return table
+
+def connector_rating_of(fastener, ratings = None):
+    """The published rating of a fastener name in ratings (default CONNECTOR_RATINGS),
+    or None when there is none."""
+    return (CONNECTOR_RATINGS if ratings == None else ratings).get(fastener)
+
+def connector(a, b, fastener, ratings = None, fasteners = None, name = None):
+    """Part a held by b through a catalogued connector: a joint named after the fastener
+    with its rating from ratings (default CONNECTOR_RATINGS). A rating with load_n makes
+    the joint bearing (a carries its weight into b, e.g. a joist hanger); one with only
+    tension_n holds a down against lifting (e.g. a pair of angle brackets)."""
+    rating = connector_rating_of(fastener, ratings)
+    if rating == None:
+        table = CONNECTOR_RATINGS if ratings == None else ratings
+        fail("connector(): no rating for %r; known: %s. Give it in connector_ratings({%r: connector_rating(...)}) or use joint(rating=)" %
+             (fastener, ", ".join(sorted(table.keys())), fastener))
+    if fasteners == None:
+        touch = contact(a, b)
+        fasteners = [] if touch == None else [vec_scale(vec_add(touch.min, touch.max), 0.5)]
+    joint(a, b, kind = "connector", fastener = fastener, bearing = rating.load_n != None,
+          fasteners = fasteners, rating = rating, name = name)
 
 def arunda(a, b, template = "80 B", name = None):
     """Carried part a hangs on b through an Arunda routed dovetail (wood to wood),
@@ -1019,7 +1099,7 @@ def arunda(a, b, template = "80 B", name = None):
     does not suit the template."""
     kind = "Arunda " + template
     if kind not in CONNECTOR_RATINGS:
-        fail("arunda(): unknown template %r; use one of %s" % (template, sorted([k[7:] for k in CONNECTOR_RATINGS.keys()])))
+        fail("arunda(): unknown template %r; use one of %s" % (template, sorted([k[7:] for k in CONNECTOR_RATINGS.keys() if k.startswith("Arunda ")])))
     low, high, height, _ = _ARUNDA[template.split(" ")[0]]
     dims = sorted(part_info(a).size)
     check(low - 0.001 <= dims[0] and dims[0] <= high + 0.001 and dims[1] >= height - 0.001,
@@ -1981,7 +2061,8 @@ def no_window_over(part, tag = "window", margin = 300, height = 1500):
 #     (default the layer's tags). In a floor or roof, a framed layer's "hanger" (fastener name)
 #     hangs the headers on the joists beside the opening and the cut joists on the
 #     headers with bearing joints; "hanger_rating" (connector_rating(...)) is the maker's
-#     published rating of that hanger, else CONNECTOR_RATINGS gives it or none. anchor={"to": part, "fastener": name, "spacing": 1000,
+#     published rating of that hanger, else ratings= (connector_ratings(...), default
+#     CONNECTOR_RATINGS) gives it or none. anchor={"to": part, "fastener": name, "spacing": 1000,
 #     "edge": 300, "min_edge": 80} anchors every bottom plate to `to` (a slab) with at least two anchors;
 #     a plate too short to keep them min_edge from its ends is a program_condition_failed error.
 #     openings: [(u, v, width, height), ...] in panel coordinates, apart along u, or
@@ -2082,7 +2163,7 @@ def _spans(length, cuts):
     return spans
 
 def buildup(name, origin, along, up, length, layers, height = None, top = None, openings = [], tags = [],
-            anchor = None):
+            anchor = None, ratings = None):
     """A panel built of layers: sheets, and framed layers with plates, studs and infill.
     See the topic text above for the arguments."""
     along = vec_scale(along, 1.0 / vec_length(along))
@@ -2364,7 +2445,7 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                         carried, carrier = (beam, other) if abs(_dot(touch.normal, along)) > 0.7 else (other, beam)
                         joint(carried, carrier, kind = "hanger", fastener = hanger, bearing = True,
                               fasteners = [vec_scale(vec_add(touch.min, touch.max), 0.5)],
-                              rating = layer.get("hanger_rating", connector_rating_of(hanger)))
+                              rating = layer.get("hanger_rating", connector_rating_of(hanger, ratings)))
         if layer.get("infill") != None:
             fill_tags = base_tags + _names(layer.get("infill_tags", layer.get("tags")))
             fill_role = _role("buildup(%s) layer %s infill" % (name, label), layer.get("infill_role", MANUFACTURED_ITEM))
@@ -2603,8 +2684,9 @@ IMPOSED_LOADS = {
 #     member of such a material is checked on the loads of the loads topic.
 #   TIMBER_CLASSES: C16, C24 (EN 338:2016), GL24h, GL28h (EN 14080:2013) characteristic values.
 #   timber_strength(material, strength_class=, service_class=, glulam=, fm_k=, fv_k=, fc0_k=,
-#     fc90_k=, e0_mean=, e0_05=, source=): the builtin behind timber_design for one material
-#     with its own characteristic values in N/mm².
+#     fc90_k=, e0_mean=, e0_05=, source=, rho_k=None): the builtin behind timber_design for
+#     one material with its own characteristic values in N/mm² (rho_k, the characteristic
+#     density in kg/m³, is what a connector rating's density_kg_m3 is compared with).
 #   The report's design.members lists every load-path member: role (beam or column),
 #   section [width, depth], the checks with their utilization, governing combination and
 #   place (bending, shear, shear_notch, deflection_inst, deflection_fin, bearing =
@@ -2619,13 +2701,13 @@ IMPOSED_LOADS = {
 #     timber_design({"KVH C24": "C24", "BSH GL24h": "GL24h"}, service_class = 1)
 
 TIMBER_CLASSES = {
-    "C16": {"glulam": False, "fm_k": 16, "fv_k": 3.2, "fc0_k": 17, "fc90_k": 2.2, "e0_mean": 8000, "e0_05": 5400,
+    "C16": {"glulam": False, "fm_k": 16, "fv_k": 3.2, "fc0_k": 17, "fc90_k": 2.2, "e0_mean": 8000, "e0_05": 5400, "rho_k": 310,
             "source": "EN 338:2016 table 1, C16"},
-    "C24": {"glulam": False, "fm_k": 24, "fv_k": 4.0, "fc0_k": 21, "fc90_k": 2.5, "e0_mean": 11000, "e0_05": 7400,
+    "C24": {"glulam": False, "fm_k": 24, "fv_k": 4.0, "fc0_k": 21, "fc90_k": 2.5, "e0_mean": 11000, "e0_05": 7400, "rho_k": 350,
             "source": "EN 338:2016 table 1, C24"},
-    "GL24h": {"glulam": True, "fm_k": 24, "fv_k": 3.5, "fc0_k": 24, "fc90_k": 2.5, "e0_mean": 11500, "e0_05": 9600,
+    "GL24h": {"glulam": True, "fm_k": 24, "fv_k": 3.5, "fc0_k": 24, "fc90_k": 2.5, "e0_mean": 11500, "e0_05": 9600, "rho_k": 385,
               "source": "EN 14080:2013 table 5, GL24h"},
-    "GL28h": {"glulam": True, "fm_k": 28, "fv_k": 3.5, "fc0_k": 28, "fc90_k": 2.5, "e0_mean": 12600, "e0_05": 10500,
+    "GL28h": {"glulam": True, "fm_k": 28, "fv_k": 3.5, "fc0_k": 28, "fc90_k": 2.5, "e0_mean": 12600, "e0_05": 10500, "rho_k": 425,
               "source": "EN 14080:2013 table 5, GL28h"},
 }
 

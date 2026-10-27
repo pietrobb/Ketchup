@@ -1765,8 +1765,10 @@ pub struct Joint {
 /// Never derived from geometry or names; absent means not verified.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct JointRating {
-    /// Load the whole connection carries, in newtons.
-    pub load_n: f64,
+    /// Load the whole connection carries, in newtons; none for a connector
+    /// that only holds a part down (an angle bracket against lifting).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_n: Option<f64>,
     /// "allowable" (permissible load), "characteristic" (R_k) or "design" (R_d).
     pub basis: String,
     pub source: String,
@@ -1776,6 +1778,10 @@ pub struct JointRating {
     /// on the same basis; none published: a pull on it is not verified.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tension_n: Option<f64>,
+    /// Characteristic timber density, kg/m³, the published values hold for;
+    /// a joined part of lower or unknown density is not verified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub density_kg_m3: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
