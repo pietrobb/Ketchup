@@ -489,6 +489,75 @@ fn the_cutting_plan_exports_every_piece_on_its_sheet() {
     assert!(app.digest.contains("rozkroj.csv"), "{}", app.digest);
 }
 
+/// The stored entries of a ZIP archive the export wrote, by name.
+fn zip_entries(archive: &[u8]) -> BTreeMap<String, Vec<u8>> {
+    let field = |at: usize, width: usize| {
+        archive[at..at + width]
+            .iter()
+            .rev()
+            .fold(0_usize, |value, byte| value << 8 | usize::from(*byte))
+    };
+    let mut entries = BTreeMap::new();
+    let mut at = 0;
+    while field(at, 4) == 0x0403_4b50 {
+        let (size, name, extra) = (field(at + 18, 4), field(at + 26, 2), field(at + 28, 2));
+        let start = at + 30 + name + extra;
+        let name = String::from_utf8(archive[at + 30..at + 30 + name].to_vec()).unwrap();
+        entries.insert(name, archive[start..start + size].to_vec());
+        at = start + size;
+    }
+    entries
+}
+
+/// R9-C step 19: the window exports one CNC DXF per made flat part and a
+/// table of what it drew in one ZIP; each drawing reads back with its
+/// outline and its hole, and a bar is no CNC part.
+#[test]
+fn the_cnc_export_writes_a_dxf_per_part_that_reads_back() {
+    let mut app = KetchupApp::new();
+    let source = "side = board(\"Bočnica\", (18, 400, 720), material = \"DTD\")\n\
+                  hole(side, \"x+\", world = (18, 37, 32), diameter = 5, depth = 13)\n\
+                  board(\"top\", (600, 400, 18), at = (0, 0, 720), material = \"DTD\")\n\
+                  member(\"rail\", (0, 1000, 0), (2000, 1000, 0), (60, 120))\n";
+    app.apply_program_source(
+        ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
+            file_name: "cnc.star".into(),
+            source: source.into(),
+            overrides: BTreeMap::new(),
+        },
+        true,
+    )
+    .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("cnc.zip");
+    assert!(app.export_cnc_drawings_to(&path), "{}", app.digest);
+    assert!(app.digest.contains("cnc.zip"), "{}", app.digest);
+    let entries = zip_entries(&std::fs::read(&path).unwrap());
+    assert_eq!(
+        entries.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["Bocnica.dxf", "parts.csv", "top.dxf"]
+    );
+    let read = |name: &str| {
+        ketchup_model::import::inspect_dxf(
+            &entries[name],
+            ketchup_model::import::DxfImportOptions::new(None),
+        )
+        .unwrap_or_else(|error| panic!("{name}: {error}"))
+    };
+    let side = read("Bocnica.dxf");
+    let layers = side
+        .profiles()
+        .iter()
+        .map(|profile| profile.layer())
+        .collect::<Vec<_>>();
+    assert_eq!(layers, ["CONTOUR", "DRILL_D5_Z13"]);
+    let top = read("top.dxf");
+    assert_eq!(top.profiles().len(), 1, "an outline only");
+    let csv = String::from_utf8(entries["parts.csv"].clone()).unwrap();
+    assert!(csv.contains("Bočnica,Bocnica.dxf,18,400,720,"), "{csv}");
+}
+
 /// R9-C step 18: the window exports the quote (MCP report section `quote`):
 /// 2 x 0.096 m2 of board at 25.50 a m2 is 4.90; a program without prices
 /// says so instead of writing an empty quote.

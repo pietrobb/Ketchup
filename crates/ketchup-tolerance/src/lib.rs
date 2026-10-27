@@ -75,6 +75,8 @@ pub const LOAD_AT_SUPPORT_MM: f64 = 0.5;
 
 /// Chord error for material face boundaries used by planar contact queries, in mm.
 pub const BOUNDARY_CHORD_MM: f64 = 0.001;
+/// The largest distance between a curve in a part's CNC drawing and the lines drawn for it, in mm.
+pub const CNC_CURVE_CHORD_MM: f64 = 0.01;
 /// The largest distance between an underlay's arc and the chords drawn for it, in mm.
 pub const UNDERLAY_ARC_CHORD_MM: f64 = 0.1;
 /// Relative slack over the step an import cut an underlay's arc into: a chord up to this

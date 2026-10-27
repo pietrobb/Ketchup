@@ -964,6 +964,53 @@ fn the_quote_section_lists_priced_lines_the_total_and_unpriced_items() {
     assert_eq!(rows[2]["unpriced"]["reason"], "no price()");
 }
 
+/// R9-C step 19: the cnc_dxf section pages one R12 DXF per made flat part,
+/// a drawing of many holes in chunks that join back into the file, then the
+/// parts it cannot draw with why.
+#[test]
+fn the_cnc_dxf_section_pages_each_drawing_and_what_is_not_drawn() {
+    let (mut app, mut bridge) = setup();
+    let source = "p = board('Doska', (2000, 600, 18))\n\
+        for i in range(400):\n    hole(p, 'z+', world = (20 + 4.5 * i, 300, 18), diameter = 3, depth = 5)\n\
+        bent = board('bent', (400, 300, 18), at = (0, 1000, 0))\n\
+        mirror(bent, axis = 'x')\n";
+    bridge
+        .execute(&mut app, apply_source(source), false)
+        .unwrap();
+    let rows = all_rows(&mut app, &mut bridge, ReportSection::CncDxf);
+    let chunks = rows
+        .iter()
+        .filter(|row| row["file"] == "Doska.dxf")
+        .collect::<Vec<_>>();
+    assert!(
+        chunks.len() > 1,
+        "400 holes outgrow one row: {}",
+        chunks.len()
+    );
+    let dxf = chunks
+        .iter()
+        .map(|row| row["dxf"].as_str().unwrap())
+        .collect::<String>();
+    let read = ketchup_model::import::inspect_dxf(
+        dxf.as_bytes(),
+        ketchup_model::import::DxfImportOptions::new(None),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let holes = read
+        .profiles()
+        .iter()
+        .filter(|profile| profile.layer() == "DRILL_D3_Z5")
+        .count();
+    assert_eq!(holes, 400);
+    assert_eq!(chunks[0]["thickness_mm"], 18.0);
+    let last = rows.last().unwrap();
+    assert_eq!(last["part"], "bent");
+    assert!(
+        last["not_drawn"].as_str().unwrap().contains("mirror"),
+        "{last}"
+    );
+}
+
 /// #2482: a B500B bar Ø12 x 1000 is 0.888 kg ±1 % both in the bar schedule
 /// (the library's nominal EN 10080 mass, derived; bars are ordered as pieces)
 /// and in inspect mass (the exact solid x steel density). Each is checked on its

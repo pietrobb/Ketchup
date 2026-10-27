@@ -1121,7 +1121,7 @@ fn program_edit_result(
                 "hardware_items": report.bom.hardware.len(),
                 "machining_operations": report.bom.machining.iter().map(|part| part.operations.len()).sum::<usize>()},
             "statics": statics_summary(report),
-            "details": "program action=report with expected=after, section=cut_list/hardware/bar_schedule/cutting/quote/machining/relations/issues/material_takeoff/joints/loads/members; follow next_offset until null",
+            "details": "program action=report with expected=after, section=cut_list/hardware/bar_schedule/cutting/quote/cnc_dxf/machining/relations/issues/material_takeoff/joints/loads/members; follow next_offset until null",
             "params": params,
             "params_total": report.params.len(),
             "unused_overrides": &report.unused_overrides[..report.unused_overrides.len().min(MAX_REPORTED_PARAMS)],

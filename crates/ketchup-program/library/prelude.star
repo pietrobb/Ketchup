@@ -2785,6 +2785,26 @@ def price_list(prices, currency = None, source = None):
         value, per = entry
         price(item, value, per, currency = currency, source = source)
 
+#@topic cnc_dxf: CNC DXF of the made flat parts
+#
+#   Every made part in the production scope with role MANUFACTURED_ITEM whose body is an
+#   extrusion (board(), extrude(), a buildup sheet piece) is drawn as one AutoCAD R12 DXF:
+#   ASCII, no blocks, mm, from (0, 0). A box is seen on its largest face, any other profile
+#   along its extrusion, the face seen up. Layers (a decimal point written "_"):
+#     CONTOUR              the outline, arcs as arcs
+#     CUTOUT               a cut(..., through=True)
+#     DRILL_D8_Z12         a hole 8 across, 12 deep from the face seen (through: the thickness)
+#     DRILL_D8_Z12_BOTTOM  the same from the face below
+#     HDRILL_D8_Z30_H9     a hole into an edge, a line from its entry to its bottom, its
+#                          axis 9 above the face below
+#     POCKET_Z5            a pocket or a blind cut 5 deep (POCKET_Z5_BOTTOM from below)
+#     PART_NAME            the part's name, accents as \U+XXXX
+#   A part with a boolean, mirror, shell, push_pull or fillet/chamfer, a slanted hole or a
+#   pocket in an edge is not drawn; its reason is listed. Each file is <name>.dxf, the name
+#   in ASCII, at most 31 characters, unique. The material takeoff window exports every
+#   drawing with parts.csv as one ZIP; MCP report section "cnc_dxf" pages them (a large
+#   drawing in chunks to join) and then the parts not drawn.
+
 #@topic member_check: Timber member check after EN 1995-1-1 (EC5)
 #
 #   timber_design(materials, service_class=1, classes=TIMBER_CLASSES)

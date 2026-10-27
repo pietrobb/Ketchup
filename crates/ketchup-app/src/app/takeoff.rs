@@ -7,6 +7,7 @@ use crate::app_state::{TakeoffCache, TakeoffError};
 use crate::*;
 use ketchup_program::ProgramModel;
 use ketchup_program::bom::{bar_schedule_table, bom, hardware_table};
+use ketchup_program::cnc_dxf::{CncExport, cnc_parts};
 use ketchup_program::cut_list::cut_list_table;
 use ketchup_program::cutting::cutting_table;
 use ketchup_program::quote::quote_table;
@@ -222,6 +223,44 @@ impl KetchupApp {
         result.is_ok()
     }
 
+    /// The CNC drawings of the program's made flat parts in its production
+    /// scope (MCP report section `cnc_dxf` pages the same).
+    pub(crate) fn cnc_drawings(&self) -> Result<CncExport, TakeoffError> {
+        self.material_takeoff()?;
+        let cache = self.takeoff.cache.borrow();
+        let model = cache
+            .as_ref()
+            .and_then(|cached| cached.model.as_ref().ok())
+            .ok_or(TakeoffError::NoProgram)?;
+        Ok(cnc_parts(model))
+    }
+
+    /// Writes the CNC drawings, one DXF per part, and the table of what is
+    /// and is not drawn as one ZIP archive.
+    pub(crate) fn export_cnc_drawings_to(&mut self, path: &Path) -> bool {
+        let result = self.cnc_drawings().and_then(|export| {
+            write_atomically(path, &export.zip())
+                .map_err(|error| TakeoffError::Write(Arc::new(error)))?;
+            Ok(export)
+        });
+        let (key, mut arguments) = match &result {
+            Ok(export) => (
+                "digest-exported-cnc-dxf",
+                BTreeMap::from([
+                    ("drawn", export.parts.len().to_string()),
+                    ("missing", export.not_drawn.len().to_string()),
+                ]),
+            ),
+            Err(reason) => (
+                "error-export-cnc-dxf",
+                BTreeMap::from([("reason", self.takeoff_error_text(reason))]),
+            ),
+        };
+        arguments.insert("path", path.display().to_string());
+        self.digest = self.catalog.format(key, &arguments);
+        result.is_ok()
+    }
+
     pub(crate) fn show_material_takeoff_window(&mut self, context: &egui::Context) {
         if !self.takeoff.open {
             return;
@@ -229,6 +268,7 @@ impl KetchupApp {
         let takeoff = self.material_takeoff();
         let mut open = true;
         let mut export = None;
+        let mut export_cnc = false;
         egui::Window::new(self.catalog.text("window-material-takeoff"))
             .open(&mut open)
             .default_size([720.0, 480.0])
@@ -269,6 +309,12 @@ impl KetchupApp {
                                 }
                             }
                         }
+                        if ui
+                            .button(self.catalog.text("takeoff-export-cnc-dxf"))
+                            .clicked()
+                        {
+                            export_cnc = true;
+                        }
                     });
                     ui.separator();
                     egui::ScrollArea::vertical().show(ui, |ui| {
@@ -293,6 +339,9 @@ impl KetchupApp {
                 }
             }
             None => {}
+        }
+        if export_cnc && let Some(path) = self.choose_export_path("zip") {
+            self.export_cnc_drawings_to(&path);
         }
     }
 

@@ -2,6 +2,7 @@
 //! module here, so the crate links one test executable instead of one per file.
 
 mod buildup;
+mod cnc_dxf;
 mod components;
 mod connectivity;
 mod contact_review;

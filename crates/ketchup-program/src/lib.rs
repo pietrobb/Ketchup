@@ -11,6 +11,7 @@
 pub mod bom;
 pub mod cad;
 pub mod clearance;
+pub mod cnc_dxf;
 mod connectivity;
 pub mod contact;
 mod continuous_span;

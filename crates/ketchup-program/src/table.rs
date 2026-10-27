@@ -203,8 +203,8 @@ fn crc32(bytes: &[u8]) -> u32 {
 }
 
 /// A ZIP archive with every file stored uncompressed (method 0), which every
-/// reader accepts; the workbook is small text.
-fn stored_zip(files: &[(&str, &[u8])]) -> Vec<u8> {
+/// reader accepts; a workbook and DXF files are small text.
+pub(crate) fn stored_zip(files: &[(&str, &[u8])]) -> Vec<u8> {
     fn u16_le(output: &mut Vec<u8>, value: usize) {
         output.extend_from_slice(
             &u16::try_from(value)

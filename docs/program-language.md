@@ -183,6 +183,20 @@ a price, or priced in a unit it is not counted in, is listed under `unpriced`
 and left out of the total, and `unused_prices` names prices that matched
 nothing. The takeoff window exports the quote as CSV or XLSX.
 
+CNC DXF: every made flat part in the production scope (fabrication role
+`MANUFACTURED_ITEM`, an extrusion such as `board()` or a buildup sheet piece) is
+drawn as one AutoCAD R12 DXF, ASCII without blocks, in mm from (0, 0): a box seen
+on its largest face, any other profile along its extrusion. Layers: `CONTOUR`
+the outline (arcs as arcs), `CUTOUT` a `cut(through=True)`, `DRILL_D8_Z12` a hole
+8 across and 12 deep from the face seen (a through hole as deep as the part),
+`DRILL_D8_Z12_BOTTOM` from the face below, `HDRILL_D8_Z30_H9` a hole into an edge
+drawn as a line, its axis 9 above the face below, `POCKET_Z5` a pocket or blind
+cut 5 deep (`_BOTTOM` from below) and `PART_NAME` the name (accents as
+`\U+XXXX`); a decimal point in a layer is `_` (`DRILL_D4_5_Z10`). A part with a
+boolean, mirror, shell, face offset or edge finish, a slanted hole or a pocket in
+an edge is listed as not drawn with the reason. The takeoff window exports all
+drawings and `parts.csv` as one ZIP; MCP report section `cnc_dxf` pages them.
+
 `distribute(parts, a, b, face=None)` spaces several parts between `a` and `b`
 with equal clear gaps (two shelves between bottom and top make three equal
 compartments) and returns the gap; parts that do not fit fail with the numbers.
@@ -240,7 +254,7 @@ value at once; another value in `attributes=` stops the export, which names it.
 
 The file is split into topics by `#@topic id: title` lines (`basics`,
 `placement`, `profiles`, `machining`, `joinery`, `fasteners`, `intent`, `annotations`, `space`, `buildup`,
-`openings`, `loads`, `cutting`, `quote`, `member_check`, `validation`, `report`). Each
+`openings`, `loads`, `cutting`, `quote`, `cnc_dxf`, `member_check`, `validation`, `report`). Each
 topic holds the comments that document its builtins and the helpers that
 belong to it, so an AI reads the index and then only the topics it needs;
 concise topic answers contain signatures, rules and a short example; helper code is

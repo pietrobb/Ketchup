@@ -21,6 +21,7 @@ pub enum ReportSection {
     BarSchedule,
     Cutting,
     Quote,
+    CncDxf,
     Machining,
     Relations,
     Issues,
@@ -41,6 +42,10 @@ pub(super) fn invalid(target: &str, reason: impl Into<String>, hint: &str) -> &'
     );
     "invalid_params"
 }
+
+/// The largest piece of a CNC drawing one report row carries: inside the
+/// page's frame budget even with every line break escaped in JSON.
+const CNC_DXF_CHUNK: usize = 12 * 1024;
 
 /// Most source edits one patch carries; the tool schema states the same bound.
 const PATCH_EDITS: usize = 100;
@@ -354,6 +359,46 @@ impl LiveBridge {
             )
             .map(ReportPage::Ready);
         }
+        if let ReportSection::CncDxf = section {
+            check_page_limit(limit)?;
+            app.wait_for_program_evaluation();
+            let export = app.cnc_drawings().map_err(|reason| {
+                invalid(
+                    "source",
+                    app.takeoff_error_text(&reason),
+                    "Apply a program; its made flat parts are drawn.",
+                )
+            })?;
+            // A drawing of many holes outgrows one frame: it comes in pieces
+            // of at most CNC_DXF_CHUNK bytes (it is ASCII), joined by file.
+            let drawn = export.parts.iter().flat_map(|part| {
+                let dxf = part.dxf();
+                let chunks = dxf.chunks(CNC_DXF_CHUNK).count();
+                dxf.chunks(CNC_DXF_CHUNK)
+                    .enumerate()
+                    .map(|(index, chunk)| {
+                        json!({"part": part.part, "file": part.file, "thickness_mm": part.thickness_mm,
+                            "size_mm": part.size_mm, "layers": part.layers(),
+                            "chunk": index + 1, "chunks": chunks,
+                            "dxf": String::from_utf8_lossy(chunk)})
+                    })
+                    .collect::<Vec<_>>()
+            });
+            let missing = export
+                .not_drawn
+                .iter()
+                .map(|part| json!({"part": part.part, "not_drawn": part.reason}));
+            return page(
+                section,
+                &drawn.chain(missing).collect::<Vec<_>>(),
+                offset,
+                limit,
+                json!({"basis": "program_production_scope", "drawn": export.parts.len(),
+                    "not_drawn": export.not_drawn.len(),
+                    "hint": "One AutoCAD R12 DXF per made flat part (fabrication role manufactured item, an extrusion; a box seen on its largest face), in mm from (0, 0): CONTOUR outline, CUTOUT through cuts, DRILL_D<d>_Z<depth> holes from the face seen (_BOTTOM from below), HDRILL_D<d>_Z<depth>_H<height> edge holes as lines, POCKET_Z<depth> pockets and blind cuts, PART_NAME the name; a decimal point in a layer is _. Join the dxf of a file's chunks 1..chunks in order and write it to the file; not_drawn says why a part has none."}),
+            )
+            .map(ReportPage::Ready);
+        }
         if self.program_check_job.is_some() {
             return Err(failure(
                 "busy",
@@ -610,7 +655,9 @@ fn report_rows(report: &ketchup_program::Report, section: ReportSection) -> Vec<
             .collect(),
         ReportSection::Relations => report.relations.iter().map(|row| json!(row)).collect(),
         ReportSection::Issues => report.issues.iter().map(|row| json!(row)).collect(),
-        ReportSection::MaterialTakeoff | ReportSection::SelectionTakeoff => Vec::new(),
+        ReportSection::MaterialTakeoff
+        | ReportSection::SelectionTakeoff
+        | ReportSection::CncDxf => Vec::new(),
         ReportSection::Joints => report.joints.iter().map(|row| json!(row)).collect(),
         ReportSection::Loads => report.loads.members.iter().map(|row| json!(row)).collect(),
         ReportSection::Members => report.design.members.iter().map(|row| json!(row)).collect(),
