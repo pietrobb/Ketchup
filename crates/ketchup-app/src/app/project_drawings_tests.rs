@@ -500,8 +500,14 @@ const PANEL: &str = "buildup('wall S', (0, 0, 0), (1, 0, 0), (0, 0, 1), 3000, he
 fn the_set_carries_a_cutting_plan_of_every_material_with_stock() {
     use ketchup_manufacturing::project_drawings::SheetKind;
     let mut app = KetchupApp::new();
+    // The OSB laid from whole boards (capability review run 349): without
+    // "sheet" its wall-high columns fit no sheet and were all left unplanned.
+    let panel = PANEL.replace(
+        "'material': 'OSB'}",
+        "'material': 'OSB', 'sheet': (1250, 2500), 'grain': 'v'}",
+    );
     let source = format!(
-        "{PANEL}bar_stock('C24', [3000, 5000])\nsheet_stock('OSB', [(2500, 1250)], trim = 10)\n"
+        "{panel}bar_stock('C24', [3000, 5000])\nsheet_stock('OSB', [(2500, 1250)], trim = 0, grain = True)\n"
     );
     let program = ketchup_model::document::RuleProgramSource {
         variants: Default::default(),
@@ -521,6 +527,18 @@ fn the_set_carries_a_cutting_plan_of_every_material_with_stock() {
             .collect::<Vec<_>>(),
         ["C24", "OSB"],
         "{plans:#?}"
+    );
+    let osb = &plans[1];
+    assert_eq!(osb.unplaced, [], "{osb:#?}");
+    let sawn = osb
+        .layouts
+        .iter()
+        .flat_map(|layout| &layout.pieces)
+        .map(|piece| piece.size_mm[0] * piece.size_mm[1])
+        .sum::<f64>();
+    assert!(
+        (sawn - (3000.0 * 2500.0 - 900.0 * 1200.0)).abs() < 1e-3,
+        "{sawn}"
     );
 
     let kinds = set

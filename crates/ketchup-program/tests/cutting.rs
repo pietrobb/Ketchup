@@ -310,3 +310,89 @@ fn stock_refuses_what_cannot_be_cut() {
         assert!(error.contains(message), "{source}: {error}");
     }
 }
+
+/// A 3000 x 2500 wall framed at 625 with OSB boards 1250 x 2500, grain up.
+fn sheathed_wall(length: f64, openings: &str) -> String {
+    format!(
+        "buildup('wall', (0, 0, 0), (1, 0, 0), (0, 0, 1), {length}, height = 2500,\n\
+         layers = [{{'name': 'frame', 'thickness': 140, 'material': 'C24', 'spacing': 625}},\n\
+                   {{'name': 'osb', 'thickness': 15, 'material': 'OSB', 'sheet': (1250, 2500), 'grain': 'v'}}],\n\
+         openings = [{openings}])\n\
+         sheet_stock('OSB', [(2500, 1250)], trim = 0, grain = True)\n"
+    )
+}
+
+/// Capability review run 349: a buildup's sheathing came as wall-high columns
+/// (whole walls without openings) wider than any sheet and was all "not
+/// planned". With "sheet" the layer is laid from boards with their joints on
+/// stud centres, and the plan saws every one of them from the stock.
+#[test]
+fn a_sheathed_buildup_is_cut_from_whole_sheets_with_joints_on_studs() {
+    for (length, openings, window) in [
+        (3000.0, "(1000, 800, 900, 1200)", 900.0 * 1200.0),
+        (4000.0, "", 0.0),
+    ] {
+        let source = sheathed_wall(length, openings);
+        let model = ketchup_program::evaluate("cutting.star", &source, &BTreeMap::new())
+            .unwrap_or_else(|error| panic!("{error}"))
+            .model;
+        let osb = bom(&model)
+            .cutting
+            .into_iter()
+            .find(|plan| plan.material == "OSB")
+            .unwrap();
+        assert_eq!(osb.unplaced, [], "{length}");
+        let placed = osb
+            .layouts
+            .iter()
+            .flat_map(|layout| &layout.pieces)
+            .map(|piece| piece.size_mm[0] * piece.size_mm[1])
+            .sum::<f64>();
+        assert!(
+            (placed - (length * 2500.0 - window)).abs() < 1e-3,
+            "{length}: {placed}"
+        );
+        // Grain up the wall runs along the sheet's length: every piece lies
+        // with its height on the wall along the sheet.
+        for piece in osb.layouts.iter().flat_map(|layout| &layout.pieces) {
+            let (min, max) = model.part(&piece.part).unwrap().world_bounds();
+            assert!(
+                (piece.size_mm[0] - (max[2] - min[2])).abs() < 1e-6,
+                "{piece:?}"
+            );
+        }
+        let studs = model
+            .parts
+            .iter()
+            .filter(|part| part.name.starts_with("wall/frame/stud"))
+            .map(|part| {
+                let (min, max) = part.world_bounds();
+                (min[0], max[0])
+            })
+            .collect::<Vec<_>>();
+        let mut joints = Vec::new();
+        for part in model
+            .parts
+            .iter()
+            .filter(|part| part.name.starts_with("wall/osb"))
+        {
+            assert_eq!(part.attributes.get("grain").map(String::as_str), Some("y"));
+            let (min, max) = part.world_bounds();
+            assert!(max[0] - min[0] <= 1250.0 + 1e-6, "{}", part.name);
+            joints.extend([min[0], max[0]]);
+        }
+        // A board edge that is not a panel end or an opening side sits on a
+        // stud, the stud's centre on the joint.
+        for u in joints {
+            if u < 1.0 || u > length - 1.0 || (window > 0.0 && [1000.0, 1900.0].contains(&u)) {
+                continue;
+            }
+            assert!(
+                studs
+                    .iter()
+                    .any(|(low, high)| ((low + high) / 2.0 - u).abs() < 1e-6),
+                "{length}: joint at u = {u} has no stud under it: {studs:?}"
+            );
+        }
+    }
+}

@@ -2046,8 +2046,12 @@ def no_window_over(part, tag = "window", margin = 300, height = 1500):
 #     layer's inner offset (mm from the inside face) returning such points, for a panel
 #     whose end another plane cuts (roof halves meeting in the ridge).
 #     A layer is a dict {"name", "thickness", "material", "color", "tags"}. A sheet layer
-#     is cut into pieces around the openings. A framed layer adds "spacing" (stud
-#     centres in mm), "stud" (stud width, default 60), "header" (depth of the headers
+#     is cut into pieces around the openings; its "sheet": (u, v) (board size in mm, e.g.
+#     (1250, 2500) for upright OSB) also cuts it into boards: joints along v on the stud
+#     centres of the nearest framed layer, a whole number of spacings apart, and along u
+#     every board height. Its "grain": "u" or "v" gives every piece the grain attribute
+#     sheet_stock(grain = True) keeps (topic cutting). A framed layer adds "spacing" (stud
+#     centres from u = 0 in mm; a stud at each end), "stud" (stud width, default 60), "header" (depth of the headers
 #     over openings in a wall, default the stud width, which a warning then names as sized
 #     by nothing) and optionally "infill" (material
 #     between the studs; "infill_color", "infill_tags"): a bottom plate, a top plate
@@ -2162,6 +2166,26 @@ def _spans(length, cuts):
         spans.append((cursor, length))
     return spans
 
+def _sheet_joints(name, layers, layer, length, points):
+    """The joints of a sheet layer laid from boards layer["sheet"] = (u, v) mm: lines
+    u = ... on the nearest framed layer's stud centres, a whole number of spacings
+    apart (else the board width), and lines v = ... a board height apart."""
+    sheet = layer.get("sheet")
+    if sheet == None:
+        return [], []
+    size_u, size_v = float(sheet[0]), float(sheet[1])
+    if size_u <= 0 or size_v <= 0:
+        fail("buildup(%s): layer %s sheet must be (u, v) mm above zero, got %s" % (name, layer["name"], sheet))
+    here = layers.index(layer)
+    framed = sorted([(abs(k - here), float(l["spacing"])) for k, l in enumerate(layers) if "spacing" in l])
+    step = size_u
+    if framed and framed[0][1] <= size_u:
+        step = int(size_u / framed[0][1] + 0.001) * framed[0][1]
+    top_v = max([p[1] for p in points])
+    joints_u = [k * step for k in range(1, int(length / step) + 1) if length - k * step >= 1]
+    joints_v = [k * size_v for k in range(1, int(top_v / size_v) + 1)]
+    return joints_u, joints_v
+
 def buildup(name, origin, along, up, length, layers, height = None, top = None, openings = [], tags = [],
             anchor = None, ratings = None):
     """A panel built of layers: sheets, and framed layers with plates, studs and infill.
@@ -2198,10 +2222,11 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
     base_tags = _names(tags)
     pieces = []
 
-    def piece(label, poly, at, thickness, material, color, piece_tags, role):
+    def piece(label, poly, at, thickness, material, color, piece_tags, role, extra = {}):
+        attributes = {FABRICATION_ROLE: role, SHOP_DRAWING: name}
+        attributes.update(extra)
         part = extrude("%s/%s" % (name, label), profile = [[p[0], p[1]] for p in poly], distance = thickness,
-                       material = material, color = color, tags = piece_tags,
-                       attributes = {FABRICATION_ROLE: role, SHOP_DRAWING: name})
+                       material = material, color = color, tags = piece_tags, attributes = attributes)
         placed = place(part, origin = vec_add(origin, vec_scale(out, at)), z = out, x = along)
         pieces.append(placed)
         return placed
@@ -2225,16 +2250,25 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
         # Openings that leave no room above them run out through the top edge.
         through = [_under(points, flat, o[0], o[0] + o[2], o[1] + o[3]) == None for o in holes]
         if "spacing" not in layer:
-            edges = sorted({e: 0 for e in [0.0, length] + [o[0] for o in holes] + [o[0] + o[2] for o in holes]}.keys())
+            grain = layer.get("grain")
+            if grain not in (None, "u", "v"):
+                fail("buildup(%s): layer %s grain must be \"u\" or \"v\", got %r" % (name, label, grain))
+            extra = grain_attributes({"u": "x", "v": "y"}.get(grain))
+            joints_u, joints_v = _sheet_joints(name, layers, layer, length, points)
+            edges = sorted({e: 0 for e in [0.0, length] + joints_u + [o[0] for o in holes] + [o[0] + o[2] for o in holes]}.keys())
             parts = []
             for k in range(len(edges) - 1):
                 a, b = edges[k], edges[k + 1]
                 if b - a < 1:
                     continue
                 blocks = [(o[1], None if through[holes.index(o)] else o[1] + o[3]) for o in covering(a, b)]
+                if joints_v:
+                    # A joint across a sloping top would need a slanted cut: left out.
+                    lowest = min([p[1] for p in _under(points, flat, a, b, 0.0)[2:]])
+                    blocks += [(v, v) for v in joints_v if v <= lowest - 1]
                 parts += _column(points, flat, a, b, 0.0, blocks)
             for k in range(len(parts)):
-                piece(label if len(parts) == 1 else "%s %d" % (label, k + 1), parts[k], offset, thickness, material, color, layer_tags, role)
+                piece(label if len(parts) == 1 else "%s %d" % (label, k + 1), parts[k], offset, thickness, material, color, layer_tags, role, extra)
             offset += thickness
             continue
         stud = float(layer.get("stud", 60))
@@ -2317,7 +2351,10 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                         or [z for z in zones if z[0] < u + stud - 0.001 and u < z[1] - 0.001]):
                     continue
                 fulls.append(u)
-        regular = [k * spacing for k in range(int((length - stud) / spacing) + 1) if length - stud - k * spacing >= stud]
+        # Studs at both ends and centred on every `spacing` from u = 0, so the joints
+        # of sheets a whole number of spacings wide fall on a stud.
+        regular = [0.0] + [k * spacing - stud / 2.0 for k in range(1, int(length / spacing) + 1)
+                           if k * spacing - stud / 2.0 >= stud and k * spacing + stud / 2.0 <= length - stud]
         regular.append(length - stud)
         studs = kings + fulls + cripples + [u for u in regular if not [s for s in kings + fulls + cripples if abs(s - u) < stud]
                                             and not [o for o in holes if (u < o[0] and o[0] < u + stud) or (u < o[0] + o[2] and o[0] + o[2] < u + stud)]]
