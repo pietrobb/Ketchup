@@ -126,6 +126,7 @@ point and outward normal in the part's frame and in the world. An edge gives
 | `material_weight(material, source=, kg_m3=, kg_m2=)`, `weight_scope(tags)`, `area_load(name, kind=, kn_m2=, on=[tags], projected=True, source=)` | self weight and area loads in kN/m² on the load-path members |
 | `text(name, value, at=, height_mm=2.5, tags=)`, `dim(name, a, b, offset_mm=0, height_mm=2.5, tags=)`, `leader(name, value, point=, at=, height_mm=2.5, tags=)`, `polyline(name, points, closed=False, tags=)` | drawing annotations, no parts (never in the cut list, collisions, mass or takeoff): a text at a point, a dimension whose value Kečup measures between two points, an arrow from a point to a text, drawn lines; text height in mm on paper, the dimension offset in model mm; the library's `chain_dim(name, points, offset_mm=)` dimensions neighbouring points |
 | `timber_strength(material, strength_class=, service_class=, glulam=, fm_k=, fv_k=, fc0_k=, fc90_k=, e0_mean=, e0_05=, source=)` | the EC5 characteristic values in N/mm² of one material, behind the library's `timber_design` |
+| `stock(material, lengths=None, sheets=None, kerf=0, trim=0, along=None)` | the stock lengths (bars) or sheets the made parts of a material are cut from, behind the library's `bar_stock` and `sheet_stock` and report section `cutting` |
 
 A box's faces are `x-`, `x+`, `y-`, `y+`, `z-` and `z+` in the part's own
 frame; their coordinates `(u, v)` are measured from the part's minimum corner:
@@ -159,6 +160,15 @@ GL28h (EN 14080:2013). Report section `design.members` gives each member's check
 (bending, shear, shear_notch, deflection_inst, deflection_fin, bearing and
 buckling of columns) with their utilization and `pass`, `fail` or `not_verified`
 when an input is missing. It is a computed check, not an authorized structural design.
+
+`bar_stock(material, lengths, kerf=4, trim=0)` and `sheet_stock(material,
+sheets, kerf=4, trim=10, grain=False)` declare what a material's made parts are
+cut from. Report section `cutting` (`bom.cutting`) then lays them out: lengths
+on bars per cross-section, rectangles guillotine-packed on sheets per thickness
+(`grain=True` keeps a part's grain along the sheet), each bar or sheet shrunk to
+the smallest stock size holding its pieces, with used percent, offcuts and the
+pieces no stock holds and why. It is a heuristic, not a proven optimum. The
+drawing set draws every plan and the takeoff window exports it as CSV or XLSX.
 
 `distribute(parts, a, b, face=None)` spaces several parts between `a` and `b`
 with equal clear gaps (two shelves between bottom and top make three equal
@@ -217,7 +227,7 @@ value at once; another value in `attributes=` stops the export, which names it.
 
 The file is split into topics by `#@topic id: title` lines (`basics`,
 `placement`, `profiles`, `machining`, `joinery`, `fasteners`, `intent`, `annotations`, `space`, `buildup`,
-`openings`, `loads`, `member_check`, `validation`, `report`). Each
+`openings`, `loads`, `cutting`, `member_check`, `validation`, `report`). Each
 topic holds the comments that document its builtins and the helpers that
 belong to it, so an AI reads the index and then only the topics it needs;
 concise topic answers contain signatures, rules and a short example; helper code is
