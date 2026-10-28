@@ -96,7 +96,7 @@ def test_validator_catalog_discovery_and_execution(mcp):
     assert catalog["catalog_only"] is True
     assert mcp("inspect", action="status") == before
     rows = {row["id"]: row for row in catalog["validators"]}
-    assert len(rows) == len(catalog["validators"]) == 15
+    assert len(rows) == len(catalog["validators"]) == 16
     assert {row["id"] for row in rows.values() if row["kind"] == "document"} == set(catalog["document_edit_route"]["supported_ids"])
     docs = catalog["documentation"]
     assert mcp(docs["tool"], **docs["arguments"])["text"]
@@ -601,12 +601,12 @@ def test_house_project_drawings_pdf_with_title_block_through_public_mcp(mcp, tmp
     result = export(format="auto", title_block=title_block)
     assert result["exported"] is True and result["scale"] == "1:50", result
     assert result["title_block"]["client"] == "Ján Novák" and result["dirty"] is True, result
-    cuts = {view["view"]: view["cut_solids"] for view in result["views"]}
+    # The set is one sheet per storey plan, the sections and the elevations.
+    cuts = {view["view"]: view["cut_solids"] for page in result["sheets"] for view in page["views"]}
     assert cuts["plan"] > 50 and cuts["longitudinal_section"] > 0 and cuts["cross_section"] > 0, cuts
     import fitz
-    document = fitz.open(sheet)
-    text = document[0].get_text()
-    for expected in ["Ján Novák", "Žilina, parc. č. 1234/5", "D.1.01", "1:50", result["format"], "Longitudinal section"]:
+    text = "".join(page.get_text() for file in result["files"] for page in fitz.open(file))
+    for expected in ["Ján Novák", "Žilina, parc. č. 1234/5", "D.1.01", "1:50", result["sheets"][0]["format"], "Longitudinal section"]:
         assert expected in text, expected
     assert mcp("file", action="export_drawings", path=str(tmp_path / "sheet.svg"), error=True)["error"] == "invalid_path"
     assert mcp("file", action="export_drawings", path=str(tmp_path / "b5.pdf"), format="B5", error=True)["error"] == "invalid_sheet_format"
