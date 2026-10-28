@@ -47,6 +47,9 @@ On Unix, where there is no job object, `JobMemoryLimit` is exported too (any fea
 needs nix's `resource` feature (`Cargo.toml`). Ketchup's crates forbid `unsafe`, and `pre_exec`
 is unsafe. The limit caps address space, not committed memory as on Windows; the program worker
 reserves little beyond what it uses, so the same number serves both (review 2026-10-15 PRG-1).
+On macOS `pre_spawn` sets nothing: macOS refuses an `RLIMIT_AS` below the address space a
+process already reserves (hundreds of GiB with the shared cache) with `EINVAL`, so the child would
+not start at all. The limit is not enforced there.
 
 `src/std/job_memory_limit.rs` also has `physical_memory_bytes()` (`GlobalMemoryStatusEx` on
 Windows, which adds `Win32_System_SystemInformation` to the `job-object` feature in `Cargo.toml`;
@@ -69,7 +72,8 @@ themselves instead (`ketchup-scheduler`, `child_process::exit_with_parent`).
 - `src/std/process_group.rs` (`ProcessGroupChild`): `try_wait` observes the leader's exit with
   `waitid(WNOWAIT)` and leaves it a zombie; only `wait` reaps the leader and the rest of the group.
   After `wait` has reaped the leader, `start_kill` and `signal` do nothing. Once the leader has
-  exited, `EPERM` from `killpg` counts as success: macOS refuses to signal a group whose members
+  exited (seen by an earlier `try_wait` or by `waitid(WNOWAIT)` right after the refusal), `EPERM`
+  from `killpg` counts as success: macOS refuses to signal a group whose members
   are all zombies, which Linux allows. Two unit tests in the same file. Upstream `try_wait` reaped every process of the group (`waitpid(-pgid)` until `ECHILD`).
 
 Why: Ketchup's plugin host waits for the plugin and then kills its group so no descendant outlives

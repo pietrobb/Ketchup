@@ -402,6 +402,70 @@ pub struct StepImportEvidence {
     pub tolerance: String,
 }
 
+/// How many units in the last place an imported body's volume and area may
+/// lie from the recorded ones, and its bounds, and still be the same body.
+/// A document saved where libm rounded differently (MSVC's before ADR 0009)
+/// records them a few last bits away from what a correctly rounded libm
+/// evaluates now; anything further is another body.
+pub const IMPORTED_MEASURE_ULPS: u64 = 8;
+pub const IMPORTED_BOUNDS_ULPS: u64 = 1;
+
+/// `value` as an integer that orders like it, one apart per representable step.
+fn ulp_ordinal(value: f64) -> i64 {
+    let bits = value.to_bits() as i64;
+    if bits < 0 { i64::MIN - bits } else { bits }
+}
+
+/// Whether two finite values are at most `ulps` representable steps apart.
+#[must_use]
+pub fn within_ulps(a: f64, b: f64, ulps: u64) -> bool {
+    a.is_finite()
+        && b.is_finite()
+        && (i128::from(ulp_ordinal(a)) - i128::from(ulp_ordinal(b))).unsigned_abs()
+            <= u128::from(ulps)
+}
+
+/// The finite value `steps` representable steps from `value`.
+#[must_use]
+pub fn ulps_from(value: f64, steps: i64) -> Option<f64> {
+    if !value.is_finite() {
+        return None;
+    }
+    let ordinal = ulp_ordinal(value).checked_add(steps)?;
+    let bits = if ordinal < 0 {
+        i64::MIN - ordinal
+    } else {
+        ordinal
+    };
+    Some(f64::from_bits(bits as u64)).filter(|stepped| stepped.is_finite())
+}
+
+impl StepImportEvidence {
+    /// Whether `other` is the same imported body: equal, or equal but for the
+    /// last bits of volume, area and bounds ([`IMPORTED_MEASURE_ULPS`]). The
+    /// result fingerprints are then not compared, as they hash those bits.
+    #[must_use]
+    pub fn is_same_body_as(&self, other: &Self) -> bool {
+        self == other
+            || (self.source_sha256 == other.source_sha256
+                && self.source_byte_len == other.source_byte_len
+                && self.source_unit == other.source_unit
+                && self.body_kind == other.body_kind
+                && self.solid_count == other.solid_count
+                && self.topology_counts == other.topology_counts
+                && self.backend == other.backend
+                && self.tolerance == other.tolerance
+                && within_ulps(self.volume_mm3, other.volume_mm3, IMPORTED_MEASURE_ULPS)
+                && within_ulps(self.area_mm2, other.area_mm2, IMPORTED_MEASURE_ULPS)
+                && self
+                    .bounds_mm
+                    .as_flattened()
+                    .iter()
+                    .zip(other.bounds_mm.as_flattened())
+                    .all(|(a, b)| within_ulps(*a, *b, IMPORTED_BOUNDS_ULPS)))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct StepXdePartEvidence {
     pub index: u32,

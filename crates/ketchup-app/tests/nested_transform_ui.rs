@@ -339,7 +339,7 @@ fn exact_face_placement_flip_offset_preview_cancel_confirm_is_nested_and_one_und
     }
     let offset = shell.catalog().text("assembly-distance-value");
     shell.focus_text_input(&offset);
-    shell.key(Key::A, Modifiers::CTRL);
+    shell.key(Key::A, Modifiers::COMMAND);
     shell.type_text("12.5");
     // The reference-face list stays open over the viewport until a click
     // elsewhere; the reference image must show the model, not the list.

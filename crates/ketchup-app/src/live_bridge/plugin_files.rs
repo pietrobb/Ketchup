@@ -31,6 +31,7 @@ pub(super) fn past_limits(what: &str) -> String {
 /// Opens `path` for reading; on Windows nobody may write, rename or delete
 /// it while the handle is open. Only a regular file opens (`open_regular`).
 pub(super) fn open_held(path: &Path) -> io::Result<File> {
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut options = fs::OpenOptions::new();
     #[cfg(windows)]
     {

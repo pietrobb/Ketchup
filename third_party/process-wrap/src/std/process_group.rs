@@ -112,8 +112,14 @@ impl ProcessGroupChild {
 		match killpg(self.pgid, sig) {
 			// macOS refuses to signal a group whose members are all zombies,
 			// as the exited, unreaped leader is; a kill then has nothing to
-			// end, like `std::process::Child::kill` on an exited child.
-			Err(Errno::EPERM) if matches!(self.exit_status, ChildExitStatus::Exited(_)) => Ok(()),
+			// end, like `std::process::Child::kill` on an exited child. The
+			// leader may have exited before any `try_wait` saw it.
+			Err(Errno::EPERM)
+				if matches!(self.exit_status, ChildExitStatus::Exited(_))
+					|| matches!(Self::leader_exit(self.pgid), Ok(Some(_))) =>
+			{
+				Ok(())
+			}
 			result => result.map_err(Error::from),
 		}
 	}

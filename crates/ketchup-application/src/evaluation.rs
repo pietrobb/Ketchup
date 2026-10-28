@@ -1053,7 +1053,10 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                 if spec.schema != ketchup_model::document::IMPORTED_EXACT_BODY_SCHEMA_V3 {
                     expected.area_mm2 = actual.area_mm2;
                 }
-                if actual != expected {
+                // The body keeps the recorded identity even when this libm
+                // rounds its measures a few last bits away (ADR 0009); the
+                // worker labels the mesh with what it evaluated.
+                if !actual.is_same_body_as(&expected) {
                     return Err(ExactProducerError::EvidenceMismatch {
                         format: format_name,
                         expected: Box::new(expected),
@@ -1070,7 +1073,7 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                         Some(index) => worker.tessellate_step_xde_part_with_cancellation(
                             temporary.path(),
                             &source_sha256,
-                            &spec.result_fingerprint,
+                            &actual.result_fingerprint,
                             mesh_target.path(),
                             index,
                             &worker_cancelled,
@@ -1078,7 +1081,7 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                         None => worker.tessellate_step_import_with_cancellation(
                             temporary.path(),
                             &source_sha256,
-                            &spec.result_fingerprint,
+                            &actual.result_fingerprint,
                             mesh_target.path(),
                             &worker_cancelled,
                         ),
@@ -1087,7 +1090,7 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                         Some(index) => worker.tessellate_iges_xde_part_with_cancellation(
                             temporary.path(),
                             &source_sha256,
-                            &spec.result_fingerprint,
+                            &actual.result_fingerprint,
                             mesh_target.path(),
                             index,
                             &worker_cancelled,
@@ -1095,7 +1098,7 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                         None => worker.tessellate_iges_import_with_cancellation(
                             temporary.path(),
                             &source_sha256,
-                            &spec.result_fingerprint,
+                            &actual.result_fingerprint,
                             mesh_target.path(),
                             &worker_cancelled,
                         ),

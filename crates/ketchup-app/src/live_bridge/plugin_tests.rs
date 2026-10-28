@@ -682,6 +682,15 @@ fn link_directory(link: &Path, target: &Path) {
     std::os::unix::fs::symlink(target, link).unwrap();
 }
 
+/// Removes a link [`link_directory`] made: a junction is a directory on
+/// Windows, a symbolic link is a file on Unix.
+fn unlink_directory(link: &Path) {
+    #[cfg(windows)]
+    std::fs::remove_dir(link).unwrap();
+    #[cfg(unix)]
+    std::fs::remove_file(link).unwrap();
+}
+
 #[test]
 fn a_link_in_or_as_a_plugin_folder_is_refused_without_a_prompt() {
     let _turn = file_turn();
@@ -711,7 +720,7 @@ fn a_link_in_or_as_a_plugin_folder_is_refused_without_a_prompt() {
         .unwrap()
         .to_owned();
     assert!(reason.starts_with("linked is a link"), "{reason}");
-    std::fs::remove_dir(folder.join("linked")).unwrap();
+    unlink_directory(&folder.join("linked"));
 
     // So would a link naming the plugin folder itself.
     let alias = directory.path().join("alias");

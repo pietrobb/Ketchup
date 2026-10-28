@@ -181,6 +181,7 @@ fn percentile(samples: &[f64], percentile: usize) -> f64 {
     ordered[index]
 }
 
+#[cfg(windows)]
 fn process_private_bytes() -> usize {
     let command = format!(
         "[Console]::Write((Get-Process -Id {}).PrivateMemorySize64)",
@@ -196,4 +197,21 @@ fn process_private_bytes() -> usize {
         .trim()
         .parse()
         .unwrap()
+}
+
+/// Resident set size stands in for private bytes, which `ps` cannot report;
+/// it also counts resident shared-library pages.
+#[cfg(not(windows))]
+fn process_private_bytes() -> usize {
+    let output = Command::new("ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .output()
+        .expect("ps reports the resident set size");
+    assert!(output.status.success());
+    let kibibytes: usize = String::from_utf8(output.stdout)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    kibibytes * 1024
 }

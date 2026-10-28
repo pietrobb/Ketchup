@@ -44,11 +44,14 @@ pub struct Grant {
     pub token: String,
 }
 
-/// `%LOCALAPPDATA%\Ketchup\live-instances` on Windows, `$XDG_RUNTIME_DIR/...` elsewhere.
+/// `%LOCALAPPDATA%\Ketchup\live-instances` on Windows, `$TMPDIR/...` on macOS
+/// (private to the user there), `$XDG_RUNTIME_DIR/...` on other Unixes.
 pub fn default_root() -> Option<PathBuf> {
     #[cfg(windows)]
     let base = std::env::var_os("LOCALAPPDATA");
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
+    let base = std::env::var_os("TMPDIR");
+    #[cfg(all(unix, not(target_os = "macos")))]
     let base = std::env::var_os("XDG_RUNTIME_DIR");
     #[cfg(not(any(windows, unix)))]
     let base: Option<std::ffi::OsString> = None;

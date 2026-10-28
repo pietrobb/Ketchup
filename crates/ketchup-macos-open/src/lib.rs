@@ -1,13 +1,12 @@
 //! Finder, "Open with" and drops on the Dock icon send the files as an
-//! "open documents" Apple Event, at launch and to a running Viewer. winit
-//! keeps the application delegate to itself, so the Viewer registers its own
-//! Apple Event handler once AppKit has installed its defaults.
-
-// The whole module is the Objective-C bridge: defining the handler class and
+//! "open documents" Apple Event, at launch and to a running app. winit keeps
+//! the application delegate to itself, so the app registers its own Apple
+//! Event handler once AppKit has installed its defaults.
+#![cfg(target_os = "macos")]
+// The whole crate is the Objective-C bridge: defining the handler class and
 // registering its selectors with AppKit is unsafe by nature.
 #![allow(unsafe_code)]
 
-use ketchup_viewer::desktop::OpenRequests;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
@@ -25,9 +24,9 @@ define_class!(
     // SAFETY: NSObject has no subclassing requirements and the class does not implement Drop.
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[name = "KetchupViewerOpenEvents"]
-    #[ivars = OpenRequests]
-    pub(crate) struct OpenEvents;
+    #[name = "KetchupOpenEvents"]
+    #[ivars = Box<dyn Fn(PathBuf)>]
+    pub struct OpenEvents;
 
     unsafe impl NSObjectProtocol for OpenEvents {}
 
@@ -54,7 +53,7 @@ define_class!(
         #[unsafe(method(openDocuments:withReplyEvent:))]
         fn open_documents(&self, event: &NSAppleEventDescriptor, _reply: &NSAppleEventDescriptor) {
             for path in document_paths(event) {
-                self.ivars().push(path);
+                (self.ivars())(path);
             }
         }
     }
@@ -79,11 +78,13 @@ fn document_paths(event: &NSAppleEventDescriptor) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Start listening for open events; keep the returned handler alive for the
-/// life of the app. `None` off the main thread, where AppKit cannot run.
-pub(crate) fn install(requests: OpenRequests) -> Option<Retained<OpenEvents>> {
+/// Start listening for open events before the event loop starts, and hand
+/// every file to `open` on the main thread; keep the returned handler alive for
+/// the life of the app. `None` off the main thread, where AppKit cannot run.
+pub fn install(open: impl Fn(PathBuf) + 'static) -> Option<Retained<OpenEvents>> {
     let mtm = MainThreadMarker::new()?;
-    let this = mtm.alloc::<OpenEvents>().set_ivars(requests);
+    let open: Box<dyn Fn(PathBuf)> = Box::new(open);
+    let this = mtm.alloc::<OpenEvents>().set_ivars(open);
     // SAFETY: NSObject's designated initializer on a freshly allocated instance.
     let handler: Retained<OpenEvents> = unsafe { msg_send![super(this), init] };
     let name = NSString::from_str("NSApplicationWillFinishLaunchingNotification");
