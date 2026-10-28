@@ -11,17 +11,28 @@ const NATIVE_BACKEND: (eframe::wgpu::Backend, eframe::wgpu::Backends) =
 const NATIVE_BACKEND: (eframe::wgpu::Backend, eframe::wgpu::Backends) =
     (eframe::wgpu::Backend::Metal, eframe::wgpu::Backends::METAL);
 
+/// Set to `1` only by tests on machines without a graphics card (the GitHub Windows
+/// runner): the window may then fall back to the software rasterizer (WARP).
+const SOFTWARE_ADAPTER_FOR_TESTS: &str = "KETCHUP_TEST_SOFTWARE_ADAPTER";
+
 /// Prefer discrete hardware for normal startup; explicit diagnostics remain unique.
+/// A software adapter is refused unless `allow_software`, and even then hardware wins.
 fn select_native_adapter(
     candidates: impl IntoIterator<Item = (eframe::wgpu::AdapterInfo, bool)>,
     requirement: Option<&AdapterRequirement>,
+    allow_software: bool,
 ) -> Result<usize, &'static str> {
     use eframe::wgpu::DeviceType;
     let mut selected = None;
     for (index, (info, surface_supported)) in candidates.into_iter().enumerate() {
+        let refused_type = match info.device_type {
+            DeviceType::Cpu => !allow_software,
+            DeviceType::VirtualGpu => true,
+            _ => false,
+        };
         if !surface_supported
             || info.backend != NATIVE_BACKEND.0
-            || matches!(info.device_type, DeviceType::Cpu | DeviceType::VirtualGpu)
+            || refused_type
             || requirement.is_some_and(|r| r.name != info.name || r.device_type != info.device_type)
         {
             continue;
@@ -29,6 +40,7 @@ fn select_native_adapter(
         let rank = match info.device_type {
             DeviceType::DiscreteGpu => 0,
             DeviceType::IntegratedGpu => 1,
+            DeviceType::Cpu => 3,
             _ => 2,
         };
         if requirement.is_some() && selected.is_some() {
@@ -158,6 +170,8 @@ impl KetchupApp {
     ) -> eframe::NativeOptions {
         let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::default();
         setup.instance_descriptor.backends = NATIVE_BACKEND.1;
+        let allow_software =
+            std::env::var_os(SOFTWARE_ADAPTER_FOR_TESTS).is_some_and(|value| value == "1");
         setup.native_adapter_selector = Some(Arc::new(move |adapters, surface| {
             let candidates = adapters.iter().map(|adapter| {
                 (
@@ -165,8 +179,8 @@ impl KetchupApp {
                     surface.is_none_or(|surface| adapter.is_surface_supported(surface)),
                 )
             });
-            let index =
-                select_native_adapter(candidates, requirement.as_ref()).map_err(str::to_owned)?;
+            let index = select_native_adapter(candidates, requirement.as_ref(), allow_software)
+                .map_err(str::to_owned)?;
             let selected = &adapters[index];
             let info = selected.get_info();
             *selected_info
@@ -1243,23 +1257,47 @@ mod adapter_tests {
 
     #[test]
     fn normal_start_selects_preferred_hardware_for_zero_one_and_two_gpus() {
-        assert!(select_native_adapter([], None).is_err());
+        assert!(select_native_adapter([], None, false).is_err());
         let integrated = adapter("integrated", DeviceType::IntegratedGpu);
         let discrete = adapter("discrete", DeviceType::DiscreteGpu);
-        assert_eq!(select_native_adapter([integrated.clone()], None), Ok(0));
         assert_eq!(
-            select_native_adapter([integrated.clone(), discrete.clone()], None),
+            select_native_adapter([integrated.clone()], None, false),
+            Ok(0)
+        );
+        assert_eq!(
+            select_native_adapter([integrated.clone(), discrete.clone()], None, false),
             Ok(1)
         );
         assert_eq!(
-            select_native_adapter([discrete.clone(), integrated], None),
+            select_native_adapter([discrete.clone(), integrated], None, false),
             Ok(0)
         );
         let mut unsupported = discrete;
         unsupported.1 = false;
         assert!(
-            select_native_adapter([unsupported, adapter("cpu", DeviceType::Cpu)], None).is_err()
+            select_native_adapter([unsupported, adapter("cpu", DeviceType::Cpu)], None, false)
+                .is_err()
         );
+    }
+
+    #[test]
+    fn software_adapter_only_when_tests_allow_it_and_never_over_hardware() {
+        let cpu = adapter("warp", DeviceType::Cpu);
+        let virtual_gpu = adapter("virtual", DeviceType::VirtualGpu);
+        assert!(select_native_adapter([cpu.clone()], None, false).is_err());
+        assert_eq!(select_native_adapter([cpu.clone()], None, true), Ok(0));
+        assert_eq!(
+            select_native_adapter(
+                [
+                    cpu.clone(),
+                    adapter("integrated", DeviceType::IntegratedGpu)
+                ],
+                None,
+                true
+            ),
+            Ok(1)
+        );
+        assert!(select_native_adapter([virtual_gpu], None, true).is_err());
     }
 
     #[test]
@@ -1272,11 +1310,12 @@ mod adapter_tests {
         assert_eq!(
             select_native_adapter(
                 [gpu.clone(), adapter("other", DeviceType::DiscreteGpu)],
-                Some(&requirement)
+                Some(&requirement),
+                false
             ),
             Ok(0)
         );
-        assert!(select_native_adapter([gpu.clone(), gpu], Some(&requirement)).is_err());
-        assert!(select_native_adapter([], Some(&requirement)).is_err());
+        assert!(select_native_adapter([gpu.clone(), gpu], Some(&requirement), false).is_err());
+        assert!(select_native_adapter([], Some(&requirement), false).is_err());
     }
 }

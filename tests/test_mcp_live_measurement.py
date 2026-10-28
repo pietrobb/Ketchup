@@ -27,6 +27,8 @@ def mcp(tmp_path):
     env["LOCALAPPDATA"] = str(tmp_path / "local")
     # The tests read English window text; without this the system language decides.
     env["KETCHUP_LANGUAGE"] = "en-US"
+    # The GitHub Windows runner has no graphics card; a real one still wins where present.
+    env["KETCHUP_TEST_SOFTWARE_ADAPTER"] = "1"
     Path(env["APPDATA"]).mkdir()
     Path(env["LOCALAPPDATA"]).mkdir()
     lines = queue.Queue()
