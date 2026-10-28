@@ -412,7 +412,7 @@ pub const IMPORTED_BOUNDS_ULPS: u64 = 1;
 
 /// `value` as an integer that orders like it, one apart per representable step.
 fn ulp_ordinal(value: f64) -> i64 {
-    let bits = value.to_bits() as i64;
+    let bits = value.to_bits().cast_signed();
     if bits < 0 { i64::MIN - bits } else { bits }
 }
 
@@ -437,7 +437,7 @@ pub fn ulps_from(value: f64, steps: i64) -> Option<f64> {
     } else {
         ordinal
     };
-    Some(f64::from_bits(bits as u64)).filter(|stepped| stepped.is_finite())
+    Some(f64::from_bits(bits.cast_unsigned())).filter(|stepped| stepped.is_finite())
 }
 
 impl StepImportEvidence {

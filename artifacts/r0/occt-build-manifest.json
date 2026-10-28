@@ -1,7 +1,7 @@
 {
     "schema_version":  1,
     "status":  "built-and-fingerprinted",
-    "captured_utc":  "2026-08-01T12:00:59.2677371Z",
+    "captured_utc":  "2026-10-28T07:32:01.1201099Z",
     "source":  {
                    "repository":  "https://github.com/Open-Cascade-SAS/OCCT",
                    "release":  "8.0.1",
@@ -31,11 +31,11 @@
                                             ],
                   "normalized_config_artifact":  "occt-cmake-config.json",
                   "normalized_config_sha256":  "48227fd020d6a2356fee62cdeed7ff9315c6a255c8dff5a69bf87a32d8e2316e",
-                  "raw_cmake_cache_sha256":  "787e0c51a7cebb42086925e8441c6e1e9cfe57d4c5224ad216bee10d4ec7b413"
+                  "raw_cmake_cache_sha256":  "2b97101e0c8796ae6856fe3c9d62342cb9b611116fc3994f2ab90dd309256709"
               },
     "install_tree":  {
-                         "file_count":  7400,
-                         "sha256":  "024b561dd9ab17f23df27e53dafcf1d14316aa7020d55903db6b5d984f4c9aeb"
+                         "file_count":  7401,
+                         "sha256":  "99fe87921d60c361e7dbe884907c43e39dba8376bb47c684fa20dbba3689f48c"
                      },
     "toolchain":  {
                       "rustc":  "rustc 1.97.0 (2d8144b78 2026-07-07)",
@@ -66,243 +66,243 @@
     "shared_libraries":  [
                              {
                                  "path":  "win64/vc14/bin/TKBin.dll",
-                                 "size_bytes":  112128,
-                                 "sha256":  "153bd0ee3196fd24d0c8b2b163165acfe6246eb4ed06eee8adfbce2badc5ef98"
+                                 "size_bytes":  476672,
+                                 "sha256":  "1a72ef090083d052f24f54c55df4794d8e84b480ec182859e1962dfd56502206"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKBinL.dll",
-                                 "size_bytes":  259072,
-                                 "sha256":  "a24105246985170126f31f5e27602545c7b8b3dee6d7da4f02c32ad97d8ea86e"
+                                 "size_bytes":  622592,
+                                 "sha256":  "16e529f7fede3e59c333be6861c060422bee527ec93a1185fd774a0bda07da56"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKBinTObj.dll",
-                                 "size_bytes":  56320,
-                                 "sha256":  "69f1fb559bb827741ebd2214776af6c211a73d5450cf0a91c5b8b246694ac908"
+                                 "size_bytes":  419840,
+                                 "sha256":  "389427381598caa2d4c4b6157ad7545581d2db47570a2e7a3fb7dcf7aa530ac6"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKBinXCAF.dll",
-                                 "size_bytes":  114688,
-                                 "sha256":  "8da1031e0c9bc09b87e4ee4c56988dacfce706262397c6c207c29bff811a3aa1"
+                                 "size_bytes":  477696,
+                                 "sha256":  "bae26219f4747b7f3b8d461e099bf51b366d2b1d34111c23560cf5c524447ee1"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKBO.dll",
-                                 "size_bytes":  2022912,
-                                 "sha256":  "4bb7bf67913967b7e0d2d7b23404c3bc665241ae9c9f769174f1c9d79754cef2"
+                                 "size_bytes":  2386432,
+                                 "sha256":  "cf1b57d5a4f5f29a4e693684276a9d4f1c73947a8d2708f4d302dbca87aafeea"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKBool.dll",
-                                 "size_bytes":  3610112,
-                                 "sha256":  "e2d3c54df9a6e6166dbe9b2de85be7a1d1f78dd8df70ab5b078eef5d53bcaed7"
+                                 "size_bytes":  3973120,
+                                 "sha256":  "2b8c50d39c7314af14ee5e8ee3e92e29549f72ca0d06f2304f3f50577485ace8"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKBRep.dll",
-                                 "size_bytes":  2145280,
-                                 "sha256":  "ed9c9beefb62ab27919ab55f842c45a4676302a273141c46694e2a8e34e3b8a3"
+                                 "size_bytes":  2509312,
+                                 "sha256":  "338e5ae1b5c430bc446cbdbcae5181eed39c3d919a5435169f63e4a73cc0547f"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKCAF.dll",
-                                 "size_bytes":  488960,
-                                 "sha256":  "29638405e3be25eff484cae07d89db09f27038f7130af5e86d0badfb238c604a"
+                                 "size_bytes":  852480,
+                                 "sha256":  "f4383bc85fe81c8bcdfab4e947528460484d25b570740782ebf1467c9e6de5b2"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKCDF.dll",
-                                 "size_bytes":  266752,
-                                 "sha256":  "85dea2942b806c0fdf96ed9a5db11c1558743531327b68f31c2e2309f8ff0b37"
+                                 "size_bytes":  630272,
+                                 "sha256":  "aa372d582b373620135294c938be8c34686b9d220cd747fce9ffa1b64d03151e"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKDE.dll",
-                                 "size_bytes":  182272,
-                                 "sha256":  "5c6c6a38a34c6476f656f1c35251f2b144467d6e2bca3aba3c35fcd546c94efc"
+                                 "size_bytes":  546816,
+                                 "sha256":  "4c57b8ed2bbf1388929e4a1c9ab42516a8495f501af781af0051f85c9d2b37e2"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKDECascade.dll",
-                                 "size_bytes":  100352,
-                                 "sha256":  "dd62d9d9398df9f4d6c8f63ca0fbf959fd54754369e8a1fcfb8e2a1be5b66931"
+                                 "size_bytes":  464384,
+                                 "sha256":  "cbccdb690ab7cc81cc47f46f10df7ac7dca1d1e91b75f09254cdb365b1e885be"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKDEIGES.dll",
-                                 "size_bytes":  2908672,
-                                 "sha256":  "028798360fa50235edf244d11745d47d6f03dbe79cea0dea038d3367bda6c0d7"
+                                 "size_bytes":  3272192,
+                                 "sha256":  "76d657cbe5feeb451cb9a08158767e9f19e918419b6f1da32726286e4afaa179"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKDEOBJ.dll",
-                                 "size_bytes":  217600,
-                                 "sha256":  "a4cdac9067c50af9d9f0882004b5056db3de81820210d633d680d1633d935b19"
+                                 "size_bytes":  581120,
+                                 "sha256":  "c4e49b2211a9cd079343519262dcce4315697ef33b94a85bcccd8203b4140028"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKDEPLY.dll",
-                                 "size_bytes":  104448,
-                                 "sha256":  "f33b52e74268b3be7935781d4052f222f76dfb215056b114b2514db0923abf2e"
+                                 "size_bytes":  467968,
+                                 "sha256":  "2eaf720b18fc5f6c786c5e1fa2ce5ce6981675e779d52bf6b6f96d18491efa98"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKDESTEP.dll",
-                                 "size_bytes":  5545472,
-                                 "sha256":  "d2b1d53bd628ebd056cb051d901c32c974471182199efc263662278a73b65a7b"
+                                 "size_bytes":  5907968,
+                                 "sha256":  "5a3cf358f57fc4fa77f0db982f69d288e8156bcbc7eead1dd82591714d9210c1"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKDESTL.dll",
-                                 "size_bytes":  133632,
-                                 "sha256":  "cebb8a2b52be55c482a764258a43a3f021ba32d3ac70e28f1bcc4374255ff46d"
+                                 "size_bytes":  497152,
+                                 "sha256":  "f7f34b4ea594aa341a3b75a06929abdeefedfd30b41c7bffb49d3c085640443d"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKDEVRML.dll",
-                                 "size_bytes":  505856,
-                                 "sha256":  "c483513758665ddc273ef001e756b82ea378f9be99d012919b9a96bc8a4d6a8a"
+                                 "size_bytes":  868864,
+                                 "sha256":  "3a1a7b0e7239ade8371ad4ae4bcd417dd0c5130813e38551a9087c8710069c53"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKernel.dll",
-                                 "size_bytes":  1581056,
-                                 "sha256":  "ec7d6c0d93ccf1624d7e76fe275d38ce5a807a74da824a25b1c93ef484d18df5"
+                                 "size_bytes":  1943552,
+                                 "sha256":  "b972fc4d9cf0ebff2c86ac4ffc423b3f88b66cad1ab640be232ca1c06b0ce75e"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKExpress.dll",
-                                 "size_bytes":  318464,
-                                 "sha256":  "acb2edb222b72d213fc780d9f04ad3aab7af80f04b9369944fb92ecc9e810ad8"
+                                 "size_bytes":  681472,
+                                 "sha256":  "7258ce8863fa99fefcdbb4ad66d9dac31d66ef86cc4ab3b284b8159dd66c5398"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKFeat.dll",
-                                 "size_bytes":  1036288,
-                                 "sha256":  "e4d562793ac5b52f5b6e892d6e83d72dad98bb5d75d579ef92fdc90eae5478db"
+                                 "size_bytes":  1400320,
+                                 "sha256":  "d00527bc65a29022ab5c2f5e2a293f778e8be9efb26bec1a2dd803c718fc4120"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKFillet.dll",
-                                 "size_bytes":  2344960,
-                                 "sha256":  "3fd677a88709308671ad889623e78345d20e462de03b60cd329f03e9aa489ce3"
+                                 "size_bytes":  2707456,
+                                 "sha256":  "670ee582973a7225f564c340da1ab98a87c664ae03de6b377b868dbb98a72c93"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKG2d.dll",
-                                 "size_bytes":  441344,
-                                 "sha256":  "9ec739332ba4f9d944ff3ddb9a7492e42e4528c363d27a0e7a56200f890895b6"
+                                 "size_bytes":  803840,
+                                 "sha256":  "89933db6047fde3090499f826c78d76d7371a42f6ee19bd39aebfc0b8d19c0d1"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKG3d.dll",
-                                 "size_bytes":  1359360,
-                                 "sha256":  "d23af462ba3f930eaeefcd939ed9671e0b7c6c50561b53d7b129b5d25ab580a6"
+                                 "size_bytes":  1722368,
+                                 "sha256":  "da05b08ccb5e60e1abf355efbf7ed510eff2c092ba1bc8dc09c1598e5f7c7f80"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKGeomAlgo.dll",
-                                 "size_bytes":  4455936,
-                                 "sha256":  "a585511bd79983b3d68fdf676439d7c7eb95d4e59276a951fb90843280beea29"
+                                 "size_bytes":  4818432,
+                                 "sha256":  "003d21340a392d50fde73ba045b9d8e56f1eb23e53077309162cfc3876e02b8d"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKGeomBase.dll",
-                                 "size_bytes":  4406272,
-                                 "sha256":  "8b8d3b6226b37099e489838131a7fe341d2c0ee963c2a336b6c626b00a8729a1"
+                                 "size_bytes":  4769280,
+                                 "sha256":  "f370fa5ad9acba01400910ed5ff913b9ecf29226368dc23cc481402aed8706f2"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKHelix.dll",
-                                 "size_bytes":  84992,
-                                 "sha256":  "06b687b0cab09ed908e937503266c9b41dc7382fe473f09b780751ed944288e2"
+                                 "size_bytes":  448000,
+                                 "sha256":  "19a62401d7178295fb3eaac4438e24ae35bf612ddfbc5f5a949ef1a4c2a46137"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKHLR.dll",
-                                 "size_bytes":  1011712,
-                                 "sha256":  "d443d36b070e40c7c31e27000445040218830831f9ee8823180f3295845646ae"
+                                 "size_bytes":  1374720,
+                                 "sha256":  "511f1944ab791b9126ce6df59c27d2d6591182a848d079df45c85431ada16777"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKLCAF.dll",
-                                 "size_bytes":  649728,
-                                 "sha256":  "dca4edf282500a0dbf7f218f8bc14bb6171c6a3902f0f0ef30fce310a5e73342"
+                                 "size_bytes":  1013248,
+                                 "sha256":  "6202abbe002e59e49bc414a2ca15b708108ee5cc54bab0ba72767077cf4d9e05"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKMath.dll",
-                                 "size_bytes":  1436160,
-                                 "sha256":  "29dc28793763fd991f6807f88c7815adc8075280954bda94ede6863e59a91b03"
+                                 "size_bytes":  1799168,
+                                 "sha256":  "36af8b970d45f4936394d317de4fa689d5c8bdbd105766e4f2959e306f17eb37"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKMesh.dll",
-                                 "size_bytes":  654336,
-                                 "sha256":  "fecb0a988727a579e32798d7ed9b54e9593c36be05a5a6d5514bc623dd209198"
+                                 "size_bytes":  1017344,
+                                 "sha256":  "7069ec3d5aa1759f780f5aed7704ae612d1f0e28385dcbcb69b565cb1c9dcce8"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKOffset.dll",
-                                 "size_bytes":  1795072,
-                                 "sha256":  "20290f4e8ac4bce7830fc9ba6a88330d1f58d7aa67373f5841826a301ea4ec26"
+                                 "size_bytes":  2158080,
+                                 "sha256":  "28e65cc7a1bfd1b73e19fe92d0970d16440b19ecb84fcfea05cc8b36898b05c9"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKPrim.dll",
-                                 "size_bytes":  318976,
-                                 "sha256":  "e295f3f6fe36967da3d5478988c49b71ab0e1ab6fa576de39397c95ed506a53c"
+                                 "size_bytes":  681984,
+                                 "sha256":  "a677c84f2c9c714861f3a43c8935a617fbca12992e4bce3ec6f84f990202a387"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKRWMesh.dll",
-                                 "size_bytes":  174592,
-                                 "sha256":  "caa7bfba4b57e487d139367fadf9b20312617bedcb6f5a835c1908a3a3c0ec9a"
+                                 "size_bytes":  537600,
+                                 "sha256":  "b22e22e4d9457f4969b77147c2f7f6952786ce239b8708b653509e5a99d64813"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKService.dll",
-                                 "size_bytes":  1032192,
-                                 "sha256":  "49a57f7e1e7f03f14acddffe296d6e9e75390273957c6de93bfb1f9ba5324157"
+                                 "size_bytes":  1395200,
+                                 "sha256":  "4a8632eb17c6f8642c60b7ef36b8a92083cb7b5fad4a3f355b4280e5fed22715"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKShHealing.dll",
-                                 "size_bytes":  2592768,
-                                 "sha256":  "767cb60380e97509ee94d019b99c1d8a4d30abc5ad4a83cfbac293eb7d105705"
+                                 "size_bytes":  2956288,
+                                 "sha256":  "1acfa1684d3affbdfea115b4ded87e4a2588c61d534ed09aeeb0fa05bec4d25a"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKStd.dll",
-                                 "size_bytes":  619520,
-                                 "sha256":  "f56219b1ff54dcdfeff1d670ec6872dacc952f0a3d87b9bde02721aaf5587af0"
+                                 "size_bytes":  983040,
+                                 "sha256":  "efee150bb25db3d7750f0e4f1887a4517e56214031babc48f1cd2a9418ba7140"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKStdL.dll",
-                                 "size_bytes":  235008,
-                                 "sha256":  "61990ff57c424fd3f08f06a23dcaabe9c25ec42ebae4943f6dbf46bfb6bf639b"
+                                 "size_bytes":  599040,
+                                 "sha256":  "af38429b90a5352da5d8d0071fe1c0e2f1377b2866fc9ed519ced548f6b83fe9"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKTObj.dll",
-                                 "size_bytes":  208384,
-                                 "sha256":  "082f35f3cec61aa33be2bc705d5c5354c2a30462baecfd4ea3b8aed4ccf4f0c0"
+                                 "size_bytes":  571392,
+                                 "sha256":  "39de70887122060c558fdf25c1da9318626fbc0eda688b9cc52f231595c9d0e5"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKTopAlgo.dll",
-                                 "size_bytes":  2481152,
-                                 "sha256":  "39a6e86e2349543617fd51441aa68114efe53cbc573ec5e1fad2997f876ddc03"
+                                 "size_bytes":  2844160,
+                                 "sha256":  "855ad9b74e695e37237f81caf211fd90be927d0a700e2329c0c170b37e56f28a"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKV3d.dll",
-                                 "size_bytes":  2557440,
-                                 "sha256":  "f963620012b4c40d31250a0f0370d80c4bee8e1303a739e8db4a97788e206bed"
+                                 "size_bytes":  2921472,
+                                 "sha256":  "7caa9359509d281d94aa45c4ef5fe0c59a4fc8f606d811c3922227cddcab094b"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKVCAF.dll",
-                                 "size_bytes":  207872,
-                                 "sha256":  "883c58631633bed6e461481c2905df60bc8ee8147e50733296afefa1da8d5ce7"
+                                 "size_bytes":  571392,
+                                 "sha256":  "c65279ac99d8d3f5dd9312d1b5402e6633b848dfc4b21a9958c3ab7d7e7f8a56"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKXCAF.dll",
-                                 "size_bytes":  799232,
-                                 "sha256":  "cc1562eb399db4bce334233644423fa8541c711d887a8b78ba77f7f1adadc649"
+                                 "size_bytes":  1162752,
+                                 "sha256":  "efa9004ab70bb281362dcd82c8fa7b5a52d479e85dd0bc383ac89cca4a4bff27"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKXMesh.dll",
-                                 "size_bytes":  17920,
-                                 "sha256":  "4b325a1db61bd81ca3b3568a02ad63ecb24acf19f5b0077531847f4fdb120fbe"
+                                 "size_bytes":  381440,
+                                 "sha256":  "cf66095c4e058114f8915a30038a2acd94ce92b374ffe5312abe423ffa0f50f4"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKXml.dll",
-                                 "size_bytes":  174592,
-                                 "sha256":  "18f75a8c4b1ebf4d412c8e3ffac2652e2a4110a1fced570c2131c5308cba3e24"
+                                 "size_bytes":  538112,
+                                 "sha256":  "d88c478fb5daf3ad4551f88ee2284520e28bdbe4fd37597c8ea0397be14101fc"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKXmlL.dll",
-                                 "size_bytes":  348160,
-                                 "sha256":  "de513358f8ec384b0c2198abcca9f39c60e9d4ebceb0e61dec60cf1432f76abe"
+                                 "size_bytes":  711168,
+                                 "sha256":  "4d1d214960252f9199db3860fa89f034fe715605a68c3fe5bb60768a5e52c14b"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKXmlTObj.dll",
-                                 "size_bytes":  55808,
-                                 "sha256":  "d8d907bdd21a6536c69fb18231afa7e6b0c3f842ea0b84ef545f9b5618012b58"
+                                 "size_bytes":  419328,
+                                 "sha256":  "a951d695fd396a2f64c2b0e05ee6df40ffec98e1f19aa60c0728ef4b1b9b0852"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKXmlXCAF.dll",
-                                 "size_bytes":  144896,
-                                 "sha256":  "0dd3b9430cb50feef1234e23f132770cf200259d092e3873b9b2dfedc9d22825"
+                                 "size_bytes":  508928,
+                                 "sha256":  "00c2e77e460f7a17b2e9e81203d2f47a1e4023249acf56def0fe7f71e019e024"
                              },
                              {
                                  "path":  "win64/vc14/bin/TKXSBase.dll",
-                                 "size_bytes":  1580544,
-                                 "sha256":  "93c6af42e7275eb96c1fbada88272f655e043803af02ca8b02e2c07b8ec33786"
+                                 "size_bytes":  1943552,
+                                 "sha256":  "2ee9cc18ac4a2a5b3e5d6cfcd1c703b8a793d79c8fbecb7e3602a7ef37d55576"
                              }
                          ],
     "license":  {

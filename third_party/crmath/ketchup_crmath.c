@@ -35,6 +35,8 @@ double cr_pow(double, double);
 double cr_cbrt(double);
 double cr_hypot(double, double);
 void cr_sincos(double, double *, double *);
+float cr_sinf(float);
+float cr_cosf(float);
 float cr_acosf(float);
 float cr_powf(float, float);
 float cr_tanf(float);
@@ -61,6 +63,8 @@ double log1p(double x) { return cr_log1p(x); }
 double pow(double x, double y) { return cr_pow(x, y); }
 double cbrt(double x) { return cr_cbrt(x); }
 double hypot(double x, double y) { return cr_hypot(x, y); }
+float sinf(float x) { return cr_sinf(x); }
+float cosf(float x) { return cr_cosf(x); }
 float acosf(float x) { return cr_acosf(x); }
 float powf(float x, float y) { return cr_powf(x, y); }
 float tanf(float x) { return cr_tanf(x); }
@@ -80,4 +84,43 @@ struct ketchup_sincos __sincos_stret(double x) {
 }
 
 double __exp10(double x) { return cr_exp10(x); }
+#endif
+
+#if defined(_WIN32)
+/* Rust's f64::hypot calls the CRT's _hypot on Windows. */
+double _hypot(double x, double y) { return cr_hypot(x, y); }
+
+/* The UCRT headers declare acosh, cbrt, hypot, log2, powf, ... as dllimport,
+ * so OCCT calls them through the import pointer __imp_<name>. Defining those
+ * pointers here routes the calls to the functions above and keeps the linker
+ * from pulling ucrt.lib's member, which would define <name> a second time. */
+#define KETCHUP_IMPORT(ret, name, params) ret (*__imp_##name) params = name;
+KETCHUP_IMPORT(double, sin, (double))
+KETCHUP_IMPORT(double, cos, (double))
+KETCHUP_IMPORT(double, tan, (double))
+KETCHUP_IMPORT(double, asin, (double))
+KETCHUP_IMPORT(double, acos, (double))
+KETCHUP_IMPORT(double, atan, (double))
+KETCHUP_IMPORT(double, atan2, (double, double))
+KETCHUP_IMPORT(double, sinh, (double))
+KETCHUP_IMPORT(double, cosh, (double))
+KETCHUP_IMPORT(double, tanh, (double))
+KETCHUP_IMPORT(double, asinh, (double))
+KETCHUP_IMPORT(double, acosh, (double))
+KETCHUP_IMPORT(double, atanh, (double))
+KETCHUP_IMPORT(double, exp, (double))
+KETCHUP_IMPORT(double, exp2, (double))
+KETCHUP_IMPORT(double, log, (double))
+KETCHUP_IMPORT(double, log2, (double))
+KETCHUP_IMPORT(double, log10, (double))
+KETCHUP_IMPORT(double, log1p, (double))
+KETCHUP_IMPORT(double, pow, (double, double))
+KETCHUP_IMPORT(double, cbrt, (double))
+KETCHUP_IMPORT(double, hypot, (double, double))
+KETCHUP_IMPORT(double, _hypot, (double, double))
+KETCHUP_IMPORT(float, sinf, (float))
+KETCHUP_IMPORT(float, cosf, (float))
+KETCHUP_IMPORT(float, acosf, (float))
+KETCHUP_IMPORT(float, powf, (float, float))
+KETCHUP_IMPORT(float, tanf, (float))
 #endif

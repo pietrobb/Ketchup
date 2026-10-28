@@ -29,13 +29,16 @@ use std::{
 /// The broker refuses a discovery root other users can read, as a real
 /// per-user runtime directory is; a default temp dir on Unix is 0755.
 fn private_tempdir() -> tempfile::TempDir {
-    let mut builder = tempfile::Builder::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        builder.permissions(std::fs::Permissions::from_mode(0o700));
+        tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap()
     }
-    builder.tempdir().unwrap()
+    #[cfg(not(unix))]
+    tempfile::tempdir().unwrap()
 }
 
 // Test-only fixed credential; production launchers generate secrets.token_hex(32).

@@ -888,13 +888,16 @@ mod tests {
     /// A discovery root other users can read is refused, as the real per-user
     /// runtime directory is not; a default temp dir on Unix is 0755.
     fn private_tempdir() -> tempfile::TempDir {
-        let mut builder = tempfile::Builder::new();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            builder.permissions(fs::Permissions::from_mode(0o700));
+            tempfile::Builder::new()
+                .permissions(fs::Permissions::from_mode(0o700))
+                .tempdir()
+                .unwrap()
         }
-        builder.tempdir().unwrap()
+        #[cfg(not(unix))]
+        tempfile::tempdir().unwrap()
     }
 
     #[test]

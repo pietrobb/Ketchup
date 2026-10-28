@@ -19,6 +19,7 @@ set(functions
     binary64/exp/exp binary64/exp2/exp2 binary64/exp10/exp10
     binary64/log/log binary64/log2/log2 binary64/log10/log10 binary64/log1p/log1p
     binary64/pow/pow binary64/cbrt/cbrt binary64/hypot/hypot
+    binary32/sin/sinf binary32/cos/cosf
     binary32/acos/acosf binary32/pow/powf binary32/tan/tanf)
 
 add_library(ketchup_crmath STATIC ketchup_crmath.c)

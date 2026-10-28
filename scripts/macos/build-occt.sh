@@ -58,7 +58,7 @@ cmake --install "$crmath_build"
 crmath="$install/lib/libketchup_crmath.a"
 
 math_functions=(sin cos tan asin acos atan atan2 sinh cosh tanh asinh acosh atanh
-    exp exp2 exp10 log log2 log10 log1p pow cbrt hypot acosf powf tanf)
+    exp exp2 exp10 log log2 log10 log1p pow cbrt hypot sinf cosf acosf powf tanf)
 fp_flags="-ffp-contract=off"
 for function in "${math_functions[@]}"; do
     fp_flags+=" -fno-builtin-$function"

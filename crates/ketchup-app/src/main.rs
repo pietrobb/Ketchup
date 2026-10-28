@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 struct OpenRequests(Arc<Mutex<(Vec<PathBuf>, Option<eframe::egui::Context>)>>);
 
 impl OpenRequests {
+    #[cfg(target_os = "macos")]
     fn push(&self, path: PathBuf) {
         let mut inbox = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         inbox.0.push(path);

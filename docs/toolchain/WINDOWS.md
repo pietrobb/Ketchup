@@ -5,7 +5,7 @@ This baseline builds Ketchup with Rust 1.97.0 and a source-built, replaceable OC
 ## Frozen reference environment
 
 - Windows 10 x86-64, build 19045.
-- Visual Studio Build Tools 2022 17.5.4 (`17.5.33530.505`).
+- Visual Studio Build Tools 2022 17.5.4 (`17.5.33530.505`) with the component "C++ Clang tools for Windows" (`Microsoft.VisualStudio.Component.VC.Llvm.Clang` and `Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset`, clang-cl 15.0.1). It builds the correctly rounded math library `third_party/crmath` (ADR 0009), which the build script links into every OCCT DLL.
 - MSVC compiler 19.35, toolset `14.35.32215`.
 - Windows SDK `10.0.22000.0`; its x64 `rc.exe` and `mt.exe` are selected explicitly.
 - CMake 4.2.1 binary SHA-256 `56a4d1e9407238ab004abc6a0bb960aa10a8a77b0c52023e10cdf880fe16346f`.

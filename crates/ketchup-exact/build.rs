@@ -3,10 +3,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The functions third_party/crmath/ketchup_crmath.c replaces.
-const CRMATH_FUNCTIONS: [&str; 26] = [
+const CRMATH_FUNCTIONS: [&str; 28] = [
     "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh", "asinh", "acosh",
     "atanh", "exp", "exp2", "exp10", "log", "log2", "log10", "log1p", "pow", "cbrt", "hypot",
-    "acosf", "powf", "tanf",
+    "sinf", "cosf", "acosf", "powf", "tanf",
 ];
 
 fn copy_runtime_dlls(source: &Path, destination: &Path) {

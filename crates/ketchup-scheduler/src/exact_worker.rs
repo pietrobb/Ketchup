@@ -3076,7 +3076,8 @@ fn imported_fingerprint_near(topology: &str, measures: &[f64; 7], expected: &str
             IMPORTED_MEASURE_ULPS
         } else {
             IMPORTED_BOUNDS_ULPS
-        }) as i64
+        })
+        .cast_signed()
     };
     let mut steps = [0_i64; 7];
     for (slot, step) in steps.iter_mut().enumerate() {

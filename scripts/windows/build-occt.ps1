@@ -144,7 +144,12 @@ $clangCl = Join-Path $vs.installationPath "VC\Tools\Llvm\x64\bin\clang-cl.exe"
 if (-not (Test-Path $clangCl)) {
     throw "crmath needs the Visual Studio component Microsoft.VisualStudio.Component.VC.Llvm.Clang (C++ Clang tools for Windows)."
 }
-Write-Host "clang-cl SHA-256: $((Get-FileHash $clangCl -Algorithm SHA256).Hash.ToLowerInvariant())"
+$clangClHash = (Get-FileHash $clangCl -Algorithm SHA256).Hash.ToLowerInvariant()
+Write-Host "clang-cl SHA-256: $clangClHash"
+# clang-cl 15.0.1 of Visual Studio Build Tools 17.5.33530.505.
+if (-not $RunnerToolchain -and $clangClHash -ne "46ff609d0bf7b0a37aa64c023cf2715d129b8914d63838244455ca543768f5ed") {
+    throw "Native tool hash mismatch: $clangCl"
+}
 $crmathBuild = Assert-ChildPath "$BuildDir-crmath" $thirdPartyRoot "crmath BuildDir"
 if (Test-Path $crmathBuild) { Remove-Item -Recurse -Force $crmathBuild }
 $runtimeRoot = Join-Path $InstallDir "win64\vc14"
@@ -203,7 +208,7 @@ if ($LASTEXITCODE -ne 0) { throw "OCCT CMake configuration failed." }
 if ($LASTEXITCODE -ne 0) { throw "OCCT Release build or install failed." }
 
 $dumpbin = Join-Path $vs.installationPath "VC\Tools\MSVC\$msvcVersion\bin\HostX64\x64\dumpbin.exe"
-$systemMath = '^\s+[0-9A-Fa-f]+\s+((a?(sin|cos|tan)h?|atan2|exp(2|10|m1)?|log(2|10|1p)?|pow|cbrt|hypot|erfc?|[lt]gamma)f?|__vdecl_\w+|_?_libm_sse2\w*)$'
+$systemMath = '^\s+[0-9A-Fa-f]+\s+((a?(sin|cos|tan)h?|atan2|exp(2|10|m1)?|log(2|10|1p)?|pow|cbrt|_?hypot|erfc?|[lt]gamma)f?|__vdecl_\w+|_?_libm_sse2\w*)$'
 $leaks = foreach ($dll in Get-ChildItem (Join-Path $runtimeRoot "bin") -Filter "TK*.dll") {
     & $dumpbin /nologo /imports $dll.FullName |
         Where-Object { $_ -match $systemMath } |
