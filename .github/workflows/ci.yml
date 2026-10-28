@@ -279,6 +279,13 @@ jobs:
       - name: release workers
         if: env.NIGHTLY == 'true'
         run: cargo build --locked --release -p ketchup-scheduler --bins
+      # Their geometry checks finish within the window's limits only in the
+      # optimized build (RELEASE_APP_TESTS in scripts/run_production_tests.py).
+      - name: live MCP tests against the release application
+        if: env.NIGHTLY == 'true'
+        run: |
+          cargo build --locked --release -p ketchup-app --bin ketchup-app
+          python scripts/run_production_tests.py --release-app
       - name: release-only whole-house tests
         if: env.NIGHTLY == 'true'
         env:

@@ -33,4 +33,4 @@ crates/ketchup-scheduler/tests/plugin_sandbox.rs 10
 crates/ketchup-scheduler/tests/scheduler_reliability.rs 1
 crates/ketchup-scheduler/tests/validator_sandbox.rs 1
 tests/test_headless_acceptance.py 6
-tests/test_mcp_live_measurement.py 3
+tests/test_mcp_live_measurement.py 2

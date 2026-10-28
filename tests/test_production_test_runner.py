@@ -37,6 +37,17 @@ def test_the_live_mcp_tests_get_the_debug_app_beside_its_worker(tmp_path):
     assert "psutil==" in (ROOT / "tests" / "requirements-ci.txt").read_text(encoding="utf-8")
 
 
+def test_the_release_app_tests_exist_and_run_nightly():
+    # The debug run leaves them out, so the nightly job must run them.
+    for test in runner.RELEASE_APP_TESTS:
+        path, name = test.split("::")
+        assert path in runner.app_tests(), test
+        assert f"def {name}(" in (ROOT / path).read_text(encoding="utf-8"), test
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "cargo build --locked --release -p ketchup-app --bin ketchup-app" in workflow
+    assert "python scripts/run_production_tests.py --release-app" in workflow
+
+
 def test_missing_required_component_fails_closed(tmp_path):
     missing = tmp_path / "ketchup-headless"
     with pytest.raises(runner.RunnerError, match="Missing required headless"):

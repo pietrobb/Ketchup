@@ -90,6 +90,17 @@ def mcp(tmp_path):
             server.stdout.close()
 
 
+def ask_until(ask, ready, seconds, every):
+    """Asks again until the answer is ready or `seconds` run out: the window
+    answers a request whose job has not finished with "ask again"."""
+    deadline = time.monotonic() + seconds
+    while True:
+        answer = ask()
+        if ready(answer) or time.monotonic() > deadline:
+            return answer
+        time.sleep(every)
+
+
 def test_validator_catalog_discovery_and_execution(mcp):
     before = mcp("inspect", action="status")
     catalog = mcp("list_validators")["result"]
@@ -433,12 +444,24 @@ def test_program_materials_drive_requested_read_only_validators(mcp, tmp_path):
 
 
 def test_modular_cabinet_local_edit_and_complete_reports(mcp, tmp_path):
+    """Needs the release application: on the debug one the cabinet's checks run
+    out of their 20 s (scripts/run_production_tests.py --release-app)."""
+    def settled(reply):
+        # An edit answers once its exact check has run 5 s. Like an AI client, wait
+        # for the check through the report, then validate what it published.
+        exact = reply["result"].get("exact_collisions", {})
+        if [row.get("reason") for row in exact.get("not_evaluated", [])] != ["exact_check_running"]:
+            return reply
+        ask_until(lambda: mcp("program", action="report", expected=reply["stamp"], section="issues", limit=1, error=None),
+                  lambda page: page.get("error") != "busy", 120, 1)
+        return mcp("program", action="validate", expected=reply["stamp"])
+
     shelves = mcp("program", action="docs", name="shared-partition-shelves.star")
     checked_shelves = mcp("program", action="apply", source=shelves["text"])
     assert checked_shelves["result"]["validation"]["state"] == "passed", checked_shelves
     example = mcp("program", action="docs", name="modular-doweled-cabinet.star")
     source = example["text"]
-    applied = mcp("program", action="apply", file_name="modular-doweled-cabinet.star", source=source)
+    applied = settled(mcp("program", action="apply", file_name="modular-doweled-cabinet.star", source=source))
     assert applied["result"]["validation"]["state"] == "passed", applied
     assert applied["result"]["report"]["bom"]["total_parts"] == 88
     page = mcp("inspect", action="query", kind="occurrences", limit=100)["result"]
@@ -455,13 +478,13 @@ def test_modular_cabinet_local_edit_and_complete_reports(mcp, tmp_path):
     assert any("top = board" in line["text"] for line in selection["lines"])
     for before_cap, after_cap in [("True", "False"), ("False", "True")]:
         context = mcp("program", action="read")
-        cap_result = mcp("program", action="patch", expected=context["stamp"], edits=[{"old": "upper_cap = " + before_cap, "new": "upper_cap = " + after_cap}])
+        cap_result = settled(mcp("program", action="patch", expected=context["stamp"], edits=[{"old": "upper_cap = " + before_cap, "new": "upper_cap = " + after_cap}]))
         assert cap_result["result"]["validation"]["state"] == "passed", cap_result
         assert cap_result["result"]["report"]["bom"]["total_parts"] == 88
     connector = "\nh1=hole('lower 0 right','x+',at=(260,300),diameter=8,depth=18,through=True,id='module-connector')\nh2=hole('lower 1 left','x-',at=(260,300),diameter=8,depth=18,through=True,id='module-connector')\njoint('lower 0 right','lower 1 left',kind='connector',fastener='M6 connector',fasteners=[(875,260,380)],links=[joint_link([h1,h2])])\n"
-    linked = mcp("program", action="apply", source=source + connector)
+    linked = settled(mcp("program", action="apply", source=source + connector))
     assert linked["result"]["validation"]["state"] == "passed", linked
-    removed = mcp("program", action="patch", expected=linked["stamp"], edits=[{"old": connector, "new": ""}])
+    removed = settled(mcp("program", action="patch", expected=linked["stamp"], edits=[{"old": connector, "new": ""}]))
     assert removed["result"]["validation"]["state"] == "passed", removed
     assert mcp("program", action="read")["result"]["source"] == source
     old, new = "right_clearance = 650", "right_clearance = 660"
@@ -477,9 +500,11 @@ def test_modular_cabinet_local_edit_and_complete_reports(mcp, tmp_path):
             result = mcp("program", action="apply", expected=stamp, source=source.replace(old, new))
         else:
             result = mcp("program", action="patch", expected=stamp, edits=[{"old": old, "new": new}])
+        # The read and the edit; waiting for the exact check is the same for both.
         calls = mcp.metrics[start:]
-        measurements[workflow] = {"calls": len(calls), "bytes": sum(c["request_bytes"] + c["response_bytes"] for c in calls), "seconds": sum(c["seconds"] for c in calls)}
         assert len(calls) == 2
+        measurements[workflow] = {"calls": len(calls), "bytes": sum(c["request_bytes"] + c["response_bytes"] for c in calls), "seconds": sum(c["seconds"] for c in calls)}
+        result = settled(result)
         assert result["result"]["validation"]["state"] == "passed", result
         assert any(m["distance_mm"] == pytest.approx(660) for m in result["result"]["exact_collisions"]["measurements"])
         mcp("edit", action="undo")
@@ -591,12 +616,8 @@ def test_house_project_drawings_pdf_with_title_block_through_public_mcp(mcp, tmp
     title_block = {"client": "Ján Novák", "location": "Žilina, parc. č. 1234/5", "drawing_number": "D.1.01", "stage": "DSP"}
     def export(target=sheet, **arguments):
         # The sheet waits for the exact evaluation of every visible part.
-        deadline = time.monotonic() + 300
-        while True:
-            result = mcp("file", action="export_drawings", path=str(target), error=None, **arguments)
-            if result.get("error") != "drawings_unavailable" or time.monotonic() > deadline:
-                return result["result"]
-            time.sleep(2)
+        return ask_until(lambda: mcp("file", action="export_drawings", path=str(target), error=None, **arguments),
+                         lambda result: result.get("error") != "drawings_unavailable", 300, 2)["result"]
 
     result = export(format="auto", title_block=title_block)
     assert result["exported"] is True and result["scale"] == "1:50", result
@@ -604,8 +625,8 @@ def test_house_project_drawings_pdf_with_title_block_through_public_mcp(mcp, tmp
     # The set is one sheet per storey plan, the sections and the elevations.
     cuts = {view["view"]: view["cut_solids"] for page in result["sheets"] for view in page["views"]}
     assert cuts["plan"] > 50 and cuts["longitudinal_section"] > 0 and cuts["cross_section"] > 0, cuts
-    import fitz
-    text = "".join(page.get_text() for file in result["files"] for page in fitz.open(file))
+    from pypdf import PdfReader
+    text = "".join(page.extract_text() for file in result["files"] for page in PdfReader(file).pages)
     for expected in ["Ján Novák", "Žilina, parc. č. 1234/5", "D.1.01", "1:50", result["sheets"][0]["format"], "Longitudinal section"]:
         assert expected in text, expected
     assert mcp("file", action="export_drawings", path=str(tmp_path / "sheet.svg"), error=True)["error"] == "invalid_path"
@@ -623,13 +644,9 @@ def test_house_project_drawings_pdf_with_title_block_through_public_mcp(mcp, tmp
 def test_step_export_and_import_round_trip_through_public_mcp(mcp, tmp_path):
     mcp("program", action="apply", file_name="part.star", source="box('plate',(100,60,20))\nbox('post',(20,20,80),at=(200,0,0))")
     step = tmp_path / "part.step"
-    deadline = time.monotonic() + 300
-    while True:
-        # STEP is written from the exact solids, which may still be evaluating.
-        reply = mcp("file", action="export", export_format="step", path=str(step), error=None)
-        if reply.get("error") != "export_failed" or time.monotonic() > deadline:
-            break
-        time.sleep(2)
+    # STEP is written from the exact solids, which may still be evaluating.
+    reply = ask_until(lambda: mcp("file", action="export", export_format="step", path=str(step), error=None),
+                      lambda reply: reply.get("error") != "export_failed", 300, 2)
     assert reply["result"]["exported"] is True and step.is_file(), reply
     assert "ISO-10303-21" in step.read_text(encoding="utf-8", errors="replace")[:200]
     again = mcp("file", action="export", export_format="step", path=str(step), error=True)

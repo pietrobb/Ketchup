@@ -5,6 +5,9 @@
 workspace build and the release window check. The live MCP tests launch the debug
 `ketchup-app` as `KETCHUP_APP`, beside its worker; before, nothing set it and they
 ran nowhere (review 2026-10-24 CI-22).
+
+`--release-app` runs only `RELEASE_APP_TESTS` against the release `ketchup-app`
+and worker a CI job already built; the debug run leaves them out.
 """
 
 from __future__ import annotations
@@ -28,6 +31,12 @@ ROOT = Path(__file__).resolve().parents[1]
 NATIVE_MARKER = 'os.environ.get("KETCHUP_HEADLESS")'
 # A live MCP test reads the built application from this variable and skips without it.
 APP_MARKER = 'os.environ.get("KETCHUP_APP")'
+# Live MCP tests whose geometry checks finish within the window's time limits
+# only in the optimized build: on the debug one the checks of the 88-part
+# cabinet run out of their 20 s.
+RELEASE_APP_TESTS = [
+    "tests/test_mcp_live_measurement.py::test_modular_cabinet_local_edit_and_complete_reports",
+]
 
 
 def tests_reading(marker: str) -> list[str]:
@@ -145,10 +154,26 @@ def native_paths(target_directory: Path) -> tuple[Path, Path]:
     )
 
 
-def app_path(target_directory: Path) -> Path:
-    """The debug application, which finds the debug worker beside it."""
+def app_path(target_directory: Path, profile: str = "debug") -> Path:
+    """The application, which finds the worker of the same profile beside it."""
     suffix = ".exe" if os.name == "nt" else ""
-    return target_directory / "debug" / f"ketchup-app{suffix}"
+    return target_directory / profile / f"ketchup-app{suffix}"
+
+
+def run_release_app_tests(target_directory: Path) -> int:
+    suffix = ".exe" if os.name == "nt" else ""
+    app = require_component(app_path(target_directory, "release"), "ketchup-app release executable")
+    worker = require_component(
+        target_directory / "release" / f"ketchup-exact-worker{suffix}",
+        "ketchup-exact-worker release executable",
+    )
+    worker_handshake(worker)
+    os.environ["KETCHUP_APP"] = str(app)
+    os.environ["KETCHUP_EXACT_WORKER"] = str(worker)
+    print(f"KETCHUP_APP={app} sha256={sha256(app)}")
+    print(f"KETCHUP_EXACT_WORKER={worker} sha256={sha256(worker)}")
+    print("Release application tests:", " ".join(RELEASE_APP_TESTS))
+    return int(pytest.main([*RELEASE_APP_TESTS, "-ra"], plugins=[FailOnSkipPlugin()]))
 
 
 def require_component(path: Path, label: str) -> Path:
@@ -202,13 +227,21 @@ def main() -> int:
         action="store_true",
         help="test the debug binaries already built, without building",
     )
-    prebuilt = parser.parse_args().prebuilt
+    parser.add_argument(
+        "--release-app",
+        action="store_true",
+        help="run only the live tests that need the release application already built",
+    )
+    arguments = parser.parse_args()
+    prebuilt = arguments.prebuilt
 
     cargo = shutil.which("cargo")
     if cargo is None:
         raise RunnerError("cargo is required on PATH")
 
     target_directory = cargo_target_directory(cargo)
+    if arguments.release_app:
+        return run_release_app_tests(target_directory)
     if not prebuilt:
         run([cargo, "test", "--locked", "--workspace", "--all-targets", "--no-run"])
         run([cargo, "build", "--locked", "-p", "ketchup-app", "--bin", "ketchup-app"])
@@ -234,7 +267,12 @@ def main() -> int:
     tests = sorted({*native_tests(), *app_tests()})
     print("Native tests:", " ".join(tests))
     plugin = FailOnSkipPlugin()
-    return int(pytest.main([*tests, "-ra"], plugins=[plugin]))
+    deselected = [f"--deselect={test}" for test in RELEASE_APP_TESTS]
+    status = int(pytest.main([*tests, *deselected, "-ra"], plugins=[plugin]))
+    if prebuilt or status:
+        return status
+    run([cargo, "build", "--locked", "--release", "-p", "ketchup-scheduler", "--bins"])
+    return run_release_app_tests(target_directory)
 
 
 if __name__ == "__main__":
