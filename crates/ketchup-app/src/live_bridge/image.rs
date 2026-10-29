@@ -317,7 +317,7 @@ fn resolve_detail(
                 for triangle in package
                     .triangles
                     .iter()
-                    .zip(&package.triangle_face_ordinals)
+                    .zip(package.triangle_face_ordinals.iter())
                     .filter(|(_, face_ordinal)| **face_ordinal == ordinal)
                     .map(|(triangle, _)| triangle)
                 {

@@ -1525,7 +1525,7 @@ fn integrated_finishing_chain_rebuilds_exactly_through_cad_programs() {
     assert_eq!(fillet_graph.schema, EXACT_BREP_GRAPH_SCHEMA_V17);
     let fillet_package = worker.evaluate_exact_brep_graph(&fillet_graph).unwrap();
     let mut chamfer_selection = None;
-    'edges: for edge_evidence in &fillet_package.edge_evidence {
+    'edges: for edge_evidence in fillet_package.edge_evidence.iter() {
         let edge = fillet_package
             .topological_references
             .iter()

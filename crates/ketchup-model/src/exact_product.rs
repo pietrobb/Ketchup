@@ -179,12 +179,15 @@ pub struct ExactBRepGraphPackage {
     pub area_mm2: f64,
     pub topology_counts: [u32; 5],
     pub bounds_mm: [[f64; 3]; 2],
-    pub vertices: Vec<ExactVertex>,
-    pub triangles: Vec<ExactTriangle>,
-    pub triangle_face_ordinals: Vec<u32>,
-    pub topological_references: Vec<TopologicalElementRef>,
-    pub face_evidence: Vec<ExactBRepGraphFaceEvidence>,
-    pub edge_evidence: Vec<ExactBRepGraphEdgeEvidence>,
+    // Shared: rebinding to a new revision changes only the identity and the
+    // references, so the products of a 750-part model rebind without copying
+    // every mesh and every face and edge evidence string.
+    pub vertices: Arc<[ExactVertex]>,
+    pub triangles: Arc<[ExactTriangle]>,
+    pub triangle_face_ordinals: Arc<[u32]>,
+    pub topological_references: Arc<[TopologicalElementRef]>,
+    pub face_evidence: Arc<[ExactBRepGraphFaceEvidence]>,
+    pub edge_evidence: Arc<[ExactBRepGraphEdgeEvidence]>,
     pub references: Vec<BodySubshapeRef>,
     pub planar_face_attachments: Vec<PlanarFaceAttachment>,
     pub axial_attachments: Vec<AxialAttachment>,
@@ -630,9 +633,9 @@ impl ExactBRepGraphPackage {
                 .iter()
                 .map(|triangle| triangle.face_ordinal)
                 .collect(),
-            topological_references,
-            face_evidence: evidence.faces,
-            edge_evidence: evidence.edges,
+            topological_references: topological_references.into(),
+            face_evidence: evidence.faces.into(),
+            edge_evidence: evidence.edges.into(),
             references,
             planar_face_attachments,
             axial_attachments,

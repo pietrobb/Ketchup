@@ -3008,7 +3008,9 @@ fn malformed_geometry_is_rejected_without_mutation() {
     .clone();
     match &mut malformed {
         ExactBodyPackage::Graph(package) => {
-            package.triangles[0].vertex_indices[0] = u32::MAX;
+            let mut triangles = package.triangles.to_vec();
+            triangles[0].vertex_indices[0] = u32::MAX;
+            package.triangles = triangles.into();
         }
         _ => unreachable!(),
     }

@@ -180,13 +180,17 @@ fn verified_box_conversion_is_atomic_undoable_and_persistent() {
 
     let package = worker().evaluate_exact_brep_graph(plan.graph()).unwrap();
     let mut invalid_index = package.clone();
-    invalid_index.triangles[0].vertex_indices[0] = u32::MAX;
+    let mut triangles = invalid_index.triangles.to_vec();
+    triangles[0].vertex_indices[0] = u32::MAX;
+    invalid_index.triangles = triangles.into();
     assert!(matches!(
         verify_mesh_conversion(&plan, invalid_index),
         Err(MeshConversionError::ExactVerificationMismatch)
     ));
     let mut non_finite = package.clone();
-    non_finite.vertices[0].position_mm[0] = f64::NAN;
+    let mut vertices = non_finite.vertices.to_vec();
+    vertices[0].position_mm[0] = f64::NAN;
+    non_finite.vertices = vertices.into();
     assert!(matches!(
         verify_mesh_conversion(&plan, non_finite),
         Err(MeshConversionError::ExactVerificationMismatch)

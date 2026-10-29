@@ -160,7 +160,7 @@ fn centroid_x(
 ) -> f64 {
     let package = solid(worker, program, part).unwrap();
     let (mut volume, mut moment) = (0.0, 0.0);
-    for triangle in &package.triangles {
+    for triangle in package.triangles.iter() {
         let [a, b, c] = triangle
             .vertex_indices
             .map(|index| package.vertices[index as usize].position_mm);

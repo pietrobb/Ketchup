@@ -77,7 +77,7 @@ fn resolve_face(
         let ExactBodyPackage::Graph(graph_package) = package.as_ref() else {
             continue;
         };
-        for evidence in &graph_package.face_evidence {
+        for evidence in graph_package.face_evidence.iter() {
             let Some(reference) =
                 package.topological_reference(TopologicalElementKind::Face, evidence.face_ordinal)
             else {

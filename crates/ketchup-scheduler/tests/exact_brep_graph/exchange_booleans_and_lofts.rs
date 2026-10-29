@@ -1473,7 +1473,7 @@ fn worker_transforms_a_circle_pad_from_its_arbitrary_workplane_frame() {
         triangles: result
             .triangles
             .iter()
-            .zip(&result.triangle_face_ordinals)
+            .zip(result.triangle_face_ordinals.iter())
             .map(|(triangle, face_ordinal)| StepMeshTriangle {
                 vertex_indices: triangle.vertex_indices,
                 face_ordinal: *face_ordinal,

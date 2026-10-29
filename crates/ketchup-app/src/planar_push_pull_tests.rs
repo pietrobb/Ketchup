@@ -681,7 +681,7 @@ fn physical_pick_keeps_distinct_slanted_faces_and_binds_push_pull() {
             let vertices = graph
                 .triangles
                 .iter()
-                .zip(&graph.triangle_face_ordinals)
+                .zip(graph.triangle_face_ordinals.iter())
                 .filter(|(_, index)| **index == ordinal as u32)
                 .flat_map(|(triangle, _)| triangle.vertex_indices)
                 .map(|index| {

@@ -906,7 +906,7 @@ fn worker_evaluates_planar_offset_face_through_exact_brep_graph() {
         triangles: package
             .triangles
             .iter()
-            .zip(&package.triangle_face_ordinals)
+            .zip(package.triangle_face_ordinals.iter())
             .map(|(triangle, face_ordinal)| StepMeshTriangle {
                 vertex_indices: triangle.vertex_indices,
                 face_ordinal: *face_ordinal,
@@ -1162,7 +1162,7 @@ fn worker_evaluates_signed_circle_offset_through_exact_brep_graph_v6() {
             triangles: package
                 .triangles
                 .iter()
-                .zip(&package.triangle_face_ordinals)
+                .zip(package.triangle_face_ordinals.iter())
                 .map(|(triangle, face_ordinal)| StepMeshTriangle {
                     vertex_indices: triangle.vertex_indices,
                     face_ordinal: *face_ordinal,
@@ -1525,7 +1525,7 @@ fn positive_face_offset_bounds_drive_a_complete_through_cut_and_round_trip() {
     let top_face_ordinal = base_package
         .triangles
         .iter()
-        .zip(&base_package.triangle_face_ordinals)
+        .zip(base_package.triangle_face_ordinals.iter())
         .find_map(|(triangle, face_ordinal)| {
             triangle
                 .vertex_indices

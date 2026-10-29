@@ -442,7 +442,7 @@ impl ModelQuery {
                 let ExactBodyPackage::Graph(package) = package.as_ref() else {
                     continue;
                 };
-                for evidence in &package.face_evidence {
+                for evidence in package.face_evidence.iter() {
                     let Some(reference) = topological_reference(
                         &package.topological_references,
                         TopologicalElementKind::Face,
@@ -569,7 +569,7 @@ impl ModelQuery {
             };
             match request.kind {
                 EntityKind::Edges => {
-                    for evidence in &package.edge_evidence {
+                    for evidence in package.edge_evidence.iter() {
                         let Some(reference) = topological_reference(
                             &package.topological_references,
                             TopologicalElementKind::Edge,
@@ -612,7 +612,7 @@ impl ModelQuery {
                     }
                 }
                 EntityKind::Faces => {
-                    for evidence in &package.face_evidence {
+                    for evidence in package.face_evidence.iter() {
                         let Some(reference) = topological_reference(
                             &package.topological_references,
                             TopologicalElementKind::Face,
@@ -1300,7 +1300,7 @@ impl ModelQuery {
             };
             match kind {
                 EntityKind::Edges => {
-                    for evidence in &package.edge_evidence {
+                    for evidence in package.edge_evidence.iter() {
                         let reference = topological_reference(
                             &package.topological_references,
                             TopologicalElementKind::Edge,
@@ -1327,7 +1327,7 @@ impl ModelQuery {
                     }
                 }
                 EntityKind::Faces => {
-                    for evidence in &package.face_evidence {
+                    for evidence in package.face_evidence.iter() {
                         let reference = topological_reference(
                             &package.topological_references,
                             TopologicalElementKind::Face,

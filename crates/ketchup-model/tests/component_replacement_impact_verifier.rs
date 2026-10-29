@@ -956,7 +956,9 @@ fn under_over_constrained_and_invalid_export_paths_preserve_last_valid_state() {
     ) else {
         panic!("box fixture is a graph package");
     };
-    invalid_target.triangles[0].vertex_indices = [0, 0, 0];
+    let mut triangles = invalid_target.triangles.to_vec();
+    triangles[0].vertex_indices = [0, 0, 0];
+    invalid_target.triangles = triangles.into();
     let invalid_results = ExactResultRegistry::accept(
         &export_snapshot,
         [

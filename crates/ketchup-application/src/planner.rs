@@ -1631,7 +1631,7 @@ fn resolve_assistant_axis_spec(
             let ExactBodyPackage::Graph(package) = package.as_ref() else {
                 continue;
             };
-            for evidence in &package.edge_evidence {
+            for evidence in package.edge_evidence.iter() {
                 let reference = package
                     .topological_references
                     .iter()
