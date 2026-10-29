@@ -64,6 +64,22 @@ fn bootstrap_failed(reason: impl std::fmt::Display) -> ! {
 
 fn main() -> eframe::Result {
     let all_arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    if all_arguments
+        .first()
+        .map(|argument| argument == "--mcp-setup")
+        == Some(true)
+    {
+        // The installer runs this; from a terminal pipe it (`| Out-Host`) to see the
+        // report, since the editor has no console of its own.
+        match ketchup_app::mcp_setup::set_up_installed_harnesses() {
+            Ok(report) => print!("{report}"),
+            Err(report) => {
+                print!("{report}");
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
     if all_arguments.first().map(|argument| argument == "--mcp") == Some(true) {
         if all_arguments.len() > 1 {
             eprintln!("--mcp accepts no arguments");

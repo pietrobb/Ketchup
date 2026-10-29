@@ -144,12 +144,17 @@ Ketchup has no built-in chat. Instead, you connect the AI harness you already us
 
 `Ketchup.exe --mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server on stdio. A connected harness works in the Ketchup window you have open. It can read, patch, and apply the model's program, set its parameters and variants, inspect and measure parts, make verified edits, undo, save, and render images of the viewport, including saved views and section cuts. It can also import STEP, IGES, STL, DXF, DWG, GLB, and SketchUp scene files, bring in and fit underlays, and export STEP, IGES, STL, 3MF, GLB, COLLADA, DXF, BTLx, woodWOP, cut-list CSV, Viewer packages, project drawings as PDF, and drawing sheets as DXF or DWG. Every AI edit goes through the same validation and Undo as a manual edit.
 
-The **Connect AI** section of the window's side panel shows whether a harness is connected. It also has the set-up command with the correct path, ready to copy. With the default installation, the commands are:
+Set it up once, in any of these ways:
 
-Claude Code (PowerShell):
+- **Installer:** keep *Connect Claude Code and Codex to Ketchup* checked on its last page.
+- **Window:** the **Connect AI** section of the side panel shows what Claude Code and Codex start as `ketchup`. **Set up** adds this Ketchup to the harness; **Use this Ketchup** replaces an entry that starts another program, for example a development build that was deleted (the harness then only reports *connection closed*).
+- **Terminal:** `& "$env:LOCALAPPDATA\Programs\Ketchup\Ketchup.exe" --mcp-setup | Out-Host` sets up every harness it finds and prints what each starts now.
+- **By hand**, with the default installation:
+
+Claude Code (PowerShell). `--scope user` makes the server available in every folder; without it Claude Code keeps it for the current folder only:
 
 ```powershell
-claude mcp add ketchup -- "$env:LOCALAPPDATA\Programs\Ketchup\Ketchup.exe" --mcp
+claude mcp add --scope user ketchup -- "$env:LOCALAPPDATA\Programs\Ketchup\Ketchup.exe" --mcp
 ```
 
 Codex (PowerShell):
@@ -164,7 +169,7 @@ Other harnesses take the same command in their MCP configuration. Replace `<you>
 { "mcpServers": { "ketchup": { "command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\Ketchup\\Ketchup.exe", "args": ["--mcp"] } } }
 ```
 
-Then ask the agent, for example, to *"open tiny-house.ketchup in Ketchup and make the house 1 m longer"* or *"model a 120 × 60 cm desk with two drawers"*.
+Then start a new session of the harness (it reads its MCP servers when a session starts) and ask the agent, for example, to *"open tiny-house.ketchup in Ketchup and make the house 1 m longer"* or *"model a 120 × 60 cm desk with two drawers"*.
 
 The tools connect to the open window by themselves (with several windows open the agent picks one); if none is open, the agent can start one. A newly connected client replaces the previous one, and the window shows a Disconnect button while a client is connected.
 

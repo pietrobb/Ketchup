@@ -70,6 +70,7 @@ impl KetchupApp {
                 plugin_menu: live_bridge::plugin_menu::PluginMenu::new(),
                 variants: Default::default(),
                 edits: Default::default(),
+                harnesses: None,
             },
             close_guard: close_guard::CloseGuard::default(),
             file: app_state::FileState {
