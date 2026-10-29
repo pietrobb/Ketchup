@@ -96,8 +96,8 @@ mod tests {
         ui.get_by_label("English").click();
         ui.run();
         ui.get_by_label("Perspective");
-        ui.get_by_label("Open model");
         assert!(ui.query_by_label("Perspektíva").is_none());
+        assert!(ui.query_by_label("Nastavenia").is_none());
         assert_eq!(super::super::millimetres(ui.state().language, 18.5), "18.5");
         let kept = ui.state_mut().take_changed_preferences();
         assert_eq!(kept.and_then(|kept| kept.language), Some(Language::ENGLISH));
