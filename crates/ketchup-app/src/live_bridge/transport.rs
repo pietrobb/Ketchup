@@ -303,6 +303,42 @@ fn remaining(deadline: Instant) -> io::Result<Duration> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "frame timeout"))
 }
 
+/// Waits for bytes and reads those that have arrived, giving up when
+/// `abandoned` says so or at `deadline`. The socket is polled nonblocking,
+/// never given a read timeout: on Windows a recv whose timeout fires just as
+/// bytes arrive can lose them (it fails with ERROR_IO_PENDING, and the next
+/// read starts past the lost bytes).
+pub(super) fn read_some(
+    stream: &mut TcpStream,
+    buffer: &mut [u8],
+    deadline: Option<Instant>,
+    abandoned: impl Fn() -> bool,
+) -> io::Result<usize> {
+    stream.set_nonblocking(true)?;
+    let mut pause = Duration::from_millis(1);
+    let read = loop {
+        if abandoned() {
+            break Err(io::ErrorKind::ConnectionAborted.into());
+        }
+        let left = match deadline.map(remaining).transpose() {
+            Ok(left) => left,
+            Err(error) => break Err(error),
+        };
+        match stream.read(buffer) {
+            Ok(0) => break Err(io::ErrorKind::UnexpectedEof.into()),
+            Ok(count) => break Ok(count),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::sleep(left.map_or(pause, |left| left.min(pause)));
+                pause = (pause * 2).min(STOP_POLL);
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => break Err(e),
+        }
+    };
+    stream.set_nonblocking(false)?;
+    read
+}
+
 fn read_until(
     stream: &mut TcpStream,
     mut buffer: &mut [u8],
@@ -311,30 +347,10 @@ fn read_until(
     state: &AtomicU8,
 ) -> io::Result<()> {
     while !buffer.is_empty() {
-        if stop.load(Ordering::Acquire) || state.load(Ordering::Acquire) == EVICTED {
-            return Err(io::ErrorKind::ConnectionAborted.into());
-        }
-        let timeout = deadline
-            .map(remaining)
-            .transpose()?
-            .unwrap_or(STOP_POLL)
-            .min(STOP_POLL);
-        stream.set_read_timeout(Some(timeout))?;
-        match stream.read(buffer) {
-            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
-            Ok(count) => buffer = &mut buffer[count..],
-            Err(e)
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::WouldBlock
-                        | io::ErrorKind::TimedOut
-                        | io::ErrorKind::Interrupted
-                ) =>
-            {
-                continue;
-            }
-            Err(e) => return Err(e),
-        }
+        let count = read_some(stream, buffer, deadline, || {
+            stop.load(Ordering::Acquire) || state.load(Ordering::Acquire) == EVICTED
+        })?;
+        buffer = &mut buffer[count..];
     }
     if let Some(deadline) = deadline {
         remaining(deadline)?;

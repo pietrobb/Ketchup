@@ -8,7 +8,7 @@ use super::{KetchupApp, egui, transport};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    io::{self, Read, Write},
+    io::{self, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     sync::{
@@ -667,30 +667,10 @@ fn read_request(
 ) -> io::Result<AttachRequest> {
     let mut bytes = Vec::with_capacity(MAX_CONSENT_BYTES);
     while bytes.len() < MAX_CONSENT_BYTES {
-        if stop.load(Ordering::Acquire) || state.load(Ordering::Acquire) == EVICTED {
-            return Err(io::ErrorKind::ConnectionAborted.into());
-        }
-        let remaining = deadline
-            .checked_duration_since(Instant::now())
-            .filter(|remaining| !remaining.is_zero())
-            .ok_or(io::ErrorKind::TimedOut)?;
-        stream.set_read_timeout(Some(remaining.min(STOP_POLL)))?;
         let mut byte = [0];
-        match stream.read(&mut byte) {
-            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
-            Ok(_) => {}
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock
-                        | io::ErrorKind::TimedOut
-                        | io::ErrorKind::Interrupted
-                ) =>
-            {
-                continue;
-            }
-            Err(error) => return Err(error),
-        }
+        transport::read_some(stream, &mut byte, Some(deadline), || {
+            stop.load(Ordering::Acquire) || state.load(Ordering::Acquire) == EVICTED
+        })?;
         bytes.push(byte[0]);
         if byte[0] == b'\n' {
             let request: AttachRequest = serde_json::from_slice(&bytes)
@@ -820,6 +800,7 @@ fn write_json_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
 
     /// An attach request as the MCP server sends it: proving it knows the
     /// registry's bootstrap without sending it.
