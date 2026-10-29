@@ -481,6 +481,24 @@ mod tests {
         ] {
             assert_eq!(entry_point(&build), script, "{}", build.display());
         }
+        // A window the dev server opened sees the registered script as itself,
+        // so it offers no replacement with its own temporary copy.
+        let config = serde_json::json!({
+            "mcpServers": {"ketchup": {"command": script, "args": ["--mcp"]}}
+        });
+        std::fs::write(checkout.join(".claude.json"), config.to_string()).unwrap();
+        let environment = Environment {
+            home: checkout.clone(),
+            path: OsString::new(),
+        };
+        let window = target
+            .join("mcp-windows")
+            .join("0123abcd")
+            .join("ketchup-app.exe");
+        assert_eq!(
+            environment.registration(Harness::ClaudeCode, &entry_point(&window)),
+            Registration::ThisKetchup
+        );
         let installed = checkout
             .join("Programs")
             .join("Ketchup")
