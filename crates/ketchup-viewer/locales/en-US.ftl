@@ -68,3 +68,7 @@ viewer-loading = Loading the model…
 viewer-views = Views
 viewer-settings = Settings
 viewer-language = Language
+viewer-projection = Projection
+viewer-projection-package = As the author set
+viewer-projection-perspective = In perspective
+viewer-projection-orthographic = Parallel

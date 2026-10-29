@@ -275,6 +275,32 @@ fn measured_dimensions_go_to_chosen_scenes_without_touching_cad_and_survive_reop
 }
 
 #[test]
+fn the_author_s_fit_projection_goes_into_the_package_and_survives_reopen() {
+    use ketchup_manufacturing::viewer_export::view::FittedProjection;
+    let mut app = cabinet();
+    app.save_view("Front").expect("scene");
+    assert_eq!(export(&app).package.manifest.fitted_projection, None);
+    assert!(app.set_viewer_fitted_perspective(false));
+    assert_eq!(
+        export(&app).package.manifest.fitted_projection,
+        Some(FittedProjection::Orthographic)
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("fit-projection.ketchup");
+    assert!(app.save_document_to(&path));
+    let mut reopened = KetchupApp::new();
+    assert!(reopened.open_document_path(&path));
+    reopened.wait_for_program_evaluation();
+    install_geometry(&mut reopened);
+    assert_eq!(
+        export(&reopened).package.manifest.fitted_projection,
+        Some(FittedProjection::Orthographic)
+    );
+    assert!(reopened.set_viewer_fitted_perspective(true));
+    assert_eq!(export(&reopened).package.manifest.fitted_projection, None);
+}
+
+#[test]
 fn sharing_choices_pick_scenes_start_and_drop_unshared_components() {
     let mut app = cabinet();
     let front = app.save_view("Front").expect("scene");

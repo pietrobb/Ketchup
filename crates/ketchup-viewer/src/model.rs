@@ -393,6 +393,7 @@ pub(crate) mod tests {
                 scenes: vec![],
                 dimensions: vec![],
                 start_scene: None,
+                fitted_projection: None,
             },
         }
     }

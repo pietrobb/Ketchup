@@ -13,6 +13,19 @@ pub struct Manifest {
     pub scenes: Vec<Scene>,
     pub dimensions: Vec<Dimension>,
     pub start_scene: Option<u64>,
+    /// The author's projection for a fitted view (a package without a start
+    /// scene, and Fit); absent is perspective. Written only when set, so
+    /// older Viewers still open packages that leave it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fitted_projection: Option<FittedProjection>,
+}
+
+/// The projection of a fitted view; scenes keep their own camera's.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FittedProjection {
+    Perspective,
+    Orthographic,
 }
 
 /// Existing Snapshot identity, not a new Viewer fingerprint.

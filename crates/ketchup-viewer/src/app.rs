@@ -14,7 +14,7 @@ use crate::{
 use eframe::egui;
 use ketchup_rejection::{Rejection, RejectionPhase};
 use ketchup_view_format::{
-    CommentView, DisplayStyle, InstancePath, LocalDimensions, PathCover, Section,
+    CommentView, DisplayStyle, FittedProjection, InstancePath, LocalDimensions, PathCover, Section,
 };
 use num_traits::ToPrimitive;
 use std::{
@@ -66,8 +66,10 @@ pub struct ViewerApp {
     dimensions: bool,
     /// The customer's "Perspective" switch: once switched, every view shown,
     /// a scene's or a comment's too, uses this projection. Until then a
-    /// fitted view is in perspective and a scene or a comment keeps the
-    /// projection it was saved in (review 2026-10-24 VW-22).
+    /// fitted view is in the package's projection (perspective unless the
+    /// author chose parallel) and a scene or a comment keeps the projection
+    /// it was saved in (review 2026-10-24 VW-22). Each opened package starts
+    /// with the projection chosen in Settings, or none.
     perspective: Option<bool>,
     /// Comments on the opened package.
     review: Option<Review>,
@@ -237,10 +239,17 @@ impl ViewerApp {
         self.camera = Some(camera);
     }
 
-    /// Show a fitted `camera` in the projection the customer chose, by
-    /// default in perspective.
+    /// Show a fitted `camera` in the projection the customer chose, else the
+    /// package author's, else in perspective.
     fn show_fitted_camera(&mut self, mut camera: Camera) {
-        camera.set_perspective(self.perspective.unwrap_or(true));
+        let authored = self
+            .model
+            .as_ref()
+            .and_then(|model| model.manifest().fitted_projection);
+        camera.set_perspective(
+            self.perspective
+                .unwrap_or(authored != Some(FittedProjection::Orthographic)),
+        );
         self.camera = Some(camera);
     }
 
@@ -301,6 +310,8 @@ impl ViewerApp {
         self.model = Some(model);
         self.review = Some(review);
         self.renderer = renderer;
+        // Every package starts in the projection set in Settings, if any.
+        self.perspective = self.preferences.projection.map(is_perspective);
         if scene.is_some() {
             self.show_saved_camera(camera);
         } else {
@@ -1013,6 +1024,10 @@ fn millimetres(language: Language, value: f64) -> String {
 }
 
 /// Per occurrence: visible unless the scene hides it or one of its ancestors.
+fn is_perspective(projection: FittedProjection) -> bool {
+    projection == FittedProjection::Perspective
+}
+
 fn visibility(model: &Model, scene: Option<usize>) -> Vec<bool> {
     let hidden = scene.map(|i| PathCover::new(&model.manifest().scenes[i].hidden));
     model

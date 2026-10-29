@@ -67,3 +67,7 @@ viewer-loading = Načítava sa model…
 viewer-views = Pohľady
 viewer-settings = Nastavenia
 viewer-language = Jazyk
+viewer-projection = Projekcia
+viewer-projection-package = Podľa autora
+viewer-projection-perspective = V perspektíve
+viewer-projection-orthographic = Rovnobežná

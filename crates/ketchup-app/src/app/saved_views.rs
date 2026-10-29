@@ -448,5 +448,6 @@ impl KetchupApp {
                 self.viewer_scene_controls(ui, id, &name);
             });
         }
+        self.viewer_fitted_projection_control(ui);
     }
 }

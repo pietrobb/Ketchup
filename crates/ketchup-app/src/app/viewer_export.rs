@@ -245,6 +245,7 @@ impl ViewerExportInput {
             self.viewport,
         )?;
         data.start_scene = self.saved_views.first().map(|id| id.0);
+        data.fitted_projection = self.settings.fitted_projection;
         apply_author_notes(&self.settings, &mut data);
         apply_author_dimensions(&self.settings, &mut data);
         let instances = scene

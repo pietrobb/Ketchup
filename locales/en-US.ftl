@@ -816,6 +816,7 @@ viewer-scene-start = Start
 viewer-scene-start-named = Open Viewer at { $name }
 viewer-scene-dimensions = Dimensions
 viewer-scene-dimensions-named = Show Viewer dimensions in { $name }
+viewer-fit-perspective = Viewer fits the model in perspective
 viewer-dimensions-title = Viewer dimensions
 viewer-dimension-add = Add measured dimension ({ $value })
 viewer-dimension-measure-hint = Measure two points with the Measure tool to add a dimension.

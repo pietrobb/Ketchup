@@ -50,6 +50,7 @@ pub struct ViewerExportData {
     pub dimensions: Vec<view::Dimension>,
     pub scenes_without_dimensions: BTreeSet<u64>,
     pub start_scene: Option<u64>,
+    pub fitted_projection: Option<view::FittedProjection>,
 }
 
 /// The package and a line-per-loss report of what it does not carry.
@@ -201,6 +202,7 @@ pub fn model_viewer_export(
             scenes,
             dimensions,
             start_scene: data.start_scene,
+            fitted_projection: data.fitted_projection,
         },
         glb: export.glb,
     };

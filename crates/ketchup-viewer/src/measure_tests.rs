@@ -165,6 +165,7 @@ pub(crate) fn package(meshes: &[Mesh]) -> Package {
             scenes: vec![],
             dimensions: vec![],
             start_scene: None,
+            fitted_projection: None,
         },
     }
 }

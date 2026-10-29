@@ -814,6 +814,7 @@ viewer-scene-start = Úvod
 viewer-scene-start-named = Otvoriť Viewer na { $name }
 viewer-scene-dimensions = Kóty
 viewer-scene-dimensions-named = Zobraziť kóty Viewera v { $name }
+viewer-fit-perspective = Viewer ukáže celý model v perspektíve
 viewer-dimensions-title = Kóty pre Viewer
 viewer-dimension-add = Pridať zmeranú kótu ({ $value })
 viewer-dimension-measure-hint = Zmerajte dva body nástrojom Meranie a pridajte kótu.

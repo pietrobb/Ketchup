@@ -76,6 +76,7 @@ fn manifest(digest: String, document_id: u64, revision: u64) -> Manifest {
             display_unit: LengthUnit::Inch,
         }],
         start_scene: Some(1),
+        fitted_projection: None,
     }
 }
 

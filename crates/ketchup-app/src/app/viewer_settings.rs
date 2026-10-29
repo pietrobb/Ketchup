@@ -2,6 +2,7 @@
 //! Kept as project companion data next to the CAD model; the CAD model, its
 //! history and Undo are never changed by these notes or choices.
 use crate::*;
+use ketchup_manufacturing::viewer_export::view::FittedProjection;
 use ketchup_model::document::{DefinitionId, OccurrenceId, SavedViewId};
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +37,10 @@ pub(crate) struct ViewerSettings {
     /// Shared saved views that show none of the author's dimensions.
     #[serde(default)]
     pub(crate) scenes_without_dimensions: BTreeSet<u64>,
+    /// The projection the Viewer fits the model in; `None` is perspective.
+    /// Left out when unset, so older Kečup versions still read the settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) fitted_projection: Option<FittedProjection>,
 }
 
 /// A linear dimension between two measured world points; its value is the
@@ -192,6 +197,30 @@ impl KetchupApp {
     /// Make a saved view the one the Viewer opens first.
     pub fn set_viewer_start_scene(&mut self, id: SavedViewId) -> bool {
         self.edit_viewer_settings(|settings| settings.start_scene = Some(id.0))
+    }
+
+    /// Fit the model in the Viewer in perspective (the default) or in parallel projection.
+    pub fn set_viewer_fitted_perspective(&mut self, perspective: bool) -> bool {
+        self.edit_viewer_settings(|settings| {
+            settings.fitted_projection = (!perspective).then_some(FittedProjection::Orthographic);
+        })
+    }
+
+    /// The package's choice under the saved views: how the Viewer fits the model.
+    pub(crate) fn viewer_fitted_projection_control(&mut self, ui: &mut egui::Ui) {
+        let Ok(settings) = self.stored_viewer_settings() else {
+            return;
+        };
+        let mut perspective = settings.fitted_projection != Some(FittedProjection::Orthographic);
+        if ui
+            .checkbox(
+                &mut perspective,
+                self.catalog.text("viewer-fit-perspective"),
+            )
+            .changed()
+        {
+            self.set_viewer_fitted_perspective(perspective);
+        }
     }
 
     /// Add the finished measurement as a Viewer dimension; `false` without one.
