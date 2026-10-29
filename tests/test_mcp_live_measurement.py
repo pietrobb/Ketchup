@@ -29,6 +29,8 @@ def mcp(tmp_path):
     env["KETCHUP_LANGUAGE"] = "en-US"
     # The GitHub Windows runner has no graphics card; a real one still wins where present.
     env["KETCHUP_TEST_SOFTWARE_ADAPTER"] = "1"
+    # A real, drawing window, but off screen: it never covers or takes focus from the desktop.
+    env["KETCHUP_TEST_OFFSCREEN"] = "1"
     Path(env["APPDATA"]).mkdir()
     Path(env["LOCALAPPDATA"]).mkdir()
     lines = queue.Queue()

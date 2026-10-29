@@ -759,7 +759,13 @@ fn deliberate_alt_pick_through_has_transient_xray_feedback_without_mutation() {
     shell.click_at(centre);
     assert!(shell.app_mut().copy_selected(Vec3::new(100.0, 0.0, 0.0)));
     assert!(shell.app_mut().move_selected(Vec3::new(-100.0, 0.0, 0.0)));
-    shell.settle();
+    // The block's exact faces replace its box faces when the worker finishes. On a
+    // loaded machine that came after the Alt pick below, which then lost the face it
+    // had picked: the pick-through is checked on the finished geometry. The copy is
+    // another occurrence of the same definition, so it shares that one exact body.
+    wait_for(&mut shell, "the block's exact geometry", |shell| {
+        !shell.app().exact_evaluation_running() && shell.app().exact_render_body_count() == 1
+    });
     shell.move_pointer(centre);
     let (initial_index, overlap_count) = shell.app().hovered_overlap_choice().unwrap();
     assert_eq!(initial_index, 0);

@@ -1059,15 +1059,55 @@ fn the_fasteners_examples_have_no_collision_on_the_exact_solids() {
         let response = wire.call_within(apply(source, true), Duration::from_secs(120));
         assert!(response.ok, "{response:?}");
         let result = response.result.unwrap();
-        assert_eq!(result["geometry_evaluated"], true, "{result}");
-        assert_eq!(result["exact_collisions"]["state"], "verified", "{result}");
-        assert_eq!(result["exact_collisions"]["collisions"], 0, "{result}");
-        let issues = result["report"]["issues"].as_array().unwrap();
+        let (exact, issues) = settled_exact_check(&mut wire, &result);
+        assert_eq!(exact["state"], "verified", "{result}");
+        assert_eq!(exact["collisions"], 0, "{result}");
         assert!(
             !issues.iter().any(|issue| issue["kind"] == "collision"
                 || issue["kind"] == ketchup_program::COLLISION_UNVERIFIED),
             "{issues:#?}"
         );
-        assert_eq!(result["report"]["errors"], 0, "{issues:#?}");
+        assert!(
+            !issues.iter().any(|issue| issue["severity"] == "error"),
+            "{issues:#?}"
+        );
+    }
+}
+
+/// The exact verdict and issues of an apply. An exact check still running after
+/// PROGRAM_EXACT_RUNNING_AFTER (5 s, easily reached while other tests load the
+/// machine) is followed the way a client does: the issues report answers busy
+/// until the check ends, then pages its verdict.
+fn settled_exact_check(wire: &mut Wire, result: &Value) -> (Value, Vec<Value>) {
+    if result["exact_collisions"]["not_evaluated"][0]["reason"] != "exact_check_running" {
+        assert_eq!(result["geometry_evaluated"], true, "{result}");
+        let issues = result["report"]["issues"].as_array().unwrap().clone();
+        return (result["exact_collisions"].clone(), issues);
+    }
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let (mut issues, mut offset) = (Vec::new(), 0);
+    loop {
+        let expected = wire.app.live_bridge_stamp();
+        let response = wire.answer_within(
+            Request::ProgramReport {
+                expected,
+                section: ReportSection::Issues,
+                offset,
+                limit: 50,
+            },
+            Duration::from_secs(30),
+        );
+        if response.error.as_deref() == Some("busy") {
+            assert!(Instant::now() < deadline, "the exact check never ended");
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
+        }
+        assert!(response.ok, "{response:?}");
+        let page = response.result.unwrap();
+        issues.extend(page["rows"].as_array().unwrap().iter().cloned());
+        match page["next_offset"].as_u64() {
+            Some(next) => offset = next as usize,
+            None => return (page["exact_collisions"].clone(), issues),
+        }
     }
 }

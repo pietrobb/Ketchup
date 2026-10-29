@@ -15,6 +15,11 @@ const NATIVE_BACKEND: (eframe::wgpu::Backend, eframe::wgpu::Backends) =
 /// runner): the window may then fall back to the software rasterizer (WARP).
 const SOFTWARE_ADAPTER_FOR_TESTS: &str = "KETCHUP_TEST_SOFTWARE_ADAPTER";
 
+/// Set to `1` only by tests that launch the real window on a desktop someone is using:
+/// the window opens far off screen, without focus or a taskbar button. It is not
+/// hidden, because a hidden window stops drawing frames and the app works in frames.
+const OFFSCREEN_FOR_TESTS: &str = "KETCHUP_TEST_OFFSCREEN";
+
 /// Prefer discrete hardware for normal startup; explicit diagnostics remain unique.
 /// A software adapter is refused unless `allow_software`, and even then hardware wins.
 fn select_native_adapter(
@@ -191,6 +196,16 @@ impl KetchupApp {
             Ok(selected.clone())
         }));
 
+        let mut viewport = egui::ViewportBuilder::default()
+            .with_inner_size([1_100.0, 720.0])
+            .with_min_inner_size([1_100.0, 600.0])
+            .with_icon(Self::window_icon());
+        if std::env::var_os(OFFSCREEN_FOR_TESTS).is_some_and(|value| value == "1") {
+            viewport = viewport
+                .with_position([-10_000.0, -10_000.0])
+                .with_active(false)
+                .with_taskbar(false);
+        }
         eframe::NativeOptions {
             renderer: eframe::Renderer::Wgpu,
             wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
@@ -198,10 +213,7 @@ impl KetchupApp {
                 wgpu_setup: setup.into(),
                 ..Default::default()
             },
-            viewport: egui::ViewportBuilder::default()
-                .with_inner_size([1_100.0, 720.0])
-                .with_min_inner_size([1_100.0, 600.0])
-                .with_icon(Self::window_icon()),
+            viewport,
             ..Default::default()
         }
     }
