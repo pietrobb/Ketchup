@@ -9,6 +9,7 @@ use eframe::egui;
 use ketchup_rejection::{Rejection, RejectionPhase};
 use ketchup_viewer::{
     app::{FileRequest, PendingOpen, ViewerApp},
+    preferences::Preferences,
     review::Written,
     share,
 };
@@ -39,6 +40,9 @@ enum Incoming {
 
 type Inbox = Rc<RefCell<Vec<Incoming>>>;
 
+/// The `localStorage` entry with [`Preferences::to_text`].
+const SETTINGS_KEY: &str = "ketchup-viewer-settings";
+
 /// Start the Viewer on `canvas`. `allowed_origins` lists, separated by
 /// spaces, the other origins whose models a shared link may open.
 #[wasm_bindgen]
@@ -63,6 +67,13 @@ pub async fn start(
     let origins: Vec<String> = origins.into_iter().map(str::to_owned).collect();
     let unsaved = Rc::new(Cell::new(false));
     guard_unsaved_comments(&window, unsaved.clone());
+    // A browser that refuses storage (private mode, blocked site data) only
+    // forgets the settings when the page closes.
+    let storage = window.local_storage().ok().flatten();
+    let preferences = storage
+        .as_ref()
+        .and_then(|storage| storage.get_item(SETTINGS_KEY).ok().flatten())
+        .map_or_else(Preferences::default, |text| Preferences::parse(&text));
     let status_canvas = canvas.clone();
     eframe::WebRunner::new()
         .start(
@@ -70,7 +81,9 @@ pub async fn start(
             eframe::WebOptions::default(),
             Box::new(move |cc| {
                 let inbox = Inbox::default();
-                let mut app = ViewerApp::new(cc.wgpu_render_state.clone()).with_host_files();
+                let mut app = ViewerApp::new(cc.wgpu_render_state.clone())
+                    .with_host_files()
+                    .with_preferences(preferences);
                 let mut model_name = None;
                 match shared {
                     Ok(Some(address)) => {
@@ -101,6 +114,7 @@ pub async fn start(
                     canvas: status_canvas,
                     backend,
                     status: String::new(),
+                    storage,
                 }))
             }),
         )
@@ -119,6 +133,8 @@ struct WebViewer {
     /// The GPU path the browser gave: `browserwebgpu` or `gl` (WebGL2).
     backend: String,
     status: String,
+    /// The site's `localStorage`, which keeps the Viewer settings.
+    storage: Option<web_sys::Storage>,
 }
 
 impl eframe::App for WebViewer {
@@ -171,6 +187,16 @@ impl eframe::App for WebViewer {
             if let Err(error) = self.perform(request, ctx) {
                 self.app.report(error);
             }
+        }
+        if let (Some(preferences), Some(storage)) =
+            (self.app.take_changed_preferences(), &self.storage)
+            && let Err(detail) = storage.set_item(SETTINGS_KEY, &preferences.to_text())
+        {
+            self.app.report(
+                browser_error("viewer.settings.save", SETTINGS_KEY, detail)
+                    .reason("The browser did not keep the Viewer settings; they apply until the page closes.")
+                    .fix_hint("Allow this site to store data, then choose the setting again."),
+            );
         }
         self.unsaved.set(self.app.has_unsaved_comments());
         self.publish_status();

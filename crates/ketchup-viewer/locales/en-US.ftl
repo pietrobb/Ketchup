@@ -66,3 +66,5 @@ viewer-comments-share = Send comments to the author
 viewer-comments-filter = Kečup comments
 viewer-loading = Loading the model…
 viewer-views = Views
+viewer-settings = Settings
+viewer-language = Language

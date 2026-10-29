@@ -40,7 +40,10 @@ browser blocks the download and the Viewer shows `viewer.link.fetch`.
             sandbox="allow-scripts allow-same-origin allow-downloads"></iframe>
 
 `embed-test.html` is a working example. `allow-downloads` lets the customer
-save comments; nothing else (camera, microphone, storage) is requested.
+save comments; nothing else (camera, microphone) is requested. The Settings
+menu keeps the customer's choices (the interface language) in the site's
+`localStorage` under `ketchup-viewer-settings`; where the browser refuses
+storage they last until the page closes.
 Limit who may embed the Viewer with `Content-Security-Policy: frame-ancestors
 https://example.com https://partner.example`.
 

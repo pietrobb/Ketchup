@@ -72,15 +72,24 @@ impl Language {
         Self::all().find(|language| primary(language.tag()).as_deref() == Some(wanted.as_str()))
     }
 
-    /// `KETCHUP_LANGUAGE`, then the system languages in preference order, else English.
+    /// `KETCHUP_LANGUAGE`, then the language the customer `chosen` in the
+    /// Settings menu, then the system languages in preference order, else English.
     #[must_use]
-    pub fn detect() -> Self {
-        std::env::var("KETCHUP_LANGUAGE")
+    pub fn detect(chosen: Option<Self>) -> Self {
+        let forced = std::env::var("KETCHUP_LANGUAGE")
             .ok()
-            .into_iter()
-            .chain(sys_locale::get_locales())
-            .find_map(|tag| Self::from_tag(&tag))
-            .unwrap_or_default()
+            .and_then(|tag| Self::from_tag(&tag));
+        forced.or(chosen).unwrap_or_else(|| {
+            sys_locale::get_locales()
+                .find_map(|tag| Self::from_tag(&tag))
+                .unwrap_or_default()
+        })
+    }
+
+    /// The language's own name, as the Settings menu lists it: `Slovenčina`.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        self.text("viewer-language-name")
     }
 
     /// The message for `key`; English when this catalog lacks it, the key itself

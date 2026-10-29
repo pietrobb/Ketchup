@@ -65,3 +65,5 @@ viewer-comments-share = Poslať pripomienky autorovi
 viewer-comments-filter = Pripomienky Kečup
 viewer-loading = Načítava sa model…
 viewer-views = Pohľady
+viewer-settings = Nastavenia
+viewer-language = Jazyk

@@ -7,6 +7,7 @@ use crate::{
     gpu::{MeshRenderer, RenderTarget, RenderView},
     measure::{Measure, Pointer},
     model::Model,
+    preferences::Preferences,
     review::{Review, Written},
     text::Language,
 };
@@ -24,6 +25,7 @@ use std::{
 mod comments_section;
 mod measure_section;
 mod session;
+mod settings_section;
 mod startup;
 pub use session::{SessionKeeper, SessionMark};
 pub use startup::StartupOpen;
@@ -76,6 +78,9 @@ pub struct ViewerApp {
     renderer: Option<MeshRenderer>,
     target: Option<(RenderTarget, egui::TextureId)>,
     language: Language,
+    /// What the Settings menu set; `preferences_changed` until the host took them.
+    preferences: Preferences,
+    preferences_changed: bool,
     /// `Some` when the host handles file actions; the requests wait here.
     host_files: Option<Vec<FileRequest>>,
     /// The host can share the comments file with other apps.
@@ -103,7 +108,9 @@ impl ViewerApp {
     /// An empty Viewer in the system language; `render_state` is `None` in tests.
     pub fn new(render_state: Option<eframe::egui_wgpu::RenderState>) -> Self {
         Self {
-            language: Language::detect(),
+            language: Language::detect(None),
+            preferences: Preferences::default(),
+            preferences_changed: false,
             model: None,
             camera: None,
             selected: None,
@@ -440,6 +447,7 @@ impl ViewerApp {
                 } else {
                     self.view_controls(ui);
                 }
+                self.settings_menu(ui);
             });
             let mut requested = None;
             if let Some(model) = &self.model {

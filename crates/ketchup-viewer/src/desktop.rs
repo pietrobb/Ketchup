@@ -5,6 +5,7 @@
 //! Viewer runs (macOS Finder, "Open with") arrive through [`OpenRequests`].
 
 use crate::app::ViewerApp;
+use crate::preferences::{Preferences, desktop_settings_path};
 use eframe::egui;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -54,13 +55,22 @@ pub fn main(requests: OpenRequests) -> ExitCode {
     if let Some(path) = first {
         requests.push(PathBuf::from(path));
     }
+    let settings = desktop_settings_path();
+    let preferences = settings
+        .as_deref()
+        .map(Preferences::load)
+        .unwrap_or_default();
     let result = eframe::run_native(
         "Kečup Viewer",
         native_options(),
         Box::new(move |cc| {
             requests.attach(&cc.egui_ctx);
-            let app = ViewerApp::new(cc.wgpu_render_state.clone());
-            Ok(Box::new(DesktopViewer { app, requests }))
+            let app = ViewerApp::new(cc.wgpu_render_state.clone()).with_preferences(preferences);
+            Ok(Box::new(DesktopViewer {
+                app,
+                requests,
+                settings,
+            }))
         }),
     );
     match result {
@@ -95,6 +105,8 @@ pub fn window_icon() -> egui::IconData {
 struct DesktopViewer {
     app: ViewerApp,
     requests: OpenRequests,
+    /// `None` without a per-user settings folder: settings last until the Viewer closes.
+    settings: Option<PathBuf>,
 }
 
 impl eframe::App for DesktopViewer {
@@ -111,6 +123,13 @@ impl eframe::App for DesktopViewer {
             }
         }
         self.app.update(ctx, frame);
+        if let (Some(preferences), Some(path)) =
+            (self.app.take_changed_preferences(), &self.settings)
+            && let Err(error) = preferences.save(path)
+        {
+            eprintln!("{error}");
+            self.app.report(error);
+        }
     }
 }
 

@@ -10,6 +10,7 @@ pub mod gpu;
 pub mod guides;
 pub mod measure;
 pub mod model;
+pub mod preferences;
 pub mod review;
 pub mod share;
 pub mod text;

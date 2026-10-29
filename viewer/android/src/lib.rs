@@ -24,6 +24,13 @@ fn android_main(android_app: android_activity::AndroidApp) {
         .map(|path| path.join("model.ketchup-view"));
     // Private storage, kept while the app is installed.
     let session_dir = android_app.internal_data_path();
+    let settings = session_dir
+        .as_ref()
+        .map(|dir| dir.join("viewer-settings.txt"));
+    let preferences = settings
+        .as_deref()
+        .map(ketchup_viewer::preferences::Preferences::load)
+        .unwrap_or_default();
     let mut options = eframe::NativeOptions {
         android_app: Some(android_app.clone()),
         renderer: eframe::Renderer::Wgpu,
@@ -51,7 +58,8 @@ fn android_main(android_app: android_activity::AndroidApp) {
         options,
         Box::new(move |cc| {
             let mut app = ketchup_viewer::app::ViewerApp::new(cc.wgpu_render_state.clone())
-                .with_host_sharing();
+                .with_host_sharing()
+                .with_preferences(preferences);
             // What the customer had open when Android ended the process,
             // else the development install's package, read apart from the
             // frame: it may be a package of ~268 MB.
@@ -68,6 +76,7 @@ fn android_main(android_app: android_activity::AndroidApp) {
                 recovering: None,
                 session_dir,
                 session: None,
+                settings,
             }))
         }),
     );
@@ -100,6 +109,8 @@ struct AndroidViewer {
     session_dir: Option<std::path::PathBuf>,
     /// Keeps the opened package and its comments for the next start.
     session: Option<ketchup_viewer::app::SessionKeeper>,
+    /// The Viewer settings file in private storage.
+    settings: Option<std::path::PathBuf>,
 }
 
 #[cfg(target_os = "android")]
@@ -218,6 +229,13 @@ impl eframe::App for AndroidViewer {
             if let Err(error) = self.files.request(&mut self.app, request) {
                 self.app.report(error);
             }
+        }
+        if let (Some(preferences), Some(path)) =
+            (self.app.take_changed_preferences(), &self.settings)
+            && let Err(error) = preferences.save(path)
+        {
+            log::error!("{error}; {}", error.fix_hint_text());
+            self.app.report(error);
         }
         // Android may end the process whenever the app is in the background:
         // keep every change to the package or its comments as it happens.
