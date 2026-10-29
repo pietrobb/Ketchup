@@ -94,6 +94,23 @@ impl Harness {
     }
 }
 
+/// The development checkout's server script, relative to the checkout.
+const CHECKOUT_SERVER: [&str; 2] = ["scripts", "ketchup-mcp-server.cmd"];
+
+/// The program a harness should start for this Kečup. A build inside a
+/// checkout's `target` (a cargo build, or a window's copy under
+/// `target\mcp-windows`) is replaced or deleted by the next build, so there it
+/// is the checkout's server script, which always starts the newest build.
+pub fn entry_point(executable: &Path) -> PathBuf {
+    executable
+        .ancestors()
+        .filter(|directory| directory.file_name() == Some(OsStr::new("target")))
+        .filter_map(Path::parent)
+        .map(|checkout| checkout.join(CHECKOUT_SERVER.iter().collect::<PathBuf>()))
+        .find(|script| script.is_file())
+        .unwrap_or_else(|| executable.to_owned())
+}
+
 /// What a harness starts for `ketchup`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Registration {
@@ -335,7 +352,7 @@ fn codex_command(toml: &str) -> Option<String> {
 /// `Ketchup --mcp-setup`: sets up every installed harness and says what each
 /// starts now. Ok when at least one harness starts this Kečup.
 pub fn set_up_installed_harnesses() -> Result<String, SetupFailure> {
-    let executable = std::env::current_exe().map_err(SetupFailure::Executable)?;
+    let executable = entry_point(&std::env::current_exe().map_err(SetupFailure::Executable)?);
     let environment = Environment::current().ok_or(SetupFailure::UnknownHome)?;
     let mut report = String::new();
     let mut any = false;
@@ -442,6 +459,37 @@ mod tests {
             Registration::ThisKetchup
         );
         let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn a_build_inside_a_checkout_is_started_through_its_server_script() {
+        let checkout = temporary_home("checkout");
+        let script = checkout.join("scripts").join("ketchup-mcp-server.cmd");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, "").unwrap();
+        let target = checkout.join("target");
+        for build in [
+            target.join("release").join("ketchup-app.exe"),
+            target
+                .join("mcp-windows")
+                .join("0123abcd")
+                .join("ketchup-app.exe"),
+            target
+                .join("worktree")
+                .join("release")
+                .join("ketchup-app.exe"),
+        ] {
+            assert_eq!(entry_point(&build), script, "{}", build.display());
+        }
+        let installed = checkout
+            .join("Programs")
+            .join("Ketchup")
+            .join("Ketchup.exe");
+        assert_eq!(entry_point(&installed), installed);
+        std::fs::remove_file(&script).unwrap();
+        let build = target.join("release").join("ketchup-app.exe");
+        assert_eq!(entry_point(&build), build);
+        let _ = std::fs::remove_dir_all(checkout);
     }
 
     #[test]

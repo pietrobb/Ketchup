@@ -3,7 +3,7 @@
 //! approves it here; this section shows the status, what Claude Code and Codex
 //! start as `ketchup` with a button that sets them up, and the set-up to copy.
 
-use crate::live_bridge::mcp_setup::{Environment, Harness, HarnessRow, Registration};
+use crate::live_bridge::mcp_setup::{Environment, Harness, HarnessRow, Registration, entry_point};
 use crate::*;
 
 impl KetchupApp {
@@ -111,10 +111,12 @@ impl KetchupApp {
     }
 }
 
-/// The program an MCP client starts: this executable in server mode.
+/// The program an MCP client starts: this executable in server mode, or in a
+/// development checkout its server script.
 fn mcp_server_command() -> Option<String> {
     std::env::current_exe()
         .ok()
+        .map(|path| entry_point(&path))
         .and_then(|path| path.to_str().map(str::to_owned))
 }
 

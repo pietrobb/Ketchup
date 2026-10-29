@@ -173,7 +173,14 @@ Then start a new session of the harness (it reads its MCP servers when a session
 
 The tools connect to the open window by themselves (with several windows open the agent picks one); if none is open, the agent can start one. A newly connected client replaces the previous one, and the window shows a Disconnect button while a client is connected.
 
-When an agent also develops Ketchup in this checkout, use `scripts\ketchup-mcp-server.cmd` as the command instead. It runs the server from `target\mcp-server` and the windows it opens from copies of the newest build under `target\mcp-windows`, so `cargo build --release` can replace `target\release` while those windows stay open.
+When an agent also develops Ketchup in this checkout, use `scripts\ketchup-mcp-server.cmd` as the command instead. It runs the server from `target\mcp-server` and the windows it opens from copies of the newest build under `target\mcp-windows`, so `cargo build --release` can replace `target\release` while those windows stay open. A window built in this checkout shows this script in **Connect AI**, and its **Set up** and `--mcp-setup` register it. To do it by hand, run this from the checkout root (PowerShell):
+
+```powershell
+claude mcp add --scope user ketchup -- "$PWD\scripts\ketchup-mcp-server.cmd"
+codex mcp add ketchup -- "$PWD\scripts\ketchup-mcp-server.cmd"
+```
+
+If the server does not start, the script writes the reason to stderr, which the harness shows in its MCP log; for example, there is no `target\release\ketchup-app.exe` yet because `cargo build --release` has not run.
 
 ## Build and run
 
