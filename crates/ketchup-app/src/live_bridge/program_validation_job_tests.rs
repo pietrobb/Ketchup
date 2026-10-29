@@ -48,6 +48,33 @@ fn queued_validation_returns_native_distance_without_changing_the_document() {
     assert_eq!(LiveBridge::selection(&app), selection);
 }
 
+/// Nightly 2026-10-29: on a 2-core runner the 88-part cabinet's apply passed
+/// within its 40 s, then validating the same model stopped at a separate 20 s.
+#[test]
+fn validation_has_the_time_of_an_apply() {
+    let (app, mut bridge) = setup();
+    let (reply, response) = mpsc::sync_channel(1);
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let report = ketchup_program::run("test.star", "box('part',(10,20,30))", &BTreeMap::new())
+        .unwrap()
+        .1;
+    sender
+        .send(Ok((json!({"validation": {"state": "passed"}}), report)))
+        .unwrap();
+    let apply_time = program_request_deadline().remaining();
+    assert!(apply_time > Duration::from_secs(30), "{apply_time:?}");
+    let job = ProgramValidationJob {
+        id: 1,
+        reply,
+        cancelled: Arc::default(),
+        before: app.live_bridge_stamp(),
+        started: Instant::now() - Duration::from_secs(30),
+        receiver,
+    };
+    bridge.poll_program_validation(&app, &egui::Context::default(), job);
+    assert!(response.try_recv().unwrap().ok);
+}
+
 #[test]
 fn cancelled_expired_and_disconnected_validation_leave_the_model_and_history_untouched() {
     for mode in ["cancelled", "timeout", "disconnected"] {
@@ -85,7 +112,7 @@ fn cancelled_expired_and_disconnected_validation_leave_the_model_and_history_unt
             cancelled,
             before: app.live_bridge_stamp(),
             started: if mode == "timeout" {
-                Instant::now() - Duration::from_secs(30)
+                Instant::now() - ketchup_mcp::PROGRAM_RESPONSE_WAIT - Duration::from_secs(1)
             } else {
                 Instant::now()
             },

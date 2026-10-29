@@ -445,7 +445,7 @@ def test_program_materials_drive_requested_read_only_validators(mcp, tmp_path):
 
 def test_modular_cabinet_local_edit_and_complete_reports(mcp, tmp_path):
     """Needs the release application: on the debug one the cabinet's checks run
-    out of their 20 s (scripts/run_production_tests.py --release-app)."""
+    out of their 40 s (scripts/run_production_tests.py --release-app)."""
     def settled(reply):
         # An edit answers once its exact check has run 5 s. Like an AI client, wait
         # for the check through the report, then validate what it published.

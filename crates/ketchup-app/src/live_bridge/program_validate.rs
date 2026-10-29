@@ -1,5 +1,5 @@
 //! Explicit program validation reads an immutable snapshot without publishing an edit.
-use super::program_check::{PROGRAM_EXACT_TIMEOUT, ProgramCheckJob};
+use super::program_check::{ProgramCheckJob, program_request_deadline};
 use super::*;
 #[cfg(test)]
 #[path = "program_validation_job_tests.rs"]
@@ -91,8 +91,8 @@ fn validate(
     stamp: Stamp,
     options: ValidationOptions,
 ) -> Result<(Value, ketchup_program::Report), ketchup_program::ProgramError> {
-    let deadline =
-        ketchup_application::program_isolation::CheckDeadline::after(PROGRAM_EXACT_TIMEOUT);
+    // The deadline of an apply: validating what an apply checked reaches its verdict.
+    let deadline = program_request_deadline();
     let (evaluated, mut report) = ketchup_application::program_isolation::run_program(
         &source.file_name,
         &source.source,
@@ -312,7 +312,7 @@ impl LiveBridge {
             Err(error)
         } else if let Err(error) = Self::require_request_authority(&job.cancelled) {
             Err(error)
-        } else if job.started.elapsed() > PROGRAM_EXACT_TIMEOUT + Duration::from_secs(5) {
+        } else if job.started.elapsed() > ketchup_mcp::PROGRAM_RESPONSE_WAIT {
             job.cancelled.store(true, Ordering::Release);
             Err(failure(
                 "job_worker_unavailable",
