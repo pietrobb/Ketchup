@@ -1098,8 +1098,8 @@ fn settled_exact_check(wire: &mut Wire, result: &Value) -> (Value, Vec<Value>) {
             Duration::from_secs(30),
         );
         if response.error.as_deref() == Some("busy") {
+            // Each ask polls the window until it answers, so asking again is the wait.
             assert!(Instant::now() < deadline, "the exact check never ended");
-            std::thread::sleep(Duration::from_millis(50));
             continue;
         }
         assert!(response.ok, "{response:?}");
