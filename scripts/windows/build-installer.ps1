@@ -63,6 +63,7 @@ $payloadDir = Join-Path $OutputDir "payload"
 $setupBaseName = "Ketchup-$Version-Setup"
 $setupPath = Join-Path $OutputDir "$setupBaseName.exe"
 $zipPath = Join-Path $OutputDir "Ketchup-$Version-Portable.zip"
+$viewerZipPath = Join-Path $OutputDir "Ketchup-Viewer-$Version-Portable.zip"
 $packageManifestPath = Join-Path $payloadDir "package-manifest.json"
 
 function Assert-Leaf([string]$Path, [string]$Label) {
@@ -460,6 +461,27 @@ Compress-Archive -Path (Join-Path $payloadDir "*") -DestinationPath $zipPath -Co
 Assert-Leaf $zipPath "portable archive"
 Assert-PackageNotices $zipPath "The portable archive"
 
+# The Viewer alone, for a customer who only opens .ketchup-view packages: the same
+# (signed) KetchupViewer.exe as in the installer, with the notices and a short note.
+$viewerStageDir = Join-Path $OutputDir "viewer-payload"
+[void](New-Item $viewerStageDir -ItemType Directory)
+Copy-Item (Join-Path $payloadDir "KetchupViewer.exe") $viewerStageDir
+Copy-PackageNotices $repoRoot $OcctRoot $viewerStageDir
+$viewerReadme = @"
+Ketchup Viewer $Version
+Windows x64
+
+Ketchup Viewer opens a read-only .ketchup-view package exported from Ketchup
+(File > Export for Viewer). Unzip this folder anywhere and run KetchupViewer.exe,
+or drag a .ketchup-view onto it. It needs no installation, account or network.
+Language and the default projection are in the Settings menu.
+"@
+Write-Utf8 (Join-Path $viewerStageDir "README.txt") ($viewerReadme.TrimStart() + "`r`n")
+Compress-Archive -Path (Join-Path $viewerStageDir "*") -DestinationPath $viewerZipPath -CompressionLevel Optimal
+Remove-Item $viewerStageDir -Recurse -Force
+Assert-Leaf $viewerZipPath "Viewer portable archive"
+Assert-PackageNotices $viewerZipPath "The Viewer portable archive"
+
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("ketchup-installer-verify-" + [Guid]::NewGuid().ToString("N"))
 $installedDir = Join-Path $tempRoot "installed"
 try {
@@ -527,6 +549,12 @@ try {
             throw "Installed Viewer could not open the smoke package: $viewerVerification"
         }
         Write-Host $viewerVerification
+        $portableViewerDir = Join-Path $tempRoot "viewer-portable"
+        Expand-Archive $viewerZipPath -DestinationPath $portableViewerDir
+        $portableVerification = (& (Join-Path $portableViewerDir "KetchupViewer.exe") --verify-open $ViewerSmokePackage | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or $portableVerification -cne $viewerVerification) {
+            throw "The Viewer from the portable archive could not open the smoke package: $portableVerification"
+        }
     }
 
     $uninstaller = Join-Path $installedDir "unins000.exe"
@@ -557,6 +585,7 @@ try {
 $checksums = @(
     "$((Get-Sha256 $setupPath))  $([IO.Path]::GetFileName($setupPath))",
     "$((Get-Sha256 $zipPath))  $([IO.Path]::GetFileName($zipPath))",
+    "$((Get-Sha256 $viewerZipPath))  $([IO.Path]::GetFileName($viewerZipPath))",
     "$((Get-Sha256 $packageManifestPath))  payload/package-manifest.json"
 )
 if (-not [string]::IsNullOrWhiteSpace($DownloadedExamples)) {
@@ -568,4 +597,5 @@ $signingResult = if ($Sign) { "AEON-signed payload and installer, " } else { "" 
 Write-Host "PASS: ${signingResult}portable archive, third-party notices, exact payload hashes, worker handshake, headless build identity, document and Viewer file associations, and uninstall smoke test."
 Write-Host "Installer: $setupPath"
 Write-Host "Portable:  $zipPath"
+Write-Host "Viewer:    $viewerZipPath"
 if (-not [string]::IsNullOrWhiteSpace($DownloadedExamples)) { Write-Host "Examples:  $examplesPath" }
