@@ -148,7 +148,6 @@ mod keymap;
 pub mod language;
 mod length_input;
 pub mod live_bridge;
-pub mod mcp_setup;
 mod mesh_conversion_ui;
 mod modal;
 mod native_document_inspection;

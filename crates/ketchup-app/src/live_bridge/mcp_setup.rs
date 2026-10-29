@@ -176,6 +176,7 @@ impl Environment {
                         .map(|argument| OsStr::new(argument.as_str())),
                 )
                 .err()
+                .map(|error| format!("{error}"))
             }
         };
         HarnessRow {
@@ -186,7 +187,64 @@ impl Environment {
     }
 }
 
-fn run<'a>(program: &Path, arguments: impl Iterator<Item = &'a OsStr>) -> Result<(), String> {
+/// Why a harness command did not register Kečup.
+#[derive(Debug)]
+pub enum RunError {
+    /// The command could not start.
+    Start(std::io::Error),
+    /// It ran and refused, with what it printed.
+    Refused { output: String },
+}
+
+impl std::fmt::Display for RunError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Start(error) => write!(f, "{error}"),
+            Self::Refused { output } => f.write_str(output),
+        }
+    }
+}
+
+impl std::error::Error for RunError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Start(error) => Some(error),
+            Self::Refused { .. } => None,
+        }
+    }
+}
+
+/// Why `--mcp-setup` left no harness starting this Kečup.
+#[derive(Debug)]
+pub enum SetupFailure {
+    /// This executable's own path is unknown.
+    Executable(std::io::Error),
+    /// Neither USERPROFILE nor HOME is set.
+    UnknownHome,
+    /// No harness starts this Kečup; the report says what each one starts.
+    NoHarness { report: String },
+}
+
+impl std::fmt::Display for SetupFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Executable(error) => writeln!(f, "this program's path is unknown: {error}"),
+            Self::UnknownHome => writeln!(f, "the home folder is unknown"),
+            Self::NoHarness { report } => f.write_str(report),
+        }
+    }
+}
+
+impl std::error::Error for SetupFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Executable(error) => Some(error),
+            Self::UnknownHome | Self::NoHarness { .. } => None,
+        }
+    }
+}
+
+fn run<'a>(program: &Path, arguments: impl Iterator<Item = &'a OsStr>) -> Result<(), RunError> {
     let mut command = Command::new(program);
     command.args(arguments);
     #[cfg(windows)]
@@ -195,7 +253,7 @@ fn run<'a>(program: &Path, arguments: impl Iterator<Item = &'a OsStr>) -> Result
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
-    let output = command.output().map_err(|error| error.to_string())?;
+    let output = command.output().map_err(RunError::Start)?;
     if output.status.success() {
         return Ok(());
     }
@@ -206,7 +264,9 @@ fn run<'a>(program: &Path, arguments: impl Iterator<Item = &'a OsStr>) -> Result
     } else {
         stderr
     };
-    Err(message.trim().to_owned())
+    Err(RunError::Refused {
+        output: message.trim().to_owned(),
+    })
 }
 
 /// The program `name` on `path`, as a shell would find it.
@@ -274,9 +334,9 @@ fn codex_command(toml: &str) -> Option<String> {
 
 /// `Ketchup --mcp-setup`: sets up every installed harness and says what each
 /// starts now. Ok when at least one harness starts this Kečup.
-pub fn set_up_installed_harnesses() -> Result<String, String> {
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let environment = Environment::current().ok_or("the home folder is unknown")?;
+pub fn set_up_installed_harnesses() -> Result<String, SetupFailure> {
+    let executable = std::env::current_exe().map_err(SetupFailure::Executable)?;
+    let environment = Environment::current().ok_or(SetupFailure::UnknownHome)?;
     let mut report = String::new();
     let mut any = false;
     for harness in Harness::ALL {
@@ -303,7 +363,7 @@ pub fn set_up_installed_harnesses() -> Result<String, String> {
             "No harness was set up. Add this command as an MCP server: \"{}\" --mcp\n",
             executable.display()
         ));
-        Err(report)
+        Err(SetupFailure::NoHarness { report })
     }
 }
 

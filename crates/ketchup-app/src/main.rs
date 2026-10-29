@@ -71,7 +71,7 @@ fn main() -> eframe::Result {
     {
         // The installer runs this; from a terminal pipe it (`| Out-Host`) to see the
         // report, since the editor has no console of its own.
-        match ketchup_app::mcp_setup::set_up_installed_harnesses() {
+        match ketchup_app::live_bridge::mcp_setup::set_up_installed_harnesses() {
             Ok(report) => print!("{report}"),
             Err(report) => {
                 print!("{report}");

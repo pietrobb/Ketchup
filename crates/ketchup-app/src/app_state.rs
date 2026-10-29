@@ -54,7 +54,7 @@ pub(crate) struct LiveState {
     /// A pattern confirmed in the window, sent as one MCP CAD edit.
     pub(crate) edits: live_bridge::window_edit::WindowEdits,
     /// What Claude Code and Codex start as `ketchup`, read when Connect AI opens.
-    pub(crate) harnesses: Option<Vec<crate::mcp_setup::HarnessRow>>,
+    pub(crate) harnesses: Option<Vec<crate::live_bridge::mcp_setup::HarnessRow>>,
 }
 
 /// Push/Pull input, its exact face-offset evaluation and the last committed

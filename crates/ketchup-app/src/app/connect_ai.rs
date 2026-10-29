@@ -3,7 +3,7 @@
 //! approves it here; this section shows the status, what Claude Code and Codex
 //! start as `ketchup` with a button that sets them up, and the set-up to copy.
 
-use crate::mcp_setup::{Environment, Harness, HarnessRow, Registration};
+use crate::live_bridge::mcp_setup::{Environment, Harness, HarnessRow, Registration};
 use crate::*;
 
 impl KetchupApp {
@@ -143,7 +143,7 @@ fn client_setups(executable: &str) -> [(&'static str, String); 3] {
 mod tests {
     use super::client_setups;
     use crate::KetchupApp;
-    use crate::mcp_setup::{Harness, HarnessRow, Registration};
+    use crate::live_bridge::mcp_setup::{Harness, HarnessRow, Registration};
     use eframe::egui;
     use egui_kittest::{Harness as Kittest, kittest::Queryable as _};
 
