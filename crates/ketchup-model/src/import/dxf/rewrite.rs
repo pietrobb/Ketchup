@@ -56,6 +56,8 @@ pub enum DxfEditRefusal {
     ReadDifferently,
     /// The source's groups do not pair up into sections and entities.
     Malformed,
+    /// The source is larger than its places are kept in: 4 GiB (review 2026-10-29 CD-63).
+    TooLarge,
     /// A changed object has no handle, and its entity is not told by its order either.
     NoHandle { object: u32 },
     /// No entity of the source has the handle of a changed object.
@@ -102,6 +104,7 @@ impl fmt::Display for DxfEditRefusal {
             ),
             Self::Malformed => formatter
                 .write_str("the source drawing's groups do not pair up into sections and entities"),
+            Self::TooLarge => formatter.write_str("the source drawing is larger than 4 GiB"),
             Self::NoHandle { object } => write!(
                 formatter,
                 "object {object} has no handle in the drawing, and its entity cannot be told by \
@@ -247,17 +250,22 @@ struct Pair {
 }
 
 impl Pair {
-    const fn start(&self) -> usize {
-        self.start as usize
+    fn start(&self) -> usize {
+        place(self.start)
     }
 
-    const fn value(&self) -> Range<usize> {
-        self.value[0] as usize..self.value[1] as usize
+    fn value(&self) -> Range<usize> {
+        place(self.value[0])..place(self.value[1])
     }
 
-    const fn end(&self) -> usize {
-        self.end as usize
+    fn end(&self) -> usize {
+        place(self.end)
     }
+}
+
+/// A place kept in 32 bits, as the `usize` it was made from.
+fn place(at: u32) -> usize {
+    usize::try_from(at).unwrap_or(usize::MAX)
 }
 
 /// An entity of the ENTITIES section with the vertices or attributes that follow it: the
@@ -1701,7 +1709,9 @@ fn pairs(source: &[u8]) -> Result<Vec<Pair>, EditedDxfError> {
         };
         (start, content_end, (end + 1).min(source.len()))
     };
-    let place = |at: usize| u32::try_from(at).map_err(|_| DxfEditRefusal::Malformed);
+    let place = |at: usize| {
+        u32::try_from(at).map_err(|_: std::num::TryFromIntError| DxfEditRefusal::TooLarge)
+    };
     let mut pairs = Vec::new();
     let mut start = 0;
     while start < source.len() {
