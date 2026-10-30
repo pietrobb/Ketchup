@@ -1,6 +1,7 @@
 # Static library "ketchup_crmath": correctly rounded libm replacements (see
 # ketchup_crmath.c). Built and installed next to OCCT by
-# scripts/macos/build-occt.sh and scripts/windows/build-occt.ps1, which link
+# scripts/linux/build-occt.sh, scripts/macos/build-occt.sh and
+# scripts/windows/build-occt.ps1, which link
 # it into every OCCT library; crates/ketchup-exact/build.rs links it into the
 # Rust binaries. CORE-MATH uses GCC extensions (__int128, __builtin_*), so on
 # Windows it is compiled with clang-cl; the objects link with MSVC code.

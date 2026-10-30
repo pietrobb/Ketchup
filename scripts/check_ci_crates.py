@@ -15,6 +15,12 @@ names (review 2026-10-24 CI-20): not a job or step whose `if:` asks for the nigh
 set from it) without naming `pull_request` or `push`, not one with
 `continue-on-error` other than `false`, and not a `cargo test` given a test name
 filter, `--ignored` or `--list` after `--`.
+
+Each crate is also checked on its systems (review 2026-10-29 CI-62: the crates
+with OCCT were compiled on Windows only, so code for the other systems broke
+unseen): every crate on Linux, a crate that builds on OCCT on Windows too, and a
+crate for one system only on that one. A job runs on the systems of its
+`runs-on` (or its `matrix.os`), a step on those its `runner.os` condition leaves.
 """
 
 import re
@@ -42,6 +48,16 @@ NOT_A_PULL_REQUEST = re.compile(r"event_name\s*==\s*'(?:schedule|workflow_dispat
 A_PULL_REQUEST = re.compile(r"event_name\s*==\s*'(?:pull_request|pull_request_target|push)'")
 ENVIRONMENT = re.compile(r"^\s+(\w+):\s*\$\{\{(.*)\}\}\s*$", re.MULTILINE)
 FOLDED = re.compile(r"^(\s*)(?:- )?run:\s*>-?\s*$")
+RUNS_ON = re.compile(r"^\s+runs-on:\s*(.+)$", re.MULTILINE)
+MATRIX_OS = re.compile(r"^\s+os:\s*\[(.*)\]\s*$", re.MULTILINE)
+RUNNER_OS = re.compile(r"runner\.os\s*(==|!=)\s*'(\w+)'")
+# GitHub's runner labels and the `runner.os` of each.
+SYSTEMS = {"ubuntu": "Linux", "windows": "Windows", "macos": "macOS"}
+# The crate whose build needs OCCT; every crate that depends on it does too.
+OCCT_CRATE = "ketchup-exact"
+OCCT_SYSTEMS = {"Linux", "Windows"}
+# Crates whose code compiles for one system only.
+SYSTEM_ONLY = {"ketchup-viewer-macos": {"macOS"}, "ketchup-macos-open": {"macOS"}}
 # libtest options that take the next word as their value.
 VALUE_OPTIONS = {"--skip", "--test-threads", "--format", "--color", "--logfile", "-Z", "--shuffle-seed"}
 
@@ -149,14 +165,46 @@ def narrowed(test_arguments):
     return False
 
 
-def cargo_crates(workflows, subcommand):
-    """Every crate a running `cargo <subcommand>` names, directly or through its job's CRATES list."""
+def job_systems(job):
+    """The systems a job runs on: its `runs-on` label, or each label of its `matrix.os`."""
+    head = job.split("\n    steps:", 1)[0]
+    runs_on = RUNS_ON.search(head)
+    if not runs_on:
+        return set()
+    labels = [runs_on.group(1)]
+    matrix = MATRIX_OS.search(head)
+    if "matrix.os" in runs_on.group(1) and matrix:
+        labels = matrix.group(1).split(",")
+    return {
+        system for label in labels for prefix, system in SYSTEMS.items() if label.strip().startswith(prefix)
+    }
+
+
+def step_systems(step, systems):
+    """The systems of its job a step runs on, after its `runner.os` conditions."""
+    for condition in CONDITION.findall(step):
+        tests = RUNNER_OS.findall(condition)
+        only = {system for operator, system in tests if operator == "=="}
+        if only:
+            systems = systems & only
+        systems = systems - {system for operator, system in tests if operator == "!="}
+    return systems
+
+
+def cargo_crates(workflows, subcommand, system=None):
+    """Every crate a running `cargo <subcommand>` names, directly or through its job's CRATES list.
+
+    With a system, only the runs on that system count.
+    """
     crates = set()
     for workflow in workflows:
         nightly = nightly_variables(workflow)
         for job in jobs(workflow):
             listed = set(PACKAGE_FLAG.findall("".join(CRATE_LIST.findall(job))))
+            systems = job_systems(job)
             for step in pull_request_steps(job, nightly):
+                if system is not None and system not in step_systems(step, systems):
+                    continue
                 for name, arguments, test_arguments in CARGO.findall(CONTINUATION.sub(" ", folded(step))):
                     if name != subcommand or (name == "test" and narrowed(test_arguments)):
                         continue
@@ -166,12 +214,46 @@ def cargo_crates(workflows, subcommand):
     return crates
 
 
-def linted_crates(workflows):
-    return cargo_crates(workflows, "clippy")
+def linted_crates(workflows, system=None):
+    return cargo_crates(workflows, "clippy", system)
 
 
-def tested_crates(workflows):
-    return cargo_crates(workflows, "test")
+def tested_crates(workflows, system=None):
+    return cargo_crates(workflows, "test", system)
+
+
+def required_systems(root):
+    """The systems CI must check each workspace crate on."""
+    members = workspace_members(root)
+    dependencies = {
+        name: set(tomllib.loads((directory / "Cargo.toml").read_text(encoding="utf-8")).get("dependencies", {}))
+        for name, directory in members.items()
+    }
+    with_occt = {OCCT_CRATE}
+    grown = True
+    while grown:
+        reached = {name for name, used in dependencies.items() if used & with_occt}
+        grown = not reached <= with_occt
+        with_occt |= reached
+    return {
+        name: SYSTEM_ONLY.get(name, OCCT_SYSTEMS if name in with_occt else {"Linux"}) for name in members
+    }
+
+
+def unchecked_on_systems(required, linted, tested, with_tests):
+    """What CI leaves unchecked on a system a crate needs; linted and tested map a system to its crates."""
+    problems = []
+    for crate, systems in required.items():
+        for system in sorted(systems):
+            if crate not in linted.get(system, set()):
+                problems.append(
+                    f"{crate}: no CI job on {system} runs cargo clippy on it; add it to a {system} job's crate list"
+                )
+            elif crate in with_tests and crate not in tested.get(system, set()):
+                problems.append(
+                    f"{crate}: has tests, but no CI job on {system} runs cargo test on it; add it to a {system} test job"
+                )
+    return problems
 
 
 def unchecked_crates(crates, linted, tested, with_tests):
@@ -189,6 +271,12 @@ def main():
     workflows = [path.read_text(encoding="utf-8") for path in sorted((root / ".github/workflows").glob("*.yml"))]
     problems = unchecked_crates(
         workspace_crates(root), linted_crates(workflows), tested_crates(workflows), crates_with_tests(root)
+    )
+    problems += unchecked_on_systems(
+        required_systems(root),
+        {system: linted_crates(workflows, system) for system in SYSTEMS.values()},
+        {system: tested_crates(workflows, system) for system in SYSTEMS.values()},
+        crates_with_tests(root),
     )
     for problem in problems:
         print(problem)

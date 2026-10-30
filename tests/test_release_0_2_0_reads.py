@@ -62,6 +62,7 @@ def test_every_job_that_tests_its_crates_keeps_their_saved_files_for_kecup_0_2_0
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     runs = re.findall(r"cargo test --locked \$(?:env:)?CRATES[^\n]*", ci)
     tests = [run for run in runs if "--ignored" not in run]
-    assert len(tests) == 2
+    # Crates without OCCT, and those with it on Windows and on Linux.
+    assert len(tests) == 3
     assert all("--features ketchup-model/saved-files" in run for run in tests)
     assert ci.count("scripts/release_0_2_0_reads.py --files") == len(tests)
