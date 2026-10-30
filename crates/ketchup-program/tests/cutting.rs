@@ -443,3 +443,42 @@ fn a_sheathed_buildup_is_cut_from_whole_sheets_with_joints_on_studs() {
         }
     }
 }
+
+/// Review 2026-10-29 PG-61: the cutting plan took a part's thinnest extent
+/// as a sheet's thickness and its two thinnest as a bar's section, so a
+/// sheathing piece narrower than the layer was thick made a phantom
+/// "OSB [10.0]" group that bought a whole extra sheet, and a spacer 80 mm
+/// long cut from 60 x 120 got the section 80 x 60 and its own bar. The
+/// thickness is the build-up layer's and the section the member's.
+#[test]
+fn a_cutting_plan_takes_the_layer_thickness_and_the_member_section() {
+    let source = "buildup('wall', (0, 0, 0), (1, 0, 0), (0, 0, 1), 2440, height = 2500,\n\
+         layers = [{'name': 'frame', 'thickness': 140, 'material': 'C24', 'spacing': 600},\n\
+                   {'name': 'board', 'thickness': 60, 'material': 'WF', 'sheet': (1250, 2500)}],\n\
+         openings = [(1230, 800, 770, 1200)])\n\
+         member('rail', (0, 500, 3000), (2000, 500, 3000), (60, 120), material = 'KVH')\n\
+         member('spacer', (0, 0, 3000), (80, 0, 3000), (60, 120), material = 'KVH')\n\
+         sheet_stock('WF', [(2500, 1250)])\n\
+         bar_stock('KVH', [3000])\n";
+    let model = ketchup_program::evaluate("cutting.star", source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"))
+        .model;
+    // The piece between the board joint at 1 200 and the opening is 30 mm
+    // wide, narrower than the 60 mm board.
+    assert!(model.parts.iter().any(|part| {
+        let (min, max) = part.world_bounds();
+        part.name.starts_with("wall/board") && (max[0] - min[0] - 30.0).abs() < 1e-6
+    }));
+    let plans = bom(&model).cutting;
+    let sections = |material: &str| {
+        plans
+            .iter()
+            .filter(|plan| plan.material == material)
+            .map(|plan| plan.section_mm.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(sections("WF"), [vec![60.0]], "{plans:#?}");
+    assert_eq!(sections("KVH"), [vec![120.0, 60.0]], "{plans:#?}");
+    let kvh = plans.iter().find(|plan| plan.material == "KVH").unwrap();
+    assert_eq!(kvh.layouts.len(), 1, "{kvh:#?}");
+}

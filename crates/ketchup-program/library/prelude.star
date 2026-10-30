@@ -177,6 +177,14 @@ _FABRICATION_ROLES = [TIMBER_MEMBER, MANUFACTURED_ITEM, PURCHASED_ITEM, SITE_BUI
 # table of the positions; buildup() gives it to every piece of its panel.
 SHOP_DRAWING = "drawing:sheet"
 
+# Stock: a part's LENGTH_AXIS ("x", "y" or "z") is the local axis its bar's length
+# runs along, the other two its section (member() gives "z"); its THICKNESS_AXIS the
+# axis of its sheet's thickness or of a layer's thickness in a bar's section
+# (buildup() gives "z"). Without them the cutting plan takes the longest extent as the
+# length and the shortest as the thickness.
+LENGTH_AXIS = "length_axis"
+THICKNESS_AXIS = "thickness_axis"
+
 def _role(who, role):
     """`role` if it is a fabrication role, else fail naming `who`."""
     if role not in _FABRICATION_ROLES:
@@ -256,6 +264,7 @@ def member(name, start, end, section, across = None, material = "timber", grain 
         across = _member_across(direction, length)
     attributes = grain_attributes(grain)
     attributes[FABRICATION_ROLE] = _role("member(%r)" % name, role)
+    attributes[LENGTH_AXIS] = "z"
     part = box(name, (section[0], section[1], length), material = material, color = color, attributes = attributes)
     placed = place(part, origin = start, z = direction, x = across)
     offset = vec_add(vec_scale(placed.x, -section[0] / 2.0), vec_scale(placed.y, -section[1] / 2.0))
@@ -2256,7 +2265,7 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
     pieces = []
 
     def piece(label, poly, at, thickness, material, color, piece_tags, role, extra = {}):
-        attributes = {FABRICATION_ROLE: role, SHOP_DRAWING: name}
+        attributes = {FABRICATION_ROLE: role, SHOP_DRAWING: name, THICKNESS_AXIS: "z"}
         attributes.update(extra)
         part = extrude("%s/%s" % (name, label), profile = [[p[0], p[1]] for p in poly], distance = thickness,
                        material = material, color = color, tags = piece_tags, attributes = attributes)
