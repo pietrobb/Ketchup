@@ -418,6 +418,11 @@ fn ring_text(underlay: &Underlay, ring: &[[f64; 2]], indent: &str) -> String {
             })
             .collect();
     }
+    corners_text(&ring, indent)
+}
+
+/// The corners of `ring`, in document millimetres, as points.
+fn corners_text(ring: &[[f64; 2]], indent: &str) -> String {
     let points = ring
         .iter()
         .map(|point| format!("({})", point_text(*point)))
@@ -426,6 +431,17 @@ fn ring_text(underlay: &Underlay, ring: &[[f64; 2]], indent: &str) -> String {
         .chunks(POINTS_PER_LINE)
         .map(|chunk| format!("{indent}{},\n", chunk.join(", ")))
         .collect()
+}
+
+/// The ring's corners in document millimetres as points, however [`ring_text`] writes it,
+/// so code reading `NAME_POINTS` keeps working when an edit reveals an arc (review
+/// 2026-10-29 UO-65).
+fn ring_points(underlay: &Underlay, ring: &[[f64; 2]], indent: &str) -> String {
+    let ring = ring
+        .iter()
+        .map(|point| underlay.to_document(*point))
+        .collect::<Vec<_>>();
+    corners_text(&ring, indent)
 }
 
 /// Area, perimeter and holes in document units, for checking the outline is the one meant.
@@ -482,9 +498,17 @@ fn outline_data(
         ));
     }
     let mut data = format!(
-        "{name} = [\n{}]\n{name}_HOLES = [\n",
-        ring_text(underlay, outline, "    ")
+        "{name} = [\n{}]\n{name}_POINTS = [\n{}]\n{name}_HOLES_POINTS = [\n",
+        ring_text(underlay, outline, "    "),
+        ring_points(underlay, outline, "    ")
     );
+    for hole in holes {
+        data.push_str(&format!(
+            "    [\n{}    ],\n",
+            ring_points(underlay, hole, "        ")
+        ));
+    }
+    data.push_str(&format!("]\n{name}_HOLES = [\n"));
     for hole in holes {
         data.push_str(&format!(
             "    [\n{}    ],\n",

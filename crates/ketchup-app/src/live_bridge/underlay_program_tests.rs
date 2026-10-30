@@ -550,7 +550,11 @@ fn a_floor_follows_the_room_its_walls_enclose_and_the_data_is_rewritten_in_place
         "{data}"
     );
     assert!(data.contains("ROOM_HOLES = [\n]"), "{data}");
-    assert_eq!(data.matches("), (").count() + 1, 4, "four corners: {data}");
+    assert_eq!(
+        data.matches("), (").count(),
+        2 * 3,
+        "four corners, in ROOM and in ROOM_POINTS: {data}"
+    );
 
     // The program builds on the data like on any value of its own.
     let apply = Request::ApplyProgram {
@@ -990,4 +994,82 @@ fn a_drawing_edit_after_a_pull_names_the_area_it_changes_or_would_lose() {
     assert!(answer.get("areas_changed").is_none(), "{answer}");
     evaluate_exact(&mut app);
     assert!((exact_volume(&app, "ROOM") - 4_000.0 * 4_000.0 * 200.0).abs() < 1.0);
+}
+
+/// Code that reads the outline as points reads `NAME_POINTS`: when an edit of the drawing
+/// reveals an arc and `NAME` becomes named segments, `NAME_POINTS` still gives the corners
+/// and the edit is kept (review 2026-10-29 UO-65).
+#[test]
+fn name_points_stay_points_when_an_edit_reveals_an_arc() {
+    let (mut app, mut bridge, offset) = imported(&two_rooms());
+    from_underlay(
+        &mut app,
+        &mut bridge,
+        json!({"name":"ROOM", "point_mm":[2000.0-offset[0], 2000.0-offset[1]], "layers":["walls"]}),
+    );
+    // Its box: code that takes each item of the outline as a point.
+    let pad = "
+xs = [x for x, y in ROOM_POINTS]
+ys = [y for x, y in ROOM_POINTS]
+pad = extrude(\"pad\", profile = [(min(xs), min(ys)), (max(xs), min(ys)), (max(xs), max(ys)), (min(xs), max(ys))], distance = 100)
+";
+    let apply = Request::ApplyProgram {
+        expected: Some(app.live_bridge_stamp()),
+        source: format!("{}{pad}", source(&app)),
+        overrides: None,
+        file_name: None,
+        replace_document: false,
+    };
+    bridge.execute(&mut app, apply, false).unwrap();
+    assert!(
+        source(&app).contains("ROOM_POINTS = [\n    ("),
+        "{}",
+        source(&app)
+    );
+    evaluate_exact(&mut app);
+    assert!((exact_volume(&app, "pad") - 4_000.0 * 4_000.0 * 100.0).abs() < 1.0);
+
+    // The left wall becomes a half circle: ROOM is named segments, one of them an arc.
+    let objects = bridge
+        .execute(
+            &mut app,
+            ask("underlay_objects", json!({"limit": 10})),
+            false,
+        )
+        .unwrap();
+    let left = objects["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["handle"] == "A4")
+        .unwrap()["id"]
+        .clone();
+    bridge
+        .execute(
+            &mut app,
+            ask(
+                "drawing_draw",
+                json!({"layer": "walls", "shapes": [{"shape": "arc", "center_mm": [-offset[0], 2000.0 - offset[1]], "radius_mm": 2000.0, "start_deg": 90.0, "end_deg": 270.0}]}),
+            ),
+            false,
+        )
+        .unwrap();
+    bridge
+        .execute(
+            &mut app,
+            ask("drawing_remove", json!({"object_ids": [left]})),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {:?}", take_error_details()));
+    let written = source(&app);
+    assert!(written.contains("{\"through\": "), "{written}");
+    assert!(written.ends_with(pad), "{written}");
+    evaluate_exact(&mut app);
+    // The half circle reaches 2 m left of the old wall.
+    let volume = exact_volume(&app, "pad");
+    let expected = 6_000.0 * 4_000.0 * 100.0;
+    assert!(
+        (volume - expected).abs() < 0.005 * expected,
+        "{volume} != {expected}"
+    );
 }
