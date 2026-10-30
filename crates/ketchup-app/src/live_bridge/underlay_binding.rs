@@ -175,13 +175,29 @@ fn followed_section_lost(name: &str, code: &'static str) -> RuleProgramApplyErro
         "{name} follows this drawing, and the edit leaves it no outline: {}",
         cause.reason_text()
     );
-    let fix_hint = format!(
-        "{} To keep {name} as it is, first unlink the areas from the drawing: Tools > {UNLINK_MENU} in the window, or program action=patch removing the line starting \"{PREFIX}\" under \"{BEGIN} {name}:\".",
-        cause.fix_hint_text()
-    );
+    let fix_hint = format!("{} {}", cause.fix_hint_text(), unlink_hint(name));
     RuleProgramApplyError::Rejected(Box::new(
         cause.reason(reason).fix_hint(fix_hint.trim_start()),
     ))
+}
+
+/// The refusal to remove the underlay the section `name` follows (review 2026-10-26 UO-43).
+fn followed_underlay_removed(name: &str) -> RuleProgramApplyError {
+    RuleProgramApplyError::Rejected(Box::new(
+        rejected("invalid_params")
+            .target("underlay_id")
+            .reason(format!(
+                "{name} follows this drawing, and the edit removes the drawing it takes its outline from."
+            ))
+            .fix_hint(unlink_hint(name)),
+    ))
+}
+
+/// How to keep the section `name` as it is when its drawing changes.
+fn unlink_hint(name: &str) -> String {
+    format!(
+        "To keep {name} as it is, first unlink the areas from the drawing: Tools > {UNLINK_MENU} in the window, or program action=patch removing the line starting \"{PREFIX}\" under \"{BEGIN} {name}:\"."
+    )
 }
 
 /// The window's command that unlinks pulled areas from their drawing.
@@ -289,6 +305,9 @@ impl KetchupApp {
         for binding in bindings {
             // Positional object IDs belong to one import blob, not to a later import.
             let id = ketchup_model::underlay::UnderlayId(binding.underlay_id);
+            if snapshot.underlay(id).is_none() {
+                return Err(followed_underlay_removed(&binding.name));
+            }
             if binding.object_id.is_some()
                 && binding.handle.is_none_or(|handle| handle == 0)
                 && self

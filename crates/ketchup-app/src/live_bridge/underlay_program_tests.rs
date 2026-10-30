@@ -1118,6 +1118,48 @@ fn a_drawing_edit_after_a_pull_names_the_area_it_changes_or_would_lose() {
     assert!((exact_volume(&app, "ROOM") - 4_000.0 * 4_000.0 * 200.0).abs() < 1.0);
 }
 
+/// Removing an underlay a section follows is refused naming the section, saying the drawing
+/// it follows would be gone, and how to unlink it; once unlinked the underlay goes and the
+/// slab stays (review 2026-10-26 UO-43).
+#[test]
+fn removing_a_followed_underlay_names_the_section_and_how_to_unlink_it() {
+    let (mut app, mut bridge, offset) = imported(&two_rooms());
+    from_underlay(
+        &mut app,
+        &mut bridge,
+        json!({"name":"ROOM", "point_mm":[2000.0-offset[0], 2000.0-offset[1]], "layers":["walls"], "thickness_mm":200}),
+    );
+    let id = app.document.current().underlays().next().unwrap().id.0;
+    let digest = app.canonical_digest();
+    let remove = |app: &KetchupApp| {
+        let mut arguments = json!({"underlay_id": id});
+        arguments["expected"] = serde_json::to_value(app.live_bridge_stamp()).unwrap();
+        ask("remove_underlay", arguments)
+    };
+    let request = remove(&app);
+    let code = bridge.execute(&mut app, request, false).unwrap_err();
+    assert_eq!(code, "commit_rejected");
+    let details = take_error_details().unwrap_or_default().to_string();
+    assert!(details.contains("ROOM follows this drawing"), "{details}");
+    assert!(details.contains("removes the drawing"), "{details}");
+    assert!(
+        details.contains(&app.catalog.text("menu-unlink-pulled-areas")),
+        "{details}"
+    );
+    assert_eq!(
+        app.canonical_digest(),
+        digest,
+        "a refused removal changes nothing"
+    );
+
+    assert!(app.unlink_pulled_areas());
+    let request = remove(&app);
+    bridge.execute(&mut app, request, false).unwrap();
+    assert_eq!(app.document.current().underlays().count(), 0);
+    evaluate_exact(&mut app);
+    assert!((exact_volume(&app, "ROOM") - 4_000.0 * 4_000.0 * 200.0).abs() < 1.0);
+}
+
 /// Code that reads the outline as points reads `NAME_POINTS`: when an edit of the drawing
 /// reveals an arc and `NAME` becomes named segments, `NAME_POINTS` still gives the corners
 /// and the edit is kept (review 2026-10-29 UO-65).
