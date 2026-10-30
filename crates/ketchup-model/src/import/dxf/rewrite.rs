@@ -7,6 +7,7 @@
 //! CIRCLE and TEXT on their layers. The source must be the drawing the underlay was read
 //! from: it is read again, and its lines must be the underlay's.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::io::Cursor;
 use std::ops::Range;
@@ -214,6 +215,9 @@ struct Drawing<'a> {
     block_records: Option<(usize, Option<Vec<u8>>)>,
     /// The number after the highest of the drawing's `*D<n>` blocks.
     next_dimension_block: u64,
+    /// Where each record of the OBJECTS section starts, and the pair `ENDSEC` closing it.
+    objects: Vec<usize>,
+    objects_end: Option<usize>,
 }
 
 /// A block of the BLOCKS section: the pair `BLOCK` it starts at, its name upper case, the
@@ -269,6 +273,8 @@ impl<'a> Drawing<'a> {
             blocks_end: None,
             block_records: None,
             next_dimension_block: 1,
+            objects: Vec::new(),
+            objects_end: None,
         };
         let mut section = String::new();
         let mut record = String::new();
@@ -303,6 +309,8 @@ impl<'a> Drawing<'a> {
                             }
                         }
                         ("BLOCKS", "ENDSEC") => drawing.blocks_end = Some(index),
+                        ("OBJECTS", "ENDSEC") => drawing.objects_end = Some(index),
+                        ("OBJECTS", _) => drawing.objects.push(index),
                         ("TABLES", "ENDTAB") if table.0 == "BLOCK_RECORD" => {
                             drawing.block_records = Some((index, table.1.take()));
                         }
@@ -571,6 +579,16 @@ impl<'a> Drawing<'a> {
             let pair = &self.pairs[index];
             edits_at.push((pair.value.start..pair.end, value));
         }
+        let removed: BTreeSet<u64> = self
+            .entities
+            .iter()
+            .zip(&replaced)
+            .filter(|(_, replaced)| matches!(replaced, Some(None)))
+            .flat_map(|(entity, _)| entity.pairs.clone())
+            .filter(|&index| self.pairs[index].code == 5)
+            .filter_map(|index| hex(self.value(index)))
+            .collect();
+        edits_at.extend(self.objects_without(removed));
         for (entity, replaced) in self.entities.iter().zip(replaced) {
             if let Some(replaced) = replaced {
                 let range =
@@ -600,6 +618,91 @@ impl<'a> Drawing<'a> {
         }
         out.extend_from_slice(&self.source[copied..]);
         Ok(out)
+    }
+
+    /// The OBJECTS section rewritten without the records `removed` (by handle) owned, as
+    /// a removed entity's extension dictionary, and without every reference to them: a
+    /// group's member, a reactor, a dictionary entry with its key, a draw-order entry with
+    /// its sort handle (review 2026-10-29 CD-60). Each item replaces a byte range.
+    fn objects_without(&self, mut removed: BTreeSet<u64>) -> Vec<(Range<usize>, Vec<u8>)> {
+        let Some(end) = self.objects_end else {
+            return Vec::new();
+        };
+        if removed.is_empty() {
+            return Vec::new();
+        }
+        let records: Vec<Range<usize>> = self
+            .objects
+            .iter()
+            .enumerate()
+            .map(|(at, &start)| start..self.objects.get(at + 1).copied().unwrap_or(end))
+            .collect();
+        let handle_of = |record: &Range<usize>, code: i32| -> Option<u64> {
+            let mut in_group = false;
+            record.clone().find_map(|index| {
+                let pair = &self.pairs[index];
+                if pair.code == 102 {
+                    in_group = self.value(index).starts_with(b"{");
+                }
+                (!in_group && pair.code == code)
+                    .then(|| hex(self.value(index)))
+                    .flatten()
+            })
+        };
+        let mut dropped = vec![false; records.len()];
+        loop {
+            let mut changed = false;
+            for (record, dropped) in records.iter().zip(&mut dropped) {
+                if !*dropped && handle_of(record, 330).is_some_and(|owner| removed.contains(&owner))
+                {
+                    *dropped = true;
+                    changed = true;
+                    removed.extend(handle_of(record, 5));
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let mut edits = Vec::new();
+        for (record, dropped) in records.iter().zip(dropped) {
+            let bytes = self.pairs[record.start].start..self.pairs[record.end - 1].end;
+            if dropped {
+                edits.push((bytes, Vec::new()));
+                continue;
+            }
+            let mut skip = vec![false; record.len()];
+            for (at, index) in record.clone().enumerate() {
+                let code = self.pairs[index].code;
+                if !(330..=369).contains(&code)
+                    || !hex(self.value(index)).is_some_and(|handle| removed.contains(&handle))
+                {
+                    continue;
+                }
+                skip[at] = true;
+                let previous = index.checked_sub(1).filter(|i| *i > record.start);
+                if let Some(previous) = previous
+                    && matches!(code, 350 | 360)
+                    && self.pairs[previous].code == 3
+                {
+                    skip[previous - record.start] = true;
+                }
+                if code == 331 && self.pairs.get(index + 1).is_some_and(|next| next.code == 5) {
+                    skip[at + 1] = true;
+                }
+            }
+            if skip.iter().any(|skip| *skip) {
+                let mut kept = Vec::new();
+                for (index, skip) in record.clone().zip(skip) {
+                    if !skip {
+                        let pair = &self.pairs[index];
+                        kept.extend_from_slice(&self.source[pair.start..pair.end]);
+                    }
+                }
+                edits.push((bytes, kept));
+            }
+        }
+        edits
     }
 
     /// The entity `entity`, of object `object`, mapped by `map`, of the drawing's units;

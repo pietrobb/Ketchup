@@ -2,14 +2,15 @@
 //! with what an import does not read.
 
 use acadrust::io::dwg::checksum::apply_magic_sequence;
+use acadrust::objects::{Group, ObjectType};
 use acadrust::types::Vector3;
 use acadrust::xdata::{ExtendedDataRecord, XDataValue};
 use acadrust::{AppId, CadDocument, DimStyle, DwgWriter, EntityType, Line, Text, TextStyle};
 
 /// A millimetre DWG drawing of two lines and a text, with what an import does not read but a
 /// drawing written back keeps (review 2026-10-29 CD-60): the text in style `ARIAL`, a
-/// dimension style `MYDIM`, and the first line with extended data `wall-1` of application
-/// `MYAPP`.
+/// dimension style `MYDIM`, the first line with extended data `wall-1` of application
+/// `MYAPP`, and both lines in group `WALL1`.
 ///
 /// # Panics
 /// acadrust refuses the drawing.
@@ -36,13 +37,28 @@ pub fn styled_drawing_dwg() -> Vec<u8> {
     let mut text = Text::with_value("Room", Vector3::new(1000.0, 1000.0, 0.0));
     text.height = 250.0;
     text.style = String::from("ARIAL");
-    for entity in [
-        EntityType::Line(wall),
-        EntityType::Line(Line::from_coords(4000.0, 0.0, 0.0, 4000.0, 3000.0, 0.0)),
-        EntityType::Text(text),
-    ] {
-        document.add_entity(entity).expect("the entity is added");
+    let group_handle = document.allocate_handle();
+    let mut side = Line::from_coords(4000.0, 0.0, 0.0, 4000.0, 3000.0, 0.0);
+    wall.common.reactors.push(group_handle);
+    side.common.reactors.push(group_handle);
+    let mut group = Group::new("WALL1");
+    group.handle = group_handle;
+    group.owner = document.header.acad_group_dict_handle;
+    for entity in [EntityType::Line(wall), EntityType::Line(side)] {
+        group.add_entity(document.add_entity(entity).expect("the line is added"));
     }
+    document
+        .add_entity(EntityType::Text(text))
+        .expect("the text is added");
+    if let Some(ObjectType::Dictionary(groups)) = document
+        .objects
+        .get_mut(&document.header.acad_group_dict_handle)
+    {
+        groups.add_entry("WALL1", group_handle);
+    }
+    document
+        .objects
+        .insert(group_handle, ObjectType::Group(group));
     DwgWriter::write_to_vec(&document).expect("the drawing is written")
 }
 

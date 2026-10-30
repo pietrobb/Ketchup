@@ -142,6 +142,36 @@ fn assert_whole_drawing(dxf: &str) {
         pairs.contains(&("0", "LAYOUT")),
         "the objects section keeps the layouts"
     );
+    assert!(pairs.contains(&("3", "WALL1")), "the group is kept");
+    assert_references_resolve(&pairs);
+}
+
+/// The members (340) of the drawing's groups.
+fn group_members<'a>(pairs: &[(&str, &'a str)]) -> Vec<&'a str> {
+    let mut record = "";
+    pairs
+        .iter()
+        .filter_map(|&(code, value)| {
+            if code == "0" {
+                record = value;
+            }
+            (record == "GROUP" && code == "340").then_some(value)
+        })
+        .collect()
+}
+
+/// Every owner, reactor and member reference (330, 340, 360) names a record of the drawing.
+fn assert_references_resolve(pairs: &[(&str, &str)]) {
+    let handles: std::collections::BTreeSet<&str> = pairs
+        .iter()
+        .filter(|(code, _)| matches!(*code, "5" | "105"))
+        .map(|&(_, value)| value)
+        .collect();
+    for &(code, value) in pairs {
+        if matches!(code, "330" | "340" | "360") && value != "0" {
+            assert!(handles.contains(value), "{code} {value} names no record");
+        }
+    }
 }
 
 /// Review 2026-10-29 CD-60: a drawing imported from DWG is written back whole, as DXF and as
@@ -194,4 +224,72 @@ fn a_dwg_drawing_written_back_keeps_its_styles_extended_data_and_objects() {
     write(&dwg);
     let back = ketchup_dwg::dwg_to_whole_dxf(&std::fs::read(&dwg).unwrap(), usize::MAX).unwrap();
     assert_whole_drawing(&String::from_utf8(back.dxf).unwrap());
+}
+
+/// Review 2026-10-29 CD-60, its probe: a line of group `WALL1` deleted in Kečup leaves the
+/// group with the other line, and no reference in the drawing names the deleted one.
+#[test]
+fn a_line_deleted_from_a_dwg_group_leaves_the_group_and_no_dangling_reference() {
+    use ketchup_model::import::ImportLengthUnit;
+    use ketchup_scheduler::protocol::{UnderlayInput, UnderlayWriteInput};
+
+    let _turn = crate::integration_support::file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("plan.dwg");
+    std::fs::write(&source, ketchup_dwg::testing::styled_drawing_dwg()).unwrap();
+    let lines = directory.path().join("lines.bin");
+    let mut worker = worker();
+    worker
+        .read_underlay(
+            UnderlayInput {
+                source: source.clone(),
+                dwg: true,
+                unit_if_unitless: Some(ImportLengthUnit::Millimetre),
+                output: lines.clone(),
+            },
+            &CancelToken::default(),
+        )
+        .unwrap();
+    let mut edits = ketchup_model::underlay::edits::UnderlayEdits::default();
+    edits.removed_objects.insert(0);
+    let mut write = |output: &std::path::Path| {
+        worker
+            .write_underlay(
+                UnderlayWriteInput {
+                    source: source.clone(),
+                    dwg: true,
+                    unit_if_unitless: Some(ImportLengthUnit::Millimetre),
+                    lines: lines.clone(),
+                    edits: edits.clone(),
+                    output: output.to_owned(),
+                },
+                std::time::Duration::from_secs(120),
+                &CancelToken::default(),
+            )
+            .unwrap()
+    };
+    let assert_one_member = |dxf: &str| {
+        let pairs = pairs(dxf);
+        assert!(
+            !pairs.contains(&("1000", "wall-1")),
+            "the first line is deleted"
+        );
+        assert!(pairs.contains(&("3", "WALL1")), "the group stays");
+        assert_eq!(
+            group_members(&pairs).len(),
+            1,
+            "{:?}",
+            group_members(&pairs)
+        );
+        assert_references_resolve(&pairs);
+    };
+
+    let dxf = directory.path().join("written.dxf");
+    write(&dxf);
+    assert_one_member(&std::fs::read_to_string(&dxf).unwrap());
+
+    let dwg = directory.path().join("written.dwg");
+    write(&dwg);
+    let back = ketchup_dwg::dwg_to_whole_dxf(&std::fs::read(&dwg).unwrap(), usize::MAX).unwrap();
+    assert_one_member(&String::from_utf8(back.dxf).unwrap());
 }

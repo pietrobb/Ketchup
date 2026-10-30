@@ -421,6 +421,60 @@ fn moved_and_copied_hatches_and_dimensions_are_written_where_they_now_lie() {
     assert_eq!(drawn_again["walls"].fills, 4);
 }
 
+/// Groups, draw order and the extension dictionary of the line A0, which has data.
+const OBJECTS: &str = concat!(
+    "0\nSECTION\n2\nOBJECTS\n",
+    "0\nDICTIONARY\n5\nC\n330\n0\n100\nAcDbDictionary\n3\nACAD_GROUP\n350\nD\n",
+    "0\nDICTIONARY\n5\nD\n330\nC\n100\nAcDbDictionary\n3\nWALL1\n350\nE\n3\nDOOR\n350\nF\n",
+    "0\nGROUP\n5\nE\n102\n{ACAD_REACTORS\n330\nD\n102\n}\n330\nD\n100\nAcDbGroup\n",
+    "300\n\n70\n0\n71\n1\n340\nA0\n340\nA1\n",
+    "0\nGROUP\n5\nF\n330\nD\n100\nAcDbGroup\n300\n\n70\n0\n71\n1\n340\nA4\n",
+    "0\nDICTIONARY\n5\nB0\n330\nA0\n100\nAcDbDictionary\n3\nDATA\n360\nB1\n",
+    "0\nXRECORD\n5\nB1\n330\nB0\n100\nAcDbXrecord\n1\nhello\n",
+    "0\nSORTENTSTABLE\n5\nB2\n330\nC\n100\nAcDbSortentsTable\n331\nA0\n5\nB3\n331\nA1\n5\nB4\n",
+    "0\nENDSEC\n",
+);
+
+/// Review 2026-10-29 CD-60: entities taken out leave no reference in the OBJECTS section —
+/// a group keeps its other members, draw order its other entries, and the extension
+/// dictionary of a removed entity goes with it, with what that dictionary owns.
+#[test]
+fn removed_entities_leave_no_reference_in_the_objects() {
+    let entities = ENTITIES.replace(
+        "0\nLINE\n5\nA0\n330\n1F\n",
+        "0\nLINE\n5\nA0\n102\n{ACAD_XDICTIONARY\n360\nB0\n102\n}\n330\n1F\n",
+    );
+    let source = format!("{HEADER}{TABLES}{BLOCKS}{entities}{OBJECTS}0\nEOF\n");
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(id_of(lines, 0xA0));
+    edits.removed_objects.insert(id_of(lines, 0xA4));
+
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap();
+    let text = String::from_utf8(written).unwrap();
+    let objects = &text[text.find("OBJECTS\n").unwrap()..];
+    assert_eq!(
+        objects,
+        concat!(
+            "OBJECTS\n",
+            "0\nDICTIONARY\n5\nC\n330\n0\n100\nAcDbDictionary\n3\nACAD_GROUP\n350\nD\n",
+            "0\nDICTIONARY\n5\nD\n330\nC\n100\nAcDbDictionary\n3\nWALL1\n350\nE\n3\nDOOR\n350\nF\n",
+            "0\nGROUP\n5\nE\n102\n{ACAD_REACTORS\n330\nD\n102\n}\n330\nD\n100\nAcDbGroup\n",
+            "300\n\n70\n0\n71\n1\n340\nA1\n",
+            "0\nGROUP\n5\nF\n330\nD\n100\nAcDbGroup\n300\n\n70\n0\n71\n1\n",
+            "0\nSORTENTSTABLE\n5\nB2\n330\nC\n100\nAcDbSortentsTable\n331\nA1\n5\nB4\n",
+            "0\nENDSEC\n0\nEOF\n",
+        )
+    );
+}
+
 #[test]
 fn another_drawing_is_refused() {
     let source = source();
