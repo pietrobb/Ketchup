@@ -70,6 +70,20 @@ pub fn density_below(part: &str, class: &str, rho_k: f64, density: f64) -> Strin
     )
 }
 
+/// Why a rating published for some service classes does not hold.
+#[must_use]
+pub fn service_class_outside(part: &str, class: u8, classes: &[u8]) -> String {
+    let plural = if classes.len() > 1 { "es" } else { "" };
+    let classes = classes
+        .iter()
+        .map(u8::to_string)
+        .collect::<Vec<_>>()
+        .join(" and ");
+    format!(
+        "the rating holds in service class{plural} {classes}; {part} is designed in service class {class} (timber_design)"
+    )
+}
+
 /// Utilization and the combination it comes from, on the rating's basis:
 /// an allowable load against the characteristic sum, a characteristic one
 /// as kmod R_k / gamma_M and a design one directly against the design load.
@@ -97,6 +111,19 @@ fn utilization(
                 Some(_) => {}
             }
         }
+    }
+    if !rating.service_classes.is_empty()
+        && let Some((name, class)) = joint
+            .parts
+            .iter()
+            .find_map(|name| Some((name, class_of(name)?)))
+        && !rating.service_classes.contains(&class.service_class)
+    {
+        missing.push(service_class_outside(
+            name,
+            class.service_class,
+            &rating.service_classes,
+        ));
     }
     let service_class = if rating.basis == "characteristic" {
         match joint.parts.iter().find_map(class_of) {
@@ -242,6 +269,8 @@ mod tests {
             note: String::new(),
             tension_n: None,
             density_kg_m3: None,
+            service_classes: Vec::new(),
+            hardware: std::collections::BTreeMap::new(),
         };
         let joint = Joint {
             name: "hanger".to_owned(),

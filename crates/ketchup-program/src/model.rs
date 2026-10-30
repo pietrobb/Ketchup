@@ -1790,6 +1790,13 @@ pub struct JointRating {
     /// a joined part of lower or unknown density is not verified.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub density_kg_m3: Option<f64>,
+    /// EN 1995 service classes the published values hold in; empty: any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub service_classes: Vec<u8>,
+    /// What one connection is bought as for the values to hold (the
+    /// connector and the nails it counts), by item; empty: the joint's fastener.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub hardware: BTreeMap<String, usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
