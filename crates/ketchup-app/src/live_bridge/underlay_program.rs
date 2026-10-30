@@ -369,6 +369,54 @@ pub(super) fn with_data(source: &str, name: &str, written: &str) -> String {
     format!("{written}\n{source}")
 }
 
+/// [`with_data`] for the section `name` following its drawing: its data written anew from
+/// `written`, the lines after the data as the section has them, so a name or a colour the
+/// window gave its part, or a distance changed by hand, stays (review 2026-10-26 UO-45).
+pub(super) fn with_followed_data(source: &str, name: &str, written: &str) -> String {
+    let kept = section_text(source, name).and_then(|old| statements(old, name));
+    match (statements(written, name), kept) {
+        (Some(generated), Some(kept)) => {
+            let data = &written[..written.len() - generated.len()];
+            with_data(source, name, &format!("{data}{kept}"))
+        }
+        _ => with_data(source, name, written),
+    }
+}
+
+/// The section `name` of `source`, its heading to its end line.
+fn section_text<'a>(source: &'a str, name: &str) -> Option<&'a str> {
+    let begin = format!("{BEGIN} {name}:");
+    let end = format!("{END} {name}");
+    let start = source
+        .match_indices(&begin)
+        .map(|(at, _)| at)
+        .find(|at| *at == 0 || source[..*at].ends_with('\n'))?;
+    let mut offset = start;
+    for line in source[start..].split_inclusive('\n') {
+        offset += line.len();
+        if line.trim_end() == end {
+            return Some(&source[start..offset]);
+        }
+    }
+    None
+}
+
+/// What follows the data of the section text `section` named `name`: the statements that
+/// make parts of it and its end line.
+fn statements<'a>(section: &'a str, name: &str) -> Option<&'a str> {
+    let frame = format!("{name}_FRAME =");
+    let mut offset = 0;
+    let mut after = None;
+    for line in section.split_inclusive('\n') {
+        offset += line.len();
+        let text = line.trim_end();
+        if text == "]" || text.starts_with(&frame) {
+            after = Some(offset);
+        }
+    }
+    after.map(|at| &section[at..])
+}
+
 /// A number as the program reads it: to the thousandth of a millimetre, no trailing zeros.
 pub(super) fn number(value: f64) -> String {
     let text = format!("{value:.3}");

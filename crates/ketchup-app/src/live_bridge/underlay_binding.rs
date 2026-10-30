@@ -333,8 +333,11 @@ impl KetchupApp {
                 .written(self, &snapshot)
                 .map_err(|code| followed_section_lost(&binding.name, code))?;
             let was = section_measure(&source.source, &binding.name);
-            source.source =
-                super::underlay_program::with_data(&source.source, &binding.name, &written);
+            source.source = super::underlay_program::with_followed_data(
+                &source.source,
+                &binding.name,
+                &written,
+            );
             if let (Some(was), Some(now)) = (was, section_measure(&written, &binding.name))
                 && was != now
             {

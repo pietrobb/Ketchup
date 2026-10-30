@@ -1118,6 +1118,36 @@ fn a_drawing_edit_after_a_pull_names_the_area_it_changes_or_would_lose() {
     assert!((exact_volume(&app, "ROOM") - 4_000.0 * 4_000.0 * 200.0).abs() < 1.0);
 }
 
+/// What was made of a pulled area after it was pulled, a part renamed or a distance changed
+/// by hand or by the window, stays when the area follows its drawing: only its outline is
+/// written anew (review 2026-10-26 UO-45).
+#[test]
+fn a_followed_area_keeps_the_name_and_distance_given_to_its_part() {
+    let (mut app, mut bridge, offset) = imported(&two_rooms());
+    from_underlay(
+        &mut app,
+        &mut bridge,
+        json!({"name":"ROOM", "point_mm":[2000.0-offset[0], 2000.0-offset[1]], "layers":["walls"], "thickness_mm":200}),
+    );
+    let generated = "ROOM_SOLID = extrude(\"ROOM\", profile = ROOM, distance = 200)";
+    let edited = "ROOM_SOLID = extrude(\"SLAB\", profile = ROOM, distance = 300)";
+    let mut program = app.document.current_rule_program().unwrap().clone();
+    assert!(program.source.contains(generated), "{}", program.source);
+    program.source = program.source.replace(generated, edited);
+    app.apply_program_source(program, false).unwrap();
+    let id = app.document.current().underlays().next().unwrap().id;
+    app.fit_underlay(
+        id,
+        [[0.0, 0.0], [1000.0, 0.0]],
+        [[500.0, 0.0], [1500.0, 0.0]],
+        false,
+    )
+    .unwrap_or_else(|error| panic!("{error}: {:?}", take_error_details()));
+    assert!(source(&app).contains(edited), "{}", source(&app));
+    evaluate_exact(&mut app);
+    assert!((exact_volume(&app, "SLAB") - 4_000.0 * 4_000.0 * 300.0).abs() < 1.0);
+}
+
 /// A room taken by its label still follows the drawing after the layer of room names is
 /// hidden: the binding keeps the layers its label was read from (review 2026-10-26 UO-44).
 #[test]
