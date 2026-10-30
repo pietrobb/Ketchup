@@ -181,13 +181,16 @@ impl Report {
 
     /// Takes the issues and relations [`refine`] re-derived. Refining checks
     /// collisions and relations only, so a report whose checks stopped keeps
-    /// saying that joints and loads were not checked.
+    /// saying that joints and loads were not checked, and the issues of its
+    /// loads stay.
     pub fn apply_refined(&mut self, refined: Refined) {
         let mut issues = refined.issues;
         issues.extend(
             self.issues
                 .iter()
-                .filter(|issue| issue.kind == CHECKS_UNVERIFIED)
+                .filter(|issue| {
+                    issue.kind == CHECKS_UNVERIFIED || issue.kind == loads::LOAD_UNASSIGNED
+                })
                 .cloned(),
         );
         self.relations = refined.relations;
@@ -355,12 +358,13 @@ pub fn report(evaluated: &Evaluated) -> Report {
     let mut faces = contact::ContactFaces::default();
     let mut issues =
         validate::validate_with_faces(&evaluated.model, &ExactShapes::default(), &mut faces);
+    let loads = loads::loads_with(&evaluated.model, &mut faces);
+    issues.extend(loads.issues());
     locate_issues(&mut issues, &evaluated.part_sources);
     let errors = issues
         .iter()
         .filter(|issue| issue.severity == Severity::Error)
         .count();
-    let loads = loads::loads_with(&evaluated.model, &mut faces);
     Report {
         ok: errors == 0,
         errors,
@@ -405,7 +409,9 @@ pub fn report_before_exact(evaluated: &Evaluated) -> Report {
         part_sources: evaluated.part_sources.clone(),
         checks_pending: true,
     };
-    report.set_issues(validate::collisions_only(&evaluated.model));
+    let mut issues = validate::collisions_only(&evaluated.model);
+    issues.extend(report.loads.issues());
+    report.set_issues(issues);
     report
 }
 

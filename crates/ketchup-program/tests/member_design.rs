@@ -144,6 +144,99 @@ box(\"beam\", (3000, 100, 200), at = (0, 0, 2000), material = \"C24\", tags = [\
     );
 }
 
+/// PG-41 (review 2026-10-26): a 3 m beam balanced on one 100 mm post with
+/// imposed load on both arms passed at 0.373 as two clamped cantilevers, from
+/// the resultant of all its loads together. A person on one arm tips it: the
+/// equilibrium counts every stretch beside the bearing apart (EQU), as for a
+/// member on several supports.
+#[test]
+fn a_beam_balanced_on_one_post_tips_under_load_on_one_arm() {
+    let balanced = |load: &str| {
+        format!(
+            "load_path(only = [\"frame\"], carriers = [\"deck\"])
+{load}timber_design({{\"C24\": \"C24\"}})
+self_weight([\"frame\"])
+box(\"post\", (100, 100, 2000), at = (1450, 0, 0), material = \"C24\", grounded = True)
+box(\"beam\", (3000, 100, 200), at = (0, 0, 2000), material = \"C24\", tags = [\"frame\"])
+box(\"deck\", (3000, 600, 20), at = (0, -250, 2200), material = \"OSB\", tags = [\"deck\"])
+"
+        )
+    };
+    let tips = |report: &Report| {
+        let beam = member(report, "beam");
+        assert_eq!(beam.status, "not_verified", "{beam:?}");
+        assert!(
+            beam.missing
+                .iter()
+                .any(|reason| reason.contains("rests on post alone and tips over it")),
+            "{:?}",
+            beam.missing
+        );
+    };
+    tips(&report(
+        &balanced(
+            "area_load(\"live\", kind = \"imposed\", kn_m2 = 2.0, on = [\"deck\"], source = \"test\")\n",
+        ),
+        &[],
+    ));
+    // Its own weight alone, the same on both arms, still has nothing holding
+    // it: 0.9 of one arm against 1.1 of the other.
+    tips(&report(&balanced(""), &[]));
+}
+
+/// PG-40 (review 2026-10-26): 500 kg hung under a 100 x 160 beam on two posts
+/// with no joint reached no member (PG-14b), but the beam did not know it and
+/// passed at 0.054 with `ok: true`; with a joint it fails at 1.709. The weight
+/// a member is only touched by makes it not verified, and the report says so.
+#[test]
+fn weight_that_only_touches_a_member_leaves_it_not_verified() {
+    let source = |fixing: &str| {
+        format!(
+            "load_path(only = [\"frame\"])
+material_weight(\"steel\", kg_m3 = 7850, source = \"test\")
+self_weight([\"frame\", \"construction\"])
+timber_design({{\"C24\": \"C24\"}})
+box(\"post a\", (100, 100, 2000), material = \"C24\", grounded = True)
+box(\"post b\", (100, 100, 2000), at = (3900, 0, 0), material = \"C24\", grounded = True)
+box(\"beam\", (4000, 100, 160), at = (0, 0, 2000), material = \"C24\", tags = [\"frame\"])
+box(\"block\", (100, 637, 1000), at = (1950, 0, 1000), material = \"steel\", tags = [\"construction\"])
+{fixing}"
+        )
+    };
+    let loose = report(&source(""), &[]);
+    let beam = member(&loose, "beam");
+    assert_eq!(beam.status, "not_verified", "{beam:?}");
+    assert!(
+        beam.missing
+            .iter()
+            .any(|reason| reason.contains("block touches it without a joint")
+                && reason.contains("4.91 kN")),
+        "{:?}",
+        beam.missing
+    );
+    let issue = loose
+        .issues
+        .iter()
+        .find(|issue| issue.kind == "load_unassigned")
+        .unwrap_or_else(|| panic!("no load_unassigned issue: {:?}", loose.issues));
+    assert_eq!(issue.severity, ketchup_program::Severity::Warning);
+    assert_eq!(issue.parts, ["block", "beam"]);
+
+    let joined = report(
+        &source("joint(\"block\", \"beam\", kind = \"screw\")\n"),
+        &[],
+    );
+    assert_eq!(member(&joined, "beam").status, "fail");
+    assert!(
+        joined
+            .issues
+            .iter()
+            .all(|issue| issue.kind != "load_unassigned"),
+        "{:?}",
+        joined.issues
+    );
+}
+
 #[test]
 fn a_beam_continuous_over_a_middle_post_takes_five_eighths_shear_there() {
     // 6000 mm beam on post centres 50, 3000, 5950 mm: two spans of 2950 mm.

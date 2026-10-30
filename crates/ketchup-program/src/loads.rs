@@ -14,6 +14,7 @@ use crate::contact::ContactFaces;
 use crate::continuous_span::{self, Piece};
 use crate::load_path::{joint_points, on_floor};
 use crate::model::{Part, ProgramModel, ProgramPartBody};
+use crate::validate::{Issue, Severity};
 use ketchup_geometry::linalg::{self, cross, dot, length, sub};
 use ketchup_model::tolerance::CONTACT_FIT_MM;
 use serde::{Deserialize, Serialize};
@@ -152,12 +153,41 @@ pub struct LoadReport {
     /// why: their load reaches no member, so no check is complete.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub unassigned: BTreeMap<String, String>,
+    /// What each unassigned part only touches, without a joint.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub touched: BTreeMap<String, Vec<String>>,
 }
+
+/// Issue kind of a loaded part whose load reaches no member: the checks of
+/// what it touches, and of what that rests on, are not complete.
+pub const LOAD_UNASSIGNED: &str = "load_unassigned";
 
 impl LoadReport {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.members.is_empty()
+    }
+
+    /// A warning for every unassigned part, naming it and what it touches.
+    #[must_use]
+    pub fn issues(&self) -> Vec<Issue> {
+        self.unassigned
+            .iter()
+            .map(|(part, reason)| {
+                let mut parts = vec![part.clone()];
+                parts.extend(self.touched.get(part).into_iter().flatten().cloned());
+                Issue {
+                    severity: Severity::Warning,
+                    kind: LOAD_UNASSIGNED,
+                    parts,
+                    message: format!("The load of {part} reaches no member: {reason}."),
+                    where_mm: None,
+                    hint: "Join it to what carries it with joint(), or rest it on a member."
+                        .to_owned(),
+                    source_lines: Vec::new(),
+                }
+            })
+            .collect()
     }
 }
 
@@ -610,20 +640,42 @@ fn beam_shares(
         }
     }
     // Lifting off down to one support of several, the member tips over it. On
-    // one support only it tips as soon as its loads act beside the bearing: no
-    // joint takes a moment (a hanger or screws do not clamp it).
+    // one support only it tips over an edge of the bearing when its loads
+    // beyond that edge outweigh the rest for static equilibrium: every kind
+    // apart on the stretches before, on and after the bearing, as above (PG-41).
+    // No joint takes a moment (a hanger or screws do not clamp it).
     let tips = match active.as_slice() {
         [_] if clusters.len() > 1 => true,
         [only] => {
             let (lo, hi) = bearings[*only];
-            let (force, moment) = pieces.iter().flat_map(|(_, pieces)| pieces).fold(
-                (0.0, 0.0),
-                |(force, moment), (from, to, value)| {
-                    (force + value, moment + value * f64::midpoint(*from, *to))
-                },
-            );
-            let at = moment / force;
-            force > 0.0 && (lo - at).max(at - hi) * across_gravity > 1.0
+            let force: f64 = pieces
+                .iter()
+                .flat_map(|(_, pieces)| pieces)
+                .map(|(_, _, value)| value.abs())
+                .sum();
+            // The moment holding the member on the bearing about one edge,
+            // `lever` the arm of a load towards the bearing (negative beyond it).
+            let holding = |lever: &dyn Fn(f64) -> f64| -> f64 {
+                pieces
+                    .iter()
+                    .flat_map(|(kind, pieces)| {
+                        continuous_span::by_stretch(&[lo, hi], pieces)
+                            .into_iter()
+                            .map(move |stretch| {
+                                let moment = stretch
+                                    .iter()
+                                    .map(|(from, to, value)| {
+                                        value * lever(f64::midpoint(*from, *to))
+                                    })
+                                    .sum::<f64>();
+                                holding_down(kind, moment)
+                            })
+                    })
+                    .sum()
+            };
+            let over_lo = holding(&|at| at - lo);
+            let over_hi = holding(&|at| hi - at);
+            force > 0.0 && over_lo.min(over_hi) * across_gravity < -force
         }
         _ => false,
     };
@@ -860,7 +912,7 @@ fn tipping(list: &[Support], lifted: &[bool], parts: &[Part]) -> String {
             .collect();
         on.dedup();
         format!(
-            "it rests on {} alone and tips over it: its load acts beside the bearing and no joint takes a moment",
+            "it rests on {} alone and tips over it: its loads beside the bearing turn it over (EQU 0.9 G + 1.5 Q) and no joint takes a moment",
             on.join(", ")
         )
     } else {
@@ -1103,6 +1155,8 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
     let mut done = vec![false; parts.len()];
     let mut reactions: Vec<Vec<Reaction>> = parts.iter().map(|_| Vec::new()).collect();
     let mut report = LoadReport::default();
+    // Loads that reach no member, by the part they only touch.
+    let mut lost: Vec<(usize, String)> = Vec::new();
     while let Some(item) = queue.pop() {
         done[item] = true;
         let list = &supports[item];
@@ -1117,8 +1171,31 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
                     report
                         .unassigned
                         .insert(parts[item].name.clone(), reason.clone());
+                    report.touched.insert(
+                        parts[item].name.clone(),
+                        touches[item]
+                            .iter()
+                            .map(|other| parts[*other].name.clone())
+                            .collect(),
+                    );
                 }
                 missing[item].insert(reason);
+                // What it touches does not carry it, and does not know it (PG-40).
+                let newtons: f64 = patches[item]
+                    .iter()
+                    .flat_map(|patch| patch.loads_n.values())
+                    .filter(|value| **value > 0.0)
+                    .sum();
+                for &carrier in &touches[item] {
+                    lost.push((
+                        carrier,
+                        format!(
+                            "{} touches it without a joint; its {:.2} kN is not counted",
+                            parts[item].name,
+                            newtons / 1000.0
+                        ),
+                    ));
+                }
             }
             continue;
         }
@@ -1232,6 +1309,30 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
             pending[target] -= 1;
             if pending[target] == 0 {
                 queue.push(target);
+            }
+        }
+    }
+    // A touched part may have passed its loads down before the part touching
+    // it came up, so the lost load goes down its supports here, to every part
+    // and bearing joint below.
+    for (carrier, reason) in lost {
+        let mut below = vec![carrier];
+        let mut seen = BTreeSet::new();
+        while let Some(item) = below.pop() {
+            if !seen.insert(item) {
+                continue;
+            }
+            missing[item].insert(reason.clone());
+            for support in &supports[item] {
+                if let Some(load) = support
+                    .joint
+                    .as_ref()
+                    .and_then(|joint| report.joints.get_mut(joint))
+                    && !load.missing.contains(&reason)
+                {
+                    load.missing.push(reason.clone());
+                }
+                below.push(support.supporter);
             }
         }
     }
