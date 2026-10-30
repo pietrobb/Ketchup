@@ -1695,7 +1695,8 @@ fn beam_checks(
         .into_iter()
         .filter_map(|best| best.0)
         .collect();
-    let (at_bearings, mut unchecked) = bearing_checks(load, shape, design, uls, &zones);
+    let (at_bearings, mut unchecked) =
+        bearing_checks(load, shape, design, uls, &zones, &segments, &kinds);
     checks.extend(at_bearings);
     unchecked.extend(tension_notch(shape, &segments, &zones, uls, &kinds));
     (checks, spans_checked, unchecked)
@@ -1710,6 +1711,8 @@ fn bearing_checks(
     design: &Design,
     uls: &[Combination],
     zones: &[Zone],
+    segments: &[(Segment, Vec<Option<Bending>>)],
+    kinds: &[usize],
 ) -> (Vec<Check>, Vec<String>) {
     let class = design.class;
     let (b, h) = (shape.b, shape.h);
@@ -1737,11 +1740,12 @@ fn bearing_checks(
                 let alpha = h_ef / h;
                 let (x, corner) = notch_corner(depth_at, zone, load.length_mm, 0.95 * h, shape.arc);
                 // A notch in the top, away from the bearing under it, keeps
-                // the underside: kv = 1 (6.5.2(2), fig. 6.11(b)).
+                // the underside: kv = 1 (6.5.2(2), fig. 6.11(b)), unless the
+                // moment there pulls the top (PG-44).
                 let middle = (zone.lo + zone.hi) / 2.0;
                 let on_top = shape.underside_at.as_ref().is_some_and(|underside| {
                     (underside(middle) - underside(corner)).abs() < (h - h_ef) / 2.0
-                });
+                }) && !top_pulled_over(zone, segments, uls, kinds);
                 let kv = if on_top {
                     1.0
                 } else {
@@ -1772,6 +1776,55 @@ fn bearing_checks(
     (notch.0.into_iter().chain(bearing.0).collect(), unchecked)
 }
 
+/// The bounds (largest, smallest) of the signed moment (sagging positive) at
+/// each station within `near` of `x`, in every ULS combination.
+fn moments_near(
+    segments: &[(Segment, Vec<Option<Bending>>)],
+    uls: &[Combination],
+    kinds: &[usize],
+    x: f64,
+    near: f64,
+) -> Vec<(f64, f64)> {
+    let mut bounds = Vec::new();
+    for (seg, _) in segments {
+        for (j, station) in seg.xs.iter().enumerate() {
+            if (station - x).abs() > near {
+                continue;
+            }
+            let values: Vec<f64> = seg.moments.iter().map(|m| m[j]).collect();
+            for combination in uls {
+                bounds.push(extremes(
+                    &combination.factors,
+                    kinds,
+                    &values,
+                    Some(GAMMA_G_FAVOURABLE),
+                ));
+            }
+        }
+    }
+    bounds
+}
+
+/// Review 2026-10-26 PG-44: whether the moment over `zone` pulls the top of
+/// the member (a continuous beam over an inner support), so that a notch in
+/// its top is on the side in tension, as one in the underside of a simply
+/// supported end is; a moment there of about none pulls neither side.
+fn top_pulled_over(
+    zone: &Zone,
+    segments: &[(Segment, Vec<Option<Bending>>)],
+    uls: &[Combination],
+    kinds: &[usize],
+) -> bool {
+    let scale = moments_near(segments, uls, kinds, 0.0, f64::MAX)
+        .iter()
+        .fold(0.0, |most: f64, (a, b)| most.max(a.abs()).max(b.abs()));
+    let near = (zone.hi - zone.lo) / 2.0 + 2.0 * ROUNDING;
+    let hogging = moments_near(segments, uls, kinds, (zone.lo + zone.hi) / 2.0, near)
+        .iter()
+        .fold(0.0, |most: f64, (_, smallest)| most.max(-smallest));
+    hogging > ROUNDING * scale
+}
+
 /// EN 1995-1-1 6.5.1(2): the stress concentration at a change in depth may be
 /// ignored where the change slopes at 1:10 or flatter, or lies on the side
 /// in compression.
@@ -1793,26 +1846,7 @@ fn tension_notch(
         return None;
     }
     // The signed moments (sagging positive) at the stations within `near` of x.
-    let moments = |x: f64, near: f64| {
-        let mut bounds = Vec::new();
-        for (seg, _) in segments {
-            for (j, station) in seg.xs.iter().enumerate() {
-                if (station - x).abs() > near {
-                    continue;
-                }
-                let values: Vec<f64> = seg.moments.iter().map(|m| m[j]).collect();
-                for combination in uls {
-                    bounds.push(extremes(
-                        &combination.factors,
-                        kinds,
-                        &values,
-                        Some(GAMMA_G_FAVOURABLE),
-                    ));
-                }
-            }
-        }
-        bounds
-    };
+    let moments = |x: f64, near: f64| moments_near(segments, uls, kinds, x, near);
     let scale = moments(0.0, f64::MAX)
         .iter()
         .fold(0.0, |most: f64, (a, b)| most.max(a.abs()).max(b.abs()));
