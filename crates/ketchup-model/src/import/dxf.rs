@@ -118,7 +118,9 @@ mod underlay;
 
 use block::{BlockDefinition, parse_blocks};
 use chain::{assemble_loose_segments, point_key, without_duplicate_segments};
-use code_page::{CodePage, HighBytes, code_page_encoding, code_page_name, dxf_source_text};
+use code_page::{
+    CodePage, CodePageRead, HighBytes, code_page_encoding, dxf_source_text, text_code_page,
+};
 use extrusion::{ensure_planar, ensure_planar_ocs, ensure_planar_wcs, extrusion_sign, mirror_ocs};
 use hatch::OrderedFill;
 use polyline::{PolylineVertex, build_polyline_profile, parse_lwpolyline, parse_polyline};
@@ -615,14 +617,15 @@ impl DiagnosticCounts {
         Ok(())
     }
 
-    /// Reports the code page the text was read in, and warns when it is
-    /// [doubtful](CodePage::doubtful): the texts may read wrong.
-    fn code_page_read(&mut self, name: String, doubtful: bool) -> Result<(), DxfImportError> {
-        if doubtful {
+    /// Reports the code page the text was read in, and warns, naming it, when the one its
+    /// header names is [doubtful](CodePage::doubtful): read in that one, or in the one read
+    /// in its place, the texts may read wrong.
+    fn code_page_read(&mut self, (name, doubted): CodePageRead) -> Result<(), DxfImportError> {
+        if let Some(doubted) = doubted {
             self.add(
                 ImportDiagnosticSeverity::Warning,
                 "dxf.text-code-page-doubtful",
-                Some(name.clone()),
+                Some(doubted),
                 1,
             )?;
         }
@@ -925,8 +928,8 @@ fn read_dxf(
     let (text, code_page) = dxf_source_text(source)?;
     let pairs = parse_pairs(&text, reading.max_pairs)?;
     let (sections, mut diagnostics) = parse_sections(&pairs, reading)?;
-    if let Some((code_page, doubtful)) = code_page {
-        diagnostics.code_page_read(code_page, doubtful)?;
+    if let Some(read) = code_page {
+        diagnostics.code_page_read(read)?;
     }
     let header = sections.get("HEADER").map(Vec::as_slice).unwrap_or(&[]);
     let (units, insbase_mm) = parse_header(header, options, &mut diagnostics)?;
