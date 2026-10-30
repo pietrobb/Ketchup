@@ -647,3 +647,109 @@ fn another_drawing_is_refused() {
         "{error}"
     );
 }
+
+/// A DXF R12 drawing: no entity has a handle. A line in paper space is not read.
+const R12: &str = concat!(
+    "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n",
+    "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n2\n",
+    "0\nLAYER\n2\nwalls\n70\n0\n62\n1\n6\nCONTINUOUS\n",
+    "0\nLAYER\n2\nnotes\n70\n0\n62\n3\n6\nCONTINUOUS\n",
+    "0\nENDTAB\n0\nENDSEC\n",
+    "0\nSECTION\n2\nENTITIES\n",
+    "0\nLINE\n8\nwalls\n10\n0\n20\n0\n30\n0\n11\n4000\n21\n0\n31\n0\n",
+    "0\nLINE\n8\nwalls\n67\n1\n10\n0\n20\n0\n30\n0\n11\n100\n21\n100\n31\n0\n",
+    "0\nLINE\n8\nwalls\n10\n0\n20\n1000\n30\n0\n11\n4000\n21\n1000\n31\n0\n",
+    "0\nCIRCLE\n8\nwalls\n10\n6000\n20\n0\n30\n0\n40\n300\n",
+    "0\nTEXT\n8\nnotes\n10\n500\n20\n500\n30\n0\n40\n250\n1\nWC\n",
+    "0\nPOLYLINE\n8\nwalls\n66\n1\n10\n0\n20\n0\n30\n0\n",
+    "0\nVERTEX\n8\nwalls\n10\n0\n20\n2000\n30\n0\n",
+    "0\nVERTEX\n8\nwalls\n10\n4000\n20\n2000\n30\n0\n",
+    "0\nSEQEND\n8\nwalls\n",
+    "0\nENDSEC\n0\nEOF\n",
+);
+
+/// Review 2026-10-29 CD-66: in a drawing without handles every removal, move and copy was
+/// refused only on export ("object 0 has no handle"). Its entities are found by their
+/// order: the n-th object is the n-th entity of model space.
+#[test]
+fn a_drawing_without_handles_is_written_with_its_edits() {
+    let original = read(R12.as_bytes());
+    let lines = &original.lines;
+    let objects = &lines.objects().objects;
+    let tops = (0..objects.len())
+        .filter(|index| objects[*index].parent.is_none())
+        .map(|index| u32::try_from(index).unwrap())
+        .collect::<Vec<_>>();
+    let kinds = tops
+        .iter()
+        .map(|id| objects[*id as usize].kind.name())
+        .collect::<Vec<_>>();
+    assert_eq!(kinds, ["LINE", "LINE", "CIRCLE", "TEXT", "POLYLINE"]);
+    assert!(objects.iter().all(|object| object.handle == 0));
+    let layers = original
+        .layers
+        .iter()
+        .enumerate()
+        .map(|(index, name)| UnderlayLayer {
+            name: name.clone(),
+            tag: TagId(10 + index as u64),
+        })
+        .collect::<Vec<_>>();
+    let shift = |by: [f64; 2]| [[1.0, 0.0, by[0]], [0.0, 1.0, by[1]]];
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(tops[1]);
+    edits.moved_objects.insert(tops[2], shift([1000.0, 0.0]));
+    edits.moved_objects.insert(tops[4], shift([0.0, 500.0]));
+    edits.added.push(AddedObject::Copy {
+        of: tops[3],
+        map: shift([0.0, 2000.0]),
+    });
+
+    let written = write_edited_dxf(R12.as_bytes(), DxfImportOptions::new(None), lines, &edits)
+        .unwrap_or_else(|error| panic!("{error}"));
+    let text = String::from_utf8(written.clone()).unwrap();
+    // The first line and the one in paper space are as they were; the second is gone.
+    assert!(text.contains("0\nLINE\n8\nwalls\n10\n0\n20\n0\n30\n0\n11\n4000\n21\n0\n31\n0\n"));
+    assert!(text.contains("67\n1\n"), "{text}");
+    assert!(
+        !text.contains("20\n1000\n30\n0\n11\n4000\n21\n1000\n"),
+        "{text}"
+    );
+    let again = read(&written);
+    let edited = lines.clone().edited(&edits, &layers);
+    assert_same(
+        &drawn(&again.lines, &again.layers),
+        &drawn(&edited, &original.layers),
+    );
+
+    // An insert placed in two columns is two objects of one entity: the entities do not
+    // line up with the objects one by one, and a change is refused by name.
+    let array = R12
+        .replace(
+            "0\nSECTION\n2\nENTITIES\n",
+            "0\nSECTION\n2\nBLOCKS\n0\nBLOCK\n8\n0\n2\npost\n70\n0\n10\n0\n20\n0\n\
+             0\nLINE\n8\n0\n10\n0\n20\n0\n11\n0\n21\n100\n0\nENDBLK\n8\n0\n0\nENDSEC\n\
+             0\nSECTION\n2\nENTITIES\n",
+        )
+        .replace(
+            "0\nENDSEC\n0\nEOF\n",
+            "0\nINSERT\n8\nwalls\n2\npost\n10\n0\n20\n3000\n70\n2\n44\n1000\n0\nENDSEC\n0\nEOF\n",
+        );
+    let read_array = read(array.as_bytes());
+    let mut removal = UnderlayEdits::default();
+    removal.removed_objects.insert(0);
+    let error = write_edited_dxf(
+        array.as_bytes(),
+        DxfImportOptions::new(None),
+        &read_array.lines,
+        &removal,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            EditedDxfError::Refused(DxfEditRefusal::NoHandle { object: 0 })
+        ),
+        "{error}"
+    );
+}

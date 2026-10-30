@@ -21,7 +21,7 @@ use crate::tolerance::NEGLIGIBLE;
 use crate::underlay::UnderlayLines;
 use crate::underlay::drawn::{AddedObject, DrawnShape, readable_rotation};
 use crate::underlay::edits::UnderlayEdits;
-use crate::underlay::objects::{Affine, apply};
+use crate::underlay::objects::{Affine, ObjectKind, UnderlayObject, apply};
 
 /// The units a drawing that declares none may have been read in.
 const UNITS: [ImportLengthUnit; 9] = [
@@ -51,7 +51,7 @@ pub enum DxfEditRefusal {
     NotTheSource,
     /// The source's groups do not pair up into sections and entities.
     Malformed,
-    /// A changed object has no handle to find its entity by.
+    /// A changed object has no handle, and its entity is not told by its order either.
     NoHandle { object: u32 },
     /// No entity of the source has the handle of a changed object.
     HandleMissing { object: u32, handle: u64 },
@@ -93,7 +93,8 @@ impl fmt::Display for DxfEditRefusal {
                 .write_str("the source drawing's groups do not pair up into sections and entities"),
             Self::NoHandle { object } => write!(
                 formatter,
-                "object {object} has no handle in the drawing to find its entity by"
+                "object {object} has no handle in the drawing, and its entity cannot be told by \
+                 its place among the drawing's entities"
             ),
             Self::HandleMissing { object, handle } => write!(
                 formatter,
@@ -455,6 +456,47 @@ impl<'a> Drawing<'a> {
         Err(DxfEditRefusal::Malformed.into())
     }
 
+    /// For a drawing without handles (DXF R12, Kečup's own sheets), the entity of each
+    /// top-level object of `objects` by their order: the n-th is the n-th entity of model
+    /// space of a kind objects are kept of. `None` unless both are without handles and each
+    /// object has the kind of its entity, one for one (review 2026-10-29 CD-66).
+    fn entities_by_order(&self, objects: &[UnderlayObject]) -> Option<Vec<Option<usize>>> {
+        if self.entities.iter().any(|entity| entity.handle.is_some()) {
+            return None;
+        }
+        let kinds = self
+            .entities
+            .iter()
+            .enumerate()
+            .filter(|(_, entity)| {
+                let head = entity
+                    .records
+                    .get(1)
+                    .map_or(entity.pairs.end, |record| record.0);
+                let paper = self.pairs[entity.pairs.start..head].iter().any(|pair| {
+                    pair.code == 67 && self.source[pair.value.clone()].trim_ascii() == b"1"
+                });
+                !paper && ObjectKind::from_dxf(&entity.records[0].1).is_some()
+            })
+            .map(|(index, entity)| (index, entity.records[0].1.as_str()));
+        let mut entities = vec![None; objects.len()];
+        let mut kinds = kinds.fuse();
+        for (index, object) in objects.iter().enumerate() {
+            if object.parent.is_some() {
+                continue;
+            }
+            if object.handle != 0 {
+                return None;
+            }
+            let (entity, kind) = kinds.next()?;
+            if kind != object.kind.name() {
+                return None;
+            }
+            entities[index] = Some(entity);
+        }
+        kinds.next().is_none().then_some(entities)
+    }
+
     fn value(&self, index: usize) -> &[u8] {
         self.source[self.pairs[index].value.clone()].trim_ascii()
     }
@@ -483,11 +525,19 @@ impl<'a> Drawing<'a> {
     ) -> Result<Vec<u8>, EditedDxfError> {
         let objects = &lines.objects().objects;
         let read_count = u32::try_from(objects.len()).unwrap_or(u32::MAX);
+        let by_order = self.entities_by_order(objects);
         let entity_of = |object: u32| -> Result<usize, EditedDxfError> {
+            let index = usize::try_from(object).unwrap_or(usize::MAX);
             let read = objects
-                .get(usize::try_from(object).unwrap_or(usize::MAX))
-                .filter(|read| read.parent.is_none() && read.handle != 0)
+                .get(index)
+                .filter(|read| read.parent.is_none())
                 .ok_or(DxfEditRefusal::NoHandle { object })?;
+            if read.handle == 0 {
+                return by_order
+                    .as_ref()
+                    .and_then(|entities| entities.get(index).copied().flatten())
+                    .ok_or(DxfEditRefusal::NoHandle { object }.into());
+            }
             let mut found = self
                 .entities
                 .iter()
