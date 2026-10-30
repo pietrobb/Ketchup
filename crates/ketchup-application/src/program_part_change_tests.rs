@@ -825,6 +825,30 @@ fn a_typed_length_stays_when_the_shared_parameter_that_made_it_changes() {
     assert_eq!(length(&taller), 12.0, "{}", again.source);
 }
 
+/// Review 2026-10-26 WB-21: written against the parameter only where the part's length
+/// was the parameter itself. The back of a cabinet, `H - 2 * T + 16` long, got a number:
+/// a back typed 650 grew to 830 when the height went from 720 to 900. A length a shared
+/// parameter makes through any expression stays as typed.
+#[test]
+fn a_typed_length_stays_whatever_expression_of_the_shared_parameter_made_it() {
+    let back = program(
+        "H = param(\"h\", 720, min=300, max=2400)\nT = 18\n\
+         box(\"a\", (10, 20, H - 2 * T + 16), at=(0, 0, 0))\nbox(\"b\", (5, 5, H), at=(50, 0, 0))\n",
+    );
+    let typed = set_length(&back, 650.0).unwrap().unwrap();
+    assert_eq!(length(&typed), 650.0);
+    let mut taller = typed.clone();
+    taller.overrides.insert("h".to_owned(), 900.0);
+    assert_eq!(length(&taller), 650.0, "{}", typed.source);
+    assert_eq!(Reading::Length.of(&model(&taller), "b"), Some(900.0));
+    // Typed again, the one line is written again and still holds.
+    let again = set_length(&typed, 600.0).unwrap().unwrap();
+    assert_eq!(again.source.matches("name=\"Length\"").count(), 1);
+    taller = again.clone();
+    taller.overrides.insert("h".to_owned(), 900.0);
+    assert_eq!(length(&taller), 600.0, "{}", again.source);
+}
+
 fn push_pull(source: &RuleProgramSource, distance: f64) -> RuleProgramSource {
     let change = PartChange::PushPull {
         face: "z+".to_owned(),

@@ -1753,18 +1753,55 @@ impl Edit<'_> {
                 })
                 .map(|made| made.name.clone())
         });
-        let against = line.as_ref().and(shared).and_then(|parameter| {
-            let variable = parameter_variable(self.text(), &parameter)?;
+        let against = line.as_ref().and(shared.as_ref()).and_then(|parameter| {
+            let variable = parameter_variable(self.text(), parameter)?;
             let candidate = build(Some(format!(
                 "push_pull({name}, face={}, distance={} - {variable}, name={})\n",
                 quote(end),
                 number_literal(written(extrusion)),
                 quote(LENGTH)
             )));
-            self.keeps_length(&candidate, &parameter, value)
+            self.keeps_length(&candidate, parameter, value)
                 .then_some(candidate)
         });
-        let rewritten = against.unwrap_or_else(|| build(line));
+        // Review 2026-10-26 WB-21: a length the parameter makes through any other
+        // expression (`H - 2 * T + 16`), or written so before, is written as the
+        // length itself (`to=`), so it stays whatever makes the part so far.
+        let written_to = earlier
+            .as_ref()
+            .is_some_and(|bytes| self.text()[bytes.clone()].contains(" to="));
+        let absolute = || {
+            let write = |to: f64| {
+                build(Some(format!(
+                    "push_pull({name}, face={}, to={}, name={})\n",
+                    quote(end),
+                    number_literal(written(to)),
+                    quote(LENGTH)
+                )))
+            };
+            // What Push/Pulls after the line add is taken off the length it writes.
+            let first = write(value);
+            let made = evaluate(&first)
+                .ok()
+                .and_then(|after| Reading::Length.of(&after.model, self.name))?;
+            let candidate = if (made - value).abs() <= ACCUMULATED_ROUNDING {
+                first
+            } else {
+                write(2.0 * value - made)
+            };
+            let holds = match &shared {
+                Some(parameter) => self.keeps_length(&candidate, parameter, value),
+                None => evaluate(&candidate)
+                    .ok()
+                    .and_then(|after| Reading::Length.of(&after.model, self.name))
+                    .is_some_and(|length| (length - value).abs() <= ACCUMULATED_ROUNDING),
+            };
+            holds.then_some(candidate)
+        };
+        let absolute = (against.is_none() && line.is_some() && (shared.is_some() || written_to))
+            .then(absolute)
+            .flatten();
+        let rewritten = against.or(absolute).unwrap_or_else(|| build(line));
         Ok((rewritten, self.reads(Reading::Length, value)))
     }
 

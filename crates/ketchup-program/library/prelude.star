@@ -467,7 +467,7 @@ def distribute(parts, a, b, face = None):
 #     e.g. cut(board, profile=[["in", [150, -1], [158, -1]],
 #     ["right", [158, -1], [158, 301]], ["out", [158, 301], [150, 301]],
 #     ["left", [150, 301], [150, -1]]], depth=6, name="groove")
-#   push_pull(part, face=, distance=, name=)
+#   push_pull(part, face=, distance= or to=, name=)
 #     moves one named planar face along its outward normal (negative = in),
 #     e.g. push_pull(board, face="end#2", distance=10, name="raise right half")
 #

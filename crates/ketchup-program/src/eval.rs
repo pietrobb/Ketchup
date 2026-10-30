@@ -1163,6 +1163,85 @@ fn reject_swept(part: &Part, operation: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// How far `push_pull` moves its face: by a non-zero `distance`, or, with
+/// `to=` on a cap of an extruded part, so far that the part is `to` long
+/// between its caps, whatever its first length and the Push/Pulls of its caps
+/// so far (review 2026-10-26 WB-21).
+#[derive(Clone, Copy)]
+enum PushPullBy {
+    Distance(f64),
+    To(f64),
+}
+
+/// `push_pull`'s arguments checked: one of `distance` and `to`, and the names.
+fn push_pull_by(
+    part_name: &str,
+    face: &str,
+    name: &str,
+    distance: Option<Value<'_>>,
+    to: Option<Value<'_>>,
+) -> anyhow::Result<PushPullBy> {
+    check_name("push_pull face", face)?;
+    check_name("push_pull name", name)?;
+    match (distance, to) {
+        (Some(distance), None) => {
+            let distance_mm = number(distance, "distance")?;
+            if distance_mm.abs() <= CONTACT_FIT_MM {
+                anyhow::bail!("push_pull on {part_name:?}: distance must be non-zero");
+            }
+            Ok(PushPullBy::Distance(distance_mm))
+        }
+        (None, Some(to)) => {
+            let to_mm = number(to, "to")?;
+            if !(to_mm.is_finite() && to_mm > CONTACT_FIT_MM) {
+                anyhow::bail!("push_pull on {part_name:?}: to must be a length above 0");
+            }
+            Ok(PushPullBy::To(to_mm))
+        }
+        _ => anyhow::bail!("push_pull on {part_name:?}: give distance or to, not both"),
+    }
+}
+
+impl PushPullBy {
+    /// The distance to move `face` of `part` by; `None` when `part` is `to`
+    /// long already.
+    fn distance(self, part: &Part, face: &str) -> anyhow::Result<Option<f64>> {
+        match self {
+            Self::Distance(distance) => Ok(Some(distance)),
+            Self::To(to) => push_pull_to(part, face, to),
+        }
+    }
+}
+
+fn push_pull_to(part: &Part, face: &str, to: f64) -> anyhow::Result<Option<f64>> {
+    let part_name = &part.name;
+    let ProgramPartBody::Extrusion {
+        distance_mm: pad,
+        caps,
+        ..
+    } = &part.body
+    else {
+        anyhow::bail!(
+            "push_pull on {part_name:?}: to= sets the length of an extruded part; use distance="
+        );
+    };
+    let cap = |face: &str| caps.iter().any(|cap| face.split('#').next() == Some(cap));
+    if !cap(face) {
+        anyhow::bail!(
+            "push_pull on {part_name:?}: to= moves a cap, {:?} or {:?}, not {face:?}",
+            caps[0],
+            caps[1]
+        );
+    }
+    let long = pad
+        + part
+            .face_offsets()
+            .filter(|offset| cap(&offset.face))
+            .map(|offset| offset.distance_mm)
+            .sum::<f64>();
+    Ok(((to - long).abs() > CONTACT_FIT_MM).then_some(to - long))
+}
+
 /// A sweep path: 3D points (a polyline whose corners `bend` rounds), or
 /// segments `[start, end]` and `[start, end, curve]` with the curve an arc
 /// `{"through": p}` or `{"center": c, "normal": n}` (counter-clockwise
@@ -1977,28 +2056,27 @@ fn builtins(builder: &mut GlobalsBuilder) {
         })
     }
 
-    /// Moves one program-named planar face along its outward normal.
+    /// Moves one program-named planar face along its outward normal (see [`PushPullBy`]).
     fn push_pull<'v>(
         #[starlark(require = pos)] part: Value<'v>,
         #[starlark(require = named)] face: &str,
-        #[starlark(require = named)] distance: Value<'v>,
+        #[starlark(require = named)] distance: Option<Value<'v>>,
+        #[starlark(require = named)] to: Option<Value<'v>>,
         #[starlark(require = named)] name: &str,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let heap = eval.heap();
         let part_name = part_name(part, heap)?;
-        let distance_mm = number(distance, "distance")?;
-        if distance_mm.abs() <= CONTACT_FIT_MM {
-            anyhow::bail!("push_pull on {part_name:?}: distance must be non-zero");
-        }
-        check_name("push_pull face", face)?;
-        check_name("push_pull name", name)?;
+        let by = push_pull_by(&part_name, face, name, distance, to)?;
         let state = state(eval)?;
         record_source(eval, &state, &[&part_name]);
         with_part(&state, &part_name, |part| {
             reject_swept(part, "push_pull")?;
             part.exact_face_label(face)
                 .map_err(|error| anyhow::anyhow!("push_pull on {part_name:?}: {error}"))?;
+            let Some(distance_mm) = by.distance(part, face)? else {
+                return Ok(NoneType);
+            };
             add_operation(
                 part,
                 ProgramOperation::FaceOffset(ProgramFaceOffset {
