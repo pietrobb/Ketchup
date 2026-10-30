@@ -251,16 +251,24 @@ jobs:
         run: |
           cargo build --locked -p ketchup-scheduler -p ketchup-headless --bins
           cargo build --locked -p ketchup-app --bin ketchup-app
+      # The files the application, headless and scheduler tests save go to
+      # KETCHUP_SAVED_FILES_DIR too, so Kečup 0.2.0 opens them in the next step.
       - name: tests
         env:
           # Two OCCT test threads fit the runner's memory.
           RUST_TEST_THREADS: 2
+          KETCHUP_SAVED_FILES_DIR: ${{ runner.temp }}\saved-files
         # The runner has no GPU, only the WARP software adapter; the two
         # proofs on a hardware DX12 adapter run on a developer machine.
-        run: >-
-          cargo test --locked $env:CRATES.Split(' ') --no-fail-fast --
-          --skip instanced_rendering::real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_wgpu_draw
-          --skip instanced_rendering::garden_studio_hardware_gpu_camera_frames
+        run: |
+          New-Item -ItemType Directory -Force $env:KETCHUP_SAVED_FILES_DIR | Out-Null
+          cargo test --locked $env:CRATES.Split(' ') --features ketchup-model/saved-files --no-fail-fast -- `
+            --skip instanced_rendering::real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_wgpu_draw `
+            --skip instanced_rendering::garden_studio_hardware_gpu_camera_frames
+      - name: Kečup 0.2.0 reads the files the application tests wrote for it
+        run: |
+          git fetch --no-tags --depth=1 origin tag v0.2.0
+          python scripts/release_0_2_0_reads.py --files "$env:RUNNER_TEMP\saved-files"
       # The Viewer's comment save has its own Windows code, which the Linux
       # Viewer job never compiles (review 2026-10-19).
       - name: atomic comment save on Windows
