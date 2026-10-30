@@ -159,17 +159,27 @@ fn a_document_is_saved_in_the_oldest_format_that_holds_it() {
 /// The format Save writes for a document with one DXF import of `lines` lines,
 /// its source padded with comments to `padding` more bytes.
 fn saved_format_of_a_dxf_import(lines: usize, padding: usize) -> u16 {
+    saved_format_of_a_dxf_import_in(4, 100.0, lines, padding)
+}
+
+/// [`saved_format_of_a_dxf_import`] of lines `length` long in the `$INSUNITS` unit `insunits`.
+fn saved_format_of_a_dxf_import_in(
+    insunits: u16,
+    length: f64,
+    lines: usize,
+    padding: usize,
+) -> u16 {
     use ketchup_model::import::{DxfImportOptions, plan_dxf_import};
     let entities = (0..lines)
         .map(|line| {
-            let y = 10 * line;
-            format!("0\nLINE\n8\n0\n10\n0\n20\n{y}\n11\n100\n21\n{y}\n")
+            let y = length / 10.0 * line as f64;
+            format!("0\nLINE\n8\n0\n10\n0\n20\n{y}\n11\n{length}\n21\n{y}\n")
         })
         .collect::<String>();
     let comment = format!("999\n{}\n", "x".repeat(200));
     let comments = comment.repeat(padding.div_ceil(comment.len()));
     let source = format!(
-        "{comments}0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n{entities}0\nENDSEC\n0\nEOF\n"
+        "{comments}0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n{insunits}\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n{entities}0\nENDSEC\n0\nEOF\n"
     );
     let mut document = DocumentStore::new();
     let batch = plan_dxf_import(
@@ -196,6 +206,29 @@ fn a_document_beyond_what_kecup_0_2_0_reads_is_not_written_as_format_103() {
     assert_eq!(saved_format_of_a_dxf_import(341, 0), 103);
     assert_eq!(saved_format_of_a_dxf_import(400, 0), 104);
     assert_eq!(saved_format_of_a_dxf_import(3, 9 * 1024 * 1024), 104);
+}
+
+/// Review 2026-10-29 MD-60: a DXF import in decimetres, kilometres, yards or miles was
+/// written as 103 with a unit Kečup 0.2.0 does not know (`unknown variant Decimetre`), so
+/// 0.2.0 took the file for damaged and opened its older `.recovery`. A unit outside the
+/// five 0.2.0 reads makes the file 104; the five stay 103.
+#[test]
+fn a_dxf_import_in_a_unit_kecup_0_2_0_does_not_know_is_not_written_as_format_103() {
+    // $INSUNITS and a line about a metre long in that unit.
+    for (insunits, length) in [(4, 1000.0), (5, 100.0), (6, 1.0), (1, 40.0), (2, 3.0)] {
+        assert_eq!(
+            saved_format_of_a_dxf_import_in(insunits, length, 3, 0),
+            103,
+            "$INSUNITS {insunits}"
+        );
+    }
+    for (insunits, length) in [(14, 10.0), (7, 0.001), (10, 1.0), (3, 0.0005)] {
+        assert_eq!(
+            saved_format_of_a_dxf_import_in(insunits, length, 3, 0),
+            104,
+            "$INSUNITS {insunits}"
+        );
+    }
 }
 
 /// One annotation of each kind, shown by the tag [`ANNOTATION_TAG`].

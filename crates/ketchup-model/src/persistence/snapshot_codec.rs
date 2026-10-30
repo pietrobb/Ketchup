@@ -55,12 +55,23 @@ fn format_of(product: &ProductModel) -> u16 {
 }
 
 /// Whether Kečup 0.1.0 and 0.2.0, which read format 103, accept every import receipt
-/// of `product`: at most 1 024 outputs and a source within their reader's limit. A
-/// file they refuse as damaged makes them open an older `.recovery` instead and
-/// overwrite the newer file at its next Save; format 104 they refuse as newer
-/// (review 2026-10-24 MD-20).
+/// of `product`: at most 1 024 outputs, a source within their reader's limit and a
+/// length unit they know. A file they refuse as damaged makes them open an older
+/// `.recovery` instead and overwrite the newer file at its next Save; format 104 they
+/// refuse as newer (review 2026-10-24 MD-20, 2026-10-29 MD-60).
 fn fits_format_103(product: &ProductModel) -> bool {
-    use crate::import::ImportFormat;
+    use crate::import::{ImportFormat, ImportLengthUnit};
+    // The units of `ImportLengthUnit` in Kečup 0.2.0.
+    let known_to_0_2_0 = |unit| {
+        matches!(
+            unit,
+            ImportLengthUnit::Millimetre
+                | ImportLengthUnit::Centimetre
+                | ImportLengthUnit::Metre
+                | ImportLengthUnit::Inch
+                | ImportLengthUnit::Foot
+        )
+    };
     const OUTPUTS: usize = 1_024;
     const MIB: u64 = 1024 * 1024;
     // The bounded ASCII STL of 0.2.0: 8 lines of at most 128 bytes and CR LF a triangle.
@@ -75,7 +86,9 @@ fn fits_format_103(product: &ProductModel) -> bool {
             | ImportFormat::SketchupScene
             | ImportFormat::Glb => 32 * MIB,
         };
-        receipt.outputs().len() <= OUTPUTS && receipt.source_byte_len() <= source_limit
+        receipt.outputs().len() <= OUTPUTS
+            && receipt.source_byte_len() <= source_limit
+            && known_to_0_2_0(receipt.units().source_unit())
     })
 }
 
