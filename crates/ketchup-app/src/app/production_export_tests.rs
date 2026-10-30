@@ -147,14 +147,15 @@ fn every_part_creator_gives_its_part_a_fabrication_role_and_role_changes_it() {
                 .push(row.item_kind);
         }
     }
-    use GeneralBomItemKind::{Manufactured, Purchased, Timber};
+    use GeneralBomItemKind::{Manufactured, Purchased, SiteBuilt, Timber};
     let expected = [
         ("doska", vec![Purchased]),
         ("prút", vec![Purchased]),
         ("s/osb", vec![Manufactured]),
         // Bottom plate, top plate and three members at 0, 600 and 1140.
         ("s/rám frame", vec![Timber; 5]),
-        ("s/rám/infill", vec![Manufactured; 2]),
+        // Insulation is fitted on site, not cut on a CNC (review 10-29 MF-60).
+        ("s/rám/infill", vec![SiteBuilt; 2]),
         ("s/sdk", vec![Purchased]),
         ("skrutka", vec![Purchased]),
         ("stĺp", vec![Manufactured]),

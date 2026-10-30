@@ -2184,8 +2184,9 @@ def no_window_over(part, tag = "window", margin = 300, height = 1500):
 #     layer's tags, each on the panel's shop drawing `name` (SHOP_DRAWING).
 #     Only extrusions, no booleans: every piece is rebuilt from the numbers.
 #     Fabrication role (FABRICATION_ROLE): plates, studs, noggins, headers and sills of a
-#     framed layer are TIMBER_MEMBER, a sheet layer's pieces and infill MANUFACTURED_ITEM;
-#     a layer's "role" and "infill_role" change them (a bought panel: PURCHASED_ITEM).
+#     framed layer are TIMBER_MEMBER, a sheet layer's pieces MANUFACTURED_ITEM, its infill
+#     SITE_BUILT_ITEM (insulation is fitted, not cut on a CNC); a layer's "role" and
+#     "infill_role" change them (a bought panel: PURCHASED_ITEM, roofing: SITE_BUILT_ITEM).
 #     Pair it with a concept body through alternatives() and tags, e.g. a wall facing -y:
 #     buildup("wall S", (0, 200, 0), (1, 0, 0), (0, 0, 1), 4000, height = 2600,
 #             layers = [{"name": "gypsum", "thickness": 12.5, "material": "gypsum board"},
@@ -2667,7 +2668,7 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                               rating = rating)
         if layer.get("infill") != None:
             fill_tags = base_tags + _names(layer.get("infill_tags", layer.get("tags")))
-            fill_role = _role("buildup(%s) layer %s infill" % (name, label), layer.get("infill_role", MANUFACTURED_ITEM))
+            fill_role = _role("buildup(%s) layer %s infill" % (name, label), layer.get("infill_role", SITE_BUILT_ITEM))
             bays = []
             for k in range(len(studs) - 1):
                 if studs[k + 1] - studs[k] - stud >= 1:
@@ -2981,8 +2982,9 @@ def price_list(prices, currency = None, source = None):
 #                          axis 9 above the face below
 #     POCKET_Z5            a pocket or a blind cut 5 deep (POCKET_Z5_BOTTOM from below)
 #     PART_NAME            the part's name, accents as \U+XXXX
-#   A part with a boolean, mirror, shell, push_pull or fillet/chamfer, a slanted hole or a
-#   pocket in an edge is not drawn; its reason is listed. Each file is <name>.dxf, the name
+#   A part with a boolean, mirror, shell, push_pull or fillet/chamfer, a slanted hole, a
+#   pocket in an edge, or a profile longer than it is wide (no flat part) is not drawn;
+#   its reason is listed. A buildup's infill is SITE_BUILT_ITEM: never drawn. Each file is <name>.dxf, the name
 #   in ASCII, at most 31 characters, unique. The material takeoff window exports every
 #   drawing with parts.csv as one ZIP; MCP report section "cnc_dxf" pages them (a large
 #   drawing in chunks to join) and then the parts not drawn.
