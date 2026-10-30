@@ -172,6 +172,9 @@ pub enum CanonicalError {
     /// The underlay's placement scales it more than `UNDERLAY_MAX_SCALE` either way or
     /// puts its origin outside the model's ±`MAX_COORDINATE_MM`.
     UnderlayPlacementOutOfRange(UnderlayId),
+    /// The underlay's view lies outside the model's ±`MAX_COORDINATE_MM`, or an edit of
+    /// its drawing is not a similarity, cannot be drawn or adds more than a drawing holds.
+    InvalidUnderlay(UnderlayId),
     InvalidAnnotation {
         name: String,
         problem: crate::annotation::AnnotationProblem,
@@ -381,6 +384,7 @@ impl CanonicalError {
             Self::SavedViewNotFound(..) => "canonical.saved_view_not_found",
             Self::UnderlayNotFound(..) => "canonical.underlay_not_found",
             Self::UnderlayPlacementOutOfRange(..) => "canonical.underlay_placement_out_of_range",
+            Self::InvalidUnderlay(..) => "canonical.invalid_underlay",
             Self::InvalidAnnotation { .. } => "canonical.invalid_annotation",
             Self::InvalidClassificationDimension(..) => {
                 "canonical.invalid_classification_dimension"
@@ -469,6 +473,17 @@ impl CanonicalError {
             _ => "feature shape is invalid",
         }
     }
+}
+
+fn invalid_underlay(formatter: &mut fmt::Formatter<'_>, id: UnderlayId) -> fmt::Result {
+    write!(
+        formatter,
+        "underlay {} holds a view beyond ±{} mm or an edit of its drawing that is not a \
+         move, turn, mirror or uniform scale, cannot be drawn or adds more than a drawing \
+         holds",
+        id.0,
+        crate::tolerance::MAX_COORDINATE_MM
+    )
 }
 
 impl fmt::Display for CanonicalError {
@@ -806,6 +821,7 @@ impl fmt::Display for CanonicalError {
                 crate::tolerance::UNDERLAY_MAX_SCALE,
                 crate::tolerance::MAX_COORDINATE_MM
             ),
+            Self::InvalidUnderlay(id) => invalid_underlay(formatter, *id),
             Self::InvalidAnnotation { name, problem } => {
                 write!(formatter, "annotation {name:?} {problem}")
             }

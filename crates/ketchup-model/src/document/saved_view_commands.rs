@@ -110,7 +110,7 @@ pub(super) fn validate_underlay(
         return Err(CanonicalError::UnderlayPlacementOutOfRange(underlay.id));
     }
     if !underlay.edits.is_valid() || !underlay.view.is_valid() {
-        return Err(CanonicalError::InvalidTransform);
+        return Err(CanonicalError::InvalidUnderlay(underlay.id));
     }
     for layer in &underlay.layers {
         ensure_name(&layer.name)?;

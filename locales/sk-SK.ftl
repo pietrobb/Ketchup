@@ -1393,6 +1393,7 @@ digest-new-document = Nový model je pripravený
 digest-opened-document = Otvorené „{ $path }“ — kanonická identita obnovená
 digest-opened-recovery = Varovanie: zdroj obnovy „{ $source }“ bol otvorený, pretože „{ $requested }“ je nedostupný alebo poškodený. Obnovený dokument nie je uložený; bezpečne ho zachovajte cez Uložiť ako.
 digest-opened-work-recovery = Upozornenie: neuložená práca „{ $path }“ bola obnovená z kontrolného bodu „{ $source }“. Obnovený dokument nie je uložený; zachovajte ho cez Uložiť ako.
+digest-opened-underlay-reset = Upozornenie: podklad „{ $underlay }“ v „{ $path }“ mal niečo, čo táto verzia už neprijme: { $reason }. Uložením to tak ostane.
 digest-opened-work-recovery-step-damaged = Upozornenie: posledné úpravy v kontrolnom bode neuloženej práce „{ $path }“ sa nedali prečítať ({ $reason }). Obnovila sa práca po úpravu pred nimi.
 digest-opened-without-work-recovery = „{ $path }“ sa otvoril bez zálohy práce, lebo jeho priečinok je len na čítanie alebo sa v ňom nedá zamknúť záloha: neuložená práca sa nezálohuje, preto ju uložte cez Uložiť ako do iného priečinka.
 digest-opened-without-history = Upozornenie: „{ $path }“ sa otvoril bez histórie Undo ({ $reason }). Model je celý.

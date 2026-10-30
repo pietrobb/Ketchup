@@ -282,6 +282,9 @@ pub enum LoadNotice {
     /// it short): the work up to the step before it opened, without the edits
     /// of that step and of any after it.
     WorkRecoveryStepDamaged { reason: String },
+    /// The underlay `name` held what the document no longer takes, e.g. a placement
+    /// out of range from before its bounds; `reason` says what was put back.
+    UnderlayReset { name: String, reason: String },
 }
 
 impl LoadAudit {
@@ -1034,6 +1037,22 @@ pub(crate) fn save_with_history_entry(
         }),
     )
     .expect("a test document fits the container")
+}
+
+/// `document_bin` (the output of `save`, perhaps rewritten) saved as a native container
+/// with the blobs of `container_data`.
+#[cfg(feature = "testing")]
+pub(crate) fn save_container_with_document_entry(
+    document_bin: Vec<u8>,
+    container_data: &ContainerData,
+) -> Vec<u8> {
+    let encoded = crate::document::EncodedSnapshot {
+        sha256: crate::graph::sha256_bytes(&document_bin),
+        bytes: document_bin,
+        chunks: std::sync::OnceLock::new(),
+    };
+    save_container_entries(&encoded, container_data, BTreeSet::new(), None, None)
+        .expect("a test document fits the container")
 }
 
 fn save_container_entries(
@@ -2774,6 +2793,23 @@ fn load_document(
     if schema < 100 {
         snapshot_codec::rename_format_99_role_categories(&mut product);
     }
+    let notices = product
+        .underlays
+        .values_mut()
+        .filter_map(|underlay| {
+            let mut repaired = crate::underlay::Underlay::clone(underlay);
+            let reset = repaired.reset_what_the_document_cannot_hold();
+            if reset.is_empty() {
+                return None;
+            }
+            let name = repaired.name.clone();
+            *underlay = Arc::new(repaired);
+            Some(LoadNotice::UnderlayReset {
+                name,
+                reason: reset.join("; "),
+            })
+        })
+        .collect::<Vec<_>>();
 
     let override_health = product
         .overrides
@@ -2810,7 +2846,7 @@ fn load_document(
                 required: entry.required(),
             })
             .collect(),
-        notices: Vec::new(),
+        notices,
     };
     let loaded_snapshot = document.current();
     let imported_sources = loaded_snapshot

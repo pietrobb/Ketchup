@@ -1078,3 +1078,103 @@ fn a_placement_past_the_bounds_is_refused_by_the_document_not_only_by_the_fit() 
         placed.placement
     );
 }
+
+/// Review 2026-10-26 MD-43: a file saved before the bounds of MD-24 with an underlay
+/// placed out of range, or with a view or an edit the document no longer holds, did not
+/// open at all (Kečup opened its older `.recovery` instead, and Save overwrote the newer
+/// file). Out of range is no damage (AGENTS §3): the file opens, the underlay at the
+/// origin unscaled, its view in the ground plane and without the edits it cannot hold,
+/// and the open says so by the underlay's name. A batch is still refused, naming the
+/// underlay.
+#[test]
+fn a_file_with_an_underlay_out_of_range_opens_with_it_reset_and_says_so() {
+    use ketchup_model::document::{CanonicalCommand, CanonicalError, CommandBatch};
+    use ketchup_model::persistence::LoadNotice;
+    use ketchup_model::testing::{
+        cbor_entry, rewrite_saved_snapshot, save_container_with_document_entry,
+    };
+    let underlay = read(&line("walls", [0.0, 0.0], [1000.0, 0.0]));
+    let mut document = DocumentStore::new();
+    let (batch, id) = plan_underlay(
+        &document.current(),
+        "Plan",
+        &underlay.layers,
+        &underlay.hidden_layers,
+        sha256_bytes(&underlay.lines.encode()),
+        [0.0; 2],
+    )
+    .unwrap();
+    document.apply_batch(&batch).unwrap();
+    let placed = document.current().underlay(id).unwrap().clone();
+    let saved = persistence::save(&document.current());
+    let mut container = persistence::ContainerData::default();
+    container.insert_blob(underlay.lines.encode()).unwrap();
+    let far = Transform::from_translation(1.0e12, 0.0, 0.0).unwrap();
+    let opened = |edit: &dyn Fn(&mut ciborium::Value)| {
+        let snapshot = rewrite_saved_snapshot(&saved, |snapshot| {
+            let product = cbor_entry(snapshot, "product");
+            let underlays = cbor_entry(product, "underlays").as_map_mut().unwrap();
+            edit(&mut underlays[0].1);
+        });
+        let bytes = save_container_with_document_entry(snapshot, &container);
+        let LoadOutcome::Editable {
+            document, audit, ..
+        } = persistence::load(&bytes).unwrap_or_else(|error| panic!("{error}"))
+        else {
+            panic!("the file opens editable")
+        };
+        (
+            document.current().underlay(id).unwrap().clone(),
+            audit.notices,
+        )
+    };
+    let reset_notice = |notices: &[LoadNotice], what: &str| {
+        assert!(
+            matches!(
+                notices,
+                [LoadNotice::UnderlayReset { name, reason }]
+                    if name == "Plan" && reason.contains(what)
+            ),
+            "{notices:?}"
+        );
+    };
+
+    // Placed where it was read, the underlay stores no placement.
+    let (opened_far, notices) = opened(&|underlay| {
+        underlay.as_map_mut().unwrap().push((
+            "placement".into(),
+            ciborium::Value::serialized(&far).unwrap(),
+        ));
+    });
+    assert_eq!(opened_far.placement, Transform::identity());
+    reset_notice(&notices, "placed out of range");
+
+    let (opened_view, notices) = opened(&|underlay| {
+        let view = ketchup_model::underlay::view::UnderlayView {
+            plane: ketchup_model::underlay::view::ViewPlane::Front,
+            at_mm: 1.0e12,
+        };
+        underlay
+            .as_map_mut()
+            .unwrap()
+            .push(("view".into(), ciborium::Value::serialized(&view).unwrap()));
+    });
+    assert!(opened_view.view.is_ground());
+    assert_eq!(opened_view.placement, placed.placement);
+    reset_notice(&notices, "view");
+
+    let batch = CommandBatch::new(vec![CanonicalCommand::UpsertUnderlay(
+        ketchup_model::underlay::Underlay {
+            view: ketchup_model::underlay::view::UnderlayView {
+                plane: ketchup_model::underlay::view::ViewPlane::Front,
+                at_mm: 1.0e12,
+            },
+            ..placed.clone()
+        },
+    )]);
+    let Err(refusal) = document.apply_batch(&batch) else {
+        panic!("a view 1e12 mm away is out of range, yet the document took it");
+    };
+    assert_eq!(refusal, CanonicalError::InvalidUnderlay(id), "{refusal}");
+    assert!(refusal.to_string().contains("underlay"), "{refusal}");
+}

@@ -1405,12 +1405,12 @@ fn a_file_in_a_read_only_folder_opened_over_unsaved_work_edits_without_a_checkpo
     std::fs::set_permissions(&lock, permissions).unwrap();
 }
 
-/// Another user's lock file on a writable share that no read-only handle can lock, as on
-/// a Linux NFS client: the file opens without a checkpoint, and its edits are saved back
-/// into it, instead of Save failing to open that lock file for writing (review
-/// 2026-10-24 UI-21).
+/// Another user's lock file on a writable share that a read-only handle locks only
+/// shared, as on a Linux NFS client: the file opens holding that lock (review 2026-10-26
+/// MD-44), and its edits are saved back into it, instead of Save failing to open that
+/// lock file for writing (review 2026-10-24 UI-21).
 #[test]
-fn a_file_whose_lock_file_cannot_be_locked_is_saved_back_into_its_writable_folder() {
+fn a_file_whose_lock_file_locks_only_shared_is_saved_back_into_its_writable_folder() {
     let directory = tempfile::tempdir().unwrap();
     let primary = directory.path().join("shared.ketchup");
     let mut author = Shell::with_dialogs(ScriptedFileDialogs::new().queue_save(&primary));
@@ -1429,10 +1429,16 @@ fn a_file_whose_lock_file_cannot_be_locked_is_saved_back_into_its_writable_folde
     ketchup_model::persistence::headless_with_read_handle_lock_failure(|| {
         shell.click_menu_command("menu-file", AppCommand::Open);
         assert_eq!(shell.app().document_path(), Some(primary.as_path()));
-        assert!(digest_has(&shell, "digest-opened-without-work-recovery"));
-        assert!(shell.app_mut().create_box());
+        assert!(!digest_has(&shell, "digest-opened-without-work-recovery"));
+        assert!(
+            shell.app_mut().create_box(),
+            "{}",
+            shell.app().action_digest()
+        );
         shell.settle();
         assert!(shell.app().is_dirty());
+        // Held through that lock, the unsaved edits are checkpointed.
+        assert!(ketchup_model::persistence::work_recovery_path(&primary).exists());
 
         shell.click_menu_command("menu-file", AppCommand::Save);
         shell.settle();
@@ -1452,7 +1458,7 @@ fn a_file_whose_lock_file_cannot_be_locked_is_saved_back_into_its_writable_folde
             shell.app().action_digest()
         );
     });
-    assert!(!ketchup_model::persistence::work_recovery_path(&primary).exists());
+    assert!(ketchup_model::persistence::work_recovery_path(&primary).exists());
     drop(shell);
     #[allow(clippy::permissions_set_readonly_false)]
     permissions.set_readonly(false);

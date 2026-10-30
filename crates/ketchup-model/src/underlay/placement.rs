@@ -58,6 +58,28 @@ fn in_plane(transform: Transform, point_mm: [f64; 2]) -> [f64; 2] {
 }
 
 impl Underlay {
+    /// Puts back what a file holds of it that the document no longer takes, and says what
+    /// in English, one clause each: a placement out of range or off the plane goes to the
+    /// origin unscaled, a view out of range to the ground plane, and edits the document
+    /// cannot hold are dropped, the drawing shown as read. Out of range is no damage, so
+    /// the file opens (review 2026-10-26 MD-43); a batch is still refused.
+    pub(crate) fn reset_what_the_document_cannot_hold(&mut self) -> Vec<&'static str> {
+        let mut reset = Vec::new();
+        if !is_planar(&self.placement) || !within_bounds(&self.placement) {
+            self.placement = Transform::identity();
+            reset.push("it was placed out of range, so it lies at the origin unscaled");
+        }
+        if !self.view.is_valid() {
+            self.view = super::view::UnderlayView::default();
+            reset.push("its view lay out of range, so it stands in the ground plane");
+        }
+        if !self.edits.is_valid() {
+            self.edits = super::edits::UnderlayEdits::default();
+            reset.push("its drawing edits could not be kept, so it shows the drawing as read");
+        }
+        reset
+    }
+
     /// Where the point `local_mm` of its lines lies in the document.
     #[must_use]
     pub fn to_document(&self, local_mm: [f64; 2]) -> [f64; 2] {
