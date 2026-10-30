@@ -6,10 +6,12 @@
 use super::drawn::{AddedObject, DrawnShape, stretch, then};
 use super::edits::{UnderlayEdits, UnderlayObjectError, current_read, top_level, with_edits};
 use super::object_query::ObjectIndex;
-use super::{UnderlayId, UnderlayLines, UnderlayPlanError};
+use super::objects::ObjectDetail;
+use super::{Underlay, UnderlayId, UnderlayLines, UnderlayPlanError};
 use crate::document::{CommandBatch, Snapshot};
 use crate::tolerance::ROUNDING;
 use ketchup_geometry::linalg::{cross2 as cross, dot2, sub2 as sub};
+use std::ops::Range;
 
 /// What becomes of a straight line of a drawing.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -29,6 +31,10 @@ pub enum LineEdit {
 
 /// The kinds of the drawing's straight lines whose ends alone are written anew.
 const STRETCHED_KINDS: [&str; 3] = ["LINE", "LWPOLYLINE", "POLYLINE"];
+
+/// The kinds of object whose lines a trim or an extension does not stop at: hatches and
+/// fills, and dimensions (review 2026-10-29 CD-65).
+const NOT_CUTTING_KINDS: [&str; 5] = ["HATCH", "MPOLYGON", "SOLID", "TRACE", "DIMENSION"];
 
 /// Crossings this close to an end of the line, as a share of its length, are at the end.
 const END: f64 = ROUNDING;
@@ -94,7 +100,7 @@ pub fn plan_underlay_line_edit(
     match edit {
         LineEdit::Trim { pick_mm } => {
             let picked = along(a, b, pick_mm);
-            let crossings = crossings(lines, object, a, b);
+            let crossings = crossings(lines, &cutters(snapshot, underlay, lines, object_id), a, b);
             let before = crossings
                 .iter()
                 .copied()
@@ -121,7 +127,7 @@ pub fn plan_underlay_line_edit(
             edits.added.extend(second);
         }
         LineEdit::Extend { pick_mm } => {
-            let crossings = crossings(lines, object, a, b);
+            let crossings = crossings(lines, &cutters(snapshot, underlay, lines, object_id), a, b);
             let from_end = along(a, b, pick_mm) >= 0.5;
             let reached = if from_end {
                 crossings
@@ -165,28 +171,69 @@ fn along(a: [f64; 2], b: [f64; 2], point: [f64; 2]) -> f64 {
     dot2(sub(point, a), direction) / dot2(direction, direction)
 }
 
+/// For each layer of `lines`, `None` when the user hides it, else the runs of its points
+/// that cut nothing: those of `own`, and those of hatches, fills and dimensions and of what
+/// they place (review 2026-10-29 CD-65).
+fn cutters(
+    snapshot: &Snapshot,
+    underlay: &Underlay,
+    lines: &UnderlayLines,
+    own: u32,
+) -> Vec<Option<Vec<Range<usize>>>> {
+    let objects = &lines.objects().objects;
+    let mut uncutting = vec![false; objects.len()];
+    for (index, object) in objects.iter().enumerate() {
+        let annotation = matches!(
+            object.detail,
+            ObjectDetail::Hatch { .. } | ObjectDetail::Dimension { .. }
+        ) || NOT_CUTTING_KINDS.contains(&object.kind.name());
+        let placed_by_one = object
+            .parent
+            .is_some_and(|parent| uncutting[super::index(parent)]);
+        uncutting[index] = annotation || placed_by_one;
+    }
+    let mut cutters = (0..lines.layers().len())
+        .map(|layer| {
+            let shown = underlay
+                .layers
+                .get(layer)
+                .is_none_or(|layer| snapshot.tag(layer.tag).is_none_or(|tag| tag.visible()));
+            shown.then(Vec::new)
+        })
+        .collect::<Vec<_>>();
+    let own = super::index(own);
+    for (index, object) in objects.iter().enumerate() {
+        if !uncutting[index] && index != own {
+            continue;
+        }
+        for part in &object.parts {
+            if let Some(Some(skipped)) = cutters.get_mut(super::index(part.layer)) {
+                skipped.push(super::index(part.points.start)..super::index(part.points.end));
+            }
+        }
+    }
+    cutters
+}
+
 /// Where along the endless line through a and b (0 at a, 1 at b) a straight piece of the
-/// drawing's lines crosses or touches it, but for the pieces of `own`.
+/// drawing's lines crosses or touches it, of the pieces `cutters` lets cut.
 fn crossings(
     lines: &UnderlayLines,
-    own: &super::objects::UnderlayObject,
+    cutters: &[Option<Vec<Range<usize>>>],
     a: [f64; 2],
     b: [f64; 2],
 ) -> Vec<f64> {
     let direction = sub(b, a);
     let mut found = Vec::new();
-    for (layer_index, layer) in lines.layers().iter().enumerate() {
-        let own_points = own
-            .parts
-            .iter()
-            .filter(|part| super::index(part.layer) == layer_index)
-            .map(|part| super::index(part.points.start)..super::index(part.points.end))
-            .collect::<Vec<_>>();
+    for (layer, skipped) in lines.layers().iter().zip(cutters) {
+        let Some(skipped) = skipped else {
+            continue;
+        };
         let points = layer.points_mm();
         let mut start = 0;
         for &end in layer.polyline_ends() {
             for piece in start..end.saturating_sub(1) {
-                if own_points
+                if skipped
                     .iter()
                     .any(|range| range.start <= piece && piece + 1 < range.end)
                 {

@@ -2,7 +2,7 @@
 //! polyline they were part of splits where they were, an insert takes what it placed with
 //! it, and every other object keeps its id and its lines. The edits are a few ids the
 //! underlay carries, one Undo step each, and name the lines they give.
-use ketchup_model::document::DocumentStore;
+use ketchup_model::document::{CanonicalCommand, CommandBatch, DocumentStore};
 use ketchup_model::import::{DxfImportOptions, read_dxf_underlay};
 use ketchup_model::underlay::drawn::{AddedObject, DrawnShape};
 use ketchup_model::underlay::edits::{
@@ -757,4 +757,151 @@ fn a_line_of_the_drawing_is_trimmed_extended_and_offset() {
         own_lines(&document, id, top),
         vec![vec![[100.0, 100.0], [0.0, 100.0]]]
     );
+}
+
+/// A wall with a line across it on a layer the drawing turned off, one on a layer hidden
+/// in Kečup, a hatch whose pattern draws a line across it, a dimension whose line crosses
+/// it, and a line across it that is shown; a short stub above the wall.
+fn crossed_wall() -> ketchup_model::import::DxfUnderlay {
+    let line = |handle: &str, layer: &str, from: [i32; 2], to: [i32; 2]| {
+        format!(
+            "0\nLINE\n5\n{handle}\n8\n{layer}\n10\n{}\n20\n{}\n11\n{}\n21\n{}\n",
+            from[0], from[1], to[0], to[1]
+        )
+    };
+    let corners = [[35, -10], [45, -10], [45, 60], [35, 60]];
+    let edges: String = corners
+        .iter()
+        .zip(corners.iter().cycle().skip(1))
+        .map(|([x0, y0], [x1, y1])| format!("72\n1\n10\n{x0}\n20\n{y0}\n11\n{x1}\n21\n{y1}\n"))
+        .collect();
+    // A user-defined pattern of lines 10 mm apart turned upright: one at x = 40.
+    let hatch = format!(
+        "0\nHATCH\n5\n40\n8\nfloor\n10\n0\n20\n0\n30\n0\n2\n_USER\n70\n0\n71\n0\n91\n1\n\
+         92\n0\n93\n4\n{edges}97\n0\n75\n0\n76\n0\n52\n90\n41\n10\n77\n0\n78\n0\n98\n0\n"
+    );
+    let entities = [
+        line("10", "walls", [0, 0], [100, 0]),
+        line("11", "off", [20, -10], [20, 60]),
+        line("12", "aside", [30, -10], [30, 60]),
+        hatch,
+        "0\nDIMENSION\n5\n3B\n8\ndims\n2\n*D1\n10\n60\n20\n-10\n13\n0\n23\n-10\n\
+         14\n100\n24\n-10\n42\n70\n70\n32\n"
+            .to_owned(),
+        line("13", "walls", [80, -10], [80, 60]),
+        line("14", "walls", [0, 50], [10, 50]),
+    ]
+    .concat();
+    let source = format!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+         0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n\
+         0\nLAYER\n2\noff\n70\n0\n62\n-7\n0\nENDTAB\n0\nENDSEC\n\
+         0\nSECTION\n2\nBLOCKS\n0\nBLOCK\n8\n0\n2\n*D1\n70\n1\n10\n0\n20\n0\n\
+         0\nLINE\n5\nD1\n8\n0\n10\n60\n20\n-10\n11\n60\n21\n60\n0\nENDBLK\n0\nENDSEC\n\
+         0\nSECTION\n2\nENTITIES\n{entities}0\nENDSEC\n0\nEOF\n"
+    );
+    read_dxf_underlay(source.as_bytes(), DxfImportOptions::new(None)).unwrap()
+}
+
+/// Review 2026-10-29 CD-65: trim and extend stop only at lines the user sees: not at a
+/// layer the drawing turned off or one hidden in Kečup, nor at the lines of a hatch's
+/// pattern or of a dimension.
+#[test]
+fn trim_and_extend_stop_only_at_shown_lines_of_the_drawing() {
+    let read = crossed_wall();
+    let layer_of = |x: f64| {
+        let index = read
+            .lines
+            .layers()
+            .iter()
+            .position(|layer| {
+                layer
+                    .polylines()
+                    .any(|polyline| polyline.iter().all(|point| (point[0] - x).abs() < 1e-6))
+            })
+            .unwrap_or_else(|| panic!("nothing drawn upright at x = {x}"));
+        read.layers[index].clone()
+    };
+    // What the drawing draws across the wall, and on which layers.
+    assert_eq!(layer_of(40.0), "floor");
+    assert_eq!(layer_of(60.0), "dims");
+    assert_eq!(read.hidden_layers, ["off"]);
+
+    let mut document = DocumentStore::new();
+    let (batch, id) = plan_underlay(
+        &document.current(),
+        "plan",
+        &read.layers,
+        &read.hidden_layers,
+        [7; 32],
+        [0.0, 0.0],
+    )
+    .unwrap();
+    document.apply_batch(&batch).unwrap();
+    let aside = |document: &DocumentStore| {
+        let underlay = document.current().underlay(id).unwrap().clone();
+        let layer = underlay.layers.iter().find(|layer| layer.name == "aside");
+        layer.unwrap().tag
+    };
+    let show_aside = |document: &mut DocumentStore, visible: bool| {
+        let id = aside(document);
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetTagVisibility { id, visible },
+            ]))
+            .unwrap();
+    };
+    show_aside(&mut document, false);
+    let lines_now = |document: &DocumentStore| {
+        let underlay = document.current().underlay(id).unwrap().clone();
+        read.lines.clone().edited(&underlay.edits, &underlay.layers)
+    };
+    let own = |document: &DocumentStore, object: u32| {
+        ObjectIndex::new(&lines_now(document))
+            .own_polylines(object)
+            .into_iter()
+            .map(<[[f64; 2]]>::to_vec)
+            .collect::<Vec<_>>()
+    };
+    let edit = |document: &mut DocumentStore, object: u32, edit: LineEdit| {
+        let snapshot = document.current();
+        let batch =
+            plan_underlay_line_edit(&snapshot, id, &lines_now(document), object, edit).unwrap();
+        document.apply_batch(&batch).unwrap();
+    };
+    let wall = id_of(&read.lines, 0x10);
+    let stub = id_of(&read.lines, 0x14);
+
+    // Trimmed at x = 70, the wall loses its piece back to its start: the only line the
+    // user sees crossing it is at x = 80.
+    edit(
+        &mut document,
+        wall,
+        LineEdit::Trim {
+            pick_mm: [70.0, 0.0],
+        },
+    );
+    assert_eq!(own(&document, wall), vec![vec![[80.0, 0.0], [100.0, 0.0]]]);
+    // The stub reaches on past the hidden, hatch and dimension lines to the one at x = 80.
+    edit(
+        &mut document,
+        stub,
+        LineEdit::Extend {
+            pick_mm: [9.0, 50.0],
+        },
+    );
+    assert_eq!(own(&document, stub), vec![vec![[0.0, 50.0], [80.0, 50.0]]]);
+    document.undo().unwrap();
+    document.undo().unwrap();
+
+    // Shown again, the layer set aside cuts as before.
+    show_aside(&mut document, true);
+    edit(
+        &mut document,
+        wall,
+        LineEdit::Trim {
+            pick_mm: [70.0, 0.0],
+        },
+    );
+    assert_eq!(own(&document, wall), vec![vec![[0.0, 0.0], [30.0, 0.0]]]);
 }
