@@ -1382,6 +1382,7 @@ hint-offset-underlay-line = Klik na čiaru výkresu, potom na stranu; zadaná d�
 hint-extrude-underlay-area = Kliknite dovnútra uzavretej oblasti, polyline alebo šrafy výkresu; vznikne z nej teleso zadanej výšky
 digest-underlay-extrude-height = Zadajte výšku väčšiu ako nula
 digest-underlay-extrude-no-area = Pod kurzorom nie je uzavretá oblasť zobrazenej vrstvy výkresu
+digest-underlay-extrude-refused = Nič nebolo vytiahnuté: { $reason }
 digest-underlay-extruded = Oblasť vytiahnutá o { $height } ako { $name }; nasleduje výkres
 digest-underlay-extruded-part = Oblasť vytiahnutá o { $height } ako diel { $name }
 hint-text-into-underlay = Napíš text, klikni, kde začína, potom klikni alebo zadaj jeho výšku

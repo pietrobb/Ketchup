@@ -126,13 +126,14 @@ pub(crate) fn underlay_extrusion_program(
 }
 
 /// The outline (counterclockwise) and holes (clockwise) in document millimetres of what
-/// [`underlay_extrusion_program`] extrudes, for a document no program owns.
+/// [`underlay_extrusion_program`] extrudes, for a document no program owns; none when no
+/// closed region holds `point_mm`. The cause of a refusal is left for `take_error_details`.
 pub(crate) fn underlay_area_outline(
     app: &KetchupApp,
     underlay: ketchup_model::underlay::UnderlayId,
     point_mm: Option<[f64; 2]>,
     object_id: Option<u32>,
-) -> Result<(Ring, Vec<Ring>), &'static str> {
+) -> Result<Option<(Ring, Vec<Ring>)>, &'static str> {
     let snapshot = app.document.current();
     let underlay = super::underlay_regions::one_underlay(&snapshot, Some(underlay.0))?;
     let lines = app
@@ -149,7 +150,13 @@ pub(crate) fn underlay_area_outline(
                 &[],
                 false,
             )?;
-            let region = super::underlay_regions::region_at(underlay, regions, point)?;
+            if !point.iter().all(|value| value.is_finite()) {
+                return Err("invalid_params");
+            }
+            let Some(region) = super::underlay_regions::region_holding(underlay, regions, point)
+            else {
+                return Ok(None);
+            };
             (region.outline, region.holes)
         }
         (None, Some(id)) => object_outline(&ObjectIndex::new(&lines), id)?,
@@ -166,10 +173,10 @@ pub(crate) fn underlay_area_outline(
         }
         ring
     };
-    Ok((
+    Ok(Some((
         placed(outline, true),
         holes.into_iter().map(|hole| placed(hole, false)).collect(),
-    ))
+    )))
 }
 
 /// A name neither a section of the window's program nor a part uses yet: `AREA_1`,

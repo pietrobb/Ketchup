@@ -759,3 +759,40 @@ fn a_client_pulls_closed_areas_of_a_drawing_up_into_solids() {
     }
     assert_eq!(app.canonical_digest(), digest);
 }
+
+/// Review 2026-10-29 UO-63: an area of more corners than one piece of program data holds
+/// answers with that cause, not a bare `invalid_params` of no reason.
+#[test]
+fn a_client_is_told_an_area_has_too_many_corners_to_pull_up() {
+    let mut saw = String::from("0\nLWPOLYLINE\n8\nwalls\n90\n4003\n70\n1\n");
+    for tooth in 0..2_000_u32 {
+        let x = 5 * tooth;
+        saw.push_str(&format!("10\n{x}\n20\n0\n10\n{}\n20\n10\n", x + 2));
+    }
+    saw.push_str("10\n10000\n20\n0\n10\n10000\n20\n2000\n10\n0\n20\n2000\n");
+    let (mut app, mut bridge, offset) = imported(&format!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+         0\nSECTION\n2\nENTITIES\n{saw}0\nENDSEC\n0\nEOF\n"
+    ));
+    let undo = app.undo_step_count();
+    let inside = [5_000.0 - offset[0], 1_000.0 - offset[1]];
+    let code = bridge
+        .execute(
+            &mut app,
+            ask(
+                "drawing_extrude",
+                json!({"at_mm": inside, "height_mm": 2600}),
+            ),
+            false,
+        )
+        .unwrap_err();
+    let details = take_error_details().unwrap();
+    assert_eq!(code, "invalid_params", "{details}");
+    assert!(
+        details["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("corners, more than the 4000")),
+        "{details}"
+    );
+    assert_eq!(app.undo_step_count(), undo);
+}

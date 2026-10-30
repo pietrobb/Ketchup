@@ -227,18 +227,27 @@ pub(super) fn region_at(
     if !point.iter().all(|value| value.is_finite()) {
         return Err("invalid_params");
     }
-    let local = underlay.to_local(point);
-    regions
-    .into_iter()
-    .filter(|region| region.contains(local))
-    .min_by(|a, b| a.area_mm2.total_cmp(&b.area_mm2))
-    .ok_or_else(|| {
+    region_holding(underlay, regions, point).ok_or_else(|| {
         super::program_access::invalid(
             "point_mm",
             "No closed region of the chosen layers holds the point.",
             "Ask inspect action=underlay_regions with point_mm, or name the layers whose lines close around it.",
         )
     })
+}
+
+/// The innermost of `regions` of `underlay` that holds the document point `point`, if one
+/// does: no region there is no refusal.
+pub(super) fn region_holding(
+    underlay: &Underlay,
+    regions: Vec<Region>,
+    point: [f64; 2],
+) -> Option<Region> {
+    let local = underlay.to_local(point);
+    regions
+        .into_iter()
+        .filter(|region| region.contains(local))
+        .min_by(|a, b| a.area_mm2.total_cmp(&b.area_mm2))
 }
 
 /// The one region of the shown (or named) layers whose texts (on the shown layers)

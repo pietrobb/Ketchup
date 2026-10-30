@@ -7,7 +7,7 @@
 use super::*;
 use crate::app::underlay_edit::UnderlayEditError;
 use crate::app::underlay_export::UnderlayExportError;
-use crate::app::underlay_extrude::AreaPullError;
+use crate::app::underlay_extrude::{AreaPullError, AreaRefusal};
 use ketchup_model::underlay::drawn::{in_lines, inverse, similarity};
 use ketchup_model::underlay::edits::UnderlayObjectError;
 use ketchup_model::underlay::line_edit::LineEdit;
@@ -420,13 +420,17 @@ impl LiveBridge {
         }
         let snapshot = app.document.current();
         let id = super::underlay_regions::one_underlay(&snapshot, *underlay_id)?.id;
-        let area = app.underlay_area(id, *at_mm, *object_id).ok_or_else(|| {
-            super::program_access::invalid(
-                if at_mm.is_some() { "at_mm" } else { "object_id" },
-                "No closed area of the shown layers is there.",
-                "Ask inspect action=underlay_regions with point_mm, or underlay_objects for a closed polyline or hatch.",
-            )
-        })?;
+        // A refusal answers with its own cause (review 2026-10-29 UO-63).
+        let area = app
+            .underlay_area(id, *at_mm, *object_id)
+            .map_err(refused_area)?
+            .ok_or_else(|| {
+                super::program_access::invalid(
+                    "at_mm",
+                    "No closed area of the shown layers is there.",
+                    "Ask inspect action=underlay_regions with point_mm, or underlay_objects for a closed polyline or hatch.",
+                )
+            })?;
         Self::require_request_authority(cancelled)?;
         let pulled = app
             .pull_underlay_area(&area, *height_mm)
@@ -436,10 +440,7 @@ impl LiveBridge {
                     "The height must be a positive length.",
                     "Give the height in millimetres, e.g. 2600.",
                 ),
-                AreaPullError::NotWritable { code } => {
-                    record_rejection(&rejected(code).caused_by(error), json!({}));
-                    code
-                }
+                AreaPullError::NotWritable(refusal) => refused_area(refusal),
                 error => {
                     record_rejection(&rejected("commit_rejected").caused_by(error), json!({}));
                     "commit_rejected"
@@ -455,6 +456,12 @@ impl LiveBridge {
             "dirty": app.is_dirty(),
         }))
     }
+}
+
+/// The code of `refusal`, its rejection recorded again for the answer.
+fn refused_area(refusal: AreaRefusal) -> &'static str {
+    super::restore_error_details(refusal.recorded);
+    refusal.code
 }
 
 fn edit_failure(error: UnderlayEditError) -> &'static str {

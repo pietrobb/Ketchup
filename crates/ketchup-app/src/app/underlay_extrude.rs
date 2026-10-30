@@ -30,13 +30,58 @@ pub(crate) struct PulledArea {
     pub bound: bool,
 }
 
+/// Why no area of a drawing was taken or written: the code of the refusal and the
+/// rejection recorded with it, so the window and an MCP answer give its cause, not "no
+/// closed area" (review 2026-10-29 UO-63).
+#[derive(Debug)]
+pub(crate) struct AreaRefusal {
+    pub code: &'static str,
+    /// The rejection as `take_error_details` gave it.
+    pub recorded: Option<serde_json::Value>,
+}
+
+impl AreaRefusal {
+    /// The refusal `code` with the rejection recorded for it.
+    fn taken(code: &'static str) -> Self {
+        Self {
+            code,
+            recorded: take_error_details(),
+        }
+    }
+}
+
+impl fmt::Display for AreaRefusal {
+    /// The reason of the rejection and its causes, else the code.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let text = |key: &str| {
+            self.recorded
+                .as_ref()
+                .and_then(|recorded| recorded.get(key))
+                .cloned()
+        };
+        let reason = text("reason").and_then(|reason| reason.as_str().map(str::to_owned));
+        let causes = text("causes")
+            .and_then(|causes| serde_json::from_value::<Vec<String>>(causes).ok())
+            .unwrap_or_default();
+        let reason = reason.filter(|reason| reason != self.code);
+        match (reason, causes.is_empty()) {
+            (Some(reason), true) => f.write_str(&reason),
+            (Some(reason), false) => write!(f, "{reason}: {}", causes.join(": ")),
+            (None, false) => f.write_str(&causes.join(": ")),
+            (None, true) => f.write_str(self.code),
+        }
+    }
+}
+
+impl std::error::Error for AreaRefusal {}
+
 /// Why an area of a drawing was not pulled up.
 #[derive(Debug)]
 pub(crate) enum AreaPullError {
     /// The height is not a positive length.
     Height,
     /// The area cannot be written as program data (e.g. it has too many corners).
-    NotWritable { code: &'static str },
+    NotWritable(AreaRefusal),
     /// The program owning the document refused the extruded area.
     Program(RuleProgramApplyError),
     /// The document refused the new part.
@@ -47,8 +92,8 @@ impl fmt::Display for AreaPullError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Height => f.write_str("the height must be a positive length"),
-            Self::NotWritable { code } => {
-                write!(f, "the area cannot be written into the program ({code})")
+            Self::NotWritable(refusal) => {
+                write!(f, "the area cannot be written into the program: {refusal}")
             }
             Self::Program(error) => write!(f, "the program refused the area: {error}"),
             Self::Part(error) => write!(f, "the part was refused: {error}"),
@@ -59,7 +104,8 @@ impl fmt::Display for AreaPullError {
 impl std::error::Error for AreaPullError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Height | Self::NotWritable { .. } => None,
+            Self::Height => None,
+            Self::NotWritable(refusal) => Some(refusal),
             Self::Program(error) => Some(error),
             Self::Part(error) => Some(error),
         }
@@ -75,9 +121,19 @@ impl KetchupApp {
             self.digest = self.catalog.text("digest-underlay-extrude-height");
             return;
         };
-        let Some(area) = self.underlay_area_at(pointer, rect) else {
-            self.digest = self.catalog.text("digest-underlay-extrude-no-area");
-            return;
+        let area = match self.underlay_area_at(pointer, rect) {
+            Ok(area) => area,
+            Err(None) => {
+                self.digest = self.catalog.text("digest-underlay-extrude-no-area");
+                return;
+            }
+            Err(Some(refusal)) => {
+                self.digest = self.catalog.format(
+                    "digest-underlay-extrude-refused",
+                    &BTreeMap::from([("reason", refusal.to_string())]),
+                );
+                return;
+            }
         };
         self.digest = match self.pull_underlay_area(&area, height_mm) {
             Ok(pulled) => self.catalog.format(
@@ -91,7 +147,7 @@ impl KetchupApp {
             Err(AreaPullError::Height) => self.catalog.text("digest-underlay-extrude-height"),
             Err(AreaPullError::Program(error)) => error.rejection().reason_text().to_owned(),
             Err(error) => self.catalog.format(
-                "digest-underlay-edit-failed",
+                "digest-underlay-extrude-refused",
                 &BTreeMap::from([("reason", error.to_string())]),
             ),
         };
@@ -99,9 +155,14 @@ impl KetchupApp {
 
     /// The area under `pointer`: the innermost closed region of a drawing around the
     /// point (the selected drawing first, then the one drawn last), else the closed object
-    /// whose line or fill is under it.
-    fn underlay_area_at(&self, pointer: Pos2, rect: Rect) -> Option<ChosenArea> {
-        let point = self.screen_to_plane(pointer, rect, 0.0)?;
+    /// whose line or fill is under it. With none, why a drawing's regions were not found,
+    /// if one refused: an object under the pointer that is not closed is just no area.
+    fn underlay_area_at(
+        &self,
+        pointer: Pos2,
+        rect: Rect,
+    ) -> Result<ChosenArea, Option<AreaRefusal>> {
+        let point = self.screen_to_plane(pointer, rect, 0.0).ok_or(None)?;
         let snapshot = self.document.current();
         let mut underlays = snapshot
             .underlays()
@@ -115,39 +176,51 @@ impl KetchupApp {
             underlays.retain(|id| *id != selected);
             underlays.insert(0, selected);
         }
-        let by_object = self
+        let mut by_object = self
             .underlay_line_at_screen(pointer, rect)
             .map(|(underlay, object, _)| (underlay, object))
             .into_iter()
             .chain(self.underlay_object_at_screen(pointer, rect));
-        underlays
-            .into_iter()
-            .map(|underlay| (underlay, Some([point.x, point.y]), None))
-            .chain(by_object.map(|(underlay, object)| (underlay, None, Some(object))))
-            .find_map(|(underlay, point_mm, object_id)| {
-                self.underlay_area(underlay, point_mm, object_id)
+        let mut refused = None;
+        for underlay in underlays {
+            match self.underlay_area(underlay, Some([point.x, point.y]), None) {
+                Ok(Some(area)) => return Ok(area),
+                Ok(None) => {}
+                Err(refusal) => {
+                    refused.get_or_insert(refusal);
+                }
+            }
+        }
+        by_object
+            .find_map(|(underlay, object)| {
+                self.underlay_area(underlay, None, Some(object))
+                    .ok()
+                    .flatten()
             })
+            .ok_or(refused)
     }
 
     /// The innermost closed region of the shown layers of `underlay` around the document
-    /// point `point_mm`, or the outline of its closed object `object_id`.
+    /// point `point_mm`, or the outline of its closed object `object_id`; none when no
+    /// region holds the point.
     pub(crate) fn underlay_area(
         &self,
         underlay: UnderlayId,
         point_mm: Option<[f64; 2]>,
         object_id: Option<u32>,
-    ) -> Option<ChosenArea> {
-        let found = underlay_area_outline(self, underlay, point_mm, object_id);
-        // A refusal records its cause for an MCP answer; the caller says it itself.
-        take_error_details();
-        let (outline, holes) = found.ok()?;
-        Some(ChosenArea {
+    ) -> Result<Option<ChosenArea>, AreaRefusal> {
+        let found = underlay_area_outline(self, underlay, point_mm, object_id)
+            .map_err(AreaRefusal::taken)?;
+        let Some((outline, holes)) = found else {
+            return Ok(None);
+        };
+        Ok(Some(ChosenArea {
             underlay,
             point_mm,
             object_id,
             outline,
             holes,
-        })
+        }))
     }
 
     /// Extrudes `area` up `height_mm` from the ground, as one Undo step.
@@ -171,8 +244,8 @@ impl KetchupApp {
                 name.clone(),
                 height_mm,
             );
-            take_error_details();
-            let source = source.map_err(|code| AreaPullError::NotWritable { code })?;
+            let source =
+                source.map_err(|code| AreaPullError::NotWritable(AreaRefusal::taken(code)))?;
             self.apply_program_source_with(source, false, Vec::new())
                 .map_err(AreaPullError::Program)?;
         } else {

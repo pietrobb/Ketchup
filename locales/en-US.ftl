@@ -1380,6 +1380,7 @@ hint-offset-underlay-line = Click a line of a drawing, then the side; a typed le
 hint-extrude-underlay-area = Click inside a closed area, polyline or hatch of a drawing; it becomes a solid as high as the typed height
 digest-underlay-extrude-height = Type a height greater than zero
 digest-underlay-extrude-no-area = No closed area of a shown drawing layer is under the pointer
+digest-underlay-extrude-refused = Nothing was pulled up: { $reason }
 digest-underlay-extruded = Pulled the area up { $height } as { $name }; it follows the drawing
 digest-underlay-extruded-part = Pulled the area up { $height } as the part { $name }
 hint-text-into-underlay = Type the text, click where it starts, then click or type its height

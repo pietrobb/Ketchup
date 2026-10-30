@@ -991,3 +991,64 @@ fn a_pulled_area_of_a_drawing_alone_is_written_into_the_program() {
     harness.state_mut().undo();
     assert_eq!(harness.state().canonical_digest(), digest);
 }
+
+/// A closed outline below the plan whose lower edge is a saw of `teeth` teeth, 10 m wide.
+fn saw(teeth: u32) -> String {
+    let mut entity = format!("0\nLWPOLYLINE\n8\nwalls\n90\n{}\n70\n1\n", 2 * teeth + 3);
+    let step = 10_000.0 / f64::from(teeth);
+    for tooth in 0..teeth {
+        let x = -5_000.0 + step * f64::from(tooth);
+        entity.push_str(&format!(
+            "10\n{x}\n20\n-400\n10\n{}\n20\n-390\n",
+            x + step / 2.0
+        ));
+    }
+    entity.push_str("10\n5000\n20\n-400\n10\n5000\n20\n-100\n10\n-5000\n20\n-100\n");
+    entity
+}
+
+/// Review 2026-10-29 UO-63: an area refused for its size said "No closed area is there"
+/// or "cannot be written (invalid_params)". The refusal is said: an outline of more
+/// corners than one piece of program data holds, and a drawing of more straight pieces
+/// than one region search takes.
+#[test]
+fn a_pulled_area_refused_for_its_size_says_why() {
+    let in_saw = Vec3::new(20.0, -250.0, 0.0);
+    let mut harness = shell_of(imported_alone_with(&saw(2_000)));
+    let undo = harness.state().undo_step_count();
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExtrudeUnderlayArea);
+    pull_up(&mut harness, "300", in_saw);
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo, "{}", app.digest);
+    assert!(
+        app.digest.starts_with("Nothing was pulled up")
+            && app.digest.contains("corners, more than the 4000"),
+        "{}",
+        app.digest
+    );
+
+    // An open line of more pieces than one search takes, snaking above the plan.
+    let pieces = ketchup_model::underlay::regions::MAX_REGION_SEGMENTS + 1;
+    let mut snake = format!("0\nLWPOLYLINE\n8\nwalls\n90\n{}\n70\n0\n", pieces + 1);
+    for vertex in 0..=pieces {
+        let (row, column) = (vertex / 1_000, vertex % 1_000);
+        let column = if row % 2 == 0 { column } else { 999 - column };
+        snake.push_str(&format!("10\n{}\n20\n{}\n", 10 * column, 1_000 + 5 * row));
+    }
+    let mut harness = shell_of(imported_with(&format!("{}{snake}", saw(10))));
+    let undo = harness.state().undo_step_count();
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExtrudeUnderlayArea);
+    pull_up(&mut harness, "300", in_saw);
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo, "{}", app.digest);
+    assert!(
+        app.digest
+            .contains("straight pieces are more than the 200000"),
+        "{}",
+        app.digest
+    );
+}
