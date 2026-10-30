@@ -200,13 +200,30 @@ impl KetchupApp {
             .with_inner_size([1_100.0, 720.0])
             .with_min_inner_size([1_100.0, 600.0])
             .with_icon(Self::window_icon());
-        if std::env::var_os(OFFSCREEN_FOR_TESTS).is_some_and(|value| value == "1") {
+        let offscreen = std::env::var_os(OFFSCREEN_FOR_TESTS).is_some_and(|value| value == "1");
+        if offscreen {
             viewport = viewport
                 .with_position([-10_000.0, -10_000.0])
                 .with_active(false)
                 .with_taskbar(false);
+            // macOS pulls a window with a title bar back onto the screen; a borderless one stays put.
+            #[cfg(target_os = "macos")]
+            {
+                viewport = viewport.with_decorations(false);
+            }
         }
         eframe::NativeOptions {
+            // On macOS: no Dock icon, no menu bar, and the test app never takes focus.
+            #[cfg(target_os = "macos")]
+            event_loop_builder: offscreen.then(|| -> eframe::EventLoopBuilderHook {
+                Box::new(|builder| {
+                    use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+                    builder
+                        .with_activation_policy(ActivationPolicy::Accessory)
+                        .with_activate_ignoring_other_apps(false)
+                        .with_default_menu(false);
+                })
+            }),
             renderer: eframe::Renderer::Wgpu,
             wgpu_options: eframe::egui_wgpu::WgpuConfiguration {
                 present_mode: eframe::wgpu::PresentMode::AutoNoVsync,

@@ -52,6 +52,7 @@ wgpu = { version = "25.0.2", default-features = false, features = ["dx12"] }
 ketchup-macos-open = { path = "../ketchup-macos-open" }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSLocale", "NSString"] }
 wgpu = { version = "25.0.2", default-features = false, features = ["metal"] }
+winit = { version = "0.30.13", default-features = false }
 
 [dev-dependencies]
 ketchup-view-format = { path = "../ketchup-view-format" }
