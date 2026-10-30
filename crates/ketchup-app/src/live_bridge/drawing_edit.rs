@@ -479,6 +479,12 @@ fn edit_failure(error: UnderlayEditError) -> &'static str {
         UnderlayEditError::Plan(UnderlayObjectError::InvalidShape(index)) => {
             json!({"shape_index": index})
         }
+        UnderlayEditError::Plan(UnderlayObjectError::TooLarge(size)) => json!({
+            "objects": size.objects,
+            "max_objects": ketchup_model::tolerance::limits::DRAWING_ENTITIES,
+            "bytes": size.bytes,
+            "max_bytes": ketchup_model::tolerance::limits::UNDERLAY_LINES_BYTES,
+        }),
         _ => json!({}),
     };
     record_rejection(&rejected(code).caused_by(error), details);

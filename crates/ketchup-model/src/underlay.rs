@@ -12,6 +12,7 @@
 //! drawing — its objects say ([`objects::UnderlayObjects`]).
 
 pub mod drawn;
+pub mod edited_size;
 pub mod edits;
 pub mod fill;
 pub mod line_edit;
@@ -251,6 +252,9 @@ pub enum UnderlayLinesError {
     /// An object of an unknown kind, on a layer or with a parent the blob does not hold,
     /// or pointing past the lines, texts or fills of its layer.
     InvalidObject,
+    /// With its copies the drawing would hold more than a drawing read may
+    /// ([`edited_size`]); nothing of them was made.
+    EditedTooLarge(edited_size::DrawingSize),
 }
 
 impl fmt::Display for UnderlayLinesError {
@@ -295,6 +299,14 @@ impl fmt::Display for UnderlayLinesError {
             ),
             Self::InvalidObject => formatter.write_str(
                 "an underlay object has an unknown kind, layer or parent, or points past its layer's lines",
+            ),
+            Self::EditedTooLarge(size) => write!(
+                formatter,
+                "with the objects copied into it the drawing would hold {} objects in {} MiB, more than the {} objects and {} MiB a drawing may hold; undo or remove copies",
+                size.objects,
+                size.bytes >> 20,
+                limits::DRAWING_ENTITIES,
+                limits::UNDERLAY_LINES_BYTES >> 20
             ),
         }
     }

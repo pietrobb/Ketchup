@@ -483,6 +483,101 @@ fn a_removal_is_one_undo_step_that_names_new_lines() {
     assert_eq!(document.current().underlay(underlay_id), Some(&before));
 }
 
+/// A drawing whose one insert, handle 50 on `doors`, places a block of `lines` lines.
+fn an_insert_of(lines: usize) -> UnderlayLines {
+    let block = (0..lines)
+        .map(|line| format!("0\nLINE\n8\n0\n10\n0\n20\n{line}\n11\n10\n21\n{line}\n"))
+        .collect::<String>();
+    let source = format!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+         0\nSECTION\n2\nBLOCKS\n0\nBLOCK\n8\n0\n2\nmany\n70\n0\n10\n0\n20\n0\n{block}0\nENDBLK\n0\nENDSEC\n\
+         0\nSECTION\n2\nENTITIES\n0\nINSERT\n5\n50\n8\ndoors\n2\nmany\n10\n0\n20\n0\n0\nENDSEC\n0\nEOF\n"
+    );
+    read_dxf_underlay(source.as_bytes(), DxfImportOptions::new(None))
+        .unwrap()
+        .lines
+}
+
+fn copies(of: u32, count: usize) -> UnderlayEdits {
+    UnderlayEdits {
+        added: (0..count)
+            .map(|copy| AddedObject::Copy {
+                of,
+                map: moving([20.0 * copy as f64, 0.0]),
+            })
+            .collect(),
+        ..UnderlayEdits::default()
+    }
+}
+
+/// Review 2026-10-29 MD-61: a copy of an insert places its block again, so a few kB of
+/// edits, 100 copies of an insert of 50 000 lines, made 5.1 GB of lines each time they
+/// were drawn: after every edit, at Undo and on opening the file. A drawing with its
+/// copies is held to what a drawing read may hold, counted before any copy is made: a
+/// copy past it is not planned, and lines whose edits ask for more are not drawn.
+#[test]
+fn copies_of_an_insert_are_held_to_what_a_drawing_may_hold() {
+    use ketchup_model::underlay::UnderlayLinesError;
+    use ketchup_tolerance::limits::DRAWING_ENTITIES;
+    // What is counted is what the copies make.
+    let small = lines();
+    let edits = UnderlayEdits {
+        added: vec![
+            AddedObject::Copy {
+                of: id_of(&small, 0x20),
+                map: moving([0.0, 50.0]),
+            },
+            AddedObject::Copy {
+                of: id_of(&small, 0x10),
+                map: moving([0.0, 50.0]),
+            },
+        ],
+        ..UnderlayEdits::default()
+    };
+    assert_eq!(
+        small.edited_size(&edits).objects,
+        small.clone().edited(&edits, &[]).objects().objects.len()
+    );
+
+    let per_insert = 20_000;
+    let big = an_insert_of(per_insert);
+    let insert = id_of(&big, 0x50);
+    let fit = DRAWING_ENTITIES / (per_insert + 1) - 1;
+    let (mut document, id) = document();
+    let mut underlay = document.current().underlay(id).unwrap().clone();
+    let blob = big.encode();
+    // Within it the copies are drawn.
+    underlay.edits = copies(insert, fit);
+    let drawn = underlay.read_lines(&blob).unwrap();
+    assert_eq!(drawn.objects().objects.len(), (fit + 1) * (per_insert + 1));
+    // One more is not planned.
+    document
+        .apply_batch(&ketchup_model::document::CommandBatch::new(vec![
+            ketchup_model::document::CanonicalCommand::UpsertUnderlay(underlay.clone()),
+        ]))
+        .unwrap();
+    let refused = plan_underlay_object_transform(
+        &document.current(),
+        id,
+        &drawn,
+        &[insert],
+        &moving([0.0, 5.0]),
+        true,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(refused, UnderlayObjectError::TooLarge(size) if size.objects > DRAWING_ENTITIES),
+        "{refused:?}"
+    );
+    // Lines whose edits ask for a hundred are refused before they are made.
+    underlay.edits = copies(insert, 100);
+    let error = underlay.read_lines(&blob).unwrap_err();
+    assert!(
+        matches!(error, UnderlayLinesError::EditedTooLarge(size) if size.objects > 2_000_000),
+        "{error:?}"
+    );
+}
+
 /// The straight lines a drawing's object `id` draws now.
 fn own_lines(document: &DocumentStore, id: UnderlayId, object: u32) -> Vec<Vec<[f64; 2]>> {
     let edited = drawn(document, id);

@@ -35,10 +35,12 @@ impl UnderlayEdits {
         self.removed_objects.is_empty() && self.moved_objects.is_empty() && self.added.is_empty()
     }
 
-    /// Whether every shape can be drawn and every map is a similarity.
+    /// Whether every shape can be drawn, every map is a similarity and no more objects are
+    /// added than a drawing may hold ([`super::edited_size`] counts what they add).
     #[must_use]
     pub fn is_valid(&self) -> bool {
-        self.moved_objects.values().all(is_similarity)
+        self.added.len() <= ketchup_tolerance::limits::DRAWING_ENTITIES
+            && self.moved_objects.values().all(is_similarity)
             && self.added.iter().all(|added| match added {
                 AddedObject::Drawn { shape, .. } => shape.is_valid(),
                 AddedObject::Copy { map, .. } => is_similarity(map),
@@ -69,9 +71,18 @@ impl Underlay {
         hasher.finalize().into()
     }
 
-    /// Its lines as they are drawn: the blob `bytes` decoded, with its edits.
+    /// Its lines as they are drawn: the blob `bytes` decoded, with its edits; refused
+    /// before any copy is made when with them the drawing would hold more than a drawing
+    /// read may ([`super::edited_size`]).
     pub fn read_lines(&self, bytes: &[u8]) -> Result<UnderlayLines, super::UnderlayLinesError> {
-        Ok(UnderlayLines::decode(bytes)?.edited(&self.edits, &self.layers))
+        let lines = UnderlayLines::decode(bytes)?;
+        if !self.edits.added.is_empty() {
+            let size = lines.edited_size(&self.edits);
+            if !size.fits() {
+                return Err(super::UnderlayLinesError::EditedTooLarge(size));
+            }
+        }
+        Ok(lines.edited(&self.edits, &self.layers))
     }
 }
 
@@ -304,6 +315,9 @@ pub enum UnderlayObjectError {
     NoCrossing(u32),
     /// An offset distance not finite and above zero, or a side on the line itself.
     InvalidDistance,
+    /// With the copies the drawing would hold this, more than a drawing read may
+    /// ([`super::edited_size`]).
+    TooLarge(super::edited_size::DrawingSize),
 }
 
 impl std::fmt::Display for UnderlayObjectError {
@@ -337,6 +351,14 @@ impl std::fmt::Display for UnderlayObjectError {
             ),
             Self::InvalidDistance => formatter.write_str(
                 "the offset needs a distance above zero and a side off the line",
+            ),
+            Self::TooLarge(size) => write!(
+                formatter,
+                "with these copies the drawing would hold {} objects in {} MiB, more than the {} objects and {} MiB a drawing may hold",
+                size.objects,
+                size.bytes >> 20,
+                ketchup_tolerance::limits::DRAWING_ENTITIES,
+                ketchup_tolerance::limits::UNDERLAY_LINES_BYTES >> 20
             ),
         }
     }
@@ -460,6 +482,14 @@ pub fn plan_underlay_object_transform(
             edits.added[super::index(added_by)] = mapped;
         } else if let AddedObject::Copy { map, .. } = mapped {
             edits.moved_objects.insert(object_id, map);
+        }
+    }
+    if copy {
+        // The lines drawn now hold the copies made before; these add theirs.
+        let mut size = lines.size();
+        size.add(lines.added_size(&edits.added[underlay.edits.added.len()..]));
+        if !size.fits() {
+            return Err(UnderlayObjectError::TooLarge(size));
         }
     }
     Ok(with_edits(underlay, edits))
