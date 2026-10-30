@@ -47,8 +47,13 @@ pub enum EditedDxfError {
 /// Why the changes do not go into the source drawing, with its facts as fields.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum DxfEditRefusal {
-    /// The source drawing is not the one the underlay was read from.
+    /// The source drawing is not the one the underlay was read from: an entity of it is
+    /// missing or of another kind.
     NotTheSource,
+    /// The source has every entity the underlay was read from, but they read as other
+    /// lines: changed in the file since, or read differently by this Kečup than by the
+    /// one that imported it (review 2026-10-29 CD-64).
+    ReadDifferently,
     /// The source's groups do not pair up into sections and entities.
     Malformed,
     /// A changed object has no handle, and its entity is not told by its order either.
@@ -87,7 +92,13 @@ impl fmt::Display for DxfEditRefusal {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotTheSource => formatter.write_str(
-                "the file is not the drawing the underlay was read from: its lines differ",
+                "the file is not the drawing the underlay was read from: its entities differ",
+            ),
+            Self::ReadDifferently => formatter.write_str(
+                "the file has the entities the underlay was read from, but they read as other \
+                 lines now: either they were changed in the file since it was imported, or \
+                 this Kečup reads drawings differently from the one that imported it; import \
+                 the drawing again to write it with changes",
             ),
             Self::Malformed => formatter
                 .write_str("the source drawing's groups do not pair up into sections and entities"),
@@ -134,13 +145,20 @@ pub fn write_edited_dxf(
             }
         }
     }
-    if read.lines != *lines {
-        return Err(DxfEditRefusal::NotTheSource.into());
-    }
     let encoding = text_encoding(&mut Cursor::new(source))
         .map_err(EditedDxfError::Read)?
         .map(|(encoding, ..)| encoding);
     let drawing = Drawing::parse(source, encoding)?;
+    if read.lines != *lines {
+        // The file is blamed only when its entities are not those the lines were read
+        // from (review 2026-10-29 CD-64).
+        return Err(if drawing.has_entities_of(&lines.objects().objects) {
+            DxfEditRefusal::ReadDifferently
+        } else {
+            DxfEditRefusal::NotTheSource
+        }
+        .into());
+    }
     let frame = Frame {
         mm_per_unit: read.units.millimetres_per_unit(),
         offset_mm: read.offset_mm,
@@ -454,6 +472,32 @@ impl<'a> Drawing<'a> {
             index += 1;
         }
         Err(DxfEditRefusal::Malformed.into())
+    }
+
+    /// Whether it has the entity of each top-level object of `objects`: one of its handle
+    /// and kind, or for a drawing without handles one in its place
+    /// ([`Self::entities_by_order`]).
+    fn has_entities_of(&self, objects: &[UnderlayObject]) -> bool {
+        let mut tops = objects
+            .iter()
+            .filter(|object| object.parent.is_none())
+            .peekable();
+        if tops.peek().is_none() {
+            return false;
+        }
+        if tops.clone().all(|object| object.handle == 0) {
+            return self.entities_by_order(objects).is_some();
+        }
+        tops.filter(|object| object.handle != 0).all(|object| {
+            let mut found = self
+                .entities
+                .iter()
+                .filter(|entity| entity.handle == Some(object.handle));
+            matches!(
+                (found.next(), found.next()),
+                (Some(entity), None) if entity.records[0].1 == object.kind.name()
+            )
+        })
     }
 
     /// For a drawing without handles (DXF R12, Kečup's own sheets), the entity of each

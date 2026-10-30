@@ -629,22 +629,50 @@ fn a_trimmed_extended_or_offset_line_keeps_its_entity_and_properties() {
     );
 }
 
+/// Review 2026-10-29 CD-64: a source whose lines differ from the underlay's was blamed as
+/// another drawing even when the import itself had changed. Another drawing is one whose
+/// entities differ; the same entities that read as other lines are refused for what they
+/// are, and say how to go on.
 #[test]
-fn another_drawing_is_refused() {
+fn another_drawing_and_one_read_differently_are_refused_apart() {
     let source = source();
     let original = read(source.as_bytes());
     let lines = &original.lines;
-    let other = source.replace("11\n4000\n21\n0\n", "11\n4100\n21\n0\n");
-    let error = write_edited_dxf(
+    let refusal = |other: &str, lines: &UnderlayLines| match write_edited_dxf(
         other.as_bytes(),
         DxfImportOptions::new(None),
         lines,
         &UnderlayEdits::default(),
-    )
-    .unwrap_err();
+    ) {
+        Err(EditedDxfError::Refused(refusal)) => refusal,
+        other => panic!("{other:?}"),
+    };
+    // An entity of another handle: another drawing.
+    let renamed = source.replace("0\nLINE\n5\nA0\n", "0\nLINE\n5\nF0\n");
+    assert_eq!(refusal(&renamed, lines), DxfEditRefusal::NotTheSource);
+    // The same entities, one of them longer: they read differently.
+    let longer = source.replace("11\n4000\n21\n0\n", "11\n4100\n21\n0\n");
+    assert_eq!(refusal(&longer, lines), DxfEditRefusal::ReadDifferently);
+    // The same file, its lines as an older import drew them (here: moved).
+    let mut older = UnderlayEdits::default();
+    older
+        .moved_objects
+        .insert(id_of(lines, 0xA0), [[1.0, 0.0, 5.0], [0.0, 1.0, 0.0]]);
+    let layers = original
+        .layers
+        .iter()
+        .enumerate()
+        .map(|(index, name)| UnderlayLayer {
+            name: name.clone(),
+            tag: TagId(10 + index as u64),
+        })
+        .collect::<Vec<_>>();
+    let as_drawn_then = lines.clone().edited(&older, &layers);
+    let refused = refusal(&source, &as_drawn_then);
+    assert_eq!(refused, DxfEditRefusal::ReadDifferently);
     assert!(
-        matches!(error, EditedDxfError::Refused(DxfEditRefusal::NotTheSource)),
-        "{error}"
+        refused.to_string().contains("import the drawing again"),
+        "{refused}"
     );
 }
 
