@@ -14,8 +14,8 @@ pub use crate::protocol::DwgRefusal;
 use crate::protocol::{
     ANY_FRAME_BYTES, DwgInput, DwgOutcome, Frame, MAX_REPLY_FRAME_BYTES, ProgramInput, RefineInput,
     RefineOutcome, ReportOutcome, UnderlayInput, UnderlayOutcome, UnderlayRead, UnderlayWriteInput,
-    UnderlayWriteOutcome, WorkerFailure, WorkerReply, WorkerRequest, protocol_identity, read_frame,
-    write_frame,
+    UnderlayWriteOutcome, UnderlayWritten, WorkerFailure, WorkerReply, WorkerRequest,
+    protocol_identity, read_frame, write_frame,
 };
 use crate::underlay_reading::{UnderlayReadError, read_underlay, write_underlay};
 use crate::{ExactWorkerClient, WorkerError, exact_worker_identity, verify_exact_worker_identity};
@@ -421,7 +421,8 @@ impl ProgramWorker {
     }
 
     /// Writes the drawing `input` names back as DXF with its changes, in the worker,
-    /// to `input.output`, within `time`; gives the bytes written.
+    /// to `input.output`, within `time`; gives the bytes written and what the read of a DWG
+    /// source left out.
     ///
     /// # Errors
     /// The drawing or its changes were refused, or the worker was stopped, ran out of
@@ -431,14 +432,14 @@ impl ProgramWorker {
         input: UnderlayWriteInput,
         time: Duration,
         cancel: &CancelToken,
-    ) -> Result<u64, UnderlayReadError> {
+    ) -> Result<UnderlayWritten, UnderlayReadError> {
         let outcome = self
             .call(cancel, |client| {
                 client.write_underlay(input, cancel.flag(), time)
             })
             .map_err(Stopped::underlay_error)?;
         match outcome {
-            UnderlayWriteOutcome::Written { bytes } => Ok(bytes),
+            UnderlayWriteOutcome::Written(written) => Ok(written),
             UnderlayWriteOutcome::Refused(refusal) => Err(UnderlayReadError::Refused(refusal)),
         }
     }

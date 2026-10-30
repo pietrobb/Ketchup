@@ -14,7 +14,7 @@
 use crate::export_bundle::{ExportTransactionError, write_export_artifact_if_unchanged};
 use crate::*;
 use ketchup_application::program_isolation::{
-    UnderlayWorkerError, UnderlayWriteInput, write_underlay,
+    UnderlayWorkerError, UnderlayWriteInput, UnderlayWritten, write_underlay,
 };
 use ketchup_model::underlay::UnderlayId;
 use ketchup_program::CancelToken;
@@ -80,7 +80,7 @@ impl std::error::Error for UnderlayExportError {
     }
 }
 
-type UnderlayExportResult = Result<u64, UnderlayExportError>;
+type UnderlayExportResult = Result<UnderlayWritten, UnderlayExportError>;
 
 /// A drawing to write back, taken from the document so it is written off the window's
 /// thread.
@@ -97,14 +97,19 @@ pub(crate) struct WrittenDrawing {
     output: PathBuf,
     replacing: Option<String>,
     bytes: Vec<u8>,
+    /// The records of a DWG source its read left out, by type.
+    skipped: Vec<(String, usize)>,
 }
 
 impl WrittenDrawing {
-    /// Puts the drawing in place of the file named; gives its length.
+    /// Puts the drawing in place of the file named; gives its length and what it lacks.
     fn publish(self) -> UnderlayExportResult {
         write_export_artifact_if_unchanged(&self.output, &self.bytes, self.replacing.as_deref())
             .map_err(UnderlayExportError::Publish)?;
-        Ok(u64::try_from(self.bytes.len()).unwrap_or(u64::MAX))
+        Ok(UnderlayWritten {
+            bytes: u64::try_from(self.bytes.len()).unwrap_or(u64::MAX),
+            skipped: self.skipped,
+        })
     }
 }
 
@@ -125,7 +130,7 @@ impl UnderlayExportJob {
         let written = directory
             .path()
             .join(if to_dwg { "drawing.dwg" } else { "drawing.dxf" });
-        write_underlay(
+        let worker = write_underlay(
             UnderlayWriteInput {
                 dwg: crate::app::dwg_import::is_dwg_path(&self.source),
                 source: self.source,
@@ -143,6 +148,7 @@ impl UnderlayExportJob {
             bytes: std::fs::read(&written).map_err(UnderlayExportError::Io)?,
             output: self.output,
             replacing: self.replacing,
+            skipped: worker.skipped,
         })
     }
 }
@@ -307,9 +313,25 @@ impl KetchupApp {
         result: UnderlayExportResult,
     ) {
         self.digest = match &result {
-            Ok(_) => self.catalog.format(
+            Ok(written) if written.skipped.is_empty() => self.catalog.format(
                 "digest-underlay-exported",
                 &BTreeMap::from([("path", output.display().to_string())]),
+            ),
+            // What the DWG reader could not read is said, not left out silently.
+            Ok(written) => self.catalog.format(
+                "digest-underlay-exported-incomplete",
+                &BTreeMap::from([
+                    ("path", output.display().to_string()),
+                    (
+                        "count",
+                        written
+                            .skipped
+                            .iter()
+                            .map(|(_, count)| count)
+                            .sum::<usize>()
+                            .to_string(),
+                    ),
+                ]),
             ),
             Err(error) => self.catalog.format(
                 "digest-underlay-export-failed",

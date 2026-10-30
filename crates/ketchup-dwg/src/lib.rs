@@ -1,7 +1,8 @@
 //! DWG files through a DXF bridge.
 //!
 //! The `acadrust` crate (MPL-2.0, used unmodified from crates.io) reads a DWG into DXF bytes,
-//! which Ketchup's own DXF import then plans, and writes a Ketchup DXF drawing as DWG. Only
+//! which Ketchup's own DXF import then plans ([`dwg_to_dxf`], what the import reads) or a
+//! drawing written back keeps ([`dwg_to_whole_dxf`]), and writes a DXF drawing as DWG. Only
 //! bytes cross this API, so no other crate depends on acadrust's types. A panic inside acadrust
 //! is caught and returned as [`DwgError::Panicked`] with its message; an error of acadrust is
 //! kept as the cause of [`DwgError::Library`].
@@ -70,8 +71,7 @@ impl fmt::Display for DwgError {
         match self {
             Self::DxfTooLarge { limit } => write!(
                 formatter,
-                "the header, blocks and entities of the DWG drawing are more than the {limit} \
-                 bytes of DXF asked for"
+                "the DXF text of the DWG drawing is more than the {limit} bytes asked for"
             ),
             Self::NothingRead {
                 diagnostic: Some(diagnostic),
@@ -123,6 +123,21 @@ pub struct DwgDrawing {
 /// The reader trusts sizes the file declares: a damaged or hostile file can make it allocate
 /// more memory than there is, which aborts the process. Run it in a process of its own.
 pub fn dwg_to_dxf(dwg: &[u8], max_dxf_bytes: usize) -> Result<DwgDrawing, DwgError> {
+    convert(dwg, SectionWriter::new(max_dxf_bytes))
+}
+
+/// [`dwg_to_dxf`] with every section and table written: the whole drawing, for a drawing
+/// written back as DXF or DWG, which keeps its styles, applications, extended data, groups
+/// and layouts (review 2026-10-29 CD-60).
+///
+/// # Errors
+/// As [`dwg_to_dxf`].
+pub fn dwg_to_whole_dxf(dwg: &[u8], max_dxf_bytes: usize) -> Result<DwgDrawing, DwgError> {
+    convert(dwg, SectionWriter::whole(max_dxf_bytes))
+}
+
+fn convert(dwg: &[u8], mut out: SectionWriter) -> Result<DwgDrawing, DwgError> {
+    let max_dxf_bytes = out.limit;
     let outcome = guarded(Stage::ReadDwg, || {
         DwgReader::from_stream_with_options(Cursor::new(dwg), DwgReadOptions::failsafe())
             .read_with_stats()
@@ -132,7 +147,6 @@ pub fn dwg_to_dxf(dwg: &[u8], max_dxf_bytes: usize) -> Result<DwgDrawing, DwgErr
             diagnostic: outcome.stats.diagnostics.first().map(|d| d.message.clone()),
         });
     }
-    let mut out = SectionWriter::new(max_dxf_bytes);
     let written = guarded(Stage::WriteDxf, || {
         DxfWriter::new(&outcome.document).write_to_writer(&mut out)
     });
@@ -230,11 +244,12 @@ enum Place {
 }
 
 /// Collects DXF text pair by pair, keeping only the content of [`DXF_SECTIONS_KEPT`] and of
-/// its tables [`DXF_TABLES_KEPT`], and fails every write once the kept text would grow past
-/// `limit`.
+/// its tables [`DXF_TABLES_KEPT`] (or everything, when `whole`), and fails every write once
+/// the kept text would grow past `limit`.
 struct SectionWriter {
     out: Vec<u8>,
     limit: usize,
+    whole: bool,
     exceeded: bool,
     /// The line being written, up to its newline.
     line: Vec<u8>,
@@ -248,6 +263,7 @@ impl SectionWriter {
         Self {
             out: Vec::new(),
             limit,
+            whole: false,
             exceeded: false,
             line: Vec::new(),
             code: None,
@@ -255,9 +271,18 @@ impl SectionWriter {
         }
     }
 
+    const fn whole(limit: usize) -> Self {
+        let mut writer = Self::new(limit);
+        writer.whole = true;
+        writer
+    }
+
     fn pair(&mut self, code: &[u8], value: &[u8]) {
         let is = |line: &[u8], text: &str| line.trim_ascii().eq_ignore_ascii_case(text.as_bytes());
         let pair = [code, value].concat();
+        if self.whole {
+            return self.emit(&pair);
+        }
         match std::mem::replace(&mut self.place, Place::BetweenSections) {
             Place::BetweenSections if is(code, "0") && is(value, "SECTION") => {
                 self.place = Place::SectionStart(pair);

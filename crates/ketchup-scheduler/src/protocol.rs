@@ -383,12 +383,18 @@ pub struct UnderlayWriteInput {
     pub output: PathBuf,
 }
 
+/// A drawing written back to the request's output.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct UnderlayWritten {
+    pub bytes: u64,
+    /// The records of a DWG source its read left out, by type: they are not in the file
+    /// written.
+    pub skipped: Vec<(String, usize)>,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub enum UnderlayWriteOutcome {
-    /// The DXF was written to the request's output, `bytes` long.
-    Written {
-        bytes: u64,
-    },
+    Written(UnderlayWritten),
     Refused(UnderlayRefusal),
 }
 

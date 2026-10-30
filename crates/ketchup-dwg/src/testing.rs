@@ -1,6 +1,50 @@
-//! Damaged DWG files for tests of the readers' limits.
+//! DWG files for tests in other crates: damaged ones for the readers' limits, and a drawing
+//! with what an import does not read.
 
 use acadrust::io::dwg::checksum::apply_magic_sequence;
+use acadrust::types::Vector3;
+use acadrust::xdata::{ExtendedDataRecord, XDataValue};
+use acadrust::{AppId, CadDocument, DimStyle, DwgWriter, EntityType, Line, Text, TextStyle};
+
+/// A millimetre DWG drawing of two lines and a text, with what an import does not read but a
+/// drawing written back keeps (review 2026-10-29 CD-60): the text in style `ARIAL`, a
+/// dimension style `MYDIM`, and the first line with extended data `wall-1` of application
+/// `MYAPP`.
+///
+/// # Panics
+/// acadrust refuses the drawing.
+#[must_use]
+pub fn styled_drawing_dwg() -> Vec<u8> {
+    let mut document = CadDocument::new();
+    document.header.insertion_units = 4;
+    document
+        .text_styles
+        .add(TextStyle::new("ARIAL"))
+        .expect("the text style is added");
+    document
+        .dim_styles
+        .add(DimStyle::new("MYDIM"))
+        .expect("the dimension style is added");
+    document
+        .app_ids
+        .add(AppId::new("MYAPP"))
+        .expect("the application is added");
+    let mut wall = Line::from_coords(0.0, 0.0, 0.0, 4000.0, 0.0, 0.0);
+    let mut record = ExtendedDataRecord::new("MYAPP");
+    record.add_value(XDataValue::String(String::from("wall-1")));
+    wall.common.extended_data.add_record(record);
+    let mut text = Text::with_value("Room", Vector3::new(1000.0, 1000.0, 0.0));
+    text.height = 250.0;
+    text.style = String::from("ARIAL");
+    for entity in [
+        EntityType::Line(wall),
+        EntityType::Line(Line::from_coords(4000.0, 0.0, 0.0, 4000.0, 3000.0, 0.0)),
+        EntityType::Text(text),
+    ] {
+        document.add_entity(entity).expect("the entity is added");
+    }
+    DwgWriter::write_to_vec(&document).expect("the drawing is written")
+}
 
 /// Offset and length of the AC18 inner file header, XOR-masked with the magic sequence.
 const INNER_HEADER: std::ops::Range<usize> = 0x80..0x80 + 0x6C;

@@ -163,6 +163,25 @@ fn the_dxf_of_a_dwg_keeps_what_the_import_reads_and_writes_the_rest_empty() {
     assert_eq!(entities(&read.dxf).len(), 4);
 }
 
+/// Review 2026-10-29 CD-60: the DXF of a drawing written back is the whole drawing, every
+/// section and table, and still stops at the limit.
+#[test]
+fn the_whole_dxf_of_a_dwg_is_every_section_and_still_stops_at_the_limit() {
+    let dwg = testing::styled_drawing_dwg();
+    let document =
+        DwgReader::from_stream_with_options(Cursor::new(&dwg), DwgReadOptions::failsafe())
+            .read()
+            .expect("the DWG reads");
+    let whole = DxfWriter::new(&document).write_to_vec().expect("written");
+    let read = dwg_to_whole_dxf(&dwg, usize::MAX).expect("the DWG reads");
+    assert_eq!(read.dxf, whole);
+    assert!(read.skipped.is_empty(), "{:?}", read.skipped);
+    assert!(dwg_to_dxf(&dwg, usize::MAX).unwrap().dxf.len() < whole.len());
+
+    let error = dwg_to_whole_dxf(&dwg, whole.len() - 1).expect_err("one byte over the limit");
+    assert!(matches!(error, DwgError::DxfTooLarge { .. }), "{error:?}");
+}
+
 /// Review DR-4: tables and objects that the import does not read no longer count
 /// against the DXF limit, so a drawing of one line in a file with many text styles reads.
 #[test]

@@ -354,7 +354,7 @@ impl LiveBridge {
             "added": edits.added.len(),
         });
         Self::require_request_authority(cancelled)?;
-        let bytes = app
+        let written = app
             .export_underlay_dxf_to(
                 id,
                 source.as_deref().map(Path::new),
@@ -375,9 +375,14 @@ impl LiveBridge {
             })?;
         Ok(json!({
             "path": path,
-            "bytes": bytes,
+            "bytes": written.bytes,
             "underlay_id": id.0,
             "changes": changed,
+            // The records of a DWG source its read left out are not in the file either.
+            "skipped_records": written.skipped.iter().map(|(record_type, count)| json!({
+                "record_type": record_type,
+                "count": count,
+            })).collect::<Vec<_>>(),
         }))
     }
 }

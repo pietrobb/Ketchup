@@ -101,3 +101,97 @@ fn a_dwg_whose_dxf_is_larger_than_a_reply_frame_comes_back_whole() {
 
 /// About 139 bytes of DXF each: 20 MiB of DXF.
 const LINES: usize = 150_000;
+
+/// The pairs of a DXF text, code and value trimmed.
+fn pairs(dxf: &str) -> Vec<(&str, &str)> {
+    let lines: Vec<&str> = dxf.lines().map(str::trim).collect();
+    lines
+        .chunks_exact(2)
+        .map(|pair| (pair[0], pair[1]))
+        .collect()
+}
+
+/// Whether a record `kind` named `name` is in the DXF pairs: a table entry or an object.
+fn has_record(pairs: &[(&str, &str)], kind: &str, name: &str) -> bool {
+    let mut record = "";
+    pairs.iter().any(|&(code, value)| {
+        if code == "0" {
+            record = value;
+        }
+        record == kind && code == "2" && value == name
+    })
+}
+
+/// What a drawing written back from [`ketchup_dwg::testing::styled_drawing_dwg`] keeps of it.
+fn assert_whole_drawing(dxf: &str) {
+    let pairs = pairs(dxf);
+    for (kind, name) in [
+        ("STYLE", "ARIAL"),
+        ("DIMSTYLE", "MYDIM"),
+        ("APPID", "MYAPP"),
+    ] {
+        assert!(has_record(&pairs, kind, name), "{kind} {name} is kept");
+    }
+    assert!(
+        pairs
+            .windows(2)
+            .any(|two| two == [("1001", "MYAPP"), ("1000", "wall-1")]),
+        "the line's extended data is kept"
+    );
+    assert!(
+        pairs.contains(&("0", "LAYOUT")),
+        "the objects section keeps the layouts"
+    );
+}
+
+/// Review 2026-10-29 CD-60: a drawing imported from DWG is written back whole, as DXF and as
+/// DWG: its text and dimension styles, applications with their extended data and the
+/// objects the import does not read stay, not only the layers and linetypes.
+#[test]
+fn a_dwg_drawing_written_back_keeps_its_styles_extended_data_and_objects() {
+    use ketchup_model::import::ImportLengthUnit;
+    use ketchup_scheduler::protocol::{UnderlayInput, UnderlayWriteInput};
+
+    let _turn = crate::integration_support::file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("plan.dwg");
+    std::fs::write(&source, ketchup_dwg::testing::styled_drawing_dwg()).unwrap();
+    let lines = directory.path().join("lines.bin");
+    let mut worker = worker();
+    worker
+        .read_underlay(
+            UnderlayInput {
+                source: source.clone(),
+                dwg: true,
+                unit_if_unitless: Some(ImportLengthUnit::Millimetre),
+                output: lines.clone(),
+            },
+            &CancelToken::default(),
+        )
+        .unwrap();
+    let mut write = |output: &std::path::Path| {
+        worker
+            .write_underlay(
+                UnderlayWriteInput {
+                    source: source.clone(),
+                    dwg: true,
+                    unit_if_unitless: Some(ImportLengthUnit::Millimetre),
+                    lines: lines.clone(),
+                    edits: ketchup_model::underlay::edits::UnderlayEdits::default(),
+                    output: output.to_owned(),
+                },
+                std::time::Duration::from_secs(120),
+                &CancelToken::default(),
+            )
+            .unwrap()
+    };
+
+    let dxf = directory.path().join("written.dxf");
+    write(&dxf);
+    assert_whole_drawing(&std::fs::read_to_string(&dxf).unwrap());
+
+    let dwg = directory.path().join("written.dwg");
+    write(&dwg);
+    let back = ketchup_dwg::dwg_to_whole_dxf(&std::fs::read(&dwg).unwrap(), usize::MAX).unwrap();
+    assert_whole_drawing(&String::from_utf8(back.dxf).unwrap());
+}

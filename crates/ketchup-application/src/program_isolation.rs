@@ -12,7 +12,7 @@ use ketchup_scheduler::WorkerError;
 pub use ketchup_scheduler::program_worker::{CheckDeadline, PROGRAM_CHECK_TIME};
 use ketchup_scheduler::program_worker::{DwgConversionError, ProgramWorker};
 pub use ketchup_scheduler::protocol::{
-    UnderlayInput, UnderlayRead, UnderlayRefusal, UnderlayWriteInput,
+    UnderlayInput, UnderlayRead, UnderlayRefusal, UnderlayWriteInput, UnderlayWritten,
 };
 pub use ketchup_scheduler::underlay_reading::UnderlayReadError;
 use std::collections::BTreeMap;
@@ -212,7 +212,8 @@ pub fn read_underlay(
 }
 
 /// Writes the drawing `input` names back as DXF with its changes, in a program worker,
-/// within `time`; gives the bytes written to `input.output`.
+/// within `time`; gives the bytes written to `input.output` and what the read of a DWG
+/// source left out.
 ///
 /// # Errors
 /// No worker could take it, the drawing or its changes were refused, or writing it was
@@ -221,7 +222,7 @@ pub fn write_underlay(
     input: UnderlayWriteInput,
     time: std::time::Duration,
     cancel: &CancelToken,
-) -> Result<u64, UnderlayWorkerError> {
+) -> Result<UnderlayWritten, UnderlayWorkerError> {
     with_worker(|worker| worker.write_underlay(input, time, cancel))
         .map_err(UnderlayWorkerError::Unavailable)?
         .map_err(UnderlayWorkerError::Read)

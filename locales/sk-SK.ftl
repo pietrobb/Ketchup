@@ -1628,6 +1628,10 @@ digest-underlay-objects-copied = Skopírované objekty výkresu: { $count }
 digest-underlay-whole-selected = Vybraný celý výkres: Posun a Otočenie ho celý presunú
 digest-underlay-draw-on = Čiara, Obdĺžnik, Kružnica a Oblúk teraz kreslia do výkresu, na vrstvu { $layer }; opäť Kresliť do výkresu to ukončí
 digest-underlay-exported = Výkres so zmenami je zapísaný do { $path }
+digest-underlay-exported-incomplete = Výkres so zmenami je zapísaný do { $path } bez { $count ->
+        [one] { $count } záznamu, ktorý čítačka DWG nevedela dekódovať.
+       *[other] { $count } záznamov, ktoré čítačka DWG nevedela dekódovať.
+    }
 digest-underlay-export-failed = Výkres sa nezapísal: { $reason }
 digest-underlay-text-required = Najprv napíš text, potom klikni, kde začína
 digest-underlay-draw-off = Kresliace nástroje opäť kreslia do modelu

@@ -16,7 +16,7 @@ use crate::WorkerError;
 use crate::program_worker::PROGRAM_WORKER_MEMORY_BYTES;
 use crate::protocol::{
     UnderlayInput, UnderlayOutcome, UnderlayRead, UnderlayRefusal, UnderlayWriteInput,
-    UnderlayWriteOutcome,
+    UnderlayWriteOutcome, UnderlayWritten,
 };
 
 /// Reads `input` in the worker process.
@@ -82,12 +82,19 @@ pub(crate) fn write_underlay(input: &UnderlayWriteInput) -> UnderlayWriteOutcome
 
 fn write(input: &UnderlayWriteInput) -> Result<UnderlayWriteOutcome, UnderlayRefusal> {
     let source = std::fs::read(&input.source).map_err(|error| file(&input.source, &error))?;
-    let source = if input.dwg {
-        ketchup_dwg::dwg_to_dxf(&source, usize::MAX)
-            .map_err(|error| UnderlayRefusal::Dwg(error.into()))?
-            .dxf
+    // A DWG drawing is converted whole, not as the import reads it: what the import does
+    // not read is still written back (review 2026-10-29 CD-60).
+    let (source, skipped) = if input.dwg {
+        let drawing = ketchup_dwg::dwg_to_whole_dxf(&source, usize::MAX)
+            .map_err(|error| UnderlayRefusal::Dwg(error.into()))?;
+        let skipped = drawing
+            .skipped
+            .into_iter()
+            .map(|records| (records.record_type, records.count))
+            .collect();
+        (drawing.dxf, skipped)
     } else {
-        source
+        (source, Vec::new())
     };
     let lines = std::fs::read(&input.lines).map_err(|error| file(&input.lines, &error))?;
     let lines = UnderlayLines::decode(&lines).map_err(|error| UnderlayRefusal::Dxf {
@@ -116,9 +123,10 @@ fn write(input: &UnderlayWriteInput) -> Result<UnderlayWriteOutcome, UnderlayRef
         written
     };
     std::fs::write(&input.output, &written).map_err(|error| file(&input.output, &error))?;
-    Ok(UnderlayWriteOutcome::Written {
+    Ok(UnderlayWriteOutcome::Written(UnderlayWritten {
         bytes: u64::try_from(written.len()).unwrap_or(u64::MAX),
-    })
+        skipped,
+    }))
 }
 
 fn file(path: &Path, error: &std::io::Error) -> UnderlayRefusal {
