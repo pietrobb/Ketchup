@@ -176,6 +176,7 @@ impl LiveBridge {
                 layers: view.layers.clone(),
                 tolerance_mm: None,
                 closing_segments_mm: view.closing_segments_mm.clone(),
+                within_mm: None,
                 object_id: view.object_id,
                 block: None,
                 thickness_mm: None,

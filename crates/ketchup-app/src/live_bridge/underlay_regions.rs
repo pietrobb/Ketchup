@@ -81,7 +81,7 @@ impl LiveBridge {
         } else {
             find_regions(&segments, tolerance / scale)
         }
-        .map_err(|error| failed_because("invalid_params", error))?;
+        .map_err(search_too_large)?;
         let area_scale = scale * scale;
         regions.retain(|region| region.area_mm2 * area_scale / 1e6 >= min_area_m2);
         let (texts, ambiguous_texts) =
@@ -264,24 +264,19 @@ pub(super) fn walled(
     snapshot: &Snapshot,
     underlay: &Underlay,
     lines: &UnderlayLines,
-    tolerance_mm: Option<f64>,
-    closing_segments_mm: &[[[f64; 2]; 2]],
+    lookup: Lookup,
     found: Region,
 ) -> Result<(Region, Vec<usize>), &'static str> {
-    let mut regions = closed_regions(
-        snapshot,
-        underlay,
-        lines,
-        None,
-        tolerance_mm,
-        closing_segments_mm,
-        false,
-    )?;
+    let mut regions = closed_regions(snapshot, underlay, lines, None, lookup, false)?;
     let Some(mut at) = regions.iter().position(|region| *region == found) else {
         return Ok((found, Vec::new()));
     };
-    let pieces = pieces(lines, &chosen_text_layers(snapshot, underlay), None);
-    let tolerance = tolerance_mm.unwrap_or(DEFAULT_JOIN_MM) / underlay.scale();
+    let pieces = pieces(
+        lines,
+        &chosen_text_layers(snapshot, underlay),
+        lookup.within,
+    );
+    let tolerance = lookup.tolerance_mm.unwrap_or(DEFAULT_JOIN_MM) / underlay.scale();
     let edge = |ring: &[[f64; 2]]| ring_layers(ring, &pieces, tolerance);
     let mut layers = edge(&regions[at].outline);
     for _ in 0..regions.len() {
@@ -323,45 +318,19 @@ pub(super) fn room_layers(
     lines: &UnderlayLines,
     point: Option<[f64; 2]>,
     label: Option<&str>,
-    tolerance_mm: Option<f64>,
-    closing_segments_mm: &[[[f64; 2]; 2]],
+    lookup: Lookup,
 ) -> Option<Vec<usize>> {
     let found = match (point, label) {
         (Some(point), None) if point.iter().all(|value| value.is_finite()) => {
-            let regions = closed_regions(
-                snapshot,
-                underlay,
-                lines,
-                None,
-                tolerance_mm,
-                closing_segments_mm,
-                false,
-            )
-            .ok()?;
+            let regions = closed_regions(snapshot, underlay, lines, None, lookup, false).ok()?;
             region_holding(underlay, regions, point)?
         }
-        (None, Some(label)) => region_labelled(
-            snapshot,
-            underlay,
-            lines,
-            None,
-            None,
-            label,
-            tolerance_mm,
-            closing_segments_mm,
-        )
-        .ok()?,
+        (None, Some(label)) => {
+            region_labelled(snapshot, underlay, lines, None, None, label, lookup).ok()?
+        }
         _ => return None,
     };
-    let (_, layers) = walled(
-        snapshot,
-        underlay,
-        lines,
-        tolerance_mm,
-        closing_segments_mm,
-        found,
-    )
-    .ok()?;
+    let (_, layers) = walled(snapshot, underlay, lines, lookup, found).ok()?;
     (!layers.is_empty()).then_some(layers)
 }
 
@@ -445,7 +414,6 @@ fn ring_area(ring: &[[f64; 2]]) -> f64 {
 /// The one region of the shown (or named) layers whose texts (on the shown layers)
 /// include `label`: a text equal to it, ignoring case and line breaks, or failing that
 /// one containing it. Several regions or none are an error naming what was found.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn region_labelled(
     snapshot: &Snapshot,
     underlay: &Underlay,
@@ -453,8 +421,7 @@ pub(super) fn region_labelled(
     layers: Option<&[String]>,
     text_layers: Option<&[String]>,
     label: &str,
-    tolerance_mm: Option<f64>,
-    closing_segments_mm: &[[[f64; 2]; 2]],
+    lookup: Lookup,
 ) -> Result<Region, &'static str> {
     let wanted = folded(label);
     if wanted.is_empty() {
@@ -464,15 +431,7 @@ pub(super) fn region_labelled(
             "Give the text written inside the region, e.g. \"1.02 WC\".",
         ));
     }
-    let mut regions = closed_regions(
-        snapshot,
-        underlay,
-        lines,
-        layers,
-        tolerance_mm,
-        closing_segments_mm,
-        false,
-    )?;
+    let mut regions = closed_regions(snapshot, underlay, lines, layers, lookup, false)?;
     // Review 2026-10-26 UO-44: the layers a binding read its label from, shown or not.
     let text_layers = match text_layers {
         Some(names) => underlay
@@ -559,19 +518,44 @@ pub(super) fn closed_regions(
     underlay: &Underlay,
     lines: &UnderlayLines,
     layers: Option<&[String]>,
-    tolerance_mm: Option<f64>,
-    closing_segments_mm: &[[[f64; 2]; 2]],
+    lookup: Lookup,
     whole: bool,
 ) -> Result<Vec<Region>, &'static str> {
-    let tolerance = tolerance_mm.unwrap_or(DEFAULT_JOIN_MM);
+    let tolerance = lookup.tolerance_mm.unwrap_or(DEFAULT_JOIN_MM);
     if !(tolerance > 0.0 && tolerance <= MAX_JOIN_MM) {
         return Err("invalid_params");
     }
     let chosen = chosen_layers(snapshot, underlay, layers)?;
-    let pieces = pieces(lines, &chosen, None);
+    let pieces = pieces(lines, &chosen, lookup.within);
     let mut segments = pieces.iter().map(|piece| piece.ends).collect::<Vec<_>>();
-    add_closures(&mut segments, underlay, closing_segments_mm)?;
+    add_closures(&mut segments, underlay, lookup.closing_segments_mm)?;
     found_regions(segments, tolerance / underlay.scale(), whole)
+}
+
+/// How a region is looked for besides its layers.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Lookup<'a> {
+    /// The distance, in document millimetres, within which line ends join.
+    pub tolerance_mm: Option<f64>,
+    /// Segments, in document millimetres, that close gaps such as doorways.
+    pub closing_segments_mm: &'a [[[f64; 2]; 2]],
+    /// The box, in the underlay's millimetres, the lines looked at meet: a part of a plan too
+    /// large to search whole (review 2026-10-26 UO-46).
+    pub within: Option<[[f64; 2]; 2]>,
+}
+
+/// The refusal of a search of more lines than one takes: what to narrow it with (review
+/// 2026-10-26 UO-46).
+fn search_too_large(error: ketchup_model::underlay::regions::RegionError) -> &'static str {
+    record_rejection(
+        &rejected("invalid_params")
+            .target("within_mm")
+            .reason(format!("Too many lines to search for regions: {error}."))
+            .fix_hint("Pass within_mm, a document box [[x, y], [x, y]] around the area, or name only the layers whose lines bound it.")
+            .caused_by(error),
+        json!({}),
+    );
+    "invalid_params"
 }
 
 /// The regions, or with `whole` the figures, of `segments` joined within `tolerance`, the
@@ -601,7 +585,7 @@ fn found_regions(
     } else {
         find_regions(&search.segments, tolerance)
     }
-    .map_err(|error| failed_because("invalid_params", error))?;
+    .map_err(search_too_large)?;
     let mut found = FOUND
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -783,7 +767,7 @@ fn chosen_text_layers(snapshot: &Snapshot, underlay: &Underlay) -> Vec<usize> {
         .collect()
 }
 
-fn local_area(underlay: &Underlay, area: [[f64; 2]; 2]) -> [[f64; 2]; 2] {
+pub(super) fn local_area(underlay: &Underlay, area: [[f64; 2]; 2]) -> [[f64; 2]; 2] {
     let [low, high] = area;
     let corners = [
         [low[0], low[1]],

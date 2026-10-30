@@ -667,6 +667,9 @@ pub enum Request {
         tolerance_mm: Option<f64>,
         #[serde(default)]
         closing_segments_mm: Vec<[[f64; 2]; 2]>,
+        /// Only the lines meeting this document box, for a plan too large to search whole.
+        #[serde(default)]
+        within_mm: Option<[[f64; 2]; 2]>,
         #[serde(default)]
         object_id: Option<u32>,
         #[serde(default)]

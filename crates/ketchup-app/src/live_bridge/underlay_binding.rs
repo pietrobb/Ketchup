@@ -26,6 +26,10 @@ pub(super) struct Binding {
     pub layers: Option<Vec<String>>,
     pub tolerance: Option<f64>,
     pub closures: Vec<[[f64; 2]; 2]>,
+    /// The box, in drawing millimetres, whose lines alone are searched (review 2026-10-26
+    /// UO-46).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    within: Option<[[f64; 2]; 2]>,
     object_id: Option<u32>,
     handle: Option<u64>,
     pub block: Option<String>,
@@ -55,6 +59,7 @@ impl Binding {
             layers,
             tolerance_mm: tolerance,
             closing_segments_mm: closures,
+            within_mm: within,
             object_id,
             block,
             thickness_mm: thickness,
@@ -72,8 +77,12 @@ impl Binding {
                     &lines,
                     point,
                     label.as_deref(),
-                    tolerance,
-                    &closures,
+                    super::underlay_regions::Lookup {
+                        tolerance_mm: tolerance,
+                        closing_segments_mm: &closures,
+                        within: within
+                            .map(|area| super::underlay_regions::local_area(underlay, area)),
+                    },
                 )
             }),
             _ => None,
@@ -120,6 +129,11 @@ impl Binding {
                 .into_iter()
                 .map(|ends| ends.map(drawing_point))
                 .collect(),
+            within: within.map(|area| {
+                let offset = underlay.offset_mm();
+                super::underlay_regions::local_area(underlay, area)
+                    .map(|[x, y]| [x + offset[0], y + offset[1]])
+            }),
             object_id,
             handle,
             block,
@@ -127,6 +141,13 @@ impl Binding {
             frame: false,
             whole: false,
         })
+    }
+
+    /// The box whose lines alone are searched, in the underlay's millimetres.
+    pub fn within_local(&self, underlay: &Underlay) -> Option<[[f64; 2]; 2]> {
+        let offset = underlay.offset_mm();
+        self.within
+            .map(|area| area.map(|[x, y]| [x - offset[0], y - offset[1]]))
     }
 
     pub fn object(&self, lines: &UnderlayLines) -> Result<Option<u32>, &'static str> {

@@ -33,6 +33,7 @@ impl LiveBridge {
             point_mm,
             label,
             closing_segments_mm,
+            within_mm,
             ..
         } = &request
         else {
@@ -44,6 +45,16 @@ impl LiveBridge {
                 "closing_segments_mm",
                 "Closing segments apply only to a region chosen by point or label.",
                 "Use point_mm or label with closing_segments_mm, not block or object_id.",
+            ));
+        }
+        if let Some(area) = within_mm
+            && (!area.iter().flatten().all(|value| value.is_finite())
+                || (point_mm.is_none() && label.is_none()))
+        {
+            return Err(invalid(
+                "within_mm",
+                "within_mm is a box of finite numbers and limits only the search for a region chosen by point or label.",
+                "Give [[x_min, y_min], [x_max, y_max]] in document mm with point_mm or label.",
             ));
         }
         if !is_identifier(name) {
@@ -99,6 +110,7 @@ pub(crate) fn underlay_extrusion_program(
         layers: None,
         tolerance_mm: None,
         closing_segments_mm: Vec::new(),
+        within_mm: None,
         object_id,
         block: None,
         thickness_mm: Some(height_mm),
@@ -146,8 +158,7 @@ pub(crate) fn underlay_area_outline(
                 underlay,
                 &lines,
                 None,
-                None,
-                &[],
+                Default::default(),
                 false,
             )?;
             if !point.iter().all(|value| value.is_finite()) {
@@ -157,8 +168,13 @@ pub(crate) fn underlay_area_outline(
             else {
                 return Ok(None);
             };
-            let (region, _) =
-                super::underlay_regions::walled(&snapshot, underlay, &lines, None, &[], region)?;
+            let (region, _) = super::underlay_regions::walled(
+                &snapshot,
+                underlay,
+                &lines,
+                Default::default(),
+                region,
+            )?;
             (region.outline, region.holes)
         }
         (None, Some(id)) => object_outline(&ObjectIndex::new(&lines), id)?,
@@ -219,6 +235,11 @@ pub(super) fn binding_data(
         .iter()
         .map(|ends| ends.map(document_point))
         .collect::<Vec<_>>();
+    let lookup = super::underlay_regions::Lookup {
+        tolerance_mm,
+        closing_segments_mm: &closing_segments_mm,
+        within: binding.within_local(underlay),
+    };
     let lines = app
         .cached_underlay_lines(underlay)
         .ok_or("entity_not_found")?;
@@ -235,8 +256,7 @@ pub(super) fn binding_data(
                             underlay,
                             &lines,
                             layers.as_deref(),
-                            tolerance_mm,
-                            &closing_segments_mm,
+                            lookup,
                             binding.whole,
                         )?,
                         point,
@@ -261,8 +281,7 @@ pub(super) fn binding_data(
                             layers.as_deref(),
                             binding.text_layers.as_deref(),
                             label,
-                            tolerance_mm,
-                            &closing_segments_mm,
+                            lookup,
                         )?,
                         format!("labelled {}", quoted(label)),
                     )

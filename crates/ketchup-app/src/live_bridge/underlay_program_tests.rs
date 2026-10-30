@@ -1005,6 +1005,57 @@ fn block_linework_becomes_shared_native_instances_and_a_wrong_question_changes_n
     assert_eq!(app.undo_step_count(), steps);
 }
 
+/// Review 2026-10-26 UO-46: a plan of more lines than one search takes refused every room
+/// with a bare `invalid_params`. The refusal names `within_mm`; a room taken within a box
+/// is found, and keeps that box when the drawing changes.
+#[test]
+fn a_room_of_a_plan_too_large_to_search_whole_is_taken_within_a_box() {
+    // An open line of more pieces than one search takes, snaking above the rooms.
+    let pieces = ketchup_model::underlay::regions::MAX_REGION_SEGMENTS + 1;
+    let mut snake = format!("0\nLWPOLYLINE\n8\nwalls\n90\n{}\n70\n0\n", pieces + 1);
+    for vertex in 0..=pieces {
+        let (row, column) = (vertex / 1_000, vertex % 1_000);
+        let column = if row % 2 == 0 { column } else { 999 - column };
+        snake.push_str(&format!("10\n{}\n20\n{}\n", 10 * column, 10_000 + 5 * row));
+    }
+    let drawing = two_rooms().replace("0\nENDSEC\n0\nEOF", &format!("{snake}0\nENDSEC\n0\nEOF"));
+    let (mut app, mut bridge, offset) = imported(&drawing);
+    let room = json!({"name":"ROOM", "point_mm":[2000.0-offset[0], 2000.0-offset[1]], "layers":["walls"], "thickness_mm":200});
+    let mut request = room.clone();
+    request["expected"] = serde_json::to_value(app.live_bridge_stamp()).unwrap();
+    let code = bridge
+        .execute(&mut app, ask("program_from_underlay", request), false)
+        .unwrap_err();
+    assert_eq!(code, "invalid_params");
+    let details = take_error_details().unwrap_or_default().to_string();
+    assert!(
+        details.contains("\"within_mm\"") && details.contains("200000"),
+        "{details}"
+    );
+
+    let mut within = room;
+    within["within_mm"] = json!([
+        [-100.0 - offset[0], -100.0 - offset[1]],
+        [8100.0 - offset[0], 4100.0 - offset[1]]
+    ]);
+    from_underlay(&mut app, &mut bridge, within);
+    evaluate_exact(&mut app);
+    assert!((exact_volume(&app, "ROOM") - 4_000.0 * 4_000.0 * 200.0).abs() < 1.0);
+    // A line drawn far off: the room is found again within its box, not refused.
+    bridge
+        .execute(
+            &mut app,
+            ask(
+                "drawing_draw",
+                json!({"layer": "walls", "shapes": [{"shape": "line", "points_mm": [[20_000.0 - offset[0], -offset[1]], [21_000.0 - offset[0], -offset[1]]]}]}),
+            ),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {:?}", take_error_details()));
+    evaluate_exact(&mut app);
+    assert!((exact_volume(&app, "ROOM") - 4_000.0 * 4_000.0 * 200.0).abs() < 1.0);
+}
+
 /// Two rooms of four walls and a partition between them, drawn as lines.
 fn two_rooms() -> String {
     let line = |handle: &str, [x, y]: [u32; 2], [u, v]: [u32; 2]| {
