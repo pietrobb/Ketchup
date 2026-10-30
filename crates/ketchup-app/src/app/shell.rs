@@ -1131,6 +1131,16 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::ExtendUnderlayLine);
                 self.menu_command(ui, AppCommand::OffsetUnderlayLine);
                 self.menu_command(ui, AppCommand::ExtrudeUnderlayArea);
+                if ui
+                    .add_enabled(
+                        self.has_pulled_areas(),
+                        egui::Button::new(self.catalog.text("menu-unlink-pulled-areas")),
+                    )
+                    .clicked()
+                {
+                    self.unlink_pulled_areas();
+                    ui.close();
+                }
                 self.underlay_view_menu(ui);
                 self.menu_command(ui, AppCommand::ExportUnderlayDxf);
                 self.menu_command(ui, AppCommand::ExportUnderlayDwg);

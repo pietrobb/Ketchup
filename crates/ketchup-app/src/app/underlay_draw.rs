@@ -287,7 +287,7 @@ impl KetchupApp {
             return false;
         };
         match self.draw_into_underlay(target.underlay, &target.layer, shapes) {
-            Ok(()) => {
+            Ok(changes) => {
                 // A line goes on from its end; other shapes are done.
                 if matches!(
                     self.active_tool,
@@ -298,7 +298,7 @@ impl KetchupApp {
                 self.digest = self.catalog.format(
                     "digest-underlay-drawn",
                     &BTreeMap::from([("kind", kind.to_owned()), ("layer", target.layer)]),
-                );
+                ) + &self.followed_note(&changes);
                 true
             }
             Err(error) => {

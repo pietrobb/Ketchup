@@ -324,7 +324,8 @@ pub(super) fn binding_data(
         }
     };
     Ok(format!(
-        "{BEGIN} {name}: {origin}. Follows the referenced underlay.\n{}{}\n{data}{END} {name}\n",
+        "{BEGIN} {name}: {origin}. {}\n{}{}\n{data}{END} {name}\n",
+        super::underlay_binding::FOLLOWS,
         super::underlay_binding::PREFIX,
         serde_json::to_string(binding).map_err(|error| failed_because("invalid_params", error))?,
     ))

@@ -132,7 +132,10 @@ impl KetchupApp {
             return;
         };
         match self.transform_underlay_objects(underlay, &ids, &map, copy) {
-            Ok(()) => self.digest = self.catalog.text("digest-underlay-objects-mirrored"),
+            Ok(changes) => {
+                self.digest = self.catalog.text("digest-underlay-objects-mirrored")
+                    + &self.followed_note(&changes);
+            }
             Err(error) => {
                 self.digest = self.catalog.format(
                     "digest-underlay-edit-failed",
@@ -150,8 +153,8 @@ impl KetchupApp {
         done: &'static str,
     ) -> bool {
         match self.edit_underlay_line(underlay, object, edit) {
-            Ok(()) => {
-                self.digest = self.catalog.text(done);
+            Ok(changes) => {
+                self.digest = self.catalog.text(done) + &self.followed_note(&changes);
                 true
             }
             Err(error) => {

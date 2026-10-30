@@ -5,6 +5,7 @@
 //! the drawing is not touched: the underlay carries the ids it took out
 //! ([`ketchup_model::underlay::edits`]).
 
+pub(crate) use crate::live_bridge::underlay_binding::FollowedChange;
 use crate::*;
 use ketchup_model::underlay::drawn::DrawnShape;
 use ketchup_model::underlay::edits::{
@@ -41,6 +42,58 @@ impl std::fmt::Display for UnderlayEditError {
 impl std::error::Error for UnderlayEditError {}
 
 impl KetchupApp {
+    /// What a drawing edit changed of the areas that follow the drawing, for the end of its
+    /// status line: nothing when it changed none (review 2026-10-29 UO-64).
+    pub(crate) fn followed_note(&self, changes: &[FollowedChange]) -> String {
+        changes
+            .iter()
+            .map(|change| {
+                self.catalog.format(
+                    "digest-underlay-area-followed",
+                    &BTreeMap::from([
+                        ("name", change.name.clone()),
+                        ("now", change.now.clone()),
+                        ("was", change.was.clone()),
+                    ]),
+                )
+            })
+            .map(|note| format!(". {note}"))
+            .collect()
+    }
+
+    /// Tools > Unlink pulled areas from the drawing: every area pulled from a drawing keeps
+    /// the outline it has and no longer follows the drawing, one Undo step (review
+    /// 2026-10-29 UO-64, 2026-10-26 UO-43). False when no area follows a drawing.
+    pub(crate) fn unlink_pulled_areas(&mut self) -> bool {
+        let Some(mut source) = self.document.current_rule_program().cloned() else {
+            return false;
+        };
+        let Some(kept) = crate::live_bridge::underlay_binding::unlinked(&source.source) else {
+            return false;
+        };
+        source.source = kept;
+        match self.apply_program_source_with(source, false, Vec::new()) {
+            Ok(_) => {
+                self.digest = self.catalog.text("digest-areas-unlinked");
+                true
+            }
+            Err(error) => {
+                self.digest = self.catalog.format(
+                    "digest-underlay-edit-failed",
+                    &BTreeMap::from([("reason", error.to_string())]),
+                );
+                false
+            }
+        }
+    }
+
+    /// Whether an area of the window's program follows a drawing.
+    pub(crate) fn has_pulled_areas(&self) -> bool {
+        self.document.current_rule_program().is_some_and(|program| {
+            crate::live_bridge::underlay_binding::unlinked(&program.source).is_some()
+        })
+    }
+
     /// The top-level object of `underlay` that drew its straight piece `segment`, counted
     /// as the snap index counts them.
     pub(crate) fn underlay_object_at(&self, underlay: UnderlayId, segment: u32) -> Option<u32> {
@@ -144,7 +197,7 @@ impl KetchupApp {
         &mut self,
         underlay: UnderlayId,
         ids: &[u32],
-    ) -> Result<(), UnderlayEditError> {
+    ) -> Result<Vec<FollowedChange>, UnderlayEditError> {
         self.edit_underlay_drawing(underlay, |snapshot, lines| {
             plan_underlay_object_removal(snapshot, underlay, lines, ids)
         })
@@ -157,7 +210,7 @@ impl KetchupApp {
         underlay: UnderlayId,
         layer: &str,
         shapes: Vec<DrawnShape>,
-    ) -> Result<(), UnderlayEditError> {
+    ) -> Result<Vec<FollowedChange>, UnderlayEditError> {
         self.edit_underlay_drawing(underlay, |snapshot, _| {
             plan_underlay_drawing(snapshot, underlay, layer, shapes)
         })
@@ -171,7 +224,7 @@ impl KetchupApp {
         ids: &[u32],
         map: &Affine,
         copy: bool,
-    ) -> Result<(), UnderlayEditError> {
+    ) -> Result<Vec<FollowedChange>, UnderlayEditError> {
         self.edit_underlay_drawing(underlay, |snapshot, lines| {
             plan_underlay_object_transform(snapshot, underlay, lines, ids, map, copy)
         })
@@ -184,7 +237,7 @@ impl KetchupApp {
         underlay: UnderlayId,
         object: u32,
         edit: LineEdit,
-    ) -> Result<(), UnderlayEditError> {
+    ) -> Result<Vec<FollowedChange>, UnderlayEditError> {
         self.edit_underlay_drawing(underlay, |snapshot, lines| {
             plan_underlay_line_edit(snapshot, underlay, lines, object, edit)
         })
@@ -196,7 +249,7 @@ impl KetchupApp {
         &mut self,
         underlay: UnderlayId,
         plan: impl FnOnce(&Snapshot, &UnderlayLines) -> Result<CommandBatch, UnderlayObjectError>,
-    ) -> Result<(), UnderlayEditError> {
+    ) -> Result<Vec<FollowedChange>, UnderlayEditError> {
         let snapshot = self.document.current();
         let found = snapshot.underlay(underlay).ok_or(UnderlayEditError::Plan(
             UnderlayObjectError::Plan(UnderlayPlanError::NotFound(underlay)),
@@ -205,7 +258,7 @@ impl KetchupApp {
             .cached_underlay_lines(found)
             .ok_or(UnderlayEditError::NoLines)?;
         let batch = plan(&snapshot, &lines).map_err(UnderlayEditError::Plan)?;
-        self.apply_batch_with_work_recovery(&batch)
+        self.apply_drawing_batch_with_work_recovery(&batch)
             .map_err(UnderlayEditError::Commit)
     }
 
@@ -216,12 +269,12 @@ impl KetchupApp {
             return false;
         };
         match self.remove_underlay_objects(underlay, &ids) {
-            Ok(()) => {
+            Ok(changes) => {
                 self.select_underlay(underlay);
                 self.digest = self.catalog.format(
                     "digest-underlay-objects-removed",
                     &BTreeMap::from([("count", ids.len().to_string())]),
-                );
+                ) + &self.followed_note(&changes);
                 true
             }
             Err(error) => {

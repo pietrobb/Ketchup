@@ -460,9 +460,10 @@ fn underlay_binding_errors_keep_the_cause_and_leave_geometry_unchanged() {
     assert_eq!(rejection.target_name(), "point_mm");
     assert_eq!(
         rejection.reason_text(),
-        "No closed region of the chosen layers holds the point."
+        "ROOM follows this drawing, and the edit leaves it no outline: No closed region of the chosen layers holds the point."
     );
     assert!(rejection.fix_hint_text().contains("underlay_regions"));
+    assert!(rejection.fix_hint_text().contains("To keep ROOM as it is"));
     assert_eq!(app.open_profile_line_segments(), geometry);
     assert_eq!(app.document.current().underlays().next().unwrap(), &before);
     assert_eq!(app.undo_step_count(), steps);
@@ -876,4 +877,117 @@ fn block_linework_becomes_shared_native_instances_and_a_wrong_question_changes_n
     }
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), steps);
+}
+
+/// Two rooms of four walls and a partition between them, drawn as lines.
+fn two_rooms() -> String {
+    let line = |handle: &str, [x, y]: [u32; 2], [u, v]: [u32; 2]| {
+        format!("0\nLINE\n5\n{handle}\n8\nwalls\n10\n{x}\n20\n{y}\n11\n{u}\n21\n{v}\n")
+    };
+    format!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n{}{}{}{}{}0\nENDSEC\n0\nEOF\n",
+        line("A1", [0, 0], [8000, 0]),
+        line("A2", [8000, 0], [8000, 4000]),
+        line("A3", [8000, 4000], [0, 4000]),
+        line("A4", [0, 4000], [0, 0]),
+        line("A5", [4000, 0], [4000, 4000]),
+    )
+}
+
+/// After an area is pulled, an edit of its drawing that joins two rooms says the solid grew,
+/// one that opens the room is refused naming it and how to unlink it, and once unlinked the
+/// solid keeps its outline whatever the drawing does (review 2026-10-29 UO-64).
+#[test]
+fn a_drawing_edit_after_a_pull_names_the_area_it_changes_or_would_lose() {
+    let (mut app, mut bridge, offset) = imported(&two_rooms());
+    from_underlay(
+        &mut app,
+        &mut bridge,
+        json!({"name":"ROOM", "point_mm":[2000.0-offset[0], 2000.0-offset[1]], "layers":["walls"], "thickness_mm":200}),
+    );
+    evaluate_exact(&mut app);
+    assert!((exact_volume(&app, "ROOM") - 4_000.0 * 4_000.0 * 200.0).abs() < 1.0);
+    let objects = bridge
+        .execute(
+            &mut app,
+            ask("underlay_objects", json!({"limit": 10})),
+            false,
+        )
+        .unwrap();
+    let id = |handle: &str| {
+        objects["objects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["handle"] == handle)
+            .unwrap()["id"]
+            .clone()
+    };
+    let (partition, left) = (id("A5"), id("A4"));
+
+    // The partition taken out: the room is the union of both, and the answer says so.
+    let answer = bridge
+        .execute(
+            &mut app,
+            ask("drawing_remove", json!({"object_ids": [partition]})),
+            false,
+        )
+        .unwrap();
+    assert_eq!(
+        answer["areas_changed"],
+        json!([{
+            "name": "ROOM",
+            "was": "area 16.000 m², perimeter 16.000 m, 0 holes",
+            "now": "area 32.000 m², perimeter 24.000 m, 0 holes",
+        }]),
+        "{answer}"
+    );
+    evaluate_exact(&mut app);
+    assert!((exact_volume(&app, "ROOM") - 8_000.0 * 4_000.0 * 200.0).abs() < 1.0);
+    assert!(app.undo());
+
+    // The room opened: refused, naming the area and the way to keep it.
+    let digest = app.canonical_digest();
+    let steps = app.undo_step_count();
+    let code = bridge
+        .execute(
+            &mut app,
+            ask("drawing_remove", json!({"object_ids": [left.clone()]})),
+            false,
+        )
+        .unwrap_err();
+    assert_eq!(code, "commit_rejected");
+    let details = take_error_details().unwrap_or_default().to_string();
+    assert!(details.contains("ROOM follows this drawing"), "{details}");
+    assert!(
+        details.contains(&app.catalog.text("menu-unlink-pulled-areas")),
+        "{details}"
+    );
+    assert_eq!(
+        app.canonical_digest(),
+        digest,
+        "a refused edit changes nothing"
+    );
+    assert_eq!(app.undo_step_count(), steps);
+
+    // Unlinked, one Undo step: the slab keeps its outline when the drawing changes.
+    assert!(app.has_pulled_areas());
+    assert!(app.unlink_pulled_areas());
+    assert!(!app.has_pulled_areas());
+    assert_eq!(app.undo_step_count(), steps + 1);
+    assert!(
+        !source(&app).contains(super::underlay_binding::PREFIX),
+        "{}",
+        source(&app)
+    );
+    let answer = bridge
+        .execute(
+            &mut app,
+            ask("drawing_remove", json!({"object_ids": [left]})),
+            false,
+        )
+        .unwrap();
+    assert!(answer.get("areas_changed").is_none(), "{answer}");
+    evaluate_exact(&mut app);
+    assert!((exact_volume(&app, "ROOM") - 4_000.0 * 4_000.0 * 200.0).abs() < 1.0);
 }

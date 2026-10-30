@@ -1387,18 +1387,32 @@ impl KetchupApp {
         &mut self,
         batch: &CommandBatch,
     ) -> Result<(), WorkRecoveryMutationError<CanonicalError>> {
-        if let Some((source, plan)) = self
+        self.apply_drawing_batch_with_work_recovery(batch)
+            .map(|_| ())
+    }
+
+    /// [`Self::apply_batch_with_work_recovery`], with what the batch changed of the program
+    /// sections that follow a drawing it edits.
+    pub(crate) fn apply_drawing_batch_with_work_recovery(
+        &mut self,
+        batch: &CommandBatch,
+    ) -> Result<
+        Vec<crate::live_bridge::underlay_binding::FollowedChange>,
+        WorkRecoveryMutationError<CanonicalError>,
+    > {
+        if let Some((source, plan, changes)) = self
             .plan_underlay_program_update(batch)
             .map_err(|error| WorkRecoveryMutationError::Program(Box::new(error)))?
         {
             return self
                 .publish_underlay_program_update(batch, source, plan)
-                .map(|_| ())
+                .map(|_| changes)
                 .map_err(|error| WorkRecoveryMutationError::Program(Box::new(error)));
         }
         self.complete_mutation_with_work_recovery(|document| {
             document.apply_batch(batch).map(|_| ())
         })
+        .map(|()| Vec::new())
     }
 
     pub(crate) fn commit_proposal_with_work_recovery(
@@ -1416,7 +1430,7 @@ impl KetchupApp {
         ketchup_model::document::VerifiedProposalCommit,
         WorkRecoveryMutationError<ProposalCommitError>,
     > {
-        if let Some((source, plan)) = self
+        if let Some((source, plan, _)) = self
             .plan_underlay_program_update(proposal.batch())
             .map_err(|error| WorkRecoveryMutationError::Program(Box::new(error)))?
         {

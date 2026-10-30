@@ -7,6 +7,10 @@ use ketchup_model::underlay::object_query::{ObjectFilter, ObjectIndex};
 use ketchup_model::underlay::{Underlay, UnderlayLines};
 
 pub(super) const PREFIX: &str = "# underlay binding ";
+/// How the heading of a bound section ends, and of one unlinked from its drawing.
+pub(super) const FOLLOWS: &str = "Follows the referenced underlay.";
+const UNLINKED: &str = "Unlinked from the drawing, kept as it was.";
+use super::underlay_program::BEGIN;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -130,23 +134,95 @@ impl Binding {
     }
 }
 
-fn selection_error(code: &'static str) -> RuleProgramApplyError {
+/// The rejection recorded for `code`.
+fn recorded_rejection(code: &'static str) -> Rejection {
     let mut record = rejection_result(code, take_error_details());
     if let Some(fields) = record.as_object_mut() {
         fields.remove("details");
     }
-    let rejection = serde_json::from_value::<Rejection>(record)
-        .unwrap_or_else(|error| rejected(code).caused_by(error));
-    RuleProgramApplyError::Rejected(Box::new(rejection))
+    serde_json::from_value::<Rejection>(record)
+        .unwrap_or_else(|error| rejected(code).caused_by(error))
+}
+
+fn selection_error(code: &'static str) -> RuleProgramApplyError {
+    RuleProgramApplyError::Rejected(Box::new(recorded_rejection(code)))
+}
+
+/// The refusal `code` of the section `name` that follows the drawing and finds no outline
+/// in it after the edit: what was not found, with the section named and how to keep it as
+/// it is (review 2026-10-29 UO-64).
+fn followed_section_lost(name: &str, code: &'static str) -> RuleProgramApplyError {
+    let cause = recorded_rejection(code);
+    let reason = format!(
+        "{name} follows this drawing, and the edit leaves it no outline: {}",
+        cause.reason_text()
+    );
+    let fix_hint = format!(
+        "{} To keep {name} as it is, first unlink the areas from the drawing: Tools > {UNLINK_MENU} in the window, or program action=patch removing the line starting \"{PREFIX}\" under \"{BEGIN} {name}:\".",
+        cause.fix_hint_text()
+    );
+    RuleProgramApplyError::Rejected(Box::new(
+        cause.reason(reason).fix_hint(fix_hint.trim_start()),
+    ))
+}
+
+/// The window's command that unlinks pulled areas from their drawing.
+const UNLINK_MENU: &str = "Unlink pulled areas from the drawing";
+
+/// What the edit changed of a section that follows a drawing: its measure before and after
+/// (review 2026-10-29 UO-64), so a trim that joins two rooms does not grow a solid
+/// unsaid.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FollowedChange {
+    pub name: String,
+    pub was: String,
+    pub now: String,
+}
+
+/// The area, perimeter and holes the heading of the section `name` in `source` gives.
+fn section_measure(source: &str, name: &str) -> Option<String> {
+    let begin = format!("{BEGIN} {name}:");
+    let heading = source.lines().find(|line| line.starts_with(&begin))?;
+    let start = heading.find(", area ")? + 2;
+    let end = start + heading[start..].find(" holes")? + " holes".len();
+    Some(heading[start..end].to_owned())
+}
+
+/// The program `source` with every underlay binding line taken out: its sections keep the
+/// outlines they have and no longer follow a drawing. None when nothing is bound.
+pub(crate) fn unlinked(source: &str) -> Option<String> {
+    let follows = format!(". {FOLLOWS}");
+    let mut bound = false;
+    let kept = source
+        .split_inclusive('\n')
+        .filter(|line| {
+            let binding = line.starts_with(PREFIX);
+            bound |= binding;
+            !binding
+        })
+        .map(|line| {
+            if line.starts_with(BEGIN) {
+                line.replacen(&follows, &format!(". {UNLINKED}"), 1)
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<String>();
+    bound.then_some(kept)
 }
 
 impl KetchupApp {
-    /// Returns a normal program plan only when this batch changes a referenced underlay.
+    /// Returns a normal program plan only when this batch changes a referenced underlay,
+    /// with what it changes of the sections that follow it.
     pub(crate) fn plan_underlay_program_update(
         &self,
         batch: &CommandBatch,
     ) -> Result<
-        Option<(RuleProgramSource, ketchup_application::RuleProgramPlan)>,
+        Option<(
+            RuleProgramSource,
+            ketchup_application::RuleProgramPlan,
+            Vec<FollowedChange>,
+        )>,
         RuleProgramApplyError,
     > {
         let Some(program) = self.document.current_rule_program() else {
@@ -191,6 +267,7 @@ impl KetchupApp {
             .preview_batch(batch)
             .map_err(|error| RuleProgramApplyError::Session(SessionError::Canonical(error)))?;
         let mut source = program.clone();
+        let mut changes = Vec::new();
         for binding in bindings {
             // Positional object IDs belong to one import blob, not to a later import.
             let id = ketchup_model::underlay::UnderlayId(binding.underlay_id);
@@ -209,9 +286,21 @@ impl KetchupApp {
                     "Restore the original drawing data, or unlink the generated section before replacing the drawing and select the intended object again with from_underlay.",
                 )));
             }
-            let written = binding.written(self, &snapshot).map_err(selection_error)?;
+            let written = binding
+                .written(self, &snapshot)
+                .map_err(|code| followed_section_lost(&binding.name, code))?;
+            let was = section_measure(&source.source, &binding.name);
             source.source =
                 super::underlay_program::with_data(&source.source, &binding.name, &written);
+            if let (Some(was), Some(now)) = (was, section_measure(&written, &binding.name))
+                && was != now
+            {
+                changes.push(FollowedChange {
+                    name: binding.name,
+                    was,
+                    now,
+                });
+            }
         }
         if source == *program {
             return Ok(None);
@@ -220,7 +309,7 @@ impl KetchupApp {
         if matches!(plan.change, RuleProgramChange::Replacement) {
             return Err(RuleProgramApplyError::IncrementalUnsupported);
         }
-        Ok(Some((source, plan)))
+        Ok(Some((source, plan, changes)))
     }
 }
 

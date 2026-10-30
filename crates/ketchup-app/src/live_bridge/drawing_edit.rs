@@ -80,7 +80,8 @@ impl LiveBridge {
             return Err("entity_not_found");
         }
         Self::require_request_authority(cancelled)?;
-        app.remove_underlay_objects(id, &object_ids)
+        let changes = app
+            .remove_underlay_objects(id, &object_ids)
             .map_err(edit_failure)?;
         self.query.invalidate();
         let snapshot = app.document.current();
@@ -89,13 +90,16 @@ impl LiveBridge {
             .and_then(|underlay| app.cached_underlay_lines(underlay))
             .map(|lines| ObjectIndex::new(&lines).present());
         let removed = object_ids.iter().collect::<BTreeSet<_>>();
-        Ok(json!({
-            "removed": removed.len(),
-            "object_ids": removed,
-            "underlay_id": id.0,
-            "objects_left": left,
-            "dirty": app.is_dirty(),
-        }))
+        Ok(with_followed(
+            json!({
+                "removed": removed.len(),
+                "object_ids": removed,
+                "underlay_id": id.0,
+                "objects_left": left,
+                "dirty": app.is_dirty(),
+            }),
+            &changes,
+        ))
     }
 
     /// `drawing_draw`: draws shapes given in document millimetres into a layer.
@@ -133,16 +137,20 @@ impl LiveBridge {
             .len();
         let count = shapes.len();
         Self::require_request_authority(cancelled)?;
-        app.draw_into_underlay(id, layer, shapes)
+        let changes = app
+            .draw_into_underlay(id, layer, shapes)
             .map_err(edit_failure)?;
         self.query.invalidate();
-        Ok(json!({
-            "drawn": count,
-            "object_ids": (first..first + count).collect::<Vec<_>>(),
-            "underlay_id": id.0,
-            "layer": layer,
-            "dirty": app.is_dirty(),
-        }))
+        Ok(with_followed(
+            json!({
+                "drawn": count,
+                "object_ids": (first..first + count).collect::<Vec<_>>(),
+                "underlay_id": id.0,
+                "layer": layer,
+                "dirty": app.is_dirty(),
+            }),
+            &changes,
+        ))
     }
 
     /// `drawing_move`: moves top-level objects, or adds moved copies of them.
@@ -190,7 +198,8 @@ impl LiveBridge {
             .objects
             .len();
         Self::require_request_authority(cancelled)?;
-        app.transform_underlay_objects(id, object_ids, &map, *copy)
+        let changes = app
+            .transform_underlay_objects(id, object_ids, &map, *copy)
             .map_err(edit_failure)?;
         self.query.invalidate();
         let objects = object_ids.iter().collect::<BTreeSet<_>>();
@@ -218,7 +227,7 @@ impl LiveBridge {
             });
             answer["new_object_ids"] = json!(new);
         }
-        Ok(answer)
+        Ok(with_followed(answer, &changes))
     }
 
     /// `drawing_trim`, `drawing_extend` and `drawing_offset`: one straight line of the
@@ -283,7 +292,8 @@ impl LiveBridge {
             .objects
             .len();
         Self::require_request_authority(cancelled)?;
-        app.edit_underlay_line(id, object_id, edit)
+        let changes = app
+            .edit_underlay_line(id, object_id, edit)
             .map_err(edit_failure)?;
         self.query.invalidate();
         let after = app
@@ -292,13 +302,16 @@ impl LiveBridge {
             .underlay(id)
             .and_then(|underlay| app.cached_underlay_lines(underlay))
             .map_or(first, |lines| lines.objects().objects.len());
-        Ok(json!({
-            "action": action,
-            "object_id": object_id,
-            "new_object_ids": (first..after).collect::<Vec<_>>(),
-            "underlay_id": id.0,
-            "dirty": app.is_dirty(),
-        }))
+        Ok(with_followed(
+            json!({
+                "action": action,
+                "object_id": object_id,
+                "new_object_ids": (first..after).collect::<Vec<_>>(),
+                "underlay_id": id.0,
+                "dirty": app.is_dirty(),
+            }),
+            &changes,
+        ))
     }
 
     /// `drawing_export`: the drawing with its changes written to the DXF or DWG file `path`.
@@ -456,6 +469,18 @@ impl LiveBridge {
             "dirty": app.is_dirty(),
         }))
     }
+}
+
+/// `answer` with the program sections whose outline the edit changed, as
+/// `areas_changed` (review 2026-10-29 UO-64), when it changed any.
+fn with_followed(mut answer: Value, changes: &[super::underlay_binding::FollowedChange]) -> Value {
+    if !changes.is_empty() {
+        answer["areas_changed"] = changes
+            .iter()
+            .map(|change| json!({"name": change.name, "was": change.was, "now": change.now}))
+            .collect();
+    }
+    answer
 }
 
 /// The code of `refusal`, its rejection recorded again for the answer.

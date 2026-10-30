@@ -96,7 +96,7 @@ mod program_variants;
 mod tests;
 mod transport;
 mod underlay_arcs;
-mod underlay_binding;
+pub(crate) mod underlay_binding;
 mod underlay_objects;
 pub(crate) mod underlay_program;
 mod underlay_regions;

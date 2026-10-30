@@ -221,7 +221,7 @@ impl KetchupApp {
             None => Err(UnderlayEditError::Plan(UnderlayObjectError::InvalidMap)),
         };
         match result {
-            Ok(()) => {
+            Ok(changes) => {
                 self.select_underlay(underlay);
                 for id in ids {
                     self.selection.pick_underlay_object(*id, true);
@@ -234,7 +234,7 @@ impl KetchupApp {
                         "digest-underlay-objects-moved"
                     },
                     &BTreeMap::from([("count", ids.len().to_string())]),
-                );
+                ) + &self.followed_note(&changes);
                 true
             }
             Err(error) => {
