@@ -140,9 +140,11 @@ jobs:
       - name: rustfmt
         run: cargo fmt --all -- --check
       - name: clippy
+        if: ${{ !cancelled() }}
         run: cargo clippy --locked $CRATES --all-targets -- -D warnings
       # Every file the tests save also goes to KETCHUP_SAVED_FILES_DIR for the next step.
       - name: tests
+        if: ${{ !cancelled() }}
         env:
           KETCHUP_SAVED_FILES_DIR: ${{ runner.temp }}/saved-files
         run: |
@@ -152,33 +154,35 @@ jobs:
       # without opening their .recovery; the serde enums it knows gain only reviewed
       # variants (review 2026-10-29 proposal 5.4, MD-60).
       - name: Kečup 0.2.0 reads the files written for it
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && (runner.os == 'Linux') }}
         run: |
           git fetch --no-tags --depth=1 origin tag v0.2.0
           python3 scripts/release_0_2_0_reads.py --files "$RUNNER_TEMP/saved-files"
       # Time budgets live only in ignored perf_* tests, checked in release
       # (review 2026-10-17 TST-3).
       - name: release timing budgets
-        if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        if: ${{ !cancelled() && (runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')) }}
         timeout-minutes: 90
         env:
           RUST_TEST_THREADS: 1
         run: cargo test --locked --release $CRATES --no-fail-fast -- --ignored perf_
       # The tests of the 750-part house are ignored in every step (AGENTS.md
       # section 6, scripts/check_large_house_tests.py) and run nightly here,
-      # and in a pull request that changes what they evaluate (review
-      # 2026-10-24 CI-23).
+      # on every push to main, and in a pull request that changes what they
+      # evaluate (review 2026-10-24 CI-23, review 2026-10-26 CI-43).
       - name: whether the change reaches the house
+        if: ${{ !cancelled() }}
         id: house
         run: python3 scripts/changes_reach_the_house.py
       - name: large-house tests
-        if: runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || steps.house.outputs.run == 'true')
+        if: ${{ !cancelled() && (runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || steps.house.outputs.run == 'true')) }}
         run: cargo test --locked $CRATES --no-fail-fast -- --ignored large_house
       # The plugin host's Unix process group lives in the vendored process-wrap
       # (PATCH.md); ketchup-scheduler, which uses it, needs OCCT and is tested
       # on Windows only, so the group's own unit tests run here (review
       # 2026-10-17 EX-3).
       - name: unit tests of the vendored process-wrap
+        if: ${{ !cancelled() }}
         run: >-
           cargo test --locked --manifest-path third_party/process-wrap/Cargo.toml
           --target-dir target/process-wrap --lib --no-default-features
@@ -186,10 +190,10 @@ jobs:
       # The desktop Viewer renders its own pixels in tests; on Linux the
       # Vulkan software rasterizer (lavapipe) is the adapter.
       - name: lavapipe
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && (runner.os == 'Linux') }}
         run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends mesa-vulkan-drivers
       - name: clippy and tests of the desktop Viewer on lavapipe
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && (runner.os == 'Linux') }}
         run: |
           cargo clippy --locked -p ketchup-viewer --all-targets -- -D warnings
           cargo test --locked -p ketchup-viewer --no-fail-fast
@@ -248,12 +252,14 @@ jobs:
         run: cargo clippy --locked $env:CRATES.Split(' ') --all-targets -- -D warnings
       # The live MCP tests launch the debug application beside its worker.
       - name: workers, the headless CLI and the application for the tests
+        if: ${{ !cancelled() }}
         run: |
           cargo build --locked -p ketchup-scheduler -p ketchup-headless --bins
           cargo build --locked -p ketchup-app --bin ketchup-app
       # The files the application, headless and scheduler tests save go to
       # KETCHUP_SAVED_FILES_DIR too, so Kečup 0.2.0 opens them in the next step.
       - name: tests
+        if: ${{ !cancelled() }}
         env:
           # Two OCCT test threads fit the runner's memory.
           RUST_TEST_THREADS: 2
@@ -266,12 +272,14 @@ jobs:
             --skip instanced_rendering::real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_wgpu_draw `
             --skip instanced_rendering::garden_studio_hardware_gpu_camera_frames
       - name: Kečup 0.2.0 reads the files the application tests wrote for it
+        if: ${{ !cancelled() }}
         run: |
           git fetch --no-tags --depth=1 origin tag v0.2.0
           python scripts/release_0_2_0_reads.py --files "$env:RUNNER_TEMP\saved-files"
       # The Viewer's comment save has its own Windows code, which the Linux
       # Viewer job never compiles (review 2026-10-19).
       - name: atomic comment save on Windows
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           cargo test --locked -p ketchup-viewer --lib -- --exact \
@@ -282,33 +290,36 @@ jobs:
       # checks job; here every such file runs and a skip fails (review
       # 2026-10-17 TST-2).
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        if: ${{ !cancelled() }}
         with:
           python-version: "3.11"
       - name: native Python tests against the built CLI
+        if: ${{ !cancelled() }}
         run: |
           python -m pip install --quiet --require-hashes -r tests/requirements-ci.txt
           python scripts/run_production_tests.py --prebuilt
       - name: whether the change reaches the house
+        if: ${{ !cancelled() }}
         id: house
         run: python scripts/changes_reach_the_house.py
       - name: large-house tests
-        if: env.NIGHTLY == 'true' || steps.house.outputs.run == 'true'
+        if: ${{ !cancelled() && (env.NIGHTLY == 'true' || steps.house.outputs.run == 'true') }}
         env:
           RUST_TEST_THREADS: 2
         run: cargo test --locked $env:CRATES.Split(' ') --no-fail-fast -- --ignored large_house
       # The tests find the worker beside them, so it is built in release too.
       - name: release workers
-        if: env.NIGHTLY == 'true'
+        if: ${{ !cancelled() && (env.NIGHTLY == 'true') }}
         run: cargo build --locked --release -p ketchup-scheduler --bins
       # Their geometry checks finish within the window's limits only in the
       # optimized build (RELEASE_APP_TESTS in scripts/run_production_tests.py).
       - name: live MCP tests against the release application
-        if: env.NIGHTLY == 'true'
+        if: ${{ !cancelled() && (env.NIGHTLY == 'true') }}
         run: |
           cargo build --locked --release -p ketchup-app --bin ketchup-app
           python scripts/run_production_tests.py --release-app
       - name: release-only whole-house tests
-        if: env.NIGHTLY == 'true'
+        if: ${{ !cancelled() && (env.NIGHTLY == 'true') }}
         env:
           RUST_TEST_THREADS: 2
         run: >-
@@ -318,7 +329,7 @@ jobs:
       # hardware GPU and run on a developer machine; every other ignored test
       # runs in some step (scripts/check_ignored_tests.py).
       - name: release timing budgets
-        if: env.NIGHTLY == 'true'
+        if: ${{ !cancelled() && (env.NIGHTLY == 'true') }}
         timeout-minutes: 90
         env:
           RUST_TEST_THREADS: 1
@@ -329,7 +340,7 @@ jobs:
           --skip perf_garden_studio_hardware_gpu_camera_frames_within_budget
       # The Blender reference is a release asset, kept out of the repository.
       - name: garden studio against its Blender source
-        if: env.NIGHTLY == 'true'
+        if: ${{ !cancelled() && (env.NIGHTLY == 'true') }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -351,8 +362,10 @@ jobs:
       - name: clippy for Android
         run: cargo clippy --locked -p ketchup-viewer-android --target aarch64-linux-android --all-targets -- -D warnings
       - name: clippy for the browser
+        if: ${{ !cancelled() }}
         run: cargo clippy --locked -p ketchup-viewer-web --target wasm32-unknown-unknown -- -D warnings
       - name: the browser Viewer reads the browser's languages
+        if: ${{ !cancelled() }}
         # sys-locale without its js feature returns no language in a browser.
         run: cargo tree --locked -p ketchup-viewer-web --target wasm32-unknown-unknown -e normal -i js-sys | grep -q "sys-locale v"
 
@@ -371,6 +384,7 @@ jobs:
       # the Linux Viewer job never compiles; a renamed test fails here
       # instead of silently matching nothing (review 2026-10-19).
       - name: atomic comment save on macOS
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           cargo test --locked -p ketchup-viewer --lib -- --exact \
