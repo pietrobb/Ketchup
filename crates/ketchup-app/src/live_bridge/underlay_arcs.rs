@@ -8,8 +8,8 @@
 
 use ketchup_geometry::linalg::{cross2 as cross, dot2, sub2 as sub};
 use ketchup_model::tolerance::{
-    APPROXIMATION, NEGLIGIBLE, UNDERLAY_ARC_OFF_CIRCLE, UNDERLAY_ARC_OFF_CIRCLE_MM,
-    UNDERLAY_ARC_STEP_SLACK,
+    APPROXIMATION, CONTACT_FIT_MM, NEGLIGIBLE, UNDERLAY_ARC_OFF_CIRCLE,
+    UNDERLAY_ARC_OFF_CIRCLE_MAX_MM, UNDERLAY_ARC_OFF_CIRCLE_MM, UNDERLAY_ARC_STEP_SLACK,
 };
 use ketchup_model::underlay::arc_chord_step;
 use std::f64::consts::{FRAC_PI_2, TAU};
@@ -35,6 +35,10 @@ const MAX_STEP: f64 = 10.0 * std::f64::consts::PI / 180.0;
 const MIN_CHORDS: usize = 4;
 /// A quarter point this close to an end of an arc does not split it.
 const MIN_PIECE: f64 = 0.5 * std::f64::consts::PI / 180.0;
+/// Nor does one that leaves a piece whose middle lies less than this off its chord: twice
+/// what the program takes for a line, so the piece written to the thousandth of a
+/// millimetre is still an arc (review 2026-10-29 UO-62).
+const MIN_BULGE: f64 = CONTACT_FIT_MM;
 
 /// The longest chord of a drawn arc of `radius` in a drawing scaled by `scale`: its step as
 /// the import cut it, a small circle's in a few long chords (Ø15 in 20), or [`MAX_STEP`].
@@ -43,9 +47,17 @@ fn max_chord(radius: f64, scale: f64) -> f64 {
     2.0 * radius * (step.min(FRAC_PI_2) / 2.0).sin()
 }
 
-/// How far off its circle a corner of an arc may lie.
-fn tolerance(radius: f64) -> f64 {
-    UNDERLAY_ARC_OFF_CIRCLE * radius + UNDERLAY_ARC_OFF_CIRCLE_MM
+/// How far off its circle a corner of an arc may lie: with the radius, but never more than
+/// a tenth of the import's chord error, so a nearly straight wall is no huge circle that
+/// other corners lie on (review 2026-10-29 UO-60).
+fn tolerance(radius: f64, scale: f64) -> f64 {
+    (UNDERLAY_ARC_OFF_CIRCLE * radius).min(UNDERLAY_ARC_OFF_CIRCLE_MAX_MM * scale)
+        + UNDERLAY_ARC_OFF_CIRCLE_MM
+}
+
+/// The angle of an arc of `radius` whose middle lies [`MIN_BULGE`] off its chord.
+fn min_piece(radius: f64) -> f64 {
+    (2.0 * (1.0 - MIN_BULGE / radius).max(-1.0).acos()).max(MIN_PIECE)
 }
 
 fn distance(a: [f64; 2], b: [f64; 2]) -> f64 {
@@ -80,22 +92,22 @@ pub(super) fn pieces(ring: &[[f64; 2]], scale: f64) -> Option<Vec<Piece>> {
         return None;
     }
     let at = |index: usize| ring[index % n];
-    // An arc from corner `start` along `chords` chords: its circle, through its first
-    // three corners, and its signed sweep.
-    let arc_from = |start: usize, limit: usize| -> Option<(usize, [f64; 2], f64, f64)> {
-        let (center, radius) = circle(at(start), at(start + 1), at(start + 2))?;
+    // How many of the `limit` chords from corner `start` lie on the circle `center`,
+    // `radius`, each no longer than the import cuts it and all turning one way.
+    let along = |start: usize, limit: usize, center: [f64; 2], radius: f64| -> usize {
         let turn = cross(
             sub(at(start + 1), at(start)),
             sub(at(start + 2), at(start + 1)),
         );
-        let max_chord = max_chord(radius, scale);
-        let mut sweep = 0.0;
+        let (max_chord, tolerance) = (max_chord(radius, scale), tolerance(radius, scale));
+        let on = |index: usize| (distance(at(index), center) - radius).abs() <= tolerance;
+        if !on(start) {
+            return 0;
+        }
         let mut chords = 0;
         while chords < limit {
             let (from, to) = (at(start + chords), at(start + chords + 1));
-            if (distance(to, center) - radius).abs() > tolerance(radius)
-                || distance(from, to) > max_chord
-            {
+            if !on(start + chords + 1) || distance(from, to) > max_chord {
                 break;
             }
             if chords > 0 {
@@ -104,19 +116,48 @@ pub(super) fn pieces(ring: &[[f64; 2]], scale: f64) -> Option<Vec<Piece>> {
                     break;
                 }
             }
-            let (from, to) = (sub(from, center), sub(to, center));
-            sweep += cross(from, to).atan2(dot2(from, to));
             chords += 1;
         }
-        (chords >= MIN_CHORDS).then_some((chords, center, radius, sweep))
+        chords
+    };
+    // An arc from corner `start`: its chords, circle and signed sweep. The run is found
+    // along the circle through its first three corners; its circle is then the one through
+    // its ends and middle, which every corner of the run must lie on (review 2026-10-29
+    // UO-60), or the run is shortened until they do.
+    let arc_from = |start: usize, limit: usize| -> Option<(usize, [f64; 2], f64, f64)> {
+        let (center, radius) = circle(at(start), at(start + 1), at(start + 2))?;
+        let mut chords = along(start, limit, center, radius);
+        while chords >= MIN_CHORDS {
+            let middle = if chords == n { chords / 3 } else { chords / 2 };
+            let last = if chords == n { 2 * chords / 3 } else { chords };
+            if let Some((center, radius)) = circle(at(start), at(start + middle), at(start + last))
+                && along(start, chords, center, radius) == chords
+            {
+                let sweep = (0..chords)
+                    .map(|chord| {
+                        let (from, to) = (
+                            sub(at(start + chord), center),
+                            sub(at(start + chord + 1), center),
+                        );
+                        cross(from, to).atan2(dot2(from, to))
+                    })
+                    .sum();
+                return Some((chords, center, radius, sweep));
+            }
+            chords -= 1;
+        }
+        None
     };
 
-    // Start at a corner no arc passes through, or take the whole ring as one circle.
+    // Start at a corner no arc passes through, or take the whole ring as one circle. The
+    // import cuts an arc in equal chords: where a long wall meets an arc, the nearly
+    // straight circle through the corner is none (review 2026-10-29 UO-60).
     let bends = |index: usize| {
         let (before, here, after) = (at(index + n - 1), at(index), at(index + 1));
-        circle(before, here, after).is_some_and(|(_, radius)| {
-            distance(before, here).max(distance(here, after)) <= max_chord(radius, scale)
-        })
+        let (into, out) = (distance(before, here), distance(here, after));
+        (into - out).abs() <= UNDERLAY_ARC_STEP_SLACK * into.max(out) + 2.0 * tolerance(0.0, scale)
+            && circle(before, here, after)
+                .is_some_and(|(_, radius)| into.max(out) <= max_chord(radius, scale))
     };
     let mut pieces = Vec::new();
     let first = (0..n).find(|index| !bends(*index));
@@ -180,12 +221,13 @@ fn split(
     } else {
         (from / FRAC_PI_2).ceil() - 1.0
     };
+    let min_piece = min_piece(radius);
     loop {
         let along = (quarter * FRAC_PI_2 - from) * direction;
-        if along >= sweep.abs() - MIN_PIECE {
+        if along >= sweep.abs() - min_piece {
             break;
         }
-        if along >= MIN_PIECE {
+        if along >= min_piece {
             cuts.push(along);
         }
         quarter += direction;
@@ -312,6 +354,153 @@ mod tests {
         let read = pieces(&doubled, 2.0).unwrap();
         assert!((area(&read) - 4.0 * disc).abs() < 1e-9 * disc);
         assert_eq!(pieces(&doubled, 1.0), None);
+    }
+
+    /// An arc as the import cuts it: chords of [`arc_chord_step`], the end included.
+    fn drawn_arc(center: [f64; 2], radius: f64, from: f64, to: f64) -> Vec<[f64; 2]> {
+        let sides = ((to - from).abs() / arc_chord_step(radius)).ceil() as usize;
+        polygon(center, radius, sides, from, to)
+    }
+
+    /// `ring` started at each of its corners in turn.
+    fn starts(ring: &[[f64; 2]]) -> impl Iterator<Item = Vec<[f64; 2]>> + '_ {
+        (0..ring.len()).map(|start| {
+            ring[start..]
+                .iter()
+                .chain(&ring[..start])
+                .copied()
+                .collect()
+        })
+    }
+
+    fn polygon_area(ring: &[[f64; 2]]) -> f64 {
+        ring.iter()
+            .zip(ring.iter().cycle().skip(1))
+            .map(|(a, b)| cross(*a, *b) / 2.0)
+            .sum()
+    }
+
+    /// From whichever corner it starts, `ring` is read as arcs and lines bounding `exact`.
+    fn assert_round(ring: &[[f64; 2]], exact: f64) {
+        for ring in starts(ring) {
+            let pieces = pieces(&ring, 1.0).unwrap_or_else(|| panic!("arcs in {ring:?}"));
+            let area = area(&pieces);
+            assert!(
+                (area - exact).abs() <= 1e-6 * exact,
+                "{area} for {exact} from {:?}: {pieces:?}",
+                ring[0]
+            );
+        }
+    }
+
+    /// Review 2026-10-29 UO-60, UO-61: a room with a corner in the middle of a wall, nudged
+    /// out by up to 0.01 mm, keeps its straight sides from whichever corner it starts; the
+    /// big circle through the nudged corner swallowed the room's corners.
+    #[test]
+    fn a_room_with_a_corner_nudged_off_a_wall_keeps_its_straight_sides() {
+        let rooms: [&[[f64; 2]]; 3] = [
+            // An L of 21 m².
+            &[
+                [0.0, 0.0],
+                [6000.0, 0.0],
+                [6000.0, 2000.0],
+                [3000.0, 2000.0],
+                [3000.0, 5000.0],
+                [0.0, 5000.0],
+            ],
+            &[[0.0, 0.0], [4000.0, 0.0], [4000.0, 3000.0], [0.0, 3000.0]],
+            &[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]],
+        ];
+        for room in rooms {
+            for wall in 0..room.len() {
+                let (a, b) = (room[wall], room[(wall + 1) % room.len()]);
+                let along = sub(b, a);
+                let length = along[0].hypot(along[1]);
+                for nudge in [1e-7, 1e-3, 0.01] {
+                    // Out of the counterclockwise room: to the right of the wall.
+                    let corner = [
+                        (a[0] + b[0]) / 2.0 + along[1] / length * nudge,
+                        (a[1] + b[1]) / 2.0 - along[0] / length * nudge,
+                    ];
+                    let mut ring = room.to_vec();
+                    ring.insert(wall + 1, corner);
+                    for ring in starts(&ring) {
+                        assert_eq!(pieces(&ring, 1.0), None, "{ring:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Review 2026-10-29 UO-60: round edges drawn as the import cuts them stay where they
+    /// were and leave the walls beside them straight, from whichever corner the ring starts.
+    #[test]
+    fn round_edges_beside_long_walls_keep_the_area() {
+        use std::f64::consts::PI;
+        // A room of 5 × 4 m with one corner R1000.
+        let mut room = vec![[0.0, 0.0], [5000.0, 0.0]];
+        room.extend(drawn_arc([4000.0, 3000.0], 1000.0, 0.0, FRAC_PI_2));
+        room.push([0.0, 4000.0]);
+        assert_round(&room, 20.0e6 - (1.0 - PI / 4.0) * 1.0e6);
+        // A room of 4 × 3 m with an apse R2000 on its long side.
+        let mut apse = vec![[0.0, 0.0], [4000.0, 0.0]];
+        apse.extend(drawn_arc([2000.0, 3000.0], 2000.0, 0.0, PI));
+        assert_round(&apse, 12.0e6 + PI * 2.0e6);
+        // A slot 3000 long with ends R50.
+        let mut slot = drawn_arc([3000.0, 50.0], 50.0, -FRAC_PI_2, FRAC_PI_2);
+        slot.extend(drawn_arc([0.0, 50.0], 50.0, FRAC_PI_2, 3.0 * FRAC_PI_2));
+        assert_round(&slot, 3000.0 * 100.0 + PI * 2500.0);
+    }
+
+    /// Review 2026-10-29 UO-60: a slot 1000 long whose ends are drawn in chords of 10°
+    /// bounds no more than its round ends would, from whichever corner it starts.
+    #[test]
+    fn a_slot_in_chords_of_ten_degrees_bounds_no_more_than_its_round_ends() {
+        let mut slot = polygon([1000.0, 50.0], 50.0, 18, -FRAC_PI_2, FRAC_PI_2);
+        slot.extend(polygon([0.0, 50.0], 50.0, 18, FRAC_PI_2, 3.0 * FRAC_PI_2));
+        let round = 1000.0 * 100.0 + std::f64::consts::PI * 2500.0;
+        let drawn = polygon_area(&slot);
+        for ring in starts(&slot) {
+            let area = pieces(&ring, 1.0).map_or(drawn, |pieces| area(&pieces));
+            assert!(
+                drawn * (1.0 - 1e-9) <= area && area <= round * (1.0 + 1e-9),
+                "{area} of {drawn} to {round} from {:?}",
+                ring[0]
+            );
+        }
+    }
+
+    /// Review 2026-10-29 UO-62: every arc of a hole, turned any way, is one the program
+    /// takes as it is written, to the thousandth of a millimetre: its through point clear of
+    /// the line between its ends.
+    #[test]
+    fn every_arc_of_a_turned_hole_is_one_the_program_takes() {
+        use ketchup_model::tolerance::CONTACT_FIT_MM;
+        let written = |point: [f64; 2]| point.map(|value| (value * 1000.0).round() / 1000.0);
+        for radius in [2.0, 7.5, 50.0] {
+            for turn in 0..500 {
+                let from = f64::from(turn) * 0.0123;
+                let mut hole = drawn_arc([123.0, 45.0], radius, from, from + TAU);
+                hole.pop();
+                for piece in pieces(&hole, 1.0).unwrap() {
+                    let Piece::Arc {
+                        start,
+                        end,
+                        through,
+                    } = piece
+                    else {
+                        panic!("a line in a hole r = {radius}");
+                    };
+                    let [start, end, through] = [start, end, through].map(written);
+                    let half = distance(start, end) / 2.0;
+                    let bulge = cross(sub(through, start), sub(end, through));
+                    assert!(
+                        half > CONTACT_FIT_MM && bulge.abs() > CONTACT_FIT_MM * half,
+                        "r = {radius} turned {from}: {piece:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

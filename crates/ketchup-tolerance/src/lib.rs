@@ -83,8 +83,13 @@ pub const UNDERLAY_ARC_CHORD_MM: f64 = 0.1;
 /// much longer, from rounding of its drawn corners, still belongs to the arc.
 pub const UNDERLAY_ARC_STEP_SLACK: f64 = 1.0e-3;
 /// How far off its circle a corner of an underlay's drawn arc may lie, as a fraction of
-/// the radius, on top of [`UNDERLAY_ARC_OFF_CIRCLE_MM`].
+/// the radius, up to [`UNDERLAY_ARC_OFF_CIRCLE_MAX_MM`], on top of
+/// [`UNDERLAY_ARC_OFF_CIRCLE_MM`].
 pub const UNDERLAY_ARC_OFF_CIRCLE: f64 = 1.0e-4;
+/// The most the part of [`UNDERLAY_ARC_OFF_CIRCLE`] grows to, in mm of the drawing the import
+/// cut: a tenth of [`UNDERLAY_ARC_CHORD_MM`]. Without it a nearly straight wall is a huge
+/// circle that a room's corners lie on (review 2026-10-29 UO-60).
+pub const UNDERLAY_ARC_OFF_CIRCLE_MAX_MM: f64 = 0.01;
 /// The part of an underlay arc corner's allowed distance off its circle that does not
 /// grow with the radius, in document mm.
 pub const UNDERLAY_ARC_OFF_CIRCLE_MM: f64 = 0.001;
