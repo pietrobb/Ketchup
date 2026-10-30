@@ -2088,9 +2088,6 @@ pub struct KetchupApp {
     /// solid; it is applied when that is ready only if nothing it was typed for
     /// changed meanwhile, and Esc drops it (GX-1).
     value_input_awaits_program: Option<AwaitedValue>,
-    /// A click of Pull area that waits for the regions of the drawings to be found off
-    /// the UI thread (review 2026-10-26 UO-40).
-    area_click_awaits_regions: Option<app::underlay_extrude::AreaClick>,
     solid_tools: app_state::SolidToolInputs,
     helix_tool: helix_ui::HelixUiState,
     parameter: app_state::ParameterEditor,

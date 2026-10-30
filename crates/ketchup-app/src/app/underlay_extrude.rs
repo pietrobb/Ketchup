@@ -150,24 +150,24 @@ impl KetchupApp {
             self.finish_area_click(&click);
         } else {
             self.digest = self.catalog.text("digest-underlay-extrude-searching");
-            self.area_click_awaits_regions = Some(click);
+            self.solid_tools.area_click_awaits_regions = Some(click);
         }
     }
 
     /// Pulls up the area of a click that waited, on the frame the regions are found;
     /// whether it is still waiting.
     pub(crate) fn poll_area_click(&mut self) -> bool {
-        if self.area_click_awaits_regions.is_none() {
+        if self.solid_tools.area_click_awaits_regions.is_none() {
             return false;
         }
         if self.active_tool != ActiveTool::ExtrudeUnderlayArea {
-            self.area_click_awaits_regions = None;
+            self.solid_tools.area_click_awaits_regions = None;
             return false;
         }
         if !self.underlay_regions_ready() {
             return true;
         }
-        if let Some(click) = self.area_click_awaits_regions.take() {
+        if let Some(click) = self.solid_tools.area_click_awaits_regions.take() {
             self.finish_area_click(&click);
         }
         false

@@ -870,7 +870,7 @@ fn pull_up(harness: &mut Harness<'_, KetchupApp>, height: &str, at: Vec3) {
         harness,
         std::time::Duration::from_secs(60),
         "the regions of the click were never found",
-        |app| app.area_click_awaits_regions.is_none(),
+        |app| app.solid_tools.area_click_awaits_regions.is_none(),
     );
 }
 

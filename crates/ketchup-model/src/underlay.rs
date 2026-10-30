@@ -1268,15 +1268,15 @@ pub(crate) fn straight_points(segment: &ProfileSegment) -> usize {
     match segment {
         ProfileSegment::CircularArc { .. } => 0,
         ProfileSegment::Line { .. } => 1,
-        ProfileSegment::CubicBezier { .. } => BEZIER_CHORDS as usize,
+        ProfileSegment::CubicBezier { .. } => usize::try_from(BEZIER_CHORDS).unwrap_or(usize::MAX),
         ProfileSegment::Spline { points_mm } => points_mm.len().saturating_sub(1),
     }
 }
 
 /// How many chords [`push_segment`] draws an arc of `radius` turning by `sweep` with.
 pub(crate) fn arc_chords(radius: f64, sweep: f64) -> usize {
-    // At most MAX_CIRCLE_CHORDS for each whole turn, so the cast is exact.
-    (sweep.abs() / arc_chord_step(radius)).ceil() as usize
+    // At most MAX_CIRCLE_CHORDS for each whole turn.
+    crate::whole_count((sweep.abs() / arc_chord_step(radius)).ceil())
 }
 
 /// Appends the points after the start of `segment`.

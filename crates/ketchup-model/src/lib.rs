@@ -38,6 +38,15 @@ pub const fn application_name() -> &'static str {
     "Ketchup"
 }
 
+/// `whole`, a whole number of steps, chords or passes, as that count: 0 below
+/// zero or for NaN, `usize::MAX` above it. The one place a count is taken from
+/// an `f64` in this crate.
+pub(crate) fn whole_count(whole: f64) -> usize {
+    debug_assert!(whole.fract() == 0.0 || !whole.is_finite(), "{whole}");
+    // A float-to-int `as` saturates and maps NaN to 0.
+    whole as usize
+}
+
 #[cfg(test)]
 mod tests {
     use super::application_name;

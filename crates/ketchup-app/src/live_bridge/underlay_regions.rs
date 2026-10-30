@@ -256,7 +256,7 @@ pub(super) fn region_holding(
 
 /// Review 2026-10-26 UO-41: the room that `found`, a region of [`closed_regions`] of the
 /// shown layers of `underlay`, stands for when no layers are named, and the layers of its
-/// walls (none when no drawn line bounds it). A stamp frame, a wardrobe or a basin drawn
+/// walls (none when no drawn line bounds it). A stamp frame or a fitting drawn
 /// on layers of their own inside a room is no hole in it, and a point or a label inside one
 /// of them is in the room: the room is holed only where the layers of its walls close
 /// inside it.

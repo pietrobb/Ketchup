@@ -671,7 +671,7 @@ fn renamed_expected(
 }
 
 /// `text` with every whole `from` in it read as `to`: at its start ("a/notch")
-/// or after a `:` or `+` of an id derived from it ("dowel:a:1", "dowel:b+a",
+/// or after a `:` or `+` of an id derived from it ("join:a:1", "join:b+a",
 /// review 2026-10-26 WB-41), followed by its end, a space, `/`, `:` or `+`;
 /// but not where one of the names `kept` stands. `None` when it holds none.
 fn renamed_text(text: &str, from: &str, to: &str, kept: &[String]) -> Option<String> {

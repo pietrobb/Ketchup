@@ -373,8 +373,7 @@ fn cuts(segments: &[[[f64; 2]; 2]], tolerance: f64) -> Result<Vec<Vec<f64>>, Reg
         let [a, b] = segments[index];
         let steps = ((a[0] - b[0]).hypot(a[1] - b[1]) / (size / 2.0)).ceil();
         let steps = if steps < count_f64(MAX_REGION_CROSSINGS) {
-            // A whole number below the limit.
-            steps as usize
+            crate::whole_count(steps)
         } else {
             MAX_REGION_CROSSINGS
         };

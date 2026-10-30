@@ -114,7 +114,6 @@ impl KetchupApp {
             },
             program_evaluations: Default::default(),
             value_input_awaits_program: None,
-            area_click_awaits_regions: None,
             solid_tools: app_state::SolidToolInputs {
                 target: None,
                 revolve: None,
@@ -122,6 +121,7 @@ impl KetchupApp {
                 pocket_editor_feature: None,
                 pocket_depth_input: String::new(),
                 pocket_depth_source: String::new(),
+                area_click_awaits_regions: None,
             },
             helix_tool: helix_ui::HelixUiState::default(),
             parameter: app_state::ParameterEditor {

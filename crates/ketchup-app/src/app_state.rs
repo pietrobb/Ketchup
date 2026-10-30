@@ -80,6 +80,9 @@ pub(crate) struct SolidToolInputs {
     pub(crate) pocket_depth_input: String,
     /// The depth the input was loaded from; the input differs only after typing.
     pub(crate) pocket_depth_source: String,
+    /// A click of Pull area that waits for the regions of the drawings to be found off
+    /// the UI thread (review 2026-10-26 UO-40).
+    pub(crate) area_click_awaits_regions: Option<crate::app::underlay_extrude::AreaClick>,
 }
 
 /// The running Move/Rotate/Scale session, its typed input and a correction of
