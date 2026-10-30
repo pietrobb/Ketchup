@@ -4,8 +4,8 @@
 //! with handles of their own. Read again, it draws what the underlay drew with the edits.
 use ketchup_model::document::TagId;
 use ketchup_model::import::{
-    DxfEditRefusal, DxfImportOptions, DxfUnderlay, EditedDxfError, read_dxf_underlay,
-    write_edited_dxf,
+    DxfEditRefusal, DxfImportOptions, DxfUnderlay, EditedDxfError, ImportLengthUnit,
+    read_dxf_underlay, write_edited_dxf,
 };
 use ketchup_model::underlay::drawn::{AddedObject, DrawnShape, similarity};
 use ketchup_model::underlay::edits::UnderlayEdits;
@@ -673,6 +673,44 @@ fn another_drawing_and_one_read_differently_are_refused_apart() {
     assert!(
         refused.to_string().contains("import the drawing again"),
         "{refused}"
+    );
+}
+
+/// Review 2026-10-29 CD-63: a drawing that declares no unit, read in centimetres and
+/// written as if read in millimetres, is found in its unit by the size of its lines, not
+/// read once in each unit.
+#[test]
+fn a_drawing_without_a_unit_is_written_in_the_unit_it_was_read_in() {
+    let source = source().replace("9\n$INSUNITS\n70\n4\n", "");
+    let in_centimetres = DxfImportOptions::new(Some(ImportLengthUnit::Centimetre));
+    let original = read_dxf_underlay(source.as_bytes(), in_centimetres).unwrap();
+    let lines = &original.lines;
+    let layers = original
+        .layers
+        .iter()
+        .enumerate()
+        .map(|(index, name)| UnderlayLayer {
+            name: name.clone(),
+            tag: TagId(10 + index as u64),
+        })
+        .collect::<Vec<_>>();
+    let mut edits = UnderlayEdits::default();
+    edits
+        .moved_objects
+        .insert(id_of(lines, 0xA0), [[1.0, 0.0, 500.0], [0.0, 1.0, 0.0]]);
+
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(Some(ImportLengthUnit::Millimetre)),
+        lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let again = read_dxf_underlay(&written, in_centimetres).unwrap();
+    let edited = lines.clone().edited(&edits, &layers);
+    assert_same(
+        &drawn(&again.lines, &again.layers),
+        &drawn(&edited, &original.layers),
     );
 }
 

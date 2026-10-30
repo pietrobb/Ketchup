@@ -79,3 +79,7 @@ all = "deny"
 [[test]]
 name = "integration"
 path = "tests/integration.rs"
+
+[[test]]
+name = "underlay_dxf_write_memory"
+path = "tests/underlay_dxf_write_memory.rs"

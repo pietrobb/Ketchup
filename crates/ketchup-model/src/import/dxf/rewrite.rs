@@ -131,25 +131,14 @@ pub fn write_edited_dxf(
     lines: &UnderlayLines,
     edits: &UnderlayEdits,
 ) -> Result<Vec<u8>, EditedDxfError> {
-    let mut read = read_dxf_underlay(source, options).map_err(EditedDxfError::Read)?;
-    if read.lines != *lines && read.units.authority() == ImportUnitAuthority::UserDeclared {
-        for unit in UNITS {
-            let other = read_dxf_underlay(
-                source,
-                DxfImportOptions::new(Some(unit)).with_geo_origin(options.geo_origin_mm()),
-            )
-            .map_err(EditedDxfError::Read)?;
-            if other.lines == *lines {
-                read = other;
-                break;
-            }
-        }
-    }
+    // The read is let go before the drawing is parsed, so the two are not held at once
+    // (review 2026-10-29 CD-63).
+    let frame = frame_of(source, options, lines)?;
     let encoding = text_encoding(&mut Cursor::new(source))
         .map_err(EditedDxfError::Read)?
         .map(|(encoding, ..)| encoding);
     let drawing = Drawing::parse(source, encoding)?;
-    if read.lines != *lines {
+    let Some(frame) = frame else {
         // The file is blamed only when its entities are not those the lines were read
         // from (review 2026-10-29 CD-64).
         return Err(if drawing.has_entities_of(&lines.objects().objects) {
@@ -158,12 +147,67 @@ pub fn write_edited_dxf(
             DxfEditRefusal::NotTheSource
         }
         .into());
-    }
-    let frame = Frame {
+    };
+    drawing.write(lines, edits, &frame)
+}
+
+/// How `lines` lie against the units of `source`, when reading it gives them: as `options`
+/// read it, or for a drawing that declares no unit, in the unit its lines are scaled by
+/// against that read. At most two reads, not one in each unit (review 2026-10-29 CD-63).
+fn frame_of(
+    source: &[u8],
+    options: DxfImportOptions,
+    lines: &UnderlayLines,
+) -> Result<Option<Frame>, EditedDxfError> {
+    let read = read_dxf_underlay(source, options).map_err(EditedDxfError::Read)?;
+    let frame = |read: &super::underlay::DxfUnderlay| Frame {
         mm_per_unit: read.units.millimetres_per_unit(),
         offset_mm: read.offset_mm,
     };
-    drawing.write(lines, edits, &frame)
+    if read.lines == *lines {
+        return Ok(Some(frame(&read)));
+    }
+    if read.units.authority() != ImportUnitAuthority::UserDeclared {
+        return Ok(None);
+    }
+    let Some(unit) = unit_scaled_to(&read, lines) else {
+        return Ok(None);
+    };
+    drop(read);
+    let other = read_dxf_underlay(
+        source,
+        DxfImportOptions::new(Some(unit)).with_geo_origin(options.geo_origin_mm()),
+    )
+    .map_err(EditedDxfError::Read)?;
+    Ok((other.lines == *lines).then(|| frame(&other)))
+}
+
+/// The unit of [`UNITS`], other than the one `read` was read in, whose scale against it
+/// is nearest to that of `lines`, as the size of their bounds gives it: unlike where they
+/// lie, their size does not hang on what they were moved by.
+fn unit_scaled_to(
+    read: &super::underlay::DxfUnderlay,
+    lines: &UnderlayLines,
+) -> Option<ImportLengthUnit> {
+    let size = |lines: &UnderlayLines| {
+        lines
+            .bounds_mm()
+            .map(|[low, high]| (high[0] - low[0]).max(high[1] - low[1]))
+    };
+    let (found, wanted) = (size(&read.lines)?, size(lines)?);
+    let read_mm = read.units.millimetres_per_unit();
+    let mm_per_unit = wanted / found * read_mm;
+    if !(mm_per_unit.is_finite() && mm_per_unit > 0.0) {
+        return None;
+    }
+    UNITS
+        .into_iter()
+        .filter(|unit| unit.millimetres_per_unit() != read_mm)
+        .min_by(|a, b| {
+            let off =
+                |unit: &ImportLengthUnit| (unit.millimetres_per_unit() / mm_per_unit).ln().abs();
+            off(a).total_cmp(&off(b))
+        })
 }
 
 /// How the underlay's millimetres lie against the drawing's own units.
@@ -190,15 +234,30 @@ impl Frame {
     }
 }
 
-/// One group of the source: its code, and where its two lines lie.
+/// One group of the source: its code, and where its two lines lie. The places are kept in
+/// 32 bits, as a drawing holds millions of pairs (review 2026-10-29 CD-63).
 struct Pair {
     code: i32,
     /// The start of its code line.
-    start: usize,
+    start: u32,
     /// Its value line, without the line end.
-    value: Range<usize>,
+    value: [u32; 2],
     /// Past its value line's end.
-    end: usize,
+    end: u32,
+}
+
+impl Pair {
+    const fn start(&self) -> usize {
+        self.start as usize
+    }
+
+    const fn value(&self) -> Range<usize> {
+        self.value[0] as usize..self.value[1] as usize
+    }
+
+    const fn end(&self) -> usize {
+        self.end as usize
+    }
 }
 
 /// An entity of the ENTITIES section with the vertices or attributes that follow it: the
@@ -271,7 +330,7 @@ impl<'a> Drawing<'a> {
         } else {
             b"\n"
         };
-        let value = |pair: &Pair| source[pair.value.clone()].trim_ascii();
+        let value = |pair: &Pair| source[pair.value()].trim_ascii();
         let name = |pair: &Pair| String::from_utf8_lossy(value(pair)).to_ascii_uppercase();
         let decode = |bytes: &[u8]| {
             let text = encoding
@@ -426,7 +485,7 @@ impl<'a> Drawing<'a> {
         pairs: &[Pair],
         mut index: usize,
     ) -> Result<usize, EditedDxfError> {
-        let value = |pair: &Pair| self.source[pair.value.clone()].trim_ascii();
+        let value = |pair: &Pair| self.source[pair.value()].trim_ascii();
         let name = |pair: &Pair| String::from_utf8_lossy(value(pair)).to_ascii_uppercase();
         let mut current: Option<Entity> = None;
         while index < pairs.len() {
@@ -517,9 +576,9 @@ impl<'a> Drawing<'a> {
                     .records
                     .get(1)
                     .map_or(entity.pairs.end, |record| record.0);
-                let paper = self.pairs[entity.pairs.start..head].iter().any(|pair| {
-                    pair.code == 67 && self.source[pair.value.clone()].trim_ascii() == b"1"
-                });
+                let paper = self.pairs[entity.pairs.start..head]
+                    .iter()
+                    .any(|pair| pair.code == 67 && self.source[pair.value()].trim_ascii() == b"1");
                 !paper && ObjectKind::from_dxf(&entity.records[0].1).is_some()
             })
             .map(|(index, entity)| (index, entity.records[0].1.as_str()));
@@ -542,7 +601,7 @@ impl<'a> Drawing<'a> {
     }
 
     fn value(&self, index: usize) -> &[u8] {
-        self.source[self.pairs[index].value.clone()].trim_ascii()
+        self.source[self.pairs[index].value()].trim_ascii()
     }
 
     fn number(&self, index: usize) -> Result<f64, EditedDxfError> {
@@ -681,7 +740,7 @@ impl<'a> Drawing<'a> {
             let mut value = format!("{next:X}").into_bytes();
             value.extend_from_slice(self.eol);
             let pair = &self.pairs[index];
-            edits_at.push((pair.value.start..pair.end, value));
+            edits_at.push((pair.value().start..pair.end(), value));
         }
         let removed: BTreeSet<u64> = self
             .entities
@@ -696,24 +755,24 @@ impl<'a> Drawing<'a> {
         for (entity, replaced) in self.entities.iter().zip(replaced) {
             if let Some(replaced) = replaced {
                 let range =
-                    self.pairs[entity.pairs.start].start..self.pairs[entity.pairs.end - 1].end;
+                    self.pairs[entity.pairs.start].start()..self.pairs[entity.pairs.end - 1].end();
                 edits_at.push((range, replaced.unwrap_or_default()));
             }
         }
-        let end = self.pairs[self.entities_end].start;
+        let end = self.pairs[self.entities_end].start();
         edits_at.push((end..end, added));
         // A dimension's block is found only in the BLOCKS section, so when blocks were
         // added there is one.
         if let Some(index) = self.blocks_end
             && !blocks.blocks.is_empty()
         {
-            let at = self.pairs[index].start;
+            let at = self.pairs[index].start();
             edits_at.push((at..at, blocks.blocks));
         }
         if let Some((index, _)) = self.block_records
             && !blocks.records.is_empty()
         {
-            let at = self.pairs[index].start;
+            let at = self.pairs[index].start();
             edits_at.push((at..at, blocks.records));
         }
         edits_at.sort_by_key(|(range, _)| range.start);
@@ -770,7 +829,7 @@ impl<'a> Drawing<'a> {
         }
         let mut edits = Vec::new();
         for (record, dropped) in records.iter().zip(dropped) {
-            let bytes = self.pairs[record.start].start..self.pairs[record.end - 1].end;
+            let bytes = self.pairs[record.start].start()..self.pairs[record.end - 1].end();
             if dropped {
                 edits.push((bytes, Vec::new()));
                 continue;
@@ -800,7 +859,7 @@ impl<'a> Drawing<'a> {
                 for (index, skip) in record.clone().zip(skip) {
                     if !skip {
                         let pair = &self.pairs[index];
-                        kept.extend_from_slice(&self.source[pair.start..pair.end]);
+                        kept.extend_from_slice(&self.source[pair.start()..pair.end()]);
                     }
                 }
                 edits.push((bytes, kept));
@@ -1291,11 +1350,11 @@ impl<'a> Drawing<'a> {
             }
             match value {
                 Some(value) => {
-                    out.extend_from_slice(&self.source[pair.start..pair.value.start]);
+                    out.extend_from_slice(&self.source[pair.start()..pair.value().start]);
                     out.extend_from_slice(&value);
                     out.extend_from_slice(self.eol);
                 }
-                None => out.extend_from_slice(&self.source[pair.start..pair.end]),
+                None => out.extend_from_slice(&self.source[pair.start()..pair.end()]),
             }
         }
     }
@@ -1627,11 +1686,10 @@ fn number(value: f64) -> String {
     format!("{value}")
 }
 
-/// The group pairs of `source`, line by line.
+/// The group pairs of `source`, line by line, in one pass.
 fn pairs(source: &[u8]) -> Result<Vec<Pair>, EditedDxfError> {
-    let mut lines = Vec::new();
-    let mut start = 0;
-    while start < source.len() {
+    // A line from `start`: where it starts, where its content ends, and past its end.
+    let line = |start: usize| {
         let end = source[start..]
             .iter()
             .position(|byte| *byte == b'\n')
@@ -1641,35 +1699,32 @@ fn pairs(source: &[u8]) -> Result<Vec<Pair>, EditedDxfError> {
         } else {
             end
         };
-        lines.push((start, content_end, (end + 1).min(source.len())));
-        start = end + 1;
-    }
-    if lines.len() % 2 != 0 {
-        // A last empty line after the end of file is no pair.
-        if lines
-            .last()
-            .is_some_and(|(start, end, _)| source[*start..*end].trim_ascii().is_empty())
-        {
-            lines.pop();
-        } else {
+        (start, content_end, (end + 1).min(source.len()))
+    };
+    let place = |at: usize| u32::try_from(at).map_err(|_| DxfEditRefusal::Malformed);
+    let mut pairs = Vec::new();
+    let mut start = 0;
+    while start < source.len() {
+        let (code_start, code_end, next) = line(start);
+        if next >= source.len() {
+            // A last empty line after the end of file is no pair.
+            if source[code_start..code_end].trim_ascii().is_empty() {
+                break;
+            }
             return Err(DxfEditRefusal::Malformed.into());
         }
+        let (value_start, value_end, after) = line(next);
+        let code = std::str::from_utf8(source[code_start..code_end].trim_ascii())
+            .ok()
+            .and_then(|code| code.parse::<i32>().ok())
+            .ok_or(DxfEditRefusal::Malformed)?;
+        pairs.push(Pair {
+            code,
+            start: place(code_start)?,
+            value: [place(value_start)?, place(value_end)?],
+            end: place(after)?,
+        });
+        start = after;
     }
-    lines
-        .chunks_exact(2)
-        .map(|pair| {
-            let (code_start, code_end, _) = pair[0];
-            let (value_start, value_end, next) = pair[1];
-            let code = std::str::from_utf8(source[code_start..code_end].trim_ascii())
-                .ok()
-                .and_then(|code| code.parse::<i32>().ok())
-                .ok_or(DxfEditRefusal::Malformed)?;
-            Ok(Pair {
-                code,
-                start: code_start,
-                value: value_start..value_end,
-                end: next,
-            })
-        })
-        .collect()
+    Ok(pairs)
 }

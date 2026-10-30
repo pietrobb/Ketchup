@@ -88,6 +88,8 @@ fn write(input: &UnderlayWriteInput) -> Result<UnderlayWriteOutcome, UnderlayRef
     let (source, skipped) = if input.dwg {
         let drawing = ketchup_dwg::dwg_to_whole_dxf(&source, usize::MAX)
             .map_err(|error| UnderlayRefusal::Dwg(error.into()))?;
+        // The DWG is not held while its DXF is written (review 2026-10-29 CD-63).
+        drop(source);
         let skipped = drawing
             .skipped
             .into_iter()
