@@ -614,3 +614,77 @@ fn every_piece_of_a_panel_is_on_its_shop_drawing() {
             .any(|position| position.parts.len() > 4)
     );
 }
+
+/// Review 2026-10-29 PG-60: a 2 410 mm wall on 600 mm studs got OSB boards
+/// 1 200 + 1 200 + a 10 mm strip, a 4 850 mm wall a 50 mm one, and a wall
+/// higher than the board a horizontal joint with nothing behind it. The last
+/// joint is left out when one board covers the rest, no board is narrower
+/// than the layer's minimum, and a noggin backs every horizontal joint.
+#[test]
+fn sheet_layers_leave_no_strips_and_their_horizontal_joints_rest_on_noggins() {
+    for (length, height) in [(2410.0, 2500.0), (4850.0, 2500.0), (2510.0, 2650.0)] {
+        let model = eval(
+            &format!(
+                "buildup('wall', (0, 0, 0), (1, 0, 0), (0, 0, 1), {length}, height = {height},\n\
+                 layers = [{{'name': 'frame', 'thickness': 140, 'material': 'C24', 'spacing': 600}},\n\
+                           {{'name': 'osb', 'thickness': 15, 'material': 'OSB', 'sheet': (1250, 2500)}}])\n"
+            ),
+            &[],
+        );
+        let bounds = |prefix: &str| {
+            model
+                .parts
+                .iter()
+                .filter(|part| part.name.starts_with(prefix))
+                .map(|part| (part.name.clone(), part.world_bounds()))
+                .collect::<Vec<_>>()
+        };
+        let boards = bounds("wall/osb");
+        for (name, (min, max)) in &boards {
+            let (wide, high) = (max[0] - min[0], max[2] - min[2]);
+            assert!(
+                wide >= 200.0 - 1e-6 && high >= 200.0 - 1e-6,
+                "{length} x {height}: {name} is {wide} x {high}"
+            );
+            assert!(wide <= 1250.0 + 1e-6 && high <= 2500.0 + 1e-6, "{name}");
+        }
+        let columns = (length / 1250.0_f64).ceil() as usize;
+        let rows = (height / 2500.0_f64).ceil() as usize;
+        assert_eq!(
+            boards.len(),
+            columns * rows,
+            "{length} x {height}: {boards:?}"
+        );
+        let studs = bounds("wall/frame/stud");
+        let mut rails = boards
+            .iter()
+            .map(|(_, (min, _))| min[2])
+            .filter(|v| *v > 1.0)
+            .collect::<Vec<_>>();
+        rails.sort_by(f64::total_cmp);
+        rails.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+        assert_eq!(rails.len(), rows - 1, "{boards:?}");
+        let frame = bounds("wall/frame/");
+        for v in rails {
+            let mut sides = studs
+                .iter()
+                .map(|(_, (min, max))| (min[0], max[0]))
+                .collect::<Vec<_>>();
+            sides.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for pair in sides
+                .windows(2)
+                .filter(|pair| pair[1].0 - pair[0].1 >= 60.0)
+            {
+                let middle = (pair[0].1 + pair[1].0) / 2.0;
+                assert!(
+                    frame.iter().any(|(name, (min, max))| !name.contains("stud")
+                        && min[0] < middle
+                        && middle < max[0]
+                        && min[2] < v
+                        && v < max[2]),
+                    "{length} x {height}: nothing backs the joint at v = {v} at u = {middle}"
+                );
+            }
+        }
+    }
+}
