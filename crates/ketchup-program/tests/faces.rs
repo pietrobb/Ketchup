@@ -517,6 +517,30 @@ fn a_face_pulled_in_shrinks_the_bounds_and_the_reach() {
     assert_near(part(source, "b").at_mm, [0.0, 0.0, 712.0], "b on a");
 }
 
+/// WB-40 (review 2026-10-26): a through slot splits the top in two, and
+/// pulling in only its second half (`z+#2`) shrank the whole part to 712 mm,
+/// so the cutting list gave 712 for a part whose first half is 720 tall. A
+/// split face pulled in leaves the bounds; pushed out it grows them.
+#[test]
+fn half_of_a_split_face_pulled_in_keeps_the_bounds_of_the_other_half() {
+    let source = |distance: f64| {
+        format!(
+            "a = box(\"a\", (600, 400, 720))\n\
+             subtract(a, box(\"slot\", (20, 400, 100), at = (290, 0, 620)), name = \"slot\")\n\
+             push_pull(a, face = \"z+#2\", distance = {distance}, name = \"half\")\n\
+             box(\"b\", (100, 100, 18), at = (0, 0, part_info(a).max[2]))\n"
+        )
+    };
+    let pulled = source(-8.0);
+    let a = part(&pulled, "a");
+    assert_near(a.world_bounds().1, [600.0, 400.0, 720.0], "max");
+    let reached = a.reach([0.0, 0.0, 1.0]);
+    assert!((reached - 720.0).abs() < 1e-9, "{reached}");
+    assert_near(part(&pulled, "b").at_mm, [0.0, 0.0, 720.0], "b on a");
+    let pushed = part(&source(8.0), "a");
+    assert_near(pushed.world_bounds().1, [600.0, 400.0, 728.0], "pushed");
+}
+
 #[test]
 fn contact_finds_a_profile_face_mirrored_in_the_middle_of_the_program() {
     let source = "\

@@ -1197,7 +1197,7 @@ impl Part {
     /// face (a cut face, a side next to an arc) moved outward grows the body
     /// by its distance on every side, the last value; moved in, it leaves the
     /// bounds, which still hold the part. A face pulled in shrinks them
-    /// (review 2026-10-24 WB-28).
+    /// (review 2026-10-24 WB-28), a part of a split face (`z+#2`) does not.
     fn pulled_profile(
         &self,
         segments: &[ProgramProfileSegment],
@@ -1211,7 +1211,15 @@ impl Part {
         let mut grow = 0.0;
         for offset in self.face_offsets() {
             let d = offset.distance_mm;
-            let face = offset.face.split('#').next().unwrap_or_default();
+            let (face, split) = match offset.face.split_once('#') {
+                Some((face, _)) => (face, true),
+                None => (offset.face.as_str(), false),
+            };
+            // A part of a split face pulled in leaves the rest where it was, so
+            // the bounds do not shrink with it (review 2026-10-26 WB-40).
+            if split && d < 0.0 {
+                continue;
+            }
             match caps.iter().position(|cap| cap == face) {
                 Some(0) => span[0] -= d,
                 Some(_) => span[1] += d,
