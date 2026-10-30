@@ -699,7 +699,7 @@ fn send_exact_pair_batches(
     let next = AtomicUsize::new(0);
     let running = AtomicUsize::new(workers);
     let (ranges, senders, next, running) = (&ranges, &senders, &next, &running);
-    std::thread::scope(|scope| {
+    let retry = std::thread::scope(|scope| {
         for idle in own {
             scope.spawn(move || {
                 let claim = || {
@@ -750,15 +750,61 @@ fn send_exact_pair_batches(
                 }
             });
         }
-        for range_rx in receivers {
-            for result in range_rx {
-                if tx.send(result).is_err() {
-                    cancelled.store(true, Ordering::Release);
-                    return;
+        forward_ranges(ranges, receivers, tx, cancelled)
+    });
+    // Review 2026-10-26 EX-40: what a worker stopped at its share of the memory left is
+    // asked again of one worker with the whole budget, once the others have stopped.
+    for range in retry {
+        if cancelled.load(Ordering::Acquire) {
+            return;
+        }
+        send_serial_pair_batches(
+            path,
+            range,
+            graphs,
+            sources,
+            contact_tolerance_mm,
+            cancelled,
+            tx,
+        );
+    }
+}
+
+/// Forwards to `tx` the answers to `ranges`, each from its receiver, in range order, and
+/// returns the pairs a worker stopped at its memory share left unanswered, to ask again
+/// of one worker alone; with them every range no worker was left to take.
+fn forward_ranges<'a, T>(
+    ranges: &[&'a [T]],
+    receivers: Vec<mpsc::Receiver<ExactPairBatch>>,
+    tx: &mpsc::Sender<ExactPairBatch>,
+    cancelled: &AtomicBool,
+) -> Vec<&'a [T]> {
+    let mut left = Vec::new();
+    let mut out_of_memory = false;
+    for (range, range_rx) in ranges.iter().zip(receivers) {
+        let (mut answered, mut stopped) = (0, false);
+        for result in range_rx {
+            match result {
+                Err(ExactPairFailure::Batch {
+                    cause: WorkerError::MemoryLimit { .. },
+                }) => out_of_memory = true,
+                result => {
+                    match &result {
+                        Ok(entries) => answered += entries.len(),
+                        Err(_) => stopped = true,
+                    }
+                    if tx.send(result).is_err() {
+                        cancelled.store(true, Ordering::Release);
+                        return Vec::new();
+                    }
                 }
             }
         }
-    });
+        if !stopped && answered < range.len() {
+            left.push(&range[answered..]);
+        }
+    }
+    if out_of_memory { left } else { Vec::new() }
 }
 
 /// Asks one exact worker about `pairs` in batches the worker accepts and sends
@@ -2128,6 +2174,41 @@ box('beside', (100, 100, 18), at=(100, 300, 0))";
             let area = |p: Vec<ContactPatch>| p.iter().map(|p| p.area_mm2).sum::<f64>().round();
             assert_eq!(measured.map(|(p, gap)| (area(p), gap)), answer, "{a} / {b}");
         }
+    }
+
+    /// Review 2026-10-26 EX-40: a worker running beside others stopped at its share of
+    /// the memory failed the whole check, which one worker alone with the whole budget
+    /// passed. What it left, and the ranges no worker was left to take, are asked again;
+    /// the stop itself is not passed on.
+    #[test]
+    fn pairs_a_worker_left_at_its_memory_share_are_asked_again_alone() {
+        let ranges: [&[u8]; 3] = [&[0, 1, 2], &[3, 4], &[5]];
+        let answer = |pair: usize| Ok(vec![(pair, pair, Err(WorkerError::Cancelled))]);
+        let receivers = (0..ranges.len())
+            .map(|range| {
+                let (sender, receiver) = mpsc::channel();
+                match range {
+                    0 => {
+                        sender.send(answer(0)).unwrap();
+                        sender
+                            .send(Err(ExactPairFailure::Batch {
+                                cause: WorkerError::MemoryLimit { bytes: 1 << 30 },
+                            }))
+                            .unwrap();
+                    }
+                    1 => {} // Every worker had stopped before it.
+                    _ => sender.send(answer(5)).unwrap(),
+                }
+                receiver
+            })
+            .collect();
+        let (tx, rx) = mpsc::channel();
+        let retry = forward_ranges(&ranges, receivers, &tx, &AtomicBool::new(false));
+        assert_eq!(retry, [&[1u8, 2][..], &[3, 4][..]]);
+        drop(tx);
+        let forwarded = rx.iter().collect::<Vec<_>>();
+        assert_eq!(forwarded.len(), 2, "{forwarded:?}");
+        assert!(forwarded.iter().all(Result::is_ok), "{forwarded:?}");
     }
 
     /// Review 2026-10-24 EX-24: a check spread over idle workers took them one by one as

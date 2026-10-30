@@ -62,6 +62,14 @@ impl ExactWorkerClient {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // Review 2026-10-26 EX-40: a worker given a share of the budget runs beside
+        // others, so OCCT takes one thread in it instead of one per core in each; and
+        // on Linux glibc keeps two malloc arenas, not 64 MiB more per thread.
+        if memory_limit < exact_worker_memory_bytes() {
+            command.env("KETCHUP_EXACT_ONE_THREAD", "1");
+        }
+        #[cfg(target_os = "linux")]
+        command.env("MALLOC_ARENA_MAX", "2");
         let mut child = spawn_limited_worker_command(command, Some(memory_limit))
             .map_err(|error| WorkerError::Spawn(error.to_string()))?;
         let stderr_tail = Some(stderr_tail(child.stderr().take()));

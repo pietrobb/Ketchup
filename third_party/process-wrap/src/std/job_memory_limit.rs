@@ -6,8 +6,8 @@ use super::{CommandWrap, CommandWrapper};
 ///
 /// On Windows it only records the request, like [`KillOnDrop`](super::KillOnDrop): the
 /// `JobObject` wrapper creates its job with `JOB_OBJECT_LIMIT_PROCESS_MEMORY` and this many bytes
-/// as `ProcessMemoryLimit`. On Unix other than macOS the child sets its own `RLIMIT_AS` to this
-/// many bytes before it executes the program. Either way an allocation past the limit fails inside the child; the
+/// as `ProcessMemoryLimit`. On Linux the child sets its own `RLIMIT_DATA`, on other Unix but
+/// macOS its `RLIMIT_AS`, to this many bytes before it executes the program. Either way an allocation past the limit fails inside the child; the
 /// parent and the rest of the computer keep their memory.
 #[derive(Clone, Copy, Debug)]
 pub struct JobMemoryLimit(pub usize);
@@ -55,11 +55,18 @@ impl CommandWrapper for JobMemoryLimit {
 		use std::os::unix::process::CommandExt;
 
 		let bytes = rlim_t::try_from(self.0).unwrap_or(rlim_t::MAX);
+		// Linux (4.7 and later) counts in RLIMIT_DATA the private writable memory a process
+		// maps, not the address space it only reserves, as glibc does 64 MiB per thread for
+		// its malloc arenas; elsewhere RLIMIT_AS is the cap there is.
+		#[cfg(target_os = "linux")]
+		let resource = Resource::RLIMIT_DATA;
+		#[cfg(not(target_os = "linux"))]
+		let resource = Resource::RLIMIT_AS;
 		// SAFETY: setrlimit(2) is async-signal-safe, and the closure neither allocates nor
 		// takes a lock between fork and exec.
 		unsafe {
 			command.pre_exec(move || {
-				setrlimit(Resource::RLIMIT_AS, bytes, bytes).map_err(std::io::Error::from)
+				setrlimit(resource, bytes, bytes).map_err(std::io::Error::from)
 			});
 		}
 		Ok(())

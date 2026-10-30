@@ -910,7 +910,7 @@ fn limited_worker_command(mut command: Command, memory_limit: Option<usize>) -> 
         command.wrap(JobObject);
     }
     // Unix has no job object: the worker gets its own process group, so a kill
-    // reaches anything it started, and the memory limit is its own RLIMIT_AS.
+    // reaches anything it started, and the memory limit is its own RLIMIT_DATA on Linux.
     #[cfg(unix)]
     {
         command.wrap(ProcessGroup::leader());
