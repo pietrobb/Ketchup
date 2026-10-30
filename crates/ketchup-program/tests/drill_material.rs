@@ -88,6 +88,37 @@ groove(side, \"x-\", along = \"z\", width = 6, depth = 4, offset = 100)
     );
 }
 
+/// Review 2026-10-26 PG-43 (a regression of PG-23): an 8 mm hole 10 mm deep in
+/// the middle of a 200 x 200 through cut-out, or in a pocket deeper than the
+/// hole, meets no material, yet the line that found none was read as the
+/// material all the way, so no issue was raised.
+#[test]
+fn a_hole_drilled_into_an_opening_or_a_deeper_pocket_is_reported() {
+    let top = "top = box(\"top\", (600, 400, 18))\n";
+    let opening = eval(&format!(
+        "{top}cut(top, profile = [[200, 100], [400, 100], [400, 300], [200, 300]], through = True, name = \"sink\")
+hole(top, \"z+\", world = (300, 200, 18), diameter = 8, depth = 10)\n"
+    ));
+    assert!(
+        kinds(&opening).contains(&"hole_breaks_through"),
+        "{:?}",
+        kinds(&opening)
+    );
+    let pocket = |depth: f64| {
+        eval(&format!(
+            "{top}pocket(top, \"z+\", rect = (250, 150, 350, 250), depth = {depth})
+hole(top, \"z+\", world = (300, 200, 18), diameter = 8, depth = 10)\n"
+        ))
+    };
+    assert!(
+        kinds(&pocket(12.0)).contains(&"hole_breaks_through"),
+        "{:?}",
+        kinds(&pocket(12.0))
+    );
+    // A pocket 4 mm deep leaves the hole 6 mm of its depth in the material below.
+    assert_eq!(kinds(&pocket(4.0)), Vec::<&str>::new());
+}
+
 /// Dowels into the 18 mm leg of an L profile leave the rest behind them in
 /// the leg, not in the whole 100 mm the L reaches across.
 #[test]

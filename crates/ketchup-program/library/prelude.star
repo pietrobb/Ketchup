@@ -296,7 +296,8 @@ def _member_across(direction, length):
 #   reach(part, direction)  -> how far the part reaches along a world direction
 #   material_along(part, point, direction, radius=0)  -> mm of material from a point
 #     along a world direction, cuts and pockets taken out; with radius, the least
-#     on the axis and rim of a drill that wide; None if unknown
+#     on the axis and rim of a drill that wide; 0 where the line meets none (an
+#     opening); None if unknown
 #   distance(a, b)  -> struct(distance, overlap, touching, direction)
 #     direction points from a to b; overlap is how deep they intersect
 #   nearest(part, among=None)  -> struct(name, distance, overlap, touching,

@@ -559,7 +559,7 @@ fn holes(model: &ProgramModel, issues: &mut Vec<Issue>) {
             } else {
                 let limit = span.min(hole.depth_mm + THIN_WALL_MM + 1.0);
                 let rim = if off_face { 0.0 } else { radius };
-                part.material_along(local_entry, local_inward, rim, limit)
+                part.material_along(local_entry, local_inward, rim, hole.depth_mm, limit)
                     .unwrap_or(span)
             };
             if let Some((false, at, face)) = fit {
