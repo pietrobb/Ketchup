@@ -250,6 +250,193 @@ pub(super) fn region_holding(
         .min_by(|a, b| a.area_mm2.total_cmp(&b.area_mm2))
 }
 
+/// Review 2026-10-26 UO-41: the room that `found`, a region of [`closed_regions`] of the
+/// shown layers of `underlay`, stands for when no layers are named, and the layers of its
+/// walls (none when no drawn line bounds it). A stamp frame, a wardrobe or a basin drawn
+/// on layers of their own inside a room is no hole in it, and a point or a label inside one
+/// of them is in the room: the room is holed only where the layers of its walls close
+/// inside it.
+pub(super) fn walled(
+    snapshot: &Snapshot,
+    underlay: &Underlay,
+    lines: &UnderlayLines,
+    tolerance_mm: Option<f64>,
+    closing_segments_mm: &[[[f64; 2]; 2]],
+    found: Region,
+) -> Result<(Region, Vec<usize>), &'static str> {
+    let mut regions = closed_regions(
+        snapshot,
+        underlay,
+        lines,
+        None,
+        tolerance_mm,
+        closing_segments_mm,
+        false,
+    )?;
+    let Some(mut at) = regions.iter().position(|region| *region == found) else {
+        return Ok((found, Vec::new()));
+    };
+    let pieces = pieces(lines, &chosen_text_layers(snapshot, underlay), None);
+    let tolerance = tolerance_mm.unwrap_or(DEFAULT_JOIN_MM) / underlay.scale();
+    let edge = |ring: &[[f64; 2]]| ring_layers(ring, &pieces, tolerance);
+    let mut layers = edge(&regions[at].outline);
+    for _ in 0..regions.len() {
+        let outline = &regions[at].outline;
+        let Some(around) = regions.iter().position(|region| {
+            region
+                .holes
+                .iter()
+                .any(|hole| same_ring(hole, outline, tolerance))
+        }) else {
+            break;
+        };
+        let walls = edge(&regions[around].outline);
+        if walls.is_empty() || walls.iter().any(|layer| layers.contains(layer)) {
+            break;
+        }
+        at = around;
+        layers = walls;
+    }
+    let mut room = regions.swap_remove(at);
+    if !layers.is_empty() {
+        room.holes
+            .retain(|hole| edge(hole).iter().any(|layer| layers.contains(layer)));
+        room.area_mm2 = room
+            .holes
+            .iter()
+            .fold(ring_area(&room.outline), |area, hole| {
+                area - ring_area(hole)
+            });
+    }
+    Ok((room, layers))
+}
+
+/// The layers of the room ([`walled`]) at the document point `point` or labelled `label`
+/// among the shown layers, when there is one.
+pub(super) fn room_layers(
+    snapshot: &Snapshot,
+    underlay: &Underlay,
+    lines: &UnderlayLines,
+    point: Option<[f64; 2]>,
+    label: Option<&str>,
+    tolerance_mm: Option<f64>,
+    closing_segments_mm: &[[[f64; 2]; 2]],
+) -> Option<Vec<usize>> {
+    let found = match (point, label) {
+        (Some(point), None) if point.iter().all(|value| value.is_finite()) => {
+            let regions = closed_regions(
+                snapshot,
+                underlay,
+                lines,
+                None,
+                tolerance_mm,
+                closing_segments_mm,
+                false,
+            )
+            .ok()?;
+            region_holding(underlay, regions, point)?
+        }
+        (None, Some(label)) => region_labelled(
+            snapshot,
+            underlay,
+            lines,
+            None,
+            label,
+            tolerance_mm,
+            closing_segments_mm,
+        )
+        .ok()?,
+        _ => return None,
+    };
+    let (_, layers) = walled(
+        snapshot,
+        underlay,
+        lines,
+        tolerance_mm,
+        closing_segments_mm,
+        found,
+    )
+    .ok()?;
+    (!layers.is_empty()).then_some(layers)
+}
+
+/// The layers of `pieces` that run along an edge of `ring`, within `tolerance`.
+fn ring_layers(ring: &[[f64; 2]], pieces: &[Piece], tolerance: f64) -> Vec<usize> {
+    let mut layers = Vec::new();
+    for (index, start) in ring.iter().enumerate() {
+        let end = ring[(index + 1) % ring.len()];
+        let along = [end[0] - start[0], end[1] - start[1]];
+        let length = along[0].hypot(along[1]);
+        if length <= tolerance {
+            continue;
+        }
+        let unit = [along[0] / length, along[1] / length];
+        let low = [
+            start[0].min(end[0]) - tolerance,
+            start[1].min(end[1]) - tolerance,
+        ];
+        let high = [
+            start[0].max(end[0]) + tolerance,
+            start[1].max(end[1]) + tolerance,
+        ];
+        for piece in pieces {
+            let [a, b] = piece.ends;
+            if layers.contains(&piece.layer)
+                || a[0].max(b[0]) < low[0]
+                || a[0].min(b[0]) > high[0]
+                || a[1].max(b[1]) < low[1]
+                || a[1].min(b[1]) > high[1]
+            {
+                continue;
+            }
+            let offset = |p: [f64; 2]| [p[0] - start[0], p[1] - start[1]];
+            let across = |p: [f64; 2]| (offset(p)[0] * unit[1] - offset(p)[1] * unit[0]).abs();
+            let at = |p: [f64; 2]| offset(p)[0] * unit[0] + offset(p)[1] * unit[1];
+            let (from, to) = (at(a).min(at(b)), at(a).max(at(b)));
+            if across(a) <= tolerance
+                && across(b) <= tolerance
+                && to.min(length) - from.max(0.0) > tolerance
+            {
+                layers.push(piece.layer);
+            }
+        }
+    }
+    layers
+}
+
+/// Whether the rings `a` and `b` close round the same place: the same bounds and area,
+/// within `tolerance`.
+fn same_ring(a: &[[f64; 2]], b: &[[f64; 2]], tolerance: f64) -> bool {
+    let bounds = |ring: &[[f64; 2]]| {
+        ring.iter().fold(
+            [[f64::INFINITY; 2], [f64::NEG_INFINITY; 2]],
+            |[low, high], point| {
+                [
+                    [low[0].min(point[0]), low[1].min(point[1])],
+                    [high[0].max(point[0]), high[1].max(point[1])],
+                ]
+            },
+        )
+    };
+    let ([a_low, a_high], [b_low, b_high]) = (bounds(a), bounds(b));
+    let close = |x: f64, y: f64| (x - y).abs() <= tolerance;
+    let span = (a_high[0] - a_low[0]) + (a_high[1] - a_low[1]);
+    (0..2).all(|axis| close(a_low[axis], b_low[axis]) && close(a_high[axis], b_high[axis]))
+        && (ring_area(a) - ring_area(b)).abs() <= 2.0 * tolerance * span
+}
+
+/// The area a ring closes round, whichever way it turns.
+fn ring_area(ring: &[[f64; 2]]) -> f64 {
+    let twice = (0..ring.len())
+        .map(|index| {
+            let [x0, y0] = ring[index];
+            let [x1, y1] = ring[(index + 1) % ring.len()];
+            x0 * y1 - x1 * y0
+        })
+        .sum::<f64>();
+    twice.abs() / 2.0
+}
+
 /// The one region of the shown (or named) layers whose texts (on the shown layers)
 /// include `label`: a text equal to it, ignoring case and line breaks, or failing that
 /// one containing it. Several regions or none are an error naming what was found.

@@ -157,6 +157,8 @@ pub(crate) fn underlay_area_outline(
             else {
                 return Ok(None);
             };
+            let (region, _) =
+                super::underlay_regions::walled(&snapshot, underlay, &lines, None, &[], region)?;
             (region.outline, region.holes)
         }
         (None, Some(id)) => object_outline(&ObjectIndex::new(&lines), id)?,

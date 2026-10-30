@@ -60,10 +60,28 @@ impl Binding {
         else {
             return Err("invalid_params");
         };
-        let layers = super::underlay_regions::chosen_layers(snapshot, underlay, layers.as_deref())?
-            .into_iter()
-            .map(|i| underlay.layers[i].name.clone())
-            .collect();
+        // Review 2026-10-26 UO-41: with no layers named, those of the room's walls.
+        let walls = match (&layers, object_id, &block) {
+            (None, None, None) => app.cached_underlay_lines(underlay).and_then(|lines| {
+                super::underlay_regions::room_layers(
+                    snapshot,
+                    underlay,
+                    &lines,
+                    point,
+                    label.as_deref(),
+                    tolerance,
+                    &closures,
+                )
+            }),
+            _ => None,
+        };
+        let layers = match walls {
+            Some(walls) => walls,
+            None => super::underlay_regions::chosen_layers(snapshot, underlay, layers.as_deref())?,
+        }
+        .into_iter()
+        .map(|i| underlay.layers[i].name.clone())
+        .collect();
         let handle = if let Some(id) = object_id {
             let lines = app
                 .cached_underlay_lines(underlay)

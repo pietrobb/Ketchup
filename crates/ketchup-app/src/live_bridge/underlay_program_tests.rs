@@ -4,7 +4,7 @@
 //! placement of a block, each as one Undo step.
 
 use super::program_edit::{evaluate_exact, exact_volume};
-use super::underlay_objects::{DRAWING, ask, imported, walled_room};
+use super::underlay_objects::{DRAWING, ask, imported, outline, walled_room};
 use super::*;
 use ketchup_model::document::CanonicalCommand;
 
@@ -277,6 +277,69 @@ fn a_label_in_several_regions_is_refused_with_the_candidates() {
     );
     evaluate_exact(&mut app);
     assert!((exact_volume(&app, "ROOM") - 9_400.0 * 5_400.0 * 200.0).abs() < 1.0);
+}
+
+/// Review 2026-10-26 UO-41: in a room stand its name in a stamp frame, a wardrobe and a
+/// column. With the layers left to the shown ones the name still names the room, and a
+/// point in the room, on the stamp or in the wardrobe takes the room, in the program and in
+/// the window alike: only the column, drawn with the walls, is cut through the floor; the
+/// frame and the wardrobe, drawn on layers of their own, are not.
+#[test]
+fn what_stands_in_a_room_on_other_layers_than_its_walls_is_not_cut_through_its_floor() {
+    let rectangle =
+        |[x0, y0]: [f64; 2], [x1, y1]: [f64; 2]| [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    let drawing = walled_room().replace(
+        "0\nENDSEC\n0\nEOF\n",
+        &format!(
+            "{}{}{}0\nENDSEC\n0\nEOF\n",
+            outline("stamps", &rectangle([1_900.0, 1_850.0], [2_900.0, 2_250.0])),
+            outline(
+                "furniture",
+                &rectangle([5_000.0, 1_000.0], [6_000.0, 1_600.0])
+            ),
+            outline("walls", &rectangle([7_000.0, 3_000.0], [7_300.0, 3_300.0])),
+        ),
+    );
+    let (mut app, mut bridge, offset) = imported(&drawing);
+    let floor = (9_400.0 * 5_400.0 - 300.0 * 300.0) * 200.0;
+    let measure = "area 50.670 m², perimeter 29.600 m, 1 holes";
+    from_underlay(
+        &mut app,
+        &mut bridge,
+        json!({"name":"ROOM", "label":"Kitchen", "thickness_mm":200}),
+    );
+    let written = source(&app);
+    assert!(written.contains(measure), "{written}");
+    evaluate_exact(&mut app);
+    assert!((exact_volume(&app, "ROOM") - floor).abs() < 1.0);
+    let id = app.document.current().underlays().next().unwrap().id;
+    for (name, [x, y]) in [
+        ("IN_ROOM", [4_000.0, 4_000.0]),
+        ("ON_STAMP", [2_700.0, 2_200.0]),
+        ("IN_WARDROBE", [5_500.0, 1_300.0]),
+    ] {
+        let point = [x - offset[0], y - offset[1]];
+        from_underlay(
+            &mut app,
+            &mut bridge,
+            json!({"name": name, "point_mm": point}),
+        );
+        let written = source(&app);
+        let heading = written
+            .lines()
+            .find(|line| line.contains(&format!(" {name}:")))
+            .unwrap();
+        assert!(heading.contains(measure), "{heading}");
+        let (_, holes) = crate::live_bridge::underlay_program::underlay_area_outline(
+            &app,
+            id,
+            Some(point),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(holes.len(), 1, "{name}: the window cuts the column only");
+    }
 }
 
 #[test]
