@@ -20,6 +20,9 @@ pub(super) struct Binding {
     pub point: Option<[f64; 2]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// The layers `label` was read from, shown or not later (review 2026-10-26 UO-44).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_layers: Option<Vec<String>>,
     pub layers: Option<Vec<String>>,
     pub tolerance: Option<f64>,
     pub closures: Vec<[[f64; 2]; 2]>,
@@ -104,6 +107,9 @@ impl Binding {
             name,
             underlay_id: underlay.id.0,
             point: point.map(drawing_point),
+            text_layers: label
+                .is_some()
+                .then(|| super::underlay_regions::text_layer_names(snapshot, underlay)),
             label,
             layers: Some(layers),
             tolerance: Some(

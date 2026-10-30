@@ -345,6 +345,7 @@ pub(super) fn room_layers(
             underlay,
             lines,
             None,
+            None,
             label,
             tolerance_mm,
             closing_segments_mm,
@@ -444,11 +445,13 @@ fn ring_area(ring: &[[f64; 2]]) -> f64 {
 /// The one region of the shown (or named) layers whose texts (on the shown layers)
 /// include `label`: a text equal to it, ignoring case and line breaks, or failing that
 /// one containing it. Several regions or none are an error naming what was found.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn region_labelled(
     snapshot: &Snapshot,
     underlay: &Underlay,
     lines: &UnderlayLines,
     layers: Option<&[String]>,
+    text_layers: Option<&[String]>,
     label: &str,
     tolerance_mm: Option<f64>,
     closing_segments_mm: &[[[f64; 2]; 2]],
@@ -470,7 +473,22 @@ pub(super) fn region_labelled(
         closing_segments_mm,
         false,
     )?;
-    let (texts, _) = texts_in(lines, &chosen_text_layers(snapshot, underlay), &regions);
+    // Review 2026-10-26 UO-44: the layers a binding read its label from, shown or not.
+    let text_layers = match text_layers {
+        Some(names) => underlay
+            .layers
+            .iter()
+            .enumerate()
+            .filter(|(_, layer)| {
+                names
+                    .iter()
+                    .any(|name| layer.name.eq_ignore_ascii_case(name))
+            })
+            .map(|(index, _)| index)
+            .collect(),
+        None => chosen_text_layers(snapshot, underlay),
+    };
+    let (texts, _) = texts_in(lines, &text_layers, &regions);
     let holding = |matches: &dyn Fn(&str) -> bool| {
         (0..regions.len())
             .filter(|index| texts[*index].iter().any(|text| matches(&folded(text))))
@@ -744,6 +762,14 @@ pub(super) fn chosen_layers(
             .collect(),
         None => Ok(chosen_text_layers(snapshot, underlay)),
     }
+}
+
+/// The names of the layers shown, whose texts are what a region says.
+pub(super) fn text_layer_names(snapshot: &Snapshot, underlay: &Underlay) -> Vec<String> {
+    chosen_text_layers(snapshot, underlay)
+        .into_iter()
+        .map(|index| underlay.layers[index].name.clone())
+        .collect()
 }
 
 /// The layers shown: the texts on them are what a region says.

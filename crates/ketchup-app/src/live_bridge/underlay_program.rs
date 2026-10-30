@@ -259,6 +259,7 @@ pub(super) fn binding_data(
                             underlay,
                             &lines,
                             layers.as_deref(),
+                            binding.text_layers.as_deref(),
                             label,
                             tolerance_mm,
                             &closing_segments_mm,

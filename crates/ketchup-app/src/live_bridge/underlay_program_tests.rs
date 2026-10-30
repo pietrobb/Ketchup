@@ -1118,6 +1118,40 @@ fn a_drawing_edit_after_a_pull_names_the_area_it_changes_or_would_lose() {
     assert!((exact_volume(&app, "ROOM") - 4_000.0 * 4_000.0 * 200.0).abs() < 1.0);
 }
 
+/// A room taken by its label still follows the drawing after the layer of room names is
+/// hidden: the binding keeps the layers its label was read from (review 2026-10-26 UO-44).
+#[test]
+fn hiding_the_room_names_does_not_lose_a_labelled_room_when_its_drawing_moves() {
+    let (mut app, mut bridge, _) = imported(&walled_room());
+    from_underlay(
+        &mut app,
+        &mut bridge,
+        json!({"name":"ROOM", "label":"Kitchen", "layers":["walls"], "thickness_mm":200}),
+    );
+    evaluate_exact(&mut app);
+    let volume = exact_volume(&app, "ROOM");
+    let snapshot = app.document.current();
+    let underlay = snapshot.underlays().next().unwrap();
+    let id = underlay.id;
+    let rooms = underlay
+        .layers
+        .iter()
+        .find(|layer| layer.name == "rooms")
+        .unwrap()
+        .tag;
+    drop(snapshot);
+    assert!(app.set_tag_visibility(rooms, false));
+    app.fit_underlay(
+        id,
+        [[0.0, 0.0], [1000.0, 0.0]],
+        [[500.0, 0.0], [1500.0, 0.0]],
+        false,
+    )
+    .unwrap_or_else(|error| panic!("{error}: {:?}", take_error_details()));
+    evaluate_exact(&mut app);
+    assert!((exact_volume(&app, "ROOM") - volume).abs() < 1.0);
+}
+
 /// Removing an underlay a section follows is refused naming the section, saying the drawing
 /// it follows would be gone, and how to unlink it; once unlinked the underlay goes and the
 /// slab stays (review 2026-10-26 UO-43).
