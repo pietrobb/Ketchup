@@ -22,12 +22,21 @@ pub fn assert_every_test_file_is_registered(tests_dir: &Path, root_source: &str)
         .lines()
         .filter_map(|line| line.trim().strip_prefix("mod ")?.strip_suffix(';'))
         .collect();
+    // A file that needs a process of its own (its own allocator) is a `[[test]]` target.
+    let manifest = fs::read_to_string(tests_dir.join("../Cargo.toml")).expect("read Cargo.toml");
+    let own_targets: BTreeSet<&str> = manifest
+        .lines()
+        .filter_map(|line| {
+            let path = line.trim().strip_prefix("path = \"tests/")?;
+            path.strip_suffix(".rs\"")
+        })
+        .collect();
     let unregistered: Vec<String> = fs::read_dir(tests_dir)
         .expect("read the crate's tests directory")
         .map(|entry| entry.expect("read tests directory entry").path())
         .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
         .filter_map(|path| Some(path.file_stem()?.to_str()?.to_owned()))
-        .filter(|name| name != "integration" && !declared.contains(name.as_str()))
+        .filter(|name| !declared.contains(name.as_str()) && !own_targets.contains(name.as_str()))
         .collect();
     assert!(
         unregistered.is_empty(),
