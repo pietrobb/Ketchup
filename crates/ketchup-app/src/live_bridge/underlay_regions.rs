@@ -352,14 +352,54 @@ pub(super) fn closed_regions(
         .map(|piece| piece.ends)
         .collect::<Vec<_>>();
     add_closures(&mut segments, underlay, closing_segments_mm)?;
-    let tolerance = tolerance / underlay.scale();
-    if whole {
-        find_figures(&segments, tolerance)
-    } else {
-        find_regions(&segments, tolerance)
+    let search = Search {
+        segments,
+        tolerance: (tolerance / underlay.scale()).to_bits(),
+        whole,
+    };
+    let mut found = FOUND
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(at) = found.iter().position(|(earlier, _)| *earlier == search) {
+        let entry = found.remove(at);
+        let regions = entry.1.clone();
+        found.push(entry);
+        return Ok(regions);
     }
-    .map_err(|error| failed_because("invalid_params", error))
+    drop(found);
+    let tolerance = f64::from_bits(search.tolerance);
+    let regions = if whole {
+        find_figures(&search.segments, tolerance)
+    } else {
+        find_regions(&search.segments, tolerance)
+    }
+    .map_err(|error| failed_because("invalid_params", error))?;
+    let mut found = FOUND
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if found.len() == FOUND_KEPT {
+        found.remove(0);
+    }
+    found.push((search, regions.clone()));
+    Ok(regions)
 }
+
+/// What regions were found in: the pieces in the underlay's millimetres, the join
+/// tolerance there and whether figures were wanted.
+#[derive(PartialEq)]
+struct Search {
+    segments: Vec<[[f64; 2]; 2]>,
+    tolerance: u64,
+    whole: bool,
+}
+
+/// How many searches [`FOUND`] keeps.
+const FOUND_KEPT: usize = 4;
+
+/// The regions of the latest searches, the last used last: moving, turning or fitting an
+/// underlay found the same regions of the same lines again for every section that follows
+/// it (review 2026-10-26 UO-40).
+static FOUND: std::sync::Mutex<Vec<(Search, Vec<Region>)>> = std::sync::Mutex::new(Vec::new());
 
 fn add_closures(
     segments: &mut Vec<[[f64; 2]; 2]>,
