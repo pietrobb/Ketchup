@@ -609,6 +609,52 @@ fn a_side_of_the_cabinet_changes_alone() {
     );
 }
 
+/// Review 2026-10-26 WB-41: no board of the doweled cabinet could be renamed. The ids
+/// of its holes and joints name it in the middle ("dowel:carcass/left:1",
+/// "dowel:carcass/bottom+carcass/left"), which the check after a rename only read at
+/// the start; and the refusal said it "also renames "carcass/left" to nothing".
+#[test]
+fn a_doweled_board_is_renamed_with_the_holes_and_joints_named_after_it() {
+    let source = include_str!("../../../examples/programs/cabinet.star");
+    let before = model(&program(source));
+    let boards = before
+        .parts
+        .iter()
+        .map(|part| part.name.clone())
+        .filter(|name| name.starts_with("carcass/"))
+        .collect::<Vec<_>>();
+    assert!(boards.len() >= 4, "{boards:?}");
+    for board in boards {
+        let to = format!("{board}_renamed");
+        let renamed = rewrite_rule_program_parts(
+            &program(source),
+            &[(board.clone(), PartChange::Rename(to.clone()))],
+        )
+        .unwrap_or_else(|error| panic!("{board}: {error}"))
+        .unwrap();
+        let after = model(&renamed);
+        assert_eq!(
+            after.part(&to).map(Part::local_bounds),
+            before.part(&board).map(Part::local_bounds),
+            "{board}"
+        );
+    }
+
+    // A rename that changes something else says what, not that the part went nowhere.
+    let before = serde_json::json!({"parts": [
+        {"name": "a", "holes": ["dowel:b:1"]},
+        {"name": "b", "holes": ["dowel:a:1"], "size_mm": [5, 5, 5]},
+    ]});
+    let after = serde_json::json!({"parts": [
+        {"name": "abc", "holes": ["dowel:b:1"]},
+        {"name": "b", "holes": ["dowel:abc:1"], "size_mm": [15, 5, 5]},
+    ]});
+    assert_eq!(
+        rename_mismatch(&before, &after, "a", "abc", &[], ""),
+        Some("parts[\"b\"].size_mm[0] is 15 instead of 5".to_owned())
+    );
+}
+
 #[test]
 fn an_overridden_param_is_written_without_probe_noise() {
     let source = "W = param(\"width\", 100)\nbox(\"p\", (W * 3, 20, 10))\n";

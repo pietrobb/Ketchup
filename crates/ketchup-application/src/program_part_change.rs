@@ -452,22 +452,33 @@ impl Expected {
             },
             Self::Same(expected) => changed_parts(expected, after, None)
                 .unwrap_or_else(|| "what it declares besides parts changed".to_owned()),
-            Self::Renamed { to, .. } => {
+            Self::Renamed { from, to, was, .. } => {
                 if after.part(to).is_none() {
                     return format!("it makes no part {}", quote(to));
                 }
                 let (old, new) = (names(before), names(after));
-                let gone = old.difference(&new).cloned().collect::<Vec<_>>();
-                let added = new.difference(&old).filter(|name| *name != to);
-                match (
-                    gone.as_slice(),
-                    added.cloned().collect::<Vec<_>>().as_slice(),
-                ) {
-                    ([], []) => "its parts changed besides the name".to_owned(),
-                    (gone, added) => {
-                        format!("it also renames {} to {}", listed(gone), listed(added))
-                    }
+                let gone = old
+                    .difference(&new)
+                    .filter(|name| *name != from)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let added = new
+                    .difference(&old)
+                    .filter(|name| *name != to)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !gone.is_empty() && !added.is_empty() {
+                    return format!("it also renames {} to {}", listed(&gone), listed(&added));
                 }
+                // Review 2026-10-26 WB-41: the first value it makes otherwise.
+                let (expected, kept) = renamed_expected(before, after, from, to, was);
+                serde_json::to_value(after)
+                    .ok()
+                    .and_then(|after| rename_mismatch(&expected, &after, from, to, &kept, ""))
+                    .map_or_else(
+                        || "its parts changed besides the name".to_owned(),
+                        |mismatch| format!("{mismatch} besides the name"),
+                    )
             }
             Self::Mirrored { copy, bounds } => match after.part(copy) {
                 None => format!("it makes no part {}", quote(copy)),
@@ -513,25 +524,10 @@ impl Expected {
                 .is_some_and(|read| (read - value).abs() <= ACCUMULATED_ROUNDING),
             Self::Same(expected) => **expected == *after,
             Self::Renamed { from, to, was, .. } => {
-                // A part, tool or group whose name starts with the old one
-                // ("p 2", "a mirrored") keeps its name, unless the
-                // program makes it from the part's name and now names it
-                // after the new one.
-                let now = names(after);
-                let kept = names(before)
-                    .into_iter()
-                    .filter(|other| {
-                        derived_from(other, from).is_some_and(|rest| {
-                            !now.contains(&format!("{to}{rest}")) || now.contains(other)
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                let mut expected = before.clone();
-                expected.continuations.remove(from);
-                expected.continuations.insert(to.clone(), was.clone());
-                let expected = serde_json::to_value(expected).expect("models serialize");
-                serde_json::to_value(after)
-                    .is_ok_and(|after| only_renamed(&expected, &after, from, to, &kept))
+                let (expected, kept) = renamed_expected(before, after, from, to, was);
+                serde_json::to_value(after).is_ok_and(|after| {
+                    rename_mismatch(&expected, &after, from, to, &kept, "").is_none()
+                })
             }
             Self::Mirrored { copy, bounds } => {
                 let Some(made) = after.part(copy) else {
@@ -648,50 +644,116 @@ fn name_use(model: &ProgramModel, part: &str, name: &str) -> Option<String> {
     })
 }
 
-/// Whether `after` is `before` with the part name `from` read as `to` in some
-/// of the places that hold it, also where it starts a name the program derives
-/// from it ("a transform", "a/notch"), but not in the names `kept` or the names
-/// derived from them. A string that only reads the same, a text, a feature kind
-/// or a face, stays as it was (review 2026-10-24 WB-24).
-fn only_renamed(
+/// `before` as JSON with the continuation of the rename of `from` to `to`, and
+/// the names `kept`: a part, tool or group whose name starts with the old one
+/// ("p 2", "a mirrored") keeps its name, unless the program makes it from the
+/// part's name and now names it after the new one.
+fn renamed_expected(
+    before: &ProgramModel,
+    after: &ProgramModel,
+    from: &str,
+    to: &str,
+    was: &str,
+) -> (serde_json::Value, Vec<String>) {
+    let now = names(after);
+    let kept = names(before)
+        .into_iter()
+        .filter(|other| {
+            derived_from(other, from)
+                .is_some_and(|rest| !now.contains(&format!("{to}{rest}")) || now.contains(other))
+        })
+        .collect::<Vec<_>>();
+    let mut expected = before.clone();
+    expected.continuations.remove(from);
+    expected.continuations.insert(to.to_owned(), was.to_owned());
+    let expected = serde_json::to_value(expected).expect("models serialize");
+    (expected, kept)
+}
+
+/// `text` with every whole `from` in it read as `to`: at its start ("a/notch")
+/// or after a `:` or `+` of an id derived from it ("dowel:a:1", "dowel:b+a",
+/// review 2026-10-26 WB-41), followed by its end, a space, `/`, `:` or `+`;
+/// but not where one of the names `kept` stands. `None` when it holds none.
+fn renamed_text(text: &str, from: &str, to: &str, kept: &[String]) -> Option<String> {
+    let mut renamed = String::new();
+    let mut rest = 0;
+    for (at, _) in text.match_indices(from) {
+        let after = &text[at + from.len()..];
+        let whole = (at == 0 || text[..at].ends_with([':', '+']))
+            && (after.is_empty() || after.starts_with([' ', '/', ':', '+']))
+            && !kept
+                .iter()
+                .any(|kept| derived_from(&text[at..], kept).is_some());
+        if whole && at >= rest {
+            renamed.push_str(&text[rest..at]);
+            renamed.push_str(to);
+            rest = at + from.len();
+        }
+    }
+    (rest > 0).then(|| renamed + &text[rest..])
+}
+
+/// Where `after` is not `before` with the part name `from` read as `to` in
+/// some of the places that hold it, also within a name or id the program
+/// derives from it ([`renamed_text`]), but not in the names `kept` or the names
+/// derived from them: the first value it makes otherwise, at `path`. A string
+/// that only reads the same, a text, a feature kind or a face, stays as it was
+/// (review 2026-10-24 WB-24).
+fn rename_mismatch(
     before: &serde_json::Value,
     after: &serde_json::Value,
     from: &str,
     to: &str,
     kept: &[String],
-) -> bool {
+    path: &str,
+) -> Option<String> {
     use serde_json::Value;
-    let renamed = |text: &str| {
-        derived_from(text, from)
-            .filter(|_| !kept.iter().any(|kept| derived_from(text, kept).is_some()))
-            .map(|rest| format!("{to}{rest}"))
+    let renamed = |text: &str| renamed_text(text, from, to, kept);
+    let differs = || {
+        let at = if path.is_empty() { "the model" } else { path };
+        Some(format!("{at} is {after} instead of {before}"))
     };
     match (before, after) {
         (Value::String(old), Value::String(new)) => {
-            old == new || renamed(old).is_some_and(|renamed| renamed == *new)
+            if old == new || renamed(old).is_some_and(|renamed| renamed == *new) {
+                None
+            } else {
+                differs()
+            }
         }
-        (Value::Array(old), Value::Array(new)) => {
-            old.len() == new.len()
-                && (old.iter().zip(new)).all(|(old, new)| only_renamed(old, new, from, to, kept))
+        (Value::Array(old), Value::Array(new)) if old.len() == new.len() => old
+            .iter()
+            .zip(new)
+            .enumerate()
+            .find_map(|(index, (old, new))| {
+                let item = match old.get("name").and_then(Value::as_str) {
+                    Some(name) => format!("{path}[{}]", quote(name)),
+                    None => format!("{path}[{index}]"),
+                };
+                rename_mismatch(old, new, from, to, kept, &item)
+            }),
+        (Value::Object(old), Value::Object(new)) if old.len() == new.len() => {
+            old.iter().find_map(|(key, old)| {
+                let field = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                let Some(new) = new
+                    .get(key)
+                    .or_else(|| renamed(key).and_then(|renamed| new.get(&renamed)))
+                else {
+                    return Some(format!("{field} is gone"));
+                };
+                if NOT_PART_NAMES.contains(&key.as_str()) {
+                    (old != new).then(|| format!("{field} is {new} instead of {old}"))
+                } else {
+                    rename_mismatch(old, new, from, to, kept, &field)
+                }
+            })
         }
-        (Value::Object(old), Value::Object(new)) => {
-            old.len() == new.len()
-                && old.iter().all(|(key, old)| {
-                    let new = match new.get(key) {
-                        Some(new) => Some(new),
-                        None if key == from => new.get(to),
-                        None => None,
-                    };
-                    new.is_some_and(|new| {
-                        if NOT_PART_NAMES.contains(&key.as_str()) {
-                            old == new
-                        } else {
-                            only_renamed(old, new, from, to, kept)
-                        }
-                    })
-                })
-        }
-        _ => before == after,
+        _ if before == after => None,
+        _ => differs(),
     }
 }
 
