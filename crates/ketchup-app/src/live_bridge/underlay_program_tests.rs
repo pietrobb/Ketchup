@@ -342,6 +342,65 @@ fn what_stands_in_a_room_on_other_layers_than_its_walls_is_not_cut_through_its_f
     }
 }
 
+/// Review 2026-10-26 UO-42: an underlay imported before Kečup kept its objects cannot tell
+/// hatch and dimension lines from walls, so they may cut its regions; finding regions in it
+/// and taking a room from it say so and ask for the drawing to be imported again.
+#[test]
+fn regions_of_an_underlay_imported_before_its_objects_were_kept_warn_to_import_it_again() {
+    use ketchup_model::document::ProfileSegment;
+    use ketchup_model::underlay::UnderlayLinesBuilder;
+    let (mut app, mut bridge, _) = imported(&walled_room());
+    let snapshot = app.document.current();
+    let underlay = snapshot.underlays().next().unwrap();
+    let lines = app.cached_underlay_lines(underlay).unwrap();
+    assert!(!lines.objects().is_empty());
+    let mut builder = UnderlayLinesBuilder::default();
+    for (layer, drawn) in underlay.layers.iter().zip(lines.layers()) {
+        for polyline in drawn.polylines() {
+            let segments = polyline
+                .windows(2)
+                .map(|ends| ProfileSegment::Line {
+                    start_mm: ends[0],
+                    end_mm: ends[1],
+                })
+                .collect::<Vec<_>>();
+            builder.add(&layer.name, &segments);
+        }
+        for text in drawn.texts() {
+            builder.add_text(&layer.name, text.clone());
+        }
+    }
+    let (names, old) = builder.finish();
+    let present = underlay
+        .layers
+        .iter()
+        .zip(lines.layers())
+        .filter(|(_, drawn)| drawn.polylines().next().is_some() || !drawn.texts().is_empty())
+        .map(|(layer, _)| layer.name.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(names, present);
+    assert!(old.objects().is_empty());
+    let key = underlay.lines_key();
+    drop(snapshot);
+    app.render
+        .underlay_lines
+        .borrow_mut()
+        .insert(key, std::sync::Arc::new(old));
+    let mut regions = json!({});
+    regions["expected"] = serde_json::to_value(app.live_bridge_stamp()).unwrap();
+    let answer = bridge
+        .execute(&mut app, ask("underlay_regions", regions), false)
+        .unwrap();
+    let warnings = answer["warnings"].to_string();
+    assert!(warnings.contains("import it again"), "{answer}");
+    from_underlay(
+        &mut app,
+        &mut bridge,
+        json!({"name":"ROOM", "label":"Kitchen", "thickness_mm":200}),
+    );
+    assert!(source(&app).contains("import it again"), "{}", source(&app));
+}
+
 #[test]
 fn underlay_binding_without_handle_never_retargets_a_replaced_drawing() {
     use std::error::Error;

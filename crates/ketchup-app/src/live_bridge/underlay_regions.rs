@@ -109,7 +109,7 @@ impl LiveBridge {
             })
             .collect::<Vec<_>>();
         let next = offset + rows.len();
-        Ok(json!({
+        let mut answer = json!({
             "underlay_id": underlay.id.0,
             "layers": chosen.iter().map(|index| &underlay.layers[*index].name).collect::<Vec<_>>(),
             "pieces": segments.len(),
@@ -120,7 +120,11 @@ impl LiveBridge {
             "ambiguous_texts": ambiguous_texts,
             "interpretation": "Geometric regions, not classified rooms. Text association uses rendered letter centres; verify boundaries and layers before modeling.",
             "next_offset": (next < order.len()).then_some(next),
-        }))
+        });
+        if let Some(warning) = objectless_warning(&lines) {
+            answer["warnings"] = json!([warning]);
+        }
+        Ok(answer)
     }
 
     pub(super) fn underlay_parallel(
@@ -507,6 +511,18 @@ pub(super) fn region_labelled(
             ))
         }
     }
+}
+
+/// Review 2026-10-26 UO-42: what to say of the regions of `lines` imported before Kečup
+/// kept the objects of a drawing, when hatch and dimension lines cannot be left out.
+pub(super) fn objectless_warning(lines: &UnderlayLines) -> Option<&'static str> {
+    let drawn = lines
+        .layers()
+        .iter()
+        .any(|layer| layer.polylines().next().is_some());
+    (drawn && lines.objects().is_empty()).then_some(
+        "This underlay was imported before Kečup kept the objects of a drawing, so hatch and dimension lines are not left out and may split its regions; import it again.",
+    )
 }
 
 /// Lower case, every run of white space (line breaks included) one space.

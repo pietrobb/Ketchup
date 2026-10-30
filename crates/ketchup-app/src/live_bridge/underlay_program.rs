@@ -267,9 +267,11 @@ pub(super) fn binding_data(
                     )
                 }
             };
+            let warning = super::underlay_regions::objectless_warning(&lines)
+                .map_or_else(String::new, |warning| format!("; WARNING: {warning}"));
             (
                 format!(
-                    "the region {selected} of {}, {}; layers {layers:?}; closing_segments_mm {closing_segments_mm:?}",
+                    "the region {selected} of {}, {}; layers {layers:?}; closing_segments_mm {closing_segments_mm:?}{warning}",
                     underlay.name,
                     measured(underlay, &region.outline, &region.holes),
                 ),
