@@ -72,6 +72,7 @@ impl LiveBridge {
                 ..
             }
         );
+        let origin = ketchup_model::underlay::placement::geo_origin(&app.document.current());
         let cancel = CancelToken::default();
         let worker_cancel = cancel.clone();
         let (sender, receiver) = mpsc::sync_channel(1);
@@ -80,7 +81,12 @@ impl LiveBridge {
             .name("ketchup-dwg-import".into())
             .spawn(move || {
                 let read = if as_underlay {
-                    JobRead::Underlay(Box::new(read_underlay_file(&path, unit, &worker_cancel)))
+                    JobRead::Underlay(Box::new(read_underlay_file(
+                        &path,
+                        unit,
+                        origin,
+                        &worker_cancel,
+                    )))
                 } else {
                     JobRead::Dwg(read_dwg_file(&path, &worker_cancel))
                 };

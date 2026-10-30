@@ -182,7 +182,7 @@ pub fn read_dxf_underlay_from(
         )?;
     }
     let (layer_names, mut lines) = builder.finish();
-    let moved = lines.move_near_origin();
+    let moved = lines.move_near_origin(options.geo_origin_mm());
     let offset_mm = moved.offset_mm;
     for (code, outside) in [
         ("dxf.lines-outside-envelope", moved.segments_outside),

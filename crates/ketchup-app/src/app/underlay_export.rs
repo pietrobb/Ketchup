@@ -88,6 +88,8 @@ pub(crate) struct UnderlayExportJob {
     source: PathBuf,
     lines: Vec<u8>,
     edits: ketchup_model::underlay::edits::UnderlayEdits,
+    /// What its lines were moved by when read.
+    offset_mm: [f64; 2],
     output: PathBuf,
     replacing: Option<String>,
 }
@@ -136,6 +138,8 @@ impl UnderlayExportJob {
                 source: self.source,
                 // A drawing that declares no unit is matched against its lines in each.
                 unit_if_unitless: Some(ImportLengthUnit::Millimetre),
+                // Read again it moves as it moved then, also by the document's geo origin.
+                geo_origin_mm: (self.offset_mm != [0.0; 2]).then_some(self.offset_mm),
                 lines,
                 edits: self.edits,
                 output: written.clone(),
@@ -201,6 +205,7 @@ impl KetchupApp {
             source,
             lines,
             edits: underlay.edits.clone(),
+            offset_mm: underlay.offset_mm(),
             output: output.to_owned(),
             replacing: replacing.map(str::to_owned),
         })

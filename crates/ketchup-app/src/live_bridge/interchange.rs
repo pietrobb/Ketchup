@@ -97,6 +97,7 @@ impl LiveBridge {
             let read = crate::app::underlay::read_underlay_file(
                 Path::new(&path),
                 unit,
+                ketchup_model::underlay::placement::geo_origin(&app.document.current()),
                 &ketchup_program::CancelToken::default(),
             )
             .map_err(|error| import_failed(&path, error))?;

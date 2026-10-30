@@ -475,6 +475,76 @@ fn a_client_snaps_to_and_measures_an_underlay_line_in_its_drawing_coordinates() 
     assert_eq!(hidden["nearest"], Value::Null);
 }
 
+/// Review 2026-10-26 UL-41: a cadastral map and site plans at its edge, in one national grid
+/// (S-JTSK) 1.5 and 6 km from the map's middle, lie on each other: each plan's line is where
+/// the map's coordinates put it, not left at the plan's own middle.
+#[test]
+fn drawings_in_one_national_grid_kilometres_apart_lie_on_each_other() {
+    let directory = tempfile::tempdir().unwrap();
+    let drawing = |name: &str, x: f64| {
+        let path = directory.path().join(name);
+        let dxf = format!(
+            "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n6\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n\
+             0\nLINE\n8\nparcel\n10\n{x}\n20\n-1200000\n11\n{}\n21\n-1200000\n0\nENDSEC\n0\nEOF\n",
+            x + 10.0
+        );
+        std::fs::write(&path, dxf).unwrap();
+        path
+    };
+    let (mut app, mut bridge) = setup();
+    let map = bridge
+        .execute(
+            &mut app,
+            import_underlay(&drawing("map.dxf", -500_000.0)),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let map_offset: [f64; 2] =
+        serde_json::from_value(map["underlay"]["offset_mm"].clone()).unwrap();
+    for (name, x) in [("near.dxf", -501_500.0), ("far.dxf", -506_000.0)] {
+        let plan = bridge
+            .execute(&mut app, import_underlay(&drawing(name, x)), false)
+            .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+        // Written back, it is read again as it was read: by the map's offset.
+        let output = directory.path().join(format!("written-{name}"));
+        bridge
+            .execute(
+                &mut app,
+                super::underlay_objects::ask(
+                    "drawing_export",
+                    json!({"underlay_id": plan["underlay_id"], "path": output.display().to_string()}),
+                ),
+                false,
+            )
+            .unwrap_or_else(|code| panic!("{name}: {code}"));
+        // Where the map, placed as read, has the plan's start.
+        let start = [x * 1000.0 - map_offset[0], -1_200_000_000.0 - map_offset[1]];
+        let found = bridge
+            .execute(
+                &mut app,
+                Request::UnderlaySnap {
+                    expected: None,
+                    point_mm: [start[0] - 4.0, start[1] + 3.0],
+                    to_mm: None,
+                    radius_mm: None,
+                    underlay_id: None,
+                },
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            found["endpoint"]["point_mm"],
+            json!(start),
+            "{name}: {found}"
+        );
+        assert_eq!(
+            found["endpoint"]["drawing_mm"],
+            json!([x * 1000.0, -1_200_000_000.0]),
+            "{name}"
+        );
+    }
+}
+
 /// `file action=fit_underlay`: the 10 m parcel line of a drawing in S-JTSK metres, its ends
 /// picked where they are drawn, lands on a model edge turned a quarter; `underlay_snap`
 /// then finds its end there and still names the drawing's own coordinates. Scaled onto an

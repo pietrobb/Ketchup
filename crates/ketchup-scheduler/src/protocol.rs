@@ -343,6 +343,10 @@ pub struct UnderlayInput {
     pub dwg: bool,
     /// The length unit of a drawing that declares none.
     pub unit_if_unitless: Option<ImportLengthUnit>,
+    /// The document's geo origin, which the lines move by when they can
+    /// ([`ketchup_model::underlay::placement::geo_origin`]).
+    #[serde(default)]
+    pub geo_origin_mm: Option<[f64; 2]>,
     pub output: PathBuf,
 }
 
@@ -376,6 +380,10 @@ pub struct UnderlayWriteInput {
     pub source: PathBuf,
     pub dwg: bool,
     pub unit_if_unitless: Option<ImportLengthUnit>,
+    /// What the underlay's lines were moved by, given as the geo origin so the source reads
+    /// as they were read.
+    #[serde(default)]
+    pub geo_origin_mm: Option<[f64; 2]>,
     /// The underlay's encoded lines, its blob.
     pub lines: PathBuf,
     pub edits: ketchup_model::underlay::edits::UnderlayEdits,

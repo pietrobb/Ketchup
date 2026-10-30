@@ -12,7 +12,9 @@ use ketchup_application::program_isolation::{
     UnderlayInput, UnderlayRead, UnderlayReadError, UnderlayRefusal, UnderlayWorkerError,
     read_underlay,
 };
-use ketchup_model::underlay::placement::{UnderlayFit, UnderlayFitError, plan_underlay_fit};
+use ketchup_model::underlay::placement::{
+    UnderlayFit, UnderlayFitError, geo_origin, plan_underlay_fit,
+};
 use ketchup_model::underlay::snap::UnderlaySnapIndex;
 use ketchup_model::underlay::{
     LayerLines, Underlay, UnderlayId, UnderlayLines, UnderlayPlanError, plan_underlay,
@@ -107,10 +109,12 @@ impl ReadUnderlay {
 }
 
 /// Reads the drawing at `path` in the program worker; `unit` is the length unit of a
-/// drawing that declares none.
+/// drawing that declares none, `geo_origin_mm` the document's
+/// ([`ketchup_model::underlay::placement::geo_origin`]).
 pub(crate) fn read_underlay_file(
     path: &Path,
     unit: Option<ImportLengthUnit>,
+    geo_origin_mm: Option<[f64; 2]>,
     cancel: &CancelToken,
 ) -> Result<ReadUnderlay, ImportError> {
     let failed = |cause: BoxedCause| ImportError::failed(ImportFormat::Dxf, cause);
@@ -121,6 +125,7 @@ pub(crate) fn read_underlay_file(
             source: path.to_owned(),
             dwg: crate::app::dwg_import::is_dwg_path(path),
             unit_if_unitless: unit,
+            geo_origin_mm,
             output: output.clone(),
         },
         cancel,
@@ -205,8 +210,9 @@ impl KetchupApp {
     /// Reads `path` as an underlay: on a thread while a frame shows it, or here in a
     /// harness without one.
     pub(crate) fn start_underlay_read(&mut self, path: PathBuf, unit: Option<ImportLengthUnit>) {
+        let origin = geo_origin(&self.document.current());
         let Some(context) = self.file.activity.context.clone() else {
-            let result = read_underlay_file(&path, unit, &CancelToken::default());
+            let result = read_underlay_file(&path, unit, origin, &CancelToken::default());
             self.finish_underlay_read(path, unit, result);
             return;
         };
@@ -215,7 +221,12 @@ impl KetchupApp {
         let (thread_path, thread_cancel) = (path.clone(), cancel.clone());
         std::thread::spawn(move || {
             if sender
-                .send(read_underlay_file(&thread_path, unit, &thread_cancel))
+                .send(read_underlay_file(
+                    &thread_path,
+                    unit,
+                    origin,
+                    &thread_cancel,
+                ))
                 .is_ok()
             {
                 context.request_repaint();

@@ -392,7 +392,13 @@ impl UnderlayLines {
     /// Texts move with the lines, by their anchors, and count in the median too.
     /// Returns that offset, which added back gives the drawing's own coordinates, and what
     /// was left out because even moved it is more than [`UNDERLAY_EXTENT_MM`] away.
-    pub fn move_near_origin(&mut self) -> MovedNearOrigin {
+    ///
+    /// With `geo_origin_mm`, the offset of a drawing of the document in the same grid
+    /// ([`placement::geo_origin`]), the lines move by that instead when it leaves out no
+    /// more of them: drawings kilometres apart then share it and lie on each other, where
+    /// the difference of their medians would put one outside the model (review 2026-10-26
+    /// UL-41).
+    pub fn move_near_origin(&mut self, geo_origin_mm: Option<[f64; 2]>) -> MovedNearOrigin {
         let near = |point: &[f64; 2], extent: f64| point.iter().all(|value| value.abs() <= extent);
         let inside = |point: &[f64; 2]| near(point, UNDERLAY_EXTENT_MM);
         let points = LayerLines::points_and_anchors;
@@ -404,7 +410,7 @@ impl UnderlayLines {
         {
             return MovedNearOrigin::default();
         }
-        let offset_mm = [0, 1].map(|axis| {
+        let median = [0, 1].map(|axis| {
             let mut values = self
                 .layers
                 .iter()
@@ -415,6 +421,23 @@ impl UnderlayLines {
             // `+ 0.0` makes a -0.0 of a median just below zero 0.0.
             (*median / 1000.0).round() * 1000.0 + 0.0
         });
+        let outside = |offset: [f64; 2]| {
+            self.layers
+                .iter()
+                .flat_map(points)
+                .filter(|point| !inside(&[point[0] - offset[0], point[1] - offset[1]]))
+                .count()
+        };
+        let offset_mm = match geo_origin_mm {
+            Some(origin)
+                if origin != median
+                    && origin.iter().all(|value| value.is_finite())
+                    && outside(origin) <= outside(median) =>
+            {
+                origin
+            }
+            _ => median,
+        };
         let before = (self.segment_count(), self.text_count(), self.fill_count());
         let mut maps = Vec::with_capacity(self.layers.len());
         for layer in &mut self.layers {

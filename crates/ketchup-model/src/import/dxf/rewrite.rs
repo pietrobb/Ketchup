@@ -122,8 +122,11 @@ pub fn write_edited_dxf(
     let mut read = read_dxf_underlay(source, options).map_err(EditedDxfError::Read)?;
     if read.lines != *lines && read.units.authority() == ImportUnitAuthority::UserDeclared {
         for unit in UNITS {
-            let other = read_dxf_underlay(source, DxfImportOptions::new(Some(unit)))
-                .map_err(EditedDxfError::Read)?;
+            let other = read_dxf_underlay(
+                source,
+                DxfImportOptions::new(Some(unit)).with_geo_origin(options.geo_origin_mm()),
+            )
+            .map_err(EditedDxfError::Read)?;
             if other.lines == *lines {
                 read = other;
                 break;

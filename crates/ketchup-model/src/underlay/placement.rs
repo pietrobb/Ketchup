@@ -91,17 +91,29 @@ impl Underlay {
     }
 }
 
+fn first_moved(snapshot: &Snapshot) -> Option<&Underlay> {
+    snapshot
+        .underlays()
+        .filter(|underlay| underlay.offset_mm() != [0.0; 2])
+        .min_by_key(|underlay| underlay.id.0)
+}
+
+/// What the first underlay of `snapshot` moved from its drawing's coordinates was moved
+/// by: the offset a drawing read next moves by when it can
+/// ([`super::UnderlayLines::move_near_origin`]), so drawings of one national grid lie on
+/// each other however far apart they are (review 2026-10-26 UL-41).
+#[must_use]
+pub fn geo_origin(snapshot: &Snapshot) -> Option<[f64; 2]> {
+    first_moved(snapshot).map(Underlay::offset_mm)
+}
+
 /// Where an underlay moved by `offset_mm` from its drawing's own coordinates lies: by the
 /// first underlay of `snapshot` that was moved too, and by the difference of the two
 /// offsets from it, so that drawings in one national grid lie on each other wherever the
 /// median of each moved it. Identity for a drawing not moved, the first one moved, or one
 /// so far from the first that it would leave the model.
 pub(super) fn geo_placement(snapshot: &Snapshot, offset_mm: [f64; 2]) -> Transform {
-    let Some(first) = snapshot
-        .underlays()
-        .filter(|underlay| underlay.offset_mm() != [0.0; 2])
-        .min_by_key(|underlay| underlay.id.0)
-    else {
+    let Some(first) = first_moved(snapshot) else {
         return Transform::identity();
     };
     if offset_mm == [0.0; 2] {
