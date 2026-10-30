@@ -19,6 +19,8 @@ use crate::graph::SlotResolution;
 pub(crate) mod history_chunks;
 mod legacy;
 mod pipeline;
+#[cfg(feature = "saved-files")]
+mod saved_files;
 mod work_recovery;
 mod work_recovery_steps;
 
@@ -48,6 +50,14 @@ const CONTAINER_MAGIC: &[u8; 10] = b"KETCHUPCTR";
 /// file as newer instead of meeting an entry it does not know. 0.2.0 refuses either
 /// cleanly; 0.1.0 takes either for damage and opens the `.recovery` beside the file.
 const CONTAINER_SCHEMA: u16 = 1;
+/// A container with an entry over [`ENTRY_LIMIT_OF_0_2_0`], read as schema 1. Kečup
+/// 0.2.0 checks the size of every entry before the format of `document.bin`, takes one
+/// over its limit for damage and opens the `.recovery` beside the file, which its next
+/// Save writes over the newer file; the schema it checks first makes it refuse the file
+/// as newer (review 2026-10-29 proposal 5.4). Kečup 0.3.0 refuses it as newer too.
+const LARGE_CONTAINER_SCHEMA: u16 = 2;
+/// The largest entry Kečup 0.2.0 reads (`MAX_SNAPSHOT_BYTES`, `MAX_SIDECAR_BYTES`).
+const ENTRY_LIMIT_OF_0_2_0: usize = 32 * 1024 * 1024;
 /// Container entry holding the JSON of the program that owns the current revision.
 const PROGRAM_ENTRY: &str = "program.json";
 const HISTORY_MAGIC: &[u8; 10] = b"KETCHUPHST";
@@ -902,13 +912,16 @@ pub fn save_container(
     snapshot: &Snapshot,
     container_data: &ContainerData,
 ) -> Result<Vec<u8>, PersistenceError> {
-    save_container_entries(
+    let file = save_container_entries(
         &encoded_snapshot(snapshot),
         container_data,
         imported_source_blob_hashes(snapshot),
         None,
         None,
-    )
+    )?;
+    #[cfg(feature = "saved-files")]
+    saved_files::keep(&file);
+    Ok(file)
 }
 
 pub fn save_document_store(
@@ -917,13 +930,16 @@ pub fn save_document_store(
 ) -> Result<Vec<u8>, PersistenceError> {
     let snapshot = document.current();
     let document_bin = encoded_snapshot(&snapshot);
-    save_container_entries(
+    let file = save_container_entries(
         &document_bin,
         container_data,
         history_imported_sources(document),
         Some(encode_revision_history(document, &document_bin)?),
         encoded_program(document.current_rule_program())?,
-    )
+    )?;
+    #[cfg(feature = "saved-files")]
+    saved_files::keep(&file);
+    Ok(file)
 }
 
 /// The imported sources any revision of `document` names.
@@ -941,13 +957,16 @@ pub fn save_document_store_current_snapshot(
 ) -> Result<Vec<u8>, PersistenceError> {
     let snapshot = document.current();
     let document_bin = encoded_snapshot(&snapshot);
-    save_container_entries(
+    let file = save_container_entries(
         &document_bin,
         container_data,
         imported_source_blob_hashes(&snapshot),
         current_checkpoint_history(document, &document_bin)?,
         encoded_program(document.current_rule_program())?,
-    )
+    )?;
+    #[cfg(feature = "saved-files")]
+    saved_files::keep(&file);
+    Ok(file)
 }
 
 /// The current revision alone as `history.bin`, when it has a named checkpoint:
@@ -1077,9 +1096,19 @@ fn encode_container(
         return Err(PersistenceError::ResourceLimit);
     }
 
+    let large = entries
+        .values()
+        .any(|(_, bytes)| bytes.as_ref().len() > ENTRY_LIMIT_OF_0_2_0);
     let mut encoded = Vec::new();
     encoded.extend_from_slice(CONTAINER_MAGIC);
-    push_u16(&mut encoded, CONTAINER_SCHEMA);
+    push_u16(
+        &mut encoded,
+        if large {
+            LARGE_CONTAINER_SCHEMA
+        } else {
+            CONTAINER_SCHEMA
+        },
+    );
     push_u32(&mut encoded, u32_count(entries.len())?);
     for (path, (required, bytes)) in entries {
         let bytes = bytes.as_ref();
@@ -1694,7 +1723,7 @@ fn container_directory(bytes: &[u8]) -> Result<Vec<ContainerEntry<'_>>, Persiste
         return Err(PersistenceError::InvalidContainerMagic);
     }
     let schema = reader.u16()?;
-    if schema != CONTAINER_SCHEMA {
+    if schema != CONTAINER_SCHEMA && schema != LARGE_CONTAINER_SCHEMA {
         return Err(PersistenceError::UnsupportedContainerSchema(schema));
     }
     let entry_count = reader.count_with_limit(MAX_CONTAINER_ENTRIES)?;

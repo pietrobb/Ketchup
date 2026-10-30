@@ -9,10 +9,15 @@ its next Save overwrites the newer file. Two checks keep that from happening aga
    `ketchup-tolerance`) that 0.2.0 has may gain a variant only if a document using it
    is not written as 103 (`fits_format_103`); `REVIEWED` lists those checked. A new
    unlisted variant or a removed one fails.
-2. Reading. The test `files_for_kecup_0_2_0_are_in_the_format_their_document_needs`
-   writes its files, and a reader built from `ketchup-model` of the `v0.2.0` tag
-   (`release_0_2_0_reader.rs`) opens them: 103 must open, a newer format must be
-   refused as newer, and none may open its `.recovery`.
+2. Reading. Every file the tests save, not a list picked to stand for them: a check
+   relaxed since 0.2.0 changes no enum (review 2026-10-26 MD-41). With the feature
+   `ketchup-model/saved-files` and `KETCHUP_SAVED_FILES_DIR` set, Save also writes each
+   file there, and a reader built from `ketchup-model` of the `v0.2.0` tag
+   (`release_0_2_0_reader.rs`) opens them: 103 in container schema 1 within 64 MiB must
+   open, any other must be refused, and none may open its `.recovery` (a file with an
+   entry over 32 MiB is written as container schema 2 for that). `--files DIR` opens the files
+   a test run already saved in DIR (CI keeps them from its test step); without it the
+   tests of `ketchup-model` run here to save them.
 
 Needs the tag `v0.2.0` (`git fetch --depth=1 origin tag v0.2.0` in a shallow clone).
 The old crates and their build go to `<target>/release-0.2.0`; `--variants-only` skips
@@ -142,12 +147,20 @@ def old_workspace(target: Path) -> Path:
 
 
 def write_files(directory: Path) -> None:
-    env = dict(os.environ, KETCHUP_TEST_REPORT_DIR=str(directory))
-    test = "format_golden::files_for_kecup_0_2_0_are_in_the_format_their_document_needs"
+    env = dict(os.environ, KETCHUP_SAVED_FILES_DIR=str(directory))
     subprocess.run(
-        ["cargo", "test", "--locked", "-q", "-p", "ketchup-model", "--test", "integration", "--", "--exact", test],
+        ["cargo", "test", "--locked", "-q", "-p", "ketchup-model", "--features", "ketchup-model/saved-files"],
         cwd=ROOT, env=env, check=True,
     )
+
+
+def read_files(source: Path, files: Path) -> int:
+    env = {key: value for key, value in os.environ.items() if key != "CARGO_TARGET_DIR"}
+    result = subprocess.run(
+        ["cargo", "run", "-q", "-p", "release-0-2-0-reader", "--target-dir", str(source / "target"), "--", files],
+        cwd=source, env=env, check=False,
+    )
+    return result.returncode
 
 
 def main(arguments: list[str]) -> int:
@@ -161,14 +174,11 @@ def main(arguments: list[str]) -> int:
         return 0
     target = Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target")
     source = old_workspace(target)
+    if "--files" in arguments:
+        return read_files(source, Path(arguments[arguments.index("--files") + 1]).resolve())
     with tempfile.TemporaryDirectory(prefix="ketchup-release-0.2.0-") as files:
         write_files(Path(files))
-        env = {key: value for key, value in os.environ.items() if key != "CARGO_TARGET_DIR"}
-        result = subprocess.run(
-            ["cargo", "run", "-q", "-p", "release-0-2-0-reader", "--target-dir", str(source / "target"), "--", files],
-            cwd=source, env=env, check=False,
-        )
-    return result.returncode
+        return read_files(source, Path(files))
 
 
 if __name__ == "__main__":

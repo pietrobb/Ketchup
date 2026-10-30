@@ -138,3 +138,49 @@ fn a_document_over_32_mib_saves_and_opens() {
     let released = persistence::save_container(&large.current(), &container).unwrap();
     assert!(persistence::load(&released).is_ok());
 }
+
+/// The container schema of a saved file, and the digest of the document it opens at.
+fn opened(bytes: &[u8]) -> (u16, String) {
+    let persistence::LoadOutcome::Editable { document, .. } = persistence::load(bytes).unwrap()
+    else {
+        panic!("the file opens editable")
+    };
+    (
+        u16::from_le_bytes([bytes[10], bytes[11]]),
+        document.current().canonical_digest(),
+    )
+}
+
+/// Review 2026-10-29 proposal 5.4: Kečup 0.2.0 takes a file with an entry over 32 MiB
+/// for damaged, whatever format its document is in, opens its `.recovery` in its place
+/// and overwrites the newer file at its next Save. Such a file is written as container
+/// schema 2, which 0.2.0 checks first and refuses as newer, and opens here as before.
+#[test]
+fn a_file_kecup_0_2_0_would_take_for_damaged_is_refused_by_it_as_newer() {
+    let mut container = persistence::ContainerData::default();
+    let large = document_with_named_megabytes(34);
+    let digest = large.current().canonical_digest();
+    for saved in [
+        persistence::save_document_store(&large, &container).unwrap(),
+        persistence::save_document_store_current_snapshot(&large, &container).unwrap(),
+        persistence::save_container(&large.current(), &container).unwrap(),
+    ] {
+        assert_eq!(opened(&saved), (2, digest.clone()));
+    }
+
+    let small = document_with_named_megabytes(1);
+    let digest = small.current().canonical_digest();
+    let save = |container: &persistence::ContainerData| {
+        opened(&persistence::save_document_store(&small, container).unwrap())
+    };
+    assert_eq!(save(&container), (1, digest.clone()));
+    let mut one = container.clone();
+    one.insert_blob(vec![1; 32 * 1024 * 1024 + 1]).unwrap();
+    assert_eq!(save(&one), (2, digest.clone()));
+    // Entries within 32 MiB in a file over 64 MiB: 0.2.0 refuses the file by its size,
+    // before reading it, and keeps no `.recovery` in its place.
+    for byte in 2..=4 {
+        container.insert_blob(vec![byte; 22 * 1024 * 1024]).unwrap();
+    }
+    assert_eq!(save(&container), (1, digest));
+}

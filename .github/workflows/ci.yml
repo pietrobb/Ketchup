@@ -141,16 +141,21 @@ jobs:
         run: cargo fmt --all -- --check
       - name: clippy
         run: cargo clippy --locked $CRATES --all-targets -- -D warnings
+      # Every file the tests save also goes to KETCHUP_SAVED_FILES_DIR for the next step.
       - name: tests
-        run: cargo test --locked $CRATES --no-fail-fast
-      # Kečup 0.2.0 opens the format 103 files Save writes for it and refuses newer ones
+        env:
+          KETCHUP_SAVED_FILES_DIR: ${{ runner.temp }}/saved-files
+        run: |
+          mkdir -p "$KETCHUP_SAVED_FILES_DIR"
+          cargo test --locked $CRATES --features ketchup-model/saved-files --no-fail-fast
+      # Kečup 0.2.0 opens every format 103 file the tests saved and refuses the others
       # without opening their .recovery; the serde enums it knows gain only reviewed
       # variants (review 2026-10-29 proposal 5.4, MD-60).
       - name: Kečup 0.2.0 reads the files written for it
         if: runner.os == 'Linux'
         run: |
           git fetch --no-tags --depth=1 origin tag v0.2.0
-          python3 scripts/release_0_2_0_reads.py
+          python3 scripts/release_0_2_0_reads.py --files "$RUNNER_TEMP/saved-files"
       # Time budgets live only in ignored perf_* tests, checked in release
       # (review 2026-10-17 TST-3).
       - name: release timing budgets

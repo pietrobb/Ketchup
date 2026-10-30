@@ -246,12 +246,10 @@ fn a_dxf_import_in_a_unit_kecup_0_2_0_does_not_know_is_not_written_as_format_103
     }
 }
 
-/// The files of these tests as Save writes them now, for Kečup 0.2.0 to open (review
-/// 2026-10-29 proposal 5.4). Each is checked to be in the format its document needs; with
-/// `KETCHUP_TEST_REPORT_DIR` set they are written there as `release-0.2.0-<format>-<name>`,
-/// and `scripts/release_0_2_0_reads.py` opens them with the persistence of the `v0.2.0`
-/// tag: a format 103 file must open, a newer one must be refused as newer, and neither may
-/// open its `.recovery` in its place.
+/// The files of these tests as Save writes them now, each in the format its document
+/// needs (review 2026-10-29 proposal 5.4); with `KETCHUP_TEST_REPORT_DIR` set they are
+/// written there as `release-0.2.0-<format>-<name>`. `scripts/release_0_2_0_reads.py`
+/// opens these with the persistence of the `v0.2.0` tag among every file the tests save.
 #[test]
 fn files_for_kecup_0_2_0_are_in_the_format_their_document_needs() {
     let mut files = vec![(

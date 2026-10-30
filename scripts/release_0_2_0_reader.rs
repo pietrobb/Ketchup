@@ -3,9 +3,11 @@
 //! Built by `scripts/release_0_2_0_reads.py` against `ketchup-model` of the `v0.2.0` tag,
 //! not by the workspace. Each `release-0.2.0-<format>-<name>.ketchup` in the directory
 //! given gets an empty document as its `.recovery`, the way a file 0.2.0 saved over has
-//! one. A format 103 file must open editable; a newer one must be refused as newer. A file
-//! 0.2.0 takes for damaged opens its `.recovery` in its place, and the next Save of 0.2.0
-//! would overwrite the newer file with it: that fails the run.
+//! one. A format 103 file in container schema 1 within 64 MiB must open editable (or for
+//! review when it requires an extension, as in every version); any other must be refused,
+//! as newer or as larger than 0.2.0 opens. A file 0.2.0 takes for damaged opens its
+//! `.recovery` in its place, and the next Save of 0.2.0 would overwrite the newer file
+//! with it: that fails the run.
 use ketchup_model::document::DocumentStore;
 use ketchup_model::persistence::{
     self, ContainerData, FilePersistenceError, LoadNotice, PersistenceError,
@@ -34,7 +36,7 @@ fn main() -> ExitCode {
         recovery.push(".recovery");
         std::fs::write(&recovery, &backup).expect("write the .recovery");
         let name = path.file_name().unwrap().to_string_lossy();
-        match verdict(path, format_of(&name)) {
+        match verdict(path, format_of(&name) == 103 && fits(path)) {
             Ok(verdict) => println!("ok      {name}: {verdict}"),
             Err(error) => {
                 failed += 1;
@@ -58,7 +60,15 @@ fn format_of(name: &str) -> u16 {
         .unwrap_or_else(|| panic!("{name} does not name its format"))
 }
 
-fn verdict(path: &Path, format: u16) -> Result<&'static str, String> {
+/// Whether 0.2.0 reads the file `path` as it reads one it wrote: container schema 1,
+/// within its file size.
+fn fits(path: &Path) -> bool {
+    let bytes = std::fs::read(path).expect("read a file to open");
+    bytes.get(10..12) == Some(&1u16.to_le_bytes()[..])
+        && bytes.len() <= persistence::MAX_NATIVE_DOCUMENT_BYTES
+}
+
+fn verdict(path: &Path, opens: bool) -> Result<&'static str, String> {
     match persistence::load_file(path) {
         Ok(outcome) => {
             if outcome
@@ -67,11 +77,29 @@ fn verdict(path: &Path, format: u16) -> Result<&'static str, String> {
                 .iter()
                 .any(|notice| matches!(notice, LoadNotice::OpenedBackup { .. }))
             {
-                Err("took the file for damaged and opened its .recovery in its place".to_owned())
-            } else if format != 103 {
-                Err(format!("opened a format {format} file"))
+                let why = std::fs::read(path)
+                    .map_err(|error| error.to_string())
+                    .and_then(|bytes| persistence::load(&bytes).map_err(|error| error.to_string()))
+                    .err()
+                    .unwrap_or_default();
+                Err(format!(
+                    "took the file for damaged ({why}) and opened its .recovery in its place"
+                ))
+            } else if !opens {
+                Err("opened a file it should refuse".to_owned())
+            } else if !outcome.is_editable()
+                && outcome.container_data().requires_unknown_extension()
+                && outcome.audit().migration_losses.is_empty()
+            {
+                // Every version opens a file another program marked as needing what it
+                // added for review only.
+                Ok("opened for review: it requires an extension")
             } else if !outcome.is_editable() {
-                Err("opened for migration review only".to_owned())
+                let audit = outcome.audit();
+                Err(format!(
+                    "opened for migration review only: losses {:?}, overrides {:?}",
+                    audit.migration_losses, audit.override_health
+                ))
             } else {
                 Ok("opened")
             }
@@ -82,7 +110,15 @@ fn verdict(path: &Path, format: u16) -> Result<&'static str, String> {
             | PersistenceError::UnsupportedContainerEntry(_)
             | PersistenceError::UnsupportedHistorySchema(_)
             | PersistenceError::UnknownFields(_),
-        )) if format > 103 => Ok("refused as newer"),
+        )) if !opens => Ok("refused as newer"),
+        Err(FilePersistenceError::Format(PersistenceError::ResourceLimit))
+            if !opens
+                && std::fs::metadata(path).is_ok_and(|file| {
+                    file.len() > persistence::MAX_NATIVE_DOCUMENT_BYTES as u64
+                }) =>
+        {
+            Ok("refused as larger than it opens")
+        }
         Err(error) => Err(error.to_string()),
     }
 }
