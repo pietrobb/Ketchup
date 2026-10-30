@@ -159,7 +159,7 @@ fn array_insert_copies_keep_distinct_affine_children_and_geometry() {
         "0\nENDSEC\n0\nEOF\n"
     );
     let drawing = read_dxf_underlay(source.as_bytes(), DxfImportOptions::new(None)).unwrap();
-    let lines = UnderlayLines::decode(&drawing.lines.encode()).unwrap();
+    let lines = UnderlayLines::decode(&drawing.lines.encode(), usize::MAX).unwrap();
     let roots: Vec<_> = lines
         .objects()
         .objects
@@ -285,6 +285,6 @@ fn every_point_drawn_belongs_to_an_object_and_objects_survive_the_blob() {
         .map(|object| object.handle)
         .collect::<Vec<_>>();
     assert_eq!(top, [0x1F, 0x2A, 0x3B, 0x4C]);
-    let decoded = UnderlayLines::decode(&lines.encode()).unwrap();
+    let decoded = UnderlayLines::decode(&lines.encode(), usize::MAX).unwrap();
     assert_eq!(&decoded, lines);
 }

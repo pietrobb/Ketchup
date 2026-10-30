@@ -388,11 +388,11 @@ fn texts_travel_with_the_lines_and_are_no_snap_points() {
     );
     let underlay = read("", entities);
     let bytes = underlay.lines.encode();
-    let decoded = UnderlayLines::decode(&bytes).unwrap();
+    let decoded = UnderlayLines::decode(&bytes, usize::MAX).unwrap();
     assert_eq!(decoded, underlay.lines);
     assert_eq!(decoded.text_count(), 2);
     assert!(bytes.starts_with(b"KUNDRLY6"));
-    assert!(UnderlayLines::decode(&bytes[..bytes.len() - 1]).is_err());
+    assert!(UnderlayLines::decode(&bytes[..bytes.len() - 1], usize::MAX).is_err());
 
     // Snapping meets the wall, never a text: nothing near either text's anchor or
     // letters, on a layer of lines or one of texts alone.

@@ -74,6 +74,7 @@ fn an_underlay_gives_no_snap_until_its_snap_index_is_built() {
             .blobs()
             .get(&underlay.lines_blob())
             .unwrap(),
+        underlay.layers.len(),
     )
     .unwrap();
     let (sender, receiver) = std::sync::mpsc::channel();

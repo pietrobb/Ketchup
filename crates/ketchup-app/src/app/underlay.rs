@@ -132,7 +132,8 @@ pub(crate) fn read_underlay_file(
     )
     .map_err(|error| failed(error.into()))?;
     let bytes = std::fs::read(&output).map_err(|error| failed(error.into()))?;
-    let lines = UnderlayLines::decode(&bytes).map_err(|error| failed(error.into()))?;
+    let lines =
+        UnderlayLines::decode(&bytes, read.layers.len()).map_err(|error| failed(error.into()))?;
     let snaps = Arc::new(UnderlaySnapIndex::new(&lines));
     let geometry = Arc::new(UnderlayGeometry::new(sha256_bytes(&bytes), &lines));
     Ok(ReadUnderlay {

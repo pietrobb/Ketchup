@@ -686,13 +686,16 @@ fn every_entity_kind_in_s_jtsk_metres_reaches_the_move_instead_of_being_refused(
 fn lines_decode_as_they_were_encoded_and_damaged_bytes_are_refused() {
     let underlay = read(&line("0", [0.0, 0.0], [10.0, 0.0]));
     let bytes = underlay.lines.encode();
-    assert_eq!(UnderlayLines::decode(&bytes).unwrap(), underlay.lines);
     assert_eq!(
-        UnderlayLines::decode(&bytes[..bytes.len() - 1]),
+        UnderlayLines::decode(&bytes, usize::MAX).unwrap(),
+        underlay.lines
+    );
+    assert_eq!(
+        UnderlayLines::decode(&bytes[..bytes.len() - 1], usize::MAX),
         Err(UnderlayLinesError::Truncated)
     );
     assert_eq!(
-        UnderlayLines::decode(b"not lines"),
+        UnderlayLines::decode(b"not lines", usize::MAX),
         Err(UnderlayLinesError::NotUnderlayLines)
     );
 }
@@ -710,7 +713,7 @@ fn a_blob_that_would_inflate_a_thousandfold_is_refused_before_inflating() {
     bomb.extend_from_slice(&u64::try_from(zeros.len()).unwrap().to_le_bytes());
     bomb.extend_from_slice(&deflated);
     assert!(matches!(
-        UnderlayLines::decode(&bomb),
+        UnderlayLines::decode(&bomb, usize::MAX),
         Err(UnderlayLinesError::Inflated { length, .. }) if length == zeros.len()
     ));
 
@@ -719,7 +722,47 @@ fn a_blob_that_would_inflate_a_thousandfold_is_refused_before_inflating() {
         entities.push_str(&line("walls", [0.0, 0.0], [1000.0, 0.0]));
     }
     let lines = read(&entities).lines;
-    assert_eq!(UnderlayLines::decode(&lines.encode()).unwrap(), lines);
+    assert_eq!(
+        UnderlayLines::decode(&lines.encode(), usize::MAX).unwrap(),
+        lines
+    );
+}
+
+/// Review 2026-10-26 MD-42: bytes after the deflated lines made a few hundred kB of
+/// deflate pass for MBs, so the blob could declare 128 times as much. They are refused.
+#[test]
+fn bytes_after_the_deflated_lines_are_refused() {
+    let lines = read(&line("walls", [0.0, 0.0], [1000.0, 0.0])).lines;
+    let mut padded = lines.encode();
+    padded.extend_from_slice(&[0; 1024]);
+    assert_eq!(
+        UnderlayLines::decode(&padded, usize::MAX),
+        Err(UnderlayLinesError::TrailingBytes)
+    );
+}
+
+/// Review 2026-10-26 MD-42: an empty layer takes 16 bytes in the blob and some 120
+/// decoded, so 256 MiB of them took 2.2 GB on the window's thread at the first draw. A
+/// blob holding more layers than its underlay names is refused before they are read.
+#[test]
+fn a_blob_with_more_layers_than_its_underlay_names_is_refused_before_reading_them() {
+    // Uncompressed (KUNDRLY3): no styles, then 1,000 layers of no polylines, points or
+    // texts.
+    let mut blob = b"KUNDRLY3".to_vec();
+    blob.extend_from_slice(&0_u32.to_le_bytes());
+    blob.extend_from_slice(&1_000_u32.to_le_bytes());
+    blob.extend_from_slice(&[0; 12 * 1_000]);
+    assert_eq!(
+        UnderlayLines::decode(&blob, 1),
+        Err(UnderlayLinesError::LayerCount {
+            blob: 1_000,
+            underlay: 1,
+        })
+    );
+    assert_eq!(
+        UnderlayLines::decode(&blob, 1_000).unwrap().layers().len(),
+        1_000
+    );
 }
 
 /// Capability review of #2604: a blob within the inflation ratio but declaring more than
@@ -734,7 +777,7 @@ fn a_blob_declaring_more_than_an_underlay_may_hold_is_refused_before_inflating()
     bomb.extend_from_slice(&u64::try_from(length).unwrap().to_le_bytes());
     bomb.extend_from_slice(&deflated);
     assert_eq!(
-        UnderlayLines::decode(&bomb),
+        UnderlayLines::decode(&bomb, usize::MAX),
         Err(UnderlayLinesError::TooLarge { length })
     );
 
@@ -767,10 +810,13 @@ fn lines_are_kept_compressed_and_blobs_saved_before_still_read() {
         "{} bytes for {points} points",
         bytes.len()
     );
-    assert_eq!(UnderlayLines::decode(&bytes).unwrap(), underlay.lines);
+    assert_eq!(
+        UnderlayLines::decode(&bytes, usize::MAX).unwrap(),
+        underlay.lines
+    );
     let mut lying = bytes.clone();
     lying[8] ^= 1;
-    assert!(UnderlayLines::decode(&lying).is_err());
+    assert!(UnderlayLines::decode(&lying, usize::MAX).is_err());
 
     // One wall line 1 m long as KUNDRLY3 wrote it: its two styles, then the layer.
     const SAVED_3: [u8; 88] = [
@@ -782,7 +828,7 @@ fn lines_are_kept_compressed_and_blobs_saved_before_still_read() {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ];
     let wall = read(&line("walls", [0.0, 0.0], [1000.0, 0.0])).lines;
-    let saved = UnderlayLines::decode(&SAVED_3).unwrap();
+    let saved = UnderlayLines::decode(&SAVED_3, usize::MAX).unwrap();
     assert_eq!(
         (saved.layers(), saved.styles()),
         (wall.layers(), wall.styles())
@@ -796,7 +842,7 @@ fn lines_are_kept_compressed_and_blobs_saved_before_still_read() {
     for value in [0.0_f64, 0.0, 1000.0, 0.0] {
         saved_1.extend_from_slice(&value.to_le_bytes());
     }
-    let old = UnderlayLines::decode(&saved_1).unwrap();
+    let old = UnderlayLines::decode(&saved_1, usize::MAX).unwrap();
     assert_eq!(
         old.layers()[0].polylines().collect::<Vec<_>>(),
         wall.layers()[0].polylines().collect::<Vec<_>>()

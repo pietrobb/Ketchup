@@ -87,6 +87,8 @@ type UnderlayExportResult = Result<UnderlayWritten, UnderlayExportError>;
 pub(crate) struct UnderlayExportJob {
     source: PathBuf,
     lines: Vec<u8>,
+    /// How many layers the underlay names.
+    layers: usize,
     edits: ketchup_model::underlay::edits::UnderlayEdits,
     /// What its lines were moved by when read.
     offset_mm: [f64; 2],
@@ -141,6 +143,7 @@ impl UnderlayExportJob {
                 // Read again it moves as it moved then, also by the document's geo origin.
                 geo_origin_mm: (self.offset_mm != [0.0; 2]).then_some(self.offset_mm),
                 lines,
+                layers: self.layers,
                 edits: self.edits,
                 output: written.clone(),
             },
@@ -204,6 +207,7 @@ impl KetchupApp {
         Ok(UnderlayExportJob {
             source,
             lines,
+            layers: underlay.layers.len(),
             edits: underlay.edits.clone(),
             offset_mm: underlay.offset_mm(),
             output: output.to_owned(),

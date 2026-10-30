@@ -188,7 +188,7 @@ fn a_dwg_drawing_written_back_keeps_its_styles_extended_data_and_objects() {
     std::fs::write(&source, ketchup_dwg::testing::styled_drawing_dwg()).unwrap();
     let lines = directory.path().join("lines.bin");
     let mut worker = worker();
-    worker
+    let layers = worker
         .read_underlay(
             UnderlayInput {
                 source: source.clone(),
@@ -199,7 +199,9 @@ fn a_dwg_drawing_written_back_keeps_its_styles_extended_data_and_objects() {
             },
             &CancelToken::default(),
         )
-        .unwrap();
+        .unwrap()
+        .layers
+        .len();
     let mut write = |output: &std::path::Path| {
         worker
             .write_underlay(
@@ -209,6 +211,7 @@ fn a_dwg_drawing_written_back_keeps_its_styles_extended_data_and_objects() {
                     unit_if_unitless: Some(ImportLengthUnit::Millimetre),
                     geo_origin_mm: None,
                     lines: lines.clone(),
+                    layers,
                     edits: ketchup_model::underlay::edits::UnderlayEdits::default(),
                     output: output.to_owned(),
                 },
@@ -241,7 +244,7 @@ fn a_line_deleted_from_a_dwg_group_leaves_the_group_and_no_dangling_reference() 
     std::fs::write(&source, ketchup_dwg::testing::styled_drawing_dwg()).unwrap();
     let lines = directory.path().join("lines.bin");
     let mut worker = worker();
-    worker
+    let layers = worker
         .read_underlay(
             UnderlayInput {
                 source: source.clone(),
@@ -252,7 +255,9 @@ fn a_line_deleted_from_a_dwg_group_leaves_the_group_and_no_dangling_reference() 
             },
             &CancelToken::default(),
         )
-        .unwrap();
+        .unwrap()
+        .layers
+        .len();
     let mut edits = ketchup_model::underlay::edits::UnderlayEdits::default();
     edits.removed_objects.insert(0);
     let mut write = |output: &std::path::Path| {
@@ -264,6 +269,7 @@ fn a_line_deleted_from_a_dwg_group_leaves_the_group_and_no_dangling_reference() 
                     unit_if_unitless: Some(ImportLengthUnit::Millimetre),
                     geo_origin_mm: None,
                     lines: lines.clone(),
+                    layers,
                     edits: edits.clone(),
                     output: output.to_owned(),
                 },

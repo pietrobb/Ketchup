@@ -386,6 +386,8 @@ pub struct UnderlayWriteInput {
     pub geo_origin_mm: Option<[f64; 2]>,
     /// The underlay's encoded lines, its blob.
     pub lines: PathBuf,
+    /// How many layers the underlay names; lines holding more are refused.
+    pub layers: usize,
     pub edits: ketchup_model::underlay::edits::UnderlayEdits,
     /// The file written: DXF, or DWG when it ends in `.dwg`.
     pub output: PathBuf,

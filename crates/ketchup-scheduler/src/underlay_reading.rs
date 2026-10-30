@@ -100,9 +100,10 @@ fn write(input: &UnderlayWriteInput) -> Result<UnderlayWriteOutcome, UnderlayRef
         (source, Vec::new())
     };
     let lines = std::fs::read(&input.lines).map_err(|error| file(&input.lines, &error))?;
-    let lines = UnderlayLines::decode(&lines).map_err(|error| UnderlayRefusal::Dxf {
-        report: error.to_string(),
-    })?;
+    let lines =
+        UnderlayLines::decode(&lines, input.layers).map_err(|error| UnderlayRefusal::Dxf {
+            report: error.to_string(),
+        })?;
     let written = write_edited_dxf(
         &source,
         DxfImportOptions::new(input.unit_if_unitless).with_geo_origin(input.geo_origin_mm),

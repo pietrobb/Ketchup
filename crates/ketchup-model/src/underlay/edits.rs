@@ -102,7 +102,7 @@ impl Underlay {
     /// before any copy is made when with them the drawing would hold more than a drawing
     /// read may ([`super::edited_size`]).
     pub fn read_lines(&self, bytes: &[u8]) -> Result<UnderlayLines, super::UnderlayLinesError> {
-        let lines = UnderlayLines::decode(bytes)?;
+        let lines = UnderlayLines::decode(bytes, self.layers.len())?;
         if !self.edits.added.is_empty() {
             let size = lines.edited_size(&self.edits);
             if !size.fits() {

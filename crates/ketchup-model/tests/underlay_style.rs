@@ -114,7 +114,7 @@ fn each_line_keeps_the_color_pattern_and_weight_its_drawing_gives_it() {
         underlay.diagnostics
     );
     // The styles travel with the lines in their blob.
-    let decoded = UnderlayLines::decode(&underlay.lines.encode()).unwrap();
+    let decoded = UnderlayLines::decode(&underlay.lines.encode(), usize::MAX).unwrap();
     assert_eq!(decoded, underlay.lines);
 }
 
