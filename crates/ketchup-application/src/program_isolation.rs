@@ -211,17 +211,18 @@ pub fn read_underlay(
         .map_err(UnderlayWorkerError::Read)
 }
 
-/// Writes the drawing `input` names back as DXF with its changes, in a program worker;
-/// gives the bytes written to `input.output`.
+/// Writes the drawing `input` names back as DXF with its changes, in a program worker,
+/// within `time`; gives the bytes written to `input.output`.
 ///
 /// # Errors
 /// No worker could take it, the drawing or its changes were refused, or writing it was
-/// cancelled or stopped at the worker's memory limit.
+/// cancelled, ran out of time or stopped at the worker's memory limit.
 pub fn write_underlay(
     input: UnderlayWriteInput,
+    time: std::time::Duration,
     cancel: &CancelToken,
 ) -> Result<u64, UnderlayWorkerError> {
-    with_worker(|worker| worker.write_underlay(input, cancel))
+    with_worker(|worker| worker.write_underlay(input, time, cancel))
         .map_err(UnderlayWorkerError::Unavailable)?
         .map_err(UnderlayWorkerError::Read)
 }

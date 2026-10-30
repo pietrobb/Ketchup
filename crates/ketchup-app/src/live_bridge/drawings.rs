@@ -90,7 +90,7 @@ fn sheet_scale(scale: f64) -> Result<u32, &'static str> {
 
 /// Never replaces a file: no one confirms an overwrite on this path; the
 /// window's own export asks before replacing.
-fn refuse_existing(path: &str) -> Result<(), &'static str> {
+pub(super) fn refuse_existing(path: &str) -> Result<(), &'static str> {
     if std::fs::symlink_metadata(path).is_ok() {
         return Err(failure(
             "drawings_target_exists",

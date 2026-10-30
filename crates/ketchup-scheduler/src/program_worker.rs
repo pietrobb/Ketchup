@@ -421,18 +421,20 @@ impl ProgramWorker {
     }
 
     /// Writes the drawing `input` names back as DXF with its changes, in the worker,
-    /// to `input.output`; gives the bytes written.
+    /// to `input.output`, within `time`; gives the bytes written.
     ///
     /// # Errors
-    /// The drawing or its changes were refused, or the worker was stopped or died.
+    /// The drawing or its changes were refused, or the worker was stopped, ran out of
+    /// time or died.
     pub fn write_underlay(
         &mut self,
         input: UnderlayWriteInput,
+        time: Duration,
         cancel: &CancelToken,
     ) -> Result<u64, UnderlayReadError> {
         let outcome = self
             .call(cancel, |client| {
-                client.write_underlay(input, cancel.flag(), UNTIL_CANCELLED)
+                client.write_underlay(input, cancel.flag(), time)
             })
             .map_err(Stopped::underlay_error)?;
         match outcome {

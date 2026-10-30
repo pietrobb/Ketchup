@@ -193,6 +193,8 @@ pub(crate) struct UnderlayReadTask {
 #[derive(Default)]
 pub(crate) struct UnderlayImport {
     pub(crate) reading: Option<UnderlayReadTask>,
+    /// A drawing being written back with its changes.
+    pub(crate) exporting: Option<super::underlay_export::UnderlayExportTask>,
     unit_choice: Option<(PathBuf, ImportLengthUnit)>,
     /// The file each underlay imported in this window was read from, so its drawing can
     /// be written back with its changes.

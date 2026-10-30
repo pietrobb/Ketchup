@@ -585,6 +585,74 @@ fn tools_export_drawing_writes_the_edited_drawing_as_dxf() {
     assert_eq!(again.lines.segment_count(), 1);
 }
 
+/// Review 2026-10-29 SEC-60: in the window the drawing is written back on a thread while
+/// the file activity indication shows, so the window keeps painting; stopped, it keeps
+/// the file the user chose to replace. Given again, the export replaces it.
+#[test]
+fn the_window_writes_a_drawing_back_on_a_thread_that_cancelling_stops() {
+    const PLAN: &str = concat!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n",
+        "0\nSECTION\n2\nENTITIES\n",
+        "0\nLINE\n5\nA1\n8\nwalls\n10\n40\n20\n20\n11\n240\n21\n20\n",
+        "0\nLINE\n5\nA2\n8\naxes\n10\n40\n20\n120\n11\n240\n21\n120\n",
+        "0\nENDSEC\n0\nEOF\n",
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("plan.dxf");
+    let output = directory.path().join("edited.dxf");
+    std::fs::write(&source, PLAN).unwrap();
+    std::fs::write(&output, "kept").unwrap();
+    let dialogs = dialogs::ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Dxf, &source)
+        .queue_export(&output)
+        .queue_export(&output);
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.dispatch_file_command(AppCommand::ImportDrawingUnderlay);
+    let mut harness = shell_of(app);
+    click(&mut harness, Vec3::new(100.0, 20.0, 0.0));
+    press(&mut harness, egui::Key::Delete);
+
+    // Given in a frame, as the menu gives it.
+    let export = |harness: &mut Harness<'_, KetchupApp>| {
+        let context = harness.ctx.clone();
+        let app = harness.state_mut();
+        app.file.activity.context = Some(context);
+        app.dispatch_command(AppCommand::ExportUnderlayDxf);
+        assert!(app.file.activity.underlay.exporting.is_some());
+        assert!(app.file_activity_label().is_some());
+    };
+    // Closing the window stops it in the frame it is asked, before the drawing comes back.
+    export(&mut harness);
+    harness
+        .input_mut()
+        .viewports
+        .entry(egui::ViewportId::ROOT)
+        .or_default()
+        .events
+        .push(egui::ViewportEvent::Close);
+    harness.step();
+    let app = harness.state();
+    assert!(app.file.activity.underlay.exporting.is_none());
+    assert_eq!(app.digest, app.catalog.text("digest-cancelled"));
+    assert_eq!(std::fs::read_to_string(&output).unwrap(), "kept");
+    // The unsaved work keeps the window open.
+    harness.state_mut().close_guard.pending = false;
+
+    export(&mut harness);
+    crate::tests::shell::step_until(
+        &mut harness,
+        Duration::from_secs(30),
+        "the drawing was not written back",
+        |app| app.file.activity.underlay.exporting.is_none(),
+    );
+    let app = harness.state();
+    assert!(app.digest.contains("edited.dxf"), "{}", app.digest);
+    let written = std::fs::read_to_string(&output).unwrap();
+    assert!(!written.contains("5\nA1\n"), "{written}");
+    assert!(written.contains("0\nLINE\n5\nA2\n8\naxes\n"), "{written}");
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), PLAN);
+}
+
 /// A wall moved with its floor hatch and its dimension, clicked in a headless window
 /// (Shift picks the hatch and the dimension too) and exported: the DXF written draws all
 /// three where they were moved to, the dimension's lines from a block of its own.

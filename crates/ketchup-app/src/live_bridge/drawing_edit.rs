@@ -332,6 +332,8 @@ impl LiveBridge {
                 json!({"path": path}),
             ));
         }
+        // No one confirms replacing a file a client names (SEC-60, as MCP-3).
+        super::drawings::refuse_existing(path)?;
         if let Some(source) = source
             && !super::drawings::local_absolute_path(source)
         {
@@ -353,7 +355,13 @@ impl LiveBridge {
         });
         Self::require_request_authority(cancelled)?;
         let bytes = app
-            .export_underlay_dxf_to(id, source.as_deref().map(Path::new), Path::new(path))
+            .export_underlay_dxf_to(
+                id,
+                source.as_deref().map(Path::new),
+                Path::new(path),
+                None,
+                &ketchup_program::CancelToken::default(),
+            )
             .map_err(|error| {
                 let code = match &error {
                     UnderlayExportError::NoSource(..) => "invalid_params",

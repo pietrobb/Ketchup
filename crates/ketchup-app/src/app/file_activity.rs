@@ -190,6 +190,7 @@ impl KetchupApp {
             || self.file.activity.dwg_reading.is_some()
             || self.file.activity.exact_import_reading.is_some()
             || self.file.activity.underlay.reading.is_some()
+            || self.file.activity.underlay.exporting.is_some()
         {
             return true;
         }
@@ -251,6 +252,12 @@ impl KetchupApp {
             task.command()
         } else if self.file.activity.underlay.reading.is_some() {
             AppCommand::ImportDrawingUnderlay
+        } else if let Some(task) = &self.file.activity.underlay.exporting {
+            if task.dwg {
+                AppCommand::ExportUnderlayDwg
+            } else {
+                AppCommand::ExportUnderlayDxf
+            }
         } else if self.file.activity.viewer_export.is_some() {
             AppCommand::ExportViewer
         } else if let Some(task) = &self.file.activity.exchange_export {
@@ -307,6 +314,7 @@ impl KetchupApp {
             self.cancel_dwg_read();
             self.cancel_exact_import_read();
             self.cancel_underlay_read();
+            self.cancel_underlay_export();
             self.defer_close_until_saved(context);
             self.defer_close_until_exported(context);
             self.cancel_save_preparation();
@@ -342,6 +350,7 @@ impl KetchupApp {
             self.cancel_dwg_read();
             self.cancel_exact_import_read();
             self.cancel_underlay_read();
+            self.cancel_underlay_export();
             self.cancel_save_preparation();
             self.cancel_viewer_export_preparation();
             self.cancel_exchange_export();
@@ -384,6 +393,10 @@ impl KetchupApp {
         }
         if self.file.activity.underlay.reading.is_some() {
             self.poll_underlay_read(context);
+            return;
+        }
+        if self.file.activity.underlay.exporting.is_some() {
+            self.poll_underlay_export(context);
             return;
         }
         let pending = self

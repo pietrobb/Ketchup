@@ -4,6 +4,7 @@
 
 use super::underlay_objects::{DRAWING, ask, imported};
 use super::*;
+use ketchup_program::CancelToken;
 
 fn top_level(bridge: &mut LiveBridge, app: &mut KetchupApp) -> Vec<(u64, String)> {
     let answer = bridge
@@ -536,6 +537,139 @@ fn a_client_exports_the_edited_drawing_as_a_dxf_that_imports_as_edited() {
         "export_failed"
     );
     assert!(!refused.exists());
+}
+
+/// A drawing imported from `plan.dxf` with its wall taken out, beside `other.dxf`.
+fn edited_beside_another_file() -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    KetchupApp,
+    LiveBridge,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("plan.dxf");
+    std::fs::write(&source, DRAWING).unwrap();
+    let other = directory.path().join("other.dxf");
+    std::fs::write(&other, "not a drawing").unwrap();
+    let (_, mut bridge) = setup();
+    let mut app = KetchupApp::with_catalog_and_initial_box(crate::LocaleCatalog::english(), false);
+    app.selection.clear();
+    bridge
+        .execute(
+            &mut app,
+            Request::Import {
+                expected: None,
+                path: source.display().to_string(),
+                unit: None,
+                as_underlay: true,
+            },
+            false,
+        )
+        .unwrap();
+    let wall = id_of(&top_level(&mut bridge, &mut app), "2A");
+    bridge
+        .execute(
+            &mut app,
+            ask("drawing_remove", json!({"object_ids": [wall]})),
+            false,
+        )
+        .unwrap();
+    (directory, source, other, app, bridge)
+}
+
+/// Review 2026-10-29 SEC-60: a client's drawing export replaces no file, least of all the
+/// one the drawing was imported from.
+#[test]
+fn a_client_exporting_a_drawing_replaces_neither_its_source_nor_another_file() {
+    let (directory, source, other, mut app, mut bridge) = edited_beside_another_file();
+    // The source, the source spelled another way and any other file are refused.
+    let respelled = directory.path().join(".").join("plan.dxf");
+    for path in [&source, &respelled, &other] {
+        assert_eq!(
+            bridge
+                .execute(
+                    &mut app,
+                    ask(
+                        "drawing_export",
+                        json!({"path": path.display().to_string()})
+                    ),
+                    false,
+                )
+                .unwrap_err(),
+            "drawings_target_exists",
+            "{}",
+            path.display()
+        );
+    }
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), DRAWING);
+    assert_eq!(std::fs::read_to_string(&other).unwrap(), "not a drawing");
+}
+
+/// Review 2026-10-29 SEC-60: the window's drawing export never replaces the drawing's
+/// source; it replaces only the file the user confirmed, unchanged since, with a new file
+/// renamed over it, and a cancelled export leaves it as it was.
+#[test]
+fn the_window_replaces_only_a_confirmed_unchanged_file_and_never_the_source() {
+    let (directory, source, other, mut app, _bridge) = edited_beside_another_file();
+    let respelled = directory.path().join(".").join("plan.dxf");
+    // The source is refused even when the user confirmed replacing it.
+    let id = app.document.current().underlays().next().unwrap().id;
+    let confirmed = |path: &std::path::Path| {
+        crate::export_bundle::export_target_sha256(path)
+            .unwrap()
+            .unwrap()
+    };
+    let error = app
+        .export_underlay_dxf_to(
+            id,
+            None,
+            &respelled,
+            Some(&confirmed(&respelled)),
+            &CancelToken::default(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            crate::app::underlay_export::UnderlayExportError::SameAsSource(_)
+        ),
+        "{error}"
+    );
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), DRAWING);
+
+    // A file changed after the user confirmed replacing it is kept.
+    let replacing = confirmed(&other);
+    std::fs::write(&other, "changed meanwhile").unwrap();
+    assert!(
+        app.export_underlay_dxf_to(id, None, &other, Some(&replacing), &CancelToken::default())
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read_to_string(&other).unwrap(),
+        "changed meanwhile"
+    );
+
+    // A file confirmed and unchanged is replaced by the drawing.
+    let replacing = confirmed(&other);
+    app.export_underlay_dxf_to(id, None, &other, Some(&replacing), &CancelToken::default())
+        .unwrap();
+    let written = std::fs::read_to_string(&other).unwrap();
+    assert!(
+        written.contains("DOOR_80") && written.contains("1.01 Kitchen"),
+        "{written}"
+    );
+
+    // Cancelled, the worker writes nothing: the file is as it was.
+    let replacing = confirmed(&other);
+    let cancel = CancelToken::default();
+    cancel.cancel();
+    assert!(
+        app.export_underlay_dxf_to(id, None, &other, Some(&replacing), &cancel)
+            .is_err()
+    );
+    assert_eq!(std::fs::read_to_string(&other).unwrap(), written);
+    assert_eq!(std::fs::read_to_string(&source).unwrap(), DRAWING);
 }
 
 /// `drawing action=extrude`: the walls around a room are pulled up with the room cut out,
