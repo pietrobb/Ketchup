@@ -652,17 +652,17 @@ fn walks(points: &[[f64; 2]], edges: &[[usize; 2]]) -> (Vec<Walk>, Vec<Walk>) {
         let (ra, rb) = (root(&mut figure, *a), root(&mut figure, *b));
         figure[ra] = rb;
     }
-    let mut visited = vec![false; edges.len() * 2];
-    let mut bounded = Vec::new();
-    let mut outer = Vec::new();
+    // The walk each half-edge is on; `usize::MAX` for one not walked yet.
+    let mut walk_of = vec![usize::MAX; edges.len() * 2];
+    let mut rings = Vec::new();
     for start in 0..edges.len() * 2 {
-        if visited[start] {
+        if walk_of[start] != usize::MAX {
             continue;
         }
         let mut ring = Vec::new();
         let mut half = start;
-        while !visited[half] {
-            visited[half] = true;
+        while walk_of[half] == usize::MAX {
+            walk_of[half] = rings.len();
             let (from, to) = ends(half);
             ring.push(points[from]);
             // Arrived at `to`: the next edge clockwise from the way back keeps the face
@@ -671,6 +671,21 @@ fn walks(points: &[[f64; 2]], edges: &[[usize; 2]]) -> (Vec<Walk>, Vec<Walk>) {
             let list = &outgoing[to];
             half = list[(slot[back] + list.len() - 1) % list.len()];
         }
+        rings.push((start, ring));
+    }
+    // Review 2026-10-26 UO-47: an edge with the same face on both sides, such as a line
+    // from a wall to a free-standing pillar, bounds nothing; walked, it would make the
+    // room one outline along it twice. Without it the pillar is a figure of its own.
+    if (0..edges.len()).any(|edge| walk_of[2 * edge] == walk_of[2 * edge + 1]) {
+        let kept = (0..edges.len())
+            .filter(|edge| walk_of[2 * edge] != walk_of[2 * edge + 1])
+            .map(|edge| edges[edge])
+            .collect::<Vec<_>>();
+        return walks(points, &kept);
+    }
+    let mut bounded = Vec::new();
+    let mut outer = Vec::new();
+    for (start, ring) in rings {
         let area = signed_area(&ring);
         let owner = root(&mut figure, ends(start).0);
         if area > 0.0 {
@@ -807,6 +822,31 @@ mod tests {
         assert!(regions[0].contains([80.0, 50.0]));
         assert!(!regions[0].contains([65.0, 65.0]), "in the pillar");
         assert!(regions[1].contains([15.0, 50.0]));
+    }
+
+    /// Review 2026-10-26 UO-47: a line from a wall to a free-standing pillar made the room
+    /// one outline walked along that line twice, a slit OCCT builds no solid from. The line
+    /// bounds nothing: the room has the pillar as a hole, and every corner once.
+    #[test]
+    fn a_line_from_a_wall_to_a_pillar_leaves_the_pillar_a_hole_not_a_slit() {
+        let mut lines = square(0.0, 100.0);
+        lines.extend(square(60.0, 70.0));
+        lines.push([[70.0, 65.0], [100.0, 65.0]]);
+        for found in [
+            find_regions(&lines, 0.01).unwrap(),
+            find_figures(&lines, 0.01).unwrap(),
+        ] {
+            let areas = found.iter().map(|r| r.area_mm2.round()).collect::<Vec<_>>();
+            assert_eq!(areas, [9_900.0, 100.0]);
+            assert_eq!(found[0].holes.len(), 1, "{:?}", found[0]);
+            for ring in std::iter::once(&found[0].outline).chain(&found[0].holes) {
+                let mut corners = ring.iter().map(|p| p.map(f64::to_bits)).collect::<Vec<_>>();
+                corners.sort_unstable();
+                corners.dedup();
+                assert_eq!(corners.len(), ring.len(), "a corner walked twice: {ring:?}");
+            }
+            assert!(found[0].contains([80.0, 50.0]) && !found[0].contains([65.0, 62.0]));
+        }
     }
 
     #[test]
