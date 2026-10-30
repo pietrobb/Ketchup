@@ -80,18 +80,14 @@ pub fn read_dxf_underlay_from(
     let mut entity = PairBuffer::default();
     let mut read_entity = |entity: &mut PairBuffer, diagnostics: &mut DiagnosticCounts| {
         let mut parsed = ParsedEntities::default();
-        // What it places is drawn into the lines and let go before the next is read.
-        let placed_left = diagnostics.placed_left;
-        let read = parse_entities(
+        parse_entities(
             &entity.pairs(),
             units,
             Some(&blocks),
             &mut entity_count,
             &mut parsed,
             diagnostics,
-        );
-        diagnostics.placed_left = placed_left;
-        read?;
+        )?;
         parsed.report_xrefs(diagnostics)?;
         // The objects read here are numbered after those of the entities before.
         let first = builder.object_count();

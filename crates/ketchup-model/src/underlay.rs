@@ -1235,28 +1235,58 @@ pub fn arc_chord_step(radius: f64) -> f64 {
     step.max(tau / MAX_CIRCLE_CHORDS)
 }
 
+/// The radius, start angle and signed turn of `segment` if it is an arc; a whole circle
+/// when it ends where it starts.
+pub(crate) fn arc_turn(segment: &ProfileSegment) -> Option<[f64; 3]> {
+    let ProfileSegment::CircularArc {
+        start_mm,
+        end_mm,
+        center_mm,
+        clockwise,
+    } = segment
+    else {
+        return None;
+    };
+    let radius = (start_mm[0] - center_mm[0]).hypot(start_mm[1] - center_mm[1]);
+    let start = (start_mm[1] - center_mm[1]).atan2(start_mm[0] - center_mm[0]);
+    let end = (end_mm[1] - center_mm[1]).atan2(end_mm[0] - center_mm[0]);
+    let tau = std::f64::consts::TAU;
+    let mut sweep = if *clockwise {
+        -(start - end).rem_euclid(tau)
+    } else {
+        (end - start).rem_euclid(tau)
+    };
+    if sweep == 0.0 {
+        sweep = if *clockwise { -tau } else { tau };
+    }
+    Some([radius, start, sweep])
+}
+
+/// How many points [`push_segment`] appends for `segment`, none for an arc, whose chords
+/// depend on its radius where it is placed ([`arc_chords`]).
+pub(crate) fn straight_points(segment: &ProfileSegment) -> usize {
+    match segment {
+        ProfileSegment::CircularArc { .. } => 0,
+        ProfileSegment::Line { .. } => 1,
+        ProfileSegment::CubicBezier { .. } => BEZIER_CHORDS as usize,
+        ProfileSegment::Spline { points_mm } => points_mm.len().saturating_sub(1),
+    }
+}
+
+/// How many chords [`push_segment`] draws an arc of `radius` turning by `sweep` with.
+pub(crate) fn arc_chords(radius: f64, sweep: f64) -> usize {
+    // At most MAX_CIRCLE_CHORDS for each whole turn, so the cast is exact.
+    (sweep.abs() / arc_chord_step(radius)).ceil() as usize
+}
+
 /// Appends the points after the start of `segment`.
 pub(crate) fn push_segment(points: &mut Vec<[f64; 2]>, segment: &ProfileSegment) {
     match segment {
         ProfileSegment::Line { end_mm, .. } => points.push(*end_mm),
         ProfileSegment::CircularArc {
-            start_mm,
-            end_mm,
-            center_mm,
-            clockwise,
+            end_mm, center_mm, ..
         } => {
-            let radius = (start_mm[0] - center_mm[0]).hypot(start_mm[1] - center_mm[1]);
-            let start = (start_mm[1] - center_mm[1]).atan2(start_mm[0] - center_mm[0]);
-            let end = (end_mm[1] - center_mm[1]).atan2(end_mm[0] - center_mm[0]);
-            let tau = std::f64::consts::TAU;
-            let mut sweep = if *clockwise {
-                -(start - end).rem_euclid(tau)
-            } else {
-                (end - start).rem_euclid(tau)
-            };
-            if sweep == 0.0 {
-                sweep = if *clockwise { -tau } else { tau };
-            }
+            let [radius, start, sweep] = arc_turn(segment).expect("an arc");
             let chords = (sweep.abs() / arc_chord_step(radius)).ceil();
             let mut index = 1.0;
             while index < chords {

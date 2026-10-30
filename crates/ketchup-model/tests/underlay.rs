@@ -394,6 +394,102 @@ fn what_the_blocks_place_past_the_drawings_budget_is_left_out_and_counted() {
     );
 }
 
+/// A drawing of `blocks`, each a name with its entities, and `entities`, in millimetres.
+fn with_blocks(blocks: &[(&str, String)], entities: &str) -> ketchup_model::import::DxfUnderlay {
+    let blocks = (blocks.iter())
+        .map(|(name, content)| {
+            format!("0\nBLOCK\n8\n0\n2\n{name}\n70\n0\n10\n0\n20\n0\n{content}0\nENDBLK\n")
+        })
+        .collect::<String>();
+    let source = format!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nBLOCKS\n{blocks}0\nENDSEC\n0\nSECTION\n2\nENTITIES\n{entities}0\nENDSEC\n0\nEOF\n"
+    );
+    read_dxf_underlay(source.as_bytes(), DxfImportOptions::new(None)).unwrap()
+}
+
+fn left_out(underlay: &ketchup_model::import::DxfUnderlay) -> Vec<(String, u32)> {
+    (underlay.diagnostics.iter())
+        .filter(|diagnostic| {
+            ["dxf.entity-unreadable", "dxf.block-unreadable"].contains(&diagnostic.code())
+        })
+        .map(|diagnostic| {
+            (
+                diagnostic.subject().unwrap_or_default().to_owned(),
+                diagnostic.count(),
+            )
+        })
+        .collect()
+}
+
+/// A block of `count` lines, 1 mm long, one above another.
+fn lines_block(count: u32) -> String {
+    (0..count)
+        .map(|index| line("0", [0.0, f64::from(index)], [1.0, f64::from(index)]))
+        .collect()
+}
+
+fn array(layer: &str, block: &str, columns: u32) -> String {
+    format!("0\nINSERT\n8\n{layer}\n2\n{block}\n10\n0\n20\n0\n70\n{columns}\n71\n1\n44\n2\n")
+}
+
+/// Review 2026-10-26 UL-40: the budget of what inserts place was given back after each
+/// entity of the drawing, so ten arrays just within it held 2 GB together; a dimension
+/// placed its block uncounted; and an arc counted as one piece, yet a circle of 1 km is
+/// drawn with 7 026 chords.
+#[test]
+fn the_budget_of_what_inserts_and_dimensions_place_is_the_whole_drawings() {
+    let thousand = ("k", lines_block(1_000));
+    // Two arrays of 600 000 lines: the second is left out.
+    let underlay = with_blocks(
+        std::slice::from_ref(&thousand),
+        &[array("a", "k", 600), array("b", "k", 600)].concat(),
+    );
+    assert_eq!(underlay.layers, ["a"]);
+    assert_eq!(underlay.lines.segment_count(), 600_000);
+    let refused = left_out(&underlay);
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert!(refused[0].0.starts_with("INSERT: "), "{refused:?}");
+
+    // A dimension's block holding 600 000 lines, placed twice.
+    let dimension = ("*D1", array("0", "k", 600));
+    let dimensions = "0\nDIMENSION\n8\nd\n2\n*D1\n70\n0\n".repeat(2);
+    let underlay = with_blocks(&[thousand.clone(), dimension], &dimensions);
+    assert_eq!(underlay.lines.segment_count(), 600_000);
+    let refused = left_out(&underlay);
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert!(refused[0].0.starts_with("DIMENSION: "), "{refused:?}");
+
+    // 150 circles of 1 km take 150 × 7 026 chords, more than the budget.
+    let circle = (
+        "o",
+        "0\nCIRCLE\n8\n0\n10\n0\n20\n0\n40\n1000000\n".to_owned(),
+    );
+    let wall = line("w", [0.0, 0.0], [1.0, 0.0]);
+    let underlay = with_blocks(
+        std::slice::from_ref(&circle),
+        &(wall + &array("c", "o", 150)),
+    );
+    assert_eq!(underlay.lines.segment_count(), 1);
+    assert_eq!(left_out(&underlay).len(), 1);
+    let underlay = with_blocks(&[circle], &array("c", "o", 100));
+    assert_eq!(underlay.lines.segment_count(), 702_600);
+}
+
+/// Review 2026-10-26 UL-42: what a block placed inside it counted once when the block was
+/// read and again where it was placed, so a reference holding 600 000 lines, placed once,
+/// was refused with the whole drawing.
+#[test]
+fn what_a_block_places_inside_it_counts_once_where_it_is_placed() {
+    let symbol = ("s", lines_block(100));
+    let reference = ("ref", array("0", "s", 6_000));
+    let underlay = with_blocks(
+        &[symbol, reference],
+        "0\nINSERT\n8\nsite\n2\nref\n10\n0\n20\n0\n",
+    );
+    assert_eq!(left_out(&underlay), []);
+    assert_eq!(underlay.lines.segment_count(), 600_000);
+}
+
 #[test]
 fn an_entity_upside_down_or_with_noise_in_its_extrusion_is_read() {
     let down = "210\n0\n220\n0\n230\n-1\n";

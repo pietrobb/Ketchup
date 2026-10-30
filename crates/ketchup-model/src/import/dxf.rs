@@ -50,8 +50,9 @@ struct DxfReading {
     max_entities: usize,
     max_profiles: usize,
     max_segments: usize,
-    /// How many segments, texts and fills the drawing's blocks may hold and one entity's
-    /// inserts place (review 2026-10-24 UL-25).
+    /// How many pieces (points, arc chords, texts and pieces of fills) inserts and
+    /// dimensions may place into the drawing's blocks, and as many into the drawing
+    /// (review 2026-10-24 UL-25, 2026-10-26 UL-40 and UL-42).
     max_placed: usize,
     /// Joins loose lines and arcs into profiles; otherwise each stays one of its own.
     chain: bool,
@@ -258,7 +259,8 @@ pub enum DxfImportError {
     /// A block that places blocks more than [`MAX_DXF_BLOCK_DEPTH`] deep, itself included.
     BlocksTooDeep,
     UnsupportedInsertTransform,
-    /// A block placed here would draw more than an underlay's blocks have left to place.
+    /// A block placed here would draw more than an underlay's inserts and dimensions have
+    /// left to place.
     TooMuchPlaced,
     TooManyEntities,
     TooManyProfiles,
@@ -381,7 +383,7 @@ impl fmt::Display for DxfImportError {
             Self::TooMuchPlaced => {
                 return write!(
                     formatter,
-                    "DXF INSERT places more than the {} lines, texts and fills an underlay's blocks may place",
+                    "DXF INSERT or DIMENSION places more than the {} points, arc chords, texts and fills an underlay's inserts and dimensions may place",
                     limits::DRAWING_ENTITIES
                 );
             }
@@ -498,10 +500,12 @@ struct DiagnosticCounts {
     /// of the drawing's entity budget; what a block's own hatches draw counts where an
     /// insert places them.
     fill_pieces_left: usize,
-    /// How many more segments, texts and fills inserts may place, of
-    /// [`DxfReading::max_placed`]: what the blocks hold stays taken, what one entity of
-    /// the drawing places is given back once it is drawn.
+    /// How many more pieces the drawing's inserts and dimensions may place, of
+    /// [`DxfReading::max_placed`], for the whole drawing (review 2026-10-26 UL-40).
     placed_left: usize,
+    /// How many more pieces inserts and dimensions inside the drawing's blocks may place
+    /// into them, of [`DxfReading::max_placed`] apart from what the drawing places.
+    held_left: usize,
     /// The block being read, as the drawing names it, if any: a report of what it
     /// leaves out names it, whose coordinates it gives.
     block: Option<String>,
@@ -531,6 +535,7 @@ impl DiagnosticCounts {
             first_skip: None,
             fill_pieces_left: limits::DRAWING_ENTITIES,
             placed_left: reading.max_placed,
+            held_left: reading.max_placed,
             block: None,
         }
     }
@@ -3582,6 +3587,7 @@ fn parse_dimension(
     if block.base_mm != [0.0, 0.0] {
         return Err(DxfImportError::InvalidBlock);
     }
+    take_placed(block, 1, 1.0, diagnostics)?;
     let clone_x = parse_optional_number(record, 12)?;
     let clone_y = parse_optional_number(record, 22)?;
     let clone_offset_mm = match (clone_x, clone_y) {
@@ -3659,6 +3665,31 @@ fn parse_dimension(
     })
 }
 
+/// Takes what `placements` placements of `block` scaled by `scale` build from what inserts
+/// and dimensions may still place, before any of it is built: an array of millions, arrays
+/// placed inside one another or arcs of a kilometre are left out alone (review 2026-10-24
+/// UL-25, 2026-10-26 UL-40).
+fn take_placed(
+    block: &BlockDefinition,
+    placements: usize,
+    scale: f64,
+    diagnostics: &mut DiagnosticCounts,
+) -> Result<(), DxfImportError> {
+    // Each placement is an object of its own as well, so an array of a million copies of
+    // one line counts as two million.
+    let fits = |size: usize| {
+        placements
+            .checked_mul(size.saturating_add(1))
+            .filter(|placed| *placed <= diagnostics.placed_left)
+            .ok_or(DxfImportError::TooMuchPlaced)
+    };
+    // Most placements past the budget are refused before their arcs are measured.
+    fits(block.least_placed_size())?;
+    let placed = fits(block.placed_size(scale))?;
+    diagnostics.placed_left -= placed;
+    Ok(())
+}
+
 fn add_xrefs<'a>(
     xrefs: &mut BTreeMap<String, u32>,
     placed: impl IntoIterator<Item = (&'a str, u32)>,
@@ -3734,19 +3765,12 @@ fn parse_insert(
     if placement_count > diagnostics.reading.max_entities {
         return Err(DxfImportError::TooManyEntities);
     }
-    // What it places counts before any of it is built: an array of millions, or arrays
-    // placed inside one another, is left out alone (review 2026-10-24 UL-25).
-    let fill_pieces =
-        |fill: &OrderedFill| fill.pattern.len() + fill.rings.iter().map(Vec::len).sum::<usize>();
-    let block_cost = (block.profiles.iter())
-        .map(|profile| profile.segments.len())
-        .chain(block.fills.iter().map(fill_pieces))
-        .fold(block.texts.len(), usize::saturating_add);
-    let placed = placement_count
-        .checked_mul(block_cost.max(1))
-        .filter(|placed| *placed <= diagnostics.placed_left)
-        .ok_or(DxfImportError::TooMuchPlaced)?;
-    diagnostics.placed_left -= placed;
+    take_placed(
+        block,
+        placement_count,
+        scale_x.abs().max(scale_y.abs()),
+        diagnostics,
+    )?;
     let unit_scale = units.millimetres_per_unit();
     let column_spacing_mm = scale_coordinate(
         flip(parse_optional_number(record, 44)?.unwrap_or(0.0)),

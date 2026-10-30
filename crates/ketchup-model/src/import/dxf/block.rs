@@ -21,11 +21,62 @@ pub(super) struct BlockDefinition {
     /// How many entities it places, those of the blocks it places included: each insert
     /// counts them again against the reading's entity budget.
     pub(super) entities: usize,
+    /// What a placement of it builds but for its arcs: the points of its lines and
+    /// curves, its texts and the pieces of its fills.
+    pieces: usize,
+    /// The radius and turn of each of its arcs.
+    arcs: Vec<[f64; 2]>,
 }
 
 impl BlockDefinition {
+    fn new(
+        base_mm: [f64; 2],
+        profiles: Vec<OrderedProfile>,
+        texts: Vec<OrderedText>,
+        fills: Vec<OrderedFill>,
+    ) -> Self {
+        let segments = || profiles.iter().flat_map(|profile| &profile.segments);
+        let fill_pieces = |fill: &OrderedFill| {
+            fill.pattern.len() + fill.rings.iter().map(Vec::len).sum::<usize>()
+        };
+        let pieces = (segments().map(crate::underlay::straight_points))
+            .chain(fills.iter().map(fill_pieces))
+            .fold(texts.len(), usize::saturating_add);
+        let arcs = segments()
+            .filter_map(crate::underlay::arc_turn)
+            .map(|[radius, _, sweep]| [radius, sweep])
+            .collect();
+        Self {
+            base_mm,
+            profiles,
+            texts,
+            fills,
+            xref: false,
+            xrefs: BTreeMap::new(),
+            objects: Vec::new(),
+            entities: 0,
+            pieces,
+            arcs,
+        }
+    }
+
     pub(super) fn is_empty(&self) -> bool {
         self.profiles.is_empty() && self.texts.is_empty() && self.fills.is_empty()
+    }
+
+    /// What one placement of it scaled by `scale` builds: the points of its lines and
+    /// curves, the chords of its arcs at the radius they are placed at, its texts and the
+    /// pieces of its fills (review 2026-10-26 UL-40).
+    pub(super) fn placed_size(&self, scale: f64) -> usize {
+        (self.arcs.iter())
+            .map(|[radius, sweep]| crate::underlay::arc_chords(radius * scale, *sweep))
+            .fold(self.pieces, usize::saturating_add)
+    }
+
+    /// At most [`Self::placed_size`] at any scale: each line and arc builds a piece at
+    /// least.
+    pub(super) fn least_placed_size(&self) -> usize {
+        self.pieces.saturating_add(self.arcs.len())
     }
 }
 
@@ -318,14 +369,8 @@ fn resolve_raw_block<'a>(
         resolution.blocks.insert(
             key.to_owned(),
             BlockDefinition {
-                base_mm: raw.base_mm,
-                profiles: Vec::new(),
-                texts: Vec::new(),
-                fills: Vec::new(),
                 xref: true,
-                xrefs: BTreeMap::new(),
-                objects: Vec::new(),
-                entities: 0,
+                ..BlockDefinition::new(raw.base_mm, Vec::new(), Vec::new(), Vec::new())
             },
         );
         return Ok(());
@@ -351,8 +396,13 @@ fn resolve_raw_block<'a>(
 
     let mut parsed_entities = ParsedEntities::default();
     // What its hatches draw counts where an insert places it, and what it leaves out is
-    // reported in its own coordinates, under its name.
+    // reported in its own coordinates, under its name. What it places inside it counts
+    // against what the blocks may hold, not against what the drawing's inserts place:
+    // counted there too, a reference placed once was refused for twice its size (review
+    // 2026-10-26 UL-42).
     let pieces_left = resolution.diagnostics.fill_pieces_left;
+    let diagnostics = &mut *resolution.diagnostics;
+    std::mem::swap(&mut diagnostics.placed_left, &mut diagnostics.held_left);
     let outer = resolution.diagnostics.block.replace(raw.name.clone());
     let counted_before = *resolution.entity_count;
     let parsed = parse_entities(
@@ -363,6 +413,8 @@ fn resolve_raw_block<'a>(
         &mut parsed_entities,
         resolution.diagnostics,
     );
+    let diagnostics = &mut *resolution.diagnostics;
+    std::mem::swap(&mut diagnostics.placed_left, &mut diagnostics.held_left);
     resolution.diagnostics.fill_pieces_left = pieces_left;
     resolution.diagnostics.block = outer;
     parsed?;
@@ -402,14 +454,15 @@ fn resolve_raw_block<'a>(
     resolution.blocks.insert(
         key.to_owned(),
         BlockDefinition {
-            base_mm: raw.base_mm,
-            profiles,
-            texts: parsed_entities.texts,
-            fills: parsed_entities.fills,
-            xref: false,
             xrefs: parsed_entities.xrefs,
             objects: parsed_entities.objects,
             entities,
+            ..BlockDefinition::new(
+                raw.base_mm,
+                profiles,
+                parsed_entities.texts,
+                parsed_entities.fills,
+            )
         },
     );
     Ok(())
