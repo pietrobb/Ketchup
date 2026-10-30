@@ -281,6 +281,18 @@ jobs:
             app::tests::atomic_save::interrupted_save_keeps_the_earlier_file_and_leaves_no_partial_one \
             | tee "$RUNNER_TEMP/atomic-save.log"
           grep -q "test result: ok. 1 passed" "$RUNNER_TEMP/atomic-save.log"
+      # The cutting plan, quote, CNC drawings and BTLx files must be the same
+      # bytes as on Linux and macOS, where the job without OCCT checks the same
+      # golden files (review 2026-10-29 proposal 5.1, ADR 0009).
+      - name: golden shop files on Windows
+        shell: bash
+        run: |
+          cargo test --locked -p ketchup-program --test integration -- shop_golden:: \
+            | tee "$RUNNER_TEMP/shop-golden.log"
+          grep -q "test result: ok. 1 passed" "$RUNNER_TEMP/shop-golden.log"
+          cargo test --locked -p ketchup-manufacturing --test integration -- fabrication_validation:: \
+            | tee "$RUNNER_TEMP/btlx-golden.log"
+          grep -Eq "test result: ok. [1-9][0-9]* passed" "$RUNNER_TEMP/btlx-golden.log"
       # The Python tests that drive the real CLI skip without it in the
       # checks job; here every such file runs and a skip fails (review
       # 2026-10-17 TST-2).

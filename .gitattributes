@@ -22,3 +22,4 @@ artifacts/r0/occt-cmake-config.json -text !eol
 scripts/hooks/* text eol=lf
 *.star text eol=lf
 fuzz/seeds/** -text
+crates/ketchup-program/tests/fixtures/shop-golden/** -text
