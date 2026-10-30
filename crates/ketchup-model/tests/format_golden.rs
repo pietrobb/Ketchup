@@ -169,6 +169,14 @@ fn saved_format_of_a_dxf_import_in(
     lines: usize,
     padding: usize,
 ) -> u16 {
+    let document = dxf_import(insunits, length, lines, padding);
+    let snapshot = persistence::save(&document.current());
+    u16::from_le_bytes([snapshot[10], snapshot[11]])
+}
+
+/// A document with one DXF import of `lines` lines `length` long in the `$INSUNITS` unit
+/// `insunits`, its source padded with comments to `padding` more bytes.
+fn dxf_import(insunits: u16, length: f64, lines: usize, padding: usize) -> DocumentStore {
     use ketchup_model::import::{DxfImportOptions, plan_dxf_import};
     let entities = (0..lines)
         .map(|line| {
@@ -190,8 +198,7 @@ fn saved_format_of_a_dxf_import_in(
     )
     .unwrap();
     document.apply_batch(&batch).unwrap();
-    let snapshot = persistence::save(&document.current());
-    u16::from_le_bytes([snapshot[10], snapshot[11]])
+    document
 }
 
 /// Review 2026-10-24 MD-20: format 103 was chosen for any document without underlays
@@ -228,6 +235,75 @@ fn a_dxf_import_in_a_unit_kecup_0_2_0_does_not_know_is_not_written_as_format_103
             104,
             "$INSUNITS {insunits}"
         );
+    }
+}
+
+/// The files of these tests as Save writes them now, for Kečup 0.2.0 to open (review
+/// 2026-10-29 proposal 5.4). Each is checked to be in the format its document needs; with
+/// `KETCHUP_TEST_REPORT_DIR` set they are written there as `release-0.2.0-<format>-<name>`,
+/// and `scripts/release_0_2_0_reads.py` opens them with the persistence of the `v0.2.0`
+/// tag: a format 103 file must open, a newer one must be refused as newer, and neither may
+/// open its `.recovery` in its place.
+#[test]
+fn files_for_kecup_0_2_0_are_in_the_format_their_document_needs() {
+    let mut files = vec![(
+        "empty".to_owned(),
+        DocumentStore::new(),
+        ContainerData::default(),
+        103,
+    )];
+    for (name, path, schema, digest) in [
+        ("release-0.2.0", RELEASE_0_2_0, 103, DIGEST_103),
+        ("history-103", FIXTURE_103, 103, DIGEST_103),
+        ("underlay", SAVED_104, 104, DIGEST_104),
+        ("annotations", SAVED_105, 105, DIGEST_105),
+        (
+            "edited-underlay",
+            GOLDEN,
+            persistence::CURRENT_SCHEMA,
+            DIGEST_106,
+        ),
+    ] {
+        let (document, container) = opened(path, schema, digest);
+        files.push((name.to_owned(), document, container, schema));
+    }
+    // $INSUNITS, a line about a metre long in that unit, and the format it needs.
+    for (insunits, length, schema) in [
+        (4, 1000.0, 103),
+        (5, 100.0, 103),
+        (6, 1.0, 103),
+        (1, 40.0, 103),
+        (2, 3.0, 103),
+        (14, 10.0, 104),
+        (7, 0.001, 104),
+        (10, 1.0, 104),
+        (3, 0.0005, 104),
+    ] {
+        files.push((
+            format!("dxf-insunits-{insunits}"),
+            dxf_import(insunits, length, 3, 0),
+            ContainerData::default(),
+            schema,
+        ));
+    }
+    files.push((
+        "dxf-400-lines".to_owned(),
+        dxf_import(4, 100.0, 400, 0),
+        ContainerData::default(),
+        104,
+    ));
+    for (name, document, container, schema) in files {
+        let saved =
+            persistence::save_document_store_current_snapshot(&document, &container).unwrap();
+        let LoadOutcome::Editable { audit, .. } = persistence::load(&saved).unwrap() else {
+            panic!("{name} reopens editable")
+        };
+        assert_eq!(audit.source_schema, schema, "{name}");
+        if let Some(path) =
+            ketchup_test_env::report_path(&format!("release-0.2.0-{schema}-{name}.ketchup"))
+        {
+            std::fs::write(path, saved).unwrap();
+        }
     }
 }
 
