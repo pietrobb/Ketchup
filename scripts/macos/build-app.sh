@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds "Kečup.app" (Apple Silicon) and a .dmg with it: the desktop app, the
-# exact worker beside it and the pinned OCCT libraries in Contents/Frameworks,
+# exact and program workers beside it and the pinned OCCT libraries in Contents/Frameworks,
 # registered for .ketchup documents. Needs OCCT from scripts/macos/build-occt.sh.
 #
 #   scripts/macos/build-app.sh [--output DIR] [--sign IDENTITY]
@@ -28,12 +28,13 @@ occt_lib="$repo/third_party/occt-install-r0-v1/lib"
 [ -d "$occt_lib" ] || { echo "missing OCCT: run scripts/macos/build-occt.sh" >&2; exit 1; }
 
 cd "$repo"
-cargo build --locked --release -p ketchup-app --bin ketchup-app -p ketchup-scheduler --bin ketchup-exact-worker
+cargo build --locked --release -p ketchup-app --bin ketchup-app -p ketchup-scheduler --bin ketchup-exact-worker --bin ketchup-program-worker
 
 rm -rf "$app" "$dmg"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Frameworks"
-binaries=("$app/Contents/MacOS/ketchup-app" "$app/Contents/MacOS/ketchup-exact-worker")
-cp target/release/ketchup-app target/release/ketchup-exact-worker "$app/Contents/MacOS/"
+workers=("$app/Contents/MacOS/ketchup-exact-worker" "$app/Contents/MacOS/ketchup-program-worker")
+binaries=("$app/Contents/MacOS/ketchup-app" "${workers[@]}")
+cp target/release/ketchup-app target/release/ketchup-exact-worker target/release/ketchup-program-worker "$app/Contents/MacOS/"
 
 # The OCCT libraries the binaries load, directly or through each other.
 occt_dependencies() { otool -L "$1" | awk -v lib="$occt_lib/" 'index($1, lib) == 1 { print substr($1, length(lib) + 1) }'; }
@@ -126,7 +127,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
 PLIST
 plutil -lint "$app/Contents/Info.plist" >/dev/null
 
-# Inside out: libraries and the worker before the app that seals them.
+# Inside out: libraries and the workers before the app that seals them.
 sign() {
     if [ "$identity" = "-" ]; then
         codesign --force --sign - "$@"
@@ -135,12 +136,23 @@ sign() {
     fi
 }
 sign "${libraries[@]}"
-sign "$app/Contents/MacOS/ketchup-exact-worker"
+sign "${workers[@]}"
 sign "$app"
 codesign --verify --strict --deep "$app"
 
 echo "${#libraries[@]} OCCT libraries bundled"
 "$app/Contents/MacOS/ketchup-app" --inspect-native-document examples/house-project.ketchup >/dev/null
+# Opening a document starts no worker, so each bundled worker answers the typed
+# Hello frame (u32 LE length + CBOR "Hello") as the Windows installer checks it.
+# The reply is {"Hello": {"protocol": <64-character text>}} behind its length.
+hello_reply="$(printf '%s' 'a165' '48656c6c6f' 'a168' '70726f746f636f6c' '7840')"
+for worker in "${workers[@]}"; do
+    reply="$(printf '\x06\x00\x00\x00\x65Hello' | "$worker" | xxd -p | tr -d '\n')"
+    if [ "${reply:0:8}" != "53000000" ] || [ "${reply:8:${#hello_reply}}" != "$hello_reply" ] || [ ${#reply} -ne 174 ]; then
+        echo "$(basename "$worker") in the bundle failed its Hello handshake" >&2
+        exit 1
+    fi
+done
 
 mkdir "$work/dmg"
 cp -R "$app" "$work/dmg/"
