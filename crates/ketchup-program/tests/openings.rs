@@ -371,6 +371,36 @@ instance(\"upper\", \"window\", at = (0, 0, 3000))
     assert_eq!((windows.count, windows.parts.len()), (4, 20));
 }
 
+/// Review 2026-10-26 PG-42: copies named by the piece's label alone under a
+/// new prefix (`"west " + label`, `"w%d %s" % (2, label)`) share neither the
+/// source's name as a prefix nor a group, so each piece became a window of its
+/// own: 4 windows were ordered, scheduled and quoted as 16.
+#[test]
+fn copies_named_by_their_label_after_a_new_prefix_are_one_window_each() {
+    let source = format!(
+        "{WALL}
+for label in [\"frame top\", \"frame bottom\", \"frame left\", \"frame right\", \"glass\"]:
+    mirrored(\"win/\" + label, \"west \" + label, (6000, 0, 0), (1, 0, 0))
+    mirrored(\"win/\" + label, \"w%d %s\" % (2, label), (8000, 0, 0), (1, 0, 0))
+"
+    );
+    let (model, issues) = evaluate(&source);
+    assert_eq!(errors(&issues), Vec::<String>::new());
+    let windows = ketchup_program::bom(&model)
+        .hardware
+        .into_iter()
+        .find(|row| row.item == "window 1200 x 1250")
+        .expect("the window row");
+    assert_eq!((windows.count, windows.parts.len()), (3, 15));
+    let openings = ketchup_program::bom::openings(&model);
+    let windows: Vec<_> = openings
+        .iter()
+        .filter(|opening| opening.kind.as_str() == "window")
+        .map(|opening| opening.parts.len())
+        .collect();
+    assert_eq!(windows, [5, 5, 5]);
+}
+
 #[test]
 fn a_door_keeps_the_space_its_leaf_swings_through_clear() {
     // The leaf is 740 wide (x 680..1420); inside the room is y > 200, outside y < 0.
