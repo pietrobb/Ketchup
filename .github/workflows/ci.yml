@@ -365,6 +365,10 @@ jobs:
         -p ketchup-app -p ketchup-application -p ketchup-exact -p ketchup-headless
         -p ketchup-scheduler -p ketchup-test-gpu
       RUSTFLAGS: -C link-arg=-Wl,-rpath,${{ github.workspace }}/third_party/occt-install-r0-v1/lib
+      # Linux keeps full debug info inside the executable (Windows puts it in a
+      # .pdb), which makes the debug worker larger than the 128 MiB the scheduler
+      # starts; line tables keep backtraces.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
       # The MCP discovery directory lives in the per-user runtime directory.
       XDG_RUNTIME_DIR: /tmp/xdg-runtime
     steps:
