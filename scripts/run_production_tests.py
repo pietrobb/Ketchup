@@ -8,6 +8,11 @@ ran nowhere (review 2026-10-24 CI-22).
 
 `--release-app` runs only `RELEASE_APP_TESTS` against the release `ketchup-app`
 and worker a CI job already built; the debug run leaves them out.
+
+`--packaged-app PATH` runs every live MCP test against the application inside a
+built package (the macOS bundle), which must find its workers and OCCT in the
+package itself; a missing worker only shows when a program is evaluated
+(review 2026-10-30: the bundle left out the program worker).
 """
 
 from __future__ import annotations
@@ -176,6 +181,13 @@ def run_release_app_tests(target_directory: Path) -> int:
     return int(pytest.main([*RELEASE_APP_TESTS, "-ra"], plugins=[FailOnSkipPlugin()]))
 
 
+def run_packaged_app_tests(app: Path) -> int:
+    app = require_component(app, "packaged ketchup-app")
+    os.environ["KETCHUP_APP"] = str(app)
+    print(f"KETCHUP_APP={app} sha256={sha256(app)}")
+    return int(pytest.main([*app_tests(), "-ra"], plugins=[FailOnSkipPlugin()]))
+
+
 def require_component(path: Path, label: str) -> Path:
     resolved = path.resolve()
     if not resolved.is_file():
@@ -232,7 +244,14 @@ def main() -> int:
         action="store_true",
         help="run only the live tests that need the release application already built",
     )
+    parser.add_argument(
+        "--packaged-app",
+        type=Path,
+        help="run every live test against the application inside a built package",
+    )
     arguments = parser.parse_args()
+    if arguments.packaged_app:
+        return run_packaged_app_tests(arguments.packaged_app)
     prebuilt = arguments.prebuilt
 
     cargo = shutil.which("cargo")

@@ -48,6 +48,15 @@ def test_the_release_app_tests_exist_and_run_nightly():
     assert "python scripts/run_production_tests.py --release-app" in workflow
 
 
+def test_the_macos_bundle_runs_every_live_test():
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    job = workflow.split("\n  macos-app:\n", 1)[1].split("\n\n  ", 1)[0]
+    assert "scripts/macos/build-app.sh" in job
+    assert "mv third_party/occt-install-r0-v1" in job
+    assert "python scripts/run_production_tests.py --packaged-app" in job
+    assert "macos-app" in workflow.split("\n  rust-required:\n", 1)[1]
+
+
 def test_missing_required_component_fails_closed(tmp_path):
     missing = tmp_path / "ketchup-headless"
     with pytest.raises(runner.RunnerError, match="Missing required headless"):
