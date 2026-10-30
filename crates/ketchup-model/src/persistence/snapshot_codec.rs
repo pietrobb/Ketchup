@@ -92,18 +92,43 @@ fn fits_format_103(product: &ProductModel) -> bool {
     // The bounded ASCII STL of 0.2.0: 8 lines of at most 128 bytes and CR LF a triangle.
     let stl = u64::try_from(ketchup_tolerance::limits::MESH_TRIANGLES)
         .map_or(u64::MAX, |triangles| (triangles * 8 + 2) * 130);
-    product.import_receipts.values().all(|receipt| {
-        let source_limit = match receipt.format() {
-            ImportFormat::Stl => stl,
-            ImportFormat::Dxf => 8 * MIB,
-            ImportFormat::Step
-            | ImportFormat::Iges
-            | ImportFormat::SketchupScene
-            | ImportFormat::Glb => 32 * MIB,
-        };
-        receipt.outputs().len() <= OUTPUTS
-            && receipt.source_byte_len() <= source_limit
-            && known_to_0_2_0(receipt.units().source_unit())
+    product
+        .drawing_sheets
+        .values()
+        .all(|sheet| sheet_fits_format_103(product, sheet))
+        && product.import_receipts.values().all(|receipt| {
+            let source_limit = match receipt.format() {
+                ImportFormat::Stl => stl,
+                ImportFormat::Dxf => 8 * MIB,
+                ImportFormat::Step
+                | ImportFormat::Iges
+                | ImportFormat::SketchupScene
+                | ImportFormat::Glb => 32 * MIB,
+            };
+            receipt.outputs().len() <= OUTPUTS
+                && receipt.source_byte_len() <= source_limit
+                && known_to_0_2_0(receipt.units().source_unit())
+        })
+}
+
+/// Whether Kečup 0.2.0 takes the assembly `sheet` draws for rigid on opening. It
+/// refuses an assembly with no grounded part, and one with an ungrounded part unless
+/// mates solve it, but this version stores any sheet whose parts exist (M-14) and
+/// draws one part alone ungrounded (MF-21). Only grounded parts mated to nothing are
+/// certain to pass; any other assembly sheet makes the file 104 (review 2026-10-26
+/// MD-41).
+fn sheet_fits_format_103(product: &ProductModel, sheet: &crate::drawing::DrawingSheet) -> bool {
+    let Ok(paths) = crate::drawing::rigid_source_paths(sheet.source()) else {
+        return true;
+    };
+    paths.iter().all(|path| {
+        product
+            .grounded_occurrences
+            .contains(&path.root_occurrence())
+    }) && product.assembly_mates.values().all(|mate| {
+        [mate.endpoint_a(), mate.endpoint_b()]
+            .iter()
+            .all(|endpoint| !paths.contains(endpoint.instance_path()))
     })
 }
 

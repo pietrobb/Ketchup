@@ -246,6 +246,59 @@ fn a_dxf_import_in_a_unit_kecup_0_2_0_does_not_know_is_not_written_as_format_103
     }
 }
 
+/// A document with one part drawn alone on a shop drawing, the part `grounded` or not.
+fn a_part_drawn_alone(grounded: bool) -> DocumentStore {
+    use ketchup_model::document::{DefinitionId, OccurrenceId, Transform};
+    use ketchup_model::drawing::{DrawingSheet, DrawingSheetId, DrawingSource};
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Stud".into(),
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(2),
+                definition_id: DefinitionId(1),
+                name: "stud".into(),
+                transform: Transform::identity(),
+                parent: None,
+                tags: Default::default(),
+                visible: true,
+            },
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: OccurrenceId(2),
+                grounded,
+            },
+            CanonicalCommand::CreateDrawingSheet(
+                DrawingSheet::new(
+                    DrawingSheetId(3),
+                    "stud",
+                    DrawingSource::RigidAssembly {
+                        occurrence_ids: vec![OccurrenceId(2)],
+                    },
+                )
+                .unwrap(),
+            ),
+        ]))
+        .unwrap();
+    document
+}
+
+/// Review 2026-10-26 MD-41: one part is drawn alone on a shop drawing without being
+/// grounded (MF-21), which Kečup 0.2.0 refuses on opening as `SourceNotRigid`, so it
+/// took the format 103 file for damaged and opened its older `.recovery`. Such a sheet
+/// makes the file 104; a sheet of grounded parts mated to nothing outside stays 103.
+#[test]
+fn a_sheet_kecup_0_2_0_refuses_is_not_written_as_format_103() {
+    let format = |document: DocumentStore| {
+        let snapshot = persistence::save(&document.current());
+        u16::from_le_bytes([snapshot[10], snapshot[11]])
+    };
+    assert_eq!(format(a_part_drawn_alone(false)), 104);
+    assert_eq!(format(a_part_drawn_alone(true)), 103);
+}
+
 /// The files of these tests as Save writes them now, each in the format its document
 /// needs (review 2026-10-29 proposal 5.4); with `KETCHUP_TEST_REPORT_DIR` set they are
 /// written there as `release-0.2.0-<format>-<name>`. `scripts/release_0_2_0_reads.py`
@@ -299,6 +352,14 @@ fn files_for_kecup_0_2_0_are_in_the_format_their_document_needs() {
         ContainerData::default(),
         104,
     ));
+    for (grounded, schema) in [(true, 103), (false, 104)] {
+        files.push((
+            format!("part-drawn-alone-grounded-{grounded}"),
+            a_part_drawn_alone(grounded),
+            ContainerData::default(),
+            schema,
+        ));
+    }
     for (name, document, container, schema) in files {
         let saved =
             persistence::save_document_store_current_snapshot(&document, &container).unwrap();

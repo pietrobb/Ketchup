@@ -2431,7 +2431,7 @@ pub fn project_orthographic_drawing_in(
 
 /// The instance paths a rigid-assembly source draws, or the definition a
 /// definition source draws.
-fn rigid_source_paths(
+pub(crate) fn rigid_source_paths(
     source: &DrawingSource,
 ) -> Result<std::borrow::Cow<'_, [InstancePath]>, DefinitionId> {
     match source {
