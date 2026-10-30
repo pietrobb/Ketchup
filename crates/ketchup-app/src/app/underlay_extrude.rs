@@ -9,6 +9,7 @@ use crate::live_bridge::take_error_details;
 use crate::live_bridge::underlay_program::{
     Ring, free_name, underlay_area_outline, underlay_extrusion_program,
 };
+use crate::live_bridge::underlay_regions::search_ahead;
 use crate::*;
 use ketchup_application::RuleProgramApplyError;
 use ketchup_model::underlay::UnderlayId;
@@ -198,6 +199,17 @@ impl KetchupApp {
                     .flatten()
             })
             .ok_or(refused)
+    }
+
+    /// Starts finding the closed regions of each drawing lying flat off the UI thread, for
+    /// the clicks of Pull area to come (review 2026-10-26 UO-40).
+    pub(crate) fn search_underlay_regions_ahead(&self) {
+        let snapshot = self.document.current();
+        for underlay in snapshot.underlays().filter(|underlay| underlay.lies_flat()) {
+            if let Some(lines) = self.cached_underlay_lines(underlay) {
+                search_ahead(&snapshot, underlay, lines);
+            }
+        }
     }
 
     /// The innermost closed region of the shown layers of `underlay` around the document

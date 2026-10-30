@@ -892,18 +892,22 @@ mod tests {
     }
 
     /// Review 2026-10-26 UO-40: 200 000 pieces took 9.6 s, and a stray line 9 km away
-    /// made one cell of the whole plan: 29 s.
+    /// made one cell of the whole plan: 29 s. Each search, regions or figures, takes about
+    /// half a second in release here; the budget is a second each.
     #[test]
     #[ignore = "perf: release timing budget, runs nightly"]
-    fn perf_a_plan_of_two_hundred_thousand_pieces_and_a_stray_line_is_searched_in_seconds() {
+    fn perf_a_plan_of_two_hundred_thousand_pieces_and_a_stray_line_is_searched_in_a_second() {
         let lines = plan(200, 166);
         assert!((199_000..=MAX_REGION_SEGMENTS).contains(&lines.len()));
         let started = std::time::Instant::now();
         let regions = find_regions(&lines, 0.01).unwrap();
+        let regions_took = started.elapsed();
+        let started = std::time::Instant::now();
         let figures = find_figures(&lines, 0.01).unwrap();
-        let elapsed = started.elapsed();
+        let figures_took = started.elapsed();
         assert!(regions.len() > 60_000 && figures.len() > 30_000);
-        assert!(elapsed.as_secs_f64() < 3.0, "{elapsed:?}");
+        assert!(regions_took.as_secs_f64() < 1.0, "regions {regions_took:?}");
+        assert!(figures_took.as_secs_f64() < 1.0, "figures {figures_took:?}");
     }
 
     #[test]

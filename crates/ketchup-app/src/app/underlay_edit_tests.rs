@@ -1052,3 +1052,33 @@ fn a_pulled_area_refused_for_its_size_says_why() {
         app.digest
     );
 }
+
+/// Review 2026-10-26 UO-40: the first click of Pull area found the drawing's regions on
+/// the UI thread, a second and more on a large plan. Choosing the tool starts the search
+/// off it, and the click takes what it found.
+#[test]
+fn choosing_pull_area_finds_the_regions_off_the_ui_thread() {
+    let mut harness = shell_of(imported_alone_with(&saw(37)));
+    let found = |app: &KetchupApp| {
+        let snapshot = app.document.current();
+        let underlay = snapshot.underlays().next().unwrap();
+        let lines = app.cached_underlay_lines(underlay).unwrap();
+        crate::live_bridge::underlay_regions::found_ahead(&snapshot, underlay, &lines)
+    };
+    assert!(!found(harness.state()), "nothing was searched yet");
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExtrudeUnderlayArea);
+    let started = std::time::Instant::now();
+    while !found(harness.state()) {
+        assert!(
+            started.elapsed().as_secs() < 20,
+            "the regions were not found ahead of a click"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let undo = harness.state().undo_step_count();
+    pull_up(&mut harness, "300", Vec3::new(20.0, -250.0, 0.0));
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo + 1, "{}", app.digest);
+}

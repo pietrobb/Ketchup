@@ -347,14 +347,22 @@ pub(super) fn closed_regions(
         return Err("invalid_params");
     }
     let chosen = chosen_layers(snapshot, underlay, layers)?;
-    let mut segments = pieces(lines, &chosen, None)
-        .iter()
-        .map(|piece| piece.ends)
-        .collect::<Vec<_>>();
+    let pieces = pieces(lines, &chosen, None);
+    let mut segments = pieces.iter().map(|piece| piece.ends).collect::<Vec<_>>();
     add_closures(&mut segments, underlay, closing_segments_mm)?;
+    found_regions(segments, tolerance / underlay.scale(), whole)
+}
+
+/// The regions, or with `whole` the figures, of `segments` joined within `tolerance`, the
+/// same search found once.
+fn found_regions(
+    segments: Vec<[[f64; 2]; 2]>,
+    tolerance: f64,
+    whole: bool,
+) -> Result<Vec<Region>, &'static str> {
     let search = Search {
         segments,
-        tolerance: (tolerance / underlay.scale()).to_bits(),
+        tolerance: tolerance.to_bits(),
         whole,
     };
     let mut found = FOUND
@@ -367,7 +375,6 @@ pub(super) fn closed_regions(
         return Ok(regions);
     }
     drop(found);
-    let tolerance = f64::from_bits(search.tolerance);
     let regions = if whole {
         find_figures(&search.segments, tolerance)
     } else {
@@ -400,6 +407,76 @@ const FOUND_KEPT: usize = 4;
 /// underlay found the same regions of the same lines again for every section that follows
 /// it (review 2026-10-26 UO-40).
 static FOUND: std::sync::Mutex<Vec<(Search, Vec<Region>)>> = std::sync::Mutex::new(Vec::new());
+
+/// The searches [`search_ahead`] runs now.
+static SEARCHING: std::sync::Mutex<Vec<Search>> = std::sync::Mutex::new(Vec::new());
+
+/// Starts finding the closed regions of the shown layers of `underlay` on a thread of its
+/// own, the search a click of Pull area makes, so the click takes them found instead of
+/// stalling the window on a large plan (review 2026-10-26 UO-40).
+pub(crate) fn search_ahead(
+    snapshot: &Snapshot,
+    underlay: &Underlay,
+    lines: std::sync::Arc<UnderlayLines>,
+) {
+    let Ok(chosen) = chosen_layers(snapshot, underlay, None) else {
+        return;
+    };
+    let tolerance = (DEFAULT_JOIN_MM / underlay.scale()).to_bits();
+    std::thread::spawn(move || {
+        let search = shown_search(&lines, &chosen, tolerance);
+        {
+            let found = FOUND
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut searching = SEARCHING
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if found.iter().any(|(earlier, _)| *earlier == search) || searching.contains(&search) {
+                return;
+            }
+            searching.push(Search {
+                segments: search.segments.clone(),
+                ..search
+            });
+        }
+        let segments = search.segments.clone();
+        let _ = found_regions(segments, f64::from_bits(tolerance), false);
+        SEARCHING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|running| *running != search);
+    });
+}
+
+/// The search for the regions of `layers` of `lines` joined within `tolerance`, as
+/// [`closed_regions`] makes it with no closures.
+fn shown_search(lines: &UnderlayLines, layers: &[usize], tolerance: u64) -> Search {
+    Search {
+        segments: pieces(lines, layers, None)
+            .iter()
+            .map(|piece| piece.ends)
+            .collect(),
+        tolerance,
+        whole: false,
+    }
+}
+
+/// Whether the regions of the shown layers of `underlay` are found, without finding them.
+#[cfg(test)]
+pub(crate) fn found_ahead(snapshot: &Snapshot, underlay: &Underlay, lines: &UnderlayLines) -> bool {
+    let chosen = chosen_layers(snapshot, underlay, None).unwrap();
+    let search = shown_search(
+        lines,
+        &chosen,
+        (DEFAULT_JOIN_MM / underlay.scale()).to_bits(),
+    );
+    FOUND
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .any(|(earlier, _)| *earlier == search)
+}
 
 fn add_closures(
     segments: &mut Vec<[[f64; 2]; 2]>,

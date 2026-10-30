@@ -99,7 +99,7 @@ mod underlay_arcs;
 pub(crate) mod underlay_binding;
 mod underlay_objects;
 pub(crate) mod underlay_program;
-mod underlay_regions;
+pub(crate) mod underlay_regions;
 mod underlay_snap;
 pub(crate) mod underlay_views;
 mod validator_catalog;
