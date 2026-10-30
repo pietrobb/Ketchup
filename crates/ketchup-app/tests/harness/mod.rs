@@ -916,12 +916,35 @@ impl Shell {
 
     /// Type text into whatever widget currently has keyboard focus.
     pub fn type_text(&mut self, text: &str) {
-        self.event(egui::Event::Text(text.to_owned()));
+        self.type_text_once(text);
         self.run_idle();
     }
 
+    /// Type `text` in one frame as winit sends it: the key of each letter or digit goes
+    /// down before its text and up after it (review 2026-10-29 UI-60).
     pub fn type_text_once(&mut self, text: &str) {
-        self.event(egui::Event::Text(text.to_owned()));
+        let events = &mut self.harness.input_mut().events;
+        for character in text.chars() {
+            let key = Key::from_name(&character.to_ascii_uppercase().to_string());
+            let key_event = |key, pressed| egui::Event::Key {
+                key,
+                physical_key: Some(key),
+                pressed,
+                repeat: false,
+                modifiers: Modifiers {
+                    shift: character.is_uppercase(),
+                    ..Modifiers::NONE
+                },
+            };
+            if let Some(key) = key {
+                events.push(key_event(key, true));
+            }
+            events.push(egui::Event::Text(character.to_string()));
+            if let Some(key) = key {
+                events.push(key_event(key, false));
+            }
+        }
+        self.harness.step();
     }
 
     fn button(&mut self, position: Pos2, modifiers: Modifiers, pressed: bool) {

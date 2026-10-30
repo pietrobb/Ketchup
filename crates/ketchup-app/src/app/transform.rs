@@ -2339,8 +2339,11 @@ impl KetchupApp {
     pub(crate) fn advance_move(&self, drag: &mut MoveDrag, pointer: Pos2, rect: Rect, free: bool) {
         let Some(axis) = drag.axis else {
             if let Some(snap) = self.hover.snap.as_ref().filter(|snap| {
+                // An underlay's lines share one path; those of what moves are not
+                // offered as snaps at all (UI-63).
                 snap.kind != SnapKind::Face
-                    && snap.reference.instance_path != drag.selection.instance_path
+                    && (matches!(snap.reference.element, ElementId::Underlay { .. })
+                        || snap.reference.instance_path != drag.selection.instance_path)
             }) {
                 drag.delta_mm = snap.position_mm - drag.pointer_start_world;
             } else if let Some(world) = self.screen_to_plane(pointer, rect, drag.plane_z) {

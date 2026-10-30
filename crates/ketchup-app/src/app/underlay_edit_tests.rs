@@ -2,7 +2,7 @@
 //! it, Shift+click picks more or drops one, Delete takes them out of the drawing in one Undo
 //! step, and the drawing no longer snaps where they were.
 use super::underlay_snapping_tests::{imported_alone_with, imported_with};
-use super::underlay_transform_tests::{click, double_click, press, shell, shell_of};
+use super::underlay_transform_tests::{click, double_click, point, press, shell, shell_of};
 use crate::*;
 use egui_kittest::Harness;
 use ketchup_model::underlay::drawn::{AddedObject, DrawnShape};
@@ -211,6 +211,61 @@ fn move_and_rotate_on_picked_objects_of_a_drawing_edit_only_them() {
     assert_eq!(harness.state().selected_underlay(), Some(id));
 }
 
+/// Review 2026-10-29 UI-63: moving objects picked in a drawing took the whole drawing out
+/// of snapping, so a door could not be put on a wall of the same plan, and turning them
+/// snapped to where they were. Only the lines of the picked objects are left out, once
+/// they move or turn.
+#[test]
+fn picked_objects_moved_or_turned_snap_to_the_rest_of_their_drawing_only() {
+    let mut harness = shell();
+    let undo = harness.state().undo_step_count();
+    let wall_end = Vec3::new(240.0, 20.0, 0.0);
+
+    // The wall's end onto the top end of the line across, clicked a little off it: the
+    // wall then runs from (-140, 150).
+    click(&mut harness, Vec3::new(100.0, 20.0, 0.0));
+    harness.state_mut().dispatch_command(AppCommand::Move);
+    click(&mut harness, wall_end);
+    click(&mut harness, Vec3::new(61.0, 149.0, 0.0));
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo + 1, "{}", app.digest);
+    assert!(
+        end_at(&mut harness, [-140.0, 150.0]),
+        "snapped to the line across"
+    );
+    harness.state_mut().undo();
+
+    // A turn about the wall's end once its arm is set: the pointer by the wall's own other
+    // end offers no snap where the wall was, by the line across it still does.
+    harness.state_mut().dispatch_command(AppCommand::Select);
+    harness.step();
+    click(&mut harness, Vec3::new(100.0, 20.0, 0.0));
+    assert_eq!(picked(&harness), 1);
+    harness.state_mut().dispatch_command(AppCommand::Rotate);
+    click(&mut harness, wall_end);
+    click(&mut harness, Vec3::new(200.0, 120.0, 0.0));
+    let snap_at = |harness: &mut Harness<'_, KetchupApp>, world: Vec3| {
+        point(harness, world);
+        harness
+            .state()
+            .hover
+            .snap
+            .as_ref()
+            .map(|snap| snap.position_mm)
+    };
+    assert_ne!(
+        snap_at(&mut harness, Vec3::new(41.0, 21.0, 0.0)),
+        Some(Vec3::new(40.0, 20.0, 0.0)),
+        "snapped to its old end"
+    );
+    assert_eq!(
+        snap_at(&mut harness, Vec3::new(61.0, 149.0, 0.0)),
+        Some(Vec3::new(60.0, 150.0, 0.0))
+    );
+    press(&mut harness, egui::Key::Escape);
+    assert_eq!(harness.state().undo_step_count(), undo);
+}
+
 fn drawn_shapes(harness: &Harness<'_, KetchupApp>) -> Vec<(String, DrawnShape)> {
     let snapshot = harness.state().document.current();
     let underlay = snapshot.underlays().next().unwrap();
@@ -344,6 +399,57 @@ fn type_text(harness: &mut Harness<'_, KetchupApp>, text: &str) {
         .push(egui::Event::Text(text.to_owned()));
     harness.step();
     harness.step();
+}
+
+/// `text` typed as winit sends it: a letter or digit key goes down before its text in the
+/// same frame and comes up in the next.
+pub(super) fn type_keys(harness: &mut Harness<'_, KetchupApp>, text: &str) {
+    for character in text.chars() {
+        let key = egui::Key::from_name(&character.to_ascii_uppercase().to_string());
+        let modifiers = egui::Modifiers {
+            shift: character.is_uppercase(),
+            ..egui::Modifiers::NONE
+        };
+        let key_event = |pressed| egui::Event::Key {
+            key: key.unwrap(),
+            physical_key: key,
+            pressed,
+            repeat: false,
+            modifiers,
+        };
+        let events = &mut harness.input_mut().events;
+        if key.is_some() {
+            events.push(key_event(true));
+        }
+        events.push(egui::Event::Text(character.to_string()));
+        harness.step();
+        if key.is_some() {
+            harness.input_mut().events.push(key_event(false));
+        }
+        harness.step();
+    }
+}
+
+/// Review 2026-10-29 UI-60: the key of a text's first letter went down before the text
+/// and was left to the canvas, so "Spálňa" switched to Spline and "Chodba" to Circle. The
+/// key of the letter that begins the text is the text's.
+#[test]
+fn a_text_beginning_with_a_tool_key_is_typed_not_its_tool() {
+    let mut harness = shell();
+    click(&mut harness, Vec3::new(100.0, 120.0, 0.0));
+    for word in ["Spálňa", "Obývačka", "Chodba", "Terasa", "Altán", "Lino"] {
+        harness
+            .state_mut()
+            .dispatch_command(AppCommand::TextIntoUnderlay);
+        type_keys(&mut harness, word);
+        assert_eq!(
+            harness.state().active_tool,
+            ActiveTool::UnderlayText,
+            "{word}"
+        );
+        assert_eq!(harness.state().value_box.input, word);
+        press(&mut harness, egui::Key::Escape);
+    }
 }
 
 /// 2D-2: Text into drawing, typed and clicked: the text typed (commas and all) goes on the

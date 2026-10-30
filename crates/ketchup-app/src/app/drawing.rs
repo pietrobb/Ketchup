@@ -3183,11 +3183,24 @@ impl KetchupApp {
         // canvas's, so Delete then "5" deletes, and an arrow still pins.
         let value_keys = if starts_value {
             context.input_mut(|input| {
-                let first = input
+                let mut first = input
                     .events
                     .iter()
                     .position(|event| matches!(event, egui::Event::Text(_)))
                     .unwrap_or(input.events.len());
+                // winit sends the key of a typed letter or digit just before its
+                // text; left to the canvas, the "S" of "Spálňa" picked Spline
+                // (review 2026-10-29 UI-60).
+                if first > 0
+                    && matches!(
+                        input.events[first - 1],
+                        egui::Event::Key { key, pressed: true, modifiers, .. }
+                            if !(modifiers.command || modifiers.ctrl || modifiers.alt)
+                                && key.name().chars().count() == 1
+                    )
+                {
+                    first -= 1;
+                }
                 let tail = input.events.split_off(first);
                 let (keys, kept): (Vec<_>, Vec<_>) = tail.into_iter().partition(|event| {
                     matches!(

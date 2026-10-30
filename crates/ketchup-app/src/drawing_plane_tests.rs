@@ -301,19 +301,27 @@ fn space_selects_without_opening_the_value_field() {
 }
 
 /// Review 2026-10-14 (GX-14): typing "M8 12" in the Hole tool switched to
-/// Move at the "M". In the Hole tool "M" starts the thread size instead.
+/// Move at the "M". In the Hole tool "M" starts the thread size instead. The key
+/// goes down before its text in the same frame, as winit sends it (review 2026-10-29
+/// UI-60).
 #[test]
 fn an_m_typed_in_the_hole_tool_starts_a_thread_size_not_move() {
     let mut app = KetchupApp::new();
     app.dispatch_command(AppCommand::Hole);
     let mut harness = shell(app);
-    harness.key_press(egui::Key::M);
-    harness
-        .input_mut()
-        .events
-        .push(egui::Event::Text("M".into()));
+    let key_m = |pressed| egui::Event::Key {
+        key: egui::Key::M,
+        physical_key: Some(egui::Key::M),
+        pressed,
+        repeat: false,
+        modifiers: egui::Modifiers::SHIFT,
+    };
+    let events = &mut harness.input_mut().events;
+    events.push(key_m(true));
+    events.push(egui::Event::Text("M".into()));
     harness.step();
     assert_eq!(harness.state().active_tool, ActiveTool::Hole);
+    harness.input_mut().events.push(key_m(false));
     harness.step();
     harness
         .input_mut()

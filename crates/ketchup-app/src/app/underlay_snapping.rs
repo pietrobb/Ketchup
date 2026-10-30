@@ -3,6 +3,7 @@
 //! and the bridge's `underlay_snap` all find the same points.
 
 use crate::*;
+use ketchup_model::underlay::object_query::ObjectIndex;
 use ketchup_model::underlay::snap::{
     UnderlayPiece, UnderlaySnap, UnderlaySnapIndex, UnderlaySnapKind,
 };
@@ -249,13 +250,44 @@ impl KetchupApp {
         let Some((point, radius)) = self.underlay_snap_window(pointer, rect, tolerance_px) else {
             return Vec::new();
         };
-        let moving = self
-            .move_session()
-            .and_then(|(drag, _)| underlay_of(&drag.selection));
+        // Objects picked in a drawing move or turn alone, and the rest of their drawing
+        // snaps; a turn moves them once its arm is set (review 2026-10-29 UI-63).
+        let dragged = match self.transform_tool.session.as_ref() {
+            Some(ToolSession::Move { drag, .. }) => Some(&drag.selection),
+            Some(ToolSession::Rotate { drag, .. }) if drag.reference_mm.is_some() => {
+                Some(&drag.selection)
+            }
+            _ => None,
+        };
+        let (moving, picked) = match dragged {
+            Some(selection) => match self.dragged_underlay_objects(selection) {
+                Some(picked) => (None, Some(picked)),
+                _ => (underlay_of(selection), None),
+            },
+            None => (None, None),
+        };
+        let picked_lines = picked.as_ref().and_then(|(id, objects)| {
+            let lines = self.cached_underlay_lines(snapshot.underlay(*id)?)?;
+            Some((*id, objects, lines))
+        });
+        let picked_index = picked_lines
+            .as_ref()
+            .map(|(id, objects, lines)| (*id, *objects, lines, ObjectIndex::new(lines)));
+        let is_picked = |id: UnderlayId, segment: usize| {
+            picked_index
+                .as_ref()
+                .filter(|(picked, ..)| *picked == id)
+                .is_some_and(|(_, objects, lines, index)| {
+                    lines
+                        .segment_start(segment)
+                        .and_then(|(layer, point)| index.object_drawing(layer, point))
+                        .is_some_and(|object| objects.contains(&index.top_level_of(object)))
+                })
+        };
         self.underlay_snaps_near(&snapshot, point, radius)
             .0
             .into_iter()
-            .filter(|(id, _)| moving != Some(*id))
+            .filter(|(id, snap)| moving != Some(*id) && !is_picked(*id, snap.segment))
             .map(|(id, snap)| {
                 (
                     underlay_reference(id, snap.segment),
