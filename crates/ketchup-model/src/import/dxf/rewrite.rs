@@ -513,12 +513,17 @@ impl<'a> Drawing<'a> {
             records: Vec::new(),
             next_dimension: self.next_dimension_block,
         };
-        for (&object, map) in &edits.moved_objects {
+        let moved = edits.moved_objects.iter().map(|moved| (moved, false));
+        let stretched = edits.stretched_objects.iter().map(|moved| (moved, true));
+        for ((&object, map), stretch) in moved.chain(stretched) {
             if edits.removed_objects.contains(&object) {
                 continue;
             }
             let entity = entity_of(object)?;
-            let map = frame.map(map);
+            let map = Mapping {
+                map: frame.map(map),
+                stretch,
+            };
             let mapped = self.mapped(object, entity, &map, false, &mut handles, &mut blocks)?;
             replaced[entity] = Some(Some(mapped));
         }
@@ -538,20 +543,22 @@ impl<'a> Drawing<'a> {
         let mut id = read_count;
         for edit in &edits.added {
             let first = id;
-            id = id.saturating_add(match edit {
-                AddedObject::Copy { of, .. } => usize::try_from(*of)
-                    .ok()
+            id = id.saturating_add(
+                edit.copy_of()
+                    .and_then(|of| usize::try_from(of).ok())
                     .and_then(|of| tree.get(of).copied())
                     .unwrap_or(1),
-                AddedObject::Drawn { .. } => 1,
-            });
+            );
             if edits.removed_objects.contains(&first) {
                 continue;
             }
             match edit {
-                AddedObject::Copy { of, map } => {
+                AddedObject::Copy { of, map } | AddedObject::Stretched { of, map } => {
                     let entity = entity_of(*of)?;
-                    let map = frame.map(map);
+                    let map = Mapping {
+                        map: frame.map(map),
+                        stretch: matches!(edit, AddedObject::Stretched { .. }),
+                    };
                     added.extend(self.mapped(
                         *of,
                         entity,
@@ -715,7 +722,7 @@ impl<'a> Drawing<'a> {
         &self,
         object: u32,
         entity: usize,
-        map: &Affine,
+        map: &Mapping,
         copy: bool,
         handles: &mut Option<u64>,
         blocks: &mut NewBlocks,
@@ -735,7 +742,7 @@ impl<'a> Drawing<'a> {
             };
             let mut mapped = self.mapped_record(object, record, *start..end, map)?;
             if record == "DIMENSION" {
-                self.dimension_block(object, &mut mapped, map, handles, blocks)?;
+                self.dimension_block(object, &mut mapped, &map.map, handles, blocks)?;
             }
             let copy = copy.then_some((own, primary, entity.handle));
             self.write_record(&mut out, &mapped, copy);
@@ -812,7 +819,11 @@ impl<'a> Drawing<'a> {
         while start < endblk {
             let end = next_record(start)?;
             let kind = String::from_utf8_lossy(self.value(start)).to_ascii_uppercase();
-            let mapped = self.mapped_record(object, &kind, start..end, map)?;
+            let mapping = Mapping {
+                map: *map,
+                stretch: false,
+            };
+            let mapped = self.mapped_record(object, &kind, start..end, &mapping)?;
             self.write_record(&mut blocks.blocks, &mapped, copy(handles));
             start = end;
         }
@@ -838,15 +849,21 @@ impl<'a> Drawing<'a> {
         object: u32,
         record: &str,
         pairs: Range<usize>,
-        map: &Affine,
+        mapping: &Mapping,
     ) -> Result<Vec<Out>, EditedDxfError> {
         let not_mappable = || DxfEditRefusal::NotMappable {
             object,
             kind: record.to_owned(),
         };
         let rules = Rules::of(record).ok_or_else(not_mappable)?;
+        if mapping.stretch && !STRETCHED_RECORDS.contains(&record) {
+            return Err(not_mappable().into());
+        }
+        let map = &mapping.map;
         let [[a, b, _], [c, d, _]] = *map;
         let scale = (a * d - b * c).abs().sqrt();
+        // A stretched line keeps its widths.
+        let length_scale = if mapping.stretch { 1.0 } else { scale };
         let mirrored = a * d - b * c < 0.0;
         let turn_deg = c.atan2(a).to_degrees();
         let indices = pairs.clone().collect::<Vec<_>>();
@@ -914,7 +931,7 @@ impl<'a> Drawing<'a> {
                 out[at + 1] = Out::Set(next, number(y));
                 skip = 1;
             } else if rules.lengths.contains(&code) {
-                out[at] = Out::Set(index, number(self.number(index)? * scale));
+                out[at] = Out::Set(index, number(self.number(index)? * length_scale));
             } else if code == 42 && rules.bulge && mirrored {
                 out[at] = Out::Set(index, number(0.0 - self.number(index)?));
             } else if rules.angles.contains(&code) {
@@ -1336,6 +1353,16 @@ enum Out {
     New(i32, String),
     Drop,
 }
+
+/// A map of an entity, of the drawing's units; `stretch` when it makes a straight line
+/// shorter or longer, so that its widths stay as they are.
+struct Mapping {
+    map: Affine,
+    stretch: bool,
+}
+
+/// The records of the straight lines that are stretched ([`UnderlayEdits::stretched_objects`]).
+const STRETCHED_RECORDS: [&str; 5] = ["LINE", "LWPOLYLINE", "POLYLINE", "VERTEX", "SEQEND"];
 
 /// What of a record a map changes, by group code.
 struct Rules {

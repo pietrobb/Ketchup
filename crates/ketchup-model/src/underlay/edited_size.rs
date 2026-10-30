@@ -88,11 +88,11 @@ impl UnderlayLines {
         let mut copied = BTreeMap::new();
         let mut size = DrawingSize::default();
         for added in added {
-            size.add(match added {
-                AddedObject::Copy { of, .. } => *copied
-                    .entry(*of)
-                    .or_insert_with(|| self.tree_size(*of, &children)),
-                AddedObject::Drawn { .. } => DrawingSize {
+            size.add(match added.copy_of() {
+                Some(of) => *copied
+                    .entry(of)
+                    .or_insert_with(|| self.tree_size(of, &children)),
+                None => DrawingSize {
                     objects: 1,
                     bytes: OBJECT_BYTES + PART_BYTES,
                 },

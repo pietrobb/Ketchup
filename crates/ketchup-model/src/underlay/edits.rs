@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::drawn::{AddedObject, DrawnShape, is_similarity, then};
+use super::drawn::{AddedObject, DrawnShape, is_similarity};
 use super::objects::{Affine, LayerMaps, ObjectDetail, ObjectKind, UnderlayObject};
 use super::{LayerLines, Underlay, UnderlayLayer, UnderlayLines, UnderlayPlanError, kept_at};
 use crate::document::{CanonicalCommand, CommandBatch, Snapshot};
@@ -24,6 +24,13 @@ pub struct UnderlayEdits {
     /// read to where they are: a move, turn, mirror or uniform scale.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub moved_objects: BTreeMap<u32, Affine>,
+    /// Straight lines of the drawing as read, by id, made shorter or longer (trimmed,
+    /// extended) and maybe moved after: the map of their ends. Unlike a moved object's,
+    /// their widths stay as read; written back, only their ends change, so the entity keeps
+    /// its handle, colour, line type, lineweight and data (review 2026-10-29 CD-61). An id
+    /// is in this or in `moved_objects`, not both.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub stretched_objects: BTreeMap<u32, Affine>,
     /// What was drawn or copied into the drawing, in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub added: Vec<AddedObject>,
@@ -32,7 +39,20 @@ pub struct UnderlayEdits {
 impl UnderlayEdits {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.removed_objects.is_empty() && self.moved_objects.is_empty() && self.added.is_empty()
+        self.removed_objects.is_empty()
+            && self.moved_objects.is_empty()
+            && self.stretched_objects.is_empty()
+            && self.added.is_empty()
+    }
+
+    /// The map of read object `id` from where it was read to where it is, and whether it
+    /// was stretched rather than moved; `None` while it is where it was read.
+    #[must_use]
+    pub fn map_of(&self, id: u32) -> Option<(Affine, bool)> {
+        self.stretched_objects
+            .get(&id)
+            .map(|map| (*map, true))
+            .or_else(|| self.moved_objects.get(&id).map(|map| (*map, false)))
     }
 
     /// Whether every shape can be drawn, every map is a similarity and no more objects are
@@ -41,9 +61,16 @@ impl UnderlayEdits {
     pub fn is_valid(&self) -> bool {
         self.added.len() <= ketchup_tolerance::limits::DRAWING_ENTITIES
             && self.moved_objects.values().all(is_similarity)
+            && self.stretched_objects.values().all(is_similarity)
+            && self
+                .stretched_objects
+                .keys()
+                .all(|id| !self.moved_objects.contains_key(id))
             && self.added.iter().all(|added| match added {
                 AddedObject::Drawn { shape, .. } => shape.is_valid(),
-                AddedObject::Copy { map, .. } => is_similarity(map),
+                AddedObject::Copy { map, .. } | AddedObject::Stretched { map, .. } => {
+                    is_similarity(map)
+                }
             })
     }
 
@@ -98,24 +125,22 @@ impl UnderlayLines {
             return self;
         }
         let children = self.children_index();
+        // A stretched line is drawn as a moved one: its widths are not drawn.
         let moved = edits
             .moved_objects
             .iter()
+            .chain(&edits.stretched_objects)
             .filter(|(id, _)| !edits.removed_objects.contains(id))
             .filter_map(|(id, map)| Some((self.capture(*id, &children)?, *map)))
             .collect::<Vec<_>>();
         let copies = edits
             .added
             .iter()
-            .map(|added| match added {
-                AddedObject::Copy { of, .. } => self.capture(*of, &children),
-                AddedObject::Drawn { .. } => None,
-            })
+            .map(|added| self.capture(added.copy_of()?, &children))
             .collect::<Vec<_>>();
         let removed = self.with_children(|id| edits.removed_objects.contains(&id));
-        let moving = self.with_children(|id| {
-            edits.moved_objects.contains_key(&id) && !edits.removed_objects.contains(&id)
-        });
+        let moving = self
+            .with_children(|id| edits.map_of(id).is_some() && !edits.removed_objects.contains(&id));
         let gone = removed
             .iter()
             .zip(&moving)
@@ -143,11 +168,14 @@ impl UnderlayLines {
                         added_by,
                     );
                 }
-                (AddedObject::Copy { map, .. }, Some(captured)) => {
+                (
+                    AddedObject::Copy { map, .. } | AddedObject::Stretched { map, .. },
+                    Some(captured),
+                ) => {
                     self.put(captured, map, false, Some(added_by), removed);
                 }
                 // A copy of no object of the drawing still takes its id, holding nothing.
-                (AddedObject::Copy { .. }, None) => {
+                (AddedObject::Copy { .. } | AddedObject::Stretched { .. }, None) => {
                     self.objects.objects.push(UnderlayObject {
                         kind: ObjectKind::from_dxf("INSERT").expect("a kind objects are kept of"),
                         handle: 0,
@@ -457,31 +485,15 @@ pub fn plan_underlay_object_transform(
                 .get(super::index(added_by))
                 .cloned()
                 .ok_or(UnderlayObjectError::NotFound(object_id))?,
-            None => AddedObject::Copy {
-                of: object_id,
-                map: edits
-                    .moved_objects
-                    .get(&object_id)
-                    .copied()
-                    .unwrap_or(IDENTITY),
-            },
+            None => current_read(&edits, object_id),
         };
-        let mapped = match current {
-            AddedObject::Drawn { layer, shape } => AddedObject::Drawn {
-                layer,
-                shape: shape.transformed(map),
-            },
-            AddedObject::Copy { of, map: before } => AddedObject::Copy {
-                of,
-                map: then(&before, map),
-            },
-        };
+        let mapped = current.transformed(map);
         if copy {
             edits.added.push(mapped);
         } else if let Some(added_by) = object.added_by {
             edits.added[super::index(added_by)] = mapped;
-        } else if let AddedObject::Copy { map, .. } = mapped {
-            edits.moved_objects.insert(object_id, map);
+        } else {
+            edits.place_read(object_id, &mapped);
         }
     }
     if copy {
@@ -496,6 +508,35 @@ pub fn plan_underlay_object_transform(
 }
 
 const IDENTITY: Affine = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+
+/// What the read object `id` is now, as a copy of it as read: moved or stretched.
+pub(super) fn current_read(edits: &UnderlayEdits, id: u32) -> AddedObject {
+    match edits.map_of(id) {
+        Some((map, true)) => AddedObject::Stretched { of: id, map },
+        Some((map, false)) => AddedObject::Copy { of: id, map },
+        None => AddedObject::Copy {
+            of: id,
+            map: IDENTITY,
+        },
+    }
+}
+
+impl UnderlayEdits {
+    /// Puts the read object `id` where `now`, a copy of it ([`current_read`]), lies.
+    pub(super) fn place_read(&mut self, id: u32, now: &AddedObject) {
+        match now {
+            AddedObject::Stretched { map, .. } => {
+                self.moved_objects.remove(&id);
+                self.stretched_objects.insert(id, *map);
+            }
+            AddedObject::Copy { map, .. } => {
+                self.stretched_objects.remove(&id);
+                self.moved_objects.insert(id, *map);
+            }
+            AddedObject::Drawn { .. } => {}
+        }
+    }
+}
 
 /// Object `id` of `objects` when it is there and placed by none.
 pub(super) fn top_level(

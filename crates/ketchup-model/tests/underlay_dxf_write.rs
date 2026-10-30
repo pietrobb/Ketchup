@@ -475,6 +475,160 @@ fn removed_entities_leave_no_reference_in_the_objects() {
     );
 }
 
+/// A dashed red LINE of lineweight 50 with extended data, two lines across it, and an
+/// LWPOLYLINE 20 wide along it; a group names the line and the polyline.
+const SHAPED: &str = concat!(
+    "0\nSECTION\n2\nENTITIES\n",
+    "0\nLINE\n5\nC0\n330\n1F\n100\nAcDbEntity\n8\nwalls\n6\nDASHED\n62\n1\n370\n50\n",
+    "100\nAcDbLine\n10\n0\n20\n0\n30\n0\n11\n4000\n21\n0\n31\n0\n1001\nKETCHUP\n1000\nwall-7\n",
+    "0\nLINE\n5\nC1\n330\n1F\n100\nAcDbEntity\n8\nwalls\n100\nAcDbLine\n",
+    "10\n1000\n20\n-500\n30\n0\n11\n1000\n21\n1500\n31\n0\n",
+    "0\nLINE\n5\nC2\n330\n1F\n100\nAcDbEntity\n8\nwalls\n100\nAcDbLine\n",
+    "10\n3000\n20\n-500\n30\n0\n11\n3000\n21\n1500\n31\n0\n",
+    "0\nLWPOLYLINE\n5\nC3\n330\n1F\n100\nAcDbEntity\n8\nwalls\n62\n3\n100\nAcDbPolyline\n",
+    "90\n2\n70\n0\n43\n20\n10\n0\n20\n1000\n10\n4000\n20\n1000\n",
+    "0\nENDSEC\n",
+    "0\nSECTION\n2\nOBJECTS\n",
+    "0\nDICTIONARY\n5\nC\n330\n0\n100\nAcDbDictionary\n3\nACAD_GROUP\n350\nD\n",
+    "0\nDICTIONARY\n5\nD\n330\nC\n100\nAcDbDictionary\n3\nWALL1\n350\nE\n",
+    "0\nGROUP\n5\nE\n330\nD\n100\nAcDbGroup\n300\n\n70\n0\n71\n1\n340\nC0\n340\nC3\n",
+    "0\nENDSEC\n",
+);
+
+/// The records of `text`, each from its `0` group to the next, with group codes unpadded.
+fn records(text: &str) -> Vec<String> {
+    let lines = text.lines().collect::<Vec<_>>();
+    let mut records = Vec::<String>::new();
+    for pair in lines.chunks(2) {
+        let code = pair[0].trim();
+        if code == "0" {
+            records.push(String::new());
+        }
+        if let Some(record) = records.last_mut() {
+            record.push_str(&format!("{code}\n{}\n", pair.get(1).unwrap_or(&"")));
+        }
+    }
+    records
+}
+
+/// The record of handle `handle` in `text`.
+fn entity(text: &str, handle: &str) -> String {
+    records(text)
+        .into_iter()
+        .find(|record| record.contains(&format!("\n5\n{handle}\n")))
+        .unwrap_or_else(|| panic!("no entity {handle}"))
+}
+
+/// Review 2026-10-29 CD-61: a trimmed, extended or offset line was taken out and drawn
+/// again on its layer, so a dashed red LINE of lineweight 50 with extended data came back
+/// as a line by layer with a new handle and no data, a polyline lost its width, and a group
+/// lost its member. The line keeps its entity: only its ends are written; a second piece of
+/// it and an offset are copies of it with all it has, and widths are not scaled.
+#[test]
+fn a_trimmed_extended_or_offset_line_keeps_its_entity_and_properties() {
+    use ketchup_model::document::DocumentStore;
+    use ketchup_model::underlay::line_edit::{LineEdit, plan_underlay_line_edit};
+    use ketchup_model::underlay::plan_underlay;
+
+    let source = format!("{HEADER}{TABLES}{SHAPED}0\nEOF\n");
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let mut document = DocumentStore::new();
+    let (batch, underlay) = plan_underlay(
+        &document.current(),
+        "plan",
+        &original.layers,
+        &[],
+        [7; 32],
+        [0.0, 0.0],
+    )
+    .unwrap();
+    document.apply_batch(&batch).unwrap();
+    let edits = |document: &DocumentStore| document.current().underlay(underlay).unwrap().clone();
+    let edit = |document: &mut DocumentStore, object: u32, line_edit: LineEdit| {
+        let current = edits(document);
+        let drawn = lines.clone().edited(&current.edits, &current.layers);
+        let batch =
+            plan_underlay_line_edit(&document.current(), underlay, &drawn, object, line_edit)
+                .unwrap();
+        document.apply_batch(&batch).unwrap();
+    };
+    let line = id_of(lines, 0xC0);
+    let polyline = id_of(lines, 0xC3);
+    // The line between the two across it goes; the polyline's piece before the first.
+    edit(
+        &mut document,
+        line,
+        LineEdit::Trim {
+            pick_mm: [2000.0, 0.0],
+        },
+    );
+    edit(
+        &mut document,
+        polyline,
+        LineEdit::Trim {
+            pick_mm: [500.0, 1000.0],
+        },
+    );
+    edit(
+        &mut document,
+        line,
+        LineEdit::Offset {
+            distance_mm: Some(500.0),
+            side_mm: [500.0, 600.0],
+        },
+    );
+    let current = edits(&document);
+    assert!(current.edits.is_valid());
+
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &current.edits,
+    )
+    .unwrap();
+    let text = String::from_utf8(written.clone()).unwrap();
+    let properties = "8\nwalls\n6\nDASHED\n62\n1\n370\n50\n100\nAcDbLine\n";
+    let data = "1001\nKETCHUP\n1000\nwall-7\n";
+    assert_eq!(
+        entity(&text, "C0"),
+        format!(
+            "0\nLINE\n5\nC0\n330\n1F\n100\nAcDbEntity\n{properties}\
+             10\n0\n20\n0\n30\n0\n11\n1000\n21\n0\n31\n0\n{data}"
+        )
+    );
+    assert_eq!(
+        entity(&text, "C3"),
+        "0\nLWPOLYLINE\n5\nC3\n330\n1F\n100\nAcDbEntity\n8\nwalls\n62\n3\n100\nAcDbPolyline\n\
+         90\n2\n70\n0\n43\n20\n10\n1000\n20\n1000\n10\n4000\n20\n1000\n"
+    );
+    // The piece past the second line across, and the offset: lines with all the line has.
+    let records = records(&text);
+    for (from, to) in [
+        ("3000\n20\n0", "4000\n21\n0"),
+        ("0\n20\n500", "1000\n21\n500"),
+    ] {
+        let body =
+            format!("100\nAcDbEntity\n{properties}10\n{from}\n30\n0\n11\n{to}\n31\n0\n{data}");
+        let found = records.iter().filter(|record| record.ends_with(&body));
+        assert_eq!(found.count(), 1, "{body}\n{text}");
+    }
+    let kept = records
+        .iter()
+        .filter(|record| record.starts_with("0\nLINE\n"));
+    assert_eq!(kept.count(), 5, "{text}");
+    // The group still names both.
+    assert!(text.contains("340\nC0\n340\nC3\n"), "{text}");
+
+    let again = read(&written);
+    let edited = lines.clone().edited(&current.edits, &current.layers);
+    assert_same(
+        &drawn(&again.lines, &again.layers),
+        &drawn(&edited, &original.layers),
+    );
+}
+
 #[test]
 fn another_drawing_is_refused() {
     let source = source();

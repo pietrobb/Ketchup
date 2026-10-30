@@ -275,7 +275,7 @@ fn drawn_shapes(harness: &Harness<'_, KetchupApp>) -> Vec<(String, DrawnShape)> 
         .iter()
         .filter_map(|added| match added {
             AddedObject::Drawn { layer, shape } => Some((layer.clone(), shape.clone())),
-            AddedObject::Copy { .. } => None,
+            AddedObject::Copy { .. } | AddedObject::Stretched { .. } => None,
         })
         .collect()
 }

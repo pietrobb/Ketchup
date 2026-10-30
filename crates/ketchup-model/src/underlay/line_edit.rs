@@ -1,9 +1,10 @@
 //! Trim, extend and offset of a straight line of an underlay's drawing. A trimmed or
-//! extended line is taken out and the lines it becomes are drawn on its layer; an offset
-//! draws a parallel line beside it. Each is one batch, so one Undo step.
+//! extended line keeps its id and gets new ends, a second piece of a trimmed line and an
+//! offset are copies of it: a line of the drawing keeps all it has but its ends (review
+//! 2026-10-29 CD-61). Each is one batch, so one Undo step.
 
-use super::drawn::{AddedObject, DrawnShape};
-use super::edits::{UnderlayObjectError, top_level, with_edits};
+use super::drawn::{AddedObject, DrawnShape, stretch, then};
+use super::edits::{UnderlayEdits, UnderlayObjectError, current_read, top_level, with_edits};
 use super::object_query::ObjectIndex;
 use super::{UnderlayId, UnderlayLines, UnderlayPlanError};
 use crate::document::{CommandBatch, Snapshot};
@@ -25,6 +26,9 @@ pub enum LineEdit {
         side_mm: [f64; 2],
     },
 }
+
+/// The kinds of the drawing's straight lines whose ends alone are written anew.
+const STRETCHED_KINDS: [&str; 3] = ["LINE", "LWPOLYLINE", "POLYLINE"];
 
 /// Crossings this close to an end of the line, as a share of its length, are at the end.
 const END: f64 = ROUNDING;
@@ -51,15 +55,41 @@ pub fn plan_underlay_line_edit(
         [[a, b]] => [*a, *b],
         _ => return Err(UnderlayObjectError::NotALine(object_id)),
     };
-    let layer = lines.objects().layer_name(object).to_owned();
-    let line = |points: [[f64; 2]; 2]| AddedObject::Drawn {
-        layer: layer.clone(),
-        shape: DrawnShape::Polyline {
-            points_mm: points.to_vec(),
-            closed: false,
-        },
-    };
     let mut edits = underlay.edits.clone();
+    // What the line is now: drawn, or a copy of a line of the drawing as read.
+    let current = match object.added_by {
+        Some(added_by) => edits
+            .added
+            .get(super::index(added_by))
+            .cloned()
+            .ok_or(UnderlayObjectError::NotFound(object_id))?,
+        None => current_read(&edits, object_id),
+    };
+    if current.copy_of().is_some() && !STRETCHED_KINDS.contains(&object.kind.name()) {
+        return Err(UnderlayObjectError::NotALine(object_id));
+    }
+    // The line with the ends `ends`: a read one keeps all it has but its ends.
+    let line = |ends: [[f64; 2]; 2]| match &current {
+        AddedObject::Drawn { layer, .. } => Ok(AddedObject::Drawn {
+            layer: layer.clone(),
+            shape: DrawnShape::Polyline {
+                points_mm: ends.to_vec(),
+                closed: false,
+            },
+        }),
+        AddedObject::Copy { of, map } | AddedObject::Stretched { of, map } => {
+            let ends = stretch([a, b], ends).ok_or(UnderlayObjectError::NotALine(object_id))?;
+            Ok(AddedObject::Stretched {
+                of: *of,
+                map: then(map, &ends),
+            })
+        }
+    };
+    // The line itself made `now`: it keeps its id.
+    let reshape = |edits: &mut UnderlayEdits, now: AddedObject| match object.added_by {
+        Some(added_by) => edits.added[super::index(added_by)] = now,
+        None => edits.place_read(object_id, &now),
+    };
     let at = |t: f64| [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
     match edit {
         LineEdit::Trim { pick_mm } => {
@@ -79,16 +109,16 @@ pub fn plan_underlay_line_edit(
                 .fold(None, |least: Option<f64>, t| {
                     Some(least.map_or(t, |l| l.min(t)))
                 });
-            if before.is_none() && after.is_none() {
-                return Err(UnderlayObjectError::NoCrossing(object_id));
-            }
-            edits.removed_objects.insert(object_id);
-            if let Some(before) = before {
-                edits.added.push(line([a, at(before)]));
-            }
-            if let Some(after) = after {
-                edits.added.push(line([at(after), b]));
-            }
+            let mut pieces = before
+                .map(|before| [a, at(before)])
+                .into_iter()
+                .chain(after.map(|after| [at(after), b]));
+            let first = pieces
+                .next()
+                .ok_or(UnderlayObjectError::NoCrossing(object_id))?;
+            let second = pieces.next().map(line).transpose()?;
+            reshape(&mut edits, line(first)?);
+            edits.added.extend(second);
         }
         LineEdit::Extend { pick_mm } => {
             let crossings = crossings(lines, object, a, b);
@@ -107,8 +137,7 @@ pub fn plan_underlay_line_edit(
                     .map(|t| [at(t), b])
             };
             let reached = reached.ok_or(UnderlayObjectError::NoCrossing(object_id))?;
-            edits.removed_objects.insert(object_id);
-            edits.added.push(line(reached));
+            reshape(&mut edits, line(reached)?);
         }
         LineEdit::Offset {
             distance_mm,
@@ -124,7 +153,7 @@ pub fn plan_underlay_line_edit(
             let sign = side.signum() * distance / length;
             let shift = [-(b[1] - a[1]) * sign, (b[0] - a[0]) * sign];
             let moved = |p: [f64; 2]| [p[0] + shift[0], p[1] + shift[1]];
-            edits.added.push(line([moved(a), moved(b)]));
+            edits.added.push(line([moved(a), moved(b)])?);
         }
     }
     Ok(with_edits(underlay, edits))

@@ -48,10 +48,16 @@ const SAVED_105: &str = concat!(
     "/tests/fixtures/persistence/format105.bin"
 );
 
+/// Format 106 as Save wrote it: an underlay whose drawing was edited, and annotations.
+const SAVED_106: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/persistence/format106.bin"
+);
+
 /// The current format as Save writes it: the current revision alone.
 const GOLDEN: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/persistence/format106.bin"
+    "/tests/fixtures/persistence/format107.bin"
 );
 
 /// Canonical digest of the current revision each fixture was written with.
@@ -60,6 +66,7 @@ const DIGEST_103: &str = "695c01140f69ddb9";
 const DIGEST_104: &str = "36c397ed20d2ec76";
 const DIGEST_105: &str = "fdcd5e8c616c1323";
 const DIGEST_106: &str = "29680d90129178f6";
+const DIGEST_107: &str = "294cafaafcee8159";
 
 /// The document of a fixture, checked to open at `digest` with no Undo steps.
 fn opened(path: &str, schema: u16, digest: &str) -> (DocumentStore, ContainerData) {
@@ -135,7 +142,7 @@ fn a_file_saved_by_the_previous_release_opens_with_its_program_and_variants() {
 /// and 0.2.0, which read format 103, refused every file saved since. A document is saved
 /// in the oldest format that holds it: without underlays and annotations as format 103,
 /// the very snapshot bytes 0.2.0 itself saved, with an underlay as format 104; with
-/// annotations 105; with an edited underlay 106 (the golden).
+/// annotations 105; with an edited underlay 106; with a stretched line 107 (the golden).
 #[test]
 fn a_document_is_saved_in_the_oldest_format_that_holds_it() {
     for (path, schema, digest) in [
@@ -143,6 +150,7 @@ fn a_document_is_saved_in_the_oldest_format_that_holds_it() {
         (FIXTURE_103, 103, DIGEST_103),
         (SAVED_104, 104, DIGEST_104),
         (SAVED_105, 105, DIGEST_105),
+        (SAVED_106, 106, DIGEST_106),
     ] {
         let (document, _) = opened(path, schema, digest);
         let snapshot = persistence::save(&document.current());
@@ -257,11 +265,12 @@ fn files_for_kecup_0_2_0_are_in_the_format_their_document_needs() {
         ("history-103", FIXTURE_103, 103, DIGEST_103),
         ("underlay", SAVED_104, 104, DIGEST_104),
         ("annotations", SAVED_105, 105, DIGEST_105),
+        ("edited-underlay", SAVED_106, 106, DIGEST_106),
         (
-            "edited-underlay",
+            "stretched-line",
             GOLDEN,
             persistence::CURRENT_SCHEMA,
-            DIGEST_106,
+            DIGEST_107,
         ),
     ] {
         let (document, container) = opened(path, schema, digest);
@@ -381,7 +390,7 @@ fn a_format_104_document_with_annotations_saves_the_format_105_file() {
 /// Format 106 adds the edits of an underlay's drawing: the format 105 file with object 0
 /// of its drawing removed, object 1 moved, a line drawn and a copy of object 1 added.
 #[test]
-fn a_format_106_file_with_an_edited_underlay_saves_the_golden() {
+fn a_format_105_document_with_an_edited_underlay_saves_the_format_106_file() {
     let (mut document, container) = opened(SAVED_105, 105, DIGEST_105);
     let mut underlay = document.current().underlays().next().unwrap().clone();
     let moved = [[0.0, -1.0, 10.0], [1.0, 0.0, 20.0]];
@@ -404,6 +413,33 @@ fn a_format_106_file_with_an_edited_underlay_saves_the_golden() {
         .unwrap();
     assert_eq!(document.current().canonical_digest(), DIGEST_106);
     let saved = persistence::save_document_store_current_snapshot(&document, &container).unwrap();
+    assert_eq!(saved, std::fs::read(SAVED_106).unwrap());
+    let (reopened, _) = opened(SAVED_106, 106, DIGEST_106);
+    assert_eq!(reopened.current().underlays().next(), Some(&underlay));
+    assert_eq!(reopened.current().annotations(), annotations());
+}
+
+/// Format 107 adds the stretched lines of an underlay's drawing (review 2026-10-29
+/// CD-61): the format 106 file with object 2 of its drawing made shorter and a longer
+/// copy of it added.
+#[test]
+fn a_format_107_file_with_a_stretched_line_saves_the_golden() {
+    let (mut document, container) = opened(SAVED_106, 106, DIGEST_106);
+    let mut underlay = document.current().underlays().next().unwrap().clone();
+    let shorter = [[0.5, 0.0, 0.0], [0.0, 0.5, 0.0]];
+    let longer = [[2.0, 0.0, 0.0], [0.0, 2.0, 500.0]];
+    underlay.edits.stretched_objects.insert(2, shorter);
+    underlay
+        .edits
+        .added
+        .push(AddedObject::Stretched { of: 2, map: longer });
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertUnderlay(
+            underlay.clone(),
+        )]))
+        .unwrap();
+    assert_eq!(document.current().canonical_digest(), DIGEST_107);
+    let saved = persistence::save_document_store_current_snapshot(&document, &container).unwrap();
     if ketchup_test_env::update_golden() {
         std::fs::write(GOLDEN, saved).unwrap();
         panic!("wrote {GOLDEN}");
@@ -413,7 +449,7 @@ fn a_format_106_file_with_an_edited_underlay_saves_the_golden() {
         saved, golden,
         "the saved form changed; see the module comment"
     );
-    let (reopened, container) = opened(GOLDEN, persistence::CURRENT_SCHEMA, DIGEST_106);
+    let (reopened, container) = opened(GOLDEN, persistence::CURRENT_SCHEMA, DIGEST_107);
     assert_eq!(reopened.current().underlays().next(), Some(&underlay));
     assert_eq!(reopened.current().annotations(), annotations());
     assert_eq!(
@@ -443,7 +479,7 @@ fn a_drawing_standing_as_a_view_is_saved_as_format_106() {
     let path = std::env::temp_dir().join(format!("ketchup-view-{}.ketchup", std::process::id()));
     std::fs::write(&path, &saved).unwrap();
     let digest = document.current().canonical_digest();
-    let (reopened, _) = opened(path.to_str().unwrap(), persistence::CURRENT_SCHEMA, &digest);
+    let (reopened, _) = opened(path.to_str().unwrap(), 106, &digest);
     std::fs::remove_file(&path).unwrap();
     assert_eq!(reopened.current().underlays().next(), Some(&underlay));
 }
@@ -453,7 +489,7 @@ fn a_drawing_standing_as_a_view_is_saved_as_format_106() {
 /// does not know and loses it at its next Save, so a new optional field of the saved
 /// document needs a new format number like any other new field (PS-4): `underlays` and an
 /// underlay's `placement` came with format 104, `annotations` with 105, an underlay's
-/// `edits` and `view` with 106.
+/// `edits` and `view` with 106, its `stretched_objects` with 107.
 const OPTIONAL_FIELDS: &[&str] = &[
     "document.rs: annotations",
     "document.rs: contact_joints",
@@ -492,6 +528,7 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "underlay/edits.rs: added",
     "underlay/edits.rs: moved_objects",
     "underlay/edits.rs: removed_objects",
+    "underlay/edits.rs: stretched_objects",
 ];
 
 #[test]

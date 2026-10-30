@@ -51,6 +51,61 @@ pub enum AddedObject {
     /// A copy of the drawing's own top-level object `of` and all it placed, as it was read,
     /// mapped by `map`.
     Copy { of: u32, map: Affine },
+    /// A copy of the drawing's own straight line `of`, as it was read, its ends mapped by
+    /// `map` and its widths as read: a piece of a trimmed line, or a line offset from one.
+    Stretched { of: u32, map: Affine },
+}
+
+impl AddedObject {
+    /// The drawing's own object it copies.
+    #[must_use]
+    pub fn copy_of(&self) -> Option<u32> {
+        match self {
+            Self::Copy { of, .. } | Self::Stretched { of, .. } => Some(*of),
+            Self::Drawn { .. } => None,
+        }
+    }
+
+    /// The same mapped further by `map`, a similarity ([`is_similarity`]).
+    #[must_use]
+    pub fn transformed(&self, map: &Affine) -> Self {
+        match self {
+            Self::Drawn { layer, shape } => Self::Drawn {
+                layer: layer.clone(),
+                shape: shape.transformed(map),
+            },
+            Self::Copy { of, map: before } => Self::Copy {
+                of: *of,
+                map: then(before, map),
+            },
+            Self::Stretched { of, map: before } => Self::Stretched {
+                of: *of,
+                map: then(before, map),
+            },
+        }
+    }
+}
+
+/// The map that takes the straight line from `from[0]` to `from[1]` onto the one from
+/// `to[0]` to `to[1]`, turning and scaling it about no mirror; `None` when either has no
+/// length.
+#[must_use]
+pub fn stretch(from: [[f64; 2]; 2], to: [[f64; 2]; 2]) -> Option<Affine> {
+    let [[ax, ay], [bx, by]] = from;
+    let [[cx, cy], [dx, dy]] = to;
+    let (ux, uy) = (bx - ax, by - ay);
+    let (vx, vy) = (dx - cx, dy - cy);
+    let length = ux * ux + uy * uy;
+    if length <= f64::MIN_POSITIVE || vx == 0.0 && vy == 0.0 {
+        return None;
+    }
+    // The complex factor v / u: a turn and a scale.
+    let (re, im) = ((vx * ux + vy * uy) / length, (vy * ux - vx * uy) / length);
+    let map = [
+        [re, -im, cx - (re * ax - im * ay)],
+        [im, re, cy - (im * ax + re * ay)],
+    ];
+    is_similarity(&map).then_some(map)
 }
 
 impl DrawnShape {

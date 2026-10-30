@@ -222,7 +222,8 @@ impl LiveBridge {
     }
 
     /// `drawing_trim`, `drawing_extend` and `drawing_offset`: one straight line of the
-    /// drawing trimmed back, extended or offset; the lines it gave are new objects.
+    /// drawing trimmed back, extended or offset; it keeps its id, and a second piece of it
+    /// and an offset are new objects.
     pub(super) fn drawing_line_edit(
         &mut self,
         app: &mut KetchupApp,
@@ -294,7 +295,6 @@ impl LiveBridge {
         Ok(json!({
             "action": action,
             "object_id": object_id,
-            "removed": action != "offset",
             "new_object_ids": (first..after).collect::<Vec<_>>(),
             "underlay_id": id.0,
             "dirty": app.is_dirty(),
@@ -351,6 +351,7 @@ impl LiveBridge {
         let changed = json!({
             "removed": edits.removed_objects.len(),
             "moved": edits.moved_objects.len(),
+            "stretched": edits.stretched_objects.len(),
             "added": edits.added.len(),
         });
         Self::require_request_authority(cancelled)?;

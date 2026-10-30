@@ -373,22 +373,23 @@ fn a_client_trims_extends_and_offsets_lines_of_a_drawing() {
         json!({"object_id": long, "at_mm": [5800, 5000]}),
     )
     .unwrap();
-    assert_eq!(trimmed["removed"], true, "{trimmed}");
-    let left = one_new(&trimmed);
+    // The line keeps its id (review 2026-10-29 CD-61).
+    assert_eq!(trimmed["new_object_ids"], json!([]), "{trimmed}");
+    let left = long;
     let extended = edit(
         &mut app,
         "drawing_extend",
         json!({"object_id": short, "at_mm": [5190, 5301]}),
     )
     .unwrap();
-    let reached = one_new(&extended);
+    assert_eq!(extended["new_object_ids"], json!([]), "{extended}");
+    let reached = short;
     let offset = edit(
         &mut app,
         "drawing_offset",
         json!({"object_id": cross, "at_mm": [5900, 5000], "distance_mm": 100}),
     )
     .unwrap();
-    assert_eq!(offset["removed"], false, "{offset}");
     let parallel = one_new(&offset);
     let door = id_of(&before, "1F");
     assert_eq!(
@@ -477,7 +478,7 @@ fn a_client_exports_the_edited_drawing_as_a_dxf_that_imports_as_edited() {
         .unwrap();
     assert_eq!(
         answer["changes"],
-        json!({"removed": 1, "moved": 1, "added": 1}),
+        json!({"removed": 1, "moved": 1, "stretched": 0, "added": 1}),
         "{answer}"
     );
     assert_eq!(app.canonical_digest(), digest);

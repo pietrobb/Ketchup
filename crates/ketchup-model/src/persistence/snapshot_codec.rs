@@ -12,7 +12,8 @@
 //! so a new field under 103 would be dropped by 0.1.0 and lost at its next Save (PS-4).
 //! Format 104 adds underlays, 105 annotations, 106 the edits of an underlay's drawing
 //! ([`crate::underlay::edits`]) and the plane it stands on as a view
-//! ([`crate::underlay::view`]); an older file has none, so it reads
+//! ([`crate::underlay::view`]), 107 the stretched lines of a drawing (trimmed, extended,
+//! offset; review 2026-10-29 CD-61); an older file has none, so it reads
 //! without a conversion, and a document without them is still written as 103 when
 //! Kečup 0.2.0 reads all of it ([`fits_format_103`]). The
 //! optional fields of the current format are listed in `tests/format_golden.rs`, which
@@ -24,10 +25,11 @@
 use super::sheet_metal_v1::{SheetMetalV1, bend_path, flange_path};
 use super::{MAGIC, PayloadError, PayloadSection, PersistenceError};
 use crate::document::{FeatureId, ProductModel, Snapshot};
+use crate::underlay::drawn::AddedObject;
 use std::collections::BTreeMap;
 
 /// The newest format number written after the magic.
-pub(super) const SNAPSHOT_FORMAT: u16 = 106;
+pub(super) const SNAPSHOT_FORMAT: u16 = 107;
 
 /// The oldest format this version writes. A snapshot is written in the oldest format
 /// that holds it ([`format_of`]), so Kečup 0.1.0 and 0.2.0, which read 103, open a
@@ -35,16 +37,29 @@ pub(super) const SNAPSHOT_FORMAT: u16 = 106;
 /// written by this version.
 pub(super) const OLDEST_WRITTEN_FORMAT: u16 = 103;
 
-/// 106 with an underlay whose drawing was edited or that stands as a view, else 105 with
-/// annotations, else 104
+/// 107 with a line of an underlay's drawing stretched, else 106 with an underlay whose
+/// drawing was edited or that stands as a view, else 105 with annotations, else 104
 /// with underlays or with what Kečup 0.1.0 and 0.2.0 refuse to read, else 103.
 fn format_of(product: &ProductModel) -> u16 {
+    let stretched = |edits: &crate::underlay::edits::UnderlayEdits| {
+        !edits.stretched_objects.is_empty()
+            || edits
+                .added
+                .iter()
+                .any(|added| matches!(added, AddedObject::Stretched { .. }))
+    };
     if product
+        .underlays
+        .values()
+        .any(|underlay| stretched(&underlay.edits))
+    {
+        SNAPSHOT_FORMAT
+    } else if product
         .underlays
         .values()
         .any(|underlay| !underlay.edits.is_empty() || !underlay.view.is_ground())
     {
-        SNAPSHOT_FORMAT
+        106
     } else if !product.annotations.is_empty() {
         105
     } else if !product.underlays.is_empty() || !fits_format_103(product) {

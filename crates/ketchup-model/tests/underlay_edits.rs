@@ -627,16 +627,19 @@ fn a_line_of_the_drawing_is_trimmed_extended_and_offset() {
         },
     )
     .unwrap();
+    // The wall keeps its id, so its entity, with new ends (review 2026-10-29 CD-61).
     assert_eq!(document.visible_undo_steps(), steps + 1);
-    assert!(own_lines(&document, id, top).is_empty());
     assert_eq!(
-        own_lines(&document, id, read + 2),
+        own_lines(&document, id, top),
         vec![vec![[50.0, 100.0], [0.0, 100.0]]]
     );
     let edited = drawn(&document, id);
     let index = ObjectIndex::new(&edited);
-    let layer = edited.objects().layer_name(index.object(read + 2).unwrap());
+    let layer = edited.objects().layer_name(index.object(top).unwrap());
     assert_eq!(layer, "walls");
+    assert_eq!(edited.objects().objects.len(), read as usize + 2);
+    let edits = document.current().underlay(id).unwrap().edits.clone();
+    assert!(edits.stretched_objects.contains_key(&top) && edits.removed_objects.is_empty());
 
     // The short line reaches on to the wall at x = 100, or back to the cross line.
     edit(
@@ -648,19 +651,19 @@ fn a_line_of_the_drawing_is_trimmed_extended_and_offset() {
     )
     .unwrap();
     assert_eq!(
-        own_lines(&document, id, read + 3),
+        own_lines(&document, id, short),
         vec![vec![[60.0, 50.0], [100.0, 50.0]]]
     );
     edit(
         &mut document,
-        read + 3,
+        short,
         LineEdit::Extend {
             pick_mm: [61.0, 50.0],
         },
     )
     .unwrap();
     assert_eq!(
-        own_lines(&document, id, read + 4),
+        own_lines(&document, id, short),
         vec![vec![[50.0, 50.0], [100.0, 50.0]]]
     );
 
@@ -669,18 +672,52 @@ fn a_line_of_the_drawing_is_trimmed_extended_and_offset() {
         distance_mm,
         side_mm,
     };
-    edit(&mut document, read + 2, offset(Some(25.0), [10.0, 300.0])).unwrap();
+    edit(&mut document, top, offset(Some(25.0), [10.0, 300.0])).unwrap();
     assert_eq!(
-        own_lines(&document, id, read + 5),
+        own_lines(&document, id, read + 2),
         vec![vec![[50.0, 125.0], [0.0, 125.0]]]
     );
-    edit(&mut document, read + 2, offset(None, [20.0, 60.0])).unwrap();
+    edit(&mut document, top, offset(None, [20.0, 60.0])).unwrap();
     assert_eq!(
-        own_lines(&document, id, read + 6),
+        own_lines(&document, id, read + 3),
         vec![vec![[50.0, 60.0], [0.0, 60.0]]]
     );
-    assert_eq!(own_lines(&document, id, read + 2).len(), 1);
+    assert_eq!(own_lines(&document, id, top).len(), 1);
     assert_eq!(document.visible_undo_steps(), steps + 5);
+
+    // Trimmed between two cross lines, the wall keeps the piece before and a copy of it
+    // the piece after.
+    let across = vec![
+        line(&[[20.0, 90.0], [20.0, 110.0]]),
+        line(&[[40.0, 90.0], [40.0, 110.0]]),
+    ];
+    let snapshot = document.current();
+    document
+        .apply_batch(&plan_underlay_drawing(&snapshot, id, "walls", across).unwrap())
+        .unwrap();
+    edit(
+        &mut document,
+        top,
+        LineEdit::Trim {
+            pick_mm: [30.0, 100.0],
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        own_lines(&document, id, top),
+        vec![vec![[50.0, 100.0], [40.0, 100.0]]]
+    );
+    assert_eq!(
+        own_lines(&document, id, read + 6),
+        vec![vec![[20.0, 100.0], [0.0, 100.0]]]
+    );
+    let edits = document.current().underlay(id).unwrap().edits.clone();
+    assert!(matches!(
+        edits.added.last(),
+        Some(AddedObject::Stretched { of, .. }) if *of == top
+    ));
+    document.undo().unwrap();
+    document.undo().unwrap();
 
     // Refused by name: a text, nothing ahead of an end, an offset onto the line.
     let text = id_of(&lines(), 0x30);
@@ -700,15 +737,15 @@ fn a_line_of_the_drawing_is_trimmed_extended_and_offset() {
     assert_eq!(
         refused(
             &mut document,
-            read + 5,
+            read + 2,
             LineEdit::Extend {
                 pick_mm: [1.0, 125.0]
             }
         ),
-        UnderlayObjectError::NoCrossing(read + 5)
+        UnderlayObjectError::NoCrossing(read + 2)
     );
     assert_eq!(
-        refused(&mut document, read + 5, offset(None, [20.0, 125.0])),
+        refused(&mut document, read + 2, offset(None, [20.0, 125.0])),
         UnderlayObjectError::InvalidDistance
     );
     assert_eq!(document.visible_undo_steps(), steps + 5);

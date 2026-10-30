@@ -107,9 +107,14 @@ fn every_committed_document_migrates_to_the_current_schema_without_change() {
             reopened.source_schema(),
             if snapshot
                 .underlays()
-                .any(|underlay| !underlay.edits.is_empty())
+                .any(|underlay| !underlay.edits.stretched_objects.is_empty())
             {
                 persistence::CURRENT_SCHEMA
+            } else if snapshot
+                .underlays()
+                .any(|underlay| !underlay.edits.is_empty())
+            {
+                106
             } else if !snapshot.annotations().is_empty() {
                 105
             } else if snapshot.underlays().next().is_some() {
