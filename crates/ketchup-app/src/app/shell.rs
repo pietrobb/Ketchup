@@ -114,6 +114,7 @@ impl KetchupApp {
             },
             program_evaluations: Default::default(),
             value_input_awaits_program: None,
+            area_click_awaits_regions: None,
             solid_tools: app_state::SolidToolInputs {
                 target: None,
                 revolve: None,
@@ -1458,6 +1459,9 @@ impl KetchupApp {
         if self.apply_awaited_value() {
             // The next frame starts the exact evaluation of what it changed.
             context.request_repaint();
+        }
+        if self.poll_area_click() {
+            context.request_repaint_after(std::time::Duration::from_millis(30));
         }
         let palette = self.palette();
         apply_shell_style(context, palette);

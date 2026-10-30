@@ -865,6 +865,13 @@ const IN_FLOOR: Vec3 = Vec3::new(140.0, 210.0, 0.0);
 fn pull_up(harness: &mut Harness<'_, KetchupApp>, height: &str, at: Vec3) {
     harness.state_mut().value_box.input = height.to_owned();
     click(harness, at);
+    // A click before the regions are found pulls the area up on a later frame.
+    crate::tests::shell::step_until(
+        harness,
+        std::time::Duration::from_secs(60),
+        "the regions of the click were never found",
+        |app| app.area_click_awaits_regions.is_none(),
+    );
 }
 
 fn program_source(harness: &Harness<'_, KetchupApp>) -> String {
@@ -1069,16 +1076,55 @@ fn choosing_pull_area_finds_the_regions_off_the_ui_thread() {
     harness
         .state_mut()
         .dispatch_command(AppCommand::ExtrudeUnderlayArea);
-    let started = std::time::Instant::now();
-    while !found(harness.state()) {
-        assert!(
-            started.elapsed().as_secs() < 20,
-            "the regions were not found ahead of a click"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    crate::tests::shell::step_until(
+        &mut harness,
+        std::time::Duration::from_secs(60),
+        "the regions were not found ahead of a click",
+        found,
+    );
     let undo = harness.state().undo_step_count();
     pull_up(&mut harness, "300", Vec3::new(20.0, -250.0, 0.0));
     let app = harness.state();
     assert_eq!(app.undo_step_count(), undo + 1, "{}", app.digest);
+}
+
+/// Review 2026-10-26 UO-40, after the search ahead: a click of Pull area before the search
+/// ahead was done found the regions again on the UI thread. It waits for that search and
+/// pulls the area up on the frame its regions are found.
+#[test]
+fn a_pull_area_click_before_the_regions_are_found_waits_for_them_off_the_ui_thread() {
+    let hold = crate::live_bridge::underlay_regions::HoldAhead::hold();
+    let held = hold.clone();
+    let guard =
+        crate::tests::shell::hang_guard("the search of the regions ahead", move || held.let_go());
+    // A drawing of its own: the regions another test found are kept for this one too.
+    let mut harness = shell_of(imported_alone_with(&saw(41)));
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExtrudeUnderlayArea);
+    let undo = harness.state().undo_step_count();
+    harness.state_mut().value_box.input = "300".to_owned();
+    click(&mut harness, Vec3::new(20.0, -250.0, 0.0));
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo, "{}", app.digest);
+    assert!(
+        app.digest.starts_with("Finding the areas"),
+        "{}",
+        app.digest
+    );
+    hold.let_go();
+    drop(guard);
+    crate::tests::shell::step_until(
+        &mut harness,
+        std::time::Duration::from_secs(60),
+        "the waiting click never pulled the area up",
+        |app| app.undo_step_count() > undo,
+    );
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo + 1, "{}", app.digest);
+    assert!(
+        app.digest.starts_with("Pulled the area up"),
+        "{}",
+        app.digest
+    );
 }

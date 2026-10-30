@@ -577,23 +577,23 @@ fn found_regions(
         let entry = found.remove(at);
         let regions = entry.1.clone();
         found.push(entry);
-        return Ok(regions);
+        return regions.map_err(search_too_large);
     }
     drop(found);
     let regions = if whole {
         find_figures(&search.segments, tolerance)
     } else {
         find_regions(&search.segments, tolerance)
-    }
-    .map_err(search_too_large)?;
+    };
     let mut found = FOUND
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if found.len() == FOUND_KEPT {
-        found.remove(0);
+        drop(found.remove(0));
     }
     found.push((search, regions.clone()));
-    Ok(regions)
+    drop(found);
+    regions.map_err(search_too_large)
 }
 
 /// What regions were found in: the pieces in the underlay's millimetres, the join
@@ -605,13 +605,16 @@ struct Search {
     whole: bool,
 }
 
+/// The regions a search found, or why it found none.
+type Searched = Result<Vec<Region>, ketchup_model::underlay::regions::RegionError>;
+
 /// How many searches [`FOUND`] keeps.
 const FOUND_KEPT: usize = 4;
 
-/// The regions of the latest searches, the last used last: moving, turning or fitting an
-/// underlay found the same regions of the same lines again for every section that follows
-/// it (review 2026-10-26 UO-40).
-static FOUND: std::sync::Mutex<Vec<(Search, Vec<Region>)>> = std::sync::Mutex::new(Vec::new());
+/// The regions of the latest searches, or why they were not found, the last used last:
+/// moving, turning or fitting an underlay found the same regions of the same lines again
+/// for every section that follows it (review 2026-10-26 UO-40).
+static FOUND: std::sync::Mutex<Vec<(Search, Searched)>> = std::sync::Mutex::new(Vec::new());
 
 /// The searches [`search_ahead`] runs now.
 static SEARCHING: std::sync::Mutex<Vec<Search>> = std::sync::Mutex::new(Vec::new());
@@ -628,29 +631,135 @@ pub(crate) fn search_ahead(
         return;
     };
     let tolerance = (DEFAULT_JOIN_MM / underlay.scale()).to_bits();
-    std::thread::spawn(move || {
-        let search = shown_search(&lines, &chosen, tolerance);
-        {
-            let found = FOUND
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let mut searching = SEARCHING
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if found.iter().any(|(earlier, _)| *earlier == search) || searching.contains(&search) {
-                return;
-            }
-            searching.push(Search {
-                segments: search.segments.clone(),
-                ..search
-            });
+    spawn_ahead(move || {
+        if let Ahead::Claimed(search) = claim(shown_search(&lines, &chosen, tolerance)) {
+            run_ahead(search);
         }
-        let segments = search.segments.clone();
-        let _ = found_regions(segments, f64::from_bits(tolerance), false);
-        SEARCHING
+    });
+}
+
+/// Whether the regions a click of Pull area finds in `underlay` are found, or why not.
+/// When neither, they are being found off the UI thread: this starts that search unless it
+/// runs already, so the click waits for it instead of searching again (review 2026-10-26
+/// UO-40).
+pub(crate) fn regions_ready(
+    snapshot: &Snapshot,
+    underlay: &Underlay,
+    lines: &UnderlayLines,
+) -> bool {
+    let Ok(chosen) = chosen_layers(snapshot, underlay, None) else {
+        // The click says why.
+        return true;
+    };
+    let tolerance = (DEFAULT_JOIN_MM / underlay.scale()).to_bits();
+    match claim(shown_search(lines, &chosen, tolerance)) {
+        Ahead::Found => true,
+        Ahead::Running => false,
+        Ahead::Claimed(search) => {
+            spawn_ahead(move || run_ahead(search));
+            false
+        }
+    }
+}
+
+/// Where a search stands.
+enum Ahead {
+    Found,
+    Running,
+    /// Neither, now recorded in [`SEARCHING`] for the caller to run.
+    Claimed(Search),
+}
+
+fn claim(search: Search) -> Ahead {
+    let found = FOUND
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut searching = SEARCHING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if found.iter().any(|(earlier, _)| *earlier == search) {
+        return Ahead::Found;
+    }
+    if searching.contains(&search) {
+        return Ahead::Running;
+    }
+    searching.push(Search {
+        segments: search.segments.clone(),
+        ..search
+    });
+    Ahead::Claimed(search)
+}
+
+/// Finds the regions of `search`, claimed, into [`FOUND`].
+fn run_ahead(search: Search) {
+    let _ = found_regions(
+        search.segments.clone(),
+        f64::from_bits(search.tolerance),
+        search.whole,
+    );
+    SEARCHING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .retain(|running| *running != search);
+}
+
+/// A test's hold on the searches its thread starts ahead: each waits until it is let go.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct HoldAhead {
+    held: std::sync::Mutex<bool>,
+    let_go: std::sync::Condvar,
+}
+
+#[cfg(test)]
+impl HoldAhead {
+    /// Holds the searches the calling thread starts ahead from now on.
+    pub(crate) fn hold() -> std::sync::Arc<Self> {
+        let hold = std::sync::Arc::new(Self {
+            held: std::sync::Mutex::new(true),
+            let_go: std::sync::Condvar::new(),
+        });
+        HOLD_AHEAD.with(|held| *held.borrow_mut() = Some(hold.clone()));
+        hold
+    }
+
+    pub(crate) fn let_go(&self) {
+        *self
+            .held
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|running| *running != search);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+        self.let_go.notify_all();
+    }
+
+    fn wait(&self) {
+        let held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        drop(
+            self.let_go
+                .wait_while(held, |held| *held)
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static HOLD_AHEAD: std::cell::RefCell<Option<std::sync::Arc<HoldAhead>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `search` on a thread of its own.
+fn spawn_ahead(search: impl FnOnce() + Send + 'static) {
+    #[cfg(test)]
+    let hold = HOLD_AHEAD.with(|hold| hold.borrow().clone());
+    std::thread::spawn(move || {
+        #[cfg(test)]
+        if let Some(hold) = hold {
+            hold.wait();
+        }
+        search();
     });
 }
 
@@ -670,7 +779,9 @@ fn shown_search(lines: &UnderlayLines, layers: &[usize], tolerance: u64) -> Sear
 /// Whether the regions of the shown layers of `underlay` are found, without finding them.
 #[cfg(test)]
 pub(crate) fn found_ahead(snapshot: &Snapshot, underlay: &Underlay, lines: &UnderlayLines) -> bool {
-    let chosen = chosen_layers(snapshot, underlay, None).unwrap();
+    let Ok(chosen) = chosen_layers(snapshot, underlay, None) else {
+        return false;
+    };
     let search = shown_search(
         lines,
         &chosen,
