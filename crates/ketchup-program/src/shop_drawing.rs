@@ -95,7 +95,7 @@ type Making = Vec<(String, [i64; 3])>;
 /// How a part is made, for telling positions apart: the corners of its body
 /// and the places of its holes, pockets and cuts in its own frame from the
 /// corner of its bounds, the same for the part turned over or mirrored
-/// (review 2026-10-29 PG-62: studs notched on both sides, on one side and
+/// (review 2026-10-29 PG-62: members notched on both sides, on one side and
 /// on none shared one position by material and blank alone).
 fn making(part: &Part) -> Making {
     let (min, max) = part.local_bounds();
