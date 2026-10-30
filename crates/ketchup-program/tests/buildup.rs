@@ -1,4 +1,4 @@
-use ketchup_program::model::ProgramModel;
+use ketchup_program::model::{ProgramModel, ProgramPartBody};
 use ketchup_program::relations::{Relation, RelationKind};
 use ketchup_program::{Severity, run, validate};
 use std::collections::BTreeMap;
@@ -613,6 +613,49 @@ fn every_piece_of_a_panel_is_on_its_shop_drawing() {
             .iter()
             .any(|position| position.parts.len() > 4)
     );
+}
+
+/// Review 2026-10-29 PG-62: shop drawing positions were keyed by material
+/// and blank alone, so one position listed studs notched for noggins on
+/// both sides, on one side and on none as alike, and a carpenter sawing
+/// "8 x pos. 2" from it cut them wrong. Parts of a position have the same
+/// outline, turned over or mirrored at most.
+#[test]
+fn a_shop_drawing_position_holds_only_pieces_made_alike() {
+    let source = WALL.replace("\"spacing\": 625,", "\"spacing\": 625, \"noggins\": 900,");
+    let model = eval(&source, &[]);
+    let drawings = ketchup_program::shop_drawing::shop_drawings(&model);
+    // The corners of a part's outline from the middle of its bounds, the
+    // same for the part mirrored either way.
+    let corners = |name: &str| {
+        let part = model.part(name).unwrap();
+        let ProgramPartBody::Extrusion { segments, .. } = &part.body else {
+            panic!("{name} is not an extrusion");
+        };
+        let (min, max) = part.local_bounds();
+        let mut corners = segments
+            .iter()
+            .map(|segment| {
+                [0, 1].map(|axis| {
+                    let middle = f64::midpoint(min[axis], max[axis]);
+                    ((segment.start_mm[axis] - middle).abs() * 10.0).round() as i64
+                })
+            })
+            .collect::<Vec<_>>();
+        corners.sort_unstable();
+        corners
+    };
+    let mut notched = 0;
+    for position in &drawings[0].positions {
+        let first = corners(&position.parts[0]);
+        for part in &position.parts[1..] {
+            assert_eq!(corners(part), first, "{position:?}");
+        }
+        if position.parts[0].contains("/stud") && first.len() > 4 {
+            notched += 1;
+        }
+    }
+    assert!(notched >= 2, "{:?}", drawings[0].positions);
 }
 
 /// Review 2026-10-29 PG-60: a 2 410 mm wall on 600 mm studs got OSB boards
