@@ -106,6 +106,18 @@ def test_the_files_an_adr_names_exist():
     assert missing == []
 
 
+def test_every_adr_has_its_own_number():
+    """Review 2026-10-29 DOC-61: two ADRs were numbered 0009, so "ADR 0009" named two
+    decisions. The file name and the title carry the same number, and no number repeats."""
+    numbers = {}
+    for adr in sorted((ROOT / "docs" / "adr").glob("*.md")):
+        number = adr.name.split("-", 1)[0]
+        title = adr.read_text(encoding="utf-8").splitlines()[0]
+        assert title.startswith(f"# ADR {number}:"), f"{adr.name}: {title}"
+        numbers.setdefault(number, []).append(adr.name)
+    assert {n: names for n, names in numbers.items() if len(names) > 1} == {}
+
+
 def test_the_readme_does_not_place_release_only_examples_in_the_repository():
     """Review 2026-10-15 status, low: `README.md` said every example is in
     `examples/`, but some are attached only to a release."""

@@ -3046,7 +3046,7 @@ fn imported_fingerprint(topology: &str, measures: &[f64; 7]) -> String {
 
 /// Whether `expected` names this imported body: its own fingerprint, or the
 /// one of the same topology whose volume and bounds lie a few last bits away,
-/// as a document saved where libm rounded differently recorded it (ADR 0009).
+/// as a document saved where libm rounded differently recorded it (ADR 0010).
 /// The fingerprint hashes those bits, so the neighbours are searched.
 fn imported_result_matches(source_sha256: &str, output: &ExactOpOutput, expected: &str) -> bool {
     let [min, max] = bounds_mm(output);
@@ -3879,7 +3879,7 @@ fn backend_failure(operation: &str, diagnostic: &str) -> WorkerFailure {
 mod tests {
     use super::*;
 
-    /// ADR 0009: the drawer example's rail 9117663_3, saved on Windows with
+    /// ADR 0010: the drawer example's rail 9117663_3, saved on Windows with
     /// MSVC's libm, evaluates one bit away in volume under CORE-MATH. The
     /// fingerprint the document recorded still names it; one further off not.
     #[test]

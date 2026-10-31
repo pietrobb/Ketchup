@@ -255,7 +255,7 @@ fn exact_step_import_rejects_worker_evidence_from_another_source() {
     assert_eq!(document.visible_undo_steps(), 0);
 }
 
-/// ADR 0009: a part saved where libm rounded its volume one bit away (the
+/// ADR 0010: a part saved where libm rounded its volume one bit away (the
 /// Hettich rail 9117663_3 of the drawer example, MSVC against CORE-MATH) is
 /// the same body; a measure or a topology further off is another one.
 #[test]

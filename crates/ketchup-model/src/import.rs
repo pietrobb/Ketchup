@@ -404,7 +404,7 @@ pub struct StepImportEvidence {
 
 /// How many units in the last place an imported body's volume and area may
 /// lie from the recorded ones, and its bounds, and still be the same body.
-/// A document saved where libm rounded differently (MSVC's before ADR 0009)
+/// A document saved where libm rounded differently (MSVC's before ADR 0010)
 /// records them a few last bits away from what a correctly rounded libm
 /// evaluates now; anything further is another body.
 pub const IMPORTED_MEASURE_ULPS: u64 = 8;
