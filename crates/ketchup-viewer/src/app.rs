@@ -22,6 +22,8 @@ use std::{
     path::Path,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod benchmark;
 mod comments_section;
 mod measure_section;
 mod session;
@@ -281,14 +283,6 @@ impl ViewerApp {
         self.show_prepared(Prepared::read(reader)?)
     }
 
-    fn open_package(
-        &mut self,
-        package: ketchup_view_format::IdentifiedPackage,
-        comments: Option<ketchup_view_format::Comments>,
-    ) -> Result<(), Rejection> {
-        self.show_prepared(Prepared::new(package, comments)?)
-    }
-
     /// Replaces what is open with `prepared`; only its GPU upload is left to fail.
     fn show_prepared(&mut self, prepared: Prepared) -> Result<(), Rejection> {
         let Prepared {
@@ -328,7 +322,8 @@ impl ViewerApp {
 
     /// Open a local `.ketchup-view`, or a `.ketchup-comments` with the
     /// package it was written on: the open one, else the matching package in
-    /// the same folder. The current model stays when nothing matches.
+    /// the same folder. The current model and comments stay when nothing
+    /// matches or the comments do not fit the package found.
     pub fn open_path(&mut self, path: &Path) -> Result<(), Rejection> {
         let is_comments = path
             .extension()
@@ -349,8 +344,9 @@ impl ViewerApp {
             .as_ref()
             .is_some_and(|model| model.export().payload_sha256() == wanted);
         if !open {
-            let package = sibling_package(path, &wanted)?;
-            self.open_package(package, None)?;
+            let prepared = Prepared::new(sibling_package(path, &wanted)?, None)?;
+            let review = Review::open(bytes.as_slice(), &prepared.model)?;
+            return self.show_prepared(Prepared { review, ..prepared });
         }
         self.open_comments(bytes.as_slice())
     }
@@ -487,7 +483,12 @@ impl ViewerApp {
                     "viewer-error"
                 };
                 ui.colored_label(egui::Color32::LIGHT_RED, self.t(headline));
-                ui.small(error.to_string());
+                // Display ends with the hint; it gets a line of its own instead.
+                let technical = match error.target_name() {
+                    "" => format!("{}: {}", error.code(), error.reason_text()),
+                    target => format!("{} at {target}: {}", error.code(), error.reason_text()),
+                };
+                ui.small(technical);
                 ui.small(error.fix_hint_text());
             }
             if self.kept
@@ -498,8 +499,12 @@ impl ViewerApp {
             }
         });
         if narrow {
+            // A fixed share of the screen: a scroll area left to size itself
+            // shrinks the strip below the model to two lines, too little to
+            // write a comment.
+            let height = (ctx.screen_rect().height() * 0.35).clamp(160.0, 360.0);
             egui::TopBottomPanel::bottom("viewer_info_mobile")
-                .max_height(160.0)
+                .exact_height(height)
                 .show(ctx, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         self.measure_info(ui);

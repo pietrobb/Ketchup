@@ -130,6 +130,9 @@ pub(crate) mod viewer_settings;
 #[cfg(test)]
 #[path = "app/viewer_settings_tests.rs"]
 mod viewer_settings_tests;
+#[cfg(test)]
+#[path = "app/viewer_workflow_tests.rs"]
+mod viewer_workflow_tests;
 mod viewport;
 mod viewport_paint;
 

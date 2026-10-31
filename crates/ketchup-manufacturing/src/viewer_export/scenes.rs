@@ -136,10 +136,15 @@ impl DesktopView {
         let offset = target - Vec3::new(orbit_target_xy_mm[0], orbit_target_xy_mm[1], target.z);
         pan[0] -= offset.dot(right) * points_per_mm;
         pan[1] += offset.dot(up) * points_per_mm;
+        let yaw_rad = (-right.y).atan2(right.x);
+        let (sy, cy) = yaw_rad.sin_cos();
+        // Signed, as the desktop looks down at a negative pitch: forward is
+        // (-sin yaw sin pitch, -cos yaw sin pitch, -cos pitch).
+        let pitch_rad = (-(forward.x * sy + forward.y * cy)).atan2(-forward.z);
         let view = Self {
             parallel,
-            yaw_rad: (-right.y).atan2(right.x),
-            pitch_rad: (-forward.z).clamp(-1.0, 1.0).acos(),
+            yaw_rad,
+            pitch_rad,
             target_z_mm: target.z,
             points_per_mm,
             pan,

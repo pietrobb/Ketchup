@@ -1028,6 +1028,68 @@ fn opening_comments_or_a_model_over_unsaved_work_warns_first() {
     );
 }
 
+/// V9c: a returned comments file found its export in the folder, but one
+/// comment is on a part that export does not have. The export used to be
+/// opened before the comments were checked against it, so the customer's open
+/// model and unsaved comment were replaced by the export without comments.
+#[test]
+fn comments_that_do_not_fit_their_package_leave_the_open_model_and_comments() {
+    let directory =
+        std::env::temp_dir().join(format!("ketchup-viewer-misfit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut bytes = Vec::new();
+    scene_package().write(&mut bytes).expect("fixture");
+    let mut app = customer_with_comment(&bytes, "Darker oak");
+    let before = (
+        app.model.as_ref().unwrap().package().manifest.definitions[0]
+            .note
+            .clone(),
+        app.review.as_ref().unwrap().comments.clone(),
+        app.shown,
+    );
+
+    let mut other = scene_package();
+    other.manifest.definitions[0].note = Some("re-exported".into());
+    other
+        .write(std::fs::File::create(directory.join("other.ketchup-view")).unwrap())
+        .unwrap();
+    let mut comments = ketchup_view_format::Comments::new(&other).unwrap();
+    let mut missing = other.manifest.occurrences[0].path.clone();
+    missing.root_occurrence_id = u64::MAX;
+    comments.comments.push(ketchup_view_format::Comment {
+        id: 7,
+        author: None,
+        text: "Shorter legs".into(),
+        view: CommentView {
+            camera: other.manifest.scenes[0].camera.clone(),
+            hidden: vec![],
+            style: DisplayStyle::Shaded,
+            section: None,
+            scene: None,
+            shown: None,
+        },
+        selected: Some(missing),
+        arrows: vec![],
+    });
+    let returned = directory.join("returned.ketchup-comments");
+    std::fs::write(&returned, serde_json::to_vec(&comments).unwrap()).unwrap();
+
+    let error = app.open_path(&returned).unwrap_err();
+    assert_eq!(error.code(), "viewer.package.invalid", "{error}");
+    assert_eq!(
+        before,
+        (
+            app.model.as_ref().unwrap().package().manifest.definitions[0]
+                .note
+                .clone(),
+            app.review.as_ref().unwrap().comments.clone(),
+            app.shown,
+        )
+    );
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
 /// A customer's Viewer with one committed comment `text`.
 fn customer_with_comment(bytes: &[u8], text: &str) -> ViewerApp {
     let mut app = ViewerApp::new(None).with_host_files();
@@ -1361,6 +1423,26 @@ fn a_start_whose_model_does_not_open_says_so_in_the_viewer() {
     std::fs::write(dir.join(PANIC_STARTUP_READER), b"").unwrap();
     start(Some(&dir), None);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// V9c: a damaged or foreign package on the Android emulator showed what to
+/// do twice, once at the end of the technical line and once on its own; the
+/// banner now names the failure, then says once what to do.
+#[test]
+fn a_refused_package_says_once_what_to_do() {
+    let mut app = ViewerApp::new(None);
+    let refused = app
+        .open(b"not a package".as_slice())
+        .expect_err("not a package");
+    let hint = refused.fix_hint_text().to_owned();
+    assert!(!hint.is_empty());
+    app.report(refused);
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::Vec2::new(900.0, 700.0))
+        .build_state(|ctx, app: &mut ViewerApp| app.show(ctx), app);
+    harness.run();
+    assert_eq!(harness.query_all_by_label_contains(&hint).count(), 1);
+    harness.get_by_label_contains("viewer.package.invalid");
 }
 
 /// Review 2026-10-17 §3 P3: a phone's start reads the kept session, else the
@@ -1727,5 +1809,42 @@ mod atomic_save {
         .unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
         std::fs::remove_dir_all(&directory).unwrap();
+    }
+}
+
+/// Seen on the Android emulator: the phone's information panel was squeezed
+/// to two lines, so writing a comment meant scrolling a sliver at a time. The
+/// whole comment form now fits under the model on a phone.
+#[test]
+fn on_a_phone_the_comment_form_fits_under_the_model() {
+    let mut bytes = Vec::new();
+    scene_package().write(&mut bytes).expect("fixture");
+    let mut app = ViewerApp::new(None).with_language(Language::ENGLISH);
+    app.open(bytes.as_slice()).expect("open");
+    app.selected = Some(0);
+    let screen = egui::vec2(412.0, 915.0);
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(screen)
+        .build_state(|ctx, app: &mut ViewerApp| app.show(ctx), app);
+    harness.run();
+    harness.get_by_label("Add comment").click();
+    harness.run();
+    let view = harness.get_by_label("Model view").rect();
+    assert!(
+        view.height() >= 0.5 * screen.y,
+        "the model keeps most of the screen: {view:?}"
+    );
+    for label in [
+        "Your name (optional)",
+        "Comment",
+        "Add arrow",
+        "Save comment",
+        "Cancel",
+    ] {
+        let rect = harness.get_by_label(label).rect();
+        assert!(
+            rect.top() >= view.bottom() && rect.bottom() <= screen.y,
+            "{label} is in view under the model ({view:?}): {rect:?}"
+        );
     }
 }

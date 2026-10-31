@@ -15,7 +15,7 @@ fn program() -> RuleProgramSource {
     }
 }
 
-fn install_geometry(app: &mut KetchupApp) {
+pub(super) fn install_geometry(app: &mut KetchupApp) {
     let snapshot = app.document.current();
     let definitions = snapshot
         .scene_query()

@@ -2,6 +2,8 @@
 //! other apps hand over or the customer picks, and the package placed in the
 //! app's external data directory by the development install.
 
+#[cfg(any(test, target_os = "android"))]
+mod benchmark;
 #[cfg(target_os = "android")]
 mod files;
 #[cfg(any(test, target_os = "android"))]
@@ -57,6 +59,16 @@ fn android_main(android_app: android_activity::AndroidApp) {
         "Kečup Viewer",
         options,
         Box::new(move |cc| {
+            if let (Some(request), Some(render)) = (
+                path.as_deref()
+                    .and_then(|path| path.parent())
+                    .and_then(benchmark::request),
+                &cc.wgpu_render_state,
+            ) {
+                let info = render.adapter.get_info();
+                let gpu = format!("{} ({:?})", info.name, info.backend);
+                run_benchmark(&request, &gpu, &render.device, &render.queue);
+            }
             let mut app = ketchup_viewer::app::ViewerApp::new(cc.wgpu_render_state.clone())
                 .with_host_sharing()
                 .with_preferences(preferences);
@@ -82,6 +94,51 @@ fn android_main(android_app: android_activity::AndroidApp) {
     );
     if let Err(error) = result {
         log::error!("Kečup Viewer Android startup failed: {error}");
+    }
+}
+
+/// Frames orbited and their size, as `ketchup-viewer --benchmark` on Windows.
+#[cfg(target_os = "android")]
+const BENCHMARK_FRAMES: usize = 300;
+#[cfg(target_os = "android")]
+const BENCHMARK_SIZE: [u32; 2] = [1600, 900];
+
+/// Measure the requested package on the window's GPU, write the report
+/// beside it and drop the request; the start then continues as usual.
+#[cfg(target_os = "android")]
+fn run_benchmark(
+    request: &std::path::Path,
+    gpu: &str,
+    device: &eframe::wgpu::Device,
+    queue: &eframe::wgpu::Queue,
+) {
+    let measured = match ketchup_viewer::app::benchmark::run(
+        device,
+        queue,
+        request,
+        BENCHMARK_SIZE,
+        BENCHMARK_FRAMES,
+    ) {
+        Ok(result) => {
+            let peak = std::fs::read_to_string("/proc/self/status")
+                .ok()
+                .and_then(|status| benchmark::peak_memory_bytes(&status));
+            benchmark::report_with_peak(&result.report(), peak)
+        }
+        Err(error) => format!("{error}; {}\n", error.fix_hint_text()),
+    };
+    let report = format!(
+        "Ketchup Viewer {} on {gpu}\n{measured}",
+        env!("CARGO_PKG_VERSION")
+    );
+    for line in report.lines() {
+        log::info!("benchmark {line}");
+    }
+    if let Err(error) = std::fs::write(benchmark::report_path(request), &report) {
+        log::error!("Writing the benchmark report failed: {error}");
+    }
+    if let Err(error) = std::fs::remove_file(request) {
+        log::error!("Removing the benchmark request failed: {error}");
     }
 }
 
