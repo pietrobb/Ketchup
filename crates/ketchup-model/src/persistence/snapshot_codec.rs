@@ -6,13 +6,15 @@
 //! Schema policy: the saved serde form of [`ProductModel`] is the format. A history
 //! revision must encode back to the same CBOR, so any change to that form needs a new
 //! [`SNAPSHOT_FORMAT`], its conversion in [`decode`] and a golden file of the previous
-//! format: a renamed, moved or reinterpreted field, a changed default, and any new
-//! field, also one with `#[serde(default)]` and a `skip_serializing_if` for that
-//! default. Format 103 shipped in Kečup 0.1.0, which ignores fields it does not know,
+//! format: a renamed, moved or reinterpreted field, a changed default, any new enum
+//! variant, and any new field, also one with `#[serde(default)]` and a
+//! `skip_serializing_if` for that default. Format 103 shipped in Kečup 0.1.0, which ignores fields it does not know,
 //! so a new field under 103 would be dropped by 0.1.0 and lost at its next Save (PS-4).
 //! Format 104 adds underlays, 105 annotations, 106 the edits of an underlay's drawing
 //! ([`crate::underlay::edits`]) and the plane it stands on as a view
-//! ([`crate::underlay::view`]), 107 the stretched lines of a drawing (trimmed, extended,
+//! ([`crate::underlay::view`]) as Kečup 0.3.0 saves them, its drawn text and view
+//! included (they came on `main` after 106 did, before 0.3.0 shipped it; review
+//! 2026-10-29 CD-73), 107 the stretched lines of a drawing (trimmed, extended,
 //! offset; review 2026-10-29 CD-61); an older file has none, so it reads
 //! without a conversion, and a document without them is still written as 103 when
 //! Kečup 0.2.0 reads all of it ([`fits_format_103`]). The
