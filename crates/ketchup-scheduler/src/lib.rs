@@ -597,7 +597,9 @@ pub struct StepAssemblyNode {
 }
 
 const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(10);
-const MAX_EXACT_WORKER_EXECUTABLE_BYTES: u64 = 128 * 1024 * 1024;
+/// A Linux debug worker keeps its symbols and line tables inside the file
+/// (184 MB, CI-62); the file is hashed a piece at a time, never held whole.
+const MAX_EXACT_WORKER_EXECUTABLE_BYTES: u64 = 512 * 1024 * 1024;
 static NEVER_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 /// An empty buffer that already holds room for `len` bytes, or the refusal
@@ -805,15 +807,27 @@ fn open_bounded(path: &Path) -> Result<(fs::File, fs::Metadata), WorkerError> {
 }
 
 fn bounded_sha256(path: &Path, file: &fs::File) -> Result<String, WorkerError> {
-    let mut bytes = Vec::new();
-    file.take(MAX_EXACT_WORKER_EXECUTABLE_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| WorkerError::Spawn(error.to_string()))?;
-    let len = bytes.len() as u64;
-    if len > MAX_EXACT_WORKER_EXECUTABLE_BYTES {
-        return Err(oversized_worker_file(path, len));
+    struct Counted<R> {
+        reader: R,
+        len: u64,
     }
-    Ok(sha256_hex(&bytes))
+    impl<R: Read> Read for Counted<R> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let read = self.reader.read(buffer)?;
+            self.len += read as u64;
+            Ok(read)
+        }
+    }
+    let mut counted = Counted {
+        reader: file.take(MAX_EXACT_WORKER_EXECUTABLE_BYTES + 1),
+        len: 0,
+    };
+    let sha256 = ketchup_model::graph::sha256_reader_hex(&mut counted)
+        .map_err(|error| WorkerError::Spawn(error.to_string()))?;
+    if counted.len > MAX_EXACT_WORKER_EXECUTABLE_BYTES {
+        return Err(oversized_worker_file(path, counted.len));
+    }
+    Ok(sha256)
 }
 
 /// `bytes` is a lower bound when the file grew while it was read.
@@ -2995,6 +3009,21 @@ mod tests {
             exact_worker_identity(&oversized).unwrap_err().to_string(),
             format!("worker spawn failed: {expected}")
         );
+    }
+
+    #[test]
+    fn a_worker_the_size_of_a_linux_debug_build_is_started() {
+        // A Linux debug program worker keeps its symbols and line tables inside
+        // the executable: 183 895 784 bytes on Ubuntu 24.04 (CI-62), so the
+        // window could evaluate no program in a Linux debug build.
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("linux-debug-worker.bin");
+        std::fs::File::create(&executable)
+            .unwrap()
+            .set_len(183_895_784)
+            .unwrap();
+        let (canonical, sha256) = exact_worker_identity(&executable).unwrap();
+        assert!(verify_exact_worker_identity(&canonical, &sha256).is_ok());
     }
 
     #[test]
