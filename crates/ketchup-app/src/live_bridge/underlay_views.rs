@@ -248,7 +248,7 @@ def {name}_through(name, outline, holes, frame, tool):
 
 def {name}_seen(views):
     z = [vec_cross(f[1], f[2]) for v, h, f in views]
-    if max([max([abs(c) for c in vec_cross(z[0], w)]) for w in z]) < 1e-9:
+    if max([max([abs(c) for c in vec_cross(z[0], w)]) for w in z]) < {rounding:e}:
         fail(\"{name}: its views are all seen along one axis, so they show no thickness; stand one of them on another plane\")
     return z
 
@@ -262,6 +262,7 @@ def {name}_seen(views):
         views.join(", "),
         quoted(name),
         views0 = views[0],
+        rounding = ketchup_model::tolerance::ROUNDING,
     );
     for (index, view) in views.iter().enumerate().skip(1) {
         let tool = quoted(&format!("{name}/view{}", index + 1));
