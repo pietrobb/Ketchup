@@ -1062,8 +1062,8 @@ def _sae_rating(model):
         load_n = kn * 1000,
         basis = "characteristic",
         source = _SAE_SOURCE,
-        note = ("R1,k downward, %d + %d %ss (header + joist); for joists %d-%d mm wide; transverse tension " +
-                "in the timber is not included") % (header, joist, _SAE_NAIL, low, high),
+        note = ("R1,k downward, %d + %d %s (header + joist); for joists %d-%d mm wide; transverse tension " +
+                "in the timber is not included") % (header, joist, _SAE_NAIL.replace("nail", "nails", 1), low, high),
         density_kg_m3 = 350,
         service_classes = _GALVANIZED,
         hardware = {model: 1, _SAE_NAIL: header + joist},

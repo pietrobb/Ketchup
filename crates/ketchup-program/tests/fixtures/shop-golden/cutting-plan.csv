@@ -1,7 +1,7 @@
 ﻿material,kind,section_mm,stock_no,stock_mm,part,at_mm,size_mm,turned,used_percent,offcut_mm,note
-KVH,lengths,120 x 60,1,6000,rail,0,2500,,82.9,1011.5,
-KVH,lengths,120 x 60,1,6000,brace,2504,1476.5,,82.9,1011.5,
-KVH,lengths,120 x 60,1,6000,post,3984.5,1000,,82.9,1011.5,
+KVH,lengths,120 x 60,1,3000,rail,0,2500,,83.3,496,
+KVH,lengths,120 x 60,2,3000,brace,0,1476.5,,82.5,515.5,
+KVH,lengths,120 x 60,2,3000,post,1480.5,1000,,82.5,515.5,
 OSB,sheets,15,1,2500 x 1250,osb 1,10 x 10,600 x 1200,yes,53.5,,
 OSB,sheets,15,1,2500 x 1250,osb 2,614 x 10,600 x 1200,yes,53.5,,
 OSB,sheets,15,1,2500 x 1250,osb 3,1218 x 10,333.3 x 700,yes,53.5,,

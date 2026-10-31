@@ -390,6 +390,10 @@
       {
         "count": 1,
         "item": "SAE380"
+      },
+      {
+        "count": 34,
+        "item": "square twist nail 3.75x30"
       }
     ],
     "machining": [],
@@ -424,9 +428,18 @@
           "source": "example prices, not an offer",
           "unit": "piece",
           "unit_price": 4.2
+        },
+        {
+          "amount": 1.36,
+          "item": "square twist nail 3.75x30",
+          "kind": "hardware",
+          "quantity": 34.0,
+          "source": "example prices, not an offer",
+          "unit": "piece",
+          "unit_price": 0.04
         }
       ],
-      "total": 192.32
+      "total": 193.68
     },
     "total_parts": 13
   },
@@ -447,8 +460,16 @@
       "rating": {
         "basis": "characteristic",
         "density_kg_m3": 350.0,
+        "hardware": {
+          "SAE380": 1,
+          "square twist nail 3.75x30": 34
+        },
         "load_n": 22300.0,
-        "note": "R1,k downward, 22 + 12 square twist nails 3.75x30 (header + joist); transverse tension in the timber is not included",
+        "note": "R1,k downward, 22 + 12 square twist nails 3.75x30 (header + joist); for joists 38-100 mm wide; transverse tension in the timber is not included",
+        "service_classes": [
+          1,
+          2
+        ],
         "source": "ETA-06/0270 (2023-01-06), Annex D34 SAE joist hanger, characteristic capacity with square twist nails, full nailing, timber to timber"
       },
       "status": "not_verified"
