@@ -521,6 +521,20 @@ pub(super) fn closed_regions(
     lookup: Lookup,
     whole: bool,
 ) -> Result<Vec<Region>, &'static str> {
+    found_regions(region_search(
+        snapshot, underlay, lines, layers, lookup, whole,
+    )?)
+}
+
+/// The search [`closed_regions`] makes, without making it.
+pub(super) fn region_search(
+    snapshot: &Snapshot,
+    underlay: &Underlay,
+    lines: &UnderlayLines,
+    layers: Option<&[String]>,
+    lookup: Lookup,
+    whole: bool,
+) -> Result<Search, &'static str> {
     let tolerance = lookup.tolerance_mm.unwrap_or(DEFAULT_JOIN_MM);
     if !(tolerance > 0.0 && tolerance <= MAX_JOIN_MM) {
         return Err("invalid_params");
@@ -529,7 +543,11 @@ pub(super) fn closed_regions(
     let pieces = pieces(lines, &chosen, lookup.within);
     let mut segments = pieces.iter().map(|piece| piece.ends).collect::<Vec<_>>();
     add_closures(&mut segments, underlay, lookup.closing_segments_mm)?;
-    found_regions(segments, tolerance / underlay.scale(), whole)
+    Ok(Search {
+        segments,
+        tolerance: (tolerance / underlay.scale()).to_bits(),
+        whole,
+    })
 }
 
 /// How a region is looked for besides its layers.
@@ -558,18 +576,8 @@ fn search_too_large(error: ketchup_model::underlay::regions::RegionError) -> &'s
     "invalid_params"
 }
 
-/// The regions, or with `whole` the figures, of `segments` joined within `tolerance`, the
-/// same search found once.
-fn found_regions(
-    segments: Vec<[[f64; 2]; 2]>,
-    tolerance: f64,
-    whole: bool,
-) -> Result<Vec<Region>, &'static str> {
-    let search = Search {
-        segments,
-        tolerance: tolerance.to_bits(),
-        whole,
-    };
+/// The regions, or the figures, `search` finds, the same search found once.
+fn found_regions(search: Search) -> Result<Vec<Region>, &'static str> {
     let mut found = FOUND
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -580,7 +588,10 @@ fn found_regions(
         return regions.map_err(search_too_large);
     }
     drop(found);
-    let regions = if whole {
+    #[cfg(test)]
+    SEARCHED_HERE.with(|searched| searched.set(searched.get() + 1));
+    let tolerance = f64::from_bits(search.tolerance);
+    let regions = if search.whole {
         find_figures(&search.segments, tolerance)
     } else {
         find_regions(&search.segments, tolerance)
@@ -588,7 +599,9 @@ fn found_regions(
     let mut found = FOUND
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let kept = FOUND_KEPT + FLAT_DRAWINGS.load(std::sync::atomic::Ordering::Relaxed);
+    let kept = FOUND_KEPT
+        + FLAT_DRAWINGS.load(std::sync::atomic::Ordering::Relaxed)
+        + FOLLOWED_SEARCHES.load(std::sync::atomic::Ordering::Relaxed);
     while found.len() >= kept {
         drop(found.remove(0));
     }
@@ -599,8 +612,8 @@ fn found_regions(
 
 /// What regions were found in: the pieces in the underlay's millimetres, the join
 /// tolerance there and whether figures were wanted.
-#[derive(PartialEq)]
-struct Search {
+#[derive(Clone, PartialEq)]
+pub(super) struct Search {
     segments: Vec<[[f64; 2]; 2]>,
     tolerance: u64,
     whole: bool,
@@ -620,6 +633,16 @@ static FLAT_DRAWINGS: std::sync::atomic::AtomicUsize = std::sync::atomic::Atomic
 /// Keeps the regions of `count` drawings lying flat found together.
 pub(crate) fn keep_found_for(count: usize) {
     FLAT_DRAWINGS.store(count, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The areas of the window's program that follow a drawing: [`FOUND`] keeps one search
+/// more for each, or with areas found in more ways than it kept each move of the drawing
+/// found all their regions again (review 2026-10-29 UO-40).
+static FOLLOWED_SEARCHES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Keeps the regions of `count` areas that follow a drawing found together.
+pub(super) fn keep_found_for_followed(count: usize) {
+    FOLLOWED_SEARCHES.store(count, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// The regions of the latest searches, or why they were not found, the last used last:
@@ -663,7 +686,13 @@ pub(crate) fn regions_ready(
         return true;
     };
     let tolerance = (DEFAULT_JOIN_MM / underlay.scale()).to_bits();
-    match claim(shown_search(lines, &chosen, tolerance)) {
+    search_ready(shown_search(lines, &chosen, tolerance))
+}
+
+/// Whether the regions `search` finds are found, or why not; when neither, they are being
+/// found off the UI thread, started here unless they are already.
+pub(super) fn search_ready(search: Search) -> bool {
+    match claim(search) {
         Ahead::Found => true,
         Ahead::Running => false,
         Ahead::Claimed(search) => {
@@ -706,11 +735,7 @@ fn claim(search: Search) -> Ahead {
 
 /// Finds the regions of `search`, claimed, into [`FOUND`].
 fn run_ahead(search: Search) {
-    let _ = found_regions(
-        search.segments.clone(),
-        f64::from_bits(search.tolerance),
-        search.whole,
-    );
+    let _ = found_regions(search.clone());
     SEARCHING
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -762,6 +787,13 @@ impl HoldAhead {
 thread_local! {
     static HOLD_AHEAD: std::cell::RefCell<Option<std::sync::Arc<HoldAhead>>> =
         const { std::cell::RefCell::new(None) };
+    static SEARCHED_HERE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many searches for regions the calling thread has run itself.
+#[cfg(test)]
+pub(crate) fn searches_on_this_thread() -> usize {
+    SEARCHED_HERE.with(std::cell::Cell::get)
 }
 
 /// Runs `search` on a thread of its own.

@@ -3,6 +3,7 @@
 //! layer of the drawing, one Undo step each, instead of a profile of the model; the Text
 //! into drawing tool puts a TEXT there.
 
+use crate::app::underlay_edit::{FindRegions, UnderlayEditError};
 use crate::*;
 use ketchup_model::tolerance::ROUNDING;
 use ketchup_model::underlay::UnderlayId;
@@ -286,7 +287,27 @@ impl KetchupApp {
         let Some(kind) = shapes.first().map(DrawnShape::kind) else {
             return false;
         };
-        match self.draw_into_underlay(target.underlay, &target.layer, shapes) {
+        self.draw_shapes_in_window(target, kind, shapes)
+    }
+
+    fn draw_shapes_in_window(
+        &mut self,
+        target: UnderlayDrawTarget,
+        kind: &'static str,
+        shapes: Vec<DrawnShape>,
+    ) -> bool {
+        match self.draw_into_underlay(
+            target.underlay,
+            &target.layer,
+            shapes.clone(),
+            FindRegions::OffUiThread,
+        ) {
+            Err(UnderlayEditError::FindingRegions(batch)) => {
+                self.await_followed_regions(batch, move |app| {
+                    app.draw_shapes_in_window(target, kind, shapes);
+                });
+                true
+            }
             Ok(changes) => {
                 // A line goes on from its end; other shapes are done.
                 if matches!(

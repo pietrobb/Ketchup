@@ -1650,6 +1650,7 @@ digest-underlay-mirror-line-required = Os zrkadlenia potrebuje dva rôzne body
 digest-underlay-objects-mirrored = Vybrané objekty výkresu sú zrkadlené
 digest-underlay-objects-not-removed = Výkres sa nezmenil: { $reason }
 digest-underlay-edit-failed = Podklad nebol posunutý: { $reason }
+digest-underlay-edit-searching = Hľadám oblasti, ktoré sledujú výkres; zmena sa urobí, keď ich nájdem
 error-underlay-copy = podklad sa osádza, nekopíruje
 error-underlay-standing = výkres stojí ako pohľad; na posun v okne ho vráť do pôdorysu
 digest-measure-edge = Dĺžka hrany { $length } mm · iba údaj, bez kroku späť

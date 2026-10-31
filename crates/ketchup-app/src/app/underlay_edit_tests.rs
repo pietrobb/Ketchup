@@ -564,6 +564,7 @@ fn trim_extend_offset_and_mirror_edit_lines_of_a_drawing() {
                 line([[140.0, 0.0], [140.0, 140.0]]),
                 line([[180.0, 40.0], [180.0, 100.0]]),
             ],
+            crate::app::underlay_edit::FindRegions::Here,
         )
         .unwrap();
     let undo = harness.state().undo_step_count();
@@ -1126,6 +1127,66 @@ fn a_pull_area_click_before_the_regions_are_found_waits_for_them_off_the_ui_thre
         app.digest.starts_with("Pulled the area up"),
         "{}",
         app.digest
+    );
+}
+
+/// Review 2026-10-29 UO-40: a line deleted from a drawing an area follows found the area's
+/// region again on the UI thread, in the commit, once for every area, a second and more on
+/// a large plan. The deletion waits for the regions found off it and is made on the frame
+/// they are.
+#[test]
+fn a_line_deleted_from_a_drawing_an_area_follows_waits_for_its_regions_off_the_ui_thread() {
+    // A line of the room's layer of its own: the regions another test found are not these.
+    let mut harness = shell_of(imported_alone_with(&format!(
+        "{ROOM_AND_FLOOR}0\nLINE\n8\nrooms\n10\n13\n20\n400\n11\n113\n21\n400\n"
+    )));
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExtrudeUnderlayArea);
+    pull_up(&mut harness, "300", IN_ROOM);
+    harness.state_mut().dispatch_command(AppCommand::Select);
+    let undo = harness.state().undo_step_count();
+    click(&mut harness, Vec3::new(60.0, 400.0, 0.0));
+    assert_eq!(picked(&harness), 1, "{}", harness.state().digest);
+
+    let hold = crate::live_bridge::underlay_regions::HoldAhead::hold();
+    let held = hold.clone();
+    let guard = crate::tests::shell::hang_guard("the search of the followed regions", move || {
+        held.let_go();
+    });
+    let searched = crate::live_bridge::underlay_regions::searches_on_this_thread();
+    press(&mut harness, egui::Key::Delete);
+    let app = harness.state();
+    assert_eq!(
+        crate::live_bridge::underlay_regions::searches_on_this_thread(),
+        searched,
+        "the UI thread found regions"
+    );
+    assert_eq!(app.undo_step_count(), undo, "{}", app.digest);
+    assert!(
+        app.digest.starts_with("Finding the areas"),
+        "{}",
+        app.digest
+    );
+    hold.let_go();
+    drop(guard);
+    crate::tests::shell::step_until(
+        &mut harness,
+        std::time::Duration::from_secs(60),
+        "the waiting deletion was never made",
+        |app| app.undo_step_count() > undo,
+    );
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo + 1, "{}", app.digest);
+    assert!(
+        app.digest.contains("taken out of the drawing"),
+        "{}",
+        app.digest
+    );
+    assert_eq!(
+        crate::live_bridge::underlay_regions::searches_on_this_thread(),
+        searched,
+        "the UI thread found regions"
     );
 }
 

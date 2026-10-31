@@ -272,7 +272,78 @@ pub(crate) fn unlinked(source: &str) -> Option<String> {
     bound.then_some(kept)
 }
 
+/// The bindings of `program` to a drawing `batch` changes. Keeps the regions of every
+/// binding of the program found together.
+fn followed_by(
+    program: &RuleProgramSource,
+    batch: &CommandBatch,
+) -> Result<Vec<Binding>, RuleProgramApplyError> {
+    let changed = batch
+        .commands()
+        .iter()
+        .filter_map(|command| match command {
+            CanonicalCommand::UpsertUnderlay(underlay) => Some(underlay.id.0),
+            CanonicalCommand::DeleteUnderlay { id } => Some(id.0),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    if changed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut bindings = Vec::new();
+    let mut count = 0;
+    for json in program
+        .source
+        .lines()
+        .filter_map(|line| line.strip_prefix(PREFIX))
+    {
+        count += 1;
+        let binding: Binding = serde_json::from_str(json).map_err(|error| {
+            RuleProgramApplyError::Rejected(Box::new(
+                rejected("invalid_params")
+                    .target("program.underlay_binding")
+                    .reason("The underlay binding is not valid JSON for a source selection.")
+                    .fix_hint("Restore the generated source section with from_underlay.")
+                    .caused_by(error),
+            ))
+        })?;
+        if changed.contains(&binding.underlay_id) {
+            bindings.push(binding);
+        }
+    }
+    super::underlay_regions::keep_found_for_followed(count);
+    Ok(bindings)
+}
+
 impl KetchupApp {
+    /// Whether the regions of the areas that follow a drawing `batch` changes are found as
+    /// it leaves them, or why not. When neither, they are being found off the UI thread,
+    /// started here unless they are already, so the window does not stall committing the
+    /// batch on a large plan (review 2026-10-29 UO-40).
+    pub(crate) fn followed_regions_ready(&self, batch: &CommandBatch) -> bool {
+        let Some(program) = self.document.current_rule_program() else {
+            return true;
+        };
+        let Ok(bindings) = followed_by(program, batch) else {
+            // The commit says why.
+            return true;
+        };
+        if bindings.is_empty() {
+            return true;
+        }
+        let Ok(snapshot) = self.document.preview_batch(batch) else {
+            return true;
+        };
+        let mut ready = true;
+        for binding in &bindings {
+            if let Some(search) = super::underlay_program::binding_search(self, &snapshot, binding)
+            {
+                ready &= super::underlay_regions::search_ready(search);
+            }
+        }
+        ready
+    }
+
     /// Returns a normal program plan only when this batch changes a referenced underlay,
     /// with what it changes of the sections that follow it.
     pub(crate) fn plan_underlay_program_update(
@@ -289,37 +360,7 @@ impl KetchupApp {
         let Some(program) = self.document.current_rule_program() else {
             return Ok(None);
         };
-        let changed = batch
-            .commands()
-            .iter()
-            .filter_map(|command| match command {
-                CanonicalCommand::UpsertUnderlay(underlay) => Some(underlay.id.0),
-                CanonicalCommand::DeleteUnderlay { id } => Some(id.0),
-                _ => None,
-            })
-            .collect::<BTreeSet<_>>();
-        if changed.is_empty() {
-            return Ok(None);
-        }
-        let mut bindings = Vec::new();
-        for json in program
-            .source
-            .lines()
-            .filter_map(|line| line.strip_prefix(PREFIX))
-        {
-            let binding: Binding = serde_json::from_str(json).map_err(|error| {
-                RuleProgramApplyError::Rejected(Box::new(
-                    rejected("invalid_params")
-                        .target("program.underlay_binding")
-                        .reason("The underlay binding is not valid JSON for a source selection.")
-                        .fix_hint("Restore the generated source section with from_underlay.")
-                        .caused_by(error),
-                ))
-            })?;
-            if changed.contains(&binding.underlay_id) {
-                bindings.push(binding);
-            }
-        }
+        let bindings = followed_by(program, batch)?;
         if bindings.is_empty() {
             return Ok(None);
         }

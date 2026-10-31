@@ -83,6 +83,9 @@ pub(crate) struct SolidToolInputs {
     /// A click of Pull area that waits for the regions of the drawings to be found off
     /// the UI thread (review 2026-10-26 UO-40).
     pub(crate) area_click_awaits_regions: Option<crate::app::underlay_extrude::AreaClick>,
+    /// A 2D edit of a drawing that waits for the regions of the areas that follow it to be
+    /// found off the UI thread (review 2026-10-29 UO-40).
+    pub(crate) drawing_edit_awaits_regions: Option<crate::app::underlay_edit::AwaitedDrawingEdit>,
 }
 
 /// The running Move/Rotate/Scale session, its typed input and a correction of

@@ -2,7 +2,7 @@
 //! model's, and its edit goes into the underlay's placement as a fit's does, one Undo step.
 
 use super::transform::{move_world_edit, rotate_world_edit};
-use super::underlay_edit::UnderlayEditError;
+use super::underlay_edit::{FindRegions, UnderlayEditError};
 use super::underlay_snapping::{underlay_of, underlay_reference};
 use crate::transform_operation::TransformTarget;
 use crate::*;
@@ -217,10 +217,19 @@ impl KetchupApp {
             in_lines(&plane_part(edit), &found.plane_map())
         });
         let result = match map {
-            Some(map) => self.transform_underlay_objects(underlay, ids, &map, copy),
+            Some(map) => {
+                self.transform_underlay_objects(underlay, ids, &map, copy, FindRegions::OffUiThread)
+            }
             None => Err(UnderlayEditError::Plan(UnderlayObjectError::InvalidMap)),
         };
         match result {
+            Err(UnderlayEditError::FindingRegions(batch)) => {
+                let ids = ids.to_vec();
+                self.await_followed_regions(batch, move |app| {
+                    app.commit_underlay_objects_edit(underlay, &ids, edit, copy);
+                });
+                true
+            }
             Ok(changes) => {
                 self.select_underlay(underlay);
                 for id in ids {

@@ -4,6 +4,7 @@
 //! side (a typed length sets the distance). Mirror with objects of a drawing picked flips
 //! them across a line of two clicks. Each is one Undo step.
 
+use crate::app::underlay_edit::{FindRegions, UnderlayEditError};
 use crate::*;
 use ketchup_model::underlay::UnderlayId;
 use ketchup_model::underlay::line_edit::LineEdit;
@@ -131,7 +132,23 @@ impl KetchupApp {
             self.digest = self.catalog.text("digest-underlay-mirror-line-required");
             return;
         };
-        match self.transform_underlay_objects(underlay, &ids, &map, copy) {
+        self.mirror_underlay_objects_in_window(underlay, ids, map, copy);
+    }
+
+    fn mirror_underlay_objects_in_window(
+        &mut self,
+        underlay: UnderlayId,
+        ids: Vec<u32>,
+        map: Affine,
+        copy: bool,
+    ) {
+        match self.transform_underlay_objects(underlay, &ids, &map, copy, FindRegions::OffUiThread)
+        {
+            Err(UnderlayEditError::FindingRegions(batch)) => {
+                self.await_followed_regions(batch, move |app| {
+                    app.mirror_underlay_objects_in_window(underlay, ids, map, copy);
+                });
+            }
             Ok(changes) => {
                 self.digest = self.catalog.text("digest-underlay-objects-mirrored")
                     + &self.followed_note(&changes);
@@ -152,7 +169,13 @@ impl KetchupApp {
         edit: LineEdit,
         done: &'static str,
     ) -> bool {
-        match self.edit_underlay_line(underlay, object, edit) {
+        match self.edit_underlay_line(underlay, object, edit, FindRegions::OffUiThread) {
+            Err(UnderlayEditError::FindingRegions(batch)) => {
+                self.await_followed_regions(batch, move |app| {
+                    app.apply_underlay_line_edit(underlay, object, edit, done);
+                });
+                true
+            }
             Ok(changes) => {
                 self.digest = self.catalog.text(done) + &self.followed_note(&changes);
                 true

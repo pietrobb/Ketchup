@@ -216,6 +216,44 @@ pub(crate) fn free_name(app: &KetchupApp, stem: &str) -> String {
         .unwrap_or_default()
 }
 
+/// The search for the region `binding` follows, as [`binding_data`] makes it; none when it
+/// follows an object or a block, or cannot look, which its update says.
+pub(super) fn binding_search(
+    app: &KetchupApp,
+    snapshot: &Snapshot,
+    binding: &super::underlay_binding::Binding,
+) -> Option<super::underlay_regions::Search> {
+    if binding.block.is_some() || binding.point.is_none() == binding.label.is_none() {
+        return None;
+    }
+    let underlay =
+        super::underlay_regions::one_underlay(snapshot, Some(binding.underlay_id)).ok()?;
+    let lines = app.cached_underlay_lines(underlay)?;
+    if binding.object(&lines).ok()?.is_some() {
+        return None;
+    }
+    let offset = underlay.offset_mm();
+    let closing_segments_mm = binding
+        .closures
+        .iter()
+        .map(|ends| ends.map(|[x, y]| underlay.to_document([x - offset[0], y - offset[1]])))
+        .collect::<Vec<_>>();
+    let lookup = super::underlay_regions::Lookup {
+        tolerance_mm: binding.tolerance.map(|value| value * underlay.scale()),
+        closing_segments_mm: &closing_segments_mm,
+        within: binding.within_local(underlay),
+    };
+    super::underlay_regions::region_search(
+        snapshot,
+        underlay,
+        &lines,
+        binding.layers.as_deref(),
+        lookup,
+        binding.point.is_some() && binding.whole,
+    )
+    .ok()
+}
+
 pub(super) fn binding_data(
     app: &KetchupApp,
     snapshot: &Snapshot,
