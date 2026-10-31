@@ -395,7 +395,7 @@ impl LiveBridge {
                 limit,
                 json!({"basis": "program_production_scope", "drawn": export.parts.len(),
                     "not_drawn": export.not_drawn.len(),
-                    "hint": "One AutoCAD R12 DXF per made flat part (fabrication role manufactured item, an extrusion; a box seen on its largest face), in mm from (0, 0): CONTOUR outline, CUTOUT through cuts, DRILL_D<d>_Z<depth> holes from the face seen (_BOTTOM from below), HDRILL_D<d>_Z<depth>_H<height> edge holes as lines, POCKET_Z<depth> pockets and blind cuts, PART_NAME the name; a decimal point in a layer is _. Join the dxf of a file's chunks 1..chunks in order and write it to the file; not_drawn says why a part has none."}),
+                    "hint": "One AutoCAD R12 DXF per made flat part (fabrication role manufactured item, an extrusion; a box seen on its largest face, x its longer side, as woodWOP lays it), in mm from (0, 0): CONTOUR outline, CUTOUT through cuts, DRILL_D<d>_Z<depth> holes from the face seen (_BOTTOM from below), HDRILL_D<d>_Z<depth>_H<height> edge holes as lines, POCKET_Z<depth> pockets and blind cuts, PART_NAME the name; a decimal point in a layer is _. Join the dxf of a file's chunks 1..chunks in order and write it to the file; not_drawn says why a part has none."}),
             )
             .map(ReportPage::Ready);
         }

@@ -68,9 +68,10 @@ fn start(segment: &ProfileSegment) -> [f64; 2] {
 fn a_part_on_its_side_is_drawn_on_its_face_with_its_holes_and_pockets_on_their_layers() {
     let export = export();
     let side = part(&export, "Bočnica ľavá");
-    // 18 x 400 x 720 seen along x: y to the right, z up.
+    // 18 x 400 x 720 seen along x as woodWOP lays it: the 720 (z) to the
+    // right, the 400 (y) up from the far edge.
     assert_eq!(side.thickness_mm, 18.0);
-    assert_eq!(side.size_mm, [400.0, 720.0]);
+    assert_eq!(side.size_mm, [720.0, 400.0]);
     assert_eq!(side.file, "Bocnica_lava.dxf");
     let dxf = side.dxf();
     assert!(dxf.is_ascii(), "the file is ASCII");
@@ -82,7 +83,7 @@ fn a_part_on_its_side_is_drawn_on_its_face_with_its_holes_and_pockets_on_their_l
     assert_eq!(contour.len(), 1);
     assert_eq!(
         contour[0].iter().map(start).collect::<Vec<_>>(),
-        [[0.0, 0.0], [400.0, 0.0], [400.0, 720.0], [0.0, 720.0]]
+        [[0.0, 0.0], [720.0, 0.0], [720.0, 400.0], [0.0, 400.0]]
     );
     // The shelf pin from the face seen; the bolt goes through, so it is as
     // deep as the part whichever face it is drilled from.
@@ -91,18 +92,18 @@ fn a_part_on_its_side_is_drawn_on_its_face_with_its_holes_and_pockets_on_their_l
         ref other => panic!("not a circle: {other:?}"),
     };
     assert_eq!(read["DRILL_D5_Z13"].len(), 1);
-    assert_eq!(circle_center(&read["DRILL_D5_Z13"][0]), [37.0, 32.0]);
-    assert_eq!(circle_center(&read["DRILL_D8_Z18"][0]), [200.0, 360.0]);
-    // The groove runs along the bottom edge of the face seen, 8 high.
+    assert_eq!(circle_center(&read["DRILL_D5_Z13"][0]), [32.0, 363.0]);
+    assert_eq!(circle_center(&read["DRILL_D8_Z18"][0]), [360.0, 200.0]);
+    // The groove runs along the left edge of the face seen, 8 wide.
     let groove = &read["POCKET_Z6"][0];
     let mut corners = groove.iter().map(start).collect::<Vec<_>>();
     corners.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
     assert_eq!(
         corners,
-        [[0.0, 0.0], [0.0, 8.0], [400.0, 0.0], [400.0, 8.0]]
+        [[0.0, 0.0], [0.0, 400.0], [8.0, 0.0], [8.0, 400.0]]
     );
-    // The dowel into the bottom edge: a line from y = 0 up 30 mm, at
-    // mid-thickness.
+    // The dowel into the top edge (local y = 0): a line from y = 400 down
+    // 30 mm, at mid-thickness.
     let Some(Entity::Line {
         layer,
         start_mm,
@@ -115,7 +116,7 @@ fn a_part_on_its_side_is_drawn_on_its_face_with_its_holes_and_pockets_on_their_l
         panic!("no edge hole: {side:#?}");
     };
     assert_eq!(layer, "HDRILL_D8_Z30_H9");
-    assert_eq!((*start_mm, *end_mm), ([0.0, 300.0], [30.0, 300.0]));
+    assert_eq!((*start_mm, *end_mm), ([300.0, 400.0], [300.0, 370.0]));
     assert_eq!(
         read["HDRILL_D8_Z30_H9"].len(),
         1,
@@ -127,6 +128,64 @@ fn a_part_on_its_side_is_drawn_on_its_face_with_its_holes_and_pockets_on_their_l
     assert!(underlay.layers.iter().any(|layer| layer == "PART_NAME"));
     assert_eq!(underlay.lines.text_count(), 1);
     assert!(text.contains("Bo\\U+010Dnica \\U+013Eav\\U+00E1"), "{text}");
+}
+
+/// MF-63: the drawing lies as the woodWOP program lays the part: x along its
+/// longest side, y along the next, the frame right-handed, and a part drilled
+/// from below only turned over, its underside up.
+#[test]
+fn a_board_is_drawn_in_the_frame_its_woodwop_program_lays_it_in() {
+    let source = "panel = board('panel', [600, 2400, 18], material = 'DTD')\n\
+         hole(panel, 'z+', world = (100, 300, 18), diameter = 5, depth = 10, id = 'from above')\n\
+         pocket(panel, 'z+', rect = (0, 0, 600, 8), depth = 6, id = 'groove')\n\
+         under = board('under', [600, 2400, 18], at = (0, 0, 100), material = 'DTD')\n\
+         hole(under, 'z-', world = (100, 300, 100), diameter = 5, depth = 10, id = 'from below')\n\
+         hole(under, 'y-', world = (100, 0, 106), diameter = 8, depth = 30, id = 'dowel')\n";
+    let model = ketchup_program::evaluate("frame.star", source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"))
+        .model;
+    let export = cnc_parts(&model);
+    let circle = |part: &CncPart| {
+        part.entities
+            .iter()
+            .find_map(|entity| match entity {
+                Entity::Circle {
+                    layer, center_mm, ..
+                } => Some((layer.clone(), *center_mm)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no hole: {part:#?}"))
+    };
+
+    // 600 x 2400: woodWOP X is the 2 400 (local y), Y the 600 (local x) from
+    // the far edge, so the frame stays right-handed.
+    let panel = part(&export, "panel");
+    assert_eq!(panel.size_mm, [2400.0, 600.0]);
+    assert_eq!(circle(panel), ("DRILL_D5_Z10".to_owned(), [300.0, 500.0]));
+    let read = profiles(&panel.dxf());
+    let mut groove = read["POCKET_Z6"][0].iter().map(start).collect::<Vec<_>>();
+    groove.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+    assert_eq!(groove, [[0.0, 0.0], [0.0, 600.0], [8.0, 0.0], [8.0, 600.0]]);
+
+    // Drilled from below only, it lies underside up: the hole is drilled
+    // from the face seen, the edge hole's height counts from the new
+    // underside, and Y is no longer reversed.
+    let under = part(&export, "under");
+    assert_eq!(under.size_mm, [2400.0, 600.0]);
+    assert_eq!(circle(under), ("DRILL_D5_Z10".to_owned(), [300.0, 100.0]));
+    let edge = under
+        .entities
+        .iter()
+        .find_map(|entity| match entity {
+            Entity::Line {
+                layer,
+                start_mm,
+                end_mm,
+            } => Some((layer.as_str(), *start_mm, *end_mm)),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no edge hole: {under:#?}"));
+    assert_eq!(edge, ("HDRILL_D8_Z30_H12", [0.0, 100.0], [30.0, 100.0]));
 }
 
 #[test]

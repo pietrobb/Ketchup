@@ -555,7 +555,8 @@ fn the_cnc_export_writes_a_dxf_per_part_that_reads_back() {
     let top = read("top.dxf");
     assert_eq!(top.profiles().len(), 1, "an outline only");
     let csv = String::from_utf8(entries["parts.csv"].clone()).unwrap();
-    assert!(csv.contains("Bočnica,Bocnica.dxf,18,400,720,"), "{csv}");
+    // Laid as its woodWOP program lays it: the longer side along x (MF-63).
+    assert!(csv.contains("Bočnica,Bocnica.dxf,18,720,400,"), "{csv}");
 }
 
 /// R9-C step 18: the window exports the quote (MCP report section `quote`):

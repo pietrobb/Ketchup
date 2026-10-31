@@ -2791,7 +2791,9 @@ def price_list(prices, currency = None, source = None):
 #   Every made part in the production scope with role MANUFACTURED_ITEM whose body is an
 #   extrusion (board(), extrude(), a buildup sheet piece) is drawn as one AutoCAD R12 DXF:
 #   ASCII, no blocks, mm, from (0, 0). A box is seen on its largest face, any other profile
-#   along its extrusion, the face seen up. Layers (a decimal point written "_"):
+#   along its extrusion, the face seen up, as its woodWOP program lays it: x along the
+#   longer side, y along the shorter, a part machined from below only turned underside
+#   up. Layers (a decimal point written "_"):
 #     CONTOUR              the outline, arcs as arcs
 #     CUTOUT               a cut(..., through=True)
 #     DRILL_D8_Z12         a hole 8 across, 12 deep from the face seen (through: the thickness)
