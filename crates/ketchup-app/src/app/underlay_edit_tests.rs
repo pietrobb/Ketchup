@@ -432,6 +432,42 @@ fn a_drawing_stood_up_as_a_view_is_drawn_into_no_more() {
     }
 }
 
+/// Review 2026-10-29 UI-65: Undo kept the objects picked in a drawing by id, so a line
+/// drawn and picked stayed picked once Undo took it away, and its id named the next shape
+/// drawn, which Delete or Move then took. Undo keeps the picks still in the drawing only.
+#[test]
+fn undo_drops_the_picks_of_objects_it_takes_out_of_a_drawing() {
+    let mut harness = shell();
+    let at = |[x, y]: [f64; 2]| Vec3::new(x, y, 0.0);
+    click(&mut harness, Vec3::new(100.0, 120.0, 0.0));
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::DrawIntoUnderlay);
+    click(&mut harness, at([240.0, 120.0]));
+    click(&mut harness, at([240.0, 20.0]));
+    press(&mut harness, egui::Key::Escape);
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::DrawIntoUnderlay);
+    harness.state_mut().dispatch_command(AppCommand::Select);
+    assert_eq!(drawn_shapes(&harness).len(), 1);
+
+    // The line drawn and the axes line read with the drawing, both picked.
+    click(&mut harness, at([240.0, 70.0]));
+    shift_click(&mut harness, Vec3::new(100.0, 120.0, 0.0));
+    assert_eq!(picked(&harness), 2, "{}", harness.state().digest);
+
+    harness.state_mut().undo();
+    assert!(drawn_shapes(&harness).is_empty());
+    assert_eq!(picked(&harness), 1, "only the axes line is left to pick");
+    let (_, ids) = harness.state().picked_underlay_objects().unwrap();
+    let snapshot = harness.state().document.current();
+    let underlay = snapshot.underlays().next().unwrap();
+    let lines = harness.state().cached_underlay_lines(underlay).unwrap();
+    let index = ketchup_model::underlay::object_query::ObjectIndex::new(&lines);
+    assert!(ids.iter().all(|id| index.object(*id).is_some()), "{ids:?}");
+}
+
 fn type_text(harness: &mut Harness<'_, KetchupApp>, text: &str) {
     harness
         .input_mut()

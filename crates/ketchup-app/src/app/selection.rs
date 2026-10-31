@@ -1034,6 +1034,21 @@ impl KetchupApp {
         {
             self.selection.selected_group = None;
         }
+        // An id picked in a drawing names the next object added once Undo takes its own
+        // out: only objects still in the drawing stay picked (review 2026-10-29 UI-65).
+        if let Some(id) = self.selection.underlay() {
+            let lines = snapshot
+                .underlay(id)
+                .and_then(|underlay| self.cached_underlay_lines(underlay));
+            self.selection.retain_underlay_objects(|object| {
+                lines.as_ref().is_some_and(|lines| {
+                    usize::try_from(object)
+                        .ok()
+                        .and_then(|object| lines.objects().objects.get(object))
+                        .is_some_and(|object| !object.removed)
+                })
+            });
+        }
         while self
             .selection
             .edit_context

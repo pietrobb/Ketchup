@@ -59,6 +59,13 @@ impl SelectionState {
         selected.objects.insert(object);
     }
 
+    /// Keeps picked only the objects `keep` holds.
+    pub(crate) fn retain_underlay_objects(&mut self, keep: impl Fn(u32) -> bool) {
+        if let Some(selected) = self.underlay.as_mut() {
+            selected.objects.retain(|object| keep(*object));
+        }
+    }
+
     pub(crate) fn contains(&self, instance_path: &InstancePath) -> bool {
         self.occurrences.contains(instance_path)
     }
