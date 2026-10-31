@@ -428,13 +428,30 @@ pub(super) fn with_data(source: &str, name: &str, written: &str) -> String {
 
 /// [`with_data`] for the section `name` following its drawing: its data written anew from
 /// `written`, the lines after the data as the section has them, so a name or a colour the
-/// window gave its part, or a distance changed by hand, stays (review 2026-10-26 UO-45).
+/// window gave its part, or a distance changed by hand, stays (review 2026-10-26 UO-45);
+/// only the line setting the parts up where the drawing stands is written anew (UO-67).
 pub(super) fn with_followed_data(source: &str, name: &str, written: &str) -> String {
     let kept = section_text(source, name).and_then(|old| statements(old, name));
     match (statements(written, name), kept) {
         (Some(generated), Some(kept)) => {
             let data = &written[..written.len() - generated.len()];
-            with_data(source, name, &format!("{data}{kept}"))
+            let sketch = sketch_start(name);
+            let sketched = |line: &&str| line.starts_with(&sketch);
+            let stands = |line: &&str| line.trim_end().ends_with(STANDS);
+            let had_sketch = kept.split_inclusive('\n').any(|line| sketched(&line));
+            let mut lines = generated
+                .split_inclusive('\n')
+                .filter(|line| had_sketch && sketched(line))
+                .collect::<Vec<_>>();
+            lines.extend(
+                kept.split_inclusive('\n')
+                    .filter(|line| !sketched(line) && !stands(line)),
+            );
+            // The section's end line stays last.
+            let end = lines.pop().unwrap_or_default();
+            lines.extend(generated.split_inclusive('\n').filter(stands));
+            lines.push(end);
+            with_data(source, name, &format!("{data}{}", lines.concat()))
         }
         _ => with_data(source, name, written),
     }
@@ -625,9 +642,19 @@ fn outline_data(
             ring_text(underlay, hole, "        ")
         ));
     }
+    let view = underlay.view.transform();
+    let triple = |[x, y, z]: [f64; 3]| format!("({}, {}, {})", number(x), number(y), number(z));
+    // A drawing standing as a view, or a plan raised off the ground, sets the sketch and
+    // the solid up with it (review 2026-10-29 UO-67).
+    let stands = (!underlay.view.is_ground()).then(|| {
+        format!(
+            "origin = {}, z = {}, x = {}",
+            triple(view.transform_point([0.0; 3])),
+            triple(view.transform_vector([0.0, 0.0, 1.0])),
+            triple(view.transform_vector([1.0, 0.0, 0.0])),
+        )
+    });
     if framed {
-        let view = underlay.view.transform();
-        let triple = |[x, y, z]: [f64; 3]| format!("({}, {}, {})", number(x), number(y), number(z));
         data.push_str(&format!(
             "]\n{name}_FRAME = ({}, {}, {})\n",
             triple(view.transform_point([0.0; 3])),
@@ -635,7 +662,22 @@ fn outline_data(
             triple(view.transform_vector([0.0, 1.0, 0.0])),
         ));
     } else {
-        data.push_str(&format!("]\ncomponent({}, [profile_part({}, points={name}, closed=True)] + [profile_part({} % (i + 1), points=hole, closed=True) for i, hole in enumerate({name}_HOLES)])\n", quoted(&format!("{name}_sketch")), quoted(&format!("{name}/outline")), quoted(&format!("{name}/hole%d"))));
+        let placed = |part: String| match &stands {
+            Some(frame) => format!("place({part}, {frame})"),
+            None => part,
+        };
+        data.push_str(&format!(
+            "]\n{}, [{}] + [{} for i, hole in enumerate({name}_HOLES)])\n",
+            sketch_start(name),
+            placed(format!(
+                "profile_part({}, points={name}, closed=True)",
+                quoted(&format!("{name}/outline"))
+            )),
+            placed(format!(
+                "profile_part({} % (i + 1), points=hole, closed=True)",
+                quoted(&format!("{name}/hole%d"))
+            )),
+        ));
     }
     if let Some(thickness) = thickness {
         data.push_str(&format!(
@@ -644,8 +686,21 @@ fn outline_data(
             number(thickness),
             quoted(&format!("{name}/cut%d")),
         ));
+        if let (Some(frame), false) = (&stands, framed) {
+            data.push_str(&format!("place({name}_SOLID, {frame}){STANDS}\n"));
+        }
     }
     Ok(data)
+}
+
+/// Ends the generated line that sets a section's solid up where its drawing stands; a
+/// section following its drawing is written with the line as the drawing stands now, in
+/// place of the one it had, as with its sketch (see [`with_followed_data`]).
+const STANDS: &str = "  # stands where the drawing stands";
+
+/// How the line making the sketch of section `name` starts.
+fn sketch_start(name: &str) -> String {
+    format!("component({}", quoted(&format!("{name}_sketch")))
 }
 
 fn signed_area(ring: &[[f64; 2]]) -> f64 {

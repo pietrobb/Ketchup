@@ -1000,6 +1000,72 @@ fn a_pulled_area_of_a_drawing_alone_is_written_into_the_program() {
     assert_eq!(harness.state().canonical_digest(), digest);
 }
 
+/// UO-67: an area pulled up on a drawing that is then stood up as the front view stands
+/// with it, its height along the view's line of sight and the room upright in the XZ
+/// plane; laid back into the plan it lies on the ground again. Before, it stayed on the
+/// ground whatever the drawing did.
+#[test]
+fn a_pulled_area_stands_up_with_its_drawing() {
+    use ketchup_model::underlay::view::ViewPlane;
+    let mut harness = shell_of(imported_alone_with(ROOM_AND_FLOOR));
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExtrudeUnderlayArea);
+    pull_up(&mut harness, "300", IN_ROOM);
+    let size = |harness: &Harness<'_, KetchupApp>| {
+        let app = harness.state();
+        let snapshot = app.document.current();
+        let occurrence = snapshot
+            .occurrences()
+            .find(|occurrence| occurrence.name() == "AREA_1")
+            .expect("the room is pulled up")
+            .id();
+        let root = InstancePath::root(occurrence);
+        let [low, high] = app.rotation_bounds_for(&|path| *path == root).unwrap();
+        (low, high - low)
+    };
+    let (_, lying) = size(&harness);
+    assert!((lying.z - 300.0).abs() < 1e-6, "{lying:?}");
+    let id = harness
+        .state()
+        .document
+        .current()
+        .underlays()
+        .next()
+        .unwrap()
+        .id;
+
+    assert!(
+        harness.state_mut().set_underlay_view(id, ViewPlane::Front),
+        "{}",
+        harness.state().digest
+    );
+    let (low, standing) = size(&harness);
+    assert!(
+        (standing.y - 300.0).abs() < 1e-6 && (standing.z - lying.y).abs() < 1e-6,
+        "{standing:?}, {}",
+        program_source(&harness)
+    );
+    // The drawing's +Z faces the viewer in front: the room is pulled towards −Y.
+    assert!((low.y + 300.0).abs() < 1e-6, "{low:?}");
+    assert!((low.z - 160.0).abs() < 1e-6, "{low:?}");
+    let stood = "place(profile_part(\"AREA_1/outline\"";
+    assert!(
+        program_source(&harness).contains(stood),
+        "the sketch stands too"
+    );
+
+    assert!(
+        harness.state_mut().set_underlay_view(id, ViewPlane::Top),
+        "{}",
+        harness.state().digest
+    );
+    let (_, again) = size(&harness);
+    assert!((again - lying).length() < 1e-6, "{again:?}");
+    let source = program_source(&harness);
+    assert!(!source.contains("place("), "{source}");
+}
+
 /// A closed outline below the plan whose lower edge is a saw of `teeth` teeth, 10 m wide.
 fn saw(teeth: u32) -> String {
     let mut entity = format!("0\nLWPOLYLINE\n8\nwalls\n90\n{}\n70\n1\n", 2 * teeth + 3);
