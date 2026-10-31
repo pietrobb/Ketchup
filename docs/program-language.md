@@ -205,11 +205,16 @@ quantity, unit, unit price and amount, then the total. Anything counted without
 a price, or priced in a unit it is not counted in, is listed under `unpriced`
 and left out of the total, and `unused_prices` names prices that matched
 nothing. The takeoff window exports the quote as CSV or XLSX.
+[`examples/programs/sheathed-wall.star`](../examples/programs/sheathed-wall.star)
+cuts a wall's studs and its OSB boards (`"sheet"`) from declared stock, hangs a
+joist on a catalogued SAE380 hanger with `connector()` and prices it all.
 
 CNC DXF: every made flat part in the production scope (fabrication role
 `MANUFACTURED_ITEM`, an extrusion such as `board()` or a buildup sheet piece) is
 drawn as one AutoCAD R12 DXF, ASCII without blocks, in mm from (0, 0): a box seen
-on its largest face, any other profile along its extrusion. Layers: `CONTOUR`
+on its largest face, any other profile along its extrusion, in the frame its
+woodWOP program lays it in (x along the longer side; a part drilled or pocketed
+only from below turned underside up). Layers: `CONTOUR`
 the outline (arcs as arcs), `CUTOUT` a `cut(through=True)`, `DRILL_D8_Z12` a hole
 8 across and 12 deep from the face seen (a through hole as deep as the part),
 `DRILL_D8_Z12_BOTTOM` from the face below, `HDRILL_D8_Z30_H9` a hole into an edge

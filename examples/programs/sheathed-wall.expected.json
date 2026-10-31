@@ -1,0 +1,477 @@
+{
+  "bom": {
+    "cut_list": [
+      {
+        "count": 6,
+        "dimensions_mm": [
+          2380.0,
+          140.0,
+          60.0
+        ],
+        "material": "KVH C24",
+        "parts": [
+          "wall/frame/stud 1",
+          "wall/frame/stud 2",
+          "wall/frame/stud 3",
+          "wall/frame/stud 4",
+          "wall/frame/stud 5",
+          "wall/frame/stud 6"
+        ]
+      },
+      {
+        "count": 2,
+        "dimensions_mm": [
+          3000.0,
+          140.0,
+          60.0
+        ],
+        "material": "KVH C24",
+        "parts": [
+          "wall/frame/bottom plate",
+          "wall/frame/top plate"
+        ]
+      },
+      {
+        "count": 1,
+        "dimensions_mm": [
+          3000.0,
+          200.0,
+          60.0
+        ],
+        "material": "KVH C24",
+        "parts": [
+          "joist"
+        ]
+      },
+      {
+        "count": 1,
+        "dimensions_mm": [
+          3000.0,
+          240.0,
+          120.0
+        ],
+        "material": "KVH C24",
+        "parts": [
+          "ledger"
+        ]
+      },
+      {
+        "count": 1,
+        "dimensions_mm": [
+          2500.0,
+          500.0,
+          15.0
+        ],
+        "material": "OSB",
+        "parts": [
+          "wall/osb 3"
+        ]
+      },
+      {
+        "count": 2,
+        "dimensions_mm": [
+          2500.0,
+          1250.0,
+          15.0
+        ],
+        "material": "OSB",
+        "parts": [
+          "wall/osb 1",
+          "wall/osb 2"
+        ]
+      }
+    ],
+    "cutting": [
+      {
+        "kerf_mm": 4.0,
+        "kind": "lengths",
+        "layouts": [
+          {
+            "offcut_mm": 0.0,
+            "pieces": [
+              {
+                "at_mm": [
+                  0.0
+                ],
+                "part": "wall/frame/bottom plate",
+                "size_mm": [
+                  3000.0
+                ]
+              }
+            ],
+            "stock_mm": [
+              3000.0
+            ],
+            "used_percent": 100.0
+          },
+          {
+            "offcut_mm": 0.0,
+            "pieces": [
+              {
+                "at_mm": [
+                  0.0
+                ],
+                "part": "wall/frame/top plate",
+                "size_mm": [
+                  3000.0
+                ]
+              }
+            ],
+            "stock_mm": [
+              3000.0
+            ],
+            "used_percent": 100.0
+          },
+          {
+            "offcut_mm": 232.0,
+            "pieces": [
+              {
+                "at_mm": [
+                  0.0
+                ],
+                "part": "wall/frame/stud 1",
+                "size_mm": [
+                  2380.0
+                ]
+              },
+              {
+                "at_mm": [
+                  2384.0
+                ],
+                "part": "wall/frame/stud 2",
+                "size_mm": [
+                  2380.0
+                ]
+              }
+            ],
+            "stock_mm": [
+              5000.0
+            ],
+            "used_percent": 95.2
+          },
+          {
+            "offcut_mm": 232.0,
+            "pieces": [
+              {
+                "at_mm": [
+                  0.0
+                ],
+                "part": "wall/frame/stud 3",
+                "size_mm": [
+                  2380.0
+                ]
+              },
+              {
+                "at_mm": [
+                  2384.0
+                ],
+                "part": "wall/frame/stud 4",
+                "size_mm": [
+                  2380.0
+                ]
+              }
+            ],
+            "stock_mm": [
+              5000.0
+            ],
+            "used_percent": 95.2
+          },
+          {
+            "offcut_mm": 232.0,
+            "pieces": [
+              {
+                "at_mm": [
+                  0.0
+                ],
+                "part": "wall/frame/stud 5",
+                "size_mm": [
+                  2380.0
+                ]
+              },
+              {
+                "at_mm": [
+                  2384.0
+                ],
+                "part": "wall/frame/stud 6",
+                "size_mm": [
+                  2380.0
+                ]
+              }
+            ],
+            "stock_mm": [
+              5000.0
+            ],
+            "used_percent": 95.2
+          }
+        ],
+        "material": "KVH C24",
+        "section_mm": [
+          140.0,
+          60.0
+        ],
+        "stock": [
+          {
+            "count": 2,
+            "size_mm": [
+              3000.0
+            ]
+          },
+          {
+            "count": 3,
+            "size_mm": [
+              5000.0
+            ]
+          }
+        ],
+        "trim_mm": 0.0,
+        "used_percent": 96.6
+      },
+      {
+        "kerf_mm": 4.0,
+        "kind": "lengths",
+        "layouts": [
+          {
+            "offcut_mm": 0.0,
+            "pieces": [
+              {
+                "at_mm": [
+                  0.0
+                ],
+                "part": "joist",
+                "size_mm": [
+                  3000.0
+                ]
+              }
+            ],
+            "stock_mm": [
+              3000.0
+            ],
+            "used_percent": 100.0
+          }
+        ],
+        "material": "KVH C24",
+        "section_mm": [
+          200.0,
+          60.0
+        ],
+        "stock": [
+          {
+            "count": 1,
+            "size_mm": [
+              3000.0
+            ]
+          }
+        ],
+        "trim_mm": 0.0,
+        "used_percent": 100.0
+      },
+      {
+        "kerf_mm": 4.0,
+        "kind": "lengths",
+        "layouts": [
+          {
+            "offcut_mm": 0.0,
+            "pieces": [
+              {
+                "at_mm": [
+                  0.0
+                ],
+                "part": "ledger",
+                "size_mm": [
+                  3000.0
+                ]
+              }
+            ],
+            "stock_mm": [
+              3000.0
+            ],
+            "used_percent": 100.0
+          }
+        ],
+        "material": "KVH C24",
+        "section_mm": [
+          240.0,
+          120.0
+        ],
+        "stock": [
+          {
+            "count": 1,
+            "size_mm": [
+              3000.0
+            ]
+          }
+        ],
+        "trim_mm": 0.0,
+        "used_percent": 100.0
+      },
+      {
+        "kerf_mm": 4.0,
+        "kind": "sheets",
+        "layouts": [
+          {
+            "pieces": [
+              {
+                "at_mm": [
+                  0.0,
+                  0.0
+                ],
+                "part": "wall/osb 1",
+                "size_mm": [
+                  2500.0,
+                  1250.0
+                ]
+              }
+            ],
+            "stock_mm": [
+              2500.0,
+              1250.0
+            ],
+            "used_percent": 100.0
+          },
+          {
+            "pieces": [
+              {
+                "at_mm": [
+                  0.0,
+                  0.0
+                ],
+                "part": "wall/osb 2",
+                "size_mm": [
+                  2500.0,
+                  1250.0
+                ]
+              }
+            ],
+            "stock_mm": [
+              2500.0,
+              1250.0
+            ],
+            "used_percent": 100.0
+          },
+          {
+            "pieces": [
+              {
+                "at_mm": [
+                  0.0,
+                  10.0
+                ],
+                "part": "wall/osb 3",
+                "size_mm": [
+                  2500.0,
+                  500.0
+                ]
+              }
+            ],
+            "stock_mm": [
+              2500.0,
+              1250.0
+            ],
+            "used_percent": 40.0
+          }
+        ],
+        "material": "OSB",
+        "section_mm": [
+          15.0
+        ],
+        "stock": [
+          {
+            "count": 3,
+            "size_mm": [
+              2500.0,
+              1250.0
+            ]
+          }
+        ],
+        "trim_mm": 10.0,
+        "used_percent": 80.0
+      }
+    ],
+    "hardware": [
+      {
+        "count": 1,
+        "item": "SAE380"
+      }
+    ],
+    "machining": [],
+    "quote": {
+      "currency": "EUR",
+      "lines": [
+        {
+          "amount": 143.42,
+          "basis": "stock",
+          "item": "KVH C24",
+          "kind": "material",
+          "quantity": 0.2988,
+          "source": "example prices, not an offer",
+          "unit": "m3",
+          "unit_price": 480.0
+        },
+        {
+          "amount": 44.7,
+          "basis": "stock",
+          "item": "OSB",
+          "kind": "material",
+          "quantity": 3.0,
+          "source": "example prices, not an offer",
+          "unit": "piece",
+          "unit_price": 14.9
+        },
+        {
+          "amount": 4.2,
+          "item": "SAE380",
+          "kind": "hardware",
+          "quantity": 1.0,
+          "source": "example prices, not an offer",
+          "unit": "piece",
+          "unit_price": 4.2
+        }
+      ],
+      "total": 192.32
+    },
+    "total_parts": 13
+  },
+  "errors": 0,
+  "issues": [],
+  "joints": [
+    {
+      "fastener": "SAE380",
+      "joint": "connector:joist+ledger",
+      "kind": "connector",
+      "missing": [
+        "the load on the joint is not computed"
+      ],
+      "parts": [
+        "joist",
+        "ledger"
+      ],
+      "rating": {
+        "basis": "characteristic",
+        "density_kg_m3": 350.0,
+        "load_n": 22300.0,
+        "note": "R1,k downward, 22 + 12 square twist nails 3.75x30 (header + joist); transverse tension in the timber is not included",
+        "source": "ETA-06/0270 (2023-01-06), Annex D34 SAE joist hanger, characteristic capacity with square twist nails, full nailing, timber to timber"
+      },
+      "status": "not_verified"
+    }
+  ],
+  "log": [],
+  "ok": true,
+  "params": [
+    {
+      "default": 3000.0,
+      "doc": "length of the wall along x",
+      "max": 5000.0,
+      "min": 1250.0,
+      "name": "wall_length",
+      "value": 3000.0
+    }
+  ],
+  "relations": {
+    "count": 35,
+    "kinds": {
+      "contact": 35
+    }
+  },
+  "unused_overrides": [],
+  "warnings": 0
+}
