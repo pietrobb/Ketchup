@@ -97,6 +97,7 @@ def functions(text: str) -> list[dict]:
             "code": code,
             "calls": set(CALL.findall(code)) | set(MACRO_CALL.findall(code)),
             "line": text.count("\n", 0, match.start(name_group)) + 1,
+            "span": (start, end + 1),
         })
 
     for match in FUNCTION.finditer(plain):
