@@ -119,7 +119,8 @@ point and outward normal in the part's frame and in the world. An edge gives
 | `copy(part, name)`, `mirror(part, axis="x", name=)` | an identical new part; the solid reflected across its own middle plane, faces keeping their names |
 | `move(part, by=)`, `rotate(part, axis=, angle=, pivot=)`, `place(part, origin=, z=, x=)` | a shift by a world vector, a turn in degrees, a new frame of the part |
 | `reach(part, direction)`, `material_along(part, point, direction, radius=0)`, `distance(a, b)`, `nearest(part, among=None)` | how far a part reaches along a world direction; mm of material from a point, cuts and pockets taken out, with `radius` the least on the axis and rim of a drill that wide (`None` if unknown); `distance`, `overlap`, `touching` and `direction` to another part or to the closest one (`None` without one), on each part's box in its own frame |
-| `group(name, members, grounded=False)`, `component(name, members)`, `instance(name, component, at=, x=, z=)`, `continue_part(part, was=)` | groups in the document tree, a shared assembly and its instances, a renamed part keeping its ID |
+| `group(name, members, grounded=False)`, `component(name, members)`, `instance(name, component, at=, x=, z=)`, `continue_part(part, was=)` | groups in the document tree, a shared assembly and its instances, a renamed part keeping its ID. `at`/`x`/`z` place the whole component about the program origin; `instance(name, component, matrix=[16 numbers])` instead takes any invertible affine map, row-major (scaled or mirrored block copies); a map that is not rigid needs members that are planar profiles without solid operations, joints or motion. A copied part is read as `"<instance>/<part>"` |
+| `profile_part(name, points=[(x, y), ...], closed=False)` | a planar run of lines with no thickness, e.g. the outline of a room traced from a drawing: shown and snapped to, but not a solid, so never in the cut list, collisions or mass; `closed=True` adds the closing edge |
 | `floor(z)`, `alternatives(tags)` | the support plane (z = 0 without it); tags that show the same thing in different detail, whose parts may overlap |
 | `slide(axis, min, max)`, `rotate_motion(axis, min, max, pivot=)`, `assembly_step(motion, start=, end=)`, `tool_access(name, envelope=, motion=, start=, end=)` | a motion for `joint(kind="motion")` in mm or degrees; an insertion in source order; a tool envelope's approach, checked by the `assembly_path` and `tool_access` validators |
 | `keep_clear(zone, name=, only=, ignore=[], hint=)`, `load_path(only=, carriers=[], fixed=[], name=, ignore=[], hint=)` | a zone no part may reach into; members that must pass their weight down (a part leaning on or hanging from them needs a `joint()` or a `fixed` tag) |
@@ -161,6 +162,28 @@ GL28h (EN 14080:2013). Report section `design.members` gives each member's check
 (bending, shear, shear_notch, deflection_inst, deflection_fin, bearing and
 buckling of columns) with their utilization and `pass`, `fail` or `not_verified`
 when an input is missing. It is a computed check, not an authorized structural design.
+
+`connector(a, b, fastener, ratings=None, fasteners=None, name=None)` joins two
+parts with a bought connector rated from the catalogue `CONNECTOR_RATINGS`
+(joist hangers, angle brackets, characteristic for C24): a rating with
+`load_n` hangs `a` on `b` (a bearing joint for `load_path` and the joint
+check), one without holds `a` down against lifting. A fastener without a rating
+is refused. `connector_ratings({name: connector_rating(...) or None})` lays the
+program's own ratings (another maker, a different nailing) over the catalogue
+and is passed as `ratings=` to `connector()`, `connector_rating_of()` and
+`buildup()`.
+
+`buildup(name, origin, along, up, length, layers, height=, top=, openings=[],
+tags=[], anchor=None)` builds a layered panel (a framed wall, floor or roof)
+from a list of layer dicts with `"name"`, `"thickness"`, `"material"`,
+`"color"` and `"tags"`. A framed layer adds `"spacing"`, `"stud"`, `"header"`,
+`"infill"`, `"noggins"` and in a floor or roof `"hanger"`. A sheet layer is cut
+around the openings, and its `"sheet": (u, v)` (the board size, e.g. `(1250,
+2500)` for upright OSB) also cuts it into boards: joints running along v on
+stud centres of the nearest framed layer, and along u every board height. Its `"grain":
+"u"` or `"v"` gives every piece the `grain` attribute that `sheet_stock(grain=True)`
+keeps along the sheet. `"role"` and `"infill_role"` change the fabrication
+roles below. Topic `buildup` lists every key.
 
 `bar_stock(material, lengths, kerf=4, trim=0)` and `sheet_stock(material,
 sheets, kerf=4, trim=10, grain=False)` declare what a material's made parts are
@@ -260,6 +283,38 @@ belong to it, so an AI reads the index and then only the topics it needs;
 concise topic answers contain signatures, rules and a short example; helper code is
 returned only with `detail=implementation`. Named example files return runnable source. A new helper goes into the
 topic it belongs to.
+
+## Outlines from a drawing
+
+**Tools → Pull drawing area up** in the window, `drawing action=extrude` and
+`program action=from_underlay` over MCP write a closed area of an underlay
+(a room found by a point or by its label, a closed polyline or hatch) or every
+placement of a block into the program as a generated section:
+
+```python
+# underlay data ROOM_1_02: <where it came from>. Follows the referenced underlay.
+# underlay binding {"name": "ROOM_1_02", "underlay_id": 1, "label": "1.02 WC", ...}
+ROOM_1_02 = [(x, y), ...]           # the outline, document mm
+ROOM_1_02_HOLES = [[(x, y), ...]]   # the closed areas inside it
+component("ROOM_1_02_sketch", [profile_part("ROOM_1_02/outline", points=ROOM_1_02, closed=True)] + ...)
+ROOM_1_02_SOLID = extrude("ROOM_1_02", profile = ROOM_1_02, distance = 2600)   # with a height
+[cut(ROOM_1_02_SOLID, profile = hole, through = True, ...) for ... in ROOM_1_02_HOLES]
+# end of underlay data ROOM_1_02
+```
+
+A block becomes one `component()` of its sampled lines as `profile_part()`s and
+one `instance(..., matrix=[...])` per further placement, with each placement's
+handle and attributes in a comment. The binding line records how the area was
+found (point or label, layers, tolerance, helper boundaries, search box). When
+the drawing is edited, moved or replaced, Kečup finds the area again and
+rewrites the data lines in the same Undo step, so the outline and the solid
+follow the drawing; an edit that leaves the area no closed outline is refused
+with its name. The rest of the program may use `ROOM_1_02`, `ROOM_1_02_HOLES`
+and the solid like any other value. To keep an outline as it is, remove its
+binding line (**Tools → Unlink pulled areas from the drawing** does it for
+every section): the section stays and no longer follows the drawing. Text
+written between the section's first and last line is regenerated, so edit
+outside it.
 
 ## Checks
 

@@ -111,3 +111,25 @@ def test_the_readme_does_not_place_release_only_examples_in_the_repository():
     `examples/`, but some are attached only to a release."""
     text = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "releases/download/" not in text or "All examples are" not in text
+
+
+def test_the_reference_documents_what_kecup_writes_into_a_program():
+    """Review 2026-10-26 DOC-40: Kečup writes `profile_part()` and
+    `instance(matrix=)` into the user's program from a drawing, and the library
+    offers `connector()` and the build-up keys `sheet` and `grain`, but the
+    language reference named none of them; the README said a drawing never
+    becomes parts and left out its 2D edits, export and MCP `drawing` actions."""
+    generator = (
+        ROOT / "crates" / "ketchup-app" / "src" / "live_bridge" / "underlay_program.rs"
+    ).read_text(encoding="utf-8")
+    written = set(re.findall(r"\b(profile_part|instance|component|extrude|cut)\(", generator))
+    reference = (ROOT / "docs" / "program-language.md").read_text(encoding="utf-8")
+    undocumented = sorted(name for name in written if f"`{name}(" not in reference)
+    for needed in ["matrix=", "`connector(", '`"sheet"', '`"grain"', "# underlay binding"]:
+        if needed not in reference:
+            undocumented.append(needed)
+    assert undocumented == []
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "without turning it into parts" not in readme
+    for needed in ["Export drawing to DXF", "Pull drawing area up", "edit it (remove, draw"]:
+        assert needed in readme, needed
