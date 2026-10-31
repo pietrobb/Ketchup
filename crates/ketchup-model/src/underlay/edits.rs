@@ -522,9 +522,18 @@ pub(super) fn current_read(edits: &UnderlayEdits, id: u32) -> AddedObject {
 }
 
 impl UnderlayEdits {
-    /// Puts the read object `id` where `now`, a copy of it ([`current_read`]), lies.
+    /// Puts the read object `id` where `now`, a copy of it ([`current_read`]), lies. Put
+    /// back where it was read, by hand or by turns that add up to none, it is no edit, or
+    /// the unchanged drawing was saved in a format older readers refuse (review 2026-10-29
+    /// on test 05699e9).
     pub(super) fn place_read(&mut self, id: u32, now: &AddedObject) {
         match now {
+            AddedObject::Stretched { map, .. } | AddedObject::Copy { map, .. }
+                if is_identity(map) =>
+            {
+                self.moved_objects.remove(&id);
+                self.stretched_objects.remove(&id);
+            }
             AddedObject::Stretched { map, .. } => {
                 self.moved_objects.remove(&id);
                 self.stretched_objects.insert(id, *map);
@@ -536,6 +545,18 @@ impl UnderlayEdits {
             AddedObject::Drawn { .. } => {}
         }
     }
+}
+
+/// Whether `map` leaves every point where it is, but for the rounding of the maps it was
+/// composed of: within [`crate::tolerance::ROUNDING`] in its turn and scale, and within
+/// [`crate::tolerance::ACCUMULATED_ROUNDING`] millimetres in its move.
+fn is_identity(map: &Affine) -> bool {
+    use crate::tolerance::{ACCUMULATED_ROUNDING, ROUNDING};
+    map.iter().zip(IDENTITY).all(|(row, identity)| {
+        (row[0] - identity[0]).abs() <= ROUNDING
+            && (row[1] - identity[1]).abs() <= ROUNDING
+            && row[2].abs() <= ACCUMULATED_ROUNDING
+    })
 }
 
 /// Object `id` of `objects` when it is there and placed by none.

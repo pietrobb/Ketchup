@@ -320,6 +320,36 @@ fn a_moved_object_keeps_its_id_and_moves_again_from_where_it_is() {
     );
 }
 
+/// Review 2026-10-29 (test 05699e9): an object moved and moved back by hand, or turned a
+/// full turn in sixths, kept an identity map among the drawing's edits, so the unchanged
+/// drawing was saved as format 106, which Kečup 0.2.0 and 0.3.0 before it refuse. Put back
+/// where it was read, it is no edit at all and the document is as before.
+#[test]
+fn an_object_put_back_where_it_was_read_leaves_no_edit() {
+    let (mut document, id) = document();
+    let digest = document.current().canonical_digest();
+    let text = id_of(&lines(), 0x30);
+    let (sin, cos) = 60.0_f64.to_radians().sin_cos();
+    let sixth = [[cos, -sin, 30.0], [sin, cos, -20.0]];
+    let there_and_back = [moving([100.0, 0.0]), moving([-100.0, 0.0])];
+    for map in there_and_back.iter().chain(&[sixth; 6]) {
+        let snapshot = document.current();
+        let batch = plan_underlay_object_transform(
+            &snapshot,
+            id,
+            &drawn(&document, id),
+            &[text],
+            map,
+            false,
+        )
+        .unwrap();
+        document.apply_batch(&batch).unwrap();
+    }
+    let underlay = document.current().underlay(id).unwrap().clone();
+    assert!(underlay.edits.is_empty(), "{:?}", underlay.edits);
+    assert_eq!(document.current().canonical_digest(), digest);
+}
+
 #[test]
 fn a_copy_of_an_insert_places_the_block_again_and_a_turned_copy_turns_its_lines() {
     let (mut document, id) = document();
