@@ -22,14 +22,30 @@ impl KetchupApp {
         .then_some(id)
     }
 
-    /// The height of the plane the plan `id` lies in, else of the ground plane: where a
-    /// click picks a point on it.
-    pub(crate) fn underlay_plane_z(&self, id: UnderlayId) -> f64 {
-        self.document
-            .current()
-            .underlay(id)
-            .and_then(ketchup_model::underlay::Underlay::plan_height)
-            .unwrap_or(0.0)
+    /// Where the pointer meets the plane the drawing `id` lies flat or stands in, or the
+    /// plane parallel to it `through` a point: a view's plane is upright, so a point on a
+    /// horizontal plane is none of its points seen straight on, and a drag on one never
+    /// moves it up or down (review 2026-10-29 UO-69).
+    pub(crate) fn screen_to_underlay_plane(
+        &self,
+        id: UnderlayId,
+        pointer: Pos2,
+        rect: Rect,
+        through: Option<Vec3>,
+    ) -> Option<Vec3> {
+        let underlay = self.document.current().underlay(id)?.clone();
+        let (x_axis, y_axis, _) = underlay.view.plane.axes();
+        let origin_mm = through.map_or_else(
+            || underlay.world_transform().transform_point([0.0; 3]),
+            |point| [point.x, point.y, point.z],
+        );
+        let frame = WorkplaneFrame {
+            origin_mm,
+            x_axis,
+            y_axis,
+            normal: cross(x_axis, y_axis),
+        };
+        self.screen_to_workplane(pointer, rect, frame)
     }
 
     /// Selects the underlay `id` alone, so Move and Rotate place it.
@@ -129,7 +145,7 @@ impl KetchupApp {
             .as_ref()
             .filter(|snap| snap.kind != SnapKind::Face)
             .map(|snap| snap.position_mm)
-            .or_else(|| self.screen_to_plane(pointer, rect, self.underlay_plane_z(id)))
+            .or_else(|| self.screen_to_underlay_plane(id, pointer, rect, None))
             .or_else(|| self.screen_to_plane(pointer, rect, 0.0));
         let Some(start) = start else {
             self.digest = self.catalog.text("digest-move-start-missed");

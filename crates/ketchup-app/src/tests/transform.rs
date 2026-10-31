@@ -1545,13 +1545,14 @@ fn move_vcb_accepts_last_direction_distance_and_exact_vector() {
 
 #[test]
 fn move_drag_is_continuous_and_shift_constrains_dominant_axis() {
+    const PLAN: [Vec3; 2] = [Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0)];
     let start = Vec3::new(3.0, 4.0, 20.0);
     assert_eq!(
-        continuous_move_delta(start, Vec3::new(31.25, 28.75, 20.0), false),
+        continuous_move_delta(start, Vec3::new(31.25, 28.75, 20.0), false, PLAN),
         Vec3::new(28.25, 24.75, 0.0)
     );
     assert_eq!(
-        continuous_move_delta(start, Vec3::new(31.25, 28.75, 20.0), true),
+        continuous_move_delta(start, Vec3::new(31.25, 28.75, 20.0), true, PLAN),
         Vec3::new(28.25, 0.0, 0.0)
     );
 }

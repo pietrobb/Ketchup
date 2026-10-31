@@ -335,6 +335,88 @@ fn a_standing_or_raised_drawing_moves_and_turns_in_its_own_plane() {
     }
 }
 
+/// Review 2026-10-29 UO-69 (capability review): a drawing standing as a view is dragged
+/// by the pointer in its own plane, up and down too, seen straight on (Front, Right) and
+/// in the iso view, where the pointer only met a horizontal plane: seen straight on the
+/// Move did not start off a snap, and in iso the drag never moved it up or down.
+#[test]
+fn a_standing_drawing_is_dragged_by_the_pointer_in_its_own_plane() {
+    use ketchup_model::underlay::view::{UnderlayView, ViewPlane, plan_underlay_view};
+    let cases = [
+        (ViewPlane::Front, 0.0, AppCommand::ViewFront),
+        (ViewPlane::Right, 2500.0, AppCommand::ViewRight),
+        (ViewPlane::Front, 0.0, AppCommand::ViewIso),
+        (ViewPlane::Right, 2500.0, AppCommand::ViewIso),
+    ];
+    for (plane, at_mm, camera) in cases {
+        let mut harness = shell();
+        let id = harness
+            .state()
+            .document
+            .current()
+            .underlays()
+            .next()
+            .unwrap()
+            .id;
+        let view = UnderlayView { plane, at_mm };
+        let batch = plan_underlay_view(&harness.state().document.current(), id, view).unwrap();
+        harness
+            .state_mut()
+            .apply_batch_with_work_recovery(&batch)
+            .unwrap();
+        harness.state_mut().dispatch_command(camera);
+        harness.step();
+        let at = |app: &KetchupApp, point: [f64; 3]| {
+            let underlay = app.document.current().underlay(id).unwrap().clone();
+            Vec3::from(underlay.world_transform().transform_point(point))
+        };
+        let (from, to) = ([100.0, 60.0, 0.0], [100.0, 260.0, 0.0]);
+        let shown = |app: &KetchupApp| {
+            let rect = app.camera.viewport_rect.unwrap().shrink(20.0);
+            [from, to].into_iter().all(|point| {
+                app.viewport_position(at(app, point))
+                    .is_some_and(|screen| rect.contains(screen))
+            })
+        };
+        for _ in 0..20 {
+            if shown(harness.state()) {
+                break;
+            }
+            harness.state_mut().dispatch_command(AppCommand::ZoomOut);
+            harness.step();
+        }
+        let app = harness.state_mut();
+        assert!(shown(app), "{plane:?} {camera:?}: off screen");
+        let rect = app.camera.viewport_rect.unwrap();
+        let (start, end) = (at(app, from), at(app, to));
+        let start_screen = app.viewport_position(start).unwrap();
+        let end_screen = app.viewport_position(end).unwrap();
+        app.select_whole_underlay(id);
+        app.dispatch_command(AppCommand::Move);
+        app.hover.snap = None;
+        assert!(
+            app.begin_move_drag_at(start_screen, rect, false),
+            "{plane:?} {camera:?}: {}",
+            app.digest
+        );
+        let mut drag = app.move_session().unwrap().0.clone();
+        app.advance_move(&mut drag, end_screen, rect, true);
+        let expected = end - start;
+        assert!(
+            length(drag.delta_mm - expected) < 1e-3,
+            "{plane:?} {camera:?}: {:?} is not {expected:?}",
+            drag.delta_mm
+        );
+        assert!(app.commit_move_drag(&drag), "{plane:?}: {}", app.digest);
+        let moved = at(app, from);
+        assert!(
+            length(moved - end) < 1e-3,
+            "{plane:?} {camera:?}: {moved:?}"
+        );
+        assert_eq!(app.document.current().underlay(id).unwrap().view, view);
+    }
+}
+
 #[test]
 fn an_underlay_move_out_of_the_ground_plane_or_a_copy_is_refused_by_name() {
     let mut harness = shell();

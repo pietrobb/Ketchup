@@ -2362,8 +2362,20 @@ impl KetchupApp {
                         || snap.reference.instance_path != drag.selection.instance_path)
             }) {
                 drag.delta_mm = snap.position_mm - drag.pointer_start_world;
-            } else if let Some(world) = self.screen_to_plane(pointer, rect, drag.plane_z) {
-                let delta = continuous_move_delta(drag.pointer_start_world, world, free);
+            } else if let Some((world, axes)) = underlay_of(&drag.selection)
+                .and_then(|id| {
+                    // A drawing is dragged in its own plane, upright for a view (UO-69).
+                    let (x, y, _) = self.document.current().underlay(id)?.view.plane.axes();
+                    let start = Some(drag.pointer_start_world);
+                    let world = self.screen_to_underlay_plane(id, pointer, rect, start)?;
+                    Some((world, [Vec3::from(x), Vec3::from(y)]))
+                })
+                .or_else(|| {
+                    let world = self.screen_to_plane(pointer, rect, drag.plane_z)?;
+                    Some((world, [Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0)]))
+                })
+            {
+                let delta = continuous_move_delta(drag.pointer_start_world, world, free, axes);
                 let destination = drag.pointer_start_world + delta;
                 drag.delta_mm = if free {
                     delta
@@ -2944,7 +2956,7 @@ impl KetchupApp {
             })
             .or_else(|| {
                 let id = underlay?;
-                self.screen_to_plane(pointer, rect, self.underlay_plane_z(id))
+                self.screen_to_underlay_plane(id, pointer, rect, None)
                     .or_else(|| self.screen_to_plane(pointer, rect, 0.0))
             });
         let Some(centre_mm) = centre_mm else {
@@ -3675,16 +3687,22 @@ fn inverse_transform_point(transform: Transform, point: Vec3) -> Option<Vec3> {
     Some(inverse.transform_point(point))
 }
 
-pub(crate) fn continuous_move_delta(start: Vec3, end: Vec3, constrain_axis: bool) -> Vec3 {
-    let mut delta = Vec3::new(end.x - start.x, end.y - start.y, 0.0);
-    if constrain_axis {
-        if delta.x.abs() >= delta.y.abs() {
-            delta.y = 0.0;
-        } else {
-            delta.x = 0.0;
-        }
+/// The move from `start` to `end` in the plane of the unit `axes`, along the one it goes
+/// further along when `constrain_axis`.
+pub(crate) fn continuous_move_delta(
+    start: Vec3,
+    end: Vec3,
+    constrain_axis: bool,
+    axes: [Vec3; 2],
+) -> Vec3 {
+    let [u, v] = axes.map(|axis| dot(end - start, axis));
+    if !constrain_axis {
+        axes[0] * u + axes[1] * v
+    } else if u.abs() >= v.abs() {
+        axes[0] * u
+    } else {
+        axes[1] * v
     }
-    delta
 }
 
 pub(crate) fn push_pull_distance_from_pointer(
