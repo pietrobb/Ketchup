@@ -2185,12 +2185,12 @@ def no_window_over(part, tag = "window", margin = 300, height = 1500):
 #     layer's tags, each on the panel's shop drawing `name` (SHOP_DRAWING).
 #     Only extrusions, no booleans: every piece is rebuilt from the numbers.
 #     Fabrication role (FABRICATION_ROLE): plates, studs, noggins, headers and sills of a
-#     framed layer are TIMBER_MEMBER, a sheet layer's pieces MANUFACTURED_ITEM when it has
-#     a "sheet" board size or its material is a board (BOARD_MATERIALS: OSB, plywood,
-#     gypsum board...), else SITE_BUILT_ITEM with a warning (roofing, membranes and
-#     cladding are laid on site, not cut on a CNC), its infill SITE_BUILT_ITEM (insulation
-#     is fitted); a layer's "role" and "infill_role" change them (a bought panel:
-#     PURCHASED_ITEM).
+#     framed layer are TIMBER_MEMBER, a sheet layer's pieces MANUFACTURED_ITEM unless it has
+#     no "sheet" board size and its material is laid on site (SITE_LAID_WORDS: roofing,
+#     membrane, cladding, krytina, obklad...): then SITE_BUILT_ITEM with a warning; a
+#     material that is neither a board (BOARD_WORDS) nor laid on site is drawn with a
+#     warning. Its infill is SITE_BUILT_ITEM (insulation is fitted); a layer's "role" and
+#     "infill_role" change them (a bought panel: PURCHASED_ITEM).
 #     Pair it with a concept body through alternatives() and tags, e.g. a wall facing -y:
 #     buildup("wall S", (0, 200, 0), (1, 0, 0), (0, 0, 1), 4000, height = 2600,
 #             layers = [{"name": "gypsum", "thickness": 12.5, "material": "gypsum board"},
@@ -2199,14 +2199,29 @@ def no_window_over(part, tag = "window", margin = 300, height = 1500):
 #                       {"name": "osb", "thickness": 15, "material": "OSB"}],
 #             openings = [(800, 0, 900, 2100)], tags = ["construction"])
 
-# Materials a buildup sheet layer without a "sheet" board size is still cut from in the
-# shop (lower case; "OSB 3" matches "osb").
-BOARD_MATERIALS = ["osb", "plywood", "particle board", "chipboard", "mdf", "hdf", "gypsum board",
-                   "gypsum fibre board", "cement board", "wood fibre board", "clt", "lvl"]
+# MF-60: what a buildup sheet layer without a "sheet" board size or a "role" is made of,
+# read from the words of its material in lower case, in English, Slovak, Czech and German
+# ("OSB 3" has "osb", "drevovláknitá doska" has "doska"). A board is cut in the shop,
+# roofing, membranes and cladding are laid on site (these words win: "cladding board");
+# a material with neither is drawn with a warning, a missing board costs more than a
+# spare drawing.
+BOARD_WORDS = ["board", "osb", "plywood", "chipboard", "mdf", "hdf", "clt", "lvl",
+               "doska", "dosky", "sadrokartón", "preglejka", "drevotrieska",
+               "deska", "desky", "sádrokarton", "překližka", "dřevotříska",
+               "platte", "platten", "gipskarton", "sperrholz", "spanplatte"]
+SITE_LAID_WORDS = ["roofing", "membrane", "foil", "cladding", "siding", "shingles", "tiles", "render",
+                   "krytina", "fólia", "membrána", "obklad", "šindeľ", "škridla", "omietka",
+                   "fólie", "šindel", "taška", "omítka",
+                   "dachdeckung", "folie", "bekleidung", "putz", "ziegel"]
 
-def _board_material(material):
-    m = material.lower()
-    return any([m == b or m.startswith(b + " ") for b in BOARD_MATERIALS])
+def _material_kind(material):
+    """"site", "board" or None from the words of a material (BOARD_WORDS, SITE_LAID_WORDS)."""
+    words = material.lower().replace("-", " ").replace("/", " ").replace(",", " ").split()
+    if any([w in SITE_LAID_WORDS for w in words]):
+        return "site"
+    if any([w in BOARD_WORDS for w in words]):
+        return "board"
+    return None
 
 def _cross(a, b):
     return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
@@ -2403,9 +2418,10 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
         material = layer.get("material", label)
         color = layer.get("color")
         layer_tags = base_tags + _names(layer.get("tags"))
-        # MF-60: a sheet layer neither laid from boards nor of a board material
+        # MF-60: a sheet layer not laid from boards whose material is laid on site
         # (roofing, membranes, cladding) is built on site, with no CNC drawing.
-        site_laid = "spacing" not in layer and "sheet" not in layer and not _board_material(material)
+        kind = "board" if "spacing" in layer or "sheet" in layer else _material_kind(material)
+        site_laid = kind == "site"
         role = _role("buildup(%s) layer %s" % (name, label),
                      layer.get("role", TIMBER_MEMBER if "spacing" in layer else
                                        SITE_BUILT_ITEM if site_laid else MANUFACTURED_ITEM))
@@ -2439,9 +2455,13 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                              (name, label, fmt_mm(float(layer.get("min_width", 200)))),
                       parts = boards, severity = "warning",
                       hint = "Change the length or the stud spacing, or give the layer a smaller \"min_width\".")
-            if site_laid and "role" not in layer:
-                check(False, ("buildup(%s): layer %s has no \"sheet\" board size and %s is no board material " +
-                              "(BOARD_MATERIALS): built on site, no CNC drawing") % (name, label, material),
+            if kind != "board" and "role" not in layer:
+                check(False, ("buildup(%s): layer %s has no \"sheet\" board size and %s is laid on site " +
+                              "(SITE_LAID_WORDS): built on site, no CNC drawing") % (name, label, material)
+                             if site_laid else
+                             ("buildup(%s): layer %s has no \"sheet\" board size and %s is neither a board " +
+                              "(BOARD_WORDS) nor laid on site (SITE_LAID_WORDS): drawn for the CNC as cut " +
+                              "from boards") % (name, label, material),
                       parts = boards, severity = "warning",
                       hint = "Give the layer \"sheet\" or \"role\": MANUFACTURED_ITEM to cut it in the shop, " +
                              "or \"role\": SITE_BUILT_ITEM to keep it on site.")

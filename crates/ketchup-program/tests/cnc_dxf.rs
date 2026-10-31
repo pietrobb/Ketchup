@@ -354,6 +354,55 @@ fn roofing_and_cladding_of_a_buildup_are_not_drawn() {
     }
 }
 
+/// MF-60: boards are recognised by the words of their material, also in
+/// Slovak as in the review's tiny-house, and roofing named in Slovak is not
+/// drawn. A material known as neither a board nor a site-laid material is
+/// still drawn, with a warning: a missing board in the shop costs more than a
+/// spare drawing.
+#[test]
+fn boards_named_in_slovak_are_drawn_and_slovak_roofing_is_not() {
+    let source = "buildup('roof', (0, 0, 0), (1, 0, 0), (0, 1, 0), 3000, height = 2500,\n\
+         layers = [{'name': 'sadrokartón', 'thickness': 12.5, 'material': 'sadrokartón'},\n\
+                   {'name': 'krokvy', 'thickness': 180, 'material': 'KVH C24', 'spacing': 900,\n\
+                    'infill': 'minerálna vlna'},\n\
+                   {'name': 'fasáda', 'thickness': 32.5, 'material': 'drevovláknitá doska'},\n\
+                   {'name': 'krytina', 'thickness': 35.5, 'material': 'plechová krytina'},\n\
+                   {'name': 'vrstva', 'thickness': 10, 'material': 'MgO'}])\n";
+    let model = ketchup_program::evaluate("roof.star", source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"))
+        .model;
+    let export = cnc_parts(&model);
+    assert_eq!(export.not_drawn, []);
+    let mut drawn: Vec<_> = export.parts.iter().map(|part| part.thickness_mm).collect();
+    drawn.sort_by(f64::total_cmp);
+    drawn.dedup();
+    assert_eq!(drawn, [10.0, 12.5, 32.5]);
+    let warnings: Vec<_> = ketchup_program::validate(&model)
+        .into_iter()
+        .filter(|issue| issue.severity == ketchup_program::Severity::Warning)
+        .map(|issue| issue.message)
+        .collect();
+    assert!(
+        warnings.iter().any(
+            |message| message.contains("plechová krytina") && message.contains("built on site")
+        ),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|message| message.contains("MgO") && message.contains("neither")),
+        "{warnings:?}"
+    );
+    assert!(
+        !warnings
+            .iter()
+            .any(|message| message.contains("built on site")
+                && (message.contains("sadrokartón") || message.contains("drevovláknitá"))),
+        "{warnings:?}"
+    );
+}
+
 /// MF-61: a rounded handle 60 x 40 and 3 000 long is no flat part; drawn along
 /// its extrusion it would be a 60 x 40 outline 3 000 thick, its end screw a
 /// drill into the face.

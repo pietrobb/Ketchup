@@ -275,9 +275,12 @@ fasteners and `rebar` a purchased item; each takes `role=` to change it (a
 steel post from `member(..., role=MANUFACTURED_ITEM)`, a bought panel from
 `board(..., role=PURCHASED_ITEM)`). `buildup` makes the plates, studs,
 noggins, headers and sills of a framed layer timber members; sheet pieces
-manufactured items when the layer has a `"sheet"` board size or a board
-material (`BOARD_MATERIALS`), else site-built items with a warning (roofing,
-membranes, cladding); infill site-built items; a layer's `"role"` and
+manufactured items, unless the layer has no `"sheet"` board size and a word
+of its material says it is laid on site (`SITE_LAID_WORDS`: roofing,
+membrane, cladding, krytina, obklad...): then site-built items with a
+warning. The words are English, Slovak, Czech and German; a material that is
+neither a board (`BOARD_WORDS`: board, osb, doska, sadrokartón...) nor laid
+on site is still drawn, with a warning. Infill is site-built; a layer's `"role"` and
 `"infill_role"` change them. A part from `box`, `extrude`... sets it in
 `attributes={FABRICATION_ROLE: MANUFACTURED_ITEM}`. `role=` refuses any other
 value at once; another value in `attributes=` stops the export, which names it.
