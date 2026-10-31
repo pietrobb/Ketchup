@@ -7,7 +7,9 @@
 //! lists the positions.
 //!
 //! A member is a part no wider in the view than it is deep, so the sheets
-//! and the infill between members are drawn and numbered but not dimensioned.
+//! and the infill between members are drawn and numbered but not dimensioned;
+//! nor is a strip of a sheet, a narrow part of the same material at the same
+//! depths as a board of it.
 //! The view shows the members and what lies at their depth (infill); a part
 //! wholly in front of or behind them (a covering sheet) would hide them, so
 //! the parts at each other depth get a view of their own below it.
@@ -223,20 +225,58 @@ impl Piece<'_> {
         [self.max[0] - self.min[0], self.max[1] - self.min[1]]
     }
 
-    /// No wider in the view than it is deep: an upright or lying member.
-    fn member(&self) -> bool {
-        let size = self.size();
-        size[0].min(size[1]) <= (self.depth[1] - self.depth[0]) * (1.0 + ROUNDING)
+    fn thickness(&self) -> f64 {
+        self.depth[1] - self.depth[0]
     }
+
+    /// No wider in the view than it is deep: an upright or lying member, or a
+    /// strip of a sheet.
+    fn narrow(&self) -> bool {
+        let size = self.size();
+        size[0].min(size[1]) <= self.thickness() * (1.0 + ROUNDING)
+    }
+
+    /// At least [`BOARD_WIDTH_PER_THICKNESS`] times as wide in the view as it
+    /// is thick: a sheet, not a deep header.
+    fn board(&self) -> bool {
+        let size = self.size();
+        size[0].min(size[1]) >= self.thickness() * BOARD_WIDTH_PER_THICKNESS
+    }
+
+    /// Of this material at these depths: a piece of the same layer.
+    fn same_layer(&self, other: &Piece) -> bool {
+        self.material == other.material
+            && (0..2).all(|end| (self.depth[end] - other.depth[end]).abs() <= HIDDEN_LINE_TOUCH_MM)
+    }
+}
+
+/// How many times a board is at least as wide as it is thick. A header of
+/// two 240 mm planks in a 140 mm frame (1.7) is no board; the narrowest OSB
+/// or plywood sheet a layout keeps (PG-60) is well past it.
+const BOARD_WIDTH_PER_THICKNESS: f64 = 4.0;
+
+/// Whether each piece is a member: narrow, and not a strip of a sheet, which
+/// shares its material and depths with a board.
+fn members(pieces: &[Piece]) -> Vec<bool> {
+    pieces
+        .iter()
+        .map(|piece| {
+            piece.narrow()
+                && !pieces
+                    .iter()
+                    .any(|other| other.board() && other.same_layer(piece))
+        })
+        .collect()
 }
 
 /// The pieces at the members' depth (all of them when there are no members),
 /// and the others grouped by the depths they share, near to far.
-fn by_depth(pieces: &[Piece]) -> (Vec<usize>, Vec<Vec<usize>>) {
+fn by_depth(pieces: &[Piece], members: &[bool]) -> (Vec<usize>, Vec<Vec<usize>>) {
     let members = pieces
         .iter()
-        .filter(|piece| piece.member())
-        .map(|piece| piece.depth)
+        .zip(members)
+        .filter(|(_, member)| **member)
+        .map(|(piece, _)| piece.depth)
         .collect::<Vec<_>>();
     let mut order = (0..pieces.len()).collect::<Vec<_>>();
     order.sort_by(|a, b| pieces[*a].depth[0].total_cmp(&pieces[*b].depth[0]));
@@ -327,7 +367,8 @@ pub(super) fn plan_shop(
     if pieces.is_empty() {
         return Ok(None);
     }
-    let (framed, groups) = by_depth(&pieces);
+    let members = members(&pieces);
+    let (framed, groups) = by_depth(&pieces, &members);
     let view = piece_view(frame, &pieces, &framed);
     let Some((low, high)) = view.solids else {
         return Ok(None);
@@ -348,7 +389,7 @@ pub(super) fn plan_shop(
         })
         .collect::<Vec<_>>();
     let mut chains = [vec![low[0], high[0]], vec![low[1], high[1]]];
-    for piece in pieces.iter().filter(|piece| piece.member()) {
+    for (piece, _) in pieces.iter().zip(&members).filter(|(_, member)| **member) {
         let size = piece.size();
         let axis = usize::from(size[1] <= size[0]);
         chains[axis].extend([piece.min[axis], piece.max[axis]]);

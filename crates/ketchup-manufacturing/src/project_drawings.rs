@@ -2136,4 +2136,64 @@ mod tests {
         options.plan_only = true;
         assert_eq!(drawing_set(&panel, &options).unwrap().sheets.len(), 1);
     }
+
+    /// MF-62: a strip of the sheathing no wider than the sheet is thick is
+    /// still sheathing, so the sheathing keeps its own view and does not hide
+    /// the studs, and the strip is not dimensioned as a member.
+    #[test]
+    fn a_strip_of_the_sheathing_is_not_a_member() {
+        let stud = |name: &str, x: f64| cuboid(name, [x, 0.0, 60.0], [x + 60.0, 140.0, 2440.0]);
+        let lying = |name: &str, z: f64| cuboid(name, [0.0, 0.0, z], [1000.0, 140.0, z + 60.0]);
+        let panel = vec![
+            lying("p/bottom plate", 0.0),
+            lying("p/top plate", 2440.0),
+            stud("p/stud 1", 0.0),
+            stud("p/stud 2", 470.0),
+            stud("p/stud 3", 940.0),
+            // Deep, but no board: the studs beside it stay members.
+            cuboid("p/header", [60.0, 0.0, 1800.0], [470.0, 140.0, 2040.0]),
+            cuboid("p/osb", [0.0, -15.0, 0.0], [988.0, 0.0, 2500.0]),
+            cuboid("p/strip", [988.0, -15.0, 0.0], [1000.0, 0.0, 2500.0]),
+        ];
+        let position = |material: &str, dimensions_mm: [f64; 3], solids: &[&str]| ShopPosition {
+            material: material.to_owned(),
+            dimensions_mm,
+            solids: solids.iter().map(|name| format!("p/{name}")).collect(),
+            count: solids.len(),
+        };
+        let sheet = ShopSheet {
+            title: "Panel p".to_owned(),
+            right: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            positions: vec![
+                position("C24", [1000.0, 140.0, 60.0], &["bottom plate", "top plate"]),
+                position(
+                    "C24",
+                    [2380.0, 140.0, 60.0],
+                    &["stud 1", "stud 2", "stud 3"],
+                ),
+                position("C24", [410.0, 240.0, 140.0], &["header"]),
+                position("OSB", [2500.0, 988.0, 15.0], &["osb"]),
+                position("OSB", [2500.0, 15.0, 12.0], &["strip"]),
+            ],
+        };
+        let columns = ["Pos.", "Material", "Size", "Count"].map(str::to_owned);
+        let shop = shop::plan_shop(&sheet, &panel, &columns, None)
+            .unwrap()
+            .unwrap();
+        let numbers = |view: &DrawnView| {
+            view.marks
+                .iter()
+                .map(|(_, number)| number.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(numbers(&shop.view), ["1", "1", "2", "2", "2", "3"]);
+        assert_eq!(shop.layers.len(), 1);
+        assert_eq!(numbers(&shop.layers[0].1), ["4", "5"]);
+        assert_eq!(
+            shop.summary.across,
+            [0.0, 60.0, 470.0, 530.0, 940.0, 1000.0]
+        );
+        assert_eq!(shop.summary.up, [0.0, 60.0, 2440.0, 2500.0]);
+    }
 }
