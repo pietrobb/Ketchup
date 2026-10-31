@@ -40,22 +40,23 @@ fn memory_past_the_limit_ends_the_worker_not_the_caller() {
     assert_eq!(run(&mut worker, BOX).unwrap().model.parts.len(), 1);
 }
 
-/// Unix has no job object: the worker's memory limit is its own address-space
-/// limit (review 2026-10-15 PRG-1, PRG-3, PRG-6).
+/// Unix has no job object: the worker's memory limit is its own data limit,
+/// the private writable memory it maps, on Linux (review 2026-10-15 PRG-1,
+/// PRG-3, PRG-6; RLIMIT_DATA instead of RLIMIT_AS since review 2026-10-26 EX-40).
 #[cfg(target_os = "linux")]
 #[test]
-fn the_worker_runs_under_its_address_space_limit_on_linux() {
+fn the_worker_runs_under_its_data_limit_on_linux() {
     let _turn = crate::integration_support::file_turn();
     let mut worker = worker();
     run(&mut worker, BOX).unwrap();
     let pid = worker.process_id().unwrap();
     let limits = std::fs::read_to_string(format!("/proc/{pid}/limits")).unwrap();
-    let address_space = limits
+    let data = limits
         .lines()
-        .find(|line| line.starts_with("Max address space"))
+        .find(|line| line.starts_with("Max data size"))
         .unwrap();
     let bytes = ketchup_scheduler::program_worker::PROGRAM_WORKER_MEMORY_BYTES.to_string();
-    assert!(address_space.contains(&bytes), "{address_space}");
+    assert!(data.contains(&bytes), "{data}");
 }
 
 #[test]
