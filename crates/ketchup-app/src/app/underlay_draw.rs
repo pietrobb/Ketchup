@@ -159,13 +159,15 @@ impl KetchupApp {
             .or_else(|| found.layers.first().map(|layer| layer.name.clone()))
     }
 
-    /// Where the drawing tools draw, while the drawing is still in the document.
+    /// Where the drawing tools draw, while the drawing is still in the document and lies in
+    /// the ground plane they click in: one standing as a view is drawn into no more (review
+    /// 2026-10-29 UI-64).
     pub(crate) fn underlay_draw_target(&self) -> Option<UnderlayDrawTarget> {
         let target = self.gesture.underlay_draw.as_ref()?;
         self.document
             .current()
             .underlay(target.underlay)
-            .is_some()
+            .is_some_and(ketchup_model::underlay::Underlay::lies_flat)
             .then(|| target.clone())
     }
 

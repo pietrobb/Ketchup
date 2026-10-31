@@ -392,6 +392,46 @@ fn the_drawing_tools_draw_into_the_drawing_on_the_picked_objects_layer() {
     assert!(drawn_shapes(&harness).is_empty());
 }
 
+/// UI-64: a drawing being drawn into stood up as a view, from Tools > Drawing view or by
+/// the AI, is drawn into no more: drawing into it is off, said so, and the Line tool's
+/// clicks on the ground add nothing to the drawing standing elsewhere. Before, the shapes
+/// went into it and appeared on its vertical plane, away from where they were clicked.
+#[test]
+fn a_drawing_stood_up_as_a_view_is_drawn_into_no_more() {
+    use ketchup_model::underlay::view::{UnderlayView, ViewPlane, plan_underlay_view};
+    let at = |[x, y]: [f64; 2]| Vec3::new(x, y, 0.0);
+    for by_the_window in [true, false] {
+        let mut harness = shell();
+        click(&mut harness, Vec3::new(100.0, 120.0, 0.0));
+        harness
+            .state_mut()
+            .dispatch_command(AppCommand::DrawIntoUnderlay);
+        let id = harness.state().underlay_draw_target().unwrap().underlay;
+        if by_the_window {
+            assert!(harness.state_mut().set_underlay_view(id, ViewPlane::Front));
+            let app = harness.state();
+            assert!(app.gesture.underlay_draw.is_none(), "{}", app.digest);
+            assert!(app.digest.contains("Front view"), "{}", app.digest);
+        } else {
+            let snapshot = harness.state().document.current();
+            let view = UnderlayView {
+                plane: ViewPlane::Front,
+                at_mm: 0.0,
+            };
+            let batch = plan_underlay_view(&snapshot, id, view).unwrap();
+            harness
+                .state_mut()
+                .apply_batch_with_work_recovery(&batch)
+                .unwrap();
+        }
+        assert_eq!(harness.state().underlay_draw_target(), None);
+        harness.state_mut().dispatch_command(AppCommand::Line);
+        click(&mut harness, at([240.0, 120.0]));
+        click(&mut harness, at([240.0, 20.0]));
+        assert!(drawn_shapes(&harness).is_empty(), "{by_the_window}");
+    }
+}
+
 fn type_text(harness: &mut Harness<'_, KetchupApp>, text: &str) {
     harness
         .input_mut()

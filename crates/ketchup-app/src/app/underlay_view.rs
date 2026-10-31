@@ -71,6 +71,19 @@ impl KetchupApp {
                         ("plane", self.catalog.text(plane_key(plane))),
                     ]),
                 );
+                // A drawing being drawn into stands elsewhere now: drawing into it ends
+                // (review 2026-10-29 UI-64).
+                if plane != ViewPlane::Top
+                    && self
+                        .gesture
+                        .underlay_draw
+                        .take_if(|target| target.underlay == id)
+                        .is_some()
+                {
+                    self.digest.push_str(" · ");
+                    self.digest
+                        .push_str(&self.catalog.text("digest-underlay-draw-off"));
+                }
                 true
             }
             Some(reason) => {
