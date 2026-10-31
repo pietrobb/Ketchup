@@ -584,7 +584,10 @@ impl KetchupApp {
     }
 
     pub(crate) fn refresh_work_recovery_checkpoint(&mut self) {
-        if self.file.activity.saving.is_some() {
+        // While a file is read the window's work is on its way out: a checkpoint written
+        // now would bring back edits the user discarded, since the read may find it. A
+        // cancelled or failed open leaves the work, and the next frame checkpoints it.
+        if self.file.activity.saving.is_some() || self.reading_document() {
             return;
         }
         if let Err(error) = self.retry_pending_work_recovery_cleanup() {
