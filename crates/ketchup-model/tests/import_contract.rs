@@ -303,6 +303,36 @@ fn imported_evidence_a_few_last_bits_away_is_the_same_body() {
     assert_eq!(ulps_from(f64::MAX, 1), None);
 }
 
+/// Review 2026-10-29 EX-60: `ulps_from(-0.0, 0)` gave +0.0, so a body bounded
+/// at -0.0 that the window takes for the recorded one (`within_ulps`) was
+/// refused by the worker, which searches the recorded fingerprint by
+/// `ulps_from` and never reached the other zero. Every value one is within
+/// reach of, the other reaches, bit for bit.
+#[test]
+fn every_value_within_ulps_is_one_ulps_from_reaches() {
+    use ketchup_model::import::{ulps_from, within_ulps};
+    let tiny = f64::from_bits(1);
+    let values = [-1.0, -2.0 * tiny, -tiny, -0.0, 0.0, tiny, 2.0 * tiny, 1.0];
+    assert_eq!(
+        ulps_from(-0.0, 0).map(f64::to_bits),
+        Some((-0.0_f64).to_bits())
+    );
+    for a in values {
+        for b in values {
+            for ulps in 0..=2_u64 {
+                let reach = ulps.cast_signed();
+                let reached = (-reach..=reach)
+                    .any(|step| ulps_from(b, step).map(f64::to_bits) == Some(a.to_bits()));
+                assert_eq!(
+                    within_ulps(a, b, ulps),
+                    reached,
+                    "{a:e} from {b:e} in {ulps}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn exact_iges_import_is_deterministic_persistent_and_explicit_about_losses() {
     let source = b"IGES exact source";

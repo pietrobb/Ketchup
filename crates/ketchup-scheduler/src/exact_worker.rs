@@ -3943,6 +3943,21 @@ mod tests {
             &evaluated,
             recorded_fingerprint
         ));
+
+        // EX-60: a body bounded at -0.0, recorded a few bits off in volume, or
+        // at +0.0, is the recorded one as the window takes it.
+        let mut zero = recorded;
+        zero[1] = -0.0;
+        let zero_fingerprint = imported_fingerprint(topology, &zero);
+        for (slot, value) in [(0, evaluated[0]), (1, 0.0)] {
+            let mut near = zero;
+            near[slot] = value;
+            assert!(imported_fingerprint_near(
+                topology,
+                &near,
+                &zero_fingerprint
+            ));
+        }
     }
 
     #[test]

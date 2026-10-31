@@ -410,10 +410,16 @@ pub struct StepImportEvidence {
 pub const IMPORTED_MEASURE_ULPS: u64 = 8;
 pub const IMPORTED_BOUNDS_ULPS: u64 = 1;
 
-/// `value` as an integer that orders like it, one apart per representable step.
+/// `value` as an integer that orders like it, one apart per representable
+/// step, -0.0 one below +0.0 (EX-60): each ordinal is one value, so
+/// [`ulps_from`] reaches every value [`within_ulps`] takes, both zeros too.
 fn ulp_ordinal(value: f64) -> i64 {
     let bits = value.to_bits().cast_signed();
-    if bits < 0 { i64::MIN - bits } else { bits }
+    if bits < 0 {
+        -(bits & i64::MAX) - 1
+    } else {
+        bits
+    }
 }
 
 /// Whether two finite values are at most `ulps` representable steps apart.
@@ -433,7 +439,7 @@ pub fn ulps_from(value: f64, steps: i64) -> Option<f64> {
     }
     let ordinal = ulp_ordinal(value).checked_add(steps)?;
     let bits = if ordinal < 0 {
-        i64::MIN - ordinal
+        -(ordinal + 1) | i64::MIN
     } else {
         ordinal
     };
