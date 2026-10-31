@@ -206,6 +206,69 @@ fn reimport_never_duplicates_and_other_projects_are_refused() {
 }
 
 #[test]
+fn damaged_returned_files_are_refused_and_change_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut app, package) = exported();
+    let comments = comments_on(&package);
+    let good = directory.path().join("returned.ketchup-comments");
+    write_comments(&good, &comments, &package);
+    assert_eq!(app.import_viewer_comments_from(&good).unwrap().added, 1);
+    let before = (
+        app.document_revision(),
+        app.undo_step_count(),
+        app.received_viewer_comments().to_vec(),
+    );
+
+    let comments_bytes = std::fs::read(&good).unwrap();
+    let mut commented = Vec::new();
+    package
+        .write_with_comments(&mut commented, &comments)
+        .unwrap();
+    let mut flipped = commented.clone();
+    let middle = flipped.len() / 2;
+    flipped[middle] ^= 0xff;
+    let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+    let damaged = [
+        ("empty.ketchup-comments", Vec::new()),
+        (
+            "truncated.ketchup-comments",
+            comments_bytes[..comments_bytes.len() / 2].to_vec(),
+        ),
+        ("garbage.ketchup-comments", vec![0xa5; 4096]),
+        ("picture.ketchup-comments", png.clone()),
+        (
+            "truncated.ketchup-view",
+            commented[..commented.len() / 2].to_vec(),
+        ),
+        ("flipped.ketchup-view", flipped),
+        ("picture.ketchup-view", png),
+    ];
+    for (name, bytes) in damaged {
+        let path = directory.path().join(name);
+        std::fs::write(&path, bytes).unwrap();
+        app.digest.clear();
+        let error = app
+            .import_viewer_comments_from(&path)
+            .expect_err(&format!("{name} was read"));
+        assert!(
+            !error.reason_text().is_empty() && app.digest.contains(error.reason_text()),
+            "{name}: {:?} not shown in {:?}",
+            error.reason_text(),
+            app.digest
+        );
+        assert_eq!(
+            before,
+            (
+                app.document_revision(),
+                app.undo_step_count(),
+                app.received_viewer_comments().to_vec(),
+            ),
+            "{name} changed the model or the received comments"
+        );
+    }
+}
+
+#[test]
 fn deleted_commented_part_is_marked_and_never_selected() {
     let directory = tempfile::tempdir().unwrap();
     let (mut app, package) = exported();

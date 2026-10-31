@@ -1028,6 +1028,68 @@ fn opening_comments_or_a_model_over_unsaved_work_warns_first() {
     );
 }
 
+/// V9c: a returned comments file found its export in the folder, but one
+/// comment is on a part that export does not have. The export used to be
+/// opened before the comments were checked against it, so the customer's open
+/// model and unsaved comment were replaced by the export without comments.
+#[test]
+fn comments_that_do_not_fit_their_package_leave_the_open_model_and_comments() {
+    let directory =
+        std::env::temp_dir().join(format!("ketchup-viewer-misfit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let mut bytes = Vec::new();
+    scene_package().write(&mut bytes).expect("fixture");
+    let mut app = customer_with_comment(&bytes, "Darker oak");
+    let before = (
+        app.model.as_ref().unwrap().package().manifest.definitions[0]
+            .note
+            .clone(),
+        app.review.as_ref().unwrap().comments.clone(),
+        app.shown,
+    );
+
+    let mut other = scene_package();
+    other.manifest.definitions[0].note = Some("re-exported".into());
+    other
+        .write(std::fs::File::create(directory.join("other.ketchup-view")).unwrap())
+        .unwrap();
+    let mut comments = ketchup_view_format::Comments::new(&other).unwrap();
+    let mut missing = other.manifest.occurrences[0].path.clone();
+    missing.root_occurrence_id = u64::MAX;
+    comments.comments.push(ketchup_view_format::Comment {
+        id: 7,
+        author: None,
+        text: "Shorter legs".into(),
+        view: CommentView {
+            camera: other.manifest.scenes[0].camera.clone(),
+            hidden: vec![],
+            style: DisplayStyle::Shaded,
+            section: None,
+            scene: None,
+            shown: None,
+        },
+        selected: Some(missing),
+        arrows: vec![],
+    });
+    let returned = directory.join("returned.ketchup-comments");
+    std::fs::write(&returned, serde_json::to_vec(&comments).unwrap()).unwrap();
+
+    let error = app.open_path(&returned).unwrap_err();
+    assert_eq!(error.code(), "viewer.package.invalid", "{error}");
+    assert_eq!(
+        before,
+        (
+            app.model.as_ref().unwrap().package().manifest.definitions[0]
+                .note
+                .clone(),
+            app.review.as_ref().unwrap().comments.clone(),
+            app.shown,
+        )
+    );
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
 /// A customer's Viewer with one committed comment `text`.
 fn customer_with_comment(bytes: &[u8], text: &str) -> ViewerApp {
     let mut app = ViewerApp::new(None).with_host_files();
