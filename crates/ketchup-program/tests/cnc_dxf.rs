@@ -291,6 +291,69 @@ fn the_infill_of_a_framed_layer_is_not_drawn() {
     );
 }
 
+/// MF-60: roofing and cladding are laid on site, not cut from boards on a CNC.
+/// A sheet layer without a role is drawn only when it is laid from boards
+/// ("sheet") or its material is a board; any other layer is built on site and
+/// a warning names it.
+#[test]
+fn roofing_and_cladding_of_a_buildup_are_not_drawn() {
+    for (outer, material) in [
+        (
+            "{'name': 'krytina', 'thickness': 0.6, 'material': 'sheet metal roofing'}",
+            "sheet metal roofing",
+        ),
+        (
+            "{'name': 'obklad', 'thickness': 20, 'material': 'larch cladding'}",
+            "larch cladding",
+        ),
+    ] {
+        let source = format!(
+            "buildup('roof', (0, 0, 0), (1, 0, 0), (0, 1, 0), 3000, height = 2500,\n\
+             layers = [{{'name': 'frame', 'thickness': 140, 'material': 'C24', 'spacing': 625,\n\
+                        'infill': 'mineral wool'}},\n\
+                       {{'name': 'osb', 'thickness': 15, 'material': 'OSB', 'sheet': (1250, 2500)}},\n\
+                       {{'name': 'gypsum', 'thickness': 12.5, 'material': 'gypsum board'}},\n\
+                       {outer}])\n"
+        );
+        let model = ketchup_program::evaluate("roof.star", &source, &BTreeMap::new())
+            .unwrap_or_else(|error| panic!("{error}"))
+            .model;
+        assert!(
+            model
+                .parts
+                .iter()
+                .any(|part| part.material.as_deref() == Some(material)),
+            "the roof has its outer layer"
+        );
+        let export = cnc_parts(&model);
+        assert_eq!(export.not_drawn, []);
+        let drawn: Vec<_> = export
+            .parts
+            .iter()
+            .map(|part| (&part.part, part.thickness_mm))
+            .collect();
+        assert!(
+            export
+                .parts
+                .iter()
+                .all(|part| part.thickness_mm == 15.0 || part.thickness_mm == 12.5),
+            "{drawn:?}"
+        );
+        assert!(drawn.iter().any(|(_, t)| *t == 12.5), "{drawn:?}");
+        let warnings: Vec<_> = ketchup_program::validate(&model)
+            .into_iter()
+            .filter(|issue| issue.severity == ketchup_program::Severity::Warning)
+            .map(|issue| issue.message)
+            .collect();
+        assert!(
+            warnings
+                .iter()
+                .any(|message| message.contains(material) && message.contains("built on site")),
+            "{warnings:?}"
+        );
+    }
+}
+
 /// MF-61: a rounded handle 60 x 40 and 3 000 long is no flat part; drawn along
 /// its extrusion it would be a 60 x 40 outline 3 000 thick, its end screw a
 /// drill into the face.

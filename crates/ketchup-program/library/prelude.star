@@ -2185,9 +2185,12 @@ def no_window_over(part, tag = "window", margin = 300, height = 1500):
 #     layer's tags, each on the panel's shop drawing `name` (SHOP_DRAWING).
 #     Only extrusions, no booleans: every piece is rebuilt from the numbers.
 #     Fabrication role (FABRICATION_ROLE): plates, studs, noggins, headers and sills of a
-#     framed layer are TIMBER_MEMBER, a sheet layer's pieces MANUFACTURED_ITEM, its infill
-#     SITE_BUILT_ITEM (insulation is fitted, not cut on a CNC); a layer's "role" and
-#     "infill_role" change them (a bought panel: PURCHASED_ITEM, roofing: SITE_BUILT_ITEM).
+#     framed layer are TIMBER_MEMBER, a sheet layer's pieces MANUFACTURED_ITEM when it has
+#     a "sheet" board size or its material is a board (BOARD_MATERIALS: OSB, plywood,
+#     gypsum board...), else SITE_BUILT_ITEM with a warning (roofing, membranes and
+#     cladding are laid on site, not cut on a CNC), its infill SITE_BUILT_ITEM (insulation
+#     is fitted); a layer's "role" and "infill_role" change them (a bought panel:
+#     PURCHASED_ITEM).
 #     Pair it with a concept body through alternatives() and tags, e.g. a wall facing -y:
 #     buildup("wall S", (0, 200, 0), (1, 0, 0), (0, 0, 1), 4000, height = 2600,
 #             layers = [{"name": "gypsum", "thickness": 12.5, "material": "gypsum board"},
@@ -2195,6 +2198,15 @@ def no_window_over(part, tag = "window", margin = 300, height = 1500):
 #                        "spacing": 625, "infill": "mineral wool"},
 #                       {"name": "osb", "thickness": 15, "material": "OSB"}],
 #             openings = [(800, 0, 900, 2100)], tags = ["construction"])
+
+# Materials a buildup sheet layer without a "sheet" board size is still cut from in the
+# shop (lower case; "OSB 3" matches "osb").
+BOARD_MATERIALS = ["osb", "plywood", "particle board", "chipboard", "mdf", "hdf", "gypsum board",
+                   "gypsum fibre board", "cement board", "wood fibre board", "clt", "lvl"]
+
+def _board_material(material):
+    m = material.lower()
+    return any([m == b or m.startswith(b + " ") for b in BOARD_MATERIALS])
 
 def _cross(a, b):
     return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
@@ -2391,8 +2403,12 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
         material = layer.get("material", label)
         color = layer.get("color")
         layer_tags = base_tags + _names(layer.get("tags"))
+        # MF-60: a sheet layer neither laid from boards nor of a board material
+        # (roofing, membranes, cladding) is built on site, with no CNC drawing.
+        site_laid = "spacing" not in layer and "sheet" not in layer and not _board_material(material)
         role = _role("buildup(%s) layer %s" % (name, label),
-                     layer.get("role", TIMBER_MEMBER if "spacing" in layer else MANUFACTURED_ITEM))
+                     layer.get("role", TIMBER_MEMBER if "spacing" in layer else
+                                       SITE_BUILT_ITEM if site_laid else MANUFACTURED_ITEM))
         points = _outline(name, length, height, top, offset)
         flat = [0.0 for _ in points]
         # Openings that leave no room above them run out through the top edge.
@@ -2423,6 +2439,12 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                              (name, label, fmt_mm(float(layer.get("min_width", 200)))),
                       parts = boards, severity = "warning",
                       hint = "Change the length or the stud spacing, or give the layer a smaller \"min_width\".")
+            if site_laid and "role" not in layer:
+                check(False, ("buildup(%s): layer %s has no \"sheet\" board size and %s is no board material " +
+                              "(BOARD_MATERIALS): built on site, no CNC drawing") % (name, label, material),
+                      parts = boards, severity = "warning",
+                      hint = "Give the layer \"sheet\" or \"role\": MANUFACTURED_ITEM to cut it in the shop, " +
+                             "or \"role\": SITE_BUILT_ITEM to keep it on site.")
             offset += thickness
             continue
         stud = float(layer.get("stud", 60))
