@@ -1652,7 +1652,6 @@ digest-underlay-objects-not-removed = Výkres sa nezmenil: { $reason }
 digest-underlay-edit-failed = Podklad nebol posunutý: { $reason }
 digest-underlay-edit-searching = Hľadám oblasti, ktoré sledujú výkres; zmena sa urobí, keď ich nájdem
 error-underlay-copy = podklad sa osádza, nekopíruje
-error-underlay-standing = výkres stojí ako pohľad; na posun v okne ho vráť do pôdorysu
 digest-measure-edge = Dĺžka hrany { $length } mm · iba údaj, bez kroku späť
 digest-hidden = Skrytých výskytov: { $count } · 1 krok späť
 digest-delete-hidden-selected = Nič sa nezmazalo: vybraných skrytých výskytov je { $count } — najprv ich zobrazte alebo odznačte

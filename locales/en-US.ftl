@@ -1677,7 +1677,6 @@ digest-underlay-objects-not-removed = The drawing was not changed: { $reason }
 digest-underlay-edit-failed = The underlay was not moved: { $reason }
 digest-underlay-edit-searching = Finding the areas that follow the drawing; the change is made once they are found
 error-underlay-copy = an underlay is placed, not copied
-error-underlay-standing = the drawing stands as a view; lay it back into the plan to move it in the window
 digest-measure-edge = Edge length { $length } mm · reading only, no undo step
 digest-hidden = Hid { $count ->
         [one] { $count } occurrence

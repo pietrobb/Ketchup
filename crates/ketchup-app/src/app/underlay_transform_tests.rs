@@ -238,6 +238,103 @@ fn an_underlay_being_moved_does_not_snap_to_where_it_was() {
     assert_ne!(snapped(app), Some(wall_end));
 }
 
+/// Review 2026-10-29 UO-69: a drawing standing as a view, or a plan raised off the ground,
+/// was refused by Move and Rotate in the window; it moves in the plane it stands on and
+/// turns about the axis it is seen along, one Undo step each.
+#[test]
+fn a_standing_or_raised_drawing_moves_and_turns_in_its_own_plane() {
+    use ketchup_model::underlay::view::{UnderlayView, ViewPlane, plan_underlay_view};
+    let views = [
+        (ViewPlane::Front, 0.0, Axis::Y, Axis::Z),
+        (ViewPlane::Right, 2500.0, Axis::X, Axis::Y),
+        (ViewPlane::Top, 3000.0, Axis::Z, Axis::X),
+    ];
+    for (plane, at_mm, turn_axis, tilt_axis) in views {
+        let mut harness = shell();
+        let id = harness
+            .state()
+            .document
+            .current()
+            .underlays()
+            .next()
+            .unwrap()
+            .id;
+        let view = UnderlayView { plane, at_mm };
+        let batch = plan_underlay_view(&harness.state().document.current(), id, view).unwrap();
+        harness
+            .state_mut()
+            .apply_batch_with_work_recovery(&batch)
+            .unwrap();
+        let at = |app: &KetchupApp, point: [f64; 3]| {
+            let underlay = app.document.current().underlay(id).unwrap().clone();
+            underlay.world_transform().transform_point(point)
+        };
+        let before = at(harness.state(), [240.0, 120.0, 0.0]);
+        harness.state_mut().select_whole_underlay(id);
+        let undo = harness.state().undo_step_count();
+        let rect = harness.state().camera.viewport_rect.unwrap();
+
+        // A move picked off the plane keeps to it: the part across it is dropped.
+        harness.state_mut().dispatch_command(AppCommand::Move);
+        let app = harness.state_mut();
+        assert!(
+            app.begin_move_drag_at(rect.center(), rect, false),
+            "{plane:?}: {}",
+            app.digest
+        );
+        app.move_session_mut().unwrap().delta_mm = Vec3::new(100.0, 50.0, 30.0);
+        let drag = app.move_session().unwrap().0.clone();
+        assert!(app.commit_move_drag(&drag), "{plane:?}: {}", app.digest);
+        let mut moved = [100.0, 50.0, 30.0];
+        moved[plane.axes().2] = 0.0;
+        let after = at(app, [240.0, 120.0, 0.0]);
+        for axis in 0..3 {
+            assert!(
+                (after[axis] - before[axis] - moved[axis]).abs() < 1e-9,
+                "{plane:?}: {after:?}"
+            );
+        }
+        assert_eq!(app.undo_step_count(), undo + 1);
+        assert_eq!(app.document.current().underlay(id).unwrap().view, view);
+        app.undo();
+        assert_eq!(at(harness.state(), [240.0, 120.0, 0.0]), before);
+
+        // A quarter turn about the axis it is seen along keeps it on its plane.
+        let app = harness.state_mut();
+        app.dispatch_command(AppCommand::Rotate);
+        let centre = at(app, [0.0, 0.0, 0.0]);
+        assert!(
+            app.begin_rotate_drag_at(rect.center(), rect, false),
+            "{}",
+            app.digest
+        );
+        app.set_rotate_axis_lock(Some(turn_axis));
+        let session = app.rotate_session_mut().unwrap();
+        session.centre_mm = Vec3::from(centre);
+        session.angle_degrees = 90.0;
+        let drag = app.rotate_session().unwrap().0.clone();
+        assert!(app.commit_rotate_drag(&drag), "{plane:?}: {}", app.digest);
+        let turned = at(app, [240.0, 120.0, 0.0]);
+        assert!((turned[plane.axes().2] - before[plane.axes().2]).abs() < 1e-9);
+        assert_ne!(turned, before);
+        let underlay = app.document.current().underlay(id).unwrap().clone();
+        assert_eq!(underlay.view, view);
+        app.undo();
+
+        // A turn about another axis would tilt it off its plane: refused by name.
+        let digest = harness.state().canonical_digest();
+        let app = harness.state_mut();
+        app.dispatch_command(AppCommand::Rotate);
+        assert!(app.begin_rotate_drag_at(rect.center(), rect, false));
+        app.set_rotate_axis_lock(Some(tilt_axis));
+        app.rotate_session_mut().unwrap().angle_degrees = 30.0;
+        let drag = app.rotate_session().unwrap().0.clone();
+        assert!(!app.commit_rotate_drag(&drag));
+        assert!(app.digest.contains("plane it stands on"), "{}", app.digest);
+        assert_eq!(app.canonical_digest(), digest);
+    }
+}
+
 #[test]
 fn an_underlay_move_out_of_the_ground_plane_or_a_copy_is_refused_by_name() {
     let mut harness = shell();

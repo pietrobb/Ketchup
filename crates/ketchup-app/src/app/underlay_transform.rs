@@ -1,7 +1,6 @@
 //! Moving and turning a selected underlay with the Move and Rotate tools: the gesture is the
 //! model's, and its edit goes into the underlay's placement as a fit's does, one Undo step.
 
-use super::transform::{move_world_edit, rotate_world_edit};
 use super::underlay_edit::{FindRegions, UnderlayEditError};
 use super::underlay_snapping::{underlay_of, underlay_reference};
 use crate::transform_operation::{TransformPlan, TransformTarget};
@@ -58,7 +57,7 @@ impl KetchupApp {
     }
 
     /// Refuses, in the status line, a move or turn of an underlay that would leave the
-    /// ground plane.
+    /// plane it stands on.
     pub(crate) fn underlay_drag_refused(
         &mut self,
         selection: &SelectionId,
@@ -83,15 +82,7 @@ impl KetchupApp {
         let (Some(id), Some(edit)) = (underlay_of(selection), edit) else {
             return false;
         };
-        let snapshot = self.document.current();
-        if snapshot
-            .underlay(id)
-            .is_some_and(|underlay| !underlay.lies_flat())
-        {
-            self.refuse_underlay_edit(self.catalog.text("error-underlay-standing"));
-            return true;
-        }
-        let Err(error) = plan_underlay_edit(&snapshot, id, edit) else {
+        let Err(error) = plan_underlay_edit(&self.document.current(), id, edit) else {
             return false;
         };
         self.refuse_underlay_edit(error.to_string());
@@ -200,11 +191,11 @@ impl KetchupApp {
         match self.transform_tool.session.as_ref()? {
             ToolSession::Move { drag, .. } => {
                 self.dragged_underlay_objects(&drag.selection)?;
-                move_world_edit(drag)
+                self.move_world_edit(drag)
             }
             ToolSession::Rotate { drag, .. } => {
                 self.dragged_underlay_objects(&drag.selection)?;
-                rotate_world_edit(drag)
+                self.rotate_world_edit(drag)
             }
             ToolSession::Scale { .. } => None,
         }

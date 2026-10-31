@@ -3,7 +3,7 @@
 use crate::app::underlay_snapping::{underlay_of, underlay_reference};
 use crate::*;
 use ketchup_geometry::linalg::CubicBezier;
-use ketchup_model::underlay::placement::planar_turn;
+use ketchup_model::underlay::placement::axis_turn;
 
 impl KetchupApp {
     pub(crate) fn selected_alignment_pair(&self) -> Option<(OccurrenceId, OccurrenceId)> {
@@ -373,10 +373,11 @@ impl KetchupApp {
         self.gesture.transform.move_copy = false;
         self.transform_tool.input.reset();
         let objects = self.dragged_underlay_objects(&drag.selection);
-        if self.underlay_drag_refused(&drag.selection, drag.axis == Some(Axis::Z))
+        let across = drag.axis.map(Axis::index) == self.underlay_seen_along(&drag.selection);
+        if self.underlay_drag_refused(&drag.selection, drag.axis.is_some() && across)
             || (objects.is_none()
                 && !drag.copy
-                && self.underlay_edit_refused(&drag.selection, move_world_edit(drag)))
+                && self.underlay_edit_refused(&drag.selection, self.move_world_edit(drag)))
         {
             return false;
         }
@@ -391,7 +392,7 @@ impl KetchupApp {
             return self.commit_underlay_objects_edit(
                 underlay,
                 &ids,
-                move_world_edit(drag),
+                self.move_world_edit(drag),
                 drag.copy,
             );
         }
@@ -440,7 +441,7 @@ impl KetchupApp {
             let Some(plan) = self.move_transform_plan(drag) else {
                 return false;
             };
-            self.commit_move_transform(plan, &drag.selection, moved_by(drag))
+            self.commit_move_transform(plan, &drag.selection, self.moved_by(drag))
         }
     }
 
@@ -507,10 +508,13 @@ impl KetchupApp {
         self.gesture.transform.rotate_copy = false;
         self.transform_tool.input.reset();
         let objects = self.dragged_underlay_objects(&drag.selection);
-        if self.underlay_drag_refused(&drag.selection, drag.axis != Axis::Z)
+        let across = self
+            .underlay_seen_along(&drag.selection)
+            .is_some_and(|along| drag.axis.index() != along);
+        if self.underlay_drag_refused(&drag.selection, across)
             || (objects.is_none()
                 && !drag.copy
-                && self.underlay_edit_refused(&drag.selection, rotate_world_edit(drag)))
+                && self.underlay_edit_refused(&drag.selection, self.rotate_world_edit(drag)))
         {
             return false;
         }
@@ -525,7 +529,7 @@ impl KetchupApp {
             return self.commit_underlay_objects_edit(
                 underlay,
                 &ids,
-                rotate_world_edit(drag),
+                self.rotate_world_edit(drag),
                 drag.copy,
             );
         }
@@ -1896,7 +1900,7 @@ impl KetchupApp {
             &drag.selection,
             &drag.occurrence_paths,
             drag.group_id,
-            move_world_edit(drag)?,
+            self.move_world_edit(drag)?,
         )?;
         TransformPlan::prepare(&self.document.current(), request)
     }
@@ -1917,7 +1921,7 @@ impl KetchupApp {
             &drag.selection,
             &drag.occurrence_paths,
             drag.group_id,
-            rotate_world_edit(drag)?,
+            self.rotate_world_edit(drag)?,
         )?;
         TransformPlan::prepare(&self.document.current(), request)
     }
@@ -3075,32 +3079,39 @@ impl KetchupApp {
     }
 }
 
-/// The world edit of a move drag: [`moved_by`].
-pub(super) fn move_world_edit(drag: &MoveDrag) -> Option<Transform> {
-    let delta = moved_by(drag);
-    Transform::from_translation(delta.x, delta.y, delta.z).ok()
-}
-
-/// The world edit of a rotate drag. An underlay turns about Z only, built in the plane so
-/// its placement stays exactly planar.
-pub(super) fn rotate_world_edit(drag: &RotateDrag) -> Option<Transform> {
-    if underlay_of(&drag.selection).is_some() {
-        if drag.axis != Axis::Z {
-            return None;
-        }
-        planar_turn([drag.centre_mm.x, drag.centre_mm.y], drag.angle_degrees).ok()
-    } else {
-        world_rotation_transform(drag.centre_mm, drag.axis, drag.angle_degrees).ok()
+impl KetchupApp {
+    /// The world axis (0, 1 or 2) the drawing `selection` names is seen along: Z for a
+    /// plan, across its plane for a view.
+    fn underlay_seen_along(&self, selection: &SelectionId) -> Option<usize> {
+        let id = underlay_of(selection)?;
+        Some(self.document.current().underlay(id)?.seen_along())
     }
-}
 
-/// What a move drag moves its target by. An underlay moves in plan: a point picked above
-/// the ground lands where it lies in plan, and the move is as long as it is there.
-fn moved_by(drag: &MoveDrag) -> Vec3 {
-    if underlay_of(&drag.selection).is_some() {
-        Vec3::new(drag.delta_mm.x, drag.delta_mm.y, 0.0)
-    } else {
-        drag.delta_mm
+    /// The world edit of a move drag: [`Self::moved_by`].
+    pub(super) fn move_world_edit(&self, drag: &MoveDrag) -> Option<Transform> {
+        let delta = self.moved_by(drag);
+        Transform::from_translation(delta.x, delta.y, delta.z).ok()
+    }
+
+    /// The world edit of a rotate drag. A drawing turns only about the axis it is seen
+    /// along, built so its placement stays exactly planar (review 2026-10-29 UO-69).
+    pub(super) fn rotate_world_edit(&self, drag: &RotateDrag) -> Option<Transform> {
+        match self.underlay_seen_along(&drag.selection) {
+            Some(along) if drag.axis.index() != along => None,
+            Some(along) => axis_turn(drag.centre_mm.to_array(), along, drag.angle_degrees).ok(),
+            None => world_rotation_transform(drag.centre_mm, drag.axis, drag.angle_degrees).ok(),
+        }
+    }
+
+    /// What a move drag moves its target by. A drawing moves in the plane it stands on: a
+    /// point picked off that plane lands where it lies on it, and the move is as long as
+    /// it is there.
+    pub(super) fn moved_by(&self, drag: &MoveDrag) -> Vec3 {
+        let snapshot = self.document.current();
+        match underlay_of(&drag.selection).and_then(|id| snapshot.underlay(id)) {
+            Some(underlay) => Vec3::from(underlay.in_its_plane(drag.delta_mm.to_array())),
+            None => drag.delta_mm,
+        }
     }
 }
 

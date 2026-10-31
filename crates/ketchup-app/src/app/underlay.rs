@@ -496,7 +496,7 @@ impl KetchupApp {
                 Vec::new()
             };
             let placement = match dragged {
-                Some((id, edit)) if id == underlay.id => edit.compose(underlay.placement),
+                Some((id, edit)) if id == underlay.id => edit.compose(underlay.world_transform()),
                 _ => underlay.world_transform(),
             };
             draws.push(UnderlayDraw {

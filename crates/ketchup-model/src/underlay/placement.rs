@@ -174,7 +174,7 @@ pub enum UnderlayFitError {
     ModelPointsCoincide,
     /// The fitted placement is no transform of the document.
     Placement(CanonicalError),
-    /// The edit would lift or tilt the underlay out of the ground plane.
+    /// The edit would lift or tilt the underlay out of the plane it stands on.
     OffPlane,
     /// The placement would scale the underlay more than [`UNDERLAY_MAX_SCALE`] either way
     /// or put its origin outside the model's ±[`MAX_COORDINATE_MM`].
@@ -199,7 +199,8 @@ impl fmt::Display for UnderlayFitError {
             ),
             Self::Placement(error) => write!(formatter, "the fitted placement is invalid: {error}"),
             Self::OffPlane => formatter.write_str(
-                "an underlay stays in the ground plane: it moves along X and Y and turns about Z only",
+                "an underlay stays in the plane it stands on, the ground plane for a plan: \
+                 it moves along that plane and turns about the axis it is seen along only",
             ),
             Self::OutOfRange { scale, origin_mm } => write!(
                 formatter,
@@ -312,8 +313,51 @@ pub fn plan_underlay_fit(
     Ok((batch, fit))
 }
 
+/// The turn by `angle_degrees` about the world axis `axis` (0, 1 or 2) through
+/// `centre_mm`, built entry by entry so that a drawing standing across that axis keeps its
+/// placement exactly planar: the axis's row and column are exactly those of the identity.
+pub fn axis_turn(
+    centre_mm: [f64; 3],
+    axis: usize,
+    angle_degrees: f64,
+) -> Result<Transform, CanonicalError> {
+    if axis == 2 {
+        return planar_turn([centre_mm[0], centre_mm[1]], angle_degrees);
+    }
+    let (sin, cos) = angle_degrees.to_radians().sin_cos();
+    // The two other axes, in the order a right-handed turn about `axis` takes them.
+    let (i, j) = ((axis + 1) % 3, (axis + 2) % 3);
+    let mut matrix = [0.0; 16];
+    matrix[axis * 4 + axis] = 1.0;
+    matrix[15] = 1.0;
+    matrix[i * 4 + i] = cos;
+    matrix[i * 4 + j] = -sin;
+    matrix[j * 4 + i] = sin;
+    matrix[j * 4 + j] = cos;
+    matrix[i * 4 + 3] = centre_mm[i] - (cos * centre_mm[i] - sin * centre_mm[j]);
+    matrix[j * 4 + 3] = centre_mm[j] - (sin * centre_mm[i] + cos * centre_mm[j]);
+    Transform::from_matrix(matrix)
+}
+
+impl Underlay {
+    /// The world axis (0, 1 or 2) it is seen along, across its plane.
+    #[must_use]
+    pub fn seen_along(&self) -> usize {
+        self.view.plane.axes().2
+    }
+
+    /// The part of the world move `delta_mm` that lies in its plane: a point picked off the
+    /// plane moves it to where that point lies on it.
+    #[must_use]
+    pub fn in_its_plane(&self, mut delta_mm: [f64; 3]) -> [f64; 3] {
+        delta_mm[self.seen_along()] = 0.0;
+        delta_mm
+    }
+}
+
 /// One batch, so one Undo step, that moves the underlay `id` by `edit`, a move or turn of
-/// the document; an edit that would take it out of the ground plane is refused.
+/// the document, in the plane it stands on, a plan's or a view's (review 2026-10-29 UO-69);
+/// an edit that would lift or tilt it out of that plane is refused.
 pub fn plan_underlay_edit(
     snapshot: &Snapshot,
     id: UnderlayId,
@@ -322,7 +366,12 @@ pub fn plan_underlay_edit(
     let underlay = snapshot
         .underlay(id)
         .ok_or(UnderlayFitError::NotFound(id))?;
-    let placement = edit.compose(underlay.placement);
+    let view = underlay.view.transform();
+    let inverse = view.inverse().expect("a view's map is rigid");
+    let placement = inverse
+        .compose(edit)
+        .compose(view)
+        .compose(underlay.placement);
     if !is_planar(&placement) {
         return Err(UnderlayFitError::OffPlane);
     }
