@@ -58,6 +58,8 @@ fn simulated_worker_crash_ends_without_os_crash_reporting() {
 /// The exact worker reads STEP and IGES files of any size: past half of this
 /// computer's memory it is stopped with a named error, not left to exhaust the
 /// system and the window with it (review 2026-10-21 LIM-3).
+/// Not on macOS, which does not enforce the limit (see process-wrap's JobMemoryLimit).
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn the_exact_worker_is_stopped_past_its_memory_limit() {
     let _turn = crate::integration_support::file_turn();
