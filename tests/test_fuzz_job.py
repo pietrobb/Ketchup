@@ -15,7 +15,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 FUZZ = ROOT / "fuzz"
-READER = re.compile(r"^pub fn ((?:inspect|parse|read)_\w+)\(\s*source: &\[u8\]", re.MULTILINE)
+READER = re.compile(r"^pub fn ((?:inspect|parse|read|write)_\w+)\(\s*source: &\[u8\]", re.MULTILINE)
 
 
 def targets():
@@ -28,10 +28,12 @@ def fuzz_job():
 
 
 def test_every_import_reader_has_a_fuzz_target():
-    # Review 2026-10-21 P3: the DXF underlay reader, in import/dxf/, was not fuzzed.
+    # Review 2026-10-21 P3: the DXF underlay reader, in import/dxf/, was not fuzzed; review
+    # 2026-10-29 TST-61: nor was write_edited_dxf, which parses the drawing's file again.
     sources = [ROOT / "crates/ketchup-model/src/import.rs", *(ROOT / "crates/ketchup-model/src/import").rglob("*.rs")]
     readers = {name for path in sources for name in READER.findall(path.read_text(encoding="utf-8"))}
-    assert {"inspect_dxf", "read_dxf_underlay", "parse_stl", "inspect_glb", "inspect_sketchup_scene"} <= readers
+    expected = {"inspect_dxf", "read_dxf_underlay", "parse_stl", "inspect_glb", "inspect_sketchup_scene", "write_edited_dxf"}
+    assert expected <= readers
     fuzzed = "".join(path.read_text(encoding="utf-8") for path in (FUZZ / "fuzz_targets").glob("*.rs"))
     assert sorted(reader for reader in readers if f"::{reader}(" not in fuzzed) == []
 

@@ -477,6 +477,7 @@ jobs:
         run: |
           mkdir -p fuzz/seeds/load fuzz/seeds/view_package fuzz/seeds/glb fuzz/seeds/dxf_underlay/
           cp fuzz/seeds/dxf/* fuzz/seeds/dxf_underlay/
+          cp fuzz/seeds/dxf/* fuzz/seeds/dxf_rewrite/
           cp crates/ketchup-assistant/tests/fixtures/intent_entities.ketchup examples/programs/table.ketchup fuzz/seeds/load/
           cp viewer/samples/kitchen.ketchup-view fuzz/seeds/view_package/
           cp artifacts/blender/garden-studio-colored.glb fuzz/seeds/glb/
