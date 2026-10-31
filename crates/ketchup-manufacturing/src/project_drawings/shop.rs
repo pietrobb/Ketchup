@@ -9,7 +9,7 @@
 //! A member is a part no wider in the view than it is deep, so the sheets
 //! and the infill between members are drawn and numbered but not dimensioned;
 //! nor is a strip of a sheet, a narrow part of the same material at the same
-//! depths as a board of it.
+//! depths as a whole sheet of it.
 //! The view shows the members and what lies at their depth (infill); a part
 //! wholly in front of or behind them (a covering sheet) would hide them, so
 //! the parts at each other depth get a view of their own below it.
@@ -236,11 +236,11 @@ impl Piece<'_> {
         size[0].min(size[1]) <= self.thickness() * (1.0 + ROUNDING)
     }
 
-    /// At least [`BOARD_WIDTH_PER_THICKNESS`] times as wide in the view as it
+    /// At least [`SHEET_WIDTH_PER_THICKNESS`] times as wide in the view as it
     /// is thick: a sheet, not a deep header.
-    fn board(&self) -> bool {
+    fn sheet(&self) -> bool {
         let size = self.size();
-        size[0].min(size[1]) >= self.thickness() * BOARD_WIDTH_PER_THICKNESS
+        size[0].min(size[1]) >= self.thickness() * SHEET_WIDTH_PER_THICKNESS
     }
 
     /// Of this material at these depths: a piece of the same layer.
@@ -250,13 +250,13 @@ impl Piece<'_> {
     }
 }
 
-/// How many times a board is at least as wide as it is thick. A header of
-/// two 240 mm planks in a 140 mm frame (1.7) is no board; the narrowest OSB
-/// or plywood sheet a layout keeps (PG-60) is well past it.
-const BOARD_WIDTH_PER_THICKNESS: f64 = 4.0;
+/// How many times a sheet is at least as wide as it is thick. A header 240
+/// high in a 140 deep frame (1.7) is no sheet; the narrowest sheet piece a
+/// layout keeps (PG-60) is well past it.
+const SHEET_WIDTH_PER_THICKNESS: f64 = 4.0;
 
 /// Whether each piece is a member: narrow, and not a strip of a sheet, which
-/// shares its material and depths with a board.
+/// shares its material and depths with a whole sheet.
 fn members(pieces: &[Piece]) -> Vec<bool> {
     pieces
         .iter()
@@ -264,7 +264,7 @@ fn members(pieces: &[Piece]) -> Vec<bool> {
             piece.narrow()
                 && !pieces
                     .iter()
-                    .any(|other| other.board() && other.same_layer(piece))
+                    .any(|other| other.sheet() && other.same_layer(piece))
         })
         .collect()
 }
