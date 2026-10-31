@@ -412,6 +412,8 @@ pub enum UnderlayWriteOutcome {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum UnderlayRefusal {
     Dwg(DwgRefusal),
+    /// The drawing written back did not convert to the DWG named as its output.
+    DwgWrite(DwgRefusal),
     /// The drawing declares no length unit and none was given.
     UnitsRequired,
     /// The DXF reader refused the drawing: the error's report with its cause, which does
@@ -433,6 +435,9 @@ impl std::fmt::Display for UnderlayRefusal {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Dwg(refusal) => refusal.fmt(formatter),
+            Self::DwgWrite(refusal) => {
+                write!(formatter, "the drawing did not convert to DWG: {refusal}")
+            }
             Self::UnitsRequired => formatter
                 .write_str("the drawing declares no length unit; choose the unit it is drawn in"),
             Self::Dxf { report } => formatter.write_str(report),

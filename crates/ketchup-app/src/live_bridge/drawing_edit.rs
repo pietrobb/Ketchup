@@ -377,10 +377,7 @@ impl LiveBridge {
                 &ketchup_program::CancelToken::default(),
             )
             .map_err(|error| {
-                let code = match &error {
-                    UnderlayExportError::NoSource(..) => "invalid_params",
-                    _ => "export_failed",
-                };
+                let code = drawing_export_code(&error);
                 record_rejection(
                     &rejected(code).caused_by(error),
                     json!({"path": path, "underlay_id": id.0}),
@@ -398,6 +395,47 @@ impl LiveBridge {
                 "count": count,
             })).collect::<Vec<_>>(),
         }))
+    }
+}
+
+/// The host code of why a drawing was not written back, whose hint repairs that cause
+/// (review 2026-10-29 CD-72).
+pub(super) fn drawing_export_code(error: &UnderlayExportError) -> &'static str {
+    use crate::export_bundle::ExportTransactionError;
+    use ketchup_application::program_isolation::{
+        UnderlayReadError, UnderlayRefusal, UnderlayWorkerError,
+    };
+    use ketchup_model::import::DxfEditRefusal;
+    match error {
+        UnderlayExportError::NotFound(..) => "invalid_params",
+        UnderlayExportError::NoSource(..) | UnderlayExportError::NoLines(..) => {
+            "drawing_source_unavailable"
+        }
+        UnderlayExportError::Worker(UnderlayWorkerError::Read(UnderlayReadError::Refused(
+            refusal,
+        ))) => match refusal {
+            UnderlayRefusal::DwgWrite(..) => "dwg_conversion_failed",
+            UnderlayRefusal::NotWritten(
+                DxfEditRefusal::NoHandle { .. }
+                | DxfEditRefusal::HandleMissing { .. }
+                | DxfEditRefusal::NotMappable { .. },
+            ) => "drawing_edit_not_writable",
+            UnderlayRefusal::NotWritten(..)
+            | UnderlayRefusal::Dwg(..)
+            | UnderlayRefusal::UnitsRequired
+            | UnderlayRefusal::Dxf { .. }
+            | UnderlayRefusal::File { .. } => "drawing_source_unavailable",
+        },
+        UnderlayExportError::Worker(UnderlayWorkerError::Read(UnderlayReadError::Cancelled)) => {
+            "request_cancelled"
+        }
+        UnderlayExportError::Worker(_) => "drawing_worker_failed",
+        UnderlayExportError::SameAsSource(..)
+        | UnderlayExportError::Publish(
+            ExportTransactionError::TargetChanged { .. }
+            | ExportTransactionError::OriginalPreserved { .. },
+        ) => "drawings_target_exists",
+        UnderlayExportError::Io(..) | UnderlayExportError::Publish(..) => "drawings_write_failed",
     }
 }
 

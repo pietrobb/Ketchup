@@ -125,7 +125,7 @@ fn write(input: &UnderlayWriteInput) -> Result<UnderlayWriteOutcome, UnderlayRef
     // refusal of the whole drawing (review 2026-10-29 CD-71).
     let written = if to_dwg {
         let dwg = ketchup_dwg::dxf_to_dwg_leaving_out_custom_records(&written)
-            .map_err(|error| UnderlayRefusal::Dwg(error.into()))?;
+            .map_err(|error| UnderlayRefusal::DwgWrite(error.into()))?;
         skipped.extend(
             dwg.left_out
                 .into_iter()
