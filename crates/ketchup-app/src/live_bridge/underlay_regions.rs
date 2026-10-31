@@ -547,6 +547,7 @@ pub(super) fn region_search(
         segments,
         tolerance: (tolerance / underlay.scale()).to_bits(),
         whole,
+        owner: cache_owner(),
     })
 }
 
@@ -599,11 +600,18 @@ fn found_regions(search: Search) -> Result<Vec<Region>, &'static str> {
     let mut found = FOUND
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let kept = FOUND_KEPT
-        + FLAT_DRAWINGS.load(std::sync::atomic::Ordering::Relaxed)
-        + FOLLOWED_SEARCHES.load(std::sync::atomic::Ordering::Relaxed);
-    while found.len() >= kept {
-        drop(found.remove(0));
+    let owner = search.owner;
+    let kept = FOUND_KEPT + kept_for(&FLAT_DRAWINGS, owner) + kept_for(&FOLLOWED_SEARCHES, owner);
+    while found
+        .iter()
+        .filter(|(earlier, _)| earlier.owner == owner)
+        .count()
+        >= kept
+    {
+        let Some(oldest) = found.iter().position(|(earlier, _)| earlier.owner == owner) else {
+            break;
+        };
+        drop(found.remove(oldest));
     }
     found.push((search, regions.clone()));
     drop(found);
@@ -611,12 +619,44 @@ fn found_regions(search: Search) -> Result<Vec<Region>, &'static str> {
 }
 
 /// What regions were found in: the pieces in the underlay's millimetres, the join
-/// tolerance there and whether figures were wanted.
+/// tolerance there, whether figures were wanted and whose cache it is in.
 #[derive(Clone, PartialEq)]
 pub(super) struct Search {
     segments: Vec<[[f64; 2]; 2]>,
     tolerance: u64,
     whole: bool,
+    owner: u64,
+}
+
+/// Whose searches [`FOUND`] keeps apart: the app has one cache; tests, run side by side,
+/// one each, or one test's searches pushed out the searches another counted on.
+#[cfg(not(test))]
+fn cache_owner() -> u64 {
+    0
+}
+
+#[cfg(test)]
+fn cache_owner() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    CACHE_OWNER.with(|owner| {
+        *owner.get_or_init(|| NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    })
+}
+
+/// The count `kept` holds for the caller's cache.
+fn kept_for(kept: &std::sync::Mutex<std::collections::BTreeMap<u64, usize>>, owner: u64) -> usize {
+    kept.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&owner)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// Sets the count `kept` holds for the caller's cache.
+fn keep(kept: &std::sync::Mutex<std::collections::BTreeMap<u64, usize>>, count: usize) {
+    kept.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(cache_owner(), count);
 }
 
 /// The regions a search found, or why it found none.
@@ -628,21 +668,23 @@ const FOUND_KEPT: usize = 4;
 /// The drawings lying flat whose regions a click of Pull area waits for at once: [`FOUND`]
 /// keeps one search more for each, or with a plan per floor each search found pushed out
 /// another and the click waited for ever (review 2026-10-26 UO-40).
-static FLAT_DRAWINGS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static FLAT_DRAWINGS: std::sync::Mutex<std::collections::BTreeMap<u64, usize>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 /// Keeps the regions of `count` drawings lying flat found together.
 pub(crate) fn keep_found_for(count: usize) {
-    FLAT_DRAWINGS.store(count, std::sync::atomic::Ordering::Relaxed);
+    keep(&FLAT_DRAWINGS, count);
 }
 
 /// The areas of the window's program that follow a drawing: [`FOUND`] keeps one search
 /// more for each, or with areas found in more ways than it kept each move of the drawing
 /// found all their regions again (review 2026-10-29 UO-40).
-static FOLLOWED_SEARCHES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static FOLLOWED_SEARCHES: std::sync::Mutex<std::collections::BTreeMap<u64, usize>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 /// Keeps the regions of `count` areas that follow a drawing found together.
 pub(super) fn keep_found_for_followed(count: usize) {
-    FOLLOWED_SEARCHES.store(count, std::sync::atomic::Ordering::Relaxed);
+    keep(&FOLLOWED_SEARCHES, count);
 }
 
 /// The regions of the latest searches, or why they were not found, the last used last:
@@ -788,6 +830,7 @@ thread_local! {
     static HOLD_AHEAD: std::cell::RefCell<Option<std::sync::Arc<HoldAhead>>> =
         const { std::cell::RefCell::new(None) };
     static SEARCHED_HERE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static CACHE_OWNER: std::cell::OnceCell<u64> = const { std::cell::OnceCell::new() };
 }
 
 /// Forgets what `search` found.
@@ -808,11 +851,14 @@ pub(crate) fn searches_on_this_thread() -> usize {
 /// Runs `search` on a thread of its own.
 fn spawn_ahead(search: impl FnOnce() + Send + 'static) {
     #[cfg(test)]
-    let hold = HOLD_AHEAD.with(|hold| hold.borrow().clone());
+    let (hold, owner) = (HOLD_AHEAD.with(|hold| hold.borrow().clone()), cache_owner());
     std::thread::spawn(move || {
         #[cfg(test)]
-        if let Some(hold) = hold {
-            hold.wait();
+        {
+            CACHE_OWNER.with(|mine| mine.set(owner).ok());
+            if let Some(hold) = hold {
+                hold.wait();
+            }
         }
         search();
     });
@@ -828,6 +874,7 @@ fn shown_search(lines: &UnderlayLines, layers: &[usize], tolerance: u64) -> Sear
             .collect(),
         tolerance,
         whole: false,
+        owner: cache_owner(),
     }
 }
 
