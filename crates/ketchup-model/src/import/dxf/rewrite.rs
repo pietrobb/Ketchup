@@ -1227,14 +1227,20 @@ impl<'a> Drawing<'a> {
             .position(|index| self.pairs[*index].code >= 1000)
             .map_or(&indices[..], |end| &indices[..end]);
         let code_of = |index: usize| self.pairs[index].code;
+        // A multi-line attribute's text follows group 101 with the groups of an MTEXT.
+        let embedded = matches!(record, "ATTRIB" | "ATTDEF")
+            .then(|| own.iter().position(|index| code_of(*index) == 101))
+            .flatten();
+        let mtext = Rules::of("MTEXT").ok_or_else(not_mappable)?;
+        let main = embedded.map_or(own, |start| &own[..start]);
         let number_of = |code: i32| -> Result<Option<f64>, EditedDxfError> {
-            own.iter()
+            main.iter()
                 .find(|index| code_of(**index) == code)
                 .map(|index| self.number(*index))
                 .transpose()
         };
         let dimension_kind = || -> Result<i64, EditedDxfError> {
-            own.iter()
+            main.iter()
                 .find(|index| code_of(**index) == 70)
                 .map_or(Ok(0), |index| self.integer(*index))
         };
@@ -1248,13 +1254,18 @@ impl<'a> Drawing<'a> {
             .iter()
             .map(|index| Out::Raw(*index))
             .collect::<Vec<_>>();
-        let position = |code: i32| own.iter().position(|index| code_of(*index) == code);
+        let position = |code: i32| main.iter().position(|index| code_of(*index) == code);
         let mut skip = 0;
         for (at, &index) in own.iter().enumerate() {
             if skip > 0 {
                 skip -= 1;
                 continue;
             }
+            let rules = if embedded.is_some_and(|start| at > start) {
+                &mtext
+            } else {
+                &rules
+            };
             let code = code_of(index);
             let next = own
                 .get(at + 1)
@@ -1287,6 +1298,15 @@ impl<'a> Drawing<'a> {
                 out[at] = Out::Set(index, number(angle));
             }
         }
+        // A mirrored text slants the other way.
+        if mirrored
+            && matches!(record, "TEXT" | "ATTRIB" | "ATTDEF")
+            && let Some(at) = position(51)
+        {
+            let slant = (0.0 - self.number(own[at])?).rem_euclid(360.0);
+            out[at] = Out::Set(own[at], number(slant));
+        }
+        self.map_extended_data(&indices[own.len()..], &mut out[own.len()..], &mapping.map)?;
         if rules.dimension
             && let Some(at) = position(42)
             && !matches!(dimension_kind()? & 7, 2 | 5)
@@ -1355,6 +1375,49 @@ impl<'a> Drawing<'a> {
             out.insert(at + 1, pair);
         }
         Ok(out)
+    }
+
+    /// The extended data `xdata` mapped by `map`, of the world, into `out`: a world point
+    /// (1011) moves, a displacement (1012) turns and scales, a direction (1013) only turns,
+    /// and a distance (1041) and a scale factor (1042) scale (review 2026-10-29 CD-70).
+    fn map_extended_data(
+        &self,
+        xdata: &[usize],
+        out: &mut [Out],
+        map: &Affine,
+    ) -> Result<(), EditedDxfError> {
+        let [[a, b, _], [c, d, _]] = *map;
+        let scale = (a * d - b * c).abs().sqrt();
+        let mut skip = false;
+        for (at, &index) in xdata.iter().enumerate() {
+            if std::mem::take(&mut skip) {
+                continue;
+            }
+            let code = self.pairs[index].code;
+            match code {
+                1011..=1013 => {
+                    let next = xdata
+                        .get(at + 1)
+                        .copied()
+                        .filter(|next| self.pairs[*next].code == code + 10)
+                        .ok_or(DxfEditRefusal::Malformed)?;
+                    let point = [self.number(index)?, self.number(next)?];
+                    let turned = [a * point[0] + b * point[1], c * point[0] + d * point[1]];
+                    let [x, y] = match code {
+                        1011 => apply(map, point),
+                        1012 => turned,
+                        _ if scale > 0.0 => turned.map(|value| value / scale),
+                        _ => point,
+                    };
+                    out[at] = Out::Set(index, number(x));
+                    out[at + 1] = Out::Set(next, number(y));
+                    skip = true;
+                }
+                1041 | 1042 => out[at] = Out::Set(index, number(self.number(index)? * scale)),
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     /// The groups of a HATCH or MPOLYGON, `own`, mapped by `map` into `out`, by where they

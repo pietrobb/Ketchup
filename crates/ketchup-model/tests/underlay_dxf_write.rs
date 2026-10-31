@@ -497,6 +497,89 @@ fn moved_entities_of_extrusion_minus_z_are_written_where_they_now_lie() {
     assert_same(&drawn(&again.lines, &again.layers), &drawn(&edited, names));
 }
 
+/// The number of group `code` in `record`, the `nth` of them.
+fn group(record: &str, code: &str, nth: usize) -> f64 {
+    let lines = record.lines().collect::<Vec<_>>();
+    let values = lines
+        .chunks(2)
+        .filter(|pair| pair[0] == code)
+        .map(|pair| pair[1].trim().parse::<f64>().unwrap())
+        .collect::<Vec<_>>();
+    *values
+        .get(nth)
+        .unwrap_or_else(|| panic!("no group {code} #{nth} in {record}"))
+}
+
+/// Review 2026-10-29 CD-70: the MTEXT inside a multi-line attribute had its direction
+/// mapped as a point; the world points, displacements, directions and distances of
+/// extended data were left as read; and a mirrored text kept its slant.
+#[test]
+fn moved_entities_map_embedded_text_extended_data_and_slant() {
+    let entities = ENTITIES
+        .replace(
+            "100\nAcDbAttribute\n2\nNAME\n70\n0\n",
+            "100\nAcDbAttribute\n2\nNAME\n70\n0\n101\nEmbedded Object\n\
+             10\n2100\n20\n100\n30\n0\n40\n100\n41\n800\n46\n0\n71\n1\n72\n5\n\
+             11\n1\n21\n0\n31\n0\n",
+        )
+        .replace(
+            "10\n0\n20\n0\n30\n0\n11\n4000\n21\n0\n31\n0\n",
+            "10\n0\n20\n0\n30\n0\n11\n4000\n21\n0\n31\n0\n1001\nKETCHUP\n\
+             1010\n7\n1020\n7\n1030\n0\n1011\n100\n1021\n0\n1031\n0\n\
+             1012\n10\n1022\n0\n1032\n0\n1013\n1\n1023\n0\n1033\n0\n\
+             1040\n3\n1041\n50\n1042\n2\n",
+        )
+        .replace("1\nWC 1.02\n", "1\nWC 1.02\n51\n15\n");
+    let source = format!("{HEADER}{TABLES}{BLOCKS}{entities}0\nEOF\n");
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let turn = similarity([1000.0, 0.0], 90.0, 2.0, [0.0, 0.0], None);
+    let mirror = similarity(
+        [0.0, 0.0],
+        0.0,
+        1.0,
+        [0.0, 0.0],
+        Some([[0.0, 5000.0], [1.0, 5000.0]]),
+    );
+    let mut edits = UnderlayEdits::default();
+    edits.moved_objects.insert(id_of(lines, 0xA0), turn);
+    edits.moved_objects.insert(id_of(lines, 0xA3), mirror);
+    edits.moved_objects.insert(id_of(lines, 0xA4), turn);
+
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let text = String::from_utf8(written).unwrap();
+    let [[a, b, x], [c, d, y]] = turn;
+    let close = |got: f64, wanted: f64| assert!((got - wanted).abs() < 1e-6, "{got} ≠ {wanted}");
+    // The attribute's embedded text: its point moved, its direction only turned.
+    let attribute = entity(&text, "A5");
+    close(group(&attribute, "10", 1), a * 2100.0 + b * 100.0 + x);
+    close(group(&attribute, "20", 1), c * 2100.0 + d * 100.0 + y);
+    close(group(&attribute, "11", 0), a);
+    close(group(&attribute, "21", 0), c);
+    close(group(&attribute, "40", 1), 200.0);
+    close(group(&attribute, "41", 0), 1600.0);
+    // The line's extended data.
+    let line = entity(&text, "A0");
+    close(group(&line, "1010", 0), 7.0);
+    close(group(&line, "1011", 0), a * 100.0 + x);
+    close(group(&line, "1021", 0), c * 100.0 + y);
+    close(group(&line, "1012", 0), a * 10.0);
+    close(group(&line, "1022", 0), c * 10.0);
+    close(group(&line, "1013", 0), a / 2.0);
+    close(group(&line, "1023", 0), c / 2.0);
+    close(group(&line, "1040", 0), 3.0);
+    close(group(&line, "1041", 0), 100.0);
+    close(group(&line, "1042", 0), 4.0);
+    // The mirrored text slants the other way.
+    close(group(&entity(&text, "A3"), "51", 0), 345.0);
+}
+
 /// Groups, draw order and the extension dictionary of the line A0, which has data.
 const OBJECTS: &str = concat!(
     "0\nSECTION\n2\nOBJECTS\n",
