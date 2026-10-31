@@ -415,9 +415,9 @@ struct Sheet {
 /// Guillotine packing (best short side fit, the shorter leftover split off)
 /// on sheets of the largest stock size; each sheet then shrinks to the
 /// smallest stock size its pieces fit. Each piece takes its size plus one
-/// kerf, the usable sheet one kerf more than its trimmed size. A piece as
-/// long or as wide as a stock sheet (the whole sheet, or one cut only across)
-/// keeps that sheet's factory edges along that side: such sheets are not
+/// kerf, the usable sheet one kerf more than its trimmed size. A piece longer
+/// or wider than a stock sheet less its trim at both ends, up to the whole
+/// sheet, keeps that sheet's factory edge along that side: such sheets are not
 /// trimmed there and take only pieces spanning them the same way.
 fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -> Vec<Layout> {
     let mut sizes: Vec<[f64; 2]> = stock.sizes_mm.iter().map(|s| [s[0], s[1]]).collect();
@@ -461,13 +461,16 @@ fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -
                 [l + kerf, w + kerf]
             }
         };
-        // The sheet axes the piece spans whole; without trim nothing differs.
+        // The sheet axes the piece spans: longer there than the sheet less its trim at
+        // both ends, but not than the sheet, so it keeps the factory edge at its start
+        // and is cut to length at most (review 2026-10-29 PG-63: 2 481 to 2 499 of a
+        // 2 500 sheet trimmed 10 were not planned); without trim nothing differs.
         let spans = |size: [f64; 2], turned: bool| {
             let [w, h] = footprint(turned);
-            [
-                trim > EPS && (w - kerf - size[0]).abs() < EPS,
-                trim > EPS && (h - kerf - size[1]).abs() < EPS,
-            ]
+            let spanned = |piece: f64, sheet: f64| {
+                trim > EPS && piece > sheet - 2.0 * trim + EPS && piece <= sheet + EPS
+            };
+            [spanned(w - kerf, size[0]), spanned(h - kerf, size[1])]
         };
         // (short side leftover, long side leftover, sheet, free rect, turned)
         let consider = |sheets: &[Sheet]| {

@@ -331,8 +331,9 @@ fn assert_cuttable_keeping_factory_edges(layout: &Layout, kerf: f64, trim: f64) 
     for (index, piece) in layout.pieces.iter().enumerate() {
         for axis in 0..2 {
             let (at, size) = (piece.at_mm[axis], piece.size_mm[axis]);
-            if (size - stock[axis]).abs() < 1e-6 {
+            if size > stock[axis] - 2.0 * trim + 1e-6 {
                 assert!(at.abs() < 1e-6, "{piece:?}");
+                assert!(size <= stock[axis] + 1e-6, "{piece:?} on {stock:?}");
             } else {
                 assert!(at >= trim - 1e-6, "{piece:?}");
                 assert!(
@@ -365,6 +366,10 @@ fn a_sheathed_buildup_is_cut_from_whole_sheets_with_joints_on_studs() {
         (4000.0, 2500.0, "", 0.0),
         (2500.0, 2500.0, "", 0.0),
         (3000.0, 2400.0, "(1000, 800, 900, 1200)", 900.0 * 1200.0),
+        // Review 2026-10-29 PG-63: a board longer than the sheet less its trim at both
+        // ends, 2 481 to 2 499, was not planned; it keeps the factory edge at one end.
+        (3000.0, 2490.0, "", 0.0),
+        (2500.0, 2481.0, "(1000, 800, 900, 1200)", 900.0 * 1200.0),
     ] {
         let source = sheathed_wall(length, height, openings);
         let model = ketchup_program::evaluate("cutting.star", &source, &BTreeMap::new())
