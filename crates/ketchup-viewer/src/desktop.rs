@@ -1,7 +1,8 @@
 //! Desktop start shared by the Windows binary and the macOS app:
 //! `ketchup-viewer [file]` opens a window, `--verify-open <file>` only reads
 //! the file and prints what it holds (installers use it to prove the
-//! installed Viewer reads packages). Files the system hands over while the
+//! installed Viewer reads packages), `--benchmark <file>` prints how fast it
+//! opens, draws and picks the package. Files the system hands over while the
 //! Viewer runs (macOS Finder, "Open with") arrive through [`OpenRequests`].
 
 use crate::app::ViewerApp;
@@ -51,6 +52,9 @@ pub fn main(requests: OpenRequests) -> ExitCode {
     let first = args.next();
     if first.as_deref() == Some(std::ffi::OsStr::new("--verify-open")) {
         return verify_open(args.next().map(PathBuf::from));
+    }
+    if first.as_deref() == Some(std::ffi::OsStr::new("--benchmark")) {
+        return benchmark(args.next().map(PathBuf::from));
     }
     if let Some(path) = first {
         requests.push(PathBuf::from(path));
@@ -151,6 +155,49 @@ fn verify_open(path: Option<PathBuf>) -> ExitCode {
         env!("CARGO_PKG_VERSION")
     );
     ExitCode::SUCCESS
+}
+
+/// Frames orbited by `--benchmark`, at a common laptop window size.
+const BENCHMARK_FRAMES: usize = 300;
+const BENCHMARK_SIZE: [u32; 2] = [1600, 900];
+
+/// `--benchmark <file>`: open, draw and pick on the GPU the window would
+/// use, and print the timings (`crate::app::benchmark`).
+fn benchmark(path: Option<PathBuf>) -> ExitCode {
+    let Some(path) = path else {
+        eprintln!("usage: ketchup-viewer --benchmark <file.ketchup-view>");
+        return ExitCode::FAILURE;
+    };
+    let instance = wgpu::Instance::default();
+    let Ok(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        ..Default::default()
+    })) else {
+        eprintln!("viewer.benchmark.gpu: no GPU adapter");
+        return ExitCode::FAILURE;
+    };
+    let device = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()));
+    let Ok((device, queue)) = device else {
+        eprintln!("viewer.benchmark.gpu: the GPU device could not be created");
+        return ExitCode::FAILURE;
+    };
+    let info = adapter.get_info();
+    println!(
+        "Ketchup Viewer {} on {} ({:?})",
+        env!("CARGO_PKG_VERSION"),
+        info.name,
+        info.backend
+    );
+    match crate::app::benchmark::run(&device, &queue, &path, BENCHMARK_SIZE, BENCHMARK_FRAMES) {
+        Ok(result) => {
+            print!("{}", result.report());
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 #[cfg(test)]

@@ -35,6 +35,9 @@ wgpu = { version = "25.0.2", default-features = false, features = ["vulkan", "gl
 sys-locale = { version = "0.3", features = ["js"] }
 wgpu = { version = "25.0.2", default-features = false, features = ["webgpu", "webgl"] }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = "0.4.0"
+
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 rfd = "0.15.4"
 eframe = { version = "0.32.3", default-features = false, features = ["accesskit"] }
