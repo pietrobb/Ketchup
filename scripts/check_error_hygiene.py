@@ -16,6 +16,8 @@ Two forms are counted in production source (crates/*/src, test modules and
   assumption broke when it fires.
 - string_result: `Result<_, String>` (or `Ok::<_, String>`) makes every caller unable to tell one
   failure from another.
+- str_result: `Result<_, &'static str>` (or any `&str`) is the same text error as a
+  constant (review 2026-10-29 TST-43: it rose from 166 to 179 unseen).
 - stringified_cause: `map_err(|e| e.to_string())` or `map_err(ToString::to_string)`
   flattens a typed error into text, so the caller can no longer react to its kind.
 - debug_formatted: `format!("{error:?}")` or `format!("{:?}", error)` turns an
@@ -68,12 +70,17 @@ CONTENT_FREE = {
     "ed25519_dalek::SignatureError",
 }
 DISCARD = re.compile(r"map_err\(\s*(?:move\s*)?\|\s*_\w*\s*(?::\s*([^|]+?)\s*)?\|")
+# The same drop without map_err (review 2026-10-26 TST-43): `.ok().ok_or(E)`,
+# `.or(Err(E))` and a match arm `Err(_) => Err(E)` / `Err(_) => return Err(E)`.
+DISCARD_OTHERWISE = re.compile(
+    r"\.ok\(\)\s*\.\s*ok_or(?:_else)?\(|\.or\(\s*Err\(|\bErr\(\s*_\s*\)\s*=>\s*(?:return\s+)?Err\(")
 STRING = re.compile(r"""Err\(\s*"(?:[^"\\]|\\.)*"\s*\.\s*(?:to_owned|to_string|into)\(\)\s*\)""")
 UNREACHABLE = re.compile(r"\bunreachable!\s*\(")
 SILENT_UNREACHABLE = re.compile(r"\bunreachable!\s*\(\s*\)")
-# The Ok type may itself be generic up to two levels deep: Result<Vec<Option<T>>, String>.
-# A turbofish `Ok::<_, String>(...)` names the same text error type.
-STRING_RESULT = re.compile(r"\b(?:Result|(?:Ok|Err)::)<(?:[^<>,]|<[^<>]*(?:<[^<>]*>[^<>]*)*>)+,\s*String\s*>")
+# `Result<…, E>`, or the turbofish `Ok::<_, E>(...)` naming the same error type; the
+# brackets are followed to the end, so any Ok type (generic, tuple, closure) is seen.
+RESULT_OPEN = re.compile(r"\b(?:Result|(?:Ok|Err)::)<")
+STR_ERROR = re.compile(r"&\s*(?:'\w+\s+)?str")
 STRINGIFIED_CAUSE = re.compile(
     r"map_err\(\s*(?:(?:move\s*)?\|\s*(\w+)\s*\|\s*\1\s*\.\s*to_string\(\)"
     r"|(?:std::string::)?ToString::to_string)\s*\)")
@@ -98,6 +105,34 @@ TEST_MODULE = re.compile(
     re.MULTILINE | re.DOTALL)
 
 
+def result_error_types(text: str) -> list[str]:
+    """The error type of every two-argument `Result<T, E>` (and `Ok::<T, E>`) in `text`."""
+    found = []
+    for opening in RESULT_OPEN.finditer(text):
+        depth, comma, at = 0, None, opening.end()
+        while at < len(text):
+            char = text[at]
+            if text.startswith("->", at):
+                at += 2
+                continue
+            if char in "<([":
+                depth += 1
+            elif char in ")]":
+                depth -= 1
+            elif char == ">":
+                if depth == 0:
+                    break
+                depth -= 1
+            elif char == "," and depth == 0:
+                comma = at
+            elif char in ";{}":
+                break
+            at += 1
+        if comma is not None and at < len(text) and text[at] == ">":
+            found.append(text[comma + 1:at].strip())
+    return found
+
+
 def content_free(type_text: str) -> bool:
     path = type_text.split("<", 1)[0].strip()
     return any(path == entry or path.endswith("::" + entry) for entry in CONTENT_FREE)
@@ -107,10 +142,13 @@ def file_counts(text: str) -> dict[str, int]:
     text = TEST_MODULE.sub("", text)
     discards = sum(1 for match in DISCARD.finditer(text)
                    if match.group(1) is None or not content_free(match.group(1)))
+    discards += len(DISCARD_OTHERWISE.findall(text))
+    errors = result_error_types(text)
     return {"discard": discards, "string": len(STRING.findall(text)),
             "unreachable": len(UNREACHABLE.findall(text)),
             "silent_unreachable": len(SILENT_UNREACHABLE.findall(text)),
-            "string_result": len(STRING_RESULT.findall(text)),
+            "string_result": sum(1 for error in errors if error in ("String", "std::string::String")),
+            "str_result": sum(1 for error in errors if STR_ERROR.fullmatch(error)),
             "stringified_cause": len(STRINGIFIED_CAUSE.findall(text)),
             "debug_formatted": len(DEBUG_FORMATTED.findall(text)),
             "stringified_variant": len(STRINGIFIED_VARIANT.findall(text)),
