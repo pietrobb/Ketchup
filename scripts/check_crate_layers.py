@@ -352,7 +352,8 @@ LINT_ALLOW = re.compile(r"#!?\[allow\(")
 CASTS_AND_ALLOWS = {
     "ketchup-analysis allows": 1,
     "ketchup-analysis casts": 6,
-    "ketchup-app allows": 10,
+    # Includes the audited WSAPoll / poll of live_bridge::transport::wait_readable (SEC-61).
+    "ketchup-app allows": 11,
     "ketchup-app casts": 218,
     "ketchup-application allows": 9,
     "ketchup-application casts": 29,

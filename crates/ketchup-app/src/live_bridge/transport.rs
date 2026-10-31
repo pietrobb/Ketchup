@@ -304,10 +304,11 @@ fn remaining(deadline: Instant) -> io::Result<Duration> {
 }
 
 /// Waits for bytes and reads those that have arrived, giving up when
-/// `abandoned` says so or at `deadline`. The socket is polled nonblocking,
+/// `abandoned` says so or at `deadline`. The socket is read nonblocking,
 /// never given a read timeout: on Windows a recv whose timeout fires just as
 /// bytes arrive can lose them (it fails with ERROR_IO_PENDING, and the next
-/// read starts past the lost bytes).
+/// read starts past the lost bytes). Between reads it waits until bytes
+/// arrive, at most [`STOP_POLL`], so they are read at once (SEC-61).
 pub(super) fn read_some(
     stream: &mut TcpStream,
     buffer: &mut [u8],
@@ -315,7 +316,6 @@ pub(super) fn read_some(
     abandoned: impl Fn() -> bool,
 ) -> io::Result<usize> {
     stream.set_nonblocking(true)?;
-    let mut pause = Duration::from_millis(1);
     let read = loop {
         if abandoned() {
             break Err(io::ErrorKind::ConnectionAborted.into());
@@ -328,8 +328,11 @@ pub(super) fn read_some(
             Ok(0) => break Err(io::ErrorKind::UnexpectedEof.into()),
             Ok(count) => break Ok(count),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                std::thread::sleep(left.map_or(pause, |left| left.min(pause)));
-                pause = (pause * 2).min(STOP_POLL);
+                if let Err(error) =
+                    wait_readable(stream, left.map_or(STOP_POLL, |left| left.min(STOP_POLL)))
+                {
+                    break Err(error);
+                }
             }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e) => break Err(e),
@@ -337,6 +340,46 @@ pub(super) fn read_some(
     };
     stream.set_nonblocking(false)?;
     read
+}
+
+/// Waits at most `time` until `stream` has bytes to read or is closed, without
+/// reading them.
+#[allow(unsafe_code)]
+fn wait_readable(stream: &TcpStream, time: Duration) -> io::Result<()> {
+    let milliseconds = i32::try_from(time.as_millis().max(1)).unwrap_or(i32::MAX);
+    #[cfg(windows)]
+    let ready = {
+        use std::os::windows::io::AsRawSocket;
+        use windows_sys::Win32::Networking::WinSock::{
+            POLLRDNORM, SOCKET, SOCKET_ERROR, WSAGetLastError, WSAPOLLFD, WSAPoll,
+        };
+        let mut watched = WSAPOLLFD {
+            fd: stream.as_raw_socket() as SOCKET,
+            events: POLLRDNORM,
+            revents: 0,
+        };
+        // SAFETY: one valid WSAPOLLFD for a socket `stream` keeps open.
+        match unsafe { WSAPoll(&raw mut watched, 1, milliseconds) } {
+            // SAFETY: no arguments; reads this thread's last socket error.
+            SOCKET_ERROR => Err(io::Error::from_raw_os_error(unsafe { WSAGetLastError() })),
+            _ => Ok(()),
+        }
+    };
+    #[cfg(unix)]
+    let ready = {
+        use std::os::fd::AsRawFd;
+        let mut watched = libc::pollfd {
+            fd: stream.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one valid pollfd for a descriptor `stream` keeps open.
+        match unsafe { libc::poll(&raw mut watched, 1, milliseconds) } {
+            -1 => Err(io::Error::last_os_error()),
+            _ => Ok(()),
+        }
+    };
+    ready
 }
 
 fn read_until(
@@ -949,6 +992,49 @@ mod tests {
             await_response(&server, &receiver, deadline, &stop).unwrap(),
             Awaited::Ended
         ));
+    }
+
+    /// Review 2026-10-29 SEC-61: a request that comes after the connection
+    /// was idle is read as it arrives, not at the next of polls 25 ms apart.
+    /// The byte is sent once the reader has waited six times.
+    #[test]
+    #[ignore = "perf: release timing budget, runs nightly"]
+    fn perf_bytes_that_arrive_after_a_pause_are_read_at_once() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let (idle, idled) = mpsc::channel::<()>();
+        let sender = std::thread::spawn(move || {
+            let mut sent = Vec::new();
+            while idled.recv().is_ok() {
+                sent.push(Instant::now());
+                client.write_all(b"x").unwrap();
+            }
+            sent
+        });
+        let mut read = Vec::new();
+        for _ in 0..15 {
+            let waits = std::cell::Cell::new(0);
+            let mut byte = [0_u8; 1];
+            let count = read_some(&mut server, &mut byte, None, || {
+                waits.set(waits.get() + 1);
+                if waits.get() == 6 {
+                    idle.send(()).unwrap();
+                }
+                false
+            });
+            assert_eq!(count.unwrap(), 1);
+            read.push(Instant::now());
+        }
+        drop(idle);
+        let sent = sender.join().unwrap();
+        let mut late: Vec<_> = read
+            .iter()
+            .zip(&sent)
+            .map(|(read, sent)| read.saturating_duration_since(*sent))
+            .collect();
+        late.sort();
+        assert!(late[late.len() / 2] < Duration::from_millis(5), "{late:?}");
     }
 
     #[test]
