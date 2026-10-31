@@ -122,6 +122,10 @@ pub struct QuoteLine {
     pub basis: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// What the quantity holds that its basis does not say: the pieces of a material
+    /// with stock that no stock holds, priced at their blanks (review 2026-10-29 PG-66).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// Something counted that the quote could not price.
@@ -151,6 +155,8 @@ pub struct Quote {
 struct Amounts {
     by_unit: BTreeMap<Unit, f64>,
     basis: Option<&'static str>,
+    /// Pieces of a material with stock that no stock holds, counted at their blanks.
+    at_blanks: Vec<String>,
     /// Why a unit it could be counted in has no quantity.
     missing: BTreeMap<Unit, &'static str>,
 }
@@ -213,10 +219,15 @@ fn items(bom: &Bom) -> BTreeMap<(ItemKind, String), Amounts> {
         // piece no stock holds is still bought, at its blank.
         let pieces = if stocked.contains(row.material.as_str()) {
             amounts.basis = Some("stock");
-            row.parts
+            let at_blanks = row
+                .parts
                 .iter()
                 .filter(|part| unplaced.contains(part.as_str()))
-                .count()
+                .cloned()
+                .collect::<Vec<_>>();
+            let count = at_blanks.len();
+            amounts.at_blanks.extend(at_blanks);
+            count
         } else {
             amounts.basis = Some("blanks");
             row.count
@@ -326,6 +337,12 @@ pub fn quote(model: &ProgramModel, bom: &Bom) -> Option<Quote> {
             amount: round(quantity * price.value, 2),
             basis: amounts.basis.map(str::to_owned),
             source: price.source.clone(),
+            note: (!amounts.at_blanks.is_empty()).then(|| {
+                format!(
+                    "no stock holds {}, priced at its blank",
+                    amounts.at_blanks.join(", ")
+                )
+            }),
         });
     }
     let total = round(lines.iter().map(|line| line.amount).sum(), 2);
@@ -377,7 +394,7 @@ pub fn quote_table(quote: &Quote) -> Table {
                 currency(),
                 Cell::Text(line.basis.clone().unwrap_or_default()),
                 Cell::Text(line.source.clone().unwrap_or_default()),
-                empty(),
+                Cell::Text(line.note.clone().unwrap_or_default()),
             ]
         })
         .collect();
@@ -385,10 +402,15 @@ pub fn quote_table(quote: &Quote) -> Table {
     total[1] = Cell::Text("total".to_owned());
     total[5] = Cell::Decimal(quote.total, 2);
     total[6] = currency();
+    // The prices are summed as given: no VAT is added to them (review 2026-10-29 PG-66).
+    let mut note = "VAT not added".to_owned();
     if !quote.unpriced.is_empty() {
-        let note = format!("not in the total: {} without a price", quote.unpriced.len());
-        total[9] = Cell::Text(note);
+        note += &format!(
+            "; not in the total: {} without a price",
+            quote.unpriced.len()
+        );
     }
+    total[9] = Cell::Text(note);
     rows.push(total);
     for item in &quote.unpriced {
         let mut row = vec![empty(); 10];

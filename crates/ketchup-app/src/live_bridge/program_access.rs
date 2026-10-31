@@ -576,8 +576,9 @@ fn quote_rows(quote: &ketchup_program::quote::Quote) -> Vec<Value> {
         row["currency"] = json!(currency);
         row
     });
+    // The prices are summed as given, no VAT added (review 2026-10-29 PG-66).
     let total = std::iter::once(json!({"total": quote.total, "currency": currency,
-        "unpriced_count": quote.unpriced.len()}));
+        "unpriced_count": quote.unpriced.len(), "vat_added": false}));
     let unpriced = quote.unpriced.iter().map(|item| json!({"unpriced": item}));
     let unused = quote
         .unused_prices

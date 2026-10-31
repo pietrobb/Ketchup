@@ -190,6 +190,47 @@ fn a_bad_unit_a_negative_price_or_a_second_currency_is_refused() {
     assert!(error.contains("EUR"), "{error}");
 }
 
+/// Review 2026-10-29 PG-66: a second price() of an item silently replaced the first, and
+/// a price without a currency passed beside one in EUR, in either order.
+#[test]
+fn a_second_price_of_an_item_or_a_price_without_the_currency_of_the_others_is_refused() {
+    let error = refused(
+        "price(\"KVH\", 500, \"m3\")\n\
+         price(\"KVH\", 450, \"m3\")\n",
+    );
+    assert!(error.contains("priced before"), "{error}");
+    assert!(error.contains("500"), "{error}");
+    for source in [
+        "price(\"KVH\", 500, \"m3\")\nprice(\"OSB\", 9, \"m2\", currency = \"EUR\")\n",
+        "price(\"KVH\", 500, \"m3\", currency = \"EUR\")\nprice(\"OSB\", 9, \"m2\")\n",
+    ] {
+        let error = refused(source);
+        assert!(error.contains("one currency"), "{error}");
+        assert!(error.contains("names none"), "{error}");
+    }
+}
+
+/// Review 2026-10-29 PG-66: a piece no stock holds was priced at its blank with nothing
+/// to say so, and nothing said the total has no VAT in it.
+#[test]
+fn a_piece_no_stock_holds_is_named_on_its_line_and_the_total_says_no_vat_was_added() {
+    let source = CABINET.replace(
+        "board(\"pane\"",
+        "board(\"osb long\", (2600, 600, 15), at = (0, 7000, 0), material = \"OSB\")\nboard(\"pane\"",
+    );
+    let quote = quote(&source).unwrap();
+    let osb = quote.lines.iter().find(|line| line.item == "OSB").unwrap();
+    // The sheet, and the long piece at its blank.
+    assert_eq!(osb.quantity, 2.0);
+    let note = osb.note.as_deref().unwrap_or_default();
+    assert!(note.contains("osb long"), "{osb:?}");
+    assert!(note.contains("blank"), "{osb:?}");
+    let csv = quote_table(&quote).csv(DecimalSeparator::Point);
+    assert!(csv.contains("osb long"), "{csv}");
+    let total = csv.lines().find(|line| line.starts_with(",total")).unwrap();
+    assert!(total.contains("VAT not added"), "{total}");
+}
+
 /// The spreadsheet: one row per priced item, the total, then what has no
 /// price and the prices that matched nothing.
 #[test]
@@ -206,7 +247,7 @@ fn the_quote_table_lists_lines_total_unpriced_and_unused_prices() {
     );
     assert_eq!(
         lines[6],
-        ",total,,,,31.5,EUR,,,not in the total: 1 without a price"
+        ",total,,,,31.5,EUR,,,VAT not added; not in the total: 1 without a price"
     );
     assert_eq!(lines[7], "material,Glass,,,,,,,,not priced: no price()");
     assert_eq!(lines[8], ",Plywood,,,,,,,,price() matches nothing counted");

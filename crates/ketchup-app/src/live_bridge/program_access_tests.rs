@@ -960,6 +960,7 @@ fn the_quote_section_lists_priced_lines_the_total_and_unpriced_items() {
     assert_eq!(rows[0]["currency"], "EUR");
     assert_eq!(rows[1]["total"], 10.37);
     assert_eq!(rows[1]["unpriced_count"], 1);
+    assert_eq!(rows[1]["vat_added"], false, "PG-66");
     assert_eq!(rows[2]["unpriced"]["item"], "Board");
     assert_eq!(rows[2]["unpriced"]["reason"], "no price()");
 }

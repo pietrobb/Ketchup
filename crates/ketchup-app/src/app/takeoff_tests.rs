@@ -586,7 +586,7 @@ fn the_quote_exports_priced_lines_and_a_program_without_prices_is_refused() {
         std::fs::read_to_string(&path).unwrap(),
         "\u{feff}kind;item;quantity;unit;unit_price;amount;currency;basis;source;note\n\
          material;Board;0,192;m2;25,5;4,9;EUR;blanks;;\n\
-         ;total;;;;4,9;EUR;;;\n"
+         ;total;;;;4,9;EUR;;;VAT not added\n"
     );
     assert!(app.digest.contains("ponuka.csv"), "{}", app.digest);
 }

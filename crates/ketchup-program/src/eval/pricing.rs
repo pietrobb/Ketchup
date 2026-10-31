@@ -35,13 +35,27 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         let source = text(source, "price source")?;
         let state = state(eval)?;
         let mut model = state.model.borrow_mut();
-        if let Some(currency) = currency {
-            match &model.currency {
-                Some(declared) if *declared != currency => anyhow::bail!(
-                    "price({item:?}): every price is in one currency; {declared} was given before, not {currency}"
-                ),
-                _ => model.currency = Some(currency),
-            }
+        // Review 2026-10-29 PG-66: a second price of an item replaced the first, and a
+        // price without a currency passed beside priced ones.
+        if let Some(earlier) = model.prices.get(item) {
+            anyhow::bail!(
+                "price({item:?}): priced before at {} per {}; give each item one price",
+                earlier.value,
+                earlier.per.as_str()
+            );
+        }
+        match (&model.currency, currency) {
+            (Some(declared), Some(currency)) if *declared != currency => anyhow::bail!(
+                "price({item:?}): every price is in one currency; {declared} was given before, not {currency}"
+            ),
+            (Some(declared), None) => anyhow::bail!(
+                "price({item:?}): every price is in one currency; {declared} was given before and this price names none"
+            ),
+            (None, Some(currency)) if !model.prices.is_empty() => anyhow::bail!(
+                "price({item:?}): every price is in one currency; this price names {currency}, an earlier one names none"
+            ),
+            (None, Some(currency)) => model.currency = Some(currency),
+            _ => {}
         }
         model
             .prices
