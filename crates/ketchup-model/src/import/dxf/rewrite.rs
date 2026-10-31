@@ -448,8 +448,13 @@ impl<'a> Drawing<'a> {
             return Err(DxfEditRefusal::Malformed.into());
         }
         for entity in &drawing.entities {
-            max_handle = max_handle.max(entity.handle);
+            // Past the handles of its VERTEX, ATTRIB and SEQEND too, not only its own.
             for pair in &pairs[entity.pairs.clone()] {
+                if matches!(pair.code, 5 | 105)
+                    && let Some(handle) = hex(value(pair))
+                {
+                    max_handle = max_handle.max(Some(handle));
+                }
                 if pair.code == 8
                     && let Some(name) = decode(value(pair))
                     && !drawing.layers.iter().any(|(known, _)| *known == name)

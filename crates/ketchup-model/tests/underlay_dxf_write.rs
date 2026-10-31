@@ -714,6 +714,52 @@ fn a_drawing_without_a_unit_is_written_in_the_unit_it_was_read_in() {
     );
 }
 
+/// Review 2026-10-29 CD-67: with a `$HANDSEED` below the drawing's handles, the next
+/// handle was found past the entities' own handles but not past those of their VERTEX,
+/// ATTRIB and SEQEND, so a copy could take the handle of a door's attribute. Every handle
+/// written is new.
+#[test]
+fn a_copy_never_takes_the_handle_of_an_attribute_vertex_or_seqend() {
+    let entities = ENTITIES
+        .replace("0\nATTRIB\n5\nA5\n", "0\nATTRIB\n5\nF00\n")
+        .replace("0\nSEQEND\n5\nA6\n", "0\nSEQEND\n5\nF01\n");
+    let header = HEADER.replace("$HANDSEED\n5\n200\n", "$HANDSEED\n5\n1\n");
+    let source = format!("{header}{TABLES}{BLOCKS}{entities}0\nEOF\n");
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let mut edits = UnderlayEdits::default();
+    for handle in [0xA0, 0xA7] {
+        edits.added.push(AddedObject::Copy {
+            of: id_of(lines, handle),
+            map: [[1.0, 0.0, 0.0], [0.0, 1.0, 5000.0]],
+        });
+    }
+
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let text = String::from_utf8(written).unwrap();
+    let mut handles = records(&text)
+        .iter()
+        .filter_map(|record| {
+            let lines = record.lines().collect::<Vec<_>>();
+            lines
+                .chunks(2)
+                .find(|pair| pair[0] == "5")
+                .map(|pair| pair[1].to_owned())
+        })
+        .collect::<Vec<_>>();
+    let count = handles.len();
+    handles.sort();
+    handles.dedup();
+    assert_eq!(handles.len(), count, "{text}");
+    assert!(handles.contains(&"F02".to_owned()), "{handles:?}");
+}
+
 /// A DXF R12 drawing: no entity has a handle. A line in paper space is not read.
 const R12: &str = concat!(
     "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n",
