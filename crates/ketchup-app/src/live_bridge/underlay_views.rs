@@ -219,7 +219,8 @@ impl LiveBridge {
 
 /// The section that makes the part `name`: each view's outline (`NAME_Vi`, its holes and
 /// frame) pulled along the axis it is seen along through the box of every view, then
-/// intersected, the first view the part and the rest its tools.
+/// intersected, the first view the part and the rest its tools. Views all seen along one
+/// axis, as when one is laid back into the plan, fail: the box they span has no depth.
 fn intersection(name: &str, views: &[String], planes: &[ViewPlane]) -> String {
     let seen = planes
         .iter()
@@ -245,7 +246,14 @@ def {name}_through(name, outline, holes, frame, tool):
     place(part, origin = (o[0] + start * z[0], o[1] + start * z[1], o[2] + start * z[2]), z = z, x = x)
     return part
 
+def {name}_seen(views):
+    z = [vec_cross(f[1], f[2]) for v, h, f in views]
+    if max([max([abs(c) for c in vec_cross(z[0], w)]) for w in z]) < 1e-9:
+        fail(\"{name}: its views are all seen along one axis, so they show no thickness; stand one of them on another plane\")
+    return z
+
 {name}_VIEWS = [{listed}]
+{name}_SEEN = {name}_seen({name}_VIEWS)
 {name}_WORLD = [[f[0][k] + p[0] * f[1][k] + p[1] * f[2][k] for k in range(3)] for v, h, f in {name}_VIEWS for p in [q[1] if type(q[0]) == \"string\" else q for q in v]]
 {name}_LOW = [min([q[k] for q in {name}_WORLD]) - 1 for k in range(3)]
 {name}_HIGH = [max([q[k] for q in {name}_WORLD]) + 1 for k in range(3)]
