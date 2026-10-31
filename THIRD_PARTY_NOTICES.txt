@@ -19,9 +19,12 @@ Source:   https://github.com/Open-Cascade-SAS/OCCT
 Copyright (c) 1991-1999 Matra Datavision
 Copyright (c) 1999-2014 OPEN CASCADE SAS
 
-OCCT is used unmodified and dynamically linked: Kecup loads the TK*.dll
-libraries at run time. You may replace them with your own build of the same
-OCCT version from the source above.
+The OCCT source is used unmodified and dynamically linked: Kecup loads the
+TK*.dll libraries at run time. Each TK*.dll is built with CORE-MATH (section 4)
+linked in, so its math functions are correctly rounded; the build script is
+scripts/windows/build-occt.ps1 of the Kecup source repository. You may replace
+the libraries with your own build of the same OCCT version from the source
+above.
 
 
 2. acadrust 0.6.4 (DWG and DXF reading and writing)
@@ -48,3 +51,14 @@ may allocate, so a program cannot run or allocate without limit. Each changed
 file carries a "Modified for Kecup" line; the list of changes and the reasons
 are in third_party/starlark/PATCH.md of the Kecup source repository:
 https://github.com/pietrobb/Ketchup/blob/main/third_party/starlark/PATCH.md
+
+
+4. CORE-MATH (correctly rounded math functions)
+-----------------------------------------------
+Files:    linked into every TK*.dll and into the Kecup programs
+License:  MIT: LICENSE-CORE-MATH-MIT.txt
+Source:   https://gitlab.inria.fr/core-math/core-math
+          commit 81a899d67953a619d703660fd9630f0554673524
+
+CORE-MATH is used unmodified, behind a small shim in third_party/crmath of the
+Kecup source repository that gives its functions the standard names.

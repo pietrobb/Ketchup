@@ -181,13 +181,54 @@ fn percent(part: f64, whole: f64) -> f64 {
     (part / whole * 1000.0).round() / 10.0
 }
 
-/// The blank of a part: its extents sorted from longest to shortest, and
-/// which local axis each became.
-fn blank(part: &Part) -> ([f64; 3], [usize; 3]) {
+/// The part attribute naming the local axis ("x", "y" or "z") a bar's length
+/// runs along (library `member()`).
+pub const LENGTH_AXIS: &str = "length_axis";
+/// The part attribute naming the local axis of a sheet's thickness, or of a
+/// bar's section side that is a layer's thickness (library `buildup()`).
+pub const THICKNESS_AXIS: &str = "thickness_axis";
+
+/// The blank of a part: its length (longest first), section or size and
+/// thickness, and which local axis each became. The axes a part names by
+/// [`LENGTH_AXIS`] or [`THICKNESS_AXIS`] come where they belong, the others
+/// longest first (review 2026-10-29 PG-61: a piece narrower than its sheet
+/// was thick, or a bar shorter than its section was wide, was grouped by the
+/// wrong size).
+fn blank(part: &Part, kind: StockKind) -> ([f64; 3], [usize; 3]) {
     let (min, max) = part.local_bounds();
     let extent: [f64; 3] = std::array::from_fn(|axis| max[axis] - min[axis]);
+    let longest_first = |axes: &mut [usize]| {
+        axes.sort_by(|left, right| extent[*right].total_cmp(&extent[*left]));
+    };
+    let named = |attribute: &str| match part.attributes.get(attribute).map(String::as_str) {
+        Some("x" | "X") => Some(0),
+        Some("y" | "Y") => Some(1),
+        Some("z" | "Z") => Some(2),
+        _ => None,
+    };
+    let others = |axis: usize| {
+        let mut rest = [(axis + 1) % 3, (axis + 2) % 3];
+        longest_first(&mut rest);
+        rest
+    };
     let mut order = [0, 1, 2];
-    order.sort_by(|left, right| extent[*right].total_cmp(&extent[*left]));
+    longest_first(&mut order);
+    match (kind, named(LENGTH_AXIS), named(THICKNESS_AXIS)) {
+        (StockKind::Lengths, Some(axis), _) => {
+            let [a, b] = others(axis);
+            order = [axis, a, b];
+        }
+        (StockKind::Lengths, None, Some(axis)) => {
+            let [a, b] = others(axis);
+            order = [a, axis, b];
+            longest_first(&mut order[1..]);
+        }
+        (StockKind::Sheets, _, Some(axis)) => {
+            let [a, b] = others(axis);
+            order = [a, b, axis];
+        }
+        _ => {}
+    }
     (order.map(|axis| extent[axis]), order)
 }
 
@@ -226,7 +267,7 @@ pub fn plans<'a>(
         let Some(stock) = model.stock.get(material) else {
             continue;
         };
-        let (dimensions, order) = blank(part);
+        let (dimensions, order) = blank(part, stock.kind);
         let section = match stock.kind {
             StockKind::Lengths => vec![dimensions[1], dimensions[2]],
             StockKind::Sheets => vec![dimensions[2]],

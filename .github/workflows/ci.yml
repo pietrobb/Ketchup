@@ -14,9 +14,12 @@ on:
 permissions:
   contents: read
 
+# A pull request's newer push replaces its older run; every commit on main
+# keeps its whole run (CI-61): its own group, so a later push neither cancels
+# it nor replaces it while it waits.
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   checks:
@@ -286,6 +289,18 @@ jobs:
             app::tests::atomic_save::interrupted_save_keeps_the_earlier_file_and_leaves_no_partial_one \
             | tee "$RUNNER_TEMP/atomic-save.log"
           grep -q "test result: ok. 1 passed" "$RUNNER_TEMP/atomic-save.log"
+      # The cutting plan, quote, CNC drawings and BTLx files must be the same
+      # bytes as on Linux and macOS, where the job without OCCT checks the same
+      # golden files (review 2026-10-29 proposal 5.1, ADR 0009).
+      - name: golden shop files on Windows
+        shell: bash
+        run: |
+          cargo test --locked -p ketchup-program --test integration -- shop_golden:: \
+            | tee "$RUNNER_TEMP/shop-golden.log"
+          grep -q "test result: ok. 1 passed" "$RUNNER_TEMP/shop-golden.log"
+          cargo test --locked -p ketchup-manufacturing --test integration -- fabrication_validation:: \
+            | tee "$RUNNER_TEMP/btlx-golden.log"
+          grep -Eq "test result: ok. [1-9][0-9]* passed" "$RUNNER_TEMP/btlx-golden.log"
       # The Python tests that drive the real CLI skip without it in the
       # checks job; here every such file runs and a skip fails (review
       # 2026-10-17 TST-2).
@@ -346,6 +361,76 @@ jobs:
         run: |
           gh release download sample-files --pattern garden-studio-exact.blender-reference.json --dir examples
           cargo test --locked --release -p ketchup-app --no-fail-fast -- --ignored garden_studio_source_parity
+
+  rust-with-occt-linux:
+    name: clippy and tests of the crates with OCCT on Linux
+    # The crates with OCCT were compiled on Windows only, so their code for
+    # the other systems broke unseen (review 2026-10-29 CI-62). The pinned
+    # OCCT 8.0.1 with CORE-MATH is built by scripts/linux/build-occt.sh and
+    # kept in the Actions cache; the binaries find it through their rpath, as
+    # the README describes for a Linux build.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      CRATES: >-
+        -p ketchup-app -p ketchup-application -p ketchup-exact -p ketchup-headless
+        -p ketchup-scheduler -p ketchup-test-gpu
+      RUSTFLAGS: -C link-arg=-Wl,-rpath,${{ github.workspace }}/third_party/occt-install-r0-v1/lib
+      # The MCP discovery directory lives in the per-user runtime directory.
+      XDG_RUNTIME_DIR: /tmp/xdg-runtime
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: runtime directory
+        run: mkdir -m 700 -p "$XDG_RUNTIME_DIR"
+      # Ninja and clang build OCCT; the file dialogs need GTK; the window's
+      # tests render on the Vulkan software rasterizer (lavapipe).
+      - name: system packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends ninja-build clang libgtk-3-dev mesa-vulkan-drivers
+      - name: OCCT from the cache
+        id: occt
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: third_party/occt-install-r0-v1
+          key: occt-8.0.1-b8f597c6-ubuntu24.04-x64-${{ hashFiles('scripts/linux/build-occt.sh', 'third_party/crmath/**') }}
+      - name: OCCT build
+        if: steps.occt.outputs.cache-hit != 'true'
+        run: |
+          git -c advice.detachedHead=false clone --quiet --depth 1 --branch V8_0_1 https://github.com/Open-Cascade-SAS/OCCT.git third_party/occt-src
+          scripts/linux/build-occt.sh
+      - name: OCCT into the cache
+        if: steps.occt.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: third_party/occt-install-r0-v1
+          key: ${{ steps.occt.outputs.cache-primary-key }}
+      - name: clippy
+        run: cargo clippy --locked $CRATES --all-targets -- -D warnings
+      # The live MCP tests launch the debug application beside its worker.
+      - name: workers, the headless CLI and the application for the tests
+        run: |
+          cargo build --locked -p ketchup-scheduler -p ketchup-headless --bins
+          cargo build --locked -p ketchup-app --bin ketchup-app
+      # The files the tests save go to KETCHUP_SAVED_FILES_DIR too, so Kečup
+      # 0.2.0 opens them in the next step.
+      - name: tests
+        env:
+          # Two OCCT test threads fit the runner's memory.
+          RUST_TEST_THREADS: 2
+          KETCHUP_SAVED_FILES_DIR: ${{ runner.temp }}/saved-files
+        # The two proofs on a hardware GPU run on a developer machine.
+        run: |
+          mkdir -p "$KETCHUP_SAVED_FILES_DIR"
+          cargo test --locked $CRATES --features ketchup-model/saved-files --no-fail-fast -- \
+            --skip instanced_rendering::real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_wgpu_draw \
+            --skip instanced_rendering::garden_studio_hardware_gpu_camera_frames
+      - name: Kečup 0.2.0 reads the files the tests wrote for it
+        run: |
+          git fetch --no-tags --depth=1 origin tag v0.2.0
+          python3 scripts/release_0_2_0_reads.py --files "$RUNNER_TEMP/saved-files"
 
   viewer-targets:
     name: clippy of the phone and browser Viewers
@@ -518,7 +603,7 @@ jobs:
     name: CI passed
     # A skipped job counts as passed for a required check; this job fails
     # unless every job it needs ran and passed.
-    needs: [checks, dependencies, rust-without-occt, rust-with-occt, viewer-targets, viewer-macos, macos-app, fuzz]
+    needs: [checks, dependencies, rust-without-occt, rust-with-occt, rust-with-occt-linux, viewer-targets, viewer-macos, macos-app, fuzz]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

@@ -259,6 +259,58 @@ fn every_sheathing_piece_of_a_buildup_is_drawn_and_together_they_cover_the_wall(
     );
 }
 
+/// MF-60: the insulation between the studs is put in on site, not cut on a
+/// CNC: only the sheathing is drawn.
+#[test]
+fn the_infill_of_a_framed_layer_is_not_drawn() {
+    let source = "buildup('wall', (0, 0, 0), (1, 0, 0), (0, 0, 1), 3000, height = 2500,\n\
+         layers = [{'name': 'frame', 'thickness': 140, 'material': 'C24', 'spacing': 625,\n\
+                    'infill': 'mineral wool'},\n\
+                   {'name': 'osb', 'thickness': 15, 'material': 'OSB', 'sheet': (1250, 2500)}])\n";
+    let model = ketchup_program::evaluate("wall.star", source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"))
+        .model;
+    assert!(
+        model
+            .parts
+            .iter()
+            .any(|part| part.material.as_deref() == Some("mineral wool")),
+        "the wall has its infill"
+    );
+    let export = cnc_parts(&model);
+    assert_eq!(export.not_drawn, []);
+    assert!(!export.parts.is_empty());
+    assert!(
+        export.parts.iter().all(|part| part.thickness_mm == 15.0),
+        "{:?}",
+        export
+            .parts
+            .iter()
+            .map(|part| (&part.part, part.thickness_mm))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// MF-61: a rounded handle 60 x 40 and 3 000 long is no flat part; drawn along
+/// its extrusion it would be a 60 x 40 outline 3 000 thick, its end screw a
+/// drill into the face.
+#[test]
+fn a_profile_longer_than_it_is_wide_is_not_a_flat_part() {
+    let source = "handle = extrude('handle', profile = round_corners([(0, 0), (60, 0), (60, 40), (0, 40)], 10),\n\
+         distance = 3000, attributes = {FABRICATION_ROLE: MANUFACTURED_ITEM})\n\
+         hole(handle, 'end', world = (30, 20, 3000), diameter = 8, depth = 40, id = 'end screw')\n";
+    let model = ketchup_program::evaluate("handle.star", source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"))
+        .model;
+    let export = cnc_parts(&model);
+    assert_eq!(export.parts, [], "{export:#?}");
+    assert_eq!(export.not_drawn.len(), 1);
+    assert_eq!(
+        export.not_drawn[0].reason.to_string(),
+        "it is not a flat part: it is 3000 mm along the axis it would be drawn along, more than across"
+    );
+}
+
 #[test]
 fn only_made_parts_are_drawn_and_a_shape_no_face_drawing_holds_is_named() {
     let export = export();

@@ -17,7 +17,8 @@ pub struct CutListRow {
     pub parts: Vec<String>,
 }
 
-/// Bought items: a joint's named fasteners, and the parts ordered by their
+/// Bought items: a joint's named fasteners (or the hardware its rating counts
+/// on, a hanger and its nails), and the parts ordered by their
 /// designation, grouped by designation and their other attributes.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct HardwareRow {
@@ -196,7 +197,17 @@ pub fn bom(model: &ProgramModel) -> Bom {
         .iter()
         .filter(|joint| model.joint_in_production(joint))
     {
-        if let Some(fastener) = &joint.fastener {
+        let rated_hardware = joint
+            .rating
+            .as_ref()
+            .map(|rating| &rating.hardware)
+            .filter(|hardware| !hardware.is_empty());
+        if let Some(hardware_of_one) = rated_hardware {
+            // What one rated connection is bought as: the connector and its nails.
+            for (item, count) in hardware_of_one {
+                bought(&mut hardware, item, BTreeMap::new()).count += count;
+            }
+        } else if let Some(fastener) = &joint.fastener {
             // A named fastener without positions is one piece, e.g. one hanger.
             bought(&mut hardware, fastener, BTreeMap::new()).count +=
                 joint.fasteners_mm.len().max(1);

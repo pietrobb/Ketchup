@@ -1,6 +1,6 @@
 use ketchup_program::joint_check::{
     NO_LOAD, NO_RATING, NO_SERVICE_CLASS, NO_TENSION_RATING, density_below, density_unknown,
-    not_bearing,
+    not_bearing, service_class_outside,
 };
 use ketchup_program::{Report, run};
 use std::collections::BTreeMap;
@@ -242,6 +242,99 @@ fn a_catalogued_pair_of_angle_brackets_holds_a_member_down_and_its_rating_can_be
             "{FRAME}connector(joist, header, \"SAE380\", ratings = connector_ratings({{\"SAE380\": None}}))\n"
         ))
         .contains("no rating for \"SAE380\"")
+    );
+}
+
+/// Review 2026-10-29 PG-65: a catalogued hanger was rated whatever joist it
+/// held. Its ETA tabulates R1,k for some joist widths, the hanger is (A - b)/2
+/// deep around a joist b wide, and it must be at least 60 % of the joist deep.
+#[test]
+fn a_catalogued_hanger_is_rated_only_around_a_joist_it_is_made_for() {
+    let misfit = |source: &str, wanted: &str| {
+        let report = report(source);
+        let issue = report
+            .issues
+            .iter()
+            .find(|issue| issue.message.contains(wanted))
+            .unwrap_or_else(|| panic!("{wanted} in {:?}", report.issues));
+        assert_eq!(issue.severity, ketchup_program::Severity::Error);
+        assert_eq!(issue.parts, ["joist", "header"]);
+        report
+    };
+    // SAE250 around the 60 mm joist is 95 mm deep: the 200 mm joist would tip in it.
+    let tipping = misfit(
+        &format!("{FRAME}connector(joist, header, \"SAE250\")\n"),
+        "SAE250 holds a joist 60 mm wide only 95-158.3 mm high; joist is 200 mm",
+    );
+    let [check] = tipping.joints.as_slice() else {
+        panic!("{:?}", tipping.joints);
+    };
+    assert!(check.rating.is_none(), "{check:?}");
+    assert_eq!(check.status, "not_verified");
+    // SAE380 is tabulated for joists 38-100 mm wide.
+    misfit(
+        &format!("{FRAME}connector(joist, header, \"SAE380\")\n").replace("60, 200)", "120, 200)"),
+        "SAE380 is rated for joists 38-100 mm wide; joist is 120 mm",
+    );
+    // A pair of ABR105 nails its 105 mm flange to the held member's side.
+    misfit(
+        &format!("{FRAME}connector(joist, header, \"ABR105 pair CNA4.0x35\")\n")
+            .replace("60, 200)", "60, 100)"),
+        "ABR105 nails its 105 mm flange to the side of a member at least 105 mm high; joist is 100 mm",
+    );
+
+    // pick=True takes the catalogued hanger that fits.
+    let picked = report(&format!(
+        "{FRAME}connector(joist, header, \"SAE\", pick = True)\n"
+    ));
+    assert_eq!(picked.errors, 0, "{:?}", picked.issues);
+    assert_eq!(picked.joints[0].fastener.as_deref(), Some("SAE380"));
+    assert!(
+        rejected(
+            &format!("{FRAME}connector(joist, header, \"SAE\", pick = True)\n")
+                .replace("60, 200)", "120, 200)")
+        )
+        .contains("none of SAE250, SAE380, SAE500 fits")
+    );
+}
+
+/// Review 2026-10-29 PG-65: the ETAs hold for service classes 1 and 2, and
+/// the nails their ratings count were in neither the hardware list nor a quote.
+#[test]
+fn a_catalogued_connector_holds_in_its_service_classes_with_the_nails_it_counts() {
+    let sae = "connector(joist, header, \"SAE380\")";
+    let report = hung_on(sae, "C24", "{\"C24\": \"C24\"}, service_class = 3");
+    let check = only_check(&report);
+    assert_eq!(check.status, "not_verified");
+    assert_eq!(check.missing, [service_class_outside("joist", 3, &[1, 2])]);
+    assert_eq!(
+        check.rating.as_ref().unwrap().service_classes,
+        [1, 2],
+        "{check:?}"
+    );
+
+    let bought = |report: &Report| {
+        report
+            .bom
+            .hardware
+            .iter()
+            .map(|row| (row.item.clone(), row.count))
+            .collect::<Vec<_>>()
+    };
+    let report = hung_on(sae, "C24", "{\"C24\": \"C24\"}");
+    assert_eq!(
+        bought(&report),
+        [
+            ("SAE380".to_owned(), 1),
+            ("square twist nail 3.75x30".to_owned(), 34)
+        ]
+    );
+    let report = anchored(
+        "timber_design({\"C24\": \"C24\"})\nconnector(beam, post, \"ABR105 pair CNA4.0x50\")",
+    );
+    assert_eq!(
+        bought(&report),
+        [("ABR105".to_owned(), 2), ("CNA4.0x50".to_owned(), 48)]
     );
 }
 

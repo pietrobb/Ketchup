@@ -5,7 +5,7 @@
 //! A part is drawn when it is in the production scope (`production(tags=…)`),
 //! made in the shop (fabrication role manufactured item) and an extrusion: a
 //! box is seen along its thinnest side, any other profile along its
-//! extrusion. The drawing lies in the first quadrant from (0, 0), the face the
+//! extrusion when that is its thinnest (else it is no flat part). The drawing lies in the first quadrant from (0, 0), the face the
 //! part is seen from up, in the frame its woodWOP program lays it in: x along
 //! its longer side, y along the shorter (from the far edge where that keeps
 //! the frame right-handed), and a part drilled or pocketed from below only
@@ -97,10 +97,14 @@ pub struct CncPart {
 }
 
 /// Why a part in scope is not drawn.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Undrawable {
     NoRole,
     NotAnExtrusion,
+    /// The axis a drawing would be seen along is not its thinnest.
+    NotFlat {
+        thickness_mm: f64,
+    },
     /// A cut goes down local z, which is not the part's thickness.
     CutAcross {
         cut: String,
@@ -125,6 +129,11 @@ impl fmt::Display for Undrawable {
             Self::NotAnExtrusion => {
                 formatter.write_str("its body is not an extrusion, so it has no flat face to draw")
             }
+            Self::NotFlat { thickness_mm } => write!(
+                formatter,
+                "it is not a flat part: it is {} mm along the axis it would be drawn along, more than across",
+                number(*thickness_mm)
+            ),
             Self::CutAcross { cut } => write!(
                 formatter,
                 "cut {cut:?} goes down its local z, which is not its thickness"
@@ -318,6 +327,11 @@ fn drawing(part: &Part) -> Result<Drawing, Undrawable> {
         2
     };
     let mut view = View::along(normal, min, max);
+    if view.size.iter().any(|across| view.thickness > *across) {
+        return Err(Undrawable::NotFlat {
+            thickness_mm: view.thickness,
+        });
+    }
     view.turned_over = machined_from_below_only(&view, part);
     let size = view.size;
     let mut entities = vec![Entity::Outline {

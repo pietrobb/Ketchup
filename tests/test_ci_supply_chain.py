@@ -27,6 +27,31 @@ def test_python_packages_install_only_by_hash():
         assert "--hash=sha256:" in block, block
 
 
+def test_a_push_to_main_is_never_cancelled_by_the_next():
+    """CI-61: every commit on main gets a whole run; only a pull request's
+    older run gives way to its newer push."""
+    concurrency = re.search(r"^concurrency:\n((?:  .*\n)+)", WORKFLOW, re.MULTILINE)
+    assert concurrency, "the workflow sets concurrency"
+    # A pending run is replaced by the next one in its group even without
+    # cancel-in-progress, so a push has a group of its own commit.
+    group = re.search(r"group:\s*(.+)", concurrency.group(1))
+    assert group and group.group(1).strip().endswith(
+        "${{ github.event.pull_request.number || github.sha }}"
+    ), concurrency.group(1)
+    cancel = re.search(r"cancel-in-progress:\s*(.+)", concurrency.group(1))
+    assert cancel, concurrency.group(1)
+    assert cancel.group(1).strip() == "${{ github.event_name == 'pull_request' }}", cancel.group(1)
+
+
+def test_every_occt_cache_key_hashes_the_math_linked_into_it():
+    """PL-63: CORE-MATH is linked into every OCCT library, so a change in
+    third_party/crmath must build OCCT again on every platform."""
+    keys = re.findall(r"key:\s*(occt-.+)", WORKFLOW)
+    assert keys
+    for key in keys:
+        assert "'third_party/crmath/**'" in key, key
+
+
 def test_cargo_deny_runs_a_verified_release_for_all_targets():
     assert re.search(r"sha256sum --check", WORKFLOW)
     assert re.search(r"^\s*run: cargo deny --locked check\s*$", WORKFLOW, re.MULTILINE)
