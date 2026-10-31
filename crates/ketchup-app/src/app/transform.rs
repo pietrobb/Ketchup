@@ -2362,17 +2362,26 @@ impl KetchupApp {
                         || snap.reference.instance_path != drag.selection.instance_path)
             }) {
                 drag.delta_mm = snap.position_mm - drag.pointer_start_world;
-            } else if let Some((world, axes)) = underlay_of(&drag.selection)
+            } else if let Some((world, axes, frame)) = underlay_of(&drag.selection)
                 .and_then(|id| {
-                    // A drawing is dragged in its own plane, upright for a view (UO-69).
-                    let (x, y, _) = self.document.current().underlay(id)?.view.plane.axes();
-                    let start = Some(drag.pointer_start_world);
-                    let world = self.screen_to_underlay_plane(id, pointer, rect, start)?;
-                    Some((world, [Vec3::from(x), Vec3::from(y)]))
+                    // A drawing is dragged in its own plane, upright for a view, and takes
+                    // only the datum points on that plane as targets (UO-69).
+                    let (x_axis, y_axis, _) =
+                        self.document.current().underlay(id)?.view.plane.axes();
+                    let start = drag.pointer_start_world;
+                    let world = self.screen_to_underlay_plane(id, pointer, rect, Some(start))?;
+                    let frame = WorkplaneFrame {
+                        origin_mm: start.to_array(),
+                        x_axis,
+                        y_axis,
+                        normal: cross(x_axis, y_axis),
+                    };
+                    Some((world, [Vec3::from(x_axis), Vec3::from(y_axis)], Some(frame)))
                 })
                 .or_else(|| {
                     let world = self.screen_to_plane(pointer, rect, drag.plane_z)?;
-                    Some((world, [Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0)]))
+                    let axes = [Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0)];
+                    Some((world, axes, None))
                 })
             {
                 let delta = continuous_move_delta(drag.pointer_start_world, world, free, axes);
@@ -2380,7 +2389,7 @@ impl KetchupApp {
                 drag.delta_mm = if free {
                     delta
                 } else {
-                    self.move_inference_target_at_screen(pointer, rect, destination)
+                    self.move_inference_target_at_screen(pointer, rect, frame, destination)
                         .map_or(delta, |target| target - drag.pointer_start_world)
                 };
             }

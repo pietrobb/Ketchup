@@ -417,6 +417,103 @@ fn a_standing_drawing_is_dragged_by_the_pointer_in_its_own_plane() {
     }
 }
 
+/// Review 2026-10-29 UO-69 (capability review run 398): a plain drag (no Shift) of a
+/// drawing standing at Right 2500 took the world origin or a world axis as its target,
+/// none of them on the drawing's plane, so in iso the drawing jumped away from the
+/// pointer. A plain drag, also on two axes at once, ends where the pointer meets the
+/// drawing's plane.
+#[test]
+fn a_plain_drag_of_a_standing_drawing_ignores_datum_points_off_its_plane() {
+    use ketchup_model::underlay::view::{UnderlayView, ViewPlane, plan_underlay_view};
+    for camera in [AppCommand::ViewRight, AppCommand::ViewIso] {
+        for target in ["diagonal", "world Y axis", "world origin"] {
+            let mut harness = shell();
+            let id = harness
+                .state()
+                .document
+                .current()
+                .underlays()
+                .next()
+                .unwrap()
+                .id;
+            let view = UnderlayView {
+                plane: ViewPlane::Right,
+                at_mm: 2500.0,
+            };
+            let batch = plan_underlay_view(&harness.state().document.current(), id, view).unwrap();
+            harness
+                .state_mut()
+                .apply_batch_with_work_recovery(&batch)
+                .unwrap();
+            harness.state_mut().dispatch_command(camera);
+            harness.step();
+            let at = |app: &KetchupApp, point: [f64; 3]| {
+                let underlay = app.document.current().underlay(id).unwrap().clone();
+                Vec3::from(underlay.world_transform().transform_point(point))
+            };
+            let from = [100.0, 60.0, 0.0];
+            let aim = |app: &KetchupApp| {
+                let start = at(app, from);
+                match target {
+                    "diagonal" => at(app, [250.0, 210.0, 0.0]),
+                    "world Y axis" => Vec3::new(start.x, start.y + 150.0, 0.0),
+                    _ => Vec3::ZERO,
+                }
+            };
+            let shown = |app: &KetchupApp| {
+                let rect = app.camera.viewport_rect.unwrap().shrink(20.0);
+                [at(app, from), aim(app)].into_iter().all(|point| {
+                    app.viewport_position(point)
+                        .is_some_and(|screen| rect.contains(screen))
+                })
+            };
+            for _ in 0..20 {
+                if shown(harness.state()) {
+                    break;
+                }
+                harness.state_mut().dispatch_command(AppCommand::ZoomOut);
+                harness.step();
+            }
+            let app = harness.state_mut();
+            assert!(shown(app), "{camera:?} {target}: off screen");
+            let rect = app.camera.viewport_rect.unwrap();
+            let start = at(app, from);
+            let start_screen = app.viewport_position(start).unwrap();
+            let end_screen = app.viewport_position(aim(app)).unwrap();
+            app.select_whole_underlay(id);
+            app.dispatch_command(AppCommand::Move);
+            app.hover.snap = None;
+            assert!(
+                app.begin_move_drag_at(start_screen, rect, false),
+                "{}",
+                app.digest
+            );
+            let mut drag = app.move_session().unwrap().0.clone();
+            app.advance_move(&mut drag, end_screen, rect, false);
+            let under_pointer = app
+                .screen_to_underlay_plane(id, end_screen, rect, Some(start))
+                .unwrap();
+            let expected = under_pointer - start;
+            assert!(
+                length(drag.delta_mm - expected) < 1e-3,
+                "{camera:?} {target}: {:?} is not {expected:?}",
+                drag.delta_mm
+            );
+            assert!(
+                app.commit_move_drag(&drag),
+                "{camera:?} {target}: {}",
+                app.digest
+            );
+            let moved = at(app, from);
+            assert!(
+                length(moved - under_pointer) < 1e-3,
+                "{camera:?} {target}: {moved:?} is not under the pointer at {under_pointer:?}"
+            );
+            assert_eq!(app.document.current().underlay(id).unwrap().view, view);
+        }
+    }
+}
+
 #[test]
 fn an_underlay_move_out_of_the_ground_plane_or_a_copy_is_refused_by_name() {
     let mut harness = shell();

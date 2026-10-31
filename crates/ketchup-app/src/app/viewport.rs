@@ -1038,9 +1038,10 @@ impl KetchupApp {
         &self,
         pointer: Pos2,
         rect: Rect,
+        frame: Option<WorkplaneFrame>,
         destination: Vec3,
     ) -> Option<Vec3> {
-        self.datum_snap_with_position(pointer, rect, None, Some(destination))
+        self.datum_snap_with_position(pointer, rect, frame, Some(destination))
             .map(|(point, _)| point)
     }
 
