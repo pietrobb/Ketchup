@@ -202,10 +202,10 @@ impl KetchupApp {
         pointer: Pos2,
         rect: Rect,
     ) -> Option<(UnderlayId, u32)> {
-        let point = self.screen_to_plane(pointer, rect, 0.0)?;
         let snapshot = self.document.current();
         let underlays = snapshot.underlays().collect::<Vec<_>>();
         underlays.into_iter().rev().find_map(|underlay| {
+            let point = self.screen_to_plane(pointer, rect, underlay.plan_height()?)?;
             let lines = self.cached_underlay_lines(underlay)?;
             let index = ObjectIndex::new(&lines);
             let local = underlay.to_local([point.x, point.y]);
@@ -393,7 +393,9 @@ impl KetchupApp {
         // A live move or turn draws them where it takes them.
         let placement = self
             .picked_objects_drag_edit()
-            .map_or(underlay.placement, |edit| edit.compose(underlay.placement));
+            .map_or(underlay.world_transform(), |edit| {
+                edit.compose(underlay.world_transform())
+            });
         let stroke = Stroke::new(2.5_f32, self.palette().accent);
         let painter = painter.with_clip_rect(rect);
         let mut budget = MAX_PICKED_POINTS;

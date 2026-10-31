@@ -161,9 +161,20 @@ impl KetchupApp {
         point_mm: [f64; 2],
         radius_mm: f64,
     ) -> (Vec<(UnderlayId, UnderlaySnap)>, bool) {
+        self.underlay_snaps_near_of(snapshot, point_mm, radius_mm, |_| true)
+    }
+
+    /// [`Self::underlay_snaps_near`] of the underlays `of` keeps only.
+    fn underlay_snaps_near_of(
+        &self,
+        snapshot: &Snapshot,
+        point_mm: [f64; 2],
+        radius_mm: f64,
+        of: impl Fn(&Underlay) -> bool,
+    ) -> (Vec<(UnderlayId, UnderlaySnap)>, bool) {
         let mut found = Vec::new();
         let mut ready = true;
-        for underlay in snapshot.underlays() {
+        for underlay in snapshot.underlays().filter(|underlay| of(underlay)) {
             if !snapshot.tag(underlay.tag).is_some_and(|tag| tag.visible()) {
                 continue;
             }
@@ -204,9 +215,9 @@ impl KetchupApp {
         })
     }
 
-    /// Where the pointer meets the underlays' plane, z = 0, and how far from there a point
-    /// of that plane may lie to be within `tolerance_px` of the pointer: up and down the
-    /// screen as far as that reaches, but at most [`MAX_SNAP_WINDOW_STRETCH`] times its
+    /// Where the pointer meets the plane of plans at `height_mm`, and how far from there a
+    /// point of that plane may lie to be within `tolerance_px` of the pointer: up and down
+    /// the screen as far as that reaches, but at most [`MAX_SNAP_WINDOW_STRETCH`] times its
     /// reach across the screen, so that a plane seen almost edge-on is not searched to
     /// its horizon.
     pub(crate) fn underlay_snap_window(
@@ -214,8 +225,9 @@ impl KetchupApp {
         pointer: Pos2,
         rect: Rect,
         tolerance_px: f32,
+        height_mm: f64,
     ) -> Option<([f64; 2], f64)> {
-        let at = |offset: Vec2| self.screen_to_plane(pointer + offset, rect, 0.0);
+        let at = |offset: Vec2| self.screen_to_plane(pointer + offset, rect, height_mm);
         let center = at(Vec2::ZERO)?;
         let reach = |offsets: [Vec2; 2]| {
             offsets
@@ -244,12 +256,17 @@ impl KetchupApp {
         tolerance_px: f32,
     ) -> Vec<(SelectionId, SnapKind, Vec3)> {
         let snapshot = self.document.current();
-        if snapshot.underlays().next().is_none() {
+        // Each plan snaps where the pointer meets the plane it lies in, on the ground or
+        // raised off it (review 2026-10-29 UO-69).
+        let mut heights = snapshot
+            .underlays()
+            .filter_map(Underlay::plan_height)
+            .collect::<Vec<_>>();
+        heights.sort_by(f64::total_cmp);
+        heights.dedup();
+        if heights.is_empty() {
             return Vec::new();
         }
-        let Some((point, radius)) = self.underlay_snap_window(pointer, rect, tolerance_px) else {
-            return Vec::new();
-        };
         // Objects picked in a drawing move or turn alone, and the rest of their drawing
         // snaps; a turn moves them once its arm is set (review 2026-10-29 UI-63).
         let dragged = match self.transform_tool.session.as_ref() {
@@ -284,18 +301,29 @@ impl KetchupApp {
                         .is_some_and(|object| objects.contains(&index.top_level_of(object)))
                 })
         };
-        self.underlay_snaps_near(&snapshot, point, radius)
-            .0
-            .into_iter()
-            .filter(|(id, snap)| moving != Some(*id) && !is_picked(*id, snap.segment))
-            .map(|(id, snap)| {
-                (
-                    underlay_reference(id, snap.segment),
-                    snap_kind(snap.kind),
-                    Vec3::new(snap.point_mm[0], snap.point_mm[1], 0.0),
-                )
-            })
-            .collect()
+        let mut snaps = Vec::new();
+        for height in heights {
+            let Some((point, radius)) =
+                self.underlay_snap_window(pointer, rect, tolerance_px, height)
+            else {
+                continue;
+            };
+            let at_height = |underlay: &Underlay| underlay.plan_height() == Some(height);
+            let (found, _) = self.underlay_snaps_near_of(&snapshot, point, radius, at_height);
+            snaps.extend(
+                found
+                    .into_iter()
+                    .filter(|(id, snap)| moving != Some(*id) && !is_picked(*id, snap.segment))
+                    .map(|(id, snap)| {
+                        (
+                            underlay_reference(id, snap.segment),
+                            snap_kind(snap.kind),
+                            Vec3::new(snap.point_mm[0], snap.point_mm[1], height),
+                        )
+                    }),
+            );
+        }
+        snaps
     }
 
     /// Per underlay, its shown line or arc nearest the pointer within `tolerance_px`, as
@@ -308,18 +336,18 @@ impl KetchupApp {
     ) -> Vec<(Vec<Vec3>, f64)> {
         self.underlay_snaps_at_screen(pointer, rect, tolerance_px)
             .into_iter()
-            .filter_map(|(reference, kind, _)| match reference.element {
-                ElementId::Underlay { underlay, segment } if kind == SnapKind::Edge => {
-                    self.underlay_piece(underlay, usize::try_from(segment).ok()?)
-                }
+            .filter_map(|(reference, kind, at)| match reference.element {
+                ElementId::Underlay { underlay, segment } if kind == SnapKind::Edge => self
+                    .underlay_piece(underlay, usize::try_from(segment).ok()?)
+                    .map(|piece| (piece, at.z)),
                 _ => None,
             })
-            .map(|piece| {
+            .map(|(piece, height)| {
                 (
                     piece
                         .points_mm
                         .iter()
-                        .map(|point| Vec3::new(point[0], point[1], 0.0))
+                        .map(|point| Vec3::new(point[0], point[1], height))
                         .collect(),
                     piece.length_mm,
                 )

@@ -47,6 +47,14 @@ impl KetchupApp {
         let Some(underlay) = self.selected_underlay() else {
             return false;
         };
+        let snapshot = self.document.current();
+        if snapshot
+            .underlay(underlay)
+            .is_some_and(|found| !found.view.is_ground())
+        {
+            self.digest = self.catalog.text("digest-underlay-draw-not-ground");
+            return false;
+        }
         let Some(layer) = self.underlay_draw_layer(underlay) else {
             return false;
         };
@@ -160,14 +168,14 @@ impl KetchupApp {
     }
 
     /// Where the drawing tools draw, while the drawing is still in the document and lies in
-    /// the ground plane they click in: one standing as a view is drawn into no more (review
-    /// 2026-10-29 UI-64).
+    /// the ground plane they click in: one standing as a view (review 2026-10-29 UI-64), or
+    /// a plan raised off the ground, is drawn into no more.
     pub(crate) fn underlay_draw_target(&self) -> Option<UnderlayDrawTarget> {
         let target = self.gesture.underlay_draw.as_ref()?;
         self.document
             .current()
             .underlay(target.underlay)
-            .is_some_and(ketchup_model::underlay::Underlay::lies_flat)
+            .is_some_and(|underlay| underlay.view.is_ground())
             .then(|| target.clone())
     }
 

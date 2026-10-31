@@ -2942,7 +2942,11 @@ impl KetchupApp {
                     axis,
                 )
             })
-            .or_else(|| underlay.and_then(|_| self.screen_to_plane(pointer, rect, 0.0)));
+            .or_else(|| {
+                let id = underlay?;
+                self.screen_to_plane(pointer, rect, self.underlay_plane_z(id))
+                    .or_else(|| self.screen_to_plane(pointer, rect, 0.0))
+            });
         let Some(centre_mm) = centre_mm else {
             return false;
         };

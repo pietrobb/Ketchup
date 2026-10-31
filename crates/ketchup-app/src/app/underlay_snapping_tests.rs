@@ -112,7 +112,7 @@ fn the_snap_window_stays_narrow_when_the_ground_is_seen_almost_edge_on() {
         app.camera.projection_mode = mode;
         app.camera.pitch = pitch;
         let pointer = app.project(Vec3::new(140.0, 70.0, 0.0), rect);
-        let Some((center, radius)) = app.underlay_snap_window(pointer, rect, tolerance) else {
+        let Some((center, radius)) = app.underlay_snap_window(pointer, rect, tolerance, 0.0) else {
             continue;
         };
         let across = [-tolerance, tolerance]

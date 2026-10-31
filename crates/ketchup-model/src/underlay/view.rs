@@ -112,10 +112,17 @@ impl Underlay {
         }
     }
 
-    /// Whether it lies in the ground plane, where the window's tools pick, snap and draw.
+    /// Whether it lies flat as a plan, on the ground or raised off it, where the window's
+    /// tools pick and snap at its height (review 2026-10-29 UO-69).
     #[must_use]
     pub fn lies_flat(&self) -> bool {
-        self.view.is_ground()
+        self.plan_height().is_some()
+    }
+
+    /// The height of the plane it lies in, when it lies flat as a plan.
+    #[must_use]
+    pub fn plan_height(&self) -> Option<f64> {
+        (self.view.plane == ViewPlane::Top).then_some(self.view.at_mm)
     }
 }
 

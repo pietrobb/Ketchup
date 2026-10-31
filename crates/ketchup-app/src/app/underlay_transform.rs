@@ -22,6 +22,16 @@ impl KetchupApp {
         .then_some(id)
     }
 
+    /// The height of the plane the plan `id` lies in, else of the ground plane: where a
+    /// click picks a point on it.
+    pub(crate) fn underlay_plane_z(&self, id: UnderlayId) -> f64 {
+        self.document
+            .current()
+            .underlay(id)
+            .and_then(ketchup_model::underlay::Underlay::plan_height)
+            .unwrap_or(0.0)
+    }
+
     /// Selects the underlay `id` alone, so Move and Rotate place it.
     pub(crate) fn select_underlay(&mut self, id: UnderlayId) {
         let Some(name) = self
@@ -98,7 +108,8 @@ impl KetchupApp {
     }
 
     /// Starts moving the underlay `id` from the snapped point under the pointer, or from
-    /// where the pointer meets the ground plane.
+    /// where the pointer meets the plane of a plan, else (a plan above the eye, a view)
+    /// the ground plane.
     pub(crate) fn begin_underlay_move(
         &mut self,
         id: UnderlayId,
@@ -118,6 +129,7 @@ impl KetchupApp {
             .as_ref()
             .filter(|snap| snap.kind != SnapKind::Face)
             .map(|snap| snap.position_mm)
+            .or_else(|| self.screen_to_plane(pointer, rect, self.underlay_plane_z(id)))
             .or_else(|| self.screen_to_plane(pointer, rect, 0.0));
         let Some(start) = start else {
             self.digest = self.catalog.text("digest-move-start-missed");

@@ -113,11 +113,11 @@ impl std::error::Error for AreaPullError {
     }
 }
 
-/// A click of the Pull area tool: the height typed, the point of the ground clicked and
-/// the drawn objects under the pointer.
+/// A click of the Pull area tool: the height typed, the point clicked in the plane of each
+/// plan, on the ground or raised off it, and the drawn objects under the pointer.
 pub(crate) struct AreaClick {
     height_mm: f64,
-    point_mm: [f64; 2],
+    points_mm: Vec<(UnderlayId, [f64; 2])>,
     objects: Vec<(UnderlayId, u32)>,
 }
 
@@ -132,13 +132,22 @@ impl KetchupApp {
             self.digest = self.catalog.text("digest-underlay-extrude-height");
             return;
         };
-        let Some(point) = self.screen_to_plane(pointer, rect, 0.0) else {
+        let points_mm = self
+            .document
+            .current()
+            .underlays()
+            .filter_map(|underlay| {
+                let point = self.screen_to_plane(pointer, rect, underlay.plan_height()?)?;
+                Some((underlay.id, [point.x, point.y]))
+            })
+            .collect::<Vec<_>>();
+        if points_mm.is_empty() {
             self.digest = self.catalog.text("digest-underlay-extrude-no-area");
             return;
-        };
+        }
         let click = AreaClick {
             height_mm,
-            point_mm: [point.x, point.y],
+            points_mm,
             objects: self
                 .underlay_line_at_screen(pointer, rect)
                 .map(|(underlay, object, _)| (underlay, object))
@@ -231,22 +240,17 @@ impl KetchupApp {
     /// or fill was under the pointer. With none, why a drawing's regions were not found,
     /// if one refused: an object under the pointer that is not closed is just no area.
     fn underlay_area_at(&self, click: &AreaClick) -> Result<ChosenArea, Option<AreaRefusal>> {
-        let snapshot = self.document.current();
-        let mut underlays = snapshot
-            .underlays()
-            .filter(|underlay| underlay.lies_flat())
-            .map(|underlay| underlay.id)
-            .collect::<Vec<_>>();
+        let mut underlays = click.points_mm.clone();
         underlays.reverse();
         if let Some(selected) = self.selected_underlay()
-            && underlays.contains(&selected)
+            && let Some(at) = underlays.iter().position(|(id, _)| *id == selected)
         {
-            underlays.retain(|id| *id != selected);
+            let selected = underlays.remove(at);
             underlays.insert(0, selected);
         }
         let mut refused = None;
-        for underlay in underlays {
-            match self.underlay_area(underlay, Some(click.point_mm), None) {
+        for (underlay, point_mm) in underlays {
+            match self.underlay_area(underlay, Some(point_mm), None) {
                 Ok(Some(area)) => return Ok(area),
                 Ok(None) => {}
                 Err(refusal) => {

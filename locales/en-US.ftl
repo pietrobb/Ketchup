@@ -1658,6 +1658,7 @@ digest-underlay-objects-moved = { $count } objects of the drawing moved
 digest-underlay-objects-copied = { $count } objects of the drawing copied
 digest-underlay-whole-selected = The whole drawing is selected: Move and Rotate place it
 digest-underlay-draw-on = Line, Rectangle, Circle and Arc now draw into the drawing, on layer { $layer }; Draw into drawing again ends it
+digest-underlay-draw-not-ground = The drawing tools draw in the ground plane, so they draw into a plan lying on the ground only; lay the drawing back on the ground to draw into it
 digest-underlay-exported = The drawing with its changes was written to { $path }
 digest-underlay-exported-incomplete = The drawing with its changes was written to { $path } without { $count ->
         [one] { $count } record the DWG reader could not decode or a DWG cannot hold.

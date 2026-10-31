@@ -1018,6 +1018,62 @@ fn a_clicked_closed_area_of_a_drawing_is_pulled_up_into_a_part() {
     assert_eq!(harness.state().canonical_digest(), digest);
 }
 
+/// Review 2026-10-29 UO-69: a plan raised off the ground (a floor above the first) was no
+/// plan to the window: its lines gave no snap and Pull area found nothing in it. Seen at an
+/// angle, the pointer snaps to its corner where it lies and a click inside its room pulls
+/// the room up, the click met in the plan's own plane.
+#[test]
+fn a_plan_raised_off_the_ground_snaps_and_is_pulled_up_where_it_lies() {
+    use ketchup_model::underlay::view::{UnderlayView, ViewPlane, plan_underlay_view};
+    let height = 150.0;
+    let mut harness = shell_of(imported_with(ROOM_AND_FLOOR));
+    let id = harness
+        .state()
+        .document
+        .current()
+        .underlays()
+        .next()
+        .unwrap()
+        .id;
+    let view = UnderlayView {
+        plane: ViewPlane::Top,
+        at_mm: height,
+    };
+    let batch = plan_underlay_view(&harness.state().document.current(), id, view).unwrap();
+    harness
+        .state_mut()
+        .apply_batch_with_work_recovery(&batch)
+        .unwrap();
+    harness.state_mut().dispatch_command(AppCommand::ViewIso);
+    harness.step();
+
+    let corner = Vec3::new(290.0, 280.0, height);
+    point(&mut harness, corner);
+    let snapped = harness
+        .state()
+        .hover
+        .snap
+        .as_ref()
+        .map(|snap| snap.position_mm);
+    assert_eq!(snapped, Some(corner), "the raised room's corner is snapped");
+
+    let undo = harness.state().undo_step_count();
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExtrudeUnderlayArea);
+    pull_up(&mut harness, "300", Vec3::new(IN_ROOM.x, IN_ROOM.y, height));
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo + 1, "{}", app.digest);
+    assert!(app.digest.contains("AREA_1"), "{}", app.digest);
+
+    // The drawing tools draw in the ground plane: they draw into it once it lies there.
+    let app = harness.state_mut();
+    app.select_whole_underlay(id);
+    app.dispatch_command(AppCommand::DrawIntoUnderlay);
+    assert_eq!(app.underlay_draw_target(), None);
+    assert!(app.digest.contains("ground plane"), "{}", app.digest);
+}
+
 /// 2D-4 in a document with only the drawing: the pulled areas are written into the program
 /// as `program action=from_underlay` writes them, bound to the drawing.
 #[test]
