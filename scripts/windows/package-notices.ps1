@@ -1,5 +1,5 @@
 # Third-party notices every Kecup package carries (LGPL OCCT, MPL acadrust,
-# modified Apache starlark): the file name in the package and its source.
+# modified Apache starlark, MIT CORE-MATH): the file name in the package and its source.
 
 function Get-PackageNoticeSources([string]$RepoRoot, [string]$OcctRoot) {
     return [ordered]@{
@@ -7,6 +7,7 @@ function Get-PackageNoticeSources([string]$RepoRoot, [string]$OcctRoot) {
         "LICENSE-OCCT-LGPL-2.1.txt" = Join-Path $OcctRoot "LICENSE_LGPL_21.txt"
         "LICENSE-OCCT-LGPL-EXCEPTION.txt" = Join-Path $OcctRoot "OCCT_LGPL_EXCEPTION.txt"
         "LICENSE-Starlark-Apache-2.0.txt" = Join-Path $RepoRoot "third_party\starlark\LICENSE"
+        "LICENSE-CORE-MATH-MIT.txt" = Join-Path $RepoRoot "third_party\crmath\core-math\LICENSE"
     }
 }
 

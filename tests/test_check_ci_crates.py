@@ -140,6 +140,58 @@ def test_a_run_that_cannot_fail_a_pull_request_or_runs_some_tests_only_does_not_
     assert checker.linted_crates([PULL_REQUEST_ONLY_FAILS]) == {"kappa"}
 
 
+SYSTEMS = """name: CI
+jobs:
+  matrix:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - run: cargo clippy -p alpha && cargo test -p alpha
+      - if: runner.os == 'Linux'
+        run: cargo clippy -p beta && cargo test -p beta
+      - if: runner.os != 'Linux'
+        run: cargo clippy -p gamma
+  windows:
+    runs-on: windows-latest
+    steps:
+      - run: cargo clippy -p delta && cargo test -p delta
+"""
+
+
+def test_a_crate_counts_as_checked_only_on_the_systems_its_jobs_and_steps_run_on():
+    # Review 2026-10-29 CI-62: the OCCT crates were checked on Windows only.
+    assert checker.linted_crates([SYSTEMS], "Linux") == {"alpha", "beta"}
+    assert checker.linted_crates([SYSTEMS], "macOS") == {"alpha", "gamma"}
+    assert checker.tested_crates([SYSTEMS], "Windows") == {"delta"}
+    assert checker.linted_crates([SYSTEMS]) == {"alpha", "beta", "gamma", "delta"}
+    required = {"alpha": {"Linux"}, "delta": {"Linux", "Windows"}, "gamma": {"macOS"}}
+    linted = {system: checker.linted_crates([SYSTEMS], system) for system in checker.SYSTEMS.values()}
+    tested = {system: checker.tested_crates([SYSTEMS], system) for system in checker.SYSTEMS.values()}
+    assert checker.unchecked_on_systems(required, linted, tested, {"alpha", "delta"}) == [
+        "delta: no CI job on Linux runs cargo clippy on it; add it to a Linux job's crate list",
+    ]
+
+
+def test_a_crate_with_occt_is_checked_on_linux_and_windows():
+    required = checker.required_systems(ROOT)
+    assert required["ketchup-exact"] == {"Linux", "Windows"}
+    assert required["ketchup-app"] == {"Linux", "Windows"}
+    assert required["ketchup-model"] == {"Linux"}
+    assert required["ketchup-viewer-macos"] == {"macOS"}
+
+
+def test_every_workspace_crate_is_checked_on_its_systems_in_ci():
+    workflows = [path.read_text(encoding="utf-8") for path in (ROOT / ".github/workflows").glob("*.yml")]
+    linted = {system: checker.linted_crates(workflows, system) for system in checker.SYSTEMS.values()}
+    tested = {system: checker.tested_crates(workflows, system) for system in checker.SYSTEMS.values()}
+    problems = checker.unchecked_on_systems(
+        checker.required_systems(ROOT), linted, tested, checker.crates_with_tests(ROOT)
+    )
+    assert problems == []
+
+
 def test_every_workspace_crate_is_checked_in_ci():
     crates = checker.workspace_crates(ROOT)
     assert "ketchup-headless" in crates

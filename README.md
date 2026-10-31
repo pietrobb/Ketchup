@@ -210,7 +210,17 @@ python scripts\run_production_tests.py
 
 Filter a run after `--` (for example `-- member_design::`). The last command runs the Python tests that drive the built headless CLI and fails on any skip. Install the pre-push hook, which runs fmt, the checks and Clippy, once per clone with `git config core.hooksPath scripts/hooks`.
 
-The Rust workspace also builds on Linux against an OCCT 8.0.1 install in the Unix layout (`include/opencascade`, `lib`). Point `KETCHUP_OCCT_ROOT` at it and make the libraries loadable, for example with `RUSTFLAGS="-C link-arg=-Wl,-rpath,$KETCHUP_OCCT_ROOT/lib"`.
+The Rust workspace also builds on Linux, against the pinned OCCT 8.0.1 built by `scripts/linux/build-occt.sh` (it needs CMake, Ninja and clang). A system or distribution OCCT does not work: the build links CORE-MATH (`third_party/crmath`, ADR 0009) into every OCCT library and installs `libketchup_crmath.a` beside them, so OCCT computes the same bits as on Windows and macOS instead of calling glibc's `sin`, `pow` and the like. Make the libraries loadable with an rpath:
+
+```bash
+git clone https://github.com/Open-Cascade-SAS/OCCT.git third_party/occt-src
+git -C third_party/occt-src checkout b8f597c677811d1f9f4d8a97f5ae2825c0353a42
+scripts/linux/build-occt.sh
+export RUSTFLAGS="-C link-arg=-Wl,-rpath,$PWD/third_party/occt-install-r0-v1/lib"
+cargo build --locked --release
+```
+
+`KETCHUP_OCCT_ROOT` points the build at an install elsewhere. CI builds and tests the crates with OCCT on Linux and Windows on every pull request.
 
 No stable public API or long-term native file-format compatibility is promised yet. Undo/Redo lives in memory for the session and reaches back 30 edits: Save writes only the current revision, and reopening a file starts a new Undo history. A named checkpoint in the revision catalog is saved with the file only when it names the revision you save, so save right after naming it; a checkpoint on an earlier edit lasts only for the session, and 30 newer edits drop it. While you work, a work-recovery copy beside the file keeps your edits and their Undo steps, so a crash loses neither.
 

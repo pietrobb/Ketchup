@@ -5,7 +5,7 @@
 //! A part is drawn when it is in the production scope (`production(tags=…)`),
 //! made in the shop (fabrication role manufactured item) and an extrusion: a
 //! box is seen along its thinnest side, any other profile along its
-//! extrusion. The drawing lies in the first quadrant from (0, 0), the face the
+//! extrusion when that is its thinnest (else it is no flat part). The drawing lies in the first quadrant from (0, 0), the face the
 //! part is seen from up. Layers, the numbers in millimetres with a decimal
 //! point written `_` (R12 takes no `.` in a layer name):
 //!
@@ -94,10 +94,14 @@ pub struct CncPart {
 }
 
 /// Why a part in scope is not drawn.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Undrawable {
     NoRole,
     NotAnExtrusion,
+    /// The axis a drawing would be seen along is not its thinnest.
+    NotFlat {
+        thickness_mm: f64,
+    },
     /// A cut goes down local z, which is not the part's thickness.
     CutAcross {
         cut: String,
@@ -122,6 +126,11 @@ impl fmt::Display for Undrawable {
             Self::NotAnExtrusion => {
                 formatter.write_str("its body is not an extrusion, so it has no flat face to draw")
             }
+            Self::NotFlat { thickness_mm } => write!(
+                formatter,
+                "it is not a flat part: it is {} mm along the axis it would be drawn along, more than across",
+                number(*thickness_mm)
+            ),
             Self::CutAcross { cut } => write!(
                 formatter,
                 "cut {cut:?} goes down its local z, which is not its thickness"
@@ -286,6 +295,11 @@ fn drawing(part: &Part) -> Result<Drawing, Undrawable> {
     };
     let view = View::along(normal, min, max);
     let size = view.across.map(|axis| max[axis] - min[axis]);
+    if size.iter().any(|across| view.thickness > *across) {
+        return Err(Undrawable::NotFlat {
+            thickness_mm: view.thickness,
+        });
+    }
     let mut entities = vec![Entity::Outline {
         layer: "CONTOUR".to_owned(),
         vertices: if rectangle {

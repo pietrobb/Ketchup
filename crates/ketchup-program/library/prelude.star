@@ -177,6 +177,14 @@ _FABRICATION_ROLES = [TIMBER_MEMBER, MANUFACTURED_ITEM, PURCHASED_ITEM, SITE_BUI
 # table of the positions; buildup() gives it to every piece of its panel.
 SHOP_DRAWING = "drawing:sheet"
 
+# Stock: a part's LENGTH_AXIS ("x", "y" or "z") is the local axis its bar's length
+# runs along, the other two its section (member() gives "z"); its THICKNESS_AXIS the
+# axis of its sheet's thickness or of a layer's thickness in a bar's section
+# (buildup() gives "z"). Without them the cutting plan takes the longest extent as the
+# length and the shortest as the thickness.
+LENGTH_AXIS = "length_axis"
+THICKNESS_AXIS = "thickness_axis"
+
 def _role(who, role):
     """`role` if it is a fabrication role, else fail naming `who`."""
     if role not in _FABRICATION_ROLES:
@@ -256,6 +264,7 @@ def member(name, start, end, section, across = None, material = "timber", grain 
         across = _member_across(direction, length)
     attributes = grain_attributes(grain)
     attributes[FABRICATION_ROLE] = _role("member(%r)" % name, role)
+    attributes[LENGTH_AXIS] = "z"
     part = box(name, (section[0], section[1], length), material = material, color = color, attributes = attributes)
     placed = place(part, origin = start, z = direction, x = across)
     offset = vec_add(vec_scale(placed.x, -section[0] / 2.0), vec_scale(placed.y, -section[1] / 2.0))
@@ -912,26 +921,42 @@ def boss(part, face, profile, height, name = "boss"):
 #     a dovetail): the load path counts it as a support at the fasteners (or the
 #     contact). Without it a joint only holds a part in place and carries nothing.
 #     rating=connector_rating(load_n=, basis=, source=, note="", tension_n=None,
-#     density_kg_m3=None): the load the whole connection may carry as its maker publishes
-#     it; basis "allowable" (permissible load), "characteristic" (R_k) or "design" (R_d).
+#     density_kg_m3=None, service_classes=None, hardware=None): the load the whole
+#     connection may carry as its maker publishes it; basis "allowable" (permissible
+#     load), "characteristic" (R_k) or "design" (R_d).
 #     load_n (downward) needs bearing=True. tension_n is the published pull on the same
 #     basis when the joint holds a part down (an overhang lifting its back end, a rafter
 #     on angle brackets); a joint that is not bearing may be rated with tension_n only.
 #     density_kg_m3: the characteristic timber density the values hold for; a joined part
 #     whose timber_strength has a lower or no rho_k leaves the joint not_verified.
+#     service_classes: the EN 1995 service classes the values hold in (e.g. [1, 2]); a
+#     timber_design() in another one leaves the joint not_verified.
+#     hardware: {item: count} one connection is bought as for the values to hold (the
+#     connector and the nails it counts); the hardware list counts these per joint
+#     instead of the fastener name.
 #     The report's joints list shows every bearing joint and every joint that holds a
 #     member down with its rating and utilization, or not_verified with what is missing
 #     (a rating, the load on it, tension_n for a pull). Ratings are data with a source,
 #     never guessed: CONNECTOR_RATINGS[fastener] holds the published ones, Arunda
 #     dovetails, Simpson SAE250/SAE380/SAE500 joist hangers (bearing) and "ABR105 pair
-#     CNA4.0x35"/"... CNA4.0x50" angle brackets (pull only), all characteristic for C24.
+#     CNA4.0x35"/"... CNA4.0x50" angle brackets (pull only), all characteristic for C24,
+#     in service classes 1 and 2 (zinc-coated), each bought with the nails it counts
+#     (SAE: the hanger and its square twist nails 3.75x30; the pair: 2 x ABR105 and 48
+#     nails). They hold only where they fit: an SAE around a joist of a width its table
+#     lists, (A - b) / 2 deep (A = 250, 380, 500) and so between that and 1/0.6 of it high,
+#     its header at least as deep; ABR105's 105 mm flange on a held member at least
+#     105 mm high and its 90 mm flange on a carrying member at least 90 mm wide. Where
+#     they do not, the joint is left without a rating and an error says why (also for
+#     buildup() hangers without hanger_rating).
 #     connector_ratings({name: connector_rating(...) or None}) is that catalogue with a
 #     program's own ratings over it (another maker, a different nailing), passed as
 #     ratings= to connector(), connector_rating_of() and buildup().
-#   connector(a, b, fastener, ratings=None, fasteners=None, name=None)
+#   connector(a, b, fastener, ratings=None, fasteners=None, name=None, pick=False) -> fastener
 #     a joint(kind="connector") rated from the catalogue: bearing when the rating gives
 #     load_n (a hangs on b), else it holds a down against lifting. Fails for a fastener
-#     with no rating. connector_rating_of(name, ratings=None) gives the rating or None.
+#     with no rating. pick=True: fastener is the start of a name, e.g. "SAE", and the
+#     first catalogued model in name order that fits a and b is used (fails naming why
+#     none fits). connector_rating_of(name, ratings=None) gives the rating or None.
 #   arunda(a, b, template="80 B", name=None) -> None
 #     an Arunda routed dovetail (wood to wood, no hardware): carried a hangs on b, rated
 #     from the maker's load table; checks a's width and height against the template.
@@ -985,10 +1010,11 @@ DOWELS = {
     "10x50": (10, 50),
 }
 
-def connector_rating(load_n = None, basis = None, source = None, note = "", tension_n = None, density_kg_m3 = None):
+def connector_rating(load_n = None, basis = None, source = None, note = "", tension_n = None, density_kg_m3 = None,
+                     service_classes = None, hardware = None):
     """A published load rating of a connection; see joint(rating=)."""
     return struct(load_n = load_n, basis = basis, source = source, note = note, tension_n = tension_n,
-                  density_kg_m3 = density_kg_m3)
+                  density_kg_m3 = density_kg_m3, service_classes = service_classes, hardware = hardware)
 
 _ARUNDA_SOURCE = "Arunda load table (HYBOX Slovakia), https://arunda.sk/assets/docs/zatezova-tabulka.pdf"
 
@@ -1015,22 +1041,32 @@ def _arunda_rating(template):
 
 _SAE_SOURCE = "ETA-06/0270 (2023-01-06), Annex D34 SAE joist hanger, characteristic capacity with square twist nails, full nailing, timber to timber"
 
-# model: (header nails, joist nails, R1,k in kN) for timber C24, characteristic density 350 kg/m3.
+# model: (header nails, joist nails, R1,k in kN, blank A in mm, narrowest and widest joist the R1,k
+# table lists) for timber C24, characteristic density 350 kg/m3. Around a joist b wide the hanger is
+# (A - b) / 2 deep (the dimensions of D34), and the maker's data sheet wants it at least 60 % of the
+# joist deep against rotation. SAE500 around 125 mm is tabulated with fewer nails, so it is left out.
 _SAE = {
-    "SAE250": (12, 7, 13.5),
-    "SAE380": (22, 12, 22.3),
-    "SAE500": (34, 18, 35.0),
+    "SAE250": (12, 7, 13.5, 250, 50, 76),
+    "SAE380": (22, 12, 22.3, 380, 38, 100),
+    "SAE500": (34, 18, 35.0, 500, 38, 100),
 }
 
+_SAE_NAIL = "square twist nail 3.75x30"
+
+# The ETAs hold for these zinc-coated (Z275) connectors in service classes 1 and 2 only.
+_GALVANIZED = [1, 2]
+
 def _sae_rating(model):
-    header, joist, kn = _SAE[model]
+    header, joist, kn, _, low, high = _SAE[model]
     return connector_rating(
         load_n = kn * 1000,
         basis = "characteristic",
         source = _SAE_SOURCE,
-        note = ("R1,k downward, %d + %d square twist nails 3.75x30 (header + joist); transverse tension " +
-                "in the timber is not included") % (header, joist),
+        note = ("R1,k downward, %d + %d %ss (header + joist); for joists %d-%d mm wide; transverse tension " +
+                "in the timber is not included") % (header, joist, _SAE_NAIL, low, high),
         density_kg_m3 = 350,
+        service_classes = _GALVANIZED,
+        hardware = {model: 1, _SAE_NAIL: header + joist},
     )
 
 _ABR_SOURCE = "Simpson Strong-Tie ABR 105-R technical data sheet (2026-10-21) after ETA-06/0106, timber to timber, full nailing, 2 angle brackets per connection"
@@ -1041,15 +1077,22 @@ _ABR105_PAIR = {
     "CNA4.0x50": 14.33,
 }
 
+# ABR105: its flange A (105 mm high, 10 nails) on the held member's side, flange B (14 nails) on the
+# carrying member, both 90 mm wide (ETA-06/0106 Annex D3).
+_ABR105_FLANGE = 105
+_ABR105_WIDTH = 90
+
 def _abr_rating(nail):
     return connector_rating(
         tension_n = _ABR105_PAIR[nail] * 1000,
         basis = "characteristic",
         source = _ABR_SOURCE,
         note = ("R1,k lifting for the pair, 10 + 14 %s nails per bracket, the brackets opposite each other; " +
-                "tabulated for b = 75 mm and e = 130 mm; a single bracket carries half only when the " +
-                "held member cannot rotate") % nail,
+                "the sheet's b = 75 mm and e = 130 mm are for the lateral R4,k/R5,k only; a single bracket " +
+                "carries half only when the held member cannot rotate") % nail,
         density_kg_m3 = 350,
+        service_classes = _GALVANIZED,
+        hardware = {"ABR105": 2, nail: 2 * (10 + 14)},
     )
 
 # Published ratings by fastener name. A connector missing here has no rating: its joints stay not_verified.
@@ -1078,21 +1121,83 @@ def connector_rating_of(fastener, ratings = None):
     or None when there is none."""
     return (CONNECTOR_RATINGS if ratings == None else ratings).get(fastener)
 
-def connector(a, b, fastener, ratings = None, fasteners = None, name = None):
+def _section(part):
+    """(width, height) of a member: its two smallest dimensions."""
+    dims = sorted(part_info(part).size)
+    return dims[0], dims[1]
+
+def _connector_misfit(fastener, a, b):
+    """Why the catalogued connector's published values do not hold for held part a on
+    carrying part b, or None (also for a connector whose geometry is not catalogued)."""
+    width, height = _section(a)
+    name_a, name_b = part_info(a).name, part_info(b).name
+    if fastener in _SAE:
+        _, _, _, blank, low, high = _SAE[fastener]
+        if width < low - 0.001 or width > high + 0.001:
+            return "%s is rated for joists %d-%d mm wide; %s is %s mm" % (fastener, low, high, name_a, fmt_mm(width))
+        depth = (blank - width) / 2
+        if height < depth - 0.001 or height > depth / 0.6 + 0.001:
+            return ("%s holds a joist %s mm wide only %s-%s mm high; %s is %s mm (the hanger is %s mm deep: " +
+                    "every joist nail in the joist, and at least 60 %% of its depth against rotation)") % (
+                fastener, fmt_mm(width), fmt_mm(depth), fmt_mm(depth / 0.6), name_a, fmt_mm(height), fmt_mm(depth))
+        if _section(b)[1] < depth - 0.001:
+            return "%s is %s mm deep around this joist, deeper than %s (%s mm) its header nails go into" % (
+                fastener, fmt_mm(depth), name_b, fmt_mm(_section(b)[1]))
+    elif fastener.startswith("ABR105 pair "):
+        if height < _ABR105_FLANGE - 0.001:
+            return "ABR105 nails its %d mm flange to the side of a member at least %d mm high; %s is %s mm" % (
+                _ABR105_FLANGE, _ABR105_FLANGE, name_a, fmt_mm(height))
+        if _section(b)[0] < _ABR105_WIDTH - 0.001:
+            return "ABR105 lays its %d mm wide flange on a member at least that wide; %s is %s mm" % (
+                _ABR105_WIDTH, name_b, fmt_mm(_section(b)[0]))
+    return None
+
+def _fits(fastener):
+    return fastener in _SAE or fastener.startswith("ABR105 pair ")
+
+def _rated_connector(who, a, b, fastener, rating):
+    """The rating, or None with an error issue when the catalogued connector does not fit."""
+    misfit = _connector_misfit(fastener, a, b) if rating != None and _fits(fastener) else None
+    if misfit == None:
+        return rating
+    check(False, "%s: %s, so its published values do not hold" % (who, misfit), parts = [a, b],
+          hint = "Choose the model for the section (connector(..., pick=True) picks a catalogued one that fits) or resize the member.")
+    return None
+
+def _pick_connector(a, b, family, table):
+    names = [fastener for fastener in sorted(table.keys()) if fastener.startswith(family) and _fits(fastener)]
+    if not names:
+        fail("connector(pick=True): no catalogued connector with a known geometry starts with %r" % family)
+    reasons = []
+    for fastener in names:
+        misfit = _connector_misfit(fastener, a, b)
+        if misfit == None:
+            return fastener
+        reasons.append(misfit)
+    fail("connector(%s, %s, %r, pick=True): none of %s fits: %s" %
+         (part_info(a).name, part_info(b).name, family, ", ".join(names), "; ".join(reasons)))
+
+def connector(a, b, fastener, ratings = None, fasteners = None, name = None, pick = False):
     """Part a held by b through a catalogued connector: a joint named after the fastener
     with its rating from ratings (default CONNECTOR_RATINGS). A rating with load_n makes
     the joint bearing (a carries its weight into b, e.g. a joist hanger); one with only
-    tension_n holds a down against lifting (e.g. a pair of angle brackets)."""
+    tension_n holds a down against lifting (e.g. a pair of angle brackets). pick=True
+    takes fastener as the start of a name ("SAE") and uses the first catalogued model
+    that fits a and b. Returns the fastener used."""
+    table = CONNECTOR_RATINGS if ratings == None else ratings
+    if pick:
+        fastener = _pick_connector(a, b, fastener, table)
     rating = connector_rating_of(fastener, ratings)
     if rating == None:
-        table = CONNECTOR_RATINGS if ratings == None else ratings
         fail("connector(): no rating for %r; known: %s. Give it in connector_ratings({%r: connector_rating(...)}) or use joint(rating=)" %
              (fastener, ", ".join(sorted(table.keys())), fastener))
     if fasteners == None:
         touch = contact(a, b)
         fasteners = [] if touch == None else [vec_scale(vec_add(touch.min, touch.max), 0.5)]
+    who = "connector(%s, %s, %r)" % (part_info(a).name, part_info(b).name, fastener)
     joint(a, b, kind = "connector", fastener = fastener, bearing = rating.load_n != None,
-          fasteners = fasteners, rating = rating, name = name)
+          fasteners = fasteners, rating = _rated_connector(who, a, b, fastener, rating), name = name)
+    return fastener
 
 def arunda(a, b, template = "80 B", name = None):
     """Carried part a hangs on b through an Arunda routed dovetail (wood to wood),
@@ -2050,7 +2155,10 @@ def no_window_over(part, tag = "window", margin = 300, height = 1500):
 #     is cut into pieces around the openings; its "sheet": (u, v) (board size in mm, e.g.
 #     (1250, 2500) for upright OSB) also cuts it into boards: joints along v on the stud
 #     centres of the nearest framed layer, a whole number of spacings apart, and along u
-#     every board height. Its "grain": "u" or "v" gives every piece the grain attribute
+#     every board height; no joint where one board covers the rest, and the last moved
+#     back so no board is narrower than "min_width" (default 200 mm; a warning where no
+#     stud allows it). In a wall that framed layer gets a "joint noggin" behind every
+#     horizontal joint; in a floor or roof a warning names them. Its "grain": "u" or "v" gives every piece the grain attribute
 #     sheet_stock(grain = True) keeps (topic cutting). A framed layer adds "spacing" (stud
 #     centres from u = 0 in mm; a stud at each end), "stud" (stud width, default 60), "header" (depth of the headers
 #     over openings in a wall, default the stud width, which a warning then names as sized
@@ -2077,8 +2185,9 @@ def no_window_over(part, tag = "window", margin = 300, height = 1500):
 #     layer's tags, each on the panel's shop drawing `name` (SHOP_DRAWING).
 #     Only extrusions, no booleans: every piece is rebuilt from the numbers.
 #     Fabrication role (FABRICATION_ROLE): plates, studs, noggins, headers and sills of a
-#     framed layer are TIMBER_MEMBER, a sheet layer's pieces and infill MANUFACTURED_ITEM;
-#     a layer's "role" and "infill_role" change them (a bought panel: PURCHASED_ITEM).
+#     framed layer are TIMBER_MEMBER, a sheet layer's pieces MANUFACTURED_ITEM, its infill
+#     SITE_BUILT_ITEM (insulation is fitted, not cut on a CNC); a layer's "role" and
+#     "infill_role" change them (a bought panel: PURCHASED_ITEM, roofing: SITE_BUILT_ITEM).
 #     Pair it with a concept body through alternatives() and tags, e.g. a wall facing -y:
 #     buildup("wall S", (0, 200, 0), (1, 0, 0), (0, 0, 1), 4000, height = 2600,
 #             layers = [{"name": "gypsum", "thickness": 12.5, "material": "gypsum board"},
@@ -2167,25 +2276,55 @@ def _spans(length, cuts):
         spans.append((cursor, length))
     return spans
 
+def _nearest_framed(layers, here):
+    """The index of the framed layer nearest layer `here` (the closer spacing on a tie), or None."""
+    framed = sorted([(abs(k - here), float(l["spacing"]), k) for k, l in enumerate(layers) if "spacing" in l])
+    return framed[0][2] if framed else None
+
+def _board_joints(span, size, step, grid, narrowest):
+    """The joints of boards `size` long laid along a run `span` long, `step` apart: none
+    once one board covers the rest, and the last moved back to a multiple of `grid` (0:
+    anywhere) when the board after it would be narrower than `narrowest`. Also whether a
+    board stays narrower than that."""
+    joints, last = [], 0.0
+    for _ in range(int(span / step) + 1):
+        if span - last <= size + 0.001:
+            break
+        last += step
+        joints.append(last)
+    if not joints or span - joints[-1] >= narrowest - 0.001:
+        return joints, False
+    before = joints[-2] if len(joints) > 1 else 0.0
+    high = span - narrowest
+    at = high if grid <= 0 else int(high / grid + 0.001) * grid
+    if at >= max(before + narrowest, span - size) - 0.001:
+        joints[-1] = at
+        return joints, False
+    return joints, True
+
 def _sheet_joints(name, layers, layer, length, points):
     """The joints of a sheet layer laid from boards layer["sheet"] = (u, v) mm: lines
     u = ... on the nearest framed layer's stud centres, a whole number of spacings
-    apart (else the board width), and lines v = ... a board height apart."""
+    apart (else the board width), and lines v = ... a board height apart; none where
+    one board covers the rest, and none leaving a board narrower than layer["min_width"]
+    (default 200 mm) where the joint can move. Also whether a narrower board stays."""
     sheet = layer.get("sheet")
     if sheet == None:
-        return [], []
+        return [], [], False
     size_u, size_v = float(sheet[0]), float(sheet[1])
     if size_u <= 0 or size_v <= 0:
         fail("buildup(%s): layer %s sheet must be (u, v) mm above zero, got %s" % (name, layer["name"], sheet))
-    here = layers.index(layer)
-    framed = sorted([(abs(k - here), float(l["spacing"])) for k, l in enumerate(layers) if "spacing" in l])
-    step = size_u
-    if framed and framed[0][1] <= size_u:
-        step = int(size_u / framed[0][1] + 0.001) * framed[0][1]
-    top_v = max([p[1] for p in points])
-    joints_u = [k * step for k in range(1, int(length / step) + 1) if length - k * step >= 1]
-    joints_v = [k * size_v for k in range(1, int(top_v / size_v) + 1)]
-    return joints_u, joints_v
+    narrowest = float(layer.get("min_width", 200))
+    if narrowest < 0 or narrowest > min(size_u, size_v) / 2.0:
+        fail("buildup(%s): layer %s min_width must lie between 0 and half the board, got %s" % (name, layer["name"], narrowest))
+    framed = _nearest_framed(layers, layers.index(layer))
+    step, grid = size_u, 0.0
+    if framed != None and float(layers[framed]["spacing"]) <= size_u:
+        grid = float(layers[framed]["spacing"])
+        step = int(size_u / grid + 0.001) * grid
+    joints_u, narrow_u = _board_joints(length, size_u, step, grid, narrowest)
+    joints_v, narrow_v = _board_joints(max([p[1] for p in points]), size_v, size_v, 0.0, narrowest)
+    return joints_u, joints_v, narrow_u or narrow_v
 
 def buildup(name, origin, along, up, length, layers, height = None, top = None, openings = [], tags = [],
             anchor = None, ratings = None):
@@ -2224,7 +2363,7 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
     pieces = []
 
     def piece(label, poly, at, thickness, material, color, piece_tags, role, extra = {}):
-        attributes = {FABRICATION_ROLE: role, SHOP_DRAWING: name}
+        attributes = {FABRICATION_ROLE: role, SHOP_DRAWING: name, THICKNESS_AXIS: "z"}
         attributes.update(extra)
         part = extrude("%s/%s" % (name, label), profile = [[p[0], p[1]] for p in poly], distance = thickness,
                        material = material, color = color, tags = piece_tags, attributes = attributes)
@@ -2235,8 +2374,16 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
     def covering(a, b):
         return [o for o in holes if o[0] <= a + 0.001 and b <= o[0] + o[2] + 0.001]
 
+    # Each sheet layer's board joints; the framed layer it is laid on backs its
+    # horizontal joints with noggins.
+    sheet_joints = []
+    for k in range(len(layers)):
+        inner = sum([l["thickness"] for l in layers[:k]])
+        sheet_joints.append(_sheet_joints(name, layers, layers[k], length, _outline(name, length, height, top, inner))
+                            if "spacing" not in layers[k] else ([], [], False))
     offset = 0.0
-    for layer in layers:
+    for here in range(len(layers)):
+        layer = layers[here]
         label = layer["name"]
         thickness = layer["thickness"]
         if thickness <= 0:
@@ -2255,7 +2402,7 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
             if grain not in (None, "u", "v"):
                 fail("buildup(%s): layer %s grain must be \"u\" or \"v\", got %r" % (name, label, grain))
             extra = grain_attributes({"u": "x", "v": "y"}.get(grain))
-            joints_u, joints_v = _sheet_joints(name, layers, layer, length, points)
+            joints_u, joints_v, narrow = sheet_joints[here]
             edges = sorted({e: 0 for e in [0.0, length] + joints_u + [o[0] for o in holes] + [o[0] + o[2] for o in holes]}.keys())
             parts = []
             for k in range(len(edges) - 1):
@@ -2268,8 +2415,14 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                     lowest = min([p[1] for p in _under(points, flat, a, b, 0.0)[2:]])
                     blocks += [(v, v) for v in joints_v if v <= lowest - 1]
                 parts += _column(points, flat, a, b, 0.0, blocks)
-            for k in range(len(parts)):
-                piece(label if len(parts) == 1 else "%s %d" % (label, k + 1), parts[k], offset, thickness, material, color, layer_tags, role, extra)
+            boards = [piece(label if len(parts) == 1 else "%s %d" % (label, k + 1), parts[k], offset, thickness, material, color, layer_tags, role, extra)
+                      for k in range(len(parts))]
+            if narrow:
+                check(False, ("buildup(%s): layer %s ends in a board narrower than %s mm: no joint on a stud " +
+                              "of the layer it is laid on leaves both boards at least that wide") %
+                             (name, label, fmt_mm(float(layer.get("min_width", 200)))),
+                      parts = boards, severity = "warning",
+                      hint = "Change the length or the stud spacing, or give the layer a smaller \"min_width\".")
             offset += thickness
             continue
         stud = float(layer.get("stud", 60))
@@ -2412,6 +2565,20 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
         # is never notched from both sides at one height.
         rows = [[] for _ in studs]
         notches = [([], []) for _ in studs]
+        # The horizontal joints of the sheet layers laid on this one (review 2026-10-29
+        # PG-60): in a wall a noggin centred on each, in every bay it crosses.
+        backed = sorted({v: 0 for k in range(len(layers)) if _nearest_framed(layers, k) == here
+                         for v in sheet_joints[k][1]}.keys())
+        joint_rows = [[] for _ in studs]
+        if upright:
+            for k in range(len(studs) - 1):
+                if studs[k + 1] - studs[k] < 2 * stud:
+                    continue
+                polys = bay(k)
+                for v in backed:
+                    lo, hi = v - stud / 2.0, v + stud / 2.0
+                    if [p for p in polys if p[0][1] <= lo and hi <= min(p[2][1], p[-1][1])]:
+                        joint_rows[k].append((lo, hi))
         nog = layer.get("noggins")
         depth = float(layer.get("noggin_notch", 10))
         if upright and nog != None:
@@ -2430,7 +2597,8 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                     fits = [p for p in polys if p[0][1] + stud <= lo and hi + stud <= min(p[2][1], p[-1][1])]
                     left = [p for p in columns[k] if p[1][1] < lo and hi < p[2][1]]
                     right = [p for p in columns[k + 1] if p[0][1] < lo and hi < p[-1][1]]
-                    if fits and left and right:
+                    clash = [r for r in joint_rows[k] if lo < r[1] + stud and r[0] - stud < hi]
+                    if fits and left and right and not clash:
                         rows[k].append((lo, hi))
                         notches[k][1].append((lo, hi))
                         notches[k + 1][0].append((lo, hi))
@@ -2451,6 +2619,17 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                     count += 1
                     piece("%s/noggin %d" % (label, count), _rect(studs[k] + stud - depth, lo, studs[k + 1] + depth, hi),
                           offset, thickness, material, color, nog_tags, role)
+        count = 0
+        for k in range(len(joint_rows)):
+            for lo, hi in joint_rows[k]:
+                count += 1
+                piece("%s/joint noggin %d" % (label, count), _rect(studs[k] + stud, lo, studs[k + 1], hi),
+                      offset, thickness, material, color, layer_tags, role)
+        if backed and not upright:
+            check(False, "buildup(%s): layer %s has nothing under the joints of the sheets laid on it at v = %s" %
+                         (name, label, ", ".join([fmt_mm(v) for v in backed])),
+                  parts = members, severity = "warning",
+                  hint = "Use tongue-and-groove boards, or a sheet as long as the panel is wide.")
         beams, headers, widest = [], [], 0.0
         for k in range(len(holes)):
             ou, ov, ow, oh = holes[k]
@@ -2481,12 +2660,16 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                         # The beam's end against the joist's side: the joist carries the beam
                         # (a header); the joist's end against the beam: the beam carries it.
                         carried, carrier = (beam, other) if abs(_dot(touch.normal, along)) > 0.7 else (other, beam)
+                        rating = layer.get("hanger_rating", connector_rating_of(hanger, ratings))
+                        if "hanger_rating" not in layer:
+                            rating = _rated_connector("buildup(%s) layer %s hanger %s" % (name, label, hanger),
+                                                      carried, carrier, hanger, rating)
                         joint(carried, carrier, kind = "hanger", fastener = hanger, bearing = True,
                               fasteners = [vec_scale(vec_add(touch.min, touch.max), 0.5)],
-                              rating = layer.get("hanger_rating", connector_rating_of(hanger, ratings)))
+                              rating = rating)
         if layer.get("infill") != None:
             fill_tags = base_tags + _names(layer.get("infill_tags", layer.get("tags")))
-            fill_role = _role("buildup(%s) layer %s infill" % (name, label), layer.get("infill_role", MANUFACTURED_ITEM))
+            fill_role = _role("buildup(%s) layer %s infill" % (name, label), layer.get("infill_role", SITE_BUILT_ITEM))
             bays = []
             for k in range(len(studs) - 1):
                 if studs[k + 1] - studs[k] - stud >= 1:
@@ -2800,8 +2983,9 @@ def price_list(prices, currency = None, source = None):
 #                          axis 9 above the face below
 #     POCKET_Z5            a pocket or a blind cut 5 deep (POCKET_Z5_BOTTOM from below)
 #     PART_NAME            the part's name, accents as \U+XXXX
-#   A part with a boolean, mirror, shell, push_pull or fillet/chamfer, a slanted hole or a
-#   pocket in an edge is not drawn; its reason is listed. Each file is <name>.dxf, the name
+#   A part with a boolean, mirror, shell, push_pull or fillet/chamfer, a slanted hole, a
+#   pocket in an edge, or a profile longer than it is wide (no flat part) is not drawn;
+#   its reason is listed. A buildup's infill is SITE_BUILT_ITEM: never drawn. Each file is <name>.dxf, the name
 #   in ASCII, at most 31 characters, unique. The material takeoff window exports every
 #   drawing with parts.csv as one ZIP; MCP report section "cnc_dxf" pages them (a large
 #   drawing in chunks to join) and then the parts not drawn.
