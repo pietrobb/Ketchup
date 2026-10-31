@@ -709,6 +709,7 @@ impl<'a> Drawing<'a> {
                 map: frame.map(map),
                 stretch,
                 removed: &removed,
+                vertices_minus_z: false,
             };
             let mapped = self.mapped(object, entity, &map, false, &mut handles, &mut blocks)?;
             replaced[entity] = Some(Some(mapped));
@@ -745,6 +746,7 @@ impl<'a> Drawing<'a> {
                         map: frame.map(map),
                         stretch: matches!(edit, AddedObject::Stretched { .. }),
                         removed: &removed,
+                        vertices_minus_z: false,
                     };
                     added.extend(self.mapped(
                         *of,
@@ -919,17 +921,21 @@ impl<'a> Drawing<'a> {
         let entity = &self.entities[entity];
         let mut out = Vec::new();
         let primary = if copy { take_handle(handles) } else { None };
+        let mut map = *map;
         for (index, (start, record)) in entity.records.iter().enumerate() {
             let end = entity
                 .records
                 .get(index + 1)
                 .map_or(entity.pairs.end, |next| next.0);
+            if index == 0 && record == "POLYLINE" {
+                map.vertices_minus_z = self.extrusion_z(*start..end)?.is_some_and(|z| z < 0.0);
+            }
             let own = match (copy, index) {
                 (false, _) => None,
                 (true, 0) => primary,
                 (true, _) => take_handle(handles),
             };
-            let mut mapped = self.mapped_record(object, record, *start..end, map)?;
+            let mut mapped = self.mapped_record(object, record, *start..end, &map)?;
             self.drop_references(record, &mut mapped, map.removed);
             if record == "DIMENSION" {
                 self.dimension_block(object, &mut mapped, &map.map, handles, blocks)?;
@@ -1095,14 +1101,18 @@ impl<'a> Drawing<'a> {
             .collect::<Vec<_>>();
         self.write_record(&mut blocks.blocks, &named, copy(handles));
         let mut start = header.end;
+        let mut mapping = Mapping {
+            map: *map,
+            stretch: false,
+            removed: &BTreeSet::new(),
+            vertices_minus_z: false,
+        };
         while start < endblk {
             let end = next_record(start)?;
             let kind = String::from_utf8_lossy(self.value(start)).to_ascii_uppercase();
-            let mapping = Mapping {
-                map: *map,
-                stretch: false,
-                removed: &BTreeSet::new(),
-            };
+            if kind == "POLYLINE" {
+                mapping.vertices_minus_z = self.extrusion_z(start..end)?.is_some_and(|z| z < 0.0);
+            }
             let mapped = self.mapped_record(object, &kind, start..end, &mapping)?;
             self.write_record(&mut blocks.blocks, &mapped, copy(handles));
             start = end;
@@ -1123,6 +1133,52 @@ impl<'a> Drawing<'a> {
         out.extend_from_slice(self.eol);
     }
 
+    /// The Z of the extrusion of the record of pairs `pairs`, if it has one, as an entity
+    /// flat in the plan has: ±1 (review 2026-10-29 CD-69).
+    fn extrusion_z(&self, pairs: Range<usize>) -> Result<Option<f64>, EditedDxfError> {
+        let mut z = None;
+        for index in pairs.take_while(|index| self.pairs[*index].code < 1000) {
+            match self.pairs[index].code {
+                210 | 220 if self.number(index)?.abs() > NEGLIGIBLE => {
+                    return Ok(Some(f64::NAN));
+                }
+                230 => z = Some(self.number(index)?),
+                _ => {}
+            }
+        }
+        Ok(z)
+    }
+
+    /// Whether the record `record` of pairs `pairs` has its points in an object coordinate
+    /// system of extrusion −Z, where x is the world's −x; a VERTEX has that of its
+    /// POLYLINE, `vertices_minus_z`. An entity whose points are the world's has none; one
+    /// of another extrusion is refused, as the import refuses it.
+    fn in_mirrored_ocs(
+        &self,
+        object: u32,
+        record: &str,
+        pairs: Range<usize>,
+        vertices_minus_z: bool,
+    ) -> Result<bool, EditedDxfError> {
+        let not_mappable = || DxfEditRefusal::NotMappable {
+            object,
+            kind: record.to_owned(),
+        };
+        let minus_z = match self.extrusion_z(pairs)? {
+            None => record == "VERTEX" && vertices_minus_z,
+            Some(z) if (z - 1.0).abs() <= NEGLIGIBLE => false,
+            Some(z) if (z + 1.0).abs() <= NEGLIGIBLE => true,
+            Some(_) => return Err(not_mappable().into()),
+        };
+        match record {
+            _ if !minus_z => Ok(false),
+            "LINE" | "POINT" | "ELLIPSE" | "SPLINE" | "MTEXT" => Ok(false),
+            "CIRCLE" | "ARC" | "LWPOLYLINE" | "POLYLINE" | "VERTEX" | "TEXT" | "ATTRIB"
+            | "ATTDEF" | "INSERT" => Ok(true),
+            _ => Err(not_mappable().into()),
+        }
+    }
+
     /// The pairs of one record mapped by `map`.
     fn mapped_record(
         &self,
@@ -1139,7 +1195,25 @@ impl<'a> Drawing<'a> {
         if mapping.stretch && !STRETCHED_RECORDS.contains(&record) {
             return Err(not_mappable().into());
         }
-        let map = &mapping.map;
+        let ocs = self.in_mirrored_ocs(object, record, pairs.clone(), mapping.vertices_minus_z)?;
+        let flipped;
+        let map = if ocs {
+            // Mapped in the object coordinate system: its x is the world's −x.
+            let [[a, b, x], [c, d, y]] = mapping.map;
+            flipped = [[a, 0.0 - b, 0.0 - x], [0.0 - c, d, y]];
+            &flipped
+        } else {
+            &mapping.map
+        };
+        // A text reads from left to right in the world, not in its own system.
+        let readable = |rotation: f64| {
+            use std::f64::consts::PI;
+            if ocs {
+                PI - readable_rotation(&mapping.map, PI - rotation)
+            } else {
+                readable_rotation(map, rotation)
+            }
+        };
         let [[a, b, _], [c, d, _]] = *map;
         let scale = (a * d - b * c).abs().sqrt();
         // A stretched line keeps its widths.
@@ -1164,12 +1238,6 @@ impl<'a> Drawing<'a> {
                 .find(|index| code_of(**index) == 70)
                 .map_or(Ok(0), |index| self.integer(*index))
         };
-        let extrusion = [210, 220, 230].map(number_of);
-        let [ex, ey, ez] = extrusion;
-        let (ex, ey, ez) = (ex?.unwrap_or(0.0), ey?.unwrap_or(0.0), ez?.unwrap_or(1.0));
-        if ex.abs() > NEGLIGIBLE || ey.abs() > NEGLIGIBLE || (ez - 1.0).abs() > NEGLIGIBLE {
-            return Err(not_mappable().into());
-        }
         if rules.insert && mirrored {
             let many = |code| number_of(code).map(|count| count.is_some_and(|count| count > 1.0));
             if many(70)? || many(71)? {
@@ -1201,7 +1269,7 @@ impl<'a> Drawing<'a> {
                     [a * point[0] + b * point[1], c * point[0] + d * point[1]]
                 };
                 let [x, y] = if rules.direction == Some(code) {
-                    let turned = readable_rotation(map, point[1].atan2(point[0]));
+                    let turned = readable(point[1].atan2(point[0]));
                     let length = x.hypot(y);
                     [length * turned.cos(), length * turned.sin()]
                 } else {
@@ -1264,9 +1332,7 @@ impl<'a> Drawing<'a> {
             && !(rules.direction.is_some() && position(11).is_some())
         {
             let rotation = number_of(code)?.unwrap_or(0.0).to_radians();
-            let turned = readable_rotation(map, rotation)
-                .to_degrees()
-                .rem_euclid(360.0);
+            let turned = readable(rotation).to_degrees().rem_euclid(360.0);
             set(&mut out, code, 40, turned);
         }
         if rules.insert {
@@ -1639,11 +1705,14 @@ enum Out {
 
 /// A map of an entity, of the drawing's units; `stretch` when it makes a straight line
 /// shorter or longer, so that its widths stay as they are. The entity written no longer
-/// names the handles `removed`.
+/// names the handles `removed`. With `vertices_minus_z` the VERTEX records mapped are of a
+/// POLYLINE of extrusion −Z.
+#[derive(Clone, Copy)]
 struct Mapping<'r> {
     map: Affine,
     stretch: bool,
     removed: &'r BTreeSet<u64>,
+    vertices_minus_z: bool,
 }
 
 /// The records of the straight lines that are stretched ([`UnderlayEdits::stretched_objects`]).

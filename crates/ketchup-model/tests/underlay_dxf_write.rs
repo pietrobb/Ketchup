@@ -421,6 +421,82 @@ fn moved_and_copied_hatches_and_dimensions_are_written_where_they_now_lie() {
     assert_eq!(drawn_again["walls"].fills, 4);
 }
 
+/// Review 2026-10-29 CD-69: one moved entity of extrusion −Z, as AutoCAD's Mirror leaves
+/// arcs, polylines and texts, refused the export of the whole drawing. Its points are in
+/// an object coordinate system whose x is the world's −x; it is mapped there, and a line,
+/// whose points are the world's, as it is.
+#[test]
+fn moved_entities_of_extrusion_minus_z_are_written_where_they_now_lie() {
+    let minus_z = "210\n0\n220\n0\n230\n-1\n";
+    let entities = ENTITIES
+        .replace(
+            "10\n0\n20\n0\n30\n0\n11\n4000\n21\n0\n31\n0\n",
+            &format!("10\n0\n20\n0\n30\n0\n11\n4000\n21\n0\n31\n0\n{minus_z}"),
+        )
+        .replace(
+            "10\n4000\n20\n2000\n30\n0\n40\n1000\n100\nAcDbArc\n50\n0\n51\n90\n",
+            &format!(
+                "10\n-4000\n20\n2000\n30\n0\n40\n1000\n{minus_z}100\nAcDbArc\n50\n90\n51\n180\n"
+            ),
+        )
+        .replace(
+            "90\n3\n70\n1\n10\n0\n20\n3000\n42\n0.5\n10\n1000\n20\n3000\n10\n1000\n20\n4000\n",
+            &format!(
+                "90\n3\n70\n1\n10\n0\n20\n3000\n42\n-0.5\n10\n-1000\n20\n3000\n\
+                 10\n-1000\n20\n4000\n{minus_z}"
+            ),
+        )
+        .replace(
+            "10\n500\n20\n500\n30\n0\n40\n250\n1\nWC 1.02\n",
+            &format!("10\n-500\n20\n500\n30\n0\n40\n250\n1\nWC 1.02\n50\n180\n{minus_z}"),
+        );
+    let flipped = format!("{HEADER}{TABLES}{BLOCKS}{entities}0\nEOF\n");
+    let original = read(flipped.as_bytes());
+    let lines = &original.lines;
+    let names = &original.layers;
+    // The same drawing as the one of extrusion +Z.
+    let plain = read(source().as_bytes());
+    assert_same(&drawn(lines, names), &drawn(&plain.lines, &plain.layers));
+    let layers = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| UnderlayLayer {
+            name: name.clone(),
+            tag: TagId(10 + index as u64),
+        })
+        .collect::<Vec<_>>();
+    let turn = similarity([500.0, 200.0], 30.0, 1.0, [0.0, 0.0], None);
+    let mirror = similarity(
+        [0.0, 0.0],
+        0.0,
+        1.0,
+        [0.0, 0.0],
+        Some([[0.0, 5000.0], [1.0, 5000.0]]),
+    );
+    let mut edits = UnderlayEdits::default();
+    edits.moved_objects.insert(id_of(lines, 0xA0), turn);
+    edits.moved_objects.insert(id_of(lines, 0xA1), turn);
+    edits.moved_objects.insert(id_of(lines, 0xA2), mirror);
+    edits.moved_objects.insert(id_of(lines, 0xA3), turn);
+    for handle in [0xA1, 0xA2, 0xA3] {
+        edits.added.push(AddedObject::Copy {
+            of: id_of(lines, handle),
+            map: mirror,
+        });
+    }
+
+    let written = write_edited_dxf(
+        flipped.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let again = read(&written);
+    let edited = lines.clone().edited(&edits, &layers);
+    assert_same(&drawn(&again.lines, &again.layers), &drawn(&edited, names));
+}
+
 /// Groups, draw order and the extension dictionary of the line A0, which has data.
 const OBJECTS: &str = concat!(
     "0\nSECTION\n2\nOBJECTS\n",
