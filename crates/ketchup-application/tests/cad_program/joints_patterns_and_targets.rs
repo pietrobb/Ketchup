@@ -461,6 +461,119 @@ fn pin_joints_come_off_in_any_order_and_a_deleted_part_takes_its_joints_along() 
     );
 }
 
+/// Review 2026-10-29 MD-62: a part held by a logical pin joint (pin positions, no holes)
+/// or an assembly joint passed the reference check and then failed on a raw canonical
+/// error, whatever the delete policy. Now such a part is refused by name, or deleted with
+/// the joints that hold it in one Undo step.
+#[test]
+fn a_part_held_by_a_logical_pin_joint_or_an_assembly_joint_is_refused_by_name_or_deleted_with_it() {
+    use ketchup_model::assembly_joint::{AssemblyJoint, AssemblyJointId, AssemblyJointKind};
+    let mut document = DocumentStore::new();
+    let panel = |name: &str, translation_mm| {
+        cuboid_part(
+            name.into(),
+            [100.0, 50.0, 18.0],
+            Vec::new(),
+            Vec::new(),
+            translation_mm,
+            None,
+        )
+    };
+    let registry = ExactResultRegistry::default();
+    let panels = program(vec![
+        panel("Lower panel", [0.0, 0.0, 0.0]),
+        panel("Upper panel", [0.0, 0.0, 18.0]),
+        panel("Lid", [0.0, 0.0, 36.0]),
+    ]);
+    let panels = plan(&document, &BTreeSet::new(), &registry, &panels).unwrap();
+    document.apply_batch(&panels).unwrap();
+    let face = |occurrence_id, face_z, inward_unit_local| AssistantPinJointFace {
+        instance_path: AssistantInstancePath {
+            root_occurrence_id: occurrence_id,
+            steps: Vec::new(),
+        }
+        .into(),
+        face_origin_local_mm: [0.0, 0.0, face_z],
+        inward_unit_local,
+        bounds_min_local_mm: [0.0, 0.0, 0.0],
+        bounds_max_local_mm: [100.0, 50.0, 18.0],
+    };
+    let logical = program(vec![AssistantCadEditOperation::CreatePinJoint {
+        joint_id: None,
+        name: "Dowel positions".into(),
+        first: face(1, 18.0, [0.0, 0.0, -1.0]),
+        second: face(2, 0.0, [0.0, 0.0, 1.0]),
+        first_center_local_mm: [20.0, 25.0, 18.0],
+        row_unit_first_local: [1.0, 0.0, 0.0],
+        count: 2,
+        spacing_mm: 60.0,
+        pin: AssistantPin {
+            diameter_mm: 8.0,
+            length_mm: 30.0,
+            hole_clearance_mm: 1.0,
+        },
+        holes: AssistantPinHoles::Logical,
+    }]);
+    let logical = plan(&document, &BTreeSet::new(), &registry, &logical).unwrap();
+    document.apply_batch(&logical).unwrap();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateAssemblyJoint(AssemblyJoint::new(
+                AssemblyJointId(90),
+                OccurrenceId(2),
+                OccurrenceId(3),
+                AssemblyJointKind::Fixed,
+            )),
+        ]))
+        .unwrap();
+    let joined = document.current();
+    let delete = |id: u64, dependency_policy| {
+        program(vec![AssistantCadEditOperation::Delete {
+            selector: AssistantCadEntitySelector::Occurrences {
+                occurrence_ids: vec![id],
+            },
+            dependency_policy,
+        }])
+    };
+
+    for (part, held_by) in [(1, "pin_joint:1"), (3, "assembly_joint:90")] {
+        let refused = plan(
+            &document,
+            &BTreeSet::new(),
+            &registry,
+            &delete(part, AssistantCadDeletePolicy::RejectIfReferenced),
+        )
+        .unwrap_err();
+        assert_eq!(
+            refused.code, "planning.cad_delete_referenced",
+            "{refused:?}"
+        );
+        assert!(format!("{refused:?}").contains(held_by), "{refused:?}");
+    }
+
+    let undo = document.visible_undo_steps();
+    let batch = plan(
+        &document,
+        &BTreeSet::new(),
+        &registry,
+        &delete(2, AssistantCadDeletePolicy::RemoveReferences),
+    )
+    .unwrap_or_else(|error| panic!("{error:?}"));
+    document
+        .apply_batch(&batch)
+        .unwrap_or_else(|error| panic!("{error:?}"));
+    let alone = document.current();
+    assert!(alone.occurrence(OccurrenceId(2)).is_none());
+    assert_eq!(alone.pin_joints().count(), 0);
+    assert_eq!(alone.assembly_joints().count(), 0);
+    assert_eq!(document.visible_undo_steps(), undo + 1);
+    document.undo().unwrap();
+    assert_eq!(
+        document.current().canonical_digest(),
+        joined.canonical_digest()
+    );
+}
+
 #[test]
 fn physical_pin_joint_geometry_regressions_fail_closed_without_mutation() {
     let seed = |lower_holes: Vec<AssistantPartHole>, upper_z: f64| {

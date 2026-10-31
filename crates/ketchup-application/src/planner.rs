@@ -1365,36 +1365,67 @@ fn plan_delete_occurrences(
         .map(|mate| mate.id())
         .collect::<Vec<_>>();
     // A part drilled for a pin joint takes the joint along, and with
-    // it the holes in the part it was joined to.
-    let incident_pin_joints = staged
+    // it the holes in the part it was joined to; a logical pin joint (pin
+    // positions only) and an assembly joint just go (review 2026-10-29 MD-62).
+    let (incident_pin_joints, incident_logical_pin_joints): (Vec<_>, Vec<_>) = staged
         .staged_snapshot()
         .pin_joints()
         .filter(|joint| {
-            joint.physical_hole_pairs.is_some()
-                && [&joint.first, &joint.second]
-                    .into_iter()
-                    .any(|face| target_set.contains(&face.instance_path.root_occurrence()))
+            [&joint.first, &joint.second]
+                .into_iter()
+                .any(|face| target_set.contains(&face.instance_path.root_occurrence()))
         })
-        .map(|joint| joint.id)
+        .map(|joint| (joint.id, joint.physical_hole_pairs.is_some()))
+        .partition(|(_, physical)| *physical);
+    let incident_assembly_joints = staged
+        .staged_snapshot()
+        .assembly_joints()
+        .filter(|joint| {
+            target_set.contains(&joint.parent_occurrence_id())
+                || target_set.contains(&joint.child_occurrence_id())
+        })
+        .map(|joint| joint.id())
         .collect::<Vec<_>>();
-    if policy == AssistantCadDeletePolicy::RejectIfReferenced
-        && (!referenced_collections.is_empty()
-            || !incident_mates.is_empty()
-            || !incident_pin_joints.is_empty())
-    {
-        let id = targets[0];
-        return Err(assistant_planning_rejection(
-            "planning.cad_delete_referenced",
-            operation,
-            &format!("occurrence:{}", id.0),
-            "The occurrence is referenced by a collection, assembly mate or pin joint.",
-            "Use remove_references only when removing those dependencies is intended.",
-        ));
+    if policy == AssistantCadDeletePolicy::RejectIfReferenced {
+        let holder = referenced_collections
+            .first()
+            .map(|(id, _)| format!("collection:{}", id.0))
+            .or_else(|| {
+                incident_mates
+                    .first()
+                    .map(|id| format!("assembly_mate:{}", id.0))
+            })
+            .or_else(|| {
+                incident_pin_joints
+                    .iter()
+                    .chain(&incident_logical_pin_joints)
+                    .map(|(id, _)| *id)
+                    .min()
+                    .map(|id| format!("pin_joint:{}", id.0))
+            })
+            .or_else(|| {
+                incident_assembly_joints
+                    .first()
+                    .map(|id| format!("assembly_joint:{}", id.0))
+            });
+        if let Some(holder) = holder {
+            return Err(assistant_planning_rejection(
+                "planning.cad_delete_referenced",
+                operation,
+                &holder,
+                "The occurrence is held by this collection, assembly mate, pin joint or assembly joint.",
+                "Use remove_references to delete the part with what holds it, in one undo step.",
+            ));
+        }
     }
     if policy == AssistantCadDeletePolicy::RemoveReferences {
-        for joint_id in incident_pin_joints {
+        for (joint_id, _) in incident_pin_joints {
             delete_owned_physical_pin_joint(joint_id, staged, operation, document_target)?;
         }
+        for (id, _) in incident_logical_pin_joints {
+            staged.push(CanonicalCommand::DeletePinJoint { id });
+        }
+        delete_assembly_joints(&incident_assembly_joints, staged, operation)?;
         for (collection_id, members) in referenced_collections {
             staged.push(CanonicalCommand::SetCollectionOccurrences {
                 id: collection_id,
@@ -1407,6 +1438,45 @@ fn plan_delete_occurrences(
     }
     for id in targets {
         staged.push(CanonicalCommand::DeleteOccurrence { id });
+    }
+    Ok(())
+}
+
+/// Deletes the assembly joints `ids` of a part being deleted with the motion couplings
+/// that drive one by another; a joint a motion study drives is refused by name, the study
+/// being the user's work to keep or delete.
+fn delete_assembly_joints(
+    ids: &[AssemblyJointId],
+    staged: &mut StagedPlanningContext,
+    operation: &str,
+) -> AssistantPlanningResult<()> {
+    let snapshot = staged.staged_snapshot();
+    if let Some(study) = snapshot.assembly_motion_studies().find(|study| {
+        study
+            .drivers()
+            .iter()
+            .any(|driver| ids.contains(&driver.joint_id()))
+    }) {
+        return Err(assistant_planning_rejection(
+            "planning.cad_delete_joint_in_motion_study",
+            operation,
+            &format!("assembly_motion_study:{}", study.id().0),
+            "A motion study drives an assembly joint that holds the part.",
+            "Delete the motion study or its driver first, then delete the part.",
+        ));
+    }
+    let couplings = snapshot
+        .assembly_motion_couplings()
+        .filter(|coupling| {
+            ids.contains(&coupling.input_joint_id()) || ids.contains(&coupling.output_joint_id())
+        })
+        .map(|coupling| coupling.id())
+        .collect::<Vec<_>>();
+    for id in couplings {
+        staged.push(CanonicalCommand::DeleteAssemblyMotionCoupling { id });
+    }
+    for id in ids {
+        staged.push(CanonicalCommand::DeleteAssemblyJoint { id: *id });
     }
     Ok(())
 }

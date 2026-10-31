@@ -899,6 +899,18 @@ impl KetchupApp {
         {
             return None;
         }
+        let held_by_joints = snapshot.pin_joints().any(|joint| {
+            [&joint.first, &joint.second]
+                .into_iter()
+                .any(|face| occurrence_ids.contains(&face.instance_path.root_occurrence()))
+        }) || snapshot.assembly_joints().any(|joint| {
+            occurrence_ids.contains(&joint.parent_occurrence_id())
+                || occurrence_ids.contains(&joint.child_occurrence_id())
+        });
+        // The joints go with the parts through the planner, which deletes no groups.
+        if held_by_joints && !group_ids.is_empty() {
+            return None;
+        }
 
         let occurrence_count = occurrence_ids.len();
         let group_count = group_ids.len();
@@ -932,6 +944,7 @@ impl KetchupApp {
             group_ids,
             group_count,
             commands,
+            held_by_joints,
         })
     }
 
@@ -948,11 +961,24 @@ impl KetchupApp {
             return false;
         }
         let DeleteSelectionSourcePlan {
+            occurrence_ids,
             occurrence_count,
             commands,
+            held_by_joints,
             ..
         } = plan;
-        if !self.commit_part_batch(CommandBatch::new(commands)) {
+        let deleted = if held_by_joints {
+            self.commit_dock_operation(AssistantCadEditOperation::Delete {
+                selector: AssistantCadEntitySelector::Occurrences {
+                    occurrence_ids: occurrence_ids.iter().map(|id| id.0).collect(),
+                },
+                dependency_policy:
+                    ketchup_assistant::sidecar::AssistantCadDeletePolicy::RemoveReferences,
+            })
+        } else {
+            self.commit_part_batch(CommandBatch::new(commands))
+        };
+        if !deleted {
             return false;
         }
         self.selection.clear();

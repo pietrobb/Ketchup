@@ -1327,6 +1327,9 @@ struct DeleteSelectionSourcePlan {
     group_ids: BTreeSet<GroupId>,
     group_count: usize,
     commands: Vec<CanonicalCommand>,
+    /// A pin joint or an assembly joint holds a deleted part, so the delete is planned
+    /// with the joints that hold it, as the assistant's remove_references (MD-62).
+    held_by_joints: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
