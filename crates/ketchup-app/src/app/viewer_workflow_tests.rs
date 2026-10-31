@@ -187,9 +187,75 @@ fn a_customer_comment_made_in_the_viewer_shows_the_author_the_customer_s_view_an
         .save_comments(&mut returned)
         .expect("comments file");
     viewer.state_mut().comments_written(written);
-    let comments = view::Comments::read(returned.as_slice(), &package).expect("bound comments");
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("returned.ketchup-comments");
+    std::fs::write(&path, &returned).unwrap();
+    the_author_sees_the_customer_s_comment(author, &package, &model, &path, COMMENT);
+}
+
+/// The same round trip with the customer's Viewer outside this process: the
+/// web Viewer in a browser or the Android Viewer on an emulator. Writes the
+/// export to `$KETCHUP_V9D_DIR/model.ketchup-view`, waits up to 20 minutes for
+/// the customer's `returned.ketchup-comments` there and checks what the author
+/// sees. The web Viewer's half is `viewer/web/tests/customer_round_trip.py`;
+/// on Android the export is opened in the Viewer on the emulator and the file
+/// saved there with "Save comments for the author" is pulled back with
+/// `adb pull` as `returned.ketchup-comments`.
+#[test]
+#[ignore = "needs the customer's Viewer on another platform: the web Viewer or the Android emulator"]
+fn a_customer_comment_made_in_another_viewer_shows_the_author_the_customer_s_view_and_arrow() {
+    let directory = std::path::PathBuf::from(
+        std::env::var_os("KETCHUP_V9D_DIR").expect("KETCHUP_V9D_DIR names the exchange folder"),
+    );
+    let text = std::env::var("KETCHUP_V9D_COMMENT").unwrap_or_else(|_| COMMENT.to_owned());
+    let author = author();
+    let settings = author.stored_viewer_settings().expect("settings");
+    let package = author
+        .current_model_viewer_export(
+            &author.viewer_export_scenes(&settings),
+            author.camera.viewport_rect.unwrap(),
+        )
+        .expect("export")
+        .package;
+    let mut bytes = Vec::new();
+    package.write(&mut bytes).expect("package");
+    let model = ViewerModel::read(bytes.as_slice()).expect("the Viewer reads the export");
+    let returned = directory.join("returned.ketchup-comments");
+    let _ = std::fs::remove_file(&returned);
+    std::fs::write(directory.join("model.ketchup-view.part"), &bytes).unwrap();
+    std::fs::rename(
+        directory.join("model.ketchup-view.part"),
+        directory.join("model.ketchup-view"),
+    )
+    .unwrap();
+    eprintln!("export written; waiting for {}", returned.display());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20 * 60);
+    while !returned.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no comments came back"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    the_author_sees_the_customer_s_comment(author, &package, &model, &returned, &text);
+}
+
+/// What the customer returned in `path` is one comment with `text` on the
+/// board, in a view of their own, with an arrow onto the board; the author
+/// opens it and sees the model as the customer did, the arrow on the same
+/// point and the board selected, and the model is not edited.
+fn the_author_sees_the_customer_s_comment(
+    author: KetchupApp,
+    package: &view::Package,
+    model: &ViewerModel,
+    path: &std::path::Path,
+    text: &str,
+) {
+    let returned = std::fs::read(path).expect("returned comments");
+    let comments = view::Comments::read(returned.as_slice(), package).expect("bound comments");
+    assert_eq!(comments.comments.len(), 1);
     let comment = comments.comments[0].clone();
-    assert_eq!(comment.text, COMMENT);
+    assert_eq!(comment.text, text);
     let board = model
         .manifest()
         .occurrences
@@ -204,15 +270,13 @@ fn a_customer_comment_made_in_the_viewer_shows_the_author_the_customer_s_view_an
         model.manifest().scenes[0].camera,
         "the customer's own view, not the scene"
     );
+    assert_eq!(comment.arrows.len(), 1);
     assert_eq!(comment.arrows[0].tip.occurrence, Some(board.clone()));
 
     // The author opens the returned file and shows the comment.
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("returned.ketchup-comments");
-    std::fs::write(&path, &returned).unwrap();
     let mut author = author;
     let before = (author.document_revision(), author.undo_step_count());
-    assert_eq!(author.import_viewer_comments_from(&path).unwrap().added, 1);
+    assert_eq!(author.import_viewer_comments_from(path).unwrap().added, 1);
     let mut desk = Harness::builder()
         .with_size(Vec2::new(1600.0, 1000.0))
         .build_state(|context, app: &mut KetchupApp| app.ui(context), author);
@@ -222,7 +286,7 @@ fn a_customer_comment_made_in_the_viewer_shows_the_author_the_customer_s_view_an
     let app = desk.state();
     assert_eq!(app.edit_context_depth(), 1, "the desk component is opened");
     let rect = app.camera.viewport_rect.unwrap();
-    let seen = ViewerCamera::from_scene(&model, &comment.view.camera).unwrap();
+    let seen = ViewerCamera::from_scene(model, &comment.view.camera).unwrap();
     let aspect = rect.width() / rect.height();
     // Opening the component adds its breadcrumb, 2 points off the viewport
     // after the view was set; that moves the picture by under a point.
@@ -246,7 +310,7 @@ fn a_customer_comment_made_in_the_viewer_shows_the_author_the_customer_s_view_an
         "the arrow points where the customer tapped: {:?} vs {tip_on_screen:?}",
         overlay.arrows[0][1]
     );
-    assert_eq!(overlay.label.unwrap().1, format!("Jana: {COMMENT}"));
+    assert_eq!(overlay.label.unwrap().1, format!("Jana: {text}"));
     assert!(
         app.selected_instance_paths().contains(&board),
         "the board inside the desk is selected, its component opened"

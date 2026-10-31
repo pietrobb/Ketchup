@@ -1811,3 +1811,40 @@ mod atomic_save {
         std::fs::remove_dir_all(&directory).unwrap();
     }
 }
+
+/// Seen on the Android emulator: the phone's information panel was squeezed
+/// to two lines, so writing a comment meant scrolling a sliver at a time. The
+/// whole comment form now fits under the model on a phone.
+#[test]
+fn on_a_phone_the_comment_form_fits_under_the_model() {
+    let mut bytes = Vec::new();
+    scene_package().write(&mut bytes).expect("fixture");
+    let mut app = ViewerApp::new(None).with_language(Language::ENGLISH);
+    app.open(bytes.as_slice()).expect("open");
+    app.selected = Some(0);
+    let screen = egui::vec2(412.0, 915.0);
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(screen)
+        .build_state(|ctx, app: &mut ViewerApp| app.show(ctx), app);
+    harness.run();
+    harness.get_by_label("Add comment").click();
+    harness.run();
+    let view = harness.get_by_label("Model view").rect();
+    assert!(
+        view.height() >= 0.5 * screen.y,
+        "the model keeps most of the screen: {view:?}"
+    );
+    for label in [
+        "Your name (optional)",
+        "Comment",
+        "Add arrow",
+        "Save comment",
+        "Cancel",
+    ] {
+        let rect = harness.get_by_label(label).rect();
+        assert!(
+            rect.top() >= view.bottom() && rect.bottom() <= screen.y,
+            "{label} is in view under the model ({view:?}): {rect:?}"
+        );
+    }
+}

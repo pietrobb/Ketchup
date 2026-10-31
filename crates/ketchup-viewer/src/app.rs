@@ -499,8 +499,11 @@ impl ViewerApp {
             }
         });
         if narrow {
+            // A fixed share of the screen: a scroll area left to size itself
+            // shrinks the panel to two lines, too little to write a comment.
+            let height = (ctx.screen_rect().height() * 0.35).clamp(160.0, 360.0);
             egui::TopBottomPanel::bottom("viewer_info_mobile")
-                .max_height(160.0)
+                .exact_height(height)
                 .show(ctx, |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         self.measure_info(ui);
