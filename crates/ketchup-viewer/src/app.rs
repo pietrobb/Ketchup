@@ -22,6 +22,8 @@ use std::{
     path::Path,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod benchmark;
 mod comments_section;
 mod measure_section;
 mod session;
