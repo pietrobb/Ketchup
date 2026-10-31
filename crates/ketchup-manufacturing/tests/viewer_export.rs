@@ -1240,7 +1240,17 @@ fn angle_difference(a: f64, b: f64) -> f64 {
 fn desktop_view_inverts_the_exported_scene_camera() {
     let context = camera_context();
     for parallel in [true, false] {
-        for (yaw_rad, pitch_rad) in [(0.0, 1.2), (0.7, 0.4), (-2.5, 2.0), (1.9, 0.0)] {
+        // The desktop looks down at a negative pitch (V9d: a comment from such
+        // a view came back seen from the other side, upside down).
+        for (yaw_rad, pitch_rad) in [
+            (0.0, 1.2),
+            (0.7, 0.4),
+            (-2.5, 2.0),
+            (1.9, 0.0),
+            (0.7, -0.5),
+            (-2.5, -1.2),
+            (3.0, -0.68),
+        ] {
             let saved = ketchup_model::document::SavedCamera {
                 parallel,
                 yaw_rad,

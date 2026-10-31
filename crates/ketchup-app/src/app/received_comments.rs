@@ -190,13 +190,41 @@ impl KetchupApp {
             .and_then(|path| received::model_path(&snapshot, path));
         drop(snapshot);
         match selected {
-            Some(path) => self.select_from_outliner(path, false),
-            None => {
+            Some(path) if self.open_contexts_to(&path) => self.select_from_outliner(path, false),
+            _ => {
                 self.clear_selection();
             }
         }
         self.viewer_prep.received.active = Some(index);
         true
+    }
+
+    /// Open the groups and components around `target` so that it can be
+    /// selected, as the author would to pick a part inside a component.
+    fn open_contexts_to(&mut self, target: &InstancePath) -> bool {
+        if self.occurrence_in_active_context(target) {
+            return true;
+        }
+        while self.exit_edit_context() {}
+        // Each level is at most a group and a component.
+        for _ in 0..=2 * (target.steps().len() + 1) {
+            if self.occurrence_in_active_context(target) {
+                return true;
+            }
+            let Some(outer) = self
+                .active_scene_query()
+                .into_iter()
+                .map(|occurrence| occurrence.instance_path)
+                .filter(|path| path.is_prefix_of(target))
+                .max_by_key(|path| path.steps().len())
+            else {
+                return false;
+            };
+            if !self.enter_occurrence_context(outer) {
+                return false;
+            }
+        }
+        false
     }
 
     /// Where the shown comment's arrows and text land in `rect`: arrows end at
