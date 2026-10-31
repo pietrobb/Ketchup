@@ -279,7 +279,7 @@ manufactured items, unless the layer has no `"sheet"` board size and a word
 of its material says it is laid on site (`SITE_LAID_WORDS`: roofing,
 membrane, cladding, krytina, obklad...): then site-built items with a
 warning. The words are English, Slovak, Czech and German; a material that is
-neither a board (`BOARD_WORDS`: board, osb, doska, sadrokartón...) nor laid
+neither a board (`BOARD_WORDS`: board, osb, doska, platte...) nor laid
 on site is still drawn, with a warning. Infill is site-built; a layer's `"role"` and
 `"infill_role"` change them. A part from `box`, `extrude`... sets it in
 `attributes={FABRICATION_ROLE: MANUFACTURED_ITEM}`. `role=` refuses any other
