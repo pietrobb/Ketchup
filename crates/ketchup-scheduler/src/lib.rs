@@ -411,6 +411,12 @@ pub enum WorkerError {
     ResourceLimit {
         faces: Option<u64>,
     },
+    /// The worker's executable, or an OCCT library beside it, at `path` has at
+    /// least `bytes`, more than a worker may have.
+    OversizedWorkerFile {
+        path: PathBuf,
+        bytes: u64,
+    },
     /// The named worker output is not a regular file.
     NotRegularFile(String),
     /// The named worker output had another size when it was read than when it was opened.
@@ -454,6 +460,11 @@ impl fmt::Display for WorkerError {
                     None => Ok(()),
                 }
             }
+            Self::OversizedWorkerFile { path, bytes } => write!(
+                formatter,
+                "worker spawn failed: exact worker file {} is {bytes} bytes, more than the {MAX_EXACT_WORKER_EXECUTABLE_BYTES} a worker may have",
+                path.display()
+            ),
             Self::NotRegularFile(label) => write!(formatter, "{label} is not a regular file"),
             Self::ChangedWhileRead(label) => {
                 write!(formatter, "the {label} changed while it was read")
@@ -753,7 +764,7 @@ fn guarded_exact_worker_identity(executable: &Path) -> Result<GuardedExactWorker
         .canonicalize()
         .map_err(|error| WorkerError::Spawn(error.to_string()))?;
     let (file, metadata) = open_bounded(&executable)?;
-    let mut identity = bounded_sha256(&file)?;
+    let mut identity = bounded_sha256(&executable, &file)?;
     // The OCCT libraries are code the worker runs as much as its executable.
     let mut libraries = Vec::new();
     for library in occt_libraries(&executable)? {
@@ -782,25 +793,35 @@ fn open_bounded(path: &Path) -> Result<(fs::File, fs::Metadata), WorkerError> {
     let spawn = |error: io::Error| WorkerError::Spawn(error.to_string());
     let file = open_guarded_exact_worker(path).map_err(spawn)?;
     let metadata = file.metadata().map_err(spawn)?;
-    if !metadata.is_file() || metadata.len() > MAX_EXACT_WORKER_EXECUTABLE_BYTES {
+    if !metadata.is_file() {
         return Err(WorkerError::Spawn(
-            "exact worker executable is not a bounded file".to_owned(),
+            "exact worker executable is not a file".to_owned(),
         ));
+    }
+    if metadata.len() > MAX_EXACT_WORKER_EXECUTABLE_BYTES {
+        return Err(oversized_worker_file(path, metadata.len()));
     }
     Ok((file, metadata))
 }
 
-fn bounded_sha256(file: &fs::File) -> Result<String, WorkerError> {
+fn bounded_sha256(path: &Path, file: &fs::File) -> Result<String, WorkerError> {
     let mut bytes = Vec::new();
     file.take(MAX_EXACT_WORKER_EXECUTABLE_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| WorkerError::Spawn(error.to_string()))?;
-    if bytes.len() as u64 > MAX_EXACT_WORKER_EXECUTABLE_BYTES {
-        return Err(WorkerError::Spawn(
-            "exact worker executable is not a bounded file".to_owned(),
-        ));
+    let len = bytes.len() as u64;
+    if len > MAX_EXACT_WORKER_EXECUTABLE_BYTES {
+        return Err(oversized_worker_file(path, len));
     }
     Ok(sha256_hex(&bytes))
+}
+
+/// `bytes` is a lower bound when the file grew while it was read.
+fn oversized_worker_file(path: &Path, bytes: u64) -> WorkerError {
+    WorkerError::OversizedWorkerFile {
+        path: path.to_owned(),
+        bytes,
+    }
 }
 
 /// The OCCT runtime libraries beside the worker, by name: the release
@@ -844,7 +865,7 @@ fn library_sha256(
     if let Some(sha256) = known {
         return Ok(sha256);
     }
-    let sha256 = bounded_sha256(file)?;
+    let sha256 = bounded_sha256(path, file)?;
     HASHES
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2963,11 +2984,17 @@ mod tests {
             .unwrap()
             .set_len(MAX_EXACT_WORKER_EXECUTABLE_BYTES + 1)
             .unwrap();
-        assert!(matches!(
-            exact_worker_identity(&oversized),
-            Err(WorkerError::Spawn(message))
-                if message == "exact worker executable is not a bounded file"
-        ));
+        // The refusal names the file and its size (CI-62: on Linux it said
+        // neither, so which file was too large had to be guessed).
+        let expected = format!(
+            "exact worker file {} is {} bytes, more than the {MAX_EXACT_WORKER_EXECUTABLE_BYTES} a worker may have",
+            oversized.canonicalize().unwrap().display(),
+            MAX_EXACT_WORKER_EXECUTABLE_BYTES + 1
+        );
+        assert_eq!(
+            exact_worker_identity(&oversized).unwrap_err().to_string(),
+            format!("worker spawn failed: {expected}")
+        );
     }
 
     #[test]
