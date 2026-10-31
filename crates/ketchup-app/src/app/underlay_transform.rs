@@ -4,7 +4,7 @@
 use super::transform::{move_world_edit, rotate_world_edit};
 use super::underlay_edit::{FindRegions, UnderlayEditError};
 use super::underlay_snapping::{underlay_of, underlay_reference};
-use crate::transform_operation::TransformTarget;
+use crate::transform_operation::{TransformPlan, TransformTarget};
 use crate::*;
 use ketchup_model::underlay::UnderlayId;
 use ketchup_model::underlay::drawn::in_lines;
@@ -173,6 +173,25 @@ impl KetchupApp {
             TransformTarget::Underlay(id) => Some((*id, plan.world_edit())),
             _ => None,
         }
+    }
+
+    /// Whether the move or turn `plan` of a whole drawing waits for the regions of the
+    /// areas that follow the drawing, found off the UI thread; `redo` commits it planned
+    /// again on the frame they are (review 2026-10-29 UO-40).
+    pub(crate) fn underlay_transform_awaits(
+        &mut self,
+        plan: &TransformPlan,
+        redo: impl FnOnce(&mut Self, TransformPlan) + 'static,
+    ) -> bool {
+        let TransformTarget::Underlay(id) = *plan.target() else {
+            return false;
+        };
+        let world_edit = plan.world_edit();
+        !self.followed_regions_or_await(plan.batch(), move |app| {
+            if let Some(plan) = TransformPlan::underlay(&app.document.current(), id, world_edit) {
+                redo(app, plan);
+            }
+        })
     }
 
     /// The edit so far of a live move or turn, or copy, of the objects picked in a

@@ -316,6 +316,28 @@ fn followed_by(
 }
 
 impl KetchupApp {
+    /// Forgets the regions found for the areas of the window's program that follow a
+    /// drawing, as a document opened in a new run has none found.
+    #[cfg(test)]
+    pub(crate) fn forget_followed_regions(&self) {
+        let Some(program) = self.document.current_rule_program() else {
+            return;
+        };
+        let snapshot = self.document.current();
+        for json in program
+            .source
+            .lines()
+            .filter_map(|line| line.strip_prefix(PREFIX))
+        {
+            if let Ok(binding) = serde_json::from_str::<Binding>(json)
+                && let Some(search) =
+                    super::underlay_program::binding_search(self, &snapshot, &binding)
+            {
+                super::underlay_regions::forget(&search);
+            }
+        }
+    }
+
     /// Whether the regions of the areas that follow a drawing `batch` changes are found as
     /// it leaves them, or why not. When neither, they are being found off the UI thread,
     /// started here unless they are already, so the window does not stall committing the

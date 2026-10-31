@@ -802,6 +802,38 @@ fn moving_a_drawing_again_finds_no_regions_of_the_areas_that_follow_it() {
     );
 }
 
+/// UO-40: a fit that scales a drawing an area follows finds its regions no more than a move
+/// does: the area keeps its join tolerance in the drawing's own millimetres, so the search
+/// is the one found before.
+#[test]
+fn scaling_a_drawing_finds_no_regions_of_the_area_that_follows_it_again() {
+    let (mut app, mut bridge, offset) = imported(&walled_room().replace("9700", "9717"));
+    let point = [2000.0 - offset[0], 2000.0 - offset[1]];
+    from_underlay(
+        &mut app,
+        &mut bridge,
+        json!({"name":"ROOM", "point_mm":point, "layers":["walls"]}),
+    );
+    let id = app.document.current().underlays().next().unwrap().id;
+    let before = source(&app);
+    let searched = super::underlay_regions::searches_on_this_thread();
+    let fit = app
+        .fit_underlay(
+            id,
+            [[0.0, 0.0], [1000.0, 0.0]],
+            [[0.0, 0.0], [1500.0, 0.0]],
+            true,
+        )
+        .unwrap();
+    assert!((fit.scale - 1.5).abs() < 1e-9, "{}", fit.scale);
+    assert_ne!(source(&app), before, "the room follows the drawing");
+    assert_eq!(
+        super::underlay_regions::searches_on_this_thread(),
+        searched,
+        "the scaled fit found regions again"
+    );
+}
+
 #[test]
 fn an_explicit_gap_closure_makes_a_profile_without_changing_the_drawing() {
     let drawing = "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nLWPOLYLINE\n8\nboundary\n90\n4\n70\n0\n10\n2400\n20\n0\n10\n0\n20\n0\n10\n0\n20\n1250\n10\n2400\n20\n1250\n0\nENDSEC\n0\nEOF\n";

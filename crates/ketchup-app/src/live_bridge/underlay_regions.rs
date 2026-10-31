@@ -790,6 +790,15 @@ thread_local! {
     static SEARCHED_HERE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// Forgets what `search` found.
+#[cfg(test)]
+pub(super) fn forget(search: &Search) {
+    FOUND
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .retain(|(earlier, _)| earlier != search);
+}
+
 /// How many searches for regions the calling thread has run itself.
 #[cfg(test)]
 pub(crate) fn searches_on_this_thread() -> usize {

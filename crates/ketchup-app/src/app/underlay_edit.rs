@@ -100,6 +100,23 @@ impl KetchupApp {
         });
     }
 
+    /// Whether `batch`, a change made in the window, may be committed now: the regions of
+    /// the areas that follow a drawing it moves, fits or stands up are found. When not, it
+    /// waits for them as a 2D edit does ([`Self::await_followed_regions`]), so the commit
+    /// does not find them on the UI thread, as after opening a document (review 2026-10-29
+    /// UO-40).
+    pub(crate) fn followed_regions_or_await(
+        &mut self,
+        batch: &CommandBatch,
+        redo: impl FnOnce(&mut Self) + 'static,
+    ) -> bool {
+        if self.followed_regions_ready(batch) {
+            return true;
+        }
+        self.await_followed_regions(batch.clone(), redo);
+        false
+    }
+
     /// Makes a 2D edit that waited on the frame the regions it waited for are found;
     /// whether one is still waiting.
     pub(crate) fn poll_drawing_edit(&mut self) -> bool {

@@ -915,6 +915,17 @@ fn pull_up(harness: &mut Harness<'_, KetchupApp>, height: &str, at: Vec3) {
     );
 }
 
+/// Steps until a change of a drawing waiting for the regions of the areas that follow it,
+/// pushed out of those kept by other tests, is made.
+fn awaited(harness: &mut Harness<'_, KetchupApp>) {
+    crate::tests::shell::step_until(
+        harness,
+        std::time::Duration::from_secs(60),
+        "the regions of the change were never found",
+        |app| app.solid_tools.drawing_edit_awaits_regions.is_none(),
+    );
+}
+
 fn program_source(harness: &Harness<'_, KetchupApp>) -> String {
     harness
         .state()
@@ -1080,6 +1091,7 @@ fn a_pulled_area_stands_up_with_its_drawing() {
         "{}",
         harness.state().digest
     );
+    awaited(&mut harness);
     let (low, standing) = size(&harness);
     assert!(
         (standing.y - 300.0).abs() < 1e-6 && (standing.z - lying.y).abs() < 1e-6,
@@ -1100,6 +1112,7 @@ fn a_pulled_area_stands_up_with_its_drawing() {
         "{}",
         harness.state().digest
     );
+    awaited(&mut harness);
     let (_, again) = size(&harness);
     assert!((again - lying).length() < 1e-6, "{again:?}");
     let source = program_source(&harness);
@@ -1242,9 +1255,10 @@ fn a_pull_area_click_before_the_regions_are_found_waits_for_them_off_the_ui_thre
 /// they are.
 #[test]
 fn a_line_deleted_from_a_drawing_an_area_follows_waits_for_its_regions_off_the_ui_thread() {
-    // A line of the room's layer of its own: the regions another test found are not these.
+    // Lines of the room's layer of its own, one left after the deletion: the regions
+    // another test found are not these, before it or after.
     let mut harness = shell_of(imported_alone_with(&format!(
-        "{ROOM_AND_FLOOR}0\nLINE\n8\nrooms\n10\n13\n20\n400\n11\n113\n21\n400\n"
+        "{ROOM_AND_FLOOR}0\nLINE\n8\nrooms\n10\n13\n20\n400\n11\n113\n21\n400\n0\nLINE\n8\nrooms\n10\n13\n20\n431\n11\n113\n21\n431\n"
     )));
     harness
         .state_mut()
@@ -1294,6 +1308,104 @@ fn a_line_deleted_from_a_drawing_an_area_follows_waits_for_its_regions_off_the_u
         searched,
         "the UI thread found regions"
     );
+}
+
+/// Review 2026-10-29 UO-40: with the regions of an area that follows a drawing not found
+/// yet, as after opening a document, moving the drawing with the Move tool, fitting it and
+/// standing it up as a view found them on the UI thread in the commit. Each waits for them
+/// found off it and is made on the frame they are.
+#[test]
+fn moving_fitting_or_standing_up_a_drawing_an_area_follows_waits_for_its_regions_off_the_ui_thread()
+{
+    use crate::transform_operation::TransformPlan;
+    use ketchup_model::underlay::view::ViewPlane;
+    let mut harness = shell_of(imported_alone_with(&format!(
+        "{ROOM_AND_FLOOR}0\nLINE\n8\nrooms\n10\n13\n20\n470\n11\n113\n21\n470\n"
+    )));
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExtrudeUnderlayArea);
+    pull_up(&mut harness, "300", IN_ROOM);
+    let id = harness
+        .state()
+        .document
+        .current()
+        .underlays()
+        .next()
+        .unwrap()
+        .id;
+    type Change = Box<dyn Fn(&mut KetchupApp)>;
+    let changes: [(&str, Change, &str); 3] = [
+        (
+            "move",
+            Box::new(move |app| {
+                let edit = Transform::from_translation(70.0, 30.0, 0.0).unwrap();
+                let plan = TransformPlan::underlay(&app.document.current(), id, edit).unwrap();
+                let selection = super::underlay_snapping::underlay_reference(id, 0);
+                assert!(app.commit_move_transform(plan, &selection, Vec3::new(70.0, 30.0, 0.0)));
+            }),
+            "Moved",
+        ),
+        (
+            "fit",
+            Box::new(move |app| {
+                app.fit_underlay_in_window(
+                    id,
+                    [[0.0, 0.0], [1000.0, 0.0]],
+                    [[-40.0, 20.0], [960.0, 20.0]],
+                    false,
+                );
+            }),
+            "Underlay placed",
+        ),
+        (
+            "view",
+            Box::new(move |app| {
+                assert!(app.set_underlay_view(id, ViewPlane::Front));
+            }),
+            "",
+        ),
+    ];
+    for (change, make, made) in changes {
+        harness.state().forget_followed_regions();
+        let hold = crate::live_bridge::underlay_regions::HoldAhead::hold();
+        let held = hold.clone();
+        let guard =
+            crate::tests::shell::hang_guard("the search of the followed regions", move || {
+                held.let_go();
+            });
+        let undo = harness.state().undo_step_count();
+        let searched = crate::live_bridge::underlay_regions::searches_on_this_thread();
+        make(harness.state_mut());
+        let app = harness.state();
+        assert_eq!(
+            crate::live_bridge::underlay_regions::searches_on_this_thread(),
+            searched,
+            "{change}: the UI thread found regions"
+        );
+        assert_eq!(app.undo_step_count(), undo, "{change}: {}", app.digest);
+        assert!(
+            app.digest.starts_with("Finding the areas"),
+            "{change}: {}",
+            app.digest
+        );
+        hold.let_go();
+        drop(guard);
+        crate::tests::shell::step_until(
+            &mut harness,
+            std::time::Duration::from_secs(60),
+            "the waiting change was never made",
+            |app| app.undo_step_count() > undo,
+        );
+        let app = harness.state();
+        assert_eq!(app.undo_step_count(), undo + 1, "{change}: {}", app.digest);
+        assert!(app.digest.starts_with(made), "{change}: {}", app.digest);
+        assert_eq!(
+            crate::live_bridge::underlay_regions::searches_on_this_thread(),
+            searched,
+            "{change}: the UI thread found regions"
+        );
+    }
 }
 
 /// Review 2026-10-26 UO-40, a waiting click in a building of a plan per floor: the click

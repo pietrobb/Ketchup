@@ -142,6 +142,25 @@ impl TransformPlan {
         })
     }
 
+    /// The plan of the move or turn `world_edit` of the underlay `id` as `snapshot` has it.
+    pub(crate) fn underlay(
+        snapshot: &Snapshot,
+        id: UnderlayId,
+        world_edit: Transform,
+    ) -> Option<Self> {
+        let batch = plan_underlay_edit(snapshot, id, world_edit).ok()?;
+        Some(Self {
+            target: TransformTarget::Underlay(id),
+            world_edit,
+            preview_overrides: BTreeMap::new(),
+            batch,
+        })
+    }
+
+    pub(crate) const fn batch(&self) -> &CommandBatch {
+        &self.batch
+    }
+
     pub(crate) fn preview_overrides(&self) -> &BTreeMap<InstancePath, Transform> {
         &self.preview_overrides
     }

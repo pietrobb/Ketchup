@@ -563,7 +563,7 @@ fn a_drawing_standing_as_a_view_does_not_place_the_national_grid() {
         path
     };
     let (mut app, mut bridge) = setup();
-    let mut import = |app: &mut KetchupApp, bridge: &mut LiveBridge, name: &str, x: f64| {
+    let import = |app: &mut KetchupApp, bridge: &mut LiveBridge, name: &str, x: f64| {
         bridge
             .execute(app, import_underlay(&drawing(name, x)), false)
             .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()))

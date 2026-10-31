@@ -458,6 +458,12 @@ impl KetchupApp {
         {
             return false;
         }
+        let selection = primary_selection.clone();
+        if self.underlay_transform_awaits(&plan, move |app, plan| {
+            app.commit_move_transform(plan, &selection, delta_mm);
+        }) {
+            return true;
+        }
         let Some(target) = self.commit_transform_plan(plan) else {
             return false;
         };
@@ -555,6 +561,12 @@ impl KetchupApp {
         axis: Axis,
         angle_degrees: f64,
     ) -> bool {
+        let selection = primary_selection.clone();
+        if self.underlay_transform_awaits(&plan, move |app, plan| {
+            app.commit_rotate_transform(plan, &selection, centre_mm, axis, angle_degrees);
+        }) {
+            return true;
+        }
         let Some(target) = self.commit_transform_plan(plan) else {
             return false;
         };
