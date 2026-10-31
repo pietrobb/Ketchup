@@ -483,7 +483,12 @@ impl ViewerApp {
                     "viewer-error"
                 };
                 ui.colored_label(egui::Color32::LIGHT_RED, self.t(headline));
-                ui.small(error.to_string());
+                // Display ends with the hint; it gets a line of its own instead.
+                let technical = match error.target_name() {
+                    "" => format!("{}: {}", error.code(), error.reason_text()),
+                    target => format!("{} at {target}: {}", error.code(), error.reason_text()),
+                };
+                ui.small(technical);
                 ui.small(error.fix_hint_text());
             }
             if self.kept

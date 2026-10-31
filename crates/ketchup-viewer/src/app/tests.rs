@@ -1425,6 +1425,26 @@ fn a_start_whose_model_does_not_open_says_so_in_the_viewer() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// V9c: a damaged or foreign package on the Android emulator showed what to
+/// do twice, once at the end of the technical line and once on its own; the
+/// banner now names the failure, then says once what to do.
+#[test]
+fn a_refused_package_says_once_what_to_do() {
+    let mut app = ViewerApp::new(None);
+    let refused = app
+        .open(b"not a package".as_slice())
+        .expect_err("not a package");
+    let hint = refused.fix_hint_text().to_owned();
+    assert!(!hint.is_empty());
+    app.report(refused);
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::Vec2::new(900.0, 700.0))
+        .build_state(|ctx, app: &mut ViewerApp| app.show(ctx), app);
+    harness.run();
+    assert_eq!(harness.query_all_by_label_contains(&hint).count(), 1);
+    harness.get_by_label_contains("viewer.package.invalid");
+}
+
 /// Review 2026-10-17 §3 P3: a phone's start reads the kept session, else the
 /// installed package, on a thread of its own, not in the first frame on the
 /// UI thread; meanwhile the Viewer is empty and says the model is loading.
