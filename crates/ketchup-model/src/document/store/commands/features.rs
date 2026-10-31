@@ -103,14 +103,19 @@ pub(super) fn apply(
             else {
                 return Err(CanonicalError::FeatureIsNotCut(*id));
             };
-            let target_definition = edit
+            if target == id {
+                return Err(CanonicalError::FeatureDependencyCycle(*id));
+            }
+            let target_feature = edit
                 .product
                 .features
                 .get(target)
-                .ok_or(CanonicalError::FeatureNotFound(*target))?
-                .definition_id;
-            if target == id || target_definition != feature.definition_id {
-                return Err(CanonicalError::FeatureIsNotCut(*id));
+                .ok_or(CanonicalError::FeatureNotFound(*target))?;
+            if target_feature.definition_id != feature.definition_id {
+                return Err(CanonicalError::CutTargetInOtherDefinition(*id, *target));
+            }
+            if !crate::document::feature_validation::feature_kind_is_solid(&target_feature.kind) {
+                return Err(CanonicalError::CutTargetIsNotSolid(*id, *target));
             }
             let kind = FeatureKind::Pad(PadSpec {
                 operation: PadOperation::Cut {

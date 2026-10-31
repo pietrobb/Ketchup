@@ -69,6 +69,10 @@ pub enum CanonicalError {
     DraftAngleOutOfRange,
     FeatureIsNotProfile(FeatureId),
     FeatureIsNotCut(FeatureId),
+    /// A cut (first) aimed at a feature (second) of another part.
+    CutTargetInOtherDefinition(FeatureId, FeatureId),
+    /// A cut (first) aimed at a feature (second) that makes no solid.
+    CutTargetIsNotSolid(FeatureId, FeatureId),
     FeatureDependencyCycle(FeatureId),
     InvalidFeatureSuppression(DefinitionId, BodyId),
     FeatureSuppressionUnchanged(DefinitionId, BodyId),
@@ -276,6 +280,8 @@ impl CanonicalError {
             Self::DraftAngleOutOfRange => "canonical.draft_angle_out_of_range",
             Self::FeatureIsNotProfile(..) => "canonical.feature_is_not_profile",
             Self::FeatureIsNotCut(..) => "canonical.feature_is_not_cut",
+            Self::CutTargetInOtherDefinition(..) => "canonical.cut_target_in_other_definition",
+            Self::CutTargetIsNotSolid(..) => "canonical.cut_target_is_not_solid",
             Self::FeatureDependencyCycle(..) => "canonical.feature_dependency_cycle",
             Self::InvalidFeatureSuppression(..) => "canonical.invalid_feature_suppression",
             Self::FeatureSuppressionUnchanged(..) => "canonical.feature_suppression_unchanged",
@@ -608,6 +614,16 @@ impl fmt::Display for CanonicalError {
             Self::FeatureIsNotCut(id) => {
                 write!(formatter, "feature {} is not a cut into another feature", id.0)
             }
+            Self::CutTargetInOtherDefinition(cut, target) => write!(
+                formatter,
+                "cut {} cannot cut feature {}, which belongs to another part",
+                cut.0, target.0
+            ),
+            Self::CutTargetIsNotSolid(cut, target) => write!(
+                formatter,
+                "cut {} cannot cut feature {}, which makes no solid",
+                cut.0, target.0
+            ),
             Self::FeatureDependencyCycle(id) => {
                 write!(formatter, "feature dependency cycle at {}", id.0)
             }

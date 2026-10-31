@@ -1259,6 +1259,127 @@ fn a_batch_that_keeps_every_feature_reuses_the_dependency_graph_and_dirties_noth
     ));
 }
 
+/// PG-67: re-aiming a cut names what is wrong with the new target, not that the
+/// cut is no cut.
+#[test]
+fn a_cut_aimed_at_a_target_it_cannot_cut_says_why() {
+    const OTHER_PAD: FeatureId = FeatureId(13);
+    const CUT: FeatureId = FeatureId(14);
+    const DEPENDENT: FeatureId = FeatureId(15);
+    const OTHER_DEFINITION: DefinitionId = DefinitionId(2);
+    const OTHER_WORKPLANE: FeatureId = FeatureId(20);
+    let mut document = pad_document();
+    let pad = pad_operation(&document);
+    let cut = PadSpec {
+        extent: FeatureExtent::Blind(Dimension::from_decimal("5").unwrap()),
+        operation: PadOperation::Cut {
+            target: PAD,
+            start: CutStart::ProfilePlane,
+        },
+        ..pad.clone()
+    };
+    let create = |id, definition_id, name: &str, kind| CanonicalCommand::CreateFeature {
+        id,
+        definition_id,
+        name: name.into(),
+        kind,
+    };
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            create(PAD, DEFINITION, "Pad", FeatureKind::Pad(pad.clone())),
+            create(
+                OTHER_PAD,
+                DEFINITION,
+                "Other pad",
+                FeatureKind::Pad(pad.clone()),
+            ),
+            create(CUT, DEFINITION, "Cut", FeatureKind::Pad(cut.clone())),
+            create(
+                DEPENDENT,
+                DEFINITION,
+                "Cut into the cut",
+                FeatureKind::Pad(PadSpec {
+                    operation: PadOperation::Cut {
+                        target: CUT,
+                        start: CutStart::ProfilePlane,
+                    },
+                    ..cut
+                }),
+            ),
+            CanonicalCommand::CreateDefinition {
+                id: OTHER_DEFINITION,
+                name: "Other part".into(),
+            },
+            create(
+                OTHER_WORKPLANE,
+                OTHER_DEFINITION,
+                "XY",
+                FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            ),
+        ]))
+        .unwrap();
+    let retarget = |document: &mut DocumentStore, target| {
+        let before = document.current().canonical_digest();
+        let error = document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::SetCutTarget {
+                id: CUT,
+                target,
+            }]))
+            .map(|_| ())
+            .unwrap_err();
+        assert_eq!(document.current().canonical_digest(), before);
+        error
+    };
+
+    assert_eq!(
+        retarget(&mut document, CUT),
+        CanonicalError::FeatureDependencyCycle(CUT)
+    );
+    assert_eq!(
+        retarget(&mut document, DEPENDENT),
+        CanonicalError::FeatureDependencyCycle(CUT)
+    );
+    assert_eq!(
+        retarget(&mut document, OTHER_WORKPLANE),
+        CanonicalError::CutTargetInOtherDefinition(CUT, OTHER_WORKPLANE)
+    );
+    for not_solid in [WORKPLANE, SKETCH] {
+        let error = retarget(&mut document, not_solid);
+        assert_eq!(error, CanonicalError::CutTargetIsNotSolid(CUT, not_solid));
+        assert_eq!(error.code(), "canonical.cut_target_is_not_solid");
+    }
+    assert_eq!(
+        retarget(&mut document, FeatureId(99)),
+        CanonicalError::FeatureNotFound(FeatureId(99))
+    );
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::SetCutTarget {
+            id: CUT,
+            target: OTHER_PAD,
+        }]))
+        .unwrap();
+    assert!(matches!(
+        document.current().feature(CUT).unwrap().kind(),
+        FeatureKind::Pad(PadSpec {
+            operation: PadOperation::Cut {
+                target: OTHER_PAD,
+                ..
+            },
+            ..
+        })
+    ));
+    assert_eq!(
+        document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::SetCutTarget {
+                id: PAD,
+                target: OTHER_PAD,
+            }]))
+            .map(|_| ())
+            .unwrap_err(),
+        CanonicalError::FeatureIsNotCut(PAD)
+    );
+}
+
 #[test]
 fn feature_dependency_cycle_is_rejected_atomically() {
     const FIRST_SHELL: FeatureId = FeatureId(300);
