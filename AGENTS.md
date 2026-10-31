@@ -99,14 +99,14 @@ reproduced failure that they catch, or explicit approval by the owner.
   `scripts/check_*.py` run once at the end of a block of steps (e.g. B1–B5), and before an
   installer build or a push. When the full suite fails, fix it and rerun only the failed tests
   by filter; the next full run is at the end of the next block.
-- Tests that need the large house or a document of its size (750-part `tiny-house.star`,
-  whole-house collisions and drawings) are named `large_house_*` and marked
+- Tests that need a large house or a document of its size (750-part `tiny-house.star`,
+  1 855-part `house-project.star`, whole-house collisions and drawings) are named `large_house_*` and marked
   `#[ignore = "large-house: runs in full suite"]`, so per-step runs skip them. The end of a
   block also runs them: `cargo test --locked --workspace --all-targets -- --ignored large_house`
   (plain `--include-ignored` would also start the opt-in tests that need Blender, a GPU or
   external fixtures). A test that only needs "some model" uses the small house
   `crates/ketchup-app/tests/fixtures/small-house.star`, not the large one.
-  `scripts/check_large_house_tests.py` fails on a test that reaches `tiny-house.star` and
+  `scripts/check_large_house_tests.py` fails on a test that reaches either house and
   is not ignored this way.
 - Tests check outcomes (finished, cancelled, timed out), not how long something took. A time
   budget lives only in a function named `perf_*`, marked

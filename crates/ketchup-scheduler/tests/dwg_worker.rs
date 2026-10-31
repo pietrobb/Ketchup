@@ -188,7 +188,7 @@ fn a_dwg_drawing_written_back_keeps_its_styles_extended_data_and_objects() {
     std::fs::write(&source, ketchup_dwg::testing::styled_drawing_dwg()).unwrap();
     let lines = directory.path().join("lines.bin");
     let mut worker = worker();
-    worker
+    let layers = worker
         .read_underlay(
             UnderlayInput {
                 source: source.clone(),
@@ -199,7 +199,9 @@ fn a_dwg_drawing_written_back_keeps_its_styles_extended_data_and_objects() {
             },
             &CancelToken::default(),
         )
-        .unwrap();
+        .unwrap()
+        .layers
+        .len();
     let mut write = |output: &std::path::Path| {
         worker
             .write_underlay(
@@ -209,6 +211,7 @@ fn a_dwg_drawing_written_back_keeps_its_styles_extended_data_and_objects() {
                     unit_if_unitless: Some(ImportLengthUnit::Millimetre),
                     geo_origin_mm: None,
                     lines: lines.clone(),
+                    layers,
                     edits: ketchup_model::underlay::edits::UnderlayEdits::default(),
                     output: output.to_owned(),
                 },
@@ -241,7 +244,7 @@ fn a_line_deleted_from_a_dwg_group_leaves_the_group_and_no_dangling_reference() 
     std::fs::write(&source, ketchup_dwg::testing::styled_drawing_dwg()).unwrap();
     let lines = directory.path().join("lines.bin");
     let mut worker = worker();
-    worker
+    let layers = worker
         .read_underlay(
             UnderlayInput {
                 source: source.clone(),
@@ -252,7 +255,9 @@ fn a_line_deleted_from_a_dwg_group_leaves_the_group_and_no_dangling_reference() 
             },
             &CancelToken::default(),
         )
-        .unwrap();
+        .unwrap()
+        .layers
+        .len();
     let mut edits = ketchup_model::underlay::edits::UnderlayEdits::default();
     edits.removed_objects.insert(0);
     let mut write = |output: &std::path::Path| {
@@ -264,6 +269,7 @@ fn a_line_deleted_from_a_dwg_group_leaves_the_group_and_no_dangling_reference() 
                     unit_if_unitless: Some(ImportLengthUnit::Millimetre),
                     geo_origin_mm: None,
                     lines: lines.clone(),
+                    layers,
                     edits: edits.clone(),
                     output: output.to_owned(),
                 },
@@ -296,4 +302,59 @@ fn a_line_deleted_from_a_dwg_group_leaves_the_group_and_no_dangling_reference() 
     write(&dwg);
     let back = ketchup_dwg::dwg_to_whole_dxf(&std::fs::read(&dwg).unwrap(), usize::MAX).unwrap();
     assert_one_member(&String::from_utf8(back.dxf).unwrap());
+}
+
+/// Review 2026-10-29 CD-71: a drawing with an application's own entity, which a DWG cannot
+/// hold without data of that application, is written as DWG without it and says so; before,
+/// that one entity refused the whole export.
+#[test]
+fn a_drawing_with_a_custom_entity_is_written_as_dwg_without_it_and_says_so() {
+    use ketchup_model::import::ImportLengthUnit;
+    use ketchup_scheduler::protocol::{UnderlayInput, UnderlayWriteInput};
+
+    let _turn = crate::integration_support::file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("plan.dxf");
+    let custom = DRAWING_DXF.replace(
+        "0\nENDSEC\n0\nEOF",
+        "0\nACME_WIDGET\n8\n0\n100\nAcmeWidget\n10\n1\n20\n2\n30\n0\n0\nENDSEC\n0\nEOF",
+    );
+    std::fs::write(&source, custom).unwrap();
+    let lines = directory.path().join("lines.bin");
+    let mut worker = worker();
+    let layers = worker
+        .read_underlay(
+            UnderlayInput {
+                source: source.clone(),
+                dwg: false,
+                unit_if_unitless: Some(ImportLengthUnit::Millimetre),
+                geo_origin_mm: None,
+                output: lines.clone(),
+            },
+            &CancelToken::default(),
+        )
+        .unwrap()
+        .layers
+        .len();
+    let output = directory.path().join("written.dwg");
+    let written = worker
+        .write_underlay(
+            UnderlayWriteInput {
+                source,
+                dwg: false,
+                unit_if_unitless: Some(ImportLengthUnit::Millimetre),
+                geo_origin_mm: None,
+                lines,
+                layers,
+                edits: ketchup_model::underlay::edits::UnderlayEdits::default(),
+                output: output.clone(),
+            },
+            std::time::Duration::from_secs(120),
+            &CancelToken::default(),
+        )
+        .unwrap();
+    assert_eq!(written.skipped, [(String::from("ACME_WIDGET"), 1)]);
+    let back = ketchup_dwg::dwg_to_dxf(&std::fs::read(&output).unwrap(), usize::MAX).unwrap();
+    let text = String::from_utf8(back.dxf).unwrap();
+    assert!(text.contains("LINE") && text.contains("CIRCLE"), "{text}");
 }

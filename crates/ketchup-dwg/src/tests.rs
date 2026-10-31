@@ -216,6 +216,62 @@ fn tables_and_objects_the_import_does_not_read_do_not_count_against_the_limit() 
     assert_eq!(entities(&read.dxf), [("LINE", 0.0)]);
 }
 
+/// `drawing_dxf()` with an entity and an object of a class acadrust does not know: an
+/// application's own records, which a DXF has no DWG data for.
+fn drawing_with_custom_records_dxf() -> String {
+    let dxf = String::from_utf8(drawing_dxf()).expect("acadrust writes UTF-8");
+    let entities = dxf.find("ENTITIES").expect("an ENTITIES section");
+    let end = entities + dxf[entities..].find("ENDSEC").expect("its end");
+    let end = dxf[..end].rfind("  0").expect("the 0 of ENDSEC");
+    let objects = dxf.find("OBJECTS").expect("an OBJECTS section");
+    let objects_end = objects + dxf[objects..].find("ENDSEC").expect("its end");
+    let objects_end = dxf[..objects_end].rfind("  0").expect("the 0 of ENDSEC");
+    format!(
+        "{}  0\nACME_WIDGET\n  5\nFF0\n100\nAcDbEntity\n  8\n0\n100\nAcmeWidget\n 10\n1.0\n 20\n2.0\n 30\n0.0\n{}  0\nACME_SETTINGS\n  5\nFF1\n100\nAcmeSettings\n 90\n7\n{}",
+        &dxf[..end],
+        &dxf[end..objects_end],
+        &dxf[objects_end..]
+    )
+}
+
+/// CD-71: an entity or object of an application's own class, which acadrust cannot encode
+/// without DWG data of its own, is left out of the DWG and named, and the rest of the
+/// drawing is written; before, one such record refused the whole file.
+#[test]
+fn a_custom_entity_or_object_is_left_out_of_the_dwg_and_named() {
+    let dxf = drawing_with_custom_records_dxf();
+    assert!(
+        dxf_to_dwg(dxf.as_bytes()).is_err(),
+        "the strict conversion still refuses it"
+    );
+    let written = dxf_to_dwg_leaving_out_custom_records(dxf.as_bytes())
+        .expect("the drawing is written without its custom records");
+    assert_eq!(
+        written.left_out,
+        [
+            SkippedRecords {
+                record_type: String::from("ACME_SETTINGS"),
+                count: 1
+            },
+            SkippedRecords {
+                record_type: String::from("ACME_WIDGET"),
+                count: 1
+            },
+        ]
+    );
+    let read = dwg_to_dxf(&written.dwg, 64 * 1024 * 1024).expect("the DWG reads");
+    assert!(read.skipped.is_empty(), "{:?}", read.skipped);
+    assert_eq!(
+        entities(&read.dxf),
+        [
+            ("LINE", 0.0),
+            ("LINE", 0.0),
+            ("CIRCLE", 17.5),
+            ("ARC", 42.25)
+        ]
+    );
+}
+
 #[test]
 fn bytes_that_are_not_a_dwg_file_are_a_named_error() {
     let error = dwg_to_dxf(b"AC1032 is only the magic of a DWG file", usize::MAX)

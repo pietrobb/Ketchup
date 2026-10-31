@@ -80,6 +80,12 @@ pub(crate) struct SolidToolInputs {
     pub(crate) pocket_depth_input: String,
     /// The depth the input was loaded from; the input differs only after typing.
     pub(crate) pocket_depth_source: String,
+    /// A click of Pull area that waits for the regions of the drawings to be found off
+    /// the UI thread (review 2026-10-26 UO-40).
+    pub(crate) area_click_awaits_regions: Option<crate::app::underlay_extrude::AreaClick>,
+    /// A 2D edit of a drawing that waits for the regions of the areas that follow it to be
+    /// found off the UI thread (review 2026-10-29 UO-40).
+    pub(crate) drawing_edit_awaits_regions: Option<crate::app::underlay_edit::AwaitedDrawingEdit>,
 }
 
 /// The running Move/Rotate/Scale session, its typed input and a correction of
@@ -322,16 +328,27 @@ pub(crate) struct RenderState {
     /// The bounds of each layer of the underlays' lines, by the SHA-256 of their blob: what
     /// framing the view takes of them.
     pub(crate) underlay_extents: RefCell<BTreeMap<[u8; 32], crate::app::underlay::UnderlayExtent>>,
-    /// The decoded lines and objects of the underlays the bridge was asked about, by the
-    /// SHA-256 of their blob.
+    /// The lines and objects of the underlays with their edits, by
+    /// [`ketchup_model::underlay::Underlay::lines_key`].
     pub(crate) underlay_lines:
         RefCell<BTreeMap<[u8; 32], Arc<ketchup_model::underlay::UnderlayLines>>>,
+    /// The underlays' blobs as decoded, before their edits, by the SHA-256 of the blob and
+    /// the underlay's layer count, so an edit does not decode the blob again (UI-62).
+    pub(crate) underlay_decoded:
+        RefCell<BTreeMap<DecodedBlobKey, Arc<ketchup_model::underlay::UnderlayLines>>>,
+    /// The children and bounds of the objects of `underlay_lines`, by the same key, so
+    /// picking and painting picked objects does not work them out each frame (UI-62).
+    pub(crate) underlay_object_trees:
+        RefCell<BTreeMap<[u8; 32], Arc<ketchup_model::underlay::object_query::ObjectTree>>>,
     /// What the viewport paints of them this frame.
     pub(crate) underlay_frame: Vec<crate::renderer::underlay::UnderlayDraw>,
     pub(crate) wgpu_target_format: Option<eframe::wgpu::TextureFormat>,
     pub(crate) wgpu_device: Option<eframe::wgpu::Device>,
     pub(crate) wgpu_queue: Option<eframe::wgpu::Queue>,
 }
+
+/// An underlay's blob by its SHA-256 and the layer count it is decoded with.
+pub(crate) type DecodedBlobKey = ([u8; 32], usize);
 
 pub(crate) type MovedPlan = (
     Arc<InstancedRenderPlan>,

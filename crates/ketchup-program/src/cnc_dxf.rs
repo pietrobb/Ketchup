@@ -5,8 +5,11 @@
 //! A part is drawn when it is in the production scope (`production(tags=…)`),
 //! made in the shop (fabrication role manufactured item) and an extrusion: a
 //! box is seen along its thinnest side, any other profile along its
-//! extrusion. The drawing lies in the first quadrant from (0, 0), the face the
-//! part is seen from up. Layers, the numbers in millimetres with a decimal
+//! extrusion when that is its thinnest (else it is no flat part). The drawing lies in the first quadrant from (0, 0), the face the
+//! part is seen from up, in the frame its woodWOP program lays it in: x along
+//! its longer side, y along the shorter (from the far edge where that keeps
+//! the frame right-handed), and a part drilled or pocketed from below only
+//! turned underside up. Layers, the numbers in millimetres with a decimal
 //! point written `_` (R12 takes no `.` in a layer name):
 //!
 //! - `CONTOUR` the outline, `CUTOUT` a cut through the whole part;
@@ -94,10 +97,14 @@ pub struct CncPart {
 }
 
 /// Why a part in scope is not drawn.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Undrawable {
     NoRole,
     NotAnExtrusion,
+    /// The axis a drawing would be seen along is not its thinnest.
+    NotFlat {
+        thickness_mm: f64,
+    },
     /// A cut goes down local z, which is not the part's thickness.
     CutAcross {
         cut: String,
@@ -122,6 +129,11 @@ impl fmt::Display for Undrawable {
             Self::NotAnExtrusion => {
                 formatter.write_str("its body is not an extrusion, so it has no flat face to draw")
             }
+            Self::NotFlat { thickness_mm } => write!(
+                formatter,
+                "it is not a flat part: it is {} mm along the axis it would be drawn along, more than across",
+                number(*thickness_mm)
+            ),
             Self::CutAcross { cut } => write!(
                 formatter,
                 "cut {cut:?} goes down its local z, which is not its thickness"
@@ -201,36 +213,67 @@ pub fn cnc_parts(model: &ProgramModel) -> CncExport {
     export
 }
 
-/// How a part is seen: along local axis `normal`, with local axes `across`
-/// as the drawing's x and y, from the corner `min` of its blank.
+/// How a part is seen, as its woodWOP program lays it (MF-63): along local
+/// axis `normal`, with local axes `across` as the drawing's x and y, the
+/// longer first, from the corner `min` of its blank. `mirrored` measures y
+/// from the far edge, which keeps the frame right-handed when `across` and
+/// `normal` are not in cyclic order; `turned_over` lays the part underside
+/// up (a half turn about x), as for a part machined from below only.
 struct View {
     normal: usize,
     across: [usize; 2],
     min: [f64; 3],
+    size: [f64; 2],
     thickness: f64,
+    mirrored: bool,
+    turned_over: bool,
 }
 
 impl View {
     fn along(normal: usize, min: [f64; 3], max: [f64; 3]) -> Self {
+        let extent = |axis: usize| max[axis] - min[axis];
+        let mut across = [(normal + 1) % 3, (normal + 2) % 3];
+        across.sort_by(|left, right| {
+            extent(*right)
+                .total_cmp(&extent(*left))
+                .then(left.cmp(right))
+        });
         Self {
             normal,
-            across: [(normal + 1) % 3, (normal + 2) % 3],
+            across,
             min,
-            thickness: max[normal] - min[normal],
+            size: across.map(extent),
+            thickness: extent(normal),
+            mirrored: across[0] != (normal + 1) % 3,
+            turned_over: false,
         }
     }
 
     fn point(&self, local: [f64; 3]) -> [f64; 2] {
-        self.across.map(|axis| local[axis] - self.min[axis])
+        let [x, y] = self.across.map(|axis| local[axis] - self.min[axis]);
+        if self.mirrored == self.turned_over {
+            [x, y]
+        } else {
+            [x, self.size[1] - y]
+        }
     }
 
     fn height(&self, local: [f64; 3]) -> f64 {
-        local[self.normal] - self.min[self.normal]
+        let height = local[self.normal] - self.min[self.normal];
+        if self.turned_over {
+            self.thickness - height
+        } else {
+            height
+        }
     }
 
     /// Which face a tool going `inward` enters.
     fn entered(&self, inward: [f64; 3]) -> Entered {
-        let along = inward[self.normal];
+        let along = if self.turned_over {
+            -inward[self.normal]
+        } else {
+            inward[self.normal]
+        };
         if along <= -1.0 + APPROXIMATION {
             Entered::Seen
         } else if along >= 1.0 - APPROXIMATION {
@@ -269,29 +312,34 @@ fn drawing(part: &Part) -> Result<Drawing, Undrawable> {
         [x1, y1, distance_mm.max(0.0)],
     );
     let rectangle = axis_aligned_rectangle(segments);
-    // A box is seen on its largest face; a profile only along its extrusion.
+    // A box is seen on its largest face, its thinnest side the thickness as
+    // woodWOP takes it (of equal sides the last); a profile only along its
+    // extrusion.
     let normal = if rectangle {
-        [2, 0, 1]
-            .into_iter()
-            .reduce(|best, axis| {
-                if max[axis] - min[axis] < max[best] - min[best] {
-                    axis
-                } else {
-                    best
-                }
-            })
-            .expect("three axes")
+        let mut axes = [0, 1, 2];
+        axes.sort_by(|left, right| {
+            (max[*right] - min[*right])
+                .total_cmp(&(max[*left] - min[*left]))
+                .then(left.cmp(right))
+        });
+        axes[2]
     } else {
         2
     };
-    let view = View::along(normal, min, max);
-    let size = view.across.map(|axis| max[axis] - min[axis]);
+    let mut view = View::along(normal, min, max);
+    if view.size.iter().any(|across| view.thickness > *across) {
+        return Err(Undrawable::NotFlat {
+            thickness_mm: view.thickness,
+        });
+    }
+    view.turned_over = machined_from_below_only(&view, part);
+    let size = view.size;
     let mut entities = vec![Entity::Outline {
         layer: "CONTOUR".to_owned(),
         vertices: if rectangle {
             rectangle_vertices([[0.0, 0.0], size])
         } else {
-            outline_vertices(segments, [x0, y0])
+            outline_vertices(segments, &view)
         },
     }];
     for operation in &part.operations {
@@ -310,7 +358,7 @@ fn drawing(part: &Part) -> Result<Drawing, Undrawable> {
                 };
                 entities.push(Entity::Outline {
                     layer,
-                    vertices: outline_vertices(&cut.segments, [x0, y0]),
+                    vertices: outline_vertices(&cut.segments, &view),
                 });
             }
             other => {
@@ -322,6 +370,23 @@ fn drawing(part: &Part) -> Result<Drawing, Undrawable> {
         }
     }
     Ok((view.thickness, size, entities))
+}
+
+/// Whether the part's holes and pockets enter only the face below the one
+/// `view` sees, so its woodWOP program lays it underside up (MF-20); a cut
+/// goes down from the top, the face seen.
+fn machined_from_below_only(view: &View, part: &Part) -> bool {
+    let entered = part
+        .operations
+        .iter()
+        .filter_map(|operation| match operation {
+            ProgramOperation::Hole(hole) => Some(view.entered(hole.inward)),
+            ProgramOperation::Pocket(pocket) => Some(view.entered(pocket.inward)),
+            ProgramOperation::Cut(_) => Some(Entered::Seen),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    entered.contains(&Entered::Below) && !entered.contains(&Entered::Seen)
 }
 
 fn operation_kind(operation: &ProgramOperation) -> &'static str {
@@ -436,10 +501,13 @@ fn rectangle_vertices([[x0, y0], [x1, y1]]: [[f64; 2]; 2]) -> Vec<([f64; 2], f64
     ]
 }
 
-/// A closed profile as polyline vertices, moved by `-origin`: arcs as
-/// bulges, a full circle as two halves, Bezier curves as lines.
-fn outline_vertices(segments: &[ProgramProfileSegment], origin: [f64; 2]) -> Vec<([f64; 2], f64)> {
-    let moved = |point: [f64; 2]| [point[0] - origin[0], point[1] - origin[1]];
+/// A closed profile in the local xy plane as polyline vertices in `view`'s
+/// drawing: arcs as bulges, a full circle as two halves, Bezier curves as
+/// lines.
+fn outline_vertices(segments: &[ProgramProfileSegment], view: &View) -> Vec<([f64; 2], f64)> {
+    let moved = |point: [f64; 2]| view.point([point[0], point[1], 0.0]);
+    // Seen from below, a turn the other way round.
+    let sign = if view.turned_over { -1.0 } else { 1.0 };
     let mut vertices = Vec::new();
     for segment in segments {
         if let Some(arc) = segment.arc {
@@ -452,7 +520,7 @@ fn outline_vertices(segments: &[ProgramProfileSegment], origin: [f64; 2]) -> Vec
             } else {
                 counter
             };
-            let sign = if arc.clockwise { -1.0 } else { 1.0 };
+            let sign = if arc.clockwise { -sign } else { sign };
             if sweep <= f64::EPSILON {
                 // A whole circle: two half arcs, a bulge of ±1 each.
                 let opposite = [

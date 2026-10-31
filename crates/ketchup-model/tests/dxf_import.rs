@@ -3693,6 +3693,11 @@ fn a_dos_code_page_is_read_and_a_doubtful_one_is_warned_of() {
     // "žluťoučký" in CP1250, declared ANSI_1252: ť = 0x9D is undefined there.
     let parsed = file("ANSI_1252", b"walls", b"\x9Elu\x9Dou\xE8k\xFD");
     assert_eq!(warned(&parsed), [Some("ANSI_1252".to_owned())]);
+    // Review 2026-10-26 UL-43: "Příčka Střecha" in CP1250 declared ANSI_1252 has no byte
+    // 1252 leaves undefined; it read „Pøíèka Støecha“ with no warning. It reads in 1250.
+    let parsed = file("ANSI_1252", b"P\xF8\xED\xE8ka St\xF8echa", b"A");
+    assert_eq!(parsed.layers(), ["Příčka Střecha"]);
+    assert_eq!(warned(&parsed), [Some("ANSI_1252".to_owned())]);
 }
 
 /// P3-V: a DXF older than 2007 is written in the Windows code page its

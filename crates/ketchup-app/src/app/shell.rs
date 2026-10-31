@@ -121,6 +121,8 @@ impl KetchupApp {
                 pocket_editor_feature: None,
                 pocket_depth_input: String::new(),
                 pocket_depth_source: String::new(),
+                area_click_awaits_regions: None,
+                drawing_edit_awaits_regions: None,
             },
             helix_tool: helix_ui::HelixUiState::default(),
             parameter: app_state::ParameterEditor {
@@ -250,6 +252,8 @@ impl KetchupApp {
                 underlay_snaps: RefCell::new(BTreeMap::new()),
                 underlay_extents: RefCell::new(BTreeMap::new()),
                 underlay_lines: RefCell::new(BTreeMap::new()),
+                underlay_decoded: RefCell::new(BTreeMap::new()),
+                underlay_object_trees: RefCell::new(BTreeMap::new()),
                 underlay_frame: Vec::new(),
                 wgpu_target_format: None,
                 wgpu_device: None,
@@ -1458,6 +1462,9 @@ impl KetchupApp {
         if self.apply_awaited_value() {
             // The next frame starts the exact evaluation of what it changed.
             context.request_repaint();
+        }
+        if self.poll_area_click() | self.poll_drawing_edit() {
+            context.request_repaint_after(std::time::Duration::from_millis(30));
         }
         let palette = self.palette();
         apply_shell_style(context, palette);

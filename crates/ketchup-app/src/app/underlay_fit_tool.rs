@@ -115,7 +115,30 @@ impl KetchupApp {
         let to = std::mem::take(&mut fit.to);
         let scaled = fit.scaled;
         self.status_key = "status-fit-underlay-first-line";
-        self.digest = match self.fit_underlay(id, [from[0], from[1]], [to[0], to[1]], scaled) {
+        self.fit_underlay_in_window(id, [from[0], from[1]], [to[0], to[1]], scaled);
+    }
+
+    /// The fit the tool's fourth click makes: once the regions of the areas that follow the
+    /// drawing are found off the UI thread (review 2026-10-29 UO-40).
+    pub(crate) fn fit_underlay_in_window(
+        &mut self,
+        id: UnderlayId,
+        from: [[f64; 2]; 2],
+        to: [[f64; 2]; 2],
+        scaled: bool,
+    ) {
+        if let Ok((batch, _)) = ketchup_model::underlay::placement::plan_underlay_fit(
+            &self.document.current(),
+            id,
+            from,
+            to,
+            scaled,
+        ) && !self.followed_regions_or_await(&batch, move |app| {
+            app.fit_underlay_in_window(id, from, to, scaled);
+        }) {
+            return;
+        }
+        self.digest = match self.fit_underlay(id, from, to, scaled) {
             Ok(fit) => self.catalog.format(
                 "digest-fit-underlay-done",
                 &BTreeMap::from([

@@ -555,7 +555,8 @@ fn the_cnc_export_writes_a_dxf_per_part_that_reads_back() {
     let top = read("top.dxf");
     assert_eq!(top.profiles().len(), 1, "an outline only");
     let csv = String::from_utf8(entries["parts.csv"].clone()).unwrap();
-    assert!(csv.contains("Bočnica,Bocnica.dxf,18,400,720,"), "{csv}");
+    // Laid as its woodWOP program lays it: the longer side along x (MF-63).
+    assert!(csv.contains("Bočnica,Bocnica.dxf,18,720,400,"), "{csv}");
 }
 
 /// R9-C step 18: the window exports the quote (MCP report section `quote`):
@@ -586,7 +587,7 @@ fn the_quote_exports_priced_lines_and_a_program_without_prices_is_refused() {
         std::fs::read_to_string(&path).unwrap(),
         "\u{feff}kind;item;quantity;unit;unit_price;amount;currency;basis;source;note\n\
          material;Board;0,192;m2;25,5;4,9;EUR;blanks;;\n\
-         ;total;;;;4,9;EUR;;;\n"
+         ;total;;;;4,9;EUR;;;VAT not added\n"
     );
     assert!(app.digest.contains("ponuka.csv"), "{}", app.digest);
 }

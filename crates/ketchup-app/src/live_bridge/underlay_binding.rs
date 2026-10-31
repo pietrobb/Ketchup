@@ -20,9 +20,16 @@ pub(super) struct Binding {
     pub point: Option<[f64; 2]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// The layers `label` was read from, shown or not later (review 2026-10-26 UO-44).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_layers: Option<Vec<String>>,
     pub layers: Option<Vec<String>>,
     pub tolerance: Option<f64>,
     pub closures: Vec<[[f64; 2]; 2]>,
+    /// The box, in drawing millimetres, whose lines alone are searched (review 2026-10-26
+    /// UO-46).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    within: Option<[[f64; 2]; 2]>,
     object_id: Option<u32>,
     handle: Option<u64>,
     pub block: Option<String>,
@@ -52,6 +59,7 @@ impl Binding {
             layers,
             tolerance_mm: tolerance,
             closing_segments_mm: closures,
+            within_mm: within,
             object_id,
             block,
             thickness_mm: thickness,
@@ -60,10 +68,32 @@ impl Binding {
         else {
             return Err("invalid_params");
         };
-        let layers = super::underlay_regions::chosen_layers(snapshot, underlay, layers.as_deref())?
-            .into_iter()
-            .map(|i| underlay.layers[i].name.clone())
-            .collect();
+        // Review 2026-10-26 UO-41: with no layers named, those of the room's walls.
+        let walls = match (&layers, object_id, &block) {
+            (None, None, None) => app.cached_underlay_lines(underlay).and_then(|lines| {
+                super::underlay_regions::room_layers(
+                    snapshot,
+                    underlay,
+                    &lines,
+                    point,
+                    label.as_deref(),
+                    super::underlay_regions::Lookup {
+                        tolerance_mm: tolerance,
+                        closing_segments_mm: &closures,
+                        within: within
+                            .map(|area| super::underlay_regions::local_area(underlay, area)),
+                    },
+                )
+            }),
+            _ => None,
+        };
+        let layers = match walls {
+            Some(walls) => walls,
+            None => super::underlay_regions::chosen_layers(snapshot, underlay, layers.as_deref())?,
+        }
+        .into_iter()
+        .map(|i| underlay.layers[i].name.clone())
+        .collect();
         let handle = if let Some(id) = object_id {
             let lines = app
                 .cached_underlay_lines(underlay)
@@ -86,6 +116,9 @@ impl Binding {
             name,
             underlay_id: underlay.id.0,
             point: point.map(drawing_point),
+            text_layers: label
+                .is_some()
+                .then(|| super::underlay_regions::text_layer_names(snapshot, underlay)),
             label,
             layers: Some(layers),
             tolerance: Some(
@@ -96,6 +129,11 @@ impl Binding {
                 .into_iter()
                 .map(|ends| ends.map(drawing_point))
                 .collect(),
+            within: within.map(|area| {
+                let offset = underlay.offset_mm();
+                super::underlay_regions::local_area(underlay, area)
+                    .map(|[x, y]| [x + offset[0], y + offset[1]])
+            }),
             object_id,
             handle,
             block,
@@ -103,6 +141,13 @@ impl Binding {
             frame: false,
             whole: false,
         })
+    }
+
+    /// The box whose lines alone are searched, in the underlay's millimetres.
+    pub fn within_local(&self, underlay: &Underlay) -> Option<[[f64; 2]; 2]> {
+        let offset = underlay.offset_mm();
+        self.within
+            .map(|area| area.map(|[x, y]| [x - offset[0], y - offset[1]]))
     }
 
     pub fn object(&self, lines: &UnderlayLines) -> Result<Option<u32>, &'static str> {
@@ -157,13 +202,29 @@ fn followed_section_lost(name: &str, code: &'static str) -> RuleProgramApplyErro
         "{name} follows this drawing, and the edit leaves it no outline: {}",
         cause.reason_text()
     );
-    let fix_hint = format!(
-        "{} To keep {name} as it is, first unlink the areas from the drawing: Tools > {UNLINK_MENU} in the window, or program action=patch removing the line starting \"{PREFIX}\" under \"{BEGIN} {name}:\".",
-        cause.fix_hint_text()
-    );
+    let fix_hint = format!("{} {}", cause.fix_hint_text(), unlink_hint(name));
     RuleProgramApplyError::Rejected(Box::new(
         cause.reason(reason).fix_hint(fix_hint.trim_start()),
     ))
+}
+
+/// The refusal to remove the underlay the section `name` follows (review 2026-10-26 UO-43).
+fn followed_underlay_removed(name: &str) -> RuleProgramApplyError {
+    RuleProgramApplyError::Rejected(Box::new(
+        rejected("invalid_params")
+            .target("underlay_id")
+            .reason(format!(
+                "{name} follows this drawing, and the edit removes the drawing it takes its outline from."
+            ))
+            .fix_hint(unlink_hint(name)),
+    ))
+}
+
+/// How to keep the section `name` as it is when its drawing changes.
+fn unlink_hint(name: &str) -> String {
+    format!(
+        "To keep {name} as it is, first unlink the areas from the drawing: Tools > {UNLINK_MENU} in the window, or program action=patch removing the line starting \"{PREFIX}\" under \"{BEGIN} {name}:\"."
+    )
 }
 
 /// The window's command that unlinks pulled areas from their drawing.
@@ -211,7 +272,100 @@ pub(crate) fn unlinked(source: &str) -> Option<String> {
     bound.then_some(kept)
 }
 
+/// The bindings of `program` to a drawing `batch` changes. Keeps the regions of every
+/// binding of the program found together.
+fn followed_by(
+    program: &RuleProgramSource,
+    batch: &CommandBatch,
+) -> Result<Vec<Binding>, RuleProgramApplyError> {
+    let changed = batch
+        .commands()
+        .iter()
+        .filter_map(|command| match command {
+            CanonicalCommand::UpsertUnderlay(underlay) => Some(underlay.id.0),
+            CanonicalCommand::DeleteUnderlay { id } => Some(id.0),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    if changed.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut bindings = Vec::new();
+    let mut count = 0;
+    for json in program
+        .source
+        .lines()
+        .filter_map(|line| line.strip_prefix(PREFIX))
+    {
+        count += 1;
+        let binding: Binding = serde_json::from_str(json).map_err(|error| {
+            RuleProgramApplyError::Rejected(Box::new(
+                rejected("invalid_params")
+                    .target("program.underlay_binding")
+                    .reason("The underlay binding is not valid JSON for a source selection.")
+                    .fix_hint("Restore the generated source section with from_underlay.")
+                    .caused_by(error),
+            ))
+        })?;
+        if changed.contains(&binding.underlay_id) {
+            bindings.push(binding);
+        }
+    }
+    super::underlay_regions::keep_found_for_followed(count);
+    Ok(bindings)
+}
+
 impl KetchupApp {
+    /// Forgets the regions found for the areas of the window's program that follow a
+    /// drawing, as a document opened in a new run has none found.
+    #[cfg(test)]
+    pub(crate) fn forget_followed_regions(&self) {
+        let Some(program) = self.document.current_rule_program() else {
+            return;
+        };
+        let snapshot = self.document.current();
+        for json in program
+            .source
+            .lines()
+            .filter_map(|line| line.strip_prefix(PREFIX))
+        {
+            if let Ok(binding) = serde_json::from_str::<Binding>(json)
+                && let Some(search) =
+                    super::underlay_program::binding_search(self, &snapshot, &binding)
+            {
+                super::underlay_regions::forget(&search);
+            }
+        }
+    }
+
+    /// Whether the regions of the areas that follow a drawing `batch` changes are found as
+    /// it leaves them, or why not. When neither, they are being found off the UI thread,
+    /// started here unless they are already, so the window does not stall committing the
+    /// batch on a large plan (review 2026-10-29 UO-40).
+    pub(crate) fn followed_regions_ready(&self, batch: &CommandBatch) -> bool {
+        let Some(program) = self.document.current_rule_program() else {
+            return true;
+        };
+        let Ok(bindings) = followed_by(program, batch) else {
+            // The commit says why.
+            return true;
+        };
+        if bindings.is_empty() {
+            return true;
+        }
+        let Ok(snapshot) = self.document.preview_batch(batch) else {
+            return true;
+        };
+        let mut ready = true;
+        for binding in &bindings {
+            if let Some(search) = super::underlay_program::binding_search(self, &snapshot, binding)
+            {
+                ready &= super::underlay_regions::search_ready(search);
+            }
+        }
+        ready
+    }
+
     /// Returns a normal program plan only when this batch changes a referenced underlay,
     /// with what it changes of the sections that follow it.
     pub(crate) fn plan_underlay_program_update(
@@ -228,37 +382,7 @@ impl KetchupApp {
         let Some(program) = self.document.current_rule_program() else {
             return Ok(None);
         };
-        let changed = batch
-            .commands()
-            .iter()
-            .filter_map(|command| match command {
-                CanonicalCommand::UpsertUnderlay(underlay) => Some(underlay.id.0),
-                CanonicalCommand::DeleteUnderlay { id } => Some(id.0),
-                _ => None,
-            })
-            .collect::<BTreeSet<_>>();
-        if changed.is_empty() {
-            return Ok(None);
-        }
-        let mut bindings = Vec::new();
-        for json in program
-            .source
-            .lines()
-            .filter_map(|line| line.strip_prefix(PREFIX))
-        {
-            let binding: Binding = serde_json::from_str(json).map_err(|error| {
-                RuleProgramApplyError::Rejected(Box::new(
-                    rejected("invalid_params")
-                        .target("program.underlay_binding")
-                        .reason("The underlay binding is not valid JSON for a source selection.")
-                        .fix_hint("Restore the generated source section with from_underlay.")
-                        .caused_by(error),
-                ))
-            })?;
-            if changed.contains(&binding.underlay_id) {
-                bindings.push(binding);
-            }
-        }
+        let bindings = followed_by(program, batch)?;
         if bindings.is_empty() {
             return Ok(None);
         }
@@ -271,6 +395,9 @@ impl KetchupApp {
         for binding in bindings {
             // Positional object IDs belong to one import blob, not to a later import.
             let id = ketchup_model::underlay::UnderlayId(binding.underlay_id);
+            if snapshot.underlay(id).is_none() {
+                return Err(followed_underlay_removed(&binding.name));
+            }
             if binding.object_id.is_some()
                 && binding.handle.is_none_or(|handle| handle == 0)
                 && self
@@ -290,8 +417,11 @@ impl KetchupApp {
                 .written(self, &snapshot)
                 .map_err(|code| followed_section_lost(&binding.name, code))?;
             let was = section_measure(&source.source, &binding.name);
-            source.source =
-                super::underlay_program::with_data(&source.source, &binding.name, &written);
+            source.source = super::underlay_program::with_followed_data(
+                &source.source,
+                &binding.name,
+                &written,
+            );
             if let (Some(was), Some(now)) = (was, section_measure(&written, &binding.name))
                 && was != now
             {

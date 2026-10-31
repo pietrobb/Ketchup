@@ -9,6 +9,7 @@ use crate::live_bridge::take_error_details;
 use crate::live_bridge::underlay_program::{
     Ring, free_name, underlay_area_outline, underlay_extrusion_program,
 };
+use crate::live_bridge::underlay_regions::{keep_found_for, regions_ready, search_ahead};
 use crate::*;
 use ketchup_application::RuleProgramApplyError;
 use ketchup_model::underlay::UnderlayId;
@@ -112,8 +113,18 @@ impl std::error::Error for AreaPullError {
     }
 }
 
+/// A click of the Pull area tool: the height typed, the point clicked in the plane of each
+/// plan, on the ground or raised off it, and the drawn objects under the pointer.
+pub(crate) struct AreaClick {
+    height_mm: f64,
+    points_mm: Vec<(UnderlayId, [f64; 2])>,
+    objects: Vec<(UnderlayId, u32)>,
+}
+
 impl KetchupApp {
-    /// One click of the Pull area tool.
+    /// One click of the Pull area tool. While the regions of a drawing are still being
+    /// found off the UI thread the click waits for them instead of finding them again on
+    /// it, a second and more on a large plan (review 2026-10-26 UO-40).
     pub(crate) fn click_underlay_extrude(&mut self, pointer: Pos2, rect: Rect) {
         let Some(height_mm) =
             parse_distance_mm(self.value_box.input.trim(), self.value_box.decimal)
@@ -121,7 +132,78 @@ impl KetchupApp {
             self.digest = self.catalog.text("digest-underlay-extrude-height");
             return;
         };
-        let area = match self.underlay_area_at(pointer, rect) {
+        let points_mm = self
+            .document
+            .current()
+            .underlays()
+            .filter_map(|underlay| {
+                let point = self.screen_to_plane(pointer, rect, underlay.plan_height()?)?;
+                Some((underlay.id, [point.x, point.y]))
+            })
+            .collect::<Vec<_>>();
+        if points_mm.is_empty() {
+            self.digest = self.catalog.text("digest-underlay-extrude-no-area");
+            return;
+        }
+        let click = AreaClick {
+            height_mm,
+            points_mm,
+            objects: self
+                .underlay_line_at_screen(pointer, rect)
+                .map(|(underlay, object, _)| (underlay, object))
+                .into_iter()
+                .chain(self.underlay_object_at_screen(pointer, rect))
+                .collect(),
+        };
+        if self.underlay_regions_ready() {
+            self.finish_area_click(&click);
+        } else {
+            self.digest = self.catalog.text("digest-underlay-extrude-searching");
+            self.solid_tools.area_click_awaits_regions = Some(click);
+        }
+    }
+
+    /// Pulls up the area of a click that waited, on the frame the regions are found;
+    /// whether it is still waiting.
+    pub(crate) fn poll_area_click(&mut self) -> bool {
+        if self.solid_tools.area_click_awaits_regions.is_none() {
+            return false;
+        }
+        if self.active_tool != ActiveTool::ExtrudeUnderlayArea {
+            self.solid_tools.area_click_awaits_regions = None;
+            return false;
+        }
+        if !self.underlay_regions_ready() {
+            return true;
+        }
+        if let Some(click) = self.solid_tools.area_click_awaits_regions.take() {
+            self.finish_area_click(&click);
+        }
+        false
+    }
+
+    /// Whether the regions of every drawing lying flat are found, starting the search of
+    /// those that are not off the UI thread.
+    fn underlay_regions_ready(&self) -> bool {
+        let snapshot = self.document.current();
+        let mut ready = true;
+        keep_found_for(
+            snapshot
+                .underlays()
+                .filter(|underlay| underlay.lies_flat())
+                .count(),
+        );
+        for underlay in snapshot.underlays().filter(|underlay| underlay.lies_flat()) {
+            if let Some(lines) = self.cached_underlay_lines(underlay) {
+                ready &= regions_ready(&snapshot, underlay, &lines);
+            }
+        }
+        ready
+    }
+
+    fn finish_area_click(&mut self, click: &AreaClick) {
+        let height_mm = click.height_mm;
+        let area = match self.underlay_area_at(click) {
             Ok(area) => area,
             Err(None) => {
                 self.digest = self.catalog.text("digest-underlay-extrude-no-area");
@@ -153,37 +235,22 @@ impl KetchupApp {
         };
     }
 
-    /// The area under `pointer`: the innermost closed region of a drawing around the
-    /// point (the selected drawing first, then the one drawn last), else the closed object
-    /// whose line or fill is under it. With none, why a drawing's regions were not found,
+    /// The area of `click`: the innermost closed region of a drawing around its point (the
+    /// selected drawing first, then the one drawn last), else the closed object whose line
+    /// or fill was under the pointer. With none, why a drawing's regions were not found,
     /// if one refused: an object under the pointer that is not closed is just no area.
-    fn underlay_area_at(
-        &self,
-        pointer: Pos2,
-        rect: Rect,
-    ) -> Result<ChosenArea, Option<AreaRefusal>> {
-        let point = self.screen_to_plane(pointer, rect, 0.0).ok_or(None)?;
-        let snapshot = self.document.current();
-        let mut underlays = snapshot
-            .underlays()
-            .filter(|underlay| underlay.lies_flat())
-            .map(|underlay| underlay.id)
-            .collect::<Vec<_>>();
+    fn underlay_area_at(&self, click: &AreaClick) -> Result<ChosenArea, Option<AreaRefusal>> {
+        let mut underlays = click.points_mm.clone();
         underlays.reverse();
         if let Some(selected) = self.selected_underlay()
-            && underlays.contains(&selected)
+            && let Some(at) = underlays.iter().position(|(id, _)| *id == selected)
         {
-            underlays.retain(|id| *id != selected);
+            let selected = underlays.remove(at);
             underlays.insert(0, selected);
         }
-        let mut by_object = self
-            .underlay_line_at_screen(pointer, rect)
-            .map(|(underlay, object, _)| (underlay, object))
-            .into_iter()
-            .chain(self.underlay_object_at_screen(pointer, rect));
         let mut refused = None;
-        for underlay in underlays {
-            match self.underlay_area(underlay, Some([point.x, point.y]), None) {
+        for (underlay, point_mm) in underlays {
+            match self.underlay_area(underlay, Some(point_mm), None) {
                 Ok(Some(area)) => return Ok(area),
                 Ok(None) => {}
                 Err(refusal) => {
@@ -191,13 +258,24 @@ impl KetchupApp {
                 }
             }
         }
-        by_object
-            .find_map(|(underlay, object)| {
+        (click.objects.iter())
+            .find_map(|&(underlay, object)| {
                 self.underlay_area(underlay, None, Some(object))
                     .ok()
                     .flatten()
             })
             .ok_or(refused)
+    }
+
+    /// Starts finding the closed regions of each drawing lying flat off the UI thread, for
+    /// the clicks of Pull area to come (review 2026-10-26 UO-40).
+    pub(crate) fn search_underlay_regions_ahead(&self) {
+        let snapshot = self.document.current();
+        for underlay in snapshot.underlays().filter(|underlay| underlay.lies_flat()) {
+            if let Some(lines) = self.cached_underlay_lines(underlay) {
+                search_ahead(&snapshot, underlay, lines);
+            }
+        }
     }
 
     /// The innermost closed region of the shown layers of `underlay` around the document

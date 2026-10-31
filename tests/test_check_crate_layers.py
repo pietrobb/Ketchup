@@ -234,6 +234,40 @@ def test_workspace_casts_and_allows_only_fall():
     assert checker.grown_casts_and_allows(checker.cast_and_allow_counts(ROOT)) == []
 
 
+def test_a_test_switch_in_a_release_binary_fails_until_listed_with_its_reason(tmp_path):
+    """Review 2026-10-29 SEC-62, CI-63: no check saw a test switch in the release binary."""
+    source = tmp_path / "crates" / "a" / "src"
+    source.mkdir(parents=True)
+    (source / "lib.rs").write_text(
+        'const ADAPTER: &str = "KETCHUP_TEST_ADAPTER";\n'
+        '#[cfg(test)]\nmod tests {\n    const DIR: &str = "KETCHUP_TEST_DIR";\n}\n',
+        encoding="utf-8",
+    )
+    (source / "native.cc").write_text('std::getenv("KETCHUP_TEST_NATIVE");\n', encoding="utf-8")
+    (source / "lib_tests.rs").write_text('const T: &str = "KETCHUP_TEST_T";\n', encoding="utf-8")
+    helper = tmp_path / "crates" / "ketchup-test-env" / "src"
+    helper.mkdir(parents=True)
+    (helper / "lib.rs").write_text('const R: &str = "KETCHUP_TEST_REPORT";\n', encoding="utf-8")
+    found = checker.release_test_switches(tmp_path)
+    assert found == {
+        "KETCHUP_TEST_ADAPTER": "crates/a/src/lib.rs",
+        "KETCHUP_TEST_NATIVE": "crates/a/src/native.cc",
+    }
+    problems = checker.unlisted_test_switches(found, {"KETCHUP_TEST_ADAPTER": "harmless"})
+    assert problems == [
+        "crates/a/src/native.cc: KETCHUP_TEST_NATIVE is a test switch in a release binary; "
+        "keep it in test code, or list it in TEST_SWITCHES with why it is harmless"
+    ]
+    listed = dict.fromkeys(["KETCHUP_TEST_ADAPTER", "KETCHUP_TEST_NATIVE", "KETCHUP_TEST_OLD"], "")
+    assert checker.unlisted_test_switches(found, listed) == [
+        "KETCHUP_TEST_OLD is no longer read; remove it from TEST_SWITCHES"
+    ]
+
+
+def test_workspace_test_switches_in_release_binaries_are_listed():
+    assert checker.unlisted_test_switches(checker.release_test_switches(ROOT)) == []
+
+
 def test_workspace_linear_algebra_stays_in_ketchup_geometry():
     counts = checker.linear_algebra_counts(ROOT)
     assert checker.hand_written_linear_algebra(counts) == []

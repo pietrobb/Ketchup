@@ -1,4 +1,4 @@
-# ADR 0009: Correctly Rounded Math for Exact Results
+# ADR 0010: Correctly Rounded Math for Exact Results
 
 - Status: Accepted — project owner, 2026-10-11
 - Date: 2026-10-11

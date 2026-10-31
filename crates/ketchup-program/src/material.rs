@@ -26,7 +26,9 @@ impl Part {
     /// Distance in mm from `entry` along unit `inward` (both in the part's
     /// frame) to where a drill of `radius` (0 for the line alone) first
     /// leaves the part's material, on its axis or its rim, looked for up to
-    /// `limit`. The rim is taken `CONTACT_FIT_MM` inside, so that a hole
+    /// `limit`. A line starting in a recess of the entry face is followed from
+    /// its floor if that lies within `recess`, else it has 0 mm, as one in an
+    /// opening has. The rim is taken `CONTACT_FIT_MM` inside, so that a hole
     /// touching a face's edge keeps the material of that face. `None` when
     /// the part is not an extrusion, or has a shell, boolean or face offset,
     /// which this does not model; other holes and rounded or chamfered edges
@@ -37,10 +39,11 @@ impl Part {
         entry: [f64; 3],
         inward: [f64; 3],
         radius: f64,
+        recess: f64,
         limit: f64,
     ) -> Option<f64> {
         let material = self.material_test()?;
-        let mut least = leaves(&material, entry, inward, limit);
+        let mut least = leaves(&material, entry, inward, recess, limit);
         let rim = radius - CONTACT_FIT_MM;
         if rim > 0.0 {
             // Two unit vectors across `inward`, from the world axis least
@@ -56,7 +59,7 @@ impl Part {
             for i in 0..RIM_LINES {
                 let angle = std::f64::consts::TAU * f64::from(i) / f64::from(RIM_LINES);
                 let across = add(scale(u, rim * angle.cos()), scale(v, rim * angle.sin()));
-                least = least.min(leaves(&material, add(entry, across), inward, least));
+                least = least.min(leaves(&material, add(entry, across), inward, recess, least));
             }
         }
         Some(least)
@@ -142,11 +145,14 @@ impl Part {
 /// `material`, looked for up to `limit`. A line that starts in a recess of
 /// the entry face, as the rim of a hole reaching a groove in the face it is
 /// drilled from, is followed from the recess's floor: the drill meets
-/// material there, not 0 mm in (review 2026-10-24 PG-23).
+/// material there, not 0 mm in (review 2026-10-24 PG-23). A recess deeper
+/// than `recess`, or an opening, leaves the line 0 mm of material
+/// (review 2026-10-26 PG-43).
 fn leaves(
     material: &impl Fn([f64; 3]) -> bool,
     entry: [f64; 3],
     inward: [f64; 3],
+    recess: f64,
     limit: f64,
 ) -> f64 {
     let material = |t: f64| material(add(entry, scale(inward, t)));
@@ -158,8 +164,8 @@ fn leaves(
     if !material(CONTACT_FIT_MM) {
         loop {
             inside += STEP_MM;
-            if inside > limit {
-                return round(limit);
+            if inside > recess.min(limit) {
+                return 0.0;
             }
             if material(inside) {
                 break;

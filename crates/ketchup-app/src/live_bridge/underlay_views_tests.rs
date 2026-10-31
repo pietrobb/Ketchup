@@ -189,9 +189,10 @@ fn stand_second(harness: &mut egui_kittest::Harness<'_, KetchupApp>, plane: &str
 }
 
 /// 2D-5 in the window: Tools > Drawing view stands the aligned second drawing up as the
-/// front view, one Undo step; the AI builds the solid from the plan and that view; laid
-/// back into the plan from the same menu, the solid follows in that one step: the plan's
-/// area and the L's, both seen from above, now cross only where they overlap, 2 high.
+/// front view, one Undo step; the AI builds the solid from the plan and that view. UO-66:
+/// laid back into the plan from the same menu, both views would be seen from above and
+/// show no thickness; the drawing stays the front view, the solid as it was, and the
+/// status line says why, where before the solid became a plate 2 mm thick.
 #[test]
 fn tools_drawing_view_stands_a_drawing_up_and_the_solid_follows_it() {
     let (app, mut bridge, offset) = plan_and_aligned();
@@ -226,25 +227,55 @@ fn tools_drawing_view_stands_a_drawing_up_and_the_solid_follows_it() {
     );
 
     let steps = harness.state().undo_step_count();
+    let digest = harness.state().canonical_digest();
     stand_second(&mut harness, "underlay-view-top");
-    assert_eq!(harness.state().undo_step_count(), steps + 1);
-    assert!(
-        harness
-            .state()
-            .document
-            .current_rule_program()
-            .unwrap()
-            .source
-            .contains("BRACKET_V2_FRAME = ((0, 0, 0), (1, 0, 0), (0, 1, 0))")
-    );
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), steps, "{}", app.digest);
+    assert_eq!(app.canonical_digest(), digest);
+    assert!(app.digest.contains("seen along one axis"), "{}", app.digest);
     evaluate_exact(harness.state_mut());
-    let crossed = (100.0 * 20.0 + 20.0 * 40.0) * 2.0;
     let volume = exact_volume(harness.state(), "BRACKET");
-    assert!((volume - crossed).abs() < 1.0, "{volume} != {crossed}");
+    assert!(
+        (volume - BRACKET_MM3).abs() < 1.0,
+        "{volume} != {BRACKET_MM3}"
+    );
+}
 
-    assert!(harness.state_mut().undo());
-    evaluate_exact(harness.state_mut());
-    assert!((exact_volume(harness.state(), "BRACKET") - BRACKET_MM3).abs() < 1.0);
+/// UO-66 through MCP: `drawing action=view` laying the front view of a solid back into
+/// the plan is refused with the reason, the document as it was; standing it as the right
+/// view instead, still seen along another axis than the plan, is made.
+#[test]
+fn laying_a_view_of_a_solid_back_into_the_plan_is_refused() {
+    let (mut app, mut bridge, offset) = plan_and_front();
+    let at = |[x, y]: [f64; 2]| [x - offset[0], y - offset[1]];
+    call(
+        &mut app,
+        &mut bridge,
+        "drawing_solid_from_views",
+        json!({"name": "BRACKET", "views": [
+            {"underlay_id": 1, "at_mm": at([10.0, 10.0])},
+            {"underlay_id": 2, "at_mm": [10.0, 10.0]},
+        ]}),
+    );
+    let digest = app.canonical_digest();
+    let mut arguments = json!({"underlay_id": 2, "plane": "top"});
+    arguments["expected"] = serde_json::to_value(app.live_bridge_stamp()).unwrap();
+    let refused = bridge.execute(&mut app, ask("drawing_view", arguments), false);
+    assert_eq!(refused, Err("commit_rejected"));
+    let details = take_error_details().unwrap();
+    assert!(
+        details.to_string().contains("seen along one axis"),
+        "{details}"
+    );
+    assert_eq!(app.canonical_digest(), digest);
+
+    let stood = call(
+        &mut app,
+        &mut bridge,
+        "drawing_view",
+        json!({"underlay_id": 2, "plane": "right"}),
+    );
+    assert_eq!(stood["plane"], "right", "{stood}");
 }
 
 /// A round trip: the DXF Kečup writes for a drawing of an L piece 100 × 80, 60 thick, a

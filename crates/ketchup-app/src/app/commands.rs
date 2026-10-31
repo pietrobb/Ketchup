@@ -296,6 +296,7 @@ impl KetchupApp {
             } else if tool == ActiveTool::ExtrudeUnderlayArea {
                 self.value_box.input = "200".to_owned();
                 self.status_key = "status-underlay-extrude";
+                self.search_underlay_regions_ahead();
             } else if matches!(
                 tool,
                 ActiveTool::SolidSubtract

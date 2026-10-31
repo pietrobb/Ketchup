@@ -191,7 +191,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         let span = part.reach(direction) - ketchup_geometry::linalg::dot(point, direction);
         let local = frame::apply_transposed(&part.rotation, direction);
         Ok(part
-            .material_along(part.to_local(point), local, radius, span)
+            .material_along(part.to_local(point), local, radius, span, span)
             .map_or_else(Value::new_none, |mm| heap.alloc(mm)))
     }
 }

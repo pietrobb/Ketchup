@@ -4,7 +4,7 @@
 //! placement of a block, each as one Undo step.
 
 use super::program_edit::{evaluate_exact, exact_volume};
-use super::underlay_objects::{DRAWING, ask, imported, walled_room};
+use super::underlay_objects::{DRAWING, ask, imported, outline, walled_room};
 use super::*;
 use ketchup_model::document::CanonicalCommand;
 
@@ -277,6 +277,128 @@ fn a_label_in_several_regions_is_refused_with_the_candidates() {
     );
     evaluate_exact(&mut app);
     assert!((exact_volume(&app, "ROOM") - 9_400.0 * 5_400.0 * 200.0).abs() < 1.0);
+}
+
+/// Review 2026-10-26 UO-41: in a room stand its name in a stamp frame, a wardrobe and a
+/// column. With the layers left to the shown ones the name still names the room, and a
+/// point in the room, on the stamp or in the wardrobe takes the room, in the program and in
+/// the window alike: only the column, drawn with the walls, is cut through the floor; the
+/// frame and the wardrobe, drawn on layers of their own, are not.
+#[test]
+fn what_stands_in_a_room_on_other_layers_than_its_walls_is_not_cut_through_its_floor() {
+    let rectangle =
+        |[x0, y0]: [f64; 2], [x1, y1]: [f64; 2]| [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    let drawing = walled_room().replace(
+        "0\nENDSEC\n0\nEOF\n",
+        &format!(
+            "{}{}{}0\nENDSEC\n0\nEOF\n",
+            outline("stamps", &rectangle([1_900.0, 1_850.0], [2_900.0, 2_250.0])),
+            outline(
+                "furniture",
+                &rectangle([5_000.0, 1_000.0], [6_000.0, 1_600.0])
+            ),
+            outline("walls", &rectangle([7_000.0, 3_000.0], [7_300.0, 3_300.0])),
+        ),
+    );
+    let (mut app, mut bridge, offset) = imported(&drawing);
+    let floor = (9_400.0 * 5_400.0 - 300.0 * 300.0) * 200.0;
+    let measure = "area 50.670 m², perimeter 29.600 m, 1 holes";
+    from_underlay(
+        &mut app,
+        &mut bridge,
+        json!({"name":"ROOM", "label":"Kitchen", "thickness_mm":200}),
+    );
+    let written = source(&app);
+    assert!(written.contains(measure), "{written}");
+    evaluate_exact(&mut app);
+    assert!((exact_volume(&app, "ROOM") - floor).abs() < 1.0);
+    let id = app.document.current().underlays().next().unwrap().id;
+    for (name, [x, y]) in [
+        ("IN_ROOM", [4_000.0, 4_000.0]),
+        ("ON_STAMP", [2_700.0, 2_200.0]),
+        ("IN_WARDROBE", [5_500.0, 1_300.0]),
+    ] {
+        let point = [x - offset[0], y - offset[1]];
+        from_underlay(
+            &mut app,
+            &mut bridge,
+            json!({"name": name, "point_mm": point}),
+        );
+        let written = source(&app);
+        let heading = written
+            .lines()
+            .find(|line| line.contains(&format!(" {name}:")))
+            .unwrap();
+        assert!(heading.contains(measure), "{heading}");
+        let (_, holes) = crate::live_bridge::underlay_program::underlay_area_outline(
+            &app,
+            id,
+            Some(point),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(holes.len(), 1, "{name}: the window cuts the column only");
+    }
+}
+
+/// Review 2026-10-26 UO-42: an underlay imported before Kečup kept its objects cannot tell
+/// hatch and dimension lines from walls, so they may cut its regions; finding regions in it
+/// and taking a room from it say so and ask for the drawing to be imported again.
+#[test]
+fn regions_of_an_underlay_imported_before_its_objects_were_kept_warn_to_import_it_again() {
+    use ketchup_model::document::ProfileSegment;
+    use ketchup_model::underlay::UnderlayLinesBuilder;
+    let (mut app, mut bridge, _) = imported(&walled_room());
+    let snapshot = app.document.current();
+    let underlay = snapshot.underlays().next().unwrap();
+    let lines = app.cached_underlay_lines(underlay).unwrap();
+    assert!(!lines.objects().is_empty());
+    let mut builder = UnderlayLinesBuilder::default();
+    for (layer, drawn) in underlay.layers.iter().zip(lines.layers()) {
+        for polyline in drawn.polylines() {
+            let segments = polyline
+                .windows(2)
+                .map(|ends| ProfileSegment::Line {
+                    start_mm: ends[0],
+                    end_mm: ends[1],
+                })
+                .collect::<Vec<_>>();
+            builder.add(&layer.name, &segments);
+        }
+        for text in drawn.texts() {
+            builder.add_text(&layer.name, text.clone());
+        }
+    }
+    let (names, old) = builder.finish();
+    let present = underlay
+        .layers
+        .iter()
+        .zip(lines.layers())
+        .filter(|(_, drawn)| drawn.polylines().next().is_some() || !drawn.texts().is_empty())
+        .map(|(layer, _)| layer.name.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(names, present);
+    assert!(old.objects().is_empty());
+    let key = underlay.lines_key();
+    drop(snapshot);
+    app.render
+        .underlay_lines
+        .borrow_mut()
+        .insert(key, std::sync::Arc::new(old));
+    let mut regions = json!({});
+    regions["expected"] = serde_json::to_value(app.live_bridge_stamp()).unwrap();
+    let answer = bridge
+        .execute(&mut app, ask("underlay_regions", regions), false)
+        .unwrap();
+    let warnings = answer["warnings"].to_string();
+    assert!(warnings.contains("import it again"), "{answer}");
+    from_underlay(
+        &mut app,
+        &mut bridge,
+        json!({"name":"ROOM", "label":"Kitchen", "thickness_mm":200}),
+    );
+    assert!(source(&app).contains("import it again"), "{}", source(&app));
 }
 
 #[test]
@@ -637,6 +759,81 @@ fn a_floor_follows_the_room_its_walls_enclose_and_the_data_is_rewritten_in_place
     );
 }
 
+/// Review 2026-10-29 UO-40: moving a drawing that areas found in more ways than the found
+/// searches kept follow, each with its own join tolerance or closing segment, found every
+/// area's regions again on the UI thread at each move.
+#[test]
+fn moving_a_drawing_again_finds_no_regions_of_the_areas_that_follow_it() {
+    let (mut app, mut bridge, offset) = imported(&walled_room().replace("9700", "9713"));
+    let point = [2000.0 - offset[0], 2000.0 - offset[1]];
+    for (index, tolerance) in [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0].into_iter().enumerate() {
+        from_underlay(
+            &mut app,
+            &mut bridge,
+            json!({"name":format!("ROOM{index}"), "point_mm":point, "layers":["walls"], "tolerance_mm":tolerance}),
+        );
+    }
+    from_underlay(
+        &mut app,
+        &mut bridge,
+        json!({"name":"CLOSED", "point_mm":point, "layers":["walls"],
+            "closing_segments_mm":[[[point[0] - 50.0, point[1]], [point[0] + 50.0, point[1]]]]}),
+    );
+    let id = app.document.current().underlays().next().unwrap().id;
+    app.fit_underlay(
+        id,
+        [[0.0, 0.0], [1000.0, 0.0]],
+        [[130.0, 70.0], [1130.0, 70.0]],
+        false,
+    )
+    .unwrap();
+    let searched = super::underlay_regions::searches_on_this_thread();
+    app.fit_underlay(
+        id,
+        [[130.0, 70.0], [1130.0, 70.0]],
+        [[-310.0, 1170.0], [690.0, 1170.0]],
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        super::underlay_regions::searches_on_this_thread(),
+        searched,
+        "the move found regions again"
+    );
+}
+
+/// UO-40: a fit that scales a drawing an area follows finds its regions no more than a move
+/// does: the area keeps its join tolerance in the drawing's own millimetres, so the search
+/// is the one found before.
+#[test]
+fn scaling_a_drawing_finds_no_regions_of_the_area_that_follows_it_again() {
+    let (mut app, mut bridge, offset) = imported(&walled_room().replace("9700", "9717"));
+    let point = [2000.0 - offset[0], 2000.0 - offset[1]];
+    from_underlay(
+        &mut app,
+        &mut bridge,
+        json!({"name":"ROOM", "point_mm":point, "layers":["walls"]}),
+    );
+    let id = app.document.current().underlays().next().unwrap().id;
+    let before = source(&app);
+    let searched = super::underlay_regions::searches_on_this_thread();
+    let fit = app
+        .fit_underlay(
+            id,
+            [[0.0, 0.0], [1000.0, 0.0]],
+            [[0.0, 0.0], [1500.0, 0.0]],
+            true,
+        )
+        .unwrap();
+    assert!((fit.scale - 1.5).abs() < 1e-9, "{}", fit.scale);
+    assert_ne!(source(&app), before, "the room follows the drawing");
+    assert_eq!(
+        super::underlay_regions::searches_on_this_thread(),
+        searched,
+        "the scaled fit found regions again"
+    );
+}
+
 #[test]
 fn an_explicit_gap_closure_makes_a_profile_without_changing_the_drawing() {
     let drawing = "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nLWPOLYLINE\n8\nboundary\n90\n4\n70\n0\n10\n2400\n20\n0\n10\n0\n20\n0\n10\n0\n20\n1250\n10\n2400\n20\n1250\n0\nENDSEC\n0\nEOF\n";
@@ -883,6 +1080,57 @@ fn block_linework_becomes_shared_native_instances_and_a_wrong_question_changes_n
     assert_eq!(app.undo_step_count(), steps);
 }
 
+/// Review 2026-10-26 UO-46: a plan of more lines than one search takes refused every room
+/// with a bare `invalid_params`. The refusal names `within_mm`; a room taken within a box
+/// is found, and keeps that box when the drawing changes.
+#[test]
+fn a_room_of_a_plan_too_large_to_search_whole_is_taken_within_a_box() {
+    // An open line of more pieces than one search takes, snaking above the rooms.
+    let pieces = ketchup_model::underlay::regions::MAX_REGION_SEGMENTS + 1;
+    let mut snake = format!("0\nLWPOLYLINE\n8\nwalls\n90\n{}\n70\n0\n", pieces + 1);
+    for vertex in 0..=pieces {
+        let (row, column) = (vertex / 1_000, vertex % 1_000);
+        let column = if row % 2 == 0 { column } else { 999 - column };
+        snake.push_str(&format!("10\n{}\n20\n{}\n", 10 * column, 10_000 + 5 * row));
+    }
+    let drawing = two_rooms().replace("0\nENDSEC\n0\nEOF", &format!("{snake}0\nENDSEC\n0\nEOF"));
+    let (mut app, mut bridge, offset) = imported(&drawing);
+    let room = json!({"name":"ROOM", "point_mm":[2000.0-offset[0], 2000.0-offset[1]], "layers":["walls"], "thickness_mm":200});
+    let mut request = room.clone();
+    request["expected"] = serde_json::to_value(app.live_bridge_stamp()).unwrap();
+    let code = bridge
+        .execute(&mut app, ask("program_from_underlay", request), false)
+        .unwrap_err();
+    assert_eq!(code, "invalid_params");
+    let details = take_error_details().unwrap_or_default().to_string();
+    assert!(
+        details.contains("\"within_mm\"") && details.contains("200000"),
+        "{details}"
+    );
+
+    let mut within = room;
+    within["within_mm"] = json!([
+        [-100.0 - offset[0], -100.0 - offset[1]],
+        [8100.0 - offset[0], 4100.0 - offset[1]]
+    ]);
+    from_underlay(&mut app, &mut bridge, within);
+    evaluate_exact(&mut app);
+    assert!((exact_volume(&app, "ROOM") - 4_000.0 * 4_000.0 * 200.0).abs() < 1.0);
+    // A line drawn far off: the room is found again within its box, not refused.
+    bridge
+        .execute(
+            &mut app,
+            ask(
+                "drawing_draw",
+                json!({"layer": "walls", "shapes": [{"shape": "line", "points_mm": [[20_000.0 - offset[0], -offset[1]], [21_000.0 - offset[0], -offset[1]]]}]}),
+            ),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {:?}", take_error_details()));
+    evaluate_exact(&mut app);
+    assert!((exact_volume(&app, "ROOM") - 4_000.0 * 4_000.0 * 200.0).abs() < 1.0);
+}
+
 /// Two rooms of four walls and a partition between them, drawn as lines.
 fn two_rooms() -> String {
     let line = |handle: &str, [x, y]: [u32; 2], [u, v]: [u32; 2]| {
@@ -992,6 +1240,112 @@ fn a_drawing_edit_after_a_pull_names_the_area_it_changes_or_would_lose() {
         )
         .unwrap();
     assert!(answer.get("areas_changed").is_none(), "{answer}");
+    evaluate_exact(&mut app);
+    assert!((exact_volume(&app, "ROOM") - 4_000.0 * 4_000.0 * 200.0).abs() < 1.0);
+}
+
+/// What was made of a pulled area after it was pulled, a part renamed or a distance changed
+/// by hand or by the window, stays when the area follows its drawing: only its outline is
+/// written anew (review 2026-10-26 UO-45).
+#[test]
+fn a_followed_area_keeps_the_name_and_distance_given_to_its_part() {
+    let (mut app, mut bridge, offset) = imported(&two_rooms());
+    from_underlay(
+        &mut app,
+        &mut bridge,
+        json!({"name":"ROOM", "point_mm":[2000.0-offset[0], 2000.0-offset[1]], "layers":["walls"], "thickness_mm":200}),
+    );
+    let generated = "ROOM_SOLID = extrude(\"ROOM\", profile = ROOM, distance = 200)";
+    let edited = "ROOM_SOLID = extrude(\"SLAB\", profile = ROOM, distance = 300)";
+    let mut program = app.document.current_rule_program().unwrap().clone();
+    assert!(program.source.contains(generated), "{}", program.source);
+    program.source = program.source.replace(generated, edited);
+    app.apply_program_source(program, false).unwrap();
+    let id = app.document.current().underlays().next().unwrap().id;
+    app.fit_underlay(
+        id,
+        [[0.0, 0.0], [1000.0, 0.0]],
+        [[500.0, 0.0], [1500.0, 0.0]],
+        false,
+    )
+    .unwrap_or_else(|error| panic!("{error}: {:?}", take_error_details()));
+    assert!(source(&app).contains(edited), "{}", source(&app));
+    evaluate_exact(&mut app);
+    assert!((exact_volume(&app, "SLAB") - 4_000.0 * 4_000.0 * 300.0).abs() < 1.0);
+}
+
+/// A room taken by its label still follows the drawing after the layer of room names is
+/// hidden: the binding keeps the layers its label was read from (review 2026-10-26 UO-44).
+#[test]
+fn hiding_the_room_names_does_not_lose_a_labelled_room_when_its_drawing_moves() {
+    let (mut app, mut bridge, _) = imported(&walled_room());
+    from_underlay(
+        &mut app,
+        &mut bridge,
+        json!({"name":"ROOM", "label":"Kitchen", "layers":["walls"], "thickness_mm":200}),
+    );
+    evaluate_exact(&mut app);
+    let volume = exact_volume(&app, "ROOM");
+    let snapshot = app.document.current();
+    let underlay = snapshot.underlays().next().unwrap();
+    let id = underlay.id;
+    let rooms = underlay
+        .layers
+        .iter()
+        .find(|layer| layer.name == "rooms")
+        .unwrap()
+        .tag;
+    drop(snapshot);
+    assert!(app.set_tag_visibility(rooms, false));
+    app.fit_underlay(
+        id,
+        [[0.0, 0.0], [1000.0, 0.0]],
+        [[500.0, 0.0], [1500.0, 0.0]],
+        false,
+    )
+    .unwrap_or_else(|error| panic!("{error}: {:?}", take_error_details()));
+    evaluate_exact(&mut app);
+    assert!((exact_volume(&app, "ROOM") - volume).abs() < 1.0);
+}
+
+/// Removing an underlay a section follows is refused naming the section, saying the drawing
+/// it follows would be gone, and how to unlink it; once unlinked the underlay goes and the
+/// slab stays (review 2026-10-26 UO-43).
+#[test]
+fn removing_a_followed_underlay_names_the_section_and_how_to_unlink_it() {
+    let (mut app, mut bridge, offset) = imported(&two_rooms());
+    from_underlay(
+        &mut app,
+        &mut bridge,
+        json!({"name":"ROOM", "point_mm":[2000.0-offset[0], 2000.0-offset[1]], "layers":["walls"], "thickness_mm":200}),
+    );
+    let id = app.document.current().underlays().next().unwrap().id.0;
+    let digest = app.canonical_digest();
+    let remove = |app: &KetchupApp| {
+        let mut arguments = json!({"underlay_id": id});
+        arguments["expected"] = serde_json::to_value(app.live_bridge_stamp()).unwrap();
+        ask("remove_underlay", arguments)
+    };
+    let request = remove(&app);
+    let code = bridge.execute(&mut app, request, false).unwrap_err();
+    assert_eq!(code, "commit_rejected");
+    let details = take_error_details().unwrap_or_default().to_string();
+    assert!(details.contains("ROOM follows this drawing"), "{details}");
+    assert!(details.contains("removes the drawing"), "{details}");
+    assert!(
+        details.contains(&app.catalog.text("menu-unlink-pulled-areas")),
+        "{details}"
+    );
+    assert_eq!(
+        app.canonical_digest(),
+        digest,
+        "a refused removal changes nothing"
+    );
+
+    assert!(app.unlink_pulled_areas());
+    let request = remove(&app);
+    bridge.execute(&mut app, request, false).unwrap();
+    assert_eq!(app.document.current().underlays().count(), 0);
     evaluate_exact(&mut app);
     assert!((exact_volume(&app, "ROOM") - 4_000.0 * 4_000.0 * 200.0).abs() < 1.0);
 }

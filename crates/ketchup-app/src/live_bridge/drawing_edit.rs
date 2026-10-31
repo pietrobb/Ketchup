@@ -5,7 +5,7 @@
 //! everything that draws, snaps to or asks about the underlay then sees the edited drawing.
 
 use super::*;
-use crate::app::underlay_edit::UnderlayEditError;
+use crate::app::underlay_edit::{FindRegions, UnderlayEditError};
 use crate::app::underlay_export::UnderlayExportError;
 use crate::app::underlay_extrude::{AreaPullError, AreaRefusal};
 use ketchup_model::underlay::drawn::{in_lines, inverse, similarity};
@@ -81,7 +81,7 @@ impl LiveBridge {
         }
         Self::require_request_authority(cancelled)?;
         let changes = app
-            .remove_underlay_objects(id, &object_ids)
+            .remove_underlay_objects(id, &object_ids, FindRegions::Here)
             .map_err(edit_failure)?;
         self.query.invalidate();
         let snapshot = app.document.current();
@@ -138,7 +138,7 @@ impl LiveBridge {
         let count = shapes.len();
         Self::require_request_authority(cancelled)?;
         let changes = app
-            .draw_into_underlay(id, layer, shapes)
+            .draw_into_underlay(id, layer, shapes, FindRegions::Here)
             .map_err(edit_failure)?;
         self.query.invalidate();
         Ok(with_followed(
@@ -199,7 +199,7 @@ impl LiveBridge {
             .len();
         Self::require_request_authority(cancelled)?;
         let changes = app
-            .transform_underlay_objects(id, object_ids, &map, *copy)
+            .transform_underlay_objects(id, object_ids, &map, *copy, FindRegions::Here)
             .map_err(edit_failure)?;
         self.query.invalidate();
         let objects = object_ids.iter().collect::<BTreeSet<_>>();
@@ -293,7 +293,7 @@ impl LiveBridge {
             .len();
         Self::require_request_authority(cancelled)?;
         let changes = app
-            .edit_underlay_line(id, object_id, edit)
+            .edit_underlay_line(id, object_id, edit, FindRegions::Here)
             .map_err(edit_failure)?;
         self.query.invalidate();
         let after = app
@@ -377,10 +377,7 @@ impl LiveBridge {
                 &ketchup_program::CancelToken::default(),
             )
             .map_err(|error| {
-                let code = match &error {
-                    UnderlayExportError::NoSource(..) => "invalid_params",
-                    _ => "export_failed",
-                };
+                let code = drawing_export_code(&error);
                 record_rejection(
                     &rejected(code).caused_by(error),
                     json!({"path": path, "underlay_id": id.0}),
@@ -398,6 +395,47 @@ impl LiveBridge {
                 "count": count,
             })).collect::<Vec<_>>(),
         }))
+    }
+}
+
+/// The host code of why a drawing was not written back, whose hint repairs that cause
+/// (review 2026-10-29 CD-72).
+pub(super) fn drawing_export_code(error: &UnderlayExportError) -> &'static str {
+    use crate::export_bundle::ExportTransactionError;
+    use ketchup_application::program_isolation::{
+        UnderlayReadError, UnderlayRefusal, UnderlayWorkerError,
+    };
+    use ketchup_model::import::DxfEditRefusal;
+    match error {
+        UnderlayExportError::NotFound(..) => "invalid_params",
+        UnderlayExportError::NoSource(..) | UnderlayExportError::NoLines(..) => {
+            "drawing_source_unavailable"
+        }
+        UnderlayExportError::Worker(UnderlayWorkerError::Read(UnderlayReadError::Refused(
+            refusal,
+        ))) => match refusal {
+            UnderlayRefusal::DwgWrite(..) => "dwg_conversion_failed",
+            UnderlayRefusal::NotWritten(
+                DxfEditRefusal::NoHandle { .. }
+                | DxfEditRefusal::HandleMissing { .. }
+                | DxfEditRefusal::NotMappable { .. },
+            ) => "drawing_edit_not_writable",
+            UnderlayRefusal::NotWritten(..)
+            | UnderlayRefusal::Dwg(..)
+            | UnderlayRefusal::UnitsRequired
+            | UnderlayRefusal::Dxf { .. }
+            | UnderlayRefusal::File { .. } => "drawing_source_unavailable",
+        },
+        UnderlayExportError::Worker(UnderlayWorkerError::Read(UnderlayReadError::Cancelled)) => {
+            "request_cancelled"
+        }
+        UnderlayExportError::Worker(..) => "drawing_worker_failed",
+        UnderlayExportError::SameAsSource(..)
+        | UnderlayExportError::Publish(
+            ExportTransactionError::TargetChanged { .. }
+            | ExportTransactionError::OriginalPreserved { .. },
+        ) => "drawings_target_exists",
+        UnderlayExportError::Io(..) | UnderlayExportError::Publish(..) => "drawings_write_failed",
     }
 }
 
@@ -491,7 +529,7 @@ fn refused_area(refusal: AreaRefusal) -> &'static str {
 
 fn edit_failure(error: UnderlayEditError) -> &'static str {
     let code = match &error {
-        UnderlayEditError::Commit(..) => "commit_rejected",
+        UnderlayEditError::Commit(..) | UnderlayEditError::FindingRegions(..) => "commit_rejected",
         UnderlayEditError::Plan(UnderlayObjectError::NotFound(..)) => "entity_not_found",
         UnderlayEditError::NoLines | UnderlayEditError::Plan(..) => "invalid_params",
     };

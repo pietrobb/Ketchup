@@ -98,6 +98,43 @@ def test_counts_sleeps_called_by_another_name(tmp_path):
     }
 
 
+def test_a_sleep_in_a_helper_counts_at_every_call_of_the_helper(tmp_path):
+    # Review 2026-10-29 TST-42: three polling loops moved into one `ask_until` dropped
+    # the count from 3 to 2 while the tests slept as before. A helper that calls a
+    # sleeping helper sleeps too; one that nothing calls still counts its own sleeps.
+    write(
+        tmp_path,
+        "tests/test_flow.py",
+        "import time\n"
+        "def ask_until(ask, every):\n"
+        "    while not ask():\n"
+        "        time.sleep(every)\n"
+        "def settled(reply):\n"
+        "    return ask_until(lambda: reply, 1)\n"
+        "def unused():\n"
+        "    time.sleep(1)\n"
+        "def test_a():\n"
+        "    settled(1)\n"
+        "    settled(2)\n"
+        "    ask_until(ready, 1)\n"
+        "    client.ask_until(ready)\n",
+    )
+    write(
+        tmp_path,
+        "crates/a/tests/flow.rs",
+        "fn call(x: u8) -> u8 {\n    loop {\n        std::thread::sleep(TICK);\n    }\n}\n"
+        "fn twice() {\n    call(1);\n    call(2);\n}\n"
+        "fn two_naps() {\n    sleep(A);\n    sleep(B);\n}\n"
+        "#[test]\nfn t() {\n    call(1);\n    twice();\n    twice();\n    two_naps();\n"
+        "    other.call(3);\n    // call(4)\n}\n",
+    )
+    # A call counts the sleeps the helper makes: call 1, twice 2 (each), two_naps 2.
+    assert checker.current_counts(tmp_path) == {
+        "crates/a/tests/flow.rs": 7,
+        "tests/test_flow.py": 4,
+    }
+
+
 def test_growth_fails_and_shrinking_passes(tmp_path):
     write(tmp_path, "crates/a/tests/flow.rs", "fn t() { sleep(A); sleep(B); }\n")
     assert checker.check(tmp_path, update=True) == 0

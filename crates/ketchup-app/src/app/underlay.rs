@@ -12,15 +12,24 @@ use ketchup_application::program_isolation::{
     UnderlayInput, UnderlayRead, UnderlayReadError, UnderlayRefusal, UnderlayWorkerError,
     read_underlay,
 };
+use ketchup_model::underlay::object_query::ObjectTree;
 use ketchup_model::underlay::placement::{
     UnderlayFit, UnderlayFitError, geo_origin, plan_underlay_fit,
 };
 use ketchup_model::underlay::snap::UnderlaySnapIndex;
 use ketchup_model::underlay::{
-    LayerLines, Underlay, UnderlayId, UnderlayLines, UnderlayPlanError, plan_underlay,
-    plan_underlay_removal,
+    LayerLines, Underlay, UnderlayId, UnderlayLines, UnderlayLinesError, UnderlayPlanError,
+    plan_underlay, plan_underlay_removal,
 };
 use ketchup_program::CancelToken;
+
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread decoded an underlay's blob.
+    pub(crate) static BLOB_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// How many times this thread worked out the object tree of an underlay's lines.
+    pub(crate) static OBJECT_TREES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 /// What one layer of an underlay's lines draws: the box of its points and text anchors in
 /// their own millimetres (`None` for a layer that draws nothing), its lines and its texts.
@@ -132,7 +141,8 @@ pub(crate) fn read_underlay_file(
     )
     .map_err(|error| failed(error.into()))?;
     let bytes = std::fs::read(&output).map_err(|error| failed(error.into()))?;
-    let lines = UnderlayLines::decode(&bytes).map_err(|error| failed(error.into()))?;
+    let lines =
+        UnderlayLines::decode(&bytes, read.layers.len()).map_err(|error| failed(error.into()))?;
     let snaps = Arc::new(UnderlaySnapIndex::new(&lines));
     let geometry = Arc::new(UnderlayGeometry::new(sha256_bytes(&bytes), &lines));
     Ok(ReadUnderlay {
@@ -453,26 +463,20 @@ impl KetchupApp {
             let geometry = if let Some(geometry) = self.render.underlays.get(&key) {
                 Arc::clone(geometry)
             } else {
-                let blob = underlay.lines_blob();
-                let decoded = self
-                    .file
-                    .container_data
-                    .blobs()
-                    .get(&blob)
-                    .map(|bytes| underlay.read_lines(bytes));
-                let reason = match decoded {
-                    Some(Ok(lines)) => Ok(lines),
-                    Some(Err(error)) => Err(error.to_string()),
-                    None => Err(format!("the document holds no blob {blob}")),
-                };
                 // Shown, not drawn: the document's other content stays usable.
-                let lines = reason.unwrap_or_else(|reason| {
-                    self.digest = self.catalog.format(
-                        "error-underlay-lines",
-                        &BTreeMap::from([("name", underlay.name.clone()), ("reason", reason)]),
-                    );
-                    UnderlayLines::default()
-                });
+                let lines = self
+                    .underlay_lines_or_reason(underlay)
+                    .unwrap_or_else(|error| {
+                        let reason = error.map_or_else(
+                            || format!("the document holds no blob {}", underlay.lines_blob()),
+                            |error| error.to_string(),
+                        );
+                        self.digest = self.catalog.format(
+                            "error-underlay-lines",
+                            &BTreeMap::from([("name", underlay.name.clone()), ("reason", reason)]),
+                        );
+                        Arc::new(UnderlayLines::default())
+                    });
                 let geometry = Arc::new(UnderlayGeometry::new(key, &lines));
                 self.render.underlays.insert(key, Arc::clone(&geometry));
                 self.render
@@ -495,7 +499,7 @@ impl KetchupApp {
                 Vec::new()
             };
             let placement = match dragged {
-                Some((id, edit)) if id == underlay.id => edit.compose(underlay.placement),
+                Some((id, edit)) if id == underlay.id => edit.compose(underlay.world_transform()),
                 _ => underlay.world_transform(),
             };
             draws.push(UnderlayDraw {
@@ -522,6 +526,18 @@ impl KetchupApp {
             .underlay_lines
             .get_mut()
             .retain(|key, _| named(key));
+        self.render
+            .underlay_object_trees
+            .get_mut()
+            .retain(|key, _| named(key));
+        self.render
+            .underlay_decoded
+            .get_mut()
+            .retain(|(blob, layers), _| {
+                snapshot.underlays().any(|underlay| {
+                    underlay.lines_sha256 == *blob && underlay.layers.len() == *layers
+                })
+            });
         draws
     }
 
@@ -577,21 +593,80 @@ impl KetchupApp {
     /// The lines and objects of `underlay`, decoded from the document's blob the first
     /// time; `None` while the document holds no readable blob of them.
     pub(crate) fn cached_underlay_lines(&self, underlay: &Underlay) -> Option<Arc<UnderlayLines>> {
+        self.underlay_lines_or_reason(underlay).ok()
+    }
+
+    /// The children and bounds of the objects of `lines`, the
+    /// [`Self::cached_underlay_lines`] of `underlay`, worked out the first time.
+    pub(crate) fn cached_object_tree(
+        &self,
+        underlay: &Underlay,
+        lines: &UnderlayLines,
+    ) -> Arc<ObjectTree> {
+        let key = underlay.lines_key();
+        if let Some(tree) = self.render.underlay_object_trees.borrow().get(&key) {
+            return Arc::clone(tree);
+        }
+        #[cfg(test)]
+        OBJECT_TREES.with(|built| built.set(built.get() + 1));
+        let tree = Arc::new(ObjectTree::new(lines));
+        self.render
+            .underlay_object_trees
+            .borrow_mut()
+            .insert(key, Arc::clone(&tree));
+        tree
+    }
+
+    /// The lines and objects of `underlay` with its edits, or why they cannot be read:
+    /// `None` when the document holds no blob of them. Its blob is decoded once and kept while an underlay names it, so an
+    /// edit applies the edits to the decoded blob instead of decoding it again (review
+    /// 2026-10-29 UI-62).
+    fn underlay_lines_or_reason(
+        &self,
+        underlay: &Underlay,
+    ) -> Result<Arc<UnderlayLines>, Option<UnderlayLinesError>> {
         let key = underlay.lines_key();
         if let Some(lines) = self.render.underlay_lines.borrow().get(&key) {
-            return Some(Arc::clone(lines));
+            return Ok(Arc::clone(lines));
         }
-        let blobs = self.file.container_data.blobs();
-        let lines = Arc::new(
-            underlay
-                .read_lines(blobs.get(&underlay.lines_blob())?)
-                .ok()?,
-        );
+        let blob = underlay.lines_blob();
+        let decoded_key = (underlay.lines_sha256, underlay.layers.len());
+        let cached = self
+            .render
+            .underlay_decoded
+            .borrow()
+            .get(&decoded_key)
+            .cloned();
+        let decoded = match cached {
+            Some(decoded) => decoded,
+            None => {
+                let bytes = self.file.container_data.blobs();
+                let bytes = bytes.get(&blob).ok_or(None)?;
+                #[cfg(test)]
+                BLOB_DECODES.with(|decodes| decodes.set(decodes.get() + 1));
+                let decoded =
+                    Arc::new(UnderlayLines::decode(bytes, underlay.layers.len()).map_err(Some)?);
+                self.render
+                    .underlay_decoded
+                    .borrow_mut()
+                    .insert(decoded_key, Arc::clone(&decoded));
+                decoded
+            }
+        };
+        let lines = if underlay.edits.is_empty() {
+            decoded
+        } else {
+            Arc::new(
+                underlay
+                    .with_edits(UnderlayLines::clone(&decoded))
+                    .map_err(Some)?,
+            )
+        };
         self.render
             .underlay_lines
             .borrow_mut()
             .insert(key, Arc::clone(&lines));
-        Some(lines)
+        Ok(lines)
     }
 
     /// The layer extents of `underlay`'s lines, decoded from the document's blob the first
@@ -603,17 +678,9 @@ impl KetchupApp {
         if let Some(extent) = self.render.underlay_extents.borrow().get(&key) {
             return Arc::clone(extent);
         }
-        let decoded = self.render.underlay_lines.borrow().get(&key).cloned();
-        let extent = match decoded {
-            Some(lines) => underlay_extent(&lines),
-            None => self
-                .file
-                .container_data
-                .blobs()
-                .get(&underlay.lines_blob())
-                .and_then(|bytes| underlay.read_lines(bytes).ok())
-                .map_or_else(|| Arc::from([]), |lines| underlay_extent(&lines)),
-        };
+        let extent = self
+            .cached_underlay_lines(underlay)
+            .map_or_else(|| Arc::from([]), |lines| underlay_extent(&lines));
         self.render
             .underlay_extents
             .borrow_mut()

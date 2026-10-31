@@ -535,9 +535,98 @@ fn a_client_exports_the_edited_drawing_as_a_dxf_that_imports_as_edited() {
                 false
             )
             .unwrap_err(),
-        "export_failed"
+        "drawing_source_unavailable"
     );
     assert!(!refused.exists());
+}
+
+/// Each reason a drawing is not written back has a code of its own whose hint repairs
+/// it, not one `export_failed` for all (review 2026-10-29 CD-72).
+#[test]
+fn a_drawing_export_refusal_has_the_code_of_its_cause() {
+    use crate::app::underlay_export::UnderlayExportError as Error;
+    use crate::export_bundle::ExportTransactionError;
+    use ketchup_application::program_isolation::{UnderlayWorkerError, WorkerUnavailable};
+    use ketchup_model::import::DxfEditRefusal;
+    use ketchup_model::underlay::UnderlayId;
+    use ketchup_scheduler::protocol::{DwgRefusal, UnderlayRefusal};
+    use ketchup_scheduler::underlay_reading::UnderlayReadError;
+
+    let refused = |refusal| {
+        Error::Worker(UnderlayWorkerError::Read(UnderlayReadError::Refused(
+            refusal,
+        )))
+    };
+    let path = std::path::PathBuf::from("C:/plans/plan.dxf");
+    let dwg = DwgRefusal::NothingRead { diagnostic: None };
+    for (error, code) in [
+        (Error::NoSource(UnderlayId(1)), "drawing_source_unavailable"),
+        (Error::NoLines(UnderlayId(1)), "drawing_source_unavailable"),
+        (
+            refused(UnderlayRefusal::NotWritten(DxfEditRefusal::NotTheSource)),
+            "drawing_source_unavailable",
+        ),
+        (
+            refused(UnderlayRefusal::NotWritten(DxfEditRefusal::ReadDifferently)),
+            "drawing_source_unavailable",
+        ),
+        (
+            refused(UnderlayRefusal::File {
+                path: path.clone(),
+                report: "gone".into(),
+            }),
+            "drawing_source_unavailable",
+        ),
+        (
+            refused(UnderlayRefusal::Dwg(dwg.clone())),
+            "drawing_source_unavailable",
+        ),
+        (
+            refused(UnderlayRefusal::DwgWrite(dwg)),
+            "dwg_conversion_failed",
+        ),
+        (
+            refused(UnderlayRefusal::NotWritten(DxfEditRefusal::NoHandle {
+                object: 4,
+            })),
+            "drawing_edit_not_writable",
+        ),
+        (
+            refused(UnderlayRefusal::NotWritten(DxfEditRefusal::NotMappable {
+                object: 4,
+                kind: "HATCH".into(),
+            })),
+            "drawing_edit_not_writable",
+        ),
+        (
+            Error::Worker(UnderlayWorkerError::Unavailable(
+                WorkerUnavailable::NotInstalled,
+            )),
+            "drawing_worker_failed",
+        ),
+        (
+            Error::Worker(UnderlayWorkerError::Read(UnderlayReadError::MemoryLimit)),
+            "drawing_worker_failed",
+        ),
+        (Error::SameAsSource(path.clone()), "drawings_target_exists"),
+        (
+            Error::Publish(ExportTransactionError::changed(&path)),
+            "drawings_target_exists",
+        ),
+        (
+            Error::Io(std::io::Error::other("disk full")),
+            "drawings_write_failed",
+        ),
+    ] {
+        let answer = crate::live_bridge::drawing_edit::drawing_export_code(&error);
+        assert_eq!(answer, code, "{error}");
+        assert!(
+            ketchup_application::rejections::HOST_REJECTIONS
+                .iter()
+                .any(|rejection| rejection.code == answer),
+            "{answer}"
+        );
+    }
 }
 
 /// A drawing imported from `plan.dxf` with its wall taken out, beside `other.dxf`.

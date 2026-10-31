@@ -3046,7 +3046,7 @@ fn imported_fingerprint(topology: &str, measures: &[f64; 7]) -> String {
 
 /// Whether `expected` names this imported body: its own fingerprint, or the
 /// one of the same topology whose volume and bounds lie a few last bits away,
-/// as a document saved where libm rounded differently recorded it (ADR 0009).
+/// as a document saved where libm rounded differently recorded it (ADR 0010).
 /// The fingerprint hashes those bits, so the neighbours are searched.
 fn imported_result_matches(source_sha256: &str, output: &ExactOpOutput, expected: &str) -> bool {
     let [min, max] = bounds_mm(output);
@@ -3067,10 +3067,57 @@ fn imported_result_matches(source_sha256: &str, output: &ExactOpOutput, expected
 }
 
 fn imported_fingerprint_near(topology: &str, measures: &[f64; 7], expected: &str) -> bool {
-    use ketchup_model::import::{IMPORTED_BOUNDS_ULPS, IMPORTED_MEASURE_ULPS, ulps_from};
-    if imported_fingerprint(topology, measures) == expected {
+    remembered_fingerprint_near(topology, measures, expected, imported_fingerprint)
+}
+
+/// The neighbour searches this worker has done (EX-61). A document saved
+/// before ADR 0010 names each imported body by a fingerprint a few bits off,
+/// which costs up to 12 394 hashes; the worker serves many requests, so each
+/// body is searched once, not on every request. At most this many are kept.
+const REMEMBERED_SEARCHES: usize = 4096;
+
+type SearchKey = (String, [u64; 7], String);
+
+fn remembered_fingerprint_near(
+    topology: &str,
+    measures: &[f64; 7],
+    expected: &str,
+    mut hash: impl FnMut(&str, &[f64; 7]) -> String,
+) -> bool {
+    static SEARCHED: std::sync::Mutex<BTreeMap<SearchKey, bool>> =
+        std::sync::Mutex::new(BTreeMap::new());
+    if hash(topology, measures) == expected {
         return true;
     }
+    let key = (
+        topology.to_owned(),
+        measures.map(f64::to_bits),
+        expected.to_owned(),
+    );
+    let searched = || {
+        SEARCHED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
+    if let Some(found) = searched().get(&key).copied() {
+        return found;
+    }
+    let found = search_fingerprint_near(topology, measures, expected, &mut hash);
+    let mut searched = searched();
+    if searched.len() >= REMEMBERED_SEARCHES {
+        searched.clear();
+    }
+    searched.insert(key, found);
+    found
+}
+
+fn search_fingerprint_near(
+    topology: &str,
+    measures: &[f64; 7],
+    expected: &str,
+    hash: &mut impl FnMut(&str, &[f64; 7]) -> String,
+) -> bool {
+    use ketchup_model::import::{IMPORTED_BOUNDS_ULPS, IMPORTED_MEASURE_ULPS, ulps_from};
     let reach = |slot: usize| {
         (if slot == 0 {
             IMPORTED_MEASURE_ULPS
@@ -3090,7 +3137,7 @@ fn imported_fingerprint_near(topology: &str, measures: &[f64; 7], expected: &str
                 .map(|near| *measure = near)
                 .is_some()
         });
-        if reachable && imported_fingerprint(topology, &candidate) == expected {
+        if reachable && hash(topology, &candidate) == expected {
             return true;
         }
         let mut slot = 0;
@@ -3879,7 +3926,7 @@ fn backend_failure(operation: &str, diagnostic: &str) -> WorkerFailure {
 mod tests {
     use super::*;
 
-    /// ADR 0009: the drawer example's rail 9117663_3, saved on Windows with
+    /// ADR 0010: the drawer example's rail 9117663_3, saved on Windows with
     /// MSVC's libm, evaluates one bit away in volume under CORE-MATH. The
     /// fingerprint the document recorded still names it; one further off not.
     #[test]
@@ -3943,6 +3990,42 @@ mod tests {
             &evaluated,
             recorded_fingerprint
         ));
+
+        // EX-61: the neighbours are searched once per body, not on every request.
+        let searched_once = format!("{topology}:EX-61");
+        let searched_fingerprint = imported_fingerprint(&searched_once, &recorded);
+        for (request, hashed_at_most) in [(1, usize::MAX), (2, 1), (3, 1)] {
+            let mut hashed = 0;
+            let found = remembered_fingerprint_near(
+                &searched_once,
+                &evaluated,
+                &searched_fingerprint,
+                |topology, measures| {
+                    hashed += 1;
+                    imported_fingerprint(topology, measures)
+                },
+            );
+            assert!(found);
+            assert!(
+                hashed <= hashed_at_most,
+                "request {request}: {hashed} hashes"
+            );
+        }
+
+        // EX-60: a body bounded at -0.0, recorded a few bits off in volume, or
+        // at +0.0, is the recorded one as the window takes it.
+        let mut zero = recorded;
+        zero[1] = -0.0;
+        let zero_fingerprint = imported_fingerprint(topology, &zero);
+        for (slot, value) in [(0, evaluated[0]), (1, 0.0)] {
+            let mut near = zero;
+            near[slot] = value;
+            assert!(imported_fingerprint_near(
+                topology,
+                &near,
+                &zero_fingerprint
+            ));
+        }
     }
 
     #[test]

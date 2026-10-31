@@ -133,6 +133,54 @@ fn assert_expected_reports(programs: Vec<PathBuf>) {
     );
 }
 
+/// Review 2026-10-29: no example used `bar_stock`, `sheet_stock`, `price`,
+/// `connector()` or a buildup's `"sheet"`, so the cutting plan, the quote and
+/// the catalogued connector had unit tests only. The sheathed wall uses them
+/// all: its studs and boards are cut from the declared stock with nothing left
+/// unplanned, the quote prices everything it counts and nothing else, and the
+/// joist hangs on an SAE380 hanger rated from its ETA.
+#[test]
+fn an_example_cuts_from_stock_prices_its_quote_and_hangs_a_joist_on_a_connector() {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/programs/sheathed-wall.star");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    let evaluation = ketchup_program::evaluate("sheathed-wall.star", &source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"));
+    let bom = ketchup_program::bom::bom(&evaluation.model);
+    let mut planned = bom
+        .cutting
+        .iter()
+        .map(|plan| {
+            assert_eq!(plan.unplaced, [], "{}", plan.material);
+            assert!(!plan.layouts.is_empty(), "{}", plan.material);
+            plan.material.as_str()
+        })
+        .collect::<Vec<_>>();
+    planned.sort();
+    planned.dedup();
+    assert_eq!(planned, ["KVH C24", "OSB"]);
+    let quote = bom.quote.expect("the example declares prices");
+    assert_eq!(quote.unpriced, [], "{quote:?}");
+    assert_eq!(quote.unused_prices, Vec::<String>::new(), "{quote:?}");
+    assert!(quote.total > 0.0, "{quote:?}");
+    assert!(
+        quote
+            .lines
+            .iter()
+            .any(|line| line.item == "OSB" && line.basis.as_deref() == Some("stock")),
+        "{quote:?}"
+    );
+    let (_, report) = run("sheathed-wall.star", &source, &BTreeMap::new()).unwrap();
+    let hanger = report
+        .joints
+        .iter()
+        .find(|check| check.fastener.as_deref() == Some("SAE380"))
+        .unwrap_or_else(|| panic!("{:?}", report.joints));
+    let rating = hanger.rating.as_ref().expect("catalogued");
+    assert!(rating.source.contains("ETA-06/0270"), "{}", rating.source);
+}
+
 #[test]
 fn a_long_list_keeps_its_count_and_kinds() {
     let items = (0..=VERBATIM_ITEMS)

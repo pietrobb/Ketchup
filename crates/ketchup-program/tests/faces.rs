@@ -541,6 +541,37 @@ fn half_of_a_split_face_pulled_in_keeps_the_bounds_of_the_other_half() {
     assert_near(pushed.world_bounds().1, [600.0, 400.0, 728.0], "pushed");
 }
 
+/// Review 2026-10-26 WB-21: `push_pull(to=)` makes an extruded part that long
+/// between its caps, whatever its first length and earlier Push/Pulls, so a
+/// typed length stays when a parameter changes what made it.
+#[test]
+fn push_pull_to_makes_the_part_that_long_whatever_made_it_so_far() {
+    let source = |first: f64| {
+        format!(
+            "a = box(\"a\", (600, 400, {first}))\n\
+             push_pull(a, face = \"z+\", distance = -8, name = \"shorter\")\n\
+             push_pull(a, face = \"z+\", to = 650, name = \"Length\")\n"
+        )
+    };
+    for first in [720.0, 900.0, 300.0] {
+        let a = part(&source(first), "a");
+        assert_near(a.world_bounds().1, [600.0, 400.0, 650.0], "max");
+    }
+    let refused = |line: &str| {
+        let source = format!("a = box(\"a\", (600, 400, 720))\n{line}\n");
+        format!(
+            "{:?}",
+            run("faces.star", &source, &Default::default()).unwrap_err()
+        )
+    };
+    let side = refused("push_pull(a, face = \"x+\", to = 650, name = \"p\")");
+    assert!(side.contains("to= moves a cap"), "{side}");
+    let both = refused("push_pull(a, face = \"z+\", distance = 5, to = 650, name = \"p\")");
+    assert!(both.contains("give distance or to, not both"), "{both}");
+    let zero = refused("push_pull(a, face = \"z+\", to = 0, name = \"p\")");
+    assert!(zero.contains("to must be a length above 0"), "{zero}");
+}
+
 #[test]
 fn contact_finds_a_profile_face_mirrored_in_the_middle_of_the_program() {
     let source = "\

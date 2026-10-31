@@ -1,10 +1,9 @@
 //! Moving and turning a selected underlay with the Move and Rotate tools: the gesture is the
 //! model's, and its edit goes into the underlay's placement as a fit's does, one Undo step.
 
-use super::transform::{move_world_edit, rotate_world_edit};
-use super::underlay_edit::UnderlayEditError;
+use super::underlay_edit::{FindRegions, UnderlayEditError};
 use super::underlay_snapping::{underlay_of, underlay_reference};
-use crate::transform_operation::TransformTarget;
+use crate::transform_operation::{TransformPlan, TransformTarget};
 use crate::*;
 use ketchup_model::underlay::UnderlayId;
 use ketchup_model::underlay::drawn::in_lines;
@@ -21,6 +20,32 @@ impl KetchupApp {
             && self.selection.selected_group.is_none()
             && self.document.current().underlay(id).is_some())
         .then_some(id)
+    }
+
+    /// Where the pointer meets the plane the drawing `id` lies flat or stands in, or the
+    /// plane parallel to it `through` a point: a view's plane is upright, so a point on a
+    /// horizontal plane is none of its points seen straight on, and a drag on one never
+    /// moves it up or down (review 2026-10-29 UO-69).
+    pub(crate) fn screen_to_underlay_plane(
+        &self,
+        id: UnderlayId,
+        pointer: Pos2,
+        rect: Rect,
+        through: Option<Vec3>,
+    ) -> Option<Vec3> {
+        let underlay = self.document.current().underlay(id)?.clone();
+        let (x_axis, y_axis, _) = underlay.view.plane.axes();
+        let origin_mm = through.map_or_else(
+            || underlay.world_transform().transform_point([0.0; 3]),
+            |point| [point.x, point.y, point.z],
+        );
+        let frame = WorkplaneFrame {
+            origin_mm,
+            x_axis,
+            y_axis,
+            normal: cross(x_axis, y_axis),
+        };
+        self.screen_to_workplane(pointer, rect, frame)
     }
 
     /// Selects the underlay `id` alone, so Move and Rotate place it.
@@ -58,7 +83,7 @@ impl KetchupApp {
     }
 
     /// Refuses, in the status line, a move or turn of an underlay that would leave the
-    /// ground plane.
+    /// plane it stands on.
     pub(crate) fn underlay_drag_refused(
         &mut self,
         selection: &SelectionId,
@@ -83,15 +108,7 @@ impl KetchupApp {
         let (Some(id), Some(edit)) = (underlay_of(selection), edit) else {
             return false;
         };
-        let snapshot = self.document.current();
-        if snapshot
-            .underlay(id)
-            .is_some_and(|underlay| !underlay.lies_flat())
-        {
-            self.refuse_underlay_edit(self.catalog.text("error-underlay-standing"));
-            return true;
-        }
-        let Err(error) = plan_underlay_edit(&snapshot, id, edit) else {
+        let Err(error) = plan_underlay_edit(&self.document.current(), id, edit) else {
             return false;
         };
         self.refuse_underlay_edit(error.to_string());
@@ -107,7 +124,8 @@ impl KetchupApp {
     }
 
     /// Starts moving the underlay `id` from the snapped point under the pointer, or from
-    /// where the pointer meets the ground plane.
+    /// where the pointer meets the plane of a plan, else (a plan above the eye, a view)
+    /// the ground plane.
     pub(crate) fn begin_underlay_move(
         &mut self,
         id: UnderlayId,
@@ -127,6 +145,7 @@ impl KetchupApp {
             .as_ref()
             .filter(|snap| snap.kind != SnapKind::Face)
             .map(|snap| snap.position_mm)
+            .or_else(|| self.screen_to_underlay_plane(id, pointer, rect, None))
             .or_else(|| self.screen_to_plane(pointer, rect, 0.0));
         let Some(start) = start else {
             self.digest = self.catalog.text("digest-move-start-missed");
@@ -175,17 +194,36 @@ impl KetchupApp {
         }
     }
 
+    /// Whether the move or turn `plan` of a whole drawing waits for the regions of the
+    /// areas that follow the drawing, found off the UI thread; `redo` commits it planned
+    /// again on the frame they are (review 2026-10-29 UO-40).
+    pub(crate) fn underlay_transform_awaits(
+        &mut self,
+        plan: &TransformPlan,
+        redo: impl FnOnce(&mut Self, TransformPlan) + 'static,
+    ) -> bool {
+        let TransformTarget::Underlay(id) = *plan.target() else {
+            return false;
+        };
+        let world_edit = plan.world_edit();
+        !self.followed_regions_or_await(plan.batch(), move |app| {
+            if let Some(plan) = TransformPlan::underlay(&app.document.current(), id, world_edit) {
+                redo(app, plan);
+            }
+        })
+    }
+
     /// The edit so far of a live move or turn, or copy, of the objects picked in a
     /// drawing: the viewport draws them there before the edit is committed.
     pub(crate) fn picked_objects_drag_edit(&self) -> Option<Transform> {
         match self.transform_tool.session.as_ref()? {
             ToolSession::Move { drag, .. } => {
                 self.dragged_underlay_objects(&drag.selection)?;
-                move_world_edit(drag)
+                self.move_world_edit(drag)
             }
             ToolSession::Rotate { drag, .. } => {
                 self.dragged_underlay_objects(&drag.selection)?;
-                rotate_world_edit(drag)
+                self.rotate_world_edit(drag)
             }
             ToolSession::Scale { .. } => None,
         }
@@ -217,10 +255,19 @@ impl KetchupApp {
             in_lines(&plane_part(edit), &found.plane_map())
         });
         let result = match map {
-            Some(map) => self.transform_underlay_objects(underlay, ids, &map, copy),
+            Some(map) => {
+                self.transform_underlay_objects(underlay, ids, &map, copy, FindRegions::OffUiThread)
+            }
             None => Err(UnderlayEditError::Plan(UnderlayObjectError::InvalidMap)),
         };
         match result {
+            Err(UnderlayEditError::FindingRegions(batch)) => {
+                let ids = ids.to_vec();
+                self.await_followed_regions(batch, move |app| {
+                    app.commit_underlay_objects_edit(underlay, &ids, edit, copy);
+                });
+                true
+            }
             Ok(changes) => {
                 self.select_underlay(underlay);
                 for id in ids {

@@ -4,6 +4,7 @@
 //! side (a typed length sets the distance). Mirror with objects of a drawing picked flips
 //! them across a line of two clicks. Each is one Undo step.
 
+use crate::app::underlay_edit::{FindRegions, UnderlayEditError};
 use crate::*;
 use ketchup_model::underlay::UnderlayId;
 use ketchup_model::underlay::line_edit::LineEdit;
@@ -78,12 +79,13 @@ impl KetchupApp {
         pointer: Pos2,
         rect: Rect,
     ) {
-        let Some(point) = self.measurement_point_at_screen(pointer, rect, 0.0) else {
-            return;
-        };
         let Some(found) = self.document.current().underlay(underlay).cloned() else {
             self.gesture.underlay_offset = None;
             self.status_key = "status-underlay-offset-line";
+            return;
+        };
+        let height_mm = found.plan_height().unwrap_or(0.0);
+        let Some(point) = self.measurement_point_at_screen(pointer, rect, height_mm) else {
             return;
         };
         let typed = self.value_box.input.trim();
@@ -111,7 +113,14 @@ impl KetchupApp {
     /// of the mirror line, the second its other point and flips the objects across it, or
     /// with `copy` adds flipped copies and keeps them.
     pub(crate) fn click_underlay_mirror(&mut self, pointer: Pos2, rect: Rect, copy: bool) {
-        let Some(point) = self.measurement_point_at_screen(pointer, rect, 0.0) else {
+        let Some((underlay, ids)) = self.picked_underlay_objects() else {
+            return;
+        };
+        let Some(found) = self.document.current().underlay(underlay).cloned() else {
+            return;
+        };
+        let height_mm = found.plan_height().unwrap_or(0.0);
+        let Some(point) = self.measurement_point_at_screen(pointer, rect, height_mm) else {
             return;
         };
         let Some(from) = self.gesture.underlay_mirror_from.take() else {
@@ -120,18 +129,28 @@ impl KetchupApp {
             return;
         };
         self.status_key = "status-underlay-mirror-first";
-        let Some((underlay, ids)) = self.picked_underlay_objects() else {
-            return;
-        };
-        let Some(found) = self.document.current().underlay(underlay).cloned() else {
-            return;
-        };
         let Some(map) = mirror_across(found.to_local(from), found.to_local([point.x, point.y]))
         else {
             self.digest = self.catalog.text("digest-underlay-mirror-line-required");
             return;
         };
-        match self.transform_underlay_objects(underlay, &ids, &map, copy) {
+        self.mirror_underlay_objects_in_window(underlay, ids, map, copy);
+    }
+
+    fn mirror_underlay_objects_in_window(
+        &mut self,
+        underlay: UnderlayId,
+        ids: Vec<u32>,
+        map: Affine,
+        copy: bool,
+    ) {
+        match self.transform_underlay_objects(underlay, &ids, &map, copy, FindRegions::OffUiThread)
+        {
+            Err(UnderlayEditError::FindingRegions(batch)) => {
+                self.await_followed_regions(batch, move |app| {
+                    app.mirror_underlay_objects_in_window(underlay, ids, map, copy);
+                });
+            }
             Ok(changes) => {
                 self.digest = self.catalog.text("digest-underlay-objects-mirrored")
                     + &self.followed_note(&changes);
@@ -152,7 +171,13 @@ impl KetchupApp {
         edit: LineEdit,
         done: &'static str,
     ) -> bool {
-        match self.edit_underlay_line(underlay, object, edit) {
+        match self.edit_underlay_line(underlay, object, edit, FindRegions::OffUiThread) {
+            Err(UnderlayEditError::FindingRegions(batch)) => {
+                self.await_followed_regions(batch, move |app| {
+                    app.apply_underlay_line_edit(underlay, object, edit, done);
+                });
+                true
+            }
             Ok(changes) => {
                 self.digest = self.catalog.text(done) + &self.followed_note(&changes);
                 true

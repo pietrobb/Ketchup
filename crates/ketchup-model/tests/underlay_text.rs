@@ -155,13 +155,19 @@ fn dos_code_pages_are_read_and_a_doubtful_code_page_is_warned_of() {
             None
         );
     }
-    // "žluťoučký" in CP1250 (ť = 0x9D, undefined in CP1252) declared ANSI_1252.
+    // "žluťoučký" in CP1250 (ť = 0x9D, undefined in CP1252) declared ANSI_1252: 1252 is
+    // doubted, and the text read in 1250, which reads every byte of it (UL-43).
     let underlay = read("ANSI_1252", b"walls", b"\x9Elu\x9Dou\xE8k\xFD");
     assert_eq!(
         counted(&underlay, "dxf.text-code-page-doubtful", Some("ANSI_1252")),
         Some(1),
         "{:?}",
         underlay.diagnostics
+    );
+    assert_eq!(underlay.lines.layers()[0].texts()[0].text, "žluťoučký");
+    assert_eq!(
+        counted(&underlay, "dxf.text-code-page", Some("ANSI_1250")),
+        Some(1)
     );
     // Read rightly, the same text is not doubtful.
     let underlay = read("ANSI_1250", b"walls", b"\x9Elu\x9Dou\xE8k\xFD");
@@ -170,6 +176,36 @@ fn dos_code_pages_are_read_and_a_doubtful_code_page_is_warned_of() {
         counted(&underlay, "dxf.text-code-page-doubtful", Some("ANSI_1250")),
         None
     );
+
+    // Review 2026-10-26 UL-43: Czech in CP1250 declared ANSI_1252 with no byte 1252 leaves
+    // undefined read „Pøíèka Støecha“, „mìsto“ with no warning. It reads in 1250.
+    let underlay = read("ANSI_1252", b"P\xF8\xED\xE8ka St\xF8echa", b"m\xECsto");
+    assert_eq!(underlay.layers, ["Příčka Střecha"]);
+    assert_eq!(underlay.lines.layers()[0].texts()[0].text, "město");
+    assert_eq!(
+        counted(&underlay, "dxf.text-code-page-doubtful", Some("ANSI_1252")),
+        Some(1)
+    );
+    // Western text in 1252 stays 1252 and undoubted: Danish ø beside æ, å and é, Italian
+    // ì, ò, ù and à ending a word, French è and ê within one.
+    for (layer, text, expected) in [
+        (
+            b"S\xF8jle G\xE5rd".as_slice(),
+            b"Caf\xE9 \xF8l".as_slice(),
+            "Søjle Gård",
+        ),
+        (b"Citt\xE0 pi\xF9", b"per\xF2 cos\xEC", "Città più"),
+        (b"Pi\xE8ce tr\xE8s", b"fen\xEAtre o\xF9", "Pièce très"),
+    ] {
+        let underlay = read("ANSI_1252", layer, text);
+        assert_eq!(underlay.layers, [expected]);
+        assert_eq!(
+            counted(&underlay, "dxf.text-code-page-doubtful", Some("ANSI_1252")),
+            None,
+            "{expected}: {:?}",
+            underlay.diagnostics
+        );
+    }
 }
 
 const BLOCKS: &str = concat!(
@@ -352,11 +388,11 @@ fn texts_travel_with_the_lines_and_are_no_snap_points() {
     );
     let underlay = read("", entities);
     let bytes = underlay.lines.encode();
-    let decoded = UnderlayLines::decode(&bytes).unwrap();
+    let decoded = UnderlayLines::decode(&bytes, usize::MAX).unwrap();
     assert_eq!(decoded, underlay.lines);
     assert_eq!(decoded.text_count(), 2);
     assert!(bytes.starts_with(b"KUNDRLY6"));
-    assert!(UnderlayLines::decode(&bytes[..bytes.len() - 1]).is_err());
+    assert!(UnderlayLines::decode(&bytes[..bytes.len() - 1], usize::MAX).is_err());
 
     // Snapping meets the wall, never a text: nothing near either text's anchor or
     // letters, on a layer of lines or one of texts alone.

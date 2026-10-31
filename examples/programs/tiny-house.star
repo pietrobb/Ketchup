@@ -26,8 +26,9 @@ OSB_C = (196, 160, 105)
 GYPSUM_C = (236, 236, 232)
 FACADE_C = (120, 95, 70)
 
-def layer(name, thickness, material, color, tags):
-    return {"name": name, "thickness": thickness, "material": material, "color": color, "tags": tags}
+def layer(name, thickness, material, color, tags, role = MANUFACTURED_ITEM):
+    return {"name": name, "thickness": thickness, "material": material, "color": color, "tags": tags,
+            "role": role}
 
 def framed(name, thickness, material, spacing, tags, stud = 60, hanger = None, header = None, noggins = None):
     layer = {"name": name, "thickness": thickness, "material": material, "color": TIMBER_C, "tags": tags,
@@ -60,6 +61,7 @@ HEADER = 200
 NOGGINS = 900
 
 # Skladby od interiéru von (strop: od spodku nahor). Hrúbky dávajú aj rozmery konceptu.
+# Plechová krytina sa kladie na stavbe (SITE_BUILT_ITEM), preto nemá CNC výkres.
 SYSTEMS = [
     {
         "wall": [layer("sadrokartón", 12.5, "sadrokartón", GYPSUM_C, ["sadrokartón"]),
@@ -69,7 +71,7 @@ SYSTEMS = [
         "roof": [layer("sadrokartón", 12.5, "sadrokartón", GYPSUM_C, ["sadrokartón"]),
                  framed("krokvy", 180, "KVH C24", 900, ["krokvy"], stud = 80),
                  layer("debnenie", 22, "OSB 3", OSB_C, ["OSB"]),
-                 layer("krytina", 35.5, "plechová krytina", ROOF_C, ["krytina"])],
+                 layer("krytina", 35.5, "plechová krytina", ROOF_C, ["krytina"], SITE_BUILT_ITEM)],
         "floor": [layer("sadrokartón", 12.5, "sadrokartón", GYPSUM_C, ["sadrokartón"]),
                   framed("stropnice", 200, "KVH C24", 625, ["stropnice"], stud = 80, hanger = HANGER),
                   layer("OSB", 22.5, "OSB 3", OSB_C, ["OSB", "podlaha"])],
@@ -82,7 +84,7 @@ SYSTEMS = [
         "roof": [layer("sadrokartón", 12.5, "sadrokartón", GYPSUM_C, ["sadrokartón"]),
                  framed("krokvy", 220, "KVH C24", 900, ["krokvy"], stud = 80),
                  layer("debnenie", 22, "OSB 3", OSB_C, ["OSB"]),
-                 layer("krytina", 35.5, "plechová krytina", ROOF_C, ["krytina"])],
+                 layer("krytina", 35.5, "plechová krytina", ROOF_C, ["krytina"], SITE_BUILT_ITEM)],
         "floor": [layer("sadrokartón", 12.5, "sadrokartón", GYPSUM_C, ["sadrokartón"]),
                   framed("stropnice", 200, "KVH C24", 625, ["stropnice"], stud = 80, hanger = HANGER),
                   layer("OSB", 22.5, "OSB 3", OSB_C, ["OSB", "podlaha"])],

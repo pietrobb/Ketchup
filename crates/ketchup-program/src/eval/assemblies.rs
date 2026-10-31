@@ -180,15 +180,65 @@ fn instance_joint(joint: &Joint, instance: &ProgramInstance) -> Joint {
 /// The bought item a copy `name` of piece `source` of `item` is a piece of: a
 /// new one, shared by the copies of the item's other pieces made the same way
 /// (the same suffix, as `mirrored(piece, piece + " mirrored", ...)`, or under
-/// the same group, as `"east/" + piece`), so a copied window is one more window.
-fn copied_item(item: &str, source: &str, name: &str) -> String {
-    match name.strip_prefix(source) {
-        Some(suffix) if !suffix.is_empty() => format!("{item} copied as{suffix}"),
-        _ => match name.rsplit_once('/') {
-            Some((group, _)) => format!("{item} copied to {group}"),
-            None => format!("{item} copied as {name}"),
-        },
+/// the same group, as `"east/" + piece`, or the piece's label before or after
+/// the same new text, as `"west " + label`), so a copied window is one more
+/// window. `pieces` are the names of the item's pieces.
+fn copied_item(item: &str, source: &str, name: &str, pieces: &[&str]) -> String {
+    if let Some(suffix) = name
+        .strip_prefix(source)
+        .filter(|suffix| !suffix.is_empty())
+    {
+        return format!("{item} copied as{suffix}");
     }
+    if let Some((group, _)) = name.rsplit_once('/') {
+        return format!("{item} copied to {group}");
+    }
+    // Review 2026-10-26 PG-42: the label is what tells this piece from the item's
+    // others, the source less the text they all start and end with.
+    let label = piece_label(source, pieces);
+    let rest = (!label.is_empty())
+        .then(|| {
+            name.strip_suffix(label)
+                .or_else(|| name.strip_prefix(label))
+        })
+        .flatten()
+        .map(str::trim)
+        .filter(|rest| !rest.is_empty());
+    format!("{item} copied as {}", rest.unwrap_or(name))
+}
+
+/// `source` less the text every one of `pieces` starts and ends with; empty for
+/// an item of one piece.
+fn piece_label<'a>(source: &'a str, pieces: &[&str]) -> &'a str {
+    let others = || pieces.iter().filter(|piece| **piece != source);
+    if others().next().is_none() {
+        return "";
+    }
+    let start = others()
+        .map(|piece| {
+            source
+                .char_indices()
+                .zip(piece.chars())
+                .find(|((_, a), b)| a != b)
+                .map_or(source.len().min(piece.len()), |((at, _), _)| at)
+        })
+        .min()
+        .unwrap_or(0);
+    let end = others()
+        .map(|piece| {
+            source
+                .char_indices()
+                .rev()
+                .zip(piece.chars().rev())
+                .find(|((_, a), b)| a != b)
+                .map_or(
+                    source.len() - source.len().min(piece.len()),
+                    |((at, a), _)| at + a.len_utf8(),
+                )
+        })
+        .max()
+        .unwrap_or(source.len());
+    source.get(start..end.max(start)).unwrap_or("")
 }
 
 pub(super) fn validate(model: &ProgramModel) -> anyhow::Result<()> {
@@ -246,21 +296,25 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         let source = part_name(part, heap)?;
         check_part_name(name)?;
         let state = state(eval)?;
-        let (copy, tool) = {
+        let (mut copy, tool) = {
             let model = state.model.borrow();
-            match (model.part(&source), model.tool(&source)) {
+            let (mut copy, tool) = match (model.part(&source), model.tool(&source)) {
                 (Some(part), _) => (part.clone(), false),
                 (None, Some(part)) => (part.clone(), true),
                 (None, None) => anyhow::bail!("copy(): unknown part {source:?}"),
+            };
+            if let Some(item) = copy.attributes.get_mut("bought_item") {
+                let pieces: Vec<&str> = model
+                    .parts
+                    .iter()
+                    .filter(|part| part.bought_item() == Some(item.as_str()))
+                    .map(|part| part.name.as_str())
+                    .collect();
+                *item = copied_item(item, &source, name, &pieces);
             }
+            (copy, tool)
         };
-        let mut copy = Part {
-            name: name.to_owned(),
-            ..copy
-        };
-        if let Some(item) = copy.attributes.get_mut("bought_item") {
-            *item = copied_item(item, &source, name);
-        }
+        copy.name = name.to_owned();
         if color.is_some() {
             copy.color = color;
         }

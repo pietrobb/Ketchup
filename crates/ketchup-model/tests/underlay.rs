@@ -394,6 +394,102 @@ fn what_the_blocks_place_past_the_drawings_budget_is_left_out_and_counted() {
     );
 }
 
+/// A drawing of `blocks`, each a name with its entities, and `entities`, in millimetres.
+fn with_blocks(blocks: &[(&str, String)], entities: &str) -> ketchup_model::import::DxfUnderlay {
+    let blocks = (blocks.iter())
+        .map(|(name, content)| {
+            format!("0\nBLOCK\n8\n0\n2\n{name}\n70\n0\n10\n0\n20\n0\n{content}0\nENDBLK\n")
+        })
+        .collect::<String>();
+    let source = format!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nBLOCKS\n{blocks}0\nENDSEC\n0\nSECTION\n2\nENTITIES\n{entities}0\nENDSEC\n0\nEOF\n"
+    );
+    read_dxf_underlay(source.as_bytes(), DxfImportOptions::new(None)).unwrap()
+}
+
+fn left_out(underlay: &ketchup_model::import::DxfUnderlay) -> Vec<(String, u32)> {
+    (underlay.diagnostics.iter())
+        .filter(|diagnostic| {
+            ["dxf.entity-unreadable", "dxf.block-unreadable"].contains(&diagnostic.code())
+        })
+        .map(|diagnostic| {
+            (
+                diagnostic.subject().unwrap_or_default().to_owned(),
+                diagnostic.count(),
+            )
+        })
+        .collect()
+}
+
+/// A block of `count` lines, 1 mm long, one above another.
+fn lines_block(count: u32) -> String {
+    (0..count)
+        .map(|index| line("0", [0.0, f64::from(index)], [1.0, f64::from(index)]))
+        .collect()
+}
+
+fn array(layer: &str, block: &str, columns: u32) -> String {
+    format!("0\nINSERT\n8\n{layer}\n2\n{block}\n10\n0\n20\n0\n70\n{columns}\n71\n1\n44\n2\n")
+}
+
+/// Review 2026-10-26 UL-40: the budget of what inserts place was given back after each
+/// entity of the drawing, so ten arrays just within it held 2 GB together; a dimension
+/// placed its block uncounted; and an arc counted as one piece, yet a circle of 1 km is
+/// drawn with 7 026 chords.
+#[test]
+fn the_budget_of_what_inserts_and_dimensions_place_is_the_whole_drawings() {
+    let thousand = ("k", lines_block(1_000));
+    // Two arrays of 600 000 lines: the second is left out.
+    let underlay = with_blocks(
+        std::slice::from_ref(&thousand),
+        &[array("a", "k", 600), array("b", "k", 600)].concat(),
+    );
+    assert_eq!(underlay.layers, ["a"]);
+    assert_eq!(underlay.lines.segment_count(), 600_000);
+    let refused = left_out(&underlay);
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert!(refused[0].0.starts_with("INSERT: "), "{refused:?}");
+
+    // A dimension's block holding 600 000 lines, placed twice.
+    let dimension = ("*D1", array("0", "k", 600));
+    let dimensions = "0\nDIMENSION\n8\nd\n2\n*D1\n70\n0\n".repeat(2);
+    let underlay = with_blocks(&[thousand.clone(), dimension], &dimensions);
+    assert_eq!(underlay.lines.segment_count(), 600_000);
+    let refused = left_out(&underlay);
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert!(refused[0].0.starts_with("DIMENSION: "), "{refused:?}");
+
+    // 150 circles of 1 km take 150 × 7 026 chords, more than the budget.
+    let circle = (
+        "o",
+        "0\nCIRCLE\n8\n0\n10\n0\n20\n0\n40\n1000000\n".to_owned(),
+    );
+    let wall = line("w", [0.0, 0.0], [1.0, 0.0]);
+    let underlay = with_blocks(
+        std::slice::from_ref(&circle),
+        &(wall + &array("c", "o", 150)),
+    );
+    assert_eq!(underlay.lines.segment_count(), 1);
+    assert_eq!(left_out(&underlay).len(), 1);
+    let underlay = with_blocks(&[circle], &array("c", "o", 100));
+    assert_eq!(underlay.lines.segment_count(), 702_600);
+}
+
+/// Review 2026-10-26 UL-42: what a block placed inside it counted once when the block was
+/// read and again where it was placed, so a reference holding 600 000 lines, placed once,
+/// was refused with the whole drawing.
+#[test]
+fn what_a_block_places_inside_it_counts_once_where_it_is_placed() {
+    let symbol = ("s", lines_block(100));
+    let reference = ("ref", array("0", "s", 6_000));
+    let underlay = with_blocks(
+        &[symbol, reference],
+        "0\nINSERT\n8\nsite\n2\nref\n10\n0\n20\n0\n",
+    );
+    assert_eq!(left_out(&underlay), []);
+    assert_eq!(underlay.lines.segment_count(), 600_000);
+}
+
 #[test]
 fn an_entity_upside_down_or_with_noise_in_its_extrusion_is_read() {
     let down = "210\n0\n220\n0\n230\n-1\n";
@@ -686,13 +782,16 @@ fn every_entity_kind_in_s_jtsk_metres_reaches_the_move_instead_of_being_refused(
 fn lines_decode_as_they_were_encoded_and_damaged_bytes_are_refused() {
     let underlay = read(&line("0", [0.0, 0.0], [10.0, 0.0]));
     let bytes = underlay.lines.encode();
-    assert_eq!(UnderlayLines::decode(&bytes).unwrap(), underlay.lines);
     assert_eq!(
-        UnderlayLines::decode(&bytes[..bytes.len() - 1]),
+        UnderlayLines::decode(&bytes, usize::MAX).unwrap(),
+        underlay.lines
+    );
+    assert_eq!(
+        UnderlayLines::decode(&bytes[..bytes.len() - 1], usize::MAX),
         Err(UnderlayLinesError::Truncated)
     );
     assert_eq!(
-        UnderlayLines::decode(b"not lines"),
+        UnderlayLines::decode(b"not lines", usize::MAX),
         Err(UnderlayLinesError::NotUnderlayLines)
     );
 }
@@ -710,7 +809,7 @@ fn a_blob_that_would_inflate_a_thousandfold_is_refused_before_inflating() {
     bomb.extend_from_slice(&u64::try_from(zeros.len()).unwrap().to_le_bytes());
     bomb.extend_from_slice(&deflated);
     assert!(matches!(
-        UnderlayLines::decode(&bomb),
+        UnderlayLines::decode(&bomb, usize::MAX),
         Err(UnderlayLinesError::Inflated { length, .. }) if length == zeros.len()
     ));
 
@@ -719,7 +818,47 @@ fn a_blob_that_would_inflate_a_thousandfold_is_refused_before_inflating() {
         entities.push_str(&line("walls", [0.0, 0.0], [1000.0, 0.0]));
     }
     let lines = read(&entities).lines;
-    assert_eq!(UnderlayLines::decode(&lines.encode()).unwrap(), lines);
+    assert_eq!(
+        UnderlayLines::decode(&lines.encode(), usize::MAX).unwrap(),
+        lines
+    );
+}
+
+/// Review 2026-10-26 MD-42: bytes after the deflated lines made a few hundred kB of
+/// deflate pass for MBs, so the blob could declare 128 times as much. They are refused.
+#[test]
+fn bytes_after_the_deflated_lines_are_refused() {
+    let lines = read(&line("walls", [0.0, 0.0], [1000.0, 0.0])).lines;
+    let mut padded = lines.encode();
+    padded.extend_from_slice(&[0; 1024]);
+    assert_eq!(
+        UnderlayLines::decode(&padded, usize::MAX),
+        Err(UnderlayLinesError::TrailingBytes)
+    );
+}
+
+/// Review 2026-10-26 MD-42: an empty layer takes 16 bytes in the blob and some 120
+/// decoded, so 256 MiB of them took 2.2 GB on the window's thread at the first draw. A
+/// blob holding more layers than its underlay names is refused before they are read.
+#[test]
+fn a_blob_with_more_layers_than_its_underlay_names_is_refused_before_reading_them() {
+    // Uncompressed (KUNDRLY3): no styles, then 1,000 layers of no polylines, points or
+    // texts.
+    let mut blob = b"KUNDRLY3".to_vec();
+    blob.extend_from_slice(&0_u32.to_le_bytes());
+    blob.extend_from_slice(&1_000_u32.to_le_bytes());
+    blob.extend_from_slice(&[0; 12 * 1_000]);
+    assert_eq!(
+        UnderlayLines::decode(&blob, 1),
+        Err(UnderlayLinesError::LayerCount {
+            blob: 1_000,
+            underlay: 1,
+        })
+    );
+    assert_eq!(
+        UnderlayLines::decode(&blob, 1_000).unwrap().layers().len(),
+        1_000
+    );
 }
 
 /// Capability review of #2604: a blob within the inflation ratio but declaring more than
@@ -734,7 +873,7 @@ fn a_blob_declaring_more_than_an_underlay_may_hold_is_refused_before_inflating()
     bomb.extend_from_slice(&u64::try_from(length).unwrap().to_le_bytes());
     bomb.extend_from_slice(&deflated);
     assert_eq!(
-        UnderlayLines::decode(&bomb),
+        UnderlayLines::decode(&bomb, usize::MAX),
         Err(UnderlayLinesError::TooLarge { length })
     );
 
@@ -767,10 +906,13 @@ fn lines_are_kept_compressed_and_blobs_saved_before_still_read() {
         "{} bytes for {points} points",
         bytes.len()
     );
-    assert_eq!(UnderlayLines::decode(&bytes).unwrap(), underlay.lines);
+    assert_eq!(
+        UnderlayLines::decode(&bytes, usize::MAX).unwrap(),
+        underlay.lines
+    );
     let mut lying = bytes.clone();
     lying[8] ^= 1;
-    assert!(UnderlayLines::decode(&lying).is_err());
+    assert!(UnderlayLines::decode(&lying, usize::MAX).is_err());
 
     // One wall line 1 m long as KUNDRLY3 wrote it: its two styles, then the layer.
     const SAVED_3: [u8; 88] = [
@@ -782,7 +924,7 @@ fn lines_are_kept_compressed_and_blobs_saved_before_still_read() {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ];
     let wall = read(&line("walls", [0.0, 0.0], [1000.0, 0.0])).lines;
-    let saved = UnderlayLines::decode(&SAVED_3).unwrap();
+    let saved = UnderlayLines::decode(&SAVED_3, usize::MAX).unwrap();
     assert_eq!(
         (saved.layers(), saved.styles()),
         (wall.layers(), wall.styles())
@@ -796,7 +938,7 @@ fn lines_are_kept_compressed_and_blobs_saved_before_still_read() {
     for value in [0.0_f64, 0.0, 1000.0, 0.0] {
         saved_1.extend_from_slice(&value.to_le_bytes());
     }
-    let old = UnderlayLines::decode(&saved_1).unwrap();
+    let old = UnderlayLines::decode(&saved_1, usize::MAX).unwrap();
     assert_eq!(
         old.layers()[0].polylines().collect::<Vec<_>>(),
         wall.layers()[0].polylines().collect::<Vec<_>>()
@@ -1077,4 +1219,104 @@ fn a_placement_past_the_bounds_is_refused_by_the_document_not_only_by_the_fit() 
         document.current().underlay(id).unwrap().placement,
         placed.placement
     );
+}
+
+/// Review 2026-10-26 MD-43: a file saved before the bounds of MD-24 with an underlay
+/// placed out of range, or with a view or an edit the document no longer holds, did not
+/// open at all (Kečup opened its older `.recovery` instead, and Save overwrote the newer
+/// file). Out of range is no damage (AGENTS §3): the file opens, the underlay at the
+/// origin unscaled, its view in the ground plane and without the edits it cannot hold,
+/// and the open says so by the underlay's name. A batch is still refused, naming the
+/// underlay.
+#[test]
+fn a_file_with_an_underlay_out_of_range_opens_with_it_reset_and_says_so() {
+    use ketchup_model::document::{CanonicalCommand, CanonicalError, CommandBatch};
+    use ketchup_model::persistence::LoadNotice;
+    use ketchup_model::testing::{
+        cbor_entry, rewrite_saved_snapshot, save_container_with_document_entry,
+    };
+    let underlay = read(&line("walls", [0.0, 0.0], [1000.0, 0.0]));
+    let mut document = DocumentStore::new();
+    let (batch, id) = plan_underlay(
+        &document.current(),
+        "Plan",
+        &underlay.layers,
+        &underlay.hidden_layers,
+        sha256_bytes(&underlay.lines.encode()),
+        [0.0; 2],
+    )
+    .unwrap();
+    document.apply_batch(&batch).unwrap();
+    let placed = document.current().underlay(id).unwrap().clone();
+    let saved = persistence::save(&document.current());
+    let mut container = persistence::ContainerData::default();
+    container.insert_blob(underlay.lines.encode()).unwrap();
+    let far = Transform::from_translation(1.0e12, 0.0, 0.0).unwrap();
+    let opened = |edit: &dyn Fn(&mut ciborium::Value)| {
+        let snapshot = rewrite_saved_snapshot(&saved, |snapshot| {
+            let product = cbor_entry(snapshot, "product");
+            let underlays = cbor_entry(product, "underlays").as_map_mut().unwrap();
+            edit(&mut underlays[0].1);
+        });
+        let bytes = save_container_with_document_entry(snapshot, &container);
+        let LoadOutcome::Editable {
+            document, audit, ..
+        } = persistence::load(&bytes).unwrap_or_else(|error| panic!("{error}"))
+        else {
+            panic!("the file opens editable")
+        };
+        (
+            document.current().underlay(id).unwrap().clone(),
+            audit.notices,
+        )
+    };
+    let reset_notice = |notices: &[LoadNotice], what: &str| {
+        assert!(
+            matches!(
+                notices,
+                [LoadNotice::UnderlayReset { name, reason }]
+                    if name == "Plan" && reason.contains(what)
+            ),
+            "{notices:?}"
+        );
+    };
+
+    // Placed where it was read, the underlay stores no placement.
+    let (opened_far, notices) = opened(&|underlay| {
+        underlay.as_map_mut().unwrap().push((
+            "placement".into(),
+            ciborium::Value::serialized(&far).unwrap(),
+        ));
+    });
+    assert_eq!(opened_far.placement, Transform::identity());
+    reset_notice(&notices, "placed out of range");
+
+    let (opened_view, notices) = opened(&|underlay| {
+        let view = ketchup_model::underlay::view::UnderlayView {
+            plane: ketchup_model::underlay::view::ViewPlane::Front,
+            at_mm: 1.0e12,
+        };
+        underlay
+            .as_map_mut()
+            .unwrap()
+            .push(("view".into(), ciborium::Value::serialized(&view).unwrap()));
+    });
+    assert!(opened_view.view.is_ground());
+    assert_eq!(opened_view.placement, placed.placement);
+    reset_notice(&notices, "view");
+
+    let batch = CommandBatch::new(vec![CanonicalCommand::UpsertUnderlay(
+        ketchup_model::underlay::Underlay {
+            view: ketchup_model::underlay::view::UnderlayView {
+                plane: ketchup_model::underlay::view::ViewPlane::Front,
+                at_mm: 1.0e12,
+            },
+            ..placed.clone()
+        },
+    )]);
+    let Err(refusal) = document.apply_batch(&batch) else {
+        panic!("a view 1e12 mm away is out of range, yet the document took it");
+    };
+    assert_eq!(refusal, CanonicalError::InvalidUnderlay(id), "{refusal}");
+    assert!(refusal.to_string().contains("underlay"), "{refusal}");
 }

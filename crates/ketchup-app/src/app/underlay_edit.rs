@@ -27,6 +27,9 @@ pub(crate) enum UnderlayEditError {
     NoLines,
     Plan(UnderlayObjectError),
     Commit(WorkRecoveryMutationError<CanonicalError>),
+    /// The regions of the areas that follow the drawing as the edit leaves it are being
+    /// found off the UI thread; the edit is not made yet.
+    FindingRegions(CommandBatch),
 }
 
 impl std::fmt::Display for UnderlayEditError {
@@ -35,11 +38,32 @@ impl std::fmt::Display for UnderlayEditError {
             Self::NoLines => formatter.write_str("the document holds no lines of the underlay"),
             Self::Plan(error) => error.fmt(formatter),
             Self::Commit(error) => write!(formatter, "the change was not kept: {error}"),
+            Self::FindingRegions(_) => {
+                formatter.write_str("the areas that follow the drawing are still being found")
+            }
         }
     }
 }
 
 impl std::error::Error for UnderlayEditError {}
+
+/// Where a 2D edit of a drawing finds the regions of the areas that follow the drawing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FindRegions {
+    /// On the calling thread, before the edit is made: a request that answers with it.
+    Here,
+    /// Off the UI thread: until they are found the edit is refused with
+    /// [`UnderlayEditError::FindingRegions`] and waits ([`KetchupApp::await_followed_regions`]).
+    OffUiThread,
+}
+
+/// A 2D edit of a drawing made in the window that waits for the regions of the areas that
+/// follow the drawing (review 2026-10-29 UO-40).
+pub(crate) struct AwaitedDrawingEdit {
+    batch: CommandBatch,
+    /// Makes the edit again, as the window made it.
+    redo: Box<dyn FnOnce(&mut KetchupApp)>,
+}
 
 impl KetchupApp {
     /// What a drawing edit changed of the areas that follow the drawing, for the end of its
@@ -59,6 +83,53 @@ impl KetchupApp {
             })
             .map(|note| format!(". {note}"))
             .collect()
+    }
+
+    /// Lets a 2D edit of a drawing made in the window wait for the regions of the areas
+    /// that follow the drawing as `batch` leaves it, being found off the UI thread; `redo`
+    /// makes it again on the frame they are found ([`Self::poll_drawing_edit`]).
+    pub(crate) fn await_followed_regions(
+        &mut self,
+        batch: CommandBatch,
+        redo: impl FnOnce(&mut Self) + 'static,
+    ) {
+        self.digest = self.catalog.text("digest-underlay-edit-searching");
+        self.solid_tools.drawing_edit_awaits_regions = Some(AwaitedDrawingEdit {
+            batch,
+            redo: Box::new(redo),
+        });
+    }
+
+    /// Whether `batch`, a change made in the window, may be committed now: the regions of
+    /// the areas that follow a drawing it moves, fits or stands up are found. When not, it
+    /// waits for them as a 2D edit does ([`Self::await_followed_regions`]), so the commit
+    /// does not find them on the UI thread, as after opening a document (review 2026-10-29
+    /// UO-40).
+    pub(crate) fn followed_regions_or_await(
+        &mut self,
+        batch: &CommandBatch,
+        redo: impl FnOnce(&mut Self) + 'static,
+    ) -> bool {
+        if self.followed_regions_ready(batch) {
+            return true;
+        }
+        self.await_followed_regions(batch.clone(), redo);
+        false
+    }
+
+    /// Makes a 2D edit that waited on the frame the regions it waited for are found;
+    /// whether one is still waiting.
+    pub(crate) fn poll_drawing_edit(&mut self) -> bool {
+        let Some(awaited) = &self.solid_tools.drawing_edit_awaits_regions else {
+            return false;
+        };
+        if !self.followed_regions_ready(&awaited.batch) {
+            return true;
+        }
+        if let Some(awaited) = self.solid_tools.drawing_edit_awaits_regions.take() {
+            (awaited.redo)(self);
+        }
+        self.solid_tools.drawing_edit_awaits_regions.is_some()
     }
 
     /// Tools > Unlink pulled areas from the drawing: every area pulled from a drawing keeps
@@ -98,9 +169,10 @@ impl KetchupApp {
     /// as the snap index counts them.
     pub(crate) fn underlay_object_at(&self, underlay: UnderlayId, segment: u32) -> Option<u32> {
         let snapshot = self.document.current();
-        let lines = self.cached_underlay_lines(snapshot.underlay(underlay)?)?;
+        let underlay = snapshot.underlay(underlay)?;
+        let lines = self.cached_underlay_lines(underlay)?;
         let (layer, point) = lines.segment_start(usize::try_from(segment).ok()?)?;
-        let index = ObjectIndex::new(&lines);
+        let index = ObjectIndex::with_tree(&lines, self.cached_object_tree(underlay, &lines));
         Some(index.top_level_of(index.object_drawing(layer, point)?))
     }
 
@@ -131,12 +203,12 @@ impl KetchupApp {
         pointer: Pos2,
         rect: Rect,
     ) -> Option<(UnderlayId, u32)> {
-        let point = self.screen_to_plane(pointer, rect, 0.0)?;
         let snapshot = self.document.current();
         let underlays = snapshot.underlays().collect::<Vec<_>>();
         underlays.into_iter().rev().find_map(|underlay| {
+            let point = self.screen_to_plane(pointer, rect, underlay.plan_height()?)?;
             let lines = self.cached_underlay_lines(underlay)?;
-            let index = ObjectIndex::new(&lines);
+            let index = ObjectIndex::with_tree(&lines, self.cached_object_tree(underlay, &lines));
             let local = underlay.to_local([point.x, point.y]);
             let object = index.object_with_area_at(
                 local,
@@ -197,8 +269,9 @@ impl KetchupApp {
         &mut self,
         underlay: UnderlayId,
         ids: &[u32],
+        find: FindRegions,
     ) -> Result<Vec<FollowedChange>, UnderlayEditError> {
-        self.edit_underlay_drawing(underlay, |snapshot, lines| {
+        self.edit_underlay_drawing(underlay, find, |snapshot, lines| {
             plan_underlay_object_removal(snapshot, underlay, lines, ids)
         })
     }
@@ -210,8 +283,9 @@ impl KetchupApp {
         underlay: UnderlayId,
         layer: &str,
         shapes: Vec<DrawnShape>,
+        find: FindRegions,
     ) -> Result<Vec<FollowedChange>, UnderlayEditError> {
-        self.edit_underlay_drawing(underlay, |snapshot, _| {
+        self.edit_underlay_drawing(underlay, find, |snapshot, _| {
             plan_underlay_drawing(snapshot, underlay, layer, shapes)
         })
     }
@@ -224,8 +298,9 @@ impl KetchupApp {
         ids: &[u32],
         map: &Affine,
         copy: bool,
+        find: FindRegions,
     ) -> Result<Vec<FollowedChange>, UnderlayEditError> {
-        self.edit_underlay_drawing(underlay, |snapshot, lines| {
+        self.edit_underlay_drawing(underlay, find, |snapshot, lines| {
             plan_underlay_object_transform(snapshot, underlay, lines, ids, map, copy)
         })
     }
@@ -237,8 +312,9 @@ impl KetchupApp {
         underlay: UnderlayId,
         object: u32,
         edit: LineEdit,
+        find: FindRegions,
     ) -> Result<Vec<FollowedChange>, UnderlayEditError> {
-        self.edit_underlay_drawing(underlay, |snapshot, lines| {
+        self.edit_underlay_drawing(underlay, find, |snapshot, lines| {
             plan_underlay_line_edit(snapshot, underlay, lines, object, edit)
         })
     }
@@ -248,6 +324,7 @@ impl KetchupApp {
     fn edit_underlay_drawing(
         &mut self,
         underlay: UnderlayId,
+        find: FindRegions,
         plan: impl FnOnce(&Snapshot, &UnderlayLines) -> Result<CommandBatch, UnderlayObjectError>,
     ) -> Result<Vec<FollowedChange>, UnderlayEditError> {
         let snapshot = self.document.current();
@@ -258,6 +335,9 @@ impl KetchupApp {
             .cached_underlay_lines(found)
             .ok_or(UnderlayEditError::NoLines)?;
         let batch = plan(&snapshot, &lines).map_err(UnderlayEditError::Plan)?;
+        if find == FindRegions::OffUiThread && !self.followed_regions_ready(&batch) {
+            return Err(UnderlayEditError::FindingRegions(batch));
+        }
         self.apply_drawing_batch_with_work_recovery(&batch)
             .map_err(UnderlayEditError::Commit)
     }
@@ -268,7 +348,17 @@ impl KetchupApp {
         let Some((underlay, ids)) = self.picked_underlay_objects() else {
             return false;
         };
-        match self.remove_underlay_objects(underlay, &ids) {
+        self.delete_underlay_objects_in_window(underlay, ids)
+    }
+
+    fn delete_underlay_objects_in_window(&mut self, underlay: UnderlayId, ids: Vec<u32>) -> bool {
+        match self.remove_underlay_objects(underlay, &ids, FindRegions::OffUiThread) {
+            Err(UnderlayEditError::FindingRegions(batch)) => {
+                self.await_followed_regions(batch, move |app| {
+                    app.delete_underlay_objects_in_window(underlay, ids);
+                });
+                true
+            }
             Ok(changes) => {
                 self.select_underlay(underlay);
                 self.digest = self.catalog.format(
@@ -300,11 +390,13 @@ impl KetchupApp {
         let Some(lines) = self.cached_underlay_lines(underlay) else {
             return;
         };
-        let index = ObjectIndex::new(&lines);
+        let index = ObjectIndex::with_tree(&lines, self.cached_object_tree(underlay, &lines));
         // A live move or turn draws them where it takes them.
         let placement = self
             .picked_objects_drag_edit()
-            .map_or(underlay.placement, |edit| edit.compose(underlay.placement));
+            .map_or(underlay.world_transform(), |edit| {
+                edit.compose(underlay.world_transform())
+            });
         let stroke = Stroke::new(2.5_f32, self.palette().accent);
         let painter = painter.with_clip_rect(rect);
         let mut budget = MAX_PICKED_POINTS;

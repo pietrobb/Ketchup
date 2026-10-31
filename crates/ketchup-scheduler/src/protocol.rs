@@ -386,6 +386,8 @@ pub struct UnderlayWriteInput {
     pub geo_origin_mm: Option<[f64; 2]>,
     /// The underlay's encoded lines, its blob.
     pub lines: PathBuf,
+    /// How many layers the underlay names; lines holding more are refused.
+    pub layers: usize,
     pub edits: ketchup_model::underlay::edits::UnderlayEdits,
     /// The file written: DXF, or DWG when it ends in `.dwg`.
     pub output: PathBuf,
@@ -410,6 +412,8 @@ pub enum UnderlayWriteOutcome {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum UnderlayRefusal {
     Dwg(DwgRefusal),
+    /// The drawing written back did not convert to the DWG named as its output.
+    DwgWrite(DwgRefusal),
     /// The drawing declares no length unit and none was given.
     UnitsRequired,
     /// The DXF reader refused the drawing: the error's report with its cause, which does
@@ -431,6 +435,9 @@ impl std::fmt::Display for UnderlayRefusal {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Dwg(refusal) => refusal.fmt(formatter),
+            Self::DwgWrite(refusal) => {
+                write!(formatter, "the drawing did not convert to DWG: {refusal}")
+            }
             Self::UnitsRequired => formatter
                 .write_str("the drawing declares no length unit; choose the unit it is drawn in"),
             Self::Dxf { report } => formatter.write_str(report),

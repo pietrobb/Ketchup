@@ -30,7 +30,8 @@ try {
 
     $notices = Get-Content (Join-Path $payload "THIRD_PARTY_NOTICES.txt") -Raw
     foreach ($needle in @("OCCT", "LGPL", "acadrust", "MPL", "https://github.com/hakanaktt/acadrust",
-            "starlark", "Apache License 2.0", "PATCH.md")) {
+            "starlark", "Apache License 2.0", "PATCH.md", "CORE-MATH", "LICENSE-CORE-MATH-MIT.txt",
+            "81a899d67953a619d703660fd9630f0554673524")) {
         if (-not $notices.Contains($needle)) { throw "FAIL: THIRD_PARTY_NOTICES.txt does not name $needle." }
     }
 

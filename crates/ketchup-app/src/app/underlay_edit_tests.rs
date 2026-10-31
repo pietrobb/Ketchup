@@ -91,6 +91,61 @@ fn clicked_objects_of_a_drawing_are_picked_and_deleted_in_one_undo_step() {
     assert!(end_at(&mut harness, [290.0, 70.0]));
 }
 
+/// Review 2026-10-29 UI-62: every edit of a drawing decoded its blob again, once to draw
+/// it, once more to pick, snap and frame it (~180 ms each at 400 000 lines). Now the
+/// window decodes the blob once and applies each edit, and each Undo, to the decoded copy.
+#[test]
+fn edits_of_a_drawing_and_their_undo_decode_its_blob_once() {
+    use super::underlay::BLOB_DECODES;
+    let mut harness = shell();
+    for _ in 0..4 {
+        harness.step();
+    }
+    harness.state().wait_for_underlay_snaps();
+    BLOB_DECODES.with(|decodes| decodes.set(0));
+    let decoded = || BLOB_DECODES.with(std::cell::Cell::get);
+
+    click(&mut harness, Vec3::new(100.0, 20.0, 0.0));
+    assert_eq!(picked(&harness), 1);
+    press(&mut harness, egui::Key::Delete);
+    assert!(!end_at(&mut harness, [40.0, 20.0]), "the wall is gone");
+    click(&mut harness, Vec3::new(100.0, 120.0, 0.0));
+    assert_eq!(picked(&harness), 1, "{}", harness.state().digest);
+    press(&mut harness, egui::Key::Delete);
+    assert!(
+        !end_at(&mut harness, [240.0, 120.0]),
+        "the axes line is gone"
+    );
+    harness.state_mut().undo();
+    for _ in 0..4 {
+        harness.step();
+    }
+    assert!(
+        end_at(&mut harness, [240.0, 120.0]),
+        "the axes line is back"
+    );
+    assert_eq!(decoded(), 1, "the blob decoded for the first edit is kept");
+}
+
+/// Review 2026-10-29 UI-62: with objects of a drawing picked, each frame worked out the
+/// children and bounds of all its objects again to paint them. Now they are worked out
+/// once for the drawing as it is.
+#[test]
+fn objects_picked_in_a_drawing_are_painted_without_indexing_it_each_frame() {
+    use super::underlay::OBJECT_TREES;
+    let mut harness = shell();
+    click(&mut harness, Vec3::new(100.0, 20.0, 0.0));
+    assert_eq!(picked(&harness), 1);
+    harness.step();
+    OBJECT_TREES.with(|built| built.set(0));
+    for _ in 0..20 {
+        harness.step();
+    }
+    shift_click(&mut harness, Vec3::new(100.0, 120.0, 0.0));
+    assert_eq!(picked(&harness), 2);
+    assert_eq!(OBJECT_TREES.with(std::cell::Cell::get), 0);
+}
+
 /// A room label and a solid hatch with no boundary object draw no line to click: a click
 /// on the label's letters or inside the hatch picks them, and Delete takes them out.
 #[test]
@@ -392,6 +447,82 @@ fn the_drawing_tools_draw_into_the_drawing_on_the_picked_objects_layer() {
     assert!(drawn_shapes(&harness).is_empty());
 }
 
+/// UI-64: a drawing being drawn into stood up as a view, from Tools > Drawing view or by
+/// the AI, is drawn into no more: drawing into it is off, said so, and the Line tool's
+/// clicks on the ground add nothing to the drawing standing elsewhere. Before, the shapes
+/// went into it and appeared on its vertical plane, away from where they were clicked.
+#[test]
+fn a_drawing_stood_up_as_a_view_is_drawn_into_no_more() {
+    use ketchup_model::underlay::view::{UnderlayView, ViewPlane, plan_underlay_view};
+    let at = |[x, y]: [f64; 2]| Vec3::new(x, y, 0.0);
+    for by_the_window in [true, false] {
+        let mut harness = shell();
+        click(&mut harness, Vec3::new(100.0, 120.0, 0.0));
+        harness
+            .state_mut()
+            .dispatch_command(AppCommand::DrawIntoUnderlay);
+        let id = harness.state().underlay_draw_target().unwrap().underlay;
+        if by_the_window {
+            assert!(harness.state_mut().set_underlay_view(id, ViewPlane::Front));
+            let app = harness.state();
+            assert!(app.gesture.underlay_draw.is_none(), "{}", app.digest);
+            assert!(app.digest.contains("Front view"), "{}", app.digest);
+        } else {
+            let snapshot = harness.state().document.current();
+            let view = UnderlayView {
+                plane: ViewPlane::Front,
+                at_mm: 0.0,
+            };
+            let batch = plan_underlay_view(&snapshot, id, view).unwrap();
+            harness
+                .state_mut()
+                .apply_batch_with_work_recovery(&batch)
+                .unwrap();
+        }
+        assert_eq!(harness.state().underlay_draw_target(), None);
+        harness.state_mut().dispatch_command(AppCommand::Line);
+        click(&mut harness, at([240.0, 120.0]));
+        click(&mut harness, at([240.0, 20.0]));
+        assert!(drawn_shapes(&harness).is_empty(), "{by_the_window}");
+    }
+}
+
+/// Review 2026-10-29 UI-65: Undo kept the objects picked in a drawing by id, so a line
+/// drawn and picked stayed picked once Undo took it away, and its id named the next shape
+/// drawn, which Delete or Move then took. Undo keeps the picks still in the drawing only.
+#[test]
+fn undo_drops_the_picks_of_objects_it_takes_out_of_a_drawing() {
+    let mut harness = shell();
+    let at = |[x, y]: [f64; 2]| Vec3::new(x, y, 0.0);
+    click(&mut harness, Vec3::new(100.0, 120.0, 0.0));
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::DrawIntoUnderlay);
+    click(&mut harness, at([240.0, 120.0]));
+    click(&mut harness, at([240.0, 20.0]));
+    press(&mut harness, egui::Key::Escape);
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::DrawIntoUnderlay);
+    harness.state_mut().dispatch_command(AppCommand::Select);
+    assert_eq!(drawn_shapes(&harness).len(), 1);
+
+    // The line drawn and the axes line read with the drawing, both picked.
+    click(&mut harness, at([240.0, 70.0]));
+    shift_click(&mut harness, Vec3::new(100.0, 120.0, 0.0));
+    assert_eq!(picked(&harness), 2, "{}", harness.state().digest);
+
+    harness.state_mut().undo();
+    assert!(drawn_shapes(&harness).is_empty());
+    assert_eq!(picked(&harness), 1, "only the axes line is left to pick");
+    let (_, ids) = harness.state().picked_underlay_objects().unwrap();
+    let snapshot = harness.state().document.current();
+    let underlay = snapshot.underlays().next().unwrap();
+    let lines = harness.state().cached_underlay_lines(underlay).unwrap();
+    let index = ketchup_model::underlay::object_query::ObjectIndex::new(&lines);
+    assert!(ids.iter().all(|id| index.object(*id).is_some()), "{ids:?}");
+}
+
 fn type_text(harness: &mut Harness<'_, KetchupApp>, text: &str) {
     harness
         .input_mut()
@@ -564,6 +695,7 @@ fn trim_extend_offset_and_mirror_edit_lines_of_a_drawing() {
                 line([[140.0, 0.0], [140.0, 140.0]]),
                 line([[180.0, 40.0], [180.0, 100.0]]),
             ],
+            crate::app::underlay_edit::FindRegions::Here,
         )
         .unwrap();
     let undo = harness.state().undo_step_count();
@@ -865,6 +997,24 @@ const IN_FLOOR: Vec3 = Vec3::new(140.0, 210.0, 0.0);
 fn pull_up(harness: &mut Harness<'_, KetchupApp>, height: &str, at: Vec3) {
     harness.state_mut().value_box.input = height.to_owned();
     click(harness, at);
+    // A click before the regions are found pulls the area up on a later frame.
+    crate::tests::shell::step_until(
+        harness,
+        std::time::Duration::from_secs(60),
+        "the regions of the click were never found",
+        |app| app.solid_tools.area_click_awaits_regions.is_none(),
+    );
+}
+
+/// Steps until a change of a drawing waiting for the regions of the areas that follow it,
+/// pushed out of those kept by other tests, is made.
+fn awaited(harness: &mut Harness<'_, KetchupApp>) {
+    crate::tests::shell::step_until(
+        harness,
+        std::time::Duration::from_secs(60),
+        "the regions of the change were never found",
+        |app| app.solid_tools.drawing_edit_awaits_regions.is_none(),
+    );
 }
 
 fn program_source(harness: &Harness<'_, KetchupApp>) -> String {
@@ -959,6 +1109,62 @@ fn a_clicked_closed_area_of_a_drawing_is_pulled_up_into_a_part() {
     assert_eq!(harness.state().canonical_digest(), digest);
 }
 
+/// Review 2026-10-29 UO-69: a plan raised off the ground (a floor above the first) was no
+/// plan to the window: its lines gave no snap and Pull area found nothing in it. Seen at an
+/// angle, the pointer snaps to its corner where it lies and a click inside its room pulls
+/// the room up, the click met in the plan's own plane.
+#[test]
+fn a_plan_raised_off_the_ground_snaps_and_is_pulled_up_where_it_lies() {
+    use ketchup_model::underlay::view::{UnderlayView, ViewPlane, plan_underlay_view};
+    let height = 150.0;
+    let mut harness = shell_of(imported_with(ROOM_AND_FLOOR));
+    let id = harness
+        .state()
+        .document
+        .current()
+        .underlays()
+        .next()
+        .unwrap()
+        .id;
+    let view = UnderlayView {
+        plane: ViewPlane::Top,
+        at_mm: height,
+    };
+    let batch = plan_underlay_view(&harness.state().document.current(), id, view).unwrap();
+    harness
+        .state_mut()
+        .apply_batch_with_work_recovery(&batch)
+        .unwrap();
+    harness.state_mut().dispatch_command(AppCommand::ViewIso);
+    harness.step();
+
+    let corner = Vec3::new(290.0, 280.0, height);
+    point(&mut harness, corner);
+    let snapped = harness
+        .state()
+        .hover
+        .snap
+        .as_ref()
+        .map(|snap| snap.position_mm);
+    assert_eq!(snapped, Some(corner), "the raised room's corner is snapped");
+
+    let undo = harness.state().undo_step_count();
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExtrudeUnderlayArea);
+    pull_up(&mut harness, "300", Vec3::new(IN_ROOM.x, IN_ROOM.y, height));
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo + 1, "{}", app.digest);
+    assert!(app.digest.contains("AREA_1"), "{}", app.digest);
+
+    // The drawing tools draw in the ground plane: they draw into it once it lies there.
+    let app = harness.state_mut();
+    app.select_whole_underlay(id);
+    app.dispatch_command(AppCommand::DrawIntoUnderlay);
+    assert_eq!(app.underlay_draw_target(), None);
+    assert!(app.digest.contains("ground plane"), "{}", app.digest);
+}
+
 /// 2D-4 in a document with only the drawing: the pulled areas are written into the program
 /// as `program action=from_underlay` writes them, bound to the drawing.
 #[test]
@@ -990,6 +1196,74 @@ fn a_pulled_area_of_a_drawing_alone_is_written_into_the_program() {
     harness.state_mut().undo();
     harness.state_mut().undo();
     assert_eq!(harness.state().canonical_digest(), digest);
+}
+
+/// UO-67: an area pulled up on a drawing that is then stood up as the front view stands
+/// with it, its height along the view's line of sight and the room upright in the XZ
+/// plane; laid back into the plan it lies on the ground again. Before, it stayed on the
+/// ground whatever the drawing did.
+#[test]
+fn a_pulled_area_stands_up_with_its_drawing() {
+    use ketchup_model::underlay::view::ViewPlane;
+    let mut harness = shell_of(imported_alone_with(ROOM_AND_FLOOR));
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExtrudeUnderlayArea);
+    pull_up(&mut harness, "300", IN_ROOM);
+    let size = |harness: &Harness<'_, KetchupApp>| {
+        let app = harness.state();
+        let snapshot = app.document.current();
+        let occurrence = snapshot
+            .occurrences()
+            .find(|occurrence| occurrence.name() == "AREA_1")
+            .expect("the room is pulled up")
+            .id();
+        let root = InstancePath::root(occurrence);
+        let [low, high] = app.rotation_bounds_for(&|path| *path == root).unwrap();
+        (low, high - low)
+    };
+    let (_, lying) = size(&harness);
+    assert!((lying.z - 300.0).abs() < 1e-6, "{lying:?}");
+    let id = harness
+        .state()
+        .document
+        .current()
+        .underlays()
+        .next()
+        .unwrap()
+        .id;
+
+    assert!(
+        harness.state_mut().set_underlay_view(id, ViewPlane::Front),
+        "{}",
+        harness.state().digest
+    );
+    awaited(&mut harness);
+    let (low, standing) = size(&harness);
+    assert!(
+        (standing.y - 300.0).abs() < 1e-6 && (standing.z - lying.y).abs() < 1e-6,
+        "{standing:?}, {}",
+        program_source(&harness)
+    );
+    // The drawing's +Z faces the viewer in front: the room is pulled towards −Y.
+    assert!((low.y + 300.0).abs() < 1e-6, "{low:?}");
+    assert!((low.z - 160.0).abs() < 1e-6, "{low:?}");
+    let stood = "place(profile_part(\"AREA_1/outline\"";
+    assert!(
+        program_source(&harness).contains(stood),
+        "the sketch stands too"
+    );
+
+    assert!(
+        harness.state_mut().set_underlay_view(id, ViewPlane::Top),
+        "{}",
+        harness.state().digest
+    );
+    awaited(&mut harness);
+    let (_, again) = size(&harness);
+    assert!((again - lying).length() < 1e-6, "{again:?}");
+    let source = program_source(&harness);
+    assert!(!source.contains("place("), "{source}");
 }
 
 /// A closed outline below the plan whose lower edge is a saw of `teeth` teeth, 10 m wide.
@@ -1048,6 +1322,290 @@ fn a_pulled_area_refused_for_its_size_says_why() {
     assert!(
         app.digest
             .contains("straight pieces are more than the 200000"),
+        "{}",
+        app.digest
+    );
+}
+
+/// Review 2026-10-26 UO-40: the first click of Pull area found the drawing's regions on
+/// the UI thread, a second and more on a large plan. Choosing the tool starts the search
+/// off it, and the click takes what it found.
+#[test]
+fn choosing_pull_area_finds_the_regions_off_the_ui_thread() {
+    let mut harness = shell_of(imported_alone_with(&saw(37)));
+    let found = |app: &KetchupApp| {
+        let snapshot = app.document.current();
+        let underlay = snapshot.underlays().next().unwrap();
+        let lines = app.cached_underlay_lines(underlay).unwrap();
+        crate::live_bridge::underlay_regions::found_ahead(&snapshot, underlay, &lines)
+    };
+    assert!(!found(harness.state()), "nothing was searched yet");
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExtrudeUnderlayArea);
+    crate::tests::shell::step_until(
+        &mut harness,
+        std::time::Duration::from_secs(60),
+        "the regions were not found ahead of a click",
+        found,
+    );
+    let undo = harness.state().undo_step_count();
+    pull_up(&mut harness, "300", Vec3::new(20.0, -250.0, 0.0));
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo + 1, "{}", app.digest);
+}
+
+/// Review 2026-10-26 UO-40, after the search ahead: a click of Pull area before the search
+/// ahead was done found the regions again on the UI thread. It waits for that search and
+/// pulls the area up on the frame its regions are found.
+#[test]
+fn a_pull_area_click_before_the_regions_are_found_waits_for_them_off_the_ui_thread() {
+    let hold = crate::live_bridge::underlay_regions::HoldAhead::hold();
+    let held = hold.clone();
+    let guard =
+        crate::tests::shell::hang_guard("the search of the regions ahead", move || held.let_go());
+    // A drawing of its own: the regions another test found are kept for this one too.
+    let mut harness = shell_of(imported_alone_with(&saw(41)));
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExtrudeUnderlayArea);
+    let undo = harness.state().undo_step_count();
+    harness.state_mut().value_box.input = "300".to_owned();
+    click(&mut harness, Vec3::new(20.0, -250.0, 0.0));
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo, "{}", app.digest);
+    assert!(
+        app.digest.starts_with("Finding the areas"),
+        "{}",
+        app.digest
+    );
+    hold.let_go();
+    drop(guard);
+    crate::tests::shell::step_until(
+        &mut harness,
+        std::time::Duration::from_secs(60),
+        "the waiting click never pulled the area up",
+        |app| app.undo_step_count() > undo,
+    );
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo + 1, "{}", app.digest);
+    assert!(
+        app.digest.starts_with("Pulled the area up"),
+        "{}",
+        app.digest
+    );
+}
+
+/// Review 2026-10-29 UO-40: a line deleted from a drawing an area follows found the area's
+/// region again on the UI thread, in the commit, once for every area, a second and more on
+/// a large plan. The deletion waits for the regions found off it and is made on the frame
+/// they are.
+#[test]
+fn a_line_deleted_from_a_drawing_an_area_follows_waits_for_its_regions_off_the_ui_thread() {
+    // Lines of the room's layer of its own, one left after the deletion: the regions
+    // another test found are not these, before it or after.
+    let mut harness = shell_of(imported_alone_with(&format!(
+        "{ROOM_AND_FLOOR}0\nLINE\n8\nrooms\n10\n13\n20\n400\n11\n113\n21\n400\n0\nLINE\n8\nrooms\n10\n13\n20\n431\n11\n113\n21\n431\n"
+    )));
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExtrudeUnderlayArea);
+    pull_up(&mut harness, "300", IN_ROOM);
+    harness.state_mut().dispatch_command(AppCommand::Select);
+    let undo = harness.state().undo_step_count();
+    click(&mut harness, Vec3::new(60.0, 400.0, 0.0));
+    assert_eq!(picked(&harness), 1, "{}", harness.state().digest);
+
+    let hold = crate::live_bridge::underlay_regions::HoldAhead::hold();
+    let held = hold.clone();
+    let guard = crate::tests::shell::hang_guard("the search of the followed regions", move || {
+        held.let_go();
+    });
+    let searched = crate::live_bridge::underlay_regions::searches_on_this_thread();
+    press(&mut harness, egui::Key::Delete);
+    let app = harness.state();
+    assert_eq!(
+        crate::live_bridge::underlay_regions::searches_on_this_thread(),
+        searched,
+        "the UI thread found regions"
+    );
+    assert_eq!(app.undo_step_count(), undo, "{}", app.digest);
+    assert!(
+        app.digest.starts_with("Finding the areas"),
+        "{}",
+        app.digest
+    );
+    hold.let_go();
+    drop(guard);
+    crate::tests::shell::step_until(
+        &mut harness,
+        std::time::Duration::from_secs(60),
+        "the waiting deletion was never made",
+        |app| app.undo_step_count() > undo,
+    );
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo + 1, "{}", app.digest);
+    assert!(
+        app.digest.contains("taken out of the drawing"),
+        "{}",
+        app.digest
+    );
+    assert_eq!(
+        crate::live_bridge::underlay_regions::searches_on_this_thread(),
+        searched,
+        "the UI thread found regions"
+    );
+}
+
+/// Review 2026-10-29 UO-40: with the regions of an area that follows a drawing not found
+/// yet, as after opening a document, moving the drawing with the Move tool, fitting it and
+/// standing it up as a view found them on the UI thread in the commit. Each waits for them
+/// found off it and is made on the frame they are.
+#[test]
+fn moving_fitting_or_standing_up_a_drawing_an_area_follows_waits_for_its_regions_off_the_ui_thread()
+{
+    use crate::transform_operation::TransformPlan;
+    use ketchup_model::underlay::view::ViewPlane;
+    let mut harness = shell_of(imported_alone_with(&format!(
+        "{ROOM_AND_FLOOR}0\nLINE\n8\nrooms\n10\n13\n20\n470\n11\n113\n21\n470\n"
+    )));
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExtrudeUnderlayArea);
+    pull_up(&mut harness, "300", IN_ROOM);
+    let id = harness
+        .state()
+        .document
+        .current()
+        .underlays()
+        .next()
+        .unwrap()
+        .id;
+    type Change = Box<dyn Fn(&mut KetchupApp)>;
+    let changes: [(&str, Change, &str); 3] = [
+        (
+            "move",
+            Box::new(move |app| {
+                let edit = Transform::from_translation(70.0, 30.0, 0.0).unwrap();
+                let plan = TransformPlan::underlay(&app.document.current(), id, edit).unwrap();
+                let selection = super::underlay_snapping::underlay_reference(id, 0);
+                assert!(app.commit_move_transform(plan, &selection, Vec3::new(70.0, 30.0, 0.0)));
+            }),
+            "Moved",
+        ),
+        (
+            "fit",
+            Box::new(move |app| {
+                app.fit_underlay_in_window(
+                    id,
+                    [[0.0, 0.0], [1000.0, 0.0]],
+                    [[-40.0, 20.0], [960.0, 20.0]],
+                    false,
+                );
+            }),
+            "Underlay placed",
+        ),
+        (
+            "view",
+            Box::new(move |app| {
+                assert!(app.set_underlay_view(id, ViewPlane::Front));
+            }),
+            "",
+        ),
+    ];
+    for (change, make, made) in changes {
+        harness.state().forget_followed_regions();
+        let hold = crate::live_bridge::underlay_regions::HoldAhead::hold();
+        let held = hold.clone();
+        let guard =
+            crate::tests::shell::hang_guard("the search of the followed regions", move || {
+                held.let_go();
+            });
+        let undo = harness.state().undo_step_count();
+        let searched = crate::live_bridge::underlay_regions::searches_on_this_thread();
+        make(harness.state_mut());
+        let app = harness.state();
+        assert_eq!(
+            crate::live_bridge::underlay_regions::searches_on_this_thread(),
+            searched,
+            "{change}: the UI thread found regions"
+        );
+        assert_eq!(app.undo_step_count(), undo, "{change}: {}", app.digest);
+        assert!(
+            app.digest.starts_with("Finding the areas"),
+            "{change}: {}",
+            app.digest
+        );
+        hold.let_go();
+        drop(guard);
+        crate::tests::shell::step_until(
+            &mut harness,
+            std::time::Duration::from_secs(60),
+            "the waiting change was never made",
+            |app| app.undo_step_count() > undo,
+        );
+        let app = harness.state();
+        assert_eq!(app.undo_step_count(), undo + 1, "{change}: {}", app.digest);
+        assert!(app.digest.starts_with(made), "{change}: {}", app.digest);
+        assert_eq!(
+            crate::live_bridge::underlay_regions::searches_on_this_thread(),
+            searched,
+            "{change}: the UI thread found regions"
+        );
+    }
+}
+
+/// Review 2026-10-26 UO-40, a waiting click in a building of a plan per floor: the click
+/// waited until the regions of every flat drawing were found at once, more drawings than
+/// the found searches kept, so each search found pushed out another and the click waited
+/// for ever.
+#[test]
+fn a_waiting_pull_area_click_is_pulled_up_among_more_flat_drawings_than_searches_kept() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut dialogs = dialogs::ScriptedFileDialogs::new();
+    // Drawings of their own: the regions another test found are kept for this one too.
+    for teeth in 43..49 {
+        let path = directory.path().join(format!("floor{teeth}.dxf"));
+        std::fs::write(
+            &path,
+            format!(
+                "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+                 0\nSECTION\n2\nENTITIES\n{}0\nENDSEC\n0\nEOF\n",
+                saw(teeth)
+            ),
+        )
+        .unwrap();
+        dialogs = dialogs.queue_import(ImportFormat::Dxf, &path);
+    }
+    let mut app = KetchupApp::with_catalog_and_initial_box(LocaleCatalog::english(), false)
+        .with_dialogs(Box::new(dialogs));
+    for _ in 43..49 {
+        app.dispatch_file_command(AppCommand::ImportDrawingUnderlay);
+    }
+    let flat = app
+        .document
+        .current()
+        .underlays()
+        .filter(|underlay| underlay.lies_flat())
+        .count();
+    assert_eq!(flat, 6, "{}", app.action_digest());
+    let mut harness = shell_of(app);
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExtrudeUnderlayArea);
+    let undo = harness.state().undo_step_count();
+    harness.state_mut().value_box.input = "300".to_owned();
+    click(&mut harness, Vec3::new(20.0, -250.0, 0.0));
+    crate::tests::shell::step_until(
+        &mut harness,
+        std::time::Duration::from_secs(20),
+        "the waiting click never pulled the area up",
+        |app| app.solid_tools.area_click_awaits_regions.is_none(),
+    );
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo + 1, "{}", app.digest);
+    assert!(
+        app.digest.starts_with("Pulled the area up"),
         "{}",
         app.digest
     );

@@ -42,6 +42,14 @@ const RELEASE_0_2_0: &str = concat!(
     "/tests/fixtures/persistence/release-0.2.0.bin"
 );
 
+/// Format 106 as Save in the released Kečup 0.3.0 wrote it, written by 0.3.0's own code:
+/// the format 105 file with its drawing edited, a polyline, an arc, a circle and a text
+/// drawn on it and a copy added, standing as a front view 250 mm out.
+const RELEASE_0_3_0: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/persistence/release-0.3.0.bin"
+);
+
 /// Format 105 as Save wrote it: an underlay and annotations.
 const SAVED_105: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -67,6 +75,7 @@ const DIGEST_104: &str = "36c397ed20d2ec76";
 const DIGEST_105: &str = "fdcd5e8c616c1323";
 const DIGEST_106: &str = "29680d90129178f6";
 const DIGEST_107: &str = "294cafaafcee8159";
+const DIGEST_RELEASE_0_3_0: &str = "3e767c0ebaf2d5b1";
 
 /// The document of a fixture, checked to open at `digest` with no Undo steps.
 fn opened(path: &str, schema: u16, digest: &str) -> (DocumentStore, ContainerData) {
@@ -136,6 +145,32 @@ fn a_file_saved_by_the_previous_release_opens_with_its_program_and_variants() {
     assert_eq!(program.overrides.get("width"), Some(&800.0));
     assert_eq!(program.variants.len(), 1);
     assert_eq!(program.variants["1000"].get("width"), Some(&1000.0));
+}
+
+/// Review 2026-10-29 CD-73: a drawn text and a drawing standing as a view came after
+/// format 106 was first written on `main`, without a new number, but before Kečup 0.3.0
+/// shipped 106, so format 106 is what 0.3.0 saves, these included. The file 0.3.0 saved
+/// opens with its text and view, and Save writes its very bytes again: a change to how
+/// they are saved fails here and needs a new format number.
+#[test]
+fn a_file_saved_by_kecup_0_3_0_opens_with_its_text_and_view_and_saves_the_same() {
+    let (document, container) = opened(RELEASE_0_3_0, 106, DIGEST_RELEASE_0_3_0);
+    let snapshot = document.current();
+    let underlay = snapshot.underlays().next().unwrap();
+    assert!(underlay.edits.added.iter().any(|added| matches!(
+        added,
+        AddedObject::Drawn {
+            shape: DrawnShape::Text { text, rotation_deg, .. },
+            ..
+        } if text == "1.01 Kuchyňa" && *rotation_deg == 30.0
+    )));
+    assert_eq!(underlay.edits.added.len(), 5);
+    assert!(!underlay.view.is_ground());
+    assert_eq!(underlay.view.at_mm, 250.0);
+    assert_eq!(
+        persistence::save_document_store_current_snapshot(&document, &container).unwrap(),
+        std::fs::read(RELEASE_0_3_0).unwrap()
+    );
 }
 
 /// Review 2026-10-21 P3: Save wrote the newest format for every document, so Kečup 0.1.0
@@ -246,6 +281,59 @@ fn a_dxf_import_in_a_unit_kecup_0_2_0_does_not_know_is_not_written_as_format_103
     }
 }
 
+/// A document with one part drawn alone on a shop drawing, the part `grounded` or not.
+fn a_part_drawn_alone(grounded: bool) -> DocumentStore {
+    use ketchup_model::document::{DefinitionId, OccurrenceId, Transform};
+    use ketchup_model::drawing::{DrawingSheet, DrawingSheetId, DrawingSource};
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Stud".into(),
+            },
+            CanonicalCommand::CreateOccurrence {
+                id: OccurrenceId(2),
+                definition_id: DefinitionId(1),
+                name: "stud".into(),
+                transform: Transform::identity(),
+                parent: None,
+                tags: Default::default(),
+                visible: true,
+            },
+            CanonicalCommand::SetOccurrenceGrounded {
+                id: OccurrenceId(2),
+                grounded,
+            },
+            CanonicalCommand::CreateDrawingSheet(
+                DrawingSheet::new(
+                    DrawingSheetId(3),
+                    "stud",
+                    DrawingSource::RigidAssembly {
+                        occurrence_ids: vec![OccurrenceId(2)],
+                    },
+                )
+                .unwrap(),
+            ),
+        ]))
+        .unwrap();
+    document
+}
+
+/// Review 2026-10-26 MD-41: one part is drawn alone on a shop drawing without being
+/// grounded (MF-21), which Kečup 0.2.0 refuses on opening as `SourceNotRigid`, so it
+/// took the format 103 file for damaged and opened its older `.recovery`. Such a sheet
+/// makes the file 104; a sheet of grounded parts mated to nothing outside stays 103.
+#[test]
+fn a_sheet_kecup_0_2_0_refuses_is_not_written_as_format_103() {
+    let format = |document: DocumentStore| {
+        let snapshot = persistence::save(&document.current());
+        u16::from_le_bytes([snapshot[10], snapshot[11]])
+    };
+    assert_eq!(format(a_part_drawn_alone(false)), 104);
+    assert_eq!(format(a_part_drawn_alone(true)), 103);
+}
+
 /// The files of these tests as Save writes them now, each in the format its document
 /// needs (review 2026-10-29 proposal 5.4); with `KETCHUP_TEST_REPORT_DIR` set they are
 /// written there as `release-0.2.0-<format>-<name>`. `scripts/release_0_2_0_reads.py`
@@ -264,6 +352,7 @@ fn files_for_kecup_0_2_0_are_in_the_format_their_document_needs() {
         ("underlay", SAVED_104, 104, DIGEST_104),
         ("annotations", SAVED_105, 105, DIGEST_105),
         ("edited-underlay", SAVED_106, 106, DIGEST_106),
+        ("release-0.3.0", RELEASE_0_3_0, 106, DIGEST_RELEASE_0_3_0),
         (
             "stretched-line",
             GOLDEN,
@@ -299,6 +388,14 @@ fn files_for_kecup_0_2_0_are_in_the_format_their_document_needs() {
         ContainerData::default(),
         104,
     ));
+    for (grounded, schema) in [(true, 103), (false, 104)] {
+        files.push((
+            format!("part-drawn-alone-grounded-{grounded}"),
+            a_part_drawn_alone(grounded),
+            ContainerData::default(),
+            schema,
+        ));
+    }
     for (name, document, container, schema) in files {
         let saved =
             persistence::save_document_store_current_snapshot(&document, &container).unwrap();

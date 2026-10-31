@@ -83,7 +83,7 @@ LONG_FUNCTIONS = {
     "crates/ketchup-model/src/persistence/legacy.rs::read_product": 1396,
     "crates/ketchup-model/src/shared_change.rs::commit_occurrence_fork_change": 543,
     "crates/ketchup-model/src/shared_change.rs::project_occurrence_fork_impact": 457,
-    "crates/ketchup-program/src/eval.rs::builtins": 678,
+    "crates/ketchup-program/src/eval.rs::builtins": 677,
     "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 509,
 }
 
@@ -352,7 +352,8 @@ LINT_ALLOW = re.compile(r"#!?\[allow\(")
 CASTS_AND_ALLOWS = {
     "ketchup-analysis allows": 1,
     "ketchup-analysis casts": 6,
-    "ketchup-app allows": 10,
+    # Includes the audited WSAPoll / poll of live_bridge::transport::wait_readable (SEC-61).
+    "ketchup-app allows": 11,
     "ketchup-app casts": 218,
     "ketchup-application allows": 9,
     "ketchup-application casts": 29,
@@ -371,7 +372,7 @@ CASTS_AND_ALLOWS = {
     "ketchup-mcp allows": 2,
     "ketchup-mcp casts": 10,
     "ketchup-model allows": 16,
-    "ketchup-model casts": 277,
+    "ketchup-model casts": 276,
     "ketchup-pdm casts": 5,
     "ketchup-program allows": 9,
     "ketchup-program casts": 50,
@@ -423,6 +424,59 @@ def grown_casts_and_allows(counts, recorded=CASTS_AND_ALLOWS):
             )
         elif found < allowed:
             problems.append(f"{key}: fell to {found}; lower CASTS_AND_ALLOWS to it")
+    return problems
+
+
+# Switches a release binary reads only for tests (review 2026-10-29 SEC-62, CI-63).
+# Each is a documented exception: a new one fails here until it is listed with why
+# it is harmless, and one no longer read must leave the list.
+TEST_SWITCH = re.compile(r"\bKETCHUP_TEST_\w+")
+TEST_SWITCHES = {
+    "KETCHUP_TEST_SOFTWARE_ADAPTER": "the window may also take the WARP software "
+    "rasterizer, on CI runners without a graphics card; hardware still wins, and it "
+    "changes only which adapter draws, never what a file or a client may do",
+    "KETCHUP_TEST_OFFSCREEN": "the window opens off screen without focus, for tests "
+    "on a desktop someone uses; it moves the window and grants nothing",
+}
+# Crates only tests depend on; they are no part of a release binary.
+TEST_ONLY_CRATES = {"ketchup-test-env", "ketchup-test-gpu"}
+NATIVE_SOURCE = {".rs", ".cc", ".cpp", ".h", ".hpp"}
+
+
+def release_test_switches(root):
+    """{switch: first production file reading it} over the release crates."""
+    found = {}
+    for path in sorted((root / "crates").glob("*/src/**/*")):
+        relative = path.relative_to(root)
+        if (
+            path.suffix not in NATIVE_SOURCE
+            or relative.parts[1] in TEST_ONLY_CRATES
+            or is_test_module(relative)
+        ):
+            continue
+        lines = (
+            production_lines(path)
+            if path.suffix == ".rs"
+            else path.read_text(encoding="utf-8").splitlines()
+        )
+        for line in lines:
+            for switch in TEST_SWITCH.findall(line):
+                found.setdefault(switch, relative.as_posix())
+    return found
+
+
+def unlisted_test_switches(found, recorded=TEST_SWITCHES):
+    problems = [
+        f"{where}: {switch} is a test switch in a release binary; keep it in test code, "
+        "or list it in TEST_SWITCHES with why it is harmless"
+        for switch, where in sorted(found.items())
+        if switch not in recorded
+    ]
+    problems += [
+        f"{switch} is no longer read; remove it from TEST_SWITCHES"
+        for switch in sorted(recorded)
+        if switch not in found
+    ]
     return problems
 
 
@@ -524,6 +578,7 @@ def main():
     problems += milestone_named_tests(test_files(root))
     problems += hand_written_linear_algebra(linear_algebra_counts(root))
     problems += grown_casts_and_allows(cast_and_allow_counts(root))
+    problems += unlisted_test_switches(release_test_switches(root))
     problems += direct_program_evaluations(root)
     problems += waiting_program_evaluations(root)
     model = (root / "crates/ketchup-program/src/model.rs").read_text(encoding="utf-8")

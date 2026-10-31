@@ -255,7 +255,7 @@ fn exact_step_import_rejects_worker_evidence_from_another_source() {
     assert_eq!(document.visible_undo_steps(), 0);
 }
 
-/// ADR 0009: a part saved where libm rounded its volume one bit away (the
+/// ADR 0010: a part saved where libm rounded its volume one bit away (the
 /// Hettich rail 9117663_3 of the drawer example, MSVC against CORE-MATH) is
 /// the same body; a measure or a topology further off is another one.
 #[test]
@@ -301,6 +301,36 @@ fn imported_evidence_a_few_last_bits_away_is_the_same_body() {
     }
     assert_eq!(ulps_from(0.0, -1).map(f64::is_sign_negative), Some(true));
     assert_eq!(ulps_from(f64::MAX, 1), None);
+}
+
+/// Review 2026-10-29 EX-60: `ulps_from(-0.0, 0)` gave +0.0, so a body bounded
+/// at -0.0 that the window takes for the recorded one (`within_ulps`) was
+/// refused by the worker, which searches the recorded fingerprint by
+/// `ulps_from` and never reached the other zero. Every value one is within
+/// reach of, the other reaches, bit for bit.
+#[test]
+fn every_value_within_ulps_is_one_ulps_from_reaches() {
+    use ketchup_model::import::{ulps_from, within_ulps};
+    let tiny = f64::from_bits(1);
+    let values = [-1.0, -2.0 * tiny, -tiny, -0.0, 0.0, tiny, 2.0 * tiny, 1.0];
+    assert_eq!(
+        ulps_from(-0.0, 0).map(f64::to_bits),
+        Some((-0.0_f64).to_bits())
+    );
+    for a in values {
+        for b in values {
+            for ulps in 0..=2_u64 {
+                let reach = ulps.cast_signed();
+                let reached = (-reach..=reach)
+                    .any(|step| ulps_from(b, step).map(f64::to_bits) == Some(a.to_bits()));
+                assert_eq!(
+                    within_ulps(a, b, ulps),
+                    reached,
+                    "{a:e} from {b:e} in {ulps}"
+                );
+            }
+        }
+    }
 }
 
 #[test]

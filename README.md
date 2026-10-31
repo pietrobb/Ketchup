@@ -122,7 +122,11 @@ This is an evolving assembly and drafting path, not yet a complete mechanical si
 
 ### Underlays
 
-**File → Import DXF/DWG as underlay…** keeps a drawing under the model, for example a site plan or a floor plan, without turning it into parts. It never reaches the cut list, collision checks, or production exports. Each drawing layer becomes a layer you can hide, lines keep their color, linetype, and lineweight, and texts are shown on their own layers. The drawing tools snap to its endpoints, midpoints, and crossings, and **Tools → Fit underlay to model** places it by two points on its lines and two points in the model. A selected underlay moves and turns with the Move and Rotate tools. National grid coordinates (such as S-JTSK, hundreds of kilometres from the origin) keep their precision, and what cannot be drawn exactly, such as an xref, is named in the import report.
+**File → Import DXF/DWG as underlay…** keeps a drawing under the model, for example a site plan or a floor plan. The drawing itself is not a part: its lines never reach the cut list, collision checks, or production exports until you pull an area of it up into a solid (below). Each drawing layer becomes a layer you can hide, lines keep their color, linetype, and lineweight, and texts are shown on their own layers. The drawing tools snap to its endpoints, midpoints, and crossings, and **Tools → Fit underlay to model** places it by two points on its lines and two points in the model. A selected underlay moves and turns with the Move and Rotate tools. National grid coordinates (such as S-JTSK, hundreds of kilometres from the origin) keep their precision, and what cannot be drawn exactly, such as an xref, is named in the import report.
+
+The drawing can be edited in 2D. A click picks one of its objects (Shift+click more); Delete takes them out, Move, Rotate, and Mirror move them (Ctrl copies), and the Tools menu trims, extends, and offsets a line and draws lines, rectangles, circles, arcs, and text into a layer of the drawing. Each edit is one Undo step and is saved with the document; the imported file is never changed. **Tools → Export drawing to DXF/DWG…** writes the drawing with these edits: header, layers, blocks, dimensions, hatches, and every unchanged object as they were, each edited line keeping its handle, colour, and linetype. The export never replaces the file the drawing came from.
+
+**Tools → Pull drawing area up** turns a closed area of the drawing (a room, a parcel, a closed polyline or hatch) into a solid of the typed height, its holes cut through. In a program-owned or empty document the area is written into the program as a generated `# underlay data AREA_n` section bound to the drawing: when the drawing is edited, the area and its solid follow it, and the result names any area that changed. **Tools → Unlink pulled areas from the drawing** keeps the present outlines instead. The program reference ([docs/program-language.md](docs/program-language.md#outlines-from-a-drawing)) describes the generated section. A drawing can also stand as a front, side, or back view (**Tools → Drawing view**), and over the AI connection two or more such views make one solid.
 
 ### Imports and exports
 
@@ -142,7 +146,7 @@ Ketchup Viewer opens a read-only `.ketchup-view` package exported from Ketchup. 
 
 Ketchup has no built-in chat. Instead, you connect the AI harness you already use, such as Claude Code, Codex, Claude Desktop, or Cursor. Your harness keeps its own model, account, and subscription. Ketchup doesn't need an API key.
 
-`Ketchup.exe --mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server on stdio. A connected harness works in the Ketchup window you have open. It can read, patch, and apply the model's program, set its parameters and variants, inspect and measure parts, make verified edits, undo, save, and render images of the viewport, including saved views and section cuts. It can also import STEP, IGES, STL, DXF, DWG, GLB, and SketchUp scene files, bring in and fit underlays, and export STEP, IGES, STL, 3MF, GLB, COLLADA, DXF, BTLx, woodWOP, cut-list CSV, Viewer packages, project drawings as PDF, and drawing sheets as DXF or DWG. Every AI edit goes through the same validation and Undo as a manual edit.
+`Ketchup.exe --mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server on stdio. A connected harness works in the Ketchup window you have open. It can read, patch, and apply the model's program, set its parameters and variants, inspect and measure parts, make verified edits, undo, save, and render images of the viewport, including saved views and section cuts. It can also import STEP, IGES, STL, DXF, DWG, GLB, and SketchUp scene files, bring in and fit underlays, read a drawing as objects, closed regions (rooms), and parallel line pairs (wall thicknesses), edit it (remove, draw, move, trim, extend, offset) and export it as DXF or DWG, write a region or a block of it into the program as outlines or solids that follow the drawing, and export STEP, IGES, STL, 3MF, GLB, COLLADA, DXF, BTLx, woodWOP, cut-list CSV, Viewer packages, project drawings as PDF, and drawing sheets as DXF or DWG. Every AI edit goes through the same validation and Undo as a manual edit.
 
 Set it up once, in any of these ways:
 
@@ -206,7 +210,17 @@ python scripts\run_production_tests.py
 
 Filter a run after `--` (for example `-- member_design::`). The last command runs the Python tests that drive the built headless CLI and fails on any skip. Install the pre-push hook, which runs fmt, the checks and Clippy, once per clone with `git config core.hooksPath scripts/hooks`.
 
-The Rust workspace also builds on Linux against an OCCT 8.0.1 install in the Unix layout (`include/opencascade`, `lib`). Point `KETCHUP_OCCT_ROOT` at it and make the libraries loadable, for example with `RUSTFLAGS="-C link-arg=-Wl,-rpath,$KETCHUP_OCCT_ROOT/lib"`.
+The Rust workspace also builds on Linux, against the pinned OCCT 8.0.1 built by `scripts/linux/build-occt.sh` (it needs CMake, Ninja and clang). A system or distribution OCCT does not work: the build links CORE-MATH (`third_party/crmath`, ADR 0009) into every OCCT library and installs `libketchup_crmath.a` beside them, so OCCT computes the same bits as on Windows and macOS instead of calling glibc's `sin`, `pow` and the like. Make the libraries loadable with an rpath:
+
+```bash
+git clone https://github.com/Open-Cascade-SAS/OCCT.git third_party/occt-src
+git -C third_party/occt-src checkout b8f597c677811d1f9f4d8a97f5ae2825c0353a42
+scripts/linux/build-occt.sh
+export RUSTFLAGS="-C link-arg=-Wl,-rpath,$PWD/third_party/occt-install-r0-v1/lib"
+cargo build --locked --release
+```
+
+`KETCHUP_OCCT_ROOT` points the build at an install elsewhere. CI builds and tests the crates with OCCT on Linux and Windows on every pull request.
 
 No stable public API or long-term native file-format compatibility is promised yet. Undo/Redo lives in memory for the session and reaches back 30 edits: Save writes only the current revision, and reopening a file starts a new Undo history. A named checkpoint in the revision catalog is saved with the file only when it names the revision you save, so save right after naming it; a checkpoint on an earlier edit lasts only for the session, and 30 newer edits drop it. While you work, a work-recovery copy beside the file keeps your edits and their Undo steps, so a crash loses neither.
 

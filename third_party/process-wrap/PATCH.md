@@ -45,8 +45,11 @@ and reports a memory limit.
 On Unix, where there is no job object, `JobMemoryLimit` is exported too (any feature set) and its
 `pre_spawn` sets `RLIMIT_AS` to the limit in the child, through `pre_exec` before `exec`. This
 needs nix's `resource` feature (`Cargo.toml`). Ketchup's crates forbid `unsafe`, and `pre_exec`
-is unsafe. The limit caps address space, not committed memory as on Windows; the program worker
-reserves little beyond what it uses, so the same number serves both (review 2026-10-15 PRG-1).
+is unsafe. On Linux it sets `RLIMIT_DATA` instead (review 2026-10-26 EX-40): since Linux 4.7 that
+counts the private writable memory a process maps, close to what Windows counts as committed, while
+`RLIMIT_AS` also counted address space only reserved, such as glibc's 64 MiB malloc arena per
+thread, so an exact worker with one OCCT thread per core failed its share before using it. On
+other Unix it stays `RLIMIT_AS`, which caps address space (review 2026-10-15 PRG-1).
 On macOS `pre_spawn` sets nothing: macOS refuses an `RLIMIT_AS` below the address space a
 process already reserves (hundreds of GiB with the shared cache) with `EINVAL`, so the child would
 not start at all. The limit is not enforced there.

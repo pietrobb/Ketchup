@@ -102,7 +102,16 @@ impl Underlay {
     /// before any copy is made when with them the drawing would hold more than a drawing
     /// read may ([`super::edited_size`]).
     pub fn read_lines(&self, bytes: &[u8]) -> Result<UnderlayLines, super::UnderlayLinesError> {
-        let lines = UnderlayLines::decode(bytes)?;
+        self.with_edits(UnderlayLines::decode(bytes, self.layers.len())?)
+    }
+
+    /// `lines`, its blob as decoded, with its edits, refused as [`Self::read_lines`]
+    /// refuses: so a caller keeping the decoded blob applies new edits without decoding
+    /// it again (review 2026-10-29 UI-62).
+    pub fn with_edits(
+        &self,
+        lines: UnderlayLines,
+    ) -> Result<UnderlayLines, super::UnderlayLinesError> {
         if !self.edits.added.is_empty() {
             let size = lines.edited_size(&self.edits);
             if !size.fits() {
@@ -522,9 +531,18 @@ pub(super) fn current_read(edits: &UnderlayEdits, id: u32) -> AddedObject {
 }
 
 impl UnderlayEdits {
-    /// Puts the read object `id` where `now`, a copy of it ([`current_read`]), lies.
+    /// Puts the read object `id` where `now`, a copy of it ([`current_read`]), lies. Put
+    /// back where it was read, by hand or by turns that add up to none, it is no edit, or
+    /// the unchanged drawing was saved in a format older readers refuse (review 2026-10-29
+    /// on test 05699e9).
     pub(super) fn place_read(&mut self, id: u32, now: &AddedObject) {
         match now {
+            AddedObject::Stretched { map, .. } | AddedObject::Copy { map, .. }
+                if is_identity(map) =>
+            {
+                self.moved_objects.remove(&id);
+                self.stretched_objects.remove(&id);
+            }
             AddedObject::Stretched { map, .. } => {
                 self.moved_objects.remove(&id);
                 self.stretched_objects.insert(id, *map);
@@ -536,6 +554,18 @@ impl UnderlayEdits {
             AddedObject::Drawn { .. } => {}
         }
     }
+}
+
+/// Whether `map` leaves every point where it is, but for the rounding of the maps it was
+/// composed of: within [`crate::tolerance::ROUNDING`] in its turn and scale, and within
+/// [`crate::tolerance::ACCUMULATED_ROUNDING`] millimetres in its move.
+fn is_identity(map: &Affine) -> bool {
+    use crate::tolerance::{ACCUMULATED_ROUNDING, ROUNDING};
+    map.iter().zip(IDENTITY).all(|(row, identity)| {
+        (row[0] - identity[0]).abs() <= ROUNDING
+            && (row[1] - identity[1]).abs() <= ROUNDING
+            && row[2].abs() <= ACCUMULATED_ROUNDING
+    })
 }
 
 /// Object `id` of `objects` when it is there and placed by none.

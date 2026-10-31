@@ -3179,6 +3179,48 @@ fn delete_selection_rejects_missing_and_collection_protected_occurrences() {
     );
 }
 
+/// Review 2026-10-29 MD-62: Delete on a part an assembly joint holds was offered and then
+/// failed on the raw canonical error, where the assistant's delete takes the joint along.
+/// Now Delete takes the part and the joints that hold it in one Undo step, as the
+/// assistant's remove_references does; Cut, which cannot carry a joint, is not offered.
+#[test]
+fn delete_takes_a_part_with_the_assembly_joint_that_holds_it_in_one_undo_step() {
+    use ketchup_model::assembly_joint::{AssemblyJoint, AssemblyJointId, AssemblyJointKind};
+    let mut app = KetchupApp::new();
+    assert!(app.create_box());
+    let parts = app
+        .document
+        .current()
+        .occurrences()
+        .map(|occurrence| occurrence.id())
+        .collect::<Vec<_>>();
+    assert_eq!(parts.len(), 2);
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateAssemblyJoint(AssemblyJoint::new(
+                AssemblyJointId(7),
+                parts[0],
+                parts[1],
+                AssemblyJointKind::Fixed,
+            )),
+        ]))
+        .unwrap();
+    app.select_from_outliner(InstancePath::root(parts[1]), false);
+    let joined = app.canonical_digest();
+    let undo_steps = app.undo_step_count();
+
+    assert!(app.cut_source_plan().is_none());
+    assert!(app.command_enabled(AppCommand::Delete));
+    assert!(app.delete_selected(), "{}", app.action_digest());
+    let current = app.document.current();
+    assert!(current.occurrence(parts[1]).is_none());
+    assert!(current.occurrence(parts[0]).is_some());
+    assert_eq!(current.assembly_joints().count(), 0);
+    assert_eq!(app.undo_step_count(), undo_steps + 1);
+    assert!(app.undo());
+    assert_eq!(app.canonical_digest(), joined);
+}
+
 #[test]
 fn organized_component_hierarchy_round_trips_with_stable_identity() {
     let mut app = KetchupApp::new();

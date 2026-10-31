@@ -33,6 +33,7 @@ impl LiveBridge {
             point_mm,
             label,
             closing_segments_mm,
+            within_mm,
             ..
         } = &request
         else {
@@ -44,6 +45,16 @@ impl LiveBridge {
                 "closing_segments_mm",
                 "Closing segments apply only to a region chosen by point or label.",
                 "Use point_mm or label with closing_segments_mm, not block or object_id.",
+            ));
+        }
+        if let Some(area) = within_mm
+            && (!area.iter().flatten().all(|value| value.is_finite())
+                || (point_mm.is_none() && label.is_none()))
+        {
+            return Err(invalid(
+                "within_mm",
+                "within_mm is a box of finite numbers and limits only the search for a region chosen by point or label.",
+                "Give [[x_min, y_min], [x_max, y_max]] in document mm with point_mm or label.",
             ));
         }
         if !is_identifier(name) {
@@ -99,6 +110,7 @@ pub(crate) fn underlay_extrusion_program(
         layers: None,
         tolerance_mm: None,
         closing_segments_mm: Vec::new(),
+        within_mm: None,
         object_id,
         block: None,
         thickness_mm: Some(height_mm),
@@ -146,8 +158,7 @@ pub(crate) fn underlay_area_outline(
                 underlay,
                 &lines,
                 None,
-                None,
-                &[],
+                Default::default(),
                 false,
             )?;
             if !point.iter().all(|value| value.is_finite()) {
@@ -157,6 +168,13 @@ pub(crate) fn underlay_area_outline(
             else {
                 return Ok(None);
             };
+            let (region, _) = super::underlay_regions::walled(
+                &snapshot,
+                underlay,
+                &lines,
+                Default::default(),
+                region,
+            )?;
             (region.outline, region.holes)
         }
         (None, Some(id)) => object_outline(&ObjectIndex::new(&lines), id)?,
@@ -198,6 +216,44 @@ pub(crate) fn free_name(app: &KetchupApp, stem: &str) -> String {
         .unwrap_or_default()
 }
 
+/// The search for the region `binding` follows, as [`binding_data`] makes it; none when it
+/// follows an object or a block, or cannot look, which its update says.
+pub(super) fn binding_search(
+    app: &KetchupApp,
+    snapshot: &Snapshot,
+    binding: &super::underlay_binding::Binding,
+) -> Option<super::underlay_regions::Search> {
+    if binding.block.is_some() || binding.point.is_none() == binding.label.is_none() {
+        return None;
+    }
+    let underlay =
+        super::underlay_regions::one_underlay(snapshot, Some(binding.underlay_id)).ok()?;
+    let lines = app.cached_underlay_lines(underlay)?;
+    if binding.object(&lines).ok()?.is_some() {
+        return None;
+    }
+    let offset = underlay.offset_mm();
+    let closing_segments_mm = binding
+        .closures
+        .iter()
+        .map(|ends| ends.map(|[x, y]| underlay.to_document([x - offset[0], y - offset[1]])))
+        .collect::<Vec<_>>();
+    let lookup = super::underlay_regions::Lookup {
+        tolerance_mm: binding.tolerance.map(|value| value * underlay.scale()),
+        closing_segments_mm: &closing_segments_mm,
+        within: binding.within_local(underlay),
+    };
+    super::underlay_regions::region_search(
+        snapshot,
+        underlay,
+        &lines,
+        binding.layers.as_deref(),
+        lookup,
+        binding.point.is_some() && binding.whole,
+    )
+    .ok()
+}
+
 pub(super) fn binding_data(
     app: &KetchupApp,
     snapshot: &Snapshot,
@@ -217,6 +273,11 @@ pub(super) fn binding_data(
         .iter()
         .map(|ends| ends.map(document_point))
         .collect::<Vec<_>>();
+    let lookup = super::underlay_regions::Lookup {
+        tolerance_mm,
+        closing_segments_mm: &closing_segments_mm,
+        within: binding.within_local(underlay),
+    };
     let lines = app
         .cached_underlay_lines(underlay)
         .ok_or("entity_not_found")?;
@@ -233,8 +294,7 @@ pub(super) fn binding_data(
                             underlay,
                             &lines,
                             layers.as_deref(),
-                            tolerance_mm,
-                            &closing_segments_mm,
+                            lookup,
                             binding.whole,
                         )?,
                         point,
@@ -257,17 +317,19 @@ pub(super) fn binding_data(
                             underlay,
                             &lines,
                             layers.as_deref(),
+                            binding.text_layers.as_deref(),
                             label,
-                            tolerance_mm,
-                            &closing_segments_mm,
+                            lookup,
                         )?,
                         format!("labelled {}", quoted(label)),
                     )
                 }
             };
+            let warning = super::underlay_regions::objectless_warning(&lines)
+                .map_or_else(String::new, |warning| format!("; WARNING: {warning}"));
             (
                 format!(
-                    "the region {selected} of {}, {}; layers {layers:?}; closing_segments_mm {closing_segments_mm:?}",
+                    "the region {selected} of {}, {}; layers {layers:?}; closing_segments_mm {closing_segments_mm:?}{warning}",
                     underlay.name,
                     measured(underlay, &region.outline, &region.holes),
                 ),
@@ -362,6 +424,71 @@ pub(super) fn with_data(source: &str, name: &str, written: &str) -> String {
         offset += line.len();
     }
     format!("{written}\n{source}")
+}
+
+/// [`with_data`] for the section `name` following its drawing: its data written anew from
+/// `written`, the lines after the data as the section has them, so a name or a colour the
+/// window gave its part, or a distance changed by hand, stays (review 2026-10-26 UO-45);
+/// only the line setting the parts up where the drawing stands is written anew (UO-67).
+pub(super) fn with_followed_data(source: &str, name: &str, written: &str) -> String {
+    let kept = section_text(source, name).and_then(|old| statements(old, name));
+    match (statements(written, name), kept) {
+        (Some(generated), Some(kept)) => {
+            let data = &written[..written.len() - generated.len()];
+            let sketch = sketch_start(name);
+            let sketched = |line: &&str| line.starts_with(&sketch);
+            let stands = |line: &&str| line.trim_end().ends_with(STANDS);
+            let had_sketch = kept.split_inclusive('\n').any(|line| sketched(&line));
+            let mut lines = generated
+                .split_inclusive('\n')
+                .filter(|line| had_sketch && sketched(line))
+                .collect::<Vec<_>>();
+            lines.extend(
+                kept.split_inclusive('\n')
+                    .filter(|line| !sketched(line) && !stands(line)),
+            );
+            // The section's end line stays last.
+            let end = lines.pop().unwrap_or_default();
+            lines.extend(generated.split_inclusive('\n').filter(stands));
+            lines.push(end);
+            with_data(source, name, &format!("{data}{}", lines.concat()))
+        }
+        _ => with_data(source, name, written),
+    }
+}
+
+/// The section `name` of `source`, its heading to its end line.
+fn section_text<'a>(source: &'a str, name: &str) -> Option<&'a str> {
+    let begin = format!("{BEGIN} {name}:");
+    let end = format!("{END} {name}");
+    let start = source
+        .match_indices(&begin)
+        .map(|(at, _)| at)
+        .find(|at| *at == 0 || source[..*at].ends_with('\n'))?;
+    let mut offset = start;
+    for line in source[start..].split_inclusive('\n') {
+        offset += line.len();
+        if line.trim_end() == end {
+            return Some(&source[start..offset]);
+        }
+    }
+    None
+}
+
+/// What follows the data of the section text `section` named `name`: the statements that
+/// make parts of it and its end line.
+fn statements<'a>(section: &'a str, name: &str) -> Option<&'a str> {
+    let frame = format!("{name}_FRAME =");
+    let mut offset = 0;
+    let mut after = None;
+    for line in section.split_inclusive('\n') {
+        offset += line.len();
+        let text = line.trim_end();
+        if text == "]" || text.starts_with(&frame) {
+            after = Some(offset);
+        }
+    }
+    after.map(|at| &section[at..])
 }
 
 /// A number as the program reads it: to the thousandth of a millimetre, no trailing zeros.
@@ -515,9 +642,19 @@ fn outline_data(
             ring_text(underlay, hole, "        ")
         ));
     }
+    let view = underlay.view.transform();
+    let triple = |[x, y, z]: [f64; 3]| format!("({}, {}, {})", number(x), number(y), number(z));
+    // A drawing standing as a view, or a plan raised off the ground, sets the sketch and
+    // the solid up with it (review 2026-10-29 UO-67).
+    let stands = (!underlay.view.is_ground()).then(|| {
+        format!(
+            "origin = {}, z = {}, x = {}",
+            triple(view.transform_point([0.0; 3])),
+            triple(view.transform_vector([0.0, 0.0, 1.0])),
+            triple(view.transform_vector([1.0, 0.0, 0.0])),
+        )
+    });
     if framed {
-        let view = underlay.view.transform();
-        let triple = |[x, y, z]: [f64; 3]| format!("({}, {}, {})", number(x), number(y), number(z));
         data.push_str(&format!(
             "]\n{name}_FRAME = ({}, {}, {})\n",
             triple(view.transform_point([0.0; 3])),
@@ -525,7 +662,22 @@ fn outline_data(
             triple(view.transform_vector([0.0, 1.0, 0.0])),
         ));
     } else {
-        data.push_str(&format!("]\ncomponent({}, [profile_part({}, points={name}, closed=True)] + [profile_part({} % (i + 1), points=hole, closed=True) for i, hole in enumerate({name}_HOLES)])\n", quoted(&format!("{name}_sketch")), quoted(&format!("{name}/outline")), quoted(&format!("{name}/hole%d"))));
+        let placed = |part: String| match &stands {
+            Some(frame) => format!("place({part}, {frame})"),
+            None => part,
+        };
+        data.push_str(&format!(
+            "]\n{}, [{}] + [{} for i, hole in enumerate({name}_HOLES)])\n",
+            sketch_start(name),
+            placed(format!(
+                "profile_part({}, points={name}, closed=True)",
+                quoted(&format!("{name}/outline"))
+            )),
+            placed(format!(
+                "profile_part({} % (i + 1), points=hole, closed=True)",
+                quoted(&format!("{name}/hole%d"))
+            )),
+        ));
     }
     if let Some(thickness) = thickness {
         data.push_str(&format!(
@@ -534,8 +686,21 @@ fn outline_data(
             number(thickness),
             quoted(&format!("{name}/cut%d")),
         ));
+        if let (Some(frame), false) = (&stands, framed) {
+            data.push_str(&format!("place({name}_SOLID, {frame}){STANDS}\n"));
+        }
     }
     Ok(data)
+}
+
+/// Ends the generated line that sets a section's solid up where its drawing stands; a
+/// section following its drawing is written with the line as the drawing stands now, in
+/// place of the one it had, as with its sketch (see [`with_followed_data`]).
+const STANDS: &str = "  # stands where the drawing stands";
+
+/// How the line making the sketch of section `name` starts.
+fn sketch_start(name: &str) -> String {
+    format!("component({}", quoted(&format!("{name}_sketch")))
 }
 
 fn signed_area(ring: &[[f64; 2]]) -> f64 {

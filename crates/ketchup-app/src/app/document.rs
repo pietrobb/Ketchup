@@ -361,6 +361,10 @@ impl KetchupApp {
                                 "digest-opened-work-recovery-step-damaged",
                                 vec![("reason", reason)],
                             ),
+                            LoadNotice::UnderlayReset { name, reason } => (
+                                "digest-opened-underlay-reset",
+                                vec![("underlay", name), ("reason", reason)],
+                            ),
                             LoadNotice::WorkRecoveryUnusable { reason } => match &set_aside {
                                 Some(Ok(moved)) => (
                                     "digest-opened-work-recovery-set-aside",
@@ -568,15 +572,22 @@ impl KetchupApp {
         if self.file.work_recovery_lock.is_none()
             && let Some((path, _)) = self.checkpoint_target()
         {
-            self.file.work_recovery_lock = Some(
-                ketchup_model::persistence::WorkRecoveryLock::acquire(&path)?,
-            );
+            // Another user's lock file this session cannot write is locked through a
+            // read-only handle, as on open (review 2026-10-26 MD-44); where none can be
+            // taken, the edits go on without a checkpoint.
+            match ketchup_model::persistence::WorkRecoveryLock::acquire_unless_read_only(&path)? {
+                Some(lock) => self.file.work_recovery_lock = Some(lock),
+                None => self.file.work_recovery_off = true,
+            }
         }
         Ok(())
     }
 
     pub(crate) fn refresh_work_recovery_checkpoint(&mut self) {
-        if self.file.activity.saving.is_some() {
+        // While a file is read the window's work is on its way out: a checkpoint written
+        // now would bring back edits the user discarded, since the read may find it. A
+        // cancelled or failed open leaves the work, and the next frame checkpoints it.
+        if self.file.activity.saving.is_some() || self.reading_document() {
             return;
         }
         if let Err(error) = self.retry_pending_work_recovery_cleanup() {
@@ -613,7 +624,11 @@ impl KetchupApp {
         let Some((path, identity)) = self.checkpoint_target() else {
             return;
         };
-        let result = self.acquire_work_recovery_lock().and_then(|()| {
+        let acquired = self.acquire_work_recovery_lock();
+        if acquired.is_ok() && self.file.work_recovery_off {
+            return;
+        }
+        let result = acquired.and_then(|()| {
             ketchup_model::persistence::publish_work_recovery(
                 &path,
                 &self.document,

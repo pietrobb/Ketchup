@@ -1,0 +1,9 @@
+﻿kind,item,quantity,unit,unit_price,amount,currency,basis,source,note
+material,DTD,0.288,m2,20.7,5.96,EUR,blanks,offer 2026-10,
+material,KVH,0.0432,m3,500,21.6,EUR,stock,offer 2026-10,
+material,OSB,1,piece,8,8,EUR,stock,offer 2026-10,
+hardware,ISO 4017 M8x40,1,piece,0.25,0.25,EUR,,offer 2026-10,
+operation,drill,3,operation,0.5,1.5,EUR,,offer 2026-10,
+,total,,,,37.31,EUR,,,VAT not added; not in the total: 2 without a price
+material,unspecified,,,,,,,,not priced: no price()
+operation,pocket,,,,,,,,not priced: no price()

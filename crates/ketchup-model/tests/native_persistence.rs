@@ -3117,26 +3117,37 @@ fn a_read_only_lock_file_in_a_writable_folder_still_locks_the_file() {
     std::fs::set_permissions(&lock, permissions).unwrap();
 }
 
-/// A Linux NFS client locks only a file opened for writing, so another user's lock
-/// file it cannot write cannot be locked through a read-only handle either. The file
-/// then opens without a checkpoint, from a read-only mount as from a writable share,
-/// instead of failing to open (review 2026-10-24 UI-21, capability review run 303).
+/// A Linux NFS client locks a file not opened for writing only shared, so another
+/// user's lock file it cannot write is locked shared through a read-only handle. That
+/// still collides with the session holding the file: before, the second user opened and
+/// saved the file without a lock while the first edited it (review 2026-10-26 MD-44).
+/// From a read-only mount the file opens without a checkpoint, instead of failing to
+/// open (review 2026-10-24 UI-21, capability review run 303).
 #[test]
-fn a_lock_file_that_cannot_be_locked_read_only_opens_the_file_without_a_checkpoint() {
-    use ketchup_model::persistence::WorkRecoveryLock;
+fn a_lock_file_locked_only_shared_still_keeps_a_second_user_out() {
+    use ketchup_model::persistence::{FilePersistenceError, WorkRecoveryLock};
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("shared.ketchup");
     let mut lock = path.as_os_str().to_owned();
     lock.push(".work-recovery-lock");
-    std::fs::write(&lock, b"").unwrap();
+    let first_user = WorkRecoveryLock::acquire(&path).unwrap();
     let mut permissions = std::fs::metadata(&lock).unwrap().permissions();
     permissions.set_readonly(true);
     std::fs::set_permissions(&lock, permissions.clone()).unwrap();
 
+    let second_user = persistence::headless_with_read_handle_lock_failure(|| {
+        WorkRecoveryLock::acquire_unless_read_only(&path)
+    });
+    assert!(
+        matches!(second_user, Err(FilePersistenceError::ExternalConflict)),
+        "{second_user:?}"
+    );
+    drop(first_user);
     let writable_share = persistence::headless_with_read_handle_lock_failure(|| {
         WorkRecoveryLock::acquire_unless_read_only(&path)
     });
-    assert!(matches!(writable_share, Ok(None)), "{writable_share:?}");
+    assert!(matches!(writable_share, Ok(Some(_))), "{writable_share:?}");
+    drop(writable_share);
     let read_only_mount = persistence::headless_with_read_handle_lock_failure(|| {
         persistence::headless_with_read_only_folder(directory.path(), || {
             WorkRecoveryLock::acquire_unless_read_only(&path)

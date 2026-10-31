@@ -1545,13 +1545,14 @@ fn move_vcb_accepts_last_direction_distance_and_exact_vector() {
 
 #[test]
 fn move_drag_is_continuous_and_shift_constrains_dominant_axis() {
+    const PLAN: [Vec3; 2] = [Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0)];
     let start = Vec3::new(3.0, 4.0, 20.0);
     assert_eq!(
-        continuous_move_delta(start, Vec3::new(31.25, 28.75, 20.0), false),
+        continuous_move_delta(start, Vec3::new(31.25, 28.75, 20.0), false, PLAN),
         Vec3::new(28.25, 24.75, 0.0)
     );
     assert_eq!(
-        continuous_move_delta(start, Vec3::new(31.25, 28.75, 20.0), true),
+        continuous_move_delta(start, Vec3::new(31.25, 28.75, 20.0), true, PLAN),
         Vec3::new(28.25, 0.0, 0.0)
     );
 }
@@ -1563,19 +1564,24 @@ fn move_inference_targets_origin_and_world_axes_only_with_snapping_enabled() {
     let near_y_axis = Vec3::new(0.2, 40.0, 0.0);
     let pointer = app.project(near_y_axis, rect);
     assert_eq!(
-        app.move_inference_target_at_screen(pointer, rect, near_y_axis),
+        app.move_inference_target_at_screen(pointer, rect, None, near_y_axis),
         Some(Vec3::new(0.0, 40.0, 0.0))
     );
 
     let origin_pointer = app.project(Vec3::ZERO, rect);
     assert_eq!(
-        app.move_inference_target_at_screen(origin_pointer, rect, Vec3::new(20.0, 20.0, 20.0)),
+        app.move_inference_target_at_screen(
+            origin_pointer,
+            rect,
+            None,
+            Vec3::new(20.0, 20.0, 20.0)
+        ),
         Some(Vec3::ZERO)
     );
 
     app.face_workflow.set_snaps_enabled(false);
     assert_eq!(
-        app.move_inference_target_at_screen(pointer, rect, near_y_axis),
+        app.move_inference_target_at_screen(pointer, rect, None, near_y_axis),
         None
     );
 }

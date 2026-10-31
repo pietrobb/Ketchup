@@ -13,8 +13,13 @@ use std::fmt;
 use std::io::{Cursor, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+use std::collections::{BTreeMap, BTreeSet};
+
+use acadrust::objects::ObjectType;
+use acadrust::types::Handle;
 use acadrust::{
-    DwgReadOptions, DwgReader, DwgWriter, DxfError, DxfReader, DxfVersion, DxfWriter, ReadStats,
+    CadDocument, DwgReadOptions, DwgReader, DwgWriter, DxfError, DxfReader, DxfVersion, DxfWriter,
+    EntityType, ReadStats,
 };
 
 #[cfg(any(test, feature = "testing"))]
@@ -172,6 +177,100 @@ pub fn dxf_to_dwg(dxf: &[u8]) -> Result<Vec<u8>, DwgError> {
     })?;
     document.version = DxfVersion::AC1032;
     guarded(Stage::WriteDwg, || DwgWriter::write_to_vec(&document))
+}
+
+/// A DXF drawing written as DWG, with what could not be.
+#[derive(Clone, Debug)]
+pub struct DwgWritten {
+    pub dwg: Vec<u8>,
+    /// What was left out, most frequent first.
+    pub left_out: Vec<SkippedRecords>,
+}
+
+/// [`dxf_to_dwg`] for a drawing that may hold an application's own entities and objects,
+/// such as a DWG drawing written back: those acadrust cannot encode in a DWG without DWG data
+/// of their own are left out and counted in [`DwgWritten::left_out`], and the rest of the
+/// drawing is written (review 2026-10-29 CD-71). A dictionary entry naming a record left out
+/// goes with it.
+///
+/// # Errors
+/// As [`dxf_to_dwg`].
+pub fn dxf_to_dwg_leaving_out_custom_records(dxf: &[u8]) -> Result<DwgWritten, DwgError> {
+    let source = dxf.to_vec();
+    let mut document = guarded(Stage::ReadDxf, move || {
+        DxfReader::from_reader(Cursor::new(source))?.read()
+    })?;
+    document.version = DxfVersion::AC1032;
+    let left_out = leave_out_custom_records(&mut document);
+    let dwg = guarded(Stage::WriteDwg, || DwgWriter::write_to_vec(&document))?;
+    Ok(DwgWritten { dwg, left_out })
+}
+
+/// Takes out of `document` the entities and objects of a class acadrust does not know that
+/// have no DWG data of `document`'s version, as its DWG writer would refuse them, and counts
+/// them by name.
+fn leave_out_custom_records(document: &mut CadDocument) -> Vec<SkippedRecords> {
+    let version = document.version;
+    let encodable =
+        |raw: bool, from: Option<DxfVersion>| raw && from.is_none_or(|from| from == version);
+    let mut by_type = BTreeMap::<String, usize>::new();
+    let entities: Vec<Handle> = document
+        .entities()
+        .filter_map(|entity| match entity {
+            EntityType::Unknown(custom)
+                if !encodable(custom.raw_dwg_data.is_some(), custom.dwg_source_version) =>
+            {
+                *by_type.entry(custom.dxf_name.clone()).or_default() += 1;
+                Some(custom.common.handle)
+            }
+            _ => None,
+        })
+        .collect();
+    let objects: BTreeSet<Handle> = document
+        .objects
+        .values()
+        .filter_map(|object| match object {
+            ObjectType::Unknown {
+                type_name,
+                handle,
+                raw_dwg_data,
+                raw_dwg_version,
+                ..
+            } if !encodable(raw_dwg_data.is_some(), *raw_dwg_version) => {
+                *by_type.entry(type_name.clone()).or_default() += 1;
+                Some(*handle)
+            }
+            _ => None,
+        })
+        .collect();
+    for handle in &entities {
+        document.remove_entity(*handle);
+    }
+    for record in document.block_records.iter_mut() {
+        record
+            .entity_handles
+            .retain(|handle| !entities.contains(handle));
+    }
+    for handle in &objects {
+        document.objects.remove(handle);
+    }
+    for object in document.objects.values_mut() {
+        if let ObjectType::Dictionary(dictionary) = object {
+            dictionary
+                .entries
+                .retain(|(_, handle)| !objects.contains(handle));
+        }
+    }
+    let mut left_out: Vec<SkippedRecords> = by_type
+        .into_iter()
+        .map(|(record_type, count)| SkippedRecords { record_type, count })
+        .collect();
+    left_out.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then(a.record_type.cmp(&b.record_type))
+    });
+    left_out
 }
 
 /// Runs one acadrust step, keeping its error as the cause and turning a panic into

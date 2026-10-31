@@ -173,6 +173,16 @@ pub fn rewrite_saved_snapshot(saved: &[u8], edit: impl FnOnce(&mut ciborium::Val
     crate::persistence::snapshot_codec::rewrite(saved, edit)
 }
 
+/// `document_bin` (the output of `persistence::save`, perhaps rewritten) as a native
+/// container holding the blobs of `container_data`, such as an underlay's lines.
+#[must_use]
+pub fn save_container_with_document_entry(
+    document_bin: Vec<u8>,
+    container_data: &crate::persistence::ContainerData,
+) -> Vec<u8> {
+    crate::persistence::save_container_with_document_entry(document_bin, container_data)
+}
+
 /// The current revision of `document` saved as a native container whose `history.bin`
 /// is `history`, so a test can hand the loader an Undo history no writer produced.
 #[must_use]

@@ -899,6 +899,10 @@ impl KetchupApp {
         {
             return None;
         }
+        // The joints go with the parts through the planner, which deletes no groups.
+        if !group_ids.is_empty() && self.held_by_joints(&occurrence_ids) {
+            return None;
+        }
 
         let occurrence_count = occurrence_ids.len();
         let group_count = group_ids.len();
@@ -935,6 +939,21 @@ impl KetchupApp {
         })
     }
 
+    /// Whether a pin joint or an assembly joint holds one of the parts `occurrence_ids`,
+    /// so their delete is planned with the joints that hold them, as the assistant's
+    /// remove_references plans it (review 2026-10-29 MD-62).
+    pub(crate) fn held_by_joints(&self, occurrence_ids: &BTreeSet<OccurrenceId>) -> bool {
+        let snapshot = self.document.current();
+        snapshot.pin_joints().any(|joint| {
+            [&joint.first, &joint.second]
+                .into_iter()
+                .any(|face| occurrence_ids.contains(&face.instance_path.root_occurrence()))
+        }) || snapshot.assembly_joints().any(|joint| {
+            occurrence_ids.contains(&joint.parent_occurrence_id())
+                || occurrence_ids.contains(&joint.child_occurrence_id())
+        })
+    }
+
     pub(crate) fn apply_delete_selection_source_plan(
         &mut self,
         plan: DeleteSelectionSourcePlan,
@@ -948,11 +967,23 @@ impl KetchupApp {
             return false;
         }
         let DeleteSelectionSourcePlan {
+            occurrence_ids,
             occurrence_count,
             commands,
             ..
         } = plan;
-        if !self.commit_part_batch(CommandBatch::new(commands)) {
+        let deleted = if self.held_by_joints(&occurrence_ids) {
+            self.commit_dock_operation(AssistantCadEditOperation::Delete {
+                selector: AssistantCadEntitySelector::Occurrences {
+                    occurrence_ids: occurrence_ids.iter().map(|id| id.0).collect(),
+                },
+                dependency_policy:
+                    ketchup_assistant::sidecar::AssistantCadDeletePolicy::RemoveReferences,
+            })
+        } else {
+            self.commit_part_batch(CommandBatch::new(commands))
+        };
+        if !deleted {
             return false;
         }
         self.selection.clear();
@@ -1033,6 +1064,21 @@ impl KetchupApp {
             .is_some_and(|group_id| snapshot.group(group_id).is_none())
         {
             self.selection.selected_group = None;
+        }
+        // An id picked in a drawing names the next object added once Undo takes its own
+        // out: only objects still in the drawing stay picked (review 2026-10-29 UI-65).
+        if let Some(id) = self.selection.underlay() {
+            let lines = snapshot
+                .underlay(id)
+                .and_then(|underlay| self.cached_underlay_lines(underlay));
+            self.selection.retain_underlay_objects(|object| {
+                lines.as_ref().is_some_and(|lines| {
+                    usize::try_from(object)
+                        .ok()
+                        .and_then(|object| lines.objects().objects.get(object))
+                        .is_some_and(|object| !object.removed)
+                })
+            });
         }
         while self
             .selection

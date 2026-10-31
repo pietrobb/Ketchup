@@ -208,10 +208,4 @@ if ($LASTEXITCODE -ne 0) { throw "OCCT CMake configuration failed." }
 if ($LASTEXITCODE -ne 0) { throw "OCCT Release build or install failed." }
 
 $dumpbin = Join-Path $vs.installationPath "VC\Tools\MSVC\$msvcVersion\bin\HostX64\x64\dumpbin.exe"
-$systemMath = '^\s+[0-9A-Fa-f]+\s+((a?(sin|cos|tan)h?|atan2|exp(2|10|m1)?|log(2|10|1p)?|pow|cbrt|_?hypot|erfc?|[lt]gamma)f?|__vdecl_\w+|_?_libm_sse2\w*)$'
-$leaks = foreach ($dll in Get-ChildItem (Join-Path $runtimeRoot "bin") -Filter "TK*.dll") {
-    & $dumpbin /nologo /imports $dll.FullName |
-        Where-Object { $_ -match $systemMath } |
-        ForEach-Object { "$($dll.Name): $($_.Trim())" }
-}
-if ($leaks) { throw "OCCT still takes math functions from the CRT:`n$($leaks -join "`n")" }
+& (Join-Path $PSScriptRoot "check-occt-math.ps1") -Bin (Join-Path $runtimeRoot "bin") -Dumpbin $dumpbin

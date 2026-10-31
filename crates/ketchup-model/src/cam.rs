@@ -1870,9 +1870,9 @@ fn whole_steps(span: f64, step: f64) -> usize {
     let quotient = span / step;
     let nearest = quotient.round();
     if (quotient - nearest).abs() <= ketchup_tolerance::ROUNDING * nearest.max(1.0) {
-        nearest as usize
+        crate::whole_count(nearest)
     } else {
-        quotient.ceil() as usize
+        crate::whole_count(quotient.ceil())
     }
 }
 

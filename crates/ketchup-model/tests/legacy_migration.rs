@@ -43,6 +43,31 @@ fn resave(outcome: LoadOutcome) -> Vec<u8> {
     }
 }
 
+/// The committed documents whose content needs a format past the oldest written, with
+/// that format, as worked out from what each holds; every other one is resaved as the
+/// oldest. Listed rather than derived from the writer's own rule, which a test repeating
+/// it would never catch wrong (review 2026-10-29 on test 05699e9).
+const NEWER_THAN_OLDEST: &[(&str, u16)] = &[
+    // An underlay.
+    ("format104.bin", 104),
+    ("history-format104.bin", 104),
+    // Annotations.
+    ("format105.bin", 105),
+    // An edited drawing; Kečup 0.3.0's file also holds a drawing standing as a view.
+    ("format106.bin", 106),
+    ("release-0.3.0.bin", 106),
+    // A stretched line.
+    ("format107.bin", 107),
+];
+
+fn resaved_schema(path: &Path) -> u16 {
+    let name = path.file_name().unwrap().to_string_lossy();
+    NEWER_THAN_OLDEST
+        .iter()
+        .find(|(listed, _)| *listed == name)
+        .map_or(persistence::OLDEST_WRITTEN_SCHEMA, |(_, schema)| *schema)
+}
+
 #[test]
 fn every_committed_document_migrates_to_the_current_schema_without_change() {
     let root = repository_root();
@@ -105,23 +130,7 @@ fn every_committed_document_migrates_to_the_current_schema_without_change() {
         });
         assert_eq!(
             reopened.source_schema(),
-            if snapshot
-                .underlays()
-                .any(|underlay| !underlay.edits.stretched_objects.is_empty())
-            {
-                persistence::CURRENT_SCHEMA
-            } else if snapshot
-                .underlays()
-                .any(|underlay| !underlay.edits.is_empty())
-            {
-                106
-            } else if !snapshot.annotations().is_empty() {
-                105
-            } else if snapshot.underlays().next().is_some() {
-                104
-            } else {
-                persistence::OLDEST_WRITTEN_SCHEMA
-            },
+            resaved_schema(&path),
             "{}",
             path.display()
         );

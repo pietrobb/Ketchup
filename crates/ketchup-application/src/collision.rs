@@ -699,7 +699,7 @@ fn send_exact_pair_batches(
     let next = AtomicUsize::new(0);
     let running = AtomicUsize::new(workers);
     let (ranges, senders, next, running) = (&ranges, &senders, &next, &running);
-    std::thread::scope(|scope| {
+    let retry = std::thread::scope(|scope| {
         for idle in own {
             scope.spawn(move || {
                 let claim = || {
@@ -750,15 +750,61 @@ fn send_exact_pair_batches(
                 }
             });
         }
-        for range_rx in receivers {
-            for result in range_rx {
-                if tx.send(result).is_err() {
-                    cancelled.store(true, Ordering::Release);
-                    return;
+        forward_ranges(ranges, receivers, tx, cancelled)
+    });
+    // Review 2026-10-26 EX-40: what a worker stopped at its share of the memory left is
+    // asked again of one worker with the whole budget, once the others have stopped.
+    for range in retry {
+        if cancelled.load(Ordering::Acquire) {
+            return;
+        }
+        send_serial_pair_batches(
+            path,
+            range,
+            graphs,
+            sources,
+            contact_tolerance_mm,
+            cancelled,
+            tx,
+        );
+    }
+}
+
+/// Forwards to `tx` the answers to `ranges`, each from its receiver, in range order, and
+/// returns the pairs a worker stopped at its memory share left unanswered, to ask again
+/// of one worker alone; with them every range no worker was left to take.
+fn forward_ranges<'a, T>(
+    ranges: &[&'a [T]],
+    receivers: Vec<mpsc::Receiver<ExactPairBatch>>,
+    tx: &mpsc::Sender<ExactPairBatch>,
+    cancelled: &AtomicBool,
+) -> Vec<&'a [T]> {
+    let mut left = Vec::new();
+    let mut out_of_memory = false;
+    for (range, range_rx) in ranges.iter().zip(receivers) {
+        let (mut answered, mut stopped) = (0, false);
+        for result in range_rx {
+            match result {
+                Err(ExactPairFailure::Batch {
+                    cause: WorkerError::MemoryLimit { .. },
+                }) => out_of_memory = true,
+                result => {
+                    match &result {
+                        Ok(entries) => answered += entries.len(),
+                        Err(_) => stopped = true,
+                    }
+                    if tx.send(result).is_err() {
+                        cancelled.store(true, Ordering::Release);
+                        return Vec::new();
+                    }
                 }
             }
         }
-    });
+        if !stopped && answered < range.len() {
+            left.push(&range[answered..]);
+        }
+    }
+    if out_of_memory { left } else { Vec::new() }
 }
 
 /// Asks one exact worker about `pairs` in batches the worker accepts and sends
@@ -1137,6 +1183,16 @@ struct ExactTally<'a> {
     facts: Option<&'a mut ExactPairFacts>,
 }
 
+/// What [`ExactTally`] has gathered, kept to be put back.
+struct TallyState {
+    failures: Vec<Value>,
+    checked: usize,
+    checked_bodies: BTreeSet<usize>,
+    issues: Vec<Value>,
+    areas: Option<ContactAreas>,
+    facts: Option<ExactPairFacts>,
+}
+
 impl ExactTally<'_> {
     /// Asks the worker for `pairs`. A worker pair answers only for two solids
     /// that passed the native validity oracle a self-query repeats, so a solid
@@ -1168,11 +1224,9 @@ impl ExactTally<'_> {
             .filter(|(left, right, _)| left != right || !paired.contains(left))
             .cloned()
             .collect::<Vec<_>>();
-        let (failed, checked, issued) = (self.failures.len(), *self.checked, self.issues.len());
-        let areas = self.areas.as_deref().cloned();
-        let facts = self.facts.as_deref().cloned();
+        let before = self.state();
         let timed_out = self.run_pass(path.clone(), fast, graphs.clone(), sources.clone());
-        if self.failures.len() == failed
+        if self.failures.len() == before.failures.len()
             || timed_out
             || self
                 .cancelled
@@ -1180,17 +1234,47 @@ impl ExactTally<'_> {
         {
             return;
         }
-        self.failures.truncate(failed);
-        *self.checked = checked;
-        self.checked_bodies.clear();
-        self.issues.truncate(issued);
-        if let (Some(known), Some(areas)) = (self.areas.as_deref_mut(), areas) {
+        #[cfg(test)]
+        if tests::SPEND_TIME_BEFORE_RETRY.get() {
+            let (_, timeout) = self.deadline;
+            self.deadline.0 = Instant::now()
+                .checked_sub(timeout)
+                .unwrap_or(self.deadline.0);
+        }
+        let first = self.state();
+        self.restore(before);
+        // Review 2026-10-29 EX-63: the second pass has what is left of the same
+        // deadline. Out of time, the report keeps what the first pass found, so
+        // it still names the failed pairs, and says the second did not finish.
+        if self.run_pass(path, pairs, graphs, sources) {
+            let timeout = self.failures.pop();
+            self.restore(first);
+            self.failures.extend(timeout);
+        }
+    }
+
+    fn state(&self) -> TallyState {
+        TallyState {
+            failures: self.failures.clone(),
+            checked: *self.checked,
+            checked_bodies: self.checked_bodies.clone(),
+            issues: self.issues.clone(),
+            areas: self.areas.as_deref().cloned(),
+            facts: self.facts.as_deref().cloned(),
+        }
+    }
+
+    fn restore(&mut self, state: TallyState) {
+        *self.failures = state.failures;
+        *self.checked = state.checked;
+        *self.checked_bodies = state.checked_bodies;
+        *self.issues = state.issues;
+        if let (Some(known), Some(areas)) = (self.areas.as_deref_mut(), state.areas) {
             *known = areas;
         }
-        if let (Some(known), Some(facts)) = (self.facts.as_deref_mut(), facts) {
+        if let (Some(known), Some(facts)) = (self.facts.as_deref_mut(), state.facts) {
             *known = facts;
         }
-        self.run_pass(path, pairs, graphs, sources);
     }
 
     /// One worker pass over `pairs`; true when it ran out of time.
@@ -1914,6 +1998,9 @@ mod tests {
         /// fails as a pair OCCT could not measure.
         static REJECTED_SOLIDS: std::cell::RefCell<Vec<&'static str>> =
             const { std::cell::RefCell::new(Vec::new()) };
+        /// The first pass of a check the worker failed takes all its time.
+        pub(super) static SPEND_TIME_BEFORE_RETRY: std::cell::Cell<bool> =
+            const { std::cell::Cell::new(false) };
     }
 
     pub(super) fn rejected_by_test(
@@ -2007,6 +2094,63 @@ box('alone', (50, 50, 18), at=(1000, 1000, 0))";
         assert!(failed(&before, "alone", "alone"), "{before:#}");
         assert_eq!(after, before);
         assert_eq!(after_facts, before_facts);
+    }
+
+    /// Review 2026-10-29 EX-63: a check the worker failed is asked again, by
+    /// the same deadline. When the first pass took all of it, the report still
+    /// names the pairs that failed and says the second pass ran out of time,
+    /// where it said only that the check ran out of time.
+    #[test]
+    fn a_failed_check_asked_again_out_of_time_still_names_what_failed() {
+        let _turn = super::integration_support::file_turn();
+        let mut session = crate::DocumentSession::new(crate::SessionSettings::default());
+        let program = ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
+            file_name: "retry.star".into(),
+            source: "drilled = box('drilled', (100, 100, 18))
+hole(drilled, 'z+', at=(50, 50), diameter=8, depth=8)
+box('lid', (100, 100, 18), at=(0, 0, 18))
+box('alone', (50, 50, 18), at=(1000, 1000, 0))"
+                .into(),
+            overrides: BTreeMap::new(),
+        };
+        let snapshot = session.apply_rule_program(program, false).unwrap().snapshot;
+        let container = ContainerData::default();
+        REJECTED_SOLIDS.set(vec!["drilled", "alone"]);
+        SPEND_TIME_BEFORE_RETRY.set(true);
+        let report = collision_report(
+            &snapshot,
+            &AssistantValidationSelection::only(&["collision"]),
+            Some((&container, None, Duration::from_secs(120))),
+            None,
+            None,
+            None,
+            None,
+        );
+        SPEND_TIME_BEFORE_RETRY.set(false);
+        REJECTED_SOLIDS.set(Vec::new());
+        let reasons = report["not_evaluated"].as_array().unwrap();
+        let failed = |left: &str, right: &str| {
+            reasons.iter().any(|failure| {
+                failure["reason"] == "exact_pair_failed"
+                    && failure["left"]["name"] == left
+                    && failure["right"]["name"] == right
+            })
+        };
+        // 'drilled' lies under 'lid', so its self-query is left to the second pass.
+        assert!(
+            failed("drilled", "lid") || failed("lid", "drilled"),
+            "{report:#}"
+        );
+        assert!(!failed("drilled", "drilled"), "{report:#}");
+        assert!(failed("alone", "alone"), "{report:#}");
+        assert!(
+            reasons
+                .iter()
+                .any(|failure| failure["reason"] == "exact_collision_timeout"),
+            "{report:#}"
+        );
+        assert_eq!(report["complete"], false, "{report:#}");
     }
 
     #[test]
@@ -2128,6 +2272,41 @@ box('beside', (100, 100, 18), at=(100, 300, 0))";
             let area = |p: Vec<ContactPatch>| p.iter().map(|p| p.area_mm2).sum::<f64>().round();
             assert_eq!(measured.map(|(p, gap)| (area(p), gap)), answer, "{a} / {b}");
         }
+    }
+
+    /// Review 2026-10-26 EX-40: a worker running beside others stopped at its share of
+    /// the memory failed the whole check, which one worker alone with the whole budget
+    /// passed. What it left, and the ranges no worker was left to take, are asked again;
+    /// the stop itself is not passed on.
+    #[test]
+    fn pairs_a_worker_left_at_its_memory_share_are_asked_again_alone() {
+        let ranges: [&[u8]; 3] = [&[0, 1, 2], &[3, 4], &[5]];
+        let answer = |pair: usize| Ok(vec![(pair, pair, Err(WorkerError::Cancelled))]);
+        let receivers = (0..ranges.len())
+            .map(|range| {
+                let (sender, receiver) = mpsc::channel();
+                match range {
+                    0 => {
+                        sender.send(answer(0)).unwrap();
+                        sender
+                            .send(Err(ExactPairFailure::Batch {
+                                cause: WorkerError::MemoryLimit { bytes: 1 << 30 },
+                            }))
+                            .unwrap();
+                    }
+                    1 => {} // Every worker had stopped before it.
+                    _ => sender.send(answer(5)).unwrap(),
+                }
+                receiver
+            })
+            .collect();
+        let (tx, rx) = mpsc::channel();
+        let retry = forward_ranges(&ranges, receivers, &tx, &AtomicBool::new(false));
+        assert_eq!(retry, [&[1u8, 2][..], &[3, 4][..]]);
+        drop(tx);
+        let forwarded = rx.iter().collect::<Vec<_>>();
+        assert_eq!(forwarded.len(), 2, "{forwarded:?}");
+        assert!(forwarded.iter().all(Result::is_ok), "{forwarded:?}");
     }
 
     /// Review 2026-10-24 EX-24: a check spread over idle workers took them one by one as

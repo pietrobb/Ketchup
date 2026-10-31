@@ -69,6 +69,10 @@ pub enum CanonicalError {
     DraftAngleOutOfRange,
     FeatureIsNotProfile(FeatureId),
     FeatureIsNotCut(FeatureId),
+    /// A cut (first) aimed at a feature (second) of another part.
+    CutTargetInOtherDefinition(FeatureId, FeatureId),
+    /// A cut (first) aimed at a feature (second) that makes no solid.
+    CutTargetIsNotSolid(FeatureId, FeatureId),
     FeatureDependencyCycle(FeatureId),
     InvalidFeatureSuppression(DefinitionId, BodyId),
     FeatureSuppressionUnchanged(DefinitionId, BodyId),
@@ -172,6 +176,9 @@ pub enum CanonicalError {
     /// The underlay's placement scales it more than `UNDERLAY_MAX_SCALE` either way or
     /// puts its origin outside the model's ±`MAX_COORDINATE_MM`.
     UnderlayPlacementOutOfRange(UnderlayId),
+    /// The underlay's view lies outside the model's ±`MAX_COORDINATE_MM`, or an edit of
+    /// its drawing is not a similarity, cannot be drawn or adds more than a drawing holds.
+    InvalidUnderlay(UnderlayId),
     InvalidAnnotation {
         name: String,
         problem: crate::annotation::AnnotationProblem,
@@ -273,6 +280,8 @@ impl CanonicalError {
             Self::DraftAngleOutOfRange => "canonical.draft_angle_out_of_range",
             Self::FeatureIsNotProfile(..) => "canonical.feature_is_not_profile",
             Self::FeatureIsNotCut(..) => "canonical.feature_is_not_cut",
+            Self::CutTargetInOtherDefinition(..) => "canonical.cut_target_in_other_definition",
+            Self::CutTargetIsNotSolid(..) => "canonical.cut_target_is_not_solid",
             Self::FeatureDependencyCycle(..) => "canonical.feature_dependency_cycle",
             Self::InvalidFeatureSuppression(..) => "canonical.invalid_feature_suppression",
             Self::FeatureSuppressionUnchanged(..) => "canonical.feature_suppression_unchanged",
@@ -381,6 +390,7 @@ impl CanonicalError {
             Self::SavedViewNotFound(..) => "canonical.saved_view_not_found",
             Self::UnderlayNotFound(..) => "canonical.underlay_not_found",
             Self::UnderlayPlacementOutOfRange(..) => "canonical.underlay_placement_out_of_range",
+            Self::InvalidUnderlay(..) => "canonical.invalid_underlay",
             Self::InvalidAnnotation { .. } => "canonical.invalid_annotation",
             Self::InvalidClassificationDimension(..) => {
                 "canonical.invalid_classification_dimension"
@@ -469,6 +479,17 @@ impl CanonicalError {
             _ => "feature shape is invalid",
         }
     }
+}
+
+fn invalid_underlay(formatter: &mut fmt::Formatter<'_>, id: UnderlayId) -> fmt::Result {
+    write!(
+        formatter,
+        "underlay {} holds a view beyond ±{} mm or an edit of its drawing that is not a \
+         move, turn, mirror or uniform scale, cannot be drawn or adds more than a drawing \
+         holds",
+        id.0,
+        crate::tolerance::MAX_COORDINATE_MM
+    )
 }
 
 impl fmt::Display for CanonicalError {
@@ -593,6 +614,16 @@ impl fmt::Display for CanonicalError {
             Self::FeatureIsNotCut(id) => {
                 write!(formatter, "feature {} is not a cut into another feature", id.0)
             }
+            Self::CutTargetInOtherDefinition(cut, target) => write!(
+                formatter,
+                "cut {} cannot cut feature {}, which belongs to another part",
+                cut.0, target.0
+            ),
+            Self::CutTargetIsNotSolid(cut, target) => write!(
+                formatter,
+                "cut {} cannot cut feature {}, which makes no solid",
+                cut.0, target.0
+            ),
             Self::FeatureDependencyCycle(id) => {
                 write!(formatter, "feature dependency cycle at {}", id.0)
             }
@@ -637,21 +668,13 @@ impl fmt::Display for CanonicalError {
             Self::PinJoint(error) => write!(formatter, "invalid pin joint: {error}"),
             Self::AssemblyRecipeNotFound => formatter.write_str("assembly recipe does not exist"),
             Self::AssemblyRecipe(error) => write!(formatter, "{error}"),
-            Self::AssemblyMateAlreadyExists(id) => {
-                write!(formatter, "assembly mate {} already exists", id.0)
-            }
-            Self::AssemblyMateNotFound(id) => {
-                write!(formatter, "assembly mate {} does not exist", id.0)
-            }
+            Self::AssemblyMateAlreadyExists(id) => write_already_exists(formatter, "assembly mate", id.0),
+            Self::AssemblyMateNotFound(id) => write_not_found(formatter, "assembly mate", id.0),
             Self::InvalidAssemblyMate(id) => {
                 write!(formatter, "assembly mate {} is invalid or unresolved", id.0)
             }
-            Self::AssemblyJointAlreadyExists(id) => {
-                write!(formatter, "assembly joint {} already exists", id.0)
-            }
-            Self::AssemblyJointNotFound(id) => {
-                write!(formatter, "assembly joint {} does not exist", id.0)
-            }
+            Self::AssemblyJointAlreadyExists(id) => write_already_exists(formatter, "assembly joint", id.0),
+            Self::AssemblyJointNotFound(id) => write_not_found(formatter, "assembly joint", id.0),
             Self::AssemblyJointInMotionStudy(id) => {
                 write!(formatter, "assembly joint {} is still used by a motion study", id.0)
             }
@@ -668,21 +691,13 @@ impl fmt::Display for CanonicalError {
                 "assembly joint {} position requires an atomic solve transform",
                 id.0
             ),
-            Self::AssemblyMotionCouplingAlreadyExists(id) => {
-                write!(formatter, "assembly motion coupling {} already exists", id.0)
-            }
-            Self::AssemblyMotionCouplingNotFound(id) => {
-                write!(formatter, "assembly motion coupling {} does not exist", id.0)
-            }
+            Self::AssemblyMotionCouplingAlreadyExists(id) => write_already_exists(formatter, "assembly motion coupling", id.0),
+            Self::AssemblyMotionCouplingNotFound(id) => write_not_found(formatter, "assembly motion coupling", id.0),
             Self::InvalidAssemblyMotionCoupling(id) => {
                 write!(formatter, "assembly motion coupling {} is invalid", id.0)
             }
-            Self::MechanicalInterfaceAlreadyExists(id) => {
-                write!(formatter, "mechanical interface {} already exists", id.0)
-            }
-            Self::MechanicalInterfaceNotFound(id) => {
-                write!(formatter, "mechanical interface {} does not exist", id.0)
-            }
+            Self::MechanicalInterfaceAlreadyExists(id) => write_already_exists(formatter, "mechanical interface", id.0),
+            Self::MechanicalInterfaceNotFound(id) => write_not_found(formatter, "mechanical interface", id.0),
             Self::MechanicalInterfaceInCondition(id) => write!(
                 formatter,
                 "mechanical interface {} is still used by a mechanical condition",
@@ -691,21 +706,13 @@ impl fmt::Display for CanonicalError {
             Self::InvalidMechanicalInterface(id) => {
                 write!(formatter, "mechanical interface {} is invalid", id.0)
             }
-            Self::MechanicalConditionAlreadyExists(id) => {
-                write!(formatter, "mechanical condition {} already exists", id.0)
-            }
-            Self::MechanicalConditionNotFound(id) => {
-                write!(formatter, "mechanical condition {} does not exist", id.0)
-            }
+            Self::MechanicalConditionAlreadyExists(id) => write_already_exists(formatter, "mechanical condition", id.0),
+            Self::MechanicalConditionNotFound(id) => write_not_found(formatter, "mechanical condition", id.0),
             Self::InvalidMechanicalCondition(id) => {
                 write!(formatter, "mechanical condition {} is invalid", id.0)
             }
-            Self::AssemblyMotionStudyAlreadyExists(id) => {
-                write!(formatter, "assembly motion study {} already exists", id.0)
-            }
-            Self::AssemblyMotionStudyNotFound(id) => {
-                write!(formatter, "assembly motion study {} does not exist", id.0)
-            }
+            Self::AssemblyMotionStudyAlreadyExists(id) => write_already_exists(formatter, "assembly motion study", id.0),
+            Self::AssemblyMotionStudyNotFound(id) => write_not_found(formatter, "assembly motion study", id.0),
             Self::InvalidAssemblyMotionStudy(id) => {
                 write!(formatter, "assembly motion study {} is invalid", id.0)
             }
@@ -806,6 +813,7 @@ impl fmt::Display for CanonicalError {
                 crate::tolerance::UNDERLAY_MAX_SCALE,
                 crate::tolerance::MAX_COORDINATE_MM
             ),
+            Self::InvalidUnderlay(id) => invalid_underlay(formatter, *id),
             Self::InvalidAnnotation { name, problem } => {
                 write!(formatter, "annotation {name:?} {problem}")
             }
@@ -870,6 +878,14 @@ impl fmt::Display for CanonicalError {
             Self::Caused { error, cause } => write!(formatter, "{error}: {cause}"),
         }
     }
+}
+
+fn write_already_exists(formatter: &mut fmt::Formatter<'_>, what: &str, id: u64) -> fmt::Result {
+    write!(formatter, "{what} {id} already exists")
+}
+
+fn write_not_found(formatter: &mut fmt::Formatter<'_>, what: &str, id: u64) -> fmt::Result {
+    write!(formatter, "{what} {id} does not exist")
 }
 
 fn write_thread_mismatch(

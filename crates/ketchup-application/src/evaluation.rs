@@ -1054,7 +1054,7 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                     expected.area_mm2 = actual.area_mm2;
                 }
                 // The body keeps the recorded identity even when this libm
-                // rounds its measures a few last bits away (ADR 0009); the
+                // rounds its measures a few last bits away (ADR 0010); the
                 // worker labels the mesh with what it evaluated.
                 if !actual.is_same_body_as(&expected) {
                     return Err(ExactProducerError::EvidenceMismatch {

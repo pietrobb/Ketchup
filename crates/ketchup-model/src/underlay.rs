@@ -219,6 +219,48 @@ fn inflates_plausibly(body: usize, deflated: usize) -> bool {
     body <= deflated.saturating_mul(MAX_INFLATION)
 }
 
+/// `deflated` inflated, which must give `length` bytes and end where `deflated` ends:
+/// bytes after it would make a little deflate pass for as much as they are, so the blob
+/// could declare [`MAX_INFLATION`] times that (review 2026-10-26 MD-42). Grown as it
+/// inflates, so a blob declaring more than it holds allocates no more than it holds.
+fn inflate_exactly(deflated: &[u8], length: usize) -> Result<Vec<u8>, UnderlayLinesError> {
+    use miniz_oxide::inflate::TINFLStatus;
+    use miniz_oxide::inflate::core::{DecompressorOxide, decompress, inflate_flags};
+    let flags = inflate_flags::TINFL_FLAG_PARSE_ZLIB_HEADER
+        | inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
+    let mut decompressor = Box::<DecompressorOxide>::default();
+    let mut body = vec![0; length.min(deflated.len().saturating_mul(4))];
+    let (mut read, mut written) = (0, 0);
+    loop {
+        let (status, consumed, produced) = decompress(
+            &mut decompressor,
+            &deflated[read..],
+            &mut body,
+            written,
+            flags,
+        );
+        read += consumed;
+        written += produced;
+        match status {
+            TINFLStatus::Done => break,
+            TINFLStatus::HasMoreOutput if body.len() < length => {
+                body.resize(body.len().saturating_mul(2).max(1).min(length), 0);
+            }
+            TINFLStatus::FailedCannotMakeProgress | TINFLStatus::NeedsMoreInput => {
+                return Err(UnderlayLinesError::Truncated);
+            }
+            status => return Err(UnderlayLinesError::Inflate(status)),
+        }
+    }
+    if read != deflated.len() {
+        return Err(UnderlayLinesError::TrailingBytes);
+    }
+    if written != length {
+        return Err(UnderlayLinesError::Truncated);
+    }
+    Ok(body)
+}
+
 /// Why the bytes of a container blob are not underlay lines.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UnderlayLinesError {
@@ -233,7 +275,7 @@ pub enum UnderlayLinesError {
     TooLarge { length: usize },
     /// The bytes end before the counts they declare.
     Truncated,
-    /// Bytes are left over after the last layer.
+    /// Bytes are left over after the last layer, or after the deflated lines.
     TrailingBytes,
     /// A polyline of fewer than two points, or ends out of order.
     InvalidPolyline,
@@ -245,7 +287,7 @@ pub enum UnderlayLinesError {
     TextNotUtf8(std::str::Utf8Error),
     /// A style with no dash to draw, or a polyline or text naming no style.
     InvalidStyle,
-    /// The blob holds another number of layers than the underlay names.
+    /// The blob holds more layers than the underlay names.
     LayerCount { blob: usize, underlay: usize },
     /// Filling it crosses edges more often than a drawing's entity budget allows.
     FillTooLarge(usize),
@@ -277,7 +319,9 @@ impl fmt::Display for UnderlayLinesError {
                 limits::UNDERLAY_LINES_BYTES >> 20
             ),
             Self::Truncated => formatter.write_str("the underlay lines end too early"),
-            Self::TrailingBytes => formatter.write_str("bytes follow the last underlay layer"),
+            Self::TrailingBytes => {
+                formatter.write_str("bytes follow the last underlay layer or the deflated lines")
+            }
             Self::InvalidPolyline => {
                 formatter.write_str("an underlay polyline has fewer than two points")
             }
@@ -595,16 +639,17 @@ impl UnderlayLines {
         bytes
     }
 
-    /// Reads what [`Self::encode`] wrote, or an older version of it; every count is
-    /// checked against the bytes before anything is allocated for it.
-    pub fn decode(bytes: &[u8]) -> Result<Self, UnderlayLinesError> {
+    /// Reads what [`Self::encode`] wrote, or an older version of it, for an underlay that
+    /// names `layers` layers; every count is checked against the bytes, and the layers'
+    /// against `layers`, before anything is allocated for it.
+    pub fn decode(bytes: &[u8], layers: usize) -> Result<Self, UnderlayLinesError> {
         let (version, rest) = MAGICS
             .iter()
             .enumerate()
             .find_map(|(index, magic)| Some((index + 1, bytes.strip_prefix(magic.as_slice())?)))
             .ok_or(UnderlayLinesError::NotUnderlayLines)?;
         if version < 4 {
-            return Self::decode_body(version, rest);
+            return Self::decode_body(version, rest, layers);
         }
         let (length, deflated) = rest
             .split_first_chunk::<8>()
@@ -625,23 +670,18 @@ impl UnderlayLines {
                 deflated: deflated.len(),
             });
         }
-        let body = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(deflated, length)
-            .map_err(|error| match error.status {
-                miniz_oxide::inflate::TINFLStatus::FailedCannotMakeProgress => {
-                    UnderlayLinesError::Truncated
-                }
-                status => UnderlayLinesError::Inflate(status),
-            })?;
-        if body.len() != length {
-            return Err(UnderlayLinesError::Truncated);
-        }
+        let body = inflate_exactly(deflated, length)?;
         // Version 4 deflates the body of 3; 5 that of 3 with fills; 6 that of 5 with
         // objects.
-        Self::decode_body(if version == 4 { 3 } else { version }, &body)
+        Self::decode_body(if version == 4 { 3 } else { version }, &body, layers)
     }
 
-    /// The bytes after the magic of `version`, uncompressed.
-    fn decode_body(version: usize, rest: &[u8]) -> Result<Self, UnderlayLinesError> {
+    /// The bytes after the magic of `version`, uncompressed, for `layers` layers at most.
+    fn decode_body(
+        version: usize,
+        rest: &[u8],
+        layers_named: usize,
+    ) -> Result<Self, UnderlayLinesError> {
         let mut reader = Reader(rest);
         let mut styles = Vec::new();
         if version >= 3 {
@@ -655,6 +695,14 @@ impl UnderlayLines {
                 || (version < 3 && style == 0)
         };
         let layer_count = reader.count()?;
+        // An empty layer takes 16 bytes here and some 120 decoded (review 2026-10-26
+        // MD-42); a layer the underlay does not name is never drawn.
+        if layer_count > layers_named {
+            return Err(UnderlayLinesError::LayerCount {
+                blob: layer_count,
+                underlay: layers_named,
+            });
+        }
         let mut layers = Vec::new();
         for _ in 0..layer_count {
             let polyline_count = reader.count()?;
@@ -1187,28 +1235,58 @@ pub fn arc_chord_step(radius: f64) -> f64 {
     step.max(tau / MAX_CIRCLE_CHORDS)
 }
 
+/// The radius, start angle and signed turn of `segment` if it is an arc; a whole circle
+/// when it ends where it starts.
+pub(crate) fn arc_turn(segment: &ProfileSegment) -> Option<[f64; 3]> {
+    let ProfileSegment::CircularArc {
+        start_mm,
+        end_mm,
+        center_mm,
+        clockwise,
+    } = segment
+    else {
+        return None;
+    };
+    let radius = (start_mm[0] - center_mm[0]).hypot(start_mm[1] - center_mm[1]);
+    let start = (start_mm[1] - center_mm[1]).atan2(start_mm[0] - center_mm[0]);
+    let end = (end_mm[1] - center_mm[1]).atan2(end_mm[0] - center_mm[0]);
+    let tau = std::f64::consts::TAU;
+    let mut sweep = if *clockwise {
+        -(start - end).rem_euclid(tau)
+    } else {
+        (end - start).rem_euclid(tau)
+    };
+    if sweep == 0.0 {
+        sweep = if *clockwise { -tau } else { tau };
+    }
+    Some([radius, start, sweep])
+}
+
+/// How many points [`push_segment`] appends for `segment`, none for an arc, whose chords
+/// depend on its radius where it is placed ([`arc_chords`]).
+pub(crate) fn straight_points(segment: &ProfileSegment) -> usize {
+    match segment {
+        ProfileSegment::CircularArc { .. } => 0,
+        ProfileSegment::Line { .. } => 1,
+        ProfileSegment::CubicBezier { .. } => usize::try_from(BEZIER_CHORDS).unwrap_or(usize::MAX),
+        ProfileSegment::Spline { points_mm } => points_mm.len().saturating_sub(1),
+    }
+}
+
+/// How many chords [`push_segment`] draws an arc of `radius` turning by `sweep` with.
+pub(crate) fn arc_chords(radius: f64, sweep: f64) -> usize {
+    // At most MAX_CIRCLE_CHORDS for each whole turn.
+    crate::whole_count((sweep.abs() / arc_chord_step(radius)).ceil())
+}
+
 /// Appends the points after the start of `segment`.
 pub(crate) fn push_segment(points: &mut Vec<[f64; 2]>, segment: &ProfileSegment) {
     match segment {
         ProfileSegment::Line { end_mm, .. } => points.push(*end_mm),
         ProfileSegment::CircularArc {
-            start_mm,
-            end_mm,
-            center_mm,
-            clockwise,
+            end_mm, center_mm, ..
         } => {
-            let radius = (start_mm[0] - center_mm[0]).hypot(start_mm[1] - center_mm[1]);
-            let start = (start_mm[1] - center_mm[1]).atan2(start_mm[0] - center_mm[0]);
-            let end = (end_mm[1] - center_mm[1]).atan2(end_mm[0] - center_mm[0]);
-            let tau = std::f64::consts::TAU;
-            let mut sweep = if *clockwise {
-                -(start - end).rem_euclid(tau)
-            } else {
-                (end - start).rem_euclid(tau)
-            };
-            if sweep == 0.0 {
-                sweep = if *clockwise { -tau } else { tau };
-            }
+            let [radius, start, sweep] = arc_turn(segment).expect("an arc");
             let chords = (sweep.abs() / arc_chord_step(radius)).ceil();
             let mut index = 1.0;
             while index < chords {

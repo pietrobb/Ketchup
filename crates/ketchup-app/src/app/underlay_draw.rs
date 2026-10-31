@@ -3,6 +3,7 @@
 //! layer of the drawing, one Undo step each, instead of a profile of the model; the Text
 //! into drawing tool puts a TEXT there.
 
+use crate::app::underlay_edit::{FindRegions, UnderlayEditError};
 use crate::*;
 use ketchup_model::tolerance::ROUNDING;
 use ketchup_model::underlay::UnderlayId;
@@ -46,6 +47,14 @@ impl KetchupApp {
         let Some(underlay) = self.selected_underlay() else {
             return false;
         };
+        let snapshot = self.document.current();
+        if snapshot
+            .underlay(underlay)
+            .is_some_and(|found| !found.view.is_ground())
+        {
+            self.digest = self.catalog.text("digest-underlay-draw-not-ground");
+            return false;
+        }
         let Some(layer) = self.underlay_draw_layer(underlay) else {
             return false;
         };
@@ -158,13 +167,15 @@ impl KetchupApp {
             .or_else(|| found.layers.first().map(|layer| layer.name.clone()))
     }
 
-    /// Where the drawing tools draw, while the drawing is still in the document.
+    /// Where the drawing tools draw, while the drawing is still in the document and lies in
+    /// the ground plane they click in: one standing as a view (review 2026-10-29 UI-64), or
+    /// a plan raised off the ground, is drawn into no more.
     pub(crate) fn underlay_draw_target(&self) -> Option<UnderlayDrawTarget> {
         let target = self.gesture.underlay_draw.as_ref()?;
         self.document
             .current()
             .underlay(target.underlay)
-            .is_some()
+            .is_some_and(|underlay| underlay.view.is_ground())
             .then(|| target.clone())
     }
 
@@ -286,7 +297,27 @@ impl KetchupApp {
         let Some(kind) = shapes.first().map(DrawnShape::kind) else {
             return false;
         };
-        match self.draw_into_underlay(target.underlay, &target.layer, shapes) {
+        self.draw_shapes_in_window(target, kind, shapes)
+    }
+
+    fn draw_shapes_in_window(
+        &mut self,
+        target: UnderlayDrawTarget,
+        kind: &'static str,
+        shapes: Vec<DrawnShape>,
+    ) -> bool {
+        match self.draw_into_underlay(
+            target.underlay,
+            &target.layer,
+            shapes.clone(),
+            FindRegions::OffUiThread,
+        ) {
+            Err(UnderlayEditError::FindingRegions(batch)) => {
+                self.await_followed_regions(batch, move |app| {
+                    app.draw_shapes_in_window(target, kind, shapes);
+                });
+                true
+            }
             Ok(changes) => {
                 // A line goes on from its end; other shapes are done.
                 if matches!(

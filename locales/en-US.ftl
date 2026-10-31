@@ -1380,6 +1380,7 @@ hint-offset-underlay-line = Click a line of a drawing, then the side; a typed le
 hint-extrude-underlay-area = Click inside a closed area, polyline or hatch of a drawing; it becomes a solid as high as the typed height
 digest-underlay-extrude-height = Type a height greater than zero
 digest-underlay-extrude-no-area = No closed area of a shown drawing layer is under the pointer
+digest-underlay-extrude-searching = Finding the areas of the drawing; the clicked one is pulled up once they are found
 digest-underlay-extrude-refused = Nothing was pulled up: { $reason }
 digest-underlay-extruded = Pulled the area up { $height } as { $name }; it follows the drawing
 digest-underlay-extruded-part = Pulled the area up { $height } as the part { $name }
@@ -1391,6 +1392,7 @@ digest-new-document = New model ready
 digest-opened-document = Opened “{ $path }” — canonical identity restored
 digest-opened-recovery = Warning: opened recovery source “{ $source }” because “{ $requested }” is unavailable or corrupt. The recovered document is unsaved; use Save As to preserve it safely.
 digest-opened-work-recovery = Warning: restored the unsaved work of “{ $path }” from its checkpoint “{ $source }”. The restored document is unsaved; use Save As to keep it.
+digest-opened-underlay-reset = Warning: the underlay “{ $underlay }” in “{ $path }” held what this version no longer takes: { $reason }. Saving keeps it so.
 digest-opened-work-recovery-step-damaged = Warning: the last edits in the unsaved-work checkpoint of “{ $path }” could not be read ({ $reason }). The work up to the edit before them was restored.
 digest-opened-without-work-recovery = Opened “{ $path }” without work recovery, because its folder is read-only or its recovery lock cannot be taken there: unsaved work is not checkpointed, so save it to another folder with Save As to keep it.
 digest-opened-without-history = Warning: opened “{ $path }” without its Undo history ({ $reason }). The model is complete.
@@ -1656,10 +1658,11 @@ digest-underlay-objects-moved = { $count } objects of the drawing moved
 digest-underlay-objects-copied = { $count } objects of the drawing copied
 digest-underlay-whole-selected = The whole drawing is selected: Move and Rotate place it
 digest-underlay-draw-on = Line, Rectangle, Circle and Arc now draw into the drawing, on layer { $layer }; Draw into drawing again ends it
+digest-underlay-draw-not-ground = The drawing tools draw in the ground plane, so they draw into a plan lying on the ground only; lay the drawing back on the ground to draw into it
 digest-underlay-exported = The drawing with its changes was written to { $path }
 digest-underlay-exported-incomplete = The drawing with its changes was written to { $path } without { $count ->
-        [one] { $count } record the DWG reader could not decode.
-       *[other] { $count } records the DWG reader could not decode.
+        [one] { $count } record the DWG reader could not decode or a DWG cannot hold.
+       *[other] { $count } records the DWG reader could not decode or a DWG cannot hold.
     }
 digest-underlay-export-failed = The drawing was not written: { $reason }
 digest-underlay-text-required = Type the text first, then click where it starts
@@ -1673,8 +1676,8 @@ digest-underlay-mirror-line-required = The mirror line needs two different point
 digest-underlay-objects-mirrored = The picked objects of the drawing are mirrored
 digest-underlay-objects-not-removed = The drawing was not changed: { $reason }
 digest-underlay-edit-failed = The underlay was not moved: { $reason }
+digest-underlay-edit-searching = Finding the areas that follow the drawing; the change is made once they are found
 error-underlay-copy = an underlay is placed, not copied
-error-underlay-standing = the drawing stands as a view; lay it back into the plan to move it in the window
 digest-measure-edge = Edge length { $length } mm · reading only, no undo step
 digest-hidden = Hid { $count ->
         [one] { $count } occurrence

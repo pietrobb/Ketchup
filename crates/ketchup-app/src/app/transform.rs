@@ -3,7 +3,7 @@
 use crate::app::underlay_snapping::{underlay_of, underlay_reference};
 use crate::*;
 use ketchup_geometry::linalg::CubicBezier;
-use ketchup_model::underlay::placement::planar_turn;
+use ketchup_model::underlay::placement::axis_turn;
 
 impl KetchupApp {
     pub(crate) fn selected_alignment_pair(&self) -> Option<(OccurrenceId, OccurrenceId)> {
@@ -373,10 +373,11 @@ impl KetchupApp {
         self.gesture.transform.move_copy = false;
         self.transform_tool.input.reset();
         let objects = self.dragged_underlay_objects(&drag.selection);
-        if self.underlay_drag_refused(&drag.selection, drag.axis == Some(Axis::Z))
+        let across = drag.axis.map(Axis::index) == self.underlay_seen_along(&drag.selection);
+        if self.underlay_drag_refused(&drag.selection, drag.axis.is_some() && across)
             || (objects.is_none()
                 && !drag.copy
-                && self.underlay_edit_refused(&drag.selection, move_world_edit(drag)))
+                && self.underlay_edit_refused(&drag.selection, self.move_world_edit(drag)))
         {
             return false;
         }
@@ -391,7 +392,7 @@ impl KetchupApp {
             return self.commit_underlay_objects_edit(
                 underlay,
                 &ids,
-                move_world_edit(drag),
+                self.move_world_edit(drag),
                 drag.copy,
             );
         }
@@ -440,7 +441,7 @@ impl KetchupApp {
             let Some(plan) = self.move_transform_plan(drag) else {
                 return false;
             };
-            self.commit_move_transform(plan, &drag.selection, moved_by(drag))
+            self.commit_move_transform(plan, &drag.selection, self.moved_by(drag))
         }
     }
 
@@ -457,6 +458,12 @@ impl KetchupApp {
             || distance_mm <= 0.0
         {
             return false;
+        }
+        let selection = primary_selection.clone();
+        if self.underlay_transform_awaits(&plan, move |app, plan| {
+            app.commit_move_transform(plan, &selection, delta_mm);
+        }) {
+            return true;
         }
         let Some(target) = self.commit_transform_plan(plan) else {
             return false;
@@ -501,10 +508,13 @@ impl KetchupApp {
         self.gesture.transform.rotate_copy = false;
         self.transform_tool.input.reset();
         let objects = self.dragged_underlay_objects(&drag.selection);
-        if self.underlay_drag_refused(&drag.selection, drag.axis != Axis::Z)
+        let across = self
+            .underlay_seen_along(&drag.selection)
+            .is_some_and(|along| drag.axis.index() != along);
+        if self.underlay_drag_refused(&drag.selection, across)
             || (objects.is_none()
                 && !drag.copy
-                && self.underlay_edit_refused(&drag.selection, rotate_world_edit(drag)))
+                && self.underlay_edit_refused(&drag.selection, self.rotate_world_edit(drag)))
         {
             return false;
         }
@@ -519,7 +529,7 @@ impl KetchupApp {
             return self.commit_underlay_objects_edit(
                 underlay,
                 &ids,
-                rotate_world_edit(drag),
+                self.rotate_world_edit(drag),
                 drag.copy,
             );
         }
@@ -555,6 +565,12 @@ impl KetchupApp {
         axis: Axis,
         angle_degrees: f64,
     ) -> bool {
+        let selection = primary_selection.clone();
+        if self.underlay_transform_awaits(&plan, move |app, plan| {
+            app.commit_rotate_transform(plan, &selection, centre_mm, axis, angle_degrees);
+        }) {
+            return true;
+        }
         let Some(target) = self.commit_transform_plan(plan) else {
             return false;
         };
@@ -1884,7 +1900,7 @@ impl KetchupApp {
             &drag.selection,
             &drag.occurrence_paths,
             drag.group_id,
-            move_world_edit(drag)?,
+            self.move_world_edit(drag)?,
         )?;
         TransformPlan::prepare(&self.document.current(), request)
     }
@@ -1905,7 +1921,7 @@ impl KetchupApp {
             &drag.selection,
             &drag.occurrence_paths,
             drag.group_id,
-            rotate_world_edit(drag)?,
+            self.rotate_world_edit(drag)?,
         )?;
         TransformPlan::prepare(&self.document.current(), request)
     }
@@ -2346,13 +2362,34 @@ impl KetchupApp {
                         || snap.reference.instance_path != drag.selection.instance_path)
             }) {
                 drag.delta_mm = snap.position_mm - drag.pointer_start_world;
-            } else if let Some(world) = self.screen_to_plane(pointer, rect, drag.plane_z) {
-                let delta = continuous_move_delta(drag.pointer_start_world, world, free);
+            } else if let Some((world, axes, frame)) = underlay_of(&drag.selection)
+                .and_then(|id| {
+                    // A drawing is dragged in its own plane, upright for a view, and takes
+                    // only the datum points on that plane as targets (UO-69).
+                    let (x_axis, y_axis, _) =
+                        self.document.current().underlay(id)?.view.plane.axes();
+                    let start = drag.pointer_start_world;
+                    let world = self.screen_to_underlay_plane(id, pointer, rect, Some(start))?;
+                    let frame = WorkplaneFrame {
+                        origin_mm: start.to_array(),
+                        x_axis,
+                        y_axis,
+                        normal: cross(x_axis, y_axis),
+                    };
+                    Some((world, [Vec3::from(x_axis), Vec3::from(y_axis)], Some(frame)))
+                })
+                .or_else(|| {
+                    let world = self.screen_to_plane(pointer, rect, drag.plane_z)?;
+                    let axes = [Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0)];
+                    Some((world, axes, None))
+                })
+            {
+                let delta = continuous_move_delta(drag.pointer_start_world, world, free, axes);
                 let destination = drag.pointer_start_world + delta;
                 drag.delta_mm = if free {
                     delta
                 } else {
-                    self.move_inference_target_at_screen(pointer, rect, destination)
+                    self.move_inference_target_at_screen(pointer, rect, frame, destination)
                         .map_or(delta, |target| target - drag.pointer_start_world)
                 };
             }
@@ -2926,7 +2963,11 @@ impl KetchupApp {
                     axis,
                 )
             })
-            .or_else(|| underlay.and_then(|_| self.screen_to_plane(pointer, rect, 0.0)));
+            .or_else(|| {
+                let id = underlay?;
+                self.screen_to_underlay_plane(id, pointer, rect, None)
+                    .or_else(|| self.screen_to_plane(pointer, rect, 0.0))
+            });
         let Some(centre_mm) = centre_mm else {
             return false;
         };
@@ -3063,32 +3104,39 @@ impl KetchupApp {
     }
 }
 
-/// The world edit of a move drag: [`moved_by`].
-pub(super) fn move_world_edit(drag: &MoveDrag) -> Option<Transform> {
-    let delta = moved_by(drag);
-    Transform::from_translation(delta.x, delta.y, delta.z).ok()
-}
-
-/// The world edit of a rotate drag. An underlay turns about Z only, built in the plane so
-/// its placement stays exactly planar.
-pub(super) fn rotate_world_edit(drag: &RotateDrag) -> Option<Transform> {
-    if underlay_of(&drag.selection).is_some() {
-        if drag.axis != Axis::Z {
-            return None;
-        }
-        planar_turn([drag.centre_mm.x, drag.centre_mm.y], drag.angle_degrees).ok()
-    } else {
-        world_rotation_transform(drag.centre_mm, drag.axis, drag.angle_degrees).ok()
+impl KetchupApp {
+    /// The world axis (0, 1 or 2) the drawing `selection` names is seen along: Z for a
+    /// plan, across its plane for a view.
+    fn underlay_seen_along(&self, selection: &SelectionId) -> Option<usize> {
+        let id = underlay_of(selection)?;
+        Some(self.document.current().underlay(id)?.seen_along())
     }
-}
 
-/// What a move drag moves its target by. An underlay moves in plan: a point picked above
-/// the ground lands where it lies in plan, and the move is as long as it is there.
-fn moved_by(drag: &MoveDrag) -> Vec3 {
-    if underlay_of(&drag.selection).is_some() {
-        Vec3::new(drag.delta_mm.x, drag.delta_mm.y, 0.0)
-    } else {
-        drag.delta_mm
+    /// The world edit of a move drag: [`Self::moved_by`].
+    pub(super) fn move_world_edit(&self, drag: &MoveDrag) -> Option<Transform> {
+        let delta = self.moved_by(drag);
+        Transform::from_translation(delta.x, delta.y, delta.z).ok()
+    }
+
+    /// The world edit of a rotate drag. A drawing turns only about the axis it is seen
+    /// along, built so its placement stays exactly planar (review 2026-10-29 UO-69).
+    pub(super) fn rotate_world_edit(&self, drag: &RotateDrag) -> Option<Transform> {
+        match self.underlay_seen_along(&drag.selection) {
+            Some(along) if drag.axis.index() != along => None,
+            Some(along) => axis_turn(drag.centre_mm.to_array(), along, drag.angle_degrees).ok(),
+            None => world_rotation_transform(drag.centre_mm, drag.axis, drag.angle_degrees).ok(),
+        }
+    }
+
+    /// What a move drag moves its target by. A drawing moves in the plane it stands on: a
+    /// point picked off that plane lands where it lies on it, and the move is as long as
+    /// it is there.
+    pub(super) fn moved_by(&self, drag: &MoveDrag) -> Vec3 {
+        let snapshot = self.document.current();
+        match underlay_of(&drag.selection).and_then(|id| snapshot.underlay(id)) {
+            Some(underlay) => Vec3::from(underlay.in_its_plane(drag.delta_mm.to_array())),
+            None => drag.delta_mm,
+        }
     }
 }
 
@@ -3648,16 +3696,22 @@ fn inverse_transform_point(transform: Transform, point: Vec3) -> Option<Vec3> {
     Some(inverse.transform_point(point))
 }
 
-pub(crate) fn continuous_move_delta(start: Vec3, end: Vec3, constrain_axis: bool) -> Vec3 {
-    let mut delta = Vec3::new(end.x - start.x, end.y - start.y, 0.0);
-    if constrain_axis {
-        if delta.x.abs() >= delta.y.abs() {
-            delta.y = 0.0;
-        } else {
-            delta.x = 0.0;
-        }
+/// The move from `start` to `end` in the plane of the unit `axes`, along the one it goes
+/// further along when `constrain_axis`.
+pub(crate) fn continuous_move_delta(
+    start: Vec3,
+    end: Vec3,
+    constrain_axis: bool,
+    axes: [Vec3; 2],
+) -> Vec3 {
+    let [u, v] = axes.map(|axis| dot(end - start, axis));
+    if !constrain_axis {
+        axes[0] * u + axes[1] * v
+    } else if u.abs() >= v.abs() {
+        axes[0] * u
+    } else {
+        axes[1] * v
     }
-    delta
 }
 
 pub(crate) fn push_pull_distance_from_pointer(

@@ -158,7 +158,7 @@ fn a_solid_hatch_paints_its_area_and_its_islands_by_its_style() {
     }
     assert!(subjects(&underlay, "dxf.hatch-skipped").is_empty());
     // The fills travel in the blob, and the zoom of the drawing reaches the arc.
-    let decoded = UnderlayLines::decode(&underlay.lines.encode()).unwrap();
+    let decoded = UnderlayLines::decode(&underlay.lines.encode(), usize::MAX).unwrap();
     assert_eq!(decoded, underlay.lines);
     let [low, high] = underlay.lines.bounds_mm().unwrap();
     assert!(low[1] <= 0.0 && high[1] > 1499.0, "{low:?} {high:?}");
@@ -476,7 +476,7 @@ fn stored_fills_of_more_work_than_the_budget_are_not_read() {
     let (_, lines) = builder.finish();
     assert!(lines.layers()[0].fills()[0].sweep_crossings() > 1_000_000);
     assert!(matches!(
-        UnderlayLines::decode(&lines.encode()),
+        UnderlayLines::decode(&lines.encode(), usize::MAX),
         Err(ketchup_model::underlay::UnderlayLinesError::FillTooLarge(count))
             if count > 1_000_000
     ));

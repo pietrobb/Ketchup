@@ -52,10 +52,10 @@ pub fn read_dxf_underlay_from(
 ) -> Result<DxfUnderlay, DxfImportError> {
     let _any_coordinate = AnyFiniteCoordinate::new();
     let code_page = text_encoding(&mut source)?;
-    let encoding = code_page.as_ref().map(|(encoding, ..)| *encoding);
+    let encoding = code_page.as_ref().map(|(encoding, _)| *encoding);
     let mut diagnostics = DiagnosticCounts::new(UNDERLAY_READING);
-    if let Some((_, name, doubtful)) = code_page {
-        diagnostics.code_page_read(name, doubtful)?;
+    if let Some((_, read)) = code_page {
+        diagnostics.code_page_read(read)?;
     }
     let sections = read_sections(PairReader::new(&mut source, encoding)?, &mut diagnostics)?;
     let header = sections.header.pairs();
@@ -80,18 +80,14 @@ pub fn read_dxf_underlay_from(
     let mut entity = PairBuffer::default();
     let mut read_entity = |entity: &mut PairBuffer, diagnostics: &mut DiagnosticCounts| {
         let mut parsed = ParsedEntities::default();
-        // What it places is drawn into the lines and let go before the next is read.
-        let placed_left = diagnostics.placed_left;
-        let read = parse_entities(
+        parse_entities(
             &entity.pairs(),
             units,
             Some(&blocks),
             &mut entity_count,
             &mut parsed,
             diagnostics,
-        );
-        diagnostics.placed_left = placed_left;
-        read?;
+        )?;
         parsed.report_xrefs(diagnostics)?;
         // The objects read here are numbered after those of the entities before.
         let first = builder.object_count();
@@ -382,11 +378,11 @@ fn read_sections(
 }
 
 /// The encoding of `source`'s text, as the profile import decides it for the whole file:
-/// UTF-8 (`None`) when all of it is, otherwise the Windows code page its `$DWGCODEPAGE`
-/// names when it is older than DXF 2007, with that name.
+/// UTF-8 (`None`) when all of it is, otherwise the code page its `$DWGCODEPAGE` names when
+/// it is older than DXF 2007, or the one read in its place ([`text_code_page`]).
 pub(super) fn text_encoding(
     source: &mut (impl BufRead + Seek),
-) -> Result<Option<(CodePage, String, bool)>, DxfImportError> {
+) -> Result<Option<(CodePage, CodePageRead)>, DxfImportError> {
     source.seek(SeekFrom::Start(0)).map_err(read_error)?;
     let mut line = Vec::new();
     let (mut utf8, mut empty) = (true, true);
@@ -413,10 +409,7 @@ pub(super) fn text_encoding(
         .is_none_or(|version| version.as_slice() < b"AC1021".as_slice())
         .then_some(code_page.value)
         .flatten()
-        .and_then(|name| {
-            let code_page = code_page_encoding(&name)?;
-            Some((code_page, code_page_name(&name), code_page.doubtful(&high)))
-        })
+        .and_then(|name| text_code_page(&name, &high))
         .map(Some)
         .ok_or(DxfImportError::NonAscii)
 }

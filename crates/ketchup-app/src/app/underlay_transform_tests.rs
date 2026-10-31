@@ -238,6 +238,282 @@ fn an_underlay_being_moved_does_not_snap_to_where_it_was() {
     assert_ne!(snapped(app), Some(wall_end));
 }
 
+/// Review 2026-10-29 UO-69: a drawing standing as a view, or a plan raised off the ground,
+/// was refused by Move and Rotate in the window; it moves in the plane it stands on and
+/// turns about the axis it is seen along, one Undo step each.
+#[test]
+fn a_standing_or_raised_drawing_moves_and_turns_in_its_own_plane() {
+    use ketchup_model::underlay::view::{UnderlayView, ViewPlane, plan_underlay_view};
+    let views = [
+        (ViewPlane::Front, 0.0, Axis::Y, Axis::Z),
+        (ViewPlane::Right, 2500.0, Axis::X, Axis::Y),
+        (ViewPlane::Top, 3000.0, Axis::Z, Axis::X),
+    ];
+    for (plane, at_mm, turn_axis, tilt_axis) in views {
+        let mut harness = shell();
+        let id = harness
+            .state()
+            .document
+            .current()
+            .underlays()
+            .next()
+            .unwrap()
+            .id;
+        let view = UnderlayView { plane, at_mm };
+        let batch = plan_underlay_view(&harness.state().document.current(), id, view).unwrap();
+        harness
+            .state_mut()
+            .apply_batch_with_work_recovery(&batch)
+            .unwrap();
+        let at = |app: &KetchupApp, point: [f64; 3]| {
+            let underlay = app.document.current().underlay(id).unwrap().clone();
+            underlay.world_transform().transform_point(point)
+        };
+        let before = at(harness.state(), [240.0, 120.0, 0.0]);
+        harness.state_mut().select_whole_underlay(id);
+        let undo = harness.state().undo_step_count();
+        let rect = harness.state().camera.viewport_rect.unwrap();
+
+        // A move picked off the plane keeps to it: the part across it is dropped.
+        harness.state_mut().dispatch_command(AppCommand::Move);
+        let app = harness.state_mut();
+        assert!(
+            app.begin_move_drag_at(rect.center(), rect, false),
+            "{plane:?}: {}",
+            app.digest
+        );
+        app.move_session_mut().unwrap().delta_mm = Vec3::new(100.0, 50.0, 30.0);
+        let drag = app.move_session().unwrap().0.clone();
+        assert!(app.commit_move_drag(&drag), "{plane:?}: {}", app.digest);
+        let mut moved = [100.0, 50.0, 30.0];
+        moved[plane.axes().2] = 0.0;
+        let after = at(app, [240.0, 120.0, 0.0]);
+        for axis in 0..3 {
+            assert!(
+                (after[axis] - before[axis] - moved[axis]).abs() < 1e-9,
+                "{plane:?}: {after:?}"
+            );
+        }
+        assert_eq!(app.undo_step_count(), undo + 1);
+        assert_eq!(app.document.current().underlay(id).unwrap().view, view);
+        app.undo();
+        assert_eq!(at(harness.state(), [240.0, 120.0, 0.0]), before);
+
+        // A quarter turn about the axis it is seen along keeps it on its plane.
+        let app = harness.state_mut();
+        app.dispatch_command(AppCommand::Rotate);
+        let centre = at(app, [0.0, 0.0, 0.0]);
+        assert!(
+            app.begin_rotate_drag_at(rect.center(), rect, false),
+            "{}",
+            app.digest
+        );
+        app.set_rotate_axis_lock(Some(turn_axis));
+        let session = app.rotate_session_mut().unwrap();
+        session.centre_mm = Vec3::from(centre);
+        session.angle_degrees = 90.0;
+        let drag = app.rotate_session().unwrap().0.clone();
+        assert!(app.commit_rotate_drag(&drag), "{plane:?}: {}", app.digest);
+        let turned = at(app, [240.0, 120.0, 0.0]);
+        assert!((turned[plane.axes().2] - before[plane.axes().2]).abs() < 1e-9);
+        assert_ne!(turned, before);
+        let underlay = app.document.current().underlay(id).unwrap().clone();
+        assert_eq!(underlay.view, view);
+        app.undo();
+
+        // A turn about another axis would tilt it off its plane: refused by name.
+        let digest = harness.state().canonical_digest();
+        let app = harness.state_mut();
+        app.dispatch_command(AppCommand::Rotate);
+        assert!(app.begin_rotate_drag_at(rect.center(), rect, false));
+        app.set_rotate_axis_lock(Some(tilt_axis));
+        app.rotate_session_mut().unwrap().angle_degrees = 30.0;
+        let drag = app.rotate_session().unwrap().0.clone();
+        assert!(!app.commit_rotate_drag(&drag));
+        assert!(app.digest.contains("plane it stands on"), "{}", app.digest);
+        assert_eq!(app.canonical_digest(), digest);
+    }
+}
+
+/// Review 2026-10-29 UO-69 (capability review): a drawing standing as a view is dragged
+/// by the pointer in its own plane, up and down too, seen straight on (Front, Right) and
+/// in the iso view, where the pointer only met a horizontal plane: seen straight on the
+/// Move did not start off a snap, and in iso the drag never moved it up or down.
+#[test]
+fn a_standing_drawing_is_dragged_by_the_pointer_in_its_own_plane() {
+    use ketchup_model::underlay::view::{UnderlayView, ViewPlane, plan_underlay_view};
+    let cases = [
+        (ViewPlane::Front, 0.0, AppCommand::ViewFront),
+        (ViewPlane::Right, 2500.0, AppCommand::ViewRight),
+        (ViewPlane::Front, 0.0, AppCommand::ViewIso),
+        (ViewPlane::Right, 2500.0, AppCommand::ViewIso),
+    ];
+    for (plane, at_mm, camera) in cases {
+        let mut harness = shell();
+        let id = harness
+            .state()
+            .document
+            .current()
+            .underlays()
+            .next()
+            .unwrap()
+            .id;
+        let view = UnderlayView { plane, at_mm };
+        let batch = plan_underlay_view(&harness.state().document.current(), id, view).unwrap();
+        harness
+            .state_mut()
+            .apply_batch_with_work_recovery(&batch)
+            .unwrap();
+        harness.state_mut().dispatch_command(camera);
+        harness.step();
+        let at = |app: &KetchupApp, point: [f64; 3]| {
+            let underlay = app.document.current().underlay(id).unwrap().clone();
+            Vec3::from(underlay.world_transform().transform_point(point))
+        };
+        let (from, to) = ([100.0, 60.0, 0.0], [100.0, 260.0, 0.0]);
+        let shown = |app: &KetchupApp| {
+            let rect = app.camera.viewport_rect.unwrap().shrink(20.0);
+            [from, to].into_iter().all(|point| {
+                app.viewport_position(at(app, point))
+                    .is_some_and(|screen| rect.contains(screen))
+            })
+        };
+        for _ in 0..20 {
+            if shown(harness.state()) {
+                break;
+            }
+            harness.state_mut().dispatch_command(AppCommand::ZoomOut);
+            harness.step();
+        }
+        let app = harness.state_mut();
+        assert!(shown(app), "{plane:?} {camera:?}: off screen");
+        let rect = app.camera.viewport_rect.unwrap();
+        let (start, end) = (at(app, from), at(app, to));
+        let start_screen = app.viewport_position(start).unwrap();
+        let end_screen = app.viewport_position(end).unwrap();
+        app.select_whole_underlay(id);
+        app.dispatch_command(AppCommand::Move);
+        app.hover.snap = None;
+        assert!(
+            app.begin_move_drag_at(start_screen, rect, false),
+            "{plane:?} {camera:?}: {}",
+            app.digest
+        );
+        let mut drag = app.move_session().unwrap().0.clone();
+        app.advance_move(&mut drag, end_screen, rect, true);
+        let expected = end - start;
+        assert!(
+            length(drag.delta_mm - expected) < 1e-3,
+            "{plane:?} {camera:?}: {:?} is not {expected:?}",
+            drag.delta_mm
+        );
+        assert!(app.commit_move_drag(&drag), "{plane:?}: {}", app.digest);
+        let moved = at(app, from);
+        assert!(
+            length(moved - end) < 1e-3,
+            "{plane:?} {camera:?}: {moved:?}"
+        );
+        assert_eq!(app.document.current().underlay(id).unwrap().view, view);
+    }
+}
+
+/// Review 2026-10-29 UO-69 (capability review run 398): a plain drag (no Shift) of a
+/// drawing standing at Right 2500 took the world origin or a world axis as its target,
+/// none of them on the drawing's plane, so in iso the drawing jumped away from the
+/// pointer. A plain drag, also on two axes at once, ends where the pointer meets the
+/// drawing's plane.
+#[test]
+fn a_plain_drag_of_a_standing_drawing_ignores_datum_points_off_its_plane() {
+    use ketchup_model::underlay::view::{UnderlayView, ViewPlane, plan_underlay_view};
+    for camera in [AppCommand::ViewRight, AppCommand::ViewIso] {
+        for target in ["diagonal", "world Y axis", "world origin"] {
+            let mut harness = shell();
+            let id = harness
+                .state()
+                .document
+                .current()
+                .underlays()
+                .next()
+                .unwrap()
+                .id;
+            let view = UnderlayView {
+                plane: ViewPlane::Right,
+                at_mm: 2500.0,
+            };
+            let batch = plan_underlay_view(&harness.state().document.current(), id, view).unwrap();
+            harness
+                .state_mut()
+                .apply_batch_with_work_recovery(&batch)
+                .unwrap();
+            harness.state_mut().dispatch_command(camera);
+            harness.step();
+            let at = |app: &KetchupApp, point: [f64; 3]| {
+                let underlay = app.document.current().underlay(id).unwrap().clone();
+                Vec3::from(underlay.world_transform().transform_point(point))
+            };
+            let from = [100.0, 60.0, 0.0];
+            let aim = |app: &KetchupApp| {
+                let start = at(app, from);
+                match target {
+                    "diagonal" => at(app, [250.0, 210.0, 0.0]),
+                    "world Y axis" => Vec3::new(start.x, start.y + 150.0, 0.0),
+                    _ => Vec3::ZERO,
+                }
+            };
+            let shown = |app: &KetchupApp| {
+                let rect = app.camera.viewport_rect.unwrap().shrink(20.0);
+                [at(app, from), aim(app)].into_iter().all(|point| {
+                    app.viewport_position(point)
+                        .is_some_and(|screen| rect.contains(screen))
+                })
+            };
+            for _ in 0..20 {
+                if shown(harness.state()) {
+                    break;
+                }
+                harness.state_mut().dispatch_command(AppCommand::ZoomOut);
+                harness.step();
+            }
+            let app = harness.state_mut();
+            assert!(shown(app), "{camera:?} {target}: off screen");
+            let rect = app.camera.viewport_rect.unwrap();
+            let start = at(app, from);
+            let start_screen = app.viewport_position(start).unwrap();
+            let end_screen = app.viewport_position(aim(app)).unwrap();
+            app.select_whole_underlay(id);
+            app.dispatch_command(AppCommand::Move);
+            app.hover.snap = None;
+            assert!(
+                app.begin_move_drag_at(start_screen, rect, false),
+                "{}",
+                app.digest
+            );
+            let mut drag = app.move_session().unwrap().0.clone();
+            app.advance_move(&mut drag, end_screen, rect, false);
+            let under_pointer = app
+                .screen_to_underlay_plane(id, end_screen, rect, Some(start))
+                .unwrap();
+            let expected = under_pointer - start;
+            assert!(
+                length(drag.delta_mm - expected) < 1e-3,
+                "{camera:?} {target}: {:?} is not {expected:?}",
+                drag.delta_mm
+            );
+            assert!(
+                app.commit_move_drag(&drag),
+                "{camera:?} {target}: {}",
+                app.digest
+            );
+            let moved = at(app, from);
+            assert!(
+                length(moved - under_pointer) < 1e-3,
+                "{camera:?} {target}: {moved:?} is not under the pointer at {under_pointer:?}"
+            );
+            assert_eq!(app.document.current().underlay(id).unwrap().view, view);
+        }
+    }
+}
+
 #[test]
 fn an_underlay_move_out_of_the_ground_plane_or_a_copy_is_refused_by_name() {
     let mut harness = shell();

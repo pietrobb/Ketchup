@@ -6,13 +6,15 @@
 //! Schema policy: the saved serde form of [`ProductModel`] is the format. A history
 //! revision must encode back to the same CBOR, so any change to that form needs a new
 //! [`SNAPSHOT_FORMAT`], its conversion in [`decode`] and a golden file of the previous
-//! format: a renamed, moved or reinterpreted field, a changed default, and any new
-//! field, also one with `#[serde(default)]` and a `skip_serializing_if` for that
-//! default. Format 103 shipped in Kečup 0.1.0, which ignores fields it does not know,
+//! format: a renamed, moved or reinterpreted field, a changed default, any new enum
+//! variant, and any new field, also one with `#[serde(default)]` and a
+//! `skip_serializing_if` for that default. Format 103 shipped in Kečup 0.1.0, which ignores fields it does not know,
 //! so a new field under 103 would be dropped by 0.1.0 and lost at its next Save (PS-4).
 //! Format 104 adds underlays, 105 annotations, 106 the edits of an underlay's drawing
 //! ([`crate::underlay::edits`]) and the plane it stands on as a view
-//! ([`crate::underlay::view`]), 107 the stretched lines of a drawing (trimmed, extended,
+//! ([`crate::underlay::view`]) as Kečup 0.3.0 saves them, its drawn text and view
+//! included (they came on `main` after 106 did, before 0.3.0 shipped it; review
+//! 2026-10-29 CD-73), 107 the stretched lines of a drawing (trimmed, extended,
 //! offset; review 2026-10-29 CD-61); an older file has none, so it reads
 //! without a conversion, and a document without them is still written as 103 when
 //! Kečup 0.2.0 reads all of it ([`fits_format_103`]). The
@@ -92,18 +94,43 @@ fn fits_format_103(product: &ProductModel) -> bool {
     // The bounded ASCII STL of 0.2.0: 8 lines of at most 128 bytes and CR LF a triangle.
     let stl = u64::try_from(ketchup_tolerance::limits::MESH_TRIANGLES)
         .map_or(u64::MAX, |triangles| (triangles * 8 + 2) * 130);
-    product.import_receipts.values().all(|receipt| {
-        let source_limit = match receipt.format() {
-            ImportFormat::Stl => stl,
-            ImportFormat::Dxf => 8 * MIB,
-            ImportFormat::Step
-            | ImportFormat::Iges
-            | ImportFormat::SketchupScene
-            | ImportFormat::Glb => 32 * MIB,
-        };
-        receipt.outputs().len() <= OUTPUTS
-            && receipt.source_byte_len() <= source_limit
-            && known_to_0_2_0(receipt.units().source_unit())
+    product
+        .drawing_sheets
+        .values()
+        .all(|sheet| sheet_fits_format_103(product, sheet))
+        && product.import_receipts.values().all(|receipt| {
+            let source_limit = match receipt.format() {
+                ImportFormat::Stl => stl,
+                ImportFormat::Dxf => 8 * MIB,
+                ImportFormat::Step
+                | ImportFormat::Iges
+                | ImportFormat::SketchupScene
+                | ImportFormat::Glb => 32 * MIB,
+            };
+            receipt.outputs().len() <= OUTPUTS
+                && receipt.source_byte_len() <= source_limit
+                && known_to_0_2_0(receipt.units().source_unit())
+        })
+}
+
+/// Whether Kečup 0.2.0 takes the assembly `sheet` draws for rigid on opening. It
+/// refuses an assembly with no grounded part, and one with an ungrounded part unless
+/// mates solve it, but this version stores any sheet whose parts exist (M-14) and
+/// draws one part alone ungrounded (MF-21). Only grounded parts mated to nothing are
+/// certain to pass; any other assembly sheet makes the file 104 (review 2026-10-26
+/// MD-41).
+fn sheet_fits_format_103(product: &ProductModel, sheet: &crate::drawing::DrawingSheet) -> bool {
+    let Ok(paths) = crate::drawing::rigid_source_paths(sheet.source()) else {
+        return true;
+    };
+    paths.iter().all(|path| {
+        product
+            .grounded_occurrences
+            .contains(&path.root_occurrence())
+    }) && product.assembly_mates.values().all(|mate| {
+        [mate.endpoint_a(), mate.endpoint_b()]
+            .iter()
+            .all(|endpoint| !paths.contains(endpoint.instance_path()))
     })
 }
 

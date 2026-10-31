@@ -7,6 +7,7 @@
 #include <Message_Report.hxx>
 
 #include <algorithm>
+#include <cstdlib>
 #include <optional>
 
 namespace ketchup::exact {
@@ -451,12 +452,13 @@ NativePairQuery query_body_pair_native(
         }
       }
     }
-    // Boundary minimum distance, multi-threaded; the two shapes' boundaries,
-    // not their solid sets.
+    // Boundary minimum distance, multi-threaded unless the worker runs beside
+    // others (review 2026-10-26 EX-40); the two shapes' boundaries, not their
+    // solid sets.
     const auto boundary_distance = [&]() -> std::optional<double> {
       BRepExtrema_DistShapeShape distance;
       distance.SetFlag(Extrema_ExtFlag_MIN);
-      distance.SetMultiThread(true);
+      distance.SetMultiThread(std::getenv("KETCHUP_EXACT_ONE_THREAD") == nullptr);
       distance.LoadS1(left.impl().shape);
       distance.LoadS2(right.impl().shape);
       distance.Perform();

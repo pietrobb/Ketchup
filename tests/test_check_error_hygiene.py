@@ -116,6 +116,43 @@ def test_counts_text_errors_formatted_variants_and_unwraps(tmp_path):
     }
 
 
+def test_a_str_error_type_and_a_tuple_ok_type_count(tmp_path):
+    # Review 2026-10-29 TST-43: `Result<_, &'static str>` rose from 166 to 179 unseen, and
+    # a tuple Ok type hid a `String` error from string_result.
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "fn a() -> Result<(u8, u8), &'static str> { todo!() }\n"
+        "fn b() -> Result<Vec<Option<Box<[u8]>>>, &'static str> { todo!() }\n"
+        "fn c<'a>(x: &'a str) -> Result<u8, &'a str> { todo!() }\n"
+        "let d = Ok::<_, &'static str>(1);\n"
+        "fn e() -> Result<(u8, Vec<u8>), String> { todo!() }\n"
+        "fn f() -> Result<Box<dyn Fn(u8) -> u8>, String> { todo!() }\n"
+        "// Not an error type: none count.\n"
+        "fn g() -> Result<&'static str, Error> { todo!() }\n"
+        "fn h() -> io::Result<&'static str> { todo!() }\n"
+        "fn i() -> HashMap<u8, &'static str> { todo!() }\n",
+    )
+    # Review 2026-10-26 TST-43: the cause dropped without map_err.
+    write(
+        tmp_path,
+        "crates/b/src/lib.rs",
+        "let a = parse(x).ok().ok_or(Error::Bad)?;\n"
+        "let b = parse(x).ok() .ok_or_else(|| Error::Bad)?;\n"
+        "let c = parse(x).or(Err(Error::Bad))?;\n"
+        "match parse(x) { Ok(v) => v, Err(_) => return Err(Error::Bad) }\n"
+        "match parse(x) { Ok(v) => Ok(v), Err( _ ) => Err(Error::Bad) }\n"
+        "// Keeping the cause, or an Option, does not count.\n"
+        "let d = find(x).ok_or(Error::Missing)?; let e = parse(x).or_else(|error| retry(error));\n"
+        "match parse(x) { Err(error) => Err(Error::Bad(error)), Ok(v) => Ok(v) }\n",
+    )
+    assert checker.current_counts(tmp_path) == {
+        "crates/a/src/lib.rs str_result": 4,
+        "crates/a/src/lib.rs string_result": 2,
+        "crates/b/src/lib.rs discard": 5,
+    }
+
+
 def test_viewer_apps_are_scanned_and_text_or_debug_causes_count(tmp_path):
     write(
         tmp_path,

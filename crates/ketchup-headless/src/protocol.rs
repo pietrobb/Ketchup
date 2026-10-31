@@ -345,6 +345,14 @@ fn load_warning(
                  the work up to the edit before them opened"
             ),
         }),
+        (LoadNotice::UnderlayReset { name, reason }, _) => json!({
+            "kind": "underlay_reset",
+            "message": format!(
+                "the underlay {name:?} held what this version no longer takes: {reason}; \
+                 saving keeps it so"
+            ),
+            "underlay": name,
+        }),
         (LoadNotice::WorkRecoveryUnusable { reason }, Some(Ok(moved))) => json!({
             "kind": "work_recovery_set_aside",
             "message": format!(

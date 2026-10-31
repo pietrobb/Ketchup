@@ -45,7 +45,7 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56.0"
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_SystemInformation"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Networking_WinSock", "Win32_System_SystemInformation"] }
 wgpu = { version = "25.0.2", default-features = false, features = ["dx12"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -70,7 +70,8 @@ libc = "0.2"
 
 [lints.rust]
 # Denied rather than forbidden: `dialogs::DialogParentWindow` needs one audited
-# `unsafe` block to borrow the raw main-window handle for modal native dialogs.
+# `unsafe` block to borrow the raw main-window handle for modal native dialogs;
+# `live_bridge::transport::wait_readable` polls one socket (WSAPoll / poll).
 unsafe_code = "deny"
 
 [lints.clippy]

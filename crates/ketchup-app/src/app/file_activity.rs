@@ -229,6 +229,11 @@ impl KetchupApp {
         true
     }
 
+    /// A file is being read to replace the window's document.
+    pub(crate) fn reading_document(&self) -> bool {
+        self.file.activity.opening.is_some()
+    }
+
     /// No file command waits or runs, so a queued open would not replace one.
     #[must_use]
     pub fn file_activity_idle(&self) -> bool {
@@ -635,6 +640,47 @@ mod tests {
             harness.step();
             assert_eq!(harness.state().document.history_digest(), before);
         }
+    }
+
+    /// Reopening the window's own file after the user discarded its edits removes their
+    /// checkpoint; the frames that ran while the file was read wrote it again, and a read
+    /// that came after it (a loaded machine) opened the discarded edits instead of the file.
+    #[test]
+    fn a_discarded_edit_is_not_checkpointed_again_while_its_file_is_reopened() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("reopened-after-discard.ketchup");
+        let checkpoint = ketchup_model::persistence::work_recovery_path(&path);
+        let mut harness = shell(ScriptedFileDialogs::new());
+        assert!(harness.state_mut().create_box());
+        assert!(harness.state_mut().save_document_to(&path));
+        let saved = harness.state().document.current().occurrences().count();
+        assert!(harness.state_mut().create_box());
+        harness.step();
+        assert!(checkpoint.exists(), "the unsaved edit has a checkpoint");
+
+        let context = harness.ctx.clone();
+        assert!(
+            harness
+                .state_mut()
+                .open_document_in_context(&path, true, Some(&context))
+        );
+        assert!(
+            !checkpoint.exists(),
+            "the discarded edit's checkpoint is removed"
+        );
+        // What every frame does while the file is still being read.
+        harness.state_mut().refresh_work_recovery_checkpoint();
+        assert!(
+            !checkpoint.exists(),
+            "the discarded edit was checkpointed again while its file was read"
+        );
+        wait_for_open(&mut harness);
+        assert_eq!(
+            harness.state().document.current().occurrences().count(),
+            saved
+        );
+        assert!(!harness.state().is_dirty());
+        assert_eq!(harness.state().file.path.as_deref(), Some(path.as_path()));
     }
 
     /// Review 2026-10-19 P3 (GUI): a cancelled Open left the file's lock with the read,

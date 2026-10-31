@@ -1382,6 +1382,7 @@ hint-offset-underlay-line = Klik na čiaru výkresu, potom na stranu; zadaná d�
 hint-extrude-underlay-area = Kliknite dovnútra uzavretej oblasti, polyline alebo šrafy výkresu; vznikne z nej teleso zadanej výšky
 digest-underlay-extrude-height = Zadajte výšku väčšiu ako nula
 digest-underlay-extrude-no-area = Pod kurzorom nie je uzavretá oblasť zobrazenej vrstvy výkresu
+digest-underlay-extrude-searching = Hľadám oblasti výkresu; kliknutá sa vytiahne, keď ich nájdem
 digest-underlay-extrude-refused = Nič nebolo vytiahnuté: { $reason }
 digest-underlay-extruded = Oblasť vytiahnutá o { $height } ako { $name }; nasleduje výkres
 digest-underlay-extruded-part = Oblasť vytiahnutá o { $height } ako diel { $name }
@@ -1393,6 +1394,7 @@ digest-new-document = Nový model je pripravený
 digest-opened-document = Otvorené „{ $path }“ — kanonická identita obnovená
 digest-opened-recovery = Varovanie: zdroj obnovy „{ $source }“ bol otvorený, pretože „{ $requested }“ je nedostupný alebo poškodený. Obnovený dokument nie je uložený; bezpečne ho zachovajte cez Uložiť ako.
 digest-opened-work-recovery = Upozornenie: neuložená práca „{ $path }“ bola obnovená z kontrolného bodu „{ $source }“. Obnovený dokument nie je uložený; zachovajte ho cez Uložiť ako.
+digest-opened-underlay-reset = Upozornenie: podklad „{ $underlay }“ v „{ $path }“ mal niečo, čo táto verzia už neprijme: { $reason }. Uložením to tak ostane.
 digest-opened-work-recovery-step-damaged = Upozornenie: posledné úpravy v kontrolnom bode neuloženej práce „{ $path }“ sa nedali prečítať ({ $reason }). Obnovila sa práca po úpravu pred nimi.
 digest-opened-without-work-recovery = „{ $path }“ sa otvoril bez zálohy práce, lebo jeho priečinok je len na čítanie alebo sa v ňom nedá zamknúť záloha: neuložená práca sa nezálohuje, preto ju uložte cez Uložiť ako do iného priečinka.
 digest-opened-without-history = Upozornenie: „{ $path }“ sa otvoril bez histórie Undo ({ $reason }). Model je celý.
@@ -1631,10 +1633,11 @@ digest-underlay-objects-moved = Posunuté objekty výkresu: { $count }
 digest-underlay-objects-copied = Skopírované objekty výkresu: { $count }
 digest-underlay-whole-selected = Vybraný celý výkres: Posun a Otočenie ho celý presunú
 digest-underlay-draw-on = Čiara, Obdĺžnik, Kružnica a Oblúk teraz kreslia do výkresu, na vrstvu { $layer }; opäť Kresliť do výkresu to ukončí
+digest-underlay-draw-not-ground = Kresliace nástroje kreslia v rovine zeme, preto kreslia len do pôdorysu ležiaceho na zemi; aby si doň kreslil, polož výkres späť na zem
 digest-underlay-exported = Výkres so zmenami je zapísaný do { $path }
 digest-underlay-exported-incomplete = Výkres so zmenami je zapísaný do { $path } bez { $count ->
-        [one] { $count } záznamu, ktorý čítačka DWG nevedela dekódovať.
-       *[other] { $count } záznamov, ktoré čítačka DWG nevedela dekódovať.
+        [one] { $count } záznamu, ktorý čítačka DWG nevedela dekódovať alebo ktorý DWG nevie uložiť.
+       *[other] { $count } záznamov, ktoré čítačka DWG nevedela dekódovať alebo ktoré DWG nevie uložiť.
     }
 digest-underlay-export-failed = Výkres sa nezapísal: { $reason }
 digest-underlay-text-required = Najprv napíš text, potom klikni, kde začína
@@ -1648,8 +1651,8 @@ digest-underlay-mirror-line-required = Os zrkadlenia potrebuje dva rôzne body
 digest-underlay-objects-mirrored = Vybrané objekty výkresu sú zrkadlené
 digest-underlay-objects-not-removed = Výkres sa nezmenil: { $reason }
 digest-underlay-edit-failed = Podklad nebol posunutý: { $reason }
+digest-underlay-edit-searching = Hľadám oblasti, ktoré sledujú výkres; zmena sa urobí, keď ich nájdem
 error-underlay-copy = podklad sa osádza, nekopíruje
-error-underlay-standing = výkres stojí ako pohľad; na posun v okne ho vráť do pôdorysu
 digest-measure-edge = Dĺžka hrany { $length } mm · iba údaj, bez kroku späť
 digest-hidden = Skrytých výskytov: { $count } · 1 krok späť
 digest-delete-hidden-selected = Nič sa nezmazalo: vybraných skrytých výskytov je { $count } — najprv ich zobrazte alebo odznačte

@@ -68,9 +68,10 @@ fn start(segment: &ProfileSegment) -> [f64; 2] {
 fn a_part_on_its_side_is_drawn_on_its_face_with_its_holes_and_pockets_on_their_layers() {
     let export = export();
     let side = part(&export, "Bočnica ľavá");
-    // 18 x 400 x 720 seen along x: y to the right, z up.
+    // 18 x 400 x 720 seen along x as woodWOP lays it: the 720 (z) to the
+    // right, the 400 (y) up from the far edge.
     assert_eq!(side.thickness_mm, 18.0);
-    assert_eq!(side.size_mm, [400.0, 720.0]);
+    assert_eq!(side.size_mm, [720.0, 400.0]);
     assert_eq!(side.file, "Bocnica_lava.dxf");
     let dxf = side.dxf();
     assert!(dxf.is_ascii(), "the file is ASCII");
@@ -82,7 +83,7 @@ fn a_part_on_its_side_is_drawn_on_its_face_with_its_holes_and_pockets_on_their_l
     assert_eq!(contour.len(), 1);
     assert_eq!(
         contour[0].iter().map(start).collect::<Vec<_>>(),
-        [[0.0, 0.0], [400.0, 0.0], [400.0, 720.0], [0.0, 720.0]]
+        [[0.0, 0.0], [720.0, 0.0], [720.0, 400.0], [0.0, 400.0]]
     );
     // The shelf pin from the face seen; the bolt goes through, so it is as
     // deep as the part whichever face it is drilled from.
@@ -91,18 +92,18 @@ fn a_part_on_its_side_is_drawn_on_its_face_with_its_holes_and_pockets_on_their_l
         ref other => panic!("not a circle: {other:?}"),
     };
     assert_eq!(read["DRILL_D5_Z13"].len(), 1);
-    assert_eq!(circle_center(&read["DRILL_D5_Z13"][0]), [37.0, 32.0]);
-    assert_eq!(circle_center(&read["DRILL_D8_Z18"][0]), [200.0, 360.0]);
-    // The groove runs along the bottom edge of the face seen, 8 high.
+    assert_eq!(circle_center(&read["DRILL_D5_Z13"][0]), [32.0, 363.0]);
+    assert_eq!(circle_center(&read["DRILL_D8_Z18"][0]), [360.0, 200.0]);
+    // The groove runs along the left edge of the face seen, 8 wide.
     let groove = &read["POCKET_Z6"][0];
     let mut corners = groove.iter().map(start).collect::<Vec<_>>();
     corners.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
     assert_eq!(
         corners,
-        [[0.0, 0.0], [0.0, 8.0], [400.0, 0.0], [400.0, 8.0]]
+        [[0.0, 0.0], [0.0, 400.0], [8.0, 0.0], [8.0, 400.0]]
     );
-    // The dowel into the bottom edge: a line from y = 0 up 30 mm, at
-    // mid-thickness.
+    // The dowel into the top edge (local y = 0): a line from y = 400 down
+    // 30 mm, at mid-thickness.
     let Some(Entity::Line {
         layer,
         start_mm,
@@ -115,7 +116,7 @@ fn a_part_on_its_side_is_drawn_on_its_face_with_its_holes_and_pockets_on_their_l
         panic!("no edge hole: {side:#?}");
     };
     assert_eq!(layer, "HDRILL_D8_Z30_H9");
-    assert_eq!((*start_mm, *end_mm), ([0.0, 300.0], [30.0, 300.0]));
+    assert_eq!((*start_mm, *end_mm), ([300.0, 400.0], [300.0, 370.0]));
     assert_eq!(
         read["HDRILL_D8_Z30_H9"].len(),
         1,
@@ -127,6 +128,64 @@ fn a_part_on_its_side_is_drawn_on_its_face_with_its_holes_and_pockets_on_their_l
     assert!(underlay.layers.iter().any(|layer| layer == "PART_NAME"));
     assert_eq!(underlay.lines.text_count(), 1);
     assert!(text.contains("Bo\\U+010Dnica \\U+013Eav\\U+00E1"), "{text}");
+}
+
+/// MF-63: the drawing lies as the woodWOP program lays the part: x along its
+/// longest side, y along the next, the frame right-handed, and a part drilled
+/// from below only turned over, its underside up.
+#[test]
+fn a_board_is_drawn_in_the_frame_its_woodwop_program_lays_it_in() {
+    let source = "panel = board('panel', [600, 2400, 18], material = 'DTD')\n\
+         hole(panel, 'z+', world = (100, 300, 18), diameter = 5, depth = 10, id = 'from above')\n\
+         pocket(panel, 'z+', rect = (0, 0, 600, 8), depth = 6, id = 'groove')\n\
+         under = board('under', [600, 2400, 18], at = (0, 0, 100), material = 'DTD')\n\
+         hole(under, 'z-', world = (100, 300, 100), diameter = 5, depth = 10, id = 'from below')\n\
+         hole(under, 'y-', world = (100, 0, 106), diameter = 8, depth = 30, id = 'dowel')\n";
+    let model = ketchup_program::evaluate("frame.star", source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"))
+        .model;
+    let export = cnc_parts(&model);
+    let circle = |part: &CncPart| {
+        part.entities
+            .iter()
+            .find_map(|entity| match entity {
+                Entity::Circle {
+                    layer, center_mm, ..
+                } => Some((layer.clone(), *center_mm)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no hole: {part:#?}"))
+    };
+
+    // 600 x 2400: woodWOP X is the 2 400 (local y), Y the 600 (local x) from
+    // the far edge, so the frame stays right-handed.
+    let panel = part(&export, "panel");
+    assert_eq!(panel.size_mm, [2400.0, 600.0]);
+    assert_eq!(circle(panel), ("DRILL_D5_Z10".to_owned(), [300.0, 500.0]));
+    let read = profiles(&panel.dxf());
+    let mut groove = read["POCKET_Z6"][0].iter().map(start).collect::<Vec<_>>();
+    groove.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+    assert_eq!(groove, [[0.0, 0.0], [0.0, 600.0], [8.0, 0.0], [8.0, 600.0]]);
+
+    // Drilled from below only, it lies underside up: the hole is drilled
+    // from the face seen, the edge hole's height counts from the new
+    // underside, and Y is no longer reversed.
+    let under = part(&export, "under");
+    assert_eq!(under.size_mm, [2400.0, 600.0]);
+    assert_eq!(circle(under), ("DRILL_D5_Z10".to_owned(), [300.0, 100.0]));
+    let edge = under
+        .entities
+        .iter()
+        .find_map(|entity| match entity {
+            Entity::Line {
+                layer,
+                start_mm,
+                end_mm,
+            } => Some((layer.as_str(), *start_mm, *end_mm)),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no edge hole: {under:#?}"));
+    assert_eq!(edge, ("HDRILL_D8_Z30_H12", [0.0, 100.0], [30.0, 100.0]));
 }
 
 #[test]
@@ -197,6 +256,170 @@ fn every_sheathing_piece_of_a_buildup_is_drawn_and_together_they_cover_the_wall(
     assert!(
         (area - (3000.0 * 2500.0 - 900.0 * 1200.0)).abs() < 1e-3,
         "{area}"
+    );
+}
+
+/// MF-60: the insulation between the studs is put in on site, not cut on a
+/// CNC: only the sheathing is drawn.
+#[test]
+fn the_infill_of_a_framed_layer_is_not_drawn() {
+    let source = "buildup('wall', (0, 0, 0), (1, 0, 0), (0, 0, 1), 3000, height = 2500,\n\
+         layers = [{'name': 'frame', 'thickness': 140, 'material': 'C24', 'spacing': 625,\n\
+                    'infill': 'mineral wool'},\n\
+                   {'name': 'osb', 'thickness': 15, 'material': 'OSB', 'sheet': (1250, 2500)}])\n";
+    let model = ketchup_program::evaluate("wall.star", source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"))
+        .model;
+    assert!(
+        model
+            .parts
+            .iter()
+            .any(|part| part.material.as_deref() == Some("mineral wool")),
+        "the wall has its infill"
+    );
+    let export = cnc_parts(&model);
+    assert_eq!(export.not_drawn, []);
+    assert!(!export.parts.is_empty());
+    assert!(
+        export.parts.iter().all(|part| part.thickness_mm == 15.0),
+        "{:?}",
+        export
+            .parts
+            .iter()
+            .map(|part| (&part.part, part.thickness_mm))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// MF-60: roofing and cladding are laid on site, not cut from boards on a CNC.
+/// A sheet layer without a role is drawn only when it is laid from boards
+/// ("sheet") or its material is a board; any other layer is built on site and
+/// a warning names it.
+#[test]
+fn roofing_and_cladding_of_a_buildup_are_not_drawn() {
+    for (outer, material) in [
+        (
+            "{'name': 'krytina', 'thickness': 0.6, 'material': 'sheet metal roofing'}",
+            "sheet metal roofing",
+        ),
+        (
+            "{'name': 'obklad', 'thickness': 20, 'material': 'larch cladding'}",
+            "larch cladding",
+        ),
+    ] {
+        let source = format!(
+            "buildup('roof', (0, 0, 0), (1, 0, 0), (0, 1, 0), 3000, height = 2500,\n\
+             layers = [{{'name': 'frame', 'thickness': 140, 'material': 'C24', 'spacing': 625,\n\
+                        'infill': 'mineral wool'}},\n\
+                       {{'name': 'osb', 'thickness': 15, 'material': 'OSB', 'sheet': (1250, 2500)}},\n\
+                       {{'name': 'gypsum', 'thickness': 12.5, 'material': 'gypsum board'}},\n\
+                       {outer}])\n"
+        );
+        let model = ketchup_program::evaluate("roof.star", &source, &BTreeMap::new())
+            .unwrap_or_else(|error| panic!("{error}"))
+            .model;
+        assert!(
+            model
+                .parts
+                .iter()
+                .any(|part| part.material.as_deref() == Some(material)),
+            "the roof has its outer layer"
+        );
+        let export = cnc_parts(&model);
+        assert_eq!(export.not_drawn, []);
+        let drawn: Vec<_> = export
+            .parts
+            .iter()
+            .map(|part| (&part.part, part.thickness_mm))
+            .collect();
+        assert!(
+            export
+                .parts
+                .iter()
+                .all(|part| part.thickness_mm == 15.0 || part.thickness_mm == 12.5),
+            "{drawn:?}"
+        );
+        assert!(drawn.iter().any(|(_, t)| *t == 12.5), "{drawn:?}");
+        let warnings: Vec<_> = ketchup_program::validate(&model)
+            .into_iter()
+            .filter(|issue| issue.severity == ketchup_program::Severity::Warning)
+            .map(|issue| issue.message)
+            .collect();
+        assert!(
+            warnings
+                .iter()
+                .any(|message| message.contains(material) && message.contains("built on site")),
+            "{warnings:?}"
+        );
+    }
+}
+
+/// MF-60: boards are recognised by the words of their material, also in
+/// Slovak as in the review's tiny-house, and roofing named in Slovak is not
+/// drawn. A material known as neither a board nor a site-laid material is
+/// still drawn, with a warning: a missing board in the shop costs more than a
+/// spare drawing.
+#[test]
+fn boards_named_in_slovak_are_drawn_and_slovak_roofing_is_not() {
+    let source = "buildup('roof', (0, 0, 0), (1, 0, 0), (0, 1, 0), 3000, height = 2500,\n\
+         layers = [{'name': 'sadrokartón', 'thickness': 12.5, 'material': 'sadrokartón'},\n\
+                   {'name': 'krokvy', 'thickness': 180, 'material': 'KVH C24', 'spacing': 900,\n\
+                    'infill': 'minerálna vlna'},\n\
+                   {'name': 'fasáda', 'thickness': 32.5, 'material': 'drevovláknitá doska'},\n\
+                   {'name': 'krytina', 'thickness': 35.5, 'material': 'plechová krytina'},\n\
+                   {'name': 'vrstva', 'thickness': 10, 'material': 'MgO'}])\n";
+    let model = ketchup_program::evaluate("roof.star", source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"))
+        .model;
+    let export = cnc_parts(&model);
+    assert_eq!(export.not_drawn, []);
+    let mut drawn: Vec<_> = export.parts.iter().map(|part| part.thickness_mm).collect();
+    drawn.sort_by(f64::total_cmp);
+    drawn.dedup();
+    assert_eq!(drawn, [10.0, 12.5, 32.5]);
+    let warnings: Vec<_> = ketchup_program::validate(&model)
+        .into_iter()
+        .filter(|issue| issue.severity == ketchup_program::Severity::Warning)
+        .map(|issue| issue.message)
+        .collect();
+    assert!(
+        warnings.iter().any(
+            |message| message.contains("plechová krytina") && message.contains("built on site")
+        ),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|message| message.contains("MgO") && message.contains("neither")),
+        "{warnings:?}"
+    );
+    assert!(
+        !warnings
+            .iter()
+            .any(|message| message.contains("built on site")
+                && (message.contains("sadrokartón") || message.contains("drevovláknitá"))),
+        "{warnings:?}"
+    );
+}
+
+/// MF-61: a rounded handle 60 x 40 and 3 000 long is no flat part; drawn along
+/// its extrusion it would be a 60 x 40 outline 3 000 thick, its end screw a
+/// drill into the face.
+#[test]
+fn a_profile_longer_than_it_is_wide_is_not_a_flat_part() {
+    let source = "handle = extrude('handle', profile = round_corners([(0, 0), (60, 0), (60, 40), (0, 40)], 10),\n\
+         distance = 3000, attributes = {FABRICATION_ROLE: MANUFACTURED_ITEM})\n\
+         hole(handle, 'end', world = (30, 20, 3000), diameter = 8, depth = 40, id = 'end screw')\n";
+    let model = ketchup_program::evaluate("handle.star", source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"))
+        .model;
+    let export = cnc_parts(&model);
+    assert_eq!(export.parts, [], "{export:#?}");
+    assert_eq!(export.not_drawn.len(), 1);
+    assert_eq!(
+        export.not_drawn[0].reason.to_string(),
+        "it is not a flat part: it is 3000 mm along the axis it would be drawn along, more than across"
     );
 }
 

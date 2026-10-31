@@ -85,7 +85,7 @@ fn write(input: &UnderlayWriteInput) -> Result<UnderlayWriteOutcome, UnderlayRef
     let source = std::fs::read(&input.source).map_err(|error| file(&input.source, &error))?;
     // A DWG drawing is converted whole, not as the import reads it: what the import does
     // not read is still written back (review 2026-10-29 CD-60).
-    let (source, skipped) = if input.dwg {
+    let (source, mut skipped) = if input.dwg {
         let drawing = ketchup_dwg::dwg_to_whole_dxf(&source, usize::MAX)
             .map_err(|error| UnderlayRefusal::Dwg(error.into()))?;
         // The DWG is not held while its DXF is written (review 2026-10-29 CD-63).
@@ -100,9 +100,10 @@ fn write(input: &UnderlayWriteInput) -> Result<UnderlayWriteOutcome, UnderlayRef
         (source, Vec::new())
     };
     let lines = std::fs::read(&input.lines).map_err(|error| file(&input.lines, &error))?;
-    let lines = UnderlayLines::decode(&lines).map_err(|error| UnderlayRefusal::Dxf {
-        report: error.to_string(),
-    })?;
+    let lines =
+        UnderlayLines::decode(&lines, input.layers).map_err(|error| UnderlayRefusal::Dxf {
+            report: error.to_string(),
+        })?;
     let written = write_edited_dxf(
         &source,
         DxfImportOptions::new(input.unit_if_unitless).with_geo_origin(input.geo_origin_mm),
@@ -120,8 +121,17 @@ fn write(input: &UnderlayWriteInput) -> Result<UnderlayWriteOutcome, UnderlayRef
         .output
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("dwg"));
+    // An application's own entity or object a DWG cannot hold is left out and said, not a
+    // refusal of the whole drawing (review 2026-10-29 CD-71).
     let written = if to_dwg {
-        ketchup_dwg::dxf_to_dwg(&written).map_err(|error| UnderlayRefusal::Dwg(error.into()))?
+        let dwg = ketchup_dwg::dxf_to_dwg_leaving_out_custom_records(&written)
+            .map_err(|error| UnderlayRefusal::DwgWrite(error.into()))?;
+        skipped.extend(
+            dwg.left_out
+                .into_iter()
+                .map(|records| (records.record_type, records.count)),
+        );
+        dwg.dwg
     } else {
         written
     };

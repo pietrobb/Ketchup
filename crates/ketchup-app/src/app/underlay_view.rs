@@ -44,7 +44,8 @@ impl KetchupApp {
     }
 
     /// Sets the drawing `id` on `plane` through the origin, one Undo step; a program part
-    /// bound to it follows in the same step.
+    /// bound to it follows in the same step. True also while it waits for the regions of
+    /// such parts.
     pub(crate) fn set_underlay_view(&mut self, id: UnderlayId, plane: ViewPlane) -> bool {
         let snapshot = self.document.current();
         let Some(name) = snapshot.underlay(id).map(|underlay| underlay.name.clone()) else {
@@ -53,6 +54,15 @@ impl KetchupApp {
         let view = UnderlayView { plane, at_mm: 0.0 };
         // The status line is where the error ends: its text is all that is shown of it.
         let failure = match plan_underlay_view(&snapshot, id, view) {
+            // Once the regions of the areas that follow it are found off the UI thread
+            // (review 2026-10-29 UO-40).
+            Ok(batch)
+                if !self.followed_regions_or_await(&batch, move |app| {
+                    app.set_underlay_view(id, plane);
+                }) =>
+            {
+                return true;
+            }
             Ok(batch) => self
                 .apply_batch_with_work_recovery(&batch)
                 .err()
@@ -71,6 +81,19 @@ impl KetchupApp {
                         ("plane", self.catalog.text(plane_key(plane))),
                     ]),
                 );
+                // A drawing being drawn into stands elsewhere now: drawing into it ends
+                // (review 2026-10-29 UI-64).
+                if plane != ViewPlane::Top
+                    && self
+                        .gesture
+                        .underlay_draw
+                        .take_if(|target| target.underlay == id)
+                        .is_some()
+                {
+                    self.digest.push_str(" · ");
+                    self.digest
+                        .push_str(&self.catalog.text("digest-underlay-draw-off"));
+                }
                 true
             }
             Some(reason) => {

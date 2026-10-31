@@ -181,13 +181,54 @@ fn percent(part: f64, whole: f64) -> f64 {
     (part / whole * 1000.0).round() / 10.0
 }
 
-/// The blank of a part: its extents sorted from longest to shortest, and
-/// which local axis each became.
-fn blank(part: &Part) -> ([f64; 3], [usize; 3]) {
+/// The part attribute naming the local axis ("x", "y" or "z") a bar's length
+/// runs along (library `member()`).
+pub const LENGTH_AXIS: &str = "length_axis";
+/// The part attribute naming the local axis of a sheet's thickness, or of a
+/// bar's section side that is a layer's thickness (library `buildup()`).
+pub const THICKNESS_AXIS: &str = "thickness_axis";
+
+/// The blank of a part: its length (longest first), section or size and
+/// thickness, and which local axis each became. The axes a part names by
+/// [`LENGTH_AXIS`] or [`THICKNESS_AXIS`] come where they belong, the others
+/// longest first (review 2026-10-29 PG-61: a piece narrower than its sheet
+/// was thick, or a bar shorter than its section was wide, was grouped by the
+/// wrong size).
+fn blank(part: &Part, kind: StockKind) -> ([f64; 3], [usize; 3]) {
     let (min, max) = part.local_bounds();
     let extent: [f64; 3] = std::array::from_fn(|axis| max[axis] - min[axis]);
+    let longest_first = |axes: &mut [usize]| {
+        axes.sort_by(|left, right| extent[*right].total_cmp(&extent[*left]));
+    };
+    let named = |attribute: &str| match part.attributes.get(attribute).map(String::as_str) {
+        Some("x" | "X") => Some(0),
+        Some("y" | "Y") => Some(1),
+        Some("z" | "Z") => Some(2),
+        _ => None,
+    };
+    let others = |axis: usize| {
+        let mut rest = [(axis + 1) % 3, (axis + 2) % 3];
+        longest_first(&mut rest);
+        rest
+    };
     let mut order = [0, 1, 2];
-    order.sort_by(|left, right| extent[*right].total_cmp(&extent[*left]));
+    longest_first(&mut order);
+    match (kind, named(LENGTH_AXIS), named(THICKNESS_AXIS)) {
+        (StockKind::Lengths, Some(axis), _) => {
+            let [a, b] = others(axis);
+            order = [axis, a, b];
+        }
+        (StockKind::Lengths, None, Some(axis)) => {
+            let [a, b] = others(axis);
+            order = [a, axis, b];
+            longest_first(&mut order[1..]);
+        }
+        (StockKind::Sheets, _, Some(axis)) => {
+            let [a, b] = others(axis);
+            order = [a, b, axis];
+        }
+        _ => {}
+    }
     (order.map(|axis| extent[axis]), order)
 }
 
@@ -226,7 +267,7 @@ pub fn plans<'a>(
         let Some(stock) = model.stock.get(material) else {
             continue;
         };
-        let (dimensions, order) = blank(part);
+        let (dimensions, order) = blank(part, stock.kind);
         let section = match stock.kind {
             StockKind::Lengths => vec![dimensions[1], dimensions[2]],
             StockKind::Sheets => vec![dimensions[2]],
@@ -333,8 +374,7 @@ fn cut_lengths(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) 
     lengths.sort_by(f64::total_cmp);
     let usable = |length: f64| length - 2.0 * stock.trim_mm;
     let longest = lengths.last().copied().unwrap_or(0.0);
-    // Pieces and the length they take, kerfs between them.
-    let mut bars: Vec<(Vec<Piece>, f64)> = Vec::new();
+    let mut left = Vec::new();
     for piece in pieces {
         let length = piece.size[0];
         if length > usable(longest) + EPS {
@@ -344,33 +384,53 @@ fn cut_lengths(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) 
                     "{length} mm is longer than the longest stock length {longest} mm less its trim"
                 ),
             });
-            continue;
-        }
-        let needs = |taken: f64, count: usize| {
-            taken + length + if count == 0 { 0.0 } else { stock.kerf_mm }
-        };
-        let best = bars
-            .iter()
-            .enumerate()
-            .filter(|(_, (cut, taken))| needs(*taken, cut.len()) <= usable(longest) + EPS)
-            .min_by(|(_, (_, a)), (_, (_, b))| b.total_cmp(a))
-            .map(|(index, _)| index);
-        match best {
-            Some(index) => {
-                let (cut, taken) = &mut bars[index];
-                *taken = needs(*taken, cut.len());
-                cut.push(piece);
-            }
-            None => bars.push((vec![piece], length)),
+        } else {
+            left.push(piece);
         }
     }
+    // The indices into `left` a bar of `length` takes: the first piece left, then each
+    // next that still fits, kerfs between them.
+    let fill = |left: &[Piece], length: f64| {
+        let mut taken = left[0].size[0];
+        let mut cut = vec![0];
+        for (index, piece) in left.iter().enumerate().skip(1) {
+            let needs = taken + stock.kerf_mm + piece.size[0];
+            if needs <= usable(length) + EPS {
+                taken = needs;
+                cut.push(index);
+            }
+        }
+        cut
+    };
+    // Each bar is opened by the longest piece left and is the stock length its pieces
+    // fill best, the longer of two that fill it alike, where it was packed on the
+    // longest length and only then shortened (review 2026-10-29 PG-64: 7 x 2 900 on
+    // [3 000, 13 000] took 2 x 13 m, 78 %).
+    let mut bars: Vec<(Vec<Piece>, f64)> = Vec::new();
+    while !left.is_empty() {
+        let (length, cut) = lengths
+            .iter()
+            .copied()
+            .filter(|length| left[0].size[0] <= usable(*length) + EPS)
+            .map(|length| (length, fill(&left, length)))
+            .max_by(|(a, a_cut), (b, b_cut)| {
+                let filled = |length: f64, cut: &[usize]| {
+                    cut.iter().map(|index| left[*index].size[0]).sum::<f64>() / length
+                };
+                filled(*a, a_cut)
+                    .total_cmp(&filled(*b, b_cut))
+                    .then(a.total_cmp(b))
+            })
+            .unwrap_or_else(|| (longest, vec![0]));
+        let (taken, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut left)
+            .into_iter()
+            .enumerate()
+            .partition(|(index, _)| cut.contains(index));
+        left = rest.into_iter().map(|(_, piece)| piece).collect();
+        bars.push((taken.into_iter().map(|(_, piece)| piece).collect(), length));
+    }
     bars.into_iter()
-        .map(|(cut, taken)| {
-            let length = lengths
-                .iter()
-                .copied()
-                .find(|length| taken <= usable(*length) + EPS)
-                .unwrap_or(longest);
+        .map(|(cut, length)| {
             let mut at = stock.trim_mm;
             let placed: Vec<Placed> = cut
                 .into_iter()
@@ -415,9 +475,9 @@ struct Sheet {
 /// Guillotine packing (best short side fit, the shorter leftover split off)
 /// on sheets of the largest stock size; each sheet then shrinks to the
 /// smallest stock size its pieces fit. Each piece takes its size plus one
-/// kerf, the usable sheet one kerf more than its trimmed size. A piece as
-/// long or as wide as a stock sheet (the whole sheet, or one cut only across)
-/// keeps that sheet's factory edges along that side: such sheets are not
+/// kerf, the usable sheet one kerf more than its trimmed size. A piece longer
+/// or wider than a stock sheet less its trim at both ends, up to the whole
+/// sheet, keeps that sheet's factory edge along that side: such sheets are not
 /// trimmed there and take only pieces spanning them the same way.
 fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -> Vec<Layout> {
     let mut sizes: Vec<[f64; 2]> = stock.sizes_mm.iter().map(|s| [s[0], s[1]]).collect();
@@ -461,13 +521,16 @@ fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -
                 [l + kerf, w + kerf]
             }
         };
-        // The sheet axes the piece spans whole; without trim nothing differs.
+        // The sheet axes the piece spans: longer there than the sheet less its trim at
+        // both ends, but not than the sheet, so it keeps the factory edge at its start
+        // and is cut to length at most (review 2026-10-29 PG-63: 2 481 to 2 499 of a
+        // 2 500 sheet trimmed 10 were not planned); without trim nothing differs.
         let spans = |size: [f64; 2], turned: bool| {
             let [w, h] = footprint(turned);
-            [
-                trim > EPS && (w - kerf - size[0]).abs() < EPS,
-                trim > EPS && (h - kerf - size[1]).abs() < EPS,
-            ]
+            let spanned = |piece: f64, sheet: f64| {
+                trim > EPS && piece > sheet - 2.0 * trim + EPS && piece <= sheet + EPS
+            };
+            [spanned(w - kerf, size[0]), spanned(h - kerf, size[1])]
         };
         // (short side leftover, long side leftover, sheet, free rect, turned)
         let consider = |sheets: &[Sheet]| {

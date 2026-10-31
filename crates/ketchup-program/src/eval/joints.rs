@@ -104,6 +104,46 @@ fn parse_rating<'v>(
     if source.is_empty() {
         anyhow::bail!("rating source must name the published table or document");
     }
+    let given_field = |name: &str| given(value.get_attr(name, heap).ok().flatten());
+    let service_classes = match given_field("service_classes") {
+        None => Vec::new(),
+        Some(list) => iterate(
+            list,
+            heap,
+            format_args!("rating service_classes must be a list of 1, 2 or 3"),
+        )?
+        .map(|class| {
+            class
+                .unpack_i32()
+                .and_then(|number| u8::try_from(number).ok())
+                .filter(|number| (1..=3).contains(number))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "rating service_classes must be a list of 1, 2 or 3, got {class}"
+                    )
+                })
+        })
+        .collect::<anyhow::Result<Vec<u8>>>()?,
+    };
+    let mut hardware = BTreeMap::new();
+    if let Some(items) = given_field("hardware") {
+        let dict = DictRef::from_value(items).ok_or_else(|| {
+            anyhow::anyhow!("rating hardware must be a dict of item name to count")
+        })?;
+        for (item, count) in dict.iter() {
+            let item = item.unpack_str().ok_or_else(|| {
+                anyhow::anyhow!("rating hardware must be a dict of item name to count")
+            })?;
+            let count = count
+                .unpack_i32()
+                .and_then(|count| usize::try_from(count).ok())
+                .filter(|count| *count > 0)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("rating hardware {item:?}: the count must be a positive whole number, got {count}")
+                })?;
+            hardware.insert(item.to_owned(), count);
+        }
+    }
     Ok(Some(JointRating {
         load_n,
         basis,
@@ -111,6 +151,8 @@ fn parse_rating<'v>(
         note: text_field("note").unwrap_or_default(),
         tension_n,
         density_kg_m3: positive("density_kg_m3")?,
+        service_classes,
+        hardware,
     }))
 }
 

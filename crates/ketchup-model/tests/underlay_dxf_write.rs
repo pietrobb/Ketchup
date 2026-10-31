@@ -421,6 +421,165 @@ fn moved_and_copied_hatches_and_dimensions_are_written_where_they_now_lie() {
     assert_eq!(drawn_again["walls"].fills, 4);
 }
 
+/// Review 2026-10-29 CD-69: one moved entity of extrusion −Z, as AutoCAD's Mirror leaves
+/// arcs, polylines and texts, refused the export of the whole drawing. Its points are in
+/// an object coordinate system whose x is the world's −x; it is mapped there, and a line,
+/// whose points are the world's, as it is.
+#[test]
+fn moved_entities_of_extrusion_minus_z_are_written_where_they_now_lie() {
+    let minus_z = "210\n0\n220\n0\n230\n-1\n";
+    let entities = ENTITIES
+        .replace(
+            "10\n0\n20\n0\n30\n0\n11\n4000\n21\n0\n31\n0\n",
+            &format!("10\n0\n20\n0\n30\n0\n11\n4000\n21\n0\n31\n0\n{minus_z}"),
+        )
+        .replace(
+            "10\n4000\n20\n2000\n30\n0\n40\n1000\n100\nAcDbArc\n50\n0\n51\n90\n",
+            &format!(
+                "10\n-4000\n20\n2000\n30\n0\n40\n1000\n{minus_z}100\nAcDbArc\n50\n90\n51\n180\n"
+            ),
+        )
+        .replace(
+            "90\n3\n70\n1\n10\n0\n20\n3000\n42\n0.5\n10\n1000\n20\n3000\n10\n1000\n20\n4000\n",
+            &format!(
+                "90\n3\n70\n1\n10\n0\n20\n3000\n42\n-0.5\n10\n-1000\n20\n3000\n\
+                 10\n-1000\n20\n4000\n{minus_z}"
+            ),
+        )
+        .replace(
+            "10\n500\n20\n500\n30\n0\n40\n250\n1\nWC 1.02\n",
+            &format!("10\n-500\n20\n500\n30\n0\n40\n250\n1\nWC 1.02\n50\n180\n{minus_z}"),
+        );
+    let flipped = format!("{HEADER}{TABLES}{BLOCKS}{entities}0\nEOF\n");
+    let original = read(flipped.as_bytes());
+    let lines = &original.lines;
+    let names = &original.layers;
+    // The same drawing as the one of extrusion +Z.
+    let plain = read(source().as_bytes());
+    assert_same(&drawn(lines, names), &drawn(&plain.lines, &plain.layers));
+    let layers = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| UnderlayLayer {
+            name: name.clone(),
+            tag: TagId(10 + index as u64),
+        })
+        .collect::<Vec<_>>();
+    let turn = similarity([500.0, 200.0], 30.0, 1.0, [0.0, 0.0], None);
+    let mirror = similarity(
+        [0.0, 0.0],
+        0.0,
+        1.0,
+        [0.0, 0.0],
+        Some([[0.0, 5000.0], [1.0, 5000.0]]),
+    );
+    let mut edits = UnderlayEdits::default();
+    edits.moved_objects.insert(id_of(lines, 0xA0), turn);
+    edits.moved_objects.insert(id_of(lines, 0xA1), turn);
+    edits.moved_objects.insert(id_of(lines, 0xA2), mirror);
+    edits.moved_objects.insert(id_of(lines, 0xA3), turn);
+    for handle in [0xA1, 0xA2, 0xA3] {
+        edits.added.push(AddedObject::Copy {
+            of: id_of(lines, handle),
+            map: mirror,
+        });
+    }
+
+    let written = write_edited_dxf(
+        flipped.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let again = read(&written);
+    let edited = lines.clone().edited(&edits, &layers);
+    assert_same(&drawn(&again.lines, &again.layers), &drawn(&edited, names));
+}
+
+/// The number of group `code` in `record`, the `nth` of them.
+fn group(record: &str, code: &str, nth: usize) -> f64 {
+    let lines = record.lines().collect::<Vec<_>>();
+    let values = lines
+        .chunks(2)
+        .filter(|pair| pair[0] == code)
+        .map(|pair| pair[1].trim().parse::<f64>().unwrap())
+        .collect::<Vec<_>>();
+    *values
+        .get(nth)
+        .unwrap_or_else(|| panic!("no group {code} #{nth} in {record}"))
+}
+
+/// Review 2026-10-29 CD-70: the MTEXT inside a multi-line attribute had its direction
+/// mapped as a point; the world points, displacements, directions and distances of
+/// extended data were left as read; and a mirrored text kept its slant.
+#[test]
+fn moved_entities_map_embedded_text_extended_data_and_slant() {
+    let entities = ENTITIES
+        .replace(
+            "100\nAcDbAttribute\n2\nNAME\n70\n0\n",
+            "100\nAcDbAttribute\n2\nNAME\n70\n0\n101\nEmbedded Object\n\
+             10\n2100\n20\n100\n30\n0\n40\n100\n41\n800\n46\n0\n71\n1\n72\n5\n\
+             11\n1\n21\n0\n31\n0\n",
+        )
+        .replace(
+            "10\n0\n20\n0\n30\n0\n11\n4000\n21\n0\n31\n0\n",
+            "10\n0\n20\n0\n30\n0\n11\n4000\n21\n0\n31\n0\n1001\nKETCHUP\n\
+             1010\n7\n1020\n7\n1030\n0\n1011\n100\n1021\n0\n1031\n0\n\
+             1012\n10\n1022\n0\n1032\n0\n1013\n1\n1023\n0\n1033\n0\n\
+             1040\n3\n1041\n50\n1042\n2\n",
+        )
+        .replace("1\nWC 1.02\n", "1\nWC 1.02\n51\n15\n");
+    let source = format!("{HEADER}{TABLES}{BLOCKS}{entities}0\nEOF\n");
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let turn = similarity([1000.0, 0.0], 90.0, 2.0, [0.0, 0.0], None);
+    let mirror = similarity(
+        [0.0, 0.0],
+        0.0,
+        1.0,
+        [0.0, 0.0],
+        Some([[0.0, 5000.0], [1.0, 5000.0]]),
+    );
+    let mut edits = UnderlayEdits::default();
+    edits.moved_objects.insert(id_of(lines, 0xA0), turn);
+    edits.moved_objects.insert(id_of(lines, 0xA3), mirror);
+    edits.moved_objects.insert(id_of(lines, 0xA4), turn);
+
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let text = String::from_utf8(written).unwrap();
+    let [[a, b, x], [c, d, y]] = turn;
+    let close = |got: f64, wanted: f64| assert!((got - wanted).abs() < 1e-6, "{got} ≠ {wanted}");
+    // The attribute's embedded text: its point moved, its direction only turned.
+    let attribute = entity(&text, "A5");
+    close(group(&attribute, "10", 1), a * 2100.0 + b * 100.0 + x);
+    close(group(&attribute, "20", 1), c * 2100.0 + d * 100.0 + y);
+    close(group(&attribute, "11", 0), a);
+    close(group(&attribute, "21", 0), c);
+    close(group(&attribute, "40", 1), 200.0);
+    close(group(&attribute, "41", 0), 1600.0);
+    // The line's extended data.
+    let line = entity(&text, "A0");
+    close(group(&line, "1010", 0), 7.0);
+    close(group(&line, "1011", 0), a * 100.0 + x);
+    close(group(&line, "1021", 0), c * 100.0 + y);
+    close(group(&line, "1012", 0), a * 10.0);
+    close(group(&line, "1022", 0), c * 10.0);
+    close(group(&line, "1013", 0), a / 2.0);
+    close(group(&line, "1023", 0), c / 2.0);
+    close(group(&line, "1040", 0), 3.0);
+    close(group(&line, "1041", 0), 100.0);
+    close(group(&line, "1042", 0), 4.0);
+    // The mirrored text slants the other way.
+    close(group(&entity(&text, "A3"), "51", 0), 345.0);
+}
+
 /// Groups, draw order and the extension dictionary of the line A0, which has data.
 const OBJECTS: &str = concat!(
     "0\nSECTION\n2\nOBJECTS\n",
@@ -472,6 +631,68 @@ fn removed_entities_leave_no_reference_in_the_objects() {
             "0\nSORTENTSTABLE\n5\nB2\n330\nC\n100\nAcDbSortentsTable\n331\nA1\n5\nB4\n",
             "0\nENDSEC\n0\nEOF\n",
         )
+    );
+}
+
+/// Review 2026-10-29 CD-68: a removed entity was still named by the associative hatch
+/// bounded by it and by the dimension association measuring it. The hatch keeps its fill
+/// and stops following the entity; the association goes, and the dimension (here moved)
+/// no longer names it as a reactor.
+#[test]
+fn removed_entities_leave_no_reference_in_hatches_and_dimension_associations() {
+    let entities = ENTITIES.replace(
+        "0\nDIMENSION\n5\nA9\n330\n1F\n",
+        "0\nDIMENSION\n5\nA9\n102\n{ACAD_REACTORS\n330\nB5\n102\n}\n330\n1F\n",
+    );
+    let objects = OBJECTS.replace(
+        "0\nENDSEC\n",
+        concat!(
+            "0\nDIMASSOC\n5\nB5\n330\nA9\n100\nAcDbDimAssoc\n330\nA9\n90\n1\n70\n0\n71\n0\n",
+            "1\nAcDbOsnapPointRef\n72\n1\n331\nA0\n73\n0\n40\n0\n10\n0\n20\n0\n30\n0\n75\n0\n",
+            "0\nENDSEC\n",
+        ),
+    );
+    let source = format!("{HEADER}{TABLES}{BLOCKS}{entities}{objects}0\nEOF\n");
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(id_of(lines, 0xA0));
+    edits.removed_objects.insert(id_of(lines, 0xA7));
+    edits
+        .moved_objects
+        .insert(id_of(lines, 0xA9), [[1.0, 0.0, 0.0], [0.0, 1.0, 1000.0]]);
+
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let text = String::from_utf8(written.clone()).unwrap();
+    for gone in ["A0", "A7", "B5"] {
+        let named = records(&text)
+            .into_iter()
+            .filter(|record| {
+                let lines = record.lines().collect::<Vec<_>>();
+                lines.chunks(2).any(|pair| {
+                    pair[1] == gone
+                        && pair[0]
+                            .parse::<i32>()
+                            .is_ok_and(|code| code == 5 || (330..=369).contains(&code))
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(named, Vec::<String>::new(), "{gone}");
+    }
+    let hatch = entity(&text, "AA");
+    assert!(hatch.contains("\n71\n0\n"), "{hatch}");
+    assert!(hatch.contains("\n97\n0\n"), "{hatch}");
+    assert!(entity(&text, "A9").contains("\n100\nAcDbEntity\n"));
+    let again = read(&written);
+    assert_eq!(
+        again.lines.objects().objects.len() + 2,
+        lines.objects().objects.len()
     );
 }
 
@@ -712,6 +933,52 @@ fn a_drawing_without_a_unit_is_written_in_the_unit_it_was_read_in() {
         &drawn(&again.lines, &again.layers),
         &drawn(&edited, &original.layers),
     );
+}
+
+/// Review 2026-10-29 CD-67: with a `$HANDSEED` below the drawing's handles, the next
+/// handle was found past the entities' own handles but not past those of their VERTEX,
+/// ATTRIB and SEQEND, so a copy could take the handle of a door's attribute. Every handle
+/// written is new.
+#[test]
+fn a_copy_never_takes_the_handle_of_an_attribute_vertex_or_seqend() {
+    let entities = ENTITIES
+        .replace("0\nATTRIB\n5\nA5\n", "0\nATTRIB\n5\nF00\n")
+        .replace("0\nSEQEND\n5\nA6\n", "0\nSEQEND\n5\nF01\n");
+    let header = HEADER.replace("$HANDSEED\n5\n200\n", "$HANDSEED\n5\n1\n");
+    let source = format!("{header}{TABLES}{BLOCKS}{entities}0\nEOF\n");
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let mut edits = UnderlayEdits::default();
+    for handle in [0xA0, 0xA7] {
+        edits.added.push(AddedObject::Copy {
+            of: id_of(lines, handle),
+            map: [[1.0, 0.0, 0.0], [0.0, 1.0, 5000.0]],
+        });
+    }
+
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let text = String::from_utf8(written).unwrap();
+    let mut handles = records(&text)
+        .iter()
+        .filter_map(|record| {
+            let lines = record.lines().collect::<Vec<_>>();
+            lines
+                .chunks(2)
+                .find(|pair| pair[0] == "5")
+                .map(|pair| pair[1].to_owned())
+        })
+        .collect::<Vec<_>>();
+    let count = handles.len();
+    handles.sort();
+    handles.dedup();
+    assert_eq!(handles.len(), count, "{text}");
+    assert!(handles.contains(&"F02".to_owned()), "{handles:?}");
 }
 
 /// A DXF R12 drawing: no entity has a handle. A line in paper space is not read.

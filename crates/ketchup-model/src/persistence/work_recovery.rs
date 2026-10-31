@@ -138,7 +138,7 @@ impl WorkRecoveryLock {
                 Err(std::fs::TryLockError::WouldBlock) => {
                     return Err(FilePersistenceError::ExternalConflict);
                 }
-                // A Linux NFS client locks only a file opened for writing (EBADF).
+                // Not even a shared lock is taken there.
                 Err(std::fs::TryLockError::Error(_)) => Some(None),
             },
             Err(_) => None,
@@ -150,14 +150,26 @@ impl WorkRecoveryLock {
     }
 }
 
+/// Locks the lock file through a read-only handle: exclusively where the system
+/// allows it, else shared. A Linux NFS client refuses an exclusive lock on a handle
+/// not opened for writing (EBADF) but takes a shared one, which still collides with
+/// the exclusive lock of the session that holds the file, so that session keeps this
+/// one out (review 2026-10-26 MD-44).
 fn read_handle_lock(file: &fs::File) -> Result<(), std::fs::TryLockError> {
     #[cfg(feature = "testing")]
-    if READ_HANDLE_LOCK_FAILS.get() {
-        return Err(std::fs::TryLockError::Error(io::Error::from_raw_os_error(
+    let exclusive = if READ_HANDLE_LOCK_FAILS.get() {
+        Err(std::fs::TryLockError::Error(io::Error::from_raw_os_error(
             9,
-        )));
+        )))
+    } else {
+        file.try_lock()
+    };
+    #[cfg(not(feature = "testing"))]
+    let exclusive = file.try_lock();
+    match exclusive {
+        Err(std::fs::TryLockError::Error(_)) => file.try_lock_shared(),
+        locked_or_held => locked_or_held,
     }
-    file.try_lock()
 }
 
 /// Checks the observed checkpoint while the caller holds its WorkRecoveryLock.
@@ -349,8 +361,9 @@ thread_local! {
     static READ_HANDLE_LOCK_FAILS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Runs `operation` with a lock through a read-only handle failing on this thread, as
-/// on a Linux NFS client, which locks only a file opened for writing (EBADF).
+/// Runs `operation` with an exclusive lock through a read-only handle failing on this
+/// thread, as on a Linux NFS client, which locks a file not opened for writing only
+/// shared (EBADF).
 #[cfg(feature = "testing")]
 pub fn headless_with_read_handle_lock_failure<T>(operation: impl FnOnce() -> T) -> T {
     struct Reset(bool);

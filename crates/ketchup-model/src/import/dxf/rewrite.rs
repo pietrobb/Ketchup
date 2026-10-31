@@ -399,7 +399,10 @@ impl<'a> Drawing<'a> {
                         }
                         ("BLOCKS", "ENDSEC") => drawing.blocks_end = Some(index),
                         ("OBJECTS", "ENDSEC") => drawing.objects_end = Some(index),
-                        ("OBJECTS", _) => drawing.objects.push(index),
+                        // Not the `EOF` past it: the last record would take in `ENDSEC`.
+                        ("OBJECTS", _) if drawing.objects_end.is_none() => {
+                            drawing.objects.push(index);
+                        }
                         ("TABLES", "ENDTAB") if table.0 == "BLOCK_RECORD" => {
                             drawing.block_records = Some((index, table.1.take()));
                         }
@@ -448,8 +451,13 @@ impl<'a> Drawing<'a> {
             return Err(DxfEditRefusal::Malformed.into());
         }
         for entity in &drawing.entities {
-            max_handle = max_handle.max(entity.handle);
+            // Past the handles of its VERTEX, ATTRIB and SEQEND too, not only its own.
             for pair in &pairs[entity.pairs.clone()] {
+                if matches!(pair.code, 5 | 105)
+                    && let Some(handle) = hex(value(pair))
+                {
+                    max_handle = max_handle.max(Some(handle));
+                }
                 if pair.code == 8
                     && let Some(name) = decode(value(pair))
                     && !drawing.layers.iter().any(|(known, _)| *known == name)
@@ -668,6 +676,22 @@ impl<'a> Drawing<'a> {
         for &object in edits.removed_objects.iter().filter(|id| **id < read_count) {
             replaced[entity_of(object)?] = Some(None);
         }
+        let removed: BTreeSet<u64> = self
+            .entities
+            .iter()
+            .zip(&replaced)
+            .filter(|(_, replaced)| matches!(replaced, Some(None)))
+            .flat_map(|(entity, _)| entity.pairs.clone())
+            .filter(|&index| self.pairs[index].code == 5)
+            .filter_map(|index| hex(self.value(index)))
+            .collect();
+        let (objects_edits, removed) = self.objects_without(removed);
+        // The entities kept as they are, without what they named of the removed.
+        for (entity, replaced) in self.entities.iter().zip(&mut replaced) {
+            if replaced.is_none() {
+                *replaced = self.without_removed(entity, &removed).map(Some);
+            }
+        }
         let mut handles = self.next_handle;
         let mut blocks = NewBlocks {
             blocks: Vec::new(),
@@ -684,6 +708,8 @@ impl<'a> Drawing<'a> {
             let map = Mapping {
                 map: frame.map(map),
                 stretch,
+                removed: &removed,
+                vertices_minus_z: false,
             };
             let mapped = self.mapped(object, entity, &map, false, &mut handles, &mut blocks)?;
             replaced[entity] = Some(Some(mapped));
@@ -719,6 +745,8 @@ impl<'a> Drawing<'a> {
                     let map = Mapping {
                         map: frame.map(map),
                         stretch: matches!(edit, AddedObject::Stretched { .. }),
+                        removed: &removed,
+                        vertices_minus_z: false,
                     };
                     added.extend(self.mapped(
                         *of,
@@ -750,16 +778,7 @@ impl<'a> Drawing<'a> {
             let pair = &self.pairs[index];
             edits_at.push((pair.value().start..pair.end(), value));
         }
-        let removed: BTreeSet<u64> = self
-            .entities
-            .iter()
-            .zip(&replaced)
-            .filter(|(_, replaced)| matches!(replaced, Some(None)))
-            .flat_map(|(entity, _)| entity.pairs.clone())
-            .filter(|&index| self.pairs[index].code == 5)
-            .filter_map(|index| hex(self.value(index)))
-            .collect();
-        edits_at.extend(self.objects_without(removed));
+        edits_at.extend(objects_edits);
         for (entity, replaced) in self.entities.iter().zip(replaced) {
             if let Some(replaced) = replaced {
                 let range =
@@ -794,13 +813,15 @@ impl<'a> Drawing<'a> {
     /// The OBJECTS section rewritten without the records `removed` (by handle) owned, as
     /// a removed entity's extension dictionary, and without every reference to them: a
     /// group's member, a reactor, a dictionary entry with its key, a draw-order entry with
-    /// its sort handle (review 2026-10-29 CD-60). Each item replaces a byte range.
-    fn objects_without(&self, mut removed: BTreeSet<u64>) -> Vec<(Range<usize>, Vec<u8>)> {
+    /// its sort handle (review 2026-10-29 CD-60). A dimension association measuring a
+    /// removed entity goes too (CD-68). Each item replaces a byte range; the handles
+    /// removed come back with those of the records left out.
+    fn objects_without(&self, mut removed: BTreeSet<u64>) -> (ObjectEdits, BTreeSet<u64>) {
         let Some(end) = self.objects_end else {
-            return Vec::new();
+            return (Vec::new(), removed);
         };
         if removed.is_empty() {
-            return Vec::new();
+            return (Vec::new(), removed);
         }
         let records: Vec<Range<usize>> = self
             .objects
@@ -824,7 +845,16 @@ impl<'a> Drawing<'a> {
         loop {
             let mut changed = false;
             for (record, dropped) in records.iter().zip(&mut dropped) {
-                if !*dropped && handle_of(record, 330).is_some_and(|owner| removed.contains(&owner))
+                let measures_removed = || {
+                    self.value(record.start).eq_ignore_ascii_case(b"DIMASSOC")
+                        && record.clone().any(|index| {
+                            self.pairs[index].code == 331
+                                && hex(self.value(index)).is_some_and(|h| removed.contains(&h))
+                        })
+                };
+                if !*dropped
+                    && (handle_of(record, 330).is_some_and(|owner| removed.contains(&owner))
+                        || measures_removed())
                 {
                     *dropped = true;
                     changed = true;
@@ -873,7 +903,7 @@ impl<'a> Drawing<'a> {
                 edits.push((bytes, kept));
             }
         }
-        edits
+        (edits, removed)
     }
 
     /// The entity `entity`, of object `object`, mapped by `map`, of the drawing's units;
@@ -891,17 +921,22 @@ impl<'a> Drawing<'a> {
         let entity = &self.entities[entity];
         let mut out = Vec::new();
         let primary = if copy { take_handle(handles) } else { None };
+        let mut map = *map;
         for (index, (start, record)) in entity.records.iter().enumerate() {
             let end = entity
                 .records
                 .get(index + 1)
                 .map_or(entity.pairs.end, |next| next.0);
+            if index == 0 && record == "POLYLINE" {
+                map.vertices_minus_z = self.extrusion_z(*start..end)?.is_some_and(|z| z < 0.0);
+            }
             let own = match (copy, index) {
                 (false, _) => None,
                 (true, 0) => primary,
                 (true, _) => take_handle(handles),
             };
-            let mut mapped = self.mapped_record(object, record, *start..end, map)?;
+            let mut mapped = self.mapped_record(object, record, *start..end, &map)?;
+            self.drop_references(record, &mut mapped, map.removed);
             if record == "DIMENSION" {
                 self.dimension_block(object, &mut mapped, &map.map, handles, blocks)?;
             }
@@ -909,6 +944,95 @@ impl<'a> Drawing<'a> {
             self.write_record(&mut out, &mapped, copy);
         }
         Ok(out)
+    }
+
+    /// The entity `entity` as read without what it names of the `removed` handles, if it
+    /// names any (review 2026-10-29 CD-68).
+    fn without_removed(&self, entity: &Entity, removed: &BTreeSet<u64>) -> Option<Vec<u8>> {
+        let names = entity.pairs.clone().any(|index| {
+            (330..=369).contains(&self.pairs[index].code)
+                && hex(self.value(index)).is_some_and(|handle| removed.contains(&handle))
+        });
+        if !names {
+            return None;
+        }
+        let mut out = Vec::new();
+        for (index, (start, record)) in entity.records.iter().enumerate() {
+            let end = entity
+                .records
+                .get(index + 1)
+                .map_or(entity.pairs.end, |next| next.0);
+            let mut pairs = (*start..end).map(Out::Raw).collect::<Vec<_>>();
+            self.drop_references(record, &mut pairs, removed);
+            self.write_record(&mut out, &pairs, None);
+        }
+        Some(out)
+    }
+
+    /// Leaves out of `record` (one record of kind `kind`) each reference to the `removed`
+    /// handles, as a reactor, and a reactor group left empty. A hatch bounded by a removed
+    /// entity keeps its fill: its count of boundary objects goes down, and with none left
+    /// it is no longer associative (review 2026-10-29 CD-68).
+    fn drop_references(&self, kind: &str, record: &mut [Out], removed: &BTreeSet<u64>) {
+        let hatch = kind == "HATCH";
+        let mut sources = None::<(usize, usize, u64)>;
+        let mut associative = None::<(usize, usize)>;
+        let (mut dropped, mut kept) = (false, false);
+        let mut group = None::<usize>;
+        for at in 0..record.len() {
+            let index = match &record[at] {
+                Out::Raw(index) | Out::Set(index, _) => *index,
+                Out::New(..) | Out::Drop => continue,
+            };
+            let code = self.pairs[index].code;
+            let value = self.value(index);
+            match code {
+                102 if value.starts_with(b"{") => group = Some(at),
+                102 => {
+                    // A group of which every member was left out goes with them.
+                    if let Some(start) = group.take()
+                        && record[start + 1..at]
+                            .iter()
+                            .all(|out| matches!(out, Out::Drop))
+                        && at > start + 1
+                    {
+                        record[start] = Out::Drop;
+                        record[at] = Out::Drop;
+                    }
+                }
+                71 if hatch => associative = Some((at, index)),
+                97 if hatch => {
+                    let count = std::str::from_utf8(value)
+                        .ok()
+                        .and_then(|count| count.trim().parse().ok());
+                    sources = count.map(|count| (at, index, count));
+                }
+                _ => {}
+            }
+            if !(330..=369).contains(&code) {
+                continue;
+            }
+            let Some(handle) = hex(value) else {
+                continue;
+            };
+            let source = hatch && code == 330 && sources.is_some();
+            if !removed.contains(&handle) {
+                kept |= source;
+                continue;
+            }
+            record[at] = Out::Drop;
+            dropped |= source;
+            if source && let Some((at, index, count)) = sources.as_mut() {
+                *count = count.saturating_sub(1);
+                record[*at] = Out::Set(*index, count.to_string());
+            }
+        }
+        if dropped
+            && !kept
+            && let Some((at, index)) = associative
+        {
+            record[at] = Out::Set(index, "0".to_owned());
+        }
     }
 
     /// The block the dimension `record` draws, mapped by `map` as a new block of its own
@@ -977,13 +1101,18 @@ impl<'a> Drawing<'a> {
             .collect::<Vec<_>>();
         self.write_record(&mut blocks.blocks, &named, copy(handles));
         let mut start = header.end;
+        let mut mapping = Mapping {
+            map: *map,
+            stretch: false,
+            removed: &BTreeSet::new(),
+            vertices_minus_z: false,
+        };
         while start < endblk {
             let end = next_record(start)?;
             let kind = String::from_utf8_lossy(self.value(start)).to_ascii_uppercase();
-            let mapping = Mapping {
-                map: *map,
-                stretch: false,
-            };
+            if kind == "POLYLINE" {
+                mapping.vertices_minus_z = self.extrusion_z(start..end)?.is_some_and(|z| z < 0.0);
+            }
             let mapped = self.mapped_record(object, &kind, start..end, &mapping)?;
             self.write_record(&mut blocks.blocks, &mapped, copy(handles));
             start = end;
@@ -1004,6 +1133,52 @@ impl<'a> Drawing<'a> {
         out.extend_from_slice(self.eol);
     }
 
+    /// The Z of the extrusion of the record of pairs `pairs`, if it has one, as an entity
+    /// flat in the plan has: ±1 (review 2026-10-29 CD-69).
+    fn extrusion_z(&self, pairs: Range<usize>) -> Result<Option<f64>, EditedDxfError> {
+        let mut z = None;
+        for index in pairs.take_while(|index| self.pairs[*index].code < 1000) {
+            match self.pairs[index].code {
+                210 | 220 if self.number(index)?.abs() > NEGLIGIBLE => {
+                    return Ok(Some(f64::NAN));
+                }
+                230 => z = Some(self.number(index)?),
+                _ => {}
+            }
+        }
+        Ok(z)
+    }
+
+    /// Whether the record `record` of pairs `pairs` has its points in an object coordinate
+    /// system of extrusion −Z, where x is the world's −x; a VERTEX has that of its
+    /// POLYLINE, `vertices_minus_z`. An entity whose points are the world's has none; one
+    /// of another extrusion is refused, as the import refuses it.
+    fn in_mirrored_ocs(
+        &self,
+        object: u32,
+        record: &str,
+        pairs: Range<usize>,
+        vertices_minus_z: bool,
+    ) -> Result<bool, EditedDxfError> {
+        let not_mappable = || DxfEditRefusal::NotMappable {
+            object,
+            kind: record.to_owned(),
+        };
+        let minus_z = match self.extrusion_z(pairs)? {
+            None => record == "VERTEX" && vertices_minus_z,
+            Some(z) if (z - 1.0).abs() <= NEGLIGIBLE => false,
+            Some(z) if (z + 1.0).abs() <= NEGLIGIBLE => true,
+            Some(_) => return Err(not_mappable().into()),
+        };
+        match record {
+            _ if !minus_z => Ok(false),
+            "LINE" | "POINT" | "ELLIPSE" | "SPLINE" | "MTEXT" => Ok(false),
+            "CIRCLE" | "ARC" | "LWPOLYLINE" | "POLYLINE" | "VERTEX" | "TEXT" | "ATTRIB"
+            | "ATTDEF" | "INSERT" => Ok(true),
+            _ => Err(not_mappable().into()),
+        }
+    }
+
     /// The pairs of one record mapped by `map`.
     fn mapped_record(
         &self,
@@ -1020,7 +1195,25 @@ impl<'a> Drawing<'a> {
         if mapping.stretch && !STRETCHED_RECORDS.contains(&record) {
             return Err(not_mappable().into());
         }
-        let map = &mapping.map;
+        let ocs = self.in_mirrored_ocs(object, record, pairs.clone(), mapping.vertices_minus_z)?;
+        let flipped;
+        let map = if ocs {
+            // Mapped in the object coordinate system: its x is the world's −x.
+            let [[a, b, x], [c, d, y]] = mapping.map;
+            flipped = [[a, 0.0 - b, 0.0 - x], [0.0 - c, d, y]];
+            &flipped
+        } else {
+            &mapping.map
+        };
+        // A text reads from left to right in the world, not in its own system.
+        let readable = |rotation: f64| {
+            use std::f64::consts::PI;
+            if ocs {
+                PI - readable_rotation(&mapping.map, PI - rotation)
+            } else {
+                readable_rotation(map, rotation)
+            }
+        };
         let [[a, b, _], [c, d, _]] = *map;
         let scale = (a * d - b * c).abs().sqrt();
         // A stretched line keeps its widths.
@@ -1034,23 +1227,23 @@ impl<'a> Drawing<'a> {
             .position(|index| self.pairs[*index].code >= 1000)
             .map_or(&indices[..], |end| &indices[..end]);
         let code_of = |index: usize| self.pairs[index].code;
+        // A multi-line attribute's text follows group 101 with the groups of an MTEXT.
+        let embedded = matches!(record, "ATTRIB" | "ATTDEF")
+            .then(|| own.iter().position(|index| code_of(*index) == 101))
+            .flatten();
+        let mtext = Rules::of("MTEXT").ok_or_else(not_mappable)?;
+        let main = embedded.map_or(own, |start| &own[..start]);
         let number_of = |code: i32| -> Result<Option<f64>, EditedDxfError> {
-            own.iter()
+            main.iter()
                 .find(|index| code_of(**index) == code)
                 .map(|index| self.number(*index))
                 .transpose()
         };
         let dimension_kind = || -> Result<i64, EditedDxfError> {
-            own.iter()
+            main.iter()
                 .find(|index| code_of(**index) == 70)
                 .map_or(Ok(0), |index| self.integer(*index))
         };
-        let extrusion = [210, 220, 230].map(number_of);
-        let [ex, ey, ez] = extrusion;
-        let (ex, ey, ez) = (ex?.unwrap_or(0.0), ey?.unwrap_or(0.0), ez?.unwrap_or(1.0));
-        if ex.abs() > NEGLIGIBLE || ey.abs() > NEGLIGIBLE || (ez - 1.0).abs() > NEGLIGIBLE {
-            return Err(not_mappable().into());
-        }
         if rules.insert && mirrored {
             let many = |code| number_of(code).map(|count| count.is_some_and(|count| count > 1.0));
             if many(70)? || many(71)? {
@@ -1061,13 +1254,18 @@ impl<'a> Drawing<'a> {
             .iter()
             .map(|index| Out::Raw(*index))
             .collect::<Vec<_>>();
-        let position = |code: i32| own.iter().position(|index| code_of(*index) == code);
+        let position = |code: i32| main.iter().position(|index| code_of(*index) == code);
         let mut skip = 0;
         for (at, &index) in own.iter().enumerate() {
             if skip > 0 {
                 skip -= 1;
                 continue;
             }
+            let rules = if embedded.is_some_and(|start| at > start) {
+                &mtext
+            } else {
+                &rules
+            };
             let code = code_of(index);
             let next = own
                 .get(at + 1)
@@ -1082,7 +1280,7 @@ impl<'a> Drawing<'a> {
                     [a * point[0] + b * point[1], c * point[0] + d * point[1]]
                 };
                 let [x, y] = if rules.direction == Some(code) {
-                    let turned = readable_rotation(map, point[1].atan2(point[0]));
+                    let turned = readable(point[1].atan2(point[0]));
                     let length = x.hypot(y);
                     [length * turned.cos(), length * turned.sin()]
                 } else {
@@ -1100,6 +1298,15 @@ impl<'a> Drawing<'a> {
                 out[at] = Out::Set(index, number(angle));
             }
         }
+        // A mirrored text slants the other way.
+        if mirrored
+            && matches!(record, "TEXT" | "ATTRIB" | "ATTDEF")
+            && let Some(at) = position(51)
+        {
+            let slant = (0.0 - self.number(own[at])?).rem_euclid(360.0);
+            out[at] = Out::Set(own[at], number(slant));
+        }
+        self.map_extended_data(&indices[own.len()..], &mut out[own.len()..], &mapping.map)?;
         if rules.dimension
             && let Some(at) = position(42)
             && !matches!(dimension_kind()? & 7, 2 | 5)
@@ -1145,9 +1352,7 @@ impl<'a> Drawing<'a> {
             && !(rules.direction.is_some() && position(11).is_some())
         {
             let rotation = number_of(code)?.unwrap_or(0.0).to_radians();
-            let turned = readable_rotation(map, rotation)
-                .to_degrees()
-                .rem_euclid(360.0);
+            let turned = readable(rotation).to_degrees().rem_euclid(360.0);
             set(&mut out, code, 40, turned);
         }
         if rules.insert {
@@ -1170,6 +1375,49 @@ impl<'a> Drawing<'a> {
             out.insert(at + 1, pair);
         }
         Ok(out)
+    }
+
+    /// The extended data `xdata` mapped by `map`, of the world, into `out`: a world point
+    /// (1011) moves, a displacement (1012) turns and scales, a direction (1013) only turns,
+    /// and a distance (1041) and a scale factor (1042) scale (review 2026-10-29 CD-70).
+    fn map_extended_data(
+        &self,
+        xdata: &[usize],
+        out: &mut [Out],
+        map: &Affine,
+    ) -> Result<(), EditedDxfError> {
+        let [[a, b, _], [c, d, _]] = *map;
+        let scale = (a * d - b * c).abs().sqrt();
+        let mut skip = false;
+        for (at, &index) in xdata.iter().enumerate() {
+            if std::mem::take(&mut skip) {
+                continue;
+            }
+            let code = self.pairs[index].code;
+            match code {
+                1011..=1013 => {
+                    let next = xdata
+                        .get(at + 1)
+                        .copied()
+                        .filter(|next| self.pairs[*next].code == code + 10)
+                        .ok_or(DxfEditRefusal::Malformed)?;
+                    let point = [self.number(index)?, self.number(next)?];
+                    let turned = [a * point[0] + b * point[1], c * point[0] + d * point[1]];
+                    let [x, y] = match code {
+                        1011 => apply(map, point),
+                        1012 => turned,
+                        _ if scale > 0.0 => turned.map(|value| value / scale),
+                        _ => point,
+                    };
+                    out[at] = Out::Set(index, number(x));
+                    out[at + 1] = Out::Set(next, number(y));
+                    skip = true;
+                }
+                1041 | 1042 => out[at] = Out::Set(index, number(self.number(index)? * scale)),
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     /// The groups of a HATCH or MPOLYGON, `own`, mapped by `map` into `out`, by where they
@@ -1507,6 +1755,9 @@ impl<'a> Drawing<'a> {
     }
 }
 
+/// Byte ranges of the source and what replaces each.
+type ObjectEdits = Vec<(Range<usize>, Vec<u8>)>;
+
 /// One pair written of a record: as read, with a new value, new, or left out.
 enum Out {
     Raw(usize),
@@ -1516,10 +1767,15 @@ enum Out {
 }
 
 /// A map of an entity, of the drawing's units; `stretch` when it makes a straight line
-/// shorter or longer, so that its widths stay as they are.
-struct Mapping {
+/// shorter or longer, so that its widths stay as they are. The entity written no longer
+/// names the handles `removed`. With `vertices_minus_z` the VERTEX records mapped are of a
+/// POLYLINE of extrusion −Z.
+#[derive(Clone, Copy)]
+struct Mapping<'r> {
     map: Affine,
     stretch: bool,
+    removed: &'r BTreeSet<u64>,
+    vertices_minus_z: bool,
 }
 
 /// The records of the straight lines that are stretched ([`UnderlayEdits::stretched_objects`]).
