@@ -28,9 +28,11 @@ pub(super) enum Piece {
     },
 }
 
-/// An angle one chord of a drawn arc may always span; a polygon with sides this short is
-/// drawn as a curve.
-const MAX_STEP: f64 = 10.0 * std::f64::consts::PI / 180.0;
+/// An angle one chord of a drawn arc may always span, the step of a polygon of 36½ sides:
+/// a polygon of 37 sides or more is a curve drawn flattened, one of up to 36 was drawn so
+/// on purpose and stays one (review 2026-10-29 UO-68), unless the import would cut a
+/// circle of its size as coarsely.
+const MAX_STEP: f64 = TAU / 36.5;
 /// The fewest chords a run takes to be an arc.
 const MIN_CHORDS: usize = 4;
 /// A quarter point this close to an end of an arc does not split it.
@@ -450,6 +452,25 @@ mod tests {
         let mut slot = drawn_arc([3000.0, 50.0], 50.0, -FRAC_PI_2, FRAC_PI_2);
         slot.extend(drawn_arc([0.0, 50.0], 50.0, FRAC_PI_2, 3.0 * FRAC_PI_2));
         assert_round(&slot, 3000.0 * 100.0 + PI * 2500.0);
+    }
+
+    /// Review 2026-10-29 UO-68: a 36-gon drawn on purpose, its sides far longer than the
+    /// import cuts a circle of its size into, stays a polygon from whichever corner it
+    /// starts; a polygon of 37 sides and more is read as the circle it flattens.
+    #[test]
+    fn a_drawn_polygon_of_36_sides_stays_one() {
+        for radius in [50.0, 500.0, 5000.0] {
+            let mut drawn = polygon([100.0, 200.0], radius, 36, 0.2, 0.2 + TAU);
+            drawn.pop();
+            for ring in starts(&drawn) {
+                assert_eq!(pieces(&ring, 1.0), None, "r = {radius} from {:?}", ring[0]);
+            }
+            let mut finer = polygon([100.0, 200.0], radius, 37, 0.2, 0.2 + TAU);
+            finer.pop();
+            let disc = std::f64::consts::PI * radius * radius;
+            let read = pieces(&finer, 1.0).unwrap_or_else(|| panic!("r = {radius}"));
+            assert!((area(&read) - disc).abs() < 1e-6 * disc, "r = {radius}");
+        }
     }
 
     /// Review 2026-10-29 UO-60: a slot 1000 long whose ends are drawn in chords of 10°
