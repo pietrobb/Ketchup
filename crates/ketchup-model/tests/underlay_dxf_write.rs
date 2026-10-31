@@ -475,6 +475,68 @@ fn removed_entities_leave_no_reference_in_the_objects() {
     );
 }
 
+/// Review 2026-10-29 CD-68: a removed entity was still named by the associative hatch
+/// bounded by it and by the dimension association measuring it. The hatch keeps its fill
+/// and stops following the entity; the association goes, and the dimension (here moved)
+/// no longer names it as a reactor.
+#[test]
+fn removed_entities_leave_no_reference_in_hatches_and_dimension_associations() {
+    let entities = ENTITIES.replace(
+        "0\nDIMENSION\n5\nA9\n330\n1F\n",
+        "0\nDIMENSION\n5\nA9\n102\n{ACAD_REACTORS\n330\nB5\n102\n}\n330\n1F\n",
+    );
+    let objects = OBJECTS.replace(
+        "0\nENDSEC\n",
+        concat!(
+            "0\nDIMASSOC\n5\nB5\n330\nA9\n100\nAcDbDimAssoc\n330\nA9\n90\n1\n70\n0\n71\n0\n",
+            "1\nAcDbOsnapPointRef\n72\n1\n331\nA0\n73\n0\n40\n0\n10\n0\n20\n0\n30\n0\n75\n0\n",
+            "0\nENDSEC\n",
+        ),
+    );
+    let source = format!("{HEADER}{TABLES}{BLOCKS}{entities}{objects}0\nEOF\n");
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(id_of(lines, 0xA0));
+    edits.removed_objects.insert(id_of(lines, 0xA7));
+    edits
+        .moved_objects
+        .insert(id_of(lines, 0xA9), [[1.0, 0.0, 0.0], [0.0, 1.0, 1000.0]]);
+
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let text = String::from_utf8(written.clone()).unwrap();
+    for gone in ["A0", "A7", "B5"] {
+        let named = records(&text)
+            .into_iter()
+            .filter(|record| {
+                let lines = record.lines().collect::<Vec<_>>();
+                lines.chunks(2).any(|pair| {
+                    pair[1] == gone
+                        && pair[0]
+                            .parse::<i32>()
+                            .is_ok_and(|code| code == 5 || (330..=369).contains(&code))
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(named, Vec::<String>::new(), "{gone}");
+    }
+    let hatch = entity(&text, "AA");
+    assert!(hatch.contains("\n71\n0\n"), "{hatch}");
+    assert!(hatch.contains("\n97\n0\n"), "{hatch}");
+    assert!(entity(&text, "A9").contains("\n100\nAcDbEntity\n"));
+    let again = read(&written);
+    assert_eq!(
+        again.lines.objects().objects.len() + 2,
+        lines.objects().objects.len()
+    );
+}
+
 /// A dashed red LINE of lineweight 50 with extended data, two lines across it, and an
 /// LWPOLYLINE 20 wide along it; a group names the line and the polyline.
 const SHAPED: &str = concat!(

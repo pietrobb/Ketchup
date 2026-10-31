@@ -399,7 +399,10 @@ impl<'a> Drawing<'a> {
                         }
                         ("BLOCKS", "ENDSEC") => drawing.blocks_end = Some(index),
                         ("OBJECTS", "ENDSEC") => drawing.objects_end = Some(index),
-                        ("OBJECTS", _) => drawing.objects.push(index),
+                        // Not the `EOF` past it: the last record would take in `ENDSEC`.
+                        ("OBJECTS", _) if drawing.objects_end.is_none() => {
+                            drawing.objects.push(index);
+                        }
                         ("TABLES", "ENDTAB") if table.0 == "BLOCK_RECORD" => {
                             drawing.block_records = Some((index, table.1.take()));
                         }
@@ -673,6 +676,22 @@ impl<'a> Drawing<'a> {
         for &object in edits.removed_objects.iter().filter(|id| **id < read_count) {
             replaced[entity_of(object)?] = Some(None);
         }
+        let removed: BTreeSet<u64> = self
+            .entities
+            .iter()
+            .zip(&replaced)
+            .filter(|(_, replaced)| matches!(replaced, Some(None)))
+            .flat_map(|(entity, _)| entity.pairs.clone())
+            .filter(|&index| self.pairs[index].code == 5)
+            .filter_map(|index| hex(self.value(index)))
+            .collect();
+        let (objects_edits, removed) = self.objects_without(removed);
+        // The entities kept as they are, without what they named of the removed.
+        for (entity, replaced) in self.entities.iter().zip(&mut replaced) {
+            if replaced.is_none() {
+                *replaced = self.without_removed(entity, &removed).map(Some);
+            }
+        }
         let mut handles = self.next_handle;
         let mut blocks = NewBlocks {
             blocks: Vec::new(),
@@ -689,6 +708,7 @@ impl<'a> Drawing<'a> {
             let map = Mapping {
                 map: frame.map(map),
                 stretch,
+                removed: &removed,
             };
             let mapped = self.mapped(object, entity, &map, false, &mut handles, &mut blocks)?;
             replaced[entity] = Some(Some(mapped));
@@ -724,6 +744,7 @@ impl<'a> Drawing<'a> {
                     let map = Mapping {
                         map: frame.map(map),
                         stretch: matches!(edit, AddedObject::Stretched { .. }),
+                        removed: &removed,
                     };
                     added.extend(self.mapped(
                         *of,
@@ -755,16 +776,7 @@ impl<'a> Drawing<'a> {
             let pair = &self.pairs[index];
             edits_at.push((pair.value().start..pair.end(), value));
         }
-        let removed: BTreeSet<u64> = self
-            .entities
-            .iter()
-            .zip(&replaced)
-            .filter(|(_, replaced)| matches!(replaced, Some(None)))
-            .flat_map(|(entity, _)| entity.pairs.clone())
-            .filter(|&index| self.pairs[index].code == 5)
-            .filter_map(|index| hex(self.value(index)))
-            .collect();
-        edits_at.extend(self.objects_without(removed));
+        edits_at.extend(objects_edits);
         for (entity, replaced) in self.entities.iter().zip(replaced) {
             if let Some(replaced) = replaced {
                 let range =
@@ -799,13 +811,15 @@ impl<'a> Drawing<'a> {
     /// The OBJECTS section rewritten without the records `removed` (by handle) owned, as
     /// a removed entity's extension dictionary, and without every reference to them: a
     /// group's member, a reactor, a dictionary entry with its key, a draw-order entry with
-    /// its sort handle (review 2026-10-29 CD-60). Each item replaces a byte range.
-    fn objects_without(&self, mut removed: BTreeSet<u64>) -> Vec<(Range<usize>, Vec<u8>)> {
+    /// its sort handle (review 2026-10-29 CD-60). A dimension association measuring a
+    /// removed entity goes too (CD-68). Each item replaces a byte range; the handles
+    /// removed come back with those of the records left out.
+    fn objects_without(&self, mut removed: BTreeSet<u64>) -> (ObjectEdits, BTreeSet<u64>) {
         let Some(end) = self.objects_end else {
-            return Vec::new();
+            return (Vec::new(), removed);
         };
         if removed.is_empty() {
-            return Vec::new();
+            return (Vec::new(), removed);
         }
         let records: Vec<Range<usize>> = self
             .objects
@@ -829,7 +843,16 @@ impl<'a> Drawing<'a> {
         loop {
             let mut changed = false;
             for (record, dropped) in records.iter().zip(&mut dropped) {
-                if !*dropped && handle_of(record, 330).is_some_and(|owner| removed.contains(&owner))
+                let measures_removed = || {
+                    self.value(record.start).eq_ignore_ascii_case(b"DIMASSOC")
+                        && record.clone().any(|index| {
+                            self.pairs[index].code == 331
+                                && hex(self.value(index)).is_some_and(|h| removed.contains(&h))
+                        })
+                };
+                if !*dropped
+                    && (handle_of(record, 330).is_some_and(|owner| removed.contains(&owner))
+                        || measures_removed())
                 {
                     *dropped = true;
                     changed = true;
@@ -878,7 +901,7 @@ impl<'a> Drawing<'a> {
                 edits.push((bytes, kept));
             }
         }
-        edits
+        (edits, removed)
     }
 
     /// The entity `entity`, of object `object`, mapped by `map`, of the drawing's units;
@@ -907,6 +930,7 @@ impl<'a> Drawing<'a> {
                 (true, _) => take_handle(handles),
             };
             let mut mapped = self.mapped_record(object, record, *start..end, map)?;
+            self.drop_references(record, &mut mapped, map.removed);
             if record == "DIMENSION" {
                 self.dimension_block(object, &mut mapped, &map.map, handles, blocks)?;
             }
@@ -914,6 +938,95 @@ impl<'a> Drawing<'a> {
             self.write_record(&mut out, &mapped, copy);
         }
         Ok(out)
+    }
+
+    /// The entity `entity` as read without what it names of the `removed` handles, if it
+    /// names any (review 2026-10-29 CD-68).
+    fn without_removed(&self, entity: &Entity, removed: &BTreeSet<u64>) -> Option<Vec<u8>> {
+        let names = entity.pairs.clone().any(|index| {
+            (330..=369).contains(&self.pairs[index].code)
+                && hex(self.value(index)).is_some_and(|handle| removed.contains(&handle))
+        });
+        if !names {
+            return None;
+        }
+        let mut out = Vec::new();
+        for (index, (start, record)) in entity.records.iter().enumerate() {
+            let end = entity
+                .records
+                .get(index + 1)
+                .map_or(entity.pairs.end, |next| next.0);
+            let mut pairs = (*start..end).map(Out::Raw).collect::<Vec<_>>();
+            self.drop_references(record, &mut pairs, removed);
+            self.write_record(&mut out, &pairs, None);
+        }
+        Some(out)
+    }
+
+    /// Leaves out of `record` (one record of kind `kind`) each reference to the `removed`
+    /// handles, as a reactor, and a reactor group left empty. A hatch bounded by a removed
+    /// entity keeps its fill: its count of boundary objects goes down, and with none left
+    /// it is no longer associative (review 2026-10-29 CD-68).
+    fn drop_references(&self, kind: &str, record: &mut [Out], removed: &BTreeSet<u64>) {
+        let hatch = kind == "HATCH";
+        let mut sources = None::<(usize, usize, u64)>;
+        let mut associative = None::<(usize, usize)>;
+        let (mut dropped, mut kept) = (false, false);
+        let mut group = None::<usize>;
+        for at in 0..record.len() {
+            let index = match &record[at] {
+                Out::Raw(index) | Out::Set(index, _) => *index,
+                Out::New(..) | Out::Drop => continue,
+            };
+            let code = self.pairs[index].code;
+            let value = self.value(index);
+            match code {
+                102 if value.starts_with(b"{") => group = Some(at),
+                102 => {
+                    // A group of which every member was left out goes with them.
+                    if let Some(start) = group.take()
+                        && record[start + 1..at]
+                            .iter()
+                            .all(|out| matches!(out, Out::Drop))
+                        && at > start + 1
+                    {
+                        record[start] = Out::Drop;
+                        record[at] = Out::Drop;
+                    }
+                }
+                71 if hatch => associative = Some((at, index)),
+                97 if hatch => {
+                    let count = std::str::from_utf8(value)
+                        .ok()
+                        .and_then(|count| count.trim().parse().ok());
+                    sources = count.map(|count| (at, index, count));
+                }
+                _ => {}
+            }
+            if !(330..=369).contains(&code) {
+                continue;
+            }
+            let Some(handle) = hex(value) else {
+                continue;
+            };
+            let source = hatch && code == 330 && sources.is_some();
+            if !removed.contains(&handle) {
+                kept |= source;
+                continue;
+            }
+            record[at] = Out::Drop;
+            dropped |= source;
+            if source && let Some((at, index, count)) = sources.as_mut() {
+                *count = count.saturating_sub(1);
+                record[*at] = Out::Set(*index, count.to_string());
+            }
+        }
+        if dropped
+            && !kept
+            && let Some((at, index)) = associative
+        {
+            record[at] = Out::Set(index, "0".to_owned());
+        }
     }
 
     /// The block the dimension `record` draws, mapped by `map` as a new block of its own
@@ -988,6 +1101,7 @@ impl<'a> Drawing<'a> {
             let mapping = Mapping {
                 map: *map,
                 stretch: false,
+                removed: &BTreeSet::new(),
             };
             let mapped = self.mapped_record(object, &kind, start..end, &mapping)?;
             self.write_record(&mut blocks.blocks, &mapped, copy(handles));
@@ -1512,6 +1626,9 @@ impl<'a> Drawing<'a> {
     }
 }
 
+/// Byte ranges of the source and what replaces each.
+type ObjectEdits = Vec<(Range<usize>, Vec<u8>)>;
+
 /// One pair written of a record: as read, with a new value, new, or left out.
 enum Out {
     Raw(usize),
@@ -1521,10 +1638,12 @@ enum Out {
 }
 
 /// A map of an entity, of the drawing's units; `stretch` when it makes a straight line
-/// shorter or longer, so that its widths stay as they are.
-struct Mapping {
+/// shorter or longer, so that its widths stay as they are. The entity written no longer
+/// names the handles `removed`.
+struct Mapping<'r> {
     map: Affine,
     stretch: bool,
+    removed: &'r BTreeSet<u64>,
 }
 
 /// The records of the straight lines that are stretched ([`UnderlayEdits::stretched_objects`]).
