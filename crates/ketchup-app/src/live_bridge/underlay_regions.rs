@@ -588,7 +588,8 @@ fn found_regions(
     let mut found = FOUND
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if found.len() == FOUND_KEPT {
+    let kept = FOUND_KEPT + FLAT_DRAWINGS.load(std::sync::atomic::Ordering::Relaxed);
+    while found.len() >= kept {
         drop(found.remove(0));
     }
     found.push((search, regions.clone()));
@@ -608,8 +609,18 @@ struct Search {
 /// The regions a search found, or why it found none.
 type Searched = Result<Vec<Region>, ketchup_model::underlay::regions::RegionError>;
 
-/// How many searches [`FOUND`] keeps.
+/// How many searches [`FOUND`] keeps besides one per drawing lying flat.
 const FOUND_KEPT: usize = 4;
+
+/// The drawings lying flat whose regions a click of Pull area waits for at once: [`FOUND`]
+/// keeps one search more for each, or with a plan per floor each search found pushed out
+/// another and the click waited for ever (review 2026-10-26 UO-40).
+static FLAT_DRAWINGS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Keeps the regions of `count` drawings lying flat found together.
+pub(crate) fn keep_found_for(count: usize) {
+    FLAT_DRAWINGS.store(count, std::sync::atomic::Ordering::Relaxed);
+}
 
 /// The regions of the latest searches, or why they were not found, the last used last:
 /// moving, turning or fitting an underlay found the same regions of the same lines again
@@ -671,13 +682,16 @@ enum Ahead {
 }
 
 fn claim(search: Search) -> Ahead {
-    let found = FOUND
+    let mut found = FOUND
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut searching = SEARCHING
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if found.iter().any(|(earlier, _)| *earlier == search) {
+    if let Some(at) = found.iter().position(|(earlier, _)| *earlier == search) {
+        // Used last: a waiting click keeps it over searches made since.
+        let entry = found.remove(at);
+        found.push(entry);
         return Ahead::Found;
     }
     if searching.contains(&search) {

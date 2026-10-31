@@ -1128,3 +1128,59 @@ fn a_pull_area_click_before_the_regions_are_found_waits_for_them_off_the_ui_thre
         app.digest
     );
 }
+
+/// Review 2026-10-26 UO-40, a waiting click in a building of a plan per floor: the click
+/// waited until the regions of every flat drawing were found at once, more drawings than
+/// the found searches kept, so each search found pushed out another and the click waited
+/// for ever.
+#[test]
+fn a_waiting_pull_area_click_is_pulled_up_among_more_flat_drawings_than_searches_kept() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut dialogs = dialogs::ScriptedFileDialogs::new();
+    // Drawings of their own: the regions another test found are kept for this one too.
+    for teeth in 43..49 {
+        let path = directory.path().join(format!("floor{teeth}.dxf"));
+        std::fs::write(
+            &path,
+            format!(
+                "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+                 0\nSECTION\n2\nENTITIES\n{}0\nENDSEC\n0\nEOF\n",
+                saw(teeth)
+            ),
+        )
+        .unwrap();
+        dialogs = dialogs.queue_import(ImportFormat::Dxf, &path);
+    }
+    let mut app = KetchupApp::with_catalog_and_initial_box(LocaleCatalog::english(), false)
+        .with_dialogs(Box::new(dialogs));
+    for _ in 43..49 {
+        app.dispatch_file_command(AppCommand::ImportDrawingUnderlay);
+    }
+    let flat = app
+        .document
+        .current()
+        .underlays()
+        .filter(|underlay| underlay.lies_flat())
+        .count();
+    assert_eq!(flat, 6, "{}", app.action_digest());
+    let mut harness = shell_of(app);
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExtrudeUnderlayArea);
+    let undo = harness.state().undo_step_count();
+    harness.state_mut().value_box.input = "300".to_owned();
+    click(&mut harness, Vec3::new(20.0, -250.0, 0.0));
+    crate::tests::shell::step_until(
+        &mut harness,
+        std::time::Duration::from_secs(20),
+        "the waiting click never pulled the area up",
+        |app| app.solid_tools.area_click_awaits_regions.is_none(),
+    );
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo + 1, "{}", app.digest);
+    assert!(
+        app.digest.starts_with("Pulled the area up"),
+        "{}",
+        app.digest
+    );
+}

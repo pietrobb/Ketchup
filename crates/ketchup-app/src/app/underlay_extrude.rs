@@ -9,7 +9,7 @@ use crate::live_bridge::take_error_details;
 use crate::live_bridge::underlay_program::{
     Ring, free_name, underlay_area_outline, underlay_extrusion_program,
 };
-use crate::live_bridge::underlay_regions::{regions_ready, search_ahead};
+use crate::live_bridge::underlay_regions::{keep_found_for, regions_ready, search_ahead};
 use crate::*;
 use ketchup_application::RuleProgramApplyError;
 use ketchup_model::underlay::UnderlayId;
@@ -178,6 +178,12 @@ impl KetchupApp {
     fn underlay_regions_ready(&self) -> bool {
         let snapshot = self.document.current();
         let mut ready = true;
+        keep_found_for(
+            snapshot
+                .underlays()
+                .filter(|underlay| underlay.lies_flat())
+                .count(),
+        );
         for underlay in snapshot.underlays().filter(|underlay| underlay.lies_flat()) {
             if let Some(lines) = self.cached_underlay_lines(underlay) {
                 ready &= regions_ready(&snapshot, underlay, &lines);
