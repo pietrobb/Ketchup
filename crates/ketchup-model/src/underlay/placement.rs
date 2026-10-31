@@ -113,9 +113,12 @@ impl Underlay {
     }
 }
 
+/// The first plan moved from its drawing's coordinates; a drawing standing as a view shows
+/// no part of the national grid (review 2026-10-29 UL-60).
 fn first_moved(snapshot: &Snapshot) -> Option<&Underlay> {
     snapshot
         .underlays()
+        .filter(|underlay| underlay.view.plane == super::view::ViewPlane::Top)
         .filter(|underlay| underlay.offset_mm() != [0.0; 2])
         .min_by_key(|underlay| underlay.id.0)
 }

@@ -545,6 +545,62 @@ fn drawings_in_one_national_grid_kilometres_apart_lie_on_each_other() {
     }
 }
 
+/// Review 2026-10-29 UL-60: a drawing moved on import and stood up as a view does not set
+/// where the national grid lies: the map read after it is the first plan, placed as read,
+/// and a site plan 1.5 km from it lies on it; before, both were placed by the view 20 km
+/// away, too far to place them, and the plan stayed at its own middle.
+#[test]
+fn a_drawing_standing_as_a_view_does_not_place_the_national_grid() {
+    let directory = tempfile::tempdir().unwrap();
+    let drawing = |name: &str, x: f64| {
+        let path = directory.path().join(name);
+        let dxf = format!(
+            "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n6\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n\
+             0\nLINE\n8\nparcel\n10\n{x}\n20\n-1200000\n11\n{}\n21\n-1200000\n0\nENDSEC\n0\nEOF\n",
+            x + 10.0
+        );
+        std::fs::write(&path, dxf).unwrap();
+        path
+    };
+    let (mut app, mut bridge) = setup();
+    let mut import = |app: &mut KetchupApp, bridge: &mut LiveBridge, name: &str, x: f64| {
+        bridge
+            .execute(app, import_underlay(&drawing(name, x)), false)
+            .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()))
+    };
+    let view = import(&mut app, &mut bridge, "elevation.dxf", -520_000.0);
+    let mut stand = json!({"underlay_id": view["underlay_id"], "plane": "front"});
+    stand["expected"] = serde_json::to_value(app.live_bridge_stamp()).unwrap();
+    bridge
+        .execute(
+            &mut app,
+            super::underlay_objects::ask("drawing_view", stand),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {:?}", take_error_details()));
+    let map = import(&mut app, &mut bridge, "map.dxf", -500_000.0);
+    let map_offset: [f64; 2] =
+        serde_json::from_value(map["underlay"]["offset_mm"].clone()).unwrap();
+    let x = -501_500.0;
+    import(&mut app, &mut bridge, "near.dxf", x);
+    // Where the map, placed as read, has the plan's start.
+    let start = [x * 1000.0 - map_offset[0], -1_200_000_000.0 - map_offset[1]];
+    let found = bridge
+        .execute(
+            &mut app,
+            Request::UnderlaySnap {
+                expected: None,
+                point_mm: [start[0] - 4.0, start[1] + 3.0],
+                to_mm: None,
+                radius_mm: None,
+                underlay_id: None,
+            },
+            false,
+        )
+        .unwrap();
+    assert_eq!(found["endpoint"]["point_mm"], json!(start), "{found}");
+}
+
 /// `file action=fit_underlay`: the 10 m parcel line of a drawing in S-JTSK metres, its ends
 /// picked where they are drawn, lands on a model edge turned a quarter; `underlay_snap`
 /// then finds its end there and still names the drawing's own coordinates. Scaled onto an
