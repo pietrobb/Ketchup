@@ -160,7 +160,12 @@ fn a_dwg_declaring_a_huge_section_is_refused_and_the_window_lives_on() {
         .import_file(ImportFormat::Dxf, &hostile, None)
         .unwrap_err()
         .to_string();
+    // macOS does not enforce the worker's memory limit (see process-wrap's
+    // JobMemoryLimit), so there the reader refuses the file with its own error.
+    #[cfg(not(target_os = "macos"))]
     assert!(error.contains("2 GiB of memory"), "{error}");
+    #[cfg(target_os = "macos")]
+    assert!(!error.is_empty());
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo);
 

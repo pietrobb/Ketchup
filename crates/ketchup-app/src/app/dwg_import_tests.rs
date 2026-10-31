@@ -206,6 +206,9 @@ fn the_window_names_why_a_hostile_dwg_file_was_refused() {
     );
     let app = harness.state();
     assert!(app.digest.contains("hostile.dwg"), "{}", app.digest);
+    // macOS does not enforce the worker's memory limit (see process-wrap's
+    // JobMemoryLimit), so there the reader refuses the file with its own error.
+    #[cfg(not(target_os = "macos"))]
     assert!(app.digest.contains("2 GiB of memory"), "{}", app.digest);
     assert!(app.modal.get::<PendingDxfImport>().is_none());
 }
