@@ -84,5 +84,38 @@ def test_ignored_large_house_perf_and_release_only_tests_and_mentions_pass(tmp_p
     assert checker.violations(tmp_path) == []
 
 
+def test_the_other_routes_to_a_large_house_are_found_too(tmp_path):
+    # Review 2026-10-29 TST-62: the 1 855-part house-project.star, a path read at run
+    # time, a comment or doc line under #[test], #[test] on the fn line and a macro.
+    write(tmp_path, "crates/a/tests/house.rs", (
+        'const PROJECT: &str = include_str!("../../../examples/programs/house-project.star");\n'
+        + "#[test]\nfn the_bigger_house() {\n    evaluate(PROJECT);\n}\n"
+        + "#[test]\nfn read_at_run_time() {\n"
+        + '    let source = std::fs::read_to_string(examples.join("tiny-house.star")).unwrap();\n}\n'
+        + '#[test]\nfn through_concat() {\n    run(include_str!(concat!(env!("CARGO_MANIFEST_DIR"),'
+        + ' "/../../examples/programs/tiny-house.star")));\n}\n'
+        + "#[test]\n// the house, slowly\nfn under_a_comment() {\n    evaluate(PROJECT);\n}\n"
+        + "#[test]\n/// The house.\n\nfn under_a_doc_line() {\n    evaluate(PROJECT);\n}\n"
+        + "#[test] fn on_one_line() {\n    evaluate(PROJECT);\n}\n"
+        + "macro_rules! house {\n    () => { evaluate(PROJECT) };\n}\n"
+        + "#[test]\nfn through_a_macro() {\n    house!();\n}\n"
+        # An #[ignore] only in a comment does not ignore the test.
+        + '#[test]\n// #[ignore = "large-house: runs in full suite"]\nfn large_house_commented_ignore() {\n'
+        + "    evaluate(PROJECT);\n}\n"
+        # A file name that only labels a program is not reading the house.
+        + '#[test]\nfn only_a_label() {\n    let _ = Program { file_name: "tiny-house.star".into() };\n}\n'
+    ))
+    assert checker.violations(tmp_path) == [
+        "crates/a/tests/house.rs:3 the_bigger_house",
+        "crates/a/tests/house.rs:7 read_at_run_time",
+        "crates/a/tests/house.rs:11 through_concat",
+        "crates/a/tests/house.rs:16 under_a_comment",
+        "crates/a/tests/house.rs:22 under_a_doc_line",
+        "crates/a/tests/house.rs:25 on_one_line",
+        "crates/a/tests/house.rs:32 through_a_macro",
+        "crates/a/tests/house.rs:37 large_house_commented_ignore",
+    ]
+
+
 def test_the_repository_runs_no_large_house_test_in_every_step():
     assert checker.check(ROOT) == 0

@@ -5,10 +5,14 @@ AGENTS.md §6: a test that needs the 750-part `tiny-house.star` is named
 `large_house_*` (or `perf_*`, a release timing budget) and ignored, so the
 filtered tests of a step skip it and the full suite and the nightly run take it.
 Review 2026-10-18 P3 found unignored ones in `program_evaluation`, `takeoff_house`,
-`free_space`, `member_design` and `member_loads`.
+`free_space`, `member_design` and `member_loads`. Review 2026-10-29 TST-62: the
+1 855-part `house-project.star` is a large house too.
 
-A test reaches the house when its body, a constant it names or a function it
-calls holds `include_str!("…tiny-house.star")`. Functions are followed within
+A test reaches the house when its body, a constant it names or a function or
+`macro_rules!` it calls holds `include_str!("…tiny-house.star")` or a path to a
+house read any other way (`concat!`, `fs::read_to_string`, `.join("tiny-house.star")`).
+`#[test]` counts above comment, doc and blank lines and on the `fn` line; an
+`#[ignore]` in a comment does not. Functions are followed within
 the file and, for `pub` helpers, across the files of the same crate; a function
 defined in the file shadows one of the same name elsewhere. A function that lists
 `examples/programs` with `read_dir` reaches the house too, unless it names
@@ -23,18 +27,31 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-HOUSE = re.compile(r'include_str!\(\s*"[^"]*tiny-house\.star"\s*\)')
-CONSTANT = re.compile(r"\b(?:const|static)\s+(\w+)\s*:[^=]*=\s*include_str!\(\s*\"[^\"]*tiny-house\.star\"")
+# Both large houses: tiny-house.star (750 parts) and house-project.star (1 855 parts).
+FILE = r"(?:tiny-house|house-project)\.star"
+HOUSE = re.compile(rf'include_str!\(\s*"[^"]*{FILE}"\s*\)')
+# A path to a house, read however (include_str!, concat!, fs::read_to_string, join):
+# a literal with a directory before the file, or the bare file joined to a directory.
+HOUSE_PATH = re.compile(rf'"[^"\n]*/{FILE}"|\.join\(\s*"{FILE}"')
+CONSTANT = re.compile(rf"\b(?:const|static)\s+(\w+)\s*:[^=]*=[^;]*(?:\"[^\"\n]*/{FILE}\")")
+# Attribute, comment, doc and blank lines above a fn (comments are blank in the masked
+# text), and attributes on the fn line itself.
 FUNCTION = re.compile(
-    r"((?:^[ \t]*#\[[^\n]*\n|^[ \t]*///[^\n]*\n)*)^[ \t]*(pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)", re.M)
+    r"((?:^[ \t]*(?:#\[[^\n]*)?\n)*^[ \t]*(?:#\[[^\n]*?\][ \t]*)*)"
+    r"(pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+(\w+)", re.M)
+MACRO = re.compile(r"((?:^[ \t]*(?:#\[[^\n]*)?\n)*)^[ \t]*macro_rules!\s*(\w+)\s*\{", re.M)
 CALL = re.compile(r"\b(\w+)\s*(?:::<[^>]*>)?\s*\(")
+MACRO_CALL = re.compile(r"\b(\w+)!\s*[(\[{]")
 EXAMPLES = re.compile(r'"[^"\n]*examples/programs[^"\n]*"')
-NAMED = re.compile(r'"[^"\n]*tiny-house\.star"')
-NAMING = re.compile(r'\b(?:const|static)\s+(\w+)\s*:[^=]*=[^;]*"[^"\n]*tiny-house\.star"')
+NAMED = re.compile(rf'"[^"\n]*{FILE}"')
+NAMING = re.compile(rf'\b(?:const|static)\s+(\w+)\s*:[^=]*=[^;]*"[^"\n]*{FILE}"')
 ALLOWED = ("large_house_", "perf_")
 # A whole-house test run in release by its own nightly step keeps its name.
 RELEASE_ONLY = "release-only"
-IGNORE = re.compile(r'#\[ignore(?:\s*=\s*"([^"]*)")?\]')
+# Matched on the masked attributes, so an #[ignore] in a comment does not count;
+# the reason is then read from the same place in the text.
+IGNORE = re.compile(r'#\[ignore(?:\s*=\s*("[^"]*"))?\]')
+TEST = re.compile(r"#\[test\]")
 
 
 IGNORED_TEXT = re.compile(r"//[^\n]*|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^\\'\n])'")
@@ -63,31 +80,43 @@ def closing_braces(plain: str) -> dict[int, int]:
 
 
 def functions(text: str) -> list[dict]:
-    """Every `fn` with a body: name, attributes, visibility, raw body, line."""
+    """Every `fn` with a body and every `macro_rules!`: name, attributes, visibility, raw body, line."""
     plain = masked(text)
     pairs = closing_braces(plain)
     found = []
+
+    def add(match: re.Match, name_group: int, start: int, public: bool) -> None:
+        end = pairs[start]
+        code = plain[start:end + 1]
+        found.append({
+            "name": match.group(name_group),
+            "attributes": text[match.start(1):match.end(1)],
+            "plain_attributes": plain[match.start(1):match.end(1)],
+            "public": public,
+            "body": text[start:end + 1],
+            "code": code,
+            "calls": set(CALL.findall(code)) | set(MACRO_CALL.findall(code)),
+            "line": text.count("\n", 0, match.start(name_group)) + 1,
+        })
+
     for match in FUNCTION.finditer(plain):
         start = plain.find("{", match.end())
         semicolon = plain.find(";", match.end())
         if start < 0 or 0 <= semicolon < start or start not in pairs:
             continue
-        end = pairs[start]
-        found.append({
-            "name": match.group(3),
-            "attributes": text[match.start(1):match.end(1)],
-            "public": bool(match.group(2)),
-            "body": text[start:end + 1],
-            "code": plain[start:end + 1],
-            "calls": set(CALL.findall(plain[start:end + 1])),
-            "line": text.count("\n", 0, match.start(3)) + 1,
-        })
+        add(match, 3, start, bool(match.group(2)))
+    for match in MACRO.finditer(plain):
+        start = match.end() - 1
+        if start in pairs:
+            add(match, 2, start, "macro_export" in plain[match.start(1):match.end(1)])
     return found
 
 
 def holds_the_house(item: dict, constants: set[str]) -> bool:
-    """An `include_str!` of the house in code (not a comment), or a constant holding it."""
+    """An `include_str!` of a house or a path to one in code (not a comment), or a constant holding it."""
     if any(item["code"].startswith("include_str!(", found.start()) for found in HOUSE.finditer(item["body"])):
+        return True
+    if any(item["code"][found.start()] == item["body"][found.start()] for found in HOUSE_PATH.finditer(item["body"])):
         return True
     return any(re.search(rf"\b{re.escape(name)}\b", item["code"]) for name in constants)
 
@@ -137,12 +166,13 @@ def violations(root: Path = ROOT) -> list[str]:
     found = []
     for path, items in files.items():
         for item in items:
-            if not item["house"] or "#[test]" not in item["attributes"]:
+            if not item["house"] or not TEST.search(item["plain_attributes"]):
                 continue
-            reason = IGNORE.search(item["attributes"])
-            if not reason:
+            ignore = IGNORE.search(item["plain_attributes"])
+            reason = item["attributes"][ignore.start(1) + 1:ignore.end(1) - 1] if ignore and ignore.group(1) else ""
+            if not ignore:
                 found.append(f"{path.relative_to(root).as_posix()}:{item['line']} {item['name']}")
-            elif not (item["name"].startswith(ALLOWED) or (reason.group(1) or "").startswith(RELEASE_ONLY)):
+            elif not (item["name"].startswith(ALLOWED) or reason.startswith(RELEASE_ONLY)):
                 found.append(f"{path.relative_to(root).as_posix()}:{item['line']} {item['name']}")
     return found
 
@@ -150,7 +180,7 @@ def violations(root: Path = ROOT) -> list[str]:
 def check(root: Path = ROOT) -> int:
     found = violations(root)
     if found:
-        print("Tests evaluate the 750-part tiny-house.star in every step; name them large_house_* and mark them"
+        print("Tests evaluate a large house (tiny-house.star, house-project.star) in every step; name them large_house_* and mark them"
               ' #[ignore = "large-house: runs in full suite"], or use tests/fixtures/small-house.star'
               " (AGENTS.md section 6):")
         print("  " + "\n  ".join(found))

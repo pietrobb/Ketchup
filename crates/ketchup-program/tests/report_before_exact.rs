@@ -44,7 +44,8 @@ fn assert_refined_without_exact_is_whole(file: &str, source: &str) {
 }
 
 #[test]
-fn a_report_before_the_exact_check_refined_without_it_is_the_whole_report() {
+#[ignore = "large-house: runs in full suite"]
+fn large_house_project_report_before_the_exact_check_refined_without_it_is_the_whole_report() {
     assert_refined_without_exact_is_whole("house-project.star", PROJECT);
 }
 

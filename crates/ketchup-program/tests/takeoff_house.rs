@@ -80,7 +80,8 @@ fn large_house_takeoff_groups_the_construction_by_material_and_section() {
 /// The imported house names its parts `<layer name> NNN` without a `/`: the
 /// takeoff groups them by that name, not one row per member.
 #[test]
-fn numbered_part_names_share_one_category() {
+#[ignore = "large-house: runs in full suite"]
+fn large_house_numbered_part_names_share_one_category() {
     let source = include_str!("../../../examples/programs/house-project.star");
     let model = ketchup_program::evaluate("house-project.star", source, &BTreeMap::new())
         .expect("the house evaluates")
