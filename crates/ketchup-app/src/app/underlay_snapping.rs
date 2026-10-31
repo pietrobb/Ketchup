@@ -76,13 +76,7 @@ impl KetchupApp {
             },
             None => {
                 drop(slots);
-                let lines = self
-                    .file
-                    .container_data
-                    .blobs()
-                    .get(&underlay.lines_blob())
-                    .and_then(|bytes| underlay.read_lines(bytes).ok())
-                    .unwrap_or_default();
+                let lines = self.cached_underlay_lines(underlay).unwrap_or_default();
                 self.build_underlay_snap_index(key, lines);
                 return None;
             }
@@ -93,7 +87,7 @@ impl KetchupApp {
     }
 
     /// Starts building the snap index of the lines of blob `key` on a thread of its own.
-    pub(crate) fn build_underlay_snap_index(&self, key: [u8; 32], lines: UnderlayLines) {
+    pub(crate) fn build_underlay_snap_index(&self, key: [u8; 32], lines: Arc<UnderlayLines>) {
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let _ = sender.send(UnderlaySnapIndex::new(&lines));
@@ -284,12 +278,19 @@ impl KetchupApp {
             None => (None, None),
         };
         let picked_lines = picked.as_ref().and_then(|(id, objects)| {
-            let lines = self.cached_underlay_lines(snapshot.underlay(*id)?)?;
-            Some((*id, objects, lines))
+            let underlay = snapshot.underlay(*id)?;
+            let lines = self.cached_underlay_lines(underlay)?;
+            let tree = self.cached_object_tree(underlay, &lines);
+            Some((*id, objects, lines, tree))
         });
-        let picked_index = picked_lines
-            .as_ref()
-            .map(|(id, objects, lines)| (*id, *objects, lines, ObjectIndex::new(lines)));
+        let picked_index = picked_lines.as_ref().map(|(id, objects, lines, tree)| {
+            (
+                *id,
+                *objects,
+                lines,
+                ObjectIndex::with_tree(lines, Arc::clone(tree)),
+            )
+        });
         let is_picked = |id: UnderlayId, segment: usize| {
             picked_index
                 .as_ref()

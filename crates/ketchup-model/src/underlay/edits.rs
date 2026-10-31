@@ -102,7 +102,16 @@ impl Underlay {
     /// before any copy is made when with them the drawing would hold more than a drawing
     /// read may ([`super::edited_size`]).
     pub fn read_lines(&self, bytes: &[u8]) -> Result<UnderlayLines, super::UnderlayLinesError> {
-        let lines = UnderlayLines::decode(bytes, self.layers.len())?;
+        self.with_edits(UnderlayLines::decode(bytes, self.layers.len())?)
+    }
+
+    /// `lines`, its blob as decoded, with its edits, refused as [`Self::read_lines`]
+    /// refuses: so a caller keeping the decoded blob applies new edits without decoding
+    /// it again (review 2026-10-29 UI-62).
+    pub fn with_edits(
+        &self,
+        lines: UnderlayLines,
+    ) -> Result<UnderlayLines, super::UnderlayLinesError> {
         if !self.edits.added.is_empty() {
             let size = lines.edited_size(&self.edits);
             if !size.fits() {

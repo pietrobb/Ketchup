@@ -169,9 +169,10 @@ impl KetchupApp {
     /// as the snap index counts them.
     pub(crate) fn underlay_object_at(&self, underlay: UnderlayId, segment: u32) -> Option<u32> {
         let snapshot = self.document.current();
-        let lines = self.cached_underlay_lines(snapshot.underlay(underlay)?)?;
+        let underlay = snapshot.underlay(underlay)?;
+        let lines = self.cached_underlay_lines(underlay)?;
         let (layer, point) = lines.segment_start(usize::try_from(segment).ok()?)?;
-        let index = ObjectIndex::new(&lines);
+        let index = ObjectIndex::with_tree(&lines, self.cached_object_tree(underlay, &lines));
         Some(index.top_level_of(index.object_drawing(layer, point)?))
     }
 
@@ -207,7 +208,7 @@ impl KetchupApp {
         underlays.into_iter().rev().find_map(|underlay| {
             let point = self.screen_to_plane(pointer, rect, underlay.plan_height()?)?;
             let lines = self.cached_underlay_lines(underlay)?;
-            let index = ObjectIndex::new(&lines);
+            let index = ObjectIndex::with_tree(&lines, self.cached_object_tree(underlay, &lines));
             let local = underlay.to_local([point.x, point.y]);
             let object = index.object_with_area_at(
                 local,
@@ -389,7 +390,7 @@ impl KetchupApp {
         let Some(lines) = self.cached_underlay_lines(underlay) else {
             return;
         };
-        let index = ObjectIndex::new(&lines);
+        let index = ObjectIndex::with_tree(&lines, self.cached_object_tree(underlay, &lines));
         // A live move or turn draws them where it takes them.
         let placement = self
             .picked_objects_drag_edit()

@@ -4,6 +4,7 @@
 //! millimetres, before its placement.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use ketchup_geometry::linalg::dot2;
 
@@ -11,12 +12,43 @@ use super::UnderlayLines;
 use super::objects::{ObjectDetail, ObjectPart, UnderlayObject};
 use super::text::UnderlayText;
 
-/// The children and bounds of every object of an underlay, worked out once.
+/// The children and bounds of every object of an underlay's lines, worked out once.
 pub struct ObjectIndex<'a> {
     lines: &'a UnderlayLines,
+    tree: Arc<ObjectTree>,
+}
+
+/// What an [`ObjectIndex`] works out of the lines, kept apart so a window drawing the same
+/// lines each frame works it out once (review 2026-10-29 UI-62).
+#[derive(Debug)]
+pub struct ObjectTree {
     children: Vec<Vec<u32>>,
     /// Of what it and all below it draw, `None` for an object that draws nothing.
     bounds: Vec<Option<[[f64; 2]; 2]>>,
+}
+
+impl ObjectTree {
+    #[must_use]
+    pub fn new(lines: &UnderlayLines) -> Self {
+        let objects = &lines.objects().objects;
+        let mut children = vec![Vec::new(); objects.len()];
+        let mut bounds = objects
+            .iter()
+            .map(|object| own_bounds(lines, object))
+            .collect::<Vec<_>>();
+        // A parent comes before its children, so walking back folds each child's bounds,
+        // already holding its own children's, into its parent's.
+        for (index, object) in objects.iter().enumerate().rev() {
+            if let Some(parent) = object.parent.map(as_index) {
+                children[parent].push(u32::try_from(index).unwrap_or(u32::MAX));
+                bounds[parent] = merge(bounds[parent], bounds[index]);
+            }
+        }
+        for list in &mut children {
+            list.reverse();
+        }
+        Self { children, bounds }
+    }
 }
 
 /// What objects to list: each given field must match.
@@ -41,28 +73,14 @@ pub struct ObjectFilter {
 impl<'a> ObjectIndex<'a> {
     #[must_use]
     pub fn new(lines: &'a UnderlayLines) -> Self {
-        let objects = &lines.objects().objects;
-        let mut children = vec![Vec::new(); objects.len()];
-        let mut bounds = objects
-            .iter()
-            .map(|object| own_bounds(lines, object))
-            .collect::<Vec<_>>();
-        // A parent comes before its children, so walking back folds each child's bounds,
-        // already holding its own children's, into its parent's.
-        for (index, object) in objects.iter().enumerate().rev() {
-            if let Some(parent) = object.parent.map(as_index) {
-                children[parent].push(u32::try_from(index).unwrap_or(u32::MAX));
-                bounds[parent] = merge(bounds[parent], bounds[index]);
-            }
-        }
-        for list in &mut children {
-            list.reverse();
-        }
-        Self {
-            lines,
-            children,
-            bounds,
-        }
+        Self::with_tree(lines, Arc::new(ObjectTree::new(lines)))
+    }
+
+    /// The index of `lines` with `tree`, which [`ObjectTree::new`] worked out of these
+    /// same lines.
+    #[must_use]
+    pub fn with_tree(lines: &'a UnderlayLines, tree: Arc<ObjectTree>) -> Self {
+        Self { lines, tree }
     }
 
     /// The object `id`, `None` for one that was removed ([`super::edits`]).
@@ -78,7 +96,7 @@ impl<'a> ObjectIndex<'a> {
     /// How many ids there are, removed objects' too.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.children.len()
+        self.tree.children.len()
     }
 
     /// How many objects there are, removed ones left out.
@@ -97,18 +115,21 @@ impl<'a> ObjectIndex<'a> {
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.children.is_empty()
+        self.tree.children.is_empty()
     }
 
     #[must_use]
     pub fn children(&self, id: u32) -> &[u32] {
-        self.children.get(as_index(id)).map_or(&[], Vec::as_slice)
+        self.tree
+            .children
+            .get(as_index(id))
+            .map_or(&[], Vec::as_slice)
     }
 
     /// The bounds of all it and the objects below it draw.
     #[must_use]
     pub fn bounds(&self, id: u32) -> Option<[[f64; 2]; 2]> {
-        self.bounds.get(as_index(id)).copied().flatten()
+        self.tree.bounds.get(as_index(id)).copied().flatten()
     }
 
     /// The polylines it draws itself: each run of points of one polyline in its parts.

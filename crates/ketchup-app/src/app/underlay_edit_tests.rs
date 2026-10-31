@@ -91,6 +91,61 @@ fn clicked_objects_of_a_drawing_are_picked_and_deleted_in_one_undo_step() {
     assert!(end_at(&mut harness, [290.0, 70.0]));
 }
 
+/// Review 2026-10-29 UI-62: every edit of a drawing decoded its blob again, once to draw
+/// it, once more to pick, snap and frame it (~180 ms each at 400 000 lines). Now the
+/// window decodes the blob once and applies each edit, and each Undo, to the decoded copy.
+#[test]
+fn edits_of_a_drawing_and_their_undo_decode_its_blob_once() {
+    use super::underlay::BLOB_DECODES;
+    let mut harness = shell();
+    for _ in 0..4 {
+        harness.step();
+    }
+    harness.state().wait_for_underlay_snaps();
+    BLOB_DECODES.with(|decodes| decodes.set(0));
+    let decoded = || BLOB_DECODES.with(std::cell::Cell::get);
+
+    click(&mut harness, Vec3::new(100.0, 20.0, 0.0));
+    assert_eq!(picked(&harness), 1);
+    press(&mut harness, egui::Key::Delete);
+    assert!(!end_at(&mut harness, [40.0, 20.0]), "the wall is gone");
+    click(&mut harness, Vec3::new(100.0, 120.0, 0.0));
+    assert_eq!(picked(&harness), 1, "{}", harness.state().digest);
+    press(&mut harness, egui::Key::Delete);
+    assert!(
+        !end_at(&mut harness, [240.0, 120.0]),
+        "the axes line is gone"
+    );
+    harness.state_mut().undo();
+    for _ in 0..4 {
+        harness.step();
+    }
+    assert!(
+        end_at(&mut harness, [240.0, 120.0]),
+        "the axes line is back"
+    );
+    assert_eq!(decoded(), 1, "the blob decoded for the first edit is kept");
+}
+
+/// Review 2026-10-29 UI-62: with objects of a drawing picked, each frame worked out the
+/// children and bounds of all its objects again to paint them. Now they are worked out
+/// once for the drawing as it is.
+#[test]
+fn objects_picked_in_a_drawing_are_painted_without_indexing_it_each_frame() {
+    use super::underlay::OBJECT_TREES;
+    let mut harness = shell();
+    click(&mut harness, Vec3::new(100.0, 20.0, 0.0));
+    assert_eq!(picked(&harness), 1);
+    harness.step();
+    OBJECT_TREES.with(|built| built.set(0));
+    for _ in 0..20 {
+        harness.step();
+    }
+    shift_click(&mut harness, Vec3::new(100.0, 120.0, 0.0));
+    assert_eq!(picked(&harness), 2);
+    assert_eq!(OBJECT_TREES.with(std::cell::Cell::get), 0);
+}
+
 /// A room label and a solid hatch with no boundary object draw no line to click: a click
 /// on the label's letters or inside the hatch picks them, and Delete takes them out.
 #[test]
