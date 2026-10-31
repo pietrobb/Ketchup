@@ -1660,8 +1660,8 @@ digest-underlay-whole-selected = The whole drawing is selected: Move and Rotate 
 digest-underlay-draw-on = Line, Rectangle, Circle and Arc now draw into the drawing, on layer { $layer }; Draw into drawing again ends it
 digest-underlay-exported = The drawing with its changes was written to { $path }
 digest-underlay-exported-incomplete = The drawing with its changes was written to { $path } without { $count ->
-        [one] { $count } record the DWG reader could not decode.
-       *[other] { $count } records the DWG reader could not decode.
+        [one] { $count } record the DWG reader could not decode or a DWG cannot hold.
+       *[other] { $count } records the DWG reader could not decode or a DWG cannot hold.
     }
 digest-underlay-export-failed = The drawing was not written: { $reason }
 digest-underlay-text-required = Type the text first, then click where it starts
