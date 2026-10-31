@@ -93,6 +93,52 @@ fn bars_are_cut_longest_first_into_the_fullest_bar_that_still_holds_the_piece() 
     assert_eq!(rail.layouts[0].offcut_mm, Some(996.0));
 }
 
+/// Review 2026-10-29 PG-64: bars were packed on the longest stock length and only then
+/// shortened, so 7 x 2 900 on [3 000, 13 000] took 2 x 13 m (78 %) where 3 m bars waste
+/// least. Each bar is now the stock length its pieces fill best.
+#[test]
+fn each_bar_is_the_stock_length_its_pieces_fill_best() {
+    let mut source = "bar_stock(\"KVH\", [3000, 13000], kerf = 4)\n".to_owned();
+    for index in 0..7 {
+        source += &bar(
+            &format!("s{index}"),
+            2900.0,
+            (60.0, 120.0),
+            200.0 * f64::from(index),
+        );
+    }
+    // A 13 m bar takes 4 x 2 900 and three kerfs, 11 612 of 13 000.
+    source += "bar_stock(\"BSH\", [3000, 13000], kerf = 4)\n";
+    for index in 0..4 {
+        source += &format!(
+            "member(\"r{index}\", (0, {y}, 0), (2900, {y}, 0), (60, 200), material = \"BSH\")\n",
+            y = 3000 + 200 * index
+        );
+    }
+    source += "member(\"long\", (0, 4000, 0), (9000, 4000, 0), (60, 200), material = \"BSH\")\n";
+    let plans = plans(&source);
+    let kvh = plans.iter().find(|plan| plan.material == "KVH").unwrap();
+    assert!(
+        kvh.layouts
+            .iter()
+            .all(|layout| layout.stock_mm == [3000.0] && layout.pieces.len() == 1),
+        "{kvh:#?}"
+    );
+    assert_eq!(kvh.layouts.len(), 7);
+    assert_eq!(kvh.used_percent, 96.7);
+    // 9 000 + 4 + 2 900 + 4 is 11 908 of one 13 m bar (91.6 %) and the other three
+    // take a 3 m bar each (96.7 %), where 9 000 alone on 13 m is 69 %.
+    let bsh = plans.iter().find(|plan| plan.material == "BSH").unwrap();
+    assert_eq!(bsh.layouts.len(), 4, "{bsh:#?}");
+    assert_eq!(bsh.layouts[0].stock_mm, [13000.0]);
+    assert_eq!(names(&bsh.layouts[0]), ["long", "r0"]);
+    assert!(
+        bsh.layouts[1..]
+            .iter()
+            .all(|layout| layout.stock_mm == [3000.0])
+    );
+}
+
 #[test]
 fn trim_comes_off_each_end_of_a_bar_before_the_first_piece() {
     let mut source = "bar_stock(\"KVH\", [4000], kerf = 5, trim = 10)\n".to_owned();

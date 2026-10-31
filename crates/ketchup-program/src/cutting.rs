@@ -333,8 +333,7 @@ fn cut_lengths(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) 
     lengths.sort_by(f64::total_cmp);
     let usable = |length: f64| length - 2.0 * stock.trim_mm;
     let longest = lengths.last().copied().unwrap_or(0.0);
-    // Pieces and the length they take, kerfs between them.
-    let mut bars: Vec<(Vec<Piece>, f64)> = Vec::new();
+    let mut left = Vec::new();
     for piece in pieces {
         let length = piece.size[0];
         if length > usable(longest) + EPS {
@@ -344,33 +343,53 @@ fn cut_lengths(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) 
                     "{length} mm is longer than the longest stock length {longest} mm less its trim"
                 ),
             });
-            continue;
-        }
-        let needs = |taken: f64, count: usize| {
-            taken + length + if count == 0 { 0.0 } else { stock.kerf_mm }
-        };
-        let best = bars
-            .iter()
-            .enumerate()
-            .filter(|(_, (cut, taken))| needs(*taken, cut.len()) <= usable(longest) + EPS)
-            .min_by(|(_, (_, a)), (_, (_, b))| b.total_cmp(a))
-            .map(|(index, _)| index);
-        match best {
-            Some(index) => {
-                let (cut, taken) = &mut bars[index];
-                *taken = needs(*taken, cut.len());
-                cut.push(piece);
-            }
-            None => bars.push((vec![piece], length)),
+        } else {
+            left.push(piece);
         }
     }
+    // The indices into `left` a bar of `length` takes: the first piece left, then each
+    // next that still fits, kerfs between them.
+    let fill = |left: &[Piece], length: f64| {
+        let mut taken = left[0].size[0];
+        let mut cut = vec![0];
+        for (index, piece) in left.iter().enumerate().skip(1) {
+            let needs = taken + stock.kerf_mm + piece.size[0];
+            if needs <= usable(length) + EPS {
+                taken = needs;
+                cut.push(index);
+            }
+        }
+        cut
+    };
+    // Each bar is opened by the longest piece left and is the stock length its pieces
+    // fill best, the longer of two that fill it alike, where it was packed on the
+    // longest length and only then shortened (review 2026-10-29 PG-64: 7 x 2 900 on
+    // [3 000, 13 000] took 2 x 13 m, 78 %).
+    let mut bars: Vec<(Vec<Piece>, f64)> = Vec::new();
+    while !left.is_empty() {
+        let (length, cut) = lengths
+            .iter()
+            .copied()
+            .filter(|length| left[0].size[0] <= usable(*length) + EPS)
+            .map(|length| (length, fill(&left, length)))
+            .max_by(|(a, a_cut), (b, b_cut)| {
+                let filled = |length: f64, cut: &[usize]| {
+                    cut.iter().map(|index| left[*index].size[0]).sum::<f64>() / length
+                };
+                filled(*a, a_cut)
+                    .total_cmp(&filled(*b, b_cut))
+                    .then(a.total_cmp(b))
+            })
+            .unwrap_or_else(|| (longest, vec![0]));
+        let (taken, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut left)
+            .into_iter()
+            .enumerate()
+            .partition(|(index, _)| cut.contains(index));
+        left = rest.into_iter().map(|(_, piece)| piece).collect();
+        bars.push((taken.into_iter().map(|(_, piece)| piece).collect(), length));
+    }
     bars.into_iter()
-        .map(|(cut, taken)| {
-            let length = lengths
-                .iter()
-                .copied()
-                .find(|length| taken <= usable(*length) + EPS)
-                .unwrap_or(longest);
+        .map(|(cut, length)| {
             let mut at = stock.trim_mm;
             let placed: Vec<Placed> = cut
                 .into_iter()
