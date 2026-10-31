@@ -1828,13 +1828,9 @@ impl KetchupApp {
             occurrence_ids,
             occurrence_count,
         } = self.copy_source_plan()?;
-        let DeleteSelectionSourcePlan {
-            commands,
-            held_by_joints,
-            ..
-        } = self.delete_selection_source_plan()?;
+        let DeleteSelectionSourcePlan { commands, .. } = self.delete_selection_source_plan()?;
         // The clipboard carries parts, not the joints that hold them (MD-62).
-        if held_by_joints {
+        if self.held_by_joints(&occurrence_ids) {
             return None;
         }
         let deleted_ids = commands

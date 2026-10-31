@@ -899,16 +899,8 @@ impl KetchupApp {
         {
             return None;
         }
-        let held_by_joints = snapshot.pin_joints().any(|joint| {
-            [&joint.first, &joint.second]
-                .into_iter()
-                .any(|face| occurrence_ids.contains(&face.instance_path.root_occurrence()))
-        }) || snapshot.assembly_joints().any(|joint| {
-            occurrence_ids.contains(&joint.parent_occurrence_id())
-                || occurrence_ids.contains(&joint.child_occurrence_id())
-        });
         // The joints go with the parts through the planner, which deletes no groups.
-        if held_by_joints && !group_ids.is_empty() {
+        if !group_ids.is_empty() && self.held_by_joints(&occurrence_ids) {
             return None;
         }
 
@@ -944,7 +936,21 @@ impl KetchupApp {
             group_ids,
             group_count,
             commands,
-            held_by_joints,
+        })
+    }
+
+    /// Whether a pin joint or an assembly joint holds one of the parts `occurrence_ids`,
+    /// so their delete is planned with the joints that hold them, as the assistant's
+    /// remove_references plans it (review 2026-10-29 MD-62).
+    pub(crate) fn held_by_joints(&self, occurrence_ids: &BTreeSet<OccurrenceId>) -> bool {
+        let snapshot = self.document.current();
+        snapshot.pin_joints().any(|joint| {
+            [&joint.first, &joint.second]
+                .into_iter()
+                .any(|face| occurrence_ids.contains(&face.instance_path.root_occurrence()))
+        }) || snapshot.assembly_joints().any(|joint| {
+            occurrence_ids.contains(&joint.parent_occurrence_id())
+                || occurrence_ids.contains(&joint.child_occurrence_id())
         })
     }
 
@@ -964,10 +970,9 @@ impl KetchupApp {
             occurrence_ids,
             occurrence_count,
             commands,
-            held_by_joints,
             ..
         } = plan;
-        let deleted = if held_by_joints {
+        let deleted = if self.held_by_joints(&occurrence_ids) {
             self.commit_dock_operation(AssistantCadEditOperation::Delete {
                 selector: AssistantCadEntitySelector::Occurrences {
                     occurrence_ids: occurrence_ids.iter().map(|id| id.0).collect(),
