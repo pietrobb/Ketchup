@@ -23,3 +23,4 @@ scripts/hooks/* text eol=lf
 *.star text eol=lf
 fuzz/seeds/** -text
 crates/ketchup-program/tests/fixtures/shop-golden/** -text
+crates/ketchup-app/tests/fixtures/viewer_round_trip/** -text 

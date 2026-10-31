@@ -500,7 +500,8 @@ impl ViewerApp {
         });
         if narrow {
             // A fixed share of the screen: a scroll area left to size itself
-            // shrinks the panel to two lines, too little to write a comment.
+            // shrinks the strip below the model to two lines, too little to
+            // write a comment.
             let height = (ctx.screen_rect().height() * 0.35).clamp(160.0, 360.0);
             egui::TopBottomPanel::bottom("viewer_info_mobile")
                 .exact_height(height)

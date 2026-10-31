@@ -1,21 +1,20 @@
 """The customer's half of the V9d round trip in the built web Viewer.
 
-Waits for the author's export `model.ketchup-view` in the exchange folder
-(written by the ignored Rust test
-`a_customer_comment_made_in_another_viewer_shows_the_author_the_customer_s_view_and_arrow`),
-opens it through a shared link in Chrome, checks that the scene, its dimension
-and the board's notes are shown, selects the board, turns the model, writes a
-comment with an arrow onto the board and saves it for the author as
-`returned.ketchup-comments` in the exchange folder. The Rust test then checks
-what the author sees. Screenshots of every step stay in the exchange folder.
+Opens the author's export through a shared link in Chrome, checks that the
+scene, its dimension and the board's notes are shown, selects the board, turns
+the model, writes a comment with an arrow onto the board and saves it for the
+author. It writes the fixture `web.ketchup-comments` of the Rust test
+`comments_made_in_the_web_and_android_viewers_show_the_author_the_customer_s_view_and_arrow`
+in crates/ketchup-app, which checks what the author sees; the export is that
+test's `model.ketchup-view`. Screenshots of every step are kept beside the
+comments file as web-*.png.
 
-usage: python customer_round_trip.py <site-folder> <exchange-folder>
+usage: python customer_round_trip.py <site-folder> <model.ketchup-view> <comments-file>
 """
 
 import os
 import shutil
 import sys
-import time
 
 from browser_smoke import SAVE_PICKER, TIMEOUT_MS, panel_left, serve, status
 from playwright.sync_api import sync_playwright
@@ -41,12 +40,8 @@ def selected_point(page, path):
 
 
 def main():
-    site, exchange = sys.argv[1], sys.argv[2]
-    model = os.path.join(exchange, "model.ketchup-view")
-    deadline = time.monotonic() + 600
-    while not os.path.exists(model):
-        assert time.monotonic() < deadline, "no export from the author"
-        time.sleep(0.5)
+    site, model, returned = sys.argv[1], sys.argv[2], sys.argv[3]
+    exchange = os.path.dirname(os.path.abspath(returned))
     shutil.copy(model, os.path.join(site, "model.ketchup-view"))
     server, base = serve(site)
     failures = []
@@ -110,10 +105,8 @@ def main():
         page.wait_for_function("() => window.__picker.saved !== null", timeout=TIMEOUT_MS)
         saved = page.evaluate("() => window.__picker")
         check("comments saved for the author", bool(saved["saved"]), saved["name"])
-        part = os.path.join(exchange, "returned.ketchup-comments.part")
-        with open(part, "wb") as file:
+        with open(returned, "wb") as file:
             file.write(bytes(saved["saved"]))
-        os.replace(part, os.path.join(exchange, "returned.ketchup-comments"))
         check("no script errors", not errors, "; ".join(errors))
         browser.close()
     server.shutdown()

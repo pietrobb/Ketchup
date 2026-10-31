@@ -193,51 +193,32 @@ fn a_customer_comment_made_in_the_viewer_shows_the_author_the_customer_s_view_an
     the_author_sees_the_customer_s_comment(author, &package, &model, &path, COMMENT);
 }
 
-/// The same round trip with the customer's Viewer outside this process: the
-/// web Viewer in a browser or the Android Viewer on an emulator. Writes the
-/// export to `$KETCHUP_V9D_DIR/model.ketchup-view`, waits up to 20 minutes for
-/// the customer's `returned.ketchup-comments` there and checks what the author
-/// sees. The web Viewer's half is `viewer/web/tests/customer_round_trip.py`;
-/// on Android the export is opened in the Viewer on the emulator and the file
-/// saved there with "Save comments for the author" is pulled back with
-/// `adb pull` as `returned.ketchup-comments`.
+/// The same round trip with the customer's Viewer on another platform. The
+/// fixtures are files those Viewers wrote: the author's project
+/// `author.ketchup`, its export `model.ketchup-view`, and the comments made on
+/// that export in the web Viewer (`viewer/web/tests/customer_round_trip.py`)
+/// and in the Android Viewer on an emulator ("Save comments for the author",
+/// then `adb pull`). Comments name the project they were made on, so the four
+/// files are refreshed together: save the project of [`author`], export it,
+/// and comment on that export in both Viewers.
 #[test]
-#[ignore = "needs the customer's Viewer on another platform: the web Viewer or the Android emulator"]
-fn a_customer_comment_made_in_another_viewer_shows_the_author_the_customer_s_view_and_arrow() {
-    let directory = std::path::PathBuf::from(
-        std::env::var_os("KETCHUP_V9D_DIR").expect("KETCHUP_V9D_DIR names the exchange folder"),
-    );
-    let text = std::env::var("KETCHUP_V9D_COMMENT").unwrap_or_else(|_| COMMENT.to_owned());
-    let author = author();
-    let settings = author.stored_viewer_settings().expect("settings");
-    let package = author
-        .current_model_viewer_export(
-            &author.viewer_export_scenes(&settings),
-            author.camera.viewport_rect.unwrap(),
-        )
-        .expect("export")
-        .package;
-    let mut bytes = Vec::new();
-    package.write(&mut bytes).expect("package");
-    let model = ViewerModel::read(bytes.as_slice()).expect("the Viewer reads the export");
-    let returned = directory.join("returned.ketchup-comments");
-    let _ = std::fs::remove_file(&returned);
-    std::fs::write(directory.join("model.ketchup-view.part"), &bytes).unwrap();
-    std::fs::rename(
-        directory.join("model.ketchup-view.part"),
-        directory.join("model.ketchup-view"),
-    )
-    .unwrap();
-    eprintln!("export written; waiting for {}", returned.display());
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20 * 60);
-    while !returned.exists() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "no comments came back"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(500));
+fn comments_made_in_the_web_and_android_viewers_show_the_author_the_customer_s_view_and_arrow() {
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/viewer_round_trip");
+    let bytes = std::fs::read(fixtures.join("model.ketchup-view")).unwrap();
+    let package = view::Package::read(bytes.as_slice()).expect("the export");
+    let model = ViewerModel::read(bytes.as_slice()).expect("the Viewer still reads the export");
+    for viewer in ["web", "android"] {
+        // Opening takes the work-recovery lock beside the file: open a copy.
+        let directory = tempfile::tempdir().unwrap();
+        let project = directory.path().join("author.ketchup");
+        std::fs::copy(fixtures.join("author.ketchup"), &project).unwrap();
+        let mut author = KetchupApp::new();
+        assert!(author.open_document_from(&project), "{}", author.digest);
+        install_geometry(&mut author);
+        let returned = fixtures.join(format!("{viewer}.ketchup-comments"));
+        the_author_sees_the_customer_s_comment(author, &package, &model, &returned, COMMENT);
     }
-    the_author_sees_the_customer_s_comment(author, &package, &model, &returned, &text);
 }
 
 /// What the customer returned in `path` is one comment with `text` on the
