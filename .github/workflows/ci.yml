@@ -362,6 +362,10 @@ jobs:
         run: |
           gh release download sample-files --pattern garden-studio-exact.blender-reference.json --dir examples
           cargo test --locked --release -p ketchup-app --no-fail-fast -- --ignored garden_studio_source_parity
+      # The packages docs/viewer/performance.md measures stay exportable.
+      - name: Viewer reference packages
+        if: ${{ !cancelled() && (env.NIGHTLY == 'true') }}
+        run: cargo test --locked --release -p ketchup-app --no-fail-fast -- --ignored viewer_reference_packages
 
   rust-with-occt-linux:
     name: clippy and tests of the crates with OCCT on Linux
