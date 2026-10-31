@@ -365,14 +365,18 @@ jobs:
         -p ketchup-app -p ketchup-application -p ketchup-exact -p ketchup-headless
         -p ketchup-scheduler -p ketchup-test-gpu
       RUSTFLAGS: -C link-arg=-Wl,-rpath,${{ github.workspace }}/third_party/occt-install-r0-v1/lib
-      # The MCP discovery directory lives in the per-user runtime directory.
-      XDG_RUNTIME_DIR: /tmp/xdg-runtime
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      # The MCP discovery directory and the plugin stages live in the per-user
+      # runtime directory. Like /run/user/<uid> it has no shared parent: under
+      # /tmp an interpreter could load a module another user put in /tmp
+      # (review 2026-10-17 SEC-7), and the plugin tests refuse such a stage.
       - name: runtime directory
-        run: mkdir -m 700 -p "$XDG_RUNTIME_DIR"
+        run: |
+          mkdir -m 700 -p "$RUNNER_TEMP/xdg-runtime"
+          echo "XDG_RUNTIME_DIR=$RUNNER_TEMP/xdg-runtime" >> "$GITHUB_ENV"
       # Ninja and clang build OCCT; the file dialogs need GTK; the window's
       # tests render on the Vulkan software rasterizer (lavapipe).
       - name: system packages

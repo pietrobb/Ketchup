@@ -1233,7 +1233,12 @@ fn file_open_clears_line_chain_and_measurement_before_live_mutation() {
         shell.step();
         shell.app().canonical_digest() == saved_digest
     });
-    assert!(opened, "the saved file was not opened");
+    assert!(
+        opened,
+        "the saved file was not opened (file activity idle: {}): {}",
+        shell.app().file_activity_idle(),
+        shell.app().action_digest()
+    );
     assert_eq!(shell.app().occurrence_count(), saved_occurrence_count);
     assert_eq!(shell.app().measured_points(), None);
     assert!(shell.app().value_input().is_empty());
