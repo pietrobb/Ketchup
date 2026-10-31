@@ -23,4 +23,9 @@ $leaks = foreach ($dll in $libraries) {
         Where-Object { $_ -match $exported } |
         ForEach-Object { "$($dll.Name) exports $($_.Trim())" }
 }
-if ($leaks) { throw "OCCT math is not its own private crmath:`n$($leaks -join "`n")" }
+# Each leak as a plain line of its own: pwsh renders a thrown message wrapped,
+# indented and coloured, so a long leak list would not read (or match) as lines.
+if ($leaks) {
+    $leaks | ForEach-Object { [Console]::Error.WriteLine($_) }
+    throw "OCCT math is not its own private crmath: $(@($leaks).Count) leak(s) listed above."
+}

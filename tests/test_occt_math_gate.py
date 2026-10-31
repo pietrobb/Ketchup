@@ -70,15 +70,17 @@ def test_libraries_with_their_own_private_math_pass(tmp_path):
 def test_a_library_taking_sin_from_the_crt_fails(tmp_path):
     result = gate(tmp_path, imports="    api-ms-win-crt-math-l1-1-0.dll\n                          9B sin\n")
     assert result.returncode != 0
-    assert "TKMath.dll imports 9B sin" in result.stdout + result.stderr
+    assert "TKMath.dll imports 9B sin" in (result.stdout + result.stderr).splitlines()
 
 
 def test_a_library_exporting_its_crmath_copy_fails(tmp_path):
     result = gate(tmp_path, exports="          3    2 00012360 sin\n          4    3 00012370 atan2f\n")
     assert result.returncode != 0
     output = result.stdout + result.stderr
-    assert "TKMath.dll exports 3    2 00012360 sin" in output, output
-    assert "atan2f" in output, output
+    # Whole lines, as written: pwsh wraps, indents and colours a thrown message (CI on Linux).
+    lines = output.splitlines()
+    assert "TKMath.dll exports 3    2 00012360 sin" in lines, output
+    assert "TKMath.dll exports 4    3 00012370 atan2f" in lines, output
     assert "TKernel.dll" not in output, output
 
 
