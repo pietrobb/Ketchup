@@ -1279,12 +1279,26 @@ impl<'a> Drawing<'a> {
             self.push_pair(out, 2, name.as_bytes());
         }
         let copy = |handles: &mut Option<u64>| Some((take_handle(handles), new_owner, old_owner));
-        // The BLOCK, named anew; its entities mapped; its ENDBLK.
+        // The BLOCK, named anew, its base point turned as the clone point (group 12) of
+        // the dimension is, while its entities are mapped whole: what the block draws
+        // then lies where the map puts it (review 2026-10-31 P3); its ENDBLK.
         let header = block.start..next_record(block.start)?;
+        let base_of = |code: i32| header.clone().find(|&index| self.pairs[index].code == code);
+        let base = match (base_of(10), base_of(20)) {
+            (Some(x), Some(y)) => Some(([x, y], [self.number(x)?, self.number(y)?])),
+            _ => None,
+        };
+        let [[a, b, _], [c, d, _]] = *map;
         let named = header
             .clone()
-            .map(|index| match self.pairs[index].code {
-                2 | 3 => Out::Set(index, name.clone()),
+            .map(|index| match (self.pairs[index].code, base) {
+                (2 | 3, _) => Out::Set(index, name.clone()),
+                (10, Some((at, [x, y]))) if at[0] == index => {
+                    Out::Set(index, number(a * x + b * y))
+                }
+                (20, Some((at, [x, y]))) if at[1] == index => {
+                    Out::Set(index, number(c * x + d * y))
+                }
                 _ => Out::Raw(index),
             })
             .collect::<Vec<_>>();

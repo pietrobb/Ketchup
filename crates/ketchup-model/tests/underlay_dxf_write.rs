@@ -421,6 +421,66 @@ fn moved_and_copied_hatches_and_dimensions_are_written_where_they_now_lie() {
     assert_eq!(drawn_again["walls"].fills, 4);
 }
 
+/// Review 2026-10-31 P3: a dimension block is placed from its base point, the dimension
+/// moved by its clone point (group 12). A turned or mirrored dimension whose block has a
+/// base point read back away from where the underlay drew it, as the block written for it
+/// kept the base point of the original.
+#[test]
+fn turned_dimensions_whose_block_has_a_base_point_are_written_where_they_now_lie() {
+    let source = source()
+        .replace(
+            "2\n*D1\n70\n1\n10\n0\n20\n0\n",
+            "2\n*D1\n70\n1\n10\n400\n20\n300\n",
+        )
+        .replace(
+            "11\n8500\n21\n2100\n31\n0\n70\n33\n",
+            "11\n8500\n21\n2100\n31\n0\n12\n400\n22\n300\n32\n0\n70\n33\n",
+        );
+    let original = read(source.as_bytes());
+    let plain = read(self::source().as_bytes());
+    let names = &original.layers;
+    assert_same(
+        &drawn(&original.lines, names),
+        &drawn(&plain.lines, &plain.layers),
+    );
+    let lines = &original.lines;
+    let layers = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| UnderlayLayer {
+            name: name.clone(),
+            tag: TagId(10 + index as u64),
+        })
+        .collect::<Vec<_>>();
+    let dimension = id_of(lines, 0xA9);
+    let turn = similarity([500.0, 200.0], 30.0, 1.0, [0.0, 0.0], None);
+    let mirror = similarity(
+        [0.0, 0.0],
+        0.0,
+        1.0,
+        [0.0, 0.0],
+        Some([[0.0, 5000.0], [1.0, 5000.0]]),
+    );
+    let mut edits = UnderlayEdits::default();
+    edits.moved_objects.insert(dimension, turn);
+    edits.added.push(AddedObject::Copy {
+        of: dimension,
+        map: mirror,
+    });
+    assert!(edits.is_valid());
+
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap();
+    let again = read(&written);
+    let edited = lines.clone().edited(&edits, &layers);
+    assert_same(&drawn(&again.lines, &again.layers), &drawn(&edited, names));
+}
+
 /// Review 2026-10-29 CD-69: one moved entity of extrusion −Z, as AutoCAD's Mirror leaves
 /// arcs, polylines and texts, refused the export of the whole drawing. Its points are in
 /// an object coordinate system whose x is the world's −x; it is mapped there, and a line,
