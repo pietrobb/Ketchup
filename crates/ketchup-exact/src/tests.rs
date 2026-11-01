@@ -667,6 +667,50 @@ fn step_part_whose_pcurves_reach_past_a_b_spline_domain_imports_with_a_plane_top
     assert!((top.normal.z - 1.0).abs() < 1e-9);
 }
 
+/// The fixture (`tests/native/r0-step-corpus.cpp`) holds a sound block, a
+/// part of a sound block and a solid enclosing no volume (STEP `#720`), and a
+/// part of only such a solid (`#1069`).
+#[test]
+fn step_xde_part_keeps_its_sound_solids_and_names_each_one_it_refuses() {
+    let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let path = repository.join("corpora/r0/step/self-authored-partly-invalid-assembly.step");
+    let document = ExactBackend::new()
+        .open_step_xde(path.to_str().unwrap())
+        .unwrap();
+    assert_eq!(document.manifest().unwrap().parts.len(), 3);
+
+    let sound = document.part(0).unwrap();
+    assert_eq!(sound.body.topology.solid_count, 1);
+    assert!(sound.rejected_shapes.is_empty());
+
+    let mixed = document.part(1).unwrap();
+    assert_eq!(mixed.body.topology.solid_count, 1);
+    assert!((mixed.body.topology.volume_mm3 - 1_000.0).abs() < 1e-6);
+    assert_eq!(
+        mixed.rejected_shapes,
+        vec![RejectedShape {
+            ordinal: 1,
+            kind: "solid".to_owned(),
+            source_entity: Some(720),
+            reason: "encloses no volume".to_owned(),
+        }]
+    );
+
+    let refused = document.part(2).unwrap_err();
+    assert_eq!(refused.code, GeometryErrorCode::InvalidShape);
+    assert!(
+        refused.diagnostic.ends_with(
+            "part has no shape that can be kept: solid 1 (entity #1069) encloses no volume"
+        ),
+        "{}",
+        refused.diagnostic
+    );
+}
+
 #[test]
 fn step_xde_manifest_preserves_real_nested_repeated_assembly_metadata_and_parts() {
     let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

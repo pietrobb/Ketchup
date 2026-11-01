@@ -614,7 +614,26 @@ rust::Vec<NativeEdgeHistoryEvidence> NativeOperationResult::edge_history_evidenc
   return output;
 }
 
+rust::Vec<NativeRejectedShape> NativeOperationResult::rejected_shapes() const {
+  rust::Vec<NativeRejectedShape> output;
+  if (impl_ != nullptr) {
+    output.reserve(impl_->rejected.size());
+    for (const RejectedShapeRecord& record : impl_->rejected) {
+      output.push_back(NativeRejectedShape{
+          record.ordinal,
+          rust::String(record.kind),
+          record.source_entity,
+          rust::String(record.reason)});
+    }
+  }
+  return output;
+}
+
 const NativeOperationResult::Impl& NativeOperationResult::impl() const noexcept {
+  return *impl_;
+}
+
+NativeOperationResult::Impl& NativeOperationResult::impl() noexcept {
   return *impl_;
 }
 

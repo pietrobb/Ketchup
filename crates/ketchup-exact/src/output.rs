@@ -308,6 +308,16 @@ pub(super) fn collect_output(
                 output_edge_ordinal: entry.output_present.then_some(entry.output_ordinal),
             }),
     );
+    let rejected_shapes = native_ref
+        .rejected_shapes()
+        .into_iter()
+        .map(|shape| RejectedShape {
+            ordinal: shape.ordinal,
+            kind: shape.kind,
+            source_entity: (shape.source_entity != 0).then_some(shape.source_entity),
+            reason: shape.reason,
+        })
+        .collect();
 
     Ok(ExactOpOutput {
         body: ExactBody {
@@ -332,5 +342,6 @@ pub(super) fn collect_output(
         input_digest,
         backend_fingerprint: BACKEND_FINGERPRINT,
         history_confidence,
+        rejected_shapes,
     })
 }
