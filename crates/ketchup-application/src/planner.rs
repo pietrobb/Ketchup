@@ -2244,17 +2244,10 @@ fn drawing_source(
     instance_paths: Vec<InstancePath>,
     balloons: Vec<DrawingBomBalloon>,
 ) -> (DrawingSource, Vec<DrawingBomBalloon>) {
-    // The definition is the part's own hand: a mirrored copy keeps its placement
-    // and is drawn as the opposite hand (review 2026-10-21 MF-21).
-    if let [path] = instance_paths.as_slice()
-        && path.is_root()
-        && let Ok(part) = snapshot.resolve_instance_path(path)
-        && !part.mirrored()
-    {
-        return (DrawingSource::Definition(part.definition_id), Vec::new());
+    match DrawingSource::for_instances(snapshot, instance_paths) {
+        source @ DrawingSource::Definition(_) => (source, Vec::new()),
+        source => (source, balloons),
     }
-    let source = DrawingSource::RigidAssemblyInstances { instance_paths };
-    (source, balloons)
 }
 
 /// Plans against the current document and explicit host-provided context without mutation.

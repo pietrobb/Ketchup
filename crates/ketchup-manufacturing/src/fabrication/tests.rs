@@ -23,6 +23,53 @@ fn test_stock_geometry(dimensions: PieceDimensions) -> GeneralMachiningGeometry 
     }
 }
 
+/// Review 2026-10-31 MF-85: a blank with rounded corners had no production-job
+/// frame, so the job refused the part without a reason. Its corner is where its
+/// arcs reach, not where they end.
+#[test]
+fn a_blank_with_rounded_corners_has_a_job_frame_from_its_arcs() {
+    // 100 x 60, corners of radius 10, drawn counterclockwise; the left side
+    // bulges out past its ends to x = 5 - sqrt(125).
+    let arc = |start_mm, end_mm, center_mm, clockwise| GeneralMachiningSegment::CircularArc {
+        start_mm,
+        end_mm,
+        center_mm,
+        clockwise,
+    };
+    let line = |start_mm, end_mm| GeneralMachiningSegment::Line { start_mm, end_mm };
+    let cross_section = vec![
+        line([10.0, 0.0], [90.0, 0.0]),
+        arc([90.0, 0.0], [100.0, 10.0], [90.0, 10.0], false),
+        line([100.0, 10.0], [100.0, 50.0]),
+        arc([100.0, 50.0], [90.0, 60.0], [90.0, 50.0], false),
+        line([90.0, 60.0], [10.0, 60.0]),
+        arc([10.0, 60.0], [0.0, 50.0], [10.0, 50.0], false),
+        line([0.0, 50.0], [0.0, 40.0]),
+        arc([0.0, 40.0], [0.0, 20.0], [5.0, 30.0], false),
+        line([0.0, 20.0], [0.0, 10.0]),
+        arc([0.0, 10.0], [10.0, 0.0], [10.0, 10.0], false),
+    ];
+    let minimum = profile_minimum(&cross_section).unwrap();
+    assert!(
+        (minimum[0] - (5.0 - 125.0_f64.sqrt())).abs() < 1e-9,
+        "{minimum:?}"
+    );
+    assert!(minimum[1].abs() < 1e-9, "{minimum:?}");
+
+    let stock = GeneralMachiningGeometry::PrismaticStock {
+        frame: identity_machining_frame(),
+        cross_section,
+        start_mm: [0.0; 3],
+        length_axis: [0.0, 0.0, 1.0],
+        length_mm: 18.0,
+        cross_section_width_mm: 105.0,
+        cross_section_height_mm: 60.0,
+    };
+    let frame = production::job_stock_frame(&stock).expect("a rounded blank has a job frame");
+    assert!(!frame.rectangular);
+    assert_eq!(frame.dimensions_mm, [105.0, 60.0, 18.0]);
+}
+
 fn blank_at_origin(extents_mm: [f64; 3]) -> StockBlank {
     StockBlank {
         corner_mm: [0.0; 3],

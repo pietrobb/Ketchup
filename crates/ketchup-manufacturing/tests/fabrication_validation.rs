@@ -2994,6 +2994,77 @@ fn unsupported_or_unverified_exact_graph_manufacturing_fails_closed_atomically()
     );
 }
 
+/// Review 2026-10-31 MF-80: a manufactured item whose cuts cannot be described
+/// lost all its machining while the drawing printed its outline as if it had
+/// none and the job refused it without a name. Its drawing now says the
+/// machining is not described, and the machine files refuse the part by name.
+#[test]
+fn a_manufactured_part_with_undescribed_machining_is_never_shown_as_fully_machined() {
+    let mut document = graph_boolean_document(BooleanOperation::Union);
+    let mut commands = vec![CanonicalCommand::UpsertClassificationDimension {
+        id: FABRICATION_ROLE_DIMENSION,
+        name: FABRICATION_ROLE_DIMENSION_V1.to_owned(),
+        categories: vec![
+            (TIMBER_MEMBER_CATEGORY, TIMBER_MEMBER_ROLE_V1.to_owned()),
+            (
+                MANUFACTURED_ITEM_CATEGORY,
+                MANUFACTURED_ITEM_ROLE_V1.to_owned(),
+            ),
+        ],
+    }];
+    for (occurrence_id, code) in [(GRAPH_LEFT, "000000000046"), (GRAPH_RIGHT, "000000000047")] {
+        commands.push(CanonicalCommand::SetOccurrenceClassification {
+            occurrence_id,
+            dimension_id: FABRICATION_ROLE_DIMENSION,
+            category_id: Some(MANUFACTURED_ITEM_CATEGORY),
+        });
+        commands.push(CanonicalCommand::SetProductionCode {
+            instance_path: InstancePath::root(occurrence_id),
+            code: Some(code.to_owned()),
+        });
+    }
+    document.apply_batch(&CommandBatch::new(commands)).unwrap();
+    let (snapshot, projection) =
+        graph_document_fabrication_projection(document, true, "mf-80-graph-result");
+    assert_eq!(
+        projection.bom.rows[0].item_kind,
+        GeneralBomItemKind::Manufactured
+    );
+    assert!(projection.manufacturing.operations.is_empty());
+    assert_eq!(projection.manufacturing.undescribed_sources.len(), 1);
+
+    let drawing = String::from_utf8(projection.drawing_svg(&snapshot).unwrap()).unwrap();
+    assert!(
+        drawing.contains("machining not described"),
+        "the drawing must not pass for the whole part: {drawing}"
+    );
+    let refused = |format| {
+        cannot_carry(
+            format,
+            "Graph fabrication",
+            ShopElement::UndescribedMachining,
+        )
+    };
+    assert_eq!(
+        projection.production_job(&snapshot, &[]).err(),
+        Some(refused(ShopFormat::ProductionJob))
+    );
+    let woodwop = ShopFormat::Woodwop {
+        vertical_pocket_tool: true,
+    };
+    assert_eq!(
+        projection
+            .woodwop_mpr_4_0_production_package(
+                &snapshot,
+                ketchup_manufacturing::fabrication::WoodwopMprOptions {
+                    vertical_pocket_tool_number: Some(1),
+                },
+            )
+            .err(),
+        Some(refused(woodwop))
+    );
+}
+
 #[test]
 fn canonical_mesh_keeps_bom_and_drawings_but_blocks_manufacturing_export() {
     let document = mixed_document();
@@ -3261,7 +3332,18 @@ fn graph_fabrication_projection(
     verified: bool,
     result_fingerprint: &str,
 ) -> (Snapshot, GeneralFabricationProjection) {
-    let document = graph_boolean_document(operation);
+    graph_document_fabrication_projection(
+        graph_boolean_document(operation),
+        verified,
+        result_fingerprint,
+    )
+}
+
+fn graph_document_fabrication_projection(
+    document: DocumentStore,
+    verified: bool,
+    result_fingerprint: &str,
+) -> (Snapshot, GeneralFabricationProjection) {
     let snapshot = document.current();
     let registry = if verified {
         ExactResultRegistry::accept(

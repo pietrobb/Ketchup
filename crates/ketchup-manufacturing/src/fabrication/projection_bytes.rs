@@ -68,7 +68,7 @@ pub(super) fn general_drawing_bytes(
         }
         push_projection_bytes(
             &mut bytes,
-            &general_manufacturing_bytes(&drawing.machining_operations, &[], validation_state),
+            &general_manufacturing_bytes(&drawing.machining_operations, &[], &[], validation_state),
         );
         push_projection_evidence(&mut bytes, &drawing.evidence_class);
     }
@@ -78,6 +78,7 @@ pub(super) fn general_drawing_bytes(
 pub(super) fn general_manufacturing_bytes(
     operations: &[GeneralManufacturingOperation],
     unresolved_sources: &[GeneralBodySource],
+    undescribed_sources: &[GeneralBodySource],
     validation_state: ValidationState,
 ) -> Vec<u8> {
     let mut bytes = GENERAL_MANUFACTURING_EXPORT_V2.as_bytes().to_vec();
@@ -117,6 +118,11 @@ pub(super) fn general_manufacturing_bytes(
     }
     bytes.extend_from_slice(&(unresolved_sources.len() as u64).to_le_bytes());
     for source in unresolved_sources {
+        push_general_source(&mut bytes, source);
+    }
+    let undescribed = u64::try_from(undescribed_sources.len()).unwrap_or(u64::MAX);
+    bytes.extend_from_slice(&undescribed.to_le_bytes());
+    for source in undescribed_sources {
         push_general_source(&mut bytes, source);
     }
     bytes

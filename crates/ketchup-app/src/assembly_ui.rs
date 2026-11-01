@@ -1669,19 +1669,7 @@ impl KetchupApp {
         {
             return Err(self.catalog.refusal("error-preview-stale"));
         }
-        let source = if let [instance_path] = instance_paths
-            && instance_path.is_root()
-        {
-            let definition_id = snapshot
-                .resolve_instance_path(instance_path)
-                .map_err(|error| self.catalog.refusal_because("error-preview-stale", error))?
-                .definition_id;
-            DrawingSource::Definition(definition_id)
-        } else {
-            DrawingSource::RigidAssemblyInstances {
-                instance_paths: instance_paths.to_vec(),
-            }
-        };
+        let source = DrawingSource::for_instances(&snapshot, instance_paths.to_vec());
         let balloons = if matches!(&source, DrawingSource::RigidAssemblyInstances { .. }) {
             let bom_items = BomItems::new(&snapshot)
                 .map_err(|error| failed("assembly.drawing_balloon", error))?;

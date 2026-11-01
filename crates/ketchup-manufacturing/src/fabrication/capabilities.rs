@@ -56,6 +56,10 @@ pub enum ShopElement {
     /// A hole drilled through all: its interval is the padded Boolean cutter,
     /// not a depth a machine may drill.
     ThroughHole,
+    /// Machining that could not be described as operations (a fillet, chamfer,
+    /// imported body or other cut no operation kind holds): the part's holes
+    /// and cuts are unknown to every format (review 2026-10-31 MF-80).
+    UndescribedMachining,
 }
 
 impl fmt::Display for ShopElement {
@@ -66,6 +70,7 @@ impl fmt::Display for ShopElement {
             Self::Thread(label) => write!(formatter, "a tapped hole ({label})"),
             Self::PinHole(joint) => write!(formatter, "a pin hole of pin joint {joint}"),
             Self::ThroughHole => formatter.write_str("a hole drilled through all"),
+            Self::UndescribedMachining => formatter.write_str("machining that is not described"),
         }
     }
 }
@@ -95,6 +100,12 @@ const THROUGH_HOLE: &str = "it drills only holes with a depth that stops inside 
      through-all hole has no machine depth, only the Boolean cutter that runs past the part; export \
      BTLx, which drills it through the stock, or the production job or the drawing, which carry \
      the hole as through-all";
+/// Printed on the drawing of a part whose machining is not described.
+pub(super) const DRAWING_UNDESCRIBED: &str = "the drawing shows the part's outline only, \
+     without its holes and cuts; do not machine the part from this drawing";
+const UNDESCRIBED: &str = "the part's cuts could not be described as drillings, profile or \
+     through cuts, so it would be made without them; model its machining as holes, pockets and \
+     cuts, or make it from the model";
 const WOODWOP_PROFILE_WITHOUT_TOOL: &str =
     "a profile cut is milled as a vertical pocket; choose the vertical pocket tool number";
 const WOODWOP_OTHER_CUT: &str =
@@ -105,6 +116,10 @@ const WOODWOP_OTHER_CUT: &str =
 pub fn carriage(format: ShopFormat, element: &ShopElement) -> Carriage {
     use GeneralManufacturingKind as Kind;
     match (format, element) {
+        (ShopFormat::Drawing, ShopElement::UndescribedMachining) => {
+            Carriage::Loses(DRAWING_UNDESCRIBED)
+        }
+        (_, ShopElement::UndescribedMachining) => Carriage::Refuses(UNDESCRIBED),
         (ShopFormat::Drawing | ShopFormat::Btlx, ShopElement::PinHole(_)) => {
             Carriage::Refuses(UNDRILLED_PIN_HOLE)
         }
@@ -169,6 +184,9 @@ impl GeneralFabricationProjection {
             let mut elements = Vec::new();
             if row.mirrored || copies_are_mirrored(snapshot, row)? {
                 elements.push(ShopElement::MirroredCopy);
+            }
+            if self.manufacturing.undescribed_sources.contains(&row.source) {
+                elements.push(ShopElement::UndescribedMachining);
             }
             for operation in self
                 .manufacturing
