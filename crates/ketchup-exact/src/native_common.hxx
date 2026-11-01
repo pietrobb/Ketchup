@@ -172,6 +172,16 @@ struct EdgeHistoryRecord {
   bool output_present = false;
 };
 
+// One shape an import left out of a part: its ordinal among the part's shapes,
+// its kind ("solid", "shell", ...), the source file entity it was read from (0
+// when unknown) and why it was refused.
+struct RejectedShapeRecord {
+  std::uint32_t ordinal = 0;
+  std::string kind;
+  std::uint32_t source_entity = 0;
+  std::string reason;
+};
+
 const NativeTolerances& tolerances() noexcept;
 
 struct NativeOperationResult::Impl {
@@ -185,6 +195,7 @@ struct NativeOperationResult::Impl {
   std::vector<NativeEdgeFaceEvidence> edge_faces;
   std::vector<HistoryRecord> history;
   std::vector<EdgeHistoryRecord> edge_history;
+  std::vector<RejectedShapeRecord> rejected;
 };
 
 std::uint32_t count_subshapes(const TopoDS_Shape& shape, TopAbs_ShapeEnum kind);

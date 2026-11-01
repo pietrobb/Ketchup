@@ -721,6 +721,23 @@ impl KetchupApp {
         }
     }
 
+    /// The parts and solids an exact import leaves out, each with its reason,
+    /// under the heading `heading`; nothing when it leaves out none.
+    fn show_import_refusals(&self, ui: &mut egui::Ui, heading: &str, refusals: &[String]) {
+        if refusals.is_empty() {
+            return;
+        }
+        ui.colored_label(Color32::YELLOW, self.catalog.text(heading));
+        egui::ScrollArea::vertical()
+            .id_salt(heading)
+            .max_height(160.0)
+            .show(ui, |ui| {
+                for refusal in refusals {
+                    ui.label(refusal);
+                }
+            });
+    }
+
     pub(crate) fn show_step_import_window(&mut self, context: &egui::Context) {
         let Some(pending) = self.modal.get::<PendingStepImport>() else {
             return;
@@ -728,17 +745,14 @@ impl KetchupApp {
         let path = pending.plan.source.path.clone();
         let evidence = pending.plan.evidence.clone();
         let solid_count = evidence
-            .nodes
-            .iter()
-            .filter_map(|node| node.part_index)
-            .map(|index| evidence.parts[index as usize].exact.solid_count)
+            .placed_parts()
+            .map(|part| part.exact.solid_count)
             .sum::<u32>();
         let volume_mm3 = evidence
-            .nodes
-            .iter()
-            .filter_map(|node| node.part_index)
-            .map(|index| evidence.parts[index as usize].exact.volume_mm3)
+            .placed_parts()
+            .map(|part| part.exact.volume_mm3)
             .sum::<f64>();
+        let refusals = evidence.refusals();
         let mut import = false;
         let mut cancel = false;
         egui::Window::new(self.catalog.text("dialog-import-step-title"))
@@ -760,6 +774,7 @@ impl KetchupApp {
                 ui.label(self.catalog.text("dialog-import-step-preserved"));
                 ui.label(self.catalog.text("dialog-import-step-root-warning"));
                 ui.label(self.catalog.text("dialog-import-step-metadata-warning"));
+                self.show_import_refusals(ui, "dialog-import-step-refused", &refusals);
                 ui.separator();
                 ui.horizontal(|ui| {
                     import = ui
@@ -788,6 +803,7 @@ impl KetchupApp {
         };
         let path = pending.plan.source.path.clone();
         let evidence = pending.plan.evidence.clone();
+        let refusals = evidence.refusals();
         let mut import = false;
         let mut cancel = false;
         egui::Window::new(self.catalog.text("dialog-import-iges-title"))
@@ -831,6 +847,7 @@ impl KetchupApp {
                     Color32::YELLOW,
                     self.catalog.text("dialog-import-iges-loss-warning"),
                 );
+                self.show_import_refusals(ui, "dialog-import-iges-refused", &refusals);
                 ui.separator();
                 ui.horizontal(|ui| {
                     import = ui

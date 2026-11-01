@@ -1,5 +1,13 @@
 #include "native_common.hxx"
 
+#include <BRepCheck.hxx>
+#include <BRepCheck_Result.hxx>
+#include <Interface_InterfaceModel.hxx>
+#include <TCollection_HAsciiString.hxx>
+#include <TopoDS_Iterator.hxx>
+#include <XSControl_TransferReader.hxx>
+#include <XSControl_WorkSession.hxx>
+
 namespace ketchup::exact {
 
 namespace {
@@ -49,7 +57,53 @@ struct StepXdeData {
   std::string length_unit;
   // "STEP" or "IGES": the format read, which every failure names.
   const char* format = "STEP";
+  // Per part, the number of the source entity each of its shapes (in
+  // collect_part_shapes order) was read from, 0 when unknown: what a refused
+  // shape is traced back by once the reader's records are gone.
+  std::vector<std::vector<std::uint32_t>> part_shape_entities;
 };
+
+// The shapes a part is made of: its compounds opened down to what they hold.
+void collect_part_shapes(const TopoDS_Shape& shape, std::vector<TopoDS_Shape>& shapes) {
+  if (shape.ShapeType() != TopAbs_COMPOUND) {
+    shapes.push_back(shape);
+    return;
+  }
+  for (TopoDS_Iterator it(shape); it.More(); it.Next()) {
+    collect_part_shapes(it.Value(), shapes);
+  }
+}
+
+// The number of the source entity `shape` was read from, 0 when unknown.
+std::uint32_t source_entity_number(
+    const occ::handle<XSControl_TransferReader>& transfer,
+    const occ::handle<Interface_InterfaceModel>& model,
+    const TopoDS_Shape& shape) {
+  if (transfer.IsNull() || model.IsNull()) return 0;
+  try {
+    for (const int mode : {1, 3}) {
+      const occ::handle<Standard_Transient> entity = transfer->EntityFromShapeResult(shape, mode);
+      if (entity.IsNull()) continue;
+      const occ::handle<TCollection_HAsciiString> label = model->StringLabel(entity);
+      if (label.IsNull()) return 0;
+      // "#177564" in STEP, "D123" in IGES.
+      std::uint64_t number = 0;
+      bool digits = false;
+      for (const char c : std::string(label->ToCString())) {
+        if (!std::isdigit(static_cast<unsigned char>(c))) {
+          if (digits) return 0;
+          continue;
+        }
+        digits = true;
+        number = number * 10 + static_cast<std::uint64_t>(c - '0');
+        if (number > 0xffffffffull) return 0;
+      }
+      return static_cast<std::uint32_t>(number);
+    }
+  } catch (...) {
+  }
+  return 0;
+}
 
 std::string xde_error(const StepXdeData& data, const char* what) {
   return std::string(data.format) + " XDE " + what;
@@ -172,6 +226,7 @@ bool load_xde(const std::string& path, StepXdeData& data, std::string& error) {
     error = xde_error(data, "source contains no transferable roots");
     return false;
   }
+
   data.shapes = XCAFDoc_DocumentTool::ShapeTool(data.document->Main());
   data.colors = XCAFDoc_DocumentTool::ColorTool(data.document->Main());
   if (data.shapes.IsNull() || data.colors.IsNull()) {
@@ -280,6 +335,25 @@ bool load_xde(const std::string& path, StepXdeData& data, std::string& error) {
     error = xde_error(data, "source contains no supported exact parts");
     return false;
   }
+  occ::handle<XSControl_WorkSession> session;
+  if constexpr (std::is_same_v<Reader, STEPCAFControl_Reader>) {
+    session = reader.ChangeReader().WS();
+  } else {
+    session = reader.WS();
+  }
+  const auto transfer = session.IsNull() ? occ::handle<XSControl_TransferReader>() : session->TransferReader();
+  const auto model = session.IsNull() ? occ::handle<Interface_InterfaceModel>() : session->Model();
+  for (const TDF_Label& part : data.parts) {
+    std::vector<TopoDS_Shape> shapes;
+    const TopoDS_Shape shape = XCAFDoc_ShapeTool::GetShape(part);
+    if (!shape.IsNull()) collect_part_shapes(shape, shapes);
+    std::vector<std::uint32_t> entities;
+    entities.reserve(shapes.size());
+    for (const TopoDS_Shape& item : shapes) {
+      entities.push_back(source_entity_number(transfer, model, item));
+    }
+    data.part_shape_entities.push_back(std::move(entities));
+  }
   return true;
 }
 
@@ -339,6 +413,8 @@ bool load_iges_xde(const std::string& path, StepXdeData& data, std::string& erro
   }
   data.parts = std::move(parts);
   data.nodes = std::move(nodes);
+  // The source entities were recorded for the root, not for these parts.
+  data.part_shape_entities.clear();
   return true;
 }
 
@@ -587,6 +663,95 @@ std::string encode_xde_manifest(const StepXdeData& data) {
   return output.str();
 }
 
+const char* shape_kind_name(TopAbs_ShapeEnum kind) {
+  switch (kind) {
+    case TopAbs_COMPSOLID: return "compound solid";
+    case TopAbs_SOLID: return "solid";
+    case TopAbs_SHELL: return "shell";
+    case TopAbs_FACE: return "face";
+    case TopAbs_WIRE: return "wire";
+    case TopAbs_EDGE: return "edge";
+    case TopAbs_VERTEX: return "vertex";
+    default: return "shape";
+  }
+}
+
+// The first defect the validity check names in `shape`, as OCCT spells it.
+std::string first_validity_defect(const BRepCheck_Analyzer& analyzer, const TopoDS_Shape& shape) {
+  const auto named = [](const NCollection_List<BRepCheck_Status>& statuses) -> std::string {
+    for (const BRepCheck_Status status : statuses) {
+      if (status != BRepCheck_NoError) {
+        std::ostringstream name;
+        BRepCheck::Print(status, name);
+        std::string text = name.str();
+        while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back()))) {
+          text.pop_back();
+        }
+        return text;
+      }
+    }
+    return {};
+  };
+  for (const TopAbs_ShapeEnum kind :
+       {TopAbs_VERTEX, TopAbs_EDGE, TopAbs_WIRE, TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID}) {
+    TopTools_IndexedMapOfShape parts;
+    TopExp::MapShapes(shape, kind, parts);
+    for (int index = 1; index <= parts.Extent(); ++index) {
+      const occ::handle<BRepCheck_Result> result = analyzer.Result(parts(index));
+      if (result.IsNull() || analyzer.IsValid(parts(index))) continue;
+      std::string defect = named(result->Status());
+      for (result->InitContextIterator(); defect.empty() && result->MoreShapeInContext();
+           result->NextShapeInContext()) {
+        defect = named(result->StatusOnShape());
+      }
+      if (!defect.empty()) return defect;
+    }
+  }
+  return {};
+}
+
+// Why a shape read from a file cannot be kept, or empty when it can: it
+// fails the validity check, or it is a solid that encloses no volume.
+std::string shape_defect(const TopoDS_Shape& shape) {
+  try {
+    const BRepCheck_Analyzer analyzer(shape, true);
+    if (!analyzer.IsValid()) {
+      const std::string defect = first_validity_defect(analyzer, shape);
+      return defect.empty() ? "fails the exact-shape validity check"
+                            : "fails the exact-shape validity check (" + defect + ")";
+    }
+    if (shape.ShapeType() == TopAbs_SOLID) {
+      GProp_GProps volume;
+      BRepGProp::VolumeProperties(shape, volume);
+      GProp_GProps area;
+      BRepGProp::SurfaceProperties(shape, area);
+      // Thinner on average than the linear tolerance: no enclosed volume.
+      if (!std::isfinite(volume.Mass()) || volume.Mass() <= tolerances().linear_mm * area.Mass()) {
+        return "encloses no volume";
+      }
+    }
+    return {};
+  } catch (const Standard_Failure& failure) {
+    return "raises " + standard_failure_message(failure);
+  } catch (const std::exception& failure) {
+    return std::string("raises ") + failure.what();
+  }
+}
+
+std::string describe_rejected(const std::vector<RejectedShapeRecord>& rejected) {
+  std::ostringstream text;
+  for (std::size_t index = 0; index < rejected.size(); ++index) {
+    const RejectedShapeRecord& record = rejected[index];
+    text << (index == 0 ? "" : "; ") << record.kind << ' ' << record.ordinal + 1;
+    if (record.source_entity != 0) text << " (entity #" << record.source_entity << ')';
+    text << ' ' << record.reason;
+  }
+  return text.str();
+}
+
+// The body of one part. A part some of whose shapes cannot be kept is the
+// compound of the others, each refused shape recorded with its source entity
+// and reason; a part none of whose shapes can be kept fails naming them all.
 std::unique_ptr<NativeOperationResult> xde_part_result(
     const StepXdeData& data, std::uint32_t part_index) {
   if (part_index >= data.parts.size()) {
@@ -597,8 +762,72 @@ std::unique_ptr<NativeOperationResult> xde_part_result(
   if (shape.IsNull()) {
     return error_result(STATUS_INVALID_SHAPE, xde_error(data, "part has no exact shape"));
   }
-  const std::uint32_t solids = count_subshapes(shape, TopAbs_SOLID);
-  return success_result(shape, {}, solids >= 2, false, {}, solids == 0);
+  std::vector<TopoDS_Shape> shapes;
+  collect_part_shapes(shape, shapes);
+  const std::vector<std::uint32_t>* entities = part_index < data.part_shape_entities.size()
+      && data.part_shape_entities[part_index].size() == shapes.size()
+      ? &data.part_shape_entities[part_index]
+      : nullptr;
+  const auto refused = [&](std::size_t index, std::string defect) {
+    return RejectedShapeRecord{
+        static_cast<std::uint32_t>(index),
+        shape_kind_name(shapes[index].ShapeType()),
+        entities == nullptr ? 0 : (*entities)[index],
+        std::move(defect)};
+  };
+  const auto refuse_part = [&](const std::vector<RejectedShapeRecord>& rejected) {
+    return error_result(
+        STATUS_INVALID_SHAPE,
+        xde_error(data, "part has no shape that can be kept: ") + describe_rejected(rejected));
+  };
+  // Each shape is checked apart only in a part of several, so a part of one
+  // costs one validity check, as before.
+  std::vector<TopoDS_Shape> kept;
+  std::vector<RejectedShapeRecord> rejected;
+  if (shapes.size() > 1) {
+    for (std::size_t index = 0; index < shapes.size(); ++index) {
+      std::string defect = shape_defect(shapes[index]);
+      if (defect.empty()) {
+        kept.push_back(shapes[index]);
+      } else {
+        rejected.push_back(refused(index, std::move(defect)));
+      }
+    }
+    if (kept.empty()) return refuse_part(rejected);
+  }
+  TopoDS_Shape body = shape;
+  if (!rejected.empty()) {
+    TopoDS_Compound salvaged;
+    BRep_Builder builder;
+    builder.MakeCompound(salvaged);
+    for (const TopoDS_Shape& part : kept) {
+      builder.Add(salvaged, part);
+    }
+    body = kept.size() == 1 ? kept.front() : TopoDS_Shape(salvaged);
+  }
+  const std::uint32_t solids = count_subshapes(body, TopAbs_SOLID);
+  std::unique_ptr<NativeOperationResult> result;
+  std::string failure;
+  try {
+    result = success_result(body, {}, solids >= 2, false, {}, solids == 0);
+  } catch (const Standard_Failure& error) {
+    failure = "raises " + standard_failure_message(error);
+  } catch (const std::exception& error) {
+    failure = std::string("raises ") + error.what();
+  }
+  if (result != nullptr && result->status_code() == STATUS_OK) {
+    result->impl().rejected = std::move(rejected);
+    return result;
+  }
+  if (shapes.size() == 1) {
+    std::string defect = failure.empty() ? shape_defect(body) : failure;
+    return refuse_part({refused(0, defect.empty() ? "fails the exact-shape validity check" : defect)});
+  }
+  // The shapes passed apart but not together.
+  return error_result(
+      STATUS_INVALID_SHAPE,
+      xde_error(data, "part fails the exact-shape validity check as a whole")
+          + (failure.empty() ? std::string() : ": " + failure));
 }
 
 } // namespace

@@ -15,6 +15,7 @@ struct NativeFaceEvidence;
 struct NativeHistoryEvidence;
 struct NativeMeshTriangle;
 struct NativeMeshVertex;
+struct NativeRejectedShape;
 struct NativeVolumeMeshTetrahedron;
 struct NativeTopologySummary;
 struct NativePairQuery;
@@ -52,8 +53,10 @@ public:
   rust::Vec<NativeEdgeFaceEvidence> edge_face_evidence() const;
   rust::Vec<NativeHistoryEvidence> history_evidence() const;
   rust::Vec<NativeEdgeHistoryEvidence> edge_history_evidence() const;
+  rust::Vec<NativeRejectedShape> rejected_shapes() const;
 
   const Impl& impl() const noexcept;
+  Impl& impl() noexcept;
 
 private:
   std::unique_ptr<Impl> impl_;

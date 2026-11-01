@@ -533,6 +533,25 @@ pub struct StepXdeWorkerEvidence {
     pub source_unit: String,
     pub parts: Vec<StepXdeWorkerPart>,
     pub nodes: Vec<StepXdeWorkerNode>,
+    /// The parts that could not be read, which `parts` leaves out; the nodes
+    /// still name them.
+    pub rejected_parts: Vec<StepXdeRejectedPart>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct StepXdeRejectedPart {
+    pub index: u32,
+    pub name: String,
+    pub reason: String,
+}
+
+/// A shape a read part left out: see `ketchup_exact::RejectedShape`.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct StepXdeRejectedShape {
+    pub ordinal: u32,
+    pub kind: String,
+    pub source_entity: Option<u32>,
+    pub reason: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -550,6 +569,7 @@ pub struct StepXdeWorkerPart {
     pub bounds_mm: [[f64; 3]; 2],
     pub backend: String,
     pub tolerance: String,
+    pub rejected_shapes: Vec<StepXdeRejectedShape>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

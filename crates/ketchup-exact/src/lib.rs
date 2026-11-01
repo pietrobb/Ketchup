@@ -251,6 +251,13 @@ mod ffi {
         output_present: bool,
     }
 
+    struct NativeRejectedShape {
+        ordinal: u32,
+        kind: String,
+        source_entity: u32,
+        reason: String,
+    }
+
     struct NativeMeshVertex {
         x_mm: f64,
         y_mm: f64,
@@ -580,6 +587,7 @@ mod ffi {
         fn edge_face_evidence(self: &NativeOperationResult) -> Vec<NativeEdgeFaceEvidence>;
         fn history_evidence(self: &NativeOperationResult) -> Vec<NativeHistoryEvidence>;
         fn edge_history_evidence(self: &NativeOperationResult) -> Vec<NativeEdgeHistoryEvidence>;
+        fn rejected_shapes(self: &NativeOperationResult) -> Vec<NativeRejectedShape>;
     }
 }
 

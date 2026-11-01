@@ -104,6 +104,41 @@ fn an_attached_client_imports_a_file_without_a_prompt() {
     assert!(probe.high_risk_prompts().is_empty());
 }
 
+/// Ploopy STEP fix B: a STEP part that cannot be read is left out, the rest
+/// imported, and the answer names the part and the solid left out of another
+/// with their source entities.
+#[test]
+fn an_imported_step_names_the_parts_and_solids_it_left_out() {
+    let (mut app, mut bridge, _directory) = window();
+    let worker = ketchup_application::evaluation::exact_worker_candidates()
+        .into_iter()
+        .find(|path| path.is_file())
+        .expect("build ketchup-exact-worker before this test");
+    app.connect_exact_worker(worker).unwrap();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../corpora/r0/step/self-authored-partly-invalid-assembly.step");
+    let definitions = app.document.current().definitions().count();
+
+    let imported = bridge
+        .execute(&mut app, import(&source, None), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let review = &imported["review"];
+    assert_eq!(review["refused_total"], 2, "{review}");
+    let refused = review["refused"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line.as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(refused[0].starts_with("Crossed prism: ") && refused[0].contains("#1069"));
+    assert!(refused[1].contains("(entity #720) encloses no volume"));
+    assert_eq!(review["solids"], 2);
+    assert_eq!(
+        app.document.current().definitions().count(),
+        definitions + 2
+    );
+}
+
 #[test]
 fn a_large_import_review_fits_the_answer_of_the_import_that_already_happened() {
     let (mut app, mut bridge, directory) = window();

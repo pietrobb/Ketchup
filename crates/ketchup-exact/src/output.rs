@@ -253,9 +253,16 @@ pub(super) fn collect_output(
             (None, None) => !matches!(edge.curve_kind.as_str(), "line" | "circle"),
             _ => false,
         };
+        // A degenerated edge (a cone apex, a sphere pole) is a point.
+        let length_is_coherent = if edge.curve_kind == "degenerate" {
+            edge.length_mm == 0.0
+                && edge.bounds_mm.min == edge.bounds_mm.max
+                && edge.centroid_mm == edge.bounds_mm.min
+        } else {
+            edge.length_mm.is_finite() && edge.length_mm > 0.0
+        };
         !edge.curve_kind.is_empty()
-            && edge.length_mm.is_finite()
-            && edge.length_mm > 0.0
+            && length_is_coherent
             && finite_point(edge.centroid_mm)
             && finite_point(edge.bounds_mm.min)
             && finite_point(edge.bounds_mm.max)
@@ -308,6 +315,16 @@ pub(super) fn collect_output(
                 output_edge_ordinal: entry.output_present.then_some(entry.output_ordinal),
             }),
     );
+    let rejected_shapes = native_ref
+        .rejected_shapes()
+        .into_iter()
+        .map(|shape| RejectedShape {
+            ordinal: shape.ordinal,
+            kind: shape.kind,
+            source_entity: (shape.source_entity != 0).then_some(shape.source_entity),
+            reason: shape.reason,
+        })
+        .collect();
 
     Ok(ExactOpOutput {
         body: ExactBody {
@@ -332,5 +349,6 @@ pub(super) fn collect_output(
         input_digest,
         backend_fingerprint: BACKEND_FINGERPRINT,
         history_confidence,
+        rejected_shapes,
     })
 }

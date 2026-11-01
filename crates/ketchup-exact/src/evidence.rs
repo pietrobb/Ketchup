@@ -315,6 +315,18 @@ impl fmt::Debug for ExactBody {
     }
 }
 
+/// A shape an import left out of the part it belongs to, and why.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RejectedShape {
+    /// Its position among the shapes the part is made of, from 0.
+    pub ordinal: u32,
+    /// "solid", "shell", "face", ...
+    pub kind: String,
+    /// The number of the source entity it was read from: STEP `#n`, IGES `Dn`.
+    pub source_entity: Option<u32>,
+    pub reason: String,
+}
+
 pub struct ExactOpOutput {
     pub body: ExactBody,
     pub topology_history: Vec<HistoryEvidence>,
@@ -323,6 +335,8 @@ pub struct ExactOpOutput {
     pub input_digest: String,
     pub backend_fingerprint: &'static str,
     pub history_confidence: HistoryConfidence,
+    /// What an imported part left out; empty for every other operation.
+    pub rejected_shapes: Vec<RejectedShape>,
 }
 
 /// What the native shape of one face is charged in memory: its surface, wires,
@@ -410,6 +424,7 @@ impl fmt::Debug for ExactOpOutput {
             .field("input_digest", &self.input_digest)
             .field("backend_fingerprint", &self.backend_fingerprint)
             .field("history_confidence", &self.history_confidence)
+            .field("rejected_shapes", &self.rejected_shapes)
             .finish()
     }
 }

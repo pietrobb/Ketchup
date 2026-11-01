@@ -137,11 +137,24 @@ std::unique_ptr<NativeOperationResult> error_result(
 bool oriented_planar_face_normal(const TopoDS_Face& face, gp_Dir& normal) {
   double u0, u1, v0, v1;
   BRepTools::UVBounds(face, u0, u1, v0, v1);
+  const auto surface = BRep_Tool::Surface(face);
+  // The pcurves of a face may reach slightly past the domain of a
+  // non-periodic surface (SolidWorks exports do);
+  // trimming outside the domain throws, so measure the face within it.
+  double surface_u0, surface_u1, surface_v0, surface_v1;
+  surface->Bounds(surface_u0, surface_u1, surface_v0, surface_v1);
+  if (!surface->IsUPeriodic()) {
+    u0 = std::max(u0, surface_u0);
+    u1 = std::min(u1, surface_u1);
+  }
+  if (!surface->IsVPeriodic()) {
+    v0 = std::max(v0, surface_v0);
+    v1 = std::min(v1, surface_v1);
+  }
   if (!std::isfinite(u0) || !std::isfinite(u1) || !std::isfinite(v0)
       || !std::isfinite(v1) || u1 <= u0 || v1 <= v0) {
     return false;
   }
-  const auto surface = BRep_Tool::Surface(face);
   const occ::handle<Geom_Surface> trimmed =
       new Geom_RectangularTrimmedSurface(surface, u0, u1, v0, v1);
   const GeomLib_IsPlanarSurface planar(trimmed, tolerances().linear_mm);
@@ -281,6 +294,19 @@ NativeFaceEvidence inspect_face(const TopoDS_Face& face, std::uint32_t ordinal) 
 }
 
 NativeEdgeEvidence inspect_edge(const TopoDS_Edge& edge, std::uint32_t ordinal) {
+  // A degenerated edge (the apex of a cone, the pole of a sphere) is a point
+  // in space; its curve, if any, says nothing, so it is reported as that point.
+  if (const TopoDS_Vertex vertex = TopExp::FirstVertex(edge);
+      BRep_Tool::Degenerated(edge) && !vertex.IsNull()) {
+    const gp_Pnt point = BRep_Tool::Pnt(vertex);
+    return NativeEdgeEvidence{
+        ordinal, rust::String("degenerate"), 0.0,
+        point.X(), point.Y(), point.Z(),
+        point.X(), point.Y(), point.Z(),
+        point.X(), point.Y(), point.Z(),
+        BRep_Tool::IsClosed(edge), false, false, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  }
   GProp_GProps properties;
   BRepGProp::LinearProperties(edge, properties);
   const gp_Pnt centroid = properties.CentreOfMass();
@@ -601,7 +627,26 @@ rust::Vec<NativeEdgeHistoryEvidence> NativeOperationResult::edge_history_evidenc
   return output;
 }
 
+rust::Vec<NativeRejectedShape> NativeOperationResult::rejected_shapes() const {
+  rust::Vec<NativeRejectedShape> output;
+  if (impl_ != nullptr) {
+    output.reserve(impl_->rejected.size());
+    for (const RejectedShapeRecord& record : impl_->rejected) {
+      output.push_back(NativeRejectedShape{
+          record.ordinal,
+          rust::String(record.kind),
+          record.source_entity,
+          rust::String(record.reason)});
+    }
+  }
+  return output;
+}
+
 const NativeOperationResult::Impl& NativeOperationResult::impl() const noexcept {
+  return *impl_;
+}
+
+NativeOperationResult::Impl& NativeOperationResult::impl() noexcept {
   return *impl_;
 }
 

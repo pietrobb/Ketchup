@@ -357,7 +357,7 @@ CASTS_AND_ALLOWS = {
     "ketchup-analysis casts": 6,
     # Includes the audited WSAPoll / poll of live_bridge::transport::wait_readable (SEC-61).
     "ketchup-app allows": 11,
-    "ketchup-app casts": 218,
+    "ketchup-app casts": 216,
     "ketchup-application allows": 9,
     "ketchup-application casts": 29,
     "ketchup-assistant allows": 3,
@@ -375,7 +375,7 @@ CASTS_AND_ALLOWS = {
     "ketchup-mcp allows": 2,
     "ketchup-mcp casts": 10,
     "ketchup-model allows": 16,
-    "ketchup-model casts": 274,
+    "ketchup-model casts": 266,
     "ketchup-pdm casts": 5,
     "ketchup-program allows": 9,
     "ketchup-program casts": 50,

@@ -816,6 +816,62 @@ fn file_import_exact_step_commits_undoes_and_persists_source_blob_offscreen() {
 }
 
 #[test]
+fn file_import_exact_step_keeps_the_readable_parts_and_names_the_refused_offscreen() {
+    // Ploopy STEP fix B: one unreadable part failed the whole import. The
+    // review names the part refused and the solid left out of another, each
+    // with its source entity, and the readable parts are imported.
+    let source_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../corpora/r0/step/self-authored-partly-invalid-assembly.step");
+    let source = std::fs::read(&source_path).unwrap();
+    let evidence = ExactWorkerSupervisor::spawn(exact_worker_path())
+        .unwrap()
+        .inspect_step_xde_import_with_cancellation(
+            &source_path,
+            &ketchup_model::graph::sha256_hex(&source),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    let refusals = evidence.refusals();
+    assert_eq!(refusals.len(), 2, "{refusals:?}");
+    assert!(refusals[0].starts_with("Crossed prism: ") && refusals[0].contains("#1069"));
+    assert!(refusals[1].contains("(entity #720) encloses no volume"));
+
+    let script = ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Step, &source_path)
+        .always_confirm_high_risk_as(117);
+    let mut shell = Shell::with_dialogs(script);
+    shell
+        .app_mut()
+        .connect_exact_worker(exact_worker_path())
+        .expect("the partial STEP import requires the real exact worker");
+    let before = canonical_state(&shell);
+    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    assert!(shell.has_visible_label(&shell.catalog().text("dialog-import-step-refused")));
+    for refusal in &refusals {
+        assert!(shell.has_visible_label(refusal), "{refusal}");
+    }
+    shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
+
+    assert_eq!(shell.app().document_revision(), before.revision + 1);
+    assert_eq!(shell.app().definition_count(), before.definitions + 2);
+    let snapshot = shell.app().document_snapshot();
+    let receipt = snapshot
+        .import_receipts()
+        .find(|receipt| receipt.format() == ImportFormat::Step)
+        .unwrap();
+    let mut refused = receipt
+        .diagnostics()
+        .iter()
+        .filter(|diagnostic| diagnostic.code().ends_with("_refused"))
+        .map(|diagnostic| diagnostic.subject().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    refused.sort_unstable();
+    let mut expected = refusals;
+    expected.sort_unstable();
+    assert_eq!(refused, expected);
+}
+
+#[test]
 fn file_import_exact_step_preserves_a_real_nested_repeated_xde_assembly_offscreen() {
     let source_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../corpora/r0/step/independent-xde-assembly.step");

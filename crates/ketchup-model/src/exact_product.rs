@@ -480,7 +480,9 @@ impl ExactBRepGraphPackage {
                 || !edge_ordinals.insert(edge.edge_ordinal)
                 || edge.curve_kind.is_empty()
                 || !edge.length_mm.is_finite()
-                || edge.length_mm <= 0.0
+                || edge.length_mm < 0.0
+                // Only a degenerated edge (a cone apex, a sphere pole) has no length.
+                || (edge.length_mm == 0.0) != (edge.curve_kind == "degenerate")
                 || !edge.centroid_mm.into_iter().all(f64::is_finite)
                 || !finite_bounds
                 || !circle_fields_match
