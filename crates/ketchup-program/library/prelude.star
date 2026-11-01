@@ -1122,9 +1122,22 @@ def connector_rating_of(fastener, ratings = None):
     return (CONNECTOR_RATINGS if ratings == None else ratings).get(fastener)
 
 def _section(part):
-    """(width, height) of a member: its two smallest dimensions."""
-    dims = sorted(part_info(part).size)
-    return dims[0], dims[1]
+    """(width, height) of a member as it lies: across its span level and plumb (review
+    2026-10-31 PG-82: its two smallest sizes read a flat 100 x 60 joist 100 high). A member
+    standing upright: its two smallest sizes."""
+    info = part_info(part)
+    size = info.size
+    span = 0
+    for axis in [1, 2]:
+        if size[axis] > size[span]:
+            span = axis
+    plumb = [abs(getattr(info, "xyz"[axis])[2]) / vec_length(getattr(info, "xyz"[axis])) for axis in range(3)]
+    across = [axis for axis in range(3) if axis != span]
+    if plumb[span] >= max(plumb[across[0]], plumb[across[1]]):
+        dims = sorted([size[across[0]], size[across[1]]])
+        return dims[0], dims[1]
+    level, upright = (across[1], across[0]) if plumb[across[0]] >= plumb[across[1]] else (across[0], across[1])
+    return size[level], size[upright]
 
 def _connector_misfit(fastener, a, b):
     """Why the catalogued connector's published values do not hold for held part a on
@@ -1207,7 +1220,7 @@ def arunda(a, b, template = "80 B", name = None):
     if kind not in CONNECTOR_RATINGS:
         fail("arunda(): unknown template %r; use one of %s" % (template, sorted([k[7:] for k in CONNECTOR_RATINGS.keys() if k.startswith("Arunda ")])))
     low, high, height, _ = _ARUNDA[template.split(" ")[0]]
-    dims = sorted(part_info(a).size)
+    dims = _section(a)
     check(low - 0.001 <= dims[0] and dims[0] <= high + 0.001 and dims[1] >= height - 0.001,
           "arunda(%s, %s): template %s takes timber %d-%d mm wide and at least %d mm high, %s is %s x %s mm" %
           (part_info(a).name, part_info(b).name, template, low, high, height, part_info(a).name, fmt_mm(dims[0]), fmt_mm(dims[1])),

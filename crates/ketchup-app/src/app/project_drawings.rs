@@ -753,6 +753,7 @@ impl KetchupApp {
                             .iter()
                             .filter_map(|part| solid_names.get(part).cloned())
                             .collect(),
+                        mirror_of: position.mirror_of,
                     })
                     .collect(),
             })
@@ -761,6 +762,7 @@ impl KetchupApp {
             sheets,
             columns: ["position", "material", "size", "count"]
                 .map(|column| self.catalog.text(&format!("drawings-shop-{column}"))),
+            mirror_of: self.catalog.text("drawings-shop-mirror-of"),
         }
     }
 

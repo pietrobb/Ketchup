@@ -2074,6 +2074,7 @@ drawings-shop-position = Pos.
 drawings-shop-material = Material
 drawings-shop-size = Size (mm)
 drawings-shop-count = Count
+drawings-shop-mirror-of = mirror of
 drawings-sheet-cutting = Cutting plan { $material } { $section }
 drawings-cutting-stock = { $number }: { $size } mm, { $used } % used
 drawings-view-longitudinal = Longitudinal section

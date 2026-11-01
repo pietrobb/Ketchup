@@ -338,6 +338,74 @@ fn a_catalogued_connector_holds_in_its_service_classes_with_the_nails_it_counts(
     );
 }
 
+/// Review 2026-10-31 PG-82: the service class and kmod came from the first
+/// joined part that had one, so a joist in class 1 on a header in class 3
+/// passed a hanger galvanized for classes 1 and 2 only. The worst class of
+/// the joined parts decides, and timber on timber takes kmod = sqrt(kmod1
+/// kmod2) (EN 1995-1-1 2.3.2.1(2)).
+#[test]
+fn a_joint_is_rated_in_the_worst_service_class_of_its_parts_with_their_mean_kmod() {
+    let wet_header = |source: String| {
+        source
+            .replace(
+                "timber_design({\"C24\": \"C24\"})",
+                "timber_design({\"C24\": \"C24\"})\ntimber_design({\"C24 wet\": \"C24\"}, service_class = 3)",
+            )
+            .replace(
+                "(120, 2000, 240), grounded = True",
+                "(120, 2000, 240), material = \"C24 wet\", grounded = True",
+            )
+    };
+    let sae = "connector(joist, header, \"SAE380\")";
+    let source = hung_source("load_n = 1, basis = \"design\"");
+    let (frame, _) = source.split_once("joint(joist").expect("the hanger");
+    let check = only_check(&report(&wet_header(format!("{frame}{sae}\n"))));
+    assert_eq!(check.status, "not_verified");
+    assert_eq!(check.missing, [service_class_outside("header", 3, &[1, 2])]);
+
+    let check = only_check(&report(&wet_header(hung_source(
+        "load_n = 5000, basis = \"characteristic\"",
+    ))));
+    let q = check.load_n.as_ref().expect("a load")["imposed"];
+    // Medium term: 0.8 in service class 1, 0.65 in 3.
+    let expected = 1.5 * q / ((0.8_f64 * 0.65).sqrt() * 5000.0 / 1.3);
+    assert!(
+        (check.utilization.unwrap() - expected).abs() < 0.001,
+        "{check:?}"
+    );
+}
+
+/// Review 2026-10-31 PG-82: a member's width and height were its two smallest
+/// sizes, so a flat joist 100 wide and 60 high passed SAE250 (for joists
+/// 50-76 wide and at least 95 high) and a 200 x 160 header was read 200 high.
+/// Width is across the span, level; height is plumb.
+#[test]
+fn a_connector_fits_a_member_by_its_width_and_height_as_it_lies() {
+    let flat =
+        format!("{FRAME}connector(joist, header, \"SAE250\")\n").replace("60, 200)", "100, 60)");
+    let issues = report(&flat).issues;
+    assert!(
+        issues.iter().any(|issue| issue
+            .message
+            .contains("SAE250 is rated for joists 50-76 mm wide; joist is 100 mm")),
+        "{issues:?}"
+    );
+    // SAE380 is 160 mm deep around a 60 mm joist; a header 200 wide and only
+    // 150 high takes no such hanger.
+    let low = format!("{FRAME}connector(joist, header, \"SAE380\")\n")
+        .replace("(120, 2000, 240)", "(200, 2000, 150)")
+        .replace("at = (120, 500, 40)", "at = (200, 500, 0)");
+    let report = report(&low);
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.message.contains("deeper than header (150 mm)")),
+        "{:?}",
+        report.issues
+    );
+}
+
 /// The joist of `FRAME` on a hanger at the header and a post at its far end,
 /// under a 600 mm deck with 2 kN/m² imposed load, its hanger rated `rating`.
 fn hung(rating: &str) -> Report {

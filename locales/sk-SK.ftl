@@ -1991,6 +1991,7 @@ drawings-shop-position = Poz.
 drawings-shop-material = Materiál
 drawings-shop-size = Rozmer (mm)
 drawings-shop-count = Počet
+drawings-shop-mirror-of = zrkadlo poz.
 drawings-sheet-cutting = Rozkroj { $material } { $section }
 drawings-cutting-stock = { $number }: { $size } mm, využité { $used } %
 drawings-view-longitudinal = Pozdĺžny rez

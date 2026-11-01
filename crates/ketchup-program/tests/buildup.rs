@@ -619,7 +619,7 @@ fn every_piece_of_a_panel_is_on_its_shop_drawing() {
 /// and blank alone, so one position listed studs notched for noggins on
 /// both sides, on one side and on none as alike, and a carpenter sawing
 /// "8 x pos. 2" from it cut them wrong. Parts of a position have the same
-/// outline, turned over or mirrored at most.
+/// outline, turned at most (a mirror image has its own position, PG-83).
 #[test]
 fn a_shop_drawing_position_holds_only_pieces_made_alike() {
     let source = WALL.replace("\"spacing\": 625,", "\"spacing\": 625, \"noggins\": 900,");
@@ -656,6 +656,41 @@ fn a_shop_drawing_position_holds_only_pieces_made_alike() {
         }
     }
     assert!(notched >= 2, "{:?}", drawings[0].positions);
+}
+
+/// Review 2026-10-31 PG-83: positions took every flip of the axes as the same
+/// part, the odd ones too, so a board with a blind hole from z+ and one with
+/// it from z- at the same place shared one position, and the second, made
+/// from the drawing, came out wrong. Turned parts share a position; a mirror
+/// image is a position of its own that names the one it mirrors.
+#[test]
+fn a_shop_drawing_position_holds_turned_parts_and_names_mirror_images() {
+    let source = "\
+SHEET = {SHOP_DRAWING: \"s\", FABRICATION_ROLE: MANUFACTURED_ITEM}
+a = box(\"a\", [600, 400, 18], material = \"DTD\", attributes = SHEET)
+hole(a, \"z+\", world = (100, 50, 18), diameter = 8, depth = 10, id = \"h\")
+b = box(\"b\", [600, 400, 18], at = (1000, 0, 0), material = \"DTD\", attributes = SHEET)
+hole(b, \"z-\", world = (1100, 50, 0), diameter = 8, depth = 10, id = \"h\")
+c = box(\"c\", [600, 400, 18], at = (2000, 0, 0), material = \"DTD\", attributes = SHEET)
+hole(c, \"z-\", world = (2500, 350, 0), diameter = 8, depth = 10, id = \"h\")
+";
+    let model = eval(source, &[]);
+    let drawings = ketchup_program::shop_drawing::shop_drawings(&model);
+    let [drawing] = &drawings[..] else {
+        panic!("{drawings:?}")
+    };
+    assert_eq!(
+        drawing
+            .positions
+            .iter()
+            .map(|position| (position.parts.clone(), position.mirror_of))
+            .collect::<Vec<_>>(),
+        [
+            (vec!["a".to_owned()], None),
+            (vec!["b".to_owned(), "c".to_owned()], Some(1)),
+        ],
+        "c is b turned half round z; b is a mirrored through its thickness"
+    );
 }
 
 /// Review 2026-10-29 PG-60: a 2 410 mm wall on 600 mm studs got OSB boards

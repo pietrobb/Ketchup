@@ -425,9 +425,15 @@ pub fn drawing_set(
             .iter()
             .enumerate()
             .filter_map(|(drawing, sheet)| {
-                plan_shop(sheet, solids, &options.shop.columns, options.format)
-                    .transpose()
-                    .map(|planned| planned.map(|planned| (drawing, planned)))
+                plan_shop(
+                    sheet,
+                    solids,
+                    &options.shop.columns,
+                    &options.shop.mirror_of,
+                    options.format,
+                )
+                .transpose()
+                .map(|planned| planned.map(|planned| (drawing, planned)))
             })
             .collect::<Result<Vec<_>, _>>()?
     };

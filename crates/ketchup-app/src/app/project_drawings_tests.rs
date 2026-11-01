@@ -705,7 +705,10 @@ fn a_panel_has_a_shop_drawing_dimensioning_its_studs_and_its_window() {
     // Each table row: position, material, size, count.
     for (index, position) in drawing.positions.iter().enumerate() {
         let row = [
-            (index + 1).to_string(),
+            position.mirror_of.map_or_else(
+                || (index + 1).to_string(),
+                |mirrored| format!("{} (mirror of {mirrored})", index + 1),
+            ),
             position.material.clone(),
             position
                 .dimensions_mm

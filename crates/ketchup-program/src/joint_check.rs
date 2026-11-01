@@ -112,33 +112,38 @@ fn utilization(
             }
         }
     }
+    // Every joined part with a service class; the worst of them decides
+    // where the rating holds (review 2026-10-31 PG-82: the first one did).
+    let classed: Vec<(&String, u8)> = joint
+        .parts
+        .iter()
+        .filter_map(|name| Some((name, class_of(name)?.service_class)))
+        .collect();
     if !rating.service_classes.is_empty()
-        && let Some((name, class)) = joint
-            .parts
+        && let Some((name, class)) = classed
             .iter()
-            .find_map(|name| Some((name, class_of(name)?)))
-        && !rating.service_classes.contains(&class.service_class)
+            .copied()
+            .reduce(|worst, next| if next.1 > worst.1 { next } else { worst })
+        && !rating.service_classes.contains(&class)
     {
-        missing.push(service_class_outside(
-            name,
-            class.service_class,
-            &rating.service_classes,
-        ));
+        missing.push(service_class_outside(name, class, &rating.service_classes));
     }
-    let service_class = if rating.basis == "characteristic" {
-        match joint.parts.iter().find_map(class_of) {
-            Some(class) => Some(class.service_class),
-            None => {
-                missing.push(NO_SERVICE_CLASS.to_owned());
-                return (None, missing);
-            }
+    let service_classes: Option<Vec<u8>> = if rating.basis == "characteristic" {
+        if classed.is_empty() {
+            missing.push(NO_SERVICE_CLASS.to_owned());
+            return (None, missing);
         }
+        Some(classed.iter().map(|(_, class)| *class).collect())
     } else {
         None
     };
+    // Joined parts of different classes take the geometric mean of their
+    // kmod (EN 1995-1-1 2.3.2.1(2)); a single classed part its own.
     let capacity = |load_n: f64, duration: usize| {
-        service_class.map_or(load_n, |class| {
-            kmod(class, duration) * load_n / GAMMA_M_CONNECTION
+        service_classes.as_ref().map_or(load_n, |classes| {
+            let product: f64 = classes.iter().map(|class| kmod(*class, duration)).product();
+            let parts = i32::try_from(classes.len()).unwrap_or(i32::MAX);
+            product.powf(1.0 / f64::from(parts)) * load_n / GAMMA_M_CONNECTION
         })
     };
     let mut best: Option<(f64, String)> = None;
