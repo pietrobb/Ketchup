@@ -2898,6 +2898,30 @@ fn blind_drilling_at_or_beyond_stock_depth_is_drilled_through_after_reopen() {
                     "{export}"
                 );
                 assert!(export.contains("<Depth>1000</Depth>"), "{export}");
+                // woodWOP drills only holes that stop inside the part; one as
+                // deep as the part is refused by name (review 2026-10-31 P3 MF).
+                let woodwop = ShopFormat::Woodwop {
+                    vertical_pocket_tool: false,
+                };
+                let refused = Some(cannot_carry(
+                    woodwop,
+                    "Timber with circular drilling",
+                    ShopElement::HoleToFarFace,
+                ));
+                assert_eq!(
+                    projection.woodwop_mpr_4_0_drill_export(&snapshot).err(),
+                    refused
+                );
+                assert_eq!(
+                    projection
+                        .woodwop_mpr_4_0_production_package(&snapshot, Default::default())
+                        .err(),
+                    refused
+                );
+                assert_eq!(
+                    projection.admit(&snapshot, ShopFormat::Btlx),
+                    Ok(Vec::new())
+                );
             }
         }
     }

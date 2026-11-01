@@ -243,6 +243,68 @@ fn a_profile_keeps_its_arcs_and_its_cuts_are_a_cutout_or_a_pocket() {
     assert_eq!(read["POCKET_Z5"].len(), 1);
 }
 
+/// Review 2026-10-31 P3 MF: an outline kept the turn of its profile, so a part
+/// laid underside up, or a profile given clockwise, had its contour clockwise.
+/// Every outline is counterclockwise, its bulges with it.
+#[test]
+fn every_outline_turns_counterclockwise_however_the_profile_turns_and_the_part_lies() {
+    let source = "role = {FABRICATION_ROLE: MANUFACTURED_ITEM}\n\
+         cw = extrude('cw', profile = round_corners([(0, 0), (0, 300), (600, 300), (600, 0)], 20),\n\
+                      distance = 18, attributes = role)\n\
+         cut(cw, profile = [(400, 100), (400, 200), (500, 200), (500, 100)], depth = 5, name = 'inlay')\n\
+         cut(cw, profile = [['s1', [200, 150], [100, 150], {'center': (150, 150), 'clockwise': True}],\n\
+                            ['s2', [100, 150], [200, 150], {'center': (150, 150), 'clockwise': True}]],\n\
+             through = True, name = 'grommet')\n\
+         under = extrude('under', profile = round_corners([(0, 0), (600, 0), (600, 300), (0, 300)], 20),\n\
+                         distance = 18, at = (0, 1000, 0), attributes = role)\n\
+         hole(under, 'start', world = (100, 1100, 0), diameter = 5, depth = 10, id = 'from below')\n";
+    let model = ketchup_program::evaluate("turn.star", source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"))
+        .model;
+    let export = cnc_parts(&model);
+    for name in ["cw", "under"] {
+        let drawn = part(&export, name);
+        let mut outlines = 0;
+        for entity in &drawn.entities {
+            let Entity::Outline { layer, vertices } = entity else {
+                continue;
+            };
+            outlines += 1;
+            // Twice the area: the polygon of the vertices plus each bulge's
+            // circular segment, positive for a counterclockwise arc.
+            let doubled: f64 = (0..vertices.len())
+                .map(|index| {
+                    let ((a, bulge), (b, _)) =
+                        (vertices[index], vertices[(index + 1) % vertices.len()]);
+                    let chord = (b[0] - a[0]).hypot(b[1] - a[1]);
+                    let sweep = 4.0 * bulge.atan();
+                    let segment = if bulge == 0.0 {
+                        0.0
+                    } else {
+                        let radius = chord / (2.0 * (sweep / 2.0).sin());
+                        radius * radius * (sweep - sweep.sin())
+                    };
+                    a[0] * b[1] - b[0] * a[1] + segment
+                })
+                .sum();
+            assert!(
+                doubled > 0.0,
+                "{name} {layer} turns clockwise: {vertices:?}"
+            );
+        }
+        assert!(outlines >= 1, "{drawn:#?}");
+    }
+    assert_eq!(
+        part(&export, "cw")
+            .entities
+            .iter()
+            .filter(|entity| matches!(entity, Entity::Outline { .. }))
+            .count(),
+        3,
+        "contour, inlay and grommet"
+    );
+}
+
 /// A framed wall sheathed with OSB boards: every board is drawn, 15 thick,
 /// and the outlines read back cover the wall less its window.
 #[test]
