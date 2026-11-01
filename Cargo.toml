@@ -14,7 +14,7 @@ process-wrap = { path = "third_party/process-wrap" }
 [workspace.package]
 # A build between releases says so: `-dev` after the next release's number, set the
 # moment a release is tagged (review 2026-10-31 CI-80).
-version = "0.3.1-dev"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.97"
 license = "Apache-2.0"

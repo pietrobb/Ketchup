@@ -3,7 +3,7 @@
 What changed for users in each Ketchup release. The full notes, downloads, and checksums are on the
 [GitHub releases page](https://github.com/pietrobb/Ketchup/releases).
 
-## Unreleased
+## 0.3.1 — 2026-11-02
 
 **Structural checks and production**
 - A compressed timber edge counts as braced only where a board or sheathing really covers it; otherwise its lateral buckling is checked.
@@ -26,6 +26,8 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 - A plugin argument naming a file in the plugin's folder is never read as an option.
 - Each download carries third-party notices with the copyright and licence text of every component it contains.
 - An Android Viewer release no longer measures a pushed `benchmark.ketchup-view`; only a `-Benchmark` build does.
+
+Files from 0.3.0 open in 0.3.1. A file with a trimmed, extended or offset drawing line needs 0.3.1.
 
 ## 0.3.0 — 2026-10-30
 
