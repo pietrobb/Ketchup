@@ -117,7 +117,48 @@ pub struct Truncated {
     pub relations: usize,
 }
 
+/// What the statics checks of a report found, apart from `ok`, which counts
+/// error-level issues (review 2026-10-31 P3, PG-40: a member left not verified
+/// passed the command line with `ok` and exit code 0).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Statics {
+    /// The program declares no load path members or bearing joints.
+    None,
+    /// Every member and bearing joint passes and every load reaches a member.
+    Verified,
+    /// Some member or joint fails.
+    Failed,
+    /// None fails, but some member or joint is not verified or some load
+    /// reaches no member.
+    NotVerified,
+}
+
 impl Report {
+    /// The verdict of the member and joint checks and the loads.
+    #[must_use]
+    pub fn statics(&self) -> Statics {
+        let statuses = self
+            .design
+            .members
+            .iter()
+            .map(|member| member.status)
+            .chain(self.joints.iter().map(|joint| joint.status));
+        let mut verdict = Statics::None;
+        for status in statuses {
+            match status {
+                "fail" => return Statics::Failed,
+                "pass" if verdict == Statics::None => verdict = Statics::Verified,
+                "pass" => {}
+                _ => verdict = Statics::NotVerified,
+            }
+        }
+        if !self.loads.unassigned.is_empty() {
+            verdict = Statics::NotVerified;
+        }
+        verdict
+    }
+
     /// Replaces the issues (e.g. after an exact check) and recounts them. A
     /// report whose checks did not finish is not `ok`: nothing says it is.
     pub fn set_issues(&mut self, mut issues: Vec<Issue>) {
@@ -182,14 +223,19 @@ impl Report {
     /// Takes the issues and relations [`refine`] re-derived. Refining checks
     /// collisions and relations only, so a report whose checks stopped keeps
     /// saying that joints and loads were not checked, and the issues of its
-    /// loads stay.
+    /// loads and cutting plans stay.
     pub fn apply_refined(&mut self, refined: Refined) {
         let mut issues = refined.issues;
         issues.extend(
             self.issues
                 .iter()
                 .filter(|issue| {
-                    issue.kind == CHECKS_UNVERIFIED || issue.kind == loads::LOAD_UNASSIGNED
+                    [
+                        CHECKS_UNVERIFIED,
+                        loads::LOAD_UNASSIGNED,
+                        cutting::CUTTING_UNPLACED,
+                    ]
+                    .contains(&issue.kind)
                 })
                 .cloned(),
         );
@@ -360,6 +406,8 @@ pub fn report(evaluated: &Evaluated) -> Report {
         validate::validate_with_faces(&evaluated.model, &ExactShapes::default(), &mut faces);
     let loads = loads::loads_with(&evaluated.model, &mut faces);
     issues.extend(loads.issues());
+    let bom = bom(&evaluated.model);
+    issues.extend(cutting::issues(&bom.cutting));
     locate_issues(&mut issues, &evaluated.part_sources);
     let errors = issues
         .iter()
@@ -372,7 +420,7 @@ pub fn report(evaluated: &Evaluated) -> Report {
         relations: relations(&evaluated.model, &issues),
         issues,
         params: evaluated.model.params.clone(),
-        bom: bom(&evaluated.model),
+        bom,
         joints: joint_check::joint_checks(&evaluated.model, &loads),
         design: member_check::member_checks(&evaluated.model, &loads),
         loads,
@@ -411,6 +459,7 @@ pub fn report_before_exact(evaluated: &Evaluated) -> Report {
     };
     let mut issues = validate::collisions_only(&evaluated.model);
     issues.extend(report.loads.issues());
+    issues.extend(cutting::issues(&report.bom.cutting));
     report.set_issues(issues);
     report
 }

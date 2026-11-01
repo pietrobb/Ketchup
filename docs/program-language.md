@@ -29,6 +29,11 @@ The full example is [`examples/programs/cabinet.star`](../examples/programs/cabi
 | Python SDK | `session.check_program(source, params={...})`, `session.program_document(source, ...)` |
 | AI agent (MCP, `ketchup-app --mcp`) | `program` with `action=apply` in the open window; `action=docs` lists the library topics, `name=<topic>` returns one |
 
+`ketchup-program check` exits with 0 when the program has no error-level issue and its
+statics, if it has any, are verified; 1 for an error-level issue or a failing member or
+joint; 3 when nothing fails but a member or joint is not verified or a load reaches no
+member (`statics_verdict` in the summary); 2 when the program cannot be evaluated.
+
 The CLI/headless run returns the report below. MCP apply/patch returns a concise
 source diff, summary counts and bounded issue/relation previews. Retrieve complete
 model-derived details with `program action=report expected=<stamp> section=...`:

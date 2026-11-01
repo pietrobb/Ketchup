@@ -693,6 +693,28 @@ hole(c, \"z-\", world = (2500, 350, 0), diameter = 8, depth = 10, id = \"h\")
     );
 }
 
+/// Review 2026-10-31 P3: a hole's place, size and depth told positions apart, its
+/// thread did not, so a board with a tapped M8 hole and one with a plain 6.8 mm bore
+/// at the same place shared one position.
+#[test]
+fn a_shop_drawing_position_tells_a_tapped_hole_from_a_plain_one() {
+    let source = "\
+SHEET = {SHOP_DRAWING: \"s\", FABRICATION_ROLE: MANUFACTURED_ITEM}
+a = box(\"a\", [600, 400, 18], material = \"DTD\", attributes = SHEET)
+hole(a, \"z+\", world = (100, 50, 18), diameter = 6.8, depth = 19, thread = (\"M8\", 12), id = \"h\")
+b = box(\"b\", [600, 400, 18], at = (1000, 0, 0), material = \"DTD\", attributes = SHEET)
+hole(b, \"z+\", world = (1100, 50, 18), diameter = 6.8, depth = 19, id = \"h\")
+";
+    let model = eval(source, &[]);
+    let drawings = ketchup_program::shop_drawing::shop_drawings(&model);
+    let positions: Vec<_> = drawings[0]
+        .positions
+        .iter()
+        .map(|position| position.parts.clone())
+        .collect();
+    assert_eq!(positions, [vec!["a".to_owned()], vec!["b".to_owned()]]);
+}
+
 /// Review 2026-10-29 PG-60: a 2 410 mm wall on 600 mm studs got OSB boards
 /// 1 200 + 1 200 + a 10 mm strip, a 4 850 mm wall a 50 mm one, and a wall
 /// higher than the board a horizontal joint with nothing behind it. The last

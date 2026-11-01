@@ -128,8 +128,16 @@ fn making(part: &Part) -> Making {
     for operation in &part.operations {
         match operation {
             ProgramOperation::Hole(hole) => {
+                // The thread tells a tapped hole from a plain bore (review 2026-10-31 P3).
+                let thread = hole.thread.as_ref().map(|thread| {
+                    (
+                        thread.size.as_str(),
+                        key(thread.pitch_mm),
+                        key(thread.depth_mm),
+                    )
+                });
                 let tag = format!(
-                    "hole {} {} {}",
+                    "hole {} {} {} {thread:?}",
                     key(hole.diameter_mm),
                     key(hole.depth_mm),
                     hole.through

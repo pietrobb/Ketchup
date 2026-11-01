@@ -404,6 +404,71 @@ fn stock_refuses_what_cannot_be_cut() {
     }
 }
 
+/// Review 2026-10-31 P3: a second stock() of a material silently replaced the first.
+#[test]
+fn a_second_stock_of_a_material_is_refused() {
+    let error = refused(
+        "bar_stock(\"KVH\", [5000])\n\
+         sheet_stock(\"KVH\", [(2500, 1250)])\n",
+    );
+    assert!(error.contains("stock given before"), "{error}");
+    assert!(error.contains("one stock"), "{error}");
+}
+
+/// Review 2026-10-31 P3: bars were filled one at a time, each the fullest it
+/// could be, so 2 x 1 500 and 3 x 1 000 on [3 000, 5 000] with a 4 mm kerf took
+/// three 3 m bars (9 m) where a 5 m bar of 1 500 + 1 500 + 1 000 and a 3 m bar
+/// of 1 000 + 1 000 take 8 m.
+#[test]
+fn bars_take_the_least_stock_length_the_pieces_fit() {
+    let mut source = "bar_stock(\"KVH\", [3000, 5000], kerf = 4)\n".to_owned();
+    for (index, length) in [1500.0, 1500.0, 1000.0, 1000.0, 1000.0]
+        .into_iter()
+        .enumerate()
+    {
+        source += &bar(
+            &format!("s{index}"),
+            length,
+            (60.0, 120.0),
+            200.0 * index as f64,
+        );
+    }
+    let plans = plans(&source);
+    let bought: f64 = plans[0]
+        .layouts
+        .iter()
+        .map(|layout| layout.stock_mm[0])
+        .sum();
+    assert_eq!(bought, 8000.0, "{:#?}", plans[0].layouts);
+    assert!(plans[0].unplaced.is_empty());
+    for layout in &plans[0].layouts {
+        let used: f64 = layout
+            .pieces
+            .iter()
+            .map(|piece| piece.size_mm[0])
+            .sum::<f64>()
+            + 4.0 * (layout.pieces.len() - 1) as f64;
+        assert!(used <= layout.stock_mm[0], "{layout:#?}");
+    }
+}
+
+/// Review 2026-10-31 P3: a piece the cutting plan could not lay out was listed
+/// in the plan alone; the report had no issue for it.
+#[test]
+fn a_piece_no_stock_holds_is_an_issue_of_the_report() {
+    let mut source = "bar_stock(\"KVH\", [6000], kerf = 4)\n".to_owned();
+    source += &bar("a", 2500.0, (60.0, 120.0), 0.0);
+    source += &bar("b", 6500.0, (60.0, 120.0), 200.0);
+    let (_, report) = ketchup_program::run("cutting.star", &source, &BTreeMap::new()).unwrap();
+    let issue = report
+        .issues
+        .iter()
+        .find(|issue| issue.kind == "cutting_unplaced")
+        .unwrap_or_else(|| panic!("{:#?}", report.issues));
+    assert_eq!(issue.parts, ["b"]);
+    assert!(issue.message.contains("6500 mm is longer"), "{issue:?}");
+}
+
 /// A wall framed at 625 with OSB boards 1250 x 2500, grain up, on the
 /// documented stock with its default kerf 4 and trim 10.
 fn sheathed_wall(length: f64, height: f64, openings: &str) -> String {

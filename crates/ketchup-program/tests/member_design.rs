@@ -227,6 +227,7 @@ box(\"block\", (100, 637, 1000), at = (1950, 0, 1000), material = \"steel\", tag
         &[],
     );
     assert_eq!(member(&joined, "beam").status, "fail");
+    assert_eq!(joined.statics(), ketchup_program::Statics::Failed);
     assert!(
         joined
             .issues
@@ -234,6 +235,44 @@ box(\"block\", (100, 637, 1000), at = (1950, 0, 1000), material = \"steel\", tag
             .all(|issue| issue.kind != "load_unassigned"),
         "{:?}",
         joined.issues
+    );
+}
+
+/// Review 2026-10-31 P3 (PG-40 rest): the same block hung 0.5 mm under the beam
+/// touched nothing, so the beam passed as if it were not there. A loaded part
+/// resting on nothing leaves every member it nearly meets not verified.
+#[test]
+fn weight_hanging_just_clear_of_a_member_leaves_it_not_verified() {
+    let loose = report(
+        "load_path(only = [\"frame\"])
+material_weight(\"steel\", kg_m3 = 7850, source = \"test\")
+self_weight([\"frame\", \"construction\"])
+timber_design({\"C24\": \"C24\"})
+box(\"post a\", (100, 100, 2000), material = \"C24\", grounded = True)
+box(\"post b\", (100, 100, 2000), at = (3900, 0, 0), material = \"C24\", grounded = True)
+box(\"beam\", (4000, 100, 160), at = (0, 0, 2000), material = \"C24\", tags = [\"frame\"])
+box(\"block\", (100, 637, 999.5), at = (1950, 0, 1000), material = \"steel\", tags = [\"construction\"])
+",
+        &[],
+    );
+    // ok counts error issues; the statics say on their own that they are not verified,
+    // and the command line returns 3 for it (PG-40: rc 0 and "ok" for a beam not checked).
+    assert!(loose.ok);
+    assert_eq!(
+        loose.statics(),
+        ketchup_program::Statics::NotVerified,
+        "{:?}",
+        loose.design
+    );
+    let beam = member(&loose, "beam");
+    assert_eq!(beam.status, "not_verified", "{beam:?}");
+    assert!(
+        beam.missing
+            .iter()
+            .any(|reason| reason.contains("block lies 0.5 mm from it")
+                && reason.contains("kN is not counted")),
+        "{:?}",
+        beam.missing
     );
 }
 

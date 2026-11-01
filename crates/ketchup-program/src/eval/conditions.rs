@@ -365,7 +365,17 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         if kind == crate::cutting::StockKind::Lengths && along.is_some() {
             anyhow::bail!("stock({material:?}): along= applies to sheets");
         }
-        state(eval)?.model.borrow_mut().stock.insert(
+        let state = state(eval)?;
+        let mut model = state.model.borrow_mut();
+        // Review 2026-10-31 P3: a second stock() of a material replaced the first.
+        if let Some(earlier) = model.stock.get(material) {
+            anyhow::bail!(
+                "stock({material:?}): stock given before ({:?} {:?}); give each material one stock",
+                earlier.kind,
+                earlier.sizes_mm
+            );
+        }
+        model.stock.insert(
             material.to_owned(),
             crate::cutting::Stock {
                 kind,

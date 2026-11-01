@@ -940,6 +940,31 @@ fn unsupported(part: &Part, touches: &BTreeSet<usize>, parts: &[Part]) -> String
     reason
 }
 
+/// The members whose world bounds lie within [`crate::relations::GAP_LIMIT_MM`] of
+/// part `item`'s, with the gap between the bounds: a part resting on nothing there
+/// most likely was meant to rest on or hang from them.
+fn nearly_met(item: usize, parts: &[Part], member: &[bool]) -> Vec<(usize, f64)> {
+    let (low, high) = parts[item].world_bounds();
+    parts
+        .iter()
+        .enumerate()
+        .filter(|(other, _)| *other != item && member[*other])
+        .filter_map(|(other, part)| {
+            let (other_low, other_high) = part.world_bounds();
+            let gap = (0..3)
+                .map(|axis| {
+                    (low[axis] - other_high[axis])
+                        .max(other_low[axis] - high[axis])
+                        .max(0.0)
+                        .powi(2)
+                })
+                .sum::<f64>()
+                .sqrt();
+            (gap <= crate::relations::GAP_LIMIT_MM).then_some((other, gap))
+        })
+        .collect()
+}
+
 /// What a member carries in all, its patches and reactions rounded for the report.
 fn member_load(
     part: &Part,
@@ -1195,6 +1220,21 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
                             newtons / 1000.0
                         ),
                     ));
+                }
+                // Nor does a member it nearly meets: hung 0.5 mm under a beam, it
+                // touched nothing and the beam passed (review 2026-10-31 P3, PG-40).
+                if touches[item].is_empty() {
+                    for (carrier, gap) in nearly_met(item, parts, &member) {
+                        lost.push((
+                            carrier,
+                            format!(
+                                "{} lies {} mm from it, touching nothing that carries it; its {:.2} kN is not counted",
+                                parts[item].name,
+                                round(gap),
+                                newtons / 1000.0
+                            ),
+                        ));
+                    }
                 }
             }
             continue;
