@@ -223,6 +223,7 @@ struct View {
     normal: usize,
     across: [usize; 2],
     min: [f64; 3],
+    max: [f64; 3],
     size: [f64; 2],
     thickness: f64,
     mirrored: bool,
@@ -242,6 +243,7 @@ impl View {
             normal,
             across,
             min,
+            max,
             size: across.map(extent),
             thickness: extent(normal),
             mirrored: across[0] != (normal + 1) % 3,
@@ -265,6 +267,23 @@ impl View {
         } else {
             height
         }
+    }
+
+    /// How far a line from `entry` going `inward` runs before it leaves the
+    /// blank: the length of a hole through the part along its way in.
+    fn across_blank(&self, entry: [f64; 3], inward: [f64; 3]) -> f64 {
+        (0..3)
+            .filter(|&axis| inward[axis].abs() > APPROXIMATION)
+            .map(|axis| {
+                let bound = if inward[axis] > 0.0 {
+                    self.max[axis]
+                } else {
+                    self.min[axis]
+                };
+                (bound - entry[axis]) / inward[axis]
+            })
+            .fold(f64::INFINITY, f64::min)
+            .max(0.0)
     }
 
     /// Which face a tool going `inward` enters.
@@ -403,13 +422,14 @@ fn operation_kind(operation: &ProgramOperation) -> &'static str {
 }
 
 fn hole_entity(view: &View, hole: &Hole) -> Result<Entity, Undrawable> {
-    let depth = if hole.through {
-        view.thickness
-    } else {
-        hole.depth_mm
+    let entered = view.entered(hole.inward);
+    let depth = match (hole.through, entered) {
+        (false, _) => hole.depth_mm,
+        (true, Entered::Edge) => view.across_blank(hole.entry_mm, hole.inward),
+        (true, _) => view.thickness,
     };
     let diameter = token(hole.diameter_mm);
-    match view.entered(hole.inward) {
+    match entered {
         face @ (Entered::Seen | Entered::Below) => Ok(Entity::Circle {
             layer: format!(
                 "DRILL_D{diameter}_Z{}{}",

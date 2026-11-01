@@ -188,6 +188,33 @@ fn a_board_is_drawn_in_the_frame_its_woodwop_program_lays_it_in() {
     assert_eq!(edge, ("HDRILL_D8_Z30_H12", [0.0, 100.0], [30.0, 100.0]));
 }
 
+/// Review 2026-10-31 MF-83: a hole drilled through a board from its edge was written as
+/// deep as the board is thick: `HDRILL_D8_Z18`, a line of 18 mm across a board 400 wide.
+/// Through, it goes across the board along its way in.
+#[test]
+fn a_hole_through_a_board_from_its_edge_crosses_the_board() {
+    let source = "side = board('side', [18, 400, 720], material = 'DTD')\n\
+         hole(side, 'y-', world = (9, 0, 300), diameter = 8, depth = 400, through = True, id = 'rod')\n";
+    let model = ketchup_program::evaluate("edge.star", source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"))
+        .model;
+    let export = cnc_parts(&model);
+    let side = part(&export, "side");
+    let edge = side
+        .entities
+        .iter()
+        .find_map(|entity| match entity {
+            Entity::Line {
+                layer,
+                start_mm,
+                end_mm,
+            } => Some((layer.as_str(), *start_mm, *end_mm)),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no edge hole: {side:#?}"));
+    assert_eq!(edge, ("HDRILL_D8_Z400_H9", [300.0, 400.0], [300.0, 0.0]));
+}
+
 #[test]
 fn a_profile_keeps_its_arcs_and_its_cuts_are_a_cutout_or_a_pocket() {
     let export = export();
