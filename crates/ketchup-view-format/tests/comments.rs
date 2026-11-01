@@ -55,11 +55,23 @@ fn comments_roundtrip_offline_and_bind_to_their_export() {
         "text, view, selection and arrows survive"
     );
 
-    // The package checksum the envelope carries is the export identity.
+    // The export identity is the SHA-256 of the package payload, its manifest
+    // JSON then its GLB, hashed here apart from the writer (review 2026-10-31 P3:
+    // reading the header's checksum bytes back proved nothing about them).
+    use sha2::{Digest, Sha256};
+    let mut payload = serde_json::to_vec(&package.manifest).expect("manifest");
+    payload.extend_from_slice(&package.glb);
+    let digest: String = Sha256::digest(&payload)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(comments.export.package_sha256, digest);
     let mut file = Vec::new();
     package.write(&mut file).expect("package");
-    let digest: String = file[21..53].iter().map(|b| format!("{b:02x}")).collect();
-    assert_eq!(comments.export.package_sha256, digest);
+    assert!(
+        file.ends_with(&payload),
+        "the file carries the hashed payload"
+    );
 
     let mut other = package.clone();
     other.manifest.definitions[0].note = Some("re-exported".into());

@@ -101,6 +101,9 @@ impl KetchupApp {
     }
 
     pub(super) fn drawing_input_point(&self, pointer: Pos2, rect: Rect) -> Option<Vec3> {
+        if let Some(point) = self.underlay_draw_point_at_screen(pointer, rect) {
+            return point;
+        }
         let frame = self.drawing_input_frame(pointer, rect);
         self.spline_first_point_at_screen(pointer, rect)
             .or_else(|| self.drawing_origin_snap(pointer, rect))

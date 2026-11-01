@@ -149,7 +149,7 @@ fn live_program_planner_publishes_one_undo_step() {
             break result;
         }
         assert!(Instant::now() < deadline, "program planner did not finish");
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     };
     assert!(result.ok, "{result:?}");
     assert_eq!(app.document.current().occurrences().count(), 1);

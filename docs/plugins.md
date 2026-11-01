@@ -44,7 +44,9 @@ modules it imports (for Python, vendor `ketchup_sdk` into the folder):
     since Windows PowerShell runs a bare script and every word after it as one
     command;
   - `ruby`, `perl`: `-w`;
-  - any other executable: none, the script comes first.
+  - any other executable: none, and no word may follow the script either: only
+    a listed interpreter is known to hand those words to the script, and
+    `find hashed -exec …` would hand them to `find`.
 
   An executable starting with `#!` is refused: it would start the interpreter
   its first line names, which nobody hashed; give that interpreter as the

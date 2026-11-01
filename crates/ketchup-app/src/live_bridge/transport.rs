@@ -84,10 +84,7 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
                             });
                     }
                     Ok(_) => {}
-                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(10))
-                    }
-                    Err(_) => break,
+                    Err(error) => std::thread::sleep(accept_failure_pause(error.kind())),
                 }
             }
         })?;
@@ -101,6 +98,21 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
         #[cfg(test)]
         active_connections,
     ))
+}
+
+/// How long the listener waits after `accept` failed before it accepts again.
+/// No failure stops it: a connection reset or aborted before it was accepted
+/// (any local process can cause one) is that connection's failure only, and a
+/// failure of the listener itself, such as running out of file handles, may
+/// pass, so it is tried again after a pause (review 2026-10-31 SEC-80).
+fn accept_failure_pause(kind: io::ErrorKind) -> Duration {
+    match kind {
+        io::ErrorKind::ConnectionReset
+        | io::ErrorKind::ConnectionAborted
+        | io::ErrorKind::Interrupted => Duration::ZERO,
+        io::ErrorKind::WouldBlock => Duration::from_millis(10),
+        _ => Duration::from_millis(100),
+    }
 }
 
 /// A bridge without a socket for the jobs the window itself starts, such as a
@@ -328,8 +340,10 @@ pub(super) fn read_some(
             Ok(0) => break Err(io::ErrorKind::UnexpectedEof.into()),
             Ok(count) => break Ok(count),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                // A signal that cuts the wait short is no failure: read again.
                 if let Err(error) =
                     wait_readable(stream, left.map_or(STOP_POLL, |left| left.min(STOP_POLL)))
+                    && error.kind() != io::ErrorKind::Interrupted
                 {
                     break Err(error);
                 }
@@ -693,6 +707,83 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(2));
         }
+    }
+
+    /// Review 2026-10-31 SEC-80: one connection reset before it was accepted
+    /// stopped the listener for the life of the window.
+    #[test]
+    fn no_accept_failure_stops_the_listener() {
+        for kind in [
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::ConnectionAborted,
+            io::ErrorKind::Interrupted,
+        ] {
+            assert_eq!(accept_failure_pause(kind), Duration::ZERO, "{kind:?}");
+        }
+        // Out of file handles and the like: tried again after a pause.
+        for kind in [io::ErrorKind::Other, io::ErrorKind::OutOfMemory] {
+            assert!(accept_failure_pause(kind) > Duration::ZERO, "{kind:?}");
+        }
+    }
+
+    /// Review 2026-10-31 P3: a signal that interrupted the wait for bytes
+    /// (EINTR from `poll`) ended the read, and so the frame, half way.
+    #[cfg(unix)]
+    #[test]
+    #[allow(unsafe_code)]
+    fn a_signal_during_the_wait_does_not_end_the_read() {
+        static HANDLED: AtomicUsize = AtomicUsize::new(0);
+        extern "C" fn count(_: libc::c_int) {
+            HANDLED.fetch_add(1, Ordering::SeqCst);
+        }
+        // SAFETY: a handler that only counts, without SA_RESTART, so poll
+        // returns EINTR.
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            let handler: extern "C" fn(libc::c_int) = count;
+            action.sa_sigaction = handler as libc::sighandler_t;
+            libc::sigemptyset(&raw mut action.sa_mask);
+            assert_eq!(
+                libc::sigaction(libc::SIGUSR2, &raw const action, std::ptr::null_mut()),
+                0
+            );
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let (id_sender, id) = std::sync::mpsc::channel();
+        let (read_sender, read) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let reader = std::thread::spawn(move || {
+            // SAFETY: no arguments; this thread's own id, a number or a
+            // pointer by system, sent as a number.
+            id_sender
+                .send(unsafe { libc::pthread_self() } as usize)
+                .unwrap();
+            let mut buffer = [0; 4];
+            let deadline = Instant::now() + Duration::from_secs(10);
+            read_sender
+                .send(read_some(&mut server, &mut buffer, Some(deadline), || {
+                    false
+                }))
+                .unwrap();
+            // Alive until every signal is sent, so each finds it.
+            released.recv().unwrap();
+        });
+        let thread = id.recv().unwrap() as libc::pthread_t;
+        // The reader waits in poll nearly all the time, so most of these
+        // signals cut a wait short; a read they end answers before the byte.
+        let mut early = None;
+        while early.is_none() && HANDLED.load(Ordering::SeqCst) < 200 {
+            // SAFETY: the reader thread is alive until it is released below.
+            assert_eq!(unsafe { libc::pthread_kill(thread, libc::SIGUSR2) }, 0);
+            early = read.try_recv().ok();
+        }
+        client.write_all(b"x").unwrap();
+        let answer = early.unwrap_or_else(|| read.recv().unwrap());
+        release.send(()).unwrap();
+        reader.join().unwrap();
+        assert_eq!(answer.unwrap(), 1);
     }
 
     #[test]

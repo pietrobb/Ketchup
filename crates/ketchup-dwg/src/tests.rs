@@ -84,6 +84,43 @@ fn an_r12_sheet_written_as_dwg_keeps_its_line_and_its_text_with_the_escaped_char
     assert_eq!(text.insertion_point, Vector3::new(30.0, 60.0, 0.0));
 }
 
+/// Review 2026-10-31 P3: an MTEXT without a reference width (group 41) was written into
+/// the DWG with acadrust's default width 10, so its text wrapped after every word. It
+/// stays unwrapped (width 0); a width the drawing gives is kept.
+#[test]
+fn an_mtext_without_a_width_is_not_wrapped_in_the_dwg() {
+    let dxf = "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+0\nSECTION\n2\nENTITIES\n\
+0\nMTEXT\n5\n2A\n100\nAcDbEntity\n8\n0\n100\nAcDbMText\n10\n0\n20\n0\n30\n0\n40\n250\n1\nRoom 1.02 Kitchen\n\
+0\nMTEXT\n5\n2B\n100\nAcDbEntity\n8\n0\n100\nAcDbMText\n10\n0\n20\n1000\n30\n0\n40\n250\n41\n500\n1\nWrapped\n\
+0\nENDSEC\n0\nEOF\n";
+    for dwg in [
+        dxf_to_dwg(dxf.as_bytes()).expect("written as DWG"),
+        dxf_to_dwg_leaving_out_custom_records(dxf.as_bytes())
+            .expect("written as DWG")
+            .dwg,
+    ] {
+        let read = dwg_to_dxf(&dwg, 64 * 1024 * 1024).expect("the DWG reads");
+        let document = DxfReader::from_reader(Cursor::new(read.dxf))
+            .and_then(DxfReader::read)
+            .expect("the DXF of the DWG reads");
+        let widths = document
+            .entities()
+            .filter_map(|entity| match entity {
+                EntityType::MText(text) => Some((text.value.clone(), text.rectangle_width)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            widths,
+            [
+                ("Room 1.02 Kitchen".to_owned(), 0.0),
+                ("Wrapped".to_owned(), 500.0)
+            ]
+        );
+    }
+}
+
 #[test]
 fn a_dwg_whose_dxf_text_outgrows_the_limit_stops_at_the_limit() {
     let dwg = dxf_to_dwg(&drawing_dxf()).expect("the drawing is written as DWG");

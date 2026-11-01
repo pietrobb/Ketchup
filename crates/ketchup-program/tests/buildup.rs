@@ -619,7 +619,7 @@ fn every_piece_of_a_panel_is_on_its_shop_drawing() {
 /// and blank alone, so one position listed studs notched for noggins on
 /// both sides, on one side and on none as alike, and a carpenter sawing
 /// "8 x pos. 2" from it cut them wrong. Parts of a position have the same
-/// outline, turned over or mirrored at most.
+/// outline, turned at most (a mirror image has its own position, PG-83).
 #[test]
 fn a_shop_drawing_position_holds_only_pieces_made_alike() {
     let source = WALL.replace("\"spacing\": 625,", "\"spacing\": 625, \"noggins\": 900,");
@@ -656,6 +656,63 @@ fn a_shop_drawing_position_holds_only_pieces_made_alike() {
         }
     }
     assert!(notched >= 2, "{:?}", drawings[0].positions);
+}
+
+/// Review 2026-10-31 PG-83: positions took every flip of the axes as the same
+/// part, the odd ones too, so a board with a blind hole from z+ and one with
+/// it from z- at the same place shared one position, and the second, made
+/// from the drawing, came out wrong. Turned parts share a position; a mirror
+/// image is a position of its own that names the one it mirrors.
+#[test]
+fn a_shop_drawing_position_holds_turned_parts_and_names_mirror_images() {
+    let source = "\
+SHEET = {SHOP_DRAWING: \"s\", FABRICATION_ROLE: MANUFACTURED_ITEM}
+a = box(\"a\", [600, 400, 18], material = \"DTD\", attributes = SHEET)
+hole(a, \"z+\", world = (100, 50, 18), diameter = 8, depth = 10, id = \"h\")
+b = box(\"b\", [600, 400, 18], at = (1000, 0, 0), material = \"DTD\", attributes = SHEET)
+hole(b, \"z-\", world = (1100, 50, 0), diameter = 8, depth = 10, id = \"h\")
+c = box(\"c\", [600, 400, 18], at = (2000, 0, 0), material = \"DTD\", attributes = SHEET)
+hole(c, \"z-\", world = (2500, 350, 0), diameter = 8, depth = 10, id = \"h\")
+";
+    let model = eval(source, &[]);
+    let drawings = ketchup_program::shop_drawing::shop_drawings(&model);
+    let [drawing] = &drawings[..] else {
+        panic!("{drawings:?}")
+    };
+    assert_eq!(
+        drawing
+            .positions
+            .iter()
+            .map(|position| (position.parts.clone(), position.mirror_of))
+            .collect::<Vec<_>>(),
+        [
+            (vec!["a".to_owned()], None),
+            (vec!["b".to_owned(), "c".to_owned()], Some(1)),
+        ],
+        "c is b turned half round z; b is a mirrored through its thickness"
+    );
+}
+
+/// Review 2026-10-31 P3: a hole's place, size and depth told positions apart, its
+/// thread did not, so a board with a tapped M8 hole and one with a plain 6.8 mm bore
+/// at the same place shared one position.
+#[test]
+fn a_shop_drawing_position_tells_a_tapped_hole_from_a_plain_one() {
+    let source = "\
+SHEET = {SHOP_DRAWING: \"s\", FABRICATION_ROLE: MANUFACTURED_ITEM}
+a = box(\"a\", [600, 400, 18], material = \"DTD\", attributes = SHEET)
+hole(a, \"z+\", world = (100, 50, 18), diameter = 6.8, depth = 19, thread = (\"M8\", 12), id = \"h\")
+b = box(\"b\", [600, 400, 18], at = (1000, 0, 0), material = \"DTD\", attributes = SHEET)
+hole(b, \"z+\", world = (1100, 50, 18), diameter = 6.8, depth = 19, id = \"h\")
+";
+    let model = eval(source, &[]);
+    let drawings = ketchup_program::shop_drawing::shop_drawings(&model);
+    let positions: Vec<_> = drawings[0]
+        .positions
+        .iter()
+        .map(|position| position.parts.clone())
+        .collect();
+    assert_eq!(positions, [vec!["a".to_owned()], vec!["b".to_owned()]]);
 }
 
 /// Review 2026-10-29 PG-60: a 2 410 mm wall on 600 mm studs got OSB boards
@@ -729,5 +786,66 @@ fn sheet_layers_leave_no_strips_and_their_horizontal_joints_rest_on_noggins() {
                 );
             }
         }
+    }
+}
+
+/// Review 2026-10-31 PG-86: the minimum board width held only at the end of
+/// the run. A 3 000 mm wall on 600 mm studs with an opening at u = 1 230 got
+/// its joint at u = 1 200, a 30 x 2 500 strip of OSB beside the opening. Every
+/// joint moves to a stud centre leaving no strip, and a strip no joint avoids
+/// is reported.
+#[test]
+fn sheet_joints_leave_no_strip_beside_an_opening_and_report_one_they_cannot_avoid() {
+    let wall = |opening: &str| {
+        eval(
+            &format!(
+                "buildup('wall', (0, 0, 0), (1, 0, 0), (0, 0, 1), 3000, height = 2500,\n\
+                 layers = [{{'name': 'frame', 'thickness': 140, 'material': 'C24', 'spacing': 600}},\n\
+                           {{'name': 'osb', 'thickness': 15, 'material': 'OSB', 'sheet': (1250, 2500)}}],\n\
+                 openings = [{opening}])\n"
+            ),
+            &[],
+        )
+    };
+    let narrow = |model: &ProgramModel| {
+        validate(model)
+            .into_iter()
+            .filter(|issue| {
+                issue.severity == Severity::Warning && issue.message.contains("narrower")
+            })
+            .map(|issue| (issue.message, issue.parts))
+            .collect::<Vec<_>>()
+    };
+    let model = wall("(1230, 800, 900, 1200)");
+    for part in model
+        .parts
+        .iter()
+        .filter(|part| part.name.starts_with("wall/osb"))
+    {
+        let (min, max) = part.world_bounds();
+        let wide = max[0] - min[0];
+        assert!(
+            (200.0 - 1e-6..=1250.0 + 1e-6).contains(&wide),
+            "{} is {wide} wide",
+            part.name
+        );
+        for u in [min[0], max[0]] {
+            let on_stud = (u / 600.0 - (u / 600.0).round()).abs() < 1e-6;
+            let at_opening = (u - 1230.0).abs() < 1e-6 || (u - 2130.0).abs() < 1e-6;
+            assert!(on_stud || at_opening, "{} ends at u = {u}", part.name);
+        }
+    }
+    assert_eq!(narrow(&model), Vec::new());
+
+    // An opening 30 mm from the end leaves a strip no joint can avoid.
+    let model = wall("(30, 800, 900, 1200)");
+    let warnings = narrow(&model);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    let strips = &warnings[0].1;
+    assert!(!strips.is_empty(), "{warnings:?}");
+    for name in strips {
+        let part = model.parts.iter().find(|part| &part.name == name).unwrap();
+        let (min, max) = part.world_bounds();
+        assert!(max[0] - min[0] < 200.0, "{name} is not a strip");
     }
 }

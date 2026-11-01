@@ -285,6 +285,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "epaint_default_fonts"
+version = "0.32.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1537accc50c9cab5a272c39300bdd0dd5dca210f6e5e8d70be048df9596e7ca2"
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -446,7 +452,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-dwg"
-version = "0.3.0"
+version = "0.3.1-dev"
 dependencies = [
  "acadrust",
 ]
@@ -463,7 +469,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-geometry"
-version = "0.3.0"
+version = "0.3.1-dev"
 dependencies = [
  "ketchup-tolerance",
  "serde",
@@ -471,11 +477,12 @@ dependencies = [
 
 [[package]]
 name = "ketchup-model"
-version = "0.3.0"
+version = "0.3.1-dev"
 dependencies = [
  "ciborium",
  "ed25519-dalek",
  "encoding_rs",
+ "epaint_default_fonts",
  "ketchup-geometry",
  "ketchup-tolerance",
  "miniz_oxide",
@@ -483,25 +490,26 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "ttf-parser",
 ]
 
 [[package]]
 name = "ketchup-rejection"
-version = "0.3.0"
+version = "0.3.1-dev"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "ketchup-tolerance"
-version = "0.3.0"
+version = "0.3.1-dev"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "ketchup-view-format"
-version = "0.3.0"
+version = "0.3.1-dev"
 dependencies = [
  "ketchup-rejection",
  "ketchup-tolerance",
@@ -890,6 +898,12 @@ dependencies = [
  "quote",
  "syn 3.0.3",
 ]
+
+[[package]]
+name = "ttf-parser"
+version = "0.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 
 [[package]]
 name = "typenum"

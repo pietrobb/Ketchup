@@ -17,10 +17,10 @@ use ketchup_manufacturing::project_drawings::{
     DrawingSolid, DrawingThread, OpeningSchedule, PlanSheet, ProjectDrawingError, ProjectView,
     SCALES, SheetTitles, ShopDrawings, ShopPosition, ShopSheet, Storey, drawing_set, storeys,
 };
-use ketchup_manufacturing::sheet_pdf::PdfInfo;
 use ketchup_manufacturing::title_block::{
     DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM, SheetFormat, SheetSettings, TitleField,
 };
+use ketchup_model::sheet_pdf::PdfInfo;
 use ketchup_program::Evaluated;
 use std::sync::Arc;
 
@@ -753,6 +753,7 @@ impl KetchupApp {
                             .iter()
                             .filter_map(|part| solid_names.get(part).cloned())
                             .collect(),
+                        mirror_of: position.mirror_of,
                     })
                     .collect(),
             })
@@ -761,6 +762,7 @@ impl KetchupApp {
             sheets,
             columns: ["position", "material", "size", "count"]
                 .map(|column| self.catalog.text(&format!("drawings-shop-{column}"))),
+            mirror_of: self.catalog.text("drawings-shop-mirror-of"),
         }
     }
 

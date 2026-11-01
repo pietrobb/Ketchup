@@ -136,9 +136,9 @@ box("hidden", [10, 10, 10], at = (0, 0, 900), material = "steel", attributes = {
         let table = cut_list_table(&model, |name| name != "hidden");
         assert_eq!(
             table.csv(DecimalSeparator::Comma),
-            "\u{feff}position;parts;material;length_mm;width_mm;thickness_mm;count;edges;grain\n\
-             1;side_l, side_r;oak;720;560;18;2;L1;length\n\
-             2;top;oak;560;536;18;1;;width\n"
+            "\u{feff}position;parts;material;length_mm;width_mm;thickness_mm;count;edges;grain;thickness_axis\n\
+             1;side_l, side_r;oak;720;560;18;2;L1;length;thickness\n\
+             2;top;oak;560;536;18;1;;width;thickness\n"
         );
         // Namespaced attributes are validator data, not columns.
         let all = cut_list_table(&model, |_| true);

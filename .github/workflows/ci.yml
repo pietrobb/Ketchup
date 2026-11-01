@@ -153,14 +153,14 @@ jobs:
         run: |
           mkdir -p "$KETCHUP_SAVED_FILES_DIR"
           cargo test --locked $CRATES --features ketchup-model/saved-files --no-fail-fast
-      # Kečup 0.2.0 opens every format 103 file the tests saved and refuses the others
-      # without opening their .recovery; the serde enums it knows gain only reviewed
-      # variants (review 2026-10-29 proposal 5.4, MD-60).
-      - name: Kečup 0.2.0 reads the files written for it
+      # Every released Kečup opens each file the tests saved in a format it reads and
+      # refuses the others without opening their .recovery; the serde enums it knows
+      # gain only reviewed variants (review 2026-10-29 proposal 5.4, MD-60; 2026-10-31 CI-80).
+      - name: released versions read the files written for them
         if: ${{ !cancelled() && (runner.os == 'Linux') }}
         run: |
-          git fetch --no-tags --depth=1 origin tag v0.2.0
-          python3 scripts/release_0_2_0_reads.py --files "$RUNNER_TEMP/saved-files"
+          git fetch --no-tags --depth=1 origin tag v0.2.0 tag v0.3.0
+          python3 scripts/release_reads.py --files "$RUNNER_TEMP/saved-files"
       # Time budgets live only in ignored perf_* tests, checked in release
       # (review 2026-10-17 TST-3).
       - name: release timing budgets
@@ -260,7 +260,7 @@ jobs:
           cargo build --locked -p ketchup-scheduler -p ketchup-headless --bins
           cargo build --locked -p ketchup-app --bin ketchup-app
       # The files the application, headless and scheduler tests save go to
-      # KETCHUP_SAVED_FILES_DIR too, so Kečup 0.2.0 opens them in the next step.
+      # KETCHUP_SAVED_FILES_DIR too, so every released Kečup opens them in the next step.
       - name: tests
         if: ${{ !cancelled() }}
         env:
@@ -274,11 +274,11 @@ jobs:
           cargo test --locked $env:CRATES.Split(' ') --features ketchup-model/saved-files --no-fail-fast -- `
             --skip instanced_rendering::real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_wgpu_draw `
             --skip instanced_rendering::garden_studio_hardware_gpu_camera_frames
-      - name: Kečup 0.2.0 reads the files the application tests wrote for it
+      - name: released versions read the files the application tests wrote
         if: ${{ !cancelled() }}
         run: |
-          git fetch --no-tags --depth=1 origin tag v0.2.0
-          python scripts/release_0_2_0_reads.py --files "$env:RUNNER_TEMP\saved-files"
+          git fetch --no-tags --depth=1 origin tag v0.2.0 tag v0.3.0
+          python scripts/release_reads.py --files "$env:RUNNER_TEMP\saved-files"
       # The Viewer's comment save has its own Windows code, which the Linux
       # Viewer job never compiles (review 2026-10-19).
       - name: atomic comment save on Windows
@@ -289,9 +289,21 @@ jobs:
             app::tests::atomic_save::interrupted_save_keeps_the_earlier_file_and_leaves_no_partial_one \
             | tee "$RUNNER_TEMP/atomic-save.log"
           grep -q "test result: ok. 1 passed" "$RUNNER_TEMP/atomic-save.log"
+      # The portable Viewer is built with crt-static, as build-installer.ps1
+      # builds it, and needs no Visual C++ Redistributable (review 2026-10-31 VW-81).
+      - name: the Viewer carries its C++ runtime
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: |
+          cargo test --locked -p ketchup-viewer --lib --target x86_64-pc-windows-msvc -- --exact \
+            windows_runtime_tests::the_viewer_needs_no_visual_cpp_runtime_dll \
+            | tee "$RUNNER_TEMP/viewer-runtime.log"
+          grep -q "test result: ok. 1 passed" "$RUNNER_TEMP/viewer-runtime.log"
       # The cutting plan, quote, CNC drawings and BTLx files must be the same
       # bytes as on Linux and macOS, where the job without OCCT checks the same
-      # golden files (review 2026-10-29 proposal 5.1, ADR 0009).
+      # golden files (review 2026-10-29 proposal 5.1, ADR 0010).
       - name: golden shop files on Windows
         if: ${{ !cancelled() }}
         shell: bash
@@ -399,12 +411,20 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends ninja-build clang libgtk-3-dev mesa-vulkan-drivers
+      # OCCT built by one clang may not link with another's, so a runner image
+      # with a newer one builds it again (review 2026-10-31 P3).
+      - name: clang version
+        id: clang
+        run: |
+          version=$(clang --version | head -n 1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: OCCT from the cache
         id: occt
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: third_party/occt-install-r0-v1
-          key: occt-8.0.1-b8f597c6-ubuntu24.04-x64-${{ hashFiles('scripts/linux/build-occt.sh', 'third_party/crmath/**') }}
+          key: occt-8.0.1-b8f597c6-ubuntu24.04-x64-clang${{ steps.clang.outputs.version }}-${{ hashFiles('scripts/linux/build-occt.sh', 'third_party/crmath/**') }}
       - name: OCCT build
         if: steps.occt.outputs.cache-hit != 'true'
         run: |
@@ -424,8 +444,8 @@ jobs:
         run: |
           cargo build --locked -p ketchup-scheduler -p ketchup-headless --bins
           cargo build --locked -p ketchup-app --bin ketchup-app
-      # The files the tests save go to KETCHUP_SAVED_FILES_DIR too, so Kečup
-      # 0.2.0 opens them in the next step.
+      # The files the tests save go to KETCHUP_SAVED_FILES_DIR too, so every
+      # released Kečup opens them in the next step.
       - name: tests
         if: ${{ !cancelled() }}
         env:
@@ -438,11 +458,11 @@ jobs:
           cargo test --locked $CRATES --features ketchup-model/saved-files --no-fail-fast -- \
             --skip instanced_rendering::real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_wgpu_draw \
             --skip instanced_rendering::garden_studio_hardware_gpu_camera_frames
-      - name: Kečup 0.2.0 reads the files the tests wrote for it
+      - name: released versions read the files the tests wrote
         if: ${{ !cancelled() }}
         run: |
-          git fetch --no-tags --depth=1 origin tag v0.2.0
-          python3 scripts/release_0_2_0_reads.py --files "$RUNNER_TEMP/saved-files"
+          git fetch --no-tags --depth=1 origin tag v0.2.0 tag v0.3.0
+          python3 scripts/release_reads.py --files "$RUNNER_TEMP/saved-files"
 
   viewer-targets:
     name: clippy of the phone and browser Viewers

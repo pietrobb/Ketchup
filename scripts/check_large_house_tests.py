@@ -26,6 +26,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_roots import package_files  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 # Both large houses: tiny-house.star (750 parts) and house-project.star (1 855 parts).
 FILE = r"(?:tiny-house|house-project)\.star"
@@ -137,7 +140,7 @@ def crate_of(path: Path, root: Path) -> str:
 
 def violations(root: Path = ROOT) -> list[str]:
     files = {}
-    for path in sorted(root.glob("crates/*/**/*.rs")):
+    for path in package_files(root):
         if "target" in path.relative_to(root).parts:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")

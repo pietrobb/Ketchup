@@ -81,8 +81,9 @@ impl BtlxProcessing {
             }
             Self::FreeContour(contour) => {
                 let mut xml = format!(
-                    "          <FreeContour Name=\"Ketchup profile cut\" ProcessID=\"{process_id}\" ReferencePlaneID=\"{reference_plane_id}\" ToolPosition=\"{}\">\n            <Contour DepthBounded=\"yes\" Depth=\"{}\" Inclination=\"0\">\n              <StartPoint X=\"{}\" Y=\"{}\" Z=\"0\"/>\n",
+                    "          <FreeContour Name=\"Ketchup profile cut\" ProcessID=\"{process_id}\" ReferencePlaneID=\"{reference_plane_id}\" ToolPosition=\"{}\">\n            <Contour DepthBounded=\"{}\" Depth=\"{}\" Inclination=\"0\">\n              <StartPoint X=\"{}\" Y=\"{}\" Z=\"0\"/>\n",
                     contour.tool_position,
+                    if contour.depth_bounded { "yes" } else { "no" },
                     contour.depth,
                     contour.start_point[0],
                     contour.start_point[1]
@@ -185,6 +186,8 @@ pub(super) struct BtlxFreeContour {
     pub(super) start_point: [String; 2],
     pub(super) segments: Vec<BtlxContourSegment>,
     pub(super) depth: String,
+    /// False for a contour cut through the blank along its normal.
+    pub(super) depth_bounded: bool,
 }
 
 pub(super) fn btlx_processings(
@@ -626,6 +629,16 @@ pub(super) fn btlx_free_contour(
         return None;
     }
     let depth_mm = end_mm - start_mm;
+    let (low, high) = extent_along(
+        [
+            blank.corner_mm,
+            std::array::from_fn(|axis| blank.corner_mm[axis] + blank.extents_mm[axis]),
+        ],
+        frame.origin_mm,
+        frame.normal,
+    );
+    let tolerance = blank.extents_mm.into_iter().fold(1.0_f64, f64::max) * ROUNDING;
+    let through = *start_mm <= low + tolerance && *end_mm >= high - tolerance;
     Some(BtlxFreeContour {
         reference_point_mm: btlx_part_coordinate(
             blank,
@@ -643,6 +656,7 @@ pub(super) fn btlx_free_contour(
         start_point,
         segments: btlx_segments,
         depth: format_btlx_number_in_range(depth_mm, f64::MIN_POSITIVE, 100_000.0)?,
+        depth_bounded: !through,
     })
 }
 

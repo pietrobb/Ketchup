@@ -3,8 +3,10 @@
 //!
 //! Evaluates a rule program and prints one JSON report on stdout: issues,
 //! parameters, cut list, hardware and machining. Exit code 0 when the program
-//! evaluates without error-level issues, 1 when it has issues, 2 when it
-//! cannot be evaluated.
+//! evaluates without error-level issues and its statics, if any, are verified;
+//! 1 when it has error-level issues or a member or joint fails; 3 when nothing
+//! fails but some member or joint is not verified or some load reaches no
+//! member; 2 when it cannot be evaluated.
 //!
 //! `--prelude` evaluates with that prelude file instead of the built-in one,
 //! so an edited prelude is checked without a build. `--summary` prints only
@@ -170,10 +172,10 @@ fn main() -> ExitCode {
     };
     let (value, code) = match ketchup_program::run(&options.path, &source, &options.overrides) {
         Ok((evaluated, report)) => {
-            let code = if report.ok {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::from(1)
+            let code = match (report.ok, report.statics()) {
+                (false, _) | (_, ketchup_program::Statics::Failed) => ExitCode::from(1),
+                (true, ketchup_program::Statics::NotVerified) => ExitCode::from(3),
+                _ => ExitCode::SUCCESS,
             };
             let mut value = if options.summary {
                 summary(&evaluated.model, &report)
@@ -229,6 +231,7 @@ fn summary(model: &ketchup_program::ProgramModel, report: &ketchup_program::Repo
     }
     let mut value = json!({
         "ok": report.ok,
+        "statics_verdict": report.statics(),
         "errors": report.errors,
         "warnings": report.warnings,
         "parts": model.parts.len(),

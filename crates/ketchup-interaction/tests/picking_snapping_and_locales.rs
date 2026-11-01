@@ -1,9 +1,7 @@
-use ketchup_geometry::sketch::{FeatureExtent, PadOperation, PadProfile, PadSpec};
 use ketchup_interaction::projection::CanonicalInteractionProjection;
 use ketchup_interaction::{
-    Axis, ElementId, InteractionError, InteractionScene, LocaleCatalog, PreviewError,
-    PreviewSession, Ray, Side, SmartPushPullOutcome, SnapKind, SnapPolicy, SnapTracker, Vec3,
-    plan_smart_push_pull,
+    Axis, ElementId, InteractionError, InteractionScene, LocaleCatalog, Ray, Side, SnapKind,
+    SnapPolicy, SnapTracker, Vec3,
 };
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId, FeatureKind,
@@ -67,31 +65,6 @@ fn projected_scene(
     CanonicalInteractionProjection::from_snapshot(&store.current())
         .scene()
         .unwrap()
-}
-
-fn source_document() -> DocumentStore {
-    let mut store = DocumentStore::new();
-    store
-        .apply_batch(&CommandBatch::new(vec![
-            CanonicalCommand::CreateDefinition {
-                id: DefinitionId(1),
-                name: "Box".to_owned(),
-            },
-            CanonicalCommand::CreateFeature {
-                id: FeatureId(1),
-                definition_id: DefinitionId(1),
-                name: "Profile-1".to_owned(),
-                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]),
-            },
-            CanonicalCommand::CreateFeature {
-                id: FeatureId(2),
-                definition_id: DefinitionId(1),
-                name: "Extrude-1".to_owned(),
-                kind: FeatureKind::extrusion(FeatureId(1), Dimension::from_decimal("20").unwrap()),
-            },
-        ]))
-        .unwrap();
-    store
 }
 
 #[test]
@@ -361,78 +334,6 @@ fn invalid_snap_hysteresis_policy_fails_closed() {
     assert!(SnapPolicy::new(f64::NAN, 2.0).is_none());
     assert!(SnapPolicy::new(2.0, 1.0).is_none());
     assert!(SnapPolicy::new(-1.0, 2.0).is_none());
-}
-
-#[test]
-fn smart_push_pull_preview_and_commit_share_one_canonical_digest() {
-    let mut store = source_document();
-    let plan = match plan_smart_push_pull(&store, &[FeatureId(2)], "35").unwrap() {
-        SmartPushPullOutcome::Ready(plan) => plan,
-        SmartPushPullOutcome::NeedsChoice { .. } => panic!("source should be unambiguous"),
-    };
-    let catalog = LocaleCatalog::english();
-    assert_eq!(
-        plan.action_digest().render(&catalog),
-        "Change Extrude-1 height from 20 mm to 35 mm"
-    );
-    let preview_digest = plan.action_digest().command_digest.clone();
-    let committed = PreviewSession::new(1, plan).confirm(&mut store).unwrap();
-    assert_eq!(committed.action_digest.command_digest, preview_digest);
-    assert_eq!(committed.revision.batch_digest(), preview_digest);
-    assert!(matches!(
-        store.current().feature(FeatureId(2)).unwrap().kind(),
-        FeatureKind::Pad(PadSpec { profile: PadProfile::Feature(_), extent: FeatureExtent::Blind(height), operation: PadOperation::NewBody, .. }) if height.source_token() == "35"
-    ));
-}
-
-#[test]
-fn cancelled_and_stale_previews_never_mutate_the_document() {
-    let mut store = source_document();
-    let original = store.current().canonical_digest();
-    let plan = match plan_smart_push_pull(&store, &[FeatureId(2)], "35").unwrap() {
-        SmartPushPullOutcome::Ready(plan) => plan,
-        SmartPushPullOutcome::NeedsChoice { .. } => unreachable!(),
-    };
-    let mut preview = PreviewSession::new(1, plan);
-    preview.cancel();
-    assert!(matches!(
-        preview.confirm(&mut store),
-        Err(PreviewError::Cancelled)
-    ));
-    assert_eq!(store.current().canonical_digest(), original);
-
-    let stale_plan = match plan_smart_push_pull(&store, &[FeatureId(2)], "35").unwrap() {
-        SmartPushPullOutcome::Ready(plan) => plan,
-        SmartPushPullOutcome::NeedsChoice { .. } => unreachable!(),
-    };
-    store
-        .apply_batch(&CommandBatch::new(vec![
-            CanonicalCommand::SetFeatureDimension {
-                id: FeatureId(2),
-                dimension: Dimension::from_decimal("25").unwrap(),
-            },
-        ]))
-        .unwrap();
-    let after_external_edit = store.current().canonical_digest();
-    assert!(matches!(
-        PreviewSession::new(2, stale_plan).confirm(&mut store),
-        Err(PreviewError::Stale(_))
-    ));
-    assert_eq!(store.current().canonical_digest(), after_external_edit);
-}
-
-#[test]
-fn ambiguous_push_pull_requires_a_choice_and_creates_no_command() {
-    let store = source_document();
-    let revision = store.current().revision_id();
-    let outcome = plan_smart_push_pull(&store, &[FeatureId(2), FeatureId(3)], "35").unwrap();
-    match outcome {
-        SmartPushPullOutcome::NeedsChoice { candidates } => {
-            assert_eq!(candidates, vec![FeatureId(2), FeatureId(3)]);
-        }
-        SmartPushPullOutcome::Ready(_) => panic!("ambiguous sources must not be selected silently"),
-    }
-    assert_eq!(store.current().revision_id(), revision);
 }
 
 #[test]

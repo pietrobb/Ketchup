@@ -34,6 +34,8 @@ ketchup-rejection = { path = "../ketchup-rejection" }
 ketchup-scheduler = { path = "../ketchup-scheduler" }
 raw-window-handle = "0.6.2"
 rfd = "0.15.4"
+# The identity of a locked export lock file (already in the tree via walkdir).
+same-file = "1.0.6"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }
 sys-locale = "0.3"

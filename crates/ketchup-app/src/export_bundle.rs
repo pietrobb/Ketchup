@@ -506,6 +506,60 @@ fn export_artifact_lock_path(path: &Path) -> PathBuf {
     PathBuf::from(lock_path)
 }
 
+/// The export lock of one file, held until dropped. Dropping removes the lock
+/// file, then releases the lock (review 2026-10-31 P3: every export left the
+/// lock file beside the file it wrote).
+struct ExportLock {
+    path: PathBuf,
+    _file: std::fs::File,
+}
+
+impl Drop for ExportLock {
+    fn drop(&mut self) {
+        // Whoever waits on this file finds it removed and locks a new one.
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Locks the export of `path` against other exports, of this and other
+/// processes. A lock taken on a file the export before removed while this one
+/// waited locks nothing, so it is taken again on the file the name now holds.
+fn lock_export(path: &Path) -> Result<ExportLock, ExportTransactionError> {
+    let lock_path = export_artifact_lock_path(path);
+    let io = |error| ExportTransactionError::io(&lock_path)(error);
+    // On Windows a removed file that a waiting export still holds open keeps
+    // its name, refusing access, until that export lets it go.
+    let lingering_until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let file = match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+        {
+            Ok(file) => file,
+            Err(error)
+                if cfg!(windows)
+                    && error.kind() == std::io::ErrorKind::PermissionDenied
+                    && std::time::Instant::now() < lingering_until =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                continue;
+            }
+            Err(error) => return Err(io(error)),
+        };
+        file.lock().map_err(&io)?;
+        let locked = same_file::Handle::from_file(file.try_clone().map_err(&io)?).map_err(&io)?;
+        if same_file::Handle::from_path(&lock_path).is_ok_and(|named| named == locked) {
+            return Ok(ExportLock {
+                path: lock_path,
+                _file: file,
+            });
+        }
+    }
+}
+
 fn export_parent(path: &Path) -> &Path {
     path.parent().unwrap_or_else(|| Path::new("."))
 }
@@ -530,16 +584,7 @@ fn write_export_artifact_if_unchanged_after_compare(
         });
     }
     let parent = export_parent(path);
-    let lock_path = export_artifact_lock_path(path);
-    let lock = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)
-        .map_err(ExportTransactionError::io(&lock_path))?;
-    lock.lock()
-        .map_err(ExportTransactionError::io(&lock_path))?;
+    let _lock = lock_export(path)?;
     let mut temporary =
         tempfile::NamedTempFile::new_in(parent).map_err(ExportTransactionError::io(parent))?;
     temporary
@@ -1168,6 +1213,48 @@ mod tests {
             error.to_string(),
             "export recovery journal is not a bounded regular file"
         );
+    }
+
+    /// Review 2026-10-31 P3: every export left `<file>.ketchup-export-lock`
+    /// beside the file it wrote.
+    #[test]
+    fn an_export_leaves_nothing_beside_the_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("drawing.svg");
+        write_export_artifact_if_unchanged(&target, b"first", None).unwrap();
+        let sha256 = export_target_sha256(&target).unwrap().unwrap();
+        write_export_artifact_if_unchanged(&target, b"second", Some(&sha256)).unwrap();
+        let names: Vec<_> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["drawing.svg"]);
+    }
+
+    /// Removing the lock file must not let two exports in at once: one that
+    /// waited on a file the export before it removed locks nothing. Each holder
+    /// reads a count from a file and writes it back one higher, so two inside
+    /// at once lose a count.
+    #[test]
+    fn exports_hold_the_lock_one_at_a_time_while_lock_files_come_and_go() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("drawing.svg");
+        let count = directory.path().join("count");
+        std::fs::write(&count, "0").unwrap();
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for _ in 0..50 {
+                        let lock = lock_export(&target).unwrap();
+                        let seen: u32 = std::fs::read_to_string(&count).unwrap().parse().unwrap();
+                        std::fs::write(&count, (seen + 1).to_string()).unwrap();
+                        drop(lock);
+                    }
+                });
+            }
+        });
+        assert_eq!(std::fs::read_to_string(&count).unwrap(), "200");
+        assert!(!export_artifact_lock_path(&target).exists());
     }
 
     #[test]

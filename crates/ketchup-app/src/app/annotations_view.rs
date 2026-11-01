@@ -8,8 +8,8 @@
 use crate::renderer::single_precision;
 use crate::*;
 use ketchup_manufacturing::project_drawings::annotation_marks;
-use ketchup_manufacturing::sheet_pdf::{Anchor, Mark, SheetFont};
 use ketchup_model::annotation::Annotation;
+use ketchup_model::sheet_pdf::{Anchor, Mark, SheetFont};
 
 /// Screen points for one millimetre of the page the marks are laid out on: text
 /// 2.5 mm tall on paper has capitals 10 points tall on screen.

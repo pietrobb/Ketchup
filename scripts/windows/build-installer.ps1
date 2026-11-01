@@ -4,13 +4,16 @@ param(
     [string]$Version,
     [string]$OutputDir,
     [string]$BinaryDir,
+    # The Viewer is built apart, with the Visual C++ runtime linked in (crt-static).
+    [string]$ViewerBinaryDir,
     [string]$OcctRoot,
     [string]$OcctManifestPath,
     [string]$InnoCompilerPath,
     [string]$SigningMetadataPath,
     [string]$SignToolPath,
     [string]$AzureSigningDlibPath,
-    # A real .ketchup-view exported by Kecup; the installed Viewer must open it.
+    # A real .ketchup-view exported by Kecup; the installed and the portable Viewer
+    # must open it. Defaults to the committed viewer\samples\kitchen.ketchup-view.
     [string]$ViewerSmokePackage,
     # Folder with the examples README.md links to a release download (tiny-house.ketchup);
     # with it the release also gets Ketchup-<version>-Examples.zip (build-examples-zip.ps1).
@@ -36,6 +39,15 @@ if ([string]::IsNullOrWhiteSpace($OutputDir)) {
 if ([string]::IsNullOrWhiteSpace($BinaryDir)) {
     $BinaryDir = Join-Path $repoRoot "target\release"
 }
+# An explicit --target keeps crt-static off the build scripts and proc macros,
+# and its output apart from the application's.
+$viewerTarget = "x86_64-pc-windows-msvc"
+if ([string]::IsNullOrWhiteSpace($ViewerBinaryDir)) {
+    $ViewerBinaryDir = Join-Path $repoRoot "target\$viewerTarget\release"
+}
+if ([string]::IsNullOrWhiteSpace($ViewerSmokePackage)) {
+    $ViewerSmokePackage = Join-Path $repoRoot "viewer\samples\kitchen.ketchup-view"
+}
 if ([string]::IsNullOrWhiteSpace($OcctRoot)) {
     $OcctRoot = Join-Path $repoRoot "third_party\occt-install-r0-v1"
 }
@@ -56,6 +68,7 @@ if ([string]::IsNullOrWhiteSpace($SigningMetadataPath)) {
 
 $OutputDir = [IO.Path]::GetFullPath($OutputDir)
 $BinaryDir = [IO.Path]::GetFullPath($BinaryDir)
+$ViewerBinaryDir = [IO.Path]::GetFullPath($ViewerBinaryDir)
 $OcctRoot = [IO.Path]::GetFullPath($OcctRoot)
 $OcctManifestPath = [IO.Path]::GetFullPath($OcctManifestPath)
 $SigningMetadataPath = [IO.Path]::GetFullPath($SigningMetadataPath)
@@ -126,10 +139,8 @@ if ($Version -notmatch '^[0-9A-Za-z][0-9A-Za-z.-]{0,63}$') {
 }
 Assert-Leaf $OcctManifestPath "pinned OCCT manifest"
 Assert-Leaf $InnoCompilerPath "Inno Setup compiler"
-if (-not [string]::IsNullOrWhiteSpace($ViewerSmokePackage)) {
-    $ViewerSmokePackage = [IO.Path]::GetFullPath($ViewerSmokePackage)
-    Assert-Leaf $ViewerSmokePackage "Viewer smoke package"
-}
+$ViewerSmokePackage = [IO.Path]::GetFullPath($ViewerSmokePackage)
+Assert-Leaf $ViewerSmokePackage "Viewer smoke package"
 if ($Sign) {
     Assert-Leaf $SigningMetadataPath "Azure signing metadata"
     $SignToolPath = Resolve-SigningTool $SignToolPath "microsoft.windows.sdk.buildtools" "signtool.exe"
@@ -170,8 +181,16 @@ if (-not $SkipBuild) {
         }
         & cargo build --locked --release -p ketchup-scheduler --bin ketchup-exact-worker --bin ketchup-program-worker
         if ($LASTEXITCODE -ne 0) { throw "Worker release build failed." }
-        & cargo build --locked --release -p ketchup-viewer --bin ketchup-viewer
-        if ($LASTEXITCODE -ne 0) { throw "Viewer release build failed." }
+        # A clean Windows has no Visual C++ Redistributable; the portable Viewer
+        # promises nothing to install (review 2026-10-31 VW-81).
+        $previousRustFlags = [Environment]::GetEnvironmentVariable("RUSTFLAGS", "Process")
+        try {
+            [Environment]::SetEnvironmentVariable("RUSTFLAGS", "-C target-feature=+crt-static", "Process")
+            & cargo build --locked --release -p ketchup-viewer --bin ketchup-viewer --target $viewerTarget
+            if ($LASTEXITCODE -ne 0) { throw "Viewer release build failed." }
+        } finally {
+            [Environment]::SetEnvironmentVariable("RUSTFLAGS", $previousRustFlags, "Process")
+        }
     } finally {
         Pop-Location
     }
@@ -183,8 +202,13 @@ Assert-Leaf $appSource "application"
 Assert-Leaf $workerSource "exact worker"
 $programWorkerSource = Join-Path $BinaryDir "ketchup-program-worker.exe"
 Assert-Leaf $programWorkerSource "program worker"
-$viewerSource = Join-Path $BinaryDir "ketchup-viewer.exe"
+$viewerSource = Join-Path $ViewerBinaryDir "ketchup-viewer.exe"
 Assert-Leaf $viewerSource "Viewer"
+. (Join-Path $PSScriptRoot "PeImports.ps1")
+$viewerRuntime = @(Get-PeImportedDlls $viewerSource | Where-Object { $_ -match '^(vcruntime|msvcp|concrt)' })
+if ($viewerRuntime.Count -ne 0) {
+    throw "The Viewer needs $($viewerRuntime -join ', '), which a clean Windows does not have; build it with crt-static: $viewerSource"
+}
 Add-Type -Namespace KetchupBuild -Name Shell -MemberDefinition @'
 [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
 public static extern uint ExtractIconEx(string file, int index, IntPtr[] large, IntPtr[] small, uint count);
@@ -541,20 +565,16 @@ try {
             throw "Installed package is not registered for $($association.extension)."
         }
     }
-    if ([string]::IsNullOrWhiteSpace($ViewerSmokePackage)) {
-        Write-Warning "Viewer open smoke skipped: pass -ViewerSmokePackage with a real exported .ketchup-view."
-    } else {
-        $viewerVerification = (& $installedViewer --verify-open $ViewerSmokePackage | Out-String).Trim()
-        if ($LASTEXITCODE -ne 0 -or $viewerVerification -notmatch '^Ketchup Viewer \S+ opened [1-9][0-9]* components, [0-9]+ scenes, [0-9]+ comments$') {
-            throw "Installed Viewer could not open the smoke package: $viewerVerification"
-        }
-        Write-Host $viewerVerification
-        $portableViewerDir = Join-Path $tempRoot "viewer-portable"
-        Expand-Archive $viewerZipPath -DestinationPath $portableViewerDir
-        $portableVerification = (& (Join-Path $portableViewerDir "KetchupViewer.exe") --verify-open $ViewerSmokePackage | Out-String).Trim()
-        if ($LASTEXITCODE -ne 0 -or $portableVerification -cne $viewerVerification) {
-            throw "The Viewer from the portable archive could not open the smoke package: $portableVerification"
-        }
+    $viewerVerification = (& $installedViewer --verify-open $ViewerSmokePackage | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $viewerVerification -notmatch '^Ketchup Viewer \S+ opened [1-9][0-9]* components, [0-9]+ scenes, [0-9]+ comments$') {
+        throw "Installed Viewer could not open the smoke package: $viewerVerification"
+    }
+    Write-Host $viewerVerification
+    $portableViewerDir = Join-Path $tempRoot "viewer-portable"
+    Expand-Archive $viewerZipPath -DestinationPath $portableViewerDir
+    $portableVerification = (& (Join-Path $portableViewerDir "KetchupViewer.exe") --verify-open $ViewerSmokePackage | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $portableVerification -cne $viewerVerification) {
+        throw "The Viewer from the portable archive could not open the smoke package: $portableVerification"
     }
 
     $uninstaller = Join-Path $installedDir "unins000.exe"

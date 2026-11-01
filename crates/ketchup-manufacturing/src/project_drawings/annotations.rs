@@ -4,10 +4,10 @@
 //! extension lines, the arrowhead of a leader) are millimetres on paper.
 
 use super::ViewFrame;
-use crate::sheet_pdf::{Anchor, Mark, Page, Stroke};
 use ketchup_model::annotation::{
     Annotation, AnnotationMark, DimensionLayout, dimension_text, paper,
 };
+use ketchup_model::sheet_pdf::{Anchor, Mark, Page, Stroke};
 use ketchup_model::tolerance::MIN_DIMENSION_MM;
 use ketchup_model::underlay::text::LINE_PITCH_PER_HEIGHT;
 use serde::Serialize;

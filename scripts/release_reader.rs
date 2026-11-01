@@ -1,13 +1,16 @@
-//! Opens files with the persistence of Kečup 0.2.0 (review 2026-10-29 proposal 5.4).
+//! Opens files with the persistence of a released Kečup (review 2026-10-29 proposal 5.4,
+//! review 2026-10-31 CI-80).
 //!
-//! Built by `scripts/release_0_2_0_reads.py` against `ketchup-model` of the `v0.2.0` tag,
-//! not by the workspace. Each `release-0.2.0-<format>-<name>.ketchup` in the directory
-//! given gets an empty document as its `.recovery`, the way a file 0.2.0 saved over has
-//! one. A format 103 file in container schema 1 within 64 MiB must open editable (or for
-//! review when it requires an extension, as in every version); any other must be refused,
-//! as newer or as larger than 0.2.0 opens. A file 0.2.0 takes for damaged opens its
-//! `.recovery` in its place, and the next Save of 0.2.0 would overwrite the newer file
-//! with it: that fails the run.
+//! Built by `scripts/release_reads.py` against `ketchup-model` of the release's tag, not by
+//! the workspace, and given what that release reads, taken from its source: the newest
+//! format, its container schemas and its file size (0: none). Each
+//! `saved-<format>-<name>.ketchup` in the directory given gets an empty document as its
+//! `.recovery`, the way a file the release saved over has one. A file in a format and
+//! container schema it reads, within its file size, must open editable (or for review
+//! when it requires an extension, as in every version); any other must be refused, as
+//! newer or as larger than the release opens. A file the release takes for damaged opens
+//! its `.recovery` in its place, and its next Save would overwrite the newer file with
+//! it: that fails the run.
 use ketchup_model::document::DocumentStore;
 use ketchup_model::persistence::{
     self, ContainerData, FilePersistenceError, LoadNotice, PersistenceError,
@@ -15,10 +18,32 @@ use ketchup_model::persistence::{
 use std::path::Path;
 use std::process::ExitCode;
 
+/// What the release reads.
+struct Reads {
+    newest_format: u16,
+    container_schemas: Vec<u16>,
+    max_bytes: Option<u64>,
+}
+
 fn main() -> ExitCode {
-    let directory = std::env::args_os()
-        .nth(1)
-        .expect("the directory of the files to open");
+    let mut arguments = std::env::args().skip(1);
+    let directory = arguments.next().expect("the directory of the files to open");
+    let reads = Reads {
+        newest_format: arguments
+            .next()
+            .and_then(|format| format.parse().ok())
+            .expect("the newest format the release reads"),
+        container_schemas: arguments
+            .next()
+            .expect("the container schemas the release reads")
+            .split(',')
+            .map(|schema| schema.parse().expect("a container schema"))
+            .collect(),
+        max_bytes: arguments
+            .next()
+            .and_then(|bytes| bytes.parse().ok())
+            .filter(|bytes| *bytes > 0),
+    };
     let backup = persistence::save_document_store(&DocumentStore::new(), &ContainerData::default())
         .expect("an empty document saves");
     let mut files = std::fs::read_dir(&directory)
@@ -36,7 +61,8 @@ fn main() -> ExitCode {
         recovery.push(".recovery");
         std::fs::write(&recovery, &backup).expect("write the .recovery");
         let name = path.file_name().unwrap().to_string_lossy();
-        match verdict(path, format_of(&name) == 103 && fits(path)) {
+        let opens = format_of(&name) <= reads.newest_format && fits(path, &reads);
+        match verdict(path, opens, &reads) {
             Ok(verdict) => println!("ok      {name}: {verdict}"),
             Err(error) => {
                 failed += 1;
@@ -52,23 +78,31 @@ fn main() -> ExitCode {
     }
 }
 
-/// The format a file named `release-0.2.0-<format>-<name>.ketchup` is in.
+/// The format a file named `saved-<format>-<name>.ketchup` is in.
 fn format_of(name: &str) -> u16 {
-    name.strip_prefix("release-0.2.0-")
+    name.strip_prefix("saved-")
         .and_then(|rest| rest.get(..3))
         .and_then(|format| format.parse().ok())
         .unwrap_or_else(|| panic!("{name} does not name its format"))
 }
 
-/// Whether 0.2.0 reads the file `path` as it reads one it wrote: container schema 1,
-/// within its file size.
-fn fits(path: &Path) -> bool {
-    let bytes = std::fs::read(path).expect("read a file to open");
-    bytes.get(10..12) == Some(&1u16.to_le_bytes()[..])
-        && bytes.len() <= persistence::MAX_NATIVE_DOCUMENT_BYTES
+fn larger(path: &Path, reads: &Reads) -> bool {
+    reads
+        .max_bytes
+        .is_some_and(|max| std::fs::metadata(path).is_ok_and(|file| file.len() > max))
 }
 
-fn verdict(path: &Path, opens: bool) -> Result<&'static str, String> {
+/// Whether the release reads the file `path` as it reads one it wrote: a container
+/// schema it knows, within its file size.
+fn fits(path: &Path, reads: &Reads) -> bool {
+    let bytes = std::fs::read(path).expect("read a file to open");
+    let schema = bytes
+        .get(10..12)
+        .map(|schema| u16::from_le_bytes([schema[0], schema[1]]));
+    schema.is_some_and(|schema| reads.container_schemas.contains(&schema)) && !larger(path, reads)
+}
+
+fn verdict(path: &Path, opens: bool, reads: &Reads) -> Result<&'static str, String> {
     match persistence::load_file(path) {
         Ok(outcome) => {
             if outcome
@@ -112,10 +146,7 @@ fn verdict(path: &Path, opens: bool) -> Result<&'static str, String> {
             | PersistenceError::UnknownFields(_),
         )) if !opens => Ok("refused as newer"),
         Err(FilePersistenceError::Format(PersistenceError::ResourceLimit))
-            if !opens
-                && std::fs::metadata(path).is_ok_and(|file| {
-                    file.len() > persistence::MAX_NATIVE_DOCUMENT_BYTES as u64
-                }) =>
+            if !opens && larger(path, reads) =>
         {
             Ok("refused as larger than it opens")
         }

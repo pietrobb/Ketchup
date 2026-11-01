@@ -3,7 +3,8 @@
 //! piece of a build-up), seen along their local z with their local x to the
 //! right. Identical parts share a position number: the same material and
 //! blank size as on the cut list, made alike (outline, holes, pockets and
-//! cuts), turned over or mirrored at most.
+//! cuts), turned at most. A mirror image is a position of its own naming the
+//! one it mirrors.
 
 use crate::bom::key;
 use crate::frame;
@@ -20,6 +21,9 @@ pub struct ShopPosition {
     /// The blank, longest first, as the cut list gives it.
     pub dimensions_mm: [f64; 3],
     pub parts: Vec<String>,
+    /// The number of the position whose parts these mirror: the same made
+    /// the other hand, which no turning makes alike.
+    pub mirror_of: Option<usize>,
 }
 
 /// One sheet: its name, the world directions its view shows to the right and
@@ -67,20 +71,25 @@ pub fn shop_drawings(model: &ProgramModel) -> Vec<ShopDrawing> {
             made_keys.push(Vec::new());
         }
         let positions = &mut drawings[index].positions;
-        match positions
-            .iter()
-            .zip(&made_keys[index])
-            .position(|(position, other)| {
-                position.material == material
-                    && position.dimensions_mm.map(key) == dimensions.map(key)
-                    && *other == made
-            }) {
+        let alike = |made_as: &dyn Fn(&Making) -> &Keys| {
+            positions
+                .iter()
+                .zip(&made_keys[index])
+                .position(|(position, other)| {
+                    position.material == material
+                        && position.dimensions_mm.map(key) == dimensions.map(key)
+                        && other.turned == *made_as(&made)
+                })
+        };
+        match alike(&|made| &made.turned) {
             Some(found) => positions[found].parts.push(part.name.clone()),
             None => {
+                let mirror_of = alike(&|made| &made.mirrored).map(|found| found + 1);
                 positions.push(ShopPosition {
                     material,
                     dimensions_mm: dimensions,
                     parts: vec![part.name.clone()],
+                    mirror_of,
                 });
                 made_keys[index].push(made);
             }
@@ -90,13 +99,21 @@ pub fn shop_drawings(model: &ProgramModel) -> Vec<ShopDrawing> {
 }
 
 /// Tagged points (mm keys) that tell how a part is made.
-type Making = Vec<(String, [i64; 3])>;
+type Keys = Vec<(String, [i64; 3])>;
+
+/// How a part is made, and how its mirror image is.
+struct Making {
+    turned: Keys,
+    mirrored: Keys,
+}
 
 /// How a part is made, for telling positions apart: the corners of its body
 /// and the places of its holes, pockets and cuts in its own frame from the
-/// corner of its bounds, the same for the part turned over or mirrored
-/// (review 2026-10-29 PG-62: members notched on both sides, on one side and
-/// on none shared one position by material and blank alone).
+/// corner of its bounds, the same for the part turned any way (review
+/// 2026-10-29 PG-62: members notched on both sides, on one side and on none
+/// shared one position by material and blank alone). Turning flips an even
+/// number of axes; an odd number makes the mirror image, the other hand
+/// (review 2026-10-31 PG-83).
 fn making(part: &Part) -> Making {
     let (min, max) = part.local_bounds();
     let mut points: Vec<(String, [f64; 3])> = Vec::new();
@@ -111,8 +128,16 @@ fn making(part: &Part) -> Making {
     for operation in &part.operations {
         match operation {
             ProgramOperation::Hole(hole) => {
+                // The thread tells a tapped hole from a plain bore (review 2026-10-31 P3).
+                let thread = hole.thread.as_ref().map(|thread| {
+                    (
+                        thread.size.as_str(),
+                        key(thread.pitch_mm),
+                        key(thread.depth_mm),
+                    )
+                });
                 let tag = format!(
-                    "hole {} {} {}",
+                    "hole {} {} {} {thread:?}",
                     key(hole.diameter_mm),
                     key(hole.depth_mm),
                     hole.through
@@ -145,28 +170,35 @@ fn making(part: &Part) -> Making {
             other => points.push((serde_json::to_string(other).unwrap_or_default(), [0.0; 3])),
         }
     }
-    (0..8)
-        .map(|mirror: usize| {
-            let mut keys = points
-                .iter()
-                .map(|(tag, point)| {
-                    let at = std::array::from_fn(|axis| {
-                        let value = if mirror & (1 << axis) == 0 {
-                            point[axis]
-                        } else {
-                            min[axis] + max[axis] - point[axis]
-                        };
-                        key(value - min[axis])
-                    });
-                    (tag.clone(), at)
-                })
-                .collect::<Vec<_>>();
-            keys.sort_unstable();
-            keys.dedup();
-            keys
-        })
-        .min()
-        .unwrap_or_default()
+    let flipped = |odd: u32| {
+        (0..8_usize)
+            .filter(|flips| flips.count_ones() % 2 == odd)
+            .map(|mirror| {
+                let mut keys = points
+                    .iter()
+                    .map(|(tag, point)| {
+                        let at = std::array::from_fn(|axis| {
+                            let value = if mirror & (1 << axis) == 0 {
+                                point[axis]
+                            } else {
+                                min[axis] + max[axis] - point[axis]
+                            };
+                            key(value - min[axis])
+                        });
+                        (tag.clone(), at)
+                    })
+                    .collect::<Vec<_>>();
+                keys.sort_unstable();
+                keys.dedup();
+                keys
+            })
+            .min()
+            .unwrap_or_default()
+    };
+    Making {
+        turned: flipped(0),
+        mirrored: flipped(1),
+    }
 }
 
 /// The corners (and arc centres and curve control points) of a profile,

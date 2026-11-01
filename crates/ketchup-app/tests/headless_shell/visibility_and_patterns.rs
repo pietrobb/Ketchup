@@ -2960,6 +2960,22 @@ fn purge_unused_definitions_is_localized_safe_and_one_undo_step() {
 }
 
 #[test]
+fn a_screen_reader_finds_each_line_of_text_inside_the_widget_that_shows_it() {
+    for (locale, catalog) in [
+        ("en-US", LocaleCatalog::english()),
+        ("sk-SK", LocaleCatalog::slovak()),
+        ("pseudo", LocaleCatalog::pseudo()),
+    ] {
+        let shell = Shell::with_catalog(catalog);
+        let outside = shell.text_runs_outside_their_widget();
+        assert!(
+            outside.is_empty(),
+            "{locale}: text a screen reader finds outside its widget (text, line, widget): {outside:?}"
+        );
+    }
+}
+
+#[test]
 fn localized_shells_fit_and_support_screen_reader_keyboard_focus() {
     let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 1000.0));
     for (locale, catalog) in [

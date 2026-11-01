@@ -669,7 +669,14 @@ pub struct GeneralManufacturingProjection {
     pub envelope: FabricationProjectionEnvelope,
     pub validation_state: ValidationState,
     pub operations: Vec<GeneralManufacturingOperation>,
+    /// The members whose machining could not be described: they hold the
+    /// whole projection incomplete.
     pub unresolved_sources: Vec<GeneralBodySource>,
+    /// Every shop-made body whose machining could not be described, members
+    /// and manufactured items alike. Its operations are not in `operations`,
+    /// so no export may present the part as fully machined (review
+    /// 2026-10-31 MF-80).
+    pub undescribed_sources: Vec<GeneralBodySource>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -903,6 +910,7 @@ impl GeneralFabricationProjection {
         let manufacturing_bytes = general_manufacturing_bytes(
             &self.manufacturing.operations,
             &self.manufacturing.unresolved_sources,
+            &self.manufacturing.undescribed_sources,
             self.manufacturing.validation_state,
         );
         let every_operation_drawn = self.manufacturing.operations.iter().all(|operation| {
@@ -936,6 +944,13 @@ impl GeneralFabricationProjection {
                 .map(|view| view.height_mm + 55.0)
                 .sum::<f64>()
                 + 90.0;
+            if self
+                .manufacturing
+                .undescribed_sources
+                .contains(&drawing.source)
+            {
+                sheet_height += 30.0;
+            }
             for operation in drawing
                 .machining_operations
                 .iter()
@@ -977,6 +992,19 @@ impl GeneralFabricationProjection {
                 }
             ));
             y += 30.0;
+            if self
+                .manufacturing
+                .undescribed_sources
+                .contains(&drawing.source)
+            {
+                svg.push_str(&format!(
+                    "<text id=\"{}/machining-not-described\" x=\"25\" y=\"{}\" fill=\"red\" stroke=\"none\">machining not described: {}</text>\n",
+                    drawing.stable_drawing_id,
+                    format_number(y),
+                    capabilities::DRAWING_UNDESCRIBED
+                ));
+                y += 30.0;
+            }
             for view in &drawing.views {
                 svg.push_str(&format!(
                     "<rect id=\"{}\" x=\"25\" y=\"{}\" width=\"{}\" height=\"{}\" />\n<text x=\"25\" y=\"{}\" fill=\"black\" stroke=\"none\">{} ({} × {})</text>\n",
@@ -1031,6 +1059,7 @@ impl GeneralFabricationProjection {
         let result_bytes = general_manufacturing_bytes(
             &self.manufacturing.operations,
             &self.manufacturing.unresolved_sources,
+            &self.manufacturing.undescribed_sources,
             self.manufacturing.validation_state,
         );
         if self.manufacturing.envelope.status != ProjectionStatus::Complete
@@ -2072,18 +2101,58 @@ impl StockBlank {
     }
 }
 
-/// Minimum corner of a cross-section made of lines, in profile coordinates.
+/// Minimum corner of a cross-section of lines and circular arcs, in profile
+/// coordinates: an arc reaches below its ends where it passes the lowest point
+/// of its circle along an axis (review 2026-10-31 MF-85).
 fn profile_minimum(cross_section: &[GeneralMachiningSegment]) -> Option<[f64; 2]> {
     let mut minimum = [f64::INFINITY; 2];
-    for segment in cross_section {
-        let GeneralMachiningSegment::Line { start_mm, end_mm } = segment else {
-            return None;
-        };
+    let mut include = |point: [f64; 2]| {
         for axis in 0..2 {
-            minimum[axis] = minimum[axis].min(start_mm[axis]).min(end_mm[axis]);
+            minimum[axis] = minimum[axis].min(point[axis]);
+        }
+    };
+    for segment in cross_section {
+        match *segment {
+            GeneralMachiningSegment::Line { start_mm, end_mm } => {
+                include(start_mm);
+                include(end_mm);
+            }
+            GeneralMachiningSegment::CircularArc {
+                start_mm,
+                end_mm,
+                center_mm,
+                clockwise,
+            } => {
+                include(start_mm);
+                include(end_mm);
+                let radius = (start_mm[0] - center_mm[0]).hypot(start_mm[1] - center_mm[1]);
+                let angle =
+                    |point: [f64; 2]| (point[1] - center_mm[1]).atan2(point[0] - center_mm[0]);
+                // The arc runs counterclockwise from `from` through `sweep`.
+                let (from, to) = if clockwise {
+                    (angle(end_mm), angle(start_mm))
+                } else {
+                    (angle(start_mm), angle(end_mm))
+                };
+                let sweep = match (to - from).rem_euclid(std::f64::consts::TAU) {
+                    0.0 => std::f64::consts::TAU,
+                    sweep => sweep,
+                };
+                let passes =
+                    |direction: f64| (direction - from).rem_euclid(std::f64::consts::TAU) <= sweep;
+                if passes(std::f64::consts::PI) {
+                    include([center_mm[0] - radius, center_mm[1]]);
+                }
+                if passes(-std::f64::consts::FRAC_PI_2) {
+                    include([center_mm[0], center_mm[1] - radius]);
+                }
+            }
         }
     }
-    Some(minimum)
+    minimum
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some(minimum)
 }
 
 fn rectangular_stock(geometry: &GeneralMachiningGeometry) -> Option<StockBlank> {
@@ -2777,6 +2846,7 @@ pub fn project_general_fabrication(
 
     let mut operations = Vec::new();
     let mut unresolved_sources = Vec::new();
+    let mut undescribed_sources = Vec::new();
     for row in &bom.rows {
         // A member must be described; a manufactured item is machined
         // (woodWOP, production job) when it can be, and otherwise those exports
@@ -2794,6 +2864,7 @@ pub fn project_general_fabrication(
             continue;
         }
         let mut unresolved = |source: &GeneralBodySource| {
+            undescribed_sources.push(source.clone());
             if required {
                 unresolved_sources.push(source.clone());
             }
@@ -2807,6 +2878,7 @@ pub fn project_general_fabrication(
                     if required {
                         return Err(GeneralFabricationError::UnsupportedOrUnavailableGeometry);
                     }
+                    unresolved(&row.source);
                     continue;
                 };
                 if !manufacturing_export_token_is_safe(&source.result_fingerprint) {
@@ -2851,14 +2923,20 @@ pub fn project_general_fabrication(
     }
     unresolved_sources.sort();
     unresolved_sources.dedup();
+    undescribed_sources.sort();
+    undescribed_sources.dedup();
     let manufacturing_status =
         if validation_state == ValidationState::Passed && unresolved_sources.is_empty() {
             ProjectionStatus::Complete
         } else {
             ProjectionStatus::Incomplete
         };
-    let manufacturing_bytes =
-        general_manufacturing_bytes(&operations, &unresolved_sources, validation_state);
+    let manufacturing_bytes = general_manufacturing_bytes(
+        &operations,
+        &unresolved_sources,
+        &undescribed_sources,
+        validation_state,
+    );
     let manufacturing = GeneralManufacturingProjection {
         envelope: FabricationProjectionEnvelope::new_with_evaluator(
             snapshot,
@@ -2869,6 +2947,7 @@ pub fn project_general_fabrication(
         validation_state,
         operations,
         unresolved_sources,
+        undescribed_sources,
     };
     let drawings = bom
         .rows
@@ -3005,6 +3084,11 @@ fn machined_nodes(
         let mut machining = profile_cut_geometry(profile, interval, depth_bits.is_none())?;
         if depth_bits.is_some() && blind_cut_enters_at_end(graph, stock, profile, interval)? {
             machining = entering_from_end(machining);
+        }
+        // A cut through all runs past both faces; it is machined where the
+        // stock is.
+        if depth_bits.is_none() {
+            machining = within_stock(machining, graph.node_bounds_mm(stock.id).ok().flatten()?)?;
         }
         let kind = if matches!(machining, GeneralMachiningGeometry::CircularDrill { .. }) {
             GeneralManufacturingKind::CircularDrill

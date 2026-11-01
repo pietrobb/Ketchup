@@ -121,7 +121,7 @@ fn a_queued_check_and_apply_share_one_request_deadline() {
                     Instant::now() < deadline,
                     "the program request did not answer"
                 );
-                std::thread::yield_now();
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
         };
 

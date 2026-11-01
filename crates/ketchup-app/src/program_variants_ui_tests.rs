@@ -56,7 +56,7 @@ fn settle(harness: &mut Shell) {
             return;
         }
         assert!(Instant::now() < deadline, "the dock did not settle");
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
 }
 

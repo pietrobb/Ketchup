@@ -1609,7 +1609,7 @@ fn cancelled_evaluation_keeps_progress_at_the_interrupted_body() {
             std::time::Instant::now() < deadline,
             "cancelled worker did not exit"
         );
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
     let progress = task.progress();
     assert_eq!(progress.active_producer, pending);

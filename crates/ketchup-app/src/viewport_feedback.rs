@@ -668,7 +668,7 @@ mod tests {
         while app.exact.task.is_some() || app.exact.source.is_none() {
             assert!(Instant::now() < deadline, "the exact body never arrived");
             let _ = context.run(input(), |context| app.ui(context));
-            std::thread::yield_now();
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
 
         let selected = app.selection.primary.clone().expect("selection kept");

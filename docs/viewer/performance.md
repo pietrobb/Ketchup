@@ -26,8 +26,10 @@ cargo test -p ketchup-app --release --test integration viewer_reference_packages
 ## How it is measured
 
 `ketchup-viewer --benchmark <package>` reads the package, uploads it to the
-GPU, orbits it for 300 frames at 1600×900, picks components and switches
-scenes. [benchmark-viewer.ps1](../../scripts/windows/benchmark-viewer.ps1)
+GPU, orbits it for a first frame and 300 more at 1600×900, picks components
+and switches scenes. Frames are drawn offscreen: without present, vsync,
+compositor or the user interface, so a window draws fewer frames per second
+than the orbit rate below. [benchmark-viewer.ps1](../../scripts/windows/benchmark-viewer.ps1)
 runs it on Windows and adds the peak working set.
 [benchmark-android-viewer.ps1](../../scripts/windows/benchmark-android-viewer.ps1)
 runs the installed Android Viewer on the connected device or emulator; the
@@ -35,9 +37,13 @@ Viewer adds its peak resident memory (`VmHWM`).
 
 - **open**: reading the package and building the model, before the GPU.
 - **GPU upload**: building the GPU buffers of all components.
-- **orbit**: frames per second from the median frame time; worst is the
-  slowest of the 300 frames.
-- **pick**: median time to find the component under the pointer.
+- **first frame**: the first orbit frame, which also builds the pipeline
+  and compiles the shaders; reported on its own.
+- **orbit**: offscreen frames per second from the median frame time of the
+  300 frames after the first; worst is the slowest of them.
+- **pick**: median time to find the component under the pointer, over the
+  positions of a 9 × 9 grid that hit a component; a miss returns at once
+  and is not counted.
 - **scene switch**: slowest switch between saved scenes.
 - **peak memory**: on Windows the peak working set, which includes the
   graphics driver's allocations; on Android the resident memory of the app
@@ -48,6 +54,10 @@ Viewer adds its peak resident memory (`VmHWM`).
 Viewer 0.3.0, release build. PC: CENTAURY, AMD Ryzen 9 5900X, 64 GB RAM,
 AMD Radeon RX 6800 XT. Other Kečup instances were running during the
 measurement, so worst frames and Windows orbit rates vary between runs.
+These runs predate the measurement above: their worst frame includes the
+first frame, and their pick median includes positions that hit nothing, so
+the worst frames may be too high and the picks too fast. They are to be
+measured again.
 
 ### Windows 10, Direct3D 12
 

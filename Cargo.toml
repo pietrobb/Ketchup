@@ -12,7 +12,9 @@ starlark = { path = "third_party/starlark" }
 process-wrap = { path = "third_party/process-wrap" }
 
 [workspace.package]
-version = "0.3.0"
+# A build between releases says so: `-dev` after the next release's number, set the
+# moment a release is tagged (review 2026-10-31 CI-80).
+version = "0.3.1-dev"
 edition = "2024"
 rust-version = "1.97"
 license = "Apache-2.0"

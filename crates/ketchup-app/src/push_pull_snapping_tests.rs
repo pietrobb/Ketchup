@@ -263,7 +263,7 @@ fn step_until<T>(
         }
         assert!(Instant::now() < deadline, "{failure}");
         harness.step();
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
 }
 

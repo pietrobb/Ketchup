@@ -17,12 +17,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_roots import package_files  # noqa: E402
 from check_tolerance_literals import TEST_MODULE  # noqa: E402  (a Rust file's unit tests)
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = ROOT / "scripts" / "named_products_baseline.txt"
-SOURCES = ["crates/*/src/**/*.rs", "crates/*/src/**/*.cc", "crates/*/src/**/*.hxx", "crates/*/include/**/*.hxx",
-           "sdk/python/**/*.py", "skills/**/*.py"]
+# Inside every crate and Viewer app (scripts/source_roots.py), then the SDK and skills.
+PACKAGE_SOURCES = ["src/**/*.rs", "src/**/*.cc", "src/**/*.hxx", "include/**/*.hxx"]
+SOURCES = [*PACKAGE_SOURCES, "sdk/python/**/*.py", "skills/**/*.py"]
 EXCLUDED_PARTS = {"tests", "examples", "fixtures"}
 # Readers of old file formats must name the old fields and role categories they convert;
 # they are the one exception.
@@ -75,7 +77,7 @@ NAMED_SHAPE_TYPES = re.compile(r"SheetMetalEdge|MAX_SHEET_METAL_FLANGES|ThreadPr
 def current_counts(root: Path = ROOT) -> dict[str, int]:
     counts: dict[str, int] = {}
     for pattern in SOURCES:
-        for path in sorted(root.glob(pattern)):
+        for path in package_files(root, pattern) if pattern in PACKAGE_SOURCES else sorted(root.glob(pattern)):
             relative = path.relative_to(root)
             if (EXCLUDED_PARTS & set(relative.parts[:-1]) or path.stem.endswith("tests")
                     or relative.as_posix() in OLD_FORMAT_READERS | STANDARD_VALIDATORS):

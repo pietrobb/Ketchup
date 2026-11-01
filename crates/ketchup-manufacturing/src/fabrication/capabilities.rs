@@ -56,6 +56,13 @@ pub enum ShopElement {
     /// A hole drilled through all: its interval is the padded Boolean cutter,
     /// not a depth a machine may drill.
     ThroughHole,
+    /// A blind hole whose depth reaches the face its axis leaves the part by:
+    /// drilled, it opens that face.
+    HoleToFarFace,
+    /// Machining that could not be described as operations (a fillet, chamfer,
+    /// imported body or other cut no operation kind holds): the part's holes
+    /// and cuts are unknown to every format (review 2026-10-31 MF-80).
+    UndescribedMachining,
 }
 
 impl fmt::Display for ShopElement {
@@ -66,6 +73,8 @@ impl fmt::Display for ShopElement {
             Self::Thread(label) => write!(formatter, "a tapped hole ({label})"),
             Self::PinHole(joint) => write!(formatter, "a pin hole of pin joint {joint}"),
             Self::ThroughHole => formatter.write_str("a hole drilled through all"),
+            Self::HoleToFarFace => formatter.write_str("a blind hole as deep as the part"),
+            Self::UndescribedMachining => formatter.write_str("machining that is not described"),
         }
     }
 }
@@ -95,6 +104,15 @@ const THROUGH_HOLE: &str = "it drills only holes with a depth that stops inside 
      through-all hole has no machine depth, only the Boolean cutter that runs past the part; export \
      BTLx, which drills it through the stock, or the production job or the drawing, which carry \
      the hole as through-all";
+const WOODWOP_HOLE_TO_FAR_FACE: &str = "its drilling macros drill only holes that stop inside \
+     the part, and this hole's depth reaches the opposite face; make it shallower than the part, \
+     or export BTLx or the production job, which drill it through";
+/// Printed on the drawing of a part whose machining is not described.
+pub(super) const DRAWING_UNDESCRIBED: &str = "the drawing shows the part's outline only, \
+     without its holes and cuts; do not machine the part from this drawing";
+const UNDESCRIBED: &str = "the part's cuts could not be described as drillings, profile or \
+     through cuts, so it would be made without them; model its machining as holes, pockets and \
+     cuts, or make it from the model";
 const WOODWOP_PROFILE_WITHOUT_TOOL: &str =
     "a profile cut is milled as a vertical pocket; choose the vertical pocket tool number";
 const WOODWOP_OTHER_CUT: &str =
@@ -105,14 +123,21 @@ const WOODWOP_OTHER_CUT: &str =
 pub fn carriage(format: ShopFormat, element: &ShopElement) -> Carriage {
     use GeneralManufacturingKind as Kind;
     match (format, element) {
+        (ShopFormat::Drawing, ShopElement::UndescribedMachining) => {
+            Carriage::Loses(DRAWING_UNDESCRIBED)
+        }
+        (_, ShopElement::UndescribedMachining) => Carriage::Refuses(UNDESCRIBED),
         (ShopFormat::Drawing | ShopFormat::Btlx, ShopElement::PinHole(_)) => {
             Carriage::Refuses(UNDRILLED_PIN_HOLE)
         }
         (ShopFormat::ProductionJob | ShopFormat::Woodwop { .. }, ShopElement::PinHole(_))
         | (ShopFormat::Drawing, _)
         | (ShopFormat::ProductionJob | ShopFormat::Btlx, ShopElement::Operation(_))
-        | (ShopFormat::ProductionJob, ShopElement::Thread(_) | ShopElement::ThroughHole)
-        | (ShopFormat::Btlx, ShopElement::ThroughHole)
+        | (
+            ShopFormat::ProductionJob,
+            ShopElement::Thread(_) | ShopElement::ThroughHole | ShopElement::HoleToFarFace,
+        )
+        | (ShopFormat::Btlx, ShopElement::ThroughHole | ShopElement::HoleToFarFace)
         | (ShopFormat::Woodwop { .. }, ShopElement::Operation(Kind::Stock | Kind::CircularDrill))
         | (
             ShopFormat::Woodwop {
@@ -122,6 +147,9 @@ pub fn carriage(format: ShopFormat, element: &ShopElement) -> Carriage {
         ) => Carriage::Carries,
         (_, ShopElement::MirroredCopy) => Carriage::Refuses(MIRRORED_COPY),
         (ShopFormat::Woodwop { .. }, ShopElement::ThroughHole) => Carriage::Refuses(THROUGH_HOLE),
+        (ShopFormat::Woodwop { .. }, ShopElement::HoleToFarFace) => {
+            Carriage::Refuses(WOODWOP_HOLE_TO_FAR_FACE)
+        }
         (ShopFormat::Btlx, ShopElement::Thread(_)) => Carriage::Loses(BTLX_THREAD_LOSS),
         (ShopFormat::Woodwop { .. }, ShopElement::Thread(_)) => Carriage::Refuses(WOODWOP_THREAD),
         (ShopFormat::Woodwop { .. }, ShopElement::Operation(Kind::ProfileCut)) => {
@@ -170,17 +198,28 @@ impl GeneralFabricationProjection {
             if row.mirrored || copies_are_mirrored(snapshot, row)? {
                 elements.push(ShopElement::MirroredCopy);
             }
-            for operation in self
+            if self.manufacturing.undescribed_sources.contains(&row.source) {
+                elements.push(ShopElement::UndescribedMachining);
+            }
+            let operations = self
                 .manufacturing
                 .operations
                 .iter()
                 .filter(|operation| is_row_operation(row, operation))
-            {
+                .collect::<Vec<_>>();
+            let blank = operations
+                .iter()
+                .find(|operation| operation.kind == GeneralManufacturingKind::Stock)
+                .and_then(|stock| rectangular_stock(&stock.machining));
+            for operation in operations {
                 elements.push(ShopElement::Operation(operation.kind));
                 if let GeneralMachiningGeometry::CircularDrill { through: true, .. } =
                     operation.machining
                 {
                     elements.push(ShopElement::ThroughHole);
+                }
+                if blank.is_some_and(|blank| reaches_far_face(blank, &operation.machining)) {
+                    elements.push(ShopElement::HoleToFarFace);
                 }
                 if let Some(thread) = &operation.thread {
                     elements.push(ShopElement::Thread(thread.label()));
@@ -257,6 +296,32 @@ fn copies_are_mirrored(
         }
     }
     Ok(mirrored)
+}
+
+/// Whether a blind drilling ends on or past a face of the blank its axis
+/// runs towards, as BTLx drills it through.
+fn reaches_far_face(blank: StockBlank, drilling: &GeneralMachiningGeometry) -> bool {
+    let GeneralMachiningGeometry::CircularDrill {
+        frame,
+        center_mm,
+        through: false,
+        end_mm,
+        ..
+    } = drilling
+    else {
+        return false;
+    };
+    let tolerance = blank.extents_mm.into_iter().fold(1.0_f64, f64::max) * ROUNDING;
+    let end = blank.local(std::array::from_fn(|axis| {
+        frame.origin_mm[axis]
+            + frame.x_axis[axis] * center_mm[0]
+            + frame.y_axis[axis] * center_mm[1]
+            + frame.normal[axis] * end_mm
+    }));
+    (0..3).any(|axis| {
+        (frame.normal[axis] > ROUNDING && end[axis] >= blank.extents_mm[axis] - tolerance)
+            || (frame.normal[axis] < -ROUNDING && end[axis] <= tolerance)
+    })
 }
 
 #[cfg(test)]

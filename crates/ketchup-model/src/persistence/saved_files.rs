@@ -1,10 +1,10 @@
-//! Every file Save writes, kept for Kečup 0.2.0 to open (review 2026-10-29 proposal
-//! 5.4). With the feature `saved-files` and `KETCHUP_SAVED_FILES_DIR` set, each saved
-//! file also goes there as `release-0.2.0-<format>-<sha256>.ketchup`, and
-//! `scripts/release_0_2_0_reads.py` opens them all with the persistence of the `v0.2.0`
-//! tag: what the tests save, not a list of documents picked to stand for it. A check
-//! relaxed since 0.2.0 changes no enum, so only a file of each kind of document shows it
-//! (review 2026-10-26 MD-41).
+//! Every file Save writes, kept for the released Kečup versions to open (review
+//! 2026-10-29 proposal 5.4, 2026-10-31 CI-80). With the feature `saved-files` and
+//! `KETCHUP_SAVED_FILES_DIR` set, each saved file also goes there as
+//! `saved-<format>-<sha256>.ketchup`, and `scripts/release_reads.py` opens them all with
+//! the persistence of each released tag: what the tests save, not a list of documents
+//! picked to stand for it. A check relaxed since a release changes no enum, so only a
+//! file of each kind of document shows it (review 2026-10-26 MD-41).
 use super::{MAGIC, container_directory};
 use std::io::Write;
 use std::path::Path;
@@ -21,10 +21,7 @@ pub(super) fn keep(file: &[u8]) {
         .expect("a saved file has a document.bin")
         .content;
     let format = u16::from_le_bytes([document[MAGIC.len()], document[MAGIC.len() + 1]]);
-    let name = format!(
-        "release-0.2.0-{format}-{}.ketchup",
-        crate::graph::sha256_hex(file)
-    );
+    let name = format!("saved-{format}-{}.ketchup", crate::graph::sha256_hex(file));
     let path = Path::new(&directory).join(name);
     if path.exists() {
         return;

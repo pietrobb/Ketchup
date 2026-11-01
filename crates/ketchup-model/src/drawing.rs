@@ -1284,6 +1284,23 @@ pub enum DrawingSource {
 }
 
 impl DrawingSource {
+    /// The source of a drawing of the selected `instance_paths`, for every
+    /// caller (the GUI and the Assistant planner): one root part placed in its
+    /// own hand is drawn as its definition; a mirrored copy keeps its placement,
+    /// so the drawing shows the opposite hand, and several parts are drawn
+    /// where they lie (review 2026-10-21 MF-21, review 2026-10-31 MF-81).
+    #[must_use]
+    pub fn for_instances(snapshot: &Snapshot, instance_paths: Vec<InstancePath>) -> Self {
+        if let [path] = instance_paths.as_slice()
+            && path.is_root()
+            && let Ok(part) = snapshot.resolve_instance_path(path)
+            && !part.mirrored()
+        {
+            return Self::Definition(part.definition_id);
+        }
+        Self::RigidAssemblyInstances { instance_paths }
+    }
+
     #[must_use]
     pub fn references_root_occurrence(&self, occurrence_id: OccurrenceId) -> bool {
         match self {

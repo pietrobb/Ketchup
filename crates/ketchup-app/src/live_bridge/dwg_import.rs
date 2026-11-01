@@ -244,7 +244,14 @@ impl LiveBridge {
     ) -> Result<Value, &'static str> {
         let (path, ..) = Self::import_target(app, request, ui_busy)?;
         Self::require_request_authority(cancelled)?;
-        let summary = read.summary();
+        let mut summary = read.summary();
+        let not_beside = ketchup_model::underlay::placement::geo_not_beside(
+            &app.document.current(),
+            read.read.offset_mm,
+        );
+        summary["not_beside"] = not_beside.map_or(Value::Null, |not_beside| {
+            json!({"underlay_id": not_beside.underlay_id.0, "apart_mm": not_beside.apart_mm})
+        });
         let id = app
             .add_underlay(Path::new(&path), read)
             .map_err(|error| interchange::import_failed(&path, error))?;

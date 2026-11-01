@@ -23,14 +23,16 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_roots import package_files  # noqa: E402
 from check_tolerance_literals import TEST_MODULE  # noqa: E402  (a Rust file's unit tests)
 from check_large_house_tests import functions, masked  # noqa: E402  (Rust fns, comments blanked)
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = ROOT / "scripts" / "test_sleeps_baseline.txt"
 # `thread::park_timeout` sleeps as well when nothing unparks the thread; a space before
-# the parenthesis is still a call (review 2026-10-19 P3).
-SLEEPS = ("sleep", "sleep_ms", "park_timeout", "park_timeout_ms")
+# the parenthesis is still a call (review 2026-10-19 P3). A loop on `yield_now` waits as
+# well, spinning a core the worker it waits for needs (review 2026-10-31 P3).
+SLEEPS = ("sleep", "sleep_ms", "park_timeout", "park_timeout_ms", "yield_now")
 # `use std::thread::sleep as nap;` calls it `nap` (review 2026-10-24).
 RUST_ALIAS = re.compile(rf"\b(?:{'|'.join(SLEEPS)})\s+as\s+(\w+)")
 
@@ -146,7 +148,7 @@ def current_counts(root: Path = ROOT) -> dict[str, int]:
         count = python_sleeps(path.read_text(encoding="utf-8"))
         if count:
             counts[path.relative_to(root).as_posix()] = count
-    paths = [*root.glob("crates/*/**/*.rs"), *root.glob("viewer/*/**/*.rs")]
+    paths = package_files(root)
     for path in sorted(paths):
         relative = path.relative_to(root)
         if "target" in relative.parts:

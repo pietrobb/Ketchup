@@ -19,10 +19,12 @@ use std::{
 
 /// Pointer pixels the camera turns per frame, a steady drag.
 const ORBIT_PX_PER_FRAME: f32 = 4.0;
-/// Pick positions per axis over the middle of the view, in device coordinates.
-const PICKS: [f32; 5] = [-0.8, -0.4, 0.0, 0.4, 0.8];
+/// Pick positions per axis over the view, in device coordinates.
+const PICKS: [f32; 9] = [-0.8, -0.6, -0.4, -0.2, 0.0, 0.2, 0.4, 0.6, 0.8];
 
 /// What one run measured; every duration waits until the GPU finished.
+/// Frames are drawn offscreen, without present, vsync, compositor or the
+/// user interface, so a window draws fewer per second.
 #[derive(Debug)]
 pub struct Benchmark {
     pub package_bytes: u64,
@@ -32,10 +34,17 @@ pub struct Benchmark {
     pub open: Duration,
     pub upload: Duration,
     pub size: [u32; 2],
+    /// The first orbit frame, which also warms the pipeline and shaders up.
+    pub first_frame: Duration,
+    /// Orbit frames after the first; median and worst are taken over them.
     pub frames: usize,
     pub frame_median: Duration,
     pub frame_worst: Duration,
-    pub pick_median: Duration,
+    /// Pick positions that hit a component; misses return at once and are
+    /// not timed.
+    pub picks: usize,
+    /// Median of the picks that hit; `None` when none did.
+    pub pick_median: Option<Duration>,
     /// The slowest switch to a saved scene and its first frame; `None`
     /// without scenes.
     pub scene_worst: Option<Duration>,
@@ -61,8 +70,9 @@ impl Benchmark {
         ));
         line(format_args!("open: {:.1} ms", ms(self.open)));
         line(format_args!("GPU upload: {:.1} ms", ms(self.upload)));
+        line(format_args!("first frame: {:.1} ms", ms(self.first_frame)));
         line(format_args!(
-            "orbit: {:.1} fps at {}x{} ({} frames, median {:.2} ms, worst {:.2} ms)",
+            "orbit, offscreen: {:.1} fps at {}x{} ({} frames after the first, median {:.2} ms, worst {:.2} ms)",
             self.fps(),
             self.size[0],
             self.size[1],
@@ -70,7 +80,15 @@ impl Benchmark {
             ms(self.frame_median),
             ms(self.frame_worst)
         ));
-        line(format_args!("pick: median {:.3} ms", ms(self.pick_median)));
+        match self.pick_median {
+            Some(median) => line(format_args!(
+                "pick: median {:.3} ms ({} of {} positions hit)",
+                ms(median),
+                self.picks,
+                PICKS.len() * PICKS.len()
+            )),
+            None => line(format_args!("pick: no position hit a component")),
+        }
         match self.scene_worst {
             Some(worst) => line(format_args!("scene switch: worst {:.1} ms", ms(worst))),
             None => line(format_args!("scene switch: no scenes")),
@@ -109,22 +127,25 @@ pub fn run(
     let upload = started.elapsed();
     let target = RenderTarget::new(device, size);
     let mut camera = app.camera.clone().unwrap_or_else(|| Camera::fit(model));
-    let mut frame_times = Vec::with_capacity(frames);
-    for _ in 0..frames.max(1) {
+    let mut frame_times = Vec::with_capacity(frames.max(1) + 1);
+    for _ in 0..=frames.max(1) {
         camera.orbit([ORBIT_PX_PER_FRAME, 0.0]);
         let started = Instant::now();
         renderer.render(device, queue, &target, &camera, &view(&app));
         finish(device)?;
         frame_times.push(started.elapsed());
     }
+    let first_frame = frame_times.remove(0);
     let aspect = size[0].to_f32().expect("view width") / size[1].max(1).to_f32().expect("height");
     let mut pick_times = Vec::with_capacity(PICKS.len() * PICKS.len());
     for x in PICKS {
         for y in PICKS {
             let started = Instant::now();
             let hit = camera.pick(model, [x, y], aspect, &app.visible, app.section.as_ref());
-            pick_times.push(started.elapsed());
-            std::hint::black_box(hit);
+            let took = started.elapsed();
+            if std::hint::black_box(hit).is_some() {
+                pick_times.push(took);
+            }
         }
     }
     pick_times.sort_unstable();
@@ -148,9 +169,13 @@ pub fn run(
         open,
         upload,
         size,
+        first_frame,
         frames: frame_times.len(),
-        frame_median: median(&frame_times),
-        frame_worst: *frame_times.last().expect("at least one frame"),
+        frame_median: median(&frame_times).expect("at least one frame after the first"),
+        frame_worst: *frame_times
+            .last()
+            .expect("at least one frame after the first"),
+        picks: pick_times.len(),
         pick_median: median(&pick_times),
         scene_worst,
     })
@@ -180,9 +205,9 @@ fn finish(device: &wgpu::Device) -> Result<(), Rejection> {
         })
 }
 
-/// The middle of sorted `times`.
-fn median(times: &[Duration]) -> Duration {
-    times[times.len() / 2]
+/// The middle of sorted `times`; `None` when there are none.
+fn median(times: &[Duration]) -> Option<Duration> {
+    times.get(times.len() / 2).copied()
 }
 
 #[cfg(test)]
@@ -203,14 +228,28 @@ mod tests {
         assert_eq!(result.package_bytes, bytes);
         assert_eq!((result.components, result.scenes), (20, 1));
         assert_eq!((result.size, result.frames), ([320, 240], 8));
-        assert!(result.frame_median <= result.frame_worst);
+        // The first frame warms the pipeline up and is reported on its own;
+        // median and worst come from the frames after it.
+        assert!(result.first_frame > Duration::ZERO);
+        // Only pick positions that hit a component count: the kitchen fills
+        // the middle of the view, so some do, and misses are not timed.
+        assert!(result.picks > 0 && result.picks <= PICKS.len() * PICKS.len());
+        assert!(result.pick_median.is_some());
         assert!(result.fps().is_finite() && result.fps() > 0.0);
         assert!(
             result.scene_worst.is_some(),
             "the sample's scene was switched to"
         );
         let report = result.report();
-        for line in ["package", "open", "GPU upload", "orbit", "pick", "scene"] {
+        for line in [
+            "package",
+            "open",
+            "GPU upload",
+            "first frame",
+            "offscreen",
+            "pick",
+            "scene",
+        ] {
             assert!(report.contains(line), "report names {line}:\n{report}");
         }
     }

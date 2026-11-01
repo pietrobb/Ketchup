@@ -13,9 +13,9 @@
 //! so the sheet follows whatever is visible: hiding a layer leaves it out.
 //! Lines behind nearer faces are hidden by painting faces from far to near.
 
-use crate::sheet_pdf::{Anchor, Mark, Page, Stroke};
 use crate::title_block::{SheetFormat, TITLE_BLOCK_MM, TitleValueDoesNotFit, drawing_area};
 use ketchup_geometry::linalg::{Vec3, cross, cross2, dot, dot2, normalize_within, sub};
+use ketchup_model::sheet_pdf::{Anchor, Mark, Page, Stroke};
 use ketchup_model::tolerance::{HIDDEN_LINE_TOUCH_MM, NEGLIGIBLE, ROUNDING};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -1172,8 +1172,8 @@ mod tests {
         ]
     }
 
-    use crate::sheet_pdf::PdfInfo;
     use crate::title_block::{TitleBlock, TitleField};
+    use ketchup_model::sheet_pdf::PdfInfo;
 
     fn plans(storeys: Vec<Storey>) -> Vec<PlanSheet> {
         storeys
@@ -2010,6 +2010,7 @@ mod tests {
             dimensions_mm,
             solids: solids.iter().map(|name| format!("p/{name}")).collect(),
             count: solids.len(),
+            mirror_of: None,
         };
         let mut options = options(&panel, Some(1200.0));
         options.shop = ShopDrawings {
@@ -2028,10 +2029,14 @@ mod tests {
                     position("C24", [720.0, 140.0, 60.0], &["header"]),
                     position("C24", [600.0, 140.0, 60.0], &["sill"]),
                     position("OSB", [2500.0, 900.0, 15.0], &["osb 1"]),
-                    position("OSB", [2500.0, 500.0, 15.0], &["osb 2"]),
+                    ShopPosition {
+                        mirror_of: Some(6),
+                        ..position("OSB", [2500.0, 500.0, 15.0], &["osb 2"])
+                    },
                 ],
             }],
             columns: ["Pos.", "Material", "Size", "Count"].map(str::to_owned),
+            mirror_of: "mirror of".to_owned(),
         };
         let set = drawing_set(&panel, &options).unwrap();
         assert_eq!(
@@ -2078,6 +2083,7 @@ mod tests {
                 "4 / 4",
                 "Panel p",
                 "1560",
+                "7 (mirror of 6)",
             ] {
                 assert!(texts.contains(&wanted), "{wanted}: {texts:?}");
             }
@@ -2097,9 +2103,15 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["Panel p", "Panel p - OSB"]
         );
-        let shop = shop::plan_shop(&options.shop.sheets[0], &panel, &options.shop.columns, None)
-            .unwrap()
-            .unwrap();
+        let shop = shop::plan_shop(
+            &options.shop.sheets[0],
+            &panel,
+            &options.shop.columns,
+            &options.shop.mirror_of,
+            None,
+        )
+        .unwrap()
+        .unwrap();
         let views = shop.visible_lines();
         let drawn = |view: usize, x: f64, from: f64, to: f64| {
             views[view]
@@ -2160,6 +2172,7 @@ mod tests {
             dimensions_mm,
             solids: solids.iter().map(|name| format!("p/{name}")).collect(),
             count: solids.len(),
+            mirror_of: None,
         };
         let sheet = ShopSheet {
             title: "Panel p".to_owned(),
@@ -2178,7 +2191,7 @@ mod tests {
             ],
         };
         let columns = ["Pos.", "Material", "Size", "Count"].map(str::to_owned);
-        let shop = shop::plan_shop(&sheet, &panel, &columns, None)
+        let shop = shop::plan_shop(&sheet, &panel, &columns, "", None)
             .unwrap()
             .unwrap();
         let numbers = |view: &DrawnView| {

@@ -3584,9 +3584,9 @@ fn parse_dimension(
         )?;
         return Ok(Placed::default());
     };
-    if block.base_mm != [0.0, 0.0] {
-        return Err(DxfImportError::InvalidBlock);
-    }
+    // Placed as an insert places its block, from its base point (review
+    // 2026-10-31 P3, MF-13 rest).
+    let base_mm = block.base_mm;
     take_placed(block, 1, 1.0, diagnostics)?;
     let clone_x = parse_optional_number(record, 12)?;
     let clone_y = parse_optional_number(record, 22)?;
@@ -3614,14 +3614,7 @@ fn parse_dimension(
                     .segments
                     .iter()
                     .map(|segment| {
-                        transform_segment(
-                            segment,
-                            [0.0, 0.0],
-                            clone_offset_mm,
-                            [1.0, 1.0],
-                            0.0,
-                            1.0,
-                        )
+                        transform_segment(segment, base_mm, clone_offset_mm, [1.0, 1.0], 0.0, 1.0)
                     })
                     .collect::<Result<Vec<_>, _>>()?,
                 closed: profile.closed,
@@ -3645,21 +3638,21 @@ fn parse_dimension(
     let texts = text::place_texts(
         &block.texts,
         &layer,
-        [0.0, 0.0],
+        base_mm,
         clone_offset_mm,
         [1.0, 1.0],
         0.0,
         1.0,
     )?;
     let moved =
-        |point: [f64; 2]| place_point(point, [0.0, 0.0], clone_offset_mm, [1.0, 1.0], 0.0, 1.0);
+        |point: [f64; 2]| place_point(point, base_mm, clone_offset_mm, [1.0, 1.0], 0.0, 1.0);
     let fills = hatch::place_fills(&block.fills, &layer, moved, diagnostics)?;
     Ok(Placed {
         profiles,
         texts,
         fills,
         placements: vec![(
-            objects::placement([0.0; 2], clone_offset_mm, [1.0; 2], 0.0, 1.0),
+            objects::placement(base_mm, clone_offset_mm, [1.0; 2], 0.0, 1.0),
             [0; 4],
         )],
     })

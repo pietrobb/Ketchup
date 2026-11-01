@@ -27,6 +27,31 @@ def test_gated_hooks_pass_and_ungated_fail(tmp_path):
     assert checker.check(tmp_path) == 1
 
 
+def test_only_a_cfg_that_requires_testing_gates_a_hook(tmp_path):
+    # Review 2026-10-31 TST-80: `not(feature = "testing")` named the feature and passed.
+    # A hook is gated when the production build, without `test` and without the
+    # feature, leaves it out whatever the other options are.
+    write(tmp_path, "viewer/android/src/lib.rs", (
+        '#[cfg(not(feature = "testing"))]\n'
+        "pub fn headless_inverted() {}\n"
+        '#[cfg(any(windows, feature = "testing"))]\n'
+        "pub fn headless_any() {}\n"
+        '#[cfg(any(test, feature = "testing"))]\n'
+        "pub fn headless_test_or_testing() {}\n"
+        '#[cfg(all(windows, feature = "testing"))]\n'
+        "pub fn headless_all() {}\n"
+        '#[cfg(all(not(test), any(feature = "testing", feature = "testing")))]\n'
+        "pub fn headless_nested() {}\n"
+        '#[cfg_attr(feature = "testing", allow(dead_code))]\n'
+        "pub fn headless_attr() {}\n"
+    ))
+    assert checker.ungated_hooks(tmp_path) == [
+        "viewer/android/src/lib.rs: headless_inverted",
+        "viewer/android/src/lib.rs: headless_any",
+        "viewer/android/src/lib.rs: headless_attr",
+    ]
+
+
 def test_test_code_may_name_functions_headless(tmp_path):
     write(tmp_path, "crates/a/src/lib.rs", (
         "#[cfg(test)]\n"

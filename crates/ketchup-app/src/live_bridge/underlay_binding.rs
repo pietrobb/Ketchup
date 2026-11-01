@@ -43,6 +43,10 @@ pub(super) struct Binding {
     /// The whole figure around `point`, its outer edge, not the innermost region.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub whole: bool,
+    /// The holes of the room drawn on other layers than its walls, which `layers` leaves
+    /// out, as said when they were chosen (review 2026-10-31 UO-83).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub left_out: Option<String>,
 }
 
 impl Binding {
@@ -87,8 +91,11 @@ impl Binding {
             }),
             _ => None,
         };
+        let left_out = (walls.as_ref())
+            .and_then(|room| room.left_out_holes(underlay))
+            .map(|left_out| left_out.to_string());
         let layers = match walls {
-            Some(walls) => walls,
+            Some(room) => room.walls,
             None => super::underlay_regions::chosen_layers(snapshot, underlay, layers.as_deref())?,
         }
         .into_iter()
@@ -140,6 +147,7 @@ impl Binding {
             thickness,
             frame: false,
             whole: false,
+            left_out,
         })
     }
 

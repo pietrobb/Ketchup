@@ -367,6 +367,7 @@ mod drawing;
 mod exact_modeling;
 mod import_framing;
 mod interchange;
+mod mirrored_drawing;
 mod organization;
 mod scale_feature;
 mod scaled_placement;

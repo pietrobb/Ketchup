@@ -1,7 +1,7 @@
 //! A ruled table on a sheet: a bold caption row, then a row per entry, the
 //! last column aligned right.
 
-use crate::sheet_pdf::{Anchor, Mark, Page, SheetFont, Stroke};
+use ketchup_model::sheet_pdf::{Anchor, Mark, Page, SheetFont, Stroke};
 
 // not a tolerance: the pen width of the table rules and of a mark's box.
 pub(super) const RULE_MM: f64 = 0.25;

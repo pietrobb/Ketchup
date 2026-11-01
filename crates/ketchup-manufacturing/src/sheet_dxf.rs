@@ -8,8 +8,8 @@
 //! page; a character beyond the Basic Multilingual Plane, which no escape
 //! holds, is written as "?", as the PDF prints it.
 
-use crate::sheet_pdf::{Anchor, Mark, Page, Stroke};
 use ketchup_model::r12_text;
+use ketchup_model::sheet_pdf::{Anchor, Mark, Page, Stroke};
 use ketchup_model::underlay::text::LINE_PITCH_PER_HEIGHT;
 use std::collections::BTreeSet;
 use std::fmt::Write as _;

@@ -21,9 +21,9 @@ use super::{
     ProjectView, SCALES, ViewFrame, draw_view, draw_view_on_page, extent, solid_edges, tick,
     whole_mm,
 };
-use crate::sheet_pdf::{Anchor, Mark, Page, Stroke};
 use crate::title_block::{SheetFormat, TITLE_BLOCK_MM, drawing_area};
 use ketchup_geometry::linalg::{cross, dot, normalize_within};
+use ketchup_model::sheet_pdf::{Anchor, Mark, Page, Stroke};
 use ketchup_model::tolerance::{HIDDEN_LINE_TOUCH_MM, NEGLIGIBLE, ROUNDING};
 use serde::Serialize;
 
@@ -47,6 +47,8 @@ pub struct ShopPosition {
     pub dimensions_mm: [f64; 3],
     pub solids: Vec<String>,
     pub count: usize,
+    /// The number of the position these parts are the mirror image of.
+    pub mirror_of: Option<usize>,
 }
 
 /// One shop drawing: its title, the world directions its view shows to the
@@ -59,12 +61,14 @@ pub struct ShopSheet {
     pub positions: Vec<ShopPosition>,
 }
 
-/// The shop drawings and the captions of their tables' position, material,
-/// size and count columns.
+/// The shop drawings, the captions of their tables' position, material, size
+/// and count columns, and the words before the position a mirror image
+/// mirrors ("mirror of").
 #[derive(Clone, Debug, Default)]
 pub struct ShopDrawings {
     pub sheets: Vec<ShopSheet>,
     pub columns: [String; 4],
+    pub mirror_of: String,
 }
 
 /// What a shop drawing shows: its running dimensions, in mm from the left and
@@ -326,12 +330,14 @@ fn piece_view(frame: ViewFrame, pieces: &[Piece], indices: &[usize]) -> DrawnVie
     view
 }
 
-/// Lays out the shop drawing of `sheet` from the `solids` it names; `None`
-/// when none of them is drawn.
+/// Lays out the shop drawing of `sheet` from the `solids` it names, a mirror
+/// image's position numbered with the words `mirror_of` and the position it
+/// mirrors; `None` when none of them is drawn.
 pub(super) fn plan_shop(
     sheet: &ShopSheet,
     solids: &[DrawingSolid],
     columns: &[String; 4],
+    mirror_of: &str,
     requested: Option<SheetFormat>,
 ) -> Result<Option<PlannedShop>, ProjectDrawingError> {
     let (Some(right), Some(up)) = (
@@ -404,8 +410,12 @@ pub(super) fn plan_shop(
         .iter()
         .enumerate()
         .map(|(index, position)| {
+            let number = index + 1;
             vec![
-                (index + 1).to_string(),
+                position.mirror_of.map_or_else(
+                    || number.to_string(),
+                    |mirrored| format!("{number} ({mirror_of} {mirrored})"),
+                ),
                 position.material.clone(),
                 position.dimensions_mm.map(whole_mm).join(" x "),
                 position.count.to_string(),

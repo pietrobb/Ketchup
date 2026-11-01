@@ -4,11 +4,12 @@
 //! into drawing tool puts a TEXT there.
 
 use crate::app::underlay_edit::{FindRegions, UnderlayEditError};
+use crate::drawing_plane::DRAWING_SNAP_PIXELS;
 use crate::*;
 use ketchup_model::tolerance::ROUNDING;
-use ketchup_model::underlay::UnderlayId;
 use ketchup_model::underlay::drawn::{DrawnShape, inverse};
 use ketchup_model::underlay::objects::apply;
+use ketchup_model::underlay::{Underlay, UnderlayId};
 
 /// The drawing and the layer of it the drawing tools draw into.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,9 +51,9 @@ impl KetchupApp {
         let snapshot = self.document.current();
         if snapshot
             .underlay(underlay)
-            .is_some_and(|found| !found.view.is_ground())
+            .is_some_and(|found| !found.lies_flat())
         {
-            self.digest = self.catalog.text("digest-underlay-draw-not-ground");
+            self.digest = self.catalog.text("digest-underlay-draw-not-plan");
             return false;
         }
         let Some(layer) = self.underlay_draw_layer(underlay) else {
@@ -167,16 +168,61 @@ impl KetchupApp {
             .or_else(|| found.layers.first().map(|layer| layer.name.clone()))
     }
 
-    /// Where the drawing tools draw, while the drawing is still in the document and lies in
-    /// the ground plane they click in: one standing as a view (review 2026-10-29 UI-64), or
-    /// a plan raised off the ground, is drawn into no more.
+    /// Where the drawing tools draw, while the drawing is still in the document and lies
+    /// flat as a plan, on the ground or raised off it: one standing as a view is drawn into
+    /// no more (review 2026-10-29 UI-64).
     pub(crate) fn underlay_draw_target(&self) -> Option<UnderlayDrawTarget> {
         let target = self.gesture.underlay_draw.as_ref()?;
         self.document
             .current()
             .underlay(target.underlay)
-            .is_some_and(|underlay| underlay.view.is_ground())
+            .is_some_and(Underlay::lies_flat)
             .then(|| target.clone())
+    }
+
+    /// While drawing into a plan, the point the pointer gives in the plan's own plane: a
+    /// snap lying in it, else where the pointer meets it, so a plan raised off the ground
+    /// (a floor above the first) is drawn into where it lies (review 2026-10-31 UI-80).
+    /// None while the tools draw into the model.
+    pub(crate) fn underlay_draw_point_at_screen(
+        &self,
+        pointer: Pos2,
+        rect: Rect,
+    ) -> Option<Option<Vec3>> {
+        let target = self.underlay_draw_target()?;
+        let height = self
+            .document
+            .current()
+            .underlay(target.underlay)?
+            .plan_height()?;
+        let frame = WorkplaneFrame::principal(PrincipalPlane::Xy).offset(height);
+        Some(
+            self.scene_snap_at_screen(pointer, rect, DRAWING_SNAP_PIXELS, Some(frame))
+                .map(|snap| snap.position_mm)
+                .or_else(|| {
+                    self.datum_snap_at_screen(pointer, rect, Some(frame))
+                        .map(|(point, _)| point)
+                })
+                .or_else(|| self.screen_to_plane(pointer, rect, height)),
+        )
+    }
+
+    /// A shape finished with Draw into drawing on goes into the drawing by `draw`; none
+    /// while the tools draw into the model. Drawing into a drawing the AI or Undo stood up
+    /// as a view or took away meanwhile ends here, said, and the shape goes nowhere rather
+    /// than into the model unasked (review 2026-10-31 UI-80).
+    pub(crate) fn finish_into_underlay(
+        &mut self,
+        draw: impl FnOnce(&mut Self) -> bool,
+    ) -> Option<bool> {
+        self.gesture.underlay_draw.as_ref()?;
+        if self.underlay_draw_target().is_some() {
+            return Some(draw(self));
+        }
+        self.gesture.underlay_draw = None;
+        self.rearm_sketch();
+        self.digest = self.catalog.text("digest-underlay-draw-ended");
+        Some(false)
     }
 
     /// The finished line from `start` to `end`, drawn into the drawing as a LINE; the

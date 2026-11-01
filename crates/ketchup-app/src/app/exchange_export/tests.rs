@@ -41,7 +41,7 @@ fn a_running_export_keeps_the_window_painting_and_cancel_stops_its_worker_before
         // A slow worker: it runs until the user cancels it.
         let deadline = Instant::now() + Duration::from_secs(10);
         while !cancelled.load(Ordering::Acquire) && Instant::now() < deadline {
-            std::thread::yield_now();
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
         stopped.send(cancelled.load(Ordering::Acquire)).unwrap();
         Err(ExportError::failed("cancelled"))

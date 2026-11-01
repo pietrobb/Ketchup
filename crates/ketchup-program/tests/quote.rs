@@ -210,6 +210,28 @@ fn a_second_price_of_an_item_or_a_price_without_the_currency_of_the_others_is_re
     }
 }
 
+/// Review 2026-10-31 P3: prices were keyed by name alone, so a material and a
+/// bought item of one name shared one price, each at a unit only one of them is
+/// counted in. Neither is priced, and both say why.
+#[test]
+fn a_price_whose_name_counts_two_kinds_of_item_prices_neither() {
+    let quote = quote(
+        r#"
+board("side", (800, 400, 18), material = "ISO 4017 M8x40")
+bolt("b", "M8", 40, at = (0, 5000, 0))
+price("ISO 4017 M8x40", 2, "piece")
+"#,
+    )
+    .unwrap();
+    assert_eq!(quote.lines, [], "{quote:#?}");
+    let kinds: Vec<_> = quote.unpriced.iter().map(|item| item.kind).collect();
+    assert_eq!(kinds, [ItemKind::Material, ItemKind::Hardware]);
+    for item in &quote.unpriced {
+        assert!(item.reason.contains("material and hardware"), "{item:?}");
+    }
+    assert_eq!(quote.unused_prices, Vec::<String>::new());
+}
+
 /// Review 2026-10-29 PG-66: a piece no stock holds was priced at its blank with nothing
 /// to say so, and nothing said the total has no VAT in it.
 #[test]

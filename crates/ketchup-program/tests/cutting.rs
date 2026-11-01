@@ -214,8 +214,55 @@ fn sheets_take_the_pieces_with_kerf_and_trim_and_shrink_to_the_smallest_stock_th
     assert!(
         thick.unplaced[0]
             .reason
-            .contains("does not fit the largest stock sheet 2500 x 1250")
+            .contains("does not fit any stock sheet less its trim: 2500 x 1250, 1250 x 1250 mm"),
+        "{:?}",
+        thick.unplaced
     );
+}
+
+/// Review 2026-10-31 PG-80: a sheet was opened on the stock size of the
+/// largest area alone, so a 2 900 x 900 piece that fits a 3 000 x 1 000 sheet
+/// was "not fitting the largest sheet 2 500 x 1 250" and quoted as a blank.
+#[test]
+fn a_piece_opens_a_sheet_of_any_stock_size_it_fits() {
+    let source = "sheet_stock(\"OSB\", [(2500, 1250), (3000, 1000)], kerf = 4, trim = 10)\n\
+                  board(\"long\", (2900, 900, 18), material = \"OSB\")\n\
+                  board(\"small\", (600, 400, 18), at = (0, 0, 30), material = \"OSB\")\n";
+    let plans = plans(source);
+    let plan = &plans[0];
+    assert!(plan.unplaced.is_empty(), "{plan:#?}");
+    let long = plan
+        .layouts
+        .iter()
+        .find(|layout| names(layout).contains(&"long"))
+        .unwrap();
+    assert_eq!(long.stock_mm, [3000.0, 1000.0]);
+    for layout in &plan.layouts {
+        assert_sheet_cuttable(layout, 4.0, 10.0);
+    }
+}
+
+/// Review 2026-10-31 PG-81: a sheet keeping a factory edge took only pieces
+/// spanning it too, so one 2 490 x 600 piece and four of 550 x 550 on a
+/// 2 500 x 1 250 sheet trimmed 10 took two sheets where one holds them all.
+/// The other pieces go on its trimmed part.
+#[test]
+fn a_sheet_keeping_a_factory_edge_takes_other_pieces_inside_its_trim() {
+    let mut source = "sheet_stock(\"OSB\", [(2500, 1250)], kerf = 4, trim = 10)\n\
+                      board(\"long\", (2490, 600, 18), material = \"OSB\")\n"
+        .to_owned();
+    for index in 0..4 {
+        source += &format!(
+            "board(\"s{index}\", (550, 550, 18), at = (0, 0, {}), material = \"OSB\")\n",
+            30 * (index + 1)
+        );
+    }
+    let plans = plans(&source);
+    let plan = &plans[0];
+    assert!(plan.unplaced.is_empty(), "{plan:#?}");
+    assert_eq!(plan.layouts.len(), 1, "{plan:#?}");
+    assert_eq!(plan.layouts[0].pieces.len(), 5);
+    assert_cuttable_keeping_factory_edges(&plan.layouts[0], 4.0, 10.0);
 }
 
 #[test]
@@ -357,6 +404,71 @@ fn stock_refuses_what_cannot_be_cut() {
     }
 }
 
+/// Review 2026-10-31 P3: a second stock() of a material silently replaced the first.
+#[test]
+fn a_second_stock_of_a_material_is_refused() {
+    let error = refused(
+        "bar_stock(\"KVH\", [5000])\n\
+         sheet_stock(\"KVH\", [(2500, 1250)])\n",
+    );
+    assert!(error.contains("stock given before"), "{error}");
+    assert!(error.contains("one stock"), "{error}");
+}
+
+/// Review 2026-10-31 P3: bars were filled one at a time, each the fullest it
+/// could be, so 2 x 1 500 and 3 x 1 000 on [3 000, 5 000] with a 4 mm kerf took
+/// three 3 m bars (9 m) where a 5 m bar of 1 500 + 1 500 + 1 000 and a 3 m bar
+/// of 1 000 + 1 000 take 8 m.
+#[test]
+fn bars_take_the_least_stock_length_the_pieces_fit() {
+    let mut source = "bar_stock(\"KVH\", [3000, 5000], kerf = 4)\n".to_owned();
+    for (index, length) in [1500.0, 1500.0, 1000.0, 1000.0, 1000.0]
+        .into_iter()
+        .enumerate()
+    {
+        source += &bar(
+            &format!("s{index}"),
+            length,
+            (60.0, 120.0),
+            200.0 * index as f64,
+        );
+    }
+    let plans = plans(&source);
+    let bought: f64 = plans[0]
+        .layouts
+        .iter()
+        .map(|layout| layout.stock_mm[0])
+        .sum();
+    assert_eq!(bought, 8000.0, "{:#?}", plans[0].layouts);
+    assert!(plans[0].unplaced.is_empty());
+    for layout in &plans[0].layouts {
+        let used: f64 = layout
+            .pieces
+            .iter()
+            .map(|piece| piece.size_mm[0])
+            .sum::<f64>()
+            + 4.0 * (layout.pieces.len() - 1) as f64;
+        assert!(used <= layout.stock_mm[0], "{layout:#?}");
+    }
+}
+
+/// Review 2026-10-31 P3: a piece the cutting plan could not lay out was listed
+/// in the plan alone; the report had no issue for it.
+#[test]
+fn a_piece_no_stock_holds_is_an_issue_of_the_report() {
+    let mut source = "bar_stock(\"KVH\", [6000], kerf = 4)\n".to_owned();
+    source += &bar("a", 2500.0, (60.0, 120.0), 0.0);
+    source += &bar("b", 6500.0, (60.0, 120.0), 200.0);
+    let (_, report) = ketchup_program::run("cutting.star", &source, &BTreeMap::new()).unwrap();
+    let issue = report
+        .issues
+        .iter()
+        .find(|issue| issue.kind == "cutting_unplaced")
+        .unwrap_or_else(|| panic!("{:#?}", report.issues));
+    assert_eq!(issue.parts, ["b"]);
+    assert!(issue.message.contains("6500 mm is longer"), "{issue:?}");
+}
+
 /// A wall framed at 625 with OSB boards 1250 x 2500, grain up, on the
 /// documented stock with its default kerf 4 and trim 10.
 fn sheathed_wall(length: f64, height: f64, openings: &str) -> String {
@@ -495,6 +607,58 @@ fn a_sheathed_buildup_is_cut_from_whole_sheets_with_joints_on_studs() {
     }
 }
 
+/// Review 2026-10-31 PG-84: build-up members named only their thickness axis,
+/// so a 10 mm packer under a sill took its longer side in the plane as its
+/// length, became a 140 x 10 section and bought a 3 m bar of its own; and
+/// board() named none, so the thickness of a ripped strip was guessed. Each
+/// member names its length axis, a board its thickness, and a packer shorter
+/// than the stud is wide is a warning.
+#[test]
+fn members_name_their_length_and_boards_their_thickness() {
+    let source = "buildup('wall', (0, 0, 0), (1, 0, 0), (0, 0, 1), 2400, height = 2500,\n\
+         layers = [{'name': 'frame', 'thickness': 140, 'material': 'C24', 'spacing': 600}],\n\
+         openings = [(1000, 130, 800, 1200)])\n\
+         bar_stock('C24', [3000])\n\
+         board('strip', (2000, 15, 18), at = (0, 0, 3000), material = 'OSB', thickness_axis = 'z')\n\
+         board('panel', (600, 400, 18), at = (0, 0, 3100), material = 'OSB')\n\
+         sheet_stock('OSB', [(2500, 1250)])\n";
+    let (_, report) = ketchup_program::run("cutting.star", source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"));
+    let sections = |material: &str| {
+        report
+            .bom
+            .cutting
+            .iter()
+            .filter(|plan| plan.material == material)
+            .map(|plan| plan.section_mm.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        sections("C24"),
+        [vec![140.0, 60.0]],
+        "{:#?}",
+        report.bom.cutting
+    );
+    assert_eq!(sections("OSB"), [vec![18.0]], "{:#?}", report.bom.cutting);
+    let packer = report
+        .issues
+        .iter()
+        .find(|issue| issue.message.contains("10 mm long"))
+        .unwrap_or_else(|| panic!("{:#?}", report.issues));
+    assert_eq!(packer.severity, ketchup_program::Severity::Warning);
+    assert!(
+        packer
+            .parts
+            .iter()
+            .all(|part| part.starts_with("wall/frame/stud")),
+        "{packer:?}"
+    );
+    assert!(
+        refused("board('b', (100, 100, 18), thickness_axis = 'w')\n")
+            .contains("thickness_axis must be \"x\", \"y\" or \"z\"")
+    );
+}
+
 /// Review 2026-10-29 PG-61: the cutting plan took a part's thinnest extent
 /// as a sheet's thickness and its two thinnest as a bar's section, so a
 /// sheathing piece narrower than the layer was thick made a phantom
@@ -505,7 +669,7 @@ fn a_sheathed_buildup_is_cut_from_whole_sheets_with_joints_on_studs() {
 fn a_cutting_plan_takes_the_layer_thickness_and_the_member_section() {
     let source = "buildup('wall', (0, 0, 0), (1, 0, 0), (0, 0, 1), 2440, height = 2500,\n\
          layers = [{'name': 'frame', 'thickness': 140, 'material': 'C24', 'spacing': 600},\n\
-                   {'name': 'board', 'thickness': 60, 'material': 'WF', 'sheet': (1250, 2500)}],\n\
+                   {'name': 'board', 'thickness': 60, 'material': 'WF', 'sheet': (1250, 2500), 'min_width': 0}],\n\
          openings = [(1230, 800, 770, 1200)])\n\
          member('rail', (0, 500, 3000), (2000, 500, 3000), (60, 120), material = 'KVH')\n\
          member('spacer', (0, 0, 3000), (80, 0, 3000), (60, 120), material = 'KVH')\n\
@@ -514,8 +678,8 @@ fn a_cutting_plan_takes_the_layer_thickness_and_the_member_section() {
     let model = ketchup_program::evaluate("cutting.star", source, &BTreeMap::new())
         .unwrap_or_else(|error| panic!("{error}"))
         .model;
-    // The piece between the board joint at 1 200 and the opening is 30 mm
-    // wide, narrower than the 60 mm board.
+    // With no minimum width the piece between the board joint at 1 200 and
+    // the opening is 30 mm wide, narrower than the 60 mm board.
     assert!(model.parts.iter().any(|part| {
         let (min, max) = part.world_bounds();
         part.name.starts_with("wall/board") && (max[0] - min[0] - 30.0).abs() < 1e-6

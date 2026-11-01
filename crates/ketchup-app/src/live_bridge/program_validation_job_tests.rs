@@ -29,7 +29,7 @@ fn queued_validation_returns_native_distance_without_changing_the_document() {
             break response;
         }
         assert!(Instant::now() < deadline, "validation did not complete");
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     };
     assert!(response.ok, "{response:?}");
     let result = response.result.unwrap();

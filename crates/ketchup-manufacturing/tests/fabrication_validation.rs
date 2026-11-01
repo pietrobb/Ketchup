@@ -727,14 +727,18 @@ fn btlx_of_a_60_by_140_member_centred_on_its_axis_maps_width_height_and_corner()
 
 #[test]
 fn the_house_blank_check_catches_a_processing_half_a_member_out_of_its_frame() {
-    // The through cut runs 1 mm past both end faces. Its frame moved by half
-    // the length (a corner placed at the member's centre, MF-2) still
-    // overlaps the blank, yet leaves it by 500 mm; mirrored across the width
-    // it leaves the blank by 30 mm.
-    let xml = std::str::from_utf8(include_bytes!(
+    // A contour run 1 mm past both end faces passes within the cutter margin.
+    // Its frame moved by half the length (a corner placed at the member's
+    // centre, MF-2) still overlaps the blank, yet leaves it by 500 mm;
+    // mirrored across the width it leaves the blank by 30 mm.
+    let exact = std::str::from_utf8(include_bytes!(
         "fixtures/btlx/rectangular-through-cut-2.3.1.btlx"
     ))
     .unwrap();
+    let overrun = exact
+        .replace("<ReferencePoint X=\"0\"", "<ReferencePoint X=\"-1\"")
+        .replace("Depth=\"1000\"", "Depth=\"1002\"");
+    let xml = overrun.as_str();
     assert_btlx_machining_lies_in_its_blank_within(xml, "through cut", HOUSE_CUTTER_MARGIN_MM);
     let overshoots = btlx_machining_overshoots(xml);
     assert_eq!(overshoots.len(), 1);
@@ -927,13 +931,21 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
         Err(GeneralFabricationError::ExportBlocked)
     );
 
+    // Review 2026-10-31 MF-82: a profile cut through all is machined from end
+    // face to end face of the 1 000 mm part, not 1 mm past each, and its depth
+    // is not bounded.
     let (through_cut_snapshot, through_cut) = rectangular_through_cut_fabrication_projection();
-    assert_eq!(
-        through_cut
-            .btlx_2_3_1_export(&through_cut_snapshot)
-            .unwrap(),
-        include_bytes!("fixtures/btlx/rectangular-through-cut-2.3.1.btlx")
+    let through_xml = through_cut
+        .btlx_2_3_1_export(&through_cut_snapshot)
+        .unwrap();
+    assert_btlx_golden(&through_xml, "rectangular-through-cut-2.3.1.btlx");
+    let through_xml = String::from_utf8(through_xml).unwrap();
+    assert!(
+        through_xml.contains("<ReferencePoint X=\"0\" Y=\"0\" Z=\"0\"/>")
+            && through_xml.contains("<Contour DepthBounded=\"no\" Depth=\"1000\""),
+        "{through_xml}"
     );
+    assert_btlx_machining_lies_in_its_blank(&through_xml, "through cut");
 
     let (boolean_cut_snapshot, boolean_cut) =
         graph_fabrication_projection(BooleanOperation::Cut, true, "m17-btlx-boolean-cut");
@@ -2886,6 +2898,30 @@ fn blind_drilling_at_or_beyond_stock_depth_is_drilled_through_after_reopen() {
                     "{export}"
                 );
                 assert!(export.contains("<Depth>1000</Depth>"), "{export}");
+                // woodWOP drills only holes that stop inside the part; one as
+                // deep as the part is refused by name (review 2026-10-31 P3 MF).
+                let woodwop = ShopFormat::Woodwop {
+                    vertical_pocket_tool: false,
+                };
+                let refused = Some(cannot_carry(
+                    woodwop,
+                    "Timber with circular drilling",
+                    ShopElement::HoleToFarFace,
+                ));
+                assert_eq!(
+                    projection.woodwop_mpr_4_0_drill_export(&snapshot).err(),
+                    refused
+                );
+                assert_eq!(
+                    projection
+                        .woodwop_mpr_4_0_production_package(&snapshot, Default::default())
+                        .err(),
+                    refused
+                );
+                assert_eq!(
+                    projection.admit(&snapshot, ShopFormat::Btlx),
+                    Ok(Vec::new())
+                );
             }
         }
     }
@@ -2991,6 +3027,77 @@ fn unsupported_or_unverified_exact_graph_manufacturing_fails_closed_atomically()
     assert_eq!(
         projection.manufacturing_export(&snapshot),
         Err(GeneralFabricationError::ExportBlocked.at_part("Graph fabrication"))
+    );
+}
+
+/// Review 2026-10-31 MF-80: a manufactured item whose cuts cannot be described
+/// lost all its machining while the drawing printed its outline as if it had
+/// none and the job refused it without a name. Its drawing now says the
+/// machining is not described, and the machine files refuse the part by name.
+#[test]
+fn a_manufactured_part_with_undescribed_machining_is_never_shown_as_fully_machined() {
+    let mut document = graph_boolean_document(BooleanOperation::Union);
+    let mut commands = vec![CanonicalCommand::UpsertClassificationDimension {
+        id: FABRICATION_ROLE_DIMENSION,
+        name: FABRICATION_ROLE_DIMENSION_V1.to_owned(),
+        categories: vec![
+            (TIMBER_MEMBER_CATEGORY, TIMBER_MEMBER_ROLE_V1.to_owned()),
+            (
+                MANUFACTURED_ITEM_CATEGORY,
+                MANUFACTURED_ITEM_ROLE_V1.to_owned(),
+            ),
+        ],
+    }];
+    for (occurrence_id, code) in [(GRAPH_LEFT, "000000000046"), (GRAPH_RIGHT, "000000000047")] {
+        commands.push(CanonicalCommand::SetOccurrenceClassification {
+            occurrence_id,
+            dimension_id: FABRICATION_ROLE_DIMENSION,
+            category_id: Some(MANUFACTURED_ITEM_CATEGORY),
+        });
+        commands.push(CanonicalCommand::SetProductionCode {
+            instance_path: InstancePath::root(occurrence_id),
+            code: Some(code.to_owned()),
+        });
+    }
+    document.apply_batch(&CommandBatch::new(commands)).unwrap();
+    let (snapshot, projection) =
+        graph_document_fabrication_projection(document, true, "mf-80-graph-result");
+    assert_eq!(
+        projection.bom.rows[0].item_kind,
+        GeneralBomItemKind::Manufactured
+    );
+    assert!(projection.manufacturing.operations.is_empty());
+    assert_eq!(projection.manufacturing.undescribed_sources.len(), 1);
+
+    let drawing = String::from_utf8(projection.drawing_svg(&snapshot).unwrap()).unwrap();
+    assert!(
+        drawing.contains("machining not described"),
+        "the drawing must not pass for the whole part: {drawing}"
+    );
+    let refused = |format| {
+        cannot_carry(
+            format,
+            "Graph fabrication",
+            ShopElement::UndescribedMachining,
+        )
+    };
+    assert_eq!(
+        projection.production_job(&snapshot, &[]).err(),
+        Some(refused(ShopFormat::ProductionJob))
+    );
+    let woodwop = ShopFormat::Woodwop {
+        vertical_pocket_tool: true,
+    };
+    assert_eq!(
+        projection
+            .woodwop_mpr_4_0_production_package(
+                &snapshot,
+                ketchup_manufacturing::fabrication::WoodwopMprOptions {
+                    vertical_pocket_tool_number: Some(1),
+                },
+            )
+            .err(),
+        Some(refused(woodwop))
     );
 }
 
@@ -3261,7 +3368,18 @@ fn graph_fabrication_projection(
     verified: bool,
     result_fingerprint: &str,
 ) -> (Snapshot, GeneralFabricationProjection) {
-    let document = graph_boolean_document(operation);
+    graph_document_fabrication_projection(
+        graph_boolean_document(operation),
+        verified,
+        result_fingerprint,
+    )
+}
+
+fn graph_document_fabrication_projection(
+    document: DocumentStore,
+    verified: bool,
+    result_fingerprint: &str,
+) -> (Snapshot, GeneralFabricationProjection) {
     let snapshot = document.current();
     let registry = if verified {
         ExactResultRegistry::accept(

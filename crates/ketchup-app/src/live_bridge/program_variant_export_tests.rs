@@ -85,7 +85,7 @@ fn every_variant_is_exported_from_a_worker_and_the_document_stays_as_it_is() {
             break answer;
         }
         assert!(Instant::now() < deadline, "the export did not finish");
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     };
     assert!(answer.ok, "{answer:?}");
     let result = answer.result.unwrap();

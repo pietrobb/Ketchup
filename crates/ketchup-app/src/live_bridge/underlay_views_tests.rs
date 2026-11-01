@@ -564,6 +564,50 @@ fn the_ai_builds_a_round_part_from_a_circle_in_plan_and_its_section() {
     );
 }
 
+/// Review 2026-10-31 P3: the box the views are pulled through is measured from the starts
+/// of their edges only; an arc bulging past its ends is not cut off, as the data splits
+/// each arc at the quarter points of its circle, so its ends bound it. Plan: the
+/// corner (0, 1000) with sides 100 along x and 60 along y, closed by an arc about
+/// (32, 1000) of radius 68, whose top (32, 1068) lies past both its ends and the middle of
+/// the arc; front view: 100 × 20. The solid is the whole plan 20 high.
+#[test]
+fn an_arc_bulging_past_its_ends_is_not_cut_off_the_solid() {
+    let angle = 60.0_f64.atan2(-32.0);
+    let sheet = format!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n\
+         0\nLWPOLYLINE\n8\npart\n90\n3\n70\n1\n10\n0\n20\n1000\n10\n100\n20\n1000\n42\n{}\n\
+         10\n0\n20\n1060\n\
+         0\nLWPOLYLINE\n8\npart\n90\n4\n70\n1\n10\n0\n20\n0\n10\n100\n20\n0\n10\n100\n20\n20\n10\n0\n20\n20\n\
+         0\nENDSEC\n0\nEOF\n",
+        (angle / 4.0).tan()
+    );
+    let (mut app, mut bridge, offset) = imported_copies(&sheet, 2);
+    let at = |[x, y]: [f64; 2]| [x - offset[0], y - offset[1]];
+    call(
+        &mut app,
+        &mut bridge,
+        "drawing_view",
+        json!({"underlay_id": 2, "plane": "front"}),
+    );
+    call(
+        &mut app,
+        &mut bridge,
+        "drawing_solid_from_views",
+        json!({"name": "LID", "views": [
+            {"underlay_id": 1, "at_mm": at([50.0, 1030.0])},
+            {"underlay_id": 2, "at_mm": at([50.0, 10.0])},
+        ]}),
+    );
+    evaluate_exact(&mut app);
+    // The sector of the arc and the triangle between its centre and the side x = 0.
+    let wanted = (68.0 * 68.0 * angle / 2.0 + 32.0 * 60.0 / 2.0) * 20.0;
+    let volume = exact_volume(&app, "LID");
+    assert!(
+        (volume - wanted).abs() < 1e-4 * wanted,
+        "{volume} != {wanted}"
+    );
+}
+
 #[test]
 fn views_seen_along_one_axis_make_no_solid() {
     let (mut app, mut bridge, offset) = imported(&bracket_sheet());

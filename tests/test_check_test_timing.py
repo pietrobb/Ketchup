@@ -60,6 +60,29 @@ def test_the_ways_around_the_first_check_are_budgets_too(tmp_path):
     ]
 
 
+def test_a_time_measured_by_subtraction_or_duration_since_is_a_budget(tmp_path):
+    # Review 2026-10-31 TST-80: `Instant::now() - start` and `.duration_since(start)`
+    # measure as `.elapsed()` does and passed.
+    write(tmp_path, "viewer/android/src/lib.rs", (
+        "#[cfg(test)]\n"
+        "mod tests {\n"
+        "    fn timed() {\n"
+        "        let start = Instant::now();\n"
+        "        let spent = Instant::now() - start;\n"
+        "        assert!(spent < limit);\n"
+        "        assert!(Instant::now().duration_since(start) < limit);\n"
+        "        assert!(later.duration_since(start) <= limit);\n"
+        "        assert!(std::time::Instant::now() - start < limit);\n"
+        "        // A deadline that only stops a wait is still not a budget.\n"
+        "        while Instant::now() < deadline {}\n"
+        "    }\n"
+        "}\n"
+    ))
+    assert checker.violations(tmp_path) == [
+        f"viewer/android/src/lib.rs:{line}" for line in (6, 7, 8, 9)
+    ]
+
+
 def test_the_shapes_the_second_check_missed_are_budgets_too(tmp_path):
     # Review 2026-10-24 TST-21: a measured time kept under another name, a percentile
     # field, the comparison on a line of its own, `.lt()` and `assert_lt!` all passed.

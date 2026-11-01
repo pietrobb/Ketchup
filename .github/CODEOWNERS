@@ -4,4 +4,5 @@
 # The repository checks and the ratchet baselines they compare against: a
 # baseline that grows, or a check that looks at less, needs the owner.
 /scripts/check_*.py @pietrobb
+/scripts/source_roots.py @pietrobb
 /scripts/*baseline* @pietrobb

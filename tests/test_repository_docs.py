@@ -118,6 +118,41 @@ def test_every_adr_has_its_own_number():
     assert {n: names for n, names in numbers.items() if len(names) > 1} == {}
 
 
+def test_identical_results_across_systems_cite_the_math_adr():
+    """Review 2026-10-31 P3: the README, CI, the Linux OCCT build and the shop
+    golden test cited ADR 0009 (rule programs) for the promise of the same bits on
+    every system, which ADR 0010 (correctly rounded math) makes."""
+    tracked = (
+        subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, check=True, capture_output=True)
+        .stdout.decode("utf-8")
+        .split("\0")
+    )
+    topic = re.compile(r"crmath|CORE-MATH|bit for bit|same bytes|same files", re.IGNORECASE)
+    wrong = []
+    for name in tracked:
+        if not name or name.startswith(("docs/archive/", "docs/adr/")):
+            continue
+        path = ROOT / name
+        if path.suffix not in {".md", ".rs", ".py", ".sh", ".ps1", ".yml", ".toml"}:
+            continue
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        for index, line in enumerate(lines):
+            if "ADR 0009" in line and topic.search(" ".join(lines[max(0, index - 3) : index + 2])):
+                wrong.append(f"{name}:{index + 1}")
+    assert wrong == []
+
+
+def test_the_readme_states_the_import_limit_of_0_2_0_the_code_keeps():
+    """Review 2026-10-31 P3: the README said 0.2.0 reads at most 341 profiles from a
+    drawing, while the format-103 check lets an import keep 1 024 outputs."""
+    codec = (
+        ROOT / "crates" / "ketchup-model" / "src" / "persistence" / "snapshot_codec.rs"
+    ).read_text(encoding="utf-8")
+    outputs = int(re.search(r"const OUTPUTS: usize = ([\d_]+);", codec).group(1).replace("_", ""))
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert f"at most {outputs:,}".replace(",", " ") + " objects made by one import" in readme
+
+
 def test_the_readme_does_not_place_release_only_examples_in_the_repository():
     """Review 2026-10-15 status, low: `README.md` said every example is in
     `examples/`, but some are attached only to a release."""

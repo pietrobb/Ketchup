@@ -7,7 +7,7 @@
 //! CIRCLE and TEXT on their layers. The source must be the drawing the underlay was read
 //! from: it is read again, and its lines must be the underlay's.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Cursor;
 use std::ops::Range;
@@ -263,6 +263,19 @@ impl Pair {
     }
 }
 
+/// Where each moved entity went, by handle; `None` for a stretch, which reshapes it.
+type Moves = BTreeMap<u64, Option<Affine>>;
+
+/// Whether the entities of handles `a` and `b` were moved apart: one moved and the other
+/// not, by different maps, or either stretched (review 2026-10-31 CD-80).
+fn apart(moves: &Moves, a: u64, b: u64) -> bool {
+    match (moves.get(&a), moves.get(&b)) {
+        (None, None) => false,
+        (Some(Some(a)), Some(Some(b))) => a != b,
+        _ => true,
+    }
+}
+
 /// A place kept in 32 bits, as the `usize` it was made from.
 fn place(at: u32) -> usize {
     usize::try_from(at).unwrap_or(usize::MAX)
@@ -290,6 +303,8 @@ struct Drawing<'a> {
     next_handle: Option<u64>,
     /// Whether it is DXF 13 or later: entities carry subclass markers and their owner.
     subclassed: bool,
+    /// Whether it knows LWPOLYLINE: DXF 14 or later.
+    lightweight: bool,
     /// Whether its texts are UTF-8: DXF 2007 or later.
     utf8: bool,
     /// The owner (group 330) of the entities of model space.
@@ -355,6 +370,7 @@ impl<'a> Drawing<'a> {
             handseed: None,
             next_handle: None,
             subclassed: false,
+            lightweight: false,
             utf8: false,
             owner: None,
             layers: Vec::new(),
@@ -478,6 +494,7 @@ impl<'a> Drawing<'a> {
             .max()
             .map_or(1, |last| last.saturating_add(1));
         drawing.subclassed = version.as_slice() >= b"AC1012".as_slice();
+        drawing.lightweight = version.as_slice() >= b"AC1014".as_slice();
         drawing.utf8 = version.as_slice() >= b"AC1021".as_slice();
         drawing.owner = drawing.entities.iter().find_map(|entity| {
             let record =
@@ -685,11 +702,38 @@ impl<'a> Drawing<'a> {
             .filter(|&index| self.pairs[index].code == 5)
             .filter_map(|index| hex(self.value(index)))
             .collect();
-        let (objects_edits, removed) = self.objects_without(removed);
+        // Where each moved entity went, by handle; a stretch reshapes it, so it goes apart
+        // from everything (review 2026-10-31 CD-80).
+        let mut moves = Moves::new();
+        let moved = edits
+            .moved_objects
+            .iter()
+            .map(|(object, map)| (object, Some(*map)));
+        let stretched = edits.stretched_objects.keys().map(|object| (object, None));
+        for (&object, map) in moved.chain(stretched) {
+            if !edits.removed_objects.contains(&object)
+                && let Some(handle) = entity_of(object)
+                    .ok()
+                    .and_then(|entity| self.entities[entity].handle)
+            {
+                moves.insert(handle, map);
+            }
+        }
+        let detached = self.detached_hatches(&moves);
+        let (objects_edits, removed) =
+            self.objects_without(removed, (!moves.is_empty()).then_some(&moves));
+        // The handles each entity names no more: the removed, and for a hatch let go of its
+        // boundary each the other.
+        let names_dropped = |entity: &Entity| match entity.handle.and_then(|h| detached.get(&h)) {
+            Some(more) => std::borrow::Cow::Owned(removed.union(more).copied().collect()),
+            None => std::borrow::Cow::Borrowed(&removed),
+        };
         // The entities kept as they are, without what they named of the removed.
         for (entity, replaced) in self.entities.iter().zip(&mut replaced) {
             if replaced.is_none() {
-                *replaced = self.without_removed(entity, &removed).map(Some);
+                *replaced = self
+                    .without_removed(entity, &names_dropped(entity))
+                    .map(Some);
             }
         }
         let mut handles = self.next_handle;
@@ -705,10 +749,11 @@ impl<'a> Drawing<'a> {
                 continue;
             }
             let entity = entity_of(object)?;
+            let names = names_dropped(&self.entities[entity]);
             let map = Mapping {
                 map: frame.map(map),
                 stretch,
-                removed: &removed,
+                removed: &names,
                 vertices_minus_z: false,
             };
             let mapped = self.mapped(object, entity, &map, false, &mut handles, &mut blocks)?;
@@ -779,6 +824,7 @@ impl<'a> Drawing<'a> {
             edits_at.push((pair.value().start..pair.end(), value));
         }
         edits_at.extend(objects_edits);
+        edits_at.extend(self.blocks_without(&removed));
         for (entity, replaced) in self.entities.iter().zip(replaced) {
             if let Some(replaced) = replaced {
                 let range =
@@ -810,17 +856,60 @@ impl<'a> Drawing<'a> {
         Ok(out)
     }
 
+    /// For each associative hatch moved (a mapped hatch follows nothing, [`Self::map_hatch`])
+    /// or with a boundary it follows moved apart from it ([`Moves`]), the handles each of
+    /// them names no more: the hatch its boundaries, and they the hatch as a reactor. The
+    /// hatch keeps its fill where it lies and follows nothing (review 2026-10-31 CD-80).
+    fn detached_hatches(&self, moves: &Moves) -> BTreeMap<u64, BTreeSet<u64>> {
+        let mut detached = BTreeMap::<u64, BTreeSet<u64>>::new();
+        for entity in &self.entities {
+            let Some(hatch) = entity.handle.filter(|_| entity.records[0].1 == "HATCH") else {
+                continue;
+            };
+            let end = entity
+                .records
+                .get(1)
+                .map_or(entity.pairs.end, |record| record.0);
+            let (mut associative, mut boundaries, mut sources) = (None, false, Vec::new());
+            for index in entity.pairs.start..end {
+                match self.pairs[index].code {
+                    71 if associative.is_none() => associative = Some(self.value(index) == b"1"),
+                    97 => boundaries = true,
+                    330 if boundaries => sources.extend(hex(self.value(index))),
+                    _ => {}
+                }
+            }
+            if associative == Some(true)
+                && (moves.contains_key(&hatch)
+                    || sources.iter().any(|source| apart(moves, hatch, *source)))
+            {
+                for source in &sources {
+                    detached.entry(*source).or_default().insert(hatch);
+                }
+                detached.entry(hatch).or_default().extend(sources);
+            }
+        }
+        detached
+    }
+
     /// The OBJECTS section rewritten without the records `removed` (by handle) owned, as
     /// a removed entity's extension dictionary, and without every reference to them: a
     /// group's member, a reactor, a dictionary entry with its key, a draw-order entry with
     /// its sort handle (review 2026-10-29 CD-60). A dimension association measuring a
-    /// removed entity goes too (CD-68). Each item replaces a byte range; the handles
-    /// removed come back with those of the records left out.
-    fn objects_without(&self, mut removed: BTreeSet<u64>) -> (ObjectEdits, BTreeSet<u64>) {
+    /// removed entity goes too (CD-68), and one whose dimension and measured entity were
+    /// moved `apart` (review 2026-10-31 CD-80). A record of a structure not known here, an
+    /// application's XRECORD, keeps the places of its data: a removed handle in it is
+    /// written as 0 (CD-81). Each item replaces a byte range; the handles removed come back
+    /// with those of the records left out.
+    fn objects_without(
+        &self,
+        mut removed: BTreeSet<u64>,
+        moves: Option<&Moves>,
+    ) -> (ObjectEdits, BTreeSet<u64>) {
         let Some(end) = self.objects_end else {
             return (Vec::new(), removed);
         };
-        if removed.is_empty() {
+        if removed.is_empty() && moves.is_none() {
             return (Vec::new(), removed);
         }
         let records: Vec<Range<usize>> = self
@@ -845,16 +934,34 @@ impl<'a> Drawing<'a> {
         loop {
             let mut changed = false;
             for (record, dropped) in records.iter().zip(&mut dropped) {
-                let measures_removed = || {
-                    self.value(record.start).eq_ignore_ascii_case(b"DIMASSOC")
-                        && record.clone().any(|index| {
-                            self.pairs[index].code == 331
-                                && hex(self.value(index)).is_some_and(|h| removed.contains(&h))
+                let association = self.value(record.start).eq_ignore_ascii_case(b"DIMASSOC");
+                let measured = || {
+                    record
+                        .clone()
+                        .filter(|index| self.pairs[*index].code == 331)
+                        .filter_map(|index| hex(self.value(index)))
+                };
+                let measures_removed = || association && measured().any(|h| removed.contains(&h));
+                // The dimension: the first 330 of its AcDbDimAssoc data.
+                let dimension = || {
+                    let data = record.clone().find(|index| {
+                        self.pairs[*index].code == 100
+                            && self.value(*index).eq_ignore_ascii_case(b"AcDbDimAssoc")
+                    })?;
+                    (data..record.end)
+                        .find(|index| self.pairs[*index].code == 330)
+                        .and_then(|index| hex(self.value(index)))
+                };
+                let moved_apart = || {
+                    association
+                        && moves.zip(dimension()).is_some_and(|(moves, dimension)| {
+                            measured().any(|measured| apart(moves, dimension, measured))
                         })
                 };
                 if !*dropped
                     && (handle_of(record, 330).is_some_and(|owner| removed.contains(&owner))
-                        || measures_removed())
+                        || measures_removed()
+                        || moved_apart())
                 {
                     *dropped = true;
                     changed = true;
@@ -872,12 +979,34 @@ impl<'a> Drawing<'a> {
                 edits.push((bytes, Vec::new()));
                 continue;
             }
+            // Records whose references Kečup knows the structure of: a member, an entry or
+            // a draw-order pair can go. In others only a reactor group can lose a member.
+            let known = {
+                let kind = self.value(record.start);
+                [
+                    b"GROUP".as_slice(),
+                    b"DICTIONARY",
+                    b"ACDBDICTIONARYWDFLT",
+                    b"SORTENTSTABLE",
+                ]
+                .iter()
+                .any(|known| kind.eq_ignore_ascii_case(known))
+            };
             let mut skip = vec![false; record.len()];
+            let mut nulled = vec![false; record.len()];
+            let mut in_group = false;
             for (at, index) in record.clone().enumerate() {
                 let code = self.pairs[index].code;
+                if code == 102 {
+                    in_group = self.value(index).starts_with(b"{");
+                }
                 if !(330..=369).contains(&code)
                     || !hex(self.value(index)).is_some_and(|handle| removed.contains(&handle))
                 {
+                    continue;
+                }
+                if !known && !in_group {
+                    nulled[at] = true;
                     continue;
                 }
                 skip[at] = true;
@@ -892,11 +1021,16 @@ impl<'a> Drawing<'a> {
                     skip[at + 1] = true;
                 }
             }
-            if skip.iter().any(|skip| *skip) {
+            if skip.iter().chain(&nulled).any(|changed| *changed) {
                 let mut kept = Vec::new();
-                for (index, skip) in record.clone().zip(skip) {
-                    if !skip {
-                        let pair = &self.pairs[index];
+                for ((index, skip), nulled) in record.clone().zip(skip).zip(nulled) {
+                    let pair = &self.pairs[index];
+                    if nulled {
+                        let value = pair.value();
+                        kept.extend_from_slice(&self.source[pair.start()..value.start]);
+                        kept.push(b'0');
+                        kept.extend_from_slice(&self.source[value.end..pair.end()]);
+                    } else if !skip {
                         kept.extend_from_slice(&self.source[pair.start()..pair.end()]);
                     }
                 }
@@ -937,6 +1071,9 @@ impl<'a> Drawing<'a> {
             };
             let mut mapped = self.mapped_record(object, record, *start..end, &map)?;
             self.drop_references(record, &mut mapped, map.removed);
+            if copy && record == "LEADER" {
+                self.without_annotation(&mut mapped);
+            }
             if record == "DIMENSION" {
                 self.dimension_block(object, &mut mapped, &map.map, handles, blocks)?;
             }
@@ -944,6 +1081,58 @@ impl<'a> Drawing<'a> {
             self.write_record(&mut out, &mapped, copy);
         }
         Ok(out)
+    }
+
+    /// The records of the blocks, layouts among them, that name any of the `removed`
+    /// handles, each written without them as an entity of model space is
+    /// ([`Self::drop_references`]; review 2026-10-31 P3). Each item replaces a byte range.
+    fn blocks_without(&self, removed: &BTreeSet<u64>) -> Vec<(Range<usize>, Vec<u8>)> {
+        let mut edits = Vec::new();
+        if removed.is_empty() {
+            return edits;
+        }
+        for block in &self.blocks {
+            let Some(endblk) = block.endblk else {
+                continue;
+            };
+            let starts = (block.start..endblk)
+                .filter(|&index| self.pairs[index].code == 0)
+                .collect::<Vec<_>>();
+            for (at, &start) in starts.iter().enumerate() {
+                let end = starts.get(at + 1).copied().unwrap_or(endblk);
+                let names = (start..end).any(|index| {
+                    (330..=369).contains(&self.pairs[index].code)
+                        && hex(self.value(index)).is_some_and(|handle| removed.contains(&handle))
+                });
+                if !names {
+                    continue;
+                }
+                let kind = String::from_utf8_lossy(self.value(start)).to_ascii_uppercase();
+                let mut pairs = (start..end).map(Out::Raw).collect::<Vec<_>>();
+                self.drop_references(&kind, &mut pairs, removed);
+                let mut out = Vec::new();
+                self.write_record(&mut out, &pairs, None);
+                edits.push((self.pairs[start].start()..self.pairs[end - 1].end(), out));
+            }
+        }
+        edits
+    }
+
+    /// A copy of the leader `record` without the annotation of the original (group 340),
+    /// made without one (group 73 = 3), so two leaders never claim one note (review
+    /// 2026-10-31 P3).
+    fn without_annotation(&self, record: &mut [Out]) {
+        for out in record.iter_mut() {
+            let index = match out {
+                Out::Raw(index) | Out::Set(index, _) => *index,
+                Out::New(..) | Out::Drop => continue,
+            };
+            match self.pairs[index].code {
+                340 => *out = Out::Drop,
+                73 => *out = Out::Set(index, "3".to_owned()),
+                _ => {}
+            }
+        }
     }
 
     /// The entity `entity` as read without what it names of the `removed` handles, if it
@@ -1090,12 +1279,26 @@ impl<'a> Drawing<'a> {
             self.push_pair(out, 2, name.as_bytes());
         }
         let copy = |handles: &mut Option<u64>| Some((take_handle(handles), new_owner, old_owner));
-        // The BLOCK, named anew; its entities mapped; its ENDBLK.
+        // The BLOCK, named anew, its base point turned as the clone point (group 12) of
+        // the dimension is, while its entities are mapped whole: what the block draws
+        // then lies where the map puts it (review 2026-10-31 P3); its ENDBLK.
         let header = block.start..next_record(block.start)?;
+        let base_of = |code: i32| header.clone().find(|&index| self.pairs[index].code == code);
+        let base = match (base_of(10), base_of(20)) {
+            (Some(x), Some(y)) => Some(([x, y], [self.number(x)?, self.number(y)?])),
+            _ => None,
+        };
+        let [[a, b, _], [c, d, _]] = *map;
         let named = header
             .clone()
-            .map(|index| match self.pairs[index].code {
-                2 | 3 => Out::Set(index, name.clone()),
+            .map(|index| match (self.pairs[index].code, base) {
+                (2 | 3, _) => Out::Set(index, name.clone()),
+                (10, Some((at, [x, y]))) if at[0] == index => {
+                    Out::Set(index, number(a * x + b * y))
+                }
+                (20, Some((at, [x, y]))) if at[1] == index => {
+                    Out::Set(index, number(c * x + d * y))
+                }
                 _ => Out::Raw(index),
             })
             .collect::<Vec<_>>();
@@ -1174,7 +1377,7 @@ impl<'a> Drawing<'a> {
             _ if !minus_z => Ok(false),
             "LINE" | "POINT" | "ELLIPSE" | "SPLINE" | "MTEXT" => Ok(false),
             "CIRCLE" | "ARC" | "LWPOLYLINE" | "POLYLINE" | "VERTEX" | "TEXT" | "ATTRIB"
-            | "ATTDEF" | "INSERT" => Ok(true),
+            | "ATTDEF" | "INSERT" | "HATCH" | "MPOLYGON" => Ok(true),
             _ => Err(not_mappable().into()),
         }
     }
@@ -1306,7 +1509,12 @@ impl<'a> Drawing<'a> {
             let slant = (0.0 - self.number(own[at])?).rem_euclid(360.0);
             out[at] = Out::Set(own[at], number(slant));
         }
-        self.map_extended_data(&indices[own.len()..], &mut out[own.len()..], &mapping.map)?;
+        self.map_extended_data(
+            &indices[own.len()..],
+            &mut out[own.len()..],
+            &mapping.map,
+            length_scale,
+        )?;
         if rules.dimension
             && let Some(at) = position(42)
             && !matches!(dimension_kind()? & 7, 2 | 5)
@@ -1379,12 +1587,15 @@ impl<'a> Drawing<'a> {
 
     /// The extended data `xdata` mapped by `map`, of the world, into `out`: a world point
     /// (1011) moves, a displacement (1012) turns and scales, a direction (1013) only turns,
-    /// and a distance (1041) and a scale factor (1042) scale (review 2026-10-29 CD-70).
+    /// and a distance (1041) and a scale factor (1042) scale (review 2026-10-29 CD-70) by
+    /// `length_scale`: 1 for a stretch, which reshapes the line and not the drawing
+    /// (review 2026-10-31 P3).
     fn map_extended_data(
         &self,
         xdata: &[usize],
         out: &mut [Out],
         map: &Affine,
+        length_scale: f64,
     ) -> Result<(), EditedDxfError> {
         let [[a, b, _], [c, d, _]] = *map;
         let scale = (a * d - b * c).abs().sqrt();
@@ -1405,6 +1616,7 @@ impl<'a> Drawing<'a> {
                     let turned = [a * point[0] + b * point[1], c * point[0] + d * point[1]];
                     let [x, y] = match code {
                         1011 => apply(map, point),
+                        1012 if scale > 0.0 => turned.map(|value| value * length_scale / scale),
                         1012 => turned,
                         _ if scale > 0.0 => turned.map(|value| value / scale),
                         _ => point,
@@ -1413,7 +1625,9 @@ impl<'a> Drawing<'a> {
                     out[at + 1] = Out::Set(next, number(y));
                     skip = true;
                 }
-                1041 | 1042 => out[at] = Out::Set(index, number(self.number(index)? * scale)),
+                1041 | 1042 => {
+                    out[at] = Out::Set(index, number(self.number(index)? * length_scale));
+                }
                 _ => {}
             }
         }
@@ -1635,18 +1849,27 @@ impl<'a> Drawing<'a> {
             .iter()
             .find(|(name, _)| name == layer)
             .map_or_else(|| self.text(layer), |(_, raw)| raw.clone());
-        let head = |pair: &mut dyn FnMut(i32, &[u8]), kind: &str, handles: &mut Option<u64>| {
+        // The record's head, owned by `owner`; the handle it took.
+        let owned_head = |pair: &mut dyn FnMut(i32, &[u8]),
+                          kind: &str,
+                          handles: &mut Option<u64>,
+                          owner: Option<&[u8]>| {
             pair(0, kind.as_bytes());
-            if let Some(handle) = take_handle(handles) {
+            let handle = take_handle(handles);
+            if let Some(handle) = handle {
                 pair(5, format!("{handle:X}").as_bytes());
             }
             if self.subclassed {
-                if let Some(owner) = &self.owner {
+                if let Some(owner) = owner {
                     pair(330, owner);
                 }
                 pair(100, b"AcDbEntity");
             }
             pair(8, &layer_bytes);
+            handle
+        };
+        let head = |pair: &mut dyn FnMut(i32, &[u8]), kind: &str, handles: &mut Option<u64>| {
+            owned_head(pair, kind, handles, self.owner.as_deref());
         };
         let subclass = |pair: &mut dyn FnMut(i32, &[u8]), name: &str| {
             if self.subclassed {
@@ -1667,7 +1890,7 @@ impl<'a> Drawing<'a> {
                 point(&mut pair, 10, points_mm[0]);
                 point(&mut pair, 11, points_mm[1]);
             }
-            DrawnShape::Polyline { points_mm, closed } if self.subclassed => {
+            DrawnShape::Polyline { points_mm, closed } if self.lightweight => {
                 head(&mut pair, "LWPOLYLINE", handles);
                 subclass(&mut pair, "AcDbPolyline");
                 pair(90, points_mm.len().to_string().as_bytes());
@@ -1679,7 +1902,9 @@ impl<'a> Drawing<'a> {
                 }
             }
             DrawnShape::Polyline { points_mm, closed } => {
-                head(&mut pair, "POLYLINE", handles);
+                // DXF 12, or 13, which marks its records as subclasses.
+                let polyline = owned_head(&mut pair, "POLYLINE", handles, self.owner.as_deref());
+                subclass(&mut pair, "AcDb2dPolyline");
                 pair(66, b"1");
                 pair(70, if *closed { b"1" } else { b"0" });
                 point(
@@ -1687,11 +1912,14 @@ impl<'a> Drawing<'a> {
                     10,
                     [0.0 - frame.offset_mm[0], 0.0 - frame.offset_mm[1]],
                 );
+                let owner = polyline.map(|handle| format!("{handle:X}").into_bytes());
                 for at in points_mm {
-                    head(&mut pair, "VERTEX", handles);
+                    owned_head(&mut pair, "VERTEX", handles, owner.as_deref());
+                    subclass(&mut pair, "AcDbVertex");
+                    subclass(&mut pair, "AcDb2dVertex");
                     point(&mut pair, 10, *at);
                 }
-                head(&mut pair, "SEQEND", handles);
+                owned_head(&mut pair, "SEQEND", handles, owner.as_deref());
             }
             DrawnShape::Arc {
                 center_mm,
@@ -1735,7 +1963,7 @@ impl<'a> Drawing<'a> {
     }
 
     /// `text` as the drawing writes a text: UTF-8 from DXF 2007 on, else what is not
-    /// ASCII as `\U+XXXX`; a `%%` that would be read as a special character is kept as
+    /// ASCII as `\U+XXXX` for each of its UTF-16 units; a `%%` that would be read as a special character is kept as
     /// written, and what would end the line is a space.
     fn text(&self, text: &str) -> Vec<u8> {
         let mut out = String::with_capacity(text.len());
@@ -1745,10 +1973,12 @@ impl<'a> Drawing<'a> {
                 '%' if percent => out.push_str("%%%"),
                 character if character.is_control() => out.push(' '),
                 character if character.is_ascii() || self.utf8 => out.push(character),
-                character => match u16::try_from(u32::from(character)) {
-                    Ok(unit) => out.push_str(&format!("\\U+{unit:04X}")),
-                    Err(_) => out.push('?'),
-                },
+                // Beyond U+FFFF its two UTF-16 units, as a UTF-16 CAD writes it.
+                character => {
+                    for unit in character.encode_utf16(&mut [0; 2]) {
+                        out.push_str(&format!("\\U+{unit:04X}"));
+                    }
+                }
             }
         }
         out.into_bytes()

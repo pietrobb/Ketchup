@@ -40,6 +40,8 @@ use std::{
     sync::Mutex,
     time::{Duration, Instant},
 };
+#[path = "cancel_ratchet_tests.rs"]
+mod cancel_ratchet;
 #[path = "draft_analysis_tests.rs"]
 mod draft_analysis;
 #[path = "draft_faces_tests.rs"]
@@ -442,7 +444,7 @@ fn disconnect_during_a_release_confirmation_writes_no_file() {
     while !prompted.load(Ordering::Acquire) {
         assert!(Instant::now() < deadline, "{}", app.action_digest());
         app.poll_live_bridge(&context);
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
 
     assert!(!path.exists(), "the departed client's release was written");

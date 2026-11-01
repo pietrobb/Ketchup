@@ -173,7 +173,48 @@ pub(crate) struct UnderlayExportTask {
     receiver: mpsc::Receiver<Result<WrittenDrawing, UnderlayExportError>>,
 }
 
+/// A client's drawing export running on a thread (review 2026-10-31 MCP-80): the
+/// drawing the worker wrote comes back on `receiver`; `cancel` stops the worker.
+pub(crate) struct ClientUnderlayExport {
+    pub(crate) cancel: CancelToken,
+    pub(crate) receiver: mpsc::Receiver<Result<WrittenDrawing, UnderlayExportError>>,
+}
+
+impl ClientUnderlayExport {
+    /// Puts the drawing written in place of the file named.
+    pub(crate) fn publish(
+        written: Result<WrittenDrawing, UnderlayExportError>,
+    ) -> UnderlayExportResult {
+        written.and_then(WrittenDrawing::publish)
+    }
+}
+
 impl KetchupApp {
+    /// Starts writing underlay `id` with its changes to `output` on a thread, as
+    /// Tools > Export drawing writes it, so the window keeps drawing; no file is
+    /// in place until [`ClientUnderlayExport::publish`].
+    pub(crate) fn start_client_underlay_export(
+        &self,
+        id: UnderlayId,
+        source: Option<&Path>,
+        output: &Path,
+        context: &egui::Context,
+    ) -> Result<ClientUnderlayExport, UnderlayExportError> {
+        let job = self.underlay_export_job(id, source, output, None)?;
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let cancel = CancelToken::default();
+        let thread_cancel = cancel.clone();
+        let repaint = context.clone();
+        std::thread::Builder::new()
+            .name("ketchup-drawing-export".into())
+            .spawn(move || {
+                let _ = sender.try_send(job.write(&thread_cancel));
+                repaint.request_repaint();
+            })
+            .map_err(UnderlayExportError::Io)?;
+        Ok(ClientUnderlayExport { cancel, receiver })
+    }
+
     /// What writing underlay `id` with its changes to `output` takes, read again from
     /// `source` or else from the file it was imported from in this window. A file at
     /// `output` is to be replaced only while its SHA-256 is `replacing` (`None`: no file
@@ -220,6 +261,7 @@ impl KetchupApp {
     /// or else from the file it was imported from in this window; gives the bytes written.
     /// A file at `output` is replaced only while its SHA-256 is `replacing` (`None`: no
     /// file may be there), and never when it is the source; `cancel` stops the worker.
+    #[cfg(test)]
     pub(crate) fn export_underlay_dxf_to(
         &mut self,
         id: UnderlayId,
@@ -347,6 +389,14 @@ impl KetchupApp {
                 &BTreeMap::from([("reason", error.to_string())]),
             ),
         };
+        // A DWG is written in one version whatever the source's was (review 2026-10-31 P3).
+        if result.is_ok() && crate::app::dwg_import::is_dwg_path(output) {
+            self.digest.push(' ');
+            self.digest.push_str(&self.catalog.format(
+                "digest-underlay-exported-dwg-version",
+                &BTreeMap::from([("version", ketchup_dwg::WRITTEN_VERSION.to_owned())]),
+            ));
+        }
         // The file named is the drawing's source: the next export does not ask again.
         if let (Ok(_), Some(source)) = (result, named_source) {
             self.file.activity.underlay.sources.insert(id, source);

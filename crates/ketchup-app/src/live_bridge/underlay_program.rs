@@ -137,20 +137,25 @@ pub(crate) fn underlay_extrusion_program(
     })
 }
 
+/// An area's outline, its holes and the holes left out of it ([`underlay_area_outline`]).
+pub(crate) type AreaOutline = (Ring, Vec<Ring>, Option<super::underlay_regions::LeftOut>);
+
 /// The outline (counterclockwise) and holes (clockwise) in document millimetres of what
 /// [`underlay_extrusion_program`] extrudes, for a document no program owns; none when no
-/// closed region holds `point_mm`. The cause of a refusal is left for `take_error_details`.
+/// closed region holds `point_mm`. Also the holes of the room left out as drawn on other
+/// layers than its walls, said. The cause of a refusal is left for `take_error_details`.
 pub(crate) fn underlay_area_outline(
     app: &KetchupApp,
     underlay: ketchup_model::underlay::UnderlayId,
     point_mm: Option<[f64; 2]>,
     object_id: Option<u32>,
-) -> Result<Option<(Ring, Vec<Ring>)>, &'static str> {
+) -> Result<Option<AreaOutline>, &'static str> {
     let snapshot = app.document.current();
     let underlay = super::underlay_regions::one_underlay(&snapshot, Some(underlay.0))?;
     let lines = app
         .cached_underlay_lines(underlay)
         .ok_or("entity_not_found")?;
+    let mut left_out = None;
     let (outline, holes) = match (point_mm, object_id) {
         (Some(point), None) => {
             let regions = super::underlay_regions::closed_regions(
@@ -168,14 +173,15 @@ pub(crate) fn underlay_area_outline(
             else {
                 return Ok(None);
             };
-            let (region, _) = super::underlay_regions::walled(
+            let room = super::underlay_regions::walled(
                 &snapshot,
                 underlay,
                 &lines,
                 Default::default(),
                 region,
             )?;
-            (region.outline, region.holes)
+            left_out = room.left_out_holes(underlay);
+            (room.region.outline, room.region.holes)
         }
         (None, Some(id)) => object_outline(&ObjectIndex::new(&lines), id)?,
         _ => return Err("invalid_params"),
@@ -194,6 +200,7 @@ pub(crate) fn underlay_area_outline(
     Ok(Some((
         placed(outline, true),
         holes.into_iter().map(|hole| placed(hole, false)).collect(),
+        left_out,
     )))
 }
 
@@ -325,8 +332,11 @@ pub(super) fn binding_data(
                     )
                 }
             };
-            let warning = super::underlay_regions::objectless_warning(&lines)
+            let mut warning = super::underlay_regions::objectless_warning(&lines)
                 .map_or_else(String::new, |warning| format!("; WARNING: {warning}"));
+            if let Some(left_out) = &binding.left_out {
+                warning.push_str(&format!("; {left_out} (name the layers to cut them)"));
+            }
             (
                 format!(
                     "the region {selected} of {}, {}; layers {layers:?}; closing_segments_mm {closing_segments_mm:?}{warning}",
@@ -571,28 +581,69 @@ fn ring_points(underlay: &Underlay, ring: &[[f64; 2]], indent: &str) -> String {
     corners_text(&ring, indent)
 }
 
-/// Area, perimeter and holes in document units, for checking the outline is the one meant.
+/// Area, perimeter and holes in document units, for checking the outline is the one meant;
+/// of the arcs [`ring_text`] writes, not of the chords the import cut them into (review
+/// 2026-10-31 P3).
 fn measured(underlay: &Underlay, outline: &[[f64; 2]], holes: &[Vec<[f64; 2]>]) -> String {
-    let scale = underlay.scale();
-    let perimeter = outline
-        .iter()
-        .zip(outline.iter().cycle().skip(1))
-        .map(|(a, b)| (b[0] - a[0]).hypot(b[1] - a[1]))
-        .sum::<f64>()
-        * scale;
-    let area = (signed_area(outline).abs()
+    let (outline_area, perimeter) = ring_measure(underlay, outline);
+    let area = outline_area.abs()
         - holes
             .iter()
-            .map(|hole| signed_area(hole).abs())
-            .sum::<f64>())
-        * scale
-        * scale;
+            .map(|hole| ring_measure(underlay, hole).0.abs())
+            .sum::<f64>();
     format!(
         "area {:.3} m², perimeter {:.3} m, {} holes",
         area / 1e6,
         perimeter / 1e3,
         holes.len()
     )
+}
+
+/// The signed area and the length of `ring` in document millimetres, its round sides as
+/// the arcs [`ring_text`] writes: each arc adds the segment between it and its chord.
+fn ring_measure(underlay: &Underlay, ring: &[[f64; 2]]) -> (f64, f64) {
+    use super::underlay_arcs::Piece;
+    let ring = ring
+        .iter()
+        .map(|point| underlay.to_document(*point))
+        .collect::<Vec<_>>();
+    let chords = || ring.iter().zip(ring.iter().cycle().skip(1));
+    let [origin, unit] = [[0.0, 0.0], [1.0, 0.0]].map(|point| underlay.to_document(point));
+    let scale = (unit[0] - origin[0]).hypot(unit[1] - origin[1]);
+    let Some(pieces) = super::underlay_arcs::pieces(&ring, scale) else {
+        let length = chords()
+            .map(|(a, b)| (b[0] - a[0]).hypot(b[1] - a[1]))
+            .sum();
+        return (signed_area(&ring), length);
+    };
+    let (mut area, mut length) = (0.0, 0.0);
+    for piece in pieces {
+        let (start, end) = match piece {
+            Piece::Line { start, end } | Piece::Arc { start, end, .. } => (start, end),
+        };
+        area += (start[0] * end[1] - end[0] * start[1]) / 2.0;
+        let chord = (end[0] - start[0]).hypot(end[1] - start[1]);
+        let Piece::Arc { through, .. } = piece else {
+            length += chord;
+            continue;
+        };
+        // The circle through the three points: its radius and the angle the arc turns.
+        let side = |a: [f64; 2], b: [f64; 2]| (b[0] - a[0]).hypot(b[1] - a[1]);
+        let turn = cross2(
+            [end[0] - start[0], end[1] - start[1]],
+            [through[0] - start[0], through[1] - start[1]],
+        );
+        let radius = chord * side(start, through) * side(through, end) / (2.0 * turn.abs());
+        if !radius.is_finite() {
+            length += chord;
+            continue;
+        }
+        let angle = 2.0 * (chord / (2.0 * radius)).clamp(-1.0, 1.0).asin();
+        length += radius * angle;
+        // An arc bulging to the right of its chord adds to an area counted anticlockwise.
+        area -= turn.signum() * radius * radius * (angle - angle.sin()) / 2.0;
+    }
+    (area, length)
 }
 
 /// `NAME` the outline and `NAME_HOLES` its holes, in document millimetres; with a
@@ -714,7 +765,7 @@ fn signed_area(ring: &[[f64; 2]]) -> f64 {
 pub(crate) type Ring = Vec<[f64; 2]>;
 
 /// The outline (counterclockwise) and holes (clockwise) of object `id`: a hatch's
-/// boundary, or the closed polylines it draws, the largest as the outline.
+/// boundary, or the closed polylines it draws, nested by what holds what.
 fn object_outline(index: &ObjectIndex<'_>, id: u32) -> Result<(Ring, Vec<Ring>), &'static str> {
     let object = index.object(id).ok_or("entity_not_found")?;
     let mut rings = match &object.detail {
@@ -727,23 +778,48 @@ fn object_outline(index: &ObjectIndex<'_>, id: u32) -> Result<(Ring, Vec<Ring>),
             .collect(),
     };
     rings.retain(|ring| ring.len() >= 3);
-    let largest = (0..rings.len())
-        .max_by(|a, b| {
-            signed_area(&rings[*a])
-                .abs()
-                .total_cmp(&signed_area(&rings[*b]).abs())
-        })
-        .ok_or_else(|| {
+    nested_rings(rings).map_err(|outlines| {
+        let kind = object.kind.name();
+        if outlines == 0 {
             invalid(
                 "object_id",
-                format!(
-                    "Object {id} ({}) draws no closed outline.",
-                    object.kind.name()
-                ),
+                format!("Object {id} ({kind}) draws no closed outline."),
                 "Use point_mm for the region its lines enclose with the lines around it.",
             )
-        })?;
-    let mut outline = rings.swap_remove(largest);
+        } else {
+            invalid(
+                "object_id",
+                format!("Object {id} ({kind}) draws {outlines} separate closed outlines, not one."),
+                "Use point_mm inside each of them for its region.",
+            )
+        }
+    })
+}
+
+/// The rings of one object as one outline (counterclockwise) and its holes (clockwise):
+/// the rings directly inside the largest. Else how many outlines they make, those inside an
+/// even number of others (0: none at all); review 2026-10-31 UO-84.
+pub(crate) fn nested_rings(mut rings: Vec<Ring>) -> Result<(Ring, Vec<Ring>), usize> {
+    // A ring inside another holds its first corner; rings of one object do not cross.
+    let depth = |ring: usize| {
+        (0..rings.len())
+            .filter(|other| {
+                *other != ring
+                    && signed_area(&rings[*other]).abs() > signed_area(&rings[ring]).abs()
+                    && ketchup_model::underlay::objects::ring_contains(
+                        &rings[*other],
+                        rings[ring][0],
+                    )
+            })
+            .count()
+    };
+    let depths = (0..rings.len()).map(depth).collect::<Vec<_>>();
+    let outlines = depths.iter().filter(|depth| *depth % 2 == 0).count();
+    if outlines != 1 {
+        return Err(outlines);
+    }
+    let outline_at = depths.iter().position(|depth| *depth == 0).unwrap_or(0);
+    let mut outline = rings.swap_remove(outline_at);
     if signed_area(&outline) < 0.0 {
         outline.reverse();
     }

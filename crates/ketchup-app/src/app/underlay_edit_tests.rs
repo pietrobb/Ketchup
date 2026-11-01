@@ -791,7 +791,8 @@ fn tools_export_drawing_writes_the_edited_drawing_as_dxf() {
     std::fs::write(&source, PLAN).unwrap();
     let dialogs = dialogs::ScriptedFileDialogs::new()
         .queue_import(ImportFormat::Dxf, &source)
-        .queue_export(&output);
+        .queue_export(&output)
+        .queue_export(directory.path().join("edited.dwg"));
     let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
     app.dispatch_file_command(AppCommand::ImportDrawingUnderlay);
     let mut harness = shell_of(app);
@@ -821,6 +822,24 @@ fn tools_export_drawing_writes_the_edited_drawing_as_dxf() {
     )
     .unwrap();
     assert_eq!(again.lines.segment_count(), 1);
+    assert!(
+        !app.digest.contains(ketchup_dwg::WRITTEN_VERSION),
+        "{}",
+        app.digest
+    );
+
+    // A DWG is written in the one version Kečup writes, and the window says which
+    // (review 2026-10-31 P3).
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExportUnderlayDwg);
+    let app = harness.state();
+    assert!(app.digest.contains("edited.dwg"), "{}", app.digest);
+    assert!(
+        app.digest.contains(ketchup_dwg::WRITTEN_VERSION),
+        "{}",
+        app.digest
+    );
 }
 
 /// Review 2026-10-29 SEC-60: in the window the drawing is written back on a thread while
@@ -1156,13 +1175,79 @@ fn a_plan_raised_off_the_ground_snaps_and_is_pulled_up_where_it_lies() {
     let app = harness.state();
     assert_eq!(app.undo_step_count(), undo + 1, "{}", app.digest);
     assert!(app.digest.contains("AREA_1"), "{}", app.digest);
+    // Review 2026-10-31 UO-82: the part of its own stands on the raised plan, not on the
+    // ground under it.
+    let occurrence = app
+        .document
+        .current()
+        .occurrences()
+        .find(|occurrence| occurrence.name() == "AREA_1")
+        .expect("the room is pulled up")
+        .id();
+    let root = InstancePath::root(occurrence);
+    let [low, high] = app.rotation_bounds_for(&|path| *path == root).unwrap();
+    assert!(
+        (low.z - height).abs() < 1e-6 && (high.z - height - 300.0).abs() < 1e-6,
+        "{low:?} .. {high:?}"
+    );
 
-    // The drawing tools draw in the ground plane: they draw into it once it lies there.
+    // Review 2026-10-31 UI-80: the drawing tools draw into the raised plan where it lies.
+    // Before, drawing into it was refused, and raising a plan being drawn into sent the
+    // tools back to the model unsaid.
     let app = harness.state_mut();
     app.select_whole_underlay(id);
     app.dispatch_command(AppCommand::DrawIntoUnderlay);
-    assert_eq!(app.underlay_draw_target(), None);
-    assert!(app.digest.contains("ground plane"), "{}", app.digest);
+    assert!(app.underlay_draw_target().is_some(), "{}", app.digest);
+    let definitions = app.document.current().definitions().count();
+    let [from, to] = [IN_ROOM, IN_FLOOR].map(|point| Vec3::new(point.x, point.y, height));
+    click(&mut harness, from);
+    click(&mut harness, to);
+    press(&mut harness, egui::Key::Escape);
+    // The clicks land a couple of pixels off the points (`point`); met on the ground under
+    // them in iso, they would lie some 100 mm away.
+    let close = |a: [f64; 2], b: Vec3| (a[0] - b.x).hypot(a[1] - b.y) < 5.0;
+    let shapes = drawn_shapes(&harness);
+    match shapes.as_slice() {
+        [(_, DrawnShape::Polyline { points_mm, .. })] => assert!(
+            close(points_mm[0], from) && close(points_mm[1], to),
+            "{points_mm:?}"
+        ),
+        other => panic!("{other:?}"),
+    }
+
+    // Stood up as a view by the AI meanwhile, it is drawn into no more: said at the next
+    // shape, which goes nowhere, and drawing into it does not come back unasked once it
+    // lies as a plan again.
+    let stand = |harness: &mut Harness<'_, KetchupApp>, plane: ViewPlane| {
+        let view = UnderlayView { plane, at_mm: 0.0 };
+        let batch = plan_underlay_view(&harness.state().document.current(), id, view).unwrap();
+        harness
+            .state_mut()
+            .apply_batch_with_work_recovery(&batch)
+            .unwrap();
+    };
+    stand(&mut harness, ViewPlane::Front);
+    let undo = harness.state().undo_step_count();
+    harness.state_mut().dispatch_command(AppCommand::Line);
+    click(&mut harness, Vec3::new(IN_ROOM.x, 0.0, IN_ROOM.y));
+    click(&mut harness, Vec3::new(IN_FLOOR.x, 0.0, IN_FLOOR.y));
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo, "{}", app.digest);
+    assert_eq!(app.document.current().definitions().count(), definitions);
+    assert!(
+        app.gesture.underlay_draw.is_none(),
+        "{:?} {}",
+        app.active_tool,
+        app.digest
+    );
+    assert!(
+        app.digest.contains("drawing into it ended"),
+        "{}",
+        app.digest
+    );
+    press(&mut harness, egui::Key::Escape);
+    stand(&mut harness, ViewPlane::Top);
+    assert_eq!(harness.state().underlay_draw_target(), None);
 }
 
 /// 2D-4 in a document with only the drawing: the pulled areas are written into the program
@@ -1609,4 +1694,57 @@ fn a_waiting_pull_area_click_is_pulled_up_among_more_flat_drawings_than_searches
         "{}",
         app.digest
     );
+}
+
+/// Review 2026-10-31 P3: a Pull area click waiting for the regions was pulled up after an
+/// Undo too, into the document the Undo left; it is dropped, and the window says so.
+#[test]
+fn a_waiting_pull_area_click_is_dropped_when_the_document_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut dialogs = dialogs::ScriptedFileDialogs::new();
+    // Drawings of their own, so no region of them is found yet.
+    for teeth in [1901, 1902] {
+        let path = directory.path().join(format!("floor{teeth}.dxf"));
+        std::fs::write(
+            &path,
+            format!(
+                "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+                 0\nSECTION\n2\nENTITIES\n{}0\nENDSEC\n0\nEOF\n",
+                saw(teeth)
+            ),
+        )
+        .unwrap();
+        dialogs = dialogs.queue_import(ImportFormat::Dxf, &path);
+    }
+    let mut app = KetchupApp::with_catalog_and_initial_box(LocaleCatalog::english(), false)
+        .with_dialogs(Box::new(dialogs));
+    app.dispatch_file_command(AppCommand::ImportDrawingUnderlay);
+    app.dispatch_file_command(AppCommand::ImportDrawingUnderlay);
+    let mut harness = shell_of(app);
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExtrudeUnderlayArea);
+    harness.state_mut().value_box.input = "300".to_owned();
+    click(&mut harness, Vec3::new(20.0, -250.0, 0.0));
+    assert!(
+        harness
+            .state()
+            .solid_tools
+            .area_click_awaits_regions
+            .is_some(),
+        "the click did not wait: {}",
+        harness.state().digest
+    );
+    // The Undo takes the second drawing out; the first, clicked, stays.
+    harness.state_mut().dispatch_command(AppCommand::Undo);
+    let undone = harness.state().undo_step_count();
+    crate::tests::shell::step_until(
+        &mut harness,
+        std::time::Duration::from_secs(20),
+        "the waiting click was never let go",
+        |app| app.solid_tools.area_click_awaits_regions.is_none(),
+    );
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undone, "{}", app.digest);
+    assert!(app.digest.contains("changed"), "{}", app.digest);
 }

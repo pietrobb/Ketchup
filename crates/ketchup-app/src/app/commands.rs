@@ -588,6 +588,11 @@ impl KetchupApp {
                     self.program_detach_notice = Some(self.program_detach_notice(&before, program));
                     self.program_detach_warned = true;
                 }
+                // A program applied again owns the document again: the edit that detaches
+                // it next warns again (review 2026-10-31 P3).
+                if self.document.current_rule_program().is_some() {
+                    self.program_detach_warned = false;
+                }
                 publish(self, publication);
                 self.forget_scene_no_longer_shown();
                 let snapshot = self.document.current();

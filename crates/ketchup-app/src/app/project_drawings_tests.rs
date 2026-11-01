@@ -5,8 +5,8 @@ use crate::app::project_drawings::ProjectDrawingsError;
 use crate::tests::shell::step_until;
 use crate::*;
 use ketchup_manufacturing::project_drawings::{DrawingSet, ProjectView, ViewSummary};
-use ketchup_manufacturing::sheet_pdf::Mark;
 use ketchup_manufacturing::title_block::{SheetFormat, TitleField};
+use ketchup_model::sheet_pdf::Mark;
 use std::time::Duration;
 
 const HOUSE: &str = include_str!("../../../../examples/programs/tiny-house.star");
@@ -705,7 +705,10 @@ fn a_panel_has_a_shop_drawing_dimensioning_its_studs_and_its_window() {
     // Each table row: position, material, size, count.
     for (index, position) in drawing.positions.iter().enumerate() {
         let row = [
-            (index + 1).to_string(),
+            position.mirror_of.map_or_else(
+                || (index + 1).to_string(),
+                |mirrored| format!("{} (mirror of {mirrored})", index + 1),
+            ),
             position.material.clone(),
             position
                 .dimensions_mm
@@ -841,7 +844,7 @@ fn modelled_threads_draw_the_same_sheet_as_cosmetic_ones_without_helix_edges() {
         edge_lines_and_faces(&cosmetic),
         edge_lines_and_faces(&modeled)
     );
-    let info = ketchup_manufacturing::sheet_pdf::PdfInfo::default();
+    let info = ketchup_model::sheet_pdf::PdfInfo::default();
     assert!(cosmetic.pdf(&info) == modeled.pdf(&info), "the PDFs differ");
     // Drawn from the grooved bodies, the sheet would carry the helix: its
     // edges and the facets of its flanks.

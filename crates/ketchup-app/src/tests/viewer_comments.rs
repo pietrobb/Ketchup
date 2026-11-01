@@ -268,6 +268,19 @@ fn damaged_returned_files_are_refused_and_change_nothing() {
     }
 }
 
+/// Review 2026-10-31 P3: opening the contexts to a part left every context the
+/// author was in before it knew whether the part can be reached, so a comment
+/// on a part it could not reach threw the author out of their component.
+#[test]
+fn a_part_out_of_reach_leaves_the_author_in_their_context() {
+    let (mut app, package) = exported();
+    assert!(app.enter_occurrence_context(package_part(&package)));
+    assert_eq!(app.edit_context_depth(), 1);
+    let unreachable = InstancePath::root(OccurrenceId(u64::from(u32::MAX)));
+    assert!(!app.open_contexts_to(&unreachable));
+    assert_eq!(app.edit_context_depth(), 1);
+}
+
 #[test]
 fn deleted_commented_part_is_marked_and_never_selected() {
     let directory = tempfile::tempdir().unwrap();

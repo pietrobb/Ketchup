@@ -2275,11 +2275,6 @@ fn malformed_undefined_empty_non_anonymous_and_non_planar_dimensions_fail_closed
             DxfImportError::InvalidBlock,
         ),
         (
-            "0\nBLOCK\n2\n*D1\n70\n1\n10\n1\n20\n0\n0\nLINE\n10\n1\n20\n0\n11\n2\n21\n0\n0\nENDBLK\n",
-            "0\nDIMENSION\n2\n*D1\n10\n0\n20\n0\n70\n32\n",
-            DxfImportError::InvalidBlock,
-        ),
-        (
             valid_block,
             "0\nDIMENSION\n2\n*D1\n10\n0\n20\n0\n12\n1\n70\n32\n",
             DxfImportError::MalformedPairs,
@@ -2371,6 +2366,44 @@ fn a_dimension_without_its_block_and_hidden_layers_are_left_out_and_counted() {
             "DIMENSION whose drawn block is undefined, unreadable or empty; blocks: *D1, *D2"
         ),
         Some((ImportDiagnosticSeverity::Warning, 2))
+    );
+}
+
+/// Review 2026-10-31 P3 (MF-13 rest): a dimension whose drawn block has a base point
+/// other than 0,0 refused the whole drawing with a bare InvalidBlock. It is placed as an
+/// insert places its block: what the block draws, less its base, at the dimension's
+/// insertion point (12/22, 0,0 when absent).
+#[test]
+fn a_dimension_block_with_a_base_point_is_placed_from_it() {
+    let blocks = concat!(
+        "0\nSECTION\n2\nBLOCKS\n0\nBLOCK\n8\n0\n2\n*D3\n70\n1\n10\n100\n20\n50\n",
+        "0\nLINE\n8\n0\n10\n100\n20\n50\n11\n200\n21\n50\n",
+        "0\nENDBLK\n0\nENDSEC\n",
+    );
+    let entities = concat!(
+        "0\nSECTION\n2\nENTITIES\n",
+        "0\nDIMENSION\n8\ndims\n2\n*D3\n10\n0\n20\n0\n70\n32\n",
+        "0\nDIMENSION\n8\ndims\n2\n*D3\n10\n0\n20\n0\n12\n10\n22\n20\n70\n32\n",
+        "0\nENDSEC\n0\nEOF\n",
+    );
+    let source =
+        format!("0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n{blocks}{entities}")
+            .into_bytes();
+    let parsed = inspect_dxf(&source, DxfImportOptions::new(None)).unwrap();
+    let lines = parsed
+        .profiles()
+        .iter()
+        .map(|profile| match profile.segments() {
+            [ProfileSegment::Line { start_mm, end_mm }] => (profile.layer(), *start_mm, *end_mm),
+            other => panic!("not one line: {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        lines,
+        [
+            ("dims", [0.0, 0.0], [100.0, 0.0]),
+            ("dims", [10.0, 20.0], [110.0, 20.0])
+        ]
     );
 }
 

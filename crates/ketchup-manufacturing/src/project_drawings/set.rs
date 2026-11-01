@@ -23,11 +23,11 @@ use super::{
     extent, format_at_scale, solid_edges, view_frames,
 };
 use crate::sheet_dxf::page_dxf;
-use crate::sheet_pdf::{Page, PdfInfo, pages_pdf};
 use crate::title_block::{
     DEFAULT_COARSEST_SCALE, SheetFormat, TitleBlock, TitleField, draw_frame_and_title_block,
     drawing_area,
 };
+use ketchup_model::sheet_pdf::{Page, PdfInfo, pages_pdf};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -425,9 +425,15 @@ pub fn drawing_set(
             .iter()
             .enumerate()
             .filter_map(|(drawing, sheet)| {
-                plan_shop(sheet, solids, &options.shop.columns, options.format)
-                    .transpose()
-                    .map(|planned| planned.map(|planned| (drawing, planned)))
+                plan_shop(
+                    sheet,
+                    solids,
+                    &options.shop.columns,
+                    &options.shop.mirror_of,
+                    options.format,
+                )
+                .transpose()
+                .map(|planned| planned.map(|planned| (drawing, planned)))
             })
             .collect::<Result<Vec<_>, _>>()?
     };

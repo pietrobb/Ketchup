@@ -71,7 +71,7 @@ impl KetchupApp {
                 self.digest
             );
             self.poll_window_edit(&context);
-            std::thread::yield_now();
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
 }

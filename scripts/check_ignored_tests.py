@@ -21,6 +21,7 @@ import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_roots import package_files  # noqa: E402
 from check_ci_crates import CRATE_LIST, PACKAGE_FLAG, jobs, running_steps, without_comments  # noqa: E402
 
 # `#[ignore]`, `#[ignore = "…"]` or the same under `#[cfg_attr(<condition>, …)]`.
@@ -55,7 +56,7 @@ def crate_of(path):
 
 
 def rust_sources(root):
-    paths = sorted([*root.glob("crates/*/**/*.rs"), *root.glob("viewer/*/**/*.rs")])
+    paths = package_files(root)
     return [path for path in paths if "target" not in path.relative_to(root).parts]
 
 

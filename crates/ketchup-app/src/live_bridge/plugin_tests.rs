@@ -1466,11 +1466,21 @@ fn an_interpreter_gets_only_listed_options_before_its_hashed_script() {
         (python, words(&["evil", "x.py"]), vec![false, true], false),
         (python, words(&["-B"]), vec![false], false),
         (other, words(&["run", "x.ts"]), vec![false, true], false),
+        (other, words(&["x.ts"]), vec![true], true),
+        // Review 2026-10-31 P3: only a listed interpreter is known to hand the
+        // words after its script to the script; `find hashed -exec …` gave them
+        // to find, which ran what they named.
         (
             other,
             words(&["x.ts", "--allow-all"]),
             vec![true, false],
-            true,
+            false,
+        ),
+        (
+            Path::new("/usr/bin/find"),
+            words(&["x.txt", "-execdir", "rm", "-rf", "+"]),
+            vec![true, false, false, false, false],
+            false,
         ),
     ] {
         assert_eq!(

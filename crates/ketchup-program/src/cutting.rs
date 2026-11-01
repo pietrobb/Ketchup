@@ -2,7 +2,8 @@
 //! program declares for it (`stock()`), lengths cut from bars of a few stock
 //! lengths (1D) or rectangles cut from sheets by guillotine cuts (2D), with
 //! the saw kerf between pieces and a trimmed edge. A heuristic (best fit,
-//! largest pieces first), not a proven optimum.
+//! largest pieces first; for bars of a few dozen pieces a bounded search for
+//! the least stock length), not a proven optimum.
 
 use crate::bom::key;
 use crate::model::{Part, ProgramModel};
@@ -15,6 +16,33 @@ pub const MAX_PIECES: usize = 5000;
 
 /// A piece fits a space it fills exactly.
 const EPS: f64 = ketchup_tolerance::APPROXIMATION;
+
+/// Issue kind of a made part no cutting plan lays out.
+pub const CUTTING_UNPLACED: &str = "cutting_unplaced";
+
+/// A warning for every piece `plans` could not lay out, naming it and why
+/// (review 2026-10-31 P3: such pieces were listed in the plan alone).
+#[must_use]
+pub fn issues(plans: &[CuttingPlan]) -> Vec<crate::Issue> {
+    plans
+        .iter()
+        .flat_map(|plan| {
+            plan.unplaced.iter().map(|piece| crate::Issue {
+                severity: crate::Severity::Warning,
+                kind: CUTTING_UNPLACED,
+                parts: vec![piece.part.clone()],
+                message: format!(
+                    "The cutting plan of {} lays out no {}: {}.",
+                    plan.material, piece.part, piece.reason
+                ),
+                where_mm: None,
+                hint: "Give stock() a size the piece fits, or make the piece fit the stock."
+                    .to_owned(),
+                source_lines: Vec::new(),
+            })
+        })
+        .collect()
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -367,8 +395,9 @@ pub fn plans<'a>(
         .collect()
 }
 
-/// Best fit, longest first, on bars of the longest stock length; each bar
-/// then shrinks to the shortest stock length its pieces fit.
+/// Longest first, each bar the stock length its pieces fill best; a plan of a
+/// few dozen pieces then takes the least total stock length a bounded search
+/// finds, when that is less.
 fn cut_lengths(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -> Vec<Layout> {
     let mut lengths: Vec<f64> = stock.sizes_mm.iter().map(|size| size[0]).collect();
     lengths.sort_by(f64::total_cmp);
@@ -388,13 +417,14 @@ fn cut_lengths(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) 
             left.push(piece);
         }
     }
-    // The indices into `left` a bar of `length` takes: the first piece left, then each
-    // next that still fits, kerfs between them.
-    let fill = |left: &[Piece], length: f64| {
-        let mut taken = left[0].size[0];
-        let mut cut = vec![0];
-        for (index, piece) in left.iter().enumerate().skip(1) {
-            let needs = taken + stock.kerf_mm + piece.size[0];
+    let sizes: Vec<f64> = left.iter().map(|piece| piece.size[0]).collect();
+    // The indices into `sizes` of `open` a bar of `length` takes: the first, then
+    // each next that still fits, kerfs between them.
+    let fill = |open: &[usize], length: f64| {
+        let mut taken = sizes[open[0]];
+        let mut cut = vec![open[0]];
+        for &index in &open[1..] {
+            let needs = taken + stock.kerf_mm + sizes[index];
             if needs <= usable(length) + EPS {
                 taken = needs;
                 cut.push(index);
@@ -406,34 +436,39 @@ fn cut_lengths(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) 
     // fill best, the longer of two that fill it alike, where it was packed on the
     // longest length and only then shortened (review 2026-10-29 PG-64: 7 x 2 900 on
     // [3 000, 13 000] took 2 x 13 m, 78 %).
-    let mut bars: Vec<(Vec<Piece>, f64)> = Vec::new();
-    while !left.is_empty() {
+    let mut bars: Vec<(Vec<usize>, f64)> = Vec::new();
+    let mut open: Vec<usize> = (0..sizes.len()).collect();
+    while !open.is_empty() {
         let (length, cut) = lengths
             .iter()
             .copied()
-            .filter(|length| left[0].size[0] <= usable(*length) + EPS)
-            .map(|length| (length, fill(&left, length)))
+            .filter(|length| sizes[open[0]] <= usable(*length) + EPS)
+            .map(|length| (length, fill(&open, length)))
             .max_by(|(a, a_cut), (b, b_cut)| {
                 let filled = |length: f64, cut: &[usize]| {
-                    cut.iter().map(|index| left[*index].size[0]).sum::<f64>() / length
+                    cut.iter().map(|index| sizes[*index]).sum::<f64>() / length
                 };
                 filled(*a, a_cut)
                     .total_cmp(&filled(*b, b_cut))
                     .then(a.total_cmp(b))
             })
-            .unwrap_or_else(|| (longest, vec![0]));
-        let (taken, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut left)
-            .into_iter()
-            .enumerate()
-            .partition(|(index, _)| cut.contains(index));
-        left = rest.into_iter().map(|(_, piece)| piece).collect();
-        bars.push((taken.into_iter().map(|(_, piece)| piece).collect(), length));
+            .unwrap_or_else(|| (longest, vec![open[0]]));
+        open.retain(|index| !cut.contains(index));
+        bars.push((cut, length));
     }
+    // Filled one at a time, the bars need not be the least stock: 2 x 1 500 and
+    // 3 x 1 000 on [3 000, 5 000] took 9 m where 8 m hold them (review 2026-10-31 P3).
+    let greedy: f64 = bars.iter().map(|(_, length)| length).sum();
+    if let Some(better) = least_stock(&sizes, &lengths, &usable, stock.kerf_mm, greedy) {
+        bars = better;
+    }
+    let mut left: Vec<Option<Piece>> = left.into_iter().map(Some).collect();
     bars.into_iter()
         .map(|(cut, length)| {
             let mut at = stock.trim_mm;
             let placed: Vec<Placed> = cut
                 .into_iter()
+                .filter_map(|index| left[index].take())
                 .map(|piece| {
                     let placed = Placed {
                         part: piece.part,
@@ -456,12 +491,153 @@ fn cut_lengths(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) 
         .collect()
 }
 
+/// Pieces of one plan beyond this keep the bars filled one at a time.
+const SEARCHED_PIECES: usize = 48;
+
+/// Steps of the search for the least stock, so a plan stays quick to make.
+const SEARCH_STEPS: usize = 200_000;
+
+/// Bars of less total stock length than `bound` holding every piece of
+/// `sizes` (longest first), each with the indices of its pieces and its stock
+/// length, or `None` when the search finds none within its steps.
+fn least_stock(
+    sizes: &[f64],
+    lengths: &[f64],
+    usable: &dyn Fn(f64) -> f64,
+    kerf: f64,
+    bound: f64,
+) -> Option<Vec<(Vec<usize>, f64)>> {
+    struct Search<'a> {
+        sizes: &'a [f64],
+        lengths: &'a [f64],
+        room: Vec<f64>,
+        kerf: f64,
+        /// What is left of the pieces from each index on.
+        rest: Vec<f64>,
+        /// Open bars: pieces, stock length index, length taken.
+        bars: Vec<(Vec<usize>, usize, f64)>,
+        best: Option<Vec<(Vec<usize>, f64)>>,
+        best_total: f64,
+        steps: usize,
+    }
+    impl Search<'_> {
+        fn place(&mut self, index: usize, total: f64) {
+            self.steps += 1;
+            if self.steps > SEARCH_STEPS {
+                return;
+            }
+            if index == self.sizes.len() {
+                if total < self.best_total - EPS {
+                    self.best_total = total;
+                    self.best = Some(
+                        self.bars
+                            .iter()
+                            .map(|(pieces, length, _)| (pieces.clone(), self.lengths[*length]))
+                            .collect(),
+                    );
+                }
+                return;
+            }
+            // Every new bar is at least as long as the pieces it takes.
+            let free: f64 = self
+                .bars
+                .iter()
+                .map(|(_, length, taken)| self.room[*length] - taken)
+                .sum();
+            if total + (self.rest[index] - free).max(0.0) >= self.best_total - EPS {
+                return;
+            }
+            let size = self.sizes[index];
+            let mut tried: Vec<(usize, i64)> = Vec::new();
+            for bar in 0..self.bars.len() {
+                let (_, length, taken) = self.bars[bar];
+                let needs = taken + self.kerf + size;
+                let state = (length, key(taken));
+                if needs > self.room[length] + EPS || tried.contains(&state) {
+                    continue;
+                }
+                tried.push(state);
+                self.bars[bar].0.push(index);
+                self.bars[bar].2 = needs;
+                self.place(index + 1, total);
+                self.bars[bar].0.pop();
+                self.bars[bar].2 = taken;
+            }
+            for length in 0..self.lengths.len() {
+                if size <= self.room[length] + EPS {
+                    self.bars.push((vec![index], length, size));
+                    self.place(index + 1, total + self.lengths[length]);
+                    self.bars.pop();
+                }
+            }
+        }
+    }
+    if sizes.is_empty() || sizes.len() > SEARCHED_PIECES {
+        return None;
+    }
+    let mut rest = vec![0.0; sizes.len() + 1];
+    for index in (0..sizes.len()).rev() {
+        rest[index] = rest[index + 1] + sizes[index];
+    }
+    let mut search = Search {
+        sizes,
+        lengths,
+        room: lengths.iter().map(|length| usable(*length)).collect(),
+        kerf,
+        rest,
+        bars: Vec::new(),
+        best: None,
+        best_total: bound,
+        steps: 0,
+    };
+    search.place(0, 0.0);
+    search.best
+}
+
 #[derive(Clone, Copy)]
 struct Free {
     x: f64,
     y: f64,
     w: f64,
     h: f64,
+    /// Per sheet axis: it reaches into the trim the sheet keeps there.
+    edges: [bool; 2],
+}
+
+impl Free {
+    /// The part of this rectangle a piece spanning the sheet axes `spanned`
+    /// may take: whole along those (it keeps their factory edges, so the
+    /// rectangle must reach them), inside the trim along the others; `None`
+    /// when it cannot (review 2026-10-31 PG-81: a sheet keeping a factory edge
+    /// took only pieces spanning it too).
+    fn room(self, size: [f64; 2], spanned: [bool; 2], trim: f64, kerf: f64) -> Option<Self> {
+        let mut start = [self.x, self.y];
+        let mut length = [self.w, self.h];
+        let mut edges = self.edges;
+        for axis in 0..2 {
+            if spanned[axis] {
+                if !self.edges[axis] {
+                    return None;
+                }
+            } else if self.edges[axis] {
+                let low = start[axis].max(trim);
+                let high = (start[axis] + length[axis]).min(size[axis] - trim + kerf);
+                if high <= low {
+                    return None;
+                }
+                start[axis] = low;
+                length[axis] = high - low;
+                edges[axis] = false;
+            }
+        }
+        Some(Self {
+            x: start[0],
+            y: start[1],
+            w: length[0],
+            h: length[1],
+            edges,
+        })
+    }
 }
 
 struct Sheet {
@@ -472,19 +648,20 @@ struct Sheet {
     placed: Vec<Placed>,
 }
 
-/// Guillotine packing (best short side fit, the shorter leftover split off)
-/// on sheets of the largest stock size; each sheet then shrinks to the
-/// smallest stock size its pieces fit. Each piece takes its size plus one
+/// Guillotine packing (best short side fit, the shorter leftover split off).
+/// A piece no sheet takes opens one of the largest stock size it fits (review
+/// 2026-10-31 PG-80: of the largest area alone); each sheet then shrinks to
+/// the smallest stock size its pieces fit. Each piece takes its size plus one
 /// kerf, the usable sheet one kerf more than its trimmed size. A piece longer
 /// or wider than a stock sheet less its trim at both ends, up to the whole
 /// sheet, keeps that sheet's factory edge along that side: such sheets are not
-/// trimmed there and take only pieces spanning them the same way.
+/// trimmed there, and other pieces lie inside the trim.
 fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -> Vec<Layout> {
     let mut sizes: Vec<[f64; 2]> = stock.sizes_mm.iter().map(|s| [s[0], s[1]]).collect();
     sizes.sort_by(|a, b| (a[0] * a[1]).total_cmp(&(b[0] * b[1])));
-    let Some(&largest) = sizes.last() else {
+    if sizes.is_empty() {
         return Vec::new();
-    };
+    }
     let kerf = stock.kerf_mm;
     let trim = stock.trim_mm;
     let usable = |size: [f64; 2]| [size[0] - 2.0 * trim + kerf, size[1] - 2.0 * trim + kerf];
@@ -503,7 +680,7 @@ fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -
         Sheet {
             size,
             edges,
-            free: vec![Free { x, y, w, h }],
+            free: vec![Free { x, y, w, h, edges }],
             placed: Vec::new(),
         }
     };
@@ -532,20 +709,23 @@ fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -
             };
             [spanned(w - kerf, size[0]), spanned(h - kerf, size[1])]
         };
-        // (short side leftover, long side leftover, sheet, free rect, turned)
+        // (short side leftover, long side leftover, sheet, free rect, the
+        // part of it the piece may take, turned)
         let consider = |sheets: &[Sheet]| {
-            let mut best: Option<(f64, f64, usize, usize, bool)> = None;
+            let mut best: Option<(f64, f64, usize, usize, Free, bool)> = None;
             for (s, sheet) in sheets.iter().enumerate() {
                 for (f, free) in sheet.free.iter().enumerate() {
                     for &turned in &orientations {
-                        if spans(sheet.size, turned) != sheet.edges {
+                        let Some(room) =
+                            free.room(sheet.size, spans(sheet.size, turned), trim, kerf)
+                        else {
                             continue;
-                        }
+                        };
                         let [w, h] = footprint(turned);
-                        if w <= free.w + EPS && h <= free.h + EPS {
-                            let (dw, dh) = (free.w - w, free.h - h);
-                            let fit = (dw.min(dh), dw.max(dh), s, f, turned);
-                            if best.is_none_or(|b| (fit.0, fit.1) < (b.0, b.1)) {
+                        if w <= room.w + EPS && h <= room.h + EPS {
+                            let (dw, dh) = (room.w - w, room.h - h);
+                            let fit = (dw.min(dh), dw.max(dh), s, f, room, turned);
+                            if best.as_ref().is_none_or(|b| (fit.0, fit.1) < (b.0, b.1)) {
                                 best = Some(fit);
                             }
                         }
@@ -556,30 +736,39 @@ fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -
         };
         let mut best = consider(&sheets);
         if best.is_none() {
-            // The smallest stock sheet the piece spans and fits, else the
-            // largest, trimmed all round.
-            let edged = sizes.iter().find_map(|&size| {
-                orientations.iter().find_map(|&turned| {
+            // The smallest stock sheet the piece spans and fits, keeping its
+            // factory edges, else the largest it fits trimmed all round.
+            let mut openings: Vec<([f64; 2], [bool; 2])> = Vec::new();
+            for &size in &sizes {
+                for &turned in &orientations {
                     let edges = spans(size, turned);
-                    let free = fresh(size, edges).free[0];
-                    let [w, h] = footprint(turned);
-                    (edges.contains(&true) && w <= free.w + EPS && h <= free.h + EPS)
-                        .then_some((size, edges))
-                })
-            });
-            let (size, edges) = edged.unwrap_or((largest, [false, false]));
-            sheets.push(fresh(size, edges));
-            best = consider(&sheets);
+                    if edges.contains(&true) {
+                        openings.push((size, edges));
+                    }
+                }
+            }
+            openings.extend(sizes.iter().rev().map(|&size| (size, [false, false])));
+            for (size, edges) in openings {
+                sheets.push(fresh(size, edges));
+                best = consider(&sheets);
+                if best.is_some() {
+                    break;
+                }
+                sheets.pop();
+            }
         }
-        let Some((_, _, s, f, turned)) = best else {
-            sheets.pop();
+        let Some((_, _, s, f, room, turned)) = best else {
             let [l, w] = piece.size;
+            let stock_sizes = stock
+                .sizes_mm
+                .iter()
+                .map(|size| format!("{} x {}", size[0], size[1]))
+                .collect::<Vec<_>>()
+                .join(", ");
             unplaced.push(Unplaced {
                 part: piece.part,
                 reason: format!(
-                    "{l} x {w} mm does not fit the largest stock sheet {} x {} mm less its trim{}",
-                    largest[0],
-                    largest[1],
+                    "{l} x {w} mm does not fit any stock sheet less its trim: {stock_sizes} mm{}",
                     if piece.turned.is_some() {
                         format!(
                             ", laid with its {} along the sheet",
@@ -593,7 +782,9 @@ fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -
             continue;
         };
         let sheet = &mut sheets[s];
-        let free = sheet.free.swap_remove(f);
+        // What the room leaves of the rectangle is trim.
+        sheet.free.swap_remove(f);
+        let free = room;
         let [w, h] = footprint(turned);
         let [l, wd] = piece.size;
         sheet.placed.push(Placed {
@@ -612,12 +803,14 @@ fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -
                     y: free.y,
                     w: right_w,
                     h,
+                    edges: free.edges,
                 },
                 Free {
                     x: free.x,
                     y: free.y + h,
                     w: free.w,
                     h: top_h,
+                    edges: free.edges,
                 },
             )
         } else {
@@ -627,12 +820,14 @@ fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -
                     y: free.y,
                     w: right_w,
                     h: free.h,
+                    edges: free.edges,
                 },
                 Free {
                     x: free.x,
                     y: free.y + h,
                     w,
                     h: top_h,
+                    edges: free.edges,
                 },
             )
         };

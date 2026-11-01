@@ -167,6 +167,26 @@ fn underlay_binding_updates_the_profile_and_exact_slab_from_changed_source() {
     assert!((exact_volume(&app, "floor") - 4.0 * area * 200.0).abs() < 1.0);
 }
 
+/// Review 2026-10-31 P3: the heading of a round outline gave the area and perimeter of its
+/// chords, 3.141 m² for a circle of radius 1 m; it measures the arcs the data writes.
+#[test]
+fn the_heading_of_a_round_outline_measures_its_arcs() {
+    let drawing = "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+                   0\nSECTION\n2\nENTITIES\n0\nCIRCLE\n8\ntop\n10\n0\n20\n0\n40\n1000\n\
+                   0\nENDSEC\n0\nEOF\n";
+    let (mut app, mut bridge, offset) = imported(drawing);
+    from_underlay(
+        &mut app,
+        &mut bridge,
+        json!({"name": "TOP", "point_mm": [-offset[0], -offset[1]]}),
+    );
+    let written = source(&app);
+    assert!(
+        written.contains("area 3.142 m², perimeter 6.283 m, 0 holes"),
+        "{written}"
+    );
+}
+
 /// The floor of a room named in the drawing in one call: no lookup of the text or the
 /// region first, no second apply for the extrusion; it follows the room when it grows.
 #[test]
@@ -310,6 +330,10 @@ fn what_stands_in_a_room_on_other_layers_than_its_walls_is_not_cut_through_its_f
     );
     let written = source(&app);
     assert!(written.contains(measure), "{written}");
+    // Review 2026-10-31 UO-83: what is left out is said, a shaft on a layer of its own
+    // being no different to the lines than the wardrobe.
+    let left_out = "2 holes on layers [\"furniture\", \"stamps\"] left out";
+    assert!(written.contains(left_out), "{written}");
     evaluate_exact(&mut app);
     assert!((exact_volume(&app, "ROOM") - floor).abs() < 1.0);
     let id = app.document.current().underlays().next().unwrap().id;
@@ -330,7 +354,7 @@ fn what_stands_in_a_room_on_other_layers_than_its_walls_is_not_cut_through_its_f
             .find(|line| line.contains(&format!(" {name}:")))
             .unwrap();
         assert!(heading.contains(measure), "{heading}");
-        let (_, holes) = crate::live_bridge::underlay_program::underlay_area_outline(
+        let (_, holes, left_out) = crate::live_bridge::underlay_program::underlay_area_outline(
             &app,
             id,
             Some(point),
@@ -339,6 +363,11 @@ fn what_stands_in_a_room_on_other_layers_than_its_walls_is_not_cut_through_its_f
         .unwrap()
         .unwrap();
         assert_eq!(holes.len(), 1, "{name}: the window cuts the column only");
+        assert_eq!(
+            left_out.map(|left_out| (left_out.count, left_out.layers)),
+            Some((2, vec!["furniture".to_owned(), "stamps".to_owned()])),
+            "{name}"
+        );
     }
 }
 
@@ -757,6 +786,50 @@ fn a_floor_follows_the_room_its_walls_enclose_and_the_data_is_rewritten_in_place
         both.contains("# underlay data ROOM:"),
         "the room data stays: {both}"
     );
+}
+
+/// Review 2026-10-31 UO-84: every closed ring of an object after the largest was taken as
+/// a hole: a hatch of all the walls lost every island but the largest, and an island in a
+/// hole was cut out. The rings nest by what holds what: the holes are those directly in the
+/// outline, and an object of several outlines is refused with their count.
+#[test]
+fn an_objects_rings_nest_by_what_holds_what() {
+    let square = |x0: f64, y0: f64, side: f64| {
+        vec![
+            [x0, y0],
+            [x0 + side, y0],
+            [x0 + side, y0 + side],
+            [x0, y0 + side],
+        ]
+    };
+    // A slab with a hole, rings in any order and turn.
+    let mut hole = square(40.0, 40.0, 20.0);
+    hole.reverse();
+    let (outline, holes) =
+        crate::live_bridge::underlay_program::nested_rings(vec![hole, square(0.0, 0.0, 100.0)])
+            .unwrap();
+    assert_eq!(outline, square(0.0, 0.0, 100.0));
+    assert_eq!(holes.len(), 1);
+    let turn = holes[0]
+        .iter()
+        .zip(holes[0].iter().cycle().skip(1))
+        .map(|(a, b)| a[0] * b[1] - a[1] * b[0])
+        .sum::<f64>();
+    assert!(turn < 0.0, "a hole turns clockwise");
+    // Two islands, or an island in the hole: separate outlines, refused with their count.
+    for rings in [
+        vec![square(0.0, 0.0, 100.0), square(200.0, 0.0, 50.0)],
+        vec![
+            square(0.0, 0.0, 100.0),
+            square(20.0, 20.0, 60.0),
+            square(40.0, 40.0, 10.0),
+        ],
+    ] {
+        assert_eq!(
+            crate::live_bridge::underlay_program::nested_rings(rings),
+            Err(2)
+        );
+    }
 }
 
 /// Review 2026-10-29 UO-40: moving a drawing that areas found in more ways than the found

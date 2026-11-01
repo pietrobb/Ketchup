@@ -299,7 +299,36 @@ pub fn quote(model: &ProgramModel, bom: &Bom) -> Option<Quote> {
     let mut lines = Vec::new();
     let mut unpriced = Vec::new();
     let mut used = BTreeSet::new();
-    for ((kind, item), amounts) in items(bom) {
+    let items = items(bom);
+    // The kinds of item each name counts: a price names an item, not its kind, so a
+    // name of two kinds prices neither (review 2026-10-31 P3: a material and a bought
+    // item of one name shared one price).
+    let mut kinds: BTreeMap<&str, Vec<ItemKind>> = BTreeMap::new();
+    for (kind, item) in items.keys() {
+        kinds.entry(item.as_str()).or_default().push(*kind);
+    }
+    let shared: BTreeMap<String, String> = kinds
+        .into_iter()
+        .filter(|(_, kinds)| kinds.len() > 1)
+        .map(|(item, kinds)| {
+            let named: Vec<&str> = kinds.iter().map(|kind| kind.as_str()).collect();
+            (item.to_owned(), named.join(" and "))
+        })
+        .collect();
+    for ((kind, item), amounts) in items {
+        if let Some(named) = shared.get(&item)
+            && model.prices.contains_key(&item)
+        {
+            used.insert(item.clone());
+            unpriced.push(Unpriced {
+                kind,
+                reason: format!(
+                    "{item:?} names a {named}: a price() of it cannot tell which, so give them different names"
+                ),
+                item,
+            });
+            continue;
+        }
         let Some(price) = model.prices.get(&item) else {
             unpriced.push(Unpriced {
                 kind,

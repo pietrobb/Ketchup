@@ -35,6 +35,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_roots import package_files  # noqa: E402
 from check_test_sleeps import is_test_file  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +60,8 @@ TEST_MODULE = re.compile(
 COMPARISON = re.compile(r"(?<=\s)(<=?|>=?)(?=\s)")
 MEASURED = re.compile(
     r"\.elapsed\(\)|\.as_(?:millis|micros|nanos|secs(?:_f32|_f64)?)\(\)"
+    # The same time by subtraction or `duration_since` (review 2026-10-31 TST-80).
+    r"|Instant::now\(\)\s*-|\.duration_since\("
     r"|\b[a-z_0-9]*(?:elapsed|took|latency|duration)[a-z_0-9]*\b(?!\s*\()"
     r"|\b[a-z_0-9]+_(?:ms|us|ns|millis|micros|nanos|secs|seconds)\b(?!\s*\()"
     r"|\b[a-z_0-9]*(?:p50|p90|p95|p99|p999|percentile)[a-z_0-9]*\b(?!\s*\()")
@@ -215,7 +218,7 @@ def unignored_perf_tests(text: str) -> list[int]:
 
 def violations(root: Path = ROOT) -> list[str]:
     found = []
-    for path in sorted([*root.glob("crates/*/**/*.rs"), *root.glob("viewer/*/**/*.rs")]):
+    for path in package_files(root):
         relative = path.relative_to(root)
         if "target" in relative.parts:
             continue
