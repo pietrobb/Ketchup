@@ -498,9 +498,11 @@ fn a_client_exports_the_edited_drawing_as_a_dxf_that_imports_as_edited() {
     assert_eq!(again["kinds"], edited["kinds"], "{again}\n{edited}");
     assert_eq!(again["layers"], edited["layers"], "{again}\n{edited}");
 
-    // To a .dwg path the same drawing is written as DWG.
+    assert_eq!(answer.get("dwg_version"), None, "{answer}");
+    // To a .dwg path the same drawing is written as DWG, of the one version it writes,
+    // and the answer says which (review 2026-10-31 P3: it was AC1032 unsaid).
     let dwg = directory.path().join("edited.dwg");
-    bridge
+    let answer = bridge
         .execute(
             &mut app,
             ask(
@@ -510,6 +512,11 @@ fn a_client_exports_the_edited_drawing_as_a_dxf_that_imports_as_edited() {
             false,
         )
         .unwrap();
+    assert_eq!(
+        answer["dwg_version"],
+        ketchup_dwg::WRITTEN_VERSION,
+        "{answer}"
+    );
     bridge.execute(&mut app, import(&dwg), false).unwrap();
     let from_dwg = bridge
         .execute(
@@ -580,6 +587,24 @@ fn a_drawing_export_refusal_has_the_code_of_its_cause() {
         (
             refused(UnderlayRefusal::Dwg(dwg.clone())),
             "drawing_source_unavailable",
+        ),
+        // Review 2026-10-31 P3: the source is the right one, so passing it again
+        // repairs nothing.
+        (
+            refused(UnderlayRefusal::NotWritten(DxfEditRefusal::Malformed)),
+            "drawing_source_unwritable",
+        ),
+        (
+            refused(UnderlayRefusal::NotWritten(DxfEditRefusal::TooLarge)),
+            "drawing_source_unwritable",
+        ),
+        (
+            refused(UnderlayRefusal::Dwg(DwgRefusal::DxfTooLarge { limit: 1 })),
+            "drawing_source_unwritable",
+        ),
+        (
+            refused(UnderlayRefusal::Dwg(DwgRefusal::TooManyPairs { limit: 1 })),
+            "drawing_source_unwritable",
         ),
         (
             refused(UnderlayRefusal::DwgWrite(dwg)),

@@ -721,6 +721,7 @@ dialog-import-dxf-cancel = Zrušiť
 digest-imported-dxf = Canonical 2D podmnožina DXF bola importovaná z { $path }
 error-import-dxf = Import DXF z { $path } bol odmietnutý: { $reason }
 digest-imported-underlay = { $path } bol importovaný ako podklad: vrstvy { $layers }, čiary { $lines }, texty { $texts }
+digest-imported-underlay-not-beside = Leží { $km } km od podkladu { $first } v tých istých súradniciach, príliš ďaleko na to, aby model udržal oba tam, kde sú nakreslené, preto je umiestnený okolo vlastného stredu; v prípade potreby ho umiestnite nástrojom Osadiť podklad na model.
 error-underlay-lines = Čiary podkladu { $name } nemožno zobraziť: { $reason }
 dialog-underlay-unit-title = Jednotky podkladu
 dialog-underlay-unit-text = { $path } neudáva jednotku dĺžky. Vyberte jednotku, v ktorej je kreslený:
@@ -1642,6 +1643,7 @@ digest-underlay-exported-incomplete = Výkres so zmenami je zapísaný do { $pat
         [one] { $count } záznamu, ktorý čítačka DWG nevedela dekódovať alebo ktorý DWG nevie uložiť.
        *[other] { $count } záznamov, ktoré čítačka DWG nevedela dekódovať alebo ktoré DWG nevie uložiť.
     }
+digest-underlay-exported-dwg-version = Je to DWG AutoCAD 2018 ({ $version }) bez ohľadu na verziu zdroja; pre starší AutoCAD exportujte výkres do DXF.
 digest-underlay-export-failed = Výkres sa nezapísal: { $reason }
 digest-underlay-text-required = Najprv napíš text, potom klikni, kde začína
 digest-underlay-draw-off = Kresliace nástroje opäť kreslia do modelu

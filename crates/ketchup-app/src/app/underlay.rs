@@ -14,7 +14,7 @@ use ketchup_application::program_isolation::{
 };
 use ketchup_model::underlay::object_query::ObjectTree;
 use ketchup_model::underlay::placement::{
-    UnderlayFit, UnderlayFitError, geo_origin, plan_underlay_fit,
+    UnderlayFit, UnderlayFitError, geo_not_beside, geo_origin, plan_underlay_fit,
 };
 use ketchup_model::underlay::snap::UnderlaySnapIndex;
 use ketchup_model::underlay::{
@@ -309,6 +309,7 @@ impl KetchupApp {
             .file_stem()
             .map_or_else(|| "underlay".into(), |stem| stem.to_string_lossy());
         let key = sha256_bytes(&read.bytes);
+        let not_beside = geo_not_beside(&self.document.current(), read.read.offset_mm);
         let (batch, id) = plan_underlay(
             &self.document.current(),
             &name,
@@ -352,6 +353,17 @@ impl KetchupApp {
                 ("texts", read.read.texts.to_string()),
             ]),
         );
+        if let Some(not_beside) = not_beside {
+            let [x, y] = not_beside.apart_mm;
+            let note = self.catalog.format(
+                "digest-imported-underlay-not-beside",
+                &BTreeMap::from([
+                    ("first", not_beside.underlay_id.0.to_string()),
+                    ("km", format!("{:.1}", x.hypot(y) / 1_000_000.0)),
+                ]),
+            );
+            self.digest = format!("{} {note}", self.digest);
+        }
         Ok(id)
     }
 

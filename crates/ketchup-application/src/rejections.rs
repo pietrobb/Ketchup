@@ -157,6 +157,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Pass as source the DXF or DWG the drawing was imported from, unchanged since; if it changed, import it again and repeat the changes, then export again.",
     ),
     entry(
+        "drawing_source_unwritable",
+        Validation,
+        "source",
+        "The file the drawing was imported from is the right one, but it cannot be written back: its groups do not pair up into sections and entities, or it is larger than the writer holds; caused_by names which and the limit. Nothing was written.",
+        "Save the drawing again from the program that made it, as a smaller DXF if it is too large, import that, repeat the changes, then export again.",
+    ),
+    entry(
         "drawing_worker_failed",
         Io,
         "window",

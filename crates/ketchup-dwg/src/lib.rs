@@ -171,12 +171,63 @@ fn convert(dwg: &[u8], mut out: SectionWriter) -> Result<DwgDrawing, DwgError> {
 
 /// Writes a DXF drawing as a DWG file of [`WRITTEN_VERSION`].
 pub fn dxf_to_dwg(dxf: &[u8]) -> Result<Vec<u8>, DwgError> {
+    let document = read_dxf(dxf)?;
+    guarded(Stage::WriteDwg, || DwgWriter::write_to_vec(&document))
+}
+
+/// The DXF drawing `dxf` read for writing as DWG of [`WRITTEN_VERSION`]. An MTEXT the
+/// drawing gives no reference width (group 41) is not wrapped (width 0), where acadrust
+/// would give it its default 10 and wrap it after every word (review 2026-10-31 P3).
+fn read_dxf(dxf: &[u8]) -> Result<CadDocument, DwgError> {
     let source = dxf.to_vec();
     let mut document = guarded(Stage::ReadDxf, move || {
         DxfReader::from_reader(Cursor::new(source))?.read()
     })?;
     document.version = DxfVersion::AC1032;
-    guarded(Stage::WriteDwg, || DwgWriter::write_to_vec(&document))
+    for handle in mtexts_without_width(dxf) {
+        if let Some(EntityType::MText(text)) = document.get_entity_mut(Handle::new(handle)) {
+            text.rectangle_width = 0.0;
+        }
+    }
+    Ok(document)
+}
+
+/// The handles of the MTEXT records of the DXF text `dxf` without a group 41.
+fn mtexts_without_width(dxf: &[u8]) -> Vec<u64> {
+    let mut found = Vec::new();
+    // The record being read: an MTEXT's handle, and whether it has a width.
+    let mut mtext = None::<(Option<u64>, bool)>;
+    let mut finish = |mtext: &mut Option<(Option<u64>, bool)>| {
+        if let Some((Some(handle), false)) = mtext.take() {
+            found.push(handle);
+        }
+    };
+    let mut lines = dxf.split(|byte| *byte == b'\n').map(<[u8]>::trim_ascii);
+    while let (Some(code), Some(value)) = (lines.next(), lines.next()) {
+        let Some(code) = std::str::from_utf8(code)
+            .ok()
+            .and_then(|code| code.parse::<i32>().ok())
+        else {
+            return found;
+        };
+        match (code, &mut mtext) {
+            (0, _) => {
+                finish(&mut mtext);
+                mtext = value
+                    .eq_ignore_ascii_case(b"MTEXT")
+                    .then_some((None, false));
+            }
+            (5, Some((handle @ None, _))) => {
+                *handle = std::str::from_utf8(value)
+                    .ok()
+                    .and_then(|value| u64::from_str_radix(value, 16).ok());
+            }
+            (41, Some((_, width))) => *width = true,
+            _ => {}
+        }
+    }
+    finish(&mut mtext);
+    found
 }
 
 /// A DXF drawing written as DWG, with what could not be.
@@ -196,11 +247,7 @@ pub struct DwgWritten {
 /// # Errors
 /// As [`dxf_to_dwg`].
 pub fn dxf_to_dwg_leaving_out_custom_records(dxf: &[u8]) -> Result<DwgWritten, DwgError> {
-    let source = dxf.to_vec();
-    let mut document = guarded(Stage::ReadDxf, move || {
-        DxfReader::from_reader(Cursor::new(source))?.read()
-    })?;
-    document.version = DxfVersion::AC1032;
+    let mut document = read_dxf(dxf)?;
     let left_out = leave_out_custom_records(&mut document);
     let dwg = guarded(Stage::WriteDwg, || DwgWriter::write_to_vec(&document))?;
     Ok(DwgWritten { dwg, left_out })

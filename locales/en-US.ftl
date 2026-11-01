@@ -720,6 +720,7 @@ dialog-import-dxf-cancel = Cancel
 digest-imported-dxf = Imported canonical DXF 2D subset from { $path }
 error-import-dxf = DXF import from { $path } was refused: { $reason }
 digest-imported-underlay = Imported { $path } as an underlay: { $layers } layers, { $lines } lines, { $texts } texts
+digest-imported-underlay-not-beside = It lies { $km } km from underlay { $first } in the same coordinates, too far for the model to hold both where they are drawn, so it is placed at its own middle; place it with Fit underlay to model if needed.
 error-underlay-lines = The lines of underlay { $name } cannot be shown: { $reason }
 dialog-underlay-unit-title = Underlay units
 dialog-underlay-unit-text = { $path } declares no length unit. Choose the unit it is drawn in:
@@ -1667,6 +1668,7 @@ digest-underlay-exported-incomplete = The drawing with its changes was written t
         [one] { $count } record the DWG reader could not decode or a DWG cannot hold.
        *[other] { $count } records the DWG reader could not decode or a DWG cannot hold.
     }
+digest-underlay-exported-dwg-version = It is an AutoCAD 2018 DWG ({ $version }), whatever version the source was; for an older AutoCAD export the drawing to DXF.
 digest-underlay-export-failed = The drawing was not written: { $reason }
 digest-underlay-text-required = Type the text first, then click where it starts
 digest-underlay-draw-off = The drawing tools draw into the model again

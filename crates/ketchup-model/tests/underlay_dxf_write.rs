@@ -497,6 +497,82 @@ fn moved_entities_of_extrusion_minus_z_are_written_where_they_now_lie() {
     assert_same(&drawn(&again.lines, &again.layers), &drawn(&edited, names));
 }
 
+/// Review 2026-10-31 P3 (the rest of CD-69): a moved hatch of extrusion −Z still refused
+/// the export of the whole drawing. Its boundaries, seed points and pattern lie in the
+/// object coordinate system whose x is the world's −x, and are mapped there.
+#[test]
+fn moved_hatches_of_extrusion_minus_z_are_written_where_they_now_lie() {
+    let minus_z = "210\n0\n220\n0\n230\n-1\n";
+    let entities = ENTITIES
+        .replace(
+            "210\n0\n220\n0\n230\n1\n2\nSOLID\n70\n1\n71\n0\n91\n1\n92\n2\n72\n0\n73\n1\n93\n4\n\
+             10\n7000\n20\n0\n10\n8000\n20\n0\n10\n8000\n20\n1000\n10\n7000\n20\n1000\n",
+            &format!(
+                "{minus_z}2\nSOLID\n70\n1\n71\n0\n91\n1\n92\n2\n72\n0\n73\n1\n93\n4\n\
+                 10\n-7000\n20\n0\n10\n-8000\n20\n0\n10\n-8000\n20\n1000\n10\n-7000\n20\n1000\n"
+            ),
+        )
+        .replace(
+            "210\n0\n220\n0\n230\n1\n2\nUSER\n70\n0\n71\n0\n91\n1\n92\n1\n93\n4\n\
+             72\n1\n10\n12000\n20\n0\n11\n13000\n21\n0\n\
+             72\n1\n10\n13000\n20\n0\n11\n13000\n21\n1000\n\
+             72\n1\n10\n13000\n20\n1000\n11\n12000\n21\n1000\n\
+             72\n1\n10\n12000\n20\n1000\n11\n12000\n21\n0\n",
+            &format!(
+                "{minus_z}2\nUSER\n70\n0\n71\n0\n91\n1\n92\n1\n93\n4\n\
+                 72\n1\n10\n-12000\n20\n0\n11\n-13000\n21\n0\n\
+                 72\n1\n10\n-13000\n20\n0\n11\n-13000\n21\n1000\n\
+                 72\n1\n10\n-13000\n20\n1000\n11\n-12000\n21\n1000\n\
+                 72\n1\n10\n-12000\n20\n1000\n11\n-12000\n21\n0\n"
+            ),
+        )
+        .replace(
+            "98\n1\n10\n12500\n20\n500\n",
+            "98\n1\n10\n-12500\n20\n500\n",
+        );
+    let flipped = format!("{HEADER}{TABLES}{BLOCKS}{entities}0\nEOF\n");
+    assert_ne!(flipped, source());
+    let original = read(flipped.as_bytes());
+    let lines = &original.lines;
+    let names = &original.layers;
+    let plain = read(source().as_bytes());
+    assert_same(&drawn(lines, names), &drawn(&plain.lines, &plain.layers));
+    let layers = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| UnderlayLayer {
+            name: name.clone(),
+            tag: TagId(10 + index as u64),
+        })
+        .collect::<Vec<_>>();
+    let turn = similarity([500.0, 200.0], 30.0, 1.0, [0.0, 0.0], None);
+    let mirror = similarity(
+        [0.0, 0.0],
+        0.0,
+        1.0,
+        [0.0, 0.0],
+        Some([[0.0, 5000.0], [1.0, 5000.0]]),
+    );
+    let mut edits = UnderlayEdits::default();
+    for handle in [0xA8, 0xAB] {
+        edits.moved_objects.insert(id_of(lines, handle), turn);
+        edits.added.push(AddedObject::Copy {
+            of: id_of(lines, handle),
+            map: mirror,
+        });
+    }
+    let written = write_edited_dxf(
+        flipped.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let again = read(&written);
+    let edited = lines.clone().edited(&edits, &layers);
+    assert_same(&drawn(&again.lines, &again.layers), &drawn(&edited, names));
+}
+
 /// The number of group `code` in `record`, the `nth` of them.
 fn group(record: &str, code: &str, nth: usize) -> f64 {
     let lines = record.lines().collect::<Vec<_>>();
@@ -578,6 +654,39 @@ fn moved_entities_map_embedded_text_extended_data_and_slant() {
     close(group(&line, "1042", 0), 4.0);
     // The mirrored text slants the other way.
     close(group(&entity(&text, "A3"), "51", 0), 345.0);
+}
+
+/// Review 2026-10-31 P3: a stretched line (trim, extend) scaled the distances and
+/// scale factors of its extended data (1041, 1042) and its displacements (1012) by how
+/// much longer it became, as if the drawing had been scaled. A stretch reshapes the line;
+/// its data keep their size, as its widths do.
+#[test]
+fn a_stretched_line_keeps_the_sizes_of_its_extended_data() {
+    let entities = ENTITIES.replace(
+        "10\n0\n20\n0\n30\n0\n11\n4000\n21\n0\n31\n0\n",
+        "10\n0\n20\n0\n30\n0\n11\n4000\n21\n0\n31\n0\n1001\nKETCHUP\n\
+         1012\n10\n1022\n0\n1032\n0\n1041\n50\n1042\n2\n",
+    );
+    let source = format!("{HEADER}{TABLES}{BLOCKS}{entities}0\nEOF\n");
+    let original = read(source.as_bytes());
+    let mut edits = UnderlayEdits::default();
+    edits.stretched_objects.insert(
+        id_of(&original.lines, 0xA0),
+        [[0.5, 0.0, 0.0], [0.0, 0.5, 0.0]],
+    );
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        &original.lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let line = entity(&String::from_utf8(written).unwrap(), "A0");
+    let close = |got: f64, wanted: f64| assert!((got - wanted).abs() < 1e-6, "{got} ≠ {wanted}");
+    close(group(&line, "11", 0), 2000.0);
+    close(group(&line, "1012", 0), 10.0);
+    close(group(&line, "1041", 0), 50.0);
+    close(group(&line, "1042", 0), 2.0);
 }
 
 /// Groups, draw order and the extension dictionary of the line A0, which has data.
@@ -1119,6 +1228,81 @@ fn a_copy_never_takes_the_handle_of_an_attribute_vertex_or_seqend() {
     assert!(handles.contains(&"F02".to_owned()), "{handles:?}");
 }
 
+/// Review 2026-10-31 P3: a copy of a leader kept group 340, the annotation of the
+/// original, so two leaders claimed one note. The copy has no annotation of its own.
+#[test]
+fn a_copied_leader_does_not_claim_the_note_of_the_original() {
+    let entities = ENTITIES.replace(
+        "0\nENDSEC\n",
+        "0\nMTEXT\n5\nAC\n330\n1F\n100\nAcDbEntity\n8\nnotes\n100\nAcDbMText\n\
+         10\n600\n20\n-500\n30\n0\n40\n100\n1\nnote\n\
+         0\nLEADER\n5\nAD\n330\n1F\n100\nAcDbEntity\n8\nnotes\n100\nAcDbLeader\n\
+         71\n0\n72\n0\n73\n0\n74\n0\n75\n0\n76\n2\n\
+         10\n0\n20\n-500\n30\n0\n10\n500\n20\n-500\n30\n0\n340\nAC\n0\nENDSEC\n",
+    );
+    let source = format!("{HEADER}{TABLES}{BLOCKS}{entities}0\nEOF\n");
+    let original = read(source.as_bytes());
+    let mut edits = UnderlayEdits::default();
+    edits.added.push(AddedObject::Copy {
+        of: id_of(&original.lines, 0xAD),
+        map: [[1.0, 0.0, 0.0], [0.0, 1.0, -1000.0]],
+    });
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        &original.lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let text = String::from_utf8(written).unwrap();
+    let leaders = records(&text)
+        .into_iter()
+        .filter(|record| record.starts_with("0\nLEADER\n"))
+        .collect::<Vec<_>>();
+    assert_eq!(leaders.len(), 2, "{text}");
+    assert!(leaders[0].contains("\n340\nAC\n"), "{}", leaders[0]);
+    assert!(!leaders[1].contains("\n340\n"), "{}", leaders[1]);
+    assert!(leaders[1].contains("\n73\n3\n"), "{}", leaders[1]);
+}
+
+/// Review 2026-10-31 P3: only the ENTITIES section was cleared of references to removed
+/// entities, so a leader on a layout (a block) kept naming a removed note and a reactor
+/// a removed line. Every block's entities let go of them too.
+#[test]
+fn an_entity_in_a_layout_block_lets_go_of_a_removed_entity() {
+    let blocks = BLOCKS.replace(
+        "0\nENDSEC\n",
+        "0\nBLOCK\n5\n40\n8\n0\n2\n*Paper_Space\n70\n0\n10\n0\n20\n0\n\
+         0\nLEADER\n5\n41\n102\n{ACAD_REACTORS\n330\nA0\n102\n}\n8\n0\n\
+         71\n0\n72\n0\n73\n0\n74\n0\n75\n0\n76\n2\n\
+         10\n0\n20\n0\n30\n0\n10\n500\n20\n0\n30\n0\n340\nA3\n\
+         0\nENDBLK\n5\n42\n8\n0\n0\nENDSEC\n",
+    );
+    let source = format!("{HEADER}{TABLES}{blocks}{ENTITIES}0\nEOF\n");
+    let original = read(source.as_bytes());
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(id_of(&original.lines, 0xA0));
+    edits.removed_objects.insert(id_of(&original.lines, 0xA3));
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        &original.lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let text = String::from_utf8(written).unwrap();
+    let leader = records(&text)
+        .into_iter()
+        .find(|record| record.starts_with("0\nLEADER\n"))
+        .unwrap();
+    assert!(
+        leader.starts_with("0\nLEADER\n5\n41\n8\n0\n71\n"),
+        "{leader}"
+    );
+    assert!(!leader.contains("\n340\n"), "{leader}");
+    assert!(text.contains("0\nENDBLK\n5\n42\n"), "{text}");
+}
+
 /// A DXF R12 drawing: no entity has a handle. A line in paper space is not read.
 const R12: &str = concat!(
     "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n",
@@ -1222,5 +1406,138 @@ fn a_drawing_without_handles_is_written_with_its_edits() {
             EditedDxfError::Refused(DxfEditRefusal::NoHandle { object: 0 })
         ),
         "{error}"
+    );
+}
+
+/// Review 2026-10-31 P3: a character beyond U+FFFF written into a drawing before DXF 2007
+/// became `?`. It is the pair of UTF-16 units it is, each as `\U+XXXX`, and reads back.
+#[test]
+fn a_character_beyond_u_ffff_is_written_before_dxf_2007_and_reads_back() {
+    let source = source();
+    let original = read(source.as_bytes());
+    let mut edits = UnderlayEdits::default();
+    edits.added.push(AddedObject::Drawn {
+        layer: "notes".to_owned(),
+        shape: DrawnShape::Text {
+            anchor_mm: [0.0, -1000.0],
+            height_mm: 100.0,
+            rotation_deg: 0.0,
+            text: "Byt 𝔸 😀".to_owned(),
+        },
+    });
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        &original.lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let text = String::from_utf8(written.clone()).unwrap();
+    assert!(
+        text.contains("Byt \\U+D835\\U+DD38 \\U+D83D\\U+DE00\n"),
+        "{text}"
+    );
+    let again = read(&written);
+    assert!(
+        again
+            .lines
+            .layers()
+            .iter()
+            .flat_map(|layer| layer.texts())
+            .any(|text| text.text == "Byt 𝔸 😀"),
+        "{:?}",
+        again
+            .lines
+            .layers()
+            .iter()
+            .flat_map(|layer| layer.texts())
+            .map(|text| text.text.escape_unicode().to_string())
+            .collect::<Vec<_>>()
+    );
+    let mtext = source.replace(
+        "0\nENDSEC\n0\nEOF\n",
+        "0\nMTEXT\n8\nnotes\n10\n0\n20\n-2000\n40\n100\n1\nM \\U+D83D\\U+DE00\\Pdva\n\
+         0\nENDSEC\n0\nEOF\n",
+    );
+    assert!(
+        read(mtext.as_bytes())
+            .lines
+            .layers()
+            .iter()
+            .flat_map(|layer| layer.texts())
+            .any(|text| text.text == "M 😀\ndva")
+    );
+}
+
+/// Review 2026-10-31 P3: a polyline drawn into an R13 drawing was written as LWPOLYLINE,
+/// which came only with R14. It is a POLYLINE there, with its VERTEX and SEQEND marked as
+/// R13 marks them and owned by it.
+#[test]
+fn a_polyline_drawn_into_an_r13_drawing_is_one_r13_knows() {
+    let header = HEADER.replace("AC1015", "AC1012");
+    let entities = ENTITIES.split("0\nARC\n").next().unwrap().to_owned();
+    let source = format!("{header}{TABLES}{entities}0\nENDSEC\n0\nEOF\n");
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let mut edits = UnderlayEdits::default();
+    edits.added.push(AddedObject::Drawn {
+        layer: "walls".to_owned(),
+        shape: DrawnShape::Polyline {
+            points_mm: vec![[0.0, -2000.0], [3000.0, -2000.0], [3000.0, -2500.0]],
+            closed: true,
+        },
+    });
+
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let text = String::from_utf8(written.clone()).unwrap();
+    assert!(!text.contains("LWPOLYLINE"), "{text}");
+    let records = records(&text);
+    let at = records
+        .iter()
+        .position(|record| record.starts_with("0\nPOLYLINE\n"))
+        .unwrap_or_else(|| panic!("{text}"));
+    let polyline = &records[at];
+    assert!(polyline.contains("100\nAcDb2dPolyline\n"), "{polyline}");
+    let handle = |record: &str| {
+        let lines = record.lines().collect::<Vec<_>>();
+        lines
+            .chunks(2)
+            .find(|pair| pair[0] == "5")
+            .map(|pair| pair[1].to_owned())
+            .unwrap()
+    };
+    let owner = format!("330\n{}\n", handle(polyline));
+    let kinds = records[at + 1..at + 5]
+        .iter()
+        .map(|record| record.lines().nth(1).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(kinds, ["VERTEX", "VERTEX", "VERTEX", "SEQEND"]);
+    for vertex in &records[at + 1..at + 4] {
+        assert!(
+            vertex.contains("100\nAcDbVertex\n100\nAcDb2dVertex\n") && vertex.contains(&owner),
+            "{vertex}"
+        );
+    }
+    assert!(records[at + 4].contains(&owner), "{}", records[at + 4]);
+
+    let again = read(&written);
+    let layers = original
+        .layers
+        .iter()
+        .enumerate()
+        .map(|(index, name)| UnderlayLayer {
+            name: name.clone(),
+            tag: TagId(10 + index as u64),
+        })
+        .collect::<Vec<_>>();
+    assert_same(
+        &drawn(&again.lines, &again.layers),
+        &drawn(&lines.clone().edited(&edits, &layers), &original.layers),
     );
 }

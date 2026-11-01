@@ -440,7 +440,7 @@ impl DrawingExportTarget {
         &self,
         written: ketchup_application::program_isolation::UnderlayWritten,
     ) -> Value {
-        json!({
+        let mut answer = json!({
             "path": self.path,
             "bytes": written.bytes,
             "underlay_id": self.id.0,
@@ -450,7 +450,12 @@ impl DrawingExportTarget {
                 "record_type": record_type,
                 "count": count,
             })).collect::<Vec<_>>(),
-        })
+        });
+        // A DWG is written in one version whatever the source's was (review 2026-10-31 P3).
+        if crate::app::dwg_import::is_dwg_path(Path::new(&self.path)) {
+            answer["dwg_version"] = json!(ketchup_dwg::WRITTEN_VERSION);
+        }
+        answer
     }
 }
 
@@ -462,6 +467,7 @@ pub(super) fn drawing_export_code(error: &UnderlayExportError) -> &'static str {
         UnderlayReadError, UnderlayRefusal, UnderlayWorkerError,
     };
     use ketchup_model::import::DxfEditRefusal;
+    use ketchup_scheduler::protocol::DwgRefusal;
     match error {
         UnderlayExportError::NotFound(..) => "invalid_params",
         UnderlayExportError::NoSource(..) | UnderlayExportError::NoLines(..) => {
@@ -471,6 +477,11 @@ pub(super) fn drawing_export_code(error: &UnderlayExportError) -> &'static str {
             refusal,
         ))) => match refusal {
             UnderlayRefusal::DwgWrite(..) => "dwg_conversion_failed",
+            // The source is the drawing imported; it is what cannot be written back.
+            UnderlayRefusal::NotWritten(DxfEditRefusal::Malformed | DxfEditRefusal::TooLarge)
+            | UnderlayRefusal::Dwg(
+                DwgRefusal::DxfTooLarge { .. } | DwgRefusal::TooManyPairs { .. },
+            ) => "drawing_source_unwritable",
             UnderlayRefusal::NotWritten(
                 DxfEditRefusal::NoHandle { .. }
                 | DxfEditRefusal::HandleMissing { .. }

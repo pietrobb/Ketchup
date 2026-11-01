@@ -348,13 +348,13 @@ fn mtext_plain(raw: &str, fonts: &mut Vec<String>) -> String {
                 Some(literal @ ('\\' | '{' | '}')) => plain.push(literal),
                 Some('S') => plain.push_str(&parameter(&mut chars).replace(['^', '#'], "/")),
                 Some(kind @ ('U' | 'M')) if chars.peek() == Some(&'+') => {
-                    let length = if kind == 'U' { 5 } else { 6 };
+                    // Up to a pair of `\U+XXXX`, a character beyond U+FFFF.
                     let escape = std::iter::once(kind)
-                        .chain(chars.clone().take(length))
+                        .chain(chars.clone().take(12))
                         .collect::<String>();
-                    let character = escaped_character(&escape)
-                        .map_or(char::REPLACEMENT_CHARACTER, |(character, _)| character);
-                    chars.by_ref().take(length).for_each(drop);
+                    let (character, used) = escaped_character(&escape)
+                        .unwrap_or((char::REPLACEMENT_CHARACTER, if kind == 'U' { 6 } else { 7 }));
+                    chars.by_ref().take(used - 1).for_each(drop);
                     plain.push(character);
                 }
                 Some('F' | 'f') => {
@@ -387,8 +387,20 @@ fn escaped_character(escape: &str) -> Option<(char, usize)> {
             .flatten()
     };
     if let Some(code) = escape.strip_prefix("U+").and_then(|rest| rest.get(..4)) {
-        let character = hex(code).and_then(char::from_u32)?;
-        return Some((character, 6));
+        let unit = hex(code)?;
+        // A character beyond U+FFFF is the pair of its UTF-16 units, each escaped.
+        if (0xD800..0xDC00).contains(&unit)
+            && let Some(low) = escape
+                .get(6..)
+                .and_then(|rest| rest.strip_prefix("\\U+"))
+                .and_then(|rest| rest.get(..4))
+                .and_then(hex)
+                .filter(|low| (0xDC00..0xE000).contains(low))
+        {
+            let character = char::from_u32(0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00))?;
+            return Some((character, 13));
+        }
+        return Some((char::from_u32(unit)?, 6));
     }
     let rest = escape.strip_prefix("M+")?;
     let page = match rest.as_bytes().first()? {

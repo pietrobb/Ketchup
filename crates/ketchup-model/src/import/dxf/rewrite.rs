@@ -303,6 +303,8 @@ struct Drawing<'a> {
     next_handle: Option<u64>,
     /// Whether it is DXF 13 or later: entities carry subclass markers and their owner.
     subclassed: bool,
+    /// Whether it knows LWPOLYLINE: DXF 14 or later.
+    lightweight: bool,
     /// Whether its texts are UTF-8: DXF 2007 or later.
     utf8: bool,
     /// The owner (group 330) of the entities of model space.
@@ -368,6 +370,7 @@ impl<'a> Drawing<'a> {
             handseed: None,
             next_handle: None,
             subclassed: false,
+            lightweight: false,
             utf8: false,
             owner: None,
             layers: Vec::new(),
@@ -491,6 +494,7 @@ impl<'a> Drawing<'a> {
             .max()
             .map_or(1, |last| last.saturating_add(1));
         drawing.subclassed = version.as_slice() >= b"AC1012".as_slice();
+        drawing.lightweight = version.as_slice() >= b"AC1014".as_slice();
         drawing.utf8 = version.as_slice() >= b"AC1021".as_slice();
         drawing.owner = drawing.entities.iter().find_map(|entity| {
             let record =
@@ -820,6 +824,7 @@ impl<'a> Drawing<'a> {
             edits_at.push((pair.value().start..pair.end(), value));
         }
         edits_at.extend(objects_edits);
+        edits_at.extend(self.blocks_without(&removed));
         for (entity, replaced) in self.entities.iter().zip(replaced) {
             if let Some(replaced) = replaced {
                 let range =
@@ -1066,6 +1071,9 @@ impl<'a> Drawing<'a> {
             };
             let mut mapped = self.mapped_record(object, record, *start..end, &map)?;
             self.drop_references(record, &mut mapped, map.removed);
+            if copy && record == "LEADER" {
+                self.without_annotation(&mut mapped);
+            }
             if record == "DIMENSION" {
                 self.dimension_block(object, &mut mapped, &map.map, handles, blocks)?;
             }
@@ -1073,6 +1081,58 @@ impl<'a> Drawing<'a> {
             self.write_record(&mut out, &mapped, copy);
         }
         Ok(out)
+    }
+
+    /// The records of the blocks, layouts among them, that name any of the `removed`
+    /// handles, each written without them as an entity of model space is
+    /// ([`Self::drop_references`]; review 2026-10-31 P3). Each item replaces a byte range.
+    fn blocks_without(&self, removed: &BTreeSet<u64>) -> Vec<(Range<usize>, Vec<u8>)> {
+        let mut edits = Vec::new();
+        if removed.is_empty() {
+            return edits;
+        }
+        for block in &self.blocks {
+            let Some(endblk) = block.endblk else {
+                continue;
+            };
+            let starts = (block.start..endblk)
+                .filter(|&index| self.pairs[index].code == 0)
+                .collect::<Vec<_>>();
+            for (at, &start) in starts.iter().enumerate() {
+                let end = starts.get(at + 1).copied().unwrap_or(endblk);
+                let names = (start..end).any(|index| {
+                    (330..=369).contains(&self.pairs[index].code)
+                        && hex(self.value(index)).is_some_and(|handle| removed.contains(&handle))
+                });
+                if !names {
+                    continue;
+                }
+                let kind = String::from_utf8_lossy(self.value(start)).to_ascii_uppercase();
+                let mut pairs = (start..end).map(Out::Raw).collect::<Vec<_>>();
+                self.drop_references(&kind, &mut pairs, removed);
+                let mut out = Vec::new();
+                self.write_record(&mut out, &pairs, None);
+                edits.push((self.pairs[start].start()..self.pairs[end - 1].end(), out));
+            }
+        }
+        edits
+    }
+
+    /// A copy of the leader `record` without the annotation of the original (group 340),
+    /// made without one (group 73 = 3), so two leaders never claim one note (review
+    /// 2026-10-31 P3).
+    fn without_annotation(&self, record: &mut [Out]) {
+        for out in record.iter_mut() {
+            let index = match out {
+                Out::Raw(index) | Out::Set(index, _) => *index,
+                Out::New(..) | Out::Drop => continue,
+            };
+            match self.pairs[index].code {
+                340 => *out = Out::Drop,
+                73 => *out = Out::Set(index, "3".to_owned()),
+                _ => {}
+            }
+        }
     }
 
     /// The entity `entity` as read without what it names of the `removed` handles, if it
@@ -1303,7 +1363,7 @@ impl<'a> Drawing<'a> {
             _ if !minus_z => Ok(false),
             "LINE" | "POINT" | "ELLIPSE" | "SPLINE" | "MTEXT" => Ok(false),
             "CIRCLE" | "ARC" | "LWPOLYLINE" | "POLYLINE" | "VERTEX" | "TEXT" | "ATTRIB"
-            | "ATTDEF" | "INSERT" => Ok(true),
+            | "ATTDEF" | "INSERT" | "HATCH" | "MPOLYGON" => Ok(true),
             _ => Err(not_mappable().into()),
         }
     }
@@ -1435,7 +1495,12 @@ impl<'a> Drawing<'a> {
             let slant = (0.0 - self.number(own[at])?).rem_euclid(360.0);
             out[at] = Out::Set(own[at], number(slant));
         }
-        self.map_extended_data(&indices[own.len()..], &mut out[own.len()..], &mapping.map)?;
+        self.map_extended_data(
+            &indices[own.len()..],
+            &mut out[own.len()..],
+            &mapping.map,
+            length_scale,
+        )?;
         if rules.dimension
             && let Some(at) = position(42)
             && !matches!(dimension_kind()? & 7, 2 | 5)
@@ -1508,12 +1573,15 @@ impl<'a> Drawing<'a> {
 
     /// The extended data `xdata` mapped by `map`, of the world, into `out`: a world point
     /// (1011) moves, a displacement (1012) turns and scales, a direction (1013) only turns,
-    /// and a distance (1041) and a scale factor (1042) scale (review 2026-10-29 CD-70).
+    /// and a distance (1041) and a scale factor (1042) scale (review 2026-10-29 CD-70) by
+    /// `length_scale`: 1 for a stretch, which reshapes the line and not the drawing
+    /// (review 2026-10-31 P3).
     fn map_extended_data(
         &self,
         xdata: &[usize],
         out: &mut [Out],
         map: &Affine,
+        length_scale: f64,
     ) -> Result<(), EditedDxfError> {
         let [[a, b, _], [c, d, _]] = *map;
         let scale = (a * d - b * c).abs().sqrt();
@@ -1534,6 +1602,7 @@ impl<'a> Drawing<'a> {
                     let turned = [a * point[0] + b * point[1], c * point[0] + d * point[1]];
                     let [x, y] = match code {
                         1011 => apply(map, point),
+                        1012 if scale > 0.0 => turned.map(|value| value * length_scale / scale),
                         1012 => turned,
                         _ if scale > 0.0 => turned.map(|value| value / scale),
                         _ => point,
@@ -1542,7 +1611,9 @@ impl<'a> Drawing<'a> {
                     out[at + 1] = Out::Set(next, number(y));
                     skip = true;
                 }
-                1041 | 1042 => out[at] = Out::Set(index, number(self.number(index)? * scale)),
+                1041 | 1042 => {
+                    out[at] = Out::Set(index, number(self.number(index)? * length_scale));
+                }
                 _ => {}
             }
         }
@@ -1764,18 +1835,27 @@ impl<'a> Drawing<'a> {
             .iter()
             .find(|(name, _)| name == layer)
             .map_or_else(|| self.text(layer), |(_, raw)| raw.clone());
-        let head = |pair: &mut dyn FnMut(i32, &[u8]), kind: &str, handles: &mut Option<u64>| {
+        // The record's head, owned by `owner`; the handle it took.
+        let owned_head = |pair: &mut dyn FnMut(i32, &[u8]),
+                          kind: &str,
+                          handles: &mut Option<u64>,
+                          owner: Option<&[u8]>| {
             pair(0, kind.as_bytes());
-            if let Some(handle) = take_handle(handles) {
+            let handle = take_handle(handles);
+            if let Some(handle) = handle {
                 pair(5, format!("{handle:X}").as_bytes());
             }
             if self.subclassed {
-                if let Some(owner) = &self.owner {
+                if let Some(owner) = owner {
                     pair(330, owner);
                 }
                 pair(100, b"AcDbEntity");
             }
             pair(8, &layer_bytes);
+            handle
+        };
+        let head = |pair: &mut dyn FnMut(i32, &[u8]), kind: &str, handles: &mut Option<u64>| {
+            owned_head(pair, kind, handles, self.owner.as_deref());
         };
         let subclass = |pair: &mut dyn FnMut(i32, &[u8]), name: &str| {
             if self.subclassed {
@@ -1796,7 +1876,7 @@ impl<'a> Drawing<'a> {
                 point(&mut pair, 10, points_mm[0]);
                 point(&mut pair, 11, points_mm[1]);
             }
-            DrawnShape::Polyline { points_mm, closed } if self.subclassed => {
+            DrawnShape::Polyline { points_mm, closed } if self.lightweight => {
                 head(&mut pair, "LWPOLYLINE", handles);
                 subclass(&mut pair, "AcDbPolyline");
                 pair(90, points_mm.len().to_string().as_bytes());
@@ -1808,7 +1888,9 @@ impl<'a> Drawing<'a> {
                 }
             }
             DrawnShape::Polyline { points_mm, closed } => {
-                head(&mut pair, "POLYLINE", handles);
+                // DXF 12, or 13, which marks its records as subclasses.
+                let polyline = owned_head(&mut pair, "POLYLINE", handles, self.owner.as_deref());
+                subclass(&mut pair, "AcDb2dPolyline");
                 pair(66, b"1");
                 pair(70, if *closed { b"1" } else { b"0" });
                 point(
@@ -1816,11 +1898,14 @@ impl<'a> Drawing<'a> {
                     10,
                     [0.0 - frame.offset_mm[0], 0.0 - frame.offset_mm[1]],
                 );
+                let owner = polyline.map(|handle| format!("{handle:X}").into_bytes());
                 for at in points_mm {
-                    head(&mut pair, "VERTEX", handles);
+                    owned_head(&mut pair, "VERTEX", handles, owner.as_deref());
+                    subclass(&mut pair, "AcDbVertex");
+                    subclass(&mut pair, "AcDb2dVertex");
                     point(&mut pair, 10, *at);
                 }
-                head(&mut pair, "SEQEND", handles);
+                owned_head(&mut pair, "SEQEND", handles, owner.as_deref());
             }
             DrawnShape::Arc {
                 center_mm,
@@ -1864,7 +1949,7 @@ impl<'a> Drawing<'a> {
     }
 
     /// `text` as the drawing writes a text: UTF-8 from DXF 2007 on, else what is not
-    /// ASCII as `\U+XXXX`; a `%%` that would be read as a special character is kept as
+    /// ASCII as `\U+XXXX` for each of its UTF-16 units; a `%%` that would be read as a special character is kept as
     /// written, and what would end the line is a space.
     fn text(&self, text: &str) -> Vec<u8> {
         let mut out = String::with_capacity(text.len());
@@ -1874,10 +1959,12 @@ impl<'a> Drawing<'a> {
                 '%' if percent => out.push_str("%%%"),
                 character if character.is_control() => out.push(' '),
                 character if character.is_ascii() || self.utf8 => out.push(character),
-                character => match u16::try_from(u32::from(character)) {
-                    Ok(unit) => out.push_str(&format!("\\U+{unit:04X}")),
-                    Err(_) => out.push('?'),
-                },
+                // Beyond U+FFFF its two UTF-16 units, as a UTF-16 CAD writes it.
+                character => {
+                    for unit in character.encode_utf16(&mut [0; 2]) {
+                        out.push_str(&format!("\\U+{unit:04X}"));
+                    }
+                }
             }
         }
         out.into_bytes()

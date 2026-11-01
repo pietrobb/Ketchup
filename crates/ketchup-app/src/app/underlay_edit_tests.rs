@@ -791,7 +791,8 @@ fn tools_export_drawing_writes_the_edited_drawing_as_dxf() {
     std::fs::write(&source, PLAN).unwrap();
     let dialogs = dialogs::ScriptedFileDialogs::new()
         .queue_import(ImportFormat::Dxf, &source)
-        .queue_export(&output);
+        .queue_export(&output)
+        .queue_export(directory.path().join("edited.dwg"));
     let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
     app.dispatch_file_command(AppCommand::ImportDrawingUnderlay);
     let mut harness = shell_of(app);
@@ -821,6 +822,24 @@ fn tools_export_drawing_writes_the_edited_drawing_as_dxf() {
     )
     .unwrap();
     assert_eq!(again.lines.segment_count(), 1);
+    assert!(
+        !app.digest.contains(ketchup_dwg::WRITTEN_VERSION),
+        "{}",
+        app.digest
+    );
+
+    // A DWG is written in the one version Kečup writes, and the window says which
+    // (review 2026-10-31 P3).
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExportUnderlayDwg);
+    let app = harness.state();
+    assert!(app.digest.contains("edited.dwg"), "{}", app.digest);
+    assert!(
+        app.digest.contains(ketchup_dwg::WRITTEN_VERSION),
+        "{}",
+        app.digest
+    );
 }
 
 /// Review 2026-10-29 SEC-60: in the window the drawing is written back on a thread while

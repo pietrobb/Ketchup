@@ -136,19 +136,42 @@ pub fn geo_origin(snapshot: &Snapshot) -> Option<[f64; 2]> {
 /// first underlay of `snapshot` that was moved too, and by the difference of the two
 /// offsets from it, so that drawings in one national grid lie on each other wherever the
 /// median of each moved it. Identity for a drawing not moved, the first one moved, or one
-/// so far from the first that it would leave the model.
+/// so far from the first that it would leave the model ([`geo_not_beside`]).
 pub(super) fn geo_placement(snapshot: &Snapshot, offset_mm: [f64; 2]) -> Transform {
+    geo_fit(snapshot, offset_mm).unwrap_or_else(|_| Transform::identity())
+}
+
+/// A drawing of the same grid as the first moved underlay `underlay_id` that lies too far
+/// from it, `apart_mm`, to be placed where the grid puts it inside the model: it lies at
+/// its own middle instead (review 2026-10-31 P3, UL-41).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GeoNotBeside {
+    pub underlay_id: UnderlayId,
+    pub apart_mm: [f64; 2],
+}
+
+/// Whether a drawing moved by `offset_mm` is not placed beside the first moved underlay of
+/// `snapshot`, as [`geo_placement`] leaves it where it is.
+#[must_use]
+pub fn geo_not_beside(snapshot: &Snapshot, offset_mm: [f64; 2]) -> Option<GeoNotBeside> {
+    geo_fit(snapshot, offset_mm).err()
+}
+
+fn geo_fit(snapshot: &Snapshot, offset_mm: [f64; 2]) -> Result<Transform, GeoNotBeside> {
     let Some(first) = first_moved(snapshot) else {
-        return Transform::identity();
+        return Ok(Transform::identity());
     };
     if offset_mm == [0.0; 2] {
-        return Transform::identity();
+        return Ok(Transform::identity());
     }
-    let [x, y] = [0, 1].map(|axis| offset_mm[axis] - first.offset_mm()[axis]);
-    Transform::from_translation(x, y, 0.0)
+    let apart_mm = [0, 1].map(|axis| offset_mm[axis] - first.offset_mm()[axis]);
+    Transform::from_translation(apart_mm[0], apart_mm[1], 0.0)
         .ok()
         .and_then(|apart| in_range(first.placement.compose(apart)).ok())
-        .unwrap_or_else(Transform::identity)
+        .ok_or(GeoNotBeside {
+            underlay_id: first.id,
+            apart_mm,
+        })
 }
 
 /// A two-point fit: the underlay's new placement, how it turned and scaled, and by how much

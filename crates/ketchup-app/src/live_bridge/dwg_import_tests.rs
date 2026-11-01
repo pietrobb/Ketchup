@@ -547,7 +547,31 @@ fn drawings_in_one_national_grid_kilometres_apart_lie_on_each_other() {
             json!([x * 1000.0, -1_200_000_000.0]),
             "{name}"
         );
+        assert_eq!(
+            plan["underlay"]["not_beside"],
+            Value::Null,
+            "{name}: {plan}"
+        );
     }
+
+    // Review 2026-10-31 P3 (UL-41): a plan 40 km away cannot lie where the grid puts it,
+    // inside the model; it lies at its own middle, and the answer and the window say so.
+    let remote = bridge
+        .execute(
+            &mut app,
+            import_underlay(&drawing("remote.dxf", -540_000.0)),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let not_beside = &remote["underlay"]["not_beside"];
+    assert_eq!(not_beside["underlay_id"], map["underlay_id"], "{remote}");
+    let apart: [f64; 2] = serde_json::from_value(not_beside["apart_mm"].clone()).unwrap();
+    assert!(
+        (apart[0] + 40_000_000.0).abs() < 1_000.0 && apart[1].abs() < 1_000.0,
+        "{remote}"
+    );
+    let digest = app.action_digest();
+    assert!(digest.contains("40") && digest.contains("km"), "{digest}");
 }
 
 /// Review 2026-10-29 UL-60: a drawing moved on import and stood up as a view does not set

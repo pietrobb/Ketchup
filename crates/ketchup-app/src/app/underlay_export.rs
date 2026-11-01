@@ -389,6 +389,14 @@ impl KetchupApp {
                 &BTreeMap::from([("reason", error.to_string())]),
             ),
         };
+        // A DWG is written in one version whatever the source's was (review 2026-10-31 P3).
+        if result.is_ok() && crate::app::dwg_import::is_dwg_path(output) {
+            self.digest.push(' ');
+            self.digest.push_str(&self.catalog.format(
+                "digest-underlay-exported-dwg-version",
+                &BTreeMap::from([("version", ketchup_dwg::WRITTEN_VERSION.to_owned())]),
+            ));
+        }
         // The file named is the drawing's source: the next export does not ask again.
         if let (Ok(_), Some(source)) = (result, named_source) {
             self.file.activity.underlay.sources.insert(id, source);
