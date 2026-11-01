@@ -3085,6 +3085,11 @@ fn machined_nodes(
         if depth_bits.is_some() && blind_cut_enters_at_end(graph, stock, profile, interval)? {
             machining = entering_from_end(machining);
         }
+        // A cut through all runs past both faces; it is machined where the
+        // stock is.
+        if depth_bits.is_none() {
+            machining = within_stock(machining, graph.node_bounds_mm(stock.id).ok().flatten()?)?;
+        }
         let kind = if matches!(machining, GeneralMachiningGeometry::CircularDrill { .. }) {
             GeneralManufacturingKind::CircularDrill
         } else if depth_bits.is_none() {

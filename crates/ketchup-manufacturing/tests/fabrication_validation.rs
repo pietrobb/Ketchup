@@ -727,14 +727,18 @@ fn btlx_of_a_60_by_140_member_centred_on_its_axis_maps_width_height_and_corner()
 
 #[test]
 fn the_house_blank_check_catches_a_processing_half_a_member_out_of_its_frame() {
-    // The through cut runs 1 mm past both end faces. Its frame moved by half
-    // the length (a corner placed at the member's centre, MF-2) still
-    // overlaps the blank, yet leaves it by 500 mm; mirrored across the width
-    // it leaves the blank by 30 mm.
-    let xml = std::str::from_utf8(include_bytes!(
+    // A contour run 1 mm past both end faces passes within the cutter margin.
+    // Its frame moved by half the length (a corner placed at the member's
+    // centre, MF-2) still overlaps the blank, yet leaves it by 500 mm;
+    // mirrored across the width it leaves the blank by 30 mm.
+    let exact = std::str::from_utf8(include_bytes!(
         "fixtures/btlx/rectangular-through-cut-2.3.1.btlx"
     ))
     .unwrap();
+    let overrun = exact
+        .replace("<ReferencePoint X=\"0\"", "<ReferencePoint X=\"-1\"")
+        .replace("Depth=\"1000\"", "Depth=\"1002\"");
+    let xml = overrun.as_str();
     assert_btlx_machining_lies_in_its_blank_within(xml, "through cut", HOUSE_CUTTER_MARGIN_MM);
     let overshoots = btlx_machining_overshoots(xml);
     assert_eq!(overshoots.len(), 1);
@@ -927,13 +931,21 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
         Err(GeneralFabricationError::ExportBlocked)
     );
 
+    // Review 2026-10-31 MF-82: a profile cut through all is machined from end
+    // face to end face of the 1 000 mm part, not 1 mm past each, and its depth
+    // is not bounded.
     let (through_cut_snapshot, through_cut) = rectangular_through_cut_fabrication_projection();
-    assert_eq!(
-        through_cut
-            .btlx_2_3_1_export(&through_cut_snapshot)
-            .unwrap(),
-        include_bytes!("fixtures/btlx/rectangular-through-cut-2.3.1.btlx")
+    let through_xml = through_cut
+        .btlx_2_3_1_export(&through_cut_snapshot)
+        .unwrap();
+    assert_btlx_golden(&through_xml, "rectangular-through-cut-2.3.1.btlx");
+    let through_xml = String::from_utf8(through_xml).unwrap();
+    assert!(
+        through_xml.contains("<ReferencePoint X=\"0\" Y=\"0\" Z=\"0\"/>")
+            && through_xml.contains("<Contour DepthBounded=\"no\" Depth=\"1000\""),
+        "{through_xml}"
     );
+    assert_btlx_machining_lies_in_its_blank(&through_xml, "through cut");
 
     let (boolean_cut_snapshot, boolean_cut) =
         graph_fabrication_projection(BooleanOperation::Cut, true, "m17-btlx-boolean-cut");
