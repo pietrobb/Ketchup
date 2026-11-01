@@ -2375,6 +2375,7 @@ dependencies = [
  "pollster",
  "raw-window-handle",
  "rfd",
+ "same-file",
  "serde",
  "serde_json",
  "sys-locale",

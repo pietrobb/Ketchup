@@ -41,6 +41,10 @@ impl KetchupApp {
                 {
                     Some(refused("error-startup-viewer-package", &path))
                 }
+                // Opening it as a document would lock it and fail on its content.
+                Ok(path) if super::import_file::import_format(&path).is_some() => {
+                    Some(refused("error-startup-import", &path))
+                }
                 Ok(path) if !path.is_file() => Some(refused("error-startup-missing", &path)),
                 Ok(path) => {
                     self.queue_open_document_path(&path);
@@ -87,12 +91,17 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let viewer = directory.path().join("kitchen.ketchup-view");
         std::fs::write(&viewer, b"package").unwrap();
+        // Review 2026-10-31 P3: `Ketchup plan.dxf` left a lock beside the
+        // drawing and ended in a general error.
+        let drawing = directory.path().join("plan.DXF");
+        std::fs::write(&drawing, b"0\nEOF\n").unwrap();
         let missing = directory.path().join("missing.ketchup");
         let cases = [
             (OsString::from("--help"), "error-startup-switch"),
             (directory.path().into(), "error-startup-folder"),
             (missing.clone().into(), "error-startup-missing"),
             (viewer.clone().into(), "error-startup-viewer-package"),
+            (drawing.clone().into(), "error-startup-import"),
         ];
         for (argument, key) in cases {
             let mut app = KetchupApp::new();
@@ -109,7 +118,13 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect::<Vec<_>>();
         left.sort();
-        assert_eq!(left, [OsString::from("kitchen.ketchup-view")]);
+        assert_eq!(
+            left,
+            [
+                OsString::from("kitchen.ketchup-view"),
+                OsString::from("plan.DXF")
+            ]
+        );
 
         let mut app = KetchupApp::new();
         app.queue_startup_arguments(vec![missing.into(), viewer.into()]);
