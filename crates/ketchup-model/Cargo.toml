@@ -13,8 +13,8 @@ publish.workspace = true
 default = []
 # Test doubles for exact evaluation results; see `src/testing.rs`.
 testing = []
-# Every file Save writes also goes to `KETCHUP_SAVED_FILES_DIR`, for Kečup 0.2.0 to
-# open (`scripts/release_0_2_0_reads.py`).
+# Every file Save writes also goes to `KETCHUP_SAVED_FILES_DIR`, for each released
+# Kečup to open (`scripts/release_reads.py`).
 saved-files = []
 
 [dependencies]

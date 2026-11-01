@@ -336,10 +336,10 @@ fn a_sheet_kecup_0_2_0_refuses_is_not_written_as_format_103() {
 
 /// The files of these tests as Save writes them now, each in the format its document
 /// needs (review 2026-10-29 proposal 5.4); with `KETCHUP_TEST_REPORT_DIR` set they are
-/// written there as `release-0.2.0-<format>-<name>`. `scripts/release_0_2_0_reads.py`
-/// opens these with the persistence of the `v0.2.0` tag among every file the tests save.
+/// written there as `saved-<format>-<name>`. `scripts/release_reads.py` opens these
+/// with the persistence of each released tag among every file the tests save.
 #[test]
-fn files_for_kecup_0_2_0_are_in_the_format_their_document_needs() {
+fn files_for_released_versions_are_in_the_format_their_document_needs() {
     let mut files = vec![(
         "empty".to_owned(),
         DocumentStore::new(),
@@ -404,7 +404,7 @@ fn files_for_kecup_0_2_0_are_in_the_format_their_document_needs() {
         };
         assert_eq!(audit.source_schema, schema, "{name}");
         if let Some(path) =
-            ketchup_test_env::report_path(&format!("release-0.2.0-{schema}-{name}.ketchup"))
+            ketchup_test_env::report_path(&format!("saved-{schema}-{name}.ketchup"))
         {
             std::fs::write(path, saved).unwrap();
         }
