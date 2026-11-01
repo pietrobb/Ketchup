@@ -472,6 +472,120 @@ impl StepImportEvidence {
     }
 }
 
+/// A shape the exact worker left out of a part it read: its position among
+/// the part's shapes from 0, its kind ("solid", ...), the source entity it
+/// was read from (STEP `#n`, IGES `Dn`) and why.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImportRejectedShape {
+    pub ordinal: u32,
+    pub kind: String,
+    pub source_entity: Option<u32>,
+    pub reason: String,
+}
+
+/// A part of an exact source the worker could not read, and why.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImportRejectedPart {
+    pub index: u32,
+    pub name: String,
+    pub reason: String,
+}
+
+impl ImportRejectedShape {
+    /// "solid 2 (entity #720) encloses no volume".
+    #[must_use]
+    pub fn describe(&self) -> String {
+        let entity = self
+            .source_entity
+            .map(|entity| format!(" (entity #{entity})"))
+            .unwrap_or_default();
+        format!(
+            "{} {}{entity} {}",
+            self.kind,
+            u64::from(self.ordinal) + 1,
+            self.reason
+        )
+    }
+}
+
+/// `text` as a diagnostic subject: control characters as spaces, cut at a
+/// character boundary to the text limit.
+fn diagnostic_subject(text: &str) -> String {
+    let mut subject = String::new();
+    for character in text.chars() {
+        let character = if character.is_control() {
+            ' '
+        } else {
+            character
+        };
+        if subject.len() + character.len_utf8() > limits::TEXT_BYTES {
+            break;
+        }
+        subject.push(character);
+    }
+    subject
+}
+
+/// Refusals named one by one before the rest are only counted.
+const MAX_NAMED_REFUSALS: usize = 256;
+
+/// One warning per part the worker could not read and per shape it left out
+/// of a part it read, each naming the part and the reason; equal ones are
+/// counted together, and past `MAX_NAMED_REFUSALS` the rest of a code are
+/// counted in one warning without a subject.
+fn refusal_diagnostics<'a>(
+    prefix: &str,
+    rejected_parts: &[ImportRejectedPart],
+    parts: impl Iterator<Item = (&'a str, &'a [ImportRejectedShape])>,
+) -> Result<Vec<ImportDiagnostic>, ImportContractError> {
+    let mut refusals = Vec::new();
+    for part in rejected_parts {
+        refusals.push((
+            format!("{prefix}_part_refused"),
+            format!("{}: {}", part.name, part.reason),
+        ));
+    }
+    for (name, shapes) in parts {
+        for shape in shapes {
+            refusals.push((
+                format!("{prefix}_shape_refused"),
+                format!("{name}: {}", shape.describe()),
+            ));
+        }
+    }
+    let mut counts = BTreeMap::<(String, Option<String>), u32>::new();
+    for (code, subject) in refusals {
+        let subject = Some(diagnostic_subject(&subject)).filter(|subject| !subject.is_empty());
+        let key = if counts.len() < MAX_NAMED_REFUSALS
+            || counts.contains_key(&(code.clone(), subject.clone()))
+        {
+            (code, subject)
+        } else {
+            (code, None)
+        };
+        *counts.entry(key).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .map(|((code, subject), count)| {
+            ImportDiagnostic::new(ImportDiagnosticSeverity::Warning, code, subject, count)
+        })
+        .collect()
+}
+
+/// Whether the parts read and refused are told apart by strictly increasing,
+/// disjoint indices, the evidence of each refusal valid text.
+fn exact_part_indices_valid(read: &[u32], rejected: &[ImportRejectedPart]) -> bool {
+    let valid_text = |value: &str| !value.is_empty() && !value.chars().any(char::is_control);
+    read.windows(2).all(|pair| pair[0] < pair[1])
+        && rejected
+            .windows(2)
+            .all(|pair| pair[0].index < pair[1].index)
+        && rejected
+            .iter()
+            .all(|part| read.binary_search(&part.index).is_err() && valid_text(&part.name))
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct StepXdePartEvidence {
     pub index: u32,
@@ -479,6 +593,7 @@ pub struct StepXdePartEvidence {
     pub name_from_source: bool,
     pub color: Option<[u8; 3]>,
     pub exact: StepImportEvidence,
+    pub rejected_shapes: Vec<ImportRejectedShape>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -496,8 +611,11 @@ pub struct StepXdeNodeEvidence {
 pub struct StepXdeImportEvidence {
     pub source_sha256: [u8; 32],
     pub source_byte_len: u64,
+    /// The parts read, by increasing index; an index of a part not read is
+    /// in `rejected_parts`, and nodes placing it are left out of the import.
     pub parts: Vec<StepXdePartEvidence>,
     pub nodes: Vec<StepXdeNodeEvidence>,
+    pub rejected_parts: Vec<ImportRejectedPart>,
 }
 
 /// Upper bound on a derived STEP display mesh.
@@ -848,15 +966,29 @@ pub fn plan_step_xde_import(
         || evidence.source_byte_len != source.len() as u64
         || evidence.parts.is_empty()
         || evidence.parts.len() > MAX_IMPORT_OUTPUTS
+        || evidence.rejected_parts.len() > MAX_IMPORT_OUTPUTS
         || evidence.nodes.is_empty()
         || evidence.nodes.len() > MAX_IMPORT_OUTPUTS
     {
         return Err(StepImportPlanError::InvalidWorkerEvidence);
     }
     let source_unit = evidence.parts[0].exact.source_unit;
-    for (index, part) in evidence.parts.iter().enumerate() {
-        if part.index as usize != index
-            || validate_text(&part.name).is_err()
+    let read_indices = evidence
+        .parts
+        .iter()
+        .map(|part| part.index)
+        .collect::<Vec<_>>();
+    if !exact_part_indices_valid(&read_indices, &evidence.rejected_parts) {
+        return Err(StepImportPlanError::InvalidWorkerEvidence);
+    }
+    let rejected = |part: u32| {
+        evidence
+            .rejected_parts
+            .binary_search_by_key(&part, |rejected| rejected.index)
+            .is_ok()
+    };
+    for part in &evidence.parts {
+        if validate_text(&part.name).is_err()
             || !exact_body_evidence_valid(&part.exact)
             || part.exact.source_unit != source_unit
         {
@@ -871,7 +1003,7 @@ pub fn plan_step_xde_import(
                 .is_some_and(|parent| parent as usize >= index)
             || node
                 .part_index
-                .is_some_and(|part| part as usize >= evidence.parts.len())
+                .is_some_and(|part| read_indices.binary_search(&part).is_err() && !rejected(part))
             || node
                 .parent_id
                 .is_some_and(|parent| evidence.nodes[parent as usize].part_index.is_some())
@@ -879,6 +1011,14 @@ pub fn plan_step_xde_import(
             return Err(StepImportPlanError::InvalidWorkerEvidence);
         }
     }
+    // Where each part read lies in `parts`, by its index.
+    let position = |part: u32| read_indices.binary_search(&part).ok();
+    // The nodes imported: all but those placing a part not read.
+    let kept_nodes = evidence
+        .nodes
+        .iter()
+        .filter(|node| node.part_index.is_none_or(|part| !rejected(part)))
+        .collect::<Vec<_>>();
     if !evidence.nodes.iter().any(|node| node.parent_id.is_none())
         || evidence.parts.iter().any(|part| {
             !evidence
@@ -923,7 +1063,7 @@ pub fn plan_step_xde_import(
         .iter()
         .filter(|node| node.part_index.is_none())
         .count();
-    let occurrence_count = evidence.nodes.len() - group_count;
+    let occurrence_count = kept_nodes.len() - group_count;
     let group_start = next_range(
         snapshot.groups().map(|item| item.id().0).max().unwrap_or(0),
         group_count,
@@ -984,14 +1124,15 @@ pub fn plan_step_xde_import(
     let mut next_group = group_start;
     let mut next_occurrence = occurrence_start;
     let mut assembly_color_flattened = 0_u32;
-    for node in &evidence.nodes {
+    for &node in &kept_nodes {
         let parent = node.parent_id.map(|id| groups[&id]);
         if let Some(part_index) = node.part_index {
+            let part_position = position(part_index).expect("kept nodes place parts read");
             let occurrence_id = OccurrenceId(next_occurrence);
             next_occurrence += 1;
             commands.push(CanonicalCommand::CreateOccurrence {
                 id: occurrence_id,
-                definition_id: definitions[part_index as usize],
+                definition_id: definitions[part_position],
                 name: node.name.clone(),
                 transform: node.transform,
                 parent,
@@ -1005,7 +1146,7 @@ pub fn plan_step_xde_import(
                 color = evidence.nodes[parent_id as usize].color;
                 ancestor = evidence.nodes[parent_id as usize].parent_id;
             }
-            color = color.or(evidence.parts[part_index as usize].color);
+            color = color.or(evidence.parts[part_position].color);
             if color.is_some() {
                 commands.push(CanonicalCommand::SetOccurrenceColor {
                     id: occurrence_id,
@@ -1036,13 +1177,11 @@ pub fn plan_step_xde_import(
         .iter()
         .filter(|part| !part.name_from_source)
         .count()
-        + evidence
-            .nodes
+        + kept_nodes
             .iter()
             .filter(|node| !node.name_from_source)
             .count();
-    let colored_nodes = evidence
-        .nodes
+    let colored_nodes = kept_nodes
         .iter()
         .filter(|node| node.color.is_some())
         .count();
@@ -1057,12 +1196,23 @@ pub fn plan_step_xde_import(
             ImportDiagnosticSeverity::Info,
             "step_hierarchy_preserved",
             None,
-            evidence.nodes.len() as u32,
+            kept_nodes.len() as u32,
         ),
     ]
     .into_iter()
     .collect::<Result<Vec<_>, _>>()
     .map_err(StepImportPlanError::InvalidDiagnostic)?;
+    diagnostics.extend(
+        refusal_diagnostics(
+            "step",
+            &evidence.rejected_parts,
+            evidence
+                .parts
+                .iter()
+                .map(|part| (part.name.as_str(), part.rejected_shapes.as_slice())),
+        )
+        .map_err(StepImportPlanError::InvalidDiagnostic)?,
+    );
     let mut add_diagnostic = |severity, code, count| {
         diagnostics.push(
             ImportDiagnostic::new(severity, code, None, count)
@@ -1093,7 +1243,7 @@ pub fn plan_step_xde_import(
         add_diagnostic(
             ImportDiagnosticSeverity::Info,
             "step_name_metadata_preserved",
-            (evidence.parts.len() + evidence.nodes.len()) as u32,
+            (evidence.parts.len() + kept_nodes.len()) as u32,
         )?;
     }
     if assembly_color_flattened > 0 {

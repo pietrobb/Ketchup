@@ -8,9 +8,9 @@ use crate::protocol::{
 use crate::{
     CamSimulationWireCollision, CamSimulationWireEvidence, CamSimulationWireRequest,
     EXACT_VOLUME_MESH_WIRE_SCHEMA_V1, ExactVolumeMeshWireOptions,
-    MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES, StepAssemblyManifest, StepXdeWorkerEvidence,
-    StepXdeWorkerNode, StepXdeWorkerPart, WorkerExactBRepGraphEdgeEvidence,
-    WorkerExactBRepGraphFaceEvidence, WorkerExactBRepGraphResult,
+    MAX_EXACT_BREP_GRAPH_IMPORTED_SOURCES, StepAssemblyManifest, StepXdeRejectedPart,
+    StepXdeRejectedShape, StepXdeWorkerEvidence, StepXdeWorkerNode, StepXdeWorkerPart,
+    WorkerExactBRepGraphEdgeEvidence, WorkerExactBRepGraphFaceEvidence, WorkerExactBRepGraphResult,
     WorkerExactVolumeBoundaryTriangle, WorkerExactVolumeMesh,
 };
 use ketchup_exact::naming::{NamedBoolean, NamedSegment, valid_name};
@@ -3256,6 +3256,8 @@ fn import_part_reply(
 }
 
 /// Inspects every XDE part of a verified source and returns the whole manifest.
+/// A part that cannot be read is named with its reason instead of failing the
+/// others; only a source none of whose parts can be read fails.
 fn xde_evidence_reply(
     source: &SourceFile,
     source_byte_len: u64,
@@ -3264,8 +3266,21 @@ fn xde_evidence_reply(
     import_part: impl Fn(u32) -> Result<ExactOpOutput, ketchup_exact::GeometryError>,
 ) -> WorkerResult {
     let mut parts = Vec::with_capacity(manifest.parts.len());
+    let mut rejected_parts = Vec::new();
+    let mut first_failure = None;
     for part in manifest.parts {
-        let output = import_part(part.index).map_err(|error| geometry_failure(&error))?;
+        let output = match import_part(part.index) {
+            Ok(output) => output,
+            Err(error) => {
+                rejected_parts.push(StepXdeRejectedPart {
+                    index: part.index,
+                    name: part.name,
+                    reason: error.diagnostic.clone(),
+                });
+                first_failure.get_or_insert(error);
+                continue;
+            }
+        };
         parts.push(StepXdeWorkerPart {
             index: part.index,
             name: part.name,
@@ -3280,7 +3295,22 @@ fn xde_evidence_reply(
             bounds_mm: bounds_mm(&output),
             backend: output.backend_fingerprint.to_owned(),
             tolerance: output.tolerance_report.profile.to_owned(),
+            rejected_shapes: output
+                .rejected_shapes
+                .iter()
+                .map(|shape| StepXdeRejectedShape {
+                    ordinal: shape.ordinal,
+                    kind: shape.kind.clone(),
+                    source_entity: shape.source_entity,
+                    reason: shape.reason.clone(),
+                })
+                .collect(),
         });
+    }
+    if parts.is_empty()
+        && let Some(error) = first_failure
+    {
+        return Err(geometry_failure(&error));
     }
     Ok(WorkerReply::Xde(StepXdeWorkerEvidence {
         source_sha256: source.sha256.clone(),
@@ -3300,6 +3330,7 @@ fn xde_evidence_reply(
                 transform: node.transform,
             })
             .collect(),
+        rejected_parts,
     }))
 }
 
@@ -4107,6 +4138,60 @@ mod tests {
             )
         });
         assert_eq!((inspection, conversion), (1, 1));
+    }
+
+    // One part that cannot be read failed the whole inspection; it is named
+    // with its reason and the other parts come through, with the solid one
+    // of them left out.
+    #[test]
+    fn step_xde_inspection_names_the_parts_and_solids_it_cannot_keep() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../corpora/r0/step/self-authored-partly-invalid-assembly.step");
+        let source = SourceFile {
+            sha256: sha256_hex(&std::fs::read(&path).unwrap()),
+            path,
+        };
+        let reply = m21_step_xde_inspection_response(
+            &ExactBackend::new(),
+            &mut SourceDocument::default(),
+            &source,
+        )
+        .unwrap();
+        let WorkerReply::Xde(evidence) = reply else {
+            panic!("inspection answered {reply:?}");
+        };
+        assert_eq!(
+            evidence
+                .parts
+                .iter()
+                .map(|part| (part.index, part.solid_count))
+                .collect::<Vec<_>>(),
+            [(0, 1), (1, 1)]
+        );
+        assert!(evidence.parts[0].rejected_shapes.is_empty());
+        assert_eq!(
+            evidence.parts[1].rejected_shapes,
+            [StepXdeRejectedShape {
+                ordinal: 1,
+                kind: "solid".to_owned(),
+                source_entity: Some(720),
+                reason: "encloses no volume".to_owned(),
+            }]
+        );
+        assert_eq!(evidence.rejected_parts.len(), 1);
+        let rejected = &evidence.rejected_parts[0];
+        assert_eq!(
+            (rejected.index, rejected.name.as_str()),
+            (2, "Crossed prism")
+        );
+        assert!(
+            rejected
+                .reason
+                .ends_with("solid 1 (entity #1069) encloses no volume"),
+            "{}",
+            rejected.reason
+        );
+        assert_eq!(evidence.nodes.len(), 4);
     }
 
     // Review 2026-10-18 EX-9: converting to IGES wrote a STEP file of a part

@@ -39,6 +39,7 @@ pub struct IgesXdePartEvidence {
     pub name_from_source: bool,
     pub color: Option<[u8; 3]>,
     pub exact: super::StepImportEvidence,
+    pub rejected_shapes: Vec<super::ImportRejectedShape>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -55,8 +56,11 @@ pub struct IgesXdeNodeEvidence {
 pub struct IgesXdeImportEvidence {
     pub source_sha256: [u8; 32],
     pub source_byte_len: u64,
+    /// The roots read, by increasing index; an index of a root not read is
+    /// in `rejected_parts`, and its node is left out of the import.
     pub parts: Vec<IgesXdePartEvidence>,
     pub nodes: Vec<IgesXdeNodeEvidence>,
+    pub rejected_parts: Vec<super::ImportRejectedPart>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -250,7 +254,8 @@ pub fn plan_iges_xde_import(
         || evidence.source_byte_len != source.len() as u64
         || evidence.parts.is_empty()
         || evidence.parts.len() > 1_024
-        || evidence.nodes.len() != evidence.parts.len()
+        || evidence.rejected_parts.len() > 1_024
+        || evidence.nodes.len() != evidence.parts.len() + evidence.rejected_parts.len()
     {
         return Err(IgesImportPlanError::InvalidWorkerEvidence);
     }
@@ -258,25 +263,47 @@ pub fn plan_iges_xde_import(
     let valid_text = |value: &str| {
         !value.is_empty() && value.len() <= 1_024 && !value.chars().any(char::is_control)
     };
-    if evidence.parts.iter().enumerate().any(|(index, part)| {
-        part.index as usize != index
-            || !valid_text(&part.name)
-            || part.exact.source_unit != source_unit
-            || !iges_exact_evidence_valid(&part.exact)
-    }) {
-        return Err(IgesImportPlanError::InvalidWorkerEvidence);
-    }
-    let mut used_parts = BTreeSet::new();
-    if evidence.nodes.iter().enumerate().any(|(index, node)| {
-        node.id as usize != index
-            || node.part_index as usize >= evidence.parts.len()
-            || !used_parts.insert(node.part_index)
-            || !valid_text(&node.name)
-            || node.transform != Transform::identity()
-    }) || used_parts.len() != evidence.parts.len()
+    let read_indices = evidence
+        .parts
+        .iter()
+        .map(|part| part.index)
+        .collect::<Vec<_>>();
+    if !super::exact_part_indices_valid(&read_indices, &evidence.rejected_parts)
+        || evidence.parts.iter().any(|part| {
+            !valid_text(&part.name)
+                || part.exact.source_unit != source_unit
+                || !iges_exact_evidence_valid(&part.exact)
+        })
     {
         return Err(IgesImportPlanError::InvalidWorkerEvidence);
     }
+    let rejected = |part: u32| {
+        evidence
+            .rejected_parts
+            .binary_search_by_key(&part, |rejected| rejected.index)
+            .is_ok()
+    };
+    let mut used_parts = BTreeSet::new();
+    if evidence.nodes.iter().enumerate().any(|(index, node)| {
+        node.id as usize != index
+            || (read_indices.binary_search(&node.part_index).is_err() && !rejected(node.part_index))
+            || !used_parts.insert(node.part_index)
+            || !valid_text(&node.name)
+            || node.transform != Transform::identity()
+    }) {
+        return Err(IgesImportPlanError::InvalidWorkerEvidence);
+    }
+    // The roots imported, each with where its part lies in `parts`.
+    let kept_nodes = evidence
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            read_indices
+                .binary_search(&node.part_index)
+                .ok()
+                .map(|position| (node, position))
+        })
+        .collect::<Vec<_>>();
 
     let next_range = |maximum: u64, count: usize| {
         let start = maximum
@@ -310,7 +337,7 @@ pub fn plan_iges_xde_import(
             .map(|item| item.id().0)
             .max()
             .unwrap_or(0),
-        evidence.nodes.len(),
+        kept_nodes.len(),
     )?;
     let import_id = snapshot
         .next_import_id()
@@ -352,20 +379,18 @@ pub fn plan_iges_xde_import(
         outputs.push(ImportOutputRef::Definition(definition_id));
         outputs.push(ImportOutputRef::Feature(feature_id));
     }
-    for (index, node) in evidence.nodes.iter().enumerate() {
+    for (index, &(node, part_position)) in kept_nodes.iter().enumerate() {
         let occurrence_id = OccurrenceId(occurrence_start + index as u64);
         commands.push(CanonicalCommand::CreateOccurrence {
             id: occurrence_id,
-            definition_id: definitions[node.part_index as usize],
+            definition_id: definitions[part_position],
             name: node.name.clone(),
             transform: Transform::identity(),
             parent: None,
             tags: Default::default(),
             visible: true,
         });
-        let color = node
-            .color
-            .or(evidence.parts[node.part_index as usize].color);
+        let color = node.color.or(evidence.parts[part_position].color);
         if color.is_some() {
             commands.push(CanonicalCommand::SetOccurrenceColor {
                 id: occurrence_id,
@@ -381,15 +406,13 @@ pub fn plan_iges_xde_import(
         .iter()
         .filter(|part| !part.name_from_source)
         .count()
-        + evidence
-            .nodes
+        + kept_nodes
             .iter()
-            .filter(|node| !node.name_from_source)
+            .filter(|(node, _)| !node.name_from_source)
             .count();
-    let colored_roots = evidence
-        .nodes
+    let colored_roots = kept_nodes
         .iter()
-        .filter(|node| node.color.is_some())
+        .filter(|(node, _)| node.color.is_some())
         .count();
     let mut diagnostics = Vec::new();
     let mut add = |severity, code, count| {
@@ -408,7 +431,7 @@ pub fn plan_iges_xde_import(
         add(
             ImportDiagnosticSeverity::Info,
             "iges_name_metadata_preserved",
-            evidence.nodes.len() as u32,
+            kept_nodes.len() as u32,
         )?;
     } else {
         add(
@@ -433,7 +456,7 @@ pub fn plan_iges_xde_import(
     add(
         ImportDiagnosticSeverity::Warning,
         "iges_hierarchy_unavailable_flat_roots_only",
-        evidence.nodes.len() as u32,
+        kept_nodes.len() as u32,
     )?;
     add(
         ImportDiagnosticSeverity::Warning,
@@ -443,13 +466,24 @@ pub fn plan_iges_xde_import(
     add(
         ImportDiagnosticSeverity::Warning,
         "iges_local_transforms_baked_into_exact_geometry",
-        evidence.nodes.len() as u32,
+        kept_nodes.len() as u32,
     )?;
     add(
         ImportDiagnosticSeverity::Warning,
         "iges_parametric_reconstruction_unavailable",
         evidence.parts.len() as u32,
     )?;
+    diagnostics.extend(
+        super::refusal_diagnostics(
+            "iges",
+            &evidence.rejected_parts,
+            evidence
+                .parts
+                .iter()
+                .map(|part| (part.name.as_str(), part.rejected_shapes.as_slice())),
+        )
+        .map_err(IgesImportPlanError::InvalidDiagnostic)?,
+    );
     diagnostics.sort_unstable();
     let receipt = ImportReceipt::from_source_bytes(
         import_id,

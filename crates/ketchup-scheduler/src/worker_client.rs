@@ -283,9 +283,11 @@ impl ExactWorkerClient {
                 name: part.name.clone(),
                 name_from_source: part.name_from_source,
                 color: part.color,
+                rejected_shapes: rejected_shapes(&part.rejected_shapes),
                 exact: xde_part_evidence(part, source_sha256, source_byte_len, source_unit),
             })
             .collect();
+        let rejected_parts = rejected_parts(evidence.rejected_parts);
         let nodes = evidence
             .nodes
             .into_iter()
@@ -310,6 +312,7 @@ impl ExactWorkerClient {
             source_byte_len,
             parts,
             nodes,
+            rejected_parts,
         })
     }
 
@@ -331,9 +334,11 @@ impl ExactWorkerClient {
                 name: part.name.clone(),
                 name_from_source: part.name_from_source,
                 color: part.color,
+                rejected_shapes: rejected_shapes(&part.rejected_shapes),
                 exact: xde_part_evidence(part, source_sha256, source_byte_len, source_unit),
             })
             .collect();
+        let rejected_parts = rejected_parts(evidence.rejected_parts);
         let nodes = evidence
             .nodes
             .into_iter()
@@ -365,6 +370,7 @@ impl ExactWorkerClient {
             source_byte_len,
             parts,
             nodes,
+            rejected_parts,
         })
     }
 
@@ -1141,6 +1147,33 @@ fn xde_part_evidence(
         backend: part.backend,
         tolerance: part.tolerance,
     }
+}
+
+fn rejected_shapes(
+    shapes: &[crate::StepXdeRejectedShape],
+) -> Vec<ketchup_model::import::ImportRejectedShape> {
+    shapes
+        .iter()
+        .map(|shape| ketchup_model::import::ImportRejectedShape {
+            ordinal: shape.ordinal,
+            kind: shape.kind.clone(),
+            source_entity: shape.source_entity,
+            reason: shape.reason.clone(),
+        })
+        .collect()
+}
+
+fn rejected_parts(
+    parts: Vec<crate::StepXdeRejectedPart>,
+) -> Vec<ketchup_model::import::ImportRejectedPart> {
+    parts
+        .into_iter()
+        .map(|part| ketchup_model::import::ImportRejectedPart {
+            index: part.index,
+            name: part.name,
+            reason: part.reason,
+        })
+        .collect()
 }
 
 fn spawn_worker_writer(mut stdin: ChildStdin, receiver: Receiver<WorkerWriteRequest>) {

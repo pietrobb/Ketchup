@@ -5,9 +5,10 @@ use ketchup_model::document::{
 use ketchup_model::import::{
     IgesImportEvidence, IgesXdeImportEvidence, IgesXdeNodeEvidence, IgesXdePartEvidence,
     ImportDiagnostic, ImportDiagnosticSeverity, ImportFormat, ImportId, ImportLengthUnit,
-    ImportOutputRef, ImportReceipt, ImportUnitAuthority, ImportUnitDecision, StepImportEvidence,
-    StepImportPlanError, StepXdeImportEvidence, StepXdeNodeEvidence, StepXdePartEvidence,
-    plan_iges_import, plan_iges_xde_import, plan_step_import, plan_step_xde_import,
+    ImportOutputRef, ImportReceipt, ImportRejectedPart, ImportRejectedShape, ImportUnitAuthority,
+    ImportUnitDecision, StepImportEvidence, StepImportPlanError, StepXdeImportEvidence,
+    StepXdeNodeEvidence, StepXdePartEvidence, plan_iges_import, plan_iges_xde_import,
+    plan_step_import, plan_step_xde_import,
 };
 use ketchup_model::persistence;
 
@@ -442,6 +443,7 @@ fn iges_xde_import_preserves_flat_root_names_colors_and_reports_exact_losses() {
                 name_from_source: true,
                 color: Some([255, 0, 0]),
                 exact: exact(0, 0.0),
+                rejected_shapes: Vec::new(),
             },
             IgesXdePartEvidence {
                 index: 1,
@@ -449,6 +451,7 @@ fn iges_xde_import_preserves_flat_root_names_colors_and_reports_exact_losses() {
                 name_from_source: true,
                 color: Some([0, 255, 0]),
                 exact: exact(1, 40.0),
+                rejected_shapes: Vec::new(),
             },
         ],
         nodes: vec![
@@ -469,6 +472,7 @@ fn iges_xde_import_preserves_flat_root_names_colors_and_reports_exact_losses() {
                 transform: Transform::identity(),
             },
         ],
+        rejected_parts: Vec::new(),
     };
     let mut document = DocumentStore::new();
     let before = document.current().canonical_digest();
@@ -573,6 +577,7 @@ fn step_xde_import_preserves_nested_repeated_instances_names_colors_and_round_tr
             name_from_source: true,
             color: Some([0, 255, 0]),
             exact,
+            rejected_shapes: Vec::new(),
         }],
         nodes: vec![
             StepXdeNodeEvidence {
@@ -612,6 +617,7 @@ fn step_xde_import_preserves_nested_repeated_instances_names_colors_and_round_tr
                 transform: Transform::from_translation(20.0, 0.0, 0.0).unwrap(),
             },
         ],
+        rejected_parts: Vec::new(),
     };
     let mut document = DocumentStore::new();
     let before = document.current().canonical_digest();
@@ -672,6 +678,182 @@ fn step_xde_import_preserves_nested_repeated_instances_names_colors_and_round_tr
     assert_eq!(
         plan_step_xde_import(&document.current(), source, "machine.step", &tampered),
         Err(StepImportPlanError::InvalidWorkerEvidence)
+    );
+}
+
+// Ploopy STEP fix B: a part the worker could not read is left out with the
+// nodes placing it, the others imported under their source indices, and the
+// part and every solid left out of a part read are named in the receipt.
+#[test]
+fn step_and_iges_xde_imports_keep_the_parts_read_and_name_the_refused() {
+    let source = b"independent XDE source with one unreadable part";
+    let exact = |index: u32| StepImportEvidence {
+        source_sha256: ketchup_model::graph::sha256_bytes(source),
+        source_byte_len: source.len() as u64,
+        source_unit: ImportLengthUnit::Millimetre,
+        result_fingerprint: format!("fnv1a64:part-{index}"),
+        body_kind: ketchup_model::document::BodyKind::Solid,
+        solid_count: 1,
+        topology_counts: [8, 12, 6, 1, 1],
+        area_mm2: 600.0,
+        volume_mm3: 1_000.0,
+        bounds_mm: [[0.0, 0.0, 0.0], [10.0, 10.0, 10.0]],
+        backend: "occt-xde-test".to_owned(),
+        tolerance: "test-tolerance".to_owned(),
+    };
+    let left_out = ImportRejectedShape {
+        ordinal: 1,
+        kind: "solid".to_owned(),
+        source_entity: Some(720),
+        reason: "encloses no volume".to_owned(),
+    };
+    let refused = ImportRejectedPart {
+        index: 1,
+        name: "Crossed prism".to_owned(),
+        reason: "solid 1 (entity #1069) encloses no volume".to_owned(),
+    };
+    let node = |id: u32, parent_id, part_index, name: &str| StepXdeNodeEvidence {
+        id,
+        parent_id,
+        part_index,
+        name: name.to_owned(),
+        name_from_source: true,
+        color: None,
+        transform: Transform::identity(),
+    };
+    let part =
+        |index: u32, name: &str, rejected_shapes: Vec<ImportRejectedShape>| StepXdePartEvidence {
+            index,
+            name: name.to_owned(),
+            name_from_source: true,
+            color: None,
+            exact: exact(index),
+            rejected_shapes,
+        };
+    let evidence = StepXdeImportEvidence {
+        source_sha256: ketchup_model::graph::sha256_bytes(source),
+        source_byte_len: source.len() as u64,
+        parts: vec![
+            part(0, "Block", Vec::new()),
+            part(2, "Pair", vec![left_out.clone()]),
+        ],
+        nodes: vec![
+            node(0, None, None, "Assembly"),
+            node(1, Some(0), Some(0), "Block 1"),
+            node(2, Some(0), Some(1), "Crossed prism 1"),
+            node(3, Some(0), Some(2), "Pair 1"),
+        ],
+        rejected_parts: vec![refused.clone()],
+    };
+    let mut document = DocumentStore::new();
+    let batch =
+        plan_step_xde_import(&document.current(), source, "partly.step", &evidence).unwrap();
+    document.apply_batch(&batch).unwrap();
+    let committed = document.current();
+    assert_eq!(
+        committed
+            .occurrences()
+            .map(|occurrence| occurrence.name().to_owned())
+            .collect::<Vec<_>>(),
+        ["Block 1", "Pair 1"]
+    );
+    assert_eq!(
+        committed
+            .features()
+            .map(|feature| match feature.kind() {
+                FeatureKind::ImportedExactBody(spec) => spec.source_part_index,
+                _ => panic!("XDE part must remain exact"),
+            })
+            .collect::<Vec<_>>(),
+        [Some(0), Some(2)]
+    );
+    let refusals = |receipt: &ImportReceipt| {
+        receipt
+            .diagnostics()
+            .iter()
+            .filter(|diagnostic| diagnostic.code().ends_with("_refused"))
+            .map(|diagnostic| {
+                (
+                    diagnostic.code().to_owned(),
+                    diagnostic.subject().unwrap().to_owned(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        refusals(committed.import_receipt(ImportId(1)).unwrap()),
+        [
+            (
+                "step_part_refused".to_owned(),
+                "Crossed prism: solid 1 (entity #1069) encloses no volume".to_owned()
+            ),
+            (
+                "step_shape_refused".to_owned(),
+                "Pair: solid 2 (entity #720) encloses no volume".to_owned()
+            ),
+        ]
+    );
+    // An index both read and refused, or a node placing an index neither
+    // read nor refused, is evidence the plan cannot trust.
+    for tamper in [
+        |evidence: &mut StepXdeImportEvidence| evidence.rejected_parts[0].index = 2,
+        |evidence: &mut StepXdeImportEvidence| evidence.nodes[2].part_index = Some(3),
+        |evidence: &mut StepXdeImportEvidence| evidence.parts.swap(0, 1),
+    ] {
+        let mut tampered = evidence.clone();
+        tamper(&mut tampered);
+        assert_eq!(
+            plan_step_xde_import(
+                &DocumentStore::new().current(),
+                source,
+                "partly.step",
+                &tampered
+            ),
+            Err(StepImportPlanError::InvalidWorkerEvidence)
+        );
+    }
+
+    let iges = IgesXdeImportEvidence {
+        source_sha256: evidence.source_sha256,
+        source_byte_len: evidence.source_byte_len,
+        parts: vec![IgesXdePartEvidence {
+            index: 0,
+            name: "Block".to_owned(),
+            name_from_source: true,
+            color: None,
+            exact: exact(0),
+            rejected_shapes: vec![left_out],
+        }],
+        nodes: [(0, "Block 1"), (1, "Crossed prism 1")]
+            .into_iter()
+            .map(|(index, name)| IgesXdeNodeEvidence {
+                id: index,
+                part_index: index,
+                name: name.to_owned(),
+                name_from_source: true,
+                color: None,
+                transform: Transform::identity(),
+            })
+            .collect(),
+        rejected_parts: vec![refused],
+    };
+    let mut document = DocumentStore::new();
+    let batch = plan_iges_xde_import(&document.current(), source, "partly.iges", &iges).unwrap();
+    document.apply_batch(&batch).unwrap();
+    let committed = document.current();
+    assert_eq!(committed.occurrences().count(), 1);
+    assert_eq!(
+        refusals(committed.import_receipt(ImportId(1)).unwrap()),
+        [
+            (
+                "iges_part_refused".to_owned(),
+                "Crossed prism: solid 1 (entity #1069) encloses no volume".to_owned()
+            ),
+            (
+                "iges_shape_refused".to_owned(),
+                "Block: solid 2 (entity #720) encloses no volume".to_owned()
+            ),
+        ]
     );
 }
 
