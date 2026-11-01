@@ -137,11 +137,24 @@ std::unique_ptr<NativeOperationResult> error_result(
 bool oriented_planar_face_normal(const TopoDS_Face& face, gp_Dir& normal) {
   double u0, u1, v0, v1;
   BRepTools::UVBounds(face, u0, u1, v0, v1);
+  const auto surface = BRep_Tool::Surface(face);
+  // The pcurves of a face may reach slightly past the domain of a
+  // non-periodic surface (SolidWorks exports do);
+  // trimming outside the domain throws, so measure the face within it.
+  double surface_u0, surface_u1, surface_v0, surface_v1;
+  surface->Bounds(surface_u0, surface_u1, surface_v0, surface_v1);
+  if (!surface->IsUPeriodic()) {
+    u0 = std::max(u0, surface_u0);
+    u1 = std::min(u1, surface_u1);
+  }
+  if (!surface->IsVPeriodic()) {
+    v0 = std::max(v0, surface_v0);
+    v1 = std::min(v1, surface_v1);
+  }
   if (!std::isfinite(u0) || !std::isfinite(u1) || !std::isfinite(v0)
       || !std::isfinite(v1) || u1 <= u0 || v1 <= v0) {
     return false;
   }
-  const auto surface = BRep_Tool::Surface(face);
   const occ::handle<Geom_Surface> trimmed =
       new Geom_RectangularTrimmedSurface(surface, u0, u1, v0, v1);
   const GeomLib_IsPlanarSurface planar(trimmed, tolerances().linear_mm);
