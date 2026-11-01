@@ -2261,6 +2261,56 @@ fn worker_evaluates_revolve_non_rectangular_sweep_and_loft_through_one_graph_ide
 }
 
 #[test]
+fn worker_evaluates_a_revolve_touching_its_axis_with_a_degenerate_apex_edge() {
+    let _turn = crate::integration_support::file_turn();
+    let definition = DefinitionId(7);
+    let profile = FeatureId(510);
+    let revolve = FeatureId(511);
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: definition,
+                name: "Cone".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: profile,
+                definition_id: definition,
+                name: "Right triangle on the axis".into(),
+                kind: FeatureKind::polygon(&[[0.0, 0.0], [10.0, 0.0], [0.0, 20.0]]),
+            },
+            CanonicalCommand::CreateFeature {
+                id: revolve,
+                definition_id: definition,
+                name: "Full revolve".into(),
+                kind: FeatureKind::Revolve {
+                    profile,
+                    axis_start_mm: [0.0, -10.0],
+                    axis_end_mm: [0.0, 10.0],
+                    angle_degrees: 360.0,
+                },
+            },
+        ]))
+        .unwrap();
+    let graph = ExactBRepGraph::from_snapshot(&document.current(), definition, revolve).unwrap();
+    let evidence = ExactWorkerSupervisor::spawn(env!("CARGO_BIN_EXE_ketchup-exact-worker"))
+        .unwrap()
+        .evaluate_exact_brep_graph(&graph)
+        .unwrap();
+
+    let expected = std::f64::consts::PI * 100.0 * 20.0 / 3.0;
+    assert!((evidence.volume_mm3 - expected).abs() < 1e-6 * expected);
+    let apex = evidence
+        .edge_evidence
+        .iter()
+        .filter(|edge| edge.curve_kind == "degenerate")
+        .collect::<Vec<_>>();
+    assert_eq!(apex.len(), 1, "{:?}", evidence.edge_evidence);
+    assert_eq!(apex[0].length_mm, 0.0);
+    assert_eq!(apex[0].bounds_mm[0], apex[0].bounds_mm[1]);
+}
+
+#[test]
 fn worker_evaluates_mixed_planar_profile_loft_as_one_exact_solid() {
     let _turn = crate::integration_support::file_turn();
     let definition = DefinitionId(97);

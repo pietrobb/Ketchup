@@ -3,6 +3,7 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_NurbsConvert.hxx>
+#include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <STEPCAFControl_Writer.hxx>
 #include <TDF_Label.hxx>
@@ -163,6 +164,29 @@ bool write_partly_invalid_assembly(const std::filesystem::path& path)
   return writer.Transfer(document, STEPControl_AsIs) && writer.Write(path.string().c_str()) == IFSelect_RetDone;
 }
 
+// A cone of radius 10 and height 20 ending in an apex: the apex is a
+// degenerated edge, which spheres, cones and revolved parts of other systems
+// carry at their poles.
+bool write_cone_apex(const std::filesystem::path& path)
+{
+  const TopoDS_Shape cone = BRepPrimAPI_MakeCone(10.0, 0.0, 20.0).Shape();
+  bool has_degenerated_edge = false;
+  for (TopExp_Explorer it(cone, TopAbs_EDGE); it.More(); it.Next()) {
+    has_degenerated_edge = has_degenerated_edge || BRep_Tool::Degenerated(TopoDS::Edge(it.Current()));
+  }
+  GProp_GProps properties;
+  BRepGProp::VolumeProperties(cone, properties);
+  const double expected = std::acos(-1.0) * 100.0 * 20.0 / 3.0;
+  if (!BRepCheck_Analyzer(cone).IsValid() || !has_degenerated_edge ||
+      std::abs(properties.Mass() - expected) > 1.0e-6 * expected) {
+    std::cerr << "Unexpected cone for " << path.string() << '\n';
+    return false;
+  }
+  STEPControl_Writer writer;
+  return writer.Transfer(cone, STEPControl_AsIs) == IFSelect_RetDone
+      && writer.Write(path.string().c_str()) == IFSelect_RetDone;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -200,7 +224,8 @@ int main(int argc, char** argv)
       !write_shape(cut.Shape(), output_dir / "self-authored-through-cut.step", 10000.0) ||
       !write_shape(fuse.Shape(), output_dir / "self-authored-l-bracket.step", 6000.0) ||
       !write_bspline_pcurve_overshoot(output_dir / "self-authored-bspline-pcurve-overshoot.step") ||
-      !write_partly_invalid_assembly(output_dir / "self-authored-partly-invalid-assembly.step")) {
+      !write_partly_invalid_assembly(output_dir / "self-authored-partly-invalid-assembly.step") ||
+      !write_cone_apex(output_dir / "self-authored-cone-apex.step")) {
     return 5;
   }
 

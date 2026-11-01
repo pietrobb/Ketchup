@@ -55,7 +55,8 @@ fn project_instance_polyline_curves(
         .iter()
         .filter_map(|edge| {
             let reason = match (edge.curve_kind.as_str(), edge.unit_axis_direction) {
-                ("line", _) => return None,
+                // A degenerated edge is a point: nothing is drawn as lines.
+                ("line" | "degenerate", _) => return None,
                 ("circle", Some(axis)) if edge.circle_radius_mm.is_some() => {
                     let along = dot(normalized(transform.transform_vector(axis))?, depth).abs();
                     if along <= ROUNDING {
@@ -110,6 +111,7 @@ mod tests {
             edge(2, "circle", Some([0.0, 0.0, 1.0])),
             edge(3, "circle", None),
             edge(4, "bspline", None),
+            edge(5, "degenerate", None),
         ];
         let named = |kind: OrthographicViewKind| {
             project_instance_polyline_curves(

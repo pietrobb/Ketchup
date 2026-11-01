@@ -667,6 +667,74 @@ fn step_part_whose_pcurves_reach_past_a_b_spline_domain_imports_with_a_plane_top
     assert!((top.normal.z - 1.0).abs() < 1e-9);
 }
 
+/// A profile revolved about an axis it touches ends in an apex, a degenerated
+/// edge of no length, which had failed the edge evidence of the whole body.
+#[test]
+fn revolve_touching_its_axis_reports_the_apex_as_a_degenerate_edge() {
+    let line =
+        |start_mm: [f64; 2], end_mm: [f64; 2]| PlanarProfileSegment::Line { start_mm, end_mm };
+    let output = ExactBackend::new()
+        .revolve_general_profile(
+            &[
+                line([0.0, 0.0], [10.0, 0.0]),
+                line([10.0, 0.0], [0.0, 20.0]),
+                line([0.0, 20.0], [0.0, 0.0]),
+            ],
+            [0.0, 0.0],
+            [0.0, 1.0],
+            360.0,
+        )
+        .unwrap();
+    let topology = &output.body.topology;
+    let expected = std::f64::consts::PI * 100.0 * 20.0 / 3.0;
+    assert!((topology.volume_mm3 - expected).abs() < 1e-6 * expected);
+    let apex = topology
+        .edges
+        .iter()
+        .filter(|edge| edge.curve_kind == "degenerate")
+        .collect::<Vec<_>>();
+    assert_eq!(apex.len(), 1, "{:?}", topology.edges);
+    assert_eq!(apex[0].length_mm, 0.0);
+    assert!(apex[0].circle_radius_mm.is_none() && apex[0].axis_origin_mm.is_none());
+    assert_eq!(apex[0].bounds_mm.min, apex[0].bounds_mm.max);
+    assert_eq!(apex[0].centroid_mm, apex[0].bounds_mm.min);
+    assert!((apex[0].centroid_mm.y - 20.0).abs() < 1e-9);
+}
+
+/// The fixture (`tests/native/r0-step-corpus.cpp`) is a cone of radius 10 and
+/// height 20 ending in an apex, which OCCT keeps as a degenerated edge, as at
+/// the poles of spheres and revolved parts of other systems.
+#[test]
+fn step_part_with_a_degenerated_edge_imports_and_reports_it_as_degenerate() {
+    let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let path = repository.join("corpora/r0/step/self-authored-cone-apex.step");
+    let document = ExactBackend::new()
+        .open_step_xde(path.to_str().unwrap())
+        .unwrap();
+    let part = document.part(0).unwrap();
+
+    let topology = &part.body.topology;
+    let expected = std::f64::consts::PI * 100.0 * 20.0 / 3.0;
+    assert!((topology.volume_mm3 - expected).abs() < 1e-6 * expected);
+    let apex = topology
+        .edges
+        .iter()
+        .filter(|edge| edge.curve_kind == "degenerate")
+        .collect::<Vec<_>>();
+    assert_eq!(apex.len(), 1, "{:?}", topology.edges);
+    let apex = apex[0];
+    assert_eq!(apex.length_mm, 0.0);
+    assert!(apex.circle_radius_mm.is_none() && apex.axis_origin_mm.is_none());
+    assert_eq!(apex.bounds_mm.min, apex.bounds_mm.max);
+    assert_eq!(apex.centroid_mm, apex.bounds_mm.min);
+    assert!((apex.centroid_mm.z - 20.0).abs() < 1e-9);
+    assert!(apex.centroid_mm.x.abs() < 1e-9 && apex.centroid_mm.y.abs() < 1e-9);
+}
+
 /// The fixture (`tests/native/r0-step-corpus.cpp`) holds a sound block, a
 /// part of a sound block and a solid enclosing no volume (STEP `#720`), and a
 /// part of only such a solid (`#1069`).

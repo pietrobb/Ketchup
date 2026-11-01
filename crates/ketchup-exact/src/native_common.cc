@@ -294,6 +294,19 @@ NativeFaceEvidence inspect_face(const TopoDS_Face& face, std::uint32_t ordinal) 
 }
 
 NativeEdgeEvidence inspect_edge(const TopoDS_Edge& edge, std::uint32_t ordinal) {
+  // A degenerated edge (the apex of a cone, the pole of a sphere) is a point
+  // in space; its curve, if any, says nothing, so it is reported as that point.
+  if (const TopoDS_Vertex vertex = TopExp::FirstVertex(edge);
+      BRep_Tool::Degenerated(edge) && !vertex.IsNull()) {
+    const gp_Pnt point = BRep_Tool::Pnt(vertex);
+    return NativeEdgeEvidence{
+        ordinal, rust::String("degenerate"), 0.0,
+        point.X(), point.Y(), point.Z(),
+        point.X(), point.Y(), point.Z(),
+        point.X(), point.Y(), point.Z(),
+        BRep_Tool::IsClosed(edge), false, false, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  }
   GProp_GProps properties;
   BRepGProp::LinearProperties(edge, properties);
   const gp_Pnt centroid = properties.CentreOfMass();

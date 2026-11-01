@@ -253,9 +253,16 @@ pub(super) fn collect_output(
             (None, None) => !matches!(edge.curve_kind.as_str(), "line" | "circle"),
             _ => false,
         };
+        // A degenerated edge (a cone apex, a sphere pole) is a point.
+        let length_is_coherent = if edge.curve_kind == "degenerate" {
+            edge.length_mm == 0.0
+                && edge.bounds_mm.min == edge.bounds_mm.max
+                && edge.centroid_mm == edge.bounds_mm.min
+        } else {
+            edge.length_mm.is_finite() && edge.length_mm > 0.0
+        };
         !edge.curve_kind.is_empty()
-            && edge.length_mm.is_finite()
-            && edge.length_mm > 0.0
+            && length_is_coherent
             && finite_point(edge.centroid_mm)
             && finite_point(edge.bounds_mm.min)
             && finite_point(edge.bounds_mm.max)
