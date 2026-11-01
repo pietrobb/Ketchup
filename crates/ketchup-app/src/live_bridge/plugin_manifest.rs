@@ -363,7 +363,8 @@ fn script_option(executable: &Path, option: &str) -> bool {
 /// complete: `pwsh -C cmdlet hashed.txt` ran a cmdlet, and any hashed file
 /// anywhere on the line counted as the script (review 2026-10-18 SEC-8). An
 /// interpreter of [`SCRIPT_FLAGS`] gets its script right after that option.
-/// `refuse` gives the caller's refusal for the reason.
+/// An executable that is no interpreter of [`SCRIPT_OPTIONS`] gets its script
+/// alone. `refuse` gives the caller's refusal for the reason.
 pub(super) fn script_first(
     executable: &Path,
     arguments: &[String],
@@ -375,8 +376,21 @@ pub(super) fn script_first(
         .iter()
         .find(|(names, _)| names.contains(&family.as_str()))
         .map(|(_, flag)| *flag);
+    let listed = SCRIPT_OPTIONS
+        .iter()
+        .any(|(names, _, _)| names.contains(&family.as_str()));
     for (index, (argument, file)) in arguments.iter().zip(names_file).enumerate() {
         if *file {
+            // Only a listed interpreter is known to hand the words after its
+            // script to the script; `find hashed -exec …` gave them to find,
+            // which ran what they named (review 2026-10-31 P3).
+            if !listed && index + 1 < arguments.len() {
+                return Err(refuse(format!(
+                    "{} is no interpreter docs/plugins.md lists, so nothing may follow its \
+                     script {argument:?}: the words after it would reach {0}, not the script",
+                    executable.display()
+                )));
+            }
             if let Some(flag) = flag {
                 let flagged = index
                     .checked_sub(1)

@@ -1,7 +1,6 @@
 #![forbid(unsafe_code)]
 
 pub mod exact_projection;
-pub mod face_intent;
 mod locale_pattern;
 pub mod mesh_projection;
 pub mod profile_surface;
@@ -13,11 +12,7 @@ use crate::spatial::{
     SpatialQueryStats,
 };
 pub use ketchup_geometry::linalg::Vec3;
-use ketchup_model::adapters::{AdapterError, UiAction, UiAdapter};
-use ketchup_model::document::{
-    DefinitionId, DocumentStore, FeatureId, FeatureKind, InstancePath, Proposal,
-    ProposalCommitError, ProposalPrepareError, Revision, Snapshot,
-};
+use ketchup_model::document::{DefinitionId, InstancePath, Snapshot};
 use ketchup_model::tolerance::ROUNDING;
 use locale_pattern::PluralRules;
 use std::collections::BTreeMap;
@@ -813,131 +808,6 @@ fn snap_candidate(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ActionDigest {
-    pub localization_key: &'static str,
-    pub arguments: BTreeMap<&'static str, String>,
-    pub command_digest: String,
-}
-
-impl ActionDigest {
-    #[must_use]
-    pub fn render(&self, catalog: &LocaleCatalog) -> String {
-        catalog.format(self.localization_key, &self.arguments)
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct SmartPushPullPlan {
-    proposal: Proposal,
-    action_digest: ActionDigest,
-}
-
-impl SmartPushPullPlan {
-    #[must_use]
-    pub const fn action_digest(&self) -> &ActionDigest {
-        &self.action_digest
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum SmartPushPullOutcome {
-    Ready(Box<SmartPushPullPlan>),
-    NeedsChoice { candidates: Vec<FeatureId> },
-}
-
-pub fn plan_smart_push_pull(
-    store: &DocumentStore,
-    candidates: &[FeatureId],
-    new_height_text: impl Into<String>,
-) -> Result<SmartPushPullOutcome, InteractionError> {
-    if candidates.len() != 1 {
-        return Ok(SmartPushPullOutcome::NeedsChoice {
-            candidates: candidates.to_vec(),
-        });
-    }
-    let target = candidates[0];
-    let snapshot = store.current();
-    let feature = snapshot
-        .feature(target)
-        .ok_or(InteractionError::FeatureNotFound(target))?;
-    let FeatureKind::Pad(ketchup_geometry::sketch::PadSpec {
-        extent: ketchup_geometry::sketch::FeatureExtent::Blind(height),
-        ..
-    }) = feature.kind()
-    else {
-        return Err(InteractionError::FeatureNotFound(target));
-    };
-    let new_height_text = new_height_text.into();
-    let batch = UiAdapter::canonicalize(UiAction::SetFeatureDimension {
-        target,
-        value_text: new_height_text.clone(),
-    })?;
-    let mut arguments = BTreeMap::new();
-    arguments.insert("feature", feature.name().to_owned());
-    arguments.insert("from", height.source_token().to_owned());
-    arguments.insert("to", new_height_text);
-    let action_digest = ActionDigest {
-        localization_key: "action-smart-push-pull-height",
-        command_digest: batch.digest(),
-        arguments,
-    };
-    Ok(SmartPushPullOutcome::Ready(Box::new(SmartPushPullPlan {
-        proposal: store.prepare_proposal(batch)?,
-        action_digest,
-    })))
-}
-
-pub struct PreviewSession {
-    generation: u64,
-    plan: Box<SmartPushPullPlan>,
-    cancelled: bool,
-}
-
-impl PreviewSession {
-    #[must_use]
-    pub const fn new(generation: u64, plan: Box<SmartPushPullPlan>) -> Self {
-        Self {
-            generation,
-            plan,
-            cancelled: false,
-        }
-    }
-
-    #[must_use]
-    pub const fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    #[must_use]
-    pub const fn action_digest(&self) -> &ActionDigest {
-        &self.plan.action_digest
-    }
-
-    pub fn cancel(&mut self) {
-        self.cancelled = true;
-    }
-
-    pub fn confirm(self, store: &mut DocumentStore) -> Result<CommittedPreview, PreviewError> {
-        if self.cancelled {
-            return Err(PreviewError::Cancelled);
-        }
-        let revision = store.commit_proposal(&self.plan.proposal)?;
-        if revision.batch_digest() != self.plan.action_digest.command_digest {
-            return Err(PreviewError::DigestMismatch);
-        }
-        Ok(CommittedPreview {
-            revision,
-            action_digest: self.plan.action_digest,
-        })
-    }
-}
-
-pub struct CommittedPreview {
-    pub revision: Arc<Revision>,
-    pub action_digest: ActionDigest,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocaleCatalog {
     messages: BTreeMap<String, String>,
     plurals: PluralRules,
@@ -1111,10 +981,7 @@ pub enum InteractionError {
     InvalidRay,
     InvalidBox,
     DuplicateOccurrence,
-    FeatureNotFound(FeatureId),
     InvalidLocaleResource,
-    Adapter(AdapterError),
-    Proposal(ProposalPrepareError),
 }
 
 impl fmt::Display for InteractionError {
@@ -1125,54 +992,12 @@ impl fmt::Display for InteractionError {
             Self::DuplicateOccurrence => {
                 formatter.write_str("instance path must be unique with a nonzero root")
             }
-            Self::FeatureNotFound(id) => write!(formatter, "feature {} does not exist", id.0),
             Self::InvalidLocaleResource => formatter.write_str("locale resource is invalid"),
-            Self::Adapter(error) => error.fmt(formatter),
-            Self::Proposal(error) => error.fmt(formatter),
         }
     }
 }
 
 impl std::error::Error for InteractionError {}
-
-impl From<AdapterError> for InteractionError {
-    fn from(error: AdapterError) -> Self {
-        Self::Adapter(error)
-    }
-}
-
-impl From<ProposalPrepareError> for InteractionError {
-    fn from(error: ProposalPrepareError) -> Self {
-        Self::Proposal(error)
-    }
-}
-
-#[derive(Debug, PartialEq)]
-pub enum PreviewError {
-    Cancelled,
-    Stale(ProposalCommitError),
-    DigestMismatch,
-}
-
-impl fmt::Display for PreviewError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Cancelled => formatter.write_str("preview was cancelled"),
-            Self::Stale(error) => error.fmt(formatter),
-            Self::DigestMismatch => {
-                formatter.write_str("preview and committed command digests differ")
-            }
-        }
-    }
-}
-
-impl std::error::Error for PreviewError {}
-
-impl From<ProposalCommitError> for PreviewError {
-    fn from(error: ProposalCommitError) -> Self {
-        Self::Stale(error)
-    }
-}
 
 #[must_use]
 pub fn snapshot_revision(snapshot: &Snapshot) -> u64 {

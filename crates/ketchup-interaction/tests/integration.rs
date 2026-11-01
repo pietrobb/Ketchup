@@ -3,7 +3,6 @@
 
 mod bvh_and_broad_phase;
 mod canonical_projection;
-mod face_intent;
 mod picking_snapping_and_locales;
 
 #[path = "../../ketchup-model/tests/support/integration_support.rs"]
