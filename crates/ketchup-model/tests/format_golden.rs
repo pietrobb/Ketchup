@@ -403,8 +403,7 @@ fn files_for_released_versions_are_in_the_format_their_document_needs() {
             panic!("{name} reopens editable")
         };
         assert_eq!(audit.source_schema, schema, "{name}");
-        if let Some(path) =
-            ketchup_test_env::report_path(&format!("saved-{schema}-{name}.ketchup"))
+        if let Some(path) = ketchup_test_env::report_path(&format!("saved-{schema}-{name}.ketchup"))
         {
             std::fs::write(path, saved).unwrap();
         }

@@ -21,10 +21,7 @@ pub(super) fn keep(file: &[u8]) {
         .expect("a saved file has a document.bin")
         .content;
     let format = u16::from_le_bytes([document[MAGIC.len()], document[MAGIC.len() + 1]]);
-    let name = format!(
-        "saved-{format}-{}.ketchup",
-        crate::graph::sha256_hex(file)
-    );
+    let name = format!("saved-{format}-{}.ketchup", crate::graph::sha256_hex(file));
     let path = Path::new(&directory).join(name);
     if path.exists() {
         return;
