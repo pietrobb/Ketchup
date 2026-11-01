@@ -696,6 +696,144 @@ fn removed_entities_leave_no_reference_in_hatches_and_dimension_associations() {
     );
 }
 
+/// The drawing with the hatch AA following the circle A7 and the dimension A9 measuring
+/// the line A0 through the association B5, each naming the other as a reactor.
+fn associated() -> String {
+    let entities = ENTITIES
+        .replace(
+            "0\nDIMENSION\n5\nA9\n330\n1F\n",
+            "0\nDIMENSION\n5\nA9\n102\n{ACAD_REACTORS\n330\nB5\n102\n}\n330\n1F\n",
+        )
+        .replace(
+            "0\nLINE\n5\nA0\n330\n1F\n",
+            "0\nLINE\n5\nA0\n102\n{ACAD_REACTORS\n330\nB5\n102\n}\n330\n1F\n",
+        )
+        .replace(
+            "0\nCIRCLE\n5\nA7\n330\n1F\n",
+            "0\nCIRCLE\n5\nA7\n102\n{ACAD_REACTORS\n330\nAA\n102\n}\n330\n1F\n",
+        );
+    let objects = OBJECTS.replace(
+        "0\nENDSEC\n",
+        concat!(
+            "0\nDIMASSOC\n5\nB5\n330\nA9\n100\nAcDbDimAssoc\n330\nA9\n90\n1\n70\n0\n71\n0\n",
+            "1\nAcDbOsnapPointRef\n72\n1\n331\nA0\n73\n0\n40\n0\n10\n0\n20\n0\n30\n0\n75\n0\n",
+            "0\nENDSEC\n",
+        ),
+    );
+    format!("{HEADER}{TABLES}{BLOCKS}{entities}{objects}0\nEOF\n")
+}
+
+/// Review 2026-10-31 CD-80: a hatch kept its association with a boundary moved away from
+/// it (71 1 and the 330 of the boundary), and a dimension association stayed with a
+/// measured entity moved apart: AutoCAD would rebuild or break them at the next edit.
+/// Moved apart, the hatch stops following (71 0, no boundary named either way) and the
+/// association goes; moved together by one map, both stay.
+#[test]
+fn associations_of_entities_moved_apart_are_let_go() {
+    let source = associated();
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let away = [[1.0, 0.0, 5000.0], [0.0, 1.0, 0.0]];
+    let write = |moved: &[u64]| {
+        let mut edits = UnderlayEdits::default();
+        for handle in moved {
+            edits.moved_objects.insert(id_of(lines, *handle), away);
+        }
+        let written = write_edited_dxf(
+            source.as_bytes(),
+            DxfImportOptions::new(None),
+            lines,
+            &edits,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        String::from_utf8(written).unwrap()
+    };
+    let names = |record: &str, handle: &str| {
+        record
+            .lines()
+            .collect::<Vec<_>>()
+            .chunks(2)
+            .any(|pair| pair[1] == handle && pair[0].parse::<i32>().is_ok_and(|c| c >= 330))
+    };
+
+    // The boundary and the measured line moved alone.
+    let text = write(&[0xA7, 0xA0]);
+    let hatch = entity(&text, "AA");
+    assert!(
+        hatch.contains("\n71\n0\n") && hatch.contains("\n97\n0\n"),
+        "{hatch}"
+    );
+    assert!(!names(&hatch, "A7"), "{hatch}");
+    assert!(
+        !names(&entity(&text, "A7"), "AA"),
+        "the circle's reactor goes"
+    );
+    assert!(!text.contains("DIMASSOC"), "{text}");
+    assert!(!names(&entity(&text, "A9"), "B5") && !names(&entity(&text, "A0"), "B5"));
+
+    // The hatch and the dimension moved alone: the same.
+    let text = write(&[0xAA, 0xA9]);
+    assert!(entity(&text, "AA").contains("\n71\n0\n"));
+    assert!(!names(&entity(&text, "A7"), "AA"));
+    assert!(!text.contains("DIMASSOC"));
+
+    // Moved together by one map, the association stays. A moved hatch is written as
+    // following nothing, so its boundary names it no more either.
+    let text = write(&[0xA7, 0xAA, 0xA0, 0xA9]);
+    assert!(text.contains("DIMASSOC") && names(&entity(&text, "A9"), "B5"));
+    assert!(names(&entity(&text, "A0"), "B5"));
+    assert!(!names(&entity(&text, "A7"), "AA"));
+    // Nothing moved: everything follows as read.
+    let text = write(&[]);
+    assert!(entity(&text, "AA").contains("\n71\n1\n"));
+    assert!(names(&entity(&text, "A7"), "AA") && text.contains("DIMASSOC"));
+}
+
+/// Review 2026-10-31 CD-81: removing an entity took its handle out of every record of the
+/// OBJECTS section, an application's XRECORD too, so `90 2 / 330 A0 / 330 A1` became
+/// `90 2 / 330 A1`, its count and positions wrong for whoever reads it. Records of a
+/// structure not known to Kečup keep their places, the removed handle written as 0.
+#[test]
+fn removing_an_entity_keeps_the_places_of_application_data() {
+    let objects = OBJECTS.replace(
+        "0\nENDSEC\n",
+        concat!(
+            "0\nXRECORD\n5\nB7\n330\nC\n100\nAcDbXrecord\n90\n2\n330\nA0\n330\nA1\n",
+            "0\nACME_LINK\n5\nB8\n330\nC\n100\nAcmeLink\n340\nA0\n1\nfrom\n",
+            "0\nENDSEC\n",
+        ),
+    );
+    let source = format!("{HEADER}{TABLES}{BLOCKS}{ENTITIES}{objects}0\nEOF\n");
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(id_of(lines, 0xA0));
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let text = String::from_utf8(written).unwrap();
+    assert!(
+        entity(&text, "B7").ends_with("\n90\n2\n330\n0\n330\nA1\n"),
+        "{}",
+        entity(&text, "B7")
+    );
+    assert!(
+        entity(&text, "B8").contains("\n340\n0\n1\nfrom\n"),
+        "{}",
+        entity(&text, "B8")
+    );
+    // A group of known structure still loses the member.
+    assert!(!names_member(&entity(&text, "E"), "A0"));
+}
+
+fn names_member(record: &str, handle: &str) -> bool {
+    record.contains(&format!("\n340\n{handle}\n"))
+}
+
 /// A dashed red LINE of lineweight 50 with extended data, two lines across it, and an
 /// LWPOLYLINE 20 wide along it; a group names the line and the polyline.
 const SHAPED: &str = concat!(

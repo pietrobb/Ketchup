@@ -7,7 +7,7 @@
 //! CIRCLE and TEXT on their layers. The source must be the drawing the underlay was read
 //! from: it is read again, and its lines must be the underlay's.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Cursor;
 use std::ops::Range;
@@ -260,6 +260,19 @@ impl Pair {
 
     fn end(&self) -> usize {
         place(self.end)
+    }
+}
+
+/// Where each moved entity went, by handle; `None` for a stretch, which reshapes it.
+type Moves = BTreeMap<u64, Option<Affine>>;
+
+/// Whether the entities of handles `a` and `b` were moved apart: one moved and the other
+/// not, by different maps, or either stretched (review 2026-10-31 CD-80).
+fn apart(moves: &Moves, a: u64, b: u64) -> bool {
+    match (moves.get(&a), moves.get(&b)) {
+        (None, None) => false,
+        (Some(Some(a)), Some(Some(b))) => a != b,
+        _ => true,
     }
 }
 
@@ -685,11 +698,38 @@ impl<'a> Drawing<'a> {
             .filter(|&index| self.pairs[index].code == 5)
             .filter_map(|index| hex(self.value(index)))
             .collect();
-        let (objects_edits, removed) = self.objects_without(removed);
+        // Where each moved entity went, by handle; a stretch reshapes it, so it goes apart
+        // from everything (review 2026-10-31 CD-80).
+        let mut moves = Moves::new();
+        let moved = edits
+            .moved_objects
+            .iter()
+            .map(|(object, map)| (object, Some(*map)));
+        let stretched = edits.stretched_objects.keys().map(|object| (object, None));
+        for (&object, map) in moved.chain(stretched) {
+            if !edits.removed_objects.contains(&object)
+                && let Some(handle) = entity_of(object)
+                    .ok()
+                    .and_then(|entity| self.entities[entity].handle)
+            {
+                moves.insert(handle, map);
+            }
+        }
+        let detached = self.detached_hatches(&moves);
+        let (objects_edits, removed) =
+            self.objects_without(removed, (!moves.is_empty()).then_some(&moves));
+        // The handles each entity names no more: the removed, and for a hatch let go of its
+        // boundary each the other.
+        let names_dropped = |entity: &Entity| match entity.handle.and_then(|h| detached.get(&h)) {
+            Some(more) => std::borrow::Cow::Owned(removed.union(more).copied().collect()),
+            None => std::borrow::Cow::Borrowed(&removed),
+        };
         // The entities kept as they are, without what they named of the removed.
         for (entity, replaced) in self.entities.iter().zip(&mut replaced) {
             if replaced.is_none() {
-                *replaced = self.without_removed(entity, &removed).map(Some);
+                *replaced = self
+                    .without_removed(entity, &names_dropped(entity))
+                    .map(Some);
             }
         }
         let mut handles = self.next_handle;
@@ -705,10 +745,11 @@ impl<'a> Drawing<'a> {
                 continue;
             }
             let entity = entity_of(object)?;
+            let names = names_dropped(&self.entities[entity]);
             let map = Mapping {
                 map: frame.map(map),
                 stretch,
-                removed: &removed,
+                removed: &names,
                 vertices_minus_z: false,
             };
             let mapped = self.mapped(object, entity, &map, false, &mut handles, &mut blocks)?;
@@ -810,17 +851,60 @@ impl<'a> Drawing<'a> {
         Ok(out)
     }
 
+    /// For each associative hatch moved (a mapped hatch follows nothing, [`Self::map_hatch`])
+    /// or with a boundary it follows moved apart from it ([`Moves`]), the handles each of
+    /// them names no more: the hatch its boundaries, and they the hatch as a reactor. The
+    /// hatch keeps its fill where it lies and follows nothing (review 2026-10-31 CD-80).
+    fn detached_hatches(&self, moves: &Moves) -> BTreeMap<u64, BTreeSet<u64>> {
+        let mut detached = BTreeMap::<u64, BTreeSet<u64>>::new();
+        for entity in &self.entities {
+            let Some(hatch) = entity.handle.filter(|_| entity.records[0].1 == "HATCH") else {
+                continue;
+            };
+            let end = entity
+                .records
+                .get(1)
+                .map_or(entity.pairs.end, |record| record.0);
+            let (mut associative, mut boundaries, mut sources) = (None, false, Vec::new());
+            for index in entity.pairs.start..end {
+                match self.pairs[index].code {
+                    71 if associative.is_none() => associative = Some(self.value(index) == b"1"),
+                    97 => boundaries = true,
+                    330 if boundaries => sources.extend(hex(self.value(index))),
+                    _ => {}
+                }
+            }
+            if associative == Some(true)
+                && (moves.contains_key(&hatch)
+                    || sources.iter().any(|source| apart(moves, hatch, *source)))
+            {
+                for source in &sources {
+                    detached.entry(*source).or_default().insert(hatch);
+                }
+                detached.entry(hatch).or_default().extend(sources);
+            }
+        }
+        detached
+    }
+
     /// The OBJECTS section rewritten without the records `removed` (by handle) owned, as
     /// a removed entity's extension dictionary, and without every reference to them: a
     /// group's member, a reactor, a dictionary entry with its key, a draw-order entry with
     /// its sort handle (review 2026-10-29 CD-60). A dimension association measuring a
-    /// removed entity goes too (CD-68). Each item replaces a byte range; the handles
-    /// removed come back with those of the records left out.
-    fn objects_without(&self, mut removed: BTreeSet<u64>) -> (ObjectEdits, BTreeSet<u64>) {
+    /// removed entity goes too (CD-68), and one whose dimension and measured entity were
+    /// moved `apart` (review 2026-10-31 CD-80). A record of a structure not known here, an
+    /// application's XRECORD, keeps the places of its data: a removed handle in it is
+    /// written as 0 (CD-81). Each item replaces a byte range; the handles removed come back
+    /// with those of the records left out.
+    fn objects_without(
+        &self,
+        mut removed: BTreeSet<u64>,
+        moves: Option<&Moves>,
+    ) -> (ObjectEdits, BTreeSet<u64>) {
         let Some(end) = self.objects_end else {
             return (Vec::new(), removed);
         };
-        if removed.is_empty() {
+        if removed.is_empty() && moves.is_none() {
             return (Vec::new(), removed);
         }
         let records: Vec<Range<usize>> = self
@@ -845,16 +929,34 @@ impl<'a> Drawing<'a> {
         loop {
             let mut changed = false;
             for (record, dropped) in records.iter().zip(&mut dropped) {
-                let measures_removed = || {
-                    self.value(record.start).eq_ignore_ascii_case(b"DIMASSOC")
-                        && record.clone().any(|index| {
-                            self.pairs[index].code == 331
-                                && hex(self.value(index)).is_some_and(|h| removed.contains(&h))
+                let association = self.value(record.start).eq_ignore_ascii_case(b"DIMASSOC");
+                let measured = || {
+                    record
+                        .clone()
+                        .filter(|index| self.pairs[*index].code == 331)
+                        .filter_map(|index| hex(self.value(index)))
+                };
+                let measures_removed = || association && measured().any(|h| removed.contains(&h));
+                // The dimension: the first 330 of its AcDbDimAssoc data.
+                let dimension = || {
+                    let data = record.clone().find(|index| {
+                        self.pairs[*index].code == 100
+                            && self.value(*index).eq_ignore_ascii_case(b"AcDbDimAssoc")
+                    })?;
+                    (data..record.end)
+                        .find(|index| self.pairs[*index].code == 330)
+                        .and_then(|index| hex(self.value(index)))
+                };
+                let moved_apart = || {
+                    association
+                        && moves.zip(dimension()).is_some_and(|(moves, dimension)| {
+                            measured().any(|measured| apart(moves, dimension, measured))
                         })
                 };
                 if !*dropped
                     && (handle_of(record, 330).is_some_and(|owner| removed.contains(&owner))
-                        || measures_removed())
+                        || measures_removed()
+                        || moved_apart())
                 {
                     *dropped = true;
                     changed = true;
@@ -872,12 +974,34 @@ impl<'a> Drawing<'a> {
                 edits.push((bytes, Vec::new()));
                 continue;
             }
+            // Records whose references Kečup knows the structure of: a member, an entry or
+            // a draw-order pair can go. In others only a reactor group can lose a member.
+            let known = {
+                let kind = self.value(record.start);
+                [
+                    b"GROUP".as_slice(),
+                    b"DICTIONARY",
+                    b"ACDBDICTIONARYWDFLT",
+                    b"SORTENTSTABLE",
+                ]
+                .iter()
+                .any(|known| kind.eq_ignore_ascii_case(known))
+            };
             let mut skip = vec![false; record.len()];
+            let mut nulled = vec![false; record.len()];
+            let mut in_group = false;
             for (at, index) in record.clone().enumerate() {
                 let code = self.pairs[index].code;
+                if code == 102 {
+                    in_group = self.value(index).starts_with(b"{");
+                }
                 if !(330..=369).contains(&code)
                     || !hex(self.value(index)).is_some_and(|handle| removed.contains(&handle))
                 {
+                    continue;
+                }
+                if !known && !in_group {
+                    nulled[at] = true;
                     continue;
                 }
                 skip[at] = true;
@@ -892,11 +1016,16 @@ impl<'a> Drawing<'a> {
                     skip[at + 1] = true;
                 }
             }
-            if skip.iter().any(|skip| *skip) {
+            if skip.iter().chain(&nulled).any(|changed| *changed) {
                 let mut kept = Vec::new();
-                for (index, skip) in record.clone().zip(skip) {
-                    if !skip {
-                        let pair = &self.pairs[index];
+                for ((index, skip), nulled) in record.clone().zip(skip).zip(nulled) {
+                    let pair = &self.pairs[index];
+                    if nulled {
+                        let value = pair.value();
+                        kept.extend_from_slice(&self.source[pair.start()..value.start]);
+                        kept.push(b'0');
+                        kept.extend_from_slice(&self.source[value.end..pair.end()]);
+                    } else if !skip {
                         kept.extend_from_slice(&self.source[pair.start()..pair.end()]);
                     }
                 }
