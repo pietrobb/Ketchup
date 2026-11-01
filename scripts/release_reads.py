@@ -208,6 +208,8 @@ def read_files(tag: str, source: Path, files: Path) -> int:
 
 
 def main(arguments: list[str]) -> int:
+    # A Windows console (CI's included) writes cp1252, which has no "č" in "Kečup".
+    sys.stdout.reconfigure(encoding="utf-8")
     tags = [arguments[arguments.index("--tag") + 1]] if "--tag" in arguments else list(RELEASES)
     failed = False
     for tag in tags:

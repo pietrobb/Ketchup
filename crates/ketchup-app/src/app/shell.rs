@@ -1424,10 +1424,15 @@ impl KetchupApp {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(16.0);
-                ui.label(
-                    egui::RichText::new(format!("v{}", Self::build_version()))
-                        .size(9.5)
-                        .color(palette.faint),
+                // Left-aligned inside its own box: egui reports a right-aligned
+                // label's text to screen readers shifted right by its width.
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(format!("v{}", Self::build_version()))
+                            .size(9.5)
+                            .color(palette.faint),
+                    )
+                    .halign(egui::Align::LEFT),
                 );
                 for text in chips.into_iter().rev() {
                     status_chip(ui, palette, &text);

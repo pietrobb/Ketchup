@@ -1,6 +1,8 @@
 import importlib.util
+import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -81,6 +83,30 @@ def test_every_published_tag_is_a_release_the_script_checks():
     numbered = (re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", tag) for tag in tags)
     released = [m.group(0) for m in numbered if m and tuple(map(int, m.groups())) >= (0, 2, 0)]
     assert sorted(released) == sorted(checker.RELEASES)
+
+
+def test_the_script_speaks_in_a_console_without_the_products_letters(tmp_path):
+    # PR #8 CI: the Windows runner writes cp1252, which has no "č" in "Kečup".
+    stubbed = f"""
+import importlib.util, pathlib, sys, types
+spec = importlib.util.spec_from_file_location("release_reads", {str(ROOT / "scripts" / "release_reads.py")!r})
+checker = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(checker)
+checker.serde_enums = lambda tag: {{}}
+checker.version = lambda tag: "0.3.0"
+checker.what_it_reads = lambda tag: []
+checker.old_workspace = lambda tag, target: pathlib.Path(".")
+checker.subprocess.run = lambda *args, **kwargs: types.SimpleNamespace(returncode=0)
+sys.exit(checker.main(["--tag", "v0.3.0", "--files", {str(tmp_path)!r}]))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", stubbed],
+        capture_output=True,
+        env={**os.environ, "PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"},
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    assert "Kečup 0.3.0 opens the saved files" in result.stdout.decode("utf-8")
 
 
 def test_every_job_that_tests_its_crates_keeps_their_saved_files_for_the_releases():

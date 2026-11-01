@@ -547,6 +547,25 @@ impl Shell {
             .collect()
     }
 
+    /// Every visible line of text whose screen-reader bounds leave the bounds of
+    /// the widget that owns it, as `(text, line bounds, widget bounds)`.
+    pub fn text_runs_outside_their_widget(&self) -> Vec<(String, Rect, Rect)> {
+        let to_rect = |rect: egui::accesskit::Rect| Rect {
+            min: egui::pos2(rect.x0 as f32, rect.y0 as f32),
+            max: egui::pos2(rect.x1 as f32, rect.y1 as f32),
+        };
+        self.harness
+            .query_all_by(|node| !node.is_hidden() && node.role() == Role::TextRun)
+            .filter_map(|node| {
+                let run = node.accesskit_node();
+                let line = to_rect(run.bounding_box()?);
+                let widget = to_rect(run.parent()?.bounding_box()?);
+                (!widget.expand(0.5).contains_rect(line))
+                    .then(|| (run.value().unwrap_or_default(), line, widget))
+            })
+            .collect()
+    }
+
     /// Whether assistive technology can currently see a node with `label`.
     pub fn has_visible_label(&self, label: &str) -> bool {
         self.harness
