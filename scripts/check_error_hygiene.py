@@ -32,12 +32,19 @@ Two forms are counted in production source (crates/*/src, test modules and
 - dropped_variant: `SomeError::Variant(_) => "code"` answers an error that carries
   a cause with a bare code and throws the cause away; record it
   (`failed_because(code, cause)`) or map the variant to a typed error.
+- dropped_error: `map_err(drop)`, `if let Err(_) = ...` and `.ok()?` drop the error
+  as `map_err(|_| ...)` does (review 2026-10-31 TST-80).
+- formatted_cause: `format!("{e}")` or `format!("{}", error)` turns an error into its
+  Display text in place of the error.
+- stringified_field: `Error::Io { message: e.to_string() }` does it inside a struct
+  literal, as stringified_variant does inside a tuple variant.
 
 The check is a ratchet: scripts/error_hygiene_baseline.txt records what still
 exists, per file and form. A count may only go down; a new file or a higher count
 fails. Run with --update after removing occurrences to shrink the baseline; it never
-grows the baseline. Never add entries by hand: the baseline and the checks are
-owned in .github/CODEOWNERS.
+grows the count of a form the baseline lists in its `# forms:` line. A form added to
+this check is recorded as found by the first --update after it, once. Never add
+entries by hand: the baseline and the checks are owned in .github/CODEOWNERS.
 
 The viewer apps (viewer/*/src) are production source too.
 """
@@ -47,9 +54,11 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_roots import package_files  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE_NAME = "scripts/error_hygiene_baseline.txt"
-SOURCES = ["crates/*/src/**/*.rs", "viewer/*/src/**/*.rs"]
 EXCLUDED_PARTS = {"tests", "examples", "fixtures"}
 # Errors whose value says nothing beyond their type: dropping them loses nothing.
 # An entry matches the named type by its trailing path, so "fmt::Error" accepts
@@ -96,6 +105,11 @@ STRINGIFIED_VARIANT = re.compile(
     + r"\s*\.\s*to_string\(\)\s*\)")
 FORMATTED_VARIANT = re.compile(r"\b(?!(?:Some|Ok|Err)\()[A-Z]\w*\(\s*format!\(")
 UNWRAP = re.compile(r"\.unwrap\(\)")
+DROPPED_ERROR = re.compile(r"map_err\(\s*drop\s*\)|\bif\s+let\s+Err\(\s*_\s*\)\s*=|\.ok\(\)\s*\?")
+FORMATTED_CAUSE = re.compile(
+    r'format!\(\s*"(?:[^"\\]|\\.)*?(?:\{' + ERROR_NAME + r'(?::[^}?]*)?\}'
+    r'|\{(?::[^}?]*)?\}(?:[^"\\]|\\.)*"\s*,\s*&?' + ERROR_NAME + r'\s*[,)])')
+STRINGIFIED_FIELD = re.compile(r"\b\w+\s*:\s*&?\b" + ERROR_NAME + r"\s*\.\s*to_string\(\)")
 # A variant of an error type (`...Error::Name(_)`) matched to a bare string.
 DROPPED_VARIANT = re.compile(r"\b\w*Error::\w+\(\s*_\s*\)\s*=>\s*\"")
 # An inline test module at the top level of a Rust file: `#[cfg(test)]` or
@@ -154,19 +168,25 @@ def file_counts(text: str) -> dict[str, int]:
             "stringified_variant": len(STRINGIFIED_VARIANT.findall(text)),
             "formatted_variant": len(FORMATTED_VARIANT.findall(text)),
             "unwrap": len(UNWRAP.findall(text)),
-            "dropped_variant": len(DROPPED_VARIANT.findall(text))}
+            "dropped_variant": len(DROPPED_VARIANT.findall(text)),
+            "dropped_error": len(DROPPED_ERROR.findall(text)),
+            "formatted_cause": len(FORMATTED_CAUSE.findall(text)),
+            "stringified_field": len(STRINGIFIED_FIELD.findall(text))}
+
+
+FORMS = tuple(file_counts(""))
+FORMS_LINE = "# forms: "
 
 
 def current_counts(root: Path = ROOT) -> dict[str, int]:
     counts: dict[str, int] = {}
-    for pattern in SOURCES:
-        for path in sorted(root.glob(pattern)):
-            relative = path.relative_to(root)
-            if EXCLUDED_PARTS & set(relative.parts[:-1]) or path.stem.endswith("tests"):
-                continue
-            for form, found in file_counts(path.read_text(encoding="utf-8", errors="replace")).items():
-                if found:
-                    counts[f"{relative.as_posix()} {form}"] = found
+    for path in package_files(root, "src/**/*.rs"):
+        relative = path.relative_to(root)
+        if EXCLUDED_PARTS & set(relative.parts[:-1]) or path.stem.endswith("tests"):
+            continue
+        for form, found in file_counts(path.read_text(encoding="utf-8", errors="replace")).items():
+            if found:
+                counts[f"{relative.as_posix()} {form}"] = found
     return counts
 
 
@@ -181,12 +201,26 @@ def read_baseline(root: Path = ROOT) -> dict[str, int]:
     return baseline
 
 
+def recorded_forms(root: Path = ROOT) -> set[str] | None:
+    """The forms the baseline records; `None` without a baseline. A baseline from
+    before the `# forms:` line records the forms it has entries of."""
+    path = root / BASELINE_NAME
+    if not path.exists():
+        return None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith(FORMS_LINE):
+            return set(line[len(FORMS_LINE):].split())
+    return {key.rsplit(" ", 1)[1] for key in read_baseline(root)}
+
+
 def check(root: Path = ROOT, update: bool = False) -> int:
     counts = current_counts(root)
     old = read_baseline(root)
     if update:
-        grown = {key: value for key, value in counts.items() if value > old.get(key, 0)}
-        if old and grown:
+        recorded = recorded_forms(root)
+        grown = {key: value for key, value in counts.items() if value > old.get(key, 0)
+                 and (recorded is None or key.rsplit(" ", 1)[1] in recorded)}
+        if recorded is not None and grown:
             print("Refusing to grow the baseline:", *sorted(grown), sep="\n  ")
             return 1
         lines = [f"{key} {value}" for key, value in sorted(counts.items())]
@@ -194,6 +228,7 @@ def check(root: Path = ROOT, update: bool = False) -> int:
             "# Remaining errors that drop their cause or cases the types still allow"
             " (<file> <form> <count>, forms in scripts/check_error_hygiene.py);"
             " may only shrink.\n"
+            + f"{FORMS_LINE}{' '.join(FORMS)}\n"
             + "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
         print(f"baseline: {sum(counts.values())} occurrences in {len(counts)} entries")
         return 0

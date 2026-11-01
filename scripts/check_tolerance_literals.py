@@ -24,9 +24,14 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_roots import package_files  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE_NAME = "scripts/tolerance_literals_baseline.txt"
-SOURCES = ["crates/*/src/**/*.rs", "crates/*/src/**/*.cc", "crates/*/src/**/*.hxx", "crates/*/include/**/*.hxx"]
+# Inside every crate and Viewer app (scripts/source_roots.py).
+PACKAGE_SOURCES = ["src/**/*.rs", "src/**/*.cc", "src/**/*.hxx", "include/**/*.hxx"]
+SOURCES = PACKAGE_SOURCES
 EXCLUDED_PARTS = {"tests", "examples", "fixtures"}
 HOME = "crates/ketchup-tolerance/src/lib.rs"
 HOMES = {HOME, "crates/ketchup-tolerance/src/limits.rs"}
@@ -76,7 +81,7 @@ def limit_literals(text: str) -> int:
 def current_counts(root: Path = ROOT) -> dict[str, int]:
     counts: dict[str, int] = {}
     for pattern in SOURCES:
-        for path in sorted(root.glob(pattern)):
+        for path in package_files(root, pattern) if pattern in PACKAGE_SOURCES else sorted(root.glob(pattern)):
             relative = path.relative_to(root)
             key = relative.as_posix()
             if (key in HOMES or EXCLUDED_PARTS & set(relative.parts[:-1])

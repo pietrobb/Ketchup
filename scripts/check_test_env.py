@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_roots import package_files  # noqa: E402
 from check_test_sleeps import is_test_file  # noqa: E402
 from check_tolerance_literals import TEST_MODULE  # noqa: E402  (a Rust file's unit tests)
 
@@ -29,7 +30,7 @@ def handed_on(text: str, name: str) -> bool:
 
 def own_variables(root: Path = ROOT) -> list[str]:
     found = []
-    for path in sorted(root.glob("crates/*/**/*.rs")):
+    for path in package_files(root):
         relative = path.relative_to(root)
         if "target" in relative.parts or relative.as_posix().startswith(SOURCE):
             continue

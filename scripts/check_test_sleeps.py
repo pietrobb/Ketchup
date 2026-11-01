@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_roots import package_files  # noqa: E402
 from check_tolerance_literals import TEST_MODULE  # noqa: E402  (a Rust file's unit tests)
 from check_large_house_tests import functions, masked  # noqa: E402  (Rust fns, comments blanked)
 
@@ -146,7 +147,7 @@ def current_counts(root: Path = ROOT) -> dict[str, int]:
         count = python_sleeps(path.read_text(encoding="utf-8"))
         if count:
             counts[path.relative_to(root).as_posix()] = count
-    paths = [*root.glob("crates/*/**/*.rs"), *root.glob("viewer/*/**/*.rs")]
+    paths = package_files(root)
     for path in sorted(paths):
         relative = path.relative_to(root)
         if "target" in relative.parts:

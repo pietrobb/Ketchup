@@ -193,6 +193,53 @@ def test_an_error_variant_matched_to_a_bare_code_counts(tmp_path):
     assert checker.current_counts(tmp_path) == {"crates/a/src/lib.rs dropped_variant": 2}
 
 
+def test_the_ways_around_the_discard_and_text_forms_count(tmp_path):
+    # Review 2026-10-31 TST-80: each of these dropped or flattened a cause unseen.
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "let a = call().map_err(drop)?;\n"
+        "if let Err(_) = call() { return None; }\n"
+        "let b = call().ok()?;\n"
+        'let c = format!("{e}");\n'
+        'let d = format!("open failed: {error}");\n'
+        'let e = format!("{}", err);\n'
+        "let f = Error::Io { message: e.to_string() };\n"
+        "let g = Failure { path, reason: &source.to_string() };\n"
+        "// None of these drop or flatten a cause.\n"
+        "let h = call().map(drop);\n"
+        'let i = format!("{name}"); let j = format!("{error:?}");\n'
+        "let k: String = error.to_string();\n"
+        "if let Err(error) = call() { log(error); }\n",
+    )
+    assert checker.current_counts(tmp_path) == {
+        "crates/a/src/lib.rs dropped_error": 3,
+        "crates/a/src/lib.rs formatted_cause": 3,
+        "crates/a/src/lib.rs stringified_field": 2,
+        "crates/a/src/lib.rs debug_formatted": 1,
+    }
+
+
+def test_a_new_form_is_recorded_once_and_then_may_only_shrink(tmp_path):
+    # A form the baseline does not list yet is recorded as found when it is
+    # added to the check; a form it lists may never grow, even from zero.
+    (tmp_path / "scripts").mkdir()
+    write(tmp_path, "crates/a/src/lib.rs", "a.map_err(|_| 1);\n")
+    assert checker.check(tmp_path, update=True) == 0
+    baseline = tmp_path / checker.BASELINE_NAME
+    text = baseline.read_text(encoding="utf-8")
+    assert f"# forms: {' '.join(checker.FORMS)}\n" in text
+    baseline.write_text(text.replace(" dropped_error", ""), encoding="utf-8")
+    write(tmp_path, "crates/a/src/lib.rs", "a.map_err(|_| 1);\nlet b = c.ok()?;\n")
+    assert checker.check(tmp_path) == 1
+    assert checker.check(tmp_path, update=True) == 0
+    assert checker.read_baseline(tmp_path)["crates/a/src/lib.rs dropped_error"] == 1
+    write(tmp_path, "crates/a/src/lib.rs", "a.map_err(|_| 1);\nlet b = c.ok()?;\nd.ok()?;\n")
+    assert checker.check(tmp_path, update=True) == 1
+    write(tmp_path, "crates/a/src/lib.rs", "a.map_err(|_| 1);\nlet b = c.ok()?;\nunreachable!(\"x\");\n")
+    assert checker.check(tmp_path, update=True) == 1
+
+
 def test_the_baseline_has_no_way_to_grow(tmp_path):
     (tmp_path / "scripts").mkdir()
     write(tmp_path, "crates/a/src/lib.rs", "a.map_err(|_| 1);\n")

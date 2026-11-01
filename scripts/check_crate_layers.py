@@ -21,6 +21,9 @@ import sys
 import tomllib
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_roots import package_files, package_of  # noqa: E402
+
 LAYERS = {
     "ketchup-tolerance": 0,
     "ketchup-rejection": 0,
@@ -156,8 +159,8 @@ def module_sizes(root):
     module and integration-test file."""
     return {
         path.relative_to(root).as_posix(): len(path.read_text(encoding="utf-8").splitlines())
-        for pattern in ("*/src/**/*.rs", "*/tests/**/*.rs")
-        for path in sorted((root / "crates").glob(pattern))
+        for pattern in ("src/**/*.rs", "tests/**/*.rs")
+        for path in package_files(root, pattern)
     }
 
 
@@ -225,7 +228,7 @@ def long_functions(root, limit=MAX_FUNCTION_LINES):
     """{"crates/<crate>/src/...rs::name": lines} for production functions over the limit."""
     return {
         f"{path.relative_to(root).as_posix()}::{name}": length
-        for path in sorted((root / "crates").glob("*/src/**/*.rs"))
+        for path in package_files(root, "src/**/*.rs")
         if not is_test_module(path.relative_to(root))
         for name, length in function_lengths(path).items()
         if length > limit
@@ -236,8 +239,8 @@ def long_tests(root, limit=MAX_TEST_LINES):
     """{"crates/<crate>/...rs::name": lines} for functions of test files over the limit."""
     return {
         f"{path.relative_to(root).as_posix()}::{name}": length
-        for path in sorted((root / "crates").glob("*/**/*.rs"))
-        if "target" not in path.relative_to(root).parts and is_test_module(path.relative_to(root))
+        for path in package_files(root)
+        if is_test_module(path.relative_to(root))
         for name, length in function_lengths(path).items()
         if length > limit
     }
@@ -273,8 +276,8 @@ def test_files(root):
     """Every Rust test file: integration tests and unit-test modules of each crate."""
     return [
         path.relative_to(root).as_posix()
-        for pattern in ("*/tests/**/*.rs", "*/src/**/*tests*.rs")
-        for path in sorted((root / "crates").glob(pattern))
+        for pattern in ("tests/**/*.rs", "src/**/*tests*.rs")
+        for path in package_files(root, pattern)
     ]
 
 
@@ -313,7 +316,7 @@ LINEAR_ALGEBRA = {
 def linear_algebra_counts(root):
     """{"crates/...rs": hits} for hand-written linear algebra outside ketchup-geometry."""
     counts = {}
-    for path in sorted((root / "crates").glob("*/**/*.rs")):
+    for path in package_files(root):
         module = path.relative_to(root).as_posix()
         if module.startswith("crates/ketchup-geometry/"):
             continue
@@ -378,6 +381,12 @@ CASTS_AND_ALLOWS = {
     "ketchup-program casts": 50,
     "ketchup-scheduler allows": 3,
     "ketchup-scheduler casts": 73,
+    # The Viewer apps, counted since review 2026-10-31 TST-80; the allows are the
+    # unsafe FFI entry points of Android.
+    "ketchup-viewer-android allows": 3,
+    "ketchup-viewer-android casts": 2,
+    "ketchup-viewer-web allows": 1,
+    "ketchup-viewer-web casts": 1,
 }
 
 
@@ -399,11 +408,11 @@ def production_lines(path):
 def cast_and_allow_counts(root):
     """{"<crate> casts"|"<crate> allows": count} over production source."""
     counts = {}
-    for path in sorted((root / "crates").glob("*/src/**/*.rs")):
+    for path in package_files(root, "src/**/*.rs"):
         relative = path.relative_to(root)
         if is_test_module(relative):
             continue
-        crate = relative.parts[1]
+        crate = package_of(root, path)
         for line in production_lines(path):
             code = line.split("//", 1)[0]
             for kind, pattern in (("casts", NUMERIC_CAST), ("allows", LINT_ALLOW)):
@@ -446,7 +455,7 @@ NATIVE_SOURCE = {".rs", ".cc", ".cpp", ".h", ".hpp"}
 def release_test_switches(root):
     """{switch: first production file reading it} over the release crates."""
     found = {}
-    for path in sorted((root / "crates").glob("*/src/**/*")):
+    for path in package_files(root, "src/**/*"):
         relative = path.relative_to(root)
         if (
             path.suffix not in NATIVE_SOURCE
