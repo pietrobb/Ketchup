@@ -489,6 +489,10 @@ impl ViewerApp {
                     target => format!("{} at {target}: {}", error.code(), error.reason_text()),
                 };
                 ui.small(technical);
+                // What the system answered, e.g. that the file may not be read.
+                for cause in error.causes() {
+                    ui.small(cause);
+                }
                 ui.small(error.fix_hint_text());
             }
             if self.kept
@@ -752,11 +756,14 @@ impl ViewerApp {
             }
         }
         if self.dimensions {
-            let mut placed =
-                dimensions::placed(model, self.scene, &self.visible, self.section.as_ref());
-            if let Some(index) = self.selected {
-                placed.extend(dimensions::overall(model, index));
-            }
+            let placed = shown_dimensions(
+                model,
+                self.scene,
+                &self.visible,
+                self.section.as_ref(),
+                self.selected,
+                self.language,
+            );
             paint_dimensions(&ui.painter_at(rect), rect, camera, &placed);
         }
         if let Some(review) = &self.review {
@@ -1016,6 +1023,28 @@ fn ndc(rect: egui::Rect, point: egui::Pos2) -> [f32; 2] {
         (point.x - rect.left()) / rect.width() * 2.0 - 1.0,
         1.0 - (point.y - rect.top()) / rect.height() * 2.0,
     ]
+}
+
+/// The dimensions on screen: the scene's, and the overall size of the picked
+/// component, written with the language's decimal mark as the measurements
+/// are (review 2026-10-31 VW-40).
+fn shown_dimensions(
+    model: &Model,
+    scene: Option<usize>,
+    visible: &[bool],
+    section: Option<&Section>,
+    selected: Option<usize>,
+    language: Language,
+) -> Vec<dimensions::Placed> {
+    let mut placed = dimensions::placed(model, scene, visible, section);
+    if let Some(index) = selected {
+        placed.extend(dimensions::overall(model, index));
+    }
+    let mark = language.text("viewer-decimal-mark");
+    for dimension in &mut placed {
+        dimension.text = dimension.text.replace('.', mark);
+    }
+    placed
 }
 
 /// Millimetres with at most two decimals, no trailing zeros and the

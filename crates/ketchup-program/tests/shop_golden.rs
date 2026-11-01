@@ -1,7 +1,7 @@
 //! Golden shop files (review 2026-10-29 proposal 5.1): the cutting plan, the
 //! quote and the CNC drawings of one program are compared byte for byte with
 //! `tests/fixtures/shop-golden`. CI runs this on Linux, macOS and Windows, so a
-//! shop file that differs between systems fails there (ADR 0009 promises the
+//! shop file that differs between systems fails there (ADR 0010 promises the
 //! same files everywhere). `KETCHUP_UPDATE_GOLDEN=1` rewrites the files; review
 //! their diff before committing.
 

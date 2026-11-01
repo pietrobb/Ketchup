@@ -210,7 +210,7 @@ python scripts\run_production_tests.py
 
 Filter a run after `--` (for example `-- member_design::`). The last command runs the Python tests that drive the built headless CLI and fails on any skip. Install the pre-push hook, which runs fmt, the checks and Clippy, once per clone with `git config core.hooksPath scripts/hooks`.
 
-The Rust workspace also builds on Linux, against the pinned OCCT 8.0.1 built by `scripts/linux/build-occt.sh` (it needs CMake, Ninja and clang). A system or distribution OCCT does not work: the build links CORE-MATH (`third_party/crmath`, ADR 0009) into every OCCT library and installs `libketchup_crmath.a` beside them, so OCCT computes the same bits as on Windows and macOS instead of calling glibc's `sin`, `pow` and the like. Make the libraries loadable with an rpath:
+The Rust workspace also builds on Linux, against the pinned OCCT 8.0.1 built by `scripts/linux/build-occt.sh` (it needs CMake, Ninja and clang). A system or distribution OCCT does not work: the build links CORE-MATH (`third_party/crmath`, [ADR 0010](docs/adr/0010-correctly-rounded-libm.md)) into every OCCT library and installs `libketchup_crmath.a` beside them, so OCCT computes the same bits as on Windows and macOS instead of calling glibc's `sin`, `pow` and the like. Make the libraries loadable with an rpath:
 
 ```bash
 git clone https://github.com/Open-Cascade-SAS/OCCT.git third_party/occt-src
@@ -224,7 +224,7 @@ cargo build --locked --release
 
 No stable public API or long-term native file-format compatibility is promised yet. Undo/Redo lives in memory for the session and reaches back 30 edits: Save writes only the current revision, and reopening a file starts a new Undo history. A named checkpoint in the revision catalog is saved with the file only when it names the revision you save, so save right after naming it; a checkpoint on an earlier edit lasts only for the session, and 30 newer edits drop it. While you work, a work-recovery copy beside the file keeps your edits and their Undo steps, so a crash loses neither.
 
-A newer Ketchup opens the files of an older one. A document without underlays and annotations, whose imports stay within the limits of Ketchup 0.2.0 (at most 341 profiles from one drawing, a DXF source of at most 8 MiB, other sources of at most 32 MiB), is saved in the format 0.1.0 and 0.2.0 read, so they open it too. Ketchup 0.2.0 and later refuse any other file a newer version saved and change nothing. **Do not go back to 0.1.0 with files a later version has saved:** 0.1.0 takes such a file for a damaged one and opens, without saying so, the `.recovery` copy beside it, which holds the content before that save, and saving there can overwrite the newer file.
+A newer Ketchup opens the files of an older one. A document without underlays and annotations, whose imports stay within the limits of Ketchup 0.2.0 (at most 1 024 objects made by one import, such as profiles of a drawing, a DXF source of at most 8 MiB, other sources of at most 32 MiB), is saved in the format 0.1.0 and 0.2.0 read, so they open it too. Ketchup 0.2.0 and later refuse any other file a newer version saved and change nothing. **Do not go back to 0.1.0 with files a later version has saved:** 0.1.0 takes such a file for a damaged one and opens, without saying so, the `.recovery` copy beside it, which holds the content before that save, and saving there can overwrite the newer file.
 
 ## Architecture
 

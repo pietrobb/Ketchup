@@ -201,10 +201,20 @@ impl KetchupApp {
 
     /// Open the groups and components around `target` so that it can be
     /// selected, as the author would to pick a part inside a component.
-    fn open_contexts_to(&mut self, target: &InstancePath) -> bool {
+    pub(crate) fn open_contexts_to(&mut self, target: &InstancePath) -> bool {
         if self.occurrence_in_active_context(target) {
             return true;
         }
+        let author = self.selection.edit_context.clone();
+        if self.open_contexts_from_the_model_to(target) {
+            return true;
+        }
+        // Out of reach: the author stays where they were.
+        self.selection.edit_context = author;
+        false
+    }
+
+    fn open_contexts_from_the_model_to(&mut self, target: &InstancePath) -> bool {
         while self.exit_edit_context() {}
         // Each level is at most a group and a component.
         for _ in 0..=2 * (target.steps().len() + 1) {

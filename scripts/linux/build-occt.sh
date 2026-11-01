@@ -5,7 +5,7 @@
 # libraries find each other through $ORIGIN; a Kečup binary finds them through
 # its rpath (README, "Linux").
 #
-# As on macOS, results must equal the Windows ones bit for bit (ADR 0009):
+# As on macOS, results must equal the Windows ones bit for bit (ADR 0010):
 # clang with -ffp-contract=off, and no transcendental function from glibc's
 # libm. Every OCCT library gets third_party/crmath linked in whole (correctly
 # rounded CORE-MATH functions, hidden, so each library binds to its own copy),

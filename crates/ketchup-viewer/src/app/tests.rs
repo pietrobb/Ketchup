@@ -1445,6 +1445,62 @@ fn a_refused_package_says_once_what_to_do() {
     harness.get_by_label_contains("viewer.package.invalid");
 }
 
+/// Review 2026-10-31 P3 (VW-40): the author's dimensions wrote a decimal point
+/// while the measurements beside them wrote the language's decimal comma.
+#[test]
+fn dimensions_write_the_language_s_decimal_mark() {
+    use ketchup_view_format::{Anchor, Dimension, LengthUnit};
+    let mut package = scene_package();
+    let world = |point_mm| Anchor {
+        occurrence: None,
+        point_mm,
+    };
+    package.manifest.dimensions = vec![Dimension {
+        id: 1,
+        from: world([0.0; 3]),
+        to: world([25.4, 0.0, 0.0]),
+        label_offset_mm: [0.0, -4.0, 0.0],
+        value_mm: 25.4,
+        display_unit: LengthUnit::Millimetre,
+    }];
+    package.manifest.scenes[0].visible_dimensions = vec![1];
+    let mut bytes = Vec::new();
+    package.write(&mut bytes).unwrap();
+    for (tag, text) in [("sk", "25,4 mm"), ("en", "25.4 mm")] {
+        let mut app = ViewerApp::new(None).with_language(Language::from_tag(tag).expect("catalog"));
+        app.open(bytes.as_slice()).unwrap();
+        let model = app.model.as_ref().unwrap();
+        let shown = shown_dimensions(
+            model,
+            app.scene,
+            &app.visible,
+            None,
+            app.selected,
+            app.language,
+        );
+        assert_eq!(
+            shown.iter().map(|d| d.text.as_str()).collect::<Vec<_>>(),
+            [text]
+        );
+    }
+}
+
+/// Review 2026-10-31 P3: the error banner named the failure and what to do but
+/// not its cause, so a file the system refused looked like a damaged one.
+#[test]
+fn the_error_banner_names_the_cause() {
+    let mut app = ViewerApp::new(None);
+    app.report(
+        Rejection::new("viewer.file.open", RejectionPhase::Io)
+            .caused_by(std::io::Error::other("access is denied by the owner")),
+    );
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::Vec2::new(900.0, 700.0))
+        .build_state(|ctx, app: &mut ViewerApp| app.show(ctx), app);
+    harness.run();
+    harness.get_by_label_contains("access is denied by the owner");
+}
+
 /// Review 2026-10-17 §3 P3: a phone's start reads the kept session, else the
 /// installed package, on a thread of its own, not in the first frame on the
 /// UI thread; meanwhile the Viewer is empty and says the model is loading.

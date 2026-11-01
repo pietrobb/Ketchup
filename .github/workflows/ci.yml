@@ -303,7 +303,7 @@ jobs:
           grep -q "test result: ok. 1 passed" "$RUNNER_TEMP/viewer-runtime.log"
       # The cutting plan, quote, CNC drawings and BTLx files must be the same
       # bytes as on Linux and macOS, where the job without OCCT checks the same
-      # golden files (review 2026-10-29 proposal 5.1, ADR 0009).
+      # golden files (review 2026-10-29 proposal 5.1, ADR 0010).
       - name: golden shop files on Windows
         if: ${{ !cancelled() }}
         shell: bash
