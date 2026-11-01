@@ -452,7 +452,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-dwg"
-version = "0.3.1-dev"
+version = "0.3.1"
 dependencies = [
  "acadrust",
 ]
@@ -469,7 +469,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-geometry"
-version = "0.3.1-dev"
+version = "0.3.1"
 dependencies = [
  "ketchup-tolerance",
  "serde",
@@ -477,7 +477,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-model"
-version = "0.3.1-dev"
+version = "0.3.1"
 dependencies = [
  "ciborium",
  "ed25519-dalek",
@@ -495,21 +495,21 @@ dependencies = [
 
 [[package]]
 name = "ketchup-rejection"
-version = "0.3.1-dev"
+version = "0.3.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "ketchup-tolerance"
-version = "0.3.1-dev"
+version = "0.3.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "ketchup-view-format"
-version = "0.3.1-dev"
+version = "0.3.1"
 dependencies = [
  "ketchup-rejection",
  "ketchup-tolerance",

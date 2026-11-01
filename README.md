@@ -32,8 +32,8 @@ Ketchup is an AI-native desktop modeler for creating, editing, assembling, valid
 
 ## Download and try it
 
-1. Download **`Ketchup-0.3.0-Setup.exe`** from the [latest release](https://github.com/pietrobb/Ketchup/releases/latest) and run it. It installs for the current user only, without administrator rights, into `%LOCALAPPDATA%\Programs\Ketchup` and adds **Ketchup** and **Ketchup Viewer** to the Start menu. If you prefer not to install anything, use `Ketchup-0.3.0-Portable.zip` from the same release.
-2. Download **`Ketchup-0.3.0-Examples.zip`** from the release, unpack it, and double-click any `.ketchup` file to open it in Ketchup. Double-click `kitchen.ketchup-view` to open it in Ketchup Viewer. The examples are described [below](#examples-you-can-open-right-away).
+1. Download **`Ketchup-0.3.1-Setup.exe`** from the [latest release](https://github.com/pietrobb/Ketchup/releases/latest) and run it. It installs for the current user only, without administrator rights, into `%LOCALAPPDATA%\Programs\Ketchup` and adds **Ketchup** and **Ketchup Viewer** to the Start menu. If you prefer not to install anything, use `Ketchup-0.3.1-Portable.zip` from the same release.
+2. Download **`Ketchup-0.3.1-Examples.zip`** from the release, unpack it, and double-click any `.ketchup` file to open it in Ketchup. Double-click `kitchen.ketchup-view` to open it in Ketchup Viewer. The examples are described [below](#examples-you-can-open-right-away).
 3. Optional: connect the AI harness you already use, such as Claude Code, Codex, Claude Desktop, or Cursor. It can then model in the open Ketchup window. See [Connect your AI harness](#connect-your-ai-harness-mcp).
 
 Requires Windows 10 or 11 x64. The installer and the programs are signed by AEON GROUP spol. s r.o. No account, API key, or Python is needed.
@@ -54,7 +54,7 @@ Advanced operations are intentionally bounded and fail closed when geometry, ide
 
 ## Examples you can open right away
 
-The examples below are in `Ketchup-0.3.0-Examples.zip` on the [release page](https://github.com/pietrobb/Ketchup/releases/latest) and in the [`examples`](examples) folder of this repository. `tiny-house.ketchup` is too large for the repository; download it from the link in the table. Double-click a file or use **File → Open**.
+The examples below are in `Ketchup-0.3.1-Examples.zip` on the [release page](https://github.com/pietrobb/Ketchup/releases/latest) and in the [`examples`](examples) folder of this repository. `tiny-house.ketchup` is too large for the repository; download it from the link in the table. Double-click a file or use **File → Open**.
 
 The [`hettich-quadro-v6-drawer.ketchup`](examples/hettich-quadro-v6-drawer.ketchup) example is an articulated drawer assembly. It combines an editable assembly with embedded exact STEP components, reusable occurrences, stable mechanical references, joints, travel limits, a coordinated motion study, and a persisted mounting contract. Its geometry and engineering intent stay connected, which is what Ketchup is built for.
 
