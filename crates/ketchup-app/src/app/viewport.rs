@@ -4359,6 +4359,9 @@ impl KetchupApp {
         rect: Rect,
         plane_z: f64,
     ) -> Option<Vec3> {
+        if let Some(point) = self.underlay_draw_point_at_screen(pointer, rect) {
+            return point;
+        }
         if self.uses_drawing_plane() {
             return self.drawing_input_point(pointer, rect);
         }

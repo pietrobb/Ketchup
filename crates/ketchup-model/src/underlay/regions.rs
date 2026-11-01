@@ -135,13 +135,19 @@ fn plane_graph(segments: &[[[f64; 2]; 2]], tolerance_mm: f64) -> Result<PlaneGra
         });
     }
     let tolerance = tolerance_mm.max(ketchup_tolerance::APPROXIMATION);
+    // Ends merged first, then only pieces whose ends became one point left out: a
+    // ring of pieces shorter than the tolerance keeps its shape (review 2026-10-31
+    // UO-81). Any two vertices lie farther apart than the tolerance, so every piece
+    // left is longer than it.
+    let mut vertices = Vertices::new(tolerance);
     let segments = segments
         .iter()
-        .copied()
-        .filter(|[a, b]| (b[0] - a[0]).hypot(b[1] - a[1]) > tolerance)
+        .filter_map(|[a, b]| {
+            let (a, b) = (vertices.id(*a), vertices.id(*b));
+            (a != b).then(|| [vertices.points[a], vertices.points[b]])
+        })
         .collect::<Vec<_>>();
     let cuts = cuts(&segments, tolerance)?;
-    let mut vertices = Vertices::new(tolerance);
     let mut edges = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for (segment, mut at) in segments.iter().zip(cuts) {
@@ -886,6 +892,49 @@ mod tests {
         open[3] = [[0.0, 10.0], [0.0, 0.5]];
         assert!(find_regions(&open, 0.1).unwrap().is_empty());
         assert_eq!(find_regions(&open, 1.0).unwrap().len(), 1);
+    }
+
+    /// Review 2026-10-31 UO-81: pieces shorter than the tolerance were dropped
+    /// before their ends were merged, so a Ø2 hole of 7 chords, a R5 circle of
+    /// 60 chords and a wall drawn in 0.6 mm steps lost their rings.
+    #[test]
+    fn pieces_shorter_than_the_tolerance_keep_their_ring() {
+        let circle = |centre: [f64; 2], radius: f64, chords: u32| {
+            let at = move |i: u32| {
+                let angle = std::f64::consts::TAU * f64::from(i) / f64::from(chords);
+                [
+                    centre[0] + radius * angle.cos(),
+                    centre[1] + radius * angle.sin(),
+                ]
+            };
+            (0..chords).map(move |i| [at(i), at(i + 1)])
+        };
+        for (radius, chords) in [(1.0, 7), (5.0, 60)] {
+            let mut lines = square(0.0, 100.0);
+            lines.extend(circle([50.0, 50.0], radius, chords));
+            let found = find_regions(&lines, 1.0).unwrap();
+            let room = found.iter().find(|r| r.contains([10.0, 10.0])).unwrap();
+            assert_eq!(room.holes.len(), 1, "R{radius}: {room:?}");
+            assert!(!room.contains([50.0, 50.0]), "R{radius}");
+        }
+        // A 50 x 50 room whose walls are drawn in 0.6 mm steps.
+        let mut wall = Vec::new();
+        let corners = [[0.0, 0.0], [50.0, 0.0], [50.0, 50.0], [0.0, 50.0]];
+        for i in 0..4 {
+            let (a, b) = (corners[i], corners[(i + 1) % 4]);
+            let steps = 84;
+            for k in 0..steps {
+                let t = |k: u32| f64::from(k) / f64::from(steps);
+                wall.push([lerp(a, b, t(k)), lerp(a, b, t(k + 1))]);
+            }
+        }
+        let found = find_regions(&wall, 1.0).unwrap();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            (found[0].area_mm2 - 2_500.0).abs() < 100.0,
+            "{}",
+            found[0].area_mm2
+        );
     }
 
     /// A plan of `columns` × `rows` rooms of 200 × 120 mm, a pillar in each, its walls

@@ -1384,6 +1384,7 @@ digest-underlay-extrude-searching = Finding the areas of the drawing; the clicke
 digest-underlay-extrude-refused = Nothing was pulled up: { $reason }
 digest-underlay-extruded = Pulled the area up { $height } as { $name }; it follows the drawing
 digest-underlay-extruded-part = Pulled the area up { $height } as the part { $name }
+digest-underlay-extruded-left-out = { $count } holes drawn on other layers than the walls ({ $layers }) are not cut: name those layers to cut them
 hint-text-into-underlay = Type the text, click where it starts, then click or type its height
 hint-orbit = Drag to orbit. Wheel to zoom, Shift+middle-drag to pan.
 hint-pan = Drag to pan the view.
@@ -1658,7 +1659,8 @@ digest-underlay-objects-moved = { $count } objects of the drawing moved
 digest-underlay-objects-copied = { $count } objects of the drawing copied
 digest-underlay-whole-selected = The whole drawing is selected: Move and Rotate place it
 digest-underlay-draw-on = Line, Rectangle, Circle and Arc now draw into the drawing, on layer { $layer }; Draw into drawing again ends it
-digest-underlay-draw-not-ground = The drawing tools draw in the ground plane, so they draw into a plan lying on the ground only; lay the drawing back on the ground to draw into it
+digest-underlay-draw-not-plan = The drawing tools draw into a drawing lying as a plan only, on the ground or raised; lay the drawing back as a plan to draw into it
+digest-underlay-draw-ended = The drawing being drawn into stands as a view or is gone, so drawing into it ended and nothing was drawn; the drawing tools draw into the model again
 digest-underlay-exported = The drawing with its changes was written to { $path }
 digest-underlay-exported-incomplete = The drawing with its changes was written to { $path } without { $count ->
         [one] { $count } record the DWG reader could not decode or a DWG cannot hold.

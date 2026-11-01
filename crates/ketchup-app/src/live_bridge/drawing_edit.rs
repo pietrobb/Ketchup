@@ -554,14 +554,23 @@ impl LiveBridge {
                 }
             })?;
         self.query.invalidate();
-        Ok(json!({
+        let mut answer = json!({
             "name": pulled.name,
             "bound_to_drawing": pulled.bound,
             "height_mm": height_mm,
             "underlay_id": id.0,
             "undo_steps": app.undo_step_count(),
             "dirty": app.is_dirty(),
-        }))
+        });
+        // Review 2026-10-31 UO-83: holes of the room drawn on other layers than its walls.
+        if let Some(left_out) = pulled.left_out {
+            answer["holes_left_out"] = json!({
+                "count": left_out.count,
+                "layers": left_out.layers,
+                "hint": "Holes drawn on other layers than the walls are not cut; pull the area with program action=from_underlay naming those layers to cut them.",
+            });
+        }
+        Ok(answer)
     }
 }
 

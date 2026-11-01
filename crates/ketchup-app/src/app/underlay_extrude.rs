@@ -9,7 +9,7 @@ use crate::live_bridge::take_error_details;
 use crate::live_bridge::underlay_program::{
     Ring, free_name, underlay_area_outline, underlay_extrusion_program,
 };
-use crate::live_bridge::underlay_regions::{keep_found_for, regions_ready, search_ahead};
+use crate::live_bridge::underlay_regions::{LeftOut, keep_found_for, regions_ready, search_ahead};
 use crate::*;
 use ketchup_application::RuleProgramApplyError;
 use ketchup_model::underlay::UnderlayId;
@@ -22,13 +22,16 @@ pub(crate) struct ChosenArea {
     object_id: Option<u32>,
     outline: Ring,
     holes: Vec<Ring>,
+    /// Holes of the room drawn on other layers than its walls, not cut.
+    left_out: Option<LeftOut>,
 }
 
-/// What pulling an area up made: the name of its data or part, and whether the program
-/// keeps it bound to the drawing.
+/// What pulling an area up made: the name of its data or part, whether the program keeps
+/// it bound to the drawing, and the holes of the room it left out.
 pub(crate) struct PulledArea {
     pub name: String,
     pub bound: bool,
+    pub left_out: Option<LeftOut>,
 }
 
 /// Why no area of a drawing was taken or written: the code of the refusal and the
@@ -218,14 +221,28 @@ impl KetchupApp {
             }
         };
         self.digest = match self.pull_underlay_area(&area, height_mm) {
-            Ok(pulled) => self.catalog.format(
-                if pulled.bound {
-                    "digest-underlay-extruded"
-                } else {
-                    "digest-underlay-extruded-part"
-                },
-                &BTreeMap::from([("height", format_height(height_mm)), ("name", pulled.name)]),
-            ),
+            Ok(pulled) => {
+                let mut digest = self.catalog.format(
+                    if pulled.bound {
+                        "digest-underlay-extruded"
+                    } else {
+                        "digest-underlay-extruded-part"
+                    },
+                    &BTreeMap::from([("height", format_height(height_mm)), ("name", pulled.name)]),
+                );
+                // Review 2026-10-31 UO-83: a shaft drawn on a layer of its own is said.
+                if let Some(left_out) = pulled.left_out {
+                    digest.push_str("; ");
+                    digest.push_str(&self.catalog.format(
+                        "digest-underlay-extruded-left-out",
+                        &BTreeMap::from([
+                            ("count", left_out.count.to_string()),
+                            ("layers", left_out.layers.join(", ")),
+                        ]),
+                    ));
+                }
+                digest
+            }
             Err(AreaPullError::Height) => self.catalog.text("digest-underlay-extrude-height"),
             Err(AreaPullError::Program(error)) => error.rejection().reason_text().to_owned(),
             Err(error) => self.catalog.format(
@@ -289,7 +306,7 @@ impl KetchupApp {
     ) -> Result<Option<ChosenArea>, AreaRefusal> {
         let found = underlay_area_outline(self, underlay, point_mm, object_id)
             .map_err(AreaRefusal::taken)?;
-        let Some((outline, holes)) = found else {
+        let Some((outline, holes, left_out)) = found else {
             return Ok(None);
         };
         Ok(Some(ChosenArea {
@@ -298,6 +315,7 @@ impl KetchupApp {
             object_id,
             outline,
             holes,
+            left_out,
         }))
     }
 
@@ -333,10 +351,14 @@ impl KetchupApp {
             self.apply_batch_with_work_recovery(&batch)
                 .map_err(AreaPullError::Part)?;
         }
-        Ok(PulledArea { name, bound })
+        Ok(PulledArea {
+            name,
+            bound,
+            left_out: area.left_out.clone(),
+        })
     }
 
-    /// A part of its own: the outline extruded `height_mm` up from the ground, each hole
+    /// A part of its own: the outline extruded `height_mm` up from the drawing's plane, each hole
     /// cut through it by a prism a millimetre longer at both ends.
     fn area_part_batch(
         &self,
@@ -437,11 +459,16 @@ impl KetchupApp {
             ]);
             target = cut;
         }
+        // The outline is in the drawing's plane: the part stands where the drawing does, on
+        // a raised plan or a view (review 2026-10-31 UO-82).
+        let transform = snapshot
+            .underlay(area.underlay)
+            .map_or_else(Transform::identity, |underlay| underlay.view.transform());
         commands.push(CanonicalCommand::CreateOccurrence {
             id: occurrence_id,
             definition_id,
             name: name.to_owned(),
-            transform: Transform::identity(),
+            transform,
             parent: None,
             tags: Default::default(),
             visible: true,

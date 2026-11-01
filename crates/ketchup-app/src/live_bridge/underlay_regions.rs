@@ -259,17 +259,22 @@ pub(super) fn region_holding(
 /// walls (none when no drawn line bounds it). A stamp frame or a fitting drawn
 /// on layers of their own inside a room is no hole in it, and a point or a label inside one
 /// of them is in the room: the room is holed only where the layers of its walls close
-/// inside it.
+/// inside it. The holes left out are said with the layers drawing them (review 2026-10-31
+/// UO-83: an opening on a layer of its own became floor unsaid).
 pub(super) fn walled(
     snapshot: &Snapshot,
     underlay: &Underlay,
     lines: &UnderlayLines,
     lookup: Lookup,
     found: Region,
-) -> Result<(Region, Vec<usize>), &'static str> {
+) -> Result<Room, &'static str> {
     let mut regions = closed_regions(snapshot, underlay, lines, None, lookup, false)?;
     let Some(mut at) = regions.iter().position(|region| *region == found) else {
-        return Ok((found, Vec::new()));
+        return Ok(Room {
+            region: found,
+            walls: Vec::new(),
+            left_out: Vec::new(),
+        });
     };
     let pieces = pieces(
         lines,
@@ -297,9 +302,14 @@ pub(super) fn walled(
         layers = walls;
     }
     let mut room = regions.swap_remove(at);
+    let mut left_out = Vec::new();
     if !layers.is_empty() {
-        room.holes
-            .retain(|hole| edge(hole).iter().any(|layer| layers.contains(layer)));
+        let (kept, other): (Vec<_>, Vec<_>) = std::mem::take(&mut room.holes)
+            .into_iter()
+            .map(|hole| (edge(&hole), hole))
+            .partition(|(edges, _)| edges.iter().any(|layer| layers.contains(layer)));
+        room.holes = kept.into_iter().map(|(_, hole)| hole).collect();
+        left_out = other.into_iter().map(|(edges, _)| edges).collect();
         room.area_mm2 = room
             .holes
             .iter()
@@ -307,11 +317,58 @@ pub(super) fn walled(
                 area - ring_area(hole)
             });
     }
-    Ok((room, layers))
+    Ok(Room {
+        region: room,
+        walls: layers,
+        left_out,
+    })
 }
 
-/// The layers of the room ([`walled`]) at the document point `point` or labelled `label`
-/// among the shown layers, when there is one.
+/// A room [`walled`] finds: its region, the layers of its walls and, for each hole drawn
+/// on other layers than the walls and so left out of it, the layers drawing that hole.
+pub(super) struct Room {
+    pub region: Region,
+    pub walls: Vec<usize>,
+    pub left_out: Vec<Vec<usize>>,
+}
+
+impl Room {
+    /// The holes left out: how many, on which layers of `underlay`; none when none was.
+    pub(super) fn left_out_holes(&self, underlay: &Underlay) -> Option<LeftOut> {
+        let mut layers = self
+            .left_out
+            .iter()
+            .flatten()
+            .map(|index| underlay.layers[*index].name.clone())
+            .collect::<Vec<_>>();
+        layers.sort_unstable();
+        layers.dedup();
+        (!self.left_out.is_empty()).then_some(LeftOut {
+            count: self.left_out.len(),
+            layers,
+        })
+    }
+}
+
+/// Holes of a room drawn on other layers than its walls, left out of it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LeftOut {
+    pub count: usize,
+    pub layers: Vec<String>,
+}
+
+impl std::fmt::Display for LeftOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} holes on layers {:?} left out, drawn on other layers than the walls",
+            self.count, self.layers
+        )
+    }
+}
+
+/// The room ([`walled`]) at the document point `point` or labelled `label` among the shown
+/// layers, when there is one with walls.
 pub(super) fn room_layers(
     snapshot: &Snapshot,
     underlay: &Underlay,
@@ -319,7 +376,7 @@ pub(super) fn room_layers(
     point: Option<[f64; 2]>,
     label: Option<&str>,
     lookup: Lookup,
-) -> Option<Vec<usize>> {
+) -> Option<Room> {
     let found = match (point, label) {
         (Some(point), None) if point.iter().all(|value| value.is_finite()) => {
             let regions = closed_regions(snapshot, underlay, lines, None, lookup, false).ok()?;
@@ -330,8 +387,8 @@ pub(super) fn room_layers(
         }
         _ => return None,
     };
-    let (_, layers) = walled(snapshot, underlay, lines, lookup, found).ok()?;
-    (!layers.is_empty()).then_some(layers)
+    let room = walled(snapshot, underlay, lines, lookup, found).ok()?;
+    (!room.walls.is_empty()).then_some(room)
 }
 
 /// The layers of `pieces` that run along an edge of `ring`, within `tolerance`.

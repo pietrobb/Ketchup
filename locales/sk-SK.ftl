@@ -1386,6 +1386,7 @@ digest-underlay-extrude-searching = Hľadám oblasti výkresu; kliknutá sa vyti
 digest-underlay-extrude-refused = Nič nebolo vytiahnuté: { $reason }
 digest-underlay-extruded = Oblasť vytiahnutá o { $height } ako { $name }; nasleduje výkres
 digest-underlay-extruded-part = Oblasť vytiahnutá o { $height } ako diel { $name }
+digest-underlay-extruded-left-out = otvory na iných vrstvách ako steny ({ $layers }), spolu { $count }, nie sú vyrezané: pomenujte tieto vrstvy, aby sa vyrezali
 hint-text-into-underlay = Napíš text, klikni, kde začína, potom klikni alebo zadaj jeho výšku
 hint-orbit = Ťahaním otáčajte pohľad. Kolieskom približujte, Shift+stredné tlačidlo posúva.
 hint-pan = Ťahaním posúvajte pohľad.
@@ -1633,7 +1634,8 @@ digest-underlay-objects-moved = Posunuté objekty výkresu: { $count }
 digest-underlay-objects-copied = Skopírované objekty výkresu: { $count }
 digest-underlay-whole-selected = Vybraný celý výkres: Posun a Otočenie ho celý presunú
 digest-underlay-draw-on = Čiara, Obdĺžnik, Kružnica a Oblúk teraz kreslia do výkresu, na vrstvu { $layer }; opäť Kresliť do výkresu to ukončí
-digest-underlay-draw-not-ground = Kresliace nástroje kreslia v rovine zeme, preto kreslia len do pôdorysu ležiaceho na zemi; aby si doň kreslil, polož výkres späť na zem
+digest-underlay-draw-not-plan = Kresliace nástroje kreslia len do výkresu ležiaceho ako pôdorys, na zemi alebo zdvihnutého; aby si doň kreslil, polož výkres späť ako pôdorys
+digest-underlay-draw-ended = Výkres, do ktorého sa kreslilo, stojí ako pohľad alebo už nie je, preto kreslenie doň skončilo a nič sa nenakreslilo; kresliace nástroje opäť kreslia do modelu
 digest-underlay-exported = Výkres so zmenami je zapísaný do { $path }
 digest-underlay-exported-incomplete = Výkres so zmenami je zapísaný do { $path } bez { $count ->
         [one] { $count } záznamu, ktorý čítačka DWG nevedela dekódovať alebo ktorý DWG nevie uložiť.

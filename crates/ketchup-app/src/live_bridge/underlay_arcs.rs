@@ -43,9 +43,14 @@ const MIN_PIECE: f64 = 0.5 * std::f64::consts::PI / 180.0;
 const MIN_BULGE: f64 = CONTACT_FIT_MM;
 
 /// The longest chord of a drawn arc of `radius` in a drawing scaled by `scale`: its step as
-/// the import cut it, a small circle's in a few long chords (Ø15 in 20), or [`MAX_STEP`].
-fn max_chord(radius: f64, scale: f64) -> f64 {
-    let step = (arc_chord_step(radius / scale) * (1.0 + UNDERLAY_ARC_STEP_SLACK)).max(MAX_STEP);
+/// the import cut it, a small circle's in a few long chords (Ø15 in 20), or for a `whole`
+/// circle [`MAX_STEP`]. Short of a whole circle a run of longer chords is a wall drawn in
+/// facets (review 2026-10-31 UO-80).
+fn max_chord(radius: f64, scale: f64, whole: bool) -> f64 {
+    let mut step = arc_chord_step(radius / scale) * (1.0 + UNDERLAY_ARC_STEP_SLACK);
+    if whole {
+        step = step.max(MAX_STEP);
+    }
     2.0 * radius * (step.min(FRAC_PI_2) / 2.0).sin()
 }
 
@@ -95,13 +100,14 @@ pub(super) fn pieces(ring: &[[f64; 2]], scale: f64) -> Option<Vec<Piece>> {
     }
     let at = |index: usize| ring[index % n];
     // How many of the `limit` chords from corner `start` lie on the circle `center`,
-    // `radius`, each no longer than the import cuts it and all turning one way.
-    let along = |start: usize, limit: usize, center: [f64; 2], radius: f64| -> usize {
+    // `radius`, each no longer than the import cuts it (`whole`: the ring as one circle)
+    // and all turning one way.
+    let along = |start: usize, limit: usize, center: [f64; 2], radius: f64, whole: bool| -> usize {
         let turn = cross(
             sub(at(start + 1), at(start)),
             sub(at(start + 2), at(start + 1)),
         );
-        let (max_chord, tolerance) = (max_chord(radius, scale), tolerance(radius, scale));
+        let (max_chord, tolerance) = (max_chord(radius, scale, whole), tolerance(radius, scale));
         let on = |index: usize| (distance(at(index), center) - radius).abs() <= tolerance;
         if !on(start) {
             return 0;
@@ -126,30 +132,32 @@ pub(super) fn pieces(ring: &[[f64; 2]], scale: f64) -> Option<Vec<Piece>> {
     // along the circle through its first three corners; its circle is then the one through
     // its ends and middle, which every corner of the run must lie on (review 2026-10-29
     // UO-60), or the run is shortened until they do.
-    let arc_from = |start: usize, limit: usize| -> Option<(usize, [f64; 2], f64, f64)> {
-        let (center, radius) = circle(at(start), at(start + 1), at(start + 2))?;
-        let mut chords = along(start, limit, center, radius);
-        while chords >= MIN_CHORDS {
-            let middle = if chords == n { chords / 3 } else { chords / 2 };
-            let last = if chords == n { 2 * chords / 3 } else { chords };
-            if let Some((center, radius)) = circle(at(start), at(start + middle), at(start + last))
-                && along(start, chords, center, radius) == chords
-            {
-                let sweep = (0..chords)
-                    .map(|chord| {
-                        let (from, to) = (
-                            sub(at(start + chord), center),
-                            sub(at(start + chord + 1), center),
-                        );
-                        cross(from, to).atan2(dot2(from, to))
-                    })
-                    .sum();
-                return Some((chords, center, radius, sweep));
+    let arc_from =
+        |start: usize, limit: usize, whole: bool| -> Option<(usize, [f64; 2], f64, f64)> {
+            let (center, radius) = circle(at(start), at(start + 1), at(start + 2))?;
+            let mut chords = along(start, limit, center, radius, whole);
+            while chords >= MIN_CHORDS {
+                let middle = if chords == n { chords / 3 } else { chords / 2 };
+                let last = if chords == n { 2 * chords / 3 } else { chords };
+                if let Some((center, radius)) =
+                    circle(at(start), at(start + middle), at(start + last))
+                    && along(start, chords, center, radius, whole) == chords
+                {
+                    let sweep = (0..chords)
+                        .map(|chord| {
+                            let (from, to) = (
+                                sub(at(start + chord), center),
+                                sub(at(start + chord + 1), center),
+                            );
+                            cross(from, to).atan2(dot2(from, to))
+                        })
+                        .sum();
+                    return Some((chords, center, radius, sweep));
+                }
+                chords -= 1;
             }
-            chords -= 1;
-        }
-        None
-    };
+            None
+        };
 
     // Start at a corner no arc passes through, or take the whole ring as one circle. The
     // import cuts an arc in equal chords: where a long wall meets an arc, the nearly
@@ -159,12 +167,12 @@ pub(super) fn pieces(ring: &[[f64; 2]], scale: f64) -> Option<Vec<Piece>> {
         let (into, out) = (distance(before, here), distance(here, after));
         (into - out).abs() <= UNDERLAY_ARC_STEP_SLACK * into.max(out) + 2.0 * tolerance(0.0, scale)
             && circle(before, here, after)
-                .is_some_and(|(_, radius)| into.max(out) <= max_chord(radius, scale))
+                .is_some_and(|(_, radius)| into.max(out) <= max_chord(radius, scale, true))
     };
     let mut pieces = Vec::new();
     let first = (0..n).find(|index| !bends(*index));
     if first.is_none()
-        && let Some((chords, center, radius, sweep)) = arc_from(0, n)
+        && let Some((chords, center, radius, sweep)) = arc_from(0, n, true)
         && chords == n
         && (sweep.abs() - TAU).abs() <= APPROXIMATION
     {
@@ -176,7 +184,7 @@ pub(super) fn pieces(ring: &[[f64; 2]], scale: f64) -> Option<Vec<Piece>> {
     let mut done = 0;
     while done < n {
         let start = first + done;
-        if let Some((chords, center, radius, sweep)) = arc_from(start, n - done) {
+        if let Some((chords, center, radius, sweep)) = arc_from(start, n - done, false) {
             split(
                 &mut pieces,
                 at(start),
@@ -522,6 +530,33 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Review 2026-10-31 UO-80: four facets of 1 000 mm turning 9.2° (or of 3 000 mm
+    /// turning 9.7°) in a room became an arc: any run of four equal chords turning one way
+    /// within [`MAX_STEP`]. Short of a whole circle, only chords the import cuts an arc of
+    /// their radius into are an arc; an arc so drawn still is one.
+    #[test]
+    fn facets_of_a_segmented_wall_stay_straight() {
+        for (facet, turn_deg) in [(1000.0, 9.2), (3000.0, 9.7)] {
+            let turn = f64::to_radians(turn_deg);
+            let mut ring = vec![[0.0, 0.0]];
+            for k in 0..4 {
+                let [x, y] = ring[ring.len() - 1];
+                let heading = turn * f64::from(k);
+                ring.push([x + facet * heading.cos(), y + facet * heading.sin()]);
+            }
+            let end = ring[ring.len() - 1];
+            ring.push([end[0], -3000.0]);
+            ring.push([0.0, -3000.0]);
+            for ring in starts(&ring) {
+                assert_eq!(pieces(&ring, 1.0), None, "{facet} from {:?}", ring[0]);
+            }
+        }
+        let mut arc = vec![[0.0, -3000.0]];
+        arc.extend(drawn_arc([0.0, 0.0], 3000.0, -FRAC_PI_2, 0.0));
+        arc.push([0.0, 0.0]);
+        assert_round(&arc, std::f64::consts::PI * 9.0e6 / 4.0);
     }
 
     #[test]

@@ -1156,13 +1156,79 @@ fn a_plan_raised_off_the_ground_snaps_and_is_pulled_up_where_it_lies() {
     let app = harness.state();
     assert_eq!(app.undo_step_count(), undo + 1, "{}", app.digest);
     assert!(app.digest.contains("AREA_1"), "{}", app.digest);
+    // Review 2026-10-31 UO-82: the part of its own stands on the raised plan, not on the
+    // ground under it.
+    let occurrence = app
+        .document
+        .current()
+        .occurrences()
+        .find(|occurrence| occurrence.name() == "AREA_1")
+        .expect("the room is pulled up")
+        .id();
+    let root = InstancePath::root(occurrence);
+    let [low, high] = app.rotation_bounds_for(&|path| *path == root).unwrap();
+    assert!(
+        (low.z - height).abs() < 1e-6 && (high.z - height - 300.0).abs() < 1e-6,
+        "{low:?} .. {high:?}"
+    );
 
-    // The drawing tools draw in the ground plane: they draw into it once it lies there.
+    // Review 2026-10-31 UI-80: the drawing tools draw into the raised plan where it lies.
+    // Before, drawing into it was refused, and raising a plan being drawn into sent the
+    // tools back to the model unsaid.
     let app = harness.state_mut();
     app.select_whole_underlay(id);
     app.dispatch_command(AppCommand::DrawIntoUnderlay);
-    assert_eq!(app.underlay_draw_target(), None);
-    assert!(app.digest.contains("ground plane"), "{}", app.digest);
+    assert!(app.underlay_draw_target().is_some(), "{}", app.digest);
+    let definitions = app.document.current().definitions().count();
+    let [from, to] = [IN_ROOM, IN_FLOOR].map(|point| Vec3::new(point.x, point.y, height));
+    click(&mut harness, from);
+    click(&mut harness, to);
+    press(&mut harness, egui::Key::Escape);
+    // The clicks land a couple of pixels off the points (`point`); met on the ground under
+    // them in iso, they would lie some 100 mm away.
+    let close = |a: [f64; 2], b: Vec3| (a[0] - b.x).hypot(a[1] - b.y) < 5.0;
+    let shapes = drawn_shapes(&harness);
+    match shapes.as_slice() {
+        [(_, DrawnShape::Polyline { points_mm, .. })] => assert!(
+            close(points_mm[0], from) && close(points_mm[1], to),
+            "{points_mm:?}"
+        ),
+        other => panic!("{other:?}"),
+    }
+
+    // Stood up as a view by the AI meanwhile, it is drawn into no more: said at the next
+    // shape, which goes nowhere, and drawing into it does not come back unasked once it
+    // lies as a plan again.
+    let stand = |harness: &mut Harness<'_, KetchupApp>, plane: ViewPlane| {
+        let view = UnderlayView { plane, at_mm: 0.0 };
+        let batch = plan_underlay_view(&harness.state().document.current(), id, view).unwrap();
+        harness
+            .state_mut()
+            .apply_batch_with_work_recovery(&batch)
+            .unwrap();
+    };
+    stand(&mut harness, ViewPlane::Front);
+    let undo = harness.state().undo_step_count();
+    harness.state_mut().dispatch_command(AppCommand::Line);
+    click(&mut harness, Vec3::new(IN_ROOM.x, 0.0, IN_ROOM.y));
+    click(&mut harness, Vec3::new(IN_FLOOR.x, 0.0, IN_FLOOR.y));
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo, "{}", app.digest);
+    assert_eq!(app.document.current().definitions().count(), definitions);
+    assert!(
+        app.gesture.underlay_draw.is_none(),
+        "{:?} {}",
+        app.active_tool,
+        app.digest
+    );
+    assert!(
+        app.digest.contains("drawing into it ended"),
+        "{}",
+        app.digest
+    );
+    press(&mut harness, egui::Key::Escape);
+    stand(&mut harness, ViewPlane::Top);
+    assert_eq!(harness.state().underlay_draw_target(), None);
 }
 
 /// 2D-4 in a document with only the drawing: the pulled areas are written into the program
