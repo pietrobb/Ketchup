@@ -289,6 +289,18 @@ jobs:
             app::tests::atomic_save::interrupted_save_keeps_the_earlier_file_and_leaves_no_partial_one \
             | tee "$RUNNER_TEMP/atomic-save.log"
           grep -q "test result: ok. 1 passed" "$RUNNER_TEMP/atomic-save.log"
+      # The portable Viewer is built with crt-static, as build-installer.ps1
+      # builds it, and needs no Visual C++ Redistributable (review 2026-10-31 VW-81).
+      - name: the Viewer carries its C++ runtime
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: |
+          cargo test --locked -p ketchup-viewer --lib --target x86_64-pc-windows-msvc -- --exact \
+            windows_runtime_tests::the_viewer_needs_no_visual_cpp_runtime_dll \
+            | tee "$RUNNER_TEMP/viewer-runtime.log"
+          grep -q "test result: ok. 1 passed" "$RUNNER_TEMP/viewer-runtime.log"
       # The cutting plan, quote, CNC drawings and BTLx files must be the same
       # bytes as on Linux and macOS, where the job without OCCT checks the same
       # golden files (review 2026-10-29 proposal 5.1, ADR 0009).

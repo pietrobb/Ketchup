@@ -19,3 +19,5 @@ pub mod text;
 mod gpu_tests;
 #[cfg(test)]
 mod measure_tests;
+#[cfg(all(test, windows, target_feature = "crt-static"))]
+mod windows_runtime_tests;
