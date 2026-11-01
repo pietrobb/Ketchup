@@ -248,6 +248,41 @@ fn a_production_scope_names_the_bought_parts_it_leaves_out_and_a_tag_no_part_car
     assert!(unused.message.contains("\"hardwear\""), "{unused:?}");
 }
 
+/// Review 2026-10-31 PG-85: without production() the simple and the
+/// detailed copy of one beam (alternatives()) both went to the cutting plan
+/// and the quote, 4 m priced for 2 m, without a word.
+#[test]
+fn counting_more_than_one_alternative_representation_is_a_warning() {
+    let source = "box(\"beam simple\", (2000, 100, 200), material = \"KVH\", tags = [\"simple\"])\n\
+         box(\"beam detailed\", (2000, 100, 200), material = \"KVH\", tags = [\"detailed\"])\n\
+         alternatives([\"simple\", \"detailed\"])\n";
+    let (_, report) = run("t.star", source, &BTreeMap::new()).unwrap();
+    let counted = report
+        .issues
+        .iter()
+        .find(|issue| issue.kind == "production_counts_alternatives")
+        .unwrap_or_else(|| panic!("{:#?}", report.issues));
+    assert_eq!(counted.severity, Severity::Warning);
+    assert_eq!(counted.parts, ["beam simple", "beam detailed"]);
+    assert!(
+        counted.message.contains("\"detailed\", \"simple\""),
+        "{}",
+        counted.message
+    );
+
+    let made = format!("{source}production(tags = [\"detailed\"])\n");
+    let (_, report) = run("t.star", &made, &BTreeMap::new()).unwrap();
+    assert_eq!(report.bom.total_parts, 1);
+    assert!(
+        report
+            .issues
+            .iter()
+            .all(|issue| issue.kind != "production_counts_alternatives"),
+        "{:#?}",
+        report.issues
+    );
+}
+
 #[test]
 fn the_cut_list_gives_the_blank_a_push_pull_grew() {
     let (_, report) = run(

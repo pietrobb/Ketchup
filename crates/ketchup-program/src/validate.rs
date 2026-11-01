@@ -836,6 +836,7 @@ fn support<'a>(
 /// schedule.
 fn production(model: &ProgramModel, issues: &mut Vec<Issue>) {
     use std::collections::BTreeSet;
+    alternatives_counted(model, issues);
     if model.production_scope.is_empty() {
         return;
     }
@@ -915,6 +916,44 @@ fn production(model: &ProgramModel, issues: &mut Vec<Issue>) {
             .to_owned(),
         source_lines: Vec::new(),
     });
+}
+
+/// Parts of more than one representation of a set of `alternatives()` that
+/// are made: the cut list, cutting plan, hardware and quote count the same
+/// thing more than once (review 2026-10-31 PG-85).
+fn alternatives_counted(model: &ProgramModel, issues: &mut Vec<Issue>) {
+    use std::collections::BTreeSet;
+    for set in &model.alternative_tags {
+        let made = model
+            .parts
+            .iter()
+            .filter(|part| model.in_production(part) && !part.tags.is_disjoint(set))
+            .collect::<Vec<_>>();
+        let counted = made
+            .iter()
+            .flat_map(|part| part.tags.intersection(set).map(String::as_str))
+            .collect::<BTreeSet<_>>();
+        if counted.len() < 2 {
+            continue;
+        }
+        let quoted = counted
+            .iter()
+            .map(|tag| format!("{tag:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        issues.push(Issue {
+            severity: Severity::Warning,
+            kind: "production_counts_alternatives",
+            parts: made.iter().map(|part| part.name.clone()).collect(),
+            message: format!(
+                "alternatives(): the representations {quoted} are all made, so the cut list, \
+                 cutting plan, hardware and quote count the same parts more than once"
+            ),
+            where_mm: None,
+            hint: "Name the representation that is made in production(tags=[…]).".to_owned(),
+            source_lines: Vec::new(),
+        });
+    }
 }
 
 /// All generic checks on boxes. Errors first, then warnings; stable order.

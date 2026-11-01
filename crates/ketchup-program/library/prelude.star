@@ -192,11 +192,18 @@ def _role(who, role):
     return role
 
 def board(name, size, at = (0, 0, 0), material = "board", grain = None, edges = None, color = None,
-          role = MANUFACTURED_ITEM):
+          role = MANUFACTURED_ITEM, thickness_axis = None):
     """A flat panel: an axis-aligned cuboid with a material for the cut list,
-    a manufactured item unless role= says otherwise (a bought panel: PURCHASED_ITEM)."""
+    a manufactured item unless role= says otherwise (a bought panel: PURCHASED_ITEM).
+    Its thickness runs along thickness_axis ("x", "y" or "z"; default the axis of its
+    smallest size), which the cutting plan groups it by."""
     attributes = grain_attributes(grain)
     attributes[FABRICATION_ROLE] = _role("board(%r)" % name, role)
+    if thickness_axis == None:
+        thickness_axis = "xyz"[[k for k in range(3) if size[k] == min(size)][0]]
+    elif thickness_axis not in ("x", "y", "z"):
+        fail("board(%r): thickness_axis must be \"x\", \"y\" or \"z\", got %r" % (name, thickness_axis))
+    attributes[THICKNESS_AXIS] = thickness_axis
     if edges != None:
         if type(edges) != "string":
             fail("edges must be text such as \"L1 L2 W1\", got %r" % edges)
@@ -2168,9 +2175,9 @@ def no_window_over(part, tag = "window", margin = 300, height = 1500):
 #     is cut into pieces around the openings; its "sheet": (u, v) (board size in mm, e.g.
 #     (1250, 2500) for upright OSB) also cuts it into boards: joints along v on the stud
 #     centres of the nearest framed layer, a whole number of spacings apart, and along u
-#     every board height; no joint where one board covers the rest, and the last moved
-#     back so no board is narrower than "min_width" (default 200 mm; a warning where no
-#     stud allows it). In a wall that framed layer gets a "joint noggin" behind every
+#     every board height; no joint where one board covers the rest, and joints moved to
+#     other stud centres so no board is narrower than "min_width" (default 200 mm) at the
+#     end or beside an opening (a warning naming the boards where no stud allows it). In a wall that framed layer gets a "joint noggin" behind every
 #     horizontal joint; in a floor or roof a warning names them. Its "grain": "u" or "v" gives every piece the grain attribute
 #     sheet_stock(grain = True) keeps (topic cutting). A framed layer adds "spacing" (stud
 #     centres from u = 0 in mm; a stud at each end), "stud" (stud width, default 60), "header" (depth of the headers
@@ -2321,33 +2328,61 @@ def _nearest_framed(layers, here):
     framed = sorted([(abs(k - here), float(l["spacing"]), k) for k, l in enumerate(layers) if "spacing" in l])
     return framed[0][2] if framed else None
 
-def _board_joints(span, size, step, grid, narrowest):
+def _board_joints(span, size, step, grid, narrowest, fixed = []):
     """The joints of boards `size` long laid along a run `span` long, `step` apart: none
     once one board covers the rest, and the last moved back to a multiple of `grid` (0:
-    anywhere) when the board after it would be narrower than `narrowest`. Also whether a
-    board stays narrower than that."""
+    anywhere) when the board after it would be narrower than `narrowest`. A joint closer
+    than `narrowest` to one of the edges `fixed` (of openings) without meeting it moves to
+    the nearest multiple of `grid` that is not (without a grid: onto the edge or
+    `narrowest` off it), its board no longer than `size` (review 2026-10-31 PG-86: a
+    30 mm strip beside an opening). Also whether the last board stays narrower."""
+    def clear(before, u):
+        if u - before < narrowest - 0.001:
+            return False
+        for e in fixed:
+            if 0.001 < abs(u - e) and abs(u - e) < narrowest - 0.001:
+                return False
+        return True
+
+    def moved(before, at, high):
+        if clear(before, at):
+            return at
+        if grid > 0:
+            options = [k * grid for k in range(int(before / grid) + 1, int(high / grid + 0.001) + 1)]
+        else:
+            options = [o for e in fixed for o in (e - narrowest, e, e + narrowest)]
+        options = sorted([(abs(o - at), o) for o in options
+                          if before < o and o <= high + 0.001 and o < span - 0.001 and clear(before, o)])
+        return options[0][1] if options else at
+
+    shortest = step
+    if narrowest > 0:
+        shortest = min(shortest, narrowest)
+    if grid > 0:
+        shortest = min(shortest, grid)
     joints, last = [], 0.0
-    for _ in range(int(span / step) + 1):
+    for _ in range(int(span / max(shortest, 1.0)) + 2):
         if span - last <= size + 0.001:
             break
-        last += step
+        last = moved(last, last + step, last + size)
         joints.append(last)
     if not joints or span - joints[-1] >= narrowest - 0.001:
         return joints, False
     before = joints[-2] if len(joints) > 1 else 0.0
     high = span - narrowest
-    at = high if grid <= 0 else int(high / grid + 0.001) * grid
-    if at >= max(before + narrowest, span - size) - 0.001:
+    at = moved(before, high if grid <= 0 else int(high / grid + 0.001) * grid, high)
+    if at >= max(before + narrowest, span - size) - 0.001 and at <= high + 0.001:
         joints[-1] = at
         return joints, False
     return joints, True
 
-def _sheet_joints(name, layers, layer, length, points):
+def _sheet_joints(name, layers, layer, length, points, edges_u):
     """The joints of a sheet layer laid from boards layer["sheet"] = (u, v) mm: lines
     u = ... on the nearest framed layer's stud centres, a whole number of spacings
     apart (else the board width), and lines v = ... a board height apart; none where
     one board covers the rest, and none leaving a board narrower than layer["min_width"]
-    (default 200 mm) where the joint can move. Also whether a narrower board stays."""
+    (default 200 mm) beside the run's end or an opening's edge at u = edges_u where the
+    joint can move. Also whether a narrower board stays at the end."""
     sheet = layer.get("sheet")
     if sheet == None:
         return [], [], False
@@ -2362,7 +2397,7 @@ def _sheet_joints(name, layers, layer, length, points):
     if framed != None and float(layers[framed]["spacing"]) <= size_u:
         grid = float(layers[framed]["spacing"])
         step = int(size_u / grid + 0.001) * grid
-    joints_u, narrow_u = _board_joints(length, size_u, step, grid, narrowest)
+    joints_u, narrow_u = _board_joints(length, size_u, step, grid, narrowest, edges_u)
     joints_v, narrow_v = _board_joints(max([p[1] for p in points]), size_v, size_v, 0.0, narrowest)
     return joints_u, joints_v, narrow_u or narrow_v
 
@@ -2411,15 +2446,23 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
         pieces.append(placed)
         return placed
 
+    # A framing member's length runs along u (plates, sills, headers, noggins) or v (studs,
+    # joists, rafters): the cutting plan takes its section from the other two sizes (review
+    # 2026-10-31 PG-84: a 10 mm packer made a 140 x 10 section of its own).
+    along_u = {LENGTH_AXIS: "x"}
+    along_v = {LENGTH_AXIS: "y"}
+
     def covering(a, b):
         return [o for o in holes if o[0] <= a + 0.001 and b <= o[0] + o[2] + 0.001]
 
     # Each sheet layer's board joints; the framed layer it is laid on backs its
     # horizontal joints with noggins.
     sheet_joints = []
+    hole_edges = {e: 0 for o in holes for e in (o[0], o[0] + o[2])}
     for k in range(len(layers)):
         inner = sum([l["thickness"] for l in layers[:k]])
-        sheet_joints.append(_sheet_joints(name, layers, layers[k], length, _outline(name, length, height, top, inner))
+        sheet_joints.append(_sheet_joints(name, layers, layers[k], length, _outline(name, length, height, top, inner),
+                                          list(hole_edges.keys()))
                             if "spacing" not in layers[k] else ([], [], False))
     offset = 0.0
     for here in range(len(layers)):
@@ -2450,18 +2493,32 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
             joints_u, joints_v, narrow = sheet_joints[here]
             edges = sorted({e: 0 for e in [0.0, length] + joints_u + [o[0] for o in holes] + [o[0] + o[2] for o in holes]}.keys())
             parts = []
+            # Pieces narrower than the layer's minimum beside an opening, which no joint
+            # on a stud avoided (review 2026-10-31 PG-86).
+            narrowest = float(layer.get("min_width", 200)) if "sheet" in layer else 0.0
+            strips = []
             for k in range(len(edges) - 1):
                 a, b = edges[k], edges[k + 1]
                 if b - a < 1:
                     continue
+                strip = b - a < narrowest - 0.001 and (a in hole_edges or b in hole_edges)
                 blocks = [(o[1], None if through[holes.index(o)] else o[1] + o[3]) for o in covering(a, b)]
                 if joints_v:
                     # A joint across a sloping top would need a slanted cut: left out.
                     lowest = min([p[1] for p in _under(points, flat, a, b, 0.0)[2:]])
                     blocks += [(v, v) for v in joints_v if v <= lowest - 1]
-                parts += _column(points, flat, a, b, 0.0, blocks)
+                column = _column(points, flat, a, b, 0.0, blocks)
+                if strip:
+                    strips += list(range(len(parts), len(parts) + len(column)))
+                parts += column
             boards = [piece(label if len(parts) == 1 else "%s %d" % (label, k + 1), parts[k], offset, thickness, material, color, layer_tags, role, extra)
                       for k in range(len(parts))]
+            if strips:
+                check(False, ("buildup(%s): layer %s has boards narrower than %s mm beside an opening: no joint " +
+                              "on a stud of the layer it is laid on keeps them at least that wide") %
+                             (name, label, fmt_mm(narrowest)),
+                      parts = [boards[k] for k in strips], severity = "warning",
+                      hint = "Move the opening or change the stud spacing, or give the layer a smaller \"min_width\".")
             if narrow:
                 check(False, ("buildup(%s): layer %s ends in a board narrower than %s mm: no joint on a stud " +
                               "of the layer it is laid on leaves both boards at least that wide") %
@@ -2507,7 +2564,7 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
         for k in range(len(bottom)):
             a, b = bottom[k]
             plate_name = "%s/bottom plate%s" % (label, "" if len(bottom) == 1 else " %d" % (k + 1))
-            plate = piece(plate_name, _rect(a, 0.0, b, stud), offset, thickness, material, color, layer_tags, role)
+            plate = piece(plate_name, _rect(a, 0.0, b, stud), offset, thickness, material, color, layer_tags, role, along_u)
             if anchor != None:
                 edge = min(anchor.get("edge", 300), (b - a) / 4.0)
                 min_edge = anchor.get("min_edge", 80)
@@ -2529,7 +2586,7 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                 top_hi = v0 + slopes[i] * (hi - u0)
                 plates.append([(lo, top_lo - drops[i]), (hi, top_hi - drops[i]), (hi, top_hi), (lo, top_lo)])
         for k in range(len(plates)):
-            piece("%s/top plate%s" % (label, "" if len(plates) == 1 else " %d" % (k + 1)), plates[k], offset, thickness, material, color, layer_tags, role)
+            piece("%s/top plate%s" % (label, "" if len(plates) == 1 else " %d" % (k + 1)), plates[k], offset, thickness, material, color, layer_tags, role, along_u)
         kings = []
         for ou, ov, ow, oh in holes:
             for side in (ou - stud, ou + ow):
@@ -2659,13 +2716,23 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                         notches[k + 1][0].append((lo, hi))
         count = 0
         members = []
+        packers = []
         for i in range(len(studs)):
             for poly in columns[i]:
                 left = [n for n in notches[i][0] if poly[0][1] < n[0] and n[1] < poly[-1][1]]
                 right = [n for n in notches[i][1] if poly[1][1] < n[0] and n[1] < poly[2][1]]
                 count += 1
                 members.append(piece("%s/stud %d" % (label, count), _notched(poly, left, right, depth) if left or right else poly,
-                                     offset, thickness, material, color, layer_tags, role))
+                                     offset, thickness, material, color, layer_tags, role, along_v))
+                tall = max([p[1] for p in poly]) - min([p[1] for p in poly])
+                if tall < stud - 0.001:
+                    packers.append((members[-1], tall))
+        if packers:
+            check(False, ("buildup(%s): layer %s has pieces only %s mm long between a plate and a sill or header, " +
+                          "shorter than the stud is wide: packers, not members") %
+                         (name, label, ", ".join(sorted({fmt_mm(t): 0 for _, t in packers}.keys()))),
+                  parts = [p for p, _ in packers], severity = "warning",
+                  hint = "Move the opening so its sill rests on the plate or leaves room for a stud at least as long as it is wide.")
         if [r for r in rows if r]:
             nog_tags = base_tags + _names(layer.get("noggin_tags", layer.get("tags")))
             count = 0
@@ -2673,13 +2740,13 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                 for lo, hi in rows[k]:
                     count += 1
                     piece("%s/noggin %d" % (label, count), _rect(studs[k] + stud - depth, lo, studs[k + 1] + depth, hi),
-                          offset, thickness, material, color, nog_tags, role)
+                          offset, thickness, material, color, nog_tags, role, along_u)
         count = 0
         for k in range(len(joint_rows)):
             for lo, hi in joint_rows[k]:
                 count += 1
                 piece("%s/joint noggin %d" % (label, count), _rect(studs[k] + stud, lo, studs[k + 1], hi),
-                      offset, thickness, material, color, layer_tags, role)
+                      offset, thickness, material, color, layer_tags, role, along_u)
         if backed and not upright:
             check(False, "buildup(%s): layer %s has nothing under the joints of the sheets laid on it at v = %s" %
                          (name, label, ", ".join([fmt_mm(v) for v in backed])),
@@ -2690,12 +2757,12 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
             ou, ov, ow, oh = holes[k]
             if spans[k] != None:
                 a, b, low, high = spans[k]
-                beams.append(piece("%s/header %d" % (label, k + 1), _rect(a, low, b, high), offset, thickness, material, color, layer_tags, role))
+                beams.append(piece("%s/header %d" % (label, k + 1), _rect(a, low, b, high), offset, thickness, material, color, layer_tags, role, along_u))
                 headers.append(beams[-1])
                 widest = max(widest, ow)
             if sills[k] != None:
                 a, b, low, high = sills[k]
-                beams.append(piece("%s/sill %d" % (label, k + 1), _rect(a, low, b, high), offset, thickness, material, color, layer_tags, role))
+                beams.append(piece("%s/sill %d" % (label, k + 1), _rect(a, low, b, high), offset, thickness, material, color, layer_tags, role, along_u))
         # The default header depth is the stud width, which nothing sized for the
         # opening under it (review 2026-10-24 PG-26).
         if upright and headers and "header" not in layer:

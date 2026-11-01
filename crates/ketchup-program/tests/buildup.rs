@@ -766,3 +766,64 @@ fn sheet_layers_leave_no_strips_and_their_horizontal_joints_rest_on_noggins() {
         }
     }
 }
+
+/// Review 2026-10-31 PG-86: the minimum board width held only at the end of
+/// the run. A 3 000 mm wall on 600 mm studs with an opening at u = 1 230 got
+/// its joint at u = 1 200, a 30 x 2 500 strip of OSB beside the opening. Every
+/// joint moves to a stud centre leaving no strip, and a strip no joint avoids
+/// is reported.
+#[test]
+fn sheet_joints_leave_no_strip_beside_an_opening_and_report_one_they_cannot_avoid() {
+    let wall = |opening: &str| {
+        eval(
+            &format!(
+                "buildup('wall', (0, 0, 0), (1, 0, 0), (0, 0, 1), 3000, height = 2500,\n\
+                 layers = [{{'name': 'frame', 'thickness': 140, 'material': 'C24', 'spacing': 600}},\n\
+                           {{'name': 'osb', 'thickness': 15, 'material': 'OSB', 'sheet': (1250, 2500)}}],\n\
+                 openings = [{opening}])\n"
+            ),
+            &[],
+        )
+    };
+    let narrow = |model: &ProgramModel| {
+        validate(model)
+            .into_iter()
+            .filter(|issue| {
+                issue.severity == Severity::Warning && issue.message.contains("narrower")
+            })
+            .map(|issue| (issue.message, issue.parts))
+            .collect::<Vec<_>>()
+    };
+    let model = wall("(1230, 800, 900, 1200)");
+    for part in model
+        .parts
+        .iter()
+        .filter(|part| part.name.starts_with("wall/osb"))
+    {
+        let (min, max) = part.world_bounds();
+        let wide = max[0] - min[0];
+        assert!(
+            (200.0 - 1e-6..=1250.0 + 1e-6).contains(&wide),
+            "{} is {wide} wide",
+            part.name
+        );
+        for u in [min[0], max[0]] {
+            let on_stud = (u / 600.0 - (u / 600.0).round()).abs() < 1e-6;
+            let at_opening = (u - 1230.0).abs() < 1e-6 || (u - 2130.0).abs() < 1e-6;
+            assert!(on_stud || at_opening, "{} ends at u = {u}", part.name);
+        }
+    }
+    assert_eq!(narrow(&model), Vec::new());
+
+    // An opening 30 mm from the end leaves a strip no joint can avoid.
+    let model = wall("(30, 800, 900, 1200)");
+    let warnings = narrow(&model);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    let strips = &warnings[0].1;
+    assert!(!strips.is_empty(), "{warnings:?}");
+    for name in strips {
+        let part = model.parts.iter().find(|part| &part.name == name).unwrap();
+        let (min, max) = part.world_bounds();
+        assert!(max[0] - min[0] < 200.0, "{name} is not a strip");
+    }
+}

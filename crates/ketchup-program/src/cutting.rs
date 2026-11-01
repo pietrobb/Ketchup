@@ -462,6 +462,44 @@ struct Free {
     y: f64,
     w: f64,
     h: f64,
+    /// Per sheet axis: it reaches into the trim the sheet keeps there.
+    edges: [bool; 2],
+}
+
+impl Free {
+    /// The part of this rectangle a piece spanning the sheet axes `spanned`
+    /// may take: whole along those (it keeps their factory edges, so the
+    /// rectangle must reach them), inside the trim along the others; `None`
+    /// when it cannot (review 2026-10-31 PG-81: a sheet keeping a factory edge
+    /// took only pieces spanning it too).
+    fn room(self, size: [f64; 2], spanned: [bool; 2], trim: f64, kerf: f64) -> Option<Self> {
+        let mut start = [self.x, self.y];
+        let mut length = [self.w, self.h];
+        let mut edges = self.edges;
+        for axis in 0..2 {
+            if spanned[axis] {
+                if !self.edges[axis] {
+                    return None;
+                }
+            } else if self.edges[axis] {
+                let low = start[axis].max(trim);
+                let high = (start[axis] + length[axis]).min(size[axis] - trim + kerf);
+                if high <= low {
+                    return None;
+                }
+                start[axis] = low;
+                length[axis] = high - low;
+                edges[axis] = false;
+            }
+        }
+        Some(Self {
+            x: start[0],
+            y: start[1],
+            w: length[0],
+            h: length[1],
+            edges,
+        })
+    }
 }
 
 struct Sheet {
@@ -472,19 +510,20 @@ struct Sheet {
     placed: Vec<Placed>,
 }
 
-/// Guillotine packing (best short side fit, the shorter leftover split off)
-/// on sheets of the largest stock size; each sheet then shrinks to the
-/// smallest stock size its pieces fit. Each piece takes its size plus one
+/// Guillotine packing (best short side fit, the shorter leftover split off).
+/// A piece no sheet takes opens one of the largest stock size it fits (review
+/// 2026-10-31 PG-80: of the largest area alone); each sheet then shrinks to
+/// the smallest stock size its pieces fit. Each piece takes its size plus one
 /// kerf, the usable sheet one kerf more than its trimmed size. A piece longer
 /// or wider than a stock sheet less its trim at both ends, up to the whole
 /// sheet, keeps that sheet's factory edge along that side: such sheets are not
-/// trimmed there and take only pieces spanning them the same way.
+/// trimmed there, and other pieces lie inside the trim.
 fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -> Vec<Layout> {
     let mut sizes: Vec<[f64; 2]> = stock.sizes_mm.iter().map(|s| [s[0], s[1]]).collect();
     sizes.sort_by(|a, b| (a[0] * a[1]).total_cmp(&(b[0] * b[1])));
-    let Some(&largest) = sizes.last() else {
+    if sizes.is_empty() {
         return Vec::new();
-    };
+    }
     let kerf = stock.kerf_mm;
     let trim = stock.trim_mm;
     let usable = |size: [f64; 2]| [size[0] - 2.0 * trim + kerf, size[1] - 2.0 * trim + kerf];
@@ -503,7 +542,7 @@ fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -
         Sheet {
             size,
             edges,
-            free: vec![Free { x, y, w, h }],
+            free: vec![Free { x, y, w, h, edges }],
             placed: Vec::new(),
         }
     };
@@ -532,20 +571,23 @@ fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -
             };
             [spanned(w - kerf, size[0]), spanned(h - kerf, size[1])]
         };
-        // (short side leftover, long side leftover, sheet, free rect, turned)
+        // (short side leftover, long side leftover, sheet, free rect, the
+        // part of it the piece may take, turned)
         let consider = |sheets: &[Sheet]| {
-            let mut best: Option<(f64, f64, usize, usize, bool)> = None;
+            let mut best: Option<(f64, f64, usize, usize, Free, bool)> = None;
             for (s, sheet) in sheets.iter().enumerate() {
                 for (f, free) in sheet.free.iter().enumerate() {
                     for &turned in &orientations {
-                        if spans(sheet.size, turned) != sheet.edges {
+                        let Some(room) =
+                            free.room(sheet.size, spans(sheet.size, turned), trim, kerf)
+                        else {
                             continue;
-                        }
+                        };
                         let [w, h] = footprint(turned);
-                        if w <= free.w + EPS && h <= free.h + EPS {
-                            let (dw, dh) = (free.w - w, free.h - h);
-                            let fit = (dw.min(dh), dw.max(dh), s, f, turned);
-                            if best.is_none_or(|b| (fit.0, fit.1) < (b.0, b.1)) {
+                        if w <= room.w + EPS && h <= room.h + EPS {
+                            let (dw, dh) = (room.w - w, room.h - h);
+                            let fit = (dw.min(dh), dw.max(dh), s, f, room, turned);
+                            if best.as_ref().is_none_or(|b| (fit.0, fit.1) < (b.0, b.1)) {
                                 best = Some(fit);
                             }
                         }
@@ -556,30 +598,39 @@ fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -
         };
         let mut best = consider(&sheets);
         if best.is_none() {
-            // The smallest stock sheet the piece spans and fits, else the
-            // largest, trimmed all round.
-            let edged = sizes.iter().find_map(|&size| {
-                orientations.iter().find_map(|&turned| {
+            // The smallest stock sheet the piece spans and fits, keeping its
+            // factory edges, else the largest it fits trimmed all round.
+            let mut openings: Vec<([f64; 2], [bool; 2])> = Vec::new();
+            for &size in &sizes {
+                for &turned in &orientations {
                     let edges = spans(size, turned);
-                    let free = fresh(size, edges).free[0];
-                    let [w, h] = footprint(turned);
-                    (edges.contains(&true) && w <= free.w + EPS && h <= free.h + EPS)
-                        .then_some((size, edges))
-                })
-            });
-            let (size, edges) = edged.unwrap_or((largest, [false, false]));
-            sheets.push(fresh(size, edges));
-            best = consider(&sheets);
+                    if edges.contains(&true) {
+                        openings.push((size, edges));
+                    }
+                }
+            }
+            openings.extend(sizes.iter().rev().map(|&size| (size, [false, false])));
+            for (size, edges) in openings {
+                sheets.push(fresh(size, edges));
+                best = consider(&sheets);
+                if best.is_some() {
+                    break;
+                }
+                sheets.pop();
+            }
         }
-        let Some((_, _, s, f, turned)) = best else {
-            sheets.pop();
+        let Some((_, _, s, f, room, turned)) = best else {
             let [l, w] = piece.size;
+            let stock_sizes = stock
+                .sizes_mm
+                .iter()
+                .map(|size| format!("{} x {}", size[0], size[1]))
+                .collect::<Vec<_>>()
+                .join(", ");
             unplaced.push(Unplaced {
                 part: piece.part,
                 reason: format!(
-                    "{l} x {w} mm does not fit the largest stock sheet {} x {} mm less its trim{}",
-                    largest[0],
-                    largest[1],
+                    "{l} x {w} mm does not fit any stock sheet less its trim: {stock_sizes} mm{}",
                     if piece.turned.is_some() {
                         format!(
                             ", laid with its {} along the sheet",
@@ -593,7 +644,9 @@ fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -
             continue;
         };
         let sheet = &mut sheets[s];
-        let free = sheet.free.swap_remove(f);
+        // What the room leaves of the rectangle is trim.
+        sheet.free.swap_remove(f);
+        let free = room;
         let [w, h] = footprint(turned);
         let [l, wd] = piece.size;
         sheet.placed.push(Placed {
@@ -612,12 +665,14 @@ fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -
                     y: free.y,
                     w: right_w,
                     h,
+                    edges: free.edges,
                 },
                 Free {
                     x: free.x,
                     y: free.y + h,
                     w: free.w,
                     h: top_h,
+                    edges: free.edges,
                 },
             )
         } else {
@@ -627,12 +682,14 @@ fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -
                     y: free.y,
                     w: right_w,
                     h: free.h,
+                    edges: free.edges,
                 },
                 Free {
                     x: free.x,
                     y: free.y + h,
                     w,
                     h: top_h,
+                    edges: free.edges,
                 },
             )
         };
