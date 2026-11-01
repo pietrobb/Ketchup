@@ -130,3 +130,33 @@ def test_the_build_uses_the_committed_lock_file():
     job = fuzz_job()
     fetch = job.find("cargo fetch --locked --manifest-path fuzz/Cargo.toml")
     assert 0 <= fetch < job.find("fuzz build")
+
+
+def stale_workspace_crates(fuzz_lock, version):
+    """The repository's crates in the fuzz lock file whose version is not the
+    workspace's `version`, or which lack a dependency their Cargo.toml requires, as
+    `cargo fetch --locked` would refuse them."""
+    stale = []
+    for package in tomllib.loads(fuzz_lock)["package"]:
+        manifest = ROOT / "crates" / package["name"] / "Cargo.toml"
+        if "source" in package or not manifest.is_file():
+            continue
+        required = {
+            name
+            for name, spec in tomllib.loads(manifest.read_text(encoding="utf-8")).get("dependencies", {}).items()
+            if not (isinstance(spec, dict) and spec.get("optional"))
+        }
+        locked = {name.split(" ")[0] for name in package.get("dependencies", [])}
+        if package["version"] != version or not required <= locked:
+            stale.append(package["name"])
+    return sorted(stale)
+
+
+def test_the_fuzz_lock_file_follows_the_workspace():
+    """Review 2026-10-31 R11: a version bump and two dependencies of ketchup-model left
+    fuzz/Cargo.lock stale, and only the fuzz job in CI found it."""
+    version = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"]
+    fuzz_lock = (FUZZ / "Cargo.lock").read_text(encoding="utf-8")
+    assert stale_workspace_crates(fuzz_lock, version) == []
+    without = fuzz_lock.replace(' "ttf-parser",\n', "", 1)
+    assert stale_workspace_crates(without, version) == ["ketchup-model"]
