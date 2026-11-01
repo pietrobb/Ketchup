@@ -2482,16 +2482,13 @@ dependencies = [
 name = "ketchup-manufacturing"
 version = "0.3.1-dev"
 dependencies = [
- "epaint_default_fonts",
  "ketchup-geometry",
  "ketchup-model",
  "ketchup-rejection",
  "ketchup-test-env",
  "ketchup-view-format",
- "miniz_oxide",
  "serde",
  "serde_json",
- "ttf-parser",
 ]
 
 [[package]]
@@ -2514,6 +2511,7 @@ dependencies = [
  "ciborium",
  "ed25519-dalek",
  "encoding_rs",
+ "epaint_default_fonts",
  "ketchup-geometry",
  "ketchup-model",
  "ketchup-test-env",
@@ -2524,6 +2522,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "ttf-parser",
 ]
 
 [[package]]

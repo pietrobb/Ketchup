@@ -21,9 +21,9 @@ use super::{
     ProjectView, SCALES, ViewFrame, draw_view, draw_view_on_page, extent, solid_edges, tick,
     whole_mm,
 };
-use crate::sheet_pdf::{Anchor, Mark, Page, Stroke};
 use crate::title_block::{SheetFormat, TITLE_BLOCK_MM, drawing_area};
 use ketchup_geometry::linalg::{cross, dot, normalize_within};
+use ketchup_model::sheet_pdf::{Anchor, Mark, Page, Stroke};
 use ketchup_model::tolerance::{HIDDEN_LINE_TOUCH_MM, NEGLIGIBLE, ROUNDING};
 use serde::Serialize;
 

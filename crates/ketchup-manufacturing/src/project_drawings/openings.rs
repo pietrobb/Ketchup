@@ -5,8 +5,8 @@
 
 use super::table::{RULE_MM, draw_table, table_size};
 use super::{DrawingSolid, Point};
-use crate::sheet_pdf::{Anchor, Mark, Page, SheetFont, Stroke};
 use crate::title_block::{SheetFormat, TITLE_BLOCK_MM, drawing_area};
+use ketchup_model::sheet_pdf::{Anchor, Mark, Page, SheetFont, Stroke};
 use serde::Serialize;
 
 const MARK_TEXT_MM: f64 = 3.5;

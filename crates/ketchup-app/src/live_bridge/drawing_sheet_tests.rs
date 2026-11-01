@@ -834,7 +834,10 @@ fn a_drawing_sheet_draws_the_plan_annotations_in_its_top_view() {
     let drawing = project_orthographic_drawing(&snapshot, &app.exact.results, sheet).unwrap();
     let bundle = export_drawing(&snapshot, &drawing).unwrap();
     let pdf = String::from_utf8_lossy(bundle.pdf());
-    assert_eq!(pdf.matches("Tm <33303030> Tj").count(), 2, "{pdf}");
+    let value = ketchup_model::sheet_pdf::EmbeddedText::default()
+        .hex("3000")
+        .unwrap();
+    assert_eq!(pdf.matches(&format!("Tm <{value}> Tj")).count(), 2, "{pdf}");
     assert_eq!(pdf.matches(" l h f\n").count(), 1, "the arrowhead filled");
     let svg = String::from_utf8_lossy(bundle.svg());
     assert!(

@@ -23,11 +23,11 @@ use super::{
     extent, format_at_scale, solid_edges, view_frames,
 };
 use crate::sheet_dxf::page_dxf;
-use crate::sheet_pdf::{Page, PdfInfo, pages_pdf};
 use crate::title_block::{
     DEFAULT_COARSEST_SCALE, SheetFormat, TitleBlock, TitleField, draw_frame_and_title_block,
     drawing_area,
 };
+use ketchup_model::sheet_pdf::{Page, PdfInfo, pages_pdf};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 

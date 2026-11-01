@@ -5,8 +5,8 @@ use crate::app::project_drawings::ProjectDrawingsError;
 use crate::tests::shell::step_until;
 use crate::*;
 use ketchup_manufacturing::project_drawings::{DrawingSet, ProjectView, ViewSummary};
-use ketchup_manufacturing::sheet_pdf::Mark;
 use ketchup_manufacturing::title_block::{SheetFormat, TitleField};
+use ketchup_model::sheet_pdf::Mark;
 use std::time::Duration;
 
 const HOUSE: &str = include_str!("../../../../examples/programs/tiny-house.star");
@@ -844,7 +844,7 @@ fn modelled_threads_draw_the_same_sheet_as_cosmetic_ones_without_helix_edges() {
         edge_lines_and_faces(&cosmetic),
         edge_lines_and_faces(&modeled)
     );
-    let info = ketchup_manufacturing::sheet_pdf::PdfInfo::default();
+    let info = ketchup_model::sheet_pdf::PdfInfo::default();
     assert!(cosmetic.pdf(&info) == modeled.pdf(&info), "the PDFs differ");
     // Drawn from the grooved bodies, the sheet would carry the helix: its
     // edges and the facets of its flanks.

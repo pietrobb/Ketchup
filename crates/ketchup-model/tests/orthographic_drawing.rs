@@ -21,6 +21,7 @@ use ketchup_model::exact_product::{
 use ketchup_model::import::{StepImportMesh, StepMeshTriangle};
 use ketchup_model::persistence;
 use ketchup_model::testing::box_package;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 const DEFINITION: DefinitionId = DefinitionId(1);
@@ -2269,15 +2270,14 @@ fn production_exports_are_stable_across_recompute_undo_redo_and_save_open() {
         assert_eq!(&dxf_lines[index - 2..index], &["1001", "KETCHUP"]);
     }
     assert!(dxf.contains("30 \\U+00B10.2 mm"));
-    let pdf = std::str::from_utf8(initial.pdf()).unwrap();
+    let pdf = String::from_utf8_lossy(initial.pdf());
     assert!(pdf.starts_with("%PDF-1.7"));
-    assert!(pdf.contains("/Encoding 6 0 R /ToUnicode 7 0 R"));
-    assert!(pdf.contains("<93> <010D>"));
-    assert!(pdf.contains("<A2> <00B1>"));
-    assert!(pdf.contains("<A3> <2300>"));
-    assert!(pdf.contains("<333020A2302E32206D6D> Tj"));
-    assert!(pdf.contains("<4B65937570> Tj"));
-    assert!(!pdf.contains('?'));
+    assert!(pdf.contains("/Encoding /Identity-H"));
+    let copied = pdf_copied_texts(initial.pdf());
+    for character in ['č', '±', '⌀'] {
+        assert!(copied.contains(&character), "{character}: {copied:?}");
+    }
+    assert!(!copied.contains(&'?'), "{copied:?}");
     assert!(pdf.ends_with("%%EOF\n"));
 
     let edit = document
@@ -2391,9 +2391,83 @@ fn pdf_export_rejects_text_outside_its_declared_font_repertoire() {
 
     assert_eq!(
         export_drawing(&document.current(), &drawing),
-        Err(DrawingExportError::UnsupportedPdfText)
+        Err(DrawingExportError::UnsupportedPdfText {
+            character: '🚫',
+            text: "Drawing 🚫".to_owned(),
+        })
     );
     assert_eq!(stamp(&document), before);
+}
+
+/// Review 2026-10-31 MF-84: the PDF font knew Slovak letters only, so a
+/// Czech, German or Polish name on a sheet refused the SVG, DXF and PDF
+/// together. The sheet typeface is embedded and draws them.
+#[test]
+fn czech_german_and_polish_text_is_drawn_into_every_format() {
+    let mut document = seeded_document();
+    let exact = registry(
+        &document.current(),
+        "central-european-text",
+        [[0.0, 0.0, 0.0], [20.0, 10.0, 30.0]],
+    );
+    let title = "Dvířka – Größe łů";
+    let sheet = DrawingSheet::with_contract_and_views(
+        SHEET,
+        "Central European text",
+        DrawingSource::Definition(DEFINITION),
+        DrawingPageTemplate::default(),
+        DrawingTitleBlock::new(title, "", "", "").unwrap(),
+        vec![OrthographicViewKind::Front],
+    )
+    .unwrap();
+    let (create, drawing) = prepare_create_drawing_sheet(&document, &exact, sheet).unwrap();
+    document.commit_proposal(&create).unwrap();
+
+    let bundle = export_drawing(&document.current(), &drawing).unwrap();
+    assert!(std::str::from_utf8(bundle.svg()).unwrap().contains(title));
+    assert!(!bundle.dxf().is_empty());
+    let pdf = String::from_utf8_lossy(bundle.pdf());
+    assert!(pdf.contains("/Encoding /Identity-H"), "{pdf}");
+    assert!(pdf.contains("/FontFile2"), "{pdf}");
+    let copied = pdf_copied_texts(bundle.pdf());
+    for character in title.chars() {
+        assert!(
+            copied.contains(&character),
+            "{character} copies from the PDF"
+        );
+    }
+}
+
+/// The characters the PDF's ToUnicode map gives its glyphs.
+fn pdf_copied_texts(pdf: &[u8]) -> BTreeSet<char> {
+    let mut copied = BTreeSet::new();
+    let mut rest = pdf;
+    while let Some(start) = rest
+        .windows(b"stream\n".len())
+        .position(|window| window == b"stream\n")
+    {
+        let body = &rest[start + b"stream\n".len()..];
+        let end = body
+            .windows(b"\nendstream".len())
+            .position(|window| window == b"\nendstream")
+            .unwrap();
+        if let Ok(data) = miniz_oxide::inflate::decompress_to_vec_zlib(&body[..end]) {
+            let text = String::from_utf8_lossy(&data);
+            if text.contains("beginbfchar") {
+                for line in text.lines() {
+                    let parts = line.split(' ').collect::<Vec<_>>();
+                    if let [glyph, target] = parts[..]
+                        && glyph.len() == 6
+                        && let Ok(code) = u32::from_str_radix(target.trim_matches(['<', '>']), 16)
+                    {
+                        copied.extend(char::from_u32(code));
+                    }
+                }
+            }
+        }
+        rest = &body[end + b"\nendstream".len()..];
+    }
+    copied
 }
 
 /// The values of the R12 TEXT entities whose KETCHUP id is `id`, in file

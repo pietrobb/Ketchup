@@ -21,6 +21,7 @@ saved-files = []
 ciborium = "0.2"
 ed25519-dalek = "2.2.0"
 encoding_rs = "0.8.42"
+epaint_default_fonts = "0.32.3"
 ketchup-geometry = { path = "../ketchup-geometry" }
 ketchup-tolerance = { path = "../ketchup-tolerance" }
 miniz_oxide = "0.8.9"
@@ -28,6 +29,7 @@ serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 sha2 = "0.10.9"
 tempfile = "3.23.0"
+ttf-parser = "0.25.1"
 
 [dev-dependencies]
 ketchup-test-env = { path = "../ketchup-test-env" }

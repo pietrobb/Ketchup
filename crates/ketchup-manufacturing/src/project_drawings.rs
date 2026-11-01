@@ -13,9 +13,9 @@
 //! so the sheet follows whatever is visible: hiding a layer leaves it out.
 //! Lines behind nearer faces are hidden by painting faces from far to near.
 
-use crate::sheet_pdf::{Anchor, Mark, Page, Stroke};
 use crate::title_block::{SheetFormat, TITLE_BLOCK_MM, TitleValueDoesNotFit, drawing_area};
 use ketchup_geometry::linalg::{Vec3, cross, cross2, dot, dot2, normalize_within, sub};
+use ketchup_model::sheet_pdf::{Anchor, Mark, Page, Stroke};
 use ketchup_model::tolerance::{HIDDEN_LINE_TOUCH_MM, NEGLIGIBLE, ROUNDING};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -1172,8 +1172,8 @@ mod tests {
         ]
     }
 
-    use crate::sheet_pdf::PdfInfo;
     use crate::title_block::{TitleBlock, TitleField};
+    use ketchup_model::sheet_pdf::PdfInfo;
 
     fn plans(storeys: Vec<Storey>) -> Vec<PlanSheet> {
         storeys

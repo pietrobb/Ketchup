@@ -1,7 +1,7 @@
 //! The title block in the lower right corner of a drawing sheet and the ISO A
 //! sheet formats with their frame.
 
-use crate::sheet_pdf::{Anchor, Mark, Page, SheetFont, Stroke};
+use ketchup_model::sheet_pdf::{Anchor, Mark, Page, SheetFont, Stroke};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 

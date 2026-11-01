@@ -108,7 +108,7 @@ impl Page {
         let font = SheetFont::standard();
         self.texts()
             .flat_map(str::chars)
-            .filter(|character| font.face.glyph_index(*character).is_none())
+            .filter(|character| font.drawn(*character).is_none())
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect()
@@ -138,21 +138,41 @@ impl SheetFont {
         })
     }
 
-    fn glyph(&self, character: char) -> u16 {
+    /// The glyph that draws `character`, None when the typeface has none. The
+    /// diameter sign, which Ubuntu lacks, is drawn with the letter Ø.
+    fn drawn(&self, character: char) -> Option<u16> {
         self.face
             .glyph_index(character)
-            .or_else(|| self.face.glyph_index('?'))
-            .map_or(0, |glyph| glyph.0)
+            .or_else(|| {
+                (character == '⌀')
+                    .then(|| self.face.glyph_index('Ø'))
+                    .flatten()
+            })
+            .map(|glyph| glyph.0)
+    }
+
+    fn glyph(&self, character: char) -> u16 {
+        self.drawn(character)
+            .or_else(|| self.drawn('?'))
+            .unwrap_or(0)
     }
 
     /// The glyph that draws `character` and the character a reader copies
     /// from it: for a character the font lacks, the "?" it shows, so that
     /// glyph never copies as anything but "?".
     fn shown(&self, character: char) -> (u16, char) {
-        match self.face.glyph_index(character) {
-            Some(glyph) => (glyph.0, character),
+        match self.drawn(character) {
+            Some(glyph) => (glyph, character),
             None => (self.glyph('?'), '?'),
         }
+    }
+
+    /// Advance of `text` in em.
+    #[must_use]
+    pub fn advance_em(&self, text: &str) -> f64 {
+        text.chars()
+            .map(|character| self.advance(self.glyph(character)))
+            .sum()
     }
 
     /// Advance of a glyph in em.
@@ -179,11 +199,7 @@ impl SheetFont {
     /// Width of `text` with capitals `height_mm` tall.
     #[must_use]
     pub fn width_mm(&self, text: &str, height_mm: f64) -> f64 {
-        let em: f64 = text
-            .chars()
-            .map(|character| self.advance(self.glyph(character)))
-            .sum();
-        em * self.size_for(height_mm)
+        self.advance_em(text) * self.size_for(height_mm)
     }
 
     fn postscript_name(&self) -> String {
@@ -196,11 +212,9 @@ impl SheetFont {
             .unwrap_or_else(|| "SheetSans".to_owned())
     }
 
-    fn per_mille(&self, value: i16) -> i64 {
-        #[allow(clippy::cast_possible_truncation)]
-        {
-            (f64::from(value) * 1000.0 / self.units).round() as i64
-        }
+    /// A font-unit value in thousandths of an em, as a whole number.
+    fn per_mille(&self, value: i16) -> String {
+        number((f64::from(value) * 1000.0 / self.units).round())
     }
 }
 
@@ -425,6 +439,78 @@ fn to_unicode(glyphs: &BTreeMap<u16, char>) -> String {
     cmap
 }
 
+/// The five objects that embed the sheet typeface for `glyphs`, numbered from
+/// `first`: the Type0 font a page names, its CID font, descriptor, font file
+/// and ToUnicode map.
+fn font_objects(font: &SheetFont, glyphs: &BTreeMap<u16, char>, first: usize) -> [Vec<u8>; 5] {
+    let name = font.postscript_name();
+    let widths = glyphs
+        .keys()
+        .map(|glyph| {
+            format!(
+                "{glyph} [{}]",
+                number((font.advance(*glyph) * 1000.0).round())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let bbox = font.face.global_bounding_box();
+    let [cid, descriptor, file, to_unicode_map] = [1, 2, 3, 4].map(|offset| first + offset);
+    [
+        format!(
+            "<< /Type /Font /Subtype /Type0 /BaseFont /{name} /Encoding /Identity-H /DescendantFonts [{cid} 0 R] /ToUnicode {to_unicode_map} 0 R >>"
+        )
+        .into_bytes(),
+        format!(
+            "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /{name} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor {descriptor} 0 R /DW 500 /W [{widths}] /CIDToGIDMap /Identity >>"
+        )
+        .into_bytes(),
+        format!(
+            "<< /Type /FontDescriptor /FontName /{name} /Flags 32 /FontBBox [{} {} {} {}] /ItalicAngle 0 /Ascent {} /Descent {} /CapHeight {} /StemV 80 /FontFile2 {file} 0 R >>",
+            font.per_mille(bbox.x_min),
+            font.per_mille(bbox.y_min),
+            font.per_mille(bbox.x_max),
+            font.per_mille(bbox.y_max),
+            font.per_mille(font.face.ascender()),
+            font.per_mille(font.face.descender()),
+            font.per_mille(font.face.capital_height().unwrap_or(700)),
+        )
+        .into_bytes(),
+        stream(&format!("/Length1 {}", font.data.len()), font.data),
+        stream("", to_unicode(glyphs).as_bytes()),
+    ]
+}
+
+/// Text in the sheet typeface for a PDF writer that lays out its own pages:
+/// each string becomes the hex string of its glyphs, and the glyphs used are
+/// embedded once by [`EmbeddedText::font_objects`].
+#[derive(Debug, Default)]
+pub struct EmbeddedText {
+    glyphs: BTreeMap<u16, char>,
+}
+
+impl EmbeddedText {
+    /// `text` as a hex string of glyph ids for a font with Identity-H
+    /// encoding. Refuses with the first character the typeface lacks.
+    pub fn hex(&mut self, text: &str) -> Result<String, char> {
+        let font = SheetFont::standard();
+        let mut hex = String::with_capacity(text.len() * 4);
+        for character in text.chars() {
+            let glyph = font.drawn(character).ok_or(character)?;
+            self.glyphs.entry(glyph).or_insert(character);
+            let _ = write!(hex, "{glyph:04X}");
+        }
+        Ok(hex)
+    }
+
+    /// The objects embedding the glyphs used, numbered from `first`: the font
+    /// a page names is object `first`, then the four it refers to.
+    #[must_use]
+    pub fn font_objects(&self, first: usize) -> [Vec<u8>; 5] {
+        font_objects(SheetFont::standard(), &self.glyphs, first)
+    }
+}
+
 /// The pages as one PDF, a page each in their order, with the sheet typeface
 /// embedded once.
 #[must_use]
@@ -446,27 +532,6 @@ pub fn pages_pdf(pages: &[&Page], info: &PdfInfo) -> Vec<u8> {
         glyphs = content.glyphs;
         streams.push(content.out);
     }
-    let name = font.postscript_name();
-    let widths = glyphs
-        .keys()
-        .map(|glyph| {
-            #[allow(clippy::cast_possible_truncation)]
-            let width = (font.advance(*glyph) * 1000.0).round() as i64;
-            format!("{glyph} [{width}]")
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    let bbox = font.face.global_bounding_box();
-    let descriptor = format!(
-        "<< /Type /FontDescriptor /FontName /{name} /Flags 32 /FontBBox [{} {} {} {}] /ItalicAngle 0 /Ascent {} /Descent {} /CapHeight {} /StemV 80 /FontFile2 6 0 R >>",
-        font.per_mille(bbox.x_min),
-        font.per_mille(bbox.y_min),
-        font.per_mille(bbox.x_max),
-        font.per_mille(bbox.y_max),
-        font.per_mille(font.face.ascender()),
-        font.per_mille(font.face.descender()),
-        font.per_mille(font.face.capital_height().unwrap_or(700)),
-    );
     // Objects 1–8 are the catalog, the page tree, the font, its information
     // and the document information; then a page and its content per page.
     let first_page = 9;
@@ -477,17 +542,9 @@ pub fn pages_pdf(pages: &[&Page], info: &PdfInfo) -> Vec<u8> {
     let mut objects: Vec<Vec<u8>> = vec![
         b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
         format!("<< /Type /Pages /Kids [{kids}] /Count {} >>", pages.len()).into_bytes(),
-        format!(
-            "<< /Type /Font /Subtype /Type0 /BaseFont /{name} /Encoding /Identity-H /DescendantFonts [4 0 R] /ToUnicode 7 0 R >>"
-        )
-        .into_bytes(),
-        format!(
-            "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /{name} /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 5 0 R /DW 500 /W [{widths}] /CIDToGIDMap /Identity >>"
-        )
-        .into_bytes(),
-        descriptor.into_bytes(),
-        stream(&format!("/Length1 {}", font.data.len()), font.data),
-        stream("", to_unicode(&glyphs).as_bytes()),
+    ];
+    objects.extend(font_objects(font, &glyphs, 3));
+    objects.push(
         format!(
             "<< /Title {} /Author {} /Subject {} /Creator (Ketchup) /Producer (Ketchup) >>",
             pdf_text(&info.title),
@@ -495,7 +552,7 @@ pub fn pages_pdf(pages: &[&Page], info: &PdfInfo) -> Vec<u8> {
             pdf_text(&info.subject)
         )
         .into_bytes(),
-    ];
+    );
     for (index, (page, content)) in pages.iter().zip(&streams).enumerate() {
         let [width, height] = page.size_mm;
         objects.push(

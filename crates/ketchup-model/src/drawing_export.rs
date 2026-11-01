@@ -9,6 +9,7 @@ use crate::drawing::{
     drawing_layout_digest, drawing_result_digest,
 };
 use crate::r12_text;
+use crate::sheet_pdf::{EmbeddedText, SheetFont};
 use crate::tolerance::DEFAULT_LINEAR_TOLERANCE_MM;
 use std::collections::BTreeSet;
 use std::fmt;
@@ -37,61 +38,6 @@ const BOM_ROW_HEIGHT_MM: f64 = 3.0;
 pub(crate) const BOM_COLUMN_WIDTH_MM: f64 = 70.0;
 const COORDINATE_EPSILON_MM: f64 = DEFAULT_LINEAR_TOLERANCE_MM;
 const POINTS_PER_MM: f64 = 72.0 / 25.4;
-const PDF_UNICODE_GLYPHS: &[(char, u8, &str)] = &[
-    ('Á', 128, "Aacute"),
-    ('Ä', 129, "Adieresis"),
-    ('Č', 130, "Ccaron"),
-    ('Ď', 131, "Dcaron"),
-    ('É', 132, "Eacute"),
-    ('Í', 133, "Iacute"),
-    ('Ĺ', 134, "Lacute"),
-    ('Ľ', 135, "Lcaron"),
-    ('Ň', 136, "Ncaron"),
-    ('Ó', 137, "Oacute"),
-    ('Ô', 138, "Ocircumflex"),
-    ('Ŕ', 139, "Racute"),
-    ('Š', 140, "Scaron"),
-    ('Ť', 141, "Tcaron"),
-    ('Ú', 142, "Uacute"),
-    ('Ý', 143, "Yacute"),
-    ('Ž', 144, "Zcaron"),
-    ('á', 145, "aacute"),
-    ('ä', 146, "adieresis"),
-    ('č', 147, "ccaron"),
-    ('ď', 148, "dcaron"),
-    ('é', 149, "eacute"),
-    ('í', 150, "iacute"),
-    ('ĺ', 151, "lacute"),
-    ('ľ', 152, "lcaron"),
-    ('ň', 153, "ncaron"),
-    ('ó', 154, "oacute"),
-    ('ô', 155, "ocircumflex"),
-    ('ŕ', 156, "racute"),
-    ('š', 157, "scaron"),
-    ('ť', 158, "tcaron"),
-    ('ú', 159, "uacute"),
-    ('ý', 160, "yacute"),
-    ('ž', 161, "zcaron"),
-    ('±', 162, "plusminus"),
-    ('⌀', 163, "Oslash"),
-    ('°', 164, "degree"),
-    ('×', 165, "multiply"),
-    ('µ', 166, "mu"),
-    ('≤', 167, "lessequal"),
-    ('≥', 168, "greaterequal"),
-    ('≠', 169, "notequal"),
-    ('–', 170, "endash"),
-    ('—', 171, "emdash"),
-    ('„', 172, "quotedblbase"),
-    ('“', 173, "quotedblleft"),
-    ('”', 174, "quotedblright"),
-    ('’', 175, "quoteright"),
-    ('\u{a0}', 176, "space"),
-    ('€', 177, "Euro"),
-    ('Ø', 178, "Oslash"),
-    ('ø', 179, "oslash"),
-];
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DrawingExportBundle {
     svg: Vec<u8>,
@@ -140,11 +86,15 @@ impl DrawingExportBundle {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DrawingExportError {
     StaleDrawing,
     InvalidDrawing,
-    UnsupportedPdfText,
+    /// A text holds a character the sheet typeface has no glyph for.
+    UnsupportedPdfText {
+        character: char,
+        text: String,
+    },
     UnsupportedDxfText,
     DxfTextTooLong,
     TitleBlockTooLong,
@@ -157,7 +107,13 @@ impl fmt::Display for DrawingExportError {
         formatter.write_str(match self {
             Self::StaleDrawing => "drawing export source is stale",
             Self::InvalidDrawing => "drawing export contract is inconsistent",
-            Self::UnsupportedPdfText => "drawing contains text unsupported by the PDF font",
+            Self::UnsupportedPdfText { character, text } => {
+                return write!(
+                    formatter,
+                    "the text \"{text}\" holds \"{character}\" (U+{:04X}), which the sheet typeface cannot draw",
+                    u32::from(*character)
+                );
+            }
             Self::UnsupportedDxfText => {
                 "drawing contains a character outside the Basic Multilingual Plane, which DXF \\U+ escapes cannot carry"
             }
@@ -1334,6 +1290,7 @@ fn export_pdf(
     fills: &[PageFill],
     texts: &[PageText],
 ) -> Result<Vec<u8>, DrawingExportError> {
+    let mut glyphs = EmbeddedText::default();
     let mut stream = format!(
         "% {DRAWING_EXPORT_SCHEMA_V1} result={} layout={}\nq\n{} 0 0 {} 0 0 cm\n",
         drawing.result_digest,
@@ -1370,7 +1327,7 @@ fn export_pdf(
     }
     for text in texts {
         if text.middle || text.turned() {
-            push_pdf_turned_text(&mut stream, text)?;
+            push_pdf_turned_text(&mut stream, &mut glyphs, text)?;
             continue;
         }
         let mut baseline = text.position[1];
@@ -1381,43 +1338,32 @@ fn export_pdf(
                 number(text.height_mm),
                 number(text.position[0]),
                 number(baseline),
-                pdf_text_hex(line)?,
+                pdf_glyphs(&mut glyphs, line)?,
             ));
             baseline -= LINE_SPACING * text.height_mm;
         }
     }
     stream.push_str("Q\n");
     let [width, height] = drawing.layout.page_size_mm;
-    let encoding_differences = PDF_UNICODE_GLYPHS
-        .iter()
-        .map(|(_, code, glyph)| format!("{code} /{glyph}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let to_unicode = pdf_to_unicode_cmap();
-    let objects = [
-        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
-        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+    let mut objects = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
         format!(
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
             number(width * POINTS_PER_MM),
             number(height * POINTS_PER_MM),
-        ),
-        format!("<< /Length {} >>\nstream\n{stream}endstream", stream.len()),
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding 6 0 R /ToUnicode 7 0 R >>"
-            .to_owned(),
-        format!(
-            "<< /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences [{encoding_differences}] >>"
-        ),
-        format!(
-            "<< /Length {} >>\nstream\n{to_unicode}endstream",
-            to_unicode.len()
-        ),
+        )
+        .into_bytes(),
+        format!("<< /Length {} >>\nstream\n{stream}endstream", stream.len()).into_bytes(),
     ];
+    objects.extend(glyphs.font_objects(5));
     let mut pdf = b"%PDF-1.7\n% Ketchup deterministic vector drawing\n".to_vec();
     let mut offsets = Vec::with_capacity(objects.len());
     for (index, object) in objects.iter().enumerate() {
         offsets.push(pdf.len());
-        pdf.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes());
+        pdf.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+        pdf.extend_from_slice(object);
+        pdf.extend_from_slice(b"\nendobj\n");
     }
     let xref_offset = pdf.len();
     pdf.extend_from_slice(
@@ -1437,13 +1383,17 @@ fn export_pdf(
 }
 
 /// A text turned about its position, or centred on it: each line placed by a
-/// text matrix, centred with the Helvetica widths of its characters.
-fn push_pdf_turned_text(stream: &mut String, text: &PageText) -> Result<(), DrawingExportError> {
+/// text matrix, centred with the widths of its glyphs.
+fn push_pdf_turned_text(
+    stream: &mut String,
+    glyphs: &mut EmbeddedText,
+    text: &PageText,
+) -> Result<(), DrawingExportError> {
     let (sin, cos) = text.angle_deg.to_radians().sin_cos();
     let mut at = text.position;
     for line in &text.lines {
         let half = if text.middle {
-            line.chars().map(helvetica_width_em).sum::<f64>() * text.height_mm / 2.0
+            SheetFont::standard().advance_em(line) * text.height_mm / 2.0
         } else {
             0.0
         };
@@ -1457,23 +1407,12 @@ fn push_pdf_turned_text(stream: &mut String, text: &PageText) -> Result<(), Draw
             number(cos),
             number(at[0] - cos * half),
             number(at[1] - sin * half),
-            pdf_text_hex(line)?,
+            pdf_glyphs(glyphs, line)?,
         ));
         let step = LINE_SPACING * text.height_mm;
         at = [at[0] + sin * step, at[1] - cos * step];
     }
     Ok(())
-}
-
-/// The advance of a Helvetica character in em (Adobe's AFM): exact for the
-/// digits, separators and signs a measured value writes, a digit's width for
-/// any other.
-fn helvetica_width_em(character: char) -> f64 {
-    match character {
-        '.' | ',' | ' ' => 0.278,
-        '-' => 0.333,
-        _ => 0.556,
-    }
 }
 
 fn page_point(point: [f64; 2], origin: [f64; 2], scale: f64) -> [f64; 2] {
@@ -1563,41 +1502,14 @@ pub(crate) fn bom_row_lines(label: &str) -> Vec<String> {
     r12_text::lines(label, characters.floor())
 }
 
-fn pdf_text_hex(value: &str) -> Result<String, DrawingExportError> {
-    let mut encoded = String::with_capacity(value.len() * 2);
-    for character in value.chars() {
-        let code = if character.is_ascii() && !character.is_ascii_control() {
-            character as u8
-        } else {
-            PDF_UNICODE_GLYPHS
-                .iter()
-                .find_map(|(candidate, code, _)| (*candidate == character).then_some(*code))
-                .ok_or(DrawingExportError::UnsupportedPdfText)?
-        };
-        encoded.push_str(&format!("{code:02X}"));
-    }
-    Ok(encoded)
-}
-
-fn pdf_to_unicode_cmap() -> String {
-    let mappings = (32_u8..=126)
-        .map(|code| (code, char::from(code)))
-        .chain(
-            PDF_UNICODE_GLYPHS
-                .iter()
-                .map(|(character, code, _)| (*code, *character)),
-        )
-        .collect::<Vec<_>>();
-    let mut cmap = "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n/CMapName /KetchupUnicode def\n/CMapType 2 def\n1 begincodespacerange\n<00> <FF>\nendcodespacerange\n".to_owned();
-    for chunk in mappings.chunks(100) {
-        cmap.push_str(&format!("{} beginbfchar\n", chunk.len()));
-        for (code, character) in chunk {
-            cmap.push_str(&format!("<{code:02X}> <{:04X}>\n", *character as u32));
-        }
-        cmap.push_str("endbfchar\n");
-    }
-    cmap.push_str("endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
-    cmap
+/// A line of text as the hex string of its glyphs in the embedded typeface.
+fn pdf_glyphs(glyphs: &mut EmbeddedText, line: &str) -> Result<String, DrawingExportError> {
+    glyphs
+        .hex(line)
+        .map_err(|character| DrawingExportError::UnsupportedPdfText {
+            character,
+            text: line.to_owned(),
+        })
 }
 
 fn pdf_comment(value: &str) -> String {

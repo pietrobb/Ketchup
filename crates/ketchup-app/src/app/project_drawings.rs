@@ -17,10 +17,10 @@ use ketchup_manufacturing::project_drawings::{
     DrawingSolid, DrawingThread, OpeningSchedule, PlanSheet, ProjectDrawingError, ProjectView,
     SCALES, SheetTitles, ShopDrawings, ShopPosition, ShopSheet, Storey, drawing_set, storeys,
 };
-use ketchup_manufacturing::sheet_pdf::PdfInfo;
 use ketchup_manufacturing::title_block::{
     DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM, SheetFormat, SheetSettings, TitleField,
 };
+use ketchup_model::sheet_pdf::PdfInfo;
 use ketchup_program::Evaluated;
 use std::sync::Arc;
 

@@ -23,6 +23,7 @@ pub mod pin_joint;
 pub mod r12_text;
 pub mod shared_change;
 pub mod sheet_metal;
+pub mod sheet_pdf;
 pub mod space;
 pub mod state_view;
 #[cfg(feature = "testing")]

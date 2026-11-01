@@ -8,8 +8,8 @@
 //! cutting list has them all).
 
 use super::{ProjectDrawingError, SCALES};
-use crate::sheet_pdf::{Anchor, Mark, Page, SheetFont, Stroke};
 use crate::title_block::{SheetFormat, TITLE_BLOCK_MM, drawing_area};
+use ketchup_model::sheet_pdf::{Anchor, Mark, Page, SheetFont, Stroke};
 use serde::Serialize;
 
 // not a tolerance: the pen of a bar's or sheet's outline.
