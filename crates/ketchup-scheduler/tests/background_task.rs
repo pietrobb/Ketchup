@@ -9,7 +9,7 @@ const PATIENCE: Duration = Duration::from_secs(5);
 fn until_cancelled(seen: mpsc::Sender<()>) -> impl FnOnce(&TaskContext<u8, ()>) + Send {
     move |context| {
         while !context.is_cancelled() {
-            std::thread::yield_now();
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
         let _ = seen.send(());
     }

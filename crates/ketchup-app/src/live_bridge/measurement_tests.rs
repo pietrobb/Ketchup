@@ -63,7 +63,7 @@ fn measure(
             return response;
         }
         assert!(Instant::now() < deadline, "face measurement did not finish");
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
 }
 

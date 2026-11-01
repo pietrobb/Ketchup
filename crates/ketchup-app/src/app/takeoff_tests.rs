@@ -54,7 +54,7 @@ fn takeoff_window_follows_layer_visibility() {
             "the parts were never evaluated"
         );
         harness.step();
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
     harness.get_by_role_and_label(Role::Button, &menu).click();
     harness.run_steps(2);

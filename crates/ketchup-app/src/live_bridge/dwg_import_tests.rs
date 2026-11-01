@@ -207,7 +207,7 @@ fn a_clients_dwg_import_reads_the_file_off_the_windows_thread() {
         );
         assert!(answers.try_recv().is_err(), "answered without a job");
         wire.app.poll_live_bridge(&wire.context);
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
     let bridge = wire.app.live.bridge.as_ref().unwrap();
     let busy = serde_json::to_value(bridge.busy_jobs()).unwrap();
@@ -220,7 +220,7 @@ fn a_clients_dwg_import_reads_the_file_off_the_windows_thread() {
         }
         assert!(Instant::now() < deadline, "the import did not finish");
         wire.app.poll_live_bridge(&wire.context);
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     };
     reading.join().unwrap();
     assert!(answer.ok, "{answer:?}");

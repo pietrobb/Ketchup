@@ -58,6 +58,23 @@ def test_counts_spaced_and_park_timeout_sleeps(tmp_path):
     assert checker.current_counts(tmp_path) == {"crates/a/tests/flow.rs": 4}
 
 
+def test_counts_a_yield_now_busy_wait(tmp_path):
+    # Review 2026-10-31 P3: 24 polling loops spun on `yield_now`, a wait the ratchet did
+    # not see, and on a loaded machine the spinning tests took the cores their workers need.
+    write(
+        tmp_path,
+        "crates/a/tests/flow.rs",
+        "fn t() {\n"
+        "    while !done() {\n"
+        "        std::thread::yield_now();\n"
+        "    }\n"
+        "    thread::yield_now ();\n"
+        "    let yield_nowhere = 1;\n"
+        "}\n",
+    )
+    assert checker.current_counts(tmp_path) == {"crates/a/tests/flow.rs": 2}
+
+
 def test_counts_the_sleep_calls_of_python_tests(tmp_path):
     # Review 2026-10-21 P3: Python tests were not scanned. A sleep named in a string is not
     # a call, and a script outside the tests is not counted.

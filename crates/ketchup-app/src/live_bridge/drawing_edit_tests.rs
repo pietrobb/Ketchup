@@ -836,7 +836,7 @@ fn a_clients_drawing_export_runs_off_the_windows_thread_and_cancels() {
         }
         assert!(Instant::now() < deadline, "the export did not finish");
         bridge.poll_program_check_job(&mut app, &context);
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     };
     assert!(answer.ok, "{answer:?}");
     assert!(!exporting_drawing(&bridge));

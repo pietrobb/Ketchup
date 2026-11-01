@@ -30,8 +30,9 @@ from check_large_house_tests import functions, masked  # noqa: E402  (Rust fns, 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE = ROOT / "scripts" / "test_sleeps_baseline.txt"
 # `thread::park_timeout` sleeps as well when nothing unparks the thread; a space before
-# the parenthesis is still a call (review 2026-10-19 P3).
-SLEEPS = ("sleep", "sleep_ms", "park_timeout", "park_timeout_ms")
+# the parenthesis is still a call (review 2026-10-19 P3). A loop on `yield_now` waits as
+# well, spinning a core the worker it waits for needs (review 2026-10-31 P3).
+SLEEPS = ("sleep", "sleep_ms", "park_timeout", "park_timeout_ms", "yield_now")
 # `use std::thread::sleep as nap;` calls it `nap` (review 2026-10-24).
 RUST_ALIAS = re.compile(rf"\b(?:{'|'.join(SLEEPS)})\s+as\s+(\w+)")
 

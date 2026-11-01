@@ -840,7 +840,7 @@ mod tests {
                 Instant::now() < deadline,
                 "the idle connections were not taken"
             );
-            std::thread::yield_now();
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
 
         let nonce = "9".repeat(64);
@@ -1144,7 +1144,7 @@ mod tests {
                     break 'answered index;
                 }
             }
-            std::thread::yield_now();
+            std::thread::sleep(std::time::Duration::from_millis(1));
         };
         drop(
             broker
@@ -1204,7 +1204,7 @@ mod tests {
                 Instant::now() < deadline,
                 "the broker never saw the requester leave"
             );
-            std::thread::yield_now();
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
         app.answer_live_consent(&context, request);
 

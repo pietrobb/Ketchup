@@ -53,7 +53,7 @@ fn a_clients_iges_export_runs_off_the_windows_thread() {
         );
         assert!(answers.try_recv().is_err(), "answered without a job");
         wire.app.poll_live_bridge(&wire.context);
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
     let busy = serde_json::to_value(wire.app.live.bridge.as_ref().unwrap().busy_jobs()).unwrap();
     assert_eq!(busy[0]["target"], "export", "{busy}");
@@ -64,7 +64,7 @@ fn a_clients_iges_export_runs_off_the_windows_thread() {
         }
         assert!(Instant::now() < deadline, "the export did not finish");
         wire.app.poll_live_bridge(&wire.context);
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     };
     reading.join().unwrap();
     assert!(answer.ok, "{answer:?}");

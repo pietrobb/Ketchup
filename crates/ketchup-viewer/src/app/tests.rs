@@ -1188,7 +1188,7 @@ fn keep_all(keeper: &mut SessionKeeper, app: &mut ViewerApp) -> Result<(), Rejec
             std::time::Instant::now() < deadline,
             "keeper.writing() still true after 30 s: the package write never finished"
         );
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
         keeper.keep(app)?;
     }
     Ok(())
@@ -1339,7 +1339,7 @@ fn comments_made_while_the_package_is_written_survive_the_end_of_the_process() {
             std::time::Instant::now() < deadline,
             "the package was never written"
         );
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
     let mut restarted = ViewerApp::new(None);
     assert!(restarted.restore_session(&dir).unwrap().is_some());

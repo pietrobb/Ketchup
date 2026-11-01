@@ -205,7 +205,7 @@ fn a_file_saved_while_the_sheet_is_projected_is_not_overwritten() {
             "the export never ended"
         );
         app.poll_drawing_export(&context);
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
     assert_eq!(std::fs::read(&pdf).unwrap(), b"saved meanwhile");
 }
