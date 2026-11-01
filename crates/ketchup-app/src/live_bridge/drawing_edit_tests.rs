@@ -762,6 +762,78 @@ fn the_window_replaces_only_a_confirmed_unchanged_file_and_never_the_source() {
     assert_eq!(std::fs::read_to_string(&source).unwrap(), DRAWING);
 }
 
+fn exporting_drawing(bridge: &LiveBridge) -> bool {
+    matches!(
+        bridge.program_check_job,
+        Some(super::program_check::ProgramCheckJob::DrawingExport(_))
+    )
+}
+
+fn queued() -> (
+    super::program_dry_run::QueuedReply,
+    mpsc::Receiver<Response>,
+    Arc<AtomicBool>,
+) {
+    let (reply, answers) = mpsc::sync_channel(1);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let queued = super::program_dry_run::QueuedReply {
+        id: 1,
+        reply,
+        cancelled: Arc::clone(&cancelled),
+    };
+    (queued, answers, cancelled)
+}
+
+/// Review 2026-10-31 MCP-80: a client's drawing export is a job the window polls, named
+/// busy while the worker writes, answered in a later poll; cancelled, it writes nothing.
+#[test]
+fn a_clients_drawing_export_runs_off_the_windows_thread_and_cancels() {
+    let (directory, _source, _other, mut app, mut bridge) = edited_beside_another_file();
+    let context = egui::Context::default();
+    let target = directory.path().join("written.dxf");
+    let request = ask(
+        "drawing_export",
+        json!({"path": target.display().to_string()}),
+    );
+
+    let (job, answers, _) = queued();
+    bridge.start_drawing_export(&mut app, &context, job, &request, false);
+    assert!(
+        exporting_drawing(&bridge),
+        "the window waited for the worker"
+    );
+    let busy = serde_json::to_value(bridge.busy_jobs()).unwrap();
+    assert_eq!(busy[0]["target"], "drawing_export", "{busy}");
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let answer = loop {
+        if let Ok(answer) = answers.try_recv() {
+            break answer;
+        }
+        assert!(Instant::now() < deadline, "the export did not finish");
+        bridge.poll_program_check_job(&mut app, &context);
+        std::thread::yield_now();
+    };
+    assert!(answer.ok, "{answer:?}");
+    assert!(!exporting_drawing(&bridge));
+    let written = std::fs::read_to_string(&target).unwrap();
+    assert!(written.contains("DOOR_80"), "{written}");
+
+    let cancelled_target = directory.path().join("cancelled.dxf");
+    let request = ask(
+        "drawing_export",
+        json!({"path": cancelled_target.display().to_string()}),
+    );
+    let (job, answers, cancelled) = queued();
+    bridge.start_drawing_export(&mut app, &context, job, &request, false);
+    assert!(exporting_drawing(&bridge));
+    cancelled.store(true, Ordering::Release);
+    bridge.poll_program_check_job(&mut app, &context);
+    let answer = answers.try_recv().expect("answered in the same poll");
+    assert_eq!(answer.error.as_deref(), Some("request_cancelled"));
+    assert!(bridge.program_check_job.is_none());
+    assert!(!cancelled_target.exists());
+}
+
 /// `drawing action=extrude`: the walls around a room are pulled up with the room cut out,
 /// and the room's hatch by its id, each one Undo step written into the program bound to the
 /// drawing; a point in nothing closed, both selectors or no height change nothing.

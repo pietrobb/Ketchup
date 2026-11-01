@@ -40,6 +40,8 @@ use std::{
     sync::Mutex,
     time::{Duration, Instant},
 };
+#[path = "cancel_ratchet_tests.rs"]
+mod cancel_ratchet;
 #[path = "draft_analysis_tests.rs"]
 mod draft_analysis;
 #[path = "draft_faces_tests.rs"]

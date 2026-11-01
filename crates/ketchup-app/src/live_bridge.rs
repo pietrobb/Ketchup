@@ -68,6 +68,7 @@ pub mod bootstrap;
 mod busy;
 pub mod consent;
 mod drawing_edit;
+mod drawing_export;
 mod drawings;
 mod dwg_import;
 mod exchange_export;
@@ -1715,6 +1716,15 @@ impl KetchupApp {
                         cancelled,
                     };
                     bridge.start_exchange_export(self, context, queued, request, ui_busy);
+                    continue;
+                }
+                request @ Request::DrawingExport { .. } => {
+                    let queued = program_dry_run::QueuedReply {
+                        id,
+                        reply,
+                        cancelled,
+                    };
+                    bridge.start_drawing_export(self, context, queued, &request, ui_busy);
                     continue;
                 }
                 request => request,

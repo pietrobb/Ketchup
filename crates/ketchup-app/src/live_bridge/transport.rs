@@ -84,10 +84,7 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
                             });
                     }
                     Ok(_) => {}
-                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(10))
-                    }
-                    Err(_) => break,
+                    Err(error) => std::thread::sleep(accept_failure_pause(error.kind())),
                 }
             }
         })?;
@@ -101,6 +98,21 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
         #[cfg(test)]
         active_connections,
     ))
+}
+
+/// How long the listener waits after `accept` failed before it accepts again.
+/// No failure stops it: a connection reset or aborted before it was accepted
+/// (any local process can cause one) is that connection's failure only, and a
+/// failure of the listener itself, such as running out of file handles, may
+/// pass, so it is tried again after a pause (review 2026-10-31 SEC-80).
+fn accept_failure_pause(kind: io::ErrorKind) -> Duration {
+    match kind {
+        io::ErrorKind::ConnectionReset
+        | io::ErrorKind::ConnectionAborted
+        | io::ErrorKind::Interrupted => Duration::ZERO,
+        io::ErrorKind::WouldBlock => Duration::from_millis(10),
+        _ => Duration::from_millis(100),
+    }
 }
 
 /// A bridge without a socket for the jobs the window itself starts, such as a
@@ -692,6 +704,23 @@ mod tests {
                 "connection registry did not reach {expected}"
             );
             std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// Review 2026-10-31 SEC-80: one connection reset before it was accepted
+    /// stopped the listener for the life of the window.
+    #[test]
+    fn no_accept_failure_stops_the_listener() {
+        for kind in [
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::ConnectionAborted,
+            io::ErrorKind::Interrupted,
+        ] {
+            assert_eq!(accept_failure_pause(kind), Duration::ZERO, "{kind:?}");
+        }
+        // Out of file handles and the like: tried again after a pause.
+        for kind in [io::ErrorKind::Other, io::ErrorKind::OutOfMemory] {
+            assert!(accept_failure_pause(kind) > Duration::ZERO, "{kind:?}");
         }
     }
 

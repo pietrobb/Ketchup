@@ -209,6 +209,7 @@ impl LiveBridge {
                     ) => "run_plugin",
                     Some(program_check::ProgramCheckJob::DwgImport(_)) => "import",
                     Some(program_check::ProgramCheckJob::ExchangeExport(_)) => "export",
+                    Some(program_check::ProgramCheckJob::DrawingExport(_)) => "drawing_export",
                     Some(program_check::ProgramCheckJob::Reporting(_)) => "program_report",
                     _ => "program_apply",
                 },

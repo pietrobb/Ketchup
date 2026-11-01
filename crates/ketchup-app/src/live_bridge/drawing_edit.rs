@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::app::underlay_edit::{FindRegions, UnderlayEditError};
-use crate::app::underlay_export::UnderlayExportError;
+use crate::app::underlay_export::{ClientUnderlayExport, UnderlayExportError};
 use crate::app::underlay_extrude::{AreaPullError, AreaRefusal};
 use ketchup_model::underlay::drawn::{in_lines, inverse, similarity};
 use ketchup_model::underlay::edits::UnderlayObjectError;
@@ -27,7 +27,14 @@ impl LiveBridge {
             Request::DrawingRemove { .. } => self.drawing_remove(app, request, ui_busy, cancelled),
             Request::DrawingDraw { .. } => self.drawing_draw(app, request, ui_busy, cancelled),
             Request::DrawingMove { .. } => self.drawing_move(app, request, ui_busy, cancelled),
-            Request::DrawingExport { .. } => Self::drawing_export(app, request, ui_busy, cancelled),
+            Request::DrawingExport { .. } => {
+                Self::drawing_export_target(app, request, ui_busy, cancelled).and_then(|target| {
+                    target
+                        .write_here(app)
+                        .map(|written| target.written(written))
+                        .map_err(|error| target.refuse(error))
+                })
+            }
             Request::DrawingExtrude { .. } => {
                 self.drawing_extrude(app, request, ui_busy, cancelled)
             }
@@ -314,13 +321,14 @@ impl LiveBridge {
         ))
     }
 
-    /// `drawing_export`: the drawing with its changes written to the DXF or DWG file `path`.
-    pub(super) fn drawing_export(
-        app: &mut KetchupApp,
+    /// `drawing_export`: what writing the drawing with its changes to the DXF or DWG file
+    /// `path` takes, checked before the worker writes it.
+    pub(super) fn drawing_export_target(
+        app: &KetchupApp,
         request: &Request,
         ui_busy: bool,
         cancelled: &AtomicBool,
-    ) -> Result<Value, &'static str> {
+    ) -> Result<DrawingExportTarget, &'static str> {
         let Request::DrawingExport {
             expected,
             underlay_id,
@@ -359,7 +367,6 @@ impl LiveBridge {
         }
         let snapshot = app.document.current();
         let underlay = super::underlay_regions::one_underlay(&snapshot, *underlay_id)?;
-        let id = underlay.id;
         let edits = &underlay.edits;
         let changed = json!({
             "removed": edits.removed_objects.len(),
@@ -368,33 +375,82 @@ impl LiveBridge {
             "added": edits.added.len(),
         });
         Self::require_request_authority(cancelled)?;
-        let written = app
-            .export_underlay_dxf_to(
-                id,
-                source.as_deref().map(Path::new),
-                Path::new(path),
-                None,
-                &ketchup_program::CancelToken::default(),
-            )
-            .map_err(|error| {
-                let code = drawing_export_code(&error);
-                record_rejection(
-                    &rejected(code).caused_by(error),
-                    json!({"path": path, "underlay_id": id.0}),
-                );
-                code
-            })?;
-        Ok(json!({
-            "path": path,
+        Ok(DrawingExportTarget {
+            id: underlay.id,
+            source: source.clone(),
+            path: path.clone(),
+            changed,
+        })
+    }
+}
+
+/// A drawing a client asked to write back, checked on the window's thread.
+pub(super) struct DrawingExportTarget {
+    id: ketchup_model::underlay::UnderlayId,
+    source: Option<String>,
+    path: String,
+    changed: Value,
+}
+
+impl DrawingExportTarget {
+    /// Starts the worker on a thread.
+    pub(super) fn start(
+        &self,
+        app: &KetchupApp,
+        context: &egui::Context,
+    ) -> Result<ClientUnderlayExport, UnderlayExportError> {
+        app.start_client_underlay_export(
+            self.id,
+            self.source.as_deref().map(Path::new),
+            Path::new(&self.path),
+            context,
+        )
+    }
+
+    /// The in-process harness's drawing export: the job a client's request starts,
+    /// waited for here.
+    pub(super) fn write_here(
+        &self,
+        app: &KetchupApp,
+    ) -> Result<ketchup_application::program_isolation::UnderlayWritten, UnderlayExportError> {
+        let written = self
+            .start(app, &egui::Context::default())
+            .and_then(|export| {
+                export.receiver.recv().unwrap_or_else(|_| {
+                    Err(UnderlayExportError::Io(std::io::Error::other(
+                        "the thread that writes the drawing stopped",
+                    )))
+                })
+            });
+        ClientUnderlayExport::publish(written)
+    }
+
+    /// Why the drawing was not written, recorded with its cause for the client.
+    pub(super) fn refuse(&self, error: UnderlayExportError) -> &'static str {
+        let code = drawing_export_code(&error);
+        record_rejection(
+            &rejected(code).caused_by(error),
+            json!({"path": self.path, "underlay_id": self.id.0}),
+        );
+        code
+    }
+
+    /// The client's answer for the drawing written.
+    pub(super) fn written(
+        &self,
+        written: ketchup_application::program_isolation::UnderlayWritten,
+    ) -> Value {
+        json!({
+            "path": self.path,
             "bytes": written.bytes,
-            "underlay_id": id.0,
-            "changes": changed,
+            "underlay_id": self.id.0,
+            "changes": self.changed,
             // The records of a DWG source its read left out are not in the file either.
             "skipped_records": written.skipped.iter().map(|(record_type, count)| json!({
                 "record_type": record_type,
                 "count": count,
             })).collect::<Vec<_>>(),
-        }))
+        })
     }
 }
 
