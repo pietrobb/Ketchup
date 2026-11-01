@@ -63,6 +63,20 @@ pub struct IgesXdeImportEvidence {
     pub rejected_parts: Vec<super::ImportRejectedPart>,
 }
 
+impl IgesXdeImportEvidence {
+    /// Each root refused and each shape left out of a root read, as
+    /// "root: reason" lines, the roots refused first.
+    #[must_use]
+    pub fn refusals(&self) -> Vec<String> {
+        super::refusal_lines(
+            &self.rejected_parts,
+            self.parts
+                .iter()
+                .map(|part| (part.name.as_str(), part.rejected_shapes.as_slice())),
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IgesImportPlanError {
     Empty,
@@ -254,7 +268,7 @@ pub fn plan_iges_xde_import(
         || evidence.source_byte_len != source.len() as u64
         || evidence.parts.is_empty()
         || evidence.parts.len() > 1_024
-        || evidence.rejected_parts.len() > 1_024
+        || evidence.rejected_parts.len() > super::MAX_IMPORT_OUTPUTS
         || evidence.nodes.len() != evidence.parts.len() + evidence.rejected_parts.len()
     {
         return Err(IgesImportPlanError::InvalidWorkerEvidence);

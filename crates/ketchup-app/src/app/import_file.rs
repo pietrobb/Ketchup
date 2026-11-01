@@ -73,18 +73,13 @@ impl KetchupApp {
                     &snapshot,
                 );
                 let plan = self.prepare_step_import_preview_plan(source)?;
-                let parts = plan
-                    .evidence
-                    .nodes
-                    .iter()
-                    .filter_map(|node| {
-                        let index = usize::try_from(node.part_index?).ok()?;
-                        plan.evidence.parts.get(index)
-                    })
-                    .map(|part| &part.exact);
+                let parts = plan.evidence.placed_parts().map(|part| &part.exact);
+                let (refused, refused_total) = bounded(&plan.evidence.refusals());
                 let summary = json!({
                     "solids": parts.clone().map(|exact| exact.solid_count).sum::<u32>(),
                     "volume_mm3": parts.map(|exact| exact.volume_mm3).sum::<f64>(),
+                    "refused": refused,
+                    "refused_total": refused_total,
                 });
                 self.import_step_from(&PendingStepImport {
                     plan,
@@ -102,9 +97,12 @@ impl KetchupApp {
                 );
                 let plan = self.prepare_iges_import_preview_plan(source)?;
                 let parts = plan.evidence.parts.iter().map(|part| &part.exact);
+                let (refused, refused_total) = bounded(&plan.evidence.refusals());
                 let summary = json!({
                     "solids": parts.clone().map(|exact| exact.solid_count).sum::<u32>(),
                     "volume_mm3": parts.map(|exact| exact.volume_mm3).sum::<f64>(),
+                    "refused": refused,
+                    "refused_total": refused_total,
                 });
                 self.import_iges_from(&PendingIgesImport {
                     plan,

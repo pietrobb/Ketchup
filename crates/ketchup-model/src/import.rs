@@ -538,23 +538,13 @@ fn refusal_diagnostics<'a>(
     rejected_parts: &[ImportRejectedPart],
     parts: impl Iterator<Item = (&'a str, &'a [ImportRejectedShape])>,
 ) -> Result<Vec<ImportDiagnostic>, ImportContractError> {
-    let mut refusals = Vec::new();
-    for part in rejected_parts {
-        refusals.push((
-            format!("{prefix}_part_refused"),
-            format!("{}: {}", part.name, part.reason),
-        ));
-    }
-    for (name, shapes) in parts {
-        for shape in shapes {
-            refusals.push((
-                format!("{prefix}_shape_refused"),
-                format!("{name}: {}", shape.describe()),
-            ));
-        }
-    }
     let mut counts = BTreeMap::<(String, Option<String>), u32>::new();
-    for (code, subject) in refusals {
+    for (line, subject) in refusal_lines(rejected_parts, parts).into_iter().enumerate() {
+        let code = if line < rejected_parts.len() {
+            format!("{prefix}_part_refused")
+        } else {
+            format!("{prefix}_shape_refused")
+        };
         let subject = Some(diagnostic_subject(&subject)).filter(|subject| !subject.is_empty());
         let key = if counts.len() < MAX_NAMED_REFUSALS
             || counts.contains_key(&(code.clone(), subject.clone()))
@@ -616,6 +606,48 @@ pub struct StepXdeImportEvidence {
     pub parts: Vec<StepXdePartEvidence>,
     pub nodes: Vec<StepXdeNodeEvidence>,
     pub rejected_parts: Vec<ImportRejectedPart>,
+}
+
+impl StepXdeImportEvidence {
+    /// The part read that each node places, once per node; nodes placing a
+    /// part not read place nothing.
+    pub fn placed_parts(&self) -> impl Iterator<Item = &StepXdePartEvidence> + Clone {
+        self.nodes.iter().filter_map(|node| {
+            let index = node.part_index?;
+            self.parts
+                .binary_search_by_key(&index, |part| part.index)
+                .ok()
+                .map(|position| &self.parts[position])
+        })
+    }
+
+    /// Each part refused and each shape left out of a part read, as
+    /// "part: reason" lines, the parts refused first.
+    #[must_use]
+    pub fn refusals(&self) -> Vec<String> {
+        refusal_lines(
+            &self.rejected_parts,
+            self.parts
+                .iter()
+                .map(|part| (part.name.as_str(), part.rejected_shapes.as_slice())),
+        )
+    }
+}
+
+/// "part: reason" for each part refused, then for each shape left out.
+pub(crate) fn refusal_lines<'a>(
+    rejected_parts: &[ImportRejectedPart],
+    parts: impl Iterator<Item = (&'a str, &'a [ImportRejectedShape])>,
+) -> Vec<String> {
+    rejected_parts
+        .iter()
+        .map(|part| format!("{}: {}", part.name, part.reason))
+        .chain(parts.flat_map(|(name, shapes)| {
+            shapes
+                .iter()
+                .map(move |shape| format!("{name}: {}", shape.describe()))
+        }))
+        .collect()
 }
 
 /// Upper bound on a derived STEP display mesh.
