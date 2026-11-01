@@ -117,8 +117,11 @@ impl std::error::Error for AreaPullError {
 }
 
 /// A click of the Pull area tool: the height typed, the point clicked in the plane of each
-/// plan, on the ground or raised off it, and the drawn objects under the pointer.
+/// plan, on the ground or raised off it, and the drawn objects under the pointer; and the
+/// revision of the document it was made on, as a click that waits is let go when the
+/// document changes before it is pulled up (review 2026-10-31 P3).
 pub(crate) struct AreaClick {
+    revision_id: u64,
     height_mm: f64,
     points_mm: Vec<(UnderlayId, [f64; 2])>,
     objects: Vec<(UnderlayId, u32)>,
@@ -149,6 +152,7 @@ impl KetchupApp {
             return;
         }
         let click = AreaClick {
+            revision_id: self.document.current().revision_id(),
             height_mm,
             points_mm,
             objects: self
@@ -174,6 +178,16 @@ impl KetchupApp {
         }
         if self.active_tool != ActiveTool::ExtrudeUnderlayArea {
             self.solid_tools.area_click_awaits_regions = None;
+            return false;
+        }
+        if self
+            .solid_tools
+            .area_click_awaits_regions
+            .as_ref()
+            .is_some_and(|click| click.revision_id != self.document.current().revision_id())
+        {
+            self.solid_tools.area_click_awaits_regions = None;
+            self.digest = self.catalog.text("digest-underlay-extrude-changed");
             return false;
         }
         if !self.underlay_regions_ready() {

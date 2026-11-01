@@ -1384,6 +1384,7 @@ hint-extrude-underlay-area = Kliknite dovnútra uzavretej oblasti, polyline aleb
 digest-underlay-extrude-height = Zadajte výšku väčšiu ako nula
 digest-underlay-extrude-no-area = Pod kurzorom nie je uzavretá oblasť zobrazenej vrstvy výkresu
 digest-underlay-extrude-searching = Hľadám oblasti výkresu; kliknutá sa vytiahne, keď ich nájdem
+digest-underlay-extrude-changed = Nič sa nevytiahlo: model sa zmenil, kým sa hľadali oblasti výkresu; kliknite na oblasť znova
 digest-underlay-extrude-refused = Nič nebolo vytiahnuté: { $reason }
 digest-underlay-extruded = Oblasť vytiahnutá o { $height } ako { $name }; nasleduje výkres
 digest-underlay-extruded-part = Oblasť vytiahnutá o { $height } ako diel { $name }

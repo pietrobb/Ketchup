@@ -1695,3 +1695,56 @@ fn a_waiting_pull_area_click_is_pulled_up_among_more_flat_drawings_than_searches
         app.digest
     );
 }
+
+/// Review 2026-10-31 P3: a Pull area click waiting for the regions was pulled up after an
+/// Undo too, into the document the Undo left; it is dropped, and the window says so.
+#[test]
+fn a_waiting_pull_area_click_is_dropped_when_the_document_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut dialogs = dialogs::ScriptedFileDialogs::new();
+    // Drawings of their own, so no region of them is found yet.
+    for teeth in [1901, 1902] {
+        let path = directory.path().join(format!("floor{teeth}.dxf"));
+        std::fs::write(
+            &path,
+            format!(
+                "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+                 0\nSECTION\n2\nENTITIES\n{}0\nENDSEC\n0\nEOF\n",
+                saw(teeth)
+            ),
+        )
+        .unwrap();
+        dialogs = dialogs.queue_import(ImportFormat::Dxf, &path);
+    }
+    let mut app = KetchupApp::with_catalog_and_initial_box(LocaleCatalog::english(), false)
+        .with_dialogs(Box::new(dialogs));
+    app.dispatch_file_command(AppCommand::ImportDrawingUnderlay);
+    app.dispatch_file_command(AppCommand::ImportDrawingUnderlay);
+    let mut harness = shell_of(app);
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExtrudeUnderlayArea);
+    harness.state_mut().value_box.input = "300".to_owned();
+    click(&mut harness, Vec3::new(20.0, -250.0, 0.0));
+    assert!(
+        harness
+            .state()
+            .solid_tools
+            .area_click_awaits_regions
+            .is_some(),
+        "the click did not wait: {}",
+        harness.state().digest
+    );
+    // The Undo takes the second drawing out; the first, clicked, stays.
+    harness.state_mut().dispatch_command(AppCommand::Undo);
+    let undone = harness.state().undo_step_count();
+    crate::tests::shell::step_until(
+        &mut harness,
+        std::time::Duration::from_secs(20),
+        "the waiting click was never let go",
+        |app| app.solid_tools.area_click_awaits_regions.is_none(),
+    );
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undone, "{}", app.digest);
+    assert!(app.digest.contains("changed"), "{}", app.digest);
+}

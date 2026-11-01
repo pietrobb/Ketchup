@@ -681,6 +681,16 @@ fn the_detach_warning_comes_again_after_undo_or_in_another_document() {
     assert!(app.undo());
     assert!(app.document.current_rule_program().is_some());
     assert!(detach(&mut app, "second"), "after Undo");
+    // Review 2026-10-31 P3: a program applied again, over the saved detached model, owns
+    // the document again.
+    let directory = tempfile::tempdir().unwrap();
+    assert!(app.save_document_to(&directory.path().join("detached.ketchup")));
+    app.apply_program_source(program.clone(), true).unwrap();
+    assert!(app.document.current_rule_program().is_some());
+    assert!(
+        detach(&mut app, "again"),
+        "after the program is applied again"
+    );
 
     // Open puts the read document in place and resets what the old one showed.
     let mut other = KetchupApp::new();

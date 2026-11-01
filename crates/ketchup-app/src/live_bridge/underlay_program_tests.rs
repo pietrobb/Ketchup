@@ -167,6 +167,26 @@ fn underlay_binding_updates_the_profile_and_exact_slab_from_changed_source() {
     assert!((exact_volume(&app, "floor") - 4.0 * area * 200.0).abs() < 1.0);
 }
 
+/// Review 2026-10-31 P3: the heading of a round outline gave the area and perimeter of its
+/// chords, 3.141 m² for a circle of radius 1 m; it measures the arcs the data writes.
+#[test]
+fn the_heading_of_a_round_outline_measures_its_arcs() {
+    let drawing = "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+                   0\nSECTION\n2\nENTITIES\n0\nCIRCLE\n8\ntop\n10\n0\n20\n0\n40\n1000\n\
+                   0\nENDSEC\n0\nEOF\n";
+    let (mut app, mut bridge, offset) = imported(drawing);
+    from_underlay(
+        &mut app,
+        &mut bridge,
+        json!({"name": "TOP", "point_mm": [-offset[0], -offset[1]]}),
+    );
+    let written = source(&app);
+    assert!(
+        written.contains("area 3.142 m², perimeter 6.283 m, 0 holes"),
+        "{written}"
+    );
+}
+
 /// The floor of a room named in the drawing in one call: no lookup of the text or the
 /// region first, no second apply for the extrusion; it follows the room when it grows.
 #[test]
