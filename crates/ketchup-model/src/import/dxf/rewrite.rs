@@ -333,6 +333,21 @@ struct BlockAt {
     endblk: Option<usize>,
 }
 
+/// How [`Drawing::map_groups`] maps the groups of one record.
+struct GroupMap<'a> {
+    map: &'a Affine,
+    rules: &'a Rules,
+    mtext: &'a Rules,
+    /// Where a multi-line attribute's MTEXT groups start.
+    embedded: Option<usize>,
+    scale: f64,
+    length_scale: f64,
+    mirrored: bool,
+    turn_deg: f64,
+    /// A text's rotation turned to read from left to right in the world.
+    readable: &'a dyn Fn(f64) -> f64,
+}
+
 /// What mapped dimensions add besides their own entity: their drawn blocks, and the
 /// records of those blocks.
 struct NewBlocks {
@@ -763,6 +778,32 @@ impl<'a> Drawing<'a> {
             let mapped = self.mapped(object, entity, &map, false, &mut handles, &mut blocks)?;
             replaced[entity] = Some(Some(mapped));
         }
+        let added = self.added_objects(
+            objects,
+            edits,
+            frame,
+            &removed,
+            &entity_of,
+            &mut handles,
+            &mut blocks,
+        )?;
+        Ok(self.spliced(handles, objects_edits, &removed, replaced, added, blocks))
+    }
+
+    /// The objects `edits` adds, copied or drawn, as entities written at the end of the
+    /// ENTITIES section.
+    #[allow(clippy::too_many_arguments)]
+    fn added_objects(
+        &self,
+        objects: &[UnderlayObject],
+        edits: &UnderlayEdits,
+        frame: &Frame,
+        removed: &BTreeSet<u64>,
+        entity_of: &impl Fn(u32) -> Result<usize, EditedDxfError>,
+        handles: &mut Option<u64>,
+        blocks: &mut NewBlocks,
+    ) -> Result<Vec<u8>, EditedDxfError> {
+        let read_count = u32::try_from(objects.len()).unwrap_or(u32::MAX);
         // How many objects each object of the drawing is with all it placed: a copy of it
         // takes as many ids.
         let mut tree = vec![1_u32; objects.len()];
@@ -794,24 +835,31 @@ impl<'a> Drawing<'a> {
                     let map = Mapping {
                         map: frame.map(map),
                         stretch: matches!(edit, AddedObject::Stretched { .. }),
-                        removed: &removed,
+                        removed,
                         vertices_minus_z: false,
                         follows: false,
                     };
-                    added.extend(self.mapped(
-                        *of,
-                        entity,
-                        &map,
-                        true,
-                        &mut handles,
-                        &mut blocks,
-                    )?);
+                    added.extend(self.mapped(*of, entity, &map, true, handles, blocks)?);
                 }
                 AddedObject::Drawn { layer, shape } => {
-                    added.extend(self.drawn(layer, shape, frame, &mut handles));
+                    added.extend(self.drawn(layer, shape, frame, handles));
                 }
             }
         }
+        Ok(added)
+    }
+
+    /// The drawing with each entity `replaced` (left out where `None`), `added` after the
+    /// last entity, the new blocks and their records, and the handle seed past `handles`.
+    fn spliced(
+        &self,
+        handles: Option<u64>,
+        objects_edits: ObjectEdits,
+        removed: &BTreeSet<u64>,
+        replaced: Vec<Option<Option<Vec<u8>>>>,
+        added: Vec<u8>,
+        blocks: NewBlocks,
+    ) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.source.len() + added.len());
         let mut copied = 0;
         let mut splice = |out: &mut Vec<u8>, range: Range<usize>, with: &[u8]| {
@@ -829,7 +877,7 @@ impl<'a> Drawing<'a> {
             edits_at.push((pair.value().start..pair.end(), value));
         }
         edits_at.extend(objects_edits);
-        edits_at.extend(self.blocks_without(&removed));
+        edits_at.extend(self.blocks_without(removed));
         for (entity, replaced) in self.entities.iter().zip(replaced) {
             if let Some(replaced) = replaced {
                 let range =
@@ -858,7 +906,7 @@ impl<'a> Drawing<'a> {
             splice(&mut out, range, &with);
         }
         out.extend_from_slice(&self.source[copied..]);
-        Ok(out)
+        out
     }
 
     /// For each associative hatch with a boundary it follows moved apart from it
@@ -1474,49 +1522,18 @@ impl<'a> Drawing<'a> {
             .map(|index| Out::Raw(*index))
             .collect::<Vec<_>>();
         let position = |code: i32| main.iter().position(|index| code_of(*index) == code);
-        let mut skip = 0;
-        for (at, &index) in own.iter().enumerate() {
-            if skip > 0 {
-                skip -= 1;
-                continue;
-            }
-            let rules = if embedded.is_some_and(|start| at > start) {
-                &mtext
-            } else {
-                &rules
-            };
-            let code = code_of(index);
-            let next = own
-                .get(at + 1)
-                .copied()
-                .filter(|next| code_of(*next) == code + 10);
-            if rules.points.contains(&code) || rules.vectors.contains(&code) {
-                let next = next.ok_or(DxfEditRefusal::Malformed)?;
-                let point = [self.number(index)?, self.number(next)?];
-                let [x, y] = if rules.points.contains(&code) {
-                    apply(map, point)
-                } else {
-                    [a * point[0] + b * point[1], c * point[0] + d * point[1]]
-                };
-                let [x, y] = if rules.direction == Some(code) {
-                    let turned = readable(point[1].atan2(point[0]));
-                    let length = x.hypot(y);
-                    [length * turned.cos(), length * turned.sin()]
-                } else {
-                    [x, y]
-                };
-                out[at] = Out::Set(index, number(x));
-                out[at + 1] = Out::Set(next, number(y));
-                skip = 1;
-            } else if rules.lengths.contains(&code) {
-                out[at] = Out::Set(index, number(self.number(index)? * length_scale));
-            } else if code == 42 && rules.bulge && mirrored {
-                out[at] = Out::Set(index, number(0.0 - self.number(index)?));
-            } else if rules.angles.contains(&code) {
-                let angle = turned(self.number(index)?, turn_deg, mirrored);
-                out[at] = Out::Set(index, number(angle));
-            }
-        }
+        let groups = GroupMap {
+            map,
+            rules: &rules,
+            mtext: &mtext,
+            embedded,
+            scale,
+            length_scale,
+            mirrored,
+            turn_deg,
+            readable: &readable,
+        };
+        self.map_groups(own, &mut out, &groups)?;
         // A mirrored text slants the other way.
         if mirrored
             && matches!(record, "TEXT" | "ATTRIB" | "ATTDEF")
@@ -1546,6 +1563,136 @@ impl<'a> Drawing<'a> {
             };
             self.map_hatch(own, &mut out, map, how)?;
         }
+        self.map_arc_angles(&rules, own, main, &mut out, turn_deg, mirrored)?;
+        self.map_placement(own, main, &mut out, &groups)?;
+        Ok(out)
+    }
+
+    /// A text's rotation turned to read from left to right, and an insert's scales and
+    /// rotation, set in `out` or added after the group they follow.
+    fn map_placement(
+        &self,
+        own: &[usize],
+        main: &[usize],
+        out: &mut Vec<Out>,
+        groups: &GroupMap,
+    ) -> Result<(), EditedDxfError> {
+        let code_of = |index: usize| self.pairs[index].code;
+        let position = |code: i32| main.iter().position(|index| code_of(*index) == code);
+        let number_of = |code: i32| -> Result<Option<f64>, EditedDxfError> {
+            main.iter()
+                .find(|index| code_of(**index) == code)
+                .map(|index| self.number(*index))
+                .transpose()
+        };
+        // A group the record lacks goes after the group `after`, in the order set.
+        let mut new = Vec::new();
+        let mut set = |out: &mut Vec<Out>, code: i32, after: i32, value: f64| {
+            if let Some(at) = position(code) {
+                out[at] = Out::Set(own[at], number(value));
+            } else if let Some(at) = position(after) {
+                new.push((at, Out::New(code, number(value))));
+            }
+        };
+        if let Some(code) = groups.rules.rotation
+            && !(groups.rules.direction.is_some() && position(11).is_some())
+        {
+            let rotation = number_of(code)?.unwrap_or(0.0).to_radians();
+            let turned = (groups.readable)(rotation).to_degrees().rem_euclid(360.0);
+            set(out, code, 40, turned);
+        }
+        if groups.rules.insert {
+            let sx = number_of(41)?.unwrap_or(1.0);
+            let sy = number_of(42)?.unwrap_or(1.0);
+            let rotation = number_of(50)?.unwrap_or(0.0);
+            let (rotation, sy) = if groups.mirrored {
+                (groups.turn_deg - rotation, 0.0 - sy)
+            } else {
+                (groups.turn_deg + rotation, sy)
+            };
+            let anchor = if position(30).is_some() { 30 } else { 20 };
+            set(out, 41, anchor, sx * groups.scale);
+            set(out, 42, anchor, sy * groups.scale);
+            set(out, 50, anchor, rotation.rem_euclid(360.0));
+        }
+        // From the last place back, so the places before stay where they are.
+        new.sort_by_key(|(at, _)| *at);
+        for (at, pair) in new.into_iter().rev() {
+            out.insert(at + 1, pair);
+        }
+        Ok(())
+    }
+
+    /// Each group of `own` that is a point, vector, length, bulge or angle, mapped into `out`.
+    fn map_groups(
+        &self,
+        own: &[usize],
+        out: &mut [Out],
+        groups: &GroupMap,
+    ) -> Result<(), EditedDxfError> {
+        let [[a, b, _], [c, d, _]] = *groups.map;
+        let code_of = |index: usize| self.pairs[index].code;
+        let mut skip = 0;
+        for (at, &index) in own.iter().enumerate() {
+            if skip > 0 {
+                skip -= 1;
+                continue;
+            }
+            let rules = if groups.embedded.is_some_and(|start| at > start) {
+                groups.mtext
+            } else {
+                groups.rules
+            };
+            let code = code_of(index);
+            let next = own
+                .get(at + 1)
+                .copied()
+                .filter(|next| code_of(*next) == code + 10);
+            if rules.points.contains(&code) || rules.vectors.contains(&code) {
+                let next = next.ok_or(DxfEditRefusal::Malformed)?;
+                let point = [self.number(index)?, self.number(next)?];
+                let [x, y] = if rules.points.contains(&code) {
+                    apply(groups.map, point)
+                } else {
+                    [a * point[0] + b * point[1], c * point[0] + d * point[1]]
+                };
+                let [x, y] = if rules.direction == Some(code) {
+                    let turned = (groups.readable)(point[1].atan2(point[0]));
+                    let length = x.hypot(y);
+                    [length * turned.cos(), length * turned.sin()]
+                } else {
+                    [x, y]
+                };
+                out[at] = Out::Set(index, number(x));
+                out[at + 1] = Out::Set(next, number(y));
+                skip = 1;
+            } else if rules.lengths.contains(&code) {
+                out[at] = Out::Set(index, number(self.number(index)? * groups.length_scale));
+            } else if code == 42 && rules.bulge && groups.mirrored {
+                out[at] = Out::Set(index, number(0.0 - self.number(index)?));
+            } else if rules.angles.contains(&code) {
+                let angle = turned(self.number(index)?, groups.turn_deg, groups.mirrored);
+                out[at] = Out::Set(index, number(angle));
+            }
+        }
+        Ok(())
+    }
+
+    /// The start and end angles of an arc, and of a mirrored ellipse, turned (and swapped when
+    /// mirrored) into `out`, keeping the range they span.
+    fn map_arc_angles(
+        &self,
+        rules: &Rules,
+        own: &[usize],
+        main: &[usize],
+        out: &mut [Out],
+        turn_deg: f64,
+        mirrored: bool,
+    ) -> Result<(), EditedDxfError> {
+        let position = |code: i32| {
+            main.iter()
+                .position(|index| self.pairs[*index].code == code)
+        };
         if rules.arc
             && let (Some(start), Some(end)) = (position(50), position(51))
         {
@@ -1570,42 +1717,7 @@ impl<'a> Drawing<'a> {
             out[start] = Out::Set(own[start], number(from));
             out[end] = Out::Set(own[end], number(to));
         }
-        // A group the record lacks goes after the group `after`, in the order set.
-        let mut new = Vec::new();
-        let mut set = |out: &mut Vec<Out>, code: i32, after: i32, value: f64| {
-            if let Some(at) = position(code) {
-                out[at] = Out::Set(own[at], number(value));
-            } else if let Some(at) = position(after) {
-                new.push((at, Out::New(code, number(value))));
-            }
-        };
-        if let Some(code) = rules.rotation
-            && !(rules.direction.is_some() && position(11).is_some())
-        {
-            let rotation = number_of(code)?.unwrap_or(0.0).to_radians();
-            let turned = readable(rotation).to_degrees().rem_euclid(360.0);
-            set(&mut out, code, 40, turned);
-        }
-        if rules.insert {
-            let sx = number_of(41)?.unwrap_or(1.0);
-            let sy = number_of(42)?.unwrap_or(1.0);
-            let rotation = number_of(50)?.unwrap_or(0.0);
-            let (rotation, sy) = if mirrored {
-                (turn_deg - rotation, 0.0 - sy)
-            } else {
-                (turn_deg + rotation, sy)
-            };
-            let anchor = if position(30).is_some() { 30 } else { 20 };
-            set(&mut out, 41, anchor, sx * scale);
-            set(&mut out, 42, anchor, sy * scale);
-            set(&mut out, 50, anchor, rotation.rem_euclid(360.0));
-        }
-        // From the last place back, so the places before stay where they are.
-        new.sort_by_key(|(at, _)| *at);
-        for (at, pair) in new.into_iter().rev() {
-            out.insert(at + 1, pair);
-        }
-        Ok(out)
+        Ok(())
     }
 
     /// The extended data `xdata` mapped by `map`, of the world, into `out`: a world point
