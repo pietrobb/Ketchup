@@ -1677,6 +1677,17 @@ fn open_backup(
     })
 }
 
+/// Whether the file at `path` begins as every native document does; reads its
+/// first bytes only, so a window can refuse another kind of file before it
+/// locks it (review 2026-11-01 UI-101: a `.pdf`).
+pub fn begins_as_document(path: &Path) -> io::Result<bool> {
+    let mut head = [0; MAGIC.len()];
+    match fs::File::open(path)?.read_exact(&mut head) {
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(false),
+        read => read.map(|()| &head == MAGIC || &head == CONTAINER_MAGIC),
+    }
+}
+
 /// The document `bytes` hold at their current revision; an Undo history they
 /// hold is ignored.
 pub fn load(bytes: &[u8]) -> Result<LoadOutcome, PersistenceError> {

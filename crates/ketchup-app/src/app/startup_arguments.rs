@@ -46,6 +46,13 @@ impl KetchupApp {
                     Some(refused("error-startup-import", &path))
                 }
                 Ok(path) if !path.is_file() => Some(refused("error-startup-missing", &path)),
+                // Any other file that is not a document, e.g. a PDF (review 2026-11-01 UI-101);
+                // one that cannot be read is left to Open, which says why.
+                Ok(path)
+                    if !ketchup_model::persistence::begins_as_document(&path).unwrap_or(true) =>
+                {
+                    Some(refused("error-startup-not-document", &path))
+                }
                 Ok(path) => {
                     self.queue_open_document_path(&path);
                     None
@@ -96,7 +103,14 @@ mod tests {
         let drawing = directory.path().join("plan.DXF");
         std::fs::write(&drawing, b"0\nEOF\n").unwrap();
         let missing = directory.path().join("missing.ketchup");
+        // Review 2026-11-01 UI-101: so did `Ketchup offer.pdf`, and any other file.
+        let offer = directory.path().join("offer.pdf");
+        std::fs::write(&offer, b"%PDF-1.7\n").unwrap();
+        let renamed = directory.path().join("short.ketchup");
+        std::fs::write(&renamed, b"KETCHUP").unwrap();
         let cases = [
+            (offer.clone().into(), "error-startup-not-document"),
+            (renamed.clone().into(), "error-startup-not-document"),
             (OsString::from("--help"), "error-startup-switch"),
             (directory.path().into(), "error-startup-folder"),
             (missing.clone().into(), "error-startup-missing"),
@@ -122,7 +136,9 @@ mod tests {
             left,
             [
                 OsString::from("kitchen.ketchup-view"),
-                OsString::from("plan.DXF")
+                OsString::from("offer.pdf"),
+                OsString::from("plan.DXF"),
+                OsString::from("short.ketchup")
             ]
         );
 

@@ -1422,6 +1422,7 @@ error-startup-folder = „{ $path }“ je priečinok; dokument v ňom otvorte ce
 error-startup-missing = „{ $path }“ neexistuje; nič sa neotvorilo.
 error-startup-viewer-package = „{ $path }“ je balík Kečup Viewer pre zákazníkov; otvorte ho v Kečup Viewer. Kečup otvára dokumenty .ketchup.
 error-startup-import = „{ $path }“ je súbor na import, nie dokument Kečupu; vložte ho do dokumentu príkazom Importovať v ponuke Súbor.
+error-startup-not-document = „{ $path }“ nie je dokument Kečupu; Kečup otvára dokumenty .ketchup, ktoré uloží.
 error-save-document = „{ $path }“ sa nepodarilo uložiť: { $reason }. Aktívny model zostáva neuložený.
 error-edit-file-in-other-window = Úprava sa nevykonala: „{ $path }“ upravuje iné okno Kečupu a zálohu neuloženej práce pre prípad pádu vedie naraz len jedno okno. Zatvorte iné okno a súbor tu otvorte znova, alebo tu použite Uložiť ako a pracujte na kópii.
 digest-tool-active = Nástroj: { $tool }
