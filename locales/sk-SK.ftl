@@ -3,6 +3,7 @@ live-consent-untitled = Bez názvu
 live-consent-connected-title = Lokálna aplikácia je pripojená
 live-consent-connected-description = Pripojená lokálna aplikácia môže kontrolovať a upravovať tento dokument, kým ju neodpojíte. Jej identita zostáva neoverená.
 live-consent-disconnect = Odpojiť lokálnu aplikáciu
+live-consent-failed = Lokálna aplikácia sa nemohla pripojiť: { $reason }
 connect-ai-title = Pripojiť AI
 connect-ai-connected = AI klient je pripojený k tomuto oknu.
 connect-ai-waiting = Žiadny AI klient nie je pripojený.

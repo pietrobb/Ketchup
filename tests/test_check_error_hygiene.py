@@ -220,6 +220,30 @@ def test_the_ways_around_the_discard_and_text_forms_count(tmp_path):
     }
 
 
+def test_an_error_the_else_branch_cannot_see_counts(tmp_path):
+    # Review 2026-11-01 TST-100: `let Ok(x) = f() else { .. }` threw away the error of
+    # `transport::start` and refused the attach without a reason; `.or_else(|_| Err(..))`
+    # and `Err(_) => None` drop it as `map_err(|_| ..)` does.
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "let Ok(bridge) = start(context) else {\n    return reject();\n};\n"
+        "let Ok(Some(value)) = read(path)\nelse { return; };\n"
+        "let b = call().or_else(|_| Err(Refused));\n"
+        "let c = match call() { Ok(v) => Some(v), Err(_) => None };\n"
+        "// A text check cannot tell a content-free error: this one counts too.\n"
+        "let Ok(guard) = lock.lock() else { return; };\n"
+        "// None of these drop a cause.\n"
+        "let Some(part) = parts.first() else { return; };\n"
+        "let d = call().or_else(|error| retry(error));\n"
+        "let e = match call() { Ok(v) => v, Err(error) => return Err(error.into()) };\n",
+    )
+    assert checker.current_counts(tmp_path) == {
+        "crates/a/src/lib.rs let_else_error": 3,
+        "crates/a/src/lib.rs dropped_quietly": 2,
+    }
+
+
 def test_a_new_form_is_recorded_once_and_then_may_only_shrink(tmp_path):
     # A form the baseline does not list yet is recorded as found when it is
     # added to the check; a form it lists may never grow, even from zero.

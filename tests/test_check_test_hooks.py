@@ -27,6 +27,22 @@ def test_gated_hooks_pass_and_ungated_fail(tmp_path):
     assert checker.check(tmp_path) == 1
 
 
+def test_an_async_const_or_unsafe_hook_is_a_hook(tmp_path):
+    # Review 2026-11-01 TST-100: `pub async fn headless_*` was not seen as a hook.
+    write(tmp_path, "crates/a/src/lib.rs", (
+        "pub async fn headless_wait() {}\n"
+        "pub(crate) const fn headless_limit() -> u32 { 1 }\n"
+        "pub unsafe fn headless_raw() {}\n"
+        "pub async unsafe fn headless_both() {}\n"
+    ))
+    assert checker.ungated_hooks(tmp_path) == [
+        "crates/a/src/lib.rs: headless_wait",
+        "crates/a/src/lib.rs: headless_limit",
+        "crates/a/src/lib.rs: headless_raw",
+        "crates/a/src/lib.rs: headless_both",
+    ]
+
+
 def test_only_a_cfg_that_requires_testing_gates_a_hook(tmp_path):
     # Review 2026-10-31 TST-80: `not(feature = "testing")` named the feature and passed.
     # A hook is gated when the production build, without `test` and without the

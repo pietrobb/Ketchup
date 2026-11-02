@@ -38,6 +38,11 @@ Two forms are counted in production source (crates/*/src, test modules and
   Display text in place of the error.
 - stringified_field: `Error::Io { message: e.to_string() }` does it inside a struct
   literal, as stringified_variant does inside a tuple variant.
+- let_else_error: `let Ok(x) = f() else { ... }` leaves the error out of the branch that
+  answers it (review 2026-11-01 TST-100); `match` it, or `map_err` it with a typed
+  closure when it carries nothing. A text check cannot tell a content-free error here.
+- dropped_quietly: `.or_else(|_| ...)` and `Err(_) => None` drop the error as
+  `map_err(|_| ...)` does.
 
 The check is a ratchet: scripts/error_hygiene_baseline.txt records what still
 exists, per file and form. A count may only go down; a new file or a higher count
@@ -110,6 +115,10 @@ FORMATTED_CAUSE = re.compile(
     r'format!\(\s*"(?:[^"\\]|\\.)*?(?:\{' + ERROR_NAME + r'(?::[^}?]*)?\}'
     r'|\{(?::[^}?]*)?\}(?:[^"\\]|\\.)*"\s*,\s*&?' + ERROR_NAME + r'\s*[,)])')
 STRINGIFIED_FIELD = re.compile(r"\b\w+\s*:\s*&?\b" + ERROR_NAME + r"\s*\.\s*to_string\(\)")
+# A let-else on `Ok(..)`: rustfmt starts the statement on a line of its own.
+LET_ELSE_ERROR = re.compile(r"^\s*let\s+Ok\(", re.MULTILINE)
+DROPPED_QUIETLY = re.compile(
+    r"\.or_else\(\s*(?:move\s*)?\|\s*_\w*\s*\||\bErr\(\s*_\s*\)\s*=>\s*(?:return\s+)?None\b")
 # A variant of an error type (`...Error::Name(_)`) matched to a bare string.
 DROPPED_VARIANT = re.compile(r"\b\w*Error::\w+\(\s*_\s*\)\s*=>\s*\"")
 # An inline test module at the top level of a Rust file: `#[cfg(test)]` or
@@ -171,7 +180,9 @@ def file_counts(text: str) -> dict[str, int]:
             "dropped_variant": len(DROPPED_VARIANT.findall(text)),
             "dropped_error": len(DROPPED_ERROR.findall(text)),
             "formatted_cause": len(FORMATTED_CAUSE.findall(text)),
-            "stringified_field": len(STRINGIFIED_FIELD.findall(text))}
+            "stringified_field": len(STRINGIFIED_FIELD.findall(text)),
+            "let_else_error": len(LET_ELSE_ERROR.findall(text)),
+            "dropped_quietly": len(DROPPED_QUIETLY.findall(text))}
 
 
 FORMS = tuple(file_counts(""))

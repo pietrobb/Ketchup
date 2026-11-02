@@ -3,6 +3,7 @@ live-consent-untitled = Untitled
 live-consent-connected-title = Local application connected
 live-consent-connected-description = The connected local application can inspect and edit this document until you disconnect it. Its identity remains unverified.
 live-consent-disconnect = Disconnect local application
+live-consent-failed = The local application could not connect: { $reason }
 connect-ai-title = Connect AI
 connect-ai-connected = An AI client is connected to this window.
 connect-ai-waiting = No AI client is connected.

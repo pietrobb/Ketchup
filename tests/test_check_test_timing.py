@@ -83,6 +83,26 @@ def test_a_time_measured_by_subtraction_or_duration_since_is_a_budget(tmp_path):
     ]
 
 
+def test_a_time_read_from_the_system_clock_or_by_checked_sub_is_a_budget(tmp_path):
+    # Review 2026-11-01 TST-100: `SystemTime` as the clock, and the checked or
+    # saturating subtraction of instants in place of `-`, measured unseen.
+    write(tmp_path, "crates/a/src/lib.rs", (
+        "#[cfg(test)]\n"
+        "mod tests {\n"
+        "    fn timed() {\n"
+        "        let start = SystemTime::now();\n"
+        "        assert!(SystemTime::now().duration_since(start).unwrap() < limit);\n"
+        "        assert!(later.checked_duration_since(start).unwrap() < limit);\n"
+        "        assert!(Instant::now().checked_duration_since(start).unwrap() < limit);\n"
+        "        assert!(end.saturating_duration_since(start) <= limit);\n"
+        "    }\n"
+        "}\n"
+    ))
+    assert checker.violations(tmp_path) == [
+        f"crates/a/src/lib.rs:{line}" for line in (5, 6, 7, 8)
+    ]
+
+
 def test_the_shapes_the_second_check_missed_are_budgets_too(tmp_path):
     # Review 2026-10-24 TST-21: a measured time kept under another name, a percentile
     # field, the comparison on a line of its own, `.lt()` and `assert_lt!` all passed.

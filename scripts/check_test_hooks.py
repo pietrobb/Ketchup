@@ -20,7 +20,7 @@ from check_tolerance_literals import TEST_MODULE  # noqa: E402  (a Rust file's u
 from source_roots import package_files  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-HOOK = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?fn (headless_\w+)", re.MULTILINE)
+HOOK = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:(?:const|async|unsafe)\s+)*fn (headless_\w+)", re.MULTILINE)
 ATTRIBUTE = re.compile(r"^\s*(#\[|///)")
 CFG = re.compile(r"^\s*#\[cfg\((.*)\)\]\s*$")
 TOKEN = re.compile(r'\s*(all|any|not|\(|\)|,|[A-Za-z_]\w*(?:\s*=\s*"[^"]*")?)')

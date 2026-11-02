@@ -50,7 +50,7 @@ PERF_TEST = re.compile(r"((?:^[ \t]*#\[[^\n]*\n|^[ \t]*///[^\n]*\n)+)[ \t]*fn\s+
 PERF_CALL = re.compile(r"(?<!fn )\bperf_\w+\s*\(")
 # Code that reads the clock; elsewhere a `Duration` compared is a computed value
 # (a retry delay), not a measured one.
-CLOCK = re.compile(r"Instant::now\(\)|\.elapsed\(\)")
+CLOCK = re.compile(r"(?:Instant|SystemTime)::now\(\)|\.elapsed\(\)")
 # Unit tests inside a production file (review 2026-11-01 TST-101: functions and impls too).
 from check_tolerance_literals import TEST_MODULE  # noqa: E402
 # A comparison operator between spaces: not a generic (`Vec<u8>`), `->`, `=>` or a shift.
@@ -59,6 +59,8 @@ MEASURED = re.compile(
     r"\.elapsed\(\)|\.as_(?:millis|micros|nanos|secs(?:_f32|_f64)?)\(\)"
     # The same time by subtraction or `duration_since` (review 2026-10-31 TST-80).
     r"|Instant::now\(\)\s*-|\.duration_since\("
+    # The checked or saturating subtraction, and the system clock (review 2026-11-01 TST-100).
+    r"|\.(?:checked|saturating)_duration_since\("
     r"|\b[a-z_0-9]*(?:elapsed|took|latency|duration)[a-z_0-9]*\b(?!\s*\()"
     r"|\b[a-z_0-9]+_(?:ms|us|ns|millis|micros|nanos|secs|seconds)\b(?!\s*\()"
     r"|\b[a-z_0-9]*(?:p50|p90|p95|p99|p999|percentile)[a-z_0-9]*\b(?!\s*\()")
