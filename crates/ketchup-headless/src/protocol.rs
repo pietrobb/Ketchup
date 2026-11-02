@@ -2372,9 +2372,10 @@ mod tests {
             caps["result"]["cad_program_schema"]["$defs"]["AssistantCadEditOperation"]["oneOf"]
                 .as_array()
                 .unwrap();
-        assert_eq!(variants.len(), 47);
+        assert_eq!(variants.len(), 48);
         for operation in [
             "structure",
+            "set_production_code",
             "move_physical_pin_pair",
             "append_feature",
             "create_pin_joint",

@@ -1188,8 +1188,9 @@ impl DocumentStore {
         self.apply_batch_with_origin_and_validation(batch, origin, true)
     }
 
-    /// Showing or hiding a tag or a part, keeping a saved view or switching
-    /// the document's threads between modelled and cosmetic keeps the program
+    /// Showing or hiding a tag or a part, keeping a saved view, naming the made
+    /// pieces by production codes (review 2026-11-02 MF-120) or switching the
+    /// document's threads between modelled and cosmetic keeps the program
     /// owning the model; any other edit detaches it. A program's own bolts
     /// following its mode are its own edit, which binds its source anew.
     fn rule_program_kept_by(&self, batch: &CommandBatch) -> Option<BoundRuleProgram> {
@@ -1200,7 +1201,11 @@ impl DocumentStore {
         batch
             .commands
             .iter()
-            .all(|command| command.is_view_only() || (switches_mode && command.switches_threads()))
+            .all(|command| {
+                command.is_view_only()
+                    || matches!(command, CanonicalCommand::SetProductionCode { .. })
+                    || (switches_mode && command.switches_threads())
+            })
             .then(|| self.revisions[self.cursor].rule_program.clone())
             .flatten()
     }

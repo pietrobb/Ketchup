@@ -2107,6 +2107,7 @@ impl LiveBridge {
                 | AssistantCadEditOperation::Transform { selector, .. }
                 | AssistantCadEditOperation::SetColor { selector, .. }
                 | AssistantCadEditOperation::SetGrounded { selector, .. }
+                | AssistantCadEditOperation::SetProductionCode { selector, .. }
                 | AssistantCadEditOperation::SetOccurrenceClassification { selector, .. }
                 | AssistantCadEditOperation::Copy { selector, .. }
                 | AssistantCadEditOperation::LinearPattern { selector, .. }

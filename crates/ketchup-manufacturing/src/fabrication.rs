@@ -324,6 +324,12 @@ pub enum GeneralFabricationError {
     PartWithoutProductionCode {
         part: String,
     },
+    /// A HOMAG program of `part` is named by its piece's production code, and
+    /// `code` (or none) is not [`is_homag_program_code`] (review 2026-11-02 MF-120).
+    HomagProgramCodeUnusable {
+        part: String,
+        code: Option<String>,
+    },
     /// `part` is drilled into both its top and its bottom face, and one
     /// woodWOP setup machines one face and the edges.
     DrilledFromBothFaces {
@@ -444,6 +450,19 @@ impl fmt::Display for GeneralFabricationError {
                 formatter,
                 "part \"{part}\" has no production code, so a production job cannot name its piece; give every made piece a code and save the document",
             ),
+            Self::HomagProgramCodeUnusable { part, code } => {
+                match code {
+                    None => write!(formatter, "part \"{part}\" has no production code")?,
+                    Some(code) => write!(
+                        formatter,
+                        "part \"{part}\" has the production code \"{code}\""
+                    )?,
+                }
+                write!(
+                    formatter,
+                    ", and a HOMAG program and its barcode label are named by a code of exactly 12 letters, digits, '-' or '_'; assign production codes (Tools > Assign production codes, or the model operation set_production_code) and save the document",
+                )
+            }
             Self::BtlxDrillingRefused { part, reason } => write!(
                 formatter,
                 "a hole of part \"{part}\" cannot be written as a BTLx drilling: {reason}",
@@ -1780,15 +1799,36 @@ fn woodwop_direction(definition_vector: [f64; 3], stock_frame: WoodwopStockFrame
     vector
 }
 
+/// Whether `code` names a HOMAG program and its Code 128 barcode label: exactly
+/// 12 ASCII letters, digits, '-' or '_'.
+#[must_use]
+pub fn is_homag_program_code(code: &str) -> bool {
+    code.len() == 12
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+/// The production code naming the HOMAG program of the piece at
+/// `instance_path`, or a refusal naming its part (review 2026-11-02 MF-120).
 fn homag_program_name(
     snapshot: &Snapshot,
     instance_path: &InstancePath,
 ) -> Result<String, GeneralFabricationError> {
-    snapshot
-        .production_code(instance_path)
-        .filter(|code| code.len() == 12)
-        .map(str::to_owned)
-        .ok_or(GeneralFabricationError::ExportBlocked)
+    let code = snapshot.production_code(instance_path);
+    if let Some(code) = code.filter(|code| is_homag_program_code(code)) {
+        return Ok(code.to_owned());
+    }
+    let resolved = snapshot
+        .resolve_instance_path(instance_path)
+        .map_err(GeneralFabricationError::UnresolvedInstance)?;
+    let part = snapshot
+        .definition(resolved.definition_id)
+        .map_or("", |definition| definition.name());
+    Err(GeneralFabricationError::HomagProgramCodeUnusable {
+        part: part.to_owned(),
+        code: code.map(str::to_owned),
+    })
 }
 
 fn woodwop_mpr_output(
@@ -1878,11 +1918,7 @@ fn woodwop_pin_macro(hole: &PinHole, stock_frame: WoodwopStockFrame) -> Option<S
 }
 
 fn homag_code128_svg(program_name: &str) -> Option<Vec<u8>> {
-    if program_name.len() != 12
-        || !program_name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-    {
+    if !is_homag_program_code(program_name) {
         return None;
     }
     const PATTERNS: [&str; 107] = [

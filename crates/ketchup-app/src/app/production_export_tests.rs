@@ -169,6 +169,48 @@ fn every_part_creator_gives_its_part_a_fabrication_role_and_role_changes_it() {
     );
 }
 
+/// Review 2026-11-02 MF-120: Tools > Assign production codes gives every made
+/// piece a 12-digit code in one Undo step while the program keeps owning the
+/// document, so the HOMAG package passes; a second run has nothing to assign.
+#[test]
+fn assigning_production_codes_lets_the_homag_package_pass() {
+    let mut app = KetchupApp::new();
+    app.apply_program_source(
+        ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
+            file_name: "shelf.star".into(),
+            source: "rail = member('rail', (0, 0, 0), (1000, 0, 0), (60, 80))\n\
+                     hole(rail, 'y+', at = (30, 500), diameter = 8, depth = 20)\n\
+                     shelf = board('shelf', (600, 300, 18), at = (0, 300, 0))\n\
+                     hole(shelf, 'z+', at = (100, 150), diameter = 8, depth = 10)\n"
+                .into(),
+            overrides: BTreeMap::new(),
+        },
+        true,
+    )
+    .unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let zip = |app: &mut KetchupApp| {
+        let projection = app.current_general_fabrication_projection().unwrap();
+        projection.woodwop_mpr_4_0_production_zip(&app.document.current(), Default::default())
+    };
+    let refusal = zip(&mut app).unwrap_err().to_string();
+    assert!(refusal.contains("has no production code"), "{refusal}");
+    assert!(app.assign_production_codes(), "{}", app.digest);
+    assert!(app.document.current_rule_program().is_some());
+    assert_eq!(
+        app.document
+            .current()
+            .production_codes()
+            .map(|(_, code)| code.to_owned())
+            .collect::<Vec<_>>(),
+        ["000000000001", "000000000002"]
+    );
+    zip(&mut app).unwrap_or_else(|error| panic!("{error}"));
+    assert!(!app.assign_production_codes());
+    assert_eq!(app.digest, app.catalog.text("digest-production-codes-kept"));
+}
+
 /// After an Open or Undo the program may still be evaluated in the background:
 /// the export says so instead of waiting for it on the window's thread.
 #[test]

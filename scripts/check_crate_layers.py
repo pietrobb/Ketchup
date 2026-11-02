@@ -74,7 +74,7 @@ LONG_FUNCTIONS = {
     "crates/ketchup-application/src/append_feature.rs::plan_feature_kind": 660,
     "crates/ketchup-application/src/collision.rs::collision_report": 630,
     "crates/ketchup-application/src/creation.rs::plan_creation": 411,
-    "crates/ketchup-application/src/planner.rs::plan_assistant_cad_edit_program_with_outputs": 1749,
+    "crates/ketchup-application/src/planner.rs::plan_assistant_cad_edit_program_with_outputs": 1745,
     "crates/ketchup-application/src/validation.rs::assistant_assembly_retention_report": 455,
     "crates/ketchup-application/src/validation.rs::assistant_hardware_manufacturing_report": 431,
     "crates/ketchup-application/src/validation.rs::assistant_validation_context_base": 606,

@@ -240,6 +240,106 @@ fn library_members_boards_and_fasteners_carry_their_fabrication_role() {
     assert_eq!(job["parts"].as_array().map(Vec::len), Some(2), "{job}");
 }
 
+/// Review 2026-11-02 MF-120: a HOMAG package of pieces without a usable
+/// production code was a bare "export blocked"; it names the part and the code
+/// it needs. The codes are assigned for every made piece, the program keeps
+/// owning the document and still names them after it is applied again, and the
+/// package is written.
+#[test]
+fn a_homag_package_names_the_piece_without_a_code_and_assigned_codes_pass() {
+    use ketchup_assistant::sidecar::{
+        AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
+    };
+    use ketchup_manufacturing::fabrication::GeneralFabricationError;
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let program = |diameter: u32| RuleProgramSource {
+        variants: Default::default(),
+        file_name: "member.star".into(),
+        source: format!(
+            "rail = member('rail', (0, 0, 0), (1000, 0, 0), (60, 80))\n\
+             hole(rail, 'y+', at = (30, 500), diameter = {diameter}, depth = 20)\n\
+             shelf = board('shelf', (600, 300, 18), at = (0, 300, 0))\n\
+             hole(shelf, 'z+', at = (100, 150), diameter = 8, depth = 10)\n"
+        ),
+        overrides: Default::default(),
+    };
+    let mut session = DocumentSession::default();
+    session.apply_rule_program(program(8), false).unwrap();
+    let set_code = |session: &mut DocumentSession, name: &str, code: Option<&str>| {
+        let snapshot = session.snapshot();
+        let occurrence = snapshot.occurrences().find(|o| o.name() == name).unwrap();
+        session
+            .apply_cad_program(
+                &AssistantCadEditProgram {
+                    operations: vec![AssistantCadEditOperation::SetProductionCode {
+                        selector: AssistantCadEntitySelector::Occurrences {
+                            occurrence_ids: vec![occurrence.id().0],
+                        },
+                        code: code.map(str::to_owned),
+                    }],
+                },
+                &std::collections::BTreeSet::new(),
+            )
+            .unwrap();
+    };
+    set_code(&mut session, "shelf", Some("TOP-A"));
+    assert!(
+        session.rule_program().is_some(),
+        "a code detached the program"
+    );
+    let snapshot = session.snapshot();
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    let refusal = projection
+        .woodwop_mpr_4_0_production_zip(&snapshot, Default::default())
+        .unwrap_err();
+    assert_eq!(
+        refusal,
+        GeneralFabricationError::HomagProgramCodeUnusable {
+            part: "rail".into(),
+            code: None
+        }
+    );
+    assert!(refusal.to_string().contains("exactly 12"), "{refusal}");
+    set_code(&mut session, "rail", Some("000000000007"));
+    let snapshot = session.snapshot();
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        projection
+            .woodwop_mpr_4_0_production_zip(&snapshot, Default::default())
+            .err(),
+        Some(GeneralFabricationError::HomagProgramCodeUnusable {
+            part: "shelf".into(),
+            code: Some("TOP-A".into())
+        })
+    );
+    // The rail keeps its code; the shelf's unusable one is replaced, counting on.
+    let assignments = projection.production_code_assignments(&snapshot);
+    assert_eq!(
+        assignments
+            .iter()
+            .map(|(_, code)| code.as_str())
+            .collect::<Vec<_>>(),
+        ["000000000008"]
+    );
+    set_code(&mut session, "shelf", Some(&assignments[0].1));
+    session.apply_rule_program(program(10), false).unwrap();
+    assert!(session.rule_program().is_some());
+    let snapshot = session.snapshot();
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    assert!(projection.production_code_assignments(&snapshot).is_empty());
+    let zip = projection
+        .woodwop_mpr_4_0_production_zip(&snapshot, Default::default())
+        .unwrap_or_else(|error| panic!("{error}"));
+    for name in ["000000000007.mpr", "000000000008.svg"] {
+        assert!(
+            zip.windows(name.len())
+                .any(|window| window == name.as_bytes()),
+            "{name}"
+        );
+    }
+}
+
 /// Review 2026-11-01 MF-103: a table top with rounded corners, a profile of
 /// lines and arcs, has a blank around its arcs and a production job; an
 /// outline with a free-form edge is refused for its outline, not its cuts.

@@ -3683,18 +3683,14 @@ pub fn plan_assistant_cad_edit_program_with_outputs(
                         .push(CanonicalCommand::SetOccurrenceTransform { id, transform });
                 }
             }
-            AssistantCadEditOperation::SetColor { color, .. } => {
-                for id in targets {
-                    staged_planning
-                        .push(CanonicalCommand::SetOccurrenceColor { id, color: *color });
-                }
-            }
-            AssistantCadEditOperation::SetGrounded { grounded, .. } => {
-                for id in targets {
-                    staged_planning.push(CanonicalCommand::SetOccurrenceGrounded {
-                        id,
-                        grounded: *grounded,
-                    });
+            AssistantCadEditOperation::SetColor { .. }
+            | AssistantCadEditOperation::SetGrounded { .. }
+            | AssistantCadEditOperation::SetProductionCode { .. } => {
+                for command in targets
+                    .into_iter()
+                    .filter_map(|id| setting_command(operation, id))
+                {
+                    staged_planning.push(command);
                 }
             }
             AssistantCadEditOperation::CreateTag {
@@ -4052,6 +4048,32 @@ fn feature_parameter_command(
     })
 }
 
+/// The command a setting operation (colour, grounding, production code) makes
+/// for one target occurrence; `None` for any other operation.
+fn setting_command(
+    operation: &AssistantCadEditOperation,
+    id: OccurrenceId,
+) -> Option<CanonicalCommand> {
+    match operation {
+        AssistantCadEditOperation::SetColor { color, .. } => {
+            Some(CanonicalCommand::SetOccurrenceColor { id, color: *color })
+        }
+        AssistantCadEditOperation::SetGrounded { grounded, .. } => {
+            Some(CanonicalCommand::SetOccurrenceGrounded {
+                id,
+                grounded: *grounded,
+            })
+        }
+        AssistantCadEditOperation::SetProductionCode { code, .. } => {
+            Some(CanonicalCommand::SetProductionCode {
+                instance_path: InstancePath::root(id),
+                code: code.clone(),
+            })
+        }
+        _ => None,
+    }
+}
+
 /// The occurrences an operation targets, or `None` when it creates or edits
 /// something else.
 const fn operation_selector(
@@ -4099,6 +4121,7 @@ const fn operation_selector(
         | AssistantCadEditOperation::Transform { selector, .. }
         | AssistantCadEditOperation::SetColor { selector, .. }
         | AssistantCadEditOperation::SetGrounded { selector, .. }
+        | AssistantCadEditOperation::SetProductionCode { selector, .. }
         | AssistantCadEditOperation::SetOccurrenceTag { selector, .. }
         | AssistantCadEditOperation::SetOccurrenceClassification { selector, .. }
         | AssistantCadEditOperation::Copy { selector, .. }
@@ -4139,6 +4162,7 @@ const fn operation_name(operation: &AssistantCadEditOperation) -> &'static str {
         AssistantCadEditOperation::Transform { .. } => "transform_occurrence",
         AssistantCadEditOperation::SetColor { .. } => "set_color",
         AssistantCadEditOperation::SetGrounded { .. } => "set_grounded",
+        AssistantCadEditOperation::SetProductionCode { .. } => "set_production_code",
         AssistantCadEditOperation::CreateTag { .. } => "create_tag",
         AssistantCadEditOperation::SetOccurrenceTag { .. } => "set_occurrence_tag",
         AssistantCadEditOperation::SetTagVisibility { .. } => "set_tag_visibility",

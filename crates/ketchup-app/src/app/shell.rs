@@ -1145,6 +1145,13 @@ impl KetchupApp {
                     self.unlink_pulled_areas();
                     ui.close();
                 }
+                if ui
+                    .button(self.catalog.text("menu-assign-production-codes"))
+                    .clicked()
+                {
+                    self.assign_production_codes();
+                    ui.close();
+                }
                 self.underlay_view_menu(ui);
                 self.menu_command(ui, AppCommand::ExportUnderlayDxf);
                 self.menu_command(ui, AppCommand::ExportUnderlayDwg);
