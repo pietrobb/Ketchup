@@ -99,3 +99,31 @@ fn a_step_review_is_read_on_a_thread_and_confirmed_without_reading_it_again() {
         .unwrap_or_else(|error| panic!("{error}"));
     assert!(app.document.current().occurrences().count() > occurrences);
 }
+
+/// Review 2026-11-01 EX-104: the review of a partial import lists what it
+/// leaves out one line each and lays out only the lines in view, however many
+/// solids a large assembly refuses.
+#[test]
+fn an_import_review_lays_out_only_the_refusals_in_view() {
+    let refusals = (0..5_000)
+        .map(|index| format!("Part {index}: solid 1 encloses no volume"))
+        .collect::<Vec<_>>();
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(Vec2::new(800.0, 600.0))
+        .build_ui(|ui| crate::app::import::show_refusal_rows(ui, "refusals", &refusals));
+    harness.run();
+    let shown = harness
+        .query_all(egui_kittest::kittest::by().label_contains("encloses no volume"))
+        .count();
+    assert!((1..50).contains(&shown), "{shown} refusals laid out");
+    assert!(
+        harness
+            .query_by_label("Part 0: solid 1 encloses no volume")
+            .is_some()
+    );
+    assert!(
+        harness
+            .query_by_label("Part 4999: solid 1 encloses no volume")
+            .is_none()
+    );
+}

@@ -68,12 +68,37 @@ impl IgesXdeImportEvidence {
     /// "root: reason" lines, the roots refused first.
     #[must_use]
     pub fn refusals(&self) -> Vec<String> {
-        super::refusal_lines(
+        super::placed_refusal_lines(
+            super::IGES_ENTITY,
+            &self.rejected_parts,
+            self.parts.iter().map(|part| {
+                (
+                    part.index,
+                    part.name.as_str(),
+                    part.rejected_shapes.as_slice(),
+                )
+            }),
+            |index| self.placements(index),
+        )
+    }
+
+    /// What the import leaves out of the source.
+    #[must_use]
+    pub fn left_out(&self) -> super::ImportLeftOut {
+        super::ImportLeftOut::of(
             &self.rejected_parts,
             self.parts
                 .iter()
-                .map(|part| (part.name.as_str(), part.rejected_shapes.as_slice())),
+                .map(|part| (part.index, part.rejected_shapes.len())),
+            |index| self.placements(index),
         )
+    }
+
+    fn placements(&self, index: u32) -> usize {
+        self.nodes
+            .iter()
+            .filter(|node| node.part_index == index)
+            .count()
     }
 }
 
@@ -490,6 +515,7 @@ pub fn plan_iges_xde_import(
     diagnostics.extend(
         super::refusal_diagnostics(
             "iges",
+            super::IGES_ENTITY,
             &evidence.rejected_parts,
             evidence
                 .parts

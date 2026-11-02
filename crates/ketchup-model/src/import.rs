@@ -492,12 +492,13 @@ pub struct ImportRejectedPart {
 }
 
 impl ImportRejectedShape {
-    /// "solid 2 (entity #720) encloses no volume".
+    /// "solid 2 (entity #720) encloses no volume", the entity written as its
+    /// format writes it: [`STEP_ENTITY`] or [`IGES_ENTITY`] before its number.
     #[must_use]
-    pub fn describe(&self) -> String {
+    pub fn describe(&self, entity_prefix: char) -> String {
         let entity = self
             .source_entity
-            .map(|entity| format!(" (entity #{entity})"))
+            .map(|entity| format!(" (entity {entity_prefix}{entity})"))
             .unwrap_or_default();
         format!(
             "{} {}{entity} {}",
@@ -526,6 +527,11 @@ fn diagnostic_subject(text: &str) -> String {
     subject
 }
 
+/// What a STEP entity number is written after: "#720".
+pub const STEP_ENTITY: char = '#';
+/// What an IGES directory entry number is written after: "D720".
+pub const IGES_ENTITY: char = 'D';
+
 /// Refusals named one by one before the rest are only counted.
 const MAX_NAMED_REFUSALS: usize = 256;
 
@@ -535,11 +541,15 @@ const MAX_NAMED_REFUSALS: usize = 256;
 /// counted in one warning without a subject.
 fn refusal_diagnostics<'a>(
     prefix: &str,
+    entity_prefix: char,
     rejected_parts: &[ImportRejectedPart],
     parts: impl Iterator<Item = (&'a str, &'a [ImportRejectedShape])>,
 ) -> Result<Vec<ImportDiagnostic>, ImportContractError> {
     let mut counts = BTreeMap::<(String, Option<String>), u32>::new();
-    for (line, subject) in refusal_lines(rejected_parts, parts).into_iter().enumerate() {
+    for (line, subject) in refusal_lines(entity_prefix, rejected_parts, parts)
+        .into_iter()
+        .enumerate()
+    {
         let code = if line < rejected_parts.len() {
             format!("{prefix}_part_refused")
         } else {
@@ -622,30 +632,122 @@ impl StepXdeImportEvidence {
     }
 
     /// Each part refused and each shape left out of a part read, as
-    /// "part: reason" lines, the parts refused first.
+    /// "part: reason" lines, the parts refused first, each with how many times
+    /// the source places the part when more than once.
     #[must_use]
     pub fn refusals(&self) -> Vec<String> {
-        refusal_lines(
+        placed_refusal_lines(
+            STEP_ENTITY,
+            &self.rejected_parts,
+            self.parts.iter().map(|part| {
+                (
+                    part.index,
+                    part.name.as_str(),
+                    part.rejected_shapes.as_slice(),
+                )
+            }),
+            |index| self.placements(index),
+        )
+    }
+
+    /// What the import leaves out of the source.
+    #[must_use]
+    pub fn left_out(&self) -> ImportLeftOut {
+        ImportLeftOut::of(
             &self.rejected_parts,
             self.parts
                 .iter()
-                .map(|part| (part.name.as_str(), part.rejected_shapes.as_slice())),
+                .map(|part| (part.index, part.rejected_shapes.len())),
+            |index| self.placements(index),
         )
     }
+
+    fn placements(&self, index: u32) -> usize {
+        self.nodes
+            .iter()
+            .filter(|node| node.part_index == Some(index))
+            .count()
+    }
+}
+
+/// What an exact import leaves out of its source: the parts it could not read,
+/// the solids and other shapes it left out of parts it read, and how many
+/// placements of the source lack either.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ImportLeftOut {
+    pub parts: usize,
+    pub solids: usize,
+    pub placements: usize,
+}
+
+impl ImportLeftOut {
+    /// Whether the import holds everything the source holds.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.parts == 0 && self.solids == 0
+    }
+
+    pub(crate) fn of(
+        rejected_parts: &[ImportRejectedPart],
+        parts: impl Iterator<Item = (u32, usize)>,
+        placements: impl Fn(u32) -> usize,
+    ) -> Self {
+        let mut left_out = Self {
+            parts: rejected_parts.len(),
+            solids: 0,
+            placements: rejected_parts
+                .iter()
+                .map(|part| placements(part.index))
+                .sum(),
+        };
+        for (index, shapes) in parts.filter(|(_, shapes)| *shapes > 0) {
+            left_out.solids += shapes;
+            left_out.placements += placements(index);
+        }
+        left_out
+    }
+}
+
+/// [`refusal_lines`] with " (placed N times)" after a line whose part the
+/// source places more than once.
+pub(crate) fn placed_refusal_lines<'a>(
+    entity_prefix: char,
+    rejected_parts: &[ImportRejectedPart],
+    parts: impl Iterator<Item = (u32, &'a str, &'a [ImportRejectedShape])>,
+    placements: impl Fn(u32) -> usize,
+) -> Vec<String> {
+    let placed = |line: String, index: u32| match placements(index) {
+        count @ 2.. => format!("{line} (placed {count} times)"),
+        _ => line,
+    };
+    rejected_parts
+        .iter()
+        .map(|part| placed(format!("{}: {}", part.name, part.reason), part.index))
+        .chain(
+            parts
+                .flat_map(|(index, name, shapes)| {
+                    shapes.iter().map(move |shape| {
+                        (format!("{name}: {}", shape.describe(entity_prefix)), index)
+                    })
+                })
+                .map(|(line, index)| placed(line, index)),
+        )
+        .collect()
 }
 
 /// "part: reason" for each part refused, then for each shape left out.
 pub(crate) fn refusal_lines<'a>(
+    entity_prefix: char,
     rejected_parts: &[ImportRejectedPart],
     parts: impl Iterator<Item = (&'a str, &'a [ImportRejectedShape])>,
 ) -> Vec<String> {
     rejected_parts
         .iter()
         .map(|part| format!("{}: {}", part.name, part.reason))
-        .chain(parts.flat_map(|(name, shapes)| {
+        .chain(parts.flat_map(move |(name, shapes)| {
             shapes
                 .iter()
-                .map(move |shape| format!("{name}: {}", shape.describe()))
+                .map(move |shape| format!("{name}: {}", shape.describe(entity_prefix)))
         }))
         .collect()
 }
@@ -1045,11 +1147,32 @@ pub fn plan_step_xde_import(
     }
     // Where each part read lies in `parts`, by its index.
     let position = |part: u32| read_indices.binary_search(&part).ok();
-    // The nodes imported: all but those placing a part not read.
+    // Whether each node's subtree places any part, and any part read; children
+    // come after their parent, so one pass from the end sees them first.
+    let mut holds = vec![(false, false); evidence.nodes.len()];
+    for (index, node) in evidence.nodes.iter().enumerate().rev() {
+        let (any, read) = holds[index];
+        let here = match node.part_index {
+            Some(part) => (true, !rejected(part)),
+            None => (any, read),
+        };
+        holds[index] = here;
+        let parent = node
+            .parent_id
+            .and_then(|parent| usize::try_from(parent).ok())
+            .and_then(|parent| holds.get_mut(parent));
+        if let Some(parent) = parent {
+            *parent = (parent.0 || here.0, parent.1 || here.1);
+        }
+    }
+    // The nodes imported: all but those placing a part not read and the
+    // groups that would be left empty by them (review 2026-11-01 EX-104).
     let kept_nodes = evidence
         .nodes
         .iter()
-        .filter(|node| node.part_index.is_none_or(|part| !rejected(part)))
+        .zip(&holds)
+        .filter(|(_, (any, read))| *read || !*any)
+        .map(|(node, _)| node)
         .collect::<Vec<_>>();
     if !evidence.nodes.iter().any(|node| node.parent_id.is_none())
         || evidence.parts.iter().any(|part| {
@@ -1090,8 +1213,7 @@ pub fn plan_step_xde_import(
             .unwrap_or(0),
         evidence.parts.len(),
     )?;
-    let group_count = evidence
-        .nodes
+    let group_count = kept_nodes
         .iter()
         .filter(|node| node.part_index.is_none())
         .count();
@@ -1237,6 +1359,7 @@ pub fn plan_step_xde_import(
     diagnostics.extend(
         refusal_diagnostics(
             "step",
+            STEP_ENTITY,
             &evidence.rejected_parts,
             evidence
                 .parts

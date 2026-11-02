@@ -155,6 +155,8 @@ impl KetchupApp {
                 let summary = json!({
                     "solids": parts.clone().map(|exact| exact.solid_count).sum::<u32>(),
                     "volume_mm3": parts.map(|exact| exact.volume_mm3).sum::<f64>(),
+                    "complete": plan.evidence.left_out().is_empty(),
+                    "left_out": left_out_json(plan.evidence.left_out()),
                     "refused": refused,
                     "refused_total": refused_total,
                 });
@@ -171,6 +173,8 @@ impl KetchupApp {
                 let summary = json!({
                     "solids": parts.clone().map(|exact| exact.solid_count).sum::<u32>(),
                     "volume_mm3": parts.map(|exact| exact.volume_mm3).sum::<f64>(),
+                    "complete": plan.evidence.left_out().is_empty(),
+                    "left_out": left_out_json(plan.evidence.left_out()),
                     "refused": refused,
                     "refused_total": refused_total,
                 });
@@ -240,4 +244,13 @@ impl KetchupApp {
         })?;
         Ok(summary)
     }
+}
+
+/// What an exact import left out, as its answer names it (review 2026-11-01 EX-100).
+fn left_out_json(left_out: ketchup_model::import::ImportLeftOut) -> Value {
+    json!({
+        "parts": left_out.parts,
+        "solids": left_out.solids,
+        "placements": left_out.placements,
+    })
 }

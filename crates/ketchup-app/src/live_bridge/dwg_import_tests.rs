@@ -329,6 +329,7 @@ fn a_clients_step_import_reads_the_file_off_the_windows_thread() {
     assert!(answer.ok, "{answer:?}");
     let result = answer.result.unwrap();
     assert_eq!(result["review"]["solids"], 1, "{result}");
+    assert_eq!(result["review"]["complete"], true, "{result}");
     assert_eq!(wire.app.undo_step_count(), undo + 1, "one Undo step");
 }
 

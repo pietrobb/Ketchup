@@ -88,6 +88,8 @@ std::unique_ptr<NativeOperationResult> xde_document_part_native(
 
 std::uint64_t step_source_parses_on_this_thread_native() noexcept;
 std::uint64_t iges_source_parses_on_this_thread_native() noexcept;
+std::uint64_t source_entity_scans_on_this_thread_native() noexcept;
+std::uint64_t xde_shapes_checked_apart_on_this_thread_native() noexcept;
 std::uint64_t shape_maps_built_native() noexcept;
 bool route_kernel_messages_to_stderr_native() noexcept;
 std::unique_ptr<NativeOperationResult> make_box_native(

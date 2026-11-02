@@ -737,6 +737,7 @@ dialog-import-step-refused = Not imported, each with the reason (the rest of the
 dialog-import-step-confirm = Import exact B-Rep
 dialog-import-step-cancel = Cancel
 digest-imported-step = Imported exact STEP B-Rep from { $path }
+digest-imported-left-out = { $imported }; left out of the file: { $parts } parts and { $solids } solids, missing from { $placements } placements (the import review named why)
 error-import-step = STEP import from { $path } was refused: { $reason }
 file-filter-iges = IGES exact B-Rep
 file-import-iges = Import exact IGES B-Rep…

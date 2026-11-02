@@ -1,8 +1,14 @@
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_NurbsConvert.hxx>
+#include <Geom_BezierCurve.hxx>
+#include <NCollection_Array1.hxx>
+#include <gp.hxx>
+#include <gp_Pln.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <STEPCAFControl_Writer.hxx>
@@ -130,9 +136,34 @@ TopoDS_Shape crossed_prism(double x)
   return BRepPrimAPI_MakePrism(face, gp_Vec(0.0, 0.0, 10.0)).Shape();
 }
 
-// An XDE assembly of a sound part, a part holding a sound and a crossed solid,
-// and a part holding only a crossed solid: an import must keep what is sound
-// and name what it refuses.
+// A prism over a planar face bounded by two Bezier edges that cross each other
+// midway (a figure eight): unlike the crossed polygon, it still fails the
+// validity check once read back (BRepCheck_SelfIntersectingWire), as a
+// SolidWorks solid of the Ploopy mouse does.
+TopoDS_Shape figure_eight_prism(double x)
+{
+  NCollection_Array1<gp_Pnt> there(1, 4);
+  NCollection_Array1<gp_Pnt> back(1, 4);
+  there(1) = gp_Pnt(x, 0.0, 0.0);
+  there(2) = gp_Pnt(x + 2.5, 5.0, 0.0);
+  there(3) = gp_Pnt(x + 7.5, -5.0, 0.0);
+  there(4) = gp_Pnt(x + 10.0, 0.0, 0.0);
+  back(1) = gp_Pnt(x + 10.0, 0.0, 0.0);
+  back(2) = gp_Pnt(x + 7.5, 5.0, 0.0);
+  back(3) = gp_Pnt(x + 2.5, -5.0, 0.0);
+  back(4) = gp_Pnt(x, 0.0, 0.0);
+  const TopoDS_Wire wire = BRepBuilderAPI_MakeWire(
+      BRepBuilderAPI_MakeEdge(new Geom_BezierCurve(there)).Edge(),
+      BRepBuilderAPI_MakeEdge(new Geom_BezierCurve(back)).Edge()).Wire();
+  const TopoDS_Face face = BRepBuilderAPI_MakeFace(gp_Pln(gp::XOY()), wire, Standard_True).Face();
+  return BRepPrimAPI_MakePrism(face, gp_Vec(0.0, 0.0, 10.0)).Shape();
+}
+
+// An XDE assembly of a sound part, a part holding a sound and a crossed solid
+// (sound as a whole once read back), a part holding only a crossed solid and a
+// part holding a sound and a figure-eight solid (not sound as a whole): an
+// import must keep a part sound as a whole as it is, keep what is sound of
+// the others and name what it refuses.
 bool write_partly_invalid_assembly(const std::filesystem::path& path)
 {
   const TopoDS_Shape sound = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape();
@@ -142,7 +173,12 @@ bool write_partly_invalid_assembly(const std::filesystem::path& path)
   builder.Add(mixed, BRepPrimAPI_MakeBox(gp_Pnt(20.0, 0.0, 0.0), 10.0, 10.0, 10.0).Shape());
   builder.Add(mixed, crossed_prism(40.0));
   const TopoDS_Shape crossed = crossed_prism(60.0);
-  if (!BRepCheck_Analyzer(sound).IsValid() || BRepCheck_Analyzer(crossed).IsValid()) {
+  TopoDS_Compound broken;
+  builder.MakeCompound(broken);
+  builder.Add(broken, BRepPrimAPI_MakeBox(gp_Pnt(80.0, 0.0, 0.0), 10.0, 10.0, 10.0).Shape());
+  builder.Add(broken, figure_eight_prism(100.0));
+  if (!BRepCheck_Analyzer(sound).IsValid() || BRepCheck_Analyzer(crossed).IsValid()
+      || BRepCheck_Analyzer(broken).IsValid()) {
     std::cerr << "Unexpected validity of the parts of " << path.string() << '\n';
     return false;
   }
@@ -152,12 +188,28 @@ bool write_partly_invalid_assembly(const std::filesystem::path& path)
   const TDF_Label assembly = shapes->NewShape();
   TDataStd_Name::Set(assembly, TCollection_ExtendedString("Salvage assembly"));
   const std::pair<const TopoDS_Shape*, const char*> parts[] = {
-      {&sound, "Sound block"}, {&mixed, "Block and crossed prism"}, {&crossed, "Crossed prism"}};
+      {&sound, "Sound block"}, {&mixed, "Block and crossed prism"}, {&crossed, "Crossed prism"},
+      {&broken, "Block and figure eight"}};
   for (const auto& [shape, name] : parts) {
     const TDF_Label part = shapes->AddShape(*shape, Standard_False);
     TDataStd_Name::Set(part, TCollection_ExtendedString(name));
     shapes->AddComponent(assembly, part, TopLoc_Location());
   }
+  // A sub-assembly whose only part is two wires, neither a solid nor a
+  // surface: the part is refused for what it is, and the sub-assembly would
+  // be an empty group.
+  TopoDS_Compound wires;
+  builder.MakeCompound(wires);
+  builder.Add(wires, BRepBuilderAPI_MakePolygon(
+      gp_Pnt(120.0, 0.0, 0.0), gp_Pnt(130.0, 0.0, 0.0), gp_Pnt(130.0, 10.0, 0.0), Standard_True).Wire());
+  builder.Add(wires, BRepBuilderAPI_MakePolygon(
+      gp_Pnt(140.0, 0.0, 0.0), gp_Pnt(150.0, 0.0, 0.0), gp_Pnt(150.0, 10.0, 0.0), Standard_True).Wire());
+  const TDF_Label wire_group = shapes->NewShape();
+  TDataStd_Name::Set(wire_group, TCollection_ExtendedString("Wire group"));
+  const TDF_Label wire_part = shapes->AddShape(wires, Standard_False);
+  TDataStd_Name::Set(wire_part, TCollection_ExtendedString("Wire frame"));
+  shapes->AddComponent(wire_group, wire_part, TopLoc_Location());
+  shapes->AddComponent(assembly, wire_group, TopLoc_Location());
   shapes->UpdateAssemblies();
   STEPCAFControl_Writer writer;
   writer.SetNameMode(Standard_True);

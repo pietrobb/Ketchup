@@ -4,11 +4,11 @@ use ketchup_model::document::{
 };
 use ketchup_model::import::{
     IgesImportEvidence, IgesXdeImportEvidence, IgesXdeNodeEvidence, IgesXdePartEvidence,
-    ImportDiagnostic, ImportDiagnosticSeverity, ImportFormat, ImportId, ImportLengthUnit,
-    ImportOutputRef, ImportReceipt, ImportRejectedPart, ImportRejectedShape, ImportUnitAuthority,
-    ImportUnitDecision, StepImportEvidence, StepImportPlanError, StepXdeImportEvidence,
-    StepXdeNodeEvidence, StepXdePartEvidence, plan_iges_import, plan_iges_xde_import,
-    plan_step_import, plan_step_xde_import,
+    ImportDiagnostic, ImportDiagnosticSeverity, ImportFormat, ImportId, ImportLeftOut,
+    ImportLengthUnit, ImportOutputRef, ImportReceipt, ImportRejectedPart, ImportRejectedShape,
+    ImportUnitAuthority, ImportUnitDecision, StepImportEvidence, StepImportPlanError,
+    StepXdeImportEvidence, StepXdeNodeEvidence, StepXdePartEvidence, plan_iges_import,
+    plan_iges_xde_import, plan_step_import, plan_step_xde_import,
 };
 use ketchup_model::persistence;
 
@@ -793,6 +793,60 @@ fn step_and_iges_xde_imports_keep_the_parts_read_and_name_the_refused() {
             ),
         ]
     );
+    // Review 2026-11-01 EX-104: a group whose parts were all refused is not
+    // imported as an empty group; a group the source leaves empty still is.
+    let mut grouped = evidence.clone();
+    grouped.nodes.extend([
+        node(4, Some(0), None, "Refused group"),
+        node(5, Some(4), Some(1), "Crossed prism 2"),
+        node(6, Some(0), None, "Empty in the source"),
+    ]);
+    let mut document = DocumentStore::new();
+    let batch = plan_step_xde_import(&document.current(), source, "partly.step", &grouped).unwrap();
+    document.apply_batch(&batch).unwrap();
+    assert_eq!(
+        document
+            .current()
+            .groups()
+            .map(|group| group.name().to_owned())
+            .collect::<Vec<_>>(),
+        ["Assembly", "Empty in the source"]
+    );
+    // Review 2026-11-01 EX-100: a refusal says how many times the source places
+    // what it leaves out, and the total names the parts, solids and placements.
+    let mut placed = evidence.clone();
+    placed.nodes.extend([
+        node(4, Some(0), Some(1), "Crossed prism 2"),
+        node(5, Some(0), Some(1), "Crossed prism 3"),
+        node(6, Some(0), Some(2), "Pair 2"),
+    ]);
+    assert_eq!(
+        placed.refusals(),
+        [
+            "Crossed prism: solid 1 (entity #1069) encloses no volume (placed 3 times)",
+            "Pair: solid 2 (entity #720) encloses no volume (placed 2 times)",
+        ]
+    );
+    assert_eq!(
+        placed.left_out(),
+        ImportLeftOut {
+            parts: 1,
+            solids: 1,
+            placements: 5
+        }
+    );
+    assert_eq!(
+        evidence.refusals()[1],
+        "Pair: solid 2 (entity #720) encloses no volume"
+    );
+    assert!(!evidence.left_out().is_empty());
+    let read_whole = StepXdeImportEvidence {
+        parts: vec![part(0, "Block", Vec::new())],
+        nodes: vec![node(0, None, Some(0), "Block 1")],
+        rejected_parts: Vec::new(),
+        ..evidence.clone()
+    };
+    assert!(read_whole.left_out().is_empty());
     // An index both read and refused, or a node placing an index neither
     // read nor refused, is evidence the plan cannot trust.
     for tamper in [
@@ -835,8 +889,19 @@ fn step_and_iges_xde_imports_keep_the_parts_read_and_name_the_refused() {
                 transform: Transform::identity(),
             })
             .collect(),
-        rejected_parts: vec![refused],
+        rejected_parts: vec![ImportRejectedPart {
+            reason: "solid 1 (entity D1069) encloses no volume".to_owned(),
+            ..refused
+        }],
     };
+    assert_eq!(
+        iges.left_out(),
+        ImportLeftOut {
+            parts: 1,
+            solids: 1,
+            placements: 2
+        }
+    );
     let mut document = DocumentStore::new();
     let batch = plan_iges_xde_import(&document.current(), source, "partly.iges", &iges).unwrap();
     document.apply_batch(&batch).unwrap();
@@ -847,11 +912,13 @@ fn step_and_iges_xde_imports_keep_the_parts_read_and_name_the_refused() {
         [
             (
                 "iges_part_refused".to_owned(),
-                "Crossed prism: solid 1 (entity #1069) encloses no volume".to_owned()
+                "Crossed prism: solid 1 (entity D1069) encloses no volume".to_owned()
             ),
+            // EX-104: an IGES entity is its directory entry, "D720", not
+            // STEP's "#720".
             (
                 "iges_shape_refused".to_owned(),
-                "Block: solid 2 (entity #720) encloses no volume".to_owned()
+                "Block: solid 2 (entity D720) encloses no volume".to_owned()
             ),
         ]
     );

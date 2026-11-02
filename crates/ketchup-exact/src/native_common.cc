@@ -413,6 +413,14 @@ std::unique_ptr<NativeOperationResult> success_result(
   }
 
   const BRepCheck_Analyzer analyzer(impl->shape, true);
+  // Nobody reads the evidence of an invalid result: an invalid shape costs
+  // only its check, e.g. an imported part that fails as a whole before its
+  // shapes are checked apart (review 2026-11-01 EX-102).
+  if (!analyzer.IsValid()) {
+    impl->status = STATUS_INVALID_SHAPE;
+    impl->diagnostic = "OCCT result failed the exact-shape validity oracle";
+    return std::make_unique<NativeOperationResult>(std::move(impl));
+  }
   const std::uint32_t solids = count_subshapes(impl->shape, TopAbs_SOLID);
   GProp_GProps properties;
   BRepGProp::VolumeProperties(impl->shape, properties);
@@ -517,7 +525,7 @@ std::unique_ptr<NativeOperationResult> success_result(
       && ((!allow_multi_solid && solids == 1) || (allow_multi_solid && solids >= 2))
       && std::isfinite(volume)
       && volume > 0.0;
-  if (!analyzer.IsValid() || (!valid_planar_face && !valid_surface && !valid_solid)) {
+  if (!valid_planar_face && !valid_surface && !valid_solid) {
     impl->status = STATUS_INVALID_SHAPE;
     impl->diagnostic = "OCCT result failed the exact-shape validity oracle";
   } else {

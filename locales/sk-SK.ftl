@@ -738,6 +738,7 @@ dialog-import-step-refused = Nenaimportuje sa, každé s dôvodom (zvyšok súbo
 dialog-import-step-confirm = Importovať presný B-Rep
 dialog-import-step-cancel = Zrušiť
 digest-imported-step = Presný B-Rep STEP bol importovaný z { $path }
+digest-imported-left-out = { $imported }; zo súboru vynechané: dielov { $parts } a telies { $solids }, chýbajú v { $placements } umiestneniach (dôvody uviedol prehľad importu)
 error-import-step = Import STEP z { $path } bol odmietnutý: { $reason }
 file-filter-iges = Presný B-Rep IGES
 file-import-iges = Importovať presný B-Rep IGES…

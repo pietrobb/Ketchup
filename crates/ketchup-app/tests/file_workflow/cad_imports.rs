@@ -832,9 +832,18 @@ fn file_import_exact_step_keeps_the_readable_parts_and_names_the_refused_offscre
         )
         .unwrap();
     let refusals = evidence.refusals();
-    assert_eq!(refusals.len(), 2, "{refusals:?}");
-    assert!(refusals[0].starts_with("Crossed prism: ") && refusals[0].contains("#1069"));
-    assert!(refusals[1].contains("(entity #720) encloses no volume"));
+    assert_eq!(refusals.len(), 3, "{refusals:?}");
+    assert!(refusals[0].starts_with("Crossed prism: ") && refusals[0].contains("#1077"));
+    assert!(
+        refusals[1].starts_with("Wire frame: ") && refusals[1].contains("has no face"),
+        "{}",
+        refusals[1]
+    );
+    assert!(
+        refusals[2].starts_with("Block and figure eight: solid 2 (entity #1756) fails"),
+        "{}",
+        refusals[2]
+    );
 
     let script = ScriptedFileDialogs::new()
         .queue_import(ImportFormat::Step, &source_path)
@@ -853,8 +862,23 @@ fn file_import_exact_step_keeps_the_readable_parts_and_names_the_refused_offscre
     shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
 
     assert_eq!(shell.app().document_revision(), before.revision + 1);
-    assert_eq!(shell.app().definition_count(), before.definitions + 2);
+    assert_eq!(shell.app().definition_count(), before.definitions + 3);
+    // Review 2026-11-01 EX-100: once confirmed, the status line still says
+    // the import left something out.
+    let status = shell.app().action_digest();
+    assert!(
+        status.contains("2 parts and 1 solids") && status.contains("3 placements"),
+        "{status}"
+    );
     let snapshot = shell.app().document_snapshot();
+    // EX-104: the sub-assembly whose only part was refused is no empty group.
+    assert_eq!(
+        snapshot
+            .groups()
+            .map(|group| group.name().to_owned())
+            .collect::<Vec<_>>(),
+        ["Salvage assembly"]
+    );
     let receipt = snapshot
         .import_receipts()
         .find(|receipt| receipt.format() == ImportFormat::Step)
