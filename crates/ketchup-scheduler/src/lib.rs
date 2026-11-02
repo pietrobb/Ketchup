@@ -929,8 +929,7 @@ fn verify_exact_worker_identity(
 /// hostile or huge STEP or IGES file stops the worker instead of exhausting the system
 /// and the window with it. Workers running side by side share it
 /// ([`ExactWorkerSupervisor::spawn_sharing`]). 4 GiB when the system does not say how
-/// much it has. On macOS, which accepts `RLIMIT_AS` without enforcing it, this is no
-/// limit yet.
+/// much it has.
 pub fn exact_worker_memory_bytes() -> usize {
     static BYTES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *BYTES.get_or_init(|| {
@@ -965,7 +964,9 @@ fn limited_worker_command(mut command: Command, memory_limit: Option<usize>) -> 
         command.wrap(JobObject);
     }
     // Unix has no job object: the worker gets its own process group, so a kill
-    // reaches anything it started, and the memory limit is its own RLIMIT_DATA on Linux.
+    // reaches anything it started. The memory limit is its own RLIMIT_DATA on Linux;
+    // on macOS a watch of its footprint and the RLIMIT_AS it sets itself
+    // (child_process::keep_memory_limit).
     #[cfg(unix)]
     {
         command.wrap(ProcessGroup::leader());

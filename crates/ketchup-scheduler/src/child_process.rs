@@ -48,6 +48,16 @@ pub(crate) fn exit_with_parent() {
     }
 }
 
+/// Keeps the memory limit the parent's job set (process-wrap's `JobMemoryLimit`): on
+/// macOS the worker caps its own address space, so a huge allocation fails at once
+/// (review 2026-11-01 PL-61). A worker that cannot keep the limit does not run.
+pub(crate) fn keep_memory_limit() {
+    if let Err(error) = process_wrap::std::apply_inherited_memory_limit() {
+        eprintln!("worker: its memory limit could not be applied: {error}");
+        std::process::exit(2);
+    }
+}
+
 /// Ends this process at once. `process::exit` would first run the exit
 /// handlers and static destructors, OCCT's among them, while the main thread
 /// may still be inside OCCT, so the worker could crash or hang instead of

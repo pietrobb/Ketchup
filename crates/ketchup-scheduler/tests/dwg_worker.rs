@@ -31,16 +31,9 @@ fn a_dwg_declaring_a_huge_section_ends_the_worker_not_the_caller() {
     let error = worker
         .convert_dwg(&hostile, usize::MAX, &CancelToken::default())
         .unwrap_err();
-    // macOS does not enforce the worker's memory limit (see process-wrap's
-    // JobMemoryLimit), so there the reader refuses the file itself.
-    #[cfg(not(target_os = "macos"))]
-    {
-        assert_eq!(error, DwgConversionError::MemoryLimit, "{error}");
-        assert!(error.to_string().contains("2 GiB"), "{error}");
-        assert_eq!(worker.process_id(), None);
-    }
-    #[cfg(target_os = "macos")]
-    assert!(matches!(error, DwgConversionError::Refused(_)), "{error}");
+    assert_eq!(error, DwgConversionError::MemoryLimit, "{error}");
+    assert!(error.to_string().contains("2 GiB"), "{error}");
+    assert_eq!(worker.process_id(), None);
 
     let read = worker
         .convert_dwg(&dwg, usize::MAX, &CancelToken::default())

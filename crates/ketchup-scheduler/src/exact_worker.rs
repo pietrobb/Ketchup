@@ -62,6 +62,7 @@ use source_document::{SourceDocument, XdeFormat};
 
 pub fn run_stdio() {
     crate::child_process::exit_with_parent();
+    crate::child_process::keep_memory_limit();
     if !ExactBackend::route_kernel_messages_to_stderr() {
         // A kernel message on stdout would corrupt the reply frames.
         eprintln!("exact worker: kernel messages could not be moved off stdout");

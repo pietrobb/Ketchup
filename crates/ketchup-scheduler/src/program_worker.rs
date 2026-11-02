@@ -501,6 +501,7 @@ impl ProgramWorker {
 /// it needs no token.
 pub fn run_stdio() {
     crate::child_process::exit_with_parent();
+    crate::child_process::keep_memory_limit();
     let mut stdin = std::io::stdin().lock();
     let mut stdout = std::io::stdout().lock();
     loop {

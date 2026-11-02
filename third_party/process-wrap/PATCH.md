@@ -1,7 +1,7 @@
 # process-wrap 10.0.0, patched for Ketchup
 
 Unmodified copy of `process-wrap` 10.0.0 from crates.io (Apache-2.0 OR MIT, see the license
-files) except seven changes (the fourth: `JobMemoryLimit` on Unix; the fifth: `KillOnDrop` on Linux;
+files) except seven changes (the fourth: `JobMemoryLimit` on Unix, with a footprint watch on macOS; the fifth: `KillOnDrop` on Linux;
 the sixth: a `try_wait` that does not reap the process group; the seventh: `physical_memory_bytes`, below): the std API gets the `KillOnDrop` wrapper that the Tokio API already
 has, a `JobMemoryLimit` wrapper, and its job object starts the child without suspending it (below). The upstream `tests/` directory is left out, and
 with it the `[[test]]` targets and dev-dependencies of `Cargo.toml`. The unit tests in `src/` run in
@@ -50,9 +50,20 @@ counts the private writable memory a process maps, close to what Windows counts 
 `RLIMIT_AS` also counted address space only reserved, such as glibc's 64 MiB malloc arena per
 thread, so an exact worker with one OCCT thread per core failed its share before using it. On
 other Unix it stays `RLIMIT_AS`, which caps address space (review 2026-10-15 PRG-1).
-On macOS `pre_spawn` sets nothing: macOS refuses an `RLIMIT_AS` below the address space a
-process already reserves (hundreds of GiB with the shared cache) with `EINVAL`, so the child would
-not start at all. The limit is not enforced there.
+On macOS `pre_exec` cannot set it: macOS refuses an `RLIMIT_AS` below the address space a
+process already reserves (hundreds of GiB with the shared cache) with `EINVAL`, and what the
+forked parent reserves differs from what the program reserves after `exec`. macOS does enforce an
+`RLIMIT_AS` above it, so there (review 2026-11-01 PL-61):
+
+- `pre_spawn` hands the limit to the child in `PROCESS_WRAP_MEMORY_LIMIT`, and the child calls
+  `apply_inherited_memory_limit()` when it starts, which sets `RLIMIT_AS` to the address space it
+  reserves then plus the limit. A huge allocation fails at once, before any of it is written; a
+  physical-memory watch alone never sees an allocation that is reserved and not written.
+- `wrap_child` returns a child wrapper whose thread samples the child's
+  `proc_pid_rusage(RUSAGE_INFO_V4).ri_phys_footprint` every 50 ms and past the limit kills its
+  process group with `SIGKILL`; `memory_limit_exceeded(child)` then returns `true`. This holds
+  also for a child that does not call `apply_inherited_memory_limit()`. The sample checks the
+  process start time, so a pid reused after the child was reaped is never killed.
 
 `src/std/job_memory_limit.rs` also has `physical_memory_bytes()` (`GlobalMemoryStatusEx` on
 Windows, which adds `Win32_System_SystemInformation` to the `job-object` feature in `Cargo.toml`;

@@ -1015,8 +1015,8 @@ impl ExactWorkerClient {
         self.fail(WorkerError::Protocol(response))
     }
 
-    /// Stops the worker; one that died of a failed allocation fails with
-    /// [`WorkerError::MemoryLimit`] instead of `error`.
+    /// Stops the worker; one that died of a failed allocation, or that the memory
+    /// watch killed (macOS), fails with [`WorkerError::MemoryLimit`] instead of `error`.
     fn fail<T>(&mut self, error: WorkerError) -> Result<T, WorkerError> {
         self.terminate_worker();
         if matches!(
@@ -1024,6 +1024,11 @@ impl ExactWorkerClient {
             WorkerError::Cancelled | WorkerError::RequestTimedOut(_)
         ) {
             return Err(error);
+        }
+        if process_wrap::std::memory_limit_exceeded(&*self.child) {
+            return Err(WorkerError::MemoryLimit {
+                bytes: self.memory_limit,
+            });
         }
         let tail = self
             .stderr_tail
