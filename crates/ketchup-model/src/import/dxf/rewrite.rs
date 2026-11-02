@@ -1534,18 +1534,19 @@ impl<'a> Drawing<'a> {
             } else {
                 (turn_deg + from, turn_deg + to)
             };
-            out[start] = Out::Set(own[start], number(from.rem_euclid(360.0)));
-            out[end] = Out::Set(own[end], number(to.rem_euclid(360.0)));
+            let (from, to) = arc_angles(from, to, 360.0);
+            out[start] = Out::Set(own[start], number(from));
+            out[end] = Out::Set(own[end], number(to));
         }
         if rules.ellipse
             && mirrored
             && let (Some(start), Some(end)) = (position(41), position(42))
         {
-            let tau = std::f64::consts::TAU;
             let [from, to] = [start, end].map(|at| self.number(own[at]));
             let (from, to) = (from?, to?);
-            out[start] = Out::Set(own[start], number((0.0 - to).rem_euclid(tau)));
-            out[end] = Out::Set(own[end], number((0.0 - from).rem_euclid(tau)));
+            let (from, to) = arc_angles(0.0 - to, 0.0 - from, std::f64::consts::TAU);
+            out[start] = Out::Set(own[start], number(from));
+            out[end] = Out::Set(own[end], number(to));
         }
         // A group the record lacks goes after the group `after`, in the order set.
         let mut new = Vec::new();
@@ -1747,8 +1748,9 @@ impl<'a> Drawing<'a> {
                     } else {
                         (0.0 - to, 0.0 - from)
                     };
-                    set(out, start, from.rem_euclid(360.0));
-                    set(out, end, to.rem_euclid(360.0));
+                    let (from, to) = arc_angles(from, to, 360.0);
+                    set(out, start, from);
+                    set(out, end, to);
                 }
             }
         }
@@ -2161,6 +2163,20 @@ fn turned(degrees: f64, turn: f64, mirrored: bool) -> f64 {
         turn + degrees
     }
     .rem_euclid(360.0)
+}
+
+/// The angles `from` to `to` of an arc, in a full turn of `period`, written from within one
+/// turn. A whole turn keeps its span, so `0 / 360` moved stays a whole circle and is not
+/// written `0 / 0`, which other readers take as nothing (review 2026-11-01 CD-100).
+fn arc_angles(from: f64, to: f64, period: f64) -> (f64, f64) {
+    let start = from.rem_euclid(period);
+    let span = to - from;
+    let turns = (span / period).round();
+    if turns != 0.0 && (span - turns * period).abs() <= ketchup_tolerance::ROUNDING * period {
+        (start, start + turns * period)
+    } else {
+        (start, to.rem_euclid(period))
+    }
 }
 
 /// The next of `handles`, which moves on past it.

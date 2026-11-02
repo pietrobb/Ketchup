@@ -421,6 +421,137 @@ fn moved_and_copied_hatches_and_dimensions_are_written_where_they_now_lie() {
     assert_eq!(drawn_again["walls"].fills, 4);
 }
 
+/// The records `kind` of a DXF text, each as its (code, value) pairs.
+fn records_of(text: &str, kind: &str) -> Vec<Vec<(i32, String)>> {
+    let lines = text.lines().map(str::trim).collect::<Vec<_>>();
+    let mut records = Vec::new();
+    for pair in lines.chunks(2) {
+        let code = pair[0].parse::<i32>().unwrap();
+        if code == 0 {
+            records.push((pair[1] == kind, Vec::new()));
+        } else if let Some((_, record)) = records.last_mut() {
+            record.push((code, pair[1].to_owned()));
+        }
+    }
+    records
+        .into_iter()
+        .filter_map(|(wanted, record)| wanted.then_some(record))
+        .collect()
+}
+
+/// Review 2026-11-01 CD-100: the angles of an arc were written each by `rem_euclid`, so a
+/// full turn collapsed. A hatch bounded by a whole circle, moved, was written `50 0 / 51 0`
+/// (and mirrored `180 / 180`), which other readers take as an empty arc; a mirrored whole
+/// ELLIPSE `41 0 / 42 0`. The span of every arc and elliptical arc is kept, read from the
+/// DXF text itself, not through Kečup's own importer, which takes `0..0` as a full turn.
+#[test]
+fn whole_circles_and_ellipses_keep_their_full_turn_when_moved_or_mirrored() {
+    let entities = concat!(
+        "0\nSECTION\n2\nENTITIES\n",
+        // A round column filled solid: one edge, the whole circle.
+        "0\nHATCH\n5\nC0\n330\n1F\n100\nAcDbEntity\n8\nwalls\n100\nAcDbHatch\n10\n0\n20\n0\n30\n0\n",
+        "210\n0\n220\n0\n230\n1\n2\nSOLID\n70\n1\n71\n0\n91\n1\n92\n1\n93\n1\n",
+        "72\n2\n10\n1000\n20\n1000\n40\n300\n50\n0\n51\n360\n73\n1\n",
+        "97\n0\n75\n0\n76\n1\n98\n0\n",
+        // A filled ellipse: one edge, the whole elliptical arc, clockwise.
+        "0\nHATCH\n5\nC1\n330\n1F\n100\nAcDbEntity\n8\nwalls\n100\nAcDbHatch\n10\n0\n20\n0\n30\n0\n",
+        "210\n0\n220\n0\n230\n1\n2\nSOLID\n70\n1\n71\n0\n91\n1\n92\n1\n93\n1\n",
+        "72\n3\n10\n3000\n20\n1000\n11\n500\n21\n0\n40\n0.5\n50\n0\n51\n360\n73\n0\n",
+        "97\n0\n75\n0\n76\n1\n98\n0\n",
+        "0\nELLIPSE\n5\nC2\n330\n1F\n100\nAcDbEntity\n8\nwalls\n100\nAcDbEllipse\n",
+        "10\n5000\n20\n1000\n30\n0\n11\n600\n21\n0\n31\n0\n210\n0\n220\n0\n230\n1\n",
+        "40\n0.5\n41\n0\n42\n6.283185307179586\n",
+        "0\nARC\n5\nC3\n330\n1F\n100\nAcDbEntity\n8\nwalls\n100\nAcDbCircle\n",
+        "10\n7000\n20\n1000\n30\n0\n40\n400\n100\nAcDbArc\n50\n270\n51\n90\n",
+        "0\nENDSEC\n",
+    );
+    let source = format!("{HEADER}{TABLES}{entities}0\nEOF\n");
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let shift = similarity([100.0, 0.0], 0.0, 1.0, [0.0, 0.0], None);
+    let turn = similarity([500.0, 200.0], 30.0, 1.0, [0.0, 0.0], None);
+    let mirror = similarity(
+        [0.0, 0.0],
+        0.0,
+        1.0,
+        [0.0, 0.0],
+        Some([[0.0, 5000.0], [1.0, 5000.0]]),
+    );
+    let mut edits = UnderlayEdits::default();
+    for (handle, moved) in [(0xC0, shift), (0xC1, turn), (0xC2, mirror), (0xC3, turn)] {
+        edits.moved_objects.insert(id_of(lines, handle), moved);
+        for map in [mirror, turn] {
+            edits.added.push(AddedObject::Copy {
+                of: id_of(lines, handle),
+                map,
+            });
+        }
+    }
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap();
+    let text = String::from_utf8(written).unwrap();
+    let value = |record: &[(i32, String)], code: i32| -> f64 {
+        let found = record.iter().find(|(at, _)| *at == code);
+        found
+            .unwrap_or_else(|| panic!("no {code}"))
+            .1
+            .parse()
+            .unwrap()
+    };
+    let hatches = records_of(&text, "HATCH");
+    assert_eq!(hatches.len(), 6);
+    for record in &hatches {
+        let span = value(record, 51) - value(record, 50);
+        assert!(
+            (span - 360.0).abs() < 1e-9,
+            "a hatch edge spans {span}: {record:?}"
+        );
+    }
+    let ellipses = records_of(&text, "ELLIPSE");
+    assert_eq!(ellipses.len(), 3);
+    for record in &ellipses {
+        let span = value(record, 42) - value(record, 41);
+        assert!(
+            (span - std::f64::consts::TAU).abs() < 1e-9,
+            "an ellipse spans {span}: {record:?}"
+        );
+    }
+    // An arc keeps its 180°, counterclockwise from its start.
+    let arcs = records_of(&text, "ARC");
+    assert_eq!(arcs.len(), 3);
+    for record in &arcs {
+        let span = (value(record, 51) - value(record, 50)).rem_euclid(360.0);
+        assert!(
+            (span - 180.0).abs() < 1e-9,
+            "an arc spans {span}: {record:?}"
+        );
+    }
+    let again = read(text.as_bytes());
+    let edited = lines
+        .clone()
+        .edited(&edits, &underlay_layers(&original.layers));
+    assert_same(
+        &drawn(&again.lines, &again.layers),
+        &drawn(&edited, &original.layers),
+    );
+}
+
+fn underlay_layers(names: &[String]) -> Vec<UnderlayLayer> {
+    names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| UnderlayLayer {
+            name: name.clone(),
+            tag: TagId(10 + index as u64),
+        })
+        .collect()
+}
+
 /// Review 2026-10-31 P3: a dimension block is placed from its base point, the dimension
 /// moved by its clone point (group 12). A turned or mirrored dimension whose block has a
 /// base point read back away from where the underlay drew it, as the block written for it
