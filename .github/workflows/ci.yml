@@ -3,6 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
+    # A push of documentation alone was checked in its pull request and is
+    # checked again nightly; it does not take an hour of OCCT runners (review
+    # 2026-11-01 CI-101).
+    paths-ignore: ["**.md", "docs/**"]
   pull_request:
     branches: [main]
   # Nightly and by hand, the OCCT job also runs the large-house and the
