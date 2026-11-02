@@ -12,6 +12,13 @@ use ketchup_model::tolerance::ROUNDING;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// The part attribute naming the local axis ("x", "y" or "z") a bar's length
+/// runs along (library `member()`).
+pub const LENGTH_AXIS: &str = "length_axis";
+/// The part attribute naming the local axis of a sheet's thickness, or of a
+/// bar's section side that is a layer's thickness (library `buildup()`).
+pub const THICKNESS_AXIS: &str = "thickness_axis";
+
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Param {
     pub name: String,
@@ -1166,10 +1173,23 @@ impl Part {
             let (along, widths) = smallest_enclosing_rectangle(&profile);
             let [u, v] = widths.map(|width| width + 2.0 * grow);
             let depth = span[1] - span[0] + 2.0 * grow;
-            return if along[0].abs() >= along[1].abs() {
-                [u, v, depth]
-            } else {
-                [v, u, depth]
+            // Review 2026-11-02 PG-121: a rectangle turned from the profile's
+            // axes is a bar cut along its long side, which goes on the axis the
+            // part names its length (the short one on its thickness), whatever
+            // the slope; an unturned one keeps its sides on its own axes (a stub
+            // shorter than its section is wide, PG-61).
+            let turned = 1.0 - along[0].abs().max(along[1].abs()) > ROUNDING;
+            let (long, short) = (u.max(v), u.min(v));
+            let named = |attribute: &str| match self.attributes.get(attribute).map(String::as_str) {
+                Some("x" | "X") => Some(0),
+                Some("y" | "Y") => Some(1),
+                _ => None,
+            };
+            return match (turned, named(LENGTH_AXIS), named(THICKNESS_AXIS)) {
+                (true, Some(0), _) | (true, None, Some(1)) => [long, short, depth],
+                (true, Some(_), _) | (true, None, Some(_)) => [short, long, depth],
+                _ if along[0].abs() >= along[1].abs() => [u, v, depth],
+                _ => [v, u, depth],
             };
         }
         let (min, max) = self.local_bounds();

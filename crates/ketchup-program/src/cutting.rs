@@ -209,12 +209,7 @@ fn percent(part: f64, whole: f64) -> f64 {
     (part / whole * 1000.0).round() / 10.0
 }
 
-/// The part attribute naming the local axis ("x", "y" or "z") a bar's length
-/// runs along (library `member()`).
-pub const LENGTH_AXIS: &str = "length_axis";
-/// The part attribute naming the local axis of a sheet's thickness, or of a
-/// bar's section side that is a layer's thickness (library `buildup()`).
-pub const THICKNESS_AXIS: &str = "thickness_axis";
+pub use crate::model::{LENGTH_AXIS, THICKNESS_AXIS};
 
 /// The blank of a part: its length (longest first), section or size and
 /// thickness, and which local axis each became. The axes a part names by

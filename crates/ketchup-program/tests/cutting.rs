@@ -681,40 +681,45 @@ fn members_name_their_length_and_boards_their_thickness() {
 /// axes, 3 000 x 1 801 x 140: the cutting plan made a 1 801 x 140 section of
 /// it and the quote bought 0.975 m3 for 0.24 m3 of plates. A blank is the
 /// smallest rectangle around the profile: 60 x 140 along the slope, as long
-/// as the slope plus the plumb cut at the ridge.
+/// as the slope plus the plumb cut at the ridge. Review 2026-11-02 PG-121:
+/// above 45° the long side lay nearer the wall's height than its length and
+/// became the plate's width, 60 x 4 381 x 140 at 46°; the long side is the
+/// length the part names, at any pitch.
 #[test]
 fn a_sloping_plate_is_cut_from_the_smallest_rectangle_around_it() {
-    let rise = 3000.0 * 30f64.to_radians().tan();
-    let source = format!(
-        "buildup('gable', (0, 0, 0), (1, 0, 0), (0, 0, 1), 6000,\n\
-         layers = [{{'name': 'frame', 'thickness': 140, 'material': 'C24', 'spacing': 600}}],\n\
-         top = [(0, 2600), (3000, {}), (6000, 2600)])\n\
-         bar_stock('C24', [6000])\n",
-        2600.0 + rise
-    );
-    let model = ketchup_program::evaluate("cutting.star", &source, &BTreeMap::new())
-        .unwrap_or_else(|error| panic!("{error}"))
-        .model;
-    let bom = bom(&model);
-    let plates: Vec<_> = bom
-        .cut_list
-        .iter()
-        .filter(|row| row.parts.iter().any(|part| part.contains("top plate")))
-        .collect();
-    assert_eq!(plates.len(), 1, "{plates:#?}");
-    let length = 3000.0 / 30f64.to_radians().cos() + 60.0 * 30f64.to_radians().tan();
-    let [l, w, t] = plates[0].dimensions_mm;
-    assert!(
-        (l - length).abs() < 0.01 && (w - 140.0).abs() < 1e-6 && (t - 60.0).abs() < 1e-6,
-        "{plates:#?}"
-    );
-    let c24 = bom
-        .cutting
-        .iter()
-        .find(|plan| plan.material == "C24")
-        .unwrap();
-    assert_eq!(c24.section_mm, [140.0, 60.0], "{c24:#?}");
-    assert!(c24.unplaced.is_empty(), "{c24:#?}");
+    for pitch in [30f64, 46.0, 60.0] {
+        let rise = 3000.0 * pitch.to_radians().tan();
+        let source = format!(
+            "buildup('gable', (0, 0, 0), (1, 0, 0), (0, 0, 1), 6000,\n\
+             layers = [{{'name': 'frame', 'thickness': 140, 'material': 'C24', 'spacing': 600}}],\n\
+             top = [(0, 2600), (3000, {}), (6000, 2600)])\n\
+             bar_stock('C24', [9000])\n",
+            2600.0 + rise
+        );
+        let model = ketchup_program::evaluate("cutting.star", &source, &BTreeMap::new())
+            .unwrap_or_else(|error| panic!("{error}"))
+            .model;
+        let bom = bom(&model);
+        let plates: Vec<_> = bom
+            .cut_list
+            .iter()
+            .filter(|row| row.parts.iter().any(|part| part.contains("top plate")))
+            .collect();
+        assert_eq!(plates.len(), 1, "{pitch}: {plates:#?}");
+        let length = 3000.0 / pitch.to_radians().cos() + 60.0 * pitch.to_radians().tan();
+        let [l, w, t] = plates[0].dimensions_mm;
+        assert!(
+            (l - length).abs() < 0.01 && (w - 140.0).abs() < 1e-6 && (t - 60.0).abs() < 1e-6,
+            "{pitch}: {plates:#?}"
+        );
+        let c24 = bom
+            .cutting
+            .iter()
+            .find(|plan| plan.material == "C24")
+            .unwrap();
+        assert_eq!(c24.section_mm, [140.0, 60.0], "{pitch}: {c24:#?}");
+        assert!(c24.unplaced.is_empty(), "{pitch}: {c24:#?}");
+    }
 }
 
 /// Review 2026-10-29 PG-61: the cutting plan took a part's thinnest extent
