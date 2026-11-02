@@ -82,10 +82,50 @@ mod platform;
 #[cfg(windows)]
 pub(crate) use platform::remote_drive;
 
+#[cfg(target_os = "macos")]
+pub(crate) use platform::mount_table;
+
 #[cfg(unix)]
 #[allow(unsafe_code)]
 mod platform {
     use super::*;
+    /// The mount table: each mount point and whether it is a local file system,
+    /// for the path policy. `MNT_NOWAIT` answers from the kernel's table without
+    /// asking any file system, so a network share is not contacted. `None` when
+    /// the table cannot be read.
+    #[cfg(target_os = "macos")]
+    pub fn mount_table() -> Option<Vec<(String, bool)>> {
+        let mut capacity = 32_usize;
+        loop {
+            // SAFETY: `statfs` is plain data; getfsstat fills in the entries it reports.
+            let mut table = vec![unsafe { std::mem::zeroed::<libc::statfs>() }; capacity];
+            let bytes =
+                libc::c_int::try_from(capacity * std::mem::size_of::<libc::statfs>()).ok()?;
+            // SAFETY: `table` is writable for `bytes` bytes.
+            let count = unsafe { libc::getfsstat(table.as_mut_ptr(), bytes, libc::MNT_NOWAIT) };
+            let count = usize::try_from(count).ok()?;
+            if count < capacity {
+                table.truncate(count);
+                return Some(table.iter().map(mount_entry).collect());
+            }
+            capacity *= 2;
+        }
+    }
+    #[cfg(target_os = "macos")]
+    fn mount_entry(entry: &libc::statfs) -> (String, bool) {
+        let text = |chars: &[libc::c_char]| {
+            let bytes: Vec<u8> = chars
+                .iter()
+                .take_while(|&&c| c != 0)
+                .map(|&c| c.to_ne_bytes()[0])
+                .collect();
+            String::from_utf8_lossy(&bytes).into_owned()
+        };
+        // An automount trigger mounts whatever its map names, a network share included.
+        let local = entry.f_flags & libc::MNT_LOCAL.cast_unsigned() != 0
+            && text(&entry.f_fstypename) != "autofs";
+        (text(&entry.f_mntonname), local)
+    }
     use std::os::unix::fs::MetadataExt;
     pub fn create(path: &Path) -> io::Result<File> {
         use std::os::unix::fs::OpenOptionsExt;

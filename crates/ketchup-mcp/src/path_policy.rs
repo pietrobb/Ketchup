@@ -1,8 +1,9 @@
 //! The one path policy for files the window or this server touches on behalf of
 //! a client: absolute, bounded and on a local drive. It reads nothing from the
 //! file system (on Windows only the drive table, to see a drive letter mapped to
-//! a share), so a network path is refused before any request reaches its server
-//! (and before Windows sends it the user's NTLM hash).
+//! a share; on macOS only the mount table, to see a share mounted under
+//! `/Volumes`), so a network path is refused before any request reaches its
+//! server (and before Windows sends it the user's NTLM hash).
 
 use std::path::{Component, Path, Prefix};
 
@@ -17,7 +18,8 @@ const RESERVED: [&str; 6] = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"];
 /// that is a drive letter not mapped to a share and a root (`C:\…` or `C:/…`)
 /// and nothing else: no share or device however its separators are mixed (`\\server`, `\/server`,
 /// `\\?\`, `\\.\`), no alternate data stream (`file.pdf:stream`) and no device
-/// name.
+/// name. On macOS it is a path on no network mount and in no directory the
+/// automounter serves (`/net`, `/Network`, `/home`).
 #[must_use]
 pub fn local_absolute_path(path: &str) -> bool {
     !path.is_empty()
@@ -25,6 +27,80 @@ pub fn local_absolute_path(path: &str) -> bool {
         && !path.contains('\0')
         && Path::new(path).is_absolute()
         && (!cfg!(windows) || local_windows_path(path, remote_drive))
+        && (!cfg!(target_os = "macos") || mounts().is_some_and(|m| local_macos_path(path, &m)))
+}
+
+/// Top-level directories macOS's automounter serves from the network.
+const AUTOMOUNTED: [&str; 3] = ["net", "network", "home"];
+
+/// The data volume's firmlinks make `/System/Volumes/Data/Volumes` the same
+/// directory as `/Volumes`, and so for every top-level directory.
+const DATA_VOLUME: [&str; 3] = ["system", "volumes", "data"];
+
+/// A mount point as lowercase components (the default macOS file system ignores
+/// case), and whether it is a local file system.
+pub(crate) struct Mount {
+    on: Vec<String>,
+    local: bool,
+}
+
+impl Mount {
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub(crate) fn new(on: &str, local: bool) -> Self {
+        Self {
+            on: lexical_components(on),
+            local,
+        }
+    }
+}
+
+fn local_macos_path(path: &str, mounts: &[Mount]) -> bool {
+    let components = lexical_components(path);
+    let through_data_volume = components.strip_prefix(&DATA_VOLUME.map(str::to_owned)[..]);
+    [Some(&components[..]), through_data_volume]
+        .into_iter()
+        .flatten()
+        .all(|components| {
+            !components
+                .first()
+                .is_some_and(|top| AUTOMOUNTED.contains(&top.as_str()))
+                && mounts
+                    .iter()
+                    .filter(|mount| components.starts_with(&mount.on))
+                    .max_by_key(|mount| mount.on.len())
+                    .is_none_or(|mount| mount.local)
+        })
+}
+
+/// The path's directories, lowercase, with `.` dropped and `..` applied.
+fn lexical_components(path: &str) -> Vec<String> {
+    let mut components = Vec::new();
+    for component in Path::new(path).components() {
+        match component {
+            Component::Normal(name) => components.push(name.to_string_lossy().to_lowercase()),
+            Component::ParentDir => {
+                components.pop();
+            }
+            _ => {}
+        }
+    }
+    components
+}
+
+#[cfg(target_os = "macos")]
+fn mounts() -> Option<Vec<Mount>> {
+    let table = crate::local_auth::mount_table()?;
+    Some(
+        table
+            .iter()
+            .map(|(on, local)| Mount::new(on, *local))
+            .collect(),
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn mounts() -> Option<Vec<Mount>> {
+    Some(Vec::new())
 }
 
 fn local_windows_path(path: &str, remote_drive: impl Fn(u8) -> bool) -> bool {
@@ -109,6 +185,64 @@ mod tests {
             "",
         ] {
             assert!(!local_absolute_path(remote), "{remote:?}");
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_tests {
+    use super::{Mount, local_absolute_path, local_macos_path};
+
+    // Review 2026-11-01 SEC-101: the automounter reaches the host named in the path.
+    #[test]
+    fn automounted_network_directories_are_not_local() {
+        for remote in [
+            "/net/server/share/x.pdf",
+            "/NET/server/x.pdf",
+            "//net/server/x.pdf",
+            "/Network/Servers/server/x.pdf",
+            "/home/user/x.pdf",
+            "/Users/../net/server/x.pdf",
+        ] {
+            assert!(!local_absolute_path(remote), "{remote:?}");
+        }
+        assert!(local_absolute_path("/Users/me/desk.pdf"));
+    }
+
+    #[test]
+    fn no_path_on_a_mount_of_this_computer_that_is_not_local_is_local() {
+        let table = crate::local_auth::mount_table().unwrap();
+        assert!(table.iter().any(|(on, local)| on == "/" && *local));
+        for (on, _) in table.iter().filter(|(_, local)| !local) {
+            assert!(!local_absolute_path(&format!("{on}/x.pdf")), "{on}");
+        }
+    }
+
+    // Review 2026-11-01 SEC-101: a share the Finder mounted under /Volumes.
+    #[test]
+    fn a_path_on_a_network_mount_is_not_local() {
+        let mounts = [
+            Mount::new("/", true),
+            Mount::new("/Volumes/backup", false),
+            Mount::new("/Volumes/USB", true),
+        ];
+        for local in [
+            "/Users/me/desk.pdf",
+            "/Volumes/USB/x.pdf",
+            "/Volumes/backup2/x.pdf",
+            "/Volumes/USB/../USB/x.pdf",
+        ] {
+            assert!(local_macos_path(local, &mounts), "{local:?}");
+        }
+        for remote in [
+            "/Volumes/backup",
+            "/Volumes/backup/x.pdf",
+            "/volumes/BACKUP/x.pdf",
+            "/Volumes/./backup/x.pdf",
+            "/Volumes/USB/../backup/x.pdf",
+            "/System/Volumes/Data/Volumes/backup/x.pdf",
+        ] {
+            assert!(!local_macos_path(remote, &mounts), "{remote:?}");
         }
     }
 }
