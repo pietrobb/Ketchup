@@ -79,10 +79,20 @@ def test_every_published_tag_is_a_release_the_script_checks():
         ["git", "tag", "--list", "v*"], cwd=ROOT, capture_output=True, text=True, check=False
     ).stdout.split()
     if not tags:
+        # Review 2026-11-02 CI-120: CI's checkout has no tags, so this always skipped there.
+        if os.environ.get("CI"):
+            pytest.fail("CI must fetch the release tags before the Python tests")
         pytest.skip("no tags in this clone")
     numbered = (re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", tag) for tag in tags)
     released = [m.group(0) for m in numbered if m and tuple(map(int, m.groups())) >= (0, 2, 0)]
     assert sorted(released) == sorted(checker.RELEASES)
+
+
+def test_ci_fetches_the_release_tags_before_the_python_tests():
+    # Review 2026-11-02 CI-120: without them the test above skipped in every CI run.
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    fetched = ci.index("git fetch --no-tags --depth=1 origin '+refs/tags/v*:refs/tags/v*'")
+    assert fetched < ci.index("python -m pytest -q tests")
 
 
 def test_the_script_speaks_in_a_console_without_the_products_letters(tmp_path):

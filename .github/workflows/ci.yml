@@ -88,6 +88,9 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           python -m pip install --quiet --require-hashes -r tests/requirements-ci.txt
+          # The published releases, which test_release_reads.py compares with what
+          # release_reads.py checks (review 2026-11-02 CI-120: checkout has no tags).
+          git fetch --no-tags --depth=1 origin '+refs/tags/v*:refs/tags/v*'
           python -m pytest -q tests sdk/python/tests
       - name: BTLx schemas into the cache
         if: always() && steps.btlx.outputs.cache-hit != 'true' && hashFiles('target/btlx-schema/BTLx_2_3_1.xsd') != ''
