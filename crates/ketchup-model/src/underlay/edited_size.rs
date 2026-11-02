@@ -83,7 +83,7 @@ impl UnderlayLines {
     }
 
     /// What `added` adds to these lines, a copy counted by what its object holds here.
-    pub(super) fn added_size(&self, added: &[AddedObject]) -> DrawingSize {
+    fn added_size(&self, added: &[AddedObject]) -> DrawingSize {
         let children = self.children_index();
         let mut copied = BTreeMap::new();
         let mut size = DrawingSize::default();

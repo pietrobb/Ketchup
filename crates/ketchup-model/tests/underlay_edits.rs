@@ -295,6 +295,7 @@ fn a_moved_object_keeps_its_id_and_moves_again_from_where_it_is() {
         let batch = plan_underlay_object_transform(
             &snapshot,
             id,
+            &lines,
             &drawn(&document, id),
             &[text],
             &moving([100.0, 0.0]),
@@ -314,8 +315,16 @@ fn a_moved_object_keeps_its_id_and_moves_again_from_where_it_is() {
     );
     let shear = [[1.0, 0.5, 0.0], [0.0, 1.0, 0.0]];
     assert_eq!(
-        plan_underlay_object_transform(&document.current(), id, &edited, &[text], &shear, false)
-            .unwrap_err(),
+        plan_underlay_object_transform(
+            &document.current(),
+            id,
+            &lines,
+            &edited,
+            &[text],
+            &shear,
+            false
+        )
+        .unwrap_err(),
         UnderlayObjectError::InvalidMap
     );
 }
@@ -337,6 +346,7 @@ fn an_object_put_back_where_it_was_read_leaves_no_edit() {
         let batch = plan_underlay_object_transform(
             &snapshot,
             id,
+            &lines(),
             &drawn(&document, id),
             &[text],
             map,
@@ -360,8 +370,16 @@ fn a_copy_of_an_insert_places_the_block_again_and_a_turned_copy_turns_its_lines(
     let snapshot = document.current();
     document
         .apply_batch(
-            &plan_underlay_object_transform(&snapshot, id, &lines, &[door, walls], &quarter, true)
-                .unwrap(),
+            &plan_underlay_object_transform(
+                &snapshot,
+                id,
+                &lines,
+                &lines,
+                &[door, walls],
+                &quarter,
+                true,
+            )
+            .unwrap(),
         )
         .unwrap();
     let edited = drawn(&document, id);
@@ -390,6 +408,7 @@ fn a_copy_of_an_insert_places_the_block_again_and_a_turned_copy_turns_its_lines(
             &plan_underlay_object_transform(
                 &snapshot,
                 id,
+                &lines,
                 &edited,
                 &[copied_walls],
                 &moving([0.0, 10.0]),
@@ -427,6 +446,7 @@ fn moving_a_drawn_shape_rewrites_it() {
             &plan_underlay_object_transform(
                 &snapshot,
                 id,
+                &lines(),
                 &drawn(&document, id),
                 &[read],
                 &mirror,
@@ -589,6 +609,7 @@ fn copies_of_an_insert_are_held_to_what_a_drawing_may_hold() {
     let refused = plan_underlay_object_transform(
         &document.current(),
         id,
+        &big,
         &drawn,
         &[insert],
         &moving([0.0, 5.0]),
@@ -605,6 +626,82 @@ fn copies_of_an_insert_are_held_to_what_a_drawing_may_hold() {
     assert!(
         matches!(error, UnderlayLinesError::EditedTooLarge(size) if size.objects > 2_000_000),
         "{error:?}"
+    );
+}
+
+/// Review 2026-11-01 MD-100: copies were measured on the lines as drawn, where a removed
+/// object holds nothing, but a copy of a copy names the object read and is drawn in full.
+/// With the original removed, copies of copies doubled past what a drawing may hold; the
+/// document then held edits its lines could not be drawn with. Planned copies are measured
+/// as the lines are drawn with them: against the drawing as read.
+#[test]
+fn copies_of_copies_of_a_removed_object_are_held_to_what_a_drawing_may_hold() {
+    let points = 300_000;
+    let vertices = (0..points)
+        .map(|at| format!("10\n{}\n20\n{}\n", at % 1000, at / 1000))
+        .collect::<String>();
+    let source = format!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+         0\nSECTION\n2\nENTITIES\n0\nLWPOLYLINE\n5\n60\n8\nwalls\n90\n{points}\n70\n0\n{vertices}\
+         0\nENDSEC\n0\nEOF\n"
+    );
+    let read = read_dxf_underlay(source.as_bytes(), DxfImportOptions::new(None))
+        .unwrap()
+        .lines;
+    let polyline = id_of(&read, 0x60);
+    let blob = read.encode();
+    let (mut document, id) = document();
+    let mut underlay = document.current().underlay(id).unwrap().clone();
+    underlay.edits = UnderlayEdits {
+        removed_objects: [polyline].into(),
+        added: vec![AddedObject::Copy {
+            of: polyline,
+            map: moving([0.0, 1000.0]),
+        }],
+        ..UnderlayEdits::default()
+    };
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertUnderlay(
+            underlay,
+        )]))
+        .unwrap();
+    let mut refused = None;
+    for round in 1..=8 {
+        let underlay = document.current().underlay(id).unwrap().clone();
+        let lines = underlay.read_lines(&blob).unwrap_or_else(|error| {
+            panic!("round {round}: the edits planned cannot be drawn: {error:?}")
+        });
+        // Every copy there is, copied again.
+        let copies = lines
+            .objects()
+            .objects
+            .iter()
+            .enumerate()
+            .filter(|(_, object)| object.parent.is_none() && object.added_by.is_some())
+            .map(|(at, _)| u32::try_from(at).unwrap())
+            .collect::<Vec<_>>();
+        let by = moving([0.0, 1000.0 * f64::from(round)]);
+        match plan_underlay_object_transform(
+            &document.current(),
+            id,
+            &read,
+            &lines,
+            &copies,
+            &by,
+            true,
+        ) {
+            Ok(batch) => {
+                document.apply_batch(&batch).unwrap();
+            }
+            Err(error) => {
+                refused = Some(error);
+                break;
+            }
+        }
+    }
+    assert!(
+        matches!(refused, Some(UnderlayObjectError::TooLarge(size)) if !size.fits()),
+        "{refused:?}"
     );
 }
 

@@ -300,8 +300,16 @@ impl KetchupApp {
         copy: bool,
         find: FindRegions,
     ) -> Result<Vec<FollowedChange>, UnderlayEditError> {
+        // Copies are measured against the drawing as read (review 2026-11-01 MD-100).
+        let snapshot = self.document.current();
+        let found = snapshot.underlay(underlay).ok_or(UnderlayEditError::Plan(
+            UnderlayObjectError::Plan(UnderlayPlanError::NotFound(underlay)),
+        ))?;
+        let read = self
+            .cached_decoded_underlay_lines(found)
+            .ok_or(UnderlayEditError::NoLines)?;
         self.edit_underlay_drawing(underlay, find, |snapshot, lines| {
-            plan_underlay_object_transform(snapshot, underlay, lines, ids, map, copy)
+            plan_underlay_object_transform(snapshot, underlay, &read, lines, ids, map, copy)
         })
     }
 

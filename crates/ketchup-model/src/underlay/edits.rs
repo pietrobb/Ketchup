@@ -460,11 +460,13 @@ pub fn plan_underlay_drawing(
 }
 
 /// One batch, so one Undo step, that moves the top-level objects `ids` of the drawing of
-/// underlay `id`, whose lines as drawn now are `lines`, by `map` (a move, turn, mirror or
-/// uniform scale), or adds copies of them so moved when `copy`.
+/// underlay `id`, whose lines as read (its blob decoded) are `read` and as drawn now
+/// `lines`, by `map` (a move, turn, mirror or uniform scale), or adds copies of them so
+/// moved when `copy`.
 pub fn plan_underlay_object_transform(
     snapshot: &Snapshot,
     id: super::UnderlayId,
+    read: &UnderlayLines,
     lines: &UnderlayLines,
     ids: &[u32],
     map: &Affine,
@@ -506,9 +508,10 @@ pub fn plan_underlay_object_transform(
         }
     }
     if copy {
-        // The lines drawn now hold the copies made before; these add theirs.
-        let mut size = lines.size();
-        size.add(lines.added_size(&edits.added[underlay.edits.added.len()..]));
+        // Measured as `Underlay::with_edits` measures them, against the lines as read: a
+        // copy of a copy names the object read, which a removal leaves empty in the lines
+        // drawn now but which it draws in full (review 2026-11-01 MD-100).
+        let size = read.edited_size(&edits);
         if !size.fits() {
             return Err(UnderlayObjectError::TooLarge(size));
         }
