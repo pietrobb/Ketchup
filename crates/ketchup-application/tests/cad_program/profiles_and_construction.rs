@@ -383,7 +383,7 @@ fn public_nested_assembly_joint_motion_drawing_round_trip_is_branch_exact() {
             .contains("QTY 2")
     );
     assert!(!exported.dxf().is_empty());
-    assert!(!exported.pdf().is_empty());
+    assert!(!exported.pdf().unwrap().is_empty());
 
     let reopened = load(&save(&completed)).unwrap().snapshot();
     assert_eq!(reopened.canonical_digest(), completed_digest);
