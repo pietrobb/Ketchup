@@ -1,5 +1,6 @@
 # The DLLs a 64-bit PE image imports, directly and delay-loaded, in lower case.
-# build-installer.ps1 refuses a Viewer that needs a DLL a clean Windows lacks.
+# build-installer.ps1 refuses a package with an executable or library that needs
+# a DLL neither the package nor a clean Windows has (review 2026-11-02 REL-120).
 function Get-PeImportedDlls([string]$Path) {
     $image = [IO.File]::ReadAllBytes($Path)
     $pe = [BitConverter]::ToInt32($image, 0x3c)
@@ -36,4 +37,71 @@ function Get-PeImportedDlls([string]$Path) {
         }
     }
     return $dlls.ToArray()
+}
+
+# Whether a clean Windows 10 or 11 has the DLL: an API set the loader resolves, or a
+# file of Windows itself in the system directory. A redistributable runtime there
+# (Visual C++, MFC, OpenMP) came with some other program and is not part of Windows.
+function Test-WindowsSystemDll([string]$Name, [string]$SystemDirectory = [Environment]::SystemDirectory) {
+    if ($Name -match '^(api|ext)-ms-') { return $true }
+    if ([string]::IsNullOrEmpty($SystemDirectory)) { return $false }
+    $path = Join-Path $SystemDirectory $Name
+    if (-not (Test-Path $path -PathType Leaf)) { return $false }
+    return [string](Get-Item $path).VersionInfo.ProductName -match 'Windows'
+}
+
+# Every import of every .exe and .dll in $Directory that neither $Directory nor Windows
+# has, as "file: dll", sorted.
+function Get-UnresolvedPeImports([string]$Directory, [string]$SystemDirectory = [Environment]::SystemDirectory) {
+    $images = @(Get-ChildItem $Directory -File | Where-Object { $_.Extension -in '.exe', '.dll' })
+    $present = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($image in $images) { [void]$present.Add($image.Name) }
+    $system = @{}
+    $missing = foreach ($image in $images) {
+        foreach ($dll in Get-PeImportedDlls $image.FullName) {
+            if ($present.Contains($dll)) { continue }
+            if (-not $system.ContainsKey($dll)) { $system[$dll] = Test-WindowsSystemDll $dll $SystemDirectory }
+            if (-not $system[$dll]) { "$($image.Name): $dll" }
+        }
+    }
+    return @($missing | Sort-Object -Unique)
+}
+
+# Copies from $RuntimeDirectory each DLL the images in $Directory miss, and what those
+# DLLs miss in turn; returns the names copied.
+function Copy-MissingPeImports([string]$Directory, [string]$RuntimeDirectory, [string]$SystemDirectory = [Environment]::SystemDirectory) {
+    $copied = [Collections.Generic.List[string]]::new()
+    do {
+        $added = 0
+        foreach ($dll in @(Get-UnresolvedPeImports $Directory $SystemDirectory | ForEach-Object { ($_ -split ': ', 2)[1] } | Sort-Object -Unique)) {
+            $source = Join-Path $RuntimeDirectory $dll
+            if (Test-Path $source -PathType Leaf) {
+                Copy-Item $source (Join-Path $Directory ([IO.Path]::GetFileName($source)))
+                $copied.Add($dll)
+                $added++
+            }
+        }
+    } while ($added -ne 0)
+    return $copied.ToArray()
+}
+
+# The Visual C++ runtime DLLs of the newest installed Visual Studio, which Microsoft
+# allows to ship beside the program (app-local deployment).
+function Get-VcRuntimeDirectory {
+    $roots = @()
+    if (-not [string]::IsNullOrWhiteSpace($env:VCToolsRedistDir)) { $roots += $env:VCToolsRedistDir }
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vswhere -PathType Leaf) {
+        foreach ($installation in @(& $vswhere -latest -products * -property installationPath)) {
+            $roots += @(Get-ChildItem (Join-Path $installation "VC\Redist\MSVC") -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^\d+\.\d+\.\d+$' } |
+                Sort-Object { [version]$_.Name } -Descending |
+                ForEach-Object { $_.FullName })
+        }
+    }
+    foreach ($root in $roots) {
+        $crt = @(Get-ChildItem (Join-Path $root "x64") -Directory -Filter "Microsoft.VC*.CRT" -ErrorAction SilentlyContinue | Select-Object -First 1)
+        if ($crt.Count -eq 1) { return $crt[0].FullName }
+    }
+    throw "No Visual C++ x64 runtime to ship found: install the MSVC build tools or set VCToolsRedistDir."
 }

@@ -36,7 +36,7 @@ Ketchup is an AI-native desktop modeler for creating, editing, assembling, valid
 2. Download **`Ketchup-0.3.1-Examples.zip`** from the release, unpack it, and double-click any `.ketchup` file to open it in Ketchup. Double-click `kitchen.ketchup-view` to open it in Ketchup Viewer. The examples are described [below](#examples-you-can-open-right-away).
 3. Optional: connect the AI harness you already use, such as Claude Code, Codex, Claude Desktop, or Cursor. It can then model in the open Ketchup window. See [Connect your AI harness](#connect-your-ai-harness-mcp).
 
-Requires Windows 10 or 11 x64. The installer and the programs are signed by AEON GROUP spol. s r.o. No account, API key, or Python is needed. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
+Requires Windows 10 or 11 x64; the Visual C++ runtime the programs need comes with them. The installer and the programs are signed by AEON GROUP spol. s r.o. No account, API key, or Python is needed. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
 
 ## What you can do today
 

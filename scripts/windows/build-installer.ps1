@@ -205,7 +205,7 @@ Assert-Leaf $programWorkerSource "program worker"
 $viewerSource = Join-Path $ViewerBinaryDir "ketchup-viewer.exe"
 Assert-Leaf $viewerSource "Viewer"
 . (Join-Path $PSScriptRoot "PeImports.ps1")
-$viewerRuntime = @(Get-PeImportedDlls $viewerSource | Where-Object { $_ -match '^(vcruntime|msvcp|concrt)' })
+$viewerRuntime = @(Get-PeImportedDlls $viewerSource | Where-Object { -not (Test-WindowsSystemDll $_) })
 if ($viewerRuntime.Count -ne 0) {
     throw "The Viewer needs $($viewerRuntime -join ', '), which a clean Windows does not have; build it with crt-static: $viewerSource"
 }
@@ -243,6 +243,14 @@ foreach ($record in @($occtManifest.shared_libraries)) {
         throw "Pinned OCCT runtime fingerprint mismatch: $name"
     }
     Copy-Item $source (Join-Path $payloadDir $name)
+}
+# Ketchup.exe, both workers and OCCT need the Visual C++ runtime, which a clean Windows
+# lacks (review 2026-11-02 REL-120): it ships beside them, and nothing else may be missing.
+$vcRuntime = @(Copy-MissingPeImports $payloadDir (Get-VcRuntimeDirectory))
+Write-Host "Visual C++ runtime shipped beside the program: $($vcRuntime -join ', ')"
+$unresolvedImports = @(Get-UnresolvedPeImports $payloadDir)
+if ($unresolvedImports.Count -ne 0) {
+    throw "The package needs DLLs that neither it nor a clean Windows has:`n$($unresolvedImports -join "`n")"
 }
 . (Join-Path $PSScriptRoot "package-notices.ps1")
 Copy-PackageNotices $repoRoot $OcctRoot $payloadDir "ketchup"
@@ -614,7 +622,7 @@ if (-not [string]::IsNullOrWhiteSpace($DownloadedExamples)) {
 Write-Utf8 (Join-Path $OutputDir "SHA256SUMS.txt") (($checksums -join "`r`n") + "`r`n")
 
 $signingResult = if ($Sign) { "AEON-signed payload and installer, " } else { "" }
-Write-Host "PASS: ${signingResult}portable archive, third-party notices, exact payload hashes, worker handshake, headless build identity, document and Viewer file associations, and uninstall smoke test."
+Write-Host "PASS: ${signingResult}portable archive, every DLL import shipped or part of Windows, third-party notices, exact payload hashes, worker handshake, headless build identity, document and Viewer file associations, and uninstall smoke test."
 Write-Host "Installer: $setupPath"
 Write-Host "Portable:  $zipPath"
 Write-Host "Viewer:    $viewerZipPath"
