@@ -8,8 +8,19 @@ set -euo pipefail
 dmg="$1" app="$2"
 shift 2
 mount="$(mktemp -d)"
-hdiutil attach -quiet -nobrowse -readonly -mountpoint "$mount" "$dmg"
-trap 'hdiutil detach -quiet "$mount"; rmdir "$mount"' EXIT
+# A fresh image can be busy for a few seconds while the system scans it, and
+# -quiet would hide why hdiutil failed, so retry and keep its error visible.
+for attempt in 1 2 3 4 5; do
+    if hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$dmg" >/dev/null; then
+        break
+    fi
+    if [ "$attempt" -eq 5 ]; then
+        echo "cannot mount $(basename "$dmg") to check its notices" >&2
+        exit 1
+    fi
+    sleep 5
+done
+trap 'hdiutil detach -quiet "$mount" || hdiutil detach -force "$mount"; rmdir "$mount"' EXIT
 for notice in "$@"; do
     for path in "$mount/$notice" "$mount/$app/Contents/Resources/$notice"; do
         if [ ! -s "$path" ]; then
