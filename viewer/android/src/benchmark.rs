@@ -62,7 +62,10 @@ mod tests {
     #[test]
     fn the_report_is_written_beside_the_request() {
         let pushed = Path::new("external").join("benchmark.ketchup-view");
-        assert_eq!(report_path(&pushed), Path::new("external").join("benchmark.txt"));
+        assert_eq!(
+            report_path(&pushed),
+            Path::new("external").join("benchmark.txt")
+        );
     }
 
     #[cfg(not(feature = "benchmark"))]
