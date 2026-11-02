@@ -10,7 +10,7 @@
 #   param(name, default, min=, max=, doc=, unit="mm", whole=False)  -> number the user can
 #     override; unit="" for a count, a factor or an angle: the window then takes no length
 #     unit ("3 m"), else it reads one as millimetres; whole=True for a count or a switch,
-#     whose fraction is the error param_not_whole
+#     whose fraction stops the program at param(), naming it
 #   box(name, size, at=, material=, color=, attributes=, tool=)  -> part
 #   board(name, size, at=, material=, grain=, edges=, color=)  -> a panel for the cut list
 #   Every body (box, extrude, revolve, sweep, loft) takes material=, color=

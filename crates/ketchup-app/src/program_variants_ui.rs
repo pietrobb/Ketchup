@@ -7,7 +7,7 @@
 //! their fields and buttons wait, never the frame.
 
 use super::*;
-use crate::length_input::{DecimalSeparator, read_length, read_number};
+use crate::length_input::{DecimalSeparator, Refusal, read_length, read_number};
 use crate::live_bridge::variant_window::VariantAction;
 use crate::program_evaluation::Lookup;
 use ketchup_application::program_variants::active_variant;
@@ -185,14 +185,22 @@ impl KetchupApp {
                     } else {
                         read_length(&text, decimal)
                     };
+                    // A whole parameter takes no fraction (review 2026-11-02 WB-42).
+                    let read = read.map_err(Refusal::message_key).and_then(|value| {
+                        if param.whole && value.fract() != 0.0 {
+                            Err("params-not-whole")
+                        } else {
+                            Ok(value)
+                        }
+                    });
                     match read {
                         Ok(value) => {
                             action = Some(VariantAction::SetParam(param.name.clone(), value))
                         }
-                        Err(refusal) => {
+                        Err(reason) => {
                             let arguments = BTreeMap::from([
                                 ("name", param.name.clone()),
-                                ("reason", self.catalog.text(refusal.message_key())),
+                                ("reason", self.catalog.text(reason)),
                             ]);
                             self.live.variants.outcome =
                                 Some(self.catalog.format("params-refused", &arguments));

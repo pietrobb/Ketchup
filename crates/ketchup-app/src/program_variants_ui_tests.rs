@@ -55,8 +55,8 @@ fn settle(harness: &mut Shell) {
             harness.run_steps(1);
             return;
         }
+        // The frames themselves pace the loop while the workers run.
         assert!(Instant::now() < deadline, "the dock did not settle");
-        std::thread::sleep(std::time::Duration::from_millis(1));
     }
 }
 
@@ -241,6 +241,47 @@ fn a_value_is_set_when_its_field_loses_focus_and_a_count_takes_no_unit() {
     assert!(outcome.contains(&unreadable), "{outcome}");
     type_parameter(&mut harness, "shelves", "3");
     settle(&mut harness);
+    assert_eq!(field_value(&harness, "shelves").as_deref(), Some("3"));
+}
+
+/// Review 2026-11-02 WB-42: the field of a param(…, whole = True) took 2.5 and the
+/// evaluation then failed, naming no parameter. The field refuses a fraction and says so.
+#[test]
+fn a_whole_parameter_field_refuses_a_fraction() {
+    let mut harness = harness();
+    let counted = RuleProgramSource {
+        file_name: "shelves.star".into(),
+        source: "N = param(\"shelves\", 2, unit = \"\", whole = True)\n\
+                 for i in range(N):\n    box(\"s%d\" % i, (600, 400, 18), at = (0, 0, 300 * i))\n"
+            .into(),
+        overrides: BTreeMap::new(),
+        variants: BTreeMap::new(),
+    };
+    harness
+        .state_mut()
+        .apply_program_source(counted, false)
+        .unwrap();
+    settle(&mut harness);
+    let (stamp, undo) = (
+        harness.state().live_bridge_stamp(),
+        harness.state().undo_step_count(),
+    );
+    type_parameter(&mut harness, "shelves", "2.5");
+    settle(&mut harness);
+    assert_eq!(harness.state().live_bridge_stamp(), stamp);
+    assert_eq!(harness.state().undo_step_count(), undo);
+    let refused = harness.state().catalog.format(
+        "params-refused",
+        &BTreeMap::from([
+            ("name", "shelves".to_owned()),
+            ("reason", text(&harness, "params-not-whole")),
+        ]),
+    );
+    assert_eq!(harness.state().live.variants.outcome, Some(refused));
+    assert_eq!(field_value(&harness, "shelves").as_deref(), Some("2"));
+    type_parameter(&mut harness, "shelves", "2+1");
+    settle(&mut harness);
+    assert_eq!(harness.state().undo_step_count(), undo + 1);
     assert_eq!(field_value(&harness, "shelves").as_deref(), Some("3"));
 }
 

@@ -25,6 +25,12 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         let max = given(max).map(|value| number(value, "max")).transpose()?;
         let state = state(eval)?;
         let value = state.overrides.get(name).copied().unwrap_or(default);
+        // Refused here, before the program uses it (review 2026-11-02 WB-42: as
+        // an issue of the finished model, range() failed on it first, naming
+        // no parameter).
+        if whole && value.fract() != 0.0 {
+            anyhow::bail!("param {name} = {value} takes whole numbers only; choose a whole number");
+        }
         {
             let mut model = state.model.borrow_mut();
             if model.params.iter().any(|param| param.name == name) {

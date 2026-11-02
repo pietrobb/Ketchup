@@ -714,36 +714,32 @@ fn params_take_overrides_report_unknown_ones_and_check_ranges() {
 
 /// Review 2026-10-26 WB-42: a switch param(…, min = 0, max = 1) took the override 0.001
 /// and a count 2.5 without a word. A param declared whole = True takes whole numbers only.
+/// Review 2026-11-02 WB-42 (rest): it was an issue of the finished model, so a count used
+/// in range() failed there first, with a general error naming no parameter. The value is
+/// refused where the program declares the parameter, before anything uses it.
 #[test]
 fn a_whole_param_refuses_a_fraction() {
     let source = "n = param(\"count\", 2, min = 1, max = 4, whole = True, unit = \"\")\n\
                   s = param(\"switch\", 0, min = 0, max = 1, whole = True, unit = \"\")\n\
                   w = param(\"width\", 0, min = 0, max = 1)\n\
-                  box(\"p\", (10, 10, 10))\n";
-    let overrides = BTreeMap::from([
-        ("count".to_owned(), 2.5),
-        ("switch".to_owned(), 0.001),
-        ("width".to_owned(), 0.5),
-    ]);
-    let (_, report) = run("t.star", source, &overrides).unwrap();
-    let fractions = report
-        .issues
-        .iter()
-        .filter(|issue| issue.kind == "param_not_whole")
-        .map(|issue| (issue.severity, issue.message.clone()))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        fractions,
-        [
-            (
-                Severity::Error,
-                "param count = 2.5 takes whole numbers only".to_owned()
-            ),
-            (
-                Severity::Error,
-                "param switch = 0.001 takes whole numbers only".to_owned()
-            ),
-        ]
+                  for i in range(n):\n    box(\"p%d\" % i, (10, 10, 10), at = (20 * i, 0, 0))\n";
+    for (name, value) in [("count", 2.5), ("switch", 0.001)] {
+        let overrides = BTreeMap::from([(name.to_owned(), value), ("width".to_owned(), 0.5)]);
+        let error = run("t.star", source, &overrides).unwrap_err();
+        assert!(
+            format!("{error:#}")
+                .contains(&format!("param {name} = {value} takes whole numbers only")),
+            "{error:#}"
+        );
+    }
+    let overrides = BTreeMap::from([("count".to_owned(), 3.0), ("width".to_owned(), 0.5)]);
+    let (evaluated, report) = run("t.star", source, &overrides).unwrap();
+    assert_eq!(evaluated.model.parts.len(), 3);
+    assert!(
+        report
+            .issues
+            .iter()
+            .all(|issue| issue.kind != "param_not_whole")
     );
     let whole_default = run(
         "t.star",
