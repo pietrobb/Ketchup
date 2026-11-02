@@ -9,6 +9,7 @@ that the list is complete and that a component section is there exactly when
 its crate is compiled in.
 
     python scripts/third_party_notices.py --package viewer --output DIR
+    python scripts/third_party_notices.py --package ketchup-macos --output DIR
     python scripts/third_party_notices.py --check   # every package, nothing written
 """
 
@@ -21,11 +22,27 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 NOTICES = ROOT / "scripts" / "notices"
 TARGET = "x86_64-pc-windows-msvc"
+# The macOS bundles; the universal Viewer's Intel half compiles in the same crates.
+MACOS = "aarch64-apple-darwin"
+# How each platform's package ships the OCCT libraries, for the component sections.
+SHIPPED = {
+    TARGET: {
+        "library": "TK*.dll",
+        "library_folder": "the program folder",
+        "occt_build": "scripts/windows/build-occt.ps1",
+    },
+    MACOS: {
+        "library": "libTK*.dylib",
+        "library_folder": "Contents/Frameworks of the app",
+        "occt_build": "scripts/macos/build-occt.sh",
+    },
+}
 # License texts that are an attribution requirement: the copyright notice must
 # travel with the binary.
 ATTRIBUTION = {"MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC"}
@@ -52,6 +69,7 @@ class Package:
     # Workspace packages whose programs the package carries.
     programs: tuple[str, ...]
     sections: tuple[str, ...]
+    target: str = TARGET
 
 
 PACKAGES = {
@@ -62,6 +80,14 @@ PACKAGES = {
         ("occt", "acadrust", "starlark", "core-math"),
     ),
     "viewer": Package("Kecup Viewer", ("ketchup-viewer",), ()),
+    # Kecup.app carries the app and its workers; the Viewer is a .app of its own.
+    "ketchup-macos": Package(
+        "Kecup",
+        ("ketchup-app", "ketchup-scheduler"),
+        ("occt", "acadrust", "starlark", "core-math"),
+        MACOS,
+    ),
+    "viewer-macos": Package("Kecup Viewer", ("ketchup-viewer-macos",), (), MACOS),
 }
 
 
@@ -78,11 +104,17 @@ def run(args: list[str]) -> str:
     return result.stdout
 
 
+@cache
+def manifest(program: str) -> str:
+    metadata = json.loads(run(["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"]))
+    return next(package["manifest_path"] for package in metadata["packages"] if package["name"] == program)
+
+
 def about(program: str, target: str, offline: bool) -> dict:
     with tempfile.TemporaryDirectory() as directory:
         output = Path(directory) / "about.json"
         args = ["cargo", "about", "generate", "--format", "json", "--locked"]
-        args += ["--target", target, "-m", f"crates/{program}/Cargo.toml"]
+        args += ["--target", target, "-m", manifest(program)]
         args += ["-o", str(output)] + (["--offline"] if offline else [])
         run(args)
         return json.loads(output.read_text(encoding="utf-8"))
@@ -189,6 +221,8 @@ def render(package: Package, licenses: list[dict]) -> str:
     for name in package.sections:
         number += 1
         title, _, body = (NOTICES / f"{name}.txt").read_text(encoding="utf-8").partition("\n")
+        for field, value in SHIPPED[package.target].items():
+            body = body.replace(f"{{{field}}}", value)
         lines += ["", ""] + heading(f"{number}. {title}") + [body.strip("\n")]
     number += 1
     lines += ["", ""] + heading(f"{number}. Rust crates")
@@ -203,8 +237,9 @@ def render(package: Package, licenses: list[dict]) -> str:
     return "\n".join(line.rstrip() for line in "\n".join(lines).split("\n")) + "\n"
 
 
-def notices(name: str, target: str = TARGET, offline: bool = False) -> str:
+def notices(name: str, target: str | None = None, offline: bool = False) -> str:
     package = PACKAGES[name]
+    target = target or package.target
     licenses = merge([about(program, target, offline) for program in package.programs])
     compiled = set().union(*(tree(program, target) for program in package.programs))
     verify(package, licenses, compiled)
@@ -216,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--package", choices=sorted(PACKAGES))
     parser.add_argument("--output", type=Path, help="folder the file is written to")
     parser.add_argument("--check", action="store_true", help="generate every package, write nothing")
-    parser.add_argument("--target", default=TARGET)
+    parser.add_argument("--target", help="instead of the package's own")
     parser.add_argument("--offline", action="store_true")
     args = parser.parse_args(argv)
     if args.check == (args.package is not None) or (args.package is None) != (args.output is None):

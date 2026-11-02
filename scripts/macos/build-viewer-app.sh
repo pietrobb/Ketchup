@@ -37,6 +37,9 @@ done
 rm -rf "$app" "$dmg"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 lipo -create "${binaries[@]}" -output "$app/Contents/MacOS/ketchup-viewer"
+# Third-party notices (review 2026-11-01 PL-62), as in the Windows Viewer zip.
+python3 scripts/third_party_notices.py --package viewer-macos --output "$app/Contents/Resources"
+notices=(THIRD_PARTY_NOTICES.txt)
 
 # The app icon is the bottle from the splash picture.
 work="$(mktemp -d)"
@@ -116,7 +119,11 @@ lipo -info "$app/Contents/MacOS/ketchup-viewer"
 mkdir "$work/dmg"
 cp -R "$app" "$work/dmg/"
 ln -s /Applications "$work/dmg/Applications"
+for notice in "${notices[@]}"; do
+    cp "$app/Contents/Resources/$notice" "$work/dmg/"
+done
 hdiutil create -quiet -volname "$name" -srcfolder "$work/dmg" -format UDZO "$dmg"
+scripts/macos/check-notices.sh "$dmg" "$name.app" "${notices[@]}"
 if [ "$identity" != "-" ]; then
     codesign --force --timestamp --sign "$identity" "$dmg"
 fi

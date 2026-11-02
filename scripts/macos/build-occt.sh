@@ -110,6 +110,9 @@ cmake -S "$src" -B "$build" -G Ninja \
 
 cmake --build "$build" --parallel "$(sysctl -n hw.ncpu)"
 cmake --install "$build"
+# The app bundle ships OCCT's license texts beside its notices, as the Windows
+# install has them (review 2026-11-01 PL-62).
+cp "$src/LICENSE_LGPL_21.txt" "$src/OCCT_LGPL_EXCEPTION.txt" "$install/"
 
 # Gate: no OCCT library may take a transcendental function from the system
 # libm (that is what made results platform dependent), and none may export the

@@ -1,4 +1,5 @@
 import importlib.util
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -107,3 +108,30 @@ def test_every_section_has_its_text():
     for name in notices.SECTIONS:
         title, _, body = (notices.NOTICES / f"{name}.txt").read_text(encoding="utf-8").partition("\n")
         assert title and body.strip()
+
+
+def test_each_macos_bundle_carries_the_notices_of_the_programs_it_builds():
+    """Review 2026-11-01 PL-62: the .app and the .dmg carried no notices. Each
+    macOS build script makes them for macOS and for exactly the packages it
+    builds, and ships them in the bundle and beside it in the .dmg."""
+    for script_name, name in (("build-app.sh", "ketchup-macos"), ("build-viewer-app.sh", "viewer-macos")):
+        script = (ROOT / "scripts" / "macos" / script_name).read_text(encoding="utf-8")
+        package = notices.PACKAGES[name]
+        assert package.target.endswith("-apple-darwin"), name
+        build = next(line for line in script.splitlines() if line.strip().startswith("cargo build"))
+        assert set(package.programs) == set(re.findall(r"-p (\S+)", build)), name
+        assert f"scripts/third_party_notices.py --package {name} --output" in script, script_name
+        assert 'for notice in "${notices[@]}"' in script, script_name
+
+
+def test_the_component_sections_name_the_files_of_their_platform():
+    """Review 2026-11-01 PL-62: OCCT's LGPL notice names the libraries a user may
+    replace and how they are built, on each platform as it ships them."""
+    licenses = notices.merge([report(("MIT", MIT, [("a", ["Jane"])]))])
+    windows = notices.render(notices.PACKAGES["ketchup"], licenses)
+    assert "TK*.dll in the program folder" in windows
+    assert "scripts/windows/build-occt.ps1" in windows
+    macos = notices.render(notices.PACKAGES["ketchup-macos"], licenses)
+    assert "libTK*.dylib in Contents/Frameworks" in macos
+    assert "scripts/macos/build-occt.sh" in macos
+    assert ".dll" not in macos and "{" not in macos

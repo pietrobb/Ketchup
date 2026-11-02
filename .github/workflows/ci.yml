@@ -542,12 +542,21 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      # OCCT built by one Apple clang or SDK may not link with another's, so a
+      # runner image with a newer Xcode builds it again (review 2026-11-01 CI-100).
+      - name: Xcode version
+        id: xcode
+        run: |
+          clang=$(clang --version | head -n 1 | grep -oE 'clang-[0-9.]+' | head -n 1)
+          sdk=$(xcrun --show-sdk-version)
+          test -n "$clang" && test -n "$sdk"
+          echo "version=$clang-sdk$sdk" >> "$GITHUB_OUTPUT"
       - name: OCCT from the cache
         id: occt
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: third_party/occt-install-r0-v1
-          key: occt-8.0.1-b8f597c6-macos-arm64-${{ hashFiles('scripts/macos/build-occt.sh', 'third_party/crmath/**') }}
+          key: occt-8.0.1-b8f597c6-macos-arm64-${{ steps.xcode.outputs.version }}-${{ hashFiles('scripts/macos/build-occt.sh', 'third_party/crmath/**') }}
       - name: OCCT build
         if: steps.occt.outputs.cache-hit != 'true'
         run: |
@@ -560,6 +569,19 @@ jobs:
         with:
           path: third_party/occt-install-r0-v1
           key: ${{ steps.occt.outputs.cache-primary-key }}
+      # The bundle's third-party notices (review 2026-11-01 PL-62), made by the
+      # same pinned cargo-about as the Linux check of every package.
+      - name: cargo-about
+        env:
+          ABOUT_VERSION: 0.9.2
+          ABOUT_SHA256: ae72f0df0c399a1e96336f696fa55b1b28679fd725632eba8cf8e4568467cc3e
+        run: |
+          name="cargo-about-$ABOUT_VERSION-aarch64-apple-darwin"
+          curl --fail --silent --show-error --location --output "$RUNNER_TEMP/about.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-about/releases/download/$ABOUT_VERSION/$name.tar.gz"
+          echo "$ABOUT_SHA256  $RUNNER_TEMP/about.tar.gz" | shasum -a 256 --check --strict
+          tar -xzf "$RUNNER_TEMP/about.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
       - name: app bundle
         run: scripts/macos/build-app.sh --output "$RUNNER_TEMP/macos-app"
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0

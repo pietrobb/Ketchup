@@ -24,7 +24,8 @@ done
 name="Kečup"
 app="$output/$name.app"
 dmg="$output/Ketchup-$version-macOS.dmg"
-occt_lib="$repo/third_party/occt-install-r0-v1/lib"
+occt="$repo/third_party/occt-install-r0-v1"
+occt_lib="$occt/lib"
 [ -d "$occt_lib" ] || { echo "missing OCCT: run scripts/macos/build-occt.sh" >&2; exit 1; }
 
 cd "$repo"
@@ -74,6 +75,18 @@ if otool -L "${binaries[@]}" "${libraries[@]}" | grep $'^\t' | grep -F "$repo"; 
     echo "a bundled image still references the build machine" >&2
     exit 1
 fi
+
+# Third-party notices (review 2026-11-01 PL-62), as in the Windows packages:
+# the copyright and license text of every crate compiled in, and the license
+# texts of the components they name.
+resources="$app/Contents/Resources"
+python3 scripts/third_party_notices.py --package ketchup-macos --output "$resources"
+notices=(THIRD_PARTY_NOTICES.txt)
+ship_license() { cp "$1" "$resources/$2"; notices+=("$2"); }
+ship_license "$occt/LICENSE_LGPL_21.txt" LICENSE-OCCT-LGPL-2.1.txt
+ship_license "$occt/OCCT_LGPL_EXCEPTION.txt" LICENSE-OCCT-LGPL-EXCEPTION.txt
+ship_license third_party/starlark/LICENSE LICENSE-Starlark-Apache-2.0.txt
+ship_license third_party/crmath/core-math/LICENSE LICENSE-CORE-MATH-MIT.txt
 
 # The app icon is the bottle from the splash picture, as for the Viewer.
 work="$(mktemp -d)"
@@ -157,7 +170,11 @@ done
 mkdir "$work/dmg"
 cp -R "$app" "$work/dmg/"
 ln -s /Applications "$work/dmg/Applications"
+for notice in "${notices[@]}"; do
+    cp "$resources/$notice" "$work/dmg/"
+done
 hdiutil create -quiet -volname "$name" -srcfolder "$work/dmg" -format UDZO "$dmg"
+scripts/macos/check-notices.sh "$dmg" "$name.app" "${notices[@]}"
 if [ "$identity" != "-" ]; then
     codesign --force --timestamp --sign "$identity" "$dmg"
 fi
