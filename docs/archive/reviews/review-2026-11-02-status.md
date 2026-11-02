@@ -20,3 +20,13 @@ Branch `r18-review1102`. Every finding of `review-2026-11-02.md` is listed here 
 | PG-105 (rest): `load_path` + `timber_design` without loads gives statics "none", rc 0 | Fixed, 666470b8 |
 | PG-106: OSB without `product=` takes the kmod of solid timber | Fixed, 2511142e |
 | PG-124: rafters under counter-battens and battens are not braced (`not_verified`) | Deferred: new feature. Bracing passed on through a part that rides on one member (a counter-batten screwed along a rafter, battens across the counter-battens) is proposal 5.1 (explicit bracing, transitive holding); without it the result stays on the safe side, `not_verified` with the stretch named |
+
+## Blank and program
+
+| Finding | Status |
+|---|---|
+| PG-121: above 45 degrees the turned blank swaps length and width | Fixed, 18437c2a: the blank's long side is the length the part names (LENGTH_AXIS), at any pitch |
+| PG-123, PG-108 (rest): the shop drawing, CSV/XLSX cut list and CNC DXF size the blank each their own way | Fixed, f7e63559: all take the cut list's blank |
+| PG-102 (rest): two stock sizes give two boards instead of one | Fixed, 5c8faee5 |
+| PG-125: the blank ignores the grain direction | Fixed, 3365a31a and 9dc3b494 |
+| WB-42 (rest): `whole=True` only shows when the evaluation survives the value; the window does not read `Param::whole` | Fixed, 99866798: `param()` refuses the fraction, naming the parameter; the dock field refuses it |
