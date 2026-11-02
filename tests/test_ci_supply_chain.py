@@ -52,17 +52,21 @@ def test_every_occt_cache_key_hashes_the_math_linked_into_it():
         assert "'third_party/crmath/**'" in key, key
 
 
-def test_the_windows_and_linux_occt_cache_keys_name_their_compiler():
-    """Review 2026-10-31 P3: OCCT built by one compiler may not link with
-    another's, so a runner image with a newer Visual Studio or clang builds it
-    again. (The macOS key and Xcode are the Mac job's.)"""
+def test_every_occt_cache_key_names_its_compiler():
+    """Review 2026-10-31 P3 and 2026-11-01 CI-100: OCCT built by one compiler
+    may not link with another's, so a runner image with a newer Visual Studio,
+    clang or Xcode builds it again."""
     keys = {platform: key for key in re.findall(r"key:\s*(occt-.+)", WORKFLOW)
-            for platform in ("windows", "ubuntu") if f"-{platform}" in key}
-    assert set(keys) == {"windows", "ubuntu"}, keys
+            for platform in ("windows", "ubuntu", "macos") if f"-{platform}" in key}
+    assert set(keys) == {"windows", "ubuntu", "macos"}, keys
     assert "steps.vs.outputs.version" in keys["windows"], keys["windows"]
     assert "steps.clang.outputs.version" in keys["ubuntu"], keys["ubuntu"]
     clang = re.search(r"id: clang\n\s+run: \|\n((?:\s+.+\n)+)", WORKFLOW)
     assert clang and "clang --version" in clang.group(1), "the Linux job reads the clang version"
+    assert "steps.xcode.outputs.version" in keys["macos"], keys["macos"]
+    xcode = re.search(r"id: xcode\n\s+run: \|\n((?:\s+.+\n)+)", WORKFLOW)
+    assert xcode and "clang --version" in xcode.group(1) and "--show-sdk-version" in xcode.group(1), \
+        "the macOS job reads Apple clang's build and the SDK version"
 
 
 def test_cargo_deny_runs_a_verified_release_for_all_targets():
