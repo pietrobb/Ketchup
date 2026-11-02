@@ -12,7 +12,7 @@ use ketchup_model::drawing::{
     DrawingSource, DrawingTitleBlock, OrthographicViewKind, prepare_create_drawing_sheet,
     prepare_delete_drawing_sheet, prepare_edit_drawing_sheet, project_orthographic_drawing,
 };
-use ketchup_model::drawing_export::{DrawingExportError, export_drawing};
+use ketchup_model::drawing_export::{DrawingExportError, export_drawing, export_drawing_dxf};
 use ketchup_model::exact_brep_graph::ExactBRepGraph;
 use ketchup_model::exact_product::{
     ExactBRepGraphEdgeEvidence, ExactBRepGraphPackage, ExactBRepGraphWorkerEvidence,
@@ -2247,6 +2247,17 @@ fn production_exports_are_stable_across_recompute_undo_redo_and_save_open() {
         export_drawing(&document.current(), &initial_drawing).unwrap(),
         initial
     );
+    // A sheet written as DXF or DWG draws its DXF alone, the same one
+    // (review 2026-11-02 MF-125).
+    let dxf_only = export_drawing_dxf(&document.current(), &initial_drawing).unwrap();
+    assert_eq!(
+        (
+            dxf_only.dxf(),
+            dxf_only.dxf_curves(),
+            dxf_only.annotations()
+        ),
+        (initial.dxf(), initial.dxf_curves(), initial.annotations())
+    );
     let svg = std::str::from_utf8(initial.svg()).unwrap();
     assert!(svg.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
     assert!(svg.contains("class=\"VISIBLE\""));
@@ -2291,6 +2302,10 @@ fn production_exports_are_stable_across_recompute_undo_redo_and_save_open() {
     document.commit_proposal(&edit).unwrap();
     assert_eq!(
         export_drawing(&document.current(), &initial_drawing),
+        Err(DrawingExportError::StaleDrawing)
+    );
+    assert_eq!(
+        export_drawing_dxf(&document.current(), &initial_drawing),
         Err(DrawingExportError::StaleDrawing)
     );
     let edited_registry = registry(
