@@ -6,8 +6,9 @@
 use ketchup_model::document::{DocumentStore, ProposalContext};
 use ketchup_model::import::{
     DxfImportError, DxfImportOptions, ImportDiagnostic, inspect_dxf, plan_dxf_import,
-    read_dxf_underlay,
+    read_dxf_underlay, write_edited_dxf,
 };
+use ketchup_model::underlay::edits::UnderlayEdits;
 
 fn drawing(blocks: &str, entities: &str) -> Vec<u8> {
     format!(
@@ -475,4 +476,43 @@ fn a_drawing_with_nothing_readable_left_is_refused_with_why_the_first_was_left_o
         inspect_dxf(&flat, options),
         Err(DxfImportError::InvalidProfile)
     );
+}
+
+/// Review 2026-11-01 CD-106: an underlay refused a drawing whose file starts with a UTF-8
+/// byte order mark, ends with Ctrl-Z (as DOS editors wrote) or has empty lines after EOF,
+/// all of which a profile import reads.
+#[test]
+fn a_byte_order_mark_ctrl_z_and_empty_lines_after_eof_do_not_refuse_an_underlay() {
+    let plain = drawing("", &line("A1", [0, 0, 1000, 0]));
+    let mut marked = b"\xEF\xBB\xBF".to_vec();
+    marked.extend_from_slice(&plain);
+    let mut dos = plain.clone();
+    dos.push(0x1A);
+    let mut blank = plain.clone();
+    blank.extend_from_slice(b"\r\n\n  \n");
+    for source in [marked, dos, blank] {
+        assert!(inspect_dxf(&source, DxfImportOptions::new(None)).is_ok());
+        let underlay = read_dxf_underlay(&source, DxfImportOptions::new(None))
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(underlay.lines.objects().objects.len(), 1);
+        // And written back without the line, as it was otherwise.
+        let mut edits = UnderlayEdits::default();
+        edits.removed_objects.insert(0);
+        let written = write_edited_dxf(
+            &source,
+            DxfImportOptions::new(None),
+            &underlay.lines,
+            &edits,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        let line = line("A1", [0, 0, 1000, 0]);
+        let at = source
+            .windows(line.len())
+            .position(|window| window == line.as_bytes())
+            .unwrap();
+        assert_eq!(
+            written,
+            [&source[..at], &source[at + line.len()..]].concat()
+        );
+    }
 }

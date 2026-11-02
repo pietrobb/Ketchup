@@ -7,7 +7,9 @@ use super::drawing_edit::DrawingExportTarget;
 use super::program_check::ProgramCheckJob;
 use super::program_dry_run::QueuedReply;
 use super::*;
-use crate::app::underlay_export::{ClientUnderlayExport, UnderlayExportError, WrittenDrawing};
+use crate::app::underlay_export::{
+    ClientUnderlayExport, PublishGate, UnderlayExportError, UnderlayExportResult,
+};
 use ketchup_program::CancelToken;
 
 pub(super) struct DrawingExportJob {
@@ -16,7 +18,8 @@ pub(super) struct DrawingExportJob {
     cancelled: Arc<AtomicBool>,
     target: DrawingExportTarget,
     cancel: CancelToken,
-    receiver: mpsc::Receiver<Result<WrittenDrawing, UnderlayExportError>>,
+    gate: PublishGate,
+    receiver: mpsc::Receiver<UnderlayExportResult>,
 }
 
 impl LiveBridge {
@@ -51,13 +54,21 @@ impl LiveBridge {
                 }
             });
         match started {
-            Ok((target, ClientUnderlayExport { cancel, receiver })) => {
+            Ok((
+                target,
+                ClientUnderlayExport {
+                    cancel,
+                    gate,
+                    receiver,
+                },
+            )) => {
                 self.program_check_job = Some(ProgramCheckJob::DrawingExport(DrawingExportJob {
                     id,
                     reply,
                     cancelled,
                     target,
                     cancel,
+                    gate,
                     receiver,
                 }));
                 context.request_repaint_after(Duration::from_millis(10));
@@ -72,9 +83,11 @@ impl LiveBridge {
         context: &egui::Context,
         job: DrawingExportJob,
     ) {
-        // The worker is killed; the drawing it may have written replaces nothing.
-        if job.cancelled.load(Ordering::Acquire) {
-            job.cancel.cancel();
+        // The worker is killed; the drawing it may have written replaces nothing, unless
+        // it is already taking the place of the file: then its outcome is the reply.
+        if job.cancelled.load(Ordering::Acquire)
+            && ClientUnderlayExport::cancel(&job.cancel, &job.gate)
+        {
             Self::reply(app, job.id, &job.reply, Err("request_cancelled"));
             return;
         }
@@ -90,7 +103,7 @@ impl LiveBridge {
             )),
         };
         take_error_details();
-        let result = ClientUnderlayExport::publish(written)
+        let result = written
             .map(|written| job.target.written(written))
             .map_err(|error| job.target.refuse(error));
         Self::reply(app, job.id, &job.reply, result);

@@ -26,6 +26,15 @@ const MAX_DXF_LINE_BYTES: usize = 4 * MAX_DXF_LINE_CHARS;
 fn too_long(line: &str) -> bool {
     line.len() > MAX_DXF_LINE_CHARS && line.chars().count() > MAX_DXF_LINE_CHARS
 }
+
+/// A UTF-8 byte order mark, which only says how the rest of a file is written.
+const BYTE_ORDER_MARK: &[u8] = b"\xEF\xBB\xBF";
+
+/// Whether `byte` may follow the last line of a drawing: a line end, a space, or the
+/// Ctrl-Z (0x1A) with which DOS editors ended a text file (review 2026-11-01 CD-106).
+const fn is_trailing(byte: u8) -> bool {
+    byte.is_ascii_whitespace() || byte == 0x1A
+}
 /// The most group-code pairs a drawing import reads; a DWG conversion with more is
 /// refused in the worker, before the window reads its DXF.
 pub const MAX_DXF_PAIRS: usize = limits::DRAWING_PAIRS;
@@ -1100,6 +1109,8 @@ fn next_id(ids: impl Iterator<Item = u64>) -> Result<u64, DxfImportPlanError> {
 }
 
 fn parse_pairs(text: &str, max_pairs: usize) -> Result<Vec<DxfPair<'_>>, DxfImportError> {
+    let text =
+        text.trim_end_matches(|character: char| u8::try_from(character).is_ok_and(is_trailing));
     // The lines are counted and measured first and refused on the pair count as it is
     // reached, so a large file is never held as a list of its lines, only as its pairs.
     let max_lines = max_pairs.saturating_mul(2).saturating_add(1);
@@ -1531,6 +1542,9 @@ fn parse_entities(
                 handle.as_deref().map(|handle| ("handles", handle)),
                 Some(error),
             )?;
+            if diagnostics.reading.styles {
+                objects::claim_unread(output, &kind, record);
+            }
         }
         // Many INSERTs of a block each within the limit must not build millions
         // of profiles before the whole drawing is checked.

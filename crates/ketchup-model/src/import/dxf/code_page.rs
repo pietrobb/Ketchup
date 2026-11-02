@@ -221,7 +221,9 @@ pub(super) fn dxf_source_text(
         return Err(DxfImportError::Empty);
     }
     // A UTF-8 byte order mark only says how the rest is written.
-    let source = source.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(source);
+    let source = source
+        .strip_prefix(super::BYTE_ORDER_MARK)
+        .unwrap_or(source);
     if let Ok(text) = std::str::from_utf8(source) {
         return Ok((Cow::Borrowed(text), None));
     }

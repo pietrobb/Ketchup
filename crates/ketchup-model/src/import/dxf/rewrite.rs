@@ -755,6 +755,10 @@ impl<'a> Drawing<'a> {
                 stretch,
                 removed: &names,
                 vertices_minus_z: false,
+                follows: !stretch
+                    && self.entities[entity]
+                        .handle
+                        .is_some_and(|handle| !detached.contains_key(&handle)),
             };
             let mapped = self.mapped(object, entity, &map, false, &mut handles, &mut blocks)?;
             replaced[entity] = Some(Some(mapped));
@@ -792,6 +796,7 @@ impl<'a> Drawing<'a> {
                         stretch: matches!(edit, AddedObject::Stretched { .. }),
                         removed: &removed,
                         vertices_minus_z: false,
+                        follows: false,
                     };
                     added.extend(self.mapped(
                         *of,
@@ -856,10 +861,11 @@ impl<'a> Drawing<'a> {
         Ok(out)
     }
 
-    /// For each associative hatch moved (a mapped hatch follows nothing, [`Self::map_hatch`])
-    /// or with a boundary it follows moved apart from it ([`Moves`]), the handles each of
-    /// them names no more: the hatch its boundaries, and they the hatch as a reactor. The
-    /// hatch keeps its fill where it lies and follows nothing (review 2026-10-31 CD-80).
+    /// For each associative hatch with a boundary it follows moved apart from it
+    /// ([`Moves`]), the handles each of them names no more: the hatch its boundaries, and
+    /// they the hatch as a reactor. The hatch keeps its fill where it lies and follows
+    /// nothing (review 2026-10-31 CD-80); moved together they stay as they are (review
+    /// 2026-11-01 CD-105).
     fn detached_hatches(&self, moves: &Moves) -> BTreeMap<u64, BTreeSet<u64>> {
         let mut detached = BTreeMap::<u64, BTreeSet<u64>>::new();
         for entity in &self.entities {
@@ -880,8 +886,7 @@ impl<'a> Drawing<'a> {
                 }
             }
             if associative == Some(true)
-                && (moves.contains_key(&hatch)
-                    || sources.iter().any(|source| apart(moves, hatch, *source)))
+                && sources.iter().any(|source| apart(moves, hatch, *source))
             {
                 for source in &sources {
                     detached.entry(*source).or_default().insert(hatch);
@@ -1164,8 +1169,13 @@ impl<'a> Drawing<'a> {
     /// it is no longer associative (review 2026-10-29 CD-68).
     fn drop_references(&self, kind: &str, record: &mut [Out], removed: &BTreeSet<u64>) {
         let hatch = kind == "HATCH";
+        let leader = kind == "LEADER";
         let mut sources = None::<(usize, usize, u64)>;
         let mut associative = None::<(usize, usize)>;
+        // A leader whose annotation (group 340) was removed has none (group 73 = 3), as
+        // a copy of one (review 2026-11-01 CD-103).
+        let mut annotation = None::<(usize, usize)>;
+        let mut annotation_dropped = false;
         let (mut dropped, mut kept) = (false, false);
         let mut group = None::<usize>;
         for at in 0..record.len() {
@@ -1190,6 +1200,7 @@ impl<'a> Drawing<'a> {
                     }
                 }
                 71 if hatch => associative = Some((at, index)),
+                73 if leader => annotation = Some((at, index)),
                 97 if hatch => {
                     let count = std::str::from_utf8(value)
                         .ok()
@@ -1211,6 +1222,7 @@ impl<'a> Drawing<'a> {
             }
             record[at] = Out::Drop;
             dropped |= source;
+            annotation_dropped |= leader && code == 340;
             if source && let Some((at, index, count)) = sources.as_mut() {
                 *count = count.saturating_sub(1);
                 record[*at] = Out::Set(*index, count.to_string());
@@ -1221,6 +1233,9 @@ impl<'a> Drawing<'a> {
             && let Some((at, index)) = associative
         {
             record[at] = Out::Set(index, "0".to_owned());
+        }
+        if annotation_dropped && let Some((at, index)) = annotation {
+            record[at] = Out::Set(index, "3".to_owned());
         }
     }
 
@@ -1309,6 +1324,7 @@ impl<'a> Drawing<'a> {
             stretch: false,
             removed: &BTreeSet::new(),
             vertices_minus_z: false,
+            follows: false,
         };
         while start < endblk {
             let end = next_record(start)?;
@@ -1522,7 +1538,13 @@ impl<'a> Drawing<'a> {
             out[at] = Out::Set(own[at], number(self.number(own[at])? * scale));
         }
         if rules.hatch {
-            self.map_hatch(own, &mut out, map, turn_deg, mirrored, scale)?;
+            let how = HatchMap {
+                turn: turn_deg,
+                mirrored,
+                scale,
+                follows: mapping.follows,
+            };
+            self.map_hatch(own, &mut out, map, how)?;
         }
         if rules.arc
             && let (Some(start), Some(end)) = (position(50), position(51))
@@ -1639,15 +1661,19 @@ impl<'a> Drawing<'a> {
     /// stand: the boundary paths (polylines with their bulges, or lines, arcs, elliptical
     /// arcs and splines), then the pattern, its lines and the seed points. The elevation
     /// before the paths stays. Mapped, it no longer follows the entities it was made from:
-    /// it is written as not associative, without their handles.
+    /// it is written as not associative, without their handles; unless it `follows` them,
+    /// moved with it by the same map (review 2026-11-01 CD-105).
     fn map_hatch(
         &self,
         own: &[usize],
         out: &mut [Out],
         map: &Affine,
-        turn: f64,
-        mirrored: bool,
-        scale: f64,
+        HatchMap {
+            turn,
+            mirrored,
+            scale,
+            follows,
+        }: HatchMap,
     ) -> Result<(), EditedDxfError> {
         let code = |at: usize| self.pairs[own[at]].code;
         let value = |at: usize| self.number(own[at]);
@@ -1676,7 +1702,7 @@ impl<'a> Drawing<'a> {
             .filter(|at| code(*at) == 92)
             .collect::<Vec<_>>();
         let first = *starts.first().ok_or(DxfEditRefusal::Malformed)?;
-        if let Some(at) = (0..first).find(|at| code(*at) == 71) {
+        if !follows && let Some(at) = (0..first).find(|at| code(*at) == 71) {
             set(out, at, 0.0);
         }
         let mut trailing = own.len();
@@ -1691,8 +1717,10 @@ impl<'a> Drawing<'a> {
             if source_end > end || (sources + 1..source_end).any(|at| code(at) != 330) {
                 return Err(DxfEditRefusal::Malformed.into());
             }
-            set(out, sources, 0.0);
-            out[sources + 1..source_end].fill_with(|| Out::Drop);
+            if !follows {
+                set(out, sources, 0.0);
+                out[sources + 1..source_end].fill_with(|| Out::Drop);
+            }
             if path + 1 == starts.len() {
                 trailing = source_end;
             }
@@ -1850,7 +1878,7 @@ impl<'a> Drawing<'a> {
             .layers
             .iter()
             .find(|(name, _)| name == layer)
-            .map_or_else(|| self.text(layer), |(_, raw)| raw.clone());
+            .map_or_else(|| self.name(layer), |(_, raw)| raw.clone());
         // The record's head, owned by `owner`; the handle it took.
         let owned_head = |pair: &mut dyn FnMut(i32, &[u8]),
                           kind: &str,
@@ -1968,8 +1996,17 @@ impl<'a> Drawing<'a> {
     /// ASCII as `\U+XXXX` for each of its UTF-16 units; a `%%` that would be read as a special character is kept as
     /// written, and what would end the line is a space.
     fn text(&self, text: &str) -> Vec<u8> {
+        self.encoded(text, text.contains("%%"))
+    }
+
+    /// A name (of a layer) as the drawing writes it: as [`Self::text`], but a name has no
+    /// special characters, so `%%` is written as it is (review 2026-11-01 CD-102).
+    fn name(&self, name: &str) -> Vec<u8> {
+        self.encoded(name, false)
+    }
+
+    fn encoded(&self, text: &str, percent: bool) -> Vec<u8> {
         let mut out = String::with_capacity(text.len());
-        let percent = text.contains("%%");
         for character in text.chars() {
             match character {
                 '%' if percent => out.push_str("%%%"),
@@ -2001,13 +2038,26 @@ enum Out {
 /// A map of an entity, of the drawing's units; `stretch` when it makes a straight line
 /// shorter or longer, so that its widths stay as they are. The entity written no longer
 /// names the handles `removed`. With `vertices_minus_z` the VERTEX records mapped are of a
-/// POLYLINE of extrusion −Z.
+/// POLYLINE of extrusion −Z. With `follows` an associative hatch moved by the same map as
+/// every boundary it follows still follows them (review 2026-11-01 CD-105).
 #[derive(Clone, Copy)]
 struct Mapping<'r> {
     map: Affine,
     stretch: bool,
     removed: &'r BTreeSet<u64>,
     vertices_minus_z: bool,
+    follows: bool,
+}
+
+/// How a hatch's angles, lengths and boundary handles go with its map: turned by `turn`
+/// degrees, `mirrored`, lengths times `scale`, and whether it still `follows` its
+/// boundaries ([`Mapping::follows`]).
+#[derive(Clone, Copy)]
+struct HatchMap {
+    turn: f64,
+    mirrored: bool,
+    scale: f64,
+    follows: bool,
 }
 
 /// The records of the straight lines that are stretched ([`UnderlayEdits::stretched_objects`]).
@@ -2196,8 +2246,24 @@ fn number(value: f64) -> String {
     format!("{value}")
 }
 
-/// The group pairs of `source`, line by line, in one pass.
+/// The group pairs of `source`, line by line, in one pass; a byte order mark before them
+/// and what may follow the last line ([`super::is_trailing`]) are none.
 fn pairs(source: &[u8]) -> Result<Vec<Pair>, EditedDxfError> {
+    let first = if source.starts_with(super::BYTE_ORDER_MARK) {
+        super::BYTE_ORDER_MARK.len()
+    } else {
+        0
+    };
+    let end = source
+        .iter()
+        .rposition(|byte| !super::is_trailing(*byte))
+        .map_or(first, |last| last + 1);
+    // Up to the end of its last line, which keeps its line break.
+    let end = source[end..]
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .map_or(source.len(), |at| end + at + 1);
+    let source = &source[..end];
     // A line from `start`: where it starts, where its content ends, and past its end.
     let line = |start: usize| {
         let end = source[start..]
@@ -2215,7 +2281,7 @@ fn pairs(source: &[u8]) -> Result<Vec<Pair>, EditedDxfError> {
         u32::try_from(at).map_err(|_: std::num::TryFromIntError| DxfEditRefusal::TooLarge)
     };
     let mut pairs = Vec::new();
-    let mut start = 0;
+    let mut start = first;
     while start < source.len() {
         let (code_start, code_end, next) = line(start);
         if next >= source.len() {

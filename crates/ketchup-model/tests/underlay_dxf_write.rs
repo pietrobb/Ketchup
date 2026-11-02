@@ -1077,11 +1077,32 @@ fn associations_of_entities_moved_apart_are_let_go() {
     assert!(!names(&entity(&text, "A7"), "AA"));
     assert!(!text.contains("DIMASSOC"));
 
-    // Moved together by one map, the association stays. A moved hatch is written as
-    // following nothing, so its boundary names it no more either.
+    // Moved together by one map, the association stays. Review 2026-11-01 CD-105: so
+    // does the hatch's, each still naming the other.
     let text = write(&[0xA7, 0xAA, 0xA0, 0xA9]);
     assert!(text.contains("DIMASSOC") && names(&entity(&text, "A9"), "B5"));
     assert!(names(&entity(&text, "A0"), "B5"));
+    let hatch = entity(&text, "AA");
+    assert!(
+        hatch.contains("\n71\n1\n") && hatch.contains("\n97\n1\n") && names(&hatch, "A7"),
+        "{hatch}"
+    );
+    assert!(names(&entity(&text, "A7"), "AA"));
+    // Moved by another map than its boundary, it lets go.
+    let mut edits = UnderlayEdits::default();
+    edits.moved_objects.insert(id_of(lines, 0xA7), away);
+    edits
+        .moved_objects
+        .insert(id_of(lines, 0xAA), [[1.0, 0.0, 0.0], [0.0, 1.0, 5000.0]]);
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap();
+    let text = String::from_utf8(written).unwrap();
+    assert!(entity(&text, "AA").contains("\n71\n0\n"));
     assert!(!names(&entity(&text, "A7"), "AA"));
     // Nothing moved: everything follows as read.
     let text = write(&[]);
@@ -1491,6 +1512,8 @@ fn an_entity_in_a_layout_block_lets_go_of_a_removed_entity() {
         "{leader}"
     );
     assert!(!leader.contains("\n340\n"), "{leader}");
+    // Review 2026-11-01 CD-103: and says it has no annotation, not an MTEXT one.
+    assert!(leader.contains("\n73\n3\n"), "{leader}");
     assert!(text.contains("0\nENDBLK\n5\n42\n"), "{text}");
 }
 
@@ -1597,6 +1620,70 @@ fn a_drawing_without_handles_is_written_with_its_edits() {
             EditedDxfError::Refused(DxfEditRefusal::NoHandle { object: 0 })
         ),
         "{error}"
+    );
+}
+
+/// Review 2026-11-01 CD-101: one LINE of no length in a drawing without handles draws
+/// nothing, yet is an entity of model space: every edit was refused as without handle.
+#[test]
+fn a_drawing_without_handles_and_with_a_line_of_no_length_is_written_with_its_edits() {
+    let dot = R12.replace(
+        "0\nCIRCLE\n",
+        "0\nLINE\n8\nwalls\n10\n50\n20\n50\n30\n0\n11\n50\n21\n50\n31\n0\n0\nCIRCLE\n",
+    );
+    let original = read(dot.as_bytes());
+    let objects = &original.lines.objects().objects;
+    let circle = objects
+        .iter()
+        .position(|object| object.kind.name() == "CIRCLE")
+        .map(|index| u32::try_from(index).unwrap())
+        .unwrap();
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(circle);
+    let written = write_edited_dxf(
+        dot.as_bytes(),
+        DxfImportOptions::new(None),
+        &original.lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let text = String::from_utf8(written).unwrap();
+    assert!(!text.contains("CIRCLE"), "{text}");
+    // The line of no length is kept as it was.
+    assert!(
+        text.contains("10\n50\n20\n50\n30\n0\n11\n50\n21\n50\n"),
+        "{text}"
+    );
+}
+
+/// Review 2026-11-01 CD-102: a shape drawn on a layer the drawing names only on its
+/// entities (no LAYER record) wrote the layer's name as a text, `%%` as `%%%%%%`: a new
+/// layer. A name has no special characters.
+#[test]
+fn a_shape_drawn_on_a_layer_without_a_record_keeps_the_name_of_the_layer() {
+    let source = R12.replace("0\nCIRCLE\n8\nwalls\n", "0\nCIRCLE\n8\nplan%%c\n");
+    let original = read(source.as_bytes());
+    let mut edits = UnderlayEdits::default();
+    edits.added.push(AddedObject::Drawn {
+        layer: "plan%%c".to_owned(),
+        shape: DrawnShape::Polyline {
+            points_mm: vec![[0.0, -2000.0], [3000.0, -2000.0]],
+            closed: false,
+        },
+    });
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        &original.lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let text = String::from_utf8(written).unwrap();
+    assert!(!text.contains("%%%"), "{text}");
+    assert_eq!(
+        text.lines().filter(|line| *line == "plan%%c").count(),
+        2,
+        "{text}"
     );
 }
 

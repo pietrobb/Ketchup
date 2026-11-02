@@ -371,8 +371,11 @@ fn read_sections(
             )?,
         }
     }
-    if reader.next_pair(&mut value)?.is_some() {
-        return Err(DxfImportError::MalformedSections);
+    let mut line = Vec::new();
+    while read_line(reader.source, &mut line)? {
+        if !line.iter().copied().all(super::is_trailing) {
+            return Err(DxfImportError::MalformedSections);
+        }
     }
     Ok(sections)
 }
@@ -448,6 +451,13 @@ struct PairReader<'a, R> {
 impl<'a, R: BufRead + Seek> PairReader<'a, R> {
     fn new(source: &'a mut R, encoding: Option<CodePage>) -> Result<Self, DxfImportError> {
         source.seek(SeekFrom::Start(0)).map_err(read_error)?;
+        if source
+            .fill_buf()
+            .map_err(read_error)?
+            .starts_with(super::BYTE_ORDER_MARK)
+        {
+            source.consume(super::BYTE_ORDER_MARK.len());
+        }
         Ok(Self {
             source,
             encoding,
