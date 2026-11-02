@@ -783,10 +783,13 @@ fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -
         };
         let mut best = consider(&sheets);
         if best.is_none() {
-            // The smallest stock sheet the piece spans and fits, keeping its
-            // factory edges, else the largest it fits trimmed all round.
+            // The largest stock sheet the piece spans and fits, keeping its
+            // factory edges, else the largest it fits trimmed all round; the
+            // sheet shrinks below to the smallest that holds its pieces (review
+            // 2026-11-02 PG-102: opening the smallest it spans left no room for
+            // the others, two or three narrow sheets where one holds them all).
             let mut openings: Vec<([f64; 2], [bool; 2])> = Vec::new();
-            for &size in &sizes {
+            for &size in sizes.iter().rev() {
                 for &turned in &orientations {
                     let edges = spans(size, turned);
                     if edges.contains(&true) {
@@ -887,24 +890,26 @@ fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -
     sheets
         .into_iter()
         .map(|sheet| {
-            let reach = sheet.placed.iter().fold([0.0f64; 2], |reach, piece| {
-                [
-                    reach[0].max(piece.at_mm[0] + piece.size_mm[0] + kerf),
-                    reach[1].max(piece.at_mm[1] + piece.size_mm[1] + kerf),
-                ]
-            });
-            let size = if sheet.edges.contains(&true) {
-                sheet.size
-            } else {
-                sizes
-                    .iter()
-                    .copied()
-                    .find(|size| {
-                        let [w, h] = usable(*size);
-                        reach[0] - trim <= w + EPS && reach[1] - trim <= h + EPS
+            // The smallest stock size holding the pieces where they lie: a
+            // piece keeping a factory edge still spans it, the others lie
+            // inside its trim.
+            let holds = |size: [f64; 2]| {
+                sheet.placed.iter().all(|piece| {
+                    (0..2).all(|axis| {
+                        let length = piece.size_mm[axis];
+                        if sheet.edges[axis] && spanned(length, sheet.size[axis]) {
+                            spanned(length, size[axis])
+                        } else {
+                            piece.at_mm[axis] + length <= size[axis] - trim + EPS
+                        }
                     })
-                    .unwrap_or(sheet.size)
+                })
             };
+            let size = sizes
+                .iter()
+                .copied()
+                .find(|size| holds(*size))
+                .unwrap_or(sheet.size);
             let area: f64 = sheet
                 .placed
                 .iter()

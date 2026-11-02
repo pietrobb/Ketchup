@@ -268,18 +268,36 @@ fn a_sheet_keeping_a_factory_edge_takes_other_pieces_inside_its_trim() {
 /// Review 2026-11-01 PG-102: a piece inside the trim, laid before a second
 /// piece spanning the sheet, took the factory edge from the whole rest of
 /// the sheet, so 2 500 x 600, 800 x 500 and 2 500 x 120 took two sheets
-/// where one holds them.
+/// where one holds them. Review 2026-11-02 PG-102 (rest): with a narrower
+/// second size of the same length they still took two or three sheets, each
+/// piece keeping the edge opening the smallest it spans.
 #[test]
 fn a_piece_inside_the_trim_leaves_the_factory_edge_to_the_pieces_spanning_the_sheet() {
-    let source = "sheet_stock(\"OSB\", [(2500, 1250)], kerf = 4, trim = 10)\n\
-                  board(\"wide\", (2500, 600, 18), material = \"OSB\")\n\
-                  board(\"panel\", (800, 500, 18), at = (0, 0, 30), material = \"OSB\")\n\
-                  board(\"strip\", (2500, 120, 18), at = (0, 0, 60), material = \"OSB\")\n";
-    let plans = plans(source);
-    let plan = &plans[0];
-    assert!(plan.unplaced.is_empty(), "{plan:#?}");
-    assert_eq!(plan.layouts.len(), 1, "{plan:#?}");
-    assert_cuttable_keeping_factory_edges(&plan.layouts[0], 4.0, 10.0);
+    for sizes in [
+        "[(2500, 1250)]",
+        "[(2500, 1250), (2500, 625)]",
+        "[(2500, 900), (2500, 1250)]",
+        "[(2500, 1250), (2500, 750)]",
+        "[(2510, 1250), (2500, 1250)]",
+        "[(2500, 1250), (2800, 2070)]",
+    ] {
+        let source = format!(
+            "sheet_stock(\"OSB\", {sizes}, kerf = 4, trim = 10)\n\
+             board(\"wide\", (2500, 600, 18), material = \"OSB\")\n\
+             board(\"panel\", (800, 500, 18), at = (0, 0, 30), material = \"OSB\")\n\
+             board(\"strip\", (2500, 120, 18), at = (0, 0, 60), material = \"OSB\")\n"
+        );
+        let plans = plans(&source);
+        let plan = &plans[0];
+        assert!(plan.unplaced.is_empty(), "{sizes}: {plan:#?}");
+        assert_eq!(plan.layouts.len(), 1, "{sizes}: {plan:#?}");
+        assert_eq!(
+            plan.layouts[0].stock_mm,
+            [2500.0, 1250.0],
+            "{sizes}: {plan:#?}"
+        );
+        assert_cuttable_keeping_factory_edges(&plan.layouts[0], 4.0, 10.0);
+    }
 }
 
 #[test]
