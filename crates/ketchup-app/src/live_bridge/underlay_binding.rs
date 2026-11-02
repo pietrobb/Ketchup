@@ -47,6 +47,11 @@ pub(super) struct Binding {
     /// out, as said when they were chosen (review 2026-10-31 UO-83).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub left_out: Option<String>,
+    /// `layers` are those of the room's walls, found when no layers were named: the holes
+    /// drawn on other layers are left out and said each time the room follows the drawing
+    /// (review 2026-11-01 UO-102).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub walls_found: bool,
 }
 
 impl Binding {
@@ -94,6 +99,7 @@ impl Binding {
         let left_out = (walls.as_ref())
             .and_then(|room| room.left_out_holes(underlay))
             .map(|left_out| left_out.to_string());
+        let walls_found = walls.is_some();
         let layers = match walls {
             Some(room) => room.walls,
             None => super::underlay_regions::chosen_layers(snapshot, underlay, layers.as_deref())?,
@@ -148,6 +154,7 @@ impl Binding {
             frame: false,
             whole: false,
             left_out,
+            walls_found,
         })
     }
 
@@ -156,6 +163,12 @@ impl Binding {
         let offset = underlay.offset_mm();
         self.within
             .map(|area| area.map(|[x, y]| [x - offset[0], y - offset[1]]))
+    }
+
+    /// Whether `layers` are those of the room's walls ([`Self::walls_found`]); a binding
+    /// written before says so by the holes it left out.
+    pub fn walled(&self) -> bool {
+        self.walls_found || self.left_out.is_some()
     }
 
     pub fn object(&self, lines: &UnderlayLines) -> Result<Option<u32>, &'static str> {
@@ -337,11 +350,10 @@ impl KetchupApp {
             .lines()
             .filter_map(|line| line.strip_prefix(PREFIX))
         {
-            if let Ok(binding) = serde_json::from_str::<Binding>(json)
-                && let Some(search) =
-                    super::underlay_program::binding_search(self, &snapshot, &binding)
-            {
-                super::underlay_regions::forget(&search);
+            if let Ok(binding) = serde_json::from_str::<Binding>(json) {
+                for search in super::underlay_program::binding_searches(self, &snapshot, &binding) {
+                    super::underlay_regions::forget(&search);
+                }
             }
         }
     }
@@ -366,8 +378,7 @@ impl KetchupApp {
         };
         let mut ready = true;
         for binding in &bindings {
-            if let Some(search) = super::underlay_program::binding_search(self, &snapshot, binding)
-            {
+            for search in super::underlay_program::binding_searches(self, &snapshot, binding) {
                 ready &= super::underlay_regions::search_ready(search);
             }
         }

@@ -516,3 +516,77 @@ fn a_byte_order_mark_ctrl_z_and_empty_lines_after_eof_do_not_refuse_an_underlay(
         );
     }
 }
+
+/// Review 2026-11-01 UL-101: a door block placed with a scale that differs along its axes
+/// (0.889 by 1) draws its swing as an arc of an ellipse. Its arc made the whole insert
+/// refused, so the door went from the plan; in an underlay it is drawn as the chords of
+/// that ellipse. Profiles, which keep true arcs, still refuse it.
+#[test]
+fn a_door_block_scaled_unevenly_draws_its_swing_as_an_ellipse_in_an_underlay() {
+    let door = concat!(
+        "0\nBLOCK\n2\ndoor\n70\n0\n10\n0\n20\n0\n",
+        "0\nLINE\n8\n0\n10\n0\n20\n0\n11\n900\n21\n0\n",
+        "0\nARC\n8\n0\n10\n0\n20\n0\n40\n900\n50\n0\n51\n90\n",
+        "0\nENDBLK\n",
+    );
+    let source = drawing(
+        door,
+        "0\nINSERT\n5\nD1\n8\ndoors\n2\ndoor\n10\n0\n20\n0\n41\n0.889\n42\n1\n",
+    );
+    let underlay = read_dxf_underlay(&source, DxfImportOptions::new(None))
+        .unwrap_or_else(|error| panic!("{error}"));
+    let points = underlay
+        .lines
+        .layers()
+        .iter()
+        .flat_map(|layer| layer.polylines())
+        .flatten()
+        .copied()
+        .collect::<Vec<_>>();
+    let on_ellipse = |[x, y]: [f64; 2]| (x / 800.1).powi(2) + (y / 900.0).powi(2);
+    let swing = points
+        .iter()
+        .filter(|point| point[1] > 1.0)
+        .collect::<Vec<_>>();
+    assert!(swing.len() > 4, "the swing is drawn: {points:?}");
+    for point in swing {
+        assert!(
+            (on_ellipse(*point) - 1.0).abs() < 1e-6,
+            "{point:?} off the ellipse"
+        );
+    }
+    assert!(
+        points
+            .iter()
+            .any(|point| (point[0] - 0.0).abs() < 1e-6 && (point[1] - 900.0).abs() < 1e-6)
+    );
+    assert_eq!(
+        inspect_dxf(&source, DxfImportOptions::new(None)),
+        Err(DxfImportError::UnsupportedInsertTransform)
+    );
+}
+
+/// Review 2026-11-01 P3: an insert refused after it took its share of what an underlay's
+/// inserts may place (here an array of copies all in one place) kept that share,
+/// so a later insert within the limit was refused too. A refused insert gives it back.
+#[test]
+fn an_insert_refused_gives_back_what_it_took_of_the_placing_limit() {
+    let ring = "0\nBLOCK\n2\nring\n70\n0\n10\n0\n20\n0\n0\nCIRCLE\n8\n0\n10\n0\n20\n0\n40\n500000\n0\nENDBLK\n";
+    let array = |handle: &str, spacing: u32| {
+        format!("0\nINSERT\n5\n{handle}\n8\nrings\n2\nring\n10\n0\n20\n0\n70\n120\n44\n{spacing}\n")
+    };
+    let source = drawing(ring, &format!("{}{}", array("A1", 0), array("B1", 1)));
+    let underlay = read_dxf_underlay(&source, DxfImportOptions::new(None))
+        .unwrap_or_else(|error| panic!("{error}"));
+    let refused = (underlay.diagnostics.iter())
+        .filter(|diagnostic| diagnostic.code() == "dxf.entity-unreadable")
+        .map(|diagnostic| (diagnostic.subject().unwrap_or_default(), diagnostic.count()))
+        .collect::<Vec<_>>();
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert_eq!(refused[0].1, 1, "{refused:?}");
+    assert!(
+        underlay.layers.contains(&"rings".to_owned()),
+        "{:?}",
+        underlay.layers
+    );
+}
