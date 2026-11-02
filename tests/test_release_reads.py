@@ -118,3 +118,39 @@ def test_every_job_that_tests_its_crates_keeps_their_saved_files_for_the_release
     assert len(tests) == 3
     assert all("--features ketchup-model/saved-files" in run for run in tests)
     assert ci.count("scripts/release_reads.py --files") == len(tests)
+
+
+def test_a_failing_test_does_not_stop_the_reads_of_the_files_others_saved(tmp_path, monkeypatch):
+    # Review 2026-11-01 TST-44: two lock tests fail as root, and the script then stopped
+    # before it read a file.
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if "test" in command:
+            (tmp_path / "saved.ketchup").write_bytes(b"x")
+            if kwargs.get("check"):
+                raise checker.subprocess.CalledProcessError(101, command)
+            return type("Done", (), {"returncode": 101})()
+        return type("Done", (), {"returncode": 0})()
+
+    monkeypatch.setattr(checker.subprocess, "run", run)
+    monkeypatch.setattr(checker.subprocess, "CalledProcessError", subprocess.CalledProcessError)
+    monkeypatch.setattr(checker, "serde_enums", lambda tag: {})
+    monkeypatch.setattr(checker, "version", lambda tag: "0.3.0")
+    monkeypatch.setattr(checker, "what_it_reads", lambda tag: [])
+    monkeypatch.setattr(checker, "old_workspace", lambda tag, target: tmp_path)
+    monkeypatch.setattr(checker.tempfile, "TemporaryDirectory", lambda **kwargs: _Here(tmp_path))
+    assert checker.main(["--tag", "v0.3.0"]) == 1
+    assert any("run" in command for command in calls), "the release read no file"
+
+
+class _Here:
+    def __init__(self, path):
+        self.path = path
+
+    def __enter__(self):
+        return str(self.path)
+
+    def __exit__(self, *exc):
+        return False
