@@ -1808,8 +1808,8 @@ fn a_panel_product_takes_its_own_kmod_kdef_and_gamma_m() {
             ),
         )
     };
-    let report = report(&osb(1), &[]);
-    let panel = member(&report, "beam");
+    let named = report(&osb(1), &[]);
+    let panel = member(&named, "beam");
     // As the C24 beam of the hand calculation, with OSB/3 in service class 1: kmod 0.7 for
     // the medium-term imposed load and gamma_M 1.2.
     let (q, l) = (1.2, 3900.0);
@@ -1824,4 +1824,21 @@ fn a_panel_product_takes_its_own_kmod_kdef_and_gamma_m() {
         format!("{error:#}").contains("service class 3"),
         "{error:#}"
     );
+
+    // Review 2026-11-02 PG-106: without product= it took solid timber's factors
+    // and passed; a class naming no product leaves its members not verified.
+    let unnamed = report(&osb(1).replace(" product = \"osb3\",", ""), &[]);
+    let panel = member(&unnamed, "beam");
+    assert_eq!(panel.status, "not_verified", "{panel:?}");
+    assert!(
+        panel
+            .missing
+            .iter()
+            .any(|reason| reason.contains("product")),
+        "{:?}",
+        panel.missing
+    );
+    // The library's classes name theirs.
+    let c24 = report(&beam("C24", 100.0, 200.0), &[]);
+    assert_eq!(member(&c24, "beam").status, "pass");
 }

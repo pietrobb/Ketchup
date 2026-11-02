@@ -3147,10 +3147,12 @@ def price_list(prices, currency = None, source = None):
 #     timber_design for one material with its own characteristic values in N/mm² (rho_k, the
 #     characteristic density in kg/m³, is what a connector rating's density_kg_m3 is compared
 #     with). product names the EN 1995-1-1 table 3.1 row whose kmod, kdef (table 3.2) and
-#     gamma_M (table 2.3) apply: "solid" (default), "glulam" (default with glulam=True),
+#     gamma_M (table 2.3) apply: "solid", "glulam" (default with glulam=True),
 #     "lvl", "plywood" (EN 636-3), "osb2", "osb3", "osb4", "particleboard_p5",
 #     "particleboard_p6" or "particleboard_p7"; a service class the product is not used in
-#     is refused. A class of the classes table may give it as "product".
+#     is refused. A class of the classes table gives it as "product". Without product (and
+#     not glulam) the members of the material are not verified: kmod, kdef and gamma_M of
+#     solid timber would overstate a panel product.
 #   The report's design.members lists every load-path member: role (beam or column),
 #   section [width, depth], the checks with their utilization, governing combination and
 #   place (bending, lateral_torsional = bending over kcrit on the stretch of its
@@ -3169,13 +3171,13 @@ def price_list(prices, currency = None, source = None):
 
 TIMBER_CLASSES = {
     "C16": {"glulam": False, "fm_k": 16, "fv_k": 3.2, "fc0_k": 17, "fc90_k": 2.2, "e0_mean": 8000, "e0_05": 5400, "rho_k": 310,
-            "source": "EN 338:2016 table 1, C16"},
+            "source": "EN 338:2016 table 1, C16", "product": "solid"},
     "C24": {"glulam": False, "fm_k": 24, "fv_k": 4.0, "fc0_k": 21, "fc90_k": 2.5, "e0_mean": 11000, "e0_05": 7400, "rho_k": 350,
-            "source": "EN 338:2016 table 1, C24"},
+            "source": "EN 338:2016 table 1, C24", "product": "solid"},
     "GL24h": {"glulam": True, "fm_k": 24, "fv_k": 3.5, "fc0_k": 24, "fc90_k": 2.5, "e0_mean": 11500, "e0_05": 9600, "rho_k": 385,
-              "source": "EN 14080:2013 table 5, GL24h"},
+              "source": "EN 14080:2013 table 5, GL24h", "product": "glulam"},
     "GL28h": {"glulam": True, "fm_k": 28, "fv_k": 3.5, "fc0_k": 28, "fc90_k": 2.5, "e0_mean": 12600, "e0_05": 10500, "rho_k": 425,
-              "source": "EN 14080:2013 table 5, GL28h"},
+              "source": "EN 14080:2013 table 5, GL28h", "product": "glulam"},
 }
 
 def timber_design(materials, service_class = 1, classes = None):

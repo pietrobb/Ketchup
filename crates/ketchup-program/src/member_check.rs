@@ -293,7 +293,7 @@ pub const BASIS: [&str; 9] = [
     "EN 1990 6.4.3.2 (6.10): 1.35 G + 1.5 Q1 + 1.5 psi0 Qi; SLS characteristic, w_fin with kdef and psi2 (recommended values, the national annex may differ)",
     "psi0/psi2 (EN 1990 table A1.1): imposed category A 0.7/0.3, roof category H 0/0 and never with snow (EN 1991-1-1 3.3.2), snow below 1000 m 0.5/0",
     "load duration (EN 1995-1-1 2.3.1.2): permanent G, medium-term imposed, short-term roof and snow; kmod table 3.1, kdef table 3.2 and gamma_M table 2.3 of the product each class names (solid timber 1.3, glulam 1.25, LVL, plywood and OSB 1.2, particleboard 1.3)",
-    "bending with kh (3.2, 3.3); lateral torsional buckling (6.3.3) between the places that hold the member sideways (its bearings, and parts resting on it that rest on something else too: decking, battens, joists), with kcrit (6.34) of sigma_m,crit (6.32) over lef at the upper bound of table 6.1 (the stretch, plus 2h where the top is compressed): a member whose bending over kcrit exceeds the strength there is not verified",
+    "bending with kh (3.2, 3.3); lateral torsional buckling (6.3.3) between the places that hold its compressed edge sideways (its bearings, and parts bearing on that edge and on something else too, screwed to it by a joint or also bearing on a grounded part: decking, battens, a ceiling; the top under sagging, the bottom under hogging), with kcrit (6.34) of sigma_m,crit (6.32) over lef at the upper bound of table 6.1 (the stretch, plus 2h where the top is compressed): bending over kcrit is the check lateral_torsional, and a member where it exceeds the strength is not verified",
     "shear with kcr = 0.67 (6.1.7); notches at bearings with kv (6.5.2), right-angled, x from the middle of the reaction to the corner of the notch, kv = 1 for a notch in the top over a bearing under the member (fig. 6.11(b)); elsewhere a change in depth steeper than 1:10 on the side in tension is not verified (6.5.1(2))",
     "compression perpendicular to the grain with kc90 = 1 on the contact area (6.1.5, without the 30 mm extension); compression with kc (6.3.2) on the full member length about both axes, sheathing not counted, and without kc on the net section at notches in a side (6.1.4) more than twice the member width from its ends; axial force in sloped beams neglected",
     "moments, shear and deflection: bending stress, shear stress and curvature on the section at each place along the member (a notch drawn in its side profile included), taken in the vertical plane across its grain so that a vertical load bends a turned section about both its axes, and its deflection is the resultant of the vertical and the sideways part, each at its own worst load pattern; spans continuous over the supports (three-moment equation, constant section) and cantilevers clamped at their support, as the loads are passed down; variable loads laid span by span and overhang by overhang where they add to the effect (load patterns), permanent load with 1.35 or, where it relieves the effect, 1.0 (EN 1990 table A1.2(B)); w_inst <= l/300 and w_fin <= l/250, cantilevers l/150 and l/125 (EN 1995-1-1 table 7.2, the lenient ends of the ranges)",
@@ -2441,6 +2441,16 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
             members.push(check);
             continue;
         };
+        // Review 2026-11-02 PG-106: solid timber's factors are no default
+        // for a material that names no product (an OSB took kmod 0.6, not 0.4).
+        if class.product.is_empty() && !class.glulam {
+            missing.push(format!(
+                "timber_strength({material:?}) names no product (product=\"solid\", \"osb3\", ...), so its kmod, kdef and gamma_M are unknown"
+            ));
+            check.missing = missing;
+            members.push(check);
+            continue;
+        }
         let design = Design {
             class,
             gamma_m: class.product().gamma_m,
