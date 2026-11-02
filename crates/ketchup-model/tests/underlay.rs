@@ -683,8 +683,9 @@ fn a_drawing_in_national_grid_coordinates_is_moved_near_the_origin_by_its_median
     // The median point, in whole metres: the stray lines do not move it.
     assert_eq!(underlay.offset_mm, [-560_120_000.0, -1_210_987_000.0]);
     assert_eq!(underlay.layers, ["plan", "stray"]);
-    // UL-4: the line 5 km off is kept, as the edge of a map of a whole village would be.
-    assert_eq!(underlay.lines.segment_count(), 6);
+    // UL-4: the line 5 km off is kept, as the edge of a map of a whole village would be,
+    // and the one from 20 km off to 20 km off cut at 10 km off.
+    assert_eq!(underlay.lines.segment_count(), 7);
     let first = underlay.lines.layers()[0].polylines().next().unwrap();
     assert!((first[0][0] - -3456.7).abs() < 1e-6 && (first[0][1] - -654.3).abs() < 1e-6);
     let diagnostic = |code: &str| {
@@ -698,9 +699,8 @@ fn a_drawing_in_national_grid_coordinates_is_moved_near_the_origin_by_its_median
         Some("x -560120 m, y -1210987 m")
     );
     assert!(diagnostic("dxf.wcs-origin-preserved").is_none());
-    // Even moved, the stray line and the one from 20 km off to 20 km off are more than
-    // 10 km away.
-    assert_eq!(diagnostic("dxf.lines-outside-envelope").unwrap().count(), 2);
+    // Even moved, the stray line is more than 10 km away.
+    assert_eq!(diagnostic("dxf.lines-outside-envelope").unwrap().count(), 1);
 
     // A drawing near the origin stays where it is, and a profile import on the same
     // thread still keeps to the envelope.
@@ -719,6 +719,88 @@ fn a_drawing_in_national_grid_coordinates_is_moved_near_the_origin_by_its_median
         .map(|_| ()),
         Err(DxfImportError::CoordinateOutOfRange)
     );
+}
+
+/// Review 2026-11-01 UL-4: a point more than 10 km from where the drawing landed left out
+/// the pieces on both sides of it: the 24 km axis of a road across a 10 m house and the
+/// 11 km edge of a parcel were left out whole. Each piece is cut at the envelope instead,
+/// and the object that drew it keeps what is left.
+#[test]
+fn lines_reaching_past_the_envelope_are_cut_at_it_not_left_out() {
+    let [x, y] = [-560_123_456.7, -1_210_987_654.3];
+    let mut entities = String::new();
+    for (from, to) in [
+        ([0.0, 0.0], [10_000.0, 0.0]),
+        ([10_000.0, 0.0], [10_000.0, 8_000.0]),
+        ([10_000.0, 8_000.0], [0.0, 8_000.0]),
+        ([0.0, 8_000.0], [0.0, 0.0]),
+    ] {
+        entities.push_str(&line(
+            "house",
+            [x + from[0], y + from[1]],
+            [x + to[0], y + to[1]],
+        ));
+    }
+    // The road: 24 km, one straight line from 12 km off to 12 km off.
+    entities.push_str(&line(
+        "road",
+        [x - 1.2e7, y + 4_000.0],
+        [x + 1.2e7, y + 4_000.0],
+    ));
+    // The parcel: from 50 m off to 11 km off, then 30 m along out there.
+    entities.push_str(&format!(
+        "0\nLWPOLYLINE\n5\n77\n8\nparcel\n90\n3\n70\n0\n10\n{}\n20\n{}\n10\n{}\n20\n{}\n10\n{}\n20\n{}\n",
+        x - 50_000.0,
+        y - 20_000.0,
+        x + 1.1e7,
+        y - 20_000.0,
+        x + 1.1e7,
+        y + 10_000.0,
+    ));
+    let underlay = read(&entities);
+    let [dx, dy] = underlay.offset_mm;
+    let layer = |name: &str| {
+        let at = underlay
+            .layers
+            .iter()
+            .position(|known| known == name)
+            .unwrap();
+        &underlay.lines.layers()[at]
+    };
+    let polylines = |name: &str| {
+        layer(name)
+            .polylines()
+            .map(<[[f64; 2]]>::to_vec)
+            .collect::<Vec<_>>()
+    };
+    let extent = ketchup_model::underlay::UNDERLAY_EXTENT_MM;
+    let road = polylines("road");
+    assert_eq!(road.len(), 1, "{road:?}");
+    let [start, end] = [road[0][0], road[0][road[0].len() - 1]];
+    assert_eq!([start[0], end[0]], [-extent, extent], "{road:?}");
+    assert!((start[1] + dy - (y + 4_000.0)).abs() < 1e-6);
+    // The road crosses the house.
+    assert!(-extent < x - dx && x - dx + 10_000.0 < extent);
+    let parcel = polylines("parcel");
+    assert_eq!(parcel.len(), 1, "{parcel:?}");
+    assert_eq!(parcel[0].len(), 2);
+    assert!((parcel[0][0][0] + dx - (x - 50_000.0)).abs() < 1e-6);
+    assert_eq!(parcel[0][1][0], extent);
+    // The polyline's object still draws what is left of it.
+    let objects = underlay.lines.objects();
+    let object = objects
+        .objects
+        .iter()
+        .find(|object| object.handle == 0x77)
+        .unwrap();
+    assert_eq!(object.parts.len(), 1, "{object:?}");
+    assert_eq!(object.parts[0].points.len(), 2, "{object:?}");
+    // Only the parcel's piece wholly 11 km off is left out.
+    let outside = underlay
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code() == "dxf.lines-outside-envelope");
+    assert_eq!(outside.map(|diagnostic| diagnostic.count()), Some(1));
 }
 
 #[test]

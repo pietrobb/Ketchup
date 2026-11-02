@@ -447,7 +447,8 @@ impl UnderlayLines {
     /// metres, so that a stray line far away does not decide where the drawing lands.
     /// Texts move with the lines, by their anchors, and count in the median too.
     /// Returns that offset, which added back gives the drawing's own coordinates, and what
-    /// was left out because even moved it is more than [`UNDERLAY_EXTENT_MM`] away.
+    /// was left out because even moved it is more than [`UNDERLAY_EXTENT_MM`] away; a
+    /// line reaching past that is cut there.
     ///
     /// With `geo_origin_mm`, the offset of a drawing of the document in the same grid
     /// ([`placement::geo_origin`]), the lines move by that instead when it leaves out no
@@ -520,19 +521,30 @@ impl UnderlayLines {
                 }
             }
             for (style, polyline) in layer.styled_polylines() {
-                // A point outside ends the polyline; the pieces on both sides of it are
-                // left out.
+                // Each piece is cut at the envelope: a 24 km line across a 10 m plan keeps
+                // its 20 km within it (review 2026-11-01 UL-4). A piece wholly outside
+                // ends the polyline.
+                let moved = polyline
+                    .iter()
+                    .map(|point| [point[0] - offset_mm[0], point[1] - offset_mm[1]])
+                    .collect::<Vec<_>>();
+                let mut went = vec![u32::MAX; moved.len()];
+                // The points of the polyline kept, each with the point it stands for: its
+                // own, or the one outside where a piece was cut.
                 let mut run = Vec::new();
-                for point in polyline {
-                    let moved = [point[0] - offset_mm[0], point[1] - offset_mm[1]];
-                    if inside(&moved) {
-                        run.push(moved);
-                    } else {
-                        push_run(&mut kept, &mut run, style, &mut map.points);
-                        map.points.push(u32::MAX);
+                for (at, piece) in moved.windows(2).enumerate() {
+                    let Some([from, to]) = clipped(piece[0], piece[1], UNDERLAY_EXTENT_MM) else {
+                        push_run(&mut kept, &mut run, style, &mut went);
+                        continue;
+                    };
+                    if run.last().is_none_or(|(last, _)| *last != from) {
+                        push_run(&mut kept, &mut run, style, &mut went);
+                        run.push((from, at));
                     }
+                    run.push((to, at + 1));
                 }
-                push_run(&mut kept, &mut run, style, &mut map.points);
+                push_run(&mut kept, &mut run, style, &mut went);
+                map.points.extend(went);
             }
             *layer = kept;
             maps.push(map);
@@ -1109,18 +1121,63 @@ fn push_polyline(lines: &mut LayerLines, segments: &[ProfileSegment], style: u32
     lines.styles.push(style);
 }
 
-/// Appends `run` to `lines` as one polyline of `style` if it has a piece, and empties it;
-/// `map` gets where each of its points went, `u32::MAX` if it was left out.
-fn push_run(lines: &mut LayerLines, run: &mut Vec<[f64; 2]>, style: u32, map: &mut Vec<u32>) {
-    let kept = run.len() >= 2;
-    let start = lines.points_mm.len();
-    map.extend((0..run.len()).map(|offset| kept_at(kept, start + offset)));
-    if kept {
-        lines.points_mm.append(run);
+/// Appends `run`, points each with the index of the point of its polyline it stands for,
+/// to `lines` as one polyline of `style` if it has a piece, and empties it; `went` gets,
+/// by those indices, where each point went first.
+fn push_run(
+    lines: &mut LayerLines,
+    run: &mut Vec<([f64; 2], usize)>,
+    style: u32,
+    went: &mut [u32],
+) {
+    if run.len() >= 2 {
+        for (point, of) in run.iter() {
+            if went[*of] == u32::MAX {
+                went[*of] = kept_at(true, lines.points_mm.len());
+            }
+            lines.points_mm.push(*point);
+        }
         lines.ends.push(lines.points_mm.len());
         lines.styles.push(style);
     }
     run.clear();
+}
+
+/// The part of the piece `from` to `to` within `extent` of the origin along both axes, or
+/// `None` when none of it is (Liang–Barsky). An end within it stays as it is.
+fn clipped(from: [f64; 2], to: [f64; 2], extent: f64) -> Option<[[f64; 2]; 2]> {
+    if !from.iter().chain(&to).all(|value| value.is_finite()) {
+        return None;
+    }
+    let along = [to[0] - from[0], to[1] - from[1]];
+    let (mut enter, mut leave) = (0.0_f64, 1.0_f64);
+    for axis in 0..2 {
+        for (toward, room) in [
+            (-along[axis], from[axis] + extent),
+            (along[axis], extent - from[axis]),
+        ] {
+            if toward == 0.0 {
+                if room < 0.0 {
+                    return None;
+                }
+            } else if toward < 0.0 {
+                enter = enter.max(room / toward);
+            } else {
+                leave = leave.min(room / toward);
+            }
+        }
+    }
+    if enter > leave || (enter == leave && from != to) {
+        return None;
+    }
+    let at = |t: f64, end: [f64; 2]| {
+        if t == 0.0 || t == 1.0 {
+            end
+        } else {
+            [0, 1].map(|axis| (from[axis] + along[axis] * t).clamp(-extent, extent))
+        }
+    };
+    Some([at(enter, from), at(leave, to)])
 }
 
 /// Where a point, text or fill went: `at` if it was `kept`, else `u32::MAX`.
