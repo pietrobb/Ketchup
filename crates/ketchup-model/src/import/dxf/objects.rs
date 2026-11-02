@@ -38,6 +38,29 @@ pub(super) fn placement(
     })
 }
 
+/// Makes an entity of `kind` that could not be read an object that draws nothing: it is
+/// still an entity of the drawing, and an edit of a drawing without handles finds each
+/// entity by its place among the objects (review 2026-11-01 CD-101). What it placed
+/// before it failed is not its.
+pub(super) fn claim_unread(output: &mut ParsedEntities, kind: &str, record: &[DxfPair<'_>]) {
+    output.placements.clear();
+    let Some(kind) = ObjectKind::from_dxf(kind) else {
+        return;
+    };
+    let handle = parse_optional_text(record, 5)
+        .ok()
+        .flatten()
+        .and_then(|handle| u64::from_str_radix(handle.trim(), 16).ok())
+        .unwrap_or(0);
+    output.objects.push(SourceObject {
+        kind,
+        handle,
+        layer: parse_layer(record).unwrap_or_else(|_| "0".to_owned()),
+        parent: None,
+        detail: ObjectDetail::None,
+    });
+}
+
 /// Makes the entity of `kind` just read — its groups and what follows it up to its SEQEND
 /// in `span` — an object of `output`, and gives it what it drew since `counts`; what an
 /// insert or dimension placed from its block goes to the objects of the block, placed as
@@ -56,9 +79,9 @@ pub(super) fn claim(
         return Ok(());
     };
     let places = matches!(kind, "INSERT" | "DIMENSION");
-    if output.counts() == counts && !places {
-        return Ok(());
-    }
+    // An entity that draws nothing (a line of no length) is still an object: an edit
+    // of a drawing without handles finds each entity by its place among the objects
+    // (review 2026-11-01 CD-101).
     let record_end = span
         .iter()
         .position(|pair| pair.code == 0)

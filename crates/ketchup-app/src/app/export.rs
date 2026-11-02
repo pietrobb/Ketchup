@@ -18,17 +18,28 @@ impl KetchupApp {
         name
     }
 
+    /// A `.zip` destination of HOMAG MPR is the production package: one
+    /// program per piece, named by its production code (review 2026-11-01 MF-102).
+    pub(crate) fn is_homag_mpr_package_path(path: &Path) -> bool {
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+    }
+
     pub(crate) fn validate_homag_mpr_path(path: &Path) -> Result<(), ExportError> {
         let invalid_name = || ExportError::Destination {
             requirement: "a program name of exactly 12 ASCII letters, digits, '-' or '_'",
         };
+        if Self::is_homag_mpr_package_path(path) {
+            return Ok(());
+        }
         if !path
             .extension()
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("mpr"))
         {
             return Err(ExportError::Destination {
-                requirement: "an explicit .mpr destination",
+                requirement: "an explicit .mpr destination, or .zip for one program per piece",
             });
         }
         let stem = path
@@ -59,13 +70,14 @@ impl KetchupApp {
             "xlsx" => ("file-filter-cut-list-xlsx", "xlsx"),
             "nc" => ("file-filter-cam-gcode", "nc"),
             "mpr" => ("file-filter-homag-mpr", "mpr"),
+            "mpr-zip" => ("file-filter-homag-mpr-zip", "zip"),
             "btlx" => ("file-filter-btlx", "btlx"),
             "svg" => ("file-filter-svg", "svg"),
             "pdf" => ("file-filter-pdf", "pdf"),
             "dwg" => ("file-filter-dwg", "dwg"),
             "zip" => ("file-filter-cnc-dxf-zip", "zip"),
             _ => unreachable!(
-                "the File menu and the takeoff and drawings windows export only DXF, STEP, IGES, STL, 3MF, GLB, DAE, KETCHUP-VIEW, CSV, XLSX, NC, MPR, BTLx, SVG, PDF, DWG and ZIP"
+                "the File menu and the takeoff and drawings windows export only DXF, STEP, IGES, STL, 3MF, GLB, DAE, KETCHUP-VIEW, CSV, XLSX, NC, MPR (alone or as a ZIP), BTLx, SVG, PDF, DWG and ZIP"
             ),
         };
         let filter_label = self.catalog.text(filter_key);
@@ -84,7 +96,7 @@ impl KetchupApp {
         };
         self.dialogs.pick_export_path(ExportRequest {
             filter_label: &filter_label,
-            extension,
+            extension: suffix,
             suggested_name: &suggested_name,
         })
     }
@@ -434,10 +446,17 @@ impl KetchupApp {
         let snapshot = self.document.current();
         let result = (|| -> Result<Written, ExportError> {
             Self::validate_homag_mpr_path(path)?;
+            let package = Self::is_homag_mpr_package_path(path);
+            let render = |projection: &GeneralFabricationProjection, snapshot: &Snapshot| {
+                if package {
+                    projection.woodwop_mpr_4_0_production_zip(snapshot, Default::default())
+                } else {
+                    projection.woodwop_mpr_4_0_drill_export(snapshot)
+                }
+                .map_err(ExportError::failed)
+            };
             let projection = self.current_general_fabrication_projection()?;
-            let mpr = projection
-                .woodwop_mpr_4_0_drill_export(&snapshot)
-                .map_err(ExportError::failed)?;
+            let mpr = render(&projection, &snapshot)?;
             let expected_sha256 = export_target_sha256(path)?;
             let title = self.catalog.text("dialog-export-homag-mpr-title");
             let risk = self.catalog.text("dialog-export-homag-mpr-risk");
@@ -466,10 +485,7 @@ impl KetchupApp {
             if current.document_id() != snapshot.document_id()
                 || current.revision_id() != snapshot.revision_id()
                 || current.canonical_digest() != snapshot.canonical_digest()
-                || current_projection
-                    .woodwop_mpr_4_0_drill_export(&current)
-                    .map_err(ExportError::failed)?
-                    != mpr
+                || render(&current_projection, &current)? != mpr
             {
                 return Err(ExportError::ChangedDuringConsent);
             }

@@ -7,13 +7,14 @@
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, Snapshot, metric_nominal_diameter,
 };
-use ketchup_model::exact_brep_graph::{ExactBRepGraphError, ExactBRepOperation};
+use ketchup_model::exact_brep_graph::{ExactBRepGraph, ExactBRepGraphError, ExactBRepOperation};
 use ketchup_model::exact_product::ExactBRepGraphPackage;
 use ketchup_model::tolerance::ROUNDING;
 use ketchup_scheduler::WorkerError;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 pub use ketchup_model::document::ThreadCylinder;
@@ -54,20 +55,26 @@ impl std::error::Error for CosmeticThreadBodyError {
     }
 }
 
-/// `package`'s body with its modelled threads cosmetic, so a drawing shows
-/// them by ISO 6410: its graph without the thread grooves, evaluated only now
-/// by a pooled exact worker, whose output cache already holds the nodes before
-/// them. `None` when the body models no thread. `blobs` are the document's
-/// imported sources by SHA-256.
+/// What `package`'s body is drawn from with its modelled threads cosmetic, so
+/// a drawing shows them by ISO 6410: its graph without the thread grooves and
+/// the imported sources that graph reads. Made where the document is, without
+/// a worker; [`Self::evaluate`] then waits for one wherever the caller can let
+/// it be cancelled (review 2026-11-01 UI-100, UI-11).
+#[derive(Clone, Debug)]
+pub struct CosmeticThreadGraph {
+    graph: ExactBRepGraph,
+    sources: Vec<Arc<Vec<u8>>>,
+}
+
+/// The cosmetic-thread graph of `package`'s body, or `None` when the body
+/// models no thread. `blobs` are the document's imported sources by SHA-256.
 ///
 /// # Errors
-/// The graph without grooves is invalid, an imported source is missing, or
-/// no exact worker evaluates it.
-pub fn cosmetic_thread_body(
-    executable: Option<&Path>,
+/// The graph without grooves is invalid or an imported source is missing.
+pub fn cosmetic_thread_graph(
     package: &ExactBRepGraphPackage,
     blobs: &ketchup_model::persistence::Blobs,
-) -> Result<Option<ExactBRepGraphPackage>, CosmeticThreadBodyError> {
+) -> Result<Option<CosmeticThreadGraph>, CosmeticThreadBodyError> {
     let Some(graph) = package
         .graph
         .without_thread_grooves()
@@ -92,18 +99,42 @@ pub fn cosmetic_thread_body(
         .map(|hash| {
             blobs
                 .get(&hash)
-                .map(|bytes| bytes.as_slice())
+                .cloned()
                 .ok_or(CosmeticThreadBodyError::ImportedSourceMissing(hash))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let cancelled = AtomicBool::new(false);
-    let mut worker = crate::worker_pool::checkout(executable, &cancelled)
-        .map_err(CosmeticThreadBodyError::Unavailable)?;
-    let body = worker
-        .evaluate_exact_brep_graph_with_imported_sources(&graph, &sources)
-        .map_err(CosmeticThreadBodyError::Worker)?;
-    worker.release();
-    Ok(Some(body))
+    Ok(Some(CosmeticThreadGraph { graph, sources }))
+}
+
+impl CosmeticThreadGraph {
+    /// The body without its thread grooves, evaluated by a pooled exact worker
+    /// at `executable`, whose output cache already holds the nodes before them;
+    /// `cancelled` stops the worker.
+    ///
+    /// # Errors
+    /// No exact worker evaluates it, or it was cancelled.
+    pub fn evaluate(
+        &self,
+        executable: Option<&Path>,
+        cancelled: &AtomicBool,
+    ) -> Result<ExactBRepGraphPackage, CosmeticThreadBodyError> {
+        let sources = self
+            .sources
+            .iter()
+            .map(|source| source.as_slice())
+            .collect::<Vec<_>>();
+        let mut worker = crate::worker_pool::checkout(executable, cancelled)
+            .map_err(CosmeticThreadBodyError::Unavailable)?;
+        let body = worker
+            .evaluate_exact_brep_graph_with_imported_sources_and_cancellation(
+                &self.graph,
+                &sources,
+                cancelled,
+            )
+            .map_err(CosmeticThreadBodyError::Worker)?;
+        worker.release();
+        Ok(body)
+    }
 }
 
 /// Every thread of `snapshot`; the outside threads of program parts only

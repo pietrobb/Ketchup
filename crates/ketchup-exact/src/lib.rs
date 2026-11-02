@@ -289,6 +289,8 @@ mod ffi {
         fn route_kernel_messages_to_stderr_native() -> bool;
         fn step_source_parses_on_this_thread_native() -> u64;
         fn iges_source_parses_on_this_thread_native() -> u64;
+        fn source_entity_scans_on_this_thread_native() -> u64;
+        fn xde_shapes_checked_apart_on_this_thread_native() -> u64;
         fn shape_maps_built_native() -> u64;
         fn open_step_xde_document_native(path: &str) -> UniquePtr<NativeXdeDocument>;
         fn open_iges_xde_document_native(path: &str) -> UniquePtr<NativeXdeDocument>;
@@ -623,6 +625,21 @@ impl ExactBackend {
     #[must_use]
     pub fn iges_source_parses_on_this_thread() -> u64 {
         ffi::iges_source_parses_on_this_thread_native()
+    }
+
+    /// How many times this thread has passed over a reader's records to trace
+    /// the shapes of an XDE document back to their source entities. Only a
+    /// refused shape is traced, and all of one document's from one pass.
+    #[must_use]
+    pub fn source_entity_scans_on_this_thread() -> u64 {
+        ffi::source_entity_scans_on_this_thread_native()
+    }
+
+    /// How many shapes of XDE parts this thread has checked one by one, which
+    /// it does only for a part that fails the check as a whole.
+    #[must_use]
+    pub fn xde_shapes_checked_apart_on_this_thread() -> u64 {
+        ffi::xde_shapes_checked_apart_on_this_thread_native()
     }
 
     /// How many times this thread has mapped every face or every edge of a

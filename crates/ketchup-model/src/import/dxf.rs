@@ -26,6 +26,15 @@ const MAX_DXF_LINE_BYTES: usize = 4 * MAX_DXF_LINE_CHARS;
 fn too_long(line: &str) -> bool {
     line.len() > MAX_DXF_LINE_CHARS && line.chars().count() > MAX_DXF_LINE_CHARS
 }
+
+/// A UTF-8 byte order mark, which only says how the rest of a file is written.
+const BYTE_ORDER_MARK: &[u8] = b"\xEF\xBB\xBF";
+
+/// Whether `byte` may follow the last line of a drawing: a line end, a space, or the
+/// Ctrl-Z (0x1A) with which DOS editors ended a text file (review 2026-11-01 CD-106).
+const fn is_trailing(byte: u8) -> bool {
+    byte.is_ascii_whitespace() || byte == 0x1A
+}
 /// The most group-code pairs a drawing import reads; a DWG conversion with more is
 /// refused in the worker, before the window reads its DXF.
 pub const MAX_DXF_PAIRS: usize = limits::DRAWING_PAIRS;
@@ -1100,6 +1109,8 @@ fn next_id(ids: impl Iterator<Item = u64>) -> Result<u64, DxfImportPlanError> {
 }
 
 fn parse_pairs(text: &str, max_pairs: usize) -> Result<Vec<DxfPair<'_>>, DxfImportError> {
+    let text =
+        text.trim_end_matches(|character: char| u8::try_from(character).is_ok_and(is_trailing));
     // The lines are counted and measured first and refused on the pair count as it is
     // reached, so a large file is never held as a list of its lines, only as its pairs.
     let max_lines = max_pairs.saturating_mul(2).saturating_add(1);
@@ -1340,7 +1351,9 @@ fn parse_entities(
             output.handles.insert(ordinal, handle.clone());
         }
         // An entity it cannot read is left out and counted, by its handle, instead of
-        // refusing the whole drawing.
+        // refusing the whole drawing; what it took of the placing limit is given back
+        // (review 2026-11-01 P3).
+        let placed_left = diagnostics.placed_left;
         let read = (|| -> Result<(), DxfImportError> {
             if !matches!(kind.as_str(), "ATTRIB" | "SEQEND")
                 && let Some((severity, code)) = left_out(&kind, record, diagnostics)?
@@ -1506,6 +1519,7 @@ fn parse_entities(
             if error.ends_reading() {
                 return Err(error);
             }
+            diagnostics.placed_left = placed_left;
             // The vertices and attributes it did not get to are its, not entities that
             // failed too (review 2026-10-24 UL-22).
             let pending = pairs.get(index).is_some_and(|pair| {
@@ -1531,6 +1545,9 @@ fn parse_entities(
                 handle.as_deref().map(|handle| ("handles", handle)),
                 Some(error),
             )?;
+            if diagnostics.reading.styles {
+                objects::claim_unread(output, &kind, record);
+            }
         }
         // Many INSERTs of a block each within the limit must not build millions
         // of profiles before the whole drawing is checked.
@@ -3778,7 +3795,11 @@ fn parse_insert(
     {
         return Err(DxfImportError::AmbiguousGeometry);
     }
-    if scale_x.abs() != scale_y.abs()
+    // Scaled unevenly an arc becomes an arc of an ellipse: drawn as its chords where curves
+    // are (an underlay; review 2026-11-01 UL-101), refused where only true arcs are.
+    let uneven = scale_x.abs() != scale_y.abs();
+    if uneven
+        && !diagnostics.reading.curves
         && block.profiles.iter().any(|profile| {
             profile
                 .segments
@@ -3788,6 +3809,7 @@ fn parse_insert(
     {
         return Err(DxfImportError::UnsupportedInsertTransform);
     }
+    let largest = uneven.then(|| scale_x.abs().max(scale_y.abs()));
     let expanded_profile_count = placement_count
         .checked_mul(block.profiles.len())
         .ok_or(DxfImportError::TooManyProfiles)?;
@@ -3854,9 +3876,13 @@ fn parse_insert(
                     segments: profile
                         .segments
                         .iter()
+                        .flat_map(|segment| match uneven_arc_chords(segment, largest) {
+                            Some(chords) => chords,
+                            None => vec![segment.clone()],
+                        })
                         .map(|segment| {
                             transform_segment(
-                                segment,
+                                &segment,
                                 block.base_mm,
                                 array_insertion_mm,
                                 [scale_x, scale_y],
@@ -4026,6 +4052,47 @@ fn place_point(
             insertion_mm[1] + relative[0] * rotation_sin + relative[1] * rotation_cos,
         )?,
     ])
+}
+
+/// The chords, in the block, of `segment` when it is an arc an uneven scale, of `largest`
+/// along an axis, makes an arc of an ellipse: as many as keep them, placed, within
+/// [`crate::tolerance::UNDERLAY_ARC_CHORD_MM`] of the arc of the circle around the
+/// ellipse, as an ellipse is drawn ([`hatch::ellipse_points`]). None otherwise.
+fn uneven_arc_chords(
+    segment: &ProfileSegment,
+    largest: Option<f64>,
+) -> Option<Vec<ProfileSegment>> {
+    let ProfileSegment::CircularArc {
+        start_mm,
+        end_mm,
+        center_mm,
+        ..
+    } = segment
+    else {
+        return None;
+    };
+    let largest = largest?;
+    let [radius, start, turn] = crate::underlay::arc_turn(segment)?;
+    let chords = (turn.abs() / crate::underlay::arc_chord_step(radius * largest))
+        .ceil()
+        .max(1.0);
+    let mut points = vec![*start_mm];
+    let mut index = 1.0;
+    while index < chords {
+        let (sin, cos) = (start + turn * index / chords).sin_cos();
+        points.push([center_mm[0] + radius * cos, center_mm[1] + radius * sin]);
+        index += 1.0;
+    }
+    points.push(*end_mm);
+    Some(
+        points
+            .windows(2)
+            .map(|pair| ProfileSegment::Line {
+                start_mm: pair[0],
+                end_mm: pair[1],
+            })
+            .collect(),
+    )
 }
 
 fn transform_segment(

@@ -262,6 +262,121 @@ fn a_cancelled_dwg_import_changes_nothing() {
     assert_eq!(app.undo_step_count(), undo);
 }
 
+fn step_box() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpora/r0/step/self-authored-box.step")
+}
+
+fn with_exact_worker(mut app: KetchupApp) -> KetchupApp {
+    let worker = ketchup_application::evaluation::exact_worker_candidates()
+        .into_iter()
+        .find(|path| path.is_file())
+        .expect("build ketchup-exact-worker before this test");
+    app.connect_exact_worker(worker).unwrap();
+    app
+}
+
+/// Review 2026-11-01 MCP-100: a client's STEP import has the exact worker read the file
+/// off the window's thread, as a DWG import does; before, the window waited for the
+/// worker's XDE inspection, up to its whole budget, and could not cancel it.
+#[test]
+fn a_clients_step_import_reads_the_file_off_the_windows_thread() {
+    let mut app = KetchupApp::new();
+    app.selection.clear();
+    let mut wire = Wire::connect(with_exact_worker(app));
+    wire.call(Request::Status {});
+    let undo = wire.app.undo_step_count();
+
+    wire.send(import(&step_box()), false);
+    let mut reader = wire.stream.try_clone().unwrap();
+    reader
+        .set_read_timeout(Some(Duration::from_secs(60)))
+        .unwrap();
+    let (sender, answers) = mpsc::channel();
+    let reading = std::thread::spawn(move || {
+        let mut header = [0; 4];
+        reader.read_exact(&mut header).unwrap();
+        let mut bytes = vec![0; u32::from_be_bytes(header) as usize];
+        reader.read_exact(&mut bytes).unwrap();
+        sender
+            .send(serde_json::from_slice::<Response>(&bytes).unwrap())
+            .unwrap();
+    });
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !importing_dwg(wire.app.live.bridge.as_ref().unwrap()) {
+        assert!(
+            Instant::now() < deadline,
+            "the import was never a job: the window read the file itself"
+        );
+        wire.app.poll_live_bridge(&wire.context);
+        assert!(
+            answers.recv_timeout(Duration::from_millis(1)).is_err(),
+            "answered without a job"
+        );
+    }
+    let bridge = wire.app.live.bridge.as_ref().unwrap();
+    let busy = serde_json::to_value(bridge.busy_jobs()).unwrap();
+    assert_eq!(busy[0]["target"], "import", "{busy}");
+    assert_eq!(wire.app.undo_step_count(), undo, "nothing imported yet");
+
+    let answer = loop {
+        assert!(Instant::now() < deadline, "the import did not finish");
+        wire.app.poll_live_bridge(&wire.context);
+        if let Ok(answer) = answers.recv_timeout(Duration::from_millis(1)) {
+            break answer;
+        }
+    };
+    reading.join().unwrap();
+    assert!(answer.ok, "{answer:?}");
+    let result = answer.result.unwrap();
+    assert_eq!(result["review"]["solids"], 1, "{result}");
+    assert_eq!(result["review"]["complete"], true, "{result}");
+    assert_eq!(wire.app.undo_step_count(), undo + 1, "one Undo step");
+}
+
+/// MCP-100: a cancelled STEP import is answered at once and changes nothing; the same
+/// job not cancelled imports the file in one Undo step.
+#[test]
+fn a_cancelled_step_import_changes_nothing_and_an_uncancelled_one_imports() {
+    let (app, mut bridge) = setup();
+    let mut app = with_exact_worker(app);
+    let (digest, undo) = (app.canonical_digest(), app.undo_step_count());
+    let context = egui::Context::default();
+    let start = |bridge: &mut LiveBridge, app: &mut KetchupApp| {
+        let (reply, answers) = mpsc::sync_channel(1);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let queued = QueuedReply {
+            id: 1,
+            reply,
+            cancelled: Arc::clone(&cancelled),
+        };
+        bridge.start_dwg_import(app, &context, queued, import(&step_box()), false);
+        assert!(importing_dwg(bridge));
+        (answers, cancelled)
+    };
+
+    let (answers, cancelled) = start(&mut bridge, &mut app);
+    cancelled.store(true, Ordering::Release);
+    bridge.poll_program_check_job(&mut app, &context);
+    let answer = answers.try_recv().expect("answered in the same poll");
+    assert_eq!(answer.error.as_deref(), Some("request_cancelled"));
+    assert!(bridge.program_check_job.is_none());
+    assert_eq!(app.canonical_digest(), digest);
+    assert_eq!(app.undo_step_count(), undo);
+
+    let (answers, _cancelled) = start(&mut bridge, &mut app);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let answer = loop {
+        bridge.poll_program_check_job(&mut app, &context);
+        if let Ok(answer) = answers.recv_timeout(Duration::from_millis(5)) {
+            break answer;
+        }
+        assert!(Instant::now() < deadline, "the import did not finish");
+    };
+    assert!(answer.ok, "{answer:?}");
+    assert_eq!(answer.result.unwrap()["review"]["solids"], 1);
+    assert_eq!(app.undo_step_count(), undo + 1, "one Undo step");
+}
+
 /// A conversion an open review or an import still holds is never dropped from
 /// the cache, so publishing it does not read the file again on the window's
 /// thread, however many other DWG files were read meanwhile.

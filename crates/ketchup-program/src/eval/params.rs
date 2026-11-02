@@ -12,11 +12,15 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] max: Option<Value<'v>>,
         #[starlark(require = named, default = "")] doc: &str,
         #[starlark(require = named, default = "mm")] unit: &str,
+        #[starlark(require = named, default = false)] whole: bool,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
         let plain = plain_unit(name, unit)?;
         let integer_default = default.unpack_i32().is_some();
         let default = number(default, &format!("param({name:?}) default"))?;
+        if whole && default.fract() != 0.0 {
+            anyhow::bail!("param({name:?}): whole = True needs a whole default, got {default}");
+        }
         let min = given(min).map(|value| number(value, "min")).transpose()?;
         let max = given(max).map(|value| number(value, "max")).transpose()?;
         let state = state(eval)?;
@@ -34,6 +38,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
                 max,
                 doc: doc.to_owned(),
                 plain,
+                whole,
             });
         }
         let heap = eval.heap();

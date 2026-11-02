@@ -91,6 +91,7 @@ pub(super) enum ProgramCheckJob {
     DwgImport(super::dwg_import::DwgImportJob),
     ExchangeExport(super::exchange_export::ExchangeExportJob),
     DrawingExport(super::drawing_export::DrawingExportJob),
+    ProjectDrawings(super::project_drawings_job::ProjectDrawingsExportJob),
     Reporting(super::program_access::ProgramReportJob),
 }
 
@@ -593,6 +594,10 @@ impl LiveBridge {
             }
             ProgramCheckJob::DrawingExport(job) => {
                 self.poll_drawing_export(app, context, job);
+                return;
+            }
+            ProgramCheckJob::ProjectDrawings(job) => {
+                self.poll_project_drawings_export(app, context, job);
                 return;
             }
             ProgramCheckJob::Reporting(job) => {

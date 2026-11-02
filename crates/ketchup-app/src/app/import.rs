@@ -1,6 +1,7 @@
 //! Imports with review previews (STL, DXF and DWG, STEP, IGES, SketchUp scenes).
 
 use crate::app::dwg_import::drawing_dxf;
+#[cfg(test)]
 use crate::app::exact_import_activity::{ExactImportEvidence, inspect_exact_import};
 use crate::*;
 use ketchup_model::import::{inspect_sketchup_scene, plan_sketchup_scene_import};
@@ -238,29 +239,18 @@ impl KetchupApp {
         read_import_source(ImportFormat::Step, path)
     }
 
-    /// The XDE evidence of `source` read here, the window waiting for it: for
-    /// a client's import, which answers only once it is done. The menu reads it
-    /// on a thread ([`Self::start_exact_import_read`]).
-    fn inspect_exact_import_now(
-        &mut self,
-        source: &ImportSourcePlan,
-    ) -> Result<ExactImportEvidence, ImportError> {
-        let executable = self
-            .exact_worker_executable()
-            .map_err(|error| source.failed(error))?;
-        inspect_exact_import(
-            source.format,
-            &executable,
-            &source.source,
-            &AtomicBool::new(false),
-        )
-    }
-
+    /// The review of the STEP `source`, read here while the caller waits: for
+    /// tests, which have no window to read it on a thread for.
+    #[cfg(test)]
     pub(crate) fn prepare_step_import_preview_plan(
         &mut self,
         source: ImportSourcePlan,
     ) -> Result<StepImportPreviewPlan, ImportError> {
-        match self.inspect_exact_import_now(&source)? {
+        let executable = self
+            .exact_worker_executable()
+            .map_err(|error| source.failed(error))?;
+        let cancelled = AtomicBool::new(false);
+        match inspect_exact_import(source.format, &executable, &source.source, &cancelled)? {
             ExactImportEvidence::Step(evidence) => {
                 self.step_import_preview_plan_from(source, evidence)
             }
@@ -327,7 +317,9 @@ impl KetchupApp {
             .map_err(|error| source.failed(error))?;
             Ok(())
         })();
-        self.report_import_outcome(source, result)
+        self.report_import_outcome(source, result)?;
+        self.report_left_out(pending.plan.evidence.left_out());
+        Ok(())
     }
 
     pub(crate) fn choose_iges_import_path(&mut self) -> Option<PathBuf> {
@@ -343,18 +335,6 @@ impl KetchupApp {
         Self::validate_exact_exchange_extension(path, "IGES import", &["iges", "igs"])
             .map_err(|error| ImportError::failed(ImportFormat::Iges, error))?;
         read_import_source(ImportFormat::Iges, path)
-    }
-
-    pub(crate) fn prepare_iges_import_preview_plan(
-        &mut self,
-        source: ImportSourcePlan,
-    ) -> Result<IgesImportPreviewPlan, ImportError> {
-        match self.inspect_exact_import_now(&source)? {
-            ExactImportEvidence::Iges(evidence) => {
-                self.iges_import_preview_plan_from(source, evidence)
-            }
-            ExactImportEvidence::Step(_) => Err(source.failed("the IGES file was read as STEP")),
-        }
     }
 
     /// The review of `source` from the `evidence` the exact worker read of it.
@@ -413,7 +393,27 @@ impl KetchupApp {
             .map_err(|error| source.failed(error))?;
             Ok(())
         })();
-        self.report_import_outcome(source, result)
+        self.report_import_outcome(source, result)?;
+        self.report_left_out(pending.plan.evidence.left_out());
+        Ok(())
+    }
+
+    /// Adds to the status line of an exact import what it left out of the
+    /// file, which the review named before it was confirmed (review
+    /// 2026-11-01 EX-100).
+    fn report_left_out(&mut self, left_out: ketchup_model::import::ImportLeftOut) {
+        if left_out.is_empty() {
+            return;
+        }
+        self.digest = self.catalog.format(
+            "digest-imported-left-out",
+            &BTreeMap::from([
+                ("imported", std::mem::take(&mut self.digest)),
+                ("parts", left_out.parts.to_string()),
+                ("solids", left_out.solids.to_string()),
+                ("placements", left_out.placements.to_string()),
+            ]),
+        );
     }
 
     pub(crate) fn choose_sketchup_scene_import_path(&mut self) -> Option<PathBuf> {
@@ -728,14 +728,7 @@ impl KetchupApp {
             return;
         }
         ui.colored_label(Color32::YELLOW, self.catalog.text(heading));
-        egui::ScrollArea::vertical()
-            .id_salt(heading)
-            .max_height(160.0)
-            .show(ui, |ui| {
-                for refusal in refusals {
-                    ui.label(refusal);
-                }
-            });
+        show_refusal_rows(ui, heading, refusals);
     }
 
     pub(crate) fn show_step_import_window(&mut self, context: &egui::Context) {
@@ -953,4 +946,20 @@ impl KetchupApp {
             self.import_sketchup_scene_from(&pending).ok();
         }
     }
+}
+
+/// Refusals one line each in a scroll area that lays out only the rows in
+/// view: a partial import of a large assembly may refuse thousands of solids
+/// (review 2026-11-01 EX-104).
+pub(crate) fn show_refusal_rows(ui: &mut egui::Ui, id_salt: &str, refusals: &[String]) {
+    let row_height = ui.text_style_height(&egui::TextStyle::Body);
+    egui::ScrollArea::both()
+        .id_salt(id_salt)
+        .max_height(160.0)
+        .show_rows(ui, row_height, refusals.len(), |ui, rows| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+            for refusal in &refusals[rows] {
+                ui.label(refusal);
+            }
+        });
 }

@@ -9,7 +9,8 @@
 //! and never of the file the drawing is read from (review 2026-10-29 SEC-60). A worker
 //! stopped half way leaves every file named as it was. The window's export runs on a
 //! thread its file activity indication cancels, and the worker has
-//! [`UNDERLAY_EXPORT_TIME`] for it.
+//! [`UNDERLAY_EXPORT_TIME`] for it; the thread also puts the drawing in place, unless it
+//! was cancelled first ([`PublishGate`]).
 
 use crate::export_bundle::{ExportTransactionError, write_export_artifact_if_unchanged};
 use crate::*;
@@ -18,6 +19,7 @@ use ketchup_application::program_isolation::{
 };
 use ketchup_model::underlay::UnderlayId;
 use ketchup_program::CancelToken;
+use std::sync::atomic::AtomicU8;
 
 /// The time the worker has to write a drawing back. Levoča, a 38.9 MB DWG, is read and
 /// converted in 4.1 s in a release build; writing it back reads it again and converts the
@@ -40,6 +42,8 @@ pub(crate) enum UnderlayExportError {
     SameAsSource(PathBuf),
     /// The drawing written did not take the place of the file named.
     Publish(ExportTransactionError),
+    /// The export was cancelled before the drawing took the place of the file.
+    Cancelled,
 }
 
 impl std::fmt::Display for UnderlayExportError {
@@ -65,6 +69,7 @@ impl std::fmt::Display for UnderlayExportError {
                 path.display()
             ),
             Self::Publish(error) => error.fmt(formatter),
+            Self::Cancelled => formatter.write_str("the export was cancelled"),
         }
     }
 }
@@ -80,7 +85,7 @@ impl std::error::Error for UnderlayExportError {
     }
 }
 
-type UnderlayExportResult = Result<UnderlayWritten, UnderlayExportError>;
+pub(crate) type UnderlayExportResult = Result<UnderlayWritten, UnderlayExportError>;
 
 /// A drawing to write back, taken from the document so it is written off the window's
 /// thread.
@@ -97,12 +102,39 @@ pub(crate) struct UnderlayExportJob {
 }
 
 /// A drawing the worker wrote, not yet in place of the file named.
-pub(crate) struct WrittenDrawing {
+struct WrittenDrawing {
     output: PathBuf,
     replacing: Option<String>,
     bytes: Vec<u8>,
     /// The records of a DWG source its read left out, by type.
     skipped: Vec<(String, usize)>,
+}
+
+/// Whether a drawing written on a thread may still take the place of the file named:
+/// a cancel stops it only before it starts to (review 2026-11-01 CD-107), so the thread
+/// puts it in place without the window's frame and a cancel never claims what is done.
+#[derive(Clone, Default)]
+pub(crate) struct PublishGate(Arc<AtomicU8>);
+
+impl PublishGate {
+    const CANCELLED: u8 = 1;
+    const PUBLISHING: u8 = 2;
+
+    /// Whether the drawing may take the place of the file: not cancelled before.
+    pub(crate) fn begin_publish(&self) -> bool {
+        self.0
+            .compare_exchange(0, Self::PUBLISHING, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Whether the cancel came in time: no file is replaced; `false` once the drawing is
+    /// taking the place of the file, whose result is then reported as it comes.
+    pub(crate) fn cancel(&self) -> bool {
+        self.0
+            .compare_exchange(0, Self::CANCELLED, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+            || self.0.load(Ordering::Acquire) == Self::CANCELLED
+    }
 }
 
 impl WrittenDrawing {
@@ -122,6 +154,20 @@ impl UnderlayExportJob {
     /// bytes written.
     fn run(self, cancel: &CancelToken) -> UnderlayExportResult {
         self.write(cancel)?.publish()
+    }
+
+    /// [`Self::run`] on a thread: the drawing takes the place of the file there, unless
+    /// `gate` was cancelled first.
+    fn run_unless_cancelled(
+        self,
+        cancel: &CancelToken,
+        gate: &PublishGate,
+    ) -> UnderlayExportResult {
+        let written = self.write(cancel)?;
+        if !gate.begin_publish() {
+            return Err(UnderlayExportError::Cancelled);
+        }
+        written.publish()
     }
 
     /// Writes the drawing in the worker, into a folder of its own.
@@ -168,31 +214,34 @@ pub(crate) struct UnderlayExportTask {
     named_source: Option<PathBuf>,
     pub(crate) dwg: bool,
     cancel: CancelToken,
-    /// The drawing written; it replaces the file named when it comes back, so a cancelled
-    /// export replaces nothing.
-    receiver: mpsc::Receiver<Result<WrittenDrawing, UnderlayExportError>>,
+    /// Closed by a cancel before the drawing takes the place of the file named, so a
+    /// cancelled export replaces nothing.
+    gate: PublishGate,
+    /// The drawing in place of the file named, or why not.
+    receiver: mpsc::Receiver<UnderlayExportResult>,
 }
 
 /// A client's drawing export running on a thread (review 2026-10-31 MCP-80): the
-/// drawing the worker wrote comes back on `receiver`; `cancel` stops the worker.
+/// drawing the worker wrote takes the place of the file named there and the outcome comes
+/// back on `receiver`; `cancel` stops the worker and `gate` the replacing.
 pub(crate) struct ClientUnderlayExport {
     pub(crate) cancel: CancelToken,
-    pub(crate) receiver: mpsc::Receiver<Result<WrittenDrawing, UnderlayExportError>>,
+    pub(crate) gate: PublishGate,
+    pub(crate) receiver: mpsc::Receiver<UnderlayExportResult>,
 }
 
 impl ClientUnderlayExport {
-    /// Puts the drawing written in place of the file named.
-    pub(crate) fn publish(
-        written: Result<WrittenDrawing, UnderlayExportError>,
-    ) -> UnderlayExportResult {
-        written.and_then(WrittenDrawing::publish)
+    /// Stops the export; `false` once the drawing is taking the place of the file, whose
+    /// outcome then still comes on `receiver`.
+    pub(crate) fn cancel(cancel: &CancelToken, gate: &PublishGate) -> bool {
+        cancel.cancel();
+        gate.cancel()
     }
 }
 
 impl KetchupApp {
     /// Starts writing underlay `id` with its changes to `output` on a thread, as
-    /// Tools > Export drawing writes it, so the window keeps drawing; no file is
-    /// in place until [`ClientUnderlayExport::publish`].
+    /// Tools > Export drawing writes it, so the window keeps drawing.
     pub(crate) fn start_client_underlay_export(
         &self,
         id: UnderlayId,
@@ -201,18 +250,12 @@ impl KetchupApp {
         context: &egui::Context,
     ) -> Result<ClientUnderlayExport, UnderlayExportError> {
         let job = self.underlay_export_job(id, source, output, None)?;
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let cancel = CancelToken::default();
-        let thread_cancel = cancel.clone();
-        let repaint = context.clone();
-        std::thread::Builder::new()
-            .name("ketchup-drawing-export".into())
-            .spawn(move || {
-                let _ = sender.try_send(job.write(&thread_cancel));
-                repaint.request_repaint();
-            })
-            .map_err(UnderlayExportError::Io)?;
-        Ok(ClientUnderlayExport { cancel, receiver })
+        let (cancel, gate, receiver) = start_underlay_export_thread(job, context.clone())?;
+        Ok(ClientUnderlayExport {
+            cancel,
+            gate,
+            receiver,
+        })
     }
 
     /// What writing underlay `id` with its changes to `output` takes, read again from
@@ -274,6 +317,19 @@ impl KetchupApp {
             .run(cancel)
     }
 
+    /// Writes underlay `id` with its changes to a new file `output` as the window's
+    /// thread does, unless `gate` was cancelled first.
+    #[cfg(test)]
+    pub(crate) fn export_underlay_unless_cancelled(
+        &self,
+        id: UnderlayId,
+        output: &Path,
+        gate: &PublishGate,
+    ) -> UnderlayExportResult {
+        self.underlay_export_job(id, None, output, None)?
+            .run_unless_cancelled(&CancelToken::default(), gate)
+    }
+
     /// Tools > Export drawing to DXF or DWG: the selected drawing, with its changes, to a
     /// file of `extension` the user names; the file it was imported from is asked for when
     /// this window did not import it or it is no longer there. It is written on a thread
@@ -308,20 +364,17 @@ impl KetchupApp {
             let result = job.run(&CancelToken::default());
             return self.finish_underlay_export(id, &output, named_source, result);
         };
-        let (sender, receiver) = mpsc::channel();
-        let cancel = CancelToken::default();
-        let thread_cancel = cancel.clone();
-        std::thread::spawn(move || {
-            if sender.send(job.write(&thread_cancel)).is_ok() {
-                context.request_repaint();
-            }
-        });
+        let (cancel, gate, receiver) = match start_underlay_export_thread(job, context) {
+            Ok(started) => started,
+            Err(error) => return self.finish_underlay_export(id, &output, None, Err(error)),
+        };
         self.file.activity.underlay.exporting = Some(UnderlayExportTask {
             id,
             dwg: crate::app::dwg_import::is_dwg_path(&output),
             output,
             named_source,
             cancel,
+            gate,
             receiver,
         });
     }
@@ -331,7 +384,7 @@ impl KetchupApp {
             return;
         };
         let result = match task.receiver.try_recv() {
-            Ok(written) => written.and_then(WrittenDrawing::publish),
+            Ok(result) => result,
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => Err(UnderlayExportError::Io(std::io::Error::other(
                 "the thread that writes the drawing stopped",
@@ -348,10 +401,15 @@ impl KetchupApp {
         context.request_repaint();
     }
 
-    /// Stops writing a drawing back: the worker is killed and no file is replaced.
+    /// Stops writing a drawing back: the worker is killed and no file is replaced. Once
+    /// the drawing is taking the place of the file it is not stopped: its outcome is
+    /// reported as it comes.
     pub(crate) fn cancel_underlay_export(&mut self) {
-        if let Some(task) = self.file.activity.underlay.exporting.take() {
-            task.cancel.cancel();
+        let Some(task) = self.file.activity.underlay.exporting.as_ref() else {
+            return;
+        };
+        if ClientUnderlayExport::cancel(&task.cancel, &task.gate) {
+            self.file.activity.underlay.exporting = None;
             self.digest = self.catalog.text("digest-cancelled");
         }
     }
@@ -402,4 +460,32 @@ impl KetchupApp {
             self.file.activity.underlay.sources.insert(id, source);
         }
     }
+}
+
+/// Starts writing `job` on a thread that also puts it in place of the file named; the
+/// worker's cancel, the gate a cancel closes and where the outcome comes.
+fn start_underlay_export_thread(
+    job: UnderlayExportJob,
+    repaint: egui::Context,
+) -> Result<
+    (
+        CancelToken,
+        PublishGate,
+        mpsc::Receiver<UnderlayExportResult>,
+    ),
+    UnderlayExportError,
+> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let cancel = CancelToken::default();
+    let thread_cancel = cancel.clone();
+    let gate = PublishGate::default();
+    let thread_gate = gate.clone();
+    std::thread::Builder::new()
+        .name("ketchup-drawing-export".into())
+        .spawn(move || {
+            let _ = sender.try_send(job.run_unless_cancelled(&thread_cancel, &thread_gate));
+            repaint.request_repaint();
+        })
+        .map_err(UnderlayExportError::Io)?;
+    Ok((cancel, gate, receiver))
 }

@@ -102,6 +102,10 @@ pub struct MemberLoad {
     pub loads_n: Loads,
     pub patches: Vec<Patch>,
     pub reactions: Vec<Reaction>,
+    /// Stretches (from, to) along the member where a part resting on it and
+    /// on something else too (decking, battens, joists) holds it sideways.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub braced_mm: Vec<[f64; 2]>,
     /// Why the loads are incomplete; empty when every input was known.
     pub missing: Vec<String>,
 }
@@ -971,8 +975,22 @@ fn member_load(
     frame: &Frame,
     patches: &[Patch],
     reactions: Vec<Reaction>,
+    braced: &[(f64, f64)],
     missing: BTreeSet<String>,
 ) -> MemberLoad {
+    let mut stretches: Vec<(f64, f64)> = braced
+        .iter()
+        .map(|&(lo, hi)| (lo.max(0.0), hi.min(frame.length)))
+        .filter(|(lo, hi)| hi >= lo)
+        .collect();
+    stretches.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut braced_mm: Vec<[f64; 2]> = Vec::new();
+    for (lo, hi) in stretches {
+        match braced_mm.last_mut() {
+            Some(last) if lo <= last[1] => last[1] = last[1].max(hi),
+            _ => braced_mm.push([lo, hi]),
+        }
+    }
     let mut total = Loads::new();
     for patch in patches {
         add(&mut total, &patch.loads_n, 1.0);
@@ -993,8 +1011,30 @@ fn member_load(
             })
             .collect(),
         reactions,
+        braced_mm: braced_mm.into_iter().map(|s| s.map(round)).collect(),
         missing: missing.into_iter().collect(),
     }
+}
+
+/// Where each member is held sideways, along it. A part held by more than one
+/// part ties each member it rests on to the others there (review 2026-11-01
+/// PG-100); one resting on a single member (a pad, a post) moves with it.
+fn braced_stretches(
+    supports: &[Vec<Support>],
+    member: &[bool],
+    frames: &[Frame],
+) -> Vec<Vec<(f64, f64)>> {
+    let mut braced: Vec<Vec<(f64, f64)>> = frames.iter().map(|_| Vec::new()).collect();
+    for list in supports {
+        let held_by: BTreeSet<usize> = list.iter().map(|support| support.supporter).collect();
+        if held_by.len() < 2 {
+            continue;
+        }
+        for support in list.iter().filter(|support| member[support.supporter]) {
+            braced[support.supporter].push(frames[support.supporter].range(&support.points));
+        }
+    }
+    braced
 }
 
 /// Loads on every load-path member, when the program declares weights or area loads.
@@ -1168,6 +1208,7 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
         .collect();
 
     let (mut patches, mut missing) = own_loads(model, &frames);
+    let braced = braced_stretches(&supports, &member, &frames);
 
     // Pass the loads down, each part after everything it carries.
     let mut pending = vec![0usize; parts.len()];
@@ -1389,6 +1430,7 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
             &frames[item],
             &patches[item],
             std::mem::take(&mut reactions[item]),
+            &braced[item],
             reasons,
         ));
     }

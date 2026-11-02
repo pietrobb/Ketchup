@@ -225,12 +225,31 @@ impl KetchupApp {
     }
 
     fn allow_live_consent(&mut self, context: &egui::Context, pending: PendingConsent) {
+        self.allow_live_consent_with(context, pending, transport::start);
+    }
+
+    /// Grants `pending` on a bridge `start` opens when the window has none.
+    fn allow_live_consent_with(
+        &mut self,
+        context: &egui::Context,
+        pending: PendingConsent,
+        start: impl FnOnce(egui::Context) -> io::Result<super::LiveBridge>,
+    ) {
         if self.live.bridge.is_none() {
-            let Ok(bridge) = transport::start(context.clone()) else {
-                let _ = pending.decision.try_send(ConsentDecision::Reject);
-                return;
-            };
-            self.live.bridge = Some(bridge);
+            match start(context.clone()) {
+                Ok(bridge) => self.live.bridge = Some(bridge),
+                Err(error) => {
+                    // The window says why the attach failed; the cause used to be
+                    // dropped and the attach refused without a reason (review
+                    // 2026-11-01 TST-100).
+                    self.digest = self.catalog.format(
+                        "live-consent-failed",
+                        &std::collections::BTreeMap::from([("reason", error.to_string())]),
+                    );
+                    let _ = pending.decision.try_send(ConsentDecision::Reject);
+                    return;
+                }
+            }
         }
         let Some(credentials) = self.live_bridge_credentials() else {
             let _ = pending.decision.try_send(ConsentDecision::Reject);
@@ -1156,6 +1175,33 @@ mod tests {
         assert!(
             broker.requests.recv_timeout(Duration::from_secs(5)).is_ok(),
             "the attach answered busy was rejected as a replay"
+        );
+    }
+
+    /// Review 2026-11-01 TST-100: when the window could not open its bridge, the
+    /// cause was dropped and the attach refused without a word in the window.
+    #[test]
+    fn an_attach_the_bridge_cannot_serve_says_why_in_the_window() {
+        let context = egui::Context::default();
+        let mut app = KetchupApp::new();
+        let (decision, receiver) = mpsc::sync_channel(1);
+        let pending = PendingConsent {
+            decision,
+            abandoned: Arc::new(Mutex::new(false)),
+        };
+        app.allow_live_consent_with(&context, pending, |_| {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "loopback port blocked by policy",
+            ))
+        });
+
+        assert!(matches!(receiver.try_recv(), Ok(ConsentDecision::Reject)));
+        assert!(!app.live_consent_attached());
+        assert!(
+            app.digest.contains("loopback port blocked by policy"),
+            "the window must say why: {}",
+            app.digest
         );
     }
 

@@ -946,6 +946,21 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
         "{through_xml}"
     );
     assert_btlx_machining_lies_in_its_blank(&through_xml, "through cut");
+    // Review 2026-11-01 MF-104: with the default saw-then-mill strategy the saw
+    // and mill contours of the same cut are not bounded either.
+    let through_xml = String::from_utf8(
+        through_cut
+            .btlx_2_3_1_export_with_options(&through_cut_snapshot, BtlxExportOptions::default())
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        through_xml.contains("<SawContour")
+            && through_xml.contains("<MillContour")
+            && !through_xml.contains("DepthBounded=\"yes\"")
+            && through_xml.contains("<Contour DepthBounded=\"no\" Depth=\"1000\""),
+        "{through_xml}"
+    );
 
     let (boolean_cut_snapshot, boolean_cut) =
         graph_fabrication_projection(BooleanOperation::Cut, true, "m17-btlx-boolean-cut");
@@ -2218,6 +2233,76 @@ fn the_production_job_stock_frame_is_right_handed_and_the_woodwop_frame() {
         "XA={xa} YA={ya} ZA={za}\n{mpr}"
     );
 }
+/// Review 2026-11-01 MF-102: one MPR program machines one cut-list row, so a
+/// single program of several parts says how many and where to export them;
+/// the package ZIP holds a program and a barcode label per coded piece.
+#[test]
+fn several_parts_are_counted_for_one_program_and_packaged_one_program_per_piece() {
+    // One drilled part in two materials: two cut-list rows.
+    let mut document = circular_drill_document_at([20.0, 15.0]);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertClassificationDimension {
+                id: MATERIAL_DIMENSION,
+                name: MATERIAL_DIMENSION_V1.to_owned(),
+                categories: vec![
+                    (STEEL_MATERIAL_CATEGORY, "C30".to_owned()),
+                    (C24_MATERIAL_CATEGORY, "C24".to_owned()),
+                ],
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: GRAPH_LEFT,
+                dimension_id: MATERIAL_DIMENSION,
+                category_id: Some(C24_MATERIAL_CATEGORY),
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: GRAPH_RIGHT,
+                dimension_id: MATERIAL_DIMENSION,
+                category_id: Some(STEEL_MATERIAL_CATEGORY),
+            },
+            CanonicalCommand::SetProductionCode {
+                instance_path: InstancePath::root(GRAPH_LEFT),
+                code: Some("000000000046".to_owned()),
+            },
+            CanonicalCommand::SetProductionCode {
+                instance_path: InstancePath::root(GRAPH_RIGHT),
+                code: Some("000000000047".to_owned()),
+            },
+        ]))
+        .unwrap();
+    let (snapshot, projection) =
+        exact_graph_document_fabrication_projection(document, "mf-102-rows", GRAPH_BOOLEAN);
+    let parts = projection
+        .bom
+        .rows
+        .iter()
+        .filter(|row| row.item_kind.is_shop_made())
+        .count();
+    assert!(parts > 1, "{parts}");
+    let refused = projection
+        .woodwop_mpr_4_0_drill_export(&snapshot)
+        .unwrap_err();
+    assert_eq!(
+        refused,
+        GeneralFabricationError::OneProgramPerPart { parts }
+    );
+    assert!(refused.to_string().contains(".zip"), "{refused}");
+    let package = projection
+        .woodwop_mpr_4_0_production_package(&snapshot, Default::default())
+        .unwrap();
+    assert!(!package.is_empty());
+    let zip = projection
+        .woodwop_mpr_4_0_production_zip(&snapshot, Default::default())
+        .unwrap();
+    assert!(zip.starts_with(b"PK\x03\x04"));
+    let contains = |needle: &[u8]| zip.windows(needle.len()).any(|window| window == needle);
+    for program in &package {
+        assert!(contains(format!("{}.mpr", program.program_name).as_bytes()));
+        assert!(contains(format!("{}.svg", program.program_name).as_bytes()));
+        assert!(contains(&program.mpr));
+    }
+}
+
 #[test]
 fn production_adapters_share_saved_codes_and_are_opt_in() {
     use ketchup_manufacturing::fabrication::production::{HomagWoodwopAdapter, ProductionAdapter};
@@ -3636,6 +3721,15 @@ fn rectangular_through_cut_document() -> DocumentStore {
 }
 
 fn rectangular_profile_removal_document(through: bool) -> DocumentStore {
+    rectangular_removal_document(
+        through,
+        &[[10.0, 10.0], [30.0, 10.0], [30.0, 25.0], [10.0, 25.0]],
+    )
+}
+
+/// A 100 x 50 x 1000 timber with the rectangle `tool` cut from it, through or
+/// 20 mm deep.
+fn rectangular_removal_document(through: bool, tool: &[[f64; 2]]) -> DocumentStore {
     let mut document = DocumentStore::new();
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -3662,12 +3756,7 @@ fn rectangular_profile_removal_document(through: bool) -> DocumentStore {
                 id: GRAPH_TOOL_PROFILE,
                 definition_id: GRAPH_DEFINITION,
                 name: "20 x 15 rectangular profile cut".to_owned(),
-                kind: FeatureKind::polygon(&[
-                    [10.0, 10.0],
-                    [30.0, 10.0],
-                    [30.0, 25.0],
-                    [10.0, 25.0],
-                ]),
+                kind: FeatureKind::polygon(tool),
             },
             CanonicalCommand::CreateFeature {
                 id: GRAPH_BOOLEAN,
@@ -4236,4 +4325,40 @@ fn mixed_mechanical_projection(
 
     let projection = project_shown(&snapshot, &registry, &cases, &report, tolerance).unwrap();
     (snapshot, projection)
+}
+
+/// Review 2026-11-01 MF-105: a cut whose tool lies beside the part, through it
+/// or 20 mm deep, removes nothing; it is not machined, not written to the
+/// machine file as a cut beside the part. A cut over the part's edge is.
+#[test]
+fn a_cut_beside_its_part_is_not_machined() {
+    let beside = [[110.0, 10.0], [130.0, 10.0], [130.0, 25.0], [110.0, 25.0]];
+    let over_the_edge = [[90.0, 10.0], [110.0, 10.0], [110.0, 25.0], [90.0, 25.0]];
+    for through in [true, false] {
+        let (snapshot, projection) = exact_graph_document_fabrication_projection(
+            rectangular_removal_document(through, &beside),
+            "mf-105-beside",
+            GRAPH_BOOLEAN,
+        );
+        let kinds = (projection.manufacturing.operations.iter())
+            .map(|operation| operation.kind)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            [GeneralManufacturingKind::Stock],
+            "through {through}"
+        );
+        let xml = String::from_utf8(projection.btlx_2_3_1_export(&snapshot).unwrap()).unwrap();
+        assert!(!xml.contains("<FreeContour"), "{xml}");
+        let (_, projection) = exact_graph_document_fabrication_projection(
+            rectangular_removal_document(through, &over_the_edge),
+            "mf-105-edge",
+            GRAPH_BOOLEAN,
+        );
+        assert_eq!(
+            projection.manufacturing.operations.len(),
+            2,
+            "through {through}"
+        );
+    }
 }

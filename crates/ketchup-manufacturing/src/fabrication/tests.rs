@@ -101,13 +101,24 @@ fn a_production_job_refusal_gives_no_machine_file_reason() {
         evidence_class: EvidenceClass::Exact,
         validation_state: ValidationState::Passed,
     };
-    let refused = production::row_stock(&row, &[]).map(|_| ()).unwrap_err();
+    let refused = production::row_stock(&row, "Shelf", &[])
+        .map(|_| ())
+        .unwrap_err();
     // The job refuses a body that is not exact; the machine file's reasons
-    // (stock shape, cut reach) and their fixes do not apply to it.
+    // (stock shape, cut reach) and their fixes do not apply to it. Review
+    // 2026-11-01 MF-106: it names the part.
+    let message = refused.to_string();
     assert!(
-        matches!(refused, GeneralFabricationError::ExportBlocked),
-        "{refused}"
+        matches!(&refused, GeneralFabricationError::PartJobBlocked { part } if part == "Shelf")
+            && message.contains("part \"Shelf\"")
+            && !message.contains("reaches outside the stock"),
+        "{message}"
     );
+    // A part whose geometry is not there to fabricate from is named too.
+    let message = GeneralFabricationError::UnsupportedOrUnavailableGeometry
+        .at_part("Shelf")
+        .to_string();
+    assert!(message.contains("part \"Shelf\""), "{message}");
 }
 
 #[test]

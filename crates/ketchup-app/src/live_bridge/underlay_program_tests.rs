@@ -371,6 +371,39 @@ fn what_stands_in_a_room_on_other_layers_than_its_walls_is_not_cut_through_its_f
     }
 }
 
+/// Review 2026-11-01 UO-102: the holes a room leaves out were said as they were when it was
+/// taken, so a shaft drawn later on a layer of its own was neither cut nor said when the
+/// room followed the drawing. They are said as they are each time it follows.
+#[test]
+fn a_hole_drawn_later_on_another_layer_than_the_walls_is_said_left_out() {
+    let (mut app, mut bridge, offset) = imported(&walled_room());
+    from_underlay(
+        &mut app,
+        &mut bridge,
+        json!({"name":"ROOM", "label":"Kitchen", "thickness_mm":200}),
+    );
+    assert!(!source(&app).contains("left out"), "{}", source(&app));
+    let corner = |x: f64, y: f64| json!([x - offset[0], y - offset[1]]);
+    bridge
+        .execute(
+            &mut app,
+            ask(
+                "drawing_draw",
+                json!({"layer": "rooms", "shapes": [{"shape": "polyline", "closed": true, "points_mm": [
+                    corner(6_000.0, 3_000.0), corner(6_500.0, 3_000.0),
+                    corner(6_500.0, 3_500.0), corner(6_000.0, 3_500.0)
+                ]}]}),
+            ),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {:?}", take_error_details()));
+    let written = source(&app);
+    let left_out = "1 holes on layers [\"rooms\"] left out";
+    assert!(written.contains(left_out), "{written}");
+    evaluate_exact(&mut app);
+    assert!((exact_volume(&app, "ROOM") - 9_400.0 * 5_400.0 * 200.0).abs() < 1.0);
+}
+
 /// Review 2026-10-26 UO-42: an underlay imported before Kečup kept its objects cannot tell
 /// hatch and dimension lines from walls, so they may cut its regions; finding regions in it
 /// and taking a room from it say so and ask for the drawing to be imported again.
@@ -816,6 +849,20 @@ fn an_objects_rings_nest_by_what_holds_what() {
         .map(|(a, b)| a[0] * b[1] - a[1] * b[0])
         .sum::<f64>();
     assert!(turn < 0.0, "a hole turns clockwise");
+    // Review 2026-11-01 UO-101: a hole touching the outline (a notch drawn as a hole) was
+    // taken for a second outline when its first corner lay on the outline's edge.
+    for touching in [
+        vec![[100.0, 40.0], [80.0, 40.0], [80.0, 60.0], [100.0, 60.0]],
+        vec![[100.0, 40.0], [100.0, 60.0], [80.0, 50.0]],
+    ] {
+        let (outline, holes) = crate::live_bridge::underlay_program::nested_rings(vec![
+            square(0.0, 0.0, 100.0),
+            touching,
+        ])
+        .unwrap_or_else(|outlines| panic!("{outlines} outlines"));
+        assert_eq!(outline, square(0.0, 0.0, 100.0));
+        assert_eq!(holes.len(), 1);
+    }
     // Two islands, or an island in the hole: separate outlines, refused with their count.
     for rings in [
         vec![square(0.0, 0.0, 100.0), square(200.0, 0.0, 50.0)],

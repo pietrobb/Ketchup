@@ -106,14 +106,14 @@ point and outward normal in the part's frame and in the world. An edge gives
 
 | Builtin | Purpose |
 |---|---|
-| `param(name, default, min=, max=, doc=)` | a number the caller can override |
+| `param(name, default, min=, max=, doc=, unit=, whole=)` | a number the caller can override; `whole=True` for a count or a switch |
 | `box(name, size, at=, material=, color=, attributes=)` | an axis-aligned part; `at` is its minimum corner. Every body (`box`, `extrude`, `revolve`, `sweep`, `loft`) takes `material=`, `color=` and `attributes=` (a dict of strings kept on the part; the library's `board(grain=)` stores `"grain"` there) |
 | `part_info(part)` | current `name`, `size`, `at`, `max` of a part |
 | `face(part, name)`, `faces(part)`, `face_at(part, point)` | a flat or round face of any part in world: `kind`, `origin`, `normal`, `u`, `v`, `min`, `max`, `radius`, `center` |
 | `hole(part, face, at=(u, v) or world=(x, y, z), diameter=, depth=, through=False, id=)` | a hole drilled along the face's inward normal; returns an operation reference for `joint_link`; `face` is a name or a `face()` value; on a round face `at=(angle, v)` |
 | `pocket(part, face, rect=(u0, v0, u1, v1), depth=, id=)` | a rectangular pocket in a flat face; may run off the face edges. Holes and pockets are operations like `cut` and `push_pull`: each is machined where the part is when the program writes it, in that order, and its `id` shares the part's operation names |
 | `contact(a, b)` | where two parts touch: `axis`, `face_a`, `face_b`, `min`, `max`, or `None` |
-| `joint(a, b, kind=, fasteners=, fastener=, volume=, max_gap=, name=, links=[])` | a declared connection; links explicitly associate operations and optional physical hardware |
+| `joint(a, b, kind=, fasteners=, fastener=, volume=, max_gap=, name=, links=[], bearing=, rating=, hardware=)` | a declared connection; links explicitly associate operations and optional physical hardware; `hardware` {item: count} is what one connection is bought as when no rating counts it |
 | `expect(name, terms=, op=, value=, tolerance=, unit=, hint=)` | a condition on the final model: a sum of `reach`/`distance`/`contact_area` measures compared with a value; the library's `expect_contact`, `expect_gap`, `expect_flush`, `expect_symmetric` and `expect_inside` are built on it |
 | `extrude(name, profile=, distance=, at=, tool=)`, `revolve(name, profile=, axis=, angle=, at=, tool=)` | a closed profile in the local XY plane padded along local +z or turned about `axis` |
 | `sweep(name, profile=, path=, bend=None, up=None, at=, tool=)`, `loft(name, sections=[(profile, z), ...], at=, tool=)` | a closed profile carried along a smooth path; a solid through 2 to 16 stacked sections |
@@ -131,7 +131,7 @@ point and outward normal in the part's frame and in the world. An edge gives
 | `keep_clear(zone, name=, only=, ignore=[], hint=)`, `load_path(only=, carriers=[], fixed=[], name=, ignore=[], hint=)` | a zone no part may reach into; members that must pass their weight down (a part leaning on or hanging from them needs a `joint()` or a `fixed` tag) |
 | `material_weight(material, source=, kg_m3=, kg_m2=)`, `weight_scope(tags)`, `area_load(name, kind=, kn_m2=, on=[tags], projected=True, source=)` | self weight and area loads in kN/m² on the load-path members |
 | `text(name, value, at=, height_mm=2.5, tags=)`, `dim(name, a, b, offset_mm=0, height_mm=2.5, tags=)`, `leader(name, value, point=, at=, height_mm=2.5, tags=)`, `polyline(name, points, closed=False, tags=)` | drawing annotations, no parts (never in the cut list, collisions, mass or takeoff): a text at a point, a dimension whose value Kečup measures between two points, an arrow from a point to a text, drawn lines; text height in mm on paper, the dimension offset in model mm; the library's `chain_dim(name, points, offset_mm=)` dimensions neighbouring points |
-| `timber_strength(material, strength_class=, service_class=, glulam=, fm_k=, fv_k=, fc0_k=, fc90_k=, e0_mean=, e0_05=, source=)` | the EC5 characteristic values in N/mm² of one material, behind the library's `timber_design` |
+| `timber_strength(material, strength_class=, service_class=, glulam=, fm_k=, fv_k=, fc0_k=, fc90_k=, e0_mean=, e0_05=, source=, rho_k=, product=)` | the EC5 characteristic values in N/mm² of one material, behind the library's `timber_design`; `product` (solid, glulam, lvl, plywood, osb2, osb3, osb4, particleboard_p5/p6/p7) picks its kmod, kdef and gamma_M |
 | `stock(material, lengths=None, sheets=None, kerf=0, trim=0, along=None)` | the stock lengths (bars) or sheets the made parts of a material are cut from, behind the library's `bar_stock` and `sheet_stock` and report section `cutting` |
 | `price(item, value, per, currency=None, source=None)` | the unit price of a material (per `m3`, `m2`, `m`, `piece`), a bought item (`piece`), a bar grade (`kg`, `m`, `piece`) or a machining operation (`operation`), behind the library's `price_list` and report section `quote` |
 
@@ -192,7 +192,9 @@ roles below. Topic `buildup` lists every key.
 
 `bar_stock(material, lengths, kerf=4, trim=0)` and `sheet_stock(material,
 sheets, kerf=4, trim=10, grain=False)` declare what a material's made parts are
-cut from. Report section `cutting` (`bom.cutting`) then lays them out: lengths
+cut from. A part's blank is the box it is cut from: an extrusion's is the
+smallest rectangle around its profile times its depth, so a sloping plate is
+cut from a plank along its slope. Report section `cutting` (`bom.cutting`) then lays them out: lengths
 on bars per cross-section, rectangles guillotine-packed on sheets per thickness
 (`grain=True` keeps a part's grain along the sheet; a piece as long or as wide
 as a stock sheet, like a buildup layer's whole board, keeps the sheet's factory
@@ -220,10 +222,14 @@ drawn as one AutoCAD R12 DXF, ASCII without blocks, in mm from (0, 0): a box see
 on its largest face, any other profile along its extrusion, in the frame its
 woodWOP program lays it in (x along the longer side; a part drilled or pocketed
 only from below turned underside up). Layers: `CONTOUR`
-the outline (arcs as arcs), `CUTOUT` a `cut(through=True)`, `DRILL_D8_Z12` a hole
-8 across and 12 deep from the face seen (a through hole as deep as the part),
+the outline (arcs as arcs), `CUTOUT` a `cut(through=True)` or a pocket or cut as
+deep as the part, `DRILL_D8_Z12` a hole
+8 across and 12 deep from the face seen (a through hole, or one as deep as the
+part or deeper, as deep as the part),
 `DRILL_D8_Z12_BOTTOM` from the face below, `HDRILL_D8_Z30_H9` a hole into an edge
-drawn as a line, its axis 9 above the face below, `POCKET_Z5` a pocket or blind
+drawn as a line, its axis 9 above the face below, `TAP_M6X1_Z8` the thread of a
+tapped hole, size, pitch and depth, on the same circle (`_BOTTOM` from below;
+`HTAP_M6X1_Z8_H9` in an edge hole), `POCKET_Z5` a pocket or blind
 cut 5 deep (`_BOTTOM` from below) and `PART_NAME` the name (accents as
 `\U+XXXX`); a decimal point in a layer is `_` (`DRILL_D4_5_Z10`). A part with a
 boolean, mirror, shell, face offset or edge finish, a slanted hole or a pocket in
@@ -342,6 +348,7 @@ outside it.
 | `hole_wall_too_thin` | warning | a blind hole leaves less than 3 mm of the part behind it |
 | `joint_without_contact` | error | a joint connects parts that are further apart than its `max_gap` |
 | `param_out_of_range` | error | a parameter is outside its `min`/`max` |
+| `param_not_whole` | error | a parameter declared `whole=True` has a fraction |
 | `program_condition_failed` | error | `check(condition, message, parts=[...], hint=...)` found a library design problem; evaluation continues and the condition is returned |
 | `floating_part` | warning | a part touches nothing that rests on z = 0 |
 | `production_tag_unused` | error / warning | no part carries a tag of `production(tags=…)`; an error when therefore nothing is made, a warning when another tag still makes parts |

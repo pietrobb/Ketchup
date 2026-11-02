@@ -63,6 +63,10 @@ pub enum ShopElement {
     /// imported body or other cut no operation kind holds): the part's holes
     /// and cuts are unknown to every format (review 2026-10-31 MF-80).
     UndescribedMachining,
+    /// A blank whose outline has an edge that is neither a line nor a
+    /// circular arc (a cubic Bezier curve): no format describes the blank,
+    /// so the part's machining has no frame (review 2026-11-01 MF-103).
+    FreeFormBlank,
 }
 
 impl fmt::Display for ShopElement {
@@ -75,6 +79,7 @@ impl fmt::Display for ShopElement {
             Self::ThroughHole => formatter.write_str("a hole drilled through all"),
             Self::HoleToFarFace => formatter.write_str("a blind hole as deep as the part"),
             Self::UndescribedMachining => formatter.write_str("machining that is not described"),
+            Self::FreeFormBlank => formatter.write_str("a blank with a free-form outline"),
         }
     }
 }
@@ -113,6 +118,9 @@ pub(super) const DRAWING_UNDESCRIBED: &str = "the drawing shows the part's outli
 const UNDESCRIBED: &str = "the part's cuts could not be described as drillings, profile or \
      through cuts, so it would be made without them; model its machining as holes, pockets and \
      cuts, or make it from the model";
+const FREE_FORM_BLANK: &str = "the outline of the part's blank has a free-form (Bezier) edge, \
+     and a blank is described by lines and circular arcs only, so its holes and cuts have no \
+     frame; make the outline of lines and arcs, or make the part from the model";
 const WOODWOP_PROFILE_WITHOUT_TOOL: &str =
     "a profile cut is milled as a vertical pocket; choose the vertical pocket tool number";
 const WOODWOP_OTHER_CUT: &str =
@@ -123,10 +131,11 @@ const WOODWOP_OTHER_CUT: &str =
 pub fn carriage(format: ShopFormat, element: &ShopElement) -> Carriage {
     use GeneralManufacturingKind as Kind;
     match (format, element) {
-        (ShopFormat::Drawing, ShopElement::UndescribedMachining) => {
+        (ShopFormat::Drawing, ShopElement::UndescribedMachining | ShopElement::FreeFormBlank) => {
             Carriage::Loses(DRAWING_UNDESCRIBED)
         }
         (_, ShopElement::UndescribedMachining) => Carriage::Refuses(UNDESCRIBED),
+        (_, ShopElement::FreeFormBlank) => Carriage::Refuses(FREE_FORM_BLANK),
         (ShopFormat::Drawing | ShopFormat::Btlx, ShopElement::PinHole(_)) => {
             Carriage::Refuses(UNDRILLED_PIN_HOLE)
         }
@@ -198,7 +207,9 @@ impl GeneralFabricationProjection {
             if row.mirrored || copies_are_mirrored(snapshot, row)? {
                 elements.push(ShopElement::MirroredCopy);
             }
-            if self.manufacturing.undescribed_sources.contains(&row.source) {
+            if self.manufacturing.free_form_sources.contains(&row.source) {
+                elements.push(ShopElement::FreeFormBlank);
+            } else if self.manufacturing.undescribed_sources.contains(&row.source) {
                 elements.push(ShopElement::UndescribedMachining);
             }
             let operations = self

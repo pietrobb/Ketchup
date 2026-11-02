@@ -13,7 +13,7 @@ B = param("width", 4000, min = 3000, max = 6000, doc = "vonkajšia šírka domu 
 CLEAR = param("clear_height", 2550, min = 2500, max = 3000, doc = "svetlá výška prízemia")
 PITCH = param("roof_pitch", 40, min = 30, max = 50, doc = "sklon strechy v stupňoch")
 KNEE = param("knee_wall", 1000, min = 400, max = 1500, doc = "nadmurovka nad podlahou podkrovia")
-SYSTEM = param("system", 0, min = 0, max = 1, doc = "skladba: 0 drevostavba 200 mm, 1 zateplená drevostavba 250 mm")
+SYSTEM = param("system", 0, min = 0, max = 1, whole = True, unit = "", doc = "skladba: 0 drevostavba 200 mm, 1 zateplená drevostavba 250 mm")
 
 WALL_C = (226, 208, 172)
 SLAB_C = (150, 150, 150)

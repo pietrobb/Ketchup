@@ -363,7 +363,7 @@ fn drawing(part: &Part) -> Result<Drawing, Undrawable> {
     }];
     for operation in &part.operations {
         match operation {
-            ProgramOperation::Hole(hole) => entities.push(hole_entity(&view, hole)?),
+            ProgramOperation::Hole(hole) => entities.extend(hole_entities(&view, hole)?),
             ProgramOperation::Pocket(pocket) => entities.push(pocket_entity(&view, pocket)?),
             ProgramOperation::Cut(cut) => {
                 if normal != 2 {
@@ -371,9 +371,10 @@ fn drawing(part: &Part) -> Result<Drawing, Undrawable> {
                         cut: cut.name.clone(),
                     });
                 }
+                // A blind cut as deep as the part or deeper goes through it (MF-101).
                 let layer = match cut.depth_mm {
-                    None => "CUTOUT".to_owned(),
-                    Some(depth) => format!("POCKET_Z{}", token(depth)),
+                    Some(depth) if depth < view.thickness => format!("POCKET_Z{}", token(depth)),
+                    _ => "CUTOUT".to_owned(),
                 };
                 entities.push(Entity::Outline {
                     layer,
@@ -421,39 +422,80 @@ fn operation_kind(operation: &ProgramOperation) -> &'static str {
     }
 }
 
-fn hole_entity(view: &View, hole: &Hole) -> Result<Entity, Undrawable> {
+/// A hole's drilling and, when it is tapped, its thread on a `TAP` layer of
+/// its own (review 2026-11-01 MF-100: the thread was lost). A blind hole
+/// deeper than the part goes through it and no further (MF-101: the machine
+/// drilled into the table).
+fn hole_entities(view: &View, hole: &Hole) -> Result<Vec<Entity>, Undrawable> {
     let entered = view.entered(hole.inward);
-    let depth = match (hole.through, entered) {
-        (false, _) => hole.depth_mm,
-        (true, Entered::Edge) => view.across_blank(hole.entry_mm, hole.inward),
-        (true, _) => view.thickness,
+    let across = match entered {
+        Entered::Edge => view.across_blank(hole.entry_mm, hole.inward),
+        _ => view.thickness,
     };
+    let through = hole.through || hole.depth_mm >= across;
+    let depth = if through { across } else { hole.depth_mm };
     let diameter = token(hole.diameter_mm);
-    match entered {
-        face @ (Entered::Seen | Entered::Below) => Ok(Entity::Circle {
-            layer: format!(
-                "DRILL_D{diameter}_Z{}{}",
-                token(depth),
-                if face == Entered::Below && !hole.through {
-                    "_BOTTOM"
+    let tap = hole.thread.as_ref().map(|thread| {
+        let size: String = thread
+            .size
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_uppercase()
                 } else {
-                    ""
+                    '_'
                 }
-            ),
-            center_mm: view.point(hole.entry_mm),
-            radius_mm: hole.diameter_mm / 2.0,
-        }),
-        Entered::Edge => {
-            let end: [f64; 3] = std::array::from_fn(|i| hole.entry_mm[i] + hole.inward[i] * depth);
-            Ok(Entity::Line {
-                layer: format!(
-                    "HDRILL_D{diameter}_Z{}_H{}",
-                    token(depth),
-                    token(view.height(hole.entry_mm))
-                ),
-                start_mm: view.point(hole.entry_mm),
-                end_mm: view.point(end),
             })
+            .collect();
+        (
+            format!("{size}X{}", token(thread.pitch_mm)),
+            thread.depth_mm.min(depth),
+        )
+    });
+    match entered {
+        face @ (Entered::Seen | Entered::Below) => {
+            let below = if face == Entered::Below {
+                "_BOTTOM"
+            } else {
+                ""
+            };
+            let circle = |layer: String| Entity::Circle {
+                layer,
+                center_mm: view.point(hole.entry_mm),
+                radius_mm: hole.diameter_mm / 2.0,
+            };
+            let drill = if through { "" } else { below };
+            let mut entities = vec![circle(format!(
+                "DRILL_D{diameter}_Z{}{drill}",
+                token(depth)
+            ))];
+            if let Some((thread, depth)) = tap {
+                entities.push(circle(format!("TAP_{thread}_Z{}{below}", token(depth))));
+            }
+            Ok(entities)
+        }
+        Entered::Edge => {
+            let height = token(view.height(hole.entry_mm));
+            let line = |layer: String, depth: f64| {
+                let end: [f64; 3] =
+                    std::array::from_fn(|i| hole.entry_mm[i] + hole.inward[i] * depth);
+                Entity::Line {
+                    layer,
+                    start_mm: view.point(hole.entry_mm),
+                    end_mm: view.point(end),
+                }
+            };
+            let mut entities = vec![line(
+                format!("HDRILL_D{diameter}_Z{}_H{height}", token(depth)),
+                depth,
+            )];
+            if let Some((thread, depth)) = tap {
+                entities.push(line(
+                    format!("HTAP_{thread}_Z{}_H{height}", token(depth)),
+                    depth,
+                ));
+            }
+            Ok(entities)
         }
         Entered::Slanted => Err(Undrawable::SlantedHole {
             hole: hole.id.clone(),
@@ -492,12 +534,18 @@ fn pocket_entity(view: &View, pocket: &Pocket) -> Result<Entity, Undrawable> {
     if doubled_area < 0.0 {
         points.reverse();
     }
-    Ok(Entity::Outline {
-        layer: format!(
+    // A pocket as deep as the part or deeper goes through it (review 2026-11-01 MF-101).
+    let layer = if pocket.depth_mm >= view.thickness {
+        "CUTOUT".to_owned()
+    } else {
+        format!(
             "POCKET_Z{}{}",
             token(pocket.depth_mm),
             if below { "_BOTTOM" } else { "" }
-        ),
+        )
+    };
+    Ok(Entity::Outline {
+        layer,
         vertices: points.into_iter().map(|point| (point, 0.0)).collect(),
     })
 }

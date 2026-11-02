@@ -260,6 +260,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] e0_05: Value<'v>,
         #[starlark(require = named)] source: &str,
         #[starlark(require = named)] rho_k: Option<Value<'v>>,
+        #[starlark(require = named)] product: Option<&str>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let positive = |value: Value<'v>, what: &str| {
@@ -286,10 +287,12 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
                 .map(|value| positive(value, "rho_k"))
                 .transpose()?,
             source: source.trim().to_owned(),
+            product: product.unwrap_or_default().to_owned(),
         };
         if class.source.is_empty() {
             anyhow::bail!("timber_strength({material:?}): name the source of the values");
         }
+        check_product(material, &class)?;
         state(eval)?
             .model
             .borrow_mut()
@@ -387,4 +390,27 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         );
         Ok(NoneType)
     }
+}
+
+/// Review 2026-11-01 PG-106: a TimberClass names a known product, whose kmod is given in its service class.
+fn check_product(material: &str, class: &crate::member_check::TimberClass) -> anyhow::Result<()> {
+    if !class.product.is_empty() && crate::member_check::product(&class.product).is_none() {
+        let known = crate::member_check::PRODUCTS
+            .map(|product| product.name)
+            .join(", ");
+        anyhow::bail!(
+            "timber_strength({material:?}): unknown product {:?} (known: {known})",
+            class.product
+        );
+    }
+    let made = class.product();
+    if made.kmod[usize::from(class.service_class) - 1].is_none() {
+        anyhow::bail!(
+            "timber_strength({material:?}): EN 1995-1-1 table 3.1 gives {} no kmod in \
+             service class {}",
+            made.label,
+            class.service_class
+        );
+    }
+    Ok(())
 }

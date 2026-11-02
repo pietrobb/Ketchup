@@ -413,16 +413,14 @@ impl DrawingExportTarget {
         &self,
         app: &KetchupApp,
     ) -> Result<ketchup_application::program_isolation::UnderlayWritten, UnderlayExportError> {
-        let written = self
-            .start(app, &egui::Context::default())
+        self.start(app, &egui::Context::default())
             .and_then(|export| {
                 export.receiver.recv().unwrap_or_else(|_| {
                     Err(UnderlayExportError::Io(std::io::Error::other(
                         "the thread that writes the drawing stopped",
                     )))
                 })
-            });
-        ClientUnderlayExport::publish(written)
+            })
     }
 
     /// Why the drawing was not written, recorded with its cause for the client.
@@ -503,6 +501,7 @@ pub(super) fn drawing_export_code(error: &UnderlayExportError) -> &'static str {
             | ExportTransactionError::OriginalPreserved { .. },
         ) => "drawings_target_exists",
         UnderlayExportError::Io(..) | UnderlayExportError::Publish(..) => "drawings_write_failed",
+        UnderlayExportError::Cancelled => "request_cancelled",
     }
 }
 

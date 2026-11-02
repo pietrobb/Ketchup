@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use ketchup_model::import::{
     DxfImportOptions, ImportLengthUnit, read_dxf_underlay, write_edited_dxf,
 };
+use ketchup_model::underlay::drawn::AddedObject;
 use ketchup_model::underlay::edits::UnderlayEdits;
 
 struct Counting;
@@ -74,6 +75,48 @@ fn drawing(count: usize, unit: bool) -> Vec<u8> {
 fn a_changed_drawing_takes_no_more_than_its_import_and_is_read_at_most_twice() {
     a_changed_drawing_is_written_in_what_its_import_takes();
     a_drawing_without_a_unit_is_not_read_in_every_unit_before_it_is_refused();
+    copies_of_one_insert_take_what_it_placed_once();
+}
+
+/// Review 2026-11-01 MD-101: copies of one insert took what it placed out of the drawing
+/// once for each copy, all held at once before the first was drawn, so a drawing with its
+/// copies held to what a drawing may hold took about three times that while it was drawn,
+/// on the UI thread.
+fn copies_of_one_insert_take_what_it_placed_once() {
+    let block = (0..5_000)
+        .map(|line| format!("0\nLINE\n8\n0\n10\n0\n20\n{line}\n11\n10\n21\n{line}\n"))
+        .collect::<String>();
+    let source = format!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+         0\nSECTION\n2\nBLOCKS\n0\nBLOCK\n8\n0\n2\nmany\n70\n0\n10\n0\n20\n0\n{block}0\nENDBLK\n0\nENDSEC\n\
+         0\nSECTION\n2\nENTITIES\n0\nINSERT\n5\n50\n8\ndoors\n2\nmany\n10\n0\n20\n0\n0\nENDSEC\n0\nEOF\n"
+    );
+    let lines = read_dxf_underlay(source.as_bytes(), DxfImportOptions::new(None))
+        .unwrap()
+        .lines;
+    let insert = (lines.objects().objects.iter())
+        .position(|object| object.parent.is_none() && object.handle == 0x50)
+        .map(|index| u32::try_from(index).unwrap())
+        .unwrap();
+    let edits = UnderlayEdits {
+        added: (0..40)
+            .map(|copy| AddedObject::Copy {
+                of: insert,
+                map: [[1.0, 0.0, 20.0 * f64::from(copy)], [0.0, 1.0, 0.0]],
+            })
+            .collect(),
+        ..UnderlayEdits::default()
+    };
+    let before = CURRENT.load(Ordering::Relaxed);
+    let (drawn, peak, _) = counted(|| lines.edited(&edits, &[]));
+    let held = CURRENT.load(Ordering::Relaxed) - before;
+    assert_eq!(drawn.objects().objects.len(), 41 * 5_001);
+    // Drawing the copies takes little more than the drawing they make.
+    let times = peak as f64 / held as f64;
+    assert!(
+        times < 1.6,
+        "drawing the copies took {times:.2} times the drawing they make"
+    );
 }
 
 fn a_changed_drawing_is_written_in_what_its_import_takes() {

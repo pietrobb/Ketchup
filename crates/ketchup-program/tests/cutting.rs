@@ -265,6 +265,23 @@ fn a_sheet_keeping_a_factory_edge_takes_other_pieces_inside_its_trim() {
     assert_cuttable_keeping_factory_edges(&plan.layouts[0], 4.0, 10.0);
 }
 
+/// Review 2026-11-01 PG-102: a piece inside the trim, laid before a second
+/// piece spanning the sheet, took the factory edge from the whole rest of
+/// the sheet, so 2 500 x 600, 800 x 500 and 2 500 x 120 took two sheets
+/// where one holds them.
+#[test]
+fn a_piece_inside_the_trim_leaves_the_factory_edge_to_the_pieces_spanning_the_sheet() {
+    let source = "sheet_stock(\"OSB\", [(2500, 1250)], kerf = 4, trim = 10)\n\
+                  board(\"wide\", (2500, 600, 18), material = \"OSB\")\n\
+                  board(\"panel\", (800, 500, 18), at = (0, 0, 30), material = \"OSB\")\n\
+                  board(\"strip\", (2500, 120, 18), at = (0, 0, 60), material = \"OSB\")\n";
+    let plans = plans(source);
+    let plan = &plans[0];
+    assert!(plan.unplaced.is_empty(), "{plan:#?}");
+    assert_eq!(plan.layouts.len(), 1, "{plan:#?}");
+    assert_cuttable_keeping_factory_edges(&plan.layouts[0], 4.0, 10.0);
+}
+
 #[test]
 fn many_sheet_pieces_stay_cuttable_and_never_overlap() {
     let mut source = "sheet_stock(\"MDF\", [(2800, 2070)], kerf = 3.2, trim = 8)\n".to_owned();
@@ -659,6 +676,47 @@ fn members_name_their_length_and_boards_their_thickness() {
     );
 }
 
+/// Review 2026-11-01 PG-101: the sloping top plate of a 30° gable is a
+/// parallelogram in the wall's plane, and its blank was its box in the wall's
+/// axes, 3 000 x 1 801 x 140: the cutting plan made a 1 801 x 140 section of
+/// it and the quote bought 0.975 m3 for 0.24 m3 of plates. A blank is the
+/// smallest rectangle around the profile: 60 x 140 along the slope, as long
+/// as the slope plus the plumb cut at the ridge.
+#[test]
+fn a_sloping_plate_is_cut_from_the_smallest_rectangle_around_it() {
+    let rise = 3000.0 * 30f64.to_radians().tan();
+    let source = format!(
+        "buildup('gable', (0, 0, 0), (1, 0, 0), (0, 0, 1), 6000,\n\
+         layers = [{{'name': 'frame', 'thickness': 140, 'material': 'C24', 'spacing': 600}}],\n\
+         top = [(0, 2600), (3000, {}), (6000, 2600)])\n\
+         bar_stock('C24', [6000])\n",
+        2600.0 + rise
+    );
+    let model = ketchup_program::evaluate("cutting.star", &source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"))
+        .model;
+    let bom = bom(&model);
+    let plates: Vec<_> = bom
+        .cut_list
+        .iter()
+        .filter(|row| row.parts.iter().any(|part| part.contains("top plate")))
+        .collect();
+    assert_eq!(plates.len(), 1, "{plates:#?}");
+    let length = 3000.0 / 30f64.to_radians().cos() + 60.0 * 30f64.to_radians().tan();
+    let [l, w, t] = plates[0].dimensions_mm;
+    assert!(
+        (l - length).abs() < 0.01 && (w - 140.0).abs() < 1e-6 && (t - 60.0).abs() < 1e-6,
+        "{plates:#?}"
+    );
+    let c24 = bom
+        .cutting
+        .iter()
+        .find(|plan| plan.material == "C24")
+        .unwrap();
+    assert_eq!(c24.section_mm, [140.0, 60.0], "{c24:#?}");
+    assert!(c24.unplaced.is_empty(), "{c24:#?}");
+}
+
 /// Review 2026-10-29 PG-61: the cutting plan took a part's thinnest extent
 /// as a sheet's thickness and its two thinnest as a bar's section, so a
 /// sheathing piece narrower than the layer was thick made a phantom
@@ -696,4 +754,35 @@ fn a_cutting_plan_takes_the_layer_thickness_and_the_member_section() {
     assert_eq!(sections("KVH"), [vec![120.0, 60.0]], "{plans:#?}");
     let kvh = plans.iter().find(|plan| plan.material == "KVH").unwrap();
     assert_eq!(kvh.layouts.len(), 1, "{kvh:#?}");
+}
+
+/// Review 2026-11-01 PG-108: the cut list gave every blank longest side first, while the
+/// cutting plan of the same part took the sides its axes name: a strip 15 wide ripped from
+/// an 18 mm board was 2000 x 18 x 15 in the cut list and 2000 x 15 on an 18 mm sheet in the
+/// plan. Both give a blank as length, width, thickness the same way.
+#[test]
+fn the_cut_list_and_the_cutting_plan_give_a_blank_in_the_same_order() {
+    let source = "board('strip', (2000, 15, 18), material = 'OSB', thickness_axis = 'z')\n\
+         board('loose strip', (2000, 15, 18), at = (0, 100, 0), material = 'MDF', thickness_axis = 'z')\n\
+         sheet_stock('OSB', [(2500, 1250)])\n";
+    let (_, report) = ketchup_program::run("cutting.star", source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"));
+    let plan = &report.bom.cutting[0];
+    let piece = &plan.layouts[0].pieces[0];
+    assert_eq!(
+        [piece.size_mm.clone(), plan.section_mm.clone()].concat(),
+        [2000.0, 15.0, 18.0]
+    );
+    let listed = |material: &str| {
+        report
+            .bom
+            .cut_list
+            .iter()
+            .find(|row| row.material == material)
+            .unwrap_or_else(|| panic!("{:#?}", report.bom.cut_list))
+            .dimensions_mm
+    };
+    // With stock or without, a part that names its thickness gives it last.
+    assert_eq!(listed("OSB"), [2000.0, 15.0, 18.0]);
+    assert_eq!(listed("MDF"), [2000.0, 15.0, 18.0]);
 }

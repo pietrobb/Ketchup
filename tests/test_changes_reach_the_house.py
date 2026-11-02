@@ -32,8 +32,10 @@ def test_a_change_of_the_library_the_examples_or_a_house_test_reaches_the_house(
     house_test.parent.mkdir(parents=True)
     house_test.write_text('const HOUSE: &str = include_str!("../../examples/programs/tiny-house.star");\n')
     (tmp_path / "crates/b/tests/other.rs").write_text("fn other() {}\n")
+    # Review 2026-11-01 CI-101: a test of house-project.star did not count.
+    (tmp_path / "crates/b/tests/project.rs").write_text('let path = "examples/programs/house-project.star";\n')
     for path in ("crates/ketchup-program/library/prelude.star", "crates/ketchup-program/src/loads.rs",
-                 "examples/programs/tiny-house.star", "crates/b/tests/house.rs"):
+                 "examples/programs/tiny-house.star", "crates/b/tests/house.rs", "crates/b/tests/project.rs"):
         assert checker.reaches_the_house(["README.md", path], tmp_path), path
     assert not checker.reaches_the_house(["README.md", "crates/b/tests/other.rs", "crates/b/tests/gone.rs"], tmp_path)
 

@@ -154,8 +154,7 @@ pub fn material_takeoff(model: &ProgramModel, counted: &BTreeMap<String, Option<
         };
         let exact_volume = exact_volume.filter(|volume| volume.is_finite() && *volume > 0.0);
         counted_parts += 1;
-        let (min, max) = part.local_bounds();
-        let mut sides: [f64; 3] = std::array::from_fn(|axis| max[axis] - min[axis]);
+        let mut sides = part.blank_size();
         sides.sort_by(|left, right| right.total_cmp(left));
         let material = part
             .material

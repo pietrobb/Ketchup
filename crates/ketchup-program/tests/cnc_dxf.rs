@@ -215,6 +215,84 @@ fn a_hole_through_a_board_from_its_edge_crosses_the_board() {
     assert_eq!(edge, ("HDRILL_D8_Z400_H9", [300.0, 400.0], [300.0, 0.0]));
 }
 
+fn layers(part: &CncPart) -> Vec<String> {
+    part.entities
+        .iter()
+        .map(|entity| entity.layer().to_owned())
+        .collect()
+}
+
+/// Review 2026-11-01 MF-100: a tapped hole was written as its core drill
+/// alone, `DRILL_D5_Z15`, and its thread was lost without a word. The thread
+/// is drawn on a layer of its own, from a face or into an edge.
+#[test]
+fn a_tapped_hole_draws_its_thread_on_a_layer_of_its_own() {
+    let source = "plate = board('plate', [600, 400, 18], material = 'DTD')\n\
+         hole(plate, 'z+', world = (100, 100, 18), diameter = 5, depth = 15, thread = ('M6', 8), id = 'tap')\n\
+         hole(plate, 'z-', world = (300, 100, 0), diameter = 6.8, depth = 17, thread = ('M8', 10), id = 'below')\n\
+         hole(plate, 'y-', world = (200, 0, 9), diameter = 5, depth = 30, thread = ('M6', 20), id = 'edge')\n";
+    let model = ketchup_program::evaluate("tap.star", source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"))
+        .model;
+    let export = cnc_parts(&model);
+    let plate = part(&export, "plate");
+    let layers = layers(plate);
+    for layer in [
+        "DRILL_D5_Z15",
+        "TAP_M6X1_Z8",
+        "DRILL_D6_8_Z17_BOTTOM",
+        "TAP_M8X1_25_Z10_BOTTOM",
+        "HDRILL_D5_Z30_H9",
+        "HTAP_M6X1_Z20_H9",
+    ] {
+        assert!(layers.iter().any(|l| l == layer), "no {layer}: {layers:?}");
+    }
+    assert!(profiles(&plate.dxf()).contains_key("TAP_M6X1_Z8"));
+}
+
+/// Review 2026-11-01 MF-101: a blind hole or pocket deeper than the part was
+/// written at its depth, `DRILL_D8_Z25` in an 18 mm board, so the machine
+/// drilled into the table; an edge hole 600 deep into a 400 board was drawn
+/// out of the outline. Each goes through the part and no further, a pocket
+/// as a cutout.
+#[test]
+fn a_hole_or_pocket_deeper_than_the_part_goes_through_it_and_no_further() {
+    let source = "plate = board('plate', [600, 400, 18], material = 'DTD')\n\
+         hole(plate, 'z+', world = (100, 100, 18), diameter = 8, depth = 25, id = 'deep')\n\
+         hole(plate, 'z-', world = (300, 100, 0), diameter = 8, depth = 25, id = 'deep below')\n\
+         hole(plate, 'y-', world = (200, 0, 9), diameter = 8, depth = 600, id = 'long')\n\
+         pocket(plate, 'z+', rect = (400, 200, 500, 300), depth = 30, id = 'deep pocket')\n";
+    let model = ketchup_program::evaluate("deep.star", source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"))
+        .model;
+    let export = cnc_parts(&model);
+    let plate = part(&export, "plate");
+    let layers = layers(plate);
+    assert_eq!(
+        layers.iter().filter(|l| *l == "DRILL_D8_Z18").count(),
+        2,
+        "{layers:?}"
+    );
+    assert!(
+        layers.iter().any(|l| l == "HDRILL_D8_Z400_H9"),
+        "{layers:?}"
+    );
+    assert!(layers.iter().any(|l| l == "CUTOUT"), "{layers:?}");
+    for entity in &plate.entities {
+        if let Entity::Line {
+            start_mm, end_mm, ..
+        } = entity
+        {
+            for point in [start_mm, end_mm] {
+                assert!(
+                    (0.0..=600.0).contains(&point[0]) && (0.0..=400.0).contains(&point[1]),
+                    "{entity:?} leaves the outline"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn a_profile_keeps_its_arcs_and_its_cuts_are_a_cutout_or_a_pocket() {
     let export = export();

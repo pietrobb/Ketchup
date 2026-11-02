@@ -421,6 +421,137 @@ fn moved_and_copied_hatches_and_dimensions_are_written_where_they_now_lie() {
     assert_eq!(drawn_again["walls"].fills, 4);
 }
 
+/// The records `kind` of a DXF text, each as its (code, value) pairs.
+fn records_of(text: &str, kind: &str) -> Vec<Vec<(i32, String)>> {
+    let lines = text.lines().map(str::trim).collect::<Vec<_>>();
+    let mut records = Vec::new();
+    for pair in lines.chunks(2) {
+        let code = pair[0].parse::<i32>().unwrap();
+        if code == 0 {
+            records.push((pair[1] == kind, Vec::new()));
+        } else if let Some((_, record)) = records.last_mut() {
+            record.push((code, pair[1].to_owned()));
+        }
+    }
+    records
+        .into_iter()
+        .filter_map(|(wanted, record)| wanted.then_some(record))
+        .collect()
+}
+
+/// Review 2026-11-01 CD-100: the angles of an arc were written each by `rem_euclid`, so a
+/// full turn collapsed. A hatch bounded by a whole circle, moved, was written `50 0 / 51 0`
+/// (and mirrored `180 / 180`), which other readers take as an empty arc; a mirrored whole
+/// ELLIPSE `41 0 / 42 0`. The span of every arc and elliptical arc is kept, read from the
+/// DXF text itself, not through Kečup's own importer, which takes `0..0` as a full turn.
+#[test]
+fn whole_circles_and_ellipses_keep_their_full_turn_when_moved_or_mirrored() {
+    let entities = concat!(
+        "0\nSECTION\n2\nENTITIES\n",
+        // A round column filled solid: one edge, the whole circle.
+        "0\nHATCH\n5\nC0\n330\n1F\n100\nAcDbEntity\n8\nwalls\n100\nAcDbHatch\n10\n0\n20\n0\n30\n0\n",
+        "210\n0\n220\n0\n230\n1\n2\nSOLID\n70\n1\n71\n0\n91\n1\n92\n1\n93\n1\n",
+        "72\n2\n10\n1000\n20\n1000\n40\n300\n50\n0\n51\n360\n73\n1\n",
+        "97\n0\n75\n0\n76\n1\n98\n0\n",
+        // A filled ellipse: one edge, the whole elliptical arc, clockwise.
+        "0\nHATCH\n5\nC1\n330\n1F\n100\nAcDbEntity\n8\nwalls\n100\nAcDbHatch\n10\n0\n20\n0\n30\n0\n",
+        "210\n0\n220\n0\n230\n1\n2\nSOLID\n70\n1\n71\n0\n91\n1\n92\n1\n93\n1\n",
+        "72\n3\n10\n3000\n20\n1000\n11\n500\n21\n0\n40\n0.5\n50\n0\n51\n360\n73\n0\n",
+        "97\n0\n75\n0\n76\n1\n98\n0\n",
+        "0\nELLIPSE\n5\nC2\n330\n1F\n100\nAcDbEntity\n8\nwalls\n100\nAcDbEllipse\n",
+        "10\n5000\n20\n1000\n30\n0\n11\n600\n21\n0\n31\n0\n210\n0\n220\n0\n230\n1\n",
+        "40\n0.5\n41\n0\n42\n6.283185307179586\n",
+        "0\nARC\n5\nC3\n330\n1F\n100\nAcDbEntity\n8\nwalls\n100\nAcDbCircle\n",
+        "10\n7000\n20\n1000\n30\n0\n40\n400\n100\nAcDbArc\n50\n270\n51\n90\n",
+        "0\nENDSEC\n",
+    );
+    let source = format!("{HEADER}{TABLES}{entities}0\nEOF\n");
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let shift = similarity([100.0, 0.0], 0.0, 1.0, [0.0, 0.0], None);
+    let turn = similarity([500.0, 200.0], 30.0, 1.0, [0.0, 0.0], None);
+    let mirror = similarity(
+        [0.0, 0.0],
+        0.0,
+        1.0,
+        [0.0, 0.0],
+        Some([[0.0, 5000.0], [1.0, 5000.0]]),
+    );
+    let mut edits = UnderlayEdits::default();
+    for (handle, moved) in [(0xC0, shift), (0xC1, turn), (0xC2, mirror), (0xC3, turn)] {
+        edits.moved_objects.insert(id_of(lines, handle), moved);
+        for map in [mirror, turn] {
+            edits.added.push(AddedObject::Copy {
+                of: id_of(lines, handle),
+                map,
+            });
+        }
+    }
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap();
+    let text = String::from_utf8(written).unwrap();
+    let value = |record: &[(i32, String)], code: i32| -> f64 {
+        let found = record.iter().find(|(at, _)| *at == code);
+        found
+            .unwrap_or_else(|| panic!("no {code}"))
+            .1
+            .parse()
+            .unwrap()
+    };
+    let hatches = records_of(&text, "HATCH");
+    assert_eq!(hatches.len(), 6);
+    for record in &hatches {
+        let span = value(record, 51) - value(record, 50);
+        assert!(
+            (span - 360.0).abs() < 1e-9,
+            "a hatch edge spans {span}: {record:?}"
+        );
+    }
+    let ellipses = records_of(&text, "ELLIPSE");
+    assert_eq!(ellipses.len(), 3);
+    for record in &ellipses {
+        let span = value(record, 42) - value(record, 41);
+        assert!(
+            (span - std::f64::consts::TAU).abs() < 1e-9,
+            "an ellipse spans {span}: {record:?}"
+        );
+    }
+    // An arc keeps its 180°, counterclockwise from its start.
+    let arcs = records_of(&text, "ARC");
+    assert_eq!(arcs.len(), 3);
+    for record in &arcs {
+        let span = (value(record, 51) - value(record, 50)).rem_euclid(360.0);
+        assert!(
+            (span - 180.0).abs() < 1e-9,
+            "an arc spans {span}: {record:?}"
+        );
+    }
+    let again = read(text.as_bytes());
+    let edited = lines
+        .clone()
+        .edited(&edits, &underlay_layers(&original.layers));
+    assert_same(
+        &drawn(&again.lines, &again.layers),
+        &drawn(&edited, &original.layers),
+    );
+}
+
+fn underlay_layers(names: &[String]) -> Vec<UnderlayLayer> {
+    names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| UnderlayLayer {
+            name: name.clone(),
+            tag: TagId(10 + index as u64),
+        })
+        .collect()
+}
+
 /// Review 2026-10-31 P3: a dimension block is placed from its base point, the dimension
 /// moved by its clone point (group 12). A turned or mirrored dimension whose block has a
 /// base point read back away from where the underlay drew it, as the block written for it
@@ -946,11 +1077,32 @@ fn associations_of_entities_moved_apart_are_let_go() {
     assert!(!names(&entity(&text, "A7"), "AA"));
     assert!(!text.contains("DIMASSOC"));
 
-    // Moved together by one map, the association stays. A moved hatch is written as
-    // following nothing, so its boundary names it no more either.
+    // Moved together by one map, the association stays. Review 2026-11-01 CD-105: so
+    // does the hatch's, each still naming the other.
     let text = write(&[0xA7, 0xAA, 0xA0, 0xA9]);
     assert!(text.contains("DIMASSOC") && names(&entity(&text, "A9"), "B5"));
     assert!(names(&entity(&text, "A0"), "B5"));
+    let hatch = entity(&text, "AA");
+    assert!(
+        hatch.contains("\n71\n1\n") && hatch.contains("\n97\n1\n") && names(&hatch, "A7"),
+        "{hatch}"
+    );
+    assert!(names(&entity(&text, "A7"), "AA"));
+    // Moved by another map than its boundary, it lets go.
+    let mut edits = UnderlayEdits::default();
+    edits.moved_objects.insert(id_of(lines, 0xA7), away);
+    edits
+        .moved_objects
+        .insert(id_of(lines, 0xAA), [[1.0, 0.0, 0.0], [0.0, 1.0, 5000.0]]);
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap();
+    let text = String::from_utf8(written).unwrap();
+    assert!(entity(&text, "AA").contains("\n71\n0\n"));
     assert!(!names(&entity(&text, "A7"), "AA"));
     // Nothing moved: everything follows as read.
     let text = write(&[]);
@@ -1360,6 +1512,8 @@ fn an_entity_in_a_layout_block_lets_go_of_a_removed_entity() {
         "{leader}"
     );
     assert!(!leader.contains("\n340\n"), "{leader}");
+    // Review 2026-11-01 CD-103: and says it has no annotation, not an MTEXT one.
+    assert!(leader.contains("\n73\n3\n"), "{leader}");
     assert!(text.contains("0\nENDBLK\n5\n42\n"), "{text}");
 }
 
@@ -1466,6 +1620,70 @@ fn a_drawing_without_handles_is_written_with_its_edits() {
             EditedDxfError::Refused(DxfEditRefusal::NoHandle { object: 0 })
         ),
         "{error}"
+    );
+}
+
+/// Review 2026-11-01 CD-101: one LINE of no length in a drawing without handles draws
+/// nothing, yet is an entity of model space: every edit was refused as without handle.
+#[test]
+fn a_drawing_without_handles_and_with_a_line_of_no_length_is_written_with_its_edits() {
+    let dot = R12.replace(
+        "0\nCIRCLE\n",
+        "0\nLINE\n8\nwalls\n10\n50\n20\n50\n30\n0\n11\n50\n21\n50\n31\n0\n0\nCIRCLE\n",
+    );
+    let original = read(dot.as_bytes());
+    let objects = &original.lines.objects().objects;
+    let circle = objects
+        .iter()
+        .position(|object| object.kind.name() == "CIRCLE")
+        .map(|index| u32::try_from(index).unwrap())
+        .unwrap();
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(circle);
+    let written = write_edited_dxf(
+        dot.as_bytes(),
+        DxfImportOptions::new(None),
+        &original.lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let text = String::from_utf8(written).unwrap();
+    assert!(!text.contains("CIRCLE"), "{text}");
+    // The line of no length is kept as it was.
+    assert!(
+        text.contains("10\n50\n20\n50\n30\n0\n11\n50\n21\n50\n"),
+        "{text}"
+    );
+}
+
+/// Review 2026-11-01 CD-102: a shape drawn on a layer the drawing names only on its
+/// entities (no LAYER record) wrote the layer's name as a text, `%%` as `%%%%%%`: a new
+/// layer. A name has no special characters.
+#[test]
+fn a_shape_drawn_on_a_layer_without_a_record_keeps_the_name_of_the_layer() {
+    let source = R12.replace("0\nCIRCLE\n8\nwalls\n", "0\nCIRCLE\n8\nplan%%c\n");
+    let original = read(source.as_bytes());
+    let mut edits = UnderlayEdits::default();
+    edits.added.push(AddedObject::Drawn {
+        layer: "plan%%c".to_owned(),
+        shape: DrawnShape::Polyline {
+            points_mm: vec![[0.0, -2000.0], [3000.0, -2000.0]],
+            closed: false,
+        },
+    });
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        &original.lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let text = String::from_utf8(written).unwrap();
+    assert!(!text.contains("%%%"), "{text}");
+    assert_eq!(
+        text.lines().filter(|line| *line == "plan%%c").count(),
+        2,
+        "{text}"
     );
 }
 

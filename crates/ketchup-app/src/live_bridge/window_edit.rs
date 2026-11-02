@@ -63,10 +63,10 @@ impl KetchupApp {
     /// the status line, instead of guessing how long the bridge needs.
     pub(crate) fn finish_window_edit(&mut self) {
         let context = egui::Context::default();
-        let started = Instant::now();
+        let deadline = Instant::now() + Duration::from_secs(60);
         while self.live.edits.is_running() {
             assert!(
-                started.elapsed() < Duration::from_secs(60),
+                Instant::now() < deadline,
                 "the window edit was not delivered: {}",
                 self.digest
             );

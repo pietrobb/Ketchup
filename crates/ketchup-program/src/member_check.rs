@@ -31,6 +31,130 @@ pub struct TimberClass {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rho_k: Option<f64>,
     pub source: String,
+    /// The product of EN 1995-1-1 table 3.1 ([`PRODUCTS`]) whose kmod, kdef and gamma_M
+    /// apply; empty for solid timber, or glulam when `glulam`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub product: String,
+}
+
+impl TimberClass {
+    /// The product whose factors apply (review 2026-11-01 PG-106: every material took
+    /// those of solid timber).
+    #[must_use]
+    pub fn product(&self) -> &'static Product {
+        let name = match self.product.as_str() {
+            "" if self.glulam => "glulam",
+            "" => "solid",
+            name => name,
+        };
+        product(name).unwrap_or(&PRODUCTS[0])
+    }
+
+    /// kmod (table 3.1) of the load-duration class `duration` in its service class.
+    #[must_use]
+    pub fn kmod(&self, duration: usize) -> f64 {
+        self.product().kmod[usize::from(self.service_class) - 1].map_or(0.0, |row| row[duration])
+    }
+}
+
+/// A product of EN 1995-1-1 table 3.1 with its kmod in each service class (none where the
+/// standard does not use it there), kdef (table 3.2) and gamma_M (table 2.3).
+#[derive(Debug)]
+pub struct Product {
+    pub name: &'static str,
+    pub label: &'static str,
+    /// By service class, by load-duration class: permanent, long, medium, short,
+    /// instantaneous.
+    pub kmod: [Option<[f64; 5]>; 3],
+    pub kdef: [f64; 3],
+    pub gamma_m: f64,
+}
+
+const TIMBER_DRY: [f64; 5] = [0.6, 0.7, 0.8, 0.9, 1.1];
+const TIMBER_WET: [f64; 5] = [0.5, 0.55, 0.65, 0.7, 0.9];
+const BOARD_DRY: [f64; 5] = [0.4, 0.5, 0.7, 0.9, 1.1];
+const BOARD_HUMID: [f64; 5] = [0.3, 0.4, 0.55, 0.7, 0.9];
+const LOW_DRY: [f64; 5] = [0.3, 0.45, 0.65, 0.85, 1.1];
+const LOW_HUMID: [f64; 5] = [0.2, 0.3, 0.45, 0.6, 0.8];
+
+/// The products `timber_strength(product=)` names. Plywood is EN 636-3 (any service class).
+pub const PRODUCTS: [Product; 10] = [
+    Product {
+        name: "solid",
+        label: "solid timber (EN 14081-1)",
+        kmod: [Some(TIMBER_DRY), Some(TIMBER_DRY), Some(TIMBER_WET)],
+        kdef: [0.6, 0.8, 2.0],
+        gamma_m: 1.3,
+    },
+    Product {
+        name: "glulam",
+        label: "glued laminated timber (EN 14080)",
+        kmod: [Some(TIMBER_DRY), Some(TIMBER_DRY), Some(TIMBER_WET)],
+        kdef: [0.6, 0.8, 2.0],
+        gamma_m: 1.25,
+    },
+    Product {
+        name: "lvl",
+        label: "LVL (EN 14374, EN 14279)",
+        kmod: [Some(TIMBER_DRY), Some(TIMBER_DRY), Some(TIMBER_WET)],
+        kdef: [0.6, 0.8, 2.0],
+        gamma_m: 1.2,
+    },
+    Product {
+        name: "plywood",
+        label: "plywood (EN 636-3)",
+        kmod: [Some(TIMBER_DRY), Some(TIMBER_DRY), Some(TIMBER_WET)],
+        kdef: [0.8, 1.0, 2.5],
+        gamma_m: 1.2,
+    },
+    Product {
+        name: "osb2",
+        label: "OSB/2 (EN 300)",
+        kmod: [Some(LOW_DRY), None, None],
+        kdef: [2.25, 0.0, 0.0],
+        gamma_m: 1.2,
+    },
+    Product {
+        name: "osb3",
+        label: "OSB/3 (EN 300)",
+        kmod: [Some(BOARD_DRY), Some(BOARD_HUMID), None],
+        kdef: [1.5, 2.25, 0.0],
+        gamma_m: 1.2,
+    },
+    Product {
+        name: "osb4",
+        label: "OSB/4 (EN 300)",
+        kmod: [Some(BOARD_DRY), Some(BOARD_HUMID), None],
+        kdef: [1.5, 2.25, 0.0],
+        gamma_m: 1.2,
+    },
+    Product {
+        name: "particleboard_p5",
+        label: "particleboard P5 (EN 312)",
+        kmod: [Some(LOW_DRY), Some(LOW_HUMID), None],
+        kdef: [2.25, 3.0, 0.0],
+        gamma_m: 1.3,
+    },
+    Product {
+        name: "particleboard_p6",
+        label: "particleboard P6 (EN 312)",
+        kmod: [Some(BOARD_DRY), None, None],
+        kdef: [1.5, 0.0, 0.0],
+        gamma_m: 1.3,
+    },
+    Product {
+        name: "particleboard_p7",
+        label: "particleboard P7 (EN 312)",
+        kmod: [Some(BOARD_DRY), Some(BOARD_HUMID), None],
+        kdef: [1.5, 2.25, 0.0],
+        gamma_m: 1.3,
+    },
+];
+
+/// The product named `name`.
+#[must_use]
+pub fn product(name: &str) -> Option<&'static Product> {
+    PRODUCTS.iter().find(|product| product.name == name)
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -167,17 +291,14 @@ pub const BASIS: [&str; 9] = [
     "scope: vertical (gravity) loads only, permanent, imposed, roof and snow; wind, horizontal stability (bracing, racking) and bending combined with axial force (EN 1995-1-1 6.2.3, 6.2.4, 6.3.2 (6.23, 6.24)) are not checked",
     "EN 1990 6.4.3.2 (6.10): 1.35 G + 1.5 Q1 + 1.5 psi0 Qi; SLS characteristic, w_fin with kdef and psi2 (recommended values, the national annex may differ)",
     "psi0/psi2 (EN 1990 table A1.1): imposed category A 0.7/0.3, roof category H 0/0 and never with snow (EN 1991-1-1 3.3.2), snow below 1000 m 0.5/0",
-    "load duration (EN 1995-1-1 2.3.1.2): permanent G, medium-term imposed, short-term roof and snow; kmod table 3.1, kdef table 3.2, gamma_M 1.3 solid / 1.25 glulam (table 2.3)",
-    "bending with kh (3.2, 3.3), kcrit = 1: members assumed braced against lateral torsional buckling by the decking",
+    "load duration (EN 1995-1-1 2.3.1.2): permanent G, medium-term imposed, short-term roof and snow; kmod table 3.1, kdef table 3.2 and gamma_M table 2.3 of the product each class names (solid timber 1.3, glulam 1.25, LVL, plywood and OSB 1.2, particleboard 1.3)",
+    "bending with kh (3.2, 3.3); lateral torsional buckling (6.3.3) between the places that hold the member sideways (its bearings, and parts resting on it that rest on something else too: decking, battens, joists), with kcrit (6.34) of sigma_m,crit (6.32) over lef at the upper bound of table 6.1 (the stretch, plus 2h where the top is compressed): a member whose bending over kcrit exceeds the strength there is not verified",
     "shear with kcr = 0.67 (6.1.7); notches at bearings with kv (6.5.2), right-angled, x from the middle of the reaction to the corner of the notch, kv = 1 for a notch in the top over a bearing under the member (fig. 6.11(b)); elsewhere a change in depth steeper than 1:10 on the side in tension is not verified (6.5.1(2))",
     "compression perpendicular to the grain with kc90 = 1 on the contact area (6.1.5, without the 30 mm extension); compression with kc (6.3.2) on the full member length about both axes, sheathing not counted, and without kc on the net section at notches in a side (6.1.4) more than twice the member width from its ends; axial force in sloped beams neglected",
     "moments, shear and deflection: bending stress, shear stress and curvature on the section at each place along the member (a notch drawn in its side profile included), taken in the vertical plane across its grain so that a vertical load bends a turned section about both its axes, and its deflection is the resultant of the vertical and the sideways part, each at its own worst load pattern; spans continuous over the supports (three-moment equation, constant section) and cantilevers clamped at their support, as the loads are passed down; variable loads laid span by span and overhang by overhang where they add to the effect (load patterns), permanent load with 1.35 or, where it relieves the effect, 1.0 (EN 1990 table A1.2(B)); w_inst <= l/300 and w_fin <= l/250, cantilevers l/150 and l/125 (EN 1995-1-1 table 7.2, the lenient ends of the ranges)",
     "a computed check, not an authorized structural design",
 ];
 
-/// Load duration classes: permanent, long, medium, short, instantaneous.
-const KMOD: [[f64; 5]; 2] = [[0.6, 0.7, 0.8, 0.9, 1.1], [0.5, 0.55, 0.65, 0.7, 0.9]];
-const KDEF: [f64; 3] = [0.6, 0.8, 2.0];
 const GAMMA_G: f64 = 1.35;
 const GAMMA_Q: f64 = 1.5;
 const KCR: f64 = 0.67;
@@ -288,11 +409,6 @@ fn combinations(
 
 /// gamma_M of connections (EN 1995-1-1 table 2.3).
 pub(crate) const GAMMA_M_CONNECTION: f64 = 1.3;
-
-/// kmod (table 3.1) of a service class and load-duration class.
-pub(crate) fn kmod(service_class: u8, duration: usize) -> f64 {
-    KMOD[usize::from(service_class == 3)][duration]
-}
 
 /// `loads` in every ultimate combination (6.10): design value, load-duration
 /// class and label.
@@ -1401,7 +1517,7 @@ struct Design<'a> {
 
 impl Design<'_> {
     fn kmod(&self, duration: usize) -> f64 {
-        kmod(self.class.service_class, duration)
+        self.class.kmod(duration)
     }
 
     fn strength(&self, characteristic: f64, duration: usize) -> f64 {
@@ -1590,13 +1706,7 @@ fn beam_checks(
         }
     }
     let spans_checked = bearings < 2 || segments.iter().any(|(seg, _)| seg.kind == Kind::Span);
-    let h = shape.h;
-    // kh is of the member's depth (EC5 3.2(3)), not of a notched section's.
-    let kh = if class.glulam {
-        (600.0 / h).powf(0.1).clamp(1.0, 1.1)
-    } else {
-        (150.0 / h).powf(0.2).clamp(1.0, 1.3)
-    };
+    let kh = size_factor(class, shape.h);
     let mut bending = Best(None);
     let mut shear = Best(None);
     let mut inst = Best(None);
@@ -1699,7 +1809,130 @@ fn beam_checks(
         bearing_checks(load, shape, design, uls, &zones, &segments, &kinds);
     checks.extend(at_bearings);
     unchecked.extend(tension_notch(shape, &segments, &zones, uls, &kinds));
+    unchecked.extend(lateral_buckling(
+        load, shape, design, uls, &zones, &segments, &kinds,
+    ));
     (checks, spans_checked, unchecked)
+}
+
+/// kh of the member's depth (EC5 3.2(3)), not of a notched section's.
+fn size_factor(class: &TimberClass, h: f64) -> f64 {
+    if class.glulam {
+        (600.0 / h).powf(0.1).clamp(1.0, 1.1)
+    } else {
+        (150.0 / h).powf(0.2).clamp(1.0, 1.3)
+    }
+}
+
+/// kcrit of a relative slenderness in bending (EN 1995-1-1 6.3.3 (6.34)).
+fn kcrit(lambda_rel: f64) -> f64 {
+    if lambda_rel <= 0.75 {
+        1.0
+    } else if lambda_rel <= 1.4 {
+        1.56 - 0.75 * lambda_rel
+    } else {
+        1.0 / (lambda_rel * lambda_rel)
+    }
+}
+
+/// Why lateral torsional buckling may govern a beam (review 2026-11-01
+/// PG-100). Between its bearings and the parts that brace it nothing holds it
+/// sideways; over each such stretch the bending there, divided by kcrit
+/// (6.3.3) of an effective length at its upper bound (table 6.1: the stretch,
+/// plus 2h where the load bears on the compressed top), must stay within the
+/// strength, or the beam is not verified. A stretch fully braced, or so short
+/// that kcrit is 1, adds nothing; nor does a place where bending alone
+/// already fails it.
+fn lateral_buckling(
+    load: &MemberLoad,
+    shape: &Shape,
+    design: &Design,
+    uls: &[Combination],
+    zones: &[Zone],
+    segments: &[(Segment, Vec<Option<Bending>>)],
+    kinds: &[usize],
+) -> Option<String> {
+    let class = design.class;
+    let mut held: Vec<(f64, f64)> = zones
+        .iter()
+        .map(|zone| (zone.lo, zone.hi))
+        .chain(load.braced_mm.iter().map(|s| (s[0], s[1])))
+        .collect();
+    held.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut free: Vec<(f64, f64)> = Vec::new();
+    let mut reached = 0.0_f64;
+    for (lo, hi) in held.into_iter().chain([(load.length_mm, load.length_mm)]) {
+        if lo > reached {
+            free.push((reached, lo));
+        }
+        reached = reached.max(hi);
+    }
+    let h = shape.h;
+    // An equivalent width that is the width of a rectangle and less for a
+    // section with less material (6.32).
+    let b = shape.b.min(shape.area / h);
+    let kh = size_factor(class, h);
+    // Utilization, lambda_rel,m, lef and the stretch.
+    let mut worst: Option<[f64; 5]> = None;
+    for (lo, hi) in free {
+        let length = (hi - lo) * shape.arc;
+        if length <= 1.0 {
+            continue;
+        }
+        // The top in compression (sagging) and the bottom (hogging).
+        let lambdas = [length + 2.0 * h, length].map(|lef| {
+            let sigma_crit = 0.78 * b * b * class.e0_05 / (h * lef);
+            (lef, (class.fm_k / sigma_crit).sqrt())
+        });
+        if lambdas.iter().all(|(_, lambda)| kcrit(*lambda) >= 1.0) {
+            continue;
+        }
+        // The bending alone over the strength, which fails the member anyway.
+        let mut plain_most = 0.0_f64;
+        let mut stretch_worst: Option<[f64; 5]> = None;
+        for (seg, sections) in segments {
+            for (j, x) in seg.xs.iter().enumerate() {
+                let Some(section) = sections[j].as_ref().filter(|_| lo <= *x && *x <= hi) else {
+                    continue;
+                };
+                let components: Vec<f64> = seg.moments.iter().map(|m| m[j]).collect();
+                for combination in uls {
+                    let (sagging, hogging) = extremes(
+                        &combination.factors,
+                        kinds,
+                        &components,
+                        Some(GAMMA_G_FAVOURABLE),
+                    );
+                    let strength =
+                        section.modulus * design.strength(class.fm_k, combination.duration) * kh;
+                    for (moment, (lef, lambda)) in [sagging, -hogging].into_iter().zip(lambdas) {
+                        let plain = moment.max(0.0) / strength;
+                        plain_most = plain_most.max(plain);
+                        let utilization = plain / kcrit(lambda);
+                        if stretch_worst.is_none_or(|w| utilization > w[0]) {
+                            stretch_worst = Some([utilization, lambda, lef, lo, hi]);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(found) = stretch_worst.filter(|w| plain_most <= 1.0 && w[0] > 1.0)
+            && worst.is_none_or(|w| found[0] > w[0])
+        {
+            worst = Some(found);
+        }
+    }
+    worst.map(|[utilization, lambda, lef, lo, hi]| {
+        format!(
+            "lateral torsional buckling is not verified: nothing holds it sideways from {} to {} mm, and over lef = {} mm (EN 1995-1-1 6.3.3, table 6.1 at most) lambda_rel,m = {:.2} and kcrit = {:.2} would put its bending at {:.3}; brace its compressed edge (decking or battens resting on it and on the next member) or check it by hand",
+            lo.round(),
+            hi.round(),
+            lef.round(),
+            lambda,
+            kcrit(lambda),
+            utilization
+        )
+    })
 }
 
 /// Shear at notched bearings (6.5.2) and compression perpendicular to the
@@ -2103,7 +2336,9 @@ fn column_check(load: &MemberLoad, shape: &Shape, design: &Design, uls: &[Combin
 /// Every load-path member checked as a timber beam or column.
 #[must_use]
 pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
-    if loads.is_empty() || model.strength_classes.is_empty() {
+    // Without any strength class every member is listed as not verified for
+    // want of one (review 2026-11-01 PG-105), never left out as if none were.
+    if loads.members.is_empty() {
         return DesignReport::default();
     }
     let mut members: Vec<MemberCheck> = Vec::new();
@@ -2147,8 +2382,8 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
         };
         let design = Design {
             class,
-            gamma_m: if class.glulam { 1.25 } else { 1.3 },
-            kdef: KDEF[usize::from(class.service_class) - 1],
+            gamma_m: class.product().gamma_m,
+            kdef: class.product().kdef[usize::from(class.service_class) - 1],
         };
         let present: Vec<&'static str> = LOAD_KINDS[1..]
             .iter()

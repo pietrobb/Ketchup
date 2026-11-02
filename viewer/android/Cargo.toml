@@ -10,6 +10,12 @@ publish.workspace = true
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+# Measures a package a development install pushes as benchmark.ketchup-view
+# (scripts/windows/benchmark-android-viewer.ps1); off in the Viewer customers
+# install.
+benchmark = []
+
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6.1", features = ["native-activity"] }
 android_logger = "0.15"

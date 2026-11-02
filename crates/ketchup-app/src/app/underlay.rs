@@ -641,30 +641,7 @@ impl KetchupApp {
         if let Some(lines) = self.render.underlay_lines.borrow().get(&key) {
             return Ok(Arc::clone(lines));
         }
-        let blob = underlay.lines_blob();
-        let decoded_key = (underlay.lines_sha256, underlay.layers.len());
-        let cached = self
-            .render
-            .underlay_decoded
-            .borrow()
-            .get(&decoded_key)
-            .cloned();
-        let decoded = match cached {
-            Some(decoded) => decoded,
-            None => {
-                let bytes = self.file.container_data.blobs();
-                let bytes = bytes.get(&blob).ok_or(None)?;
-                #[cfg(test)]
-                BLOB_DECODES.with(|decodes| decodes.set(decodes.get() + 1));
-                let decoded =
-                    Arc::new(UnderlayLines::decode(bytes, underlay.layers.len()).map_err(Some)?);
-                self.render
-                    .underlay_decoded
-                    .borrow_mut()
-                    .insert(decoded_key, Arc::clone(&decoded));
-                decoded
-            }
-        };
+        let decoded = self.decoded_underlay_lines(underlay)?;
         let lines = if underlay.edits.is_empty() {
             decoded
         } else {
@@ -679,6 +656,44 @@ impl KetchupApp {
             .borrow_mut()
             .insert(key, Arc::clone(&lines));
         Ok(lines)
+    }
+
+    /// The lines and objects of `underlay` as read, without its edits; `None` while the
+    /// document holds no readable blob of them.
+    pub(crate) fn cached_decoded_underlay_lines(
+        &self,
+        underlay: &Underlay,
+    ) -> Option<Arc<UnderlayLines>> {
+        self.decoded_underlay_lines(underlay).ok()
+    }
+
+    /// The lines and objects of `underlay` as read, its blob decoded without its edits,
+    /// or why they cannot be read: decoded once and kept while an underlay names it.
+    fn decoded_underlay_lines(
+        &self,
+        underlay: &Underlay,
+    ) -> Result<Arc<UnderlayLines>, Option<UnderlayLinesError>> {
+        let blob = underlay.lines_blob();
+        let decoded_key = (underlay.lines_sha256, underlay.layers.len());
+        let cached = self
+            .render
+            .underlay_decoded
+            .borrow()
+            .get(&decoded_key)
+            .cloned();
+        if let Some(decoded) = cached {
+            return Ok(decoded);
+        }
+        let bytes = self.file.container_data.blobs();
+        let bytes = bytes.get(&blob).ok_or(None)?;
+        #[cfg(test)]
+        BLOB_DECODES.with(|decodes| decodes.set(decodes.get() + 1));
+        let decoded = Arc::new(UnderlayLines::decode(bytes, underlay.layers.len()).map_err(Some)?);
+        self.render
+            .underlay_decoded
+            .borrow_mut()
+            .insert(decoded_key, Arc::clone(&decoded));
+        Ok(decoded)
     }
 
     /// The layer extents of `underlay`'s lines, decoded from the document's blob the first

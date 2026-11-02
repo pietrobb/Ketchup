@@ -41,6 +41,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 # Every release whose files Save may still write: add a tag here when it is published.
+# Not v0.1.0: it takes every newer format and a document with a program for damage,
+# so no file Save writes can be kept safe from it; the README warns against it
+# (review 2026-11-01 DOC-100: 46 of 148 saved files opened its `.recovery`).
 RELEASES = ("v0.2.0", "v0.3.0")
 SAVED_CRATES = ("crates/ketchup-model", "crates/ketchup-geometry", "crates/ketchup-tolerance")
 # `ketchup-test-env` is a dev-dependency of the model: the workspace needs its manifest.
@@ -188,12 +191,19 @@ def old_workspace(tag: str, target: Path) -> Path:
     return source
 
 
-def write_files(directory: Path) -> None:
+def write_files(directory: Path) -> int:
+    """Keeps every file the model tests save in `directory`. A failing test does not stop the
+    reads: the files the others saved are still read (review 2026-11-01 TST-44)."""
     env = dict(os.environ, KETCHUP_SAVED_FILES_DIR=str(directory))
-    subprocess.run(
+    result = subprocess.run(
         ["cargo", "test", "--locked", "-q", "-p", "ketchup-model", "--features", "ketchup-model/saved-files"],
-        cwd=ROOT, env=env, check=True,
+        cwd=ROOT, env=env, check=False,
     )
+    if result.returncode != 0:
+        print("the model tests that write the files failed; reading the files they saved", flush=True)
+    if not any(directory.iterdir()):
+        raise SystemExit("the model tests saved no file to read")
+    return result.returncode
 
 
 def read_files(tag: str, source: Path, files: Path) -> int:
@@ -226,12 +236,14 @@ def main(arguments: list[str]) -> int:
         return int(failed)
     target = Path(os.environ.get("CARGO_TARGET_DIR") or ROOT / "target")
     with tempfile.TemporaryDirectory(prefix="ketchup-saved-files-") as written:
+        written_by_tests = 0
         if "--files" in arguments:
             files = Path(arguments[arguments.index("--files") + 1]).resolve()
         else:
             files = Path(written)
-            write_files(files)
+            written_by_tests = write_files(files)
         results = [read_files(tag, old_workspace(tag, target), files) for tag in tags]
+        results.append(written_by_tests)
     return 1 if any(results) else 0
 
 

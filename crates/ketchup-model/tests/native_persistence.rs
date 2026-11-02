@@ -3084,6 +3084,18 @@ fn document_tolerance_is_saved_undoable_and_part_of_the_digest() {
     ));
 }
 
+/// Whether the read-only flag just set on `lock` keeps this process from
+/// writing it. Root (a dev container's user) writes it anyway, so a test of a
+/// lock file nobody may write has nothing to test there (review 2026-10-26
+/// TST-44).
+fn read_only_flag_holds(lock: &std::ffi::OsStr) -> bool {
+    let held = std::fs::OpenOptions::new().write(true).open(lock).is_err();
+    if !held {
+        eprintln!("this user writes a read-only file (root?); the lock-file case does not arise");
+    }
+    held
+}
+
 /// A lock file that cannot be written in a folder that takes files (another user's on a
 /// shared drive, one marked read-only by an unpacked archive) is no read-only folder: it
 /// is locked through a read-only handle, so a session holding it keeps the next one out.
@@ -3099,6 +3111,9 @@ fn a_read_only_lock_file_in_a_writable_folder_still_locks_the_file() {
     let mut permissions = std::fs::metadata(&lock).unwrap().permissions();
     permissions.set_readonly(true);
     std::fs::set_permissions(&lock, permissions.clone()).unwrap();
+    if !read_only_flag_holds(&lock) {
+        return;
+    }
 
     let held = WorkRecoveryLock::acquire_unless_read_only(&path).unwrap();
     assert!(held.is_some(), "a writable folder takes a checkpoint");
@@ -3134,6 +3149,10 @@ fn a_lock_file_locked_only_shared_still_keeps_a_second_user_out() {
     let mut permissions = std::fs::metadata(&lock).unwrap().permissions();
     permissions.set_readonly(true);
     std::fs::set_permissions(&lock, permissions.clone()).unwrap();
+    if !read_only_flag_holds(&lock) {
+        drop(first_user);
+        return;
+    }
 
     let second_user = persistence::headless_with_read_handle_lock_failure(|| {
         WorkRecoveryLock::acquire_unless_read_only(&path)

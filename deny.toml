@@ -43,7 +43,9 @@ allow = [
 ]
 
 # acadrust (DWG read/write in ketchup-dwg), used unmodified from crates.io; its
-# source link is in THIRD_PARTY_NOTICES.txt. No other crate may bring in MPL-2.0.
+# source link is in scripts/notices/acadrust.txt, which the notices of every
+# package carrying it repeat. No other crate may bring in MPL-2.0. The same
+# allow list is about.toml's accepted list (scripts/third_party_notices.py).
 [[licenses.exceptions]]
 crate = "acadrust"
 allow = ["MPL-2.0"]

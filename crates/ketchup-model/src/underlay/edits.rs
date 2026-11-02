@@ -142,11 +142,14 @@ impl UnderlayLines {
             .filter(|(id, _)| !edits.removed_objects.contains(id))
             .filter_map(|(id, map)| Some((self.capture(*id, &children)?, *map)))
             .collect::<Vec<_>>();
-        let copies = edits
-            .added
-            .iter()
-            .map(|added| self.capture(added.copy_of()?, &children))
-            .collect::<Vec<_>>();
+        // Each object copied is taken once, however many times it is copied
+        // (review 2026-11-01 MD-101).
+        let mut taken = std::collections::BTreeMap::new();
+        for of in edits.added.iter().filter_map(AddedObject::copy_of) {
+            taken
+                .entry(of)
+                .or_insert_with(|| self.capture(of, &children));
+        }
         let removed = self.with_children(|id| edits.removed_objects.contains(&id));
         let moving = self
             .with_children(|id| edits.map_of(id).is_some() && !edits.removed_objects.contains(&id));
@@ -162,7 +165,8 @@ impl UnderlayLines {
         for (captured, map) in &moved {
             self.put(captured, map, true, None, false);
         }
-        for (added_by, (added, copy)) in edits.added.iter().zip(&copies).enumerate() {
+        for (added_by, added) in edits.added.iter().enumerate() {
+            let copy = (added.copy_of()).and_then(|of| taken.get(&of)?.as_ref());
             let added_by = u32::try_from(added_by).expect("an edit count fits u32");
             let first = u32::try_from(self.objects.objects.len()).unwrap_or(u32::MAX);
             let removed = edits.removed_objects.contains(&first);
@@ -460,11 +464,13 @@ pub fn plan_underlay_drawing(
 }
 
 /// One batch, so one Undo step, that moves the top-level objects `ids` of the drawing of
-/// underlay `id`, whose lines as drawn now are `lines`, by `map` (a move, turn, mirror or
-/// uniform scale), or adds copies of them so moved when `copy`.
+/// underlay `id`, whose lines as read (its blob decoded) are `read` and as drawn now
+/// `lines`, by `map` (a move, turn, mirror or uniform scale), or adds copies of them so
+/// moved when `copy`.
 pub fn plan_underlay_object_transform(
     snapshot: &Snapshot,
     id: super::UnderlayId,
+    read: &UnderlayLines,
     lines: &UnderlayLines,
     ids: &[u32],
     map: &Affine,
@@ -506,9 +512,10 @@ pub fn plan_underlay_object_transform(
         }
     }
     if copy {
-        // The lines drawn now hold the copies made before; these add theirs.
-        let mut size = lines.size();
-        size.add(lines.added_size(&edits.added[underlay.edits.added.len()..]));
+        // Measured as `Underlay::with_edits` measures them, against the lines as read: a
+        // copy of a copy names the object read, which a removal leaves empty in the lines
+        // drawn now but which it draws in full (review 2026-11-01 MD-100).
+        let size = read.edited_size(&edits);
         if !size.fits() {
             return Err(UnderlayObjectError::TooLarge(size));
         }

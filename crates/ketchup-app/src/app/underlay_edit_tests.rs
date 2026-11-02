@@ -862,6 +862,7 @@ fn the_window_writes_a_drawing_back_on_a_thread_that_cancelling_stops() {
     let dialogs = dialogs::ScriptedFileDialogs::new()
         .queue_import(ImportFormat::Dxf, &source)
         .queue_export(&output)
+        .queue_export(&output)
         .queue_export(&output);
     let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
     app.dispatch_file_command(AppCommand::ImportDrawingUnderlay);
@@ -888,10 +889,42 @@ fn the_window_writes_a_drawing_back_on_a_thread_that_cancelling_stops() {
         .events
         .push(egui::ViewportEvent::Close);
     harness.step();
-    let app = harness.state();
-    assert!(app.file.activity.underlay.exporting.is_none());
-    assert_eq!(app.digest, app.catalog.text("digest-cancelled"));
-    assert_eq!(std::fs::read_to_string(&output).unwrap(), "kept");
+    if harness.state().file.activity.underlay.exporting.is_none() {
+        // Stopped before the drawing took the place of the file, or it was already
+        // written and taken back in the same frame.
+        let app = harness.state();
+        let kept = std::fs::read_to_string(&output).unwrap() == "kept";
+        if kept {
+            assert_eq!(app.digest, app.catalog.text("digest-cancelled"));
+        } else {
+            assert!(app.digest.contains("edited.dxf"), "{}", app.digest);
+            std::fs::write(&output, "kept").unwrap();
+        }
+    } else {
+        // Review 2026-11-01 CD-107: the drawing was already taking the place of the file
+        // on the thread; the close does not claim to have stopped it, and it is reported
+        // as written.
+        crate::tests::shell::step_until(
+            &mut harness,
+            Duration::from_secs(30),
+            "the drawing taking the place of the file was not reported",
+            |app| app.file.activity.underlay.exporting.is_none(),
+        );
+        assert!(harness.state().digest.contains("edited.dxf"));
+        assert_ne!(std::fs::read_to_string(&output).unwrap(), "kept");
+        std::fs::write(&output, "kept").unwrap();
+    }
+    // A cancel before it takes the place of the file leaves every file as it was.
+    let gate = crate::app::underlay_export::PublishGate::default();
+    assert!(gate.cancel());
+    let other = directory.path().join("other.dxf");
+    let app = harness.state_mut();
+    let id = app.selected_underlay().expect("the drawing picked");
+    assert!(matches!(
+        app.export_underlay_unless_cancelled(id, &other, &gate),
+        Err(crate::app::underlay_export::UnderlayExportError::Cancelled)
+    ));
+    assert!(!other.exists());
     // The unsaved work keeps the window open.
     harness.state_mut().close_guard.pending = false;
 
@@ -908,6 +941,38 @@ fn the_window_writes_a_drawing_back_on_a_thread_that_cancelling_stops() {
     assert!(!written.contains("5\nA1\n"), "{written}");
     assert!(written.contains("0\nLINE\n5\nA2\n8\naxes\n"), "{written}");
     assert_eq!(std::fs::read_to_string(&source).unwrap(), PLAN);
+
+    // Review 2026-11-01 CD-107: the drawing takes the place of the file on the thread
+    // (written, synced and renamed), not in a window's frame that takes it back: no frame
+    // runs here until the outcome has come.
+    let fresh = directory.path().join("fresh.dxf");
+    let app = harness.state();
+    let id = app.selected_underlay().expect("the drawing picked");
+    let started = app
+        .start_client_underlay_export(id, None, &fresh, &harness.ctx)
+        .unwrap_or_else(|error| panic!("{error}"));
+    let outcome = started
+        .receiver
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the drawing was not written back");
+    if let Err(error) = outcome {
+        panic!("{error}");
+    }
+    assert!(fresh.exists());
+}
+
+/// Review 2026-11-01 CD-107: a cancel that comes once the drawing is taking the place of
+/// the file stops nothing, and says so by not claiming it; one before it, the drawing
+/// replaces nothing.
+#[test]
+fn a_drawing_export_is_cancelled_only_before_it_takes_the_place_of_the_file() {
+    use crate::app::underlay_export::PublishGate;
+    let gate = PublishGate::default();
+    assert!(gate.cancel());
+    assert!(!gate.begin_publish());
+    let gate = PublishGate::default();
+    assert!(gate.begin_publish());
+    assert!(!gate.cancel());
 }
 
 /// A wall moved with its floor hatch and its dimension, clicked in a headless window

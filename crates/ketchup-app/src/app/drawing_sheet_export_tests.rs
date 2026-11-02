@@ -132,10 +132,13 @@ fn a_drawing_export_keeps_the_window_painting_and_escape_cancels_it_without_writ
         DrawingExport::Project(SetFileFormat::Pdf),
         pdf.clone(),
         &context,
-        Box::new(move || {
+        Box::new(move |cancelled| {
             gate.recv_timeout(std::time::Duration::from_secs(10))
                 .unwrap();
-            let drawing = job.render(SetFileFormat::Pdf);
+            // Review 2026-11-01 UI-11: Esc reaches the thread too, so an exact
+            // worker making cosmetic thread bodies there stops.
+            assert!(cancelled.load(std::sync::atomic::Ordering::Acquire));
+            let drawing = job.render(SetFileFormat::Pdf, cancelled);
             made.send(()).unwrap();
             MadeDrawing::Project(drawing)
         }),
@@ -190,10 +193,10 @@ fn a_file_saved_while_the_sheet_is_projected_is_not_overwritten() {
         DrawingExport::Project(SetFileFormat::Pdf),
         pdf.clone(),
         &context,
-        Box::new(move || {
+        Box::new(move |cancelled| {
             gate.recv_timeout(std::time::Duration::from_secs(10))
                 .unwrap();
-            MadeDrawing::Project(job.render(SetFileFormat::Pdf))
+            MadeDrawing::Project(job.render(SetFileFormat::Pdf, cancelled))
         }),
     );
     std::fs::write(&pdf, b"saved meanwhile").unwrap();

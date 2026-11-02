@@ -2270,10 +2270,10 @@ fn production_exports_are_stable_across_recompute_undo_redo_and_save_open() {
         assert_eq!(&dxf_lines[index - 2..index], &["1001", "KETCHUP"]);
     }
     assert!(dxf.contains("30 \\U+00B10.2 mm"));
-    let pdf = String::from_utf8_lossy(initial.pdf());
+    let pdf = String::from_utf8_lossy(initial.pdf().unwrap());
     assert!(pdf.starts_with("%PDF-1.7"));
     assert!(pdf.contains("/Encoding /Identity-H"));
-    let copied = pdf_copied_texts(initial.pdf());
+    let copied = pdf_copied_texts(initial.pdf().unwrap());
     for character in ['č', '±', '⌀'] {
         assert!(copied.contains(&character), "{character}: {copied:?}");
     }
@@ -2368,6 +2368,8 @@ fn production_exports_are_stable_across_recompute_undo_redo_and_save_open() {
     );
 }
 
+/// Review 2026-11-01 MF-107: a character the sheet typeface cannot draw
+/// (here the prime of 5′) refuses the PDF only; the SVG and DXF carry it.
 #[test]
 fn pdf_export_rejects_text_outside_its_declared_font_repertoire() {
     let mut document = seeded_document();
@@ -2381,7 +2383,7 @@ fn pdf_export_rejects_text_outside_its_declared_font_repertoire() {
         "Unsupported PDF text",
         DrawingSource::Definition(DEFINITION),
         DrawingPageTemplate::default(),
-        DrawingTitleBlock::new("Drawing 🚫", "", "", "").unwrap(),
+        DrawingTitleBlock::new("Drawing 5′", "", "", "").unwrap(),
         vec![OrthographicViewKind::Front],
     )
     .unwrap();
@@ -2389,13 +2391,16 @@ fn pdf_export_rejects_text_outside_its_declared_font_repertoire() {
     document.commit_proposal(&create).unwrap();
     let before = stamp(&document);
 
+    let exported = export_drawing(&document.current(), &drawing).unwrap();
     assert_eq!(
-        export_drawing(&document.current(), &drawing),
+        exported.pdf(),
         Err(DrawingExportError::UnsupportedPdfText {
-            character: '🚫',
-            text: "Drawing 🚫".to_owned(),
+            character: '′',
+            text: "Drawing 5′".to_owned(),
         })
     );
+    assert!(String::from_utf8_lossy(exported.svg()).contains("Drawing 5′"));
+    assert!(String::from_utf8_lossy(exported.dxf()).contains("Drawing 5\\U+2032"));
     assert_eq!(stamp(&document), before);
 }
 
@@ -2426,10 +2431,10 @@ fn czech_german_and_polish_text_is_drawn_into_every_format() {
     let bundle = export_drawing(&document.current(), &drawing).unwrap();
     assert!(std::str::from_utf8(bundle.svg()).unwrap().contains(title));
     assert!(!bundle.dxf().is_empty());
-    let pdf = String::from_utf8_lossy(bundle.pdf());
+    let pdf = String::from_utf8_lossy(bundle.pdf().unwrap());
     assert!(pdf.contains("/Encoding /Identity-H"), "{pdf}");
     assert!(pdf.contains("/FontFile2"), "{pdf}");
-    let copied = pdf_copied_texts(bundle.pdf());
+    let copied = pdf_copied_texts(bundle.pdf().unwrap());
     for character in title.chars() {
         assert!(
             copied.contains(&character),

@@ -55,7 +55,9 @@ modules it imports (for Python, vendor `ketchup_sdk` into the folder):
   `-x`, `-xVALUE`, `--name`, `--name=VALUE` or `name=VALUE` with a name of
   letters, digits, `-` and `_` and a value of plain words, checked again
   after every `=`. Refused are an argument starting with `@` (arguments read
-  from a file) and a URL, network share, device or stream.
+  from a file), a URL, network share, device or stream, and an argument that
+  names a file of the plugin folder but starts with `-`: the interpreter would
+  take it for an option (`-m`, `-c`, `-e`); write it `./-m`.
 - Inputs are `number`, `integer`, `boolean` or `string`. The plugin reads them
   with `Client.inputs()` (`QUERY\tINPUTS`), never from its arguments. An
   undeclared, missing or mistyped input is refused before the user is asked,
@@ -133,7 +135,7 @@ so it could read the file itself. That is not true of every client: an AI
 client may run its tools in a sandbox that keeps it out of some folders. Such
 a client, steered by text it read (prompt injection), can still have the
 window load any local file of a type Kečup reads (a `.ketchup` document,
-STEP, IGES, STL, DXF, DWG, an image underlay) and then read what it holds
+STEP, IGES, STL, DXF, DWG, GLB or a SketchUp scene) and then read what it holds
 back through MCP queries and inspections, past its own sandbox.
 
 What the window still refuses for any client is a path that is not an

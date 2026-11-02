@@ -7,9 +7,10 @@
 
 #@topic basics: Parts, frames, faces, parameters, numbers
 #
-#   param(name, default, min=, max=, doc=, unit="mm")  -> number the user can override;
-#     unit="" for a count, a factor or an angle: the window then takes no length unit
-#     ("3 m"), else it reads one as millimetres
+#   param(name, default, min=, max=, doc=, unit="mm", whole=False)  -> number the user can
+#     override; unit="" for a count, a factor or an angle: the window then takes no length
+#     unit ("3 m"), else it reads one as millimetres; whole=True for a count or a switch,
+#     whose fraction is the error param_not_whole
 #   box(name, size, at=, material=, color=, attributes=, tool=)  -> part
 #   board(name, size, at=, material=, grain=, edges=, color=)  -> a panel for the cut list
 #   Every body (box, extrude, revolve, sweep, loft) takes material=, color=
@@ -921,7 +922,9 @@ def boss(part, face, profile, height, name = "boss"):
 #     Hardware omitted means metadata only; linked solids must already exist.
 #     records that a and b are joined (the part is carried, not floating);
 #     Fastener world centres follow the first endpoint a when it is placed/moved/rotated after declaration; moving b does not double-transform them or repair a separated joint.
-#     fastener names are counted in the report's hardware list. The parts
+#     fastener names are counted in the report's hardware list; hardware={item: count}
+#     instead counts what one connection is bought as when no rating counts it (connector()
+#     passes its rating's, so a connector refused for its members keeps its nails). The parts
 #     must touch, or stay within max_gap mm (a door on hinges across its
 #     reveal: joint(door, side, kind="hinge", max_gap=3)).
 #     bearing=True: the joint carries a's weight into b (a hanger, a joist hanger,
@@ -1216,7 +1219,8 @@ def connector(a, b, fastener, ratings = None, fasteners = None, name = None, pic
         fasteners = [] if touch == None else [vec_scale(vec_add(touch.min, touch.max), 0.5)]
     who = "connector(%s, %s, %r)" % (part_info(a).name, part_info(b).name, fastener)
     joint(a, b, kind = "connector", fastener = fastener, bearing = rating.load_n != None,
-          fasteners = fasteners, rating = _rated_connector(who, a, b, fastener, rating), name = name)
+          fasteners = fasteners, rating = _rated_connector(who, a, b, fastener, rating), name = name,
+          hardware = getattr(rating, "hardware", None))
     return fastener
 
 def arunda(a, b, template = "80 B", name = None):
@@ -2177,7 +2181,9 @@ def no_window_over(part, tag = "window", margin = 300, height = 1500):
 #     centres of the nearest framed layer, a whole number of spacings apart, and along u
 #     every board height; no joint where one board covers the rest, and joints moved to
 #     other stud centres so no board is narrower than "min_width" (default 200 mm) at the
-#     end or beside an opening (a warning naming the boards where no stud allows it). In a wall that framed layer gets a "joint noggin" behind every
+#     end or beside an opening, and the joints along u onto or away from an opening's top
+#     and bottom so no board over or under it is lower (a warning naming the boards where
+#     no joint allows it). In a wall that framed layer gets a "joint noggin" behind every
 #     horizontal joint; in a floor or roof a warning names them. Its "grain": "u" or "v" gives every piece the grain attribute
 #     sheet_stock(grain = True) keeps (topic cutting). A framed layer adds "spacing" (stud
 #     centres from u = 0 in mm; a stud at each end), "stud" (stud width, default 60), "header" (depth of the headers
@@ -2376,13 +2382,14 @@ def _board_joints(span, size, step, grid, narrowest, fixed = []):
         return joints, False
     return joints, True
 
-def _sheet_joints(name, layers, layer, length, points, edges_u):
+def _sheet_joints(name, layers, layer, length, points, edges_u, edges_v):
     """The joints of a sheet layer laid from boards layer["sheet"] = (u, v) mm: lines
     u = ... on the nearest framed layer's stud centres, a whole number of spacings
     apart (else the board width), and lines v = ... a board height apart; none where
     one board covers the rest, and none leaving a board narrower than layer["min_width"]
-    (default 200 mm) beside the run's end or an opening's edge at u = edges_u where the
-    joint can move. Also whether a narrower board stays at the end."""
+    (default 200 mm) beside the run's end or an opening's edge at u = edges_u or
+    v = edges_v where the joint can move (review 2026-11-01 PG-103: a 50 mm board
+    over a header). Also whether a narrower board stays at the end."""
     sheet = layer.get("sheet")
     if sheet == None:
         return [], [], False
@@ -2398,7 +2405,7 @@ def _sheet_joints(name, layers, layer, length, points, edges_u):
         grid = float(layers[framed]["spacing"])
         step = int(size_u / grid + 0.001) * grid
     joints_u, narrow_u = _board_joints(length, size_u, step, grid, narrowest, edges_u)
-    joints_v, narrow_v = _board_joints(max([p[1] for p in points]), size_v, size_v, 0.0, narrowest)
+    joints_v, narrow_v = _board_joints(max([p[1] for p in points]), size_v, size_v, 0.0, narrowest, edges_v)
     return joints_u, joints_v, narrow_u or narrow_v
 
 def buildup(name, origin, along, up, length, layers, height = None, top = None, openings = [], tags = [],
@@ -2459,10 +2466,11 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
     # horizontal joints with noggins.
     sheet_joints = []
     hole_edges = {e: 0 for o in holes for e in (o[0], o[0] + o[2])}
+    hole_edges_v = {e: 0 for o in holes for e in (o[1], o[1] + o[3])}
     for k in range(len(layers)):
         inner = sum([l["thickness"] for l in layers[:k]])
         sheet_joints.append(_sheet_joints(name, layers, layers[k], length, _outline(name, length, height, top, inner),
-                                          list(hole_edges.keys()))
+                                          list(hole_edges.keys()), list(hole_edges_v.keys()))
                             if "spacing" not in layers[k] else ([], [], False))
     offset = 0.0
     for here in range(len(layers)):
@@ -2508,8 +2516,14 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                     lowest = min([p[1] for p in _under(points, flat, a, b, 0.0)[2:]])
                     blocks += [(v, v) for v in joints_v if v <= lowest - 1]
                 column = _column(points, flat, a, b, 0.0, blocks)
-                if strip:
-                    strips += list(range(len(parts), len(parts) + len(column)))
+                # A board lower than the minimum over or under an opening (review 2026-11-01 PG-103).
+                opening_v = [e for o in covering(a, b) for e in (o[1], o[1] + o[3])]
+                for j in range(len(column)):
+                    low = min([p[1] for p in column[j]])
+                    high = max([p[1] for p in column[j]])
+                    near = [e for e in opening_v if abs(e - low) < 0.001 or abs(e - high) < 0.001]
+                    if strip or (high - low < narrowest - 0.001 and near):
+                        strips.append(len(parts) + j)
                 parts += column
             boards = [piece(label if len(parts) == 1 else "%s %d" % (label, k + 1), parts[k], offset, thickness, material, color, layer_tags, role, extra)
                       for k in range(len(parts))]
@@ -2988,7 +3002,9 @@ def _opening_in(name, o, origin, along, up, out, depth, length, top_v):
 #   The report's loads.members lists every load_path() member: its length and axis, the
 #   loads on it by kind (newtons, characteristic, unfactored), where they act (patches
 #   along the member: own weight, area loads, parts it carries) and what it passes to
-#   each support (reactions, with the bearing joint). A beam shares its load among its
+#   each support (reactions, with the bearing joint), and braced_mm, the stretches along
+#   it where a part resting on it and on something else too (decking, battens, joists)
+#   holds it sideways. A beam shares its load among its
 #   supports by the lever rule, over more supports as simple spans between them; other
 #   parts share theirs by contact area. Missing inputs are listed, never guessed.
 #   Example:
@@ -3100,11 +3116,14 @@ def price_list(prices, currency = None, source = None):
 #   longer side, y along the shorter, a part machined from below only turned underside
 #   up. Layers (a decimal point written "_"):
 #     CONTOUR              the outline, arcs as arcs
-#     CUTOUT               a cut(..., through=True)
-#     DRILL_D8_Z12         a hole 8 across, 12 deep from the face seen (through: the thickness)
+#     CUTOUT               a cut(..., through=True), or a pocket or cut as deep as the part
+#     DRILL_D8_Z12         a hole 8 across, 12 deep from the face seen (through, or as deep
+#                          as the part or deeper: the thickness)
 #     DRILL_D8_Z12_BOTTOM  the same from the face below
 #     HDRILL_D8_Z30_H9     a hole into an edge, a line from its entry to its bottom, its
-#                          axis 9 above the face below
+#                          axis 9 above the face below (at most across the part)
+#     TAP_M6X1_Z8          the thread of a tapped hole: size, pitch, depth, on its circle
+#                          (TAP_..._BOTTOM from below, HTAP_M6X1_Z8_H9 in an edge hole)
 #     POCKET_Z5            a pocket or a blind cut 5 deep (POCKET_Z5_BOTTOM from below)
 #     PART_NAME            the part's name, accents as \U+XXXX
 #   A part with a boolean, mirror, shell, push_pull or fillet/chamfer, a slanted hole, a
@@ -3121,9 +3140,14 @@ def price_list(prices, currency = None, source = None):
 #     member of such a material is checked on the loads of the loads topic.
 #   TIMBER_CLASSES: C16, C24 (EN 338:2016), GL24h, GL28h (EN 14080:2013) characteristic values.
 #   timber_strength(material, strength_class=, service_class=, glulam=, fm_k=, fv_k=, fc0_k=,
-#     fc90_k=, e0_mean=, e0_05=, source=, rho_k=None): the builtin behind timber_design for
-#     one material with its own characteristic values in N/mm² (rho_k, the characteristic
-#     density in kg/m³, is what a connector rating's density_kg_m3 is compared with).
+#     fc90_k=, e0_mean=, e0_05=, source=, rho_k=None, product=None): the builtin behind
+#     timber_design for one material with its own characteristic values in N/mm² (rho_k, the
+#     characteristic density in kg/m³, is what a connector rating's density_kg_m3 is compared
+#     with). product names the EN 1995-1-1 table 3.1 row whose kmod, kdef (table 3.2) and
+#     gamma_M (table 2.3) apply: "solid" (default), "glulam" (default with glulam=True),
+#     "lvl", "plywood" (EN 636-3), "osb2", "osb3", "osb4", "particleboard_p5",
+#     "particleboard_p6" or "particleboard_p7"; a service class the product is not used in
+#     is refused. A class of the classes table may give it as "product".
 #   The report's design.members lists every load-path member: role (beam or column),
 #   section [width, depth], the checks with their utilization, governing combination and
 #   place (bending, shear, shear_notch, deflection_inst, deflection_fin, bearing =
@@ -3132,7 +3156,9 @@ def price_list(prices, currency = None, source = None):
 #   largest utilization and status: "pass", "fail" or "not_verified" when an input is
 #   missing (the utilization is then from the known loads only; also a column whose
 #   section changes along it by another cut, pocket, shell, boolean or face offset,
-#   which has no compression check). design.basis states the
+#   which has no compression check; a beam that lateral torsional buckling may govern
+#   where nothing holds it sideways, so brace it or check it by hand; every member when
+#   no timber_design() names its material). design.basis states the
 #   factors and assumptions. A computed check, not an authorized structural design.
 #   Example:
 #     timber_design({"KVH C24": "C24", "BSH GL24h": "GL24h"}, service_class = 1)

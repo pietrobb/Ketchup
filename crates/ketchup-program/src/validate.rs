@@ -721,6 +721,20 @@ fn params(model: &ProgramModel, issues: &mut Vec<Issue>) {
                 hint: "Choose a value inside the declared range.".to_owned(),
             });
         }
+        if param.whole && param.value.fract() != 0.0 {
+            issues.push(Issue {
+                source_lines: Vec::new(),
+                severity: Severity::Error,
+                kind: "param_not_whole",
+                parts: Vec::new(),
+                message: format!(
+                    "param {} = {} takes whole numbers only",
+                    param.name, param.value
+                ),
+                where_mm: None,
+                hint: "Choose a whole number.".to_owned(),
+            });
+        }
     }
 }
 
@@ -950,10 +964,61 @@ fn alternatives_counted(model: &ProgramModel, issues: &mut Vec<Issue>) {
                  cutting plan, hardware and quote count the same parts more than once"
             ),
             where_mm: None,
-            hint: "Name the representation that is made in production(tags=[…]).".to_owned(),
+            hint: alternatives_hint(model, set, counted.first().copied().unwrap_or_default()),
             source_lines: Vec::new(),
         });
     }
+}
+
+/// How to make one representation, `chosen`, of the alternatives `set` and keep every other
+/// part made: production(tags=[…]) with the tags of the other parts too, and the parts
+/// that carry no tag, which production() leaves out (review 2026-11-01 PG-104).
+fn alternatives_hint(
+    model: &ProgramModel,
+    set: &std::collections::BTreeSet<String>,
+    chosen: &str,
+) -> String {
+    let others = model
+        .parts
+        .iter()
+        .filter(|part| model.in_production(part) && part.tags.is_disjoint(set));
+    let mut tags = std::collections::BTreeSet::new();
+    let mut untagged = Vec::new();
+    for part in others {
+        if part.tags.is_empty() {
+            untagged.push(part.name.as_str());
+        } else {
+            tags.extend(part.tags.iter().map(String::as_str));
+        }
+    }
+    let named = std::iter::once(chosen)
+        .chain(tags)
+        .map(|tag| format!("{tag:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut hint = format!(
+        "Name the representation that is made with the tags of the other parts made: \
+         production(tags = [{named}])."
+    );
+    if !untagged.is_empty() {
+        let shown = untagged
+            .iter()
+            .take(5)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = untagged.len().saturating_sub(5);
+        let more = if more > 0 {
+            format!(" and {more} more")
+        } else {
+            String::new()
+        };
+        hint.push_str(&format!(
+            " production() leaves out the parts that carry no tag, so tag these first: \
+             {shown}{more}."
+        ));
+    }
+    hint
 }
 
 /// All generic checks on boxes. Errors first, then warnings; stable order.

@@ -64,51 +64,17 @@ impl KetchupApp {
     ) -> Result<Value, ImportError> {
         let snapshot = self.document.current();
         match format {
-            ImportFormat::Step => {
-                let source = ImportSourcePlan::seal(
+            ImportFormat::Step | ImportFormat::Iges => {
+                // Only the in-process caller waits here; a client's import
+                // reads the file as a job that can be cancelled (MCP-100).
+                let executable = self.exact_worker_executable();
+                let (source, evidence) = crate::app::exact_import_activity::read_exact_import(
                     format,
-                    path.to_owned(),
-                    Self::read_step_source(path)?,
-                    (),
-                    &snapshot,
-                );
-                let plan = self.prepare_step_import_preview_plan(source)?;
-                let parts = plan.evidence.placed_parts().map(|part| &part.exact);
-                let (refused, refused_total) = bounded(&plan.evidence.refusals());
-                let summary = json!({
-                    "solids": parts.clone().map(|exact| exact.solid_count).sum::<u32>(),
-                    "volume_mm3": parts.map(|exact| exact.volume_mm3).sum::<f64>(),
-                    "refused": refused,
-                    "refused_total": refused_total,
-                });
-                self.import_step_from(&PendingStepImport {
-                    plan,
-                    invalidated: false,
-                })?;
-                Ok(summary)
-            }
-            ImportFormat::Iges => {
-                let source = ImportSourcePlan::seal(
-                    format,
-                    path.to_owned(),
-                    Self::read_iges_source(path)?,
-                    (),
-                    &snapshot,
-                );
-                let plan = self.prepare_iges_import_preview_plan(source)?;
-                let parts = plan.evidence.parts.iter().map(|part| &part.exact);
-                let (refused, refused_total) = bounded(&plan.evidence.refusals());
-                let summary = json!({
-                    "solids": parts.clone().map(|exact| exact.solid_count).sum::<u32>(),
-                    "volume_mm3": parts.map(|exact| exact.volume_mm3).sum::<f64>(),
-                    "refused": refused,
-                    "refused_total": refused_total,
-                });
-                self.import_iges_from(&PendingIgesImport {
-                    plan,
-                    invalidated: false,
-                })?;
-                Ok(summary)
+                    path,
+                    executable,
+                    &AtomicBool::new(false),
+                )?;
+                self.import_exact_read(format, path, source, evidence)
             }
             ImportFormat::Stl => {
                 let unit = unit.unwrap_or(ImportLengthUnit::Millimetre);
@@ -159,6 +125,65 @@ impl KetchupApp {
                 Ok(summary)
             }
             ImportFormat::Glb => self.import_glb_file(path),
+        }
+    }
+
+    /// Imports the STEP or IGES `source`, the bytes of the `format` file at
+    /// `path`, from the `evidence` the exact worker read of them, like
+    /// [`Self::import_file`]; the evidence is sealed against the document as it
+    /// is now.
+    pub(crate) fn import_exact_read(
+        &mut self,
+        format: ImportFormat,
+        path: &Path,
+        source: Vec<u8>,
+        evidence: crate::app::exact_import_activity::ExactImportEvidence,
+    ) -> Result<Value, ImportError> {
+        use crate::app::exact_import_activity::ExactImportEvidence;
+        let source = ImportSourcePlan::seal(
+            format,
+            path.to_owned(),
+            source,
+            (),
+            &self.document.current(),
+        );
+        match evidence {
+            ExactImportEvidence::Step(evidence) => {
+                let plan = self.step_import_preview_plan_from(source, evidence)?;
+                let parts = plan.evidence.placed_parts().map(|part| &part.exact);
+                let (refused, refused_total) = bounded(&plan.evidence.refusals());
+                let summary = json!({
+                    "solids": parts.clone().map(|exact| exact.solid_count).sum::<u32>(),
+                    "volume_mm3": parts.map(|exact| exact.volume_mm3).sum::<f64>(),
+                    "complete": plan.evidence.left_out().is_empty(),
+                    "left_out": left_out_json(plan.evidence.left_out()),
+                    "refused": refused,
+                    "refused_total": refused_total,
+                });
+                self.import_step_from(&PendingStepImport {
+                    plan,
+                    invalidated: false,
+                })?;
+                Ok(summary)
+            }
+            ExactImportEvidence::Iges(evidence) => {
+                let plan = self.iges_import_preview_plan_from(source, evidence)?;
+                let parts = plan.evidence.parts.iter().map(|part| &part.exact);
+                let (refused, refused_total) = bounded(&plan.evidence.refusals());
+                let summary = json!({
+                    "solids": parts.clone().map(|exact| exact.solid_count).sum::<u32>(),
+                    "volume_mm3": parts.map(|exact| exact.volume_mm3).sum::<f64>(),
+                    "complete": plan.evidence.left_out().is_empty(),
+                    "left_out": left_out_json(plan.evidence.left_out()),
+                    "refused": refused,
+                    "refused_total": refused_total,
+                });
+                self.import_iges_from(&PendingIgesImport {
+                    plan,
+                    invalidated: false,
+                })?;
+                Ok(summary)
+            }
         }
     }
 
@@ -219,4 +244,13 @@ impl KetchupApp {
         })?;
         Ok(summary)
     }
+}
+
+/// What an exact import left out, as its answer names it (review 2026-11-01 EX-100).
+fn left_out_json(left_out: ketchup_model::import::ImportLeftOut) -> Value {
+    json!({
+        "parts": left_out.parts,
+        "solids": left_out.solids,
+        "placements": left_out.placements,
+    })
 }

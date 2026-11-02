@@ -123,19 +123,53 @@ fn an_imported_step_names_the_parts_and_solids_it_left_out() {
         .execute(&mut app, import(&source, None), false)
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
     let review = &imported["review"];
-    assert_eq!(review["refused_total"], 2, "{review}");
+    assert_eq!(review["refused_total"], 3, "{review}");
     let refused = review["refused"]
         .as_array()
         .unwrap()
         .iter()
         .map(|line| line.as_str().unwrap())
         .collect::<Vec<_>>();
-    assert!(refused[0].starts_with("Crossed prism: ") && refused[0].contains("#1069"));
-    assert!(refused[1].contains("(entity #720) encloses no volume"));
-    assert_eq!(review["solids"], 2);
+    assert!(refused[0].starts_with("Crossed prism: ") && refused[0].contains("#1077"));
+    assert!(refused[1].starts_with("Wire frame: "), "{}", refused[1]);
+    assert!(
+        refused[2].starts_with("Block and figure eight: solid 2 (entity #1756) fails"),
+        "{}",
+        refused[2]
+    );
+    assert_eq!(review["solids"], 4);
+    // Review 2026-11-01 EX-100: the answer and the window's status line say
+    // the import is partial, not only the review a client may not read.
+    assert_eq!(review["complete"], false, "{review}");
+    assert_eq!(
+        review["left_out"],
+        json!({"parts": 2, "solids": 1, "placements": 3}),
+        "{review}"
+    );
+    let status = app.action_digest();
+    assert!(
+        status.contains("2 parts and 1 solids") && status.contains("3 placements"),
+        "{status}"
+    );
+    // ... and the model summary keeps saying it after the answer is gone.
+    let summary = bridge.query.summary(&app.document.current());
+    let partial = &summary["partial_imports"];
+    assert_eq!(partial.as_array().map(Vec::len), Some(1), "{summary}");
+    assert_eq!(partial[0]["format"], "STEP");
+    assert_eq!(
+        partial[0]["source"]["text"],
+        "self-authored-partly-invalid-assembly.step"
+    );
+    assert_eq!(partial[0]["refused_total"], 3);
+    let summarized = partial[0]["refused"].as_array().unwrap();
+    assert_eq!(summarized.len(), refused.len());
+    for (row, line) in summarized.iter().zip(&refused) {
+        assert_eq!(row["count"], 1);
+        assert!(line.starts_with(row["subject"]["text"].as_str().unwrap()));
+    }
     assert_eq!(
         app.document.current().definitions().count(),
-        definitions + 2
+        definitions + 3
     );
 }
 
@@ -413,7 +447,10 @@ fn a_plan_of_its_own_is_drawn_as_a_pdf_at_the_scale_the_client_names() {
             scale: Some(250),
         })
         .unwrap()
-        .render(crate::app::project_drawings::SetFileFormat::Pdf)
+        .render(
+            crate::app::project_drawings::SetFileFormat::Pdf,
+            &AtomicBool::new(false),
+        )
         .unwrap()
         .0;
     let texts = set.sheets[0].page.texts().collect::<Vec<_>>();

@@ -140,6 +140,15 @@ fn plane_graph(segments: &[[[f64; 2]; 2]], tolerance_mm: f64) -> Result<PlaneGra
     // UO-81). Any two vertices lie farther apart than the tolerance, so every piece
     // left is longer than it.
     let mut vertices = Vertices::new(tolerance);
+    // The ends take their vertices in the order of their coordinates, not of the pieces,
+    // so the same pieces in any order or direction give the same vertices (review
+    // 2026-11-01 UO-100).
+    let mut ends = segments.iter().flatten().copied().collect::<Vec<_>>();
+    ends.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+    ends.dedup();
+    for end in ends {
+        vertices.id(end);
+    }
     let segments = segments
         .iter()
         .filter_map(|[a, b]| {
@@ -186,6 +195,9 @@ struct Vertices {
     cell: f64,
     points: Vec<[f64; 2]>,
     grid: HashMap<Cell, Vec<usize>>,
+    /// The vertex each point was given: a point asked again gets the same one, whatever
+    /// vertices were added since.
+    given: HashMap<Cell, usize>,
 }
 
 impl Vertices {
@@ -194,24 +206,40 @@ impl Vertices {
             cell: tolerance,
             points: Vec::new(),
             grid: HashMap::new(),
+            given: HashMap::new(),
         }
     }
 
+    /// The vertex of `point`: the one it was given before, else the nearest within the
+    /// tolerance, else a new one at it.
     fn id(&mut self, point: [f64; 2]) -> usize {
+        let key = cell(point[0], point[1]);
+        if let Some(id) = self.given.get(&key) {
+            return *id;
+        }
         let [x, y] = point.map(|value| cell_of(value, self.cell));
+        let mut nearest: Option<(f64, usize)> = None;
         for dx in [-1.0, 0.0, 1.0] {
             for dy in [-1.0, 0.0, 1.0] {
                 for id in self.grid.get(&cell(x + dx, y + dy)).into_iter().flatten() {
                     let other = self.points[*id];
-                    if (other[0] - point[0]).hypot(other[1] - point[1]) <= self.cell {
-                        return *id;
+                    let distance = (other[0] - point[0]).hypot(other[1] - point[1]);
+                    if distance <= self.cell && nearest.is_none_or(|best| (distance, *id) < best) {
+                        nearest = Some((distance, *id));
                     }
                 }
             }
         }
-        self.points.push(point);
-        let id = self.points.len() - 1;
-        self.grid.entry(cell(x, y)).or_default().push(id);
+        let id = nearest.map_or_else(
+            || {
+                self.points.push(point);
+                let id = self.points.len() - 1;
+                self.grid.entry(cell(x, y)).or_default().push(id);
+                id
+            },
+            |(_, id)| id,
+        );
+        self.given.insert(key, id);
         id
     }
 }
@@ -935,6 +963,82 @@ mod tests {
             "{}",
             found[0].area_mm2
         );
+    }
+
+    /// Review 2026-11-01 UO-100: an end was merged into the first vertex found within the
+    /// tolerance while vertices were still being added, so one point shared by two pieces
+    /// could become two vertices, and whether a room was found depended on the order and
+    /// direction of its pieces. The same pieces in any order or direction give the same
+    /// regions, holes too.
+    #[test]
+    fn the_regions_found_do_not_depend_on_the_order_or_direction_of_the_pieces() {
+        // The walls of a square room of side `side` in 84 pieces each; with `gap`, each
+        // piece starts that far past the end of the one before, as a vectorised plan
+        // draws them.
+        let room = |side: f64, gap: f64| {
+            let corners = [[0.0, 0.0], [side, 0.0], [side, side], [0.0, side]];
+            let mut wall = Vec::new();
+            for i in 0..4 {
+                let (a, b) = (corners[i], corners[(i + 1) % 4]);
+                let steps = 84;
+                let t = |k: u32| f64::from(k) / f64::from(steps);
+                for k in 0..steps {
+                    let start = lerp(a, b, t(k) + gap / side);
+                    wall.push([start, lerp(a, b, t(k + 1))]);
+                }
+            }
+            wall
+        };
+        let circle = |centre: [f64; 2], radius: f64, chords: u32| {
+            let at = move |i: u32| {
+                let angle = std::f64::consts::TAU * f64::from(i) / f64::from(chords);
+                [
+                    centre[0] + radius * angle.cos(),
+                    centre[1] + radius * angle.sin(),
+                ]
+            };
+            (0..chords)
+                .map(move |i| [at(i), at(i + 1)])
+                .collect::<Vec<_>>()
+        };
+        // 0.6 mm steps; 336 lines of 60 mm with gaps of 0.01 mm; 0.6 mm steps round a hole.
+        let mut drawings = vec![(50.0, room(50.0, 0.0)), (5_000.0, room(5_000.0, 0.01))];
+        for (radius, chords) in [(1.0, 7), (5.0, 60)] {
+            let mut lines = room(50.0, 0.0);
+            lines.extend(circle([25.0, 25.0], radius, chords));
+            drawings.push((50.0, lines));
+        }
+        for (drawing, (side, lines)) in drawings.iter().enumerate() {
+            let holes = usize::from(drawing >= 2);
+            let reversed = lines.iter().rev().copied().collect::<Vec<_>>();
+            let turned = lines.iter().map(|[a, b]| [*b, *a]).collect::<Vec<_>>();
+            // A fixed shuffle: every 97th piece, round and round.
+            let shuffled = (0..lines.len())
+                .map(|k| lines[k * 97 % lines.len()])
+                .collect::<Vec<_>>();
+            assert!(lines.len() % 97 != 0, "every piece once");
+            for (order, pieces) in [lines, &reversed, &turned, &shuffled]
+                .into_iter()
+                .enumerate()
+            {
+                let found = find_regions(pieces, 1.0).unwrap();
+                let room = found
+                    .iter()
+                    .filter(|region| region.contains([3.0, 3.0]))
+                    .collect::<Vec<_>>();
+                assert_eq!(room.len(), 1, "drawing {drawing}, order {order}: {found:?}");
+                assert_eq!(
+                    room[0].holes.len(),
+                    holes,
+                    "drawing {drawing}, order {order}"
+                );
+                assert!(
+                    (room[0].area_mm2 / (side * side) - 1.0).abs() < 0.04,
+                    "drawing {drawing}, order {order}: {}",
+                    room[0].area_mm2
+                );
+            }
+        }
     }
 
     /// A plan of `columns` × `rows` rooms of 200 × 120 mm, a pillar in each, its walls

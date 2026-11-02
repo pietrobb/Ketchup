@@ -495,6 +495,15 @@ pub(super) fn resolve_argument(
         if !plain_value(argument) && !candidate.is_file() {
             return Err(refuse(format!("argument {argument:?} {NOT_PLAIN}")));
         }
+        // It reaches the process as written: a file named `-m` counted as the
+        // hashed script while Python took `-m pip` as an option (review
+        // 2026-11-01 SEC-100).
+        if argument.starts_with('-') && candidate.is_file() {
+            return Err(refuse(format!(
+                "argument {argument:?} names a file of the plugin folder but starts with -, \
+                 so an interpreter takes it for an option; write it ./{argument}"
+            )));
+        }
         let given = if parent_dir {
             candidate.display().to_string()
         } else {

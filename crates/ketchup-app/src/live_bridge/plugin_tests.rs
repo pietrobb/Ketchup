@@ -1404,6 +1404,67 @@ fn a_plugin_command_line_runs_only_hashed_code() {
     assert!(!directory.starts_with(std::env::temp_dir()));
 }
 
+/// Review 2026-11-01 SEC-100: an argument naming a file of the plugin folder
+/// reached the interpreter as written and counted as the hashed script, so a
+/// file named `-m` made `python -m pip install requests` a valid command line
+/// that installed unhashed code; `-c`, `node -e`, `ruby -e` and `perl -e` ran
+/// the words after them. Such an argument is refused; written `./-m` it names
+/// the file and passes.
+#[test]
+fn a_folder_file_named_like_an_option_is_no_script() {
+    let _turn = file_turn();
+    let directory = tempfile::tempdir().unwrap();
+    let (folder, _) = height_folder(directory.path());
+    for option in ["-m", "-c", "-e"] {
+        std::fs::write(folder.join(option), "print('hashed')\n").unwrap();
+    }
+    let load = |manifest: &Value| {
+        std::fs::write(folder.join("plugin.json"), manifest.to_string()).unwrap();
+        let inputs = json!({"height_mm": 35});
+        crate::live_bridge::plugin_manifest::load(
+            &folder.to_string_lossy(),
+            inputs.as_object(),
+            &Default::default(),
+        )
+    };
+    // Interpreters that are never started: only their names count here.
+    let interpreter = |name: &str| {
+        let path = directory.path().join(format!("{name}.exe"));
+        std::fs::write(&path, b"MZ").unwrap();
+        path.display().to_string()
+    };
+    let mut manifest: Value = serde_json::from_str(&folder_manifest(&["set_dimension"])).unwrap();
+    for (executable, arguments) in [
+        (python(), json!(["-m", "pip", "install", "requests"])),
+        (python(), json!(["-c", "import os; os.system('calc')"])),
+        (
+            interpreter("node"),
+            json!(["-e", "require('child_process')"]),
+        ),
+        (interpreter("ruby"), json!(["-e", "system('calc')"])),
+        (interpreter("perl"), json!(["-e", "system('calc')"])),
+    ] {
+        manifest["executable"] = json!(executable);
+        manifest["arguments"] = arguments.clone();
+        assert_eq!(
+            load(&manifest).err(),
+            Some("plugin_manifest_invalid"),
+            "{executable} {arguments}"
+        );
+    }
+    manifest["executable"] = json!(python());
+    manifest["arguments"] = json!(["./-m", "pip"]);
+    let loaded = load(&manifest).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        loaded
+            .command
+            .arguments
+            .first()
+            .and_then(|word| word.to_str()),
+        Some("./-m")
+    );
+}
+
 /// Review 2026-10-18 SEC-8: the window refused a list of code options, which
 /// was never complete (`pwsh -C cmdlet hashed.txt` ran the cmdlet), took any
 /// hashed file anywhere on the line for the script, and did not hash the

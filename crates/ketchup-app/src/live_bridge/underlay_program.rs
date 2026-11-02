@@ -223,21 +223,26 @@ pub(crate) fn free_name(app: &KetchupApp, stem: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The search for the region `binding` follows, as [`binding_data`] makes it; none when it
-/// follows an object or a block, or cannot look, which its update says.
-pub(super) fn binding_search(
+/// The searches for the region `binding` follows, as [`binding_data`] makes them: of its
+/// layers, and of a room of walls also of the shown layers, for the holes it leaves out;
+/// none when it follows an object or a block, or cannot look, which its update says.
+pub(super) fn binding_searches(
     app: &KetchupApp,
     snapshot: &Snapshot,
     binding: &super::underlay_binding::Binding,
-) -> Option<super::underlay_regions::Search> {
+) -> Vec<super::underlay_regions::Search> {
     if binding.block.is_some() || binding.point.is_none() == binding.label.is_none() {
-        return None;
+        return Vec::new();
     }
-    let underlay =
-        super::underlay_regions::one_underlay(snapshot, Some(binding.underlay_id)).ok()?;
-    let lines = app.cached_underlay_lines(underlay)?;
-    if binding.object(&lines).ok()?.is_some() {
-        return None;
+    let Ok(underlay) = super::underlay_regions::one_underlay(snapshot, Some(binding.underlay_id))
+    else {
+        return Vec::new();
+    };
+    let Some(lines) = app.cached_underlay_lines(underlay) else {
+        return Vec::new();
+    };
+    if !matches!(binding.object(&lines), Ok(None)) {
+        return Vec::new();
     }
     let offset = underlay.offset_mm();
     let closing_segments_mm = binding
@@ -250,15 +255,18 @@ pub(super) fn binding_search(
         closing_segments_mm: &closing_segments_mm,
         within: binding.within_local(underlay),
     };
-    super::underlay_regions::region_search(
-        snapshot,
-        underlay,
-        &lines,
-        binding.layers.as_deref(),
-        lookup,
-        binding.point.is_some() && binding.whole,
-    )
-    .ok()
+    let whole = binding.point.is_some() && binding.whole;
+    let shown = binding.walled().then_some((None, false));
+    [(binding.layers.as_deref(), whole)]
+        .into_iter()
+        .chain(shown)
+        .filter_map(|(layers, whole)| {
+            super::underlay_regions::region_search(
+                snapshot, underlay, &lines, layers, lookup, whole,
+            )
+            .ok()
+        })
+        .collect()
 }
 
 pub(super) fn binding_data(
@@ -334,7 +342,18 @@ pub(super) fn binding_data(
             };
             let mut warning = super::underlay_regions::objectless_warning(&lines)
                 .map_or_else(String::new, |warning| format!("; WARNING: {warning}"));
-            if let Some(left_out) = &binding.left_out {
+            // The holes left out as the drawing is now, not as when the room was taken
+            // (review 2026-11-01 UO-102).
+            let left_out = binding
+                .walled()
+                .then(|| {
+                    super::underlay_regions::room_layers(
+                        snapshot, underlay, &lines, point_mm, label, lookup,
+                    )
+                })
+                .flatten()
+                .and_then(|room| room.left_out_holes(underlay));
+            if let Some(left_out) = left_out {
                 warning.push_str(&format!("; {left_out} (name the layers to cut them)"));
             }
             (
@@ -800,16 +819,12 @@ fn object_outline(index: &ObjectIndex<'_>, id: u32) -> Result<(Ring, Vec<Ring>),
 /// the rings directly inside the largest. Else how many outlines they make, those inside an
 /// even number of others (0: none at all); review 2026-10-31 UO-84.
 pub(crate) fn nested_rings(mut rings: Vec<Ring>) -> Result<(Ring, Vec<Ring>), usize> {
-    // A ring inside another holds its first corner; rings of one object do not cross.
     let depth = |ring: usize| {
         (0..rings.len())
             .filter(|other| {
                 *other != ring
                     && signed_area(&rings[*other]).abs() > signed_area(&rings[ring]).abs()
-                    && ketchup_model::underlay::objects::ring_contains(
-                        &rings[*other],
-                        rings[ring][0],
-                    )
+                    && holds(&rings[*other], &rings[ring])
             })
             .count()
     };
@@ -829,6 +844,43 @@ pub(crate) fn nested_rings(mut rings: Vec<Ring>) -> Result<(Ring, Vec<Ring>), us
         }
     }
     Ok((outline, rings))
+}
+
+/// Whether `outer` holds `ring`, rings of one object that do not cross: the first of its
+/// corners, or else of the middles of its sides, off the edge of `outer` lies inside it.
+/// A ring may touch the edge of the one holding it (review 2026-11-01 UO-101).
+fn holds(outer: &[[f64; 2]], ring: &[[f64; 2]]) -> bool {
+    let (low, high) = outer.iter().fold(
+        ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]),
+        |(low, high), point| {
+            (
+                [low[0].min(point[0]), low[1].min(point[1])],
+                [high[0].max(point[0]), high[1].max(point[1])],
+            )
+        },
+    );
+    let tolerance = ketchup_model::tolerance::ROUNDING * (high[0] - low[0]).hypot(high[1] - low[1]);
+    let sides = |points: &[[f64; 2]]| {
+        points
+            .iter()
+            .zip(points.iter().cycle().skip(1))
+            .map(|(a, b)| (*a, *b))
+            .collect::<Vec<_>>()
+    };
+    let edge = sides(outer);
+    let off_edge = |point: &[f64; 2]| {
+        edge.iter().all(|(a, b)| {
+            ketchup_geometry::linalg::point_segment_distance2(*point, *a, *b) > tolerance
+        })
+    };
+    let middles = sides(ring)
+        .into_iter()
+        .map(|(a, b)| [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0]);
+    ring.iter()
+        .copied()
+        .chain(middles)
+        .find(off_edge)
+        .is_some_and(|point| ketchup_model::underlay::objects::ring_contains(outer, point))
 }
 
 /// Shared sampled linework, with the first placement as the component's original

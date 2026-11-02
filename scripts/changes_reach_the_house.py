@@ -3,7 +3,7 @@
 
 The large-house tests (AGENTS.md section 6) are ignored in a step and run nightly. A
 change of the program evaluator or of a crate it builds on, the example programs, a
-test that reads `tiny-house.star`, the lock file, the workspace manifest or the
+test that reads `tiny-house.star` or `house-project.star` (review 2026-11-01 CI-101), the lock file, the workspace manifest or the
 toolchain runs them in the pull request as well (review 2026-10-24 CI-23: a pull
 request that changed `prelude.star` could break all 21 and pass; review 2026-10-26
 CI-43: a change of `ketchup-model` or `Cargo.lock` did not count). A change elsewhere
@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EVALUATOR = "crates/ketchup-program"
 PREFIXES = ("examples/programs/",)
 FILES = ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml")
-HOUSE = "tiny-house.star"
+HOUSES = ("tiny-house.star", "house-project.star")
 
 PATH_DEPENDENCY = re.compile(r'^([A-Za-z0-9_-]+)\s*=\s*\{[^}\n]*\bpath\s*=\s*"([^"]+)"', re.MULTILINE)
 DEPENDENCY = re.compile(r"^([A-Za-z0-9_-]+)\s*=", re.MULTILINE)
@@ -58,8 +58,10 @@ def reaches_the_house(paths: list[str], root: Path = ROOT) -> bool:
         if path.startswith(prefixes) or path in FILES:
             return True
         file = root / path
-        if path.endswith(".rs") and file.is_file() and HOUSE in file.read_text(encoding="utf-8", errors="replace"):
-            return True
+        if path.endswith(".rs") and file.is_file():
+            text = file.read_text(encoding="utf-8", errors="replace")
+            if any(house in text for house in HOUSES):
+                return True
     return False
 
 

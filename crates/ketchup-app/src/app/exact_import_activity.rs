@@ -58,6 +58,24 @@ pub(crate) fn inspect_exact_import(
 /// could not be read.
 pub(crate) type ExactImportRead = Result<(Vec<u8>, ExactImportEvidence), ImportError>;
 
+/// Reads the `format` file at `path` and has the exact worker at `executable`
+/// inspect it; `cancelled` stops the worker. Runs on whatever thread may wait
+/// for the worker: the window's own only where nothing can show or cancel it.
+pub(crate) fn read_exact_import(
+    format: ImportFormat,
+    path: &Path,
+    executable: Result<PathBuf, Rejection>,
+    cancelled: &AtomicBool,
+) -> ExactImportRead {
+    let source = match format {
+        ImportFormat::Iges => KetchupApp::read_iges_source(path)?,
+        _ => KetchupApp::read_step_source(path)?,
+    };
+    let executable = executable.map_err(|error| ImportError::failed(format, error))?;
+    let evidence = inspect_exact_import(format, &executable, &source, cancelled)?;
+    Ok((source, evidence))
+}
+
 /// A STEP or IGES file being read for its import review, off the window's thread.
 pub(crate) struct ExactImportReadTask {
     format: ImportFormat,
@@ -82,13 +100,7 @@ impl KetchupApp {
     pub(crate) fn start_exact_import_read(&mut self, format: ImportFormat, path: PathBuf) {
         let executable = self.exact_worker_executable();
         let read = move |path: &Path, cancelled: &AtomicBool| -> ExactImportRead {
-            let source = match format {
-                ImportFormat::Iges => Self::read_iges_source(path)?,
-                _ => Self::read_step_source(path)?,
-            };
-            let executable = executable.map_err(|error| ImportError::failed(format, error))?;
-            let evidence = inspect_exact_import(format, &executable, &source, cancelled)?;
-            Ok((source, evidence))
+            read_exact_import(format, path, executable, cancelled)
         };
         match self.file.activity.context.clone() {
             Some(context) => self.queue_exact_import_read(format, path, &context, read),

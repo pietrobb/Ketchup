@@ -833,7 +833,7 @@ fn a_drawing_sheet_draws_the_plan_annotations_in_its_top_view() {
     let sheet = snapshot.drawing_sheet(DrawingSheetId(id)).unwrap();
     let drawing = project_orthographic_drawing(&snapshot, &app.exact.results, sheet).unwrap();
     let bundle = export_drawing(&snapshot, &drawing).unwrap();
-    let pdf = String::from_utf8_lossy(bundle.pdf());
+    let pdf = String::from_utf8_lossy(bundle.pdf().unwrap());
     let value = ketchup_model::sheet_pdf::EmbeddedText::default()
         .hex("3000")
         .unwrap();

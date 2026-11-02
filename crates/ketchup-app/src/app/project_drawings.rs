@@ -11,7 +11,9 @@
 use crate::app::drawing_export_activity::DrawingExport;
 use crate::app::drawing_sheet_export::SheetFileFormat;
 use crate::*;
-use ketchup_application::threads::{CosmeticThreadBodyError, ThreadCylinder, cosmetic_thread_body};
+use ketchup_application::threads::{
+    CosmeticThreadBodyError, CosmeticThreadGraph, ThreadCylinder, cosmetic_thread_graph,
+};
 use ketchup_manufacturing::project_drawings::{
     CuttingPiece, CuttingSheet, CuttingStock, DrawingOpening, DrawingSet, DrawingSetOptions,
     DrawingSolid, DrawingThread, OpeningSchedule, PlanSheet, ProjectDrawingError, ProjectView,
@@ -110,28 +112,91 @@ pub(crate) fn set_file_paths(path: &Path, format: SetFileFormat, sheets: usize) 
         .collect()
 }
 
+/// `package`'s triangles placed by `transform`, and the face each was meshed from.
+fn world_mesh(package: &ExactBodyPackage, transform: &Transform) -> (Vec<[[f64; 3]; 3]>, Vec<u32>) {
+    let vertices = package.vertices();
+    let world = |index: u32| {
+        let vertex = vertices.get(usize::try_from(index).ok()?)?;
+        Some(transform.transform_point(vertex.position_mm))
+    };
+    package
+        .triangles()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, triangle)| {
+            let [a, b, c] = triangle.vertex_indices;
+            let face = package.triangle_face_ordinal(index)?;
+            Some(([world(a)?, world(b)?, world(c)?], face))
+        })
+        .unzip()
+}
+
+/// The visible solids as the window has them and, for each body that models
+/// threads, what the body with them cosmetic is made from: a worker makes it
+/// on the job's thread, never the window's (review 2026-11-01 UI-100, UI-11).
+pub(crate) struct JobSolids {
+    solids: Vec<DrawingSolid>,
+    /// By the index of the solid it is drawn as.
+    cosmetic: Vec<(usize, CosmeticThreadGraph, Transform)>,
+}
+
+impl JobSolids {
+    /// The solids as the sheet draws them; `cancelled` stops the worker.
+    fn drawn(
+        self,
+        executable: Option<&Path>,
+        cancelled: &AtomicBool,
+    ) -> Result<Vec<DrawingSolid>, ProjectDrawingsError> {
+        let Self {
+            mut solids,
+            cosmetic,
+        } = self;
+        for (index, graph, transform) in cosmetic {
+            let solid = &mut solids[index];
+            let body = graph.evaluate(executable, cancelled).map_err(|cause| {
+                ProjectDrawingsError::CosmeticThreads(solid.name.clone(), cause)
+            })?;
+            (solid.triangles, solid.faces) = world_mesh(&ExactBodyPackage::Graph(body), &transform);
+        }
+        Ok(solids)
+    }
+}
+
 /// The visible solids, the set's options and the PDF's document information:
 /// everything the drawing set is drawn from.
 pub(crate) struct ProjectDrawingsJob {
-    solids: Vec<DrawingSolid>,
+    solids: JobSolids,
+    /// The exact worker that makes the cosmetic bodies of modelled threads.
+    executable: Option<PathBuf>,
     options: DrawingSetOptions,
     info: PdfInfo,
 }
 
 impl ProjectDrawingsJob {
-    /// Projects the solids and removes the hidden lines.
-    fn set(&self) -> Result<DrawingSet, ProjectDrawingsError> {
-        drawing_set(&self.solids, &self.options).map_err(ProjectDrawingsError::Drawing)
+    /// Projects the solids and removes the hidden lines; `cancelled` stops
+    /// the worker making cosmetic thread bodies.
+    fn set(self, cancelled: &AtomicBool) -> Result<(DrawingSet, PdfInfo), ProjectDrawingsError> {
+        let Self {
+            solids,
+            executable,
+            options,
+            info,
+        } = self;
+        let solids = solids.drawn(executable.as_deref(), cancelled)?;
+        let set = drawing_set(&solids, &options).map_err(ProjectDrawingsError::Drawing)?;
+        Ok((set, info))
     }
 
-    /// The set and the bytes of its files: one PDF, or a DXF or DWG per sheet.
+    /// The set and the bytes of its files: one PDF, or a DXF or DWG per sheet;
+    /// `cancelled` stops the worker making cosmetic thread bodies.
     pub(crate) fn render(
-        &self,
+        self,
         format: SetFileFormat,
+        cancelled: &AtomicBool,
     ) -> Result<(DrawingSet, Vec<Vec<u8>>), ProjectDrawingsError> {
-        let set = self.set()?;
+        let (set, info) = self.set(cancelled)?;
         let files = match format {
-            SetFileFormat::Pdf => vec![set.pdf(&self.info)],
+            SetFileFormat::Pdf => vec![set.pdf(&info)],
             SetFileFormat::Dxf => set.dxf(),
             SetFileFormat::Dwg => set
                 .dxf()
@@ -416,13 +481,36 @@ fn placed_thread(transform: &Transform, thread: &ThreadCylinder) -> Option<Drawi
 
 impl KetchupApp {
     /// Every visible body of every visible occurrence as its exact solid, in
-    /// world millimetres, the part's threads on its first; a visible part with
-    /// a body but no current exact solid is an error naming it, never a sheet
-    /// that silently leaves it out.
+    /// world millimetres, the part's threads on its first, each drawn as the
+    /// job's thread makes it: here only the test waits for a worker.
+    #[cfg(test)]
     pub(crate) fn visible_drawing_solids(
         &self,
         snapshot: &Snapshot,
     ) -> Result<Vec<DrawingSolid>, ProjectDrawingsError> {
+        let executable = self.drawing_worker();
+        self.visible_job_solids(snapshot)?
+            .drawn(executable.as_deref(), &AtomicBool::new(false))
+    }
+
+    /// The exact worker that makes the cosmetic bodies of modelled threads.
+    fn drawing_worker(&self) -> Option<PathBuf> {
+        self.exact.worker_path.clone().or_else(|| {
+            exact_worker_candidates()
+                .into_iter()
+                .find(|candidate| candidate.is_file())
+        })
+    }
+
+    /// Every visible body of every visible occurrence as its exact solid, in
+    /// world millimetres, the part's threads on its first, and what a body
+    /// with modelled threads is drawn from instead; a visible part with a body
+    /// but no current exact solid is an error naming it, never a sheet that
+    /// silently leaves it out.
+    pub(crate) fn visible_job_solids(
+        &self,
+        snapshot: &Snapshot,
+    ) -> Result<JobSolids, ProjectDrawingsError> {
         let mut threads = BTreeMap::<DefinitionId, Vec<ThreadCylinder>>::new();
         for thread in self
             .document_threads(snapshot)
@@ -489,44 +577,27 @@ impl KetchupApp {
         if !missing.is_empty() {
             return Err(ProjectDrawingsError::NotEvaluated(missing));
         }
-        let executable = self.exact.worker_path.clone().or_else(|| {
-            exact_worker_candidates()
-                .into_iter()
-                .find(|candidate| candidate.is_file())
-        });
+        let blobs = self.file.container_data.blobs();
         let mut solids = Vec::with_capacity(drawn.len());
+        let mut cosmetic_graphs = Vec::new();
         for (occurrence, package, threads) in drawn {
             // Modelled threads are drawn by ISO 6410 like cosmetic ones: from
-            // the body with them cosmetic, made only now, never the helix.
+            // the body with them cosmetic, made only on the job's thread,
+            // never the helix.
             let package: &ExactBodyPackage = package;
             let cosmetic = match package {
-                ExactBodyPackage::Graph(package) => cosmetic_thread_body(
-                    executable.as_deref(),
-                    package,
-                    self.file.container_data.blobs(),
-                )
-                .map_err(|cause| {
-                    ProjectDrawingsError::CosmeticThreads(occurrence.occurrence_name.clone(), cause)
-                })?
-                .map(ExactBodyPackage::Graph),
+                ExactBodyPackage::Graph(package) => cosmetic_thread_graph(package, blobs)
+                    .map_err(|cause| {
+                        ProjectDrawingsError::CosmeticThreads(
+                            occurrence.occurrence_name.clone(),
+                            cause,
+                        )
+                    })?
+                    .map(|graph| (solids.len(), graph, occurrence.transform)),
                 ExactBodyPackage::Imported(_) => None,
             };
-            let package = cosmetic.as_ref().unwrap_or(package);
-            let vertices = package.vertices();
-            let world = |index: u32| {
-                let vertex = vertices.get(usize::try_from(index).ok()?)?;
-                Some(occurrence.transform.transform_point(vertex.position_mm))
-            };
-            let (triangles, faces) = package
-                .triangles()
-                .iter()
-                .enumerate()
-                .filter_map(|(index, triangle)| {
-                    let [a, b, c] = triangle.vertex_indices;
-                    let face = package.triangle_face_ordinal(index)?;
-                    Some(([world(a)?, world(b)?, world(c)?], face))
-                })
-                .unzip();
+            cosmetic_graphs.extend(cosmetic);
+            let (triangles, faces) = world_mesh(package, &occurrence.transform);
             solids.push(DrawingSolid {
                 name: occurrence.occurrence_name,
                 color: occurrence.color.unwrap_or(DEFAULT_SOLID_COLOR),
@@ -535,7 +606,10 @@ impl KetchupApp {
                 threads,
             });
         }
-        Ok(solids)
+        Ok(JobSolids {
+            solids,
+            cosmetic: cosmetic_graphs,
+        })
     }
 
     /// The document name: its file name, else the program's.
@@ -660,7 +734,8 @@ impl KetchupApp {
     /// The set of the visible exact solids with the document's title block.
     #[cfg(test)]
     pub(crate) fn project_drawings(&self) -> Result<DrawingSet, ProjectDrawingsError> {
-        self.project_drawings_job()?.set()
+        let (set, _) = self.project_drawings_job()?.set(&AtomicBool::new(false))?;
+        Ok(set)
     }
 
     /// What the drawing set is drawn from, taken from the window; the
@@ -893,7 +968,7 @@ impl KetchupApp {
         self.stored_sheet_settings()
             .map_err(ProjectDrawingsError::SettingsUnreadable)?;
         let snapshot = self.document.current();
-        let solids = self.visible_drawing_solids(&snapshot)?;
+        let solids = self.visible_job_solids(&snapshot)?;
         let evaluated = self.drawing_program()?;
         let solid_names = Self::drawing_solid_names(&snapshot);
         let openings = self.drawing_openings(evaluated.as_deref(), &solid_names);
@@ -906,7 +981,9 @@ impl KetchupApp {
             .cloned()
             .collect::<Vec<_>>();
         let settings = self.sheet_settings();
-        let mut storeys = storeys(&solids, settings.plan_cut_above_floor_mm());
+        // The storeys are found from the bodies as evaluated: a thread's
+        // grooves never make a floor.
+        let mut storeys = storeys(&solids.solids, settings.plan_cut_above_floor_mm());
         // A plan of annotations alone cuts nothing; its cut is at the floor.
         if storeys.is_empty() && !annotations.is_empty() {
             storeys.push(Storey {
@@ -953,6 +1030,7 @@ impl KetchupApp {
         };
         Ok(ProjectDrawingsJob {
             solids,
+            executable: self.drawing_worker(),
             options: DrawingSetOptions {
                 plans: self.plan_sheets(storeys),
                 sheet_titles: SheetTitles {
@@ -1031,27 +1109,35 @@ impl KetchupApp {
 
     /// Writes the drawing set of what is visible as `format` for `path`, each
     /// file replacing only one whose SHA-256 `targets` holds (none: only a new
-    /// file).
+    /// file). The caller waits: for tests only, as the window and the bridge
+    /// draw on a thread.
+    #[cfg(test)]
     pub(crate) fn write_project_drawings(
         &self,
         path: &Path,
         format: SetFileFormat,
         request: SheetRequest,
         targets: &SetTargets,
+        cancelled: &AtomicBool,
     ) -> Result<ExportedSet, ProjectDrawingsError> {
-        let (set, files) = self.project_drawings_job_for(request)?.render(format)?;
+        let (set, files) = self
+            .project_drawings_job_for(request)?
+            .render(format, cancelled)?;
         let document = self.document.current().document_id();
         let paths = publish_project_drawings(path, format, &files, targets, document)?;
         Ok(ExportedSet { set, paths })
     }
 
     /// Writes the drawing set as the format `path` names (PDF when it names
-    /// none) and reports it in the digest.
+    /// none) and reports it in the digest, the caller waiting for it; the
+    /// window's menu exports on a thread (`drawing_export_activity`).
+    #[cfg(test)]
     pub fn export_project_drawings_to(&mut self, path: &Path) -> bool {
         let format = SetFileFormat::of_path(path).unwrap_or(SetFileFormat::Pdf);
         let document = self.document.current().document_id();
         let result = project_drawings_targets(path, format, document).and_then(|targets| {
-            self.write_project_drawings(path, format, SheetRequest::default(), &targets)
+            let cancelled = AtomicBool::new(false);
+            self.write_project_drawings(path, format, SheetRequest::default(), &targets, &cancelled)
         });
         self.report_project_drawings(path, &result);
         result.is_ok()

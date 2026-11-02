@@ -74,6 +74,7 @@ mod dwg_import;
 mod exchange_export;
 mod image;
 mod interchange;
+use interchange::ReadAlready;
 mod program_access;
 mod program_check;
 mod program_dry_run;
@@ -93,6 +94,7 @@ mod program_validate;
 mod program_validation_summary;
 mod program_variant_export;
 mod program_variants;
+mod project_drawings_job;
 #[cfg(test)]
 mod tests;
 mod transport;
@@ -1700,13 +1702,22 @@ impl KetchupApp {
                     bridge.start_queued_variant_export(self, context, queued, request);
                     continue;
                 }
-                request if dwg_import::imports_dwg(&request) => {
+                request if dwg_import::imports_as_job(&request) => {
                     let queued = program_dry_run::QueuedReply {
                         id,
                         reply,
                         cancelled,
                     };
                     bridge.start_dwg_import(self, context, queued, request, ui_busy);
+                    continue;
+                }
+                request if project_drawings_job::exports_project_drawings(&request) => {
+                    let queued = program_dry_run::QueuedReply {
+                        id,
+                        reply,
+                        cancelled,
+                    };
+                    bridge.start_project_drawings_export(self, context, queued, request, ui_busy);
                     continue;
                 }
                 request if exchange_export::exchange_format(&request).is_some() => {
@@ -3284,7 +3295,7 @@ impl LiveBridge {
                 Self::export_drawings(app, request, ui_busy)
             }
             request @ Request::Import { .. } => {
-                Self::import_file(app, &request, ui_busy, cancelled, None)
+                Self::import_file(app, &request, ui_busy, cancelled, ReadAlready::Nothing)
             }
             request @ Request::RemoveUnderlay { .. } => {
                 self.remove_underlay(app, &request, ui_busy, cancelled)

@@ -42,7 +42,9 @@ const POINTS_PER_MM: f64 = 72.0 / 25.4;
 pub struct DrawingExportBundle {
     svg: Vec<u8>,
     dxf: Vec<u8>,
-    pdf: Vec<u8>,
+    /// The PDF, or why it cannot draw a text of the sheet; that leaves the SVG
+    /// and DXF to be written (review 2026-11-01 MF-107).
+    pdf: Result<Vec<u8>, DrawingExportError>,
     dxf_curves: DxfCurves,
     annotations: SheetAnnotations,
 }
@@ -69,9 +71,8 @@ impl DrawingExportBundle {
         &self.dxf
     }
 
-    #[must_use]
-    pub fn pdf(&self) -> &[u8] {
-        &self.pdf
+    pub fn pdf(&self) -> Result<&[u8], DrawingExportError> {
+        self.pdf.as_deref().map_err(Clone::clone)
     }
 
     #[must_use]
@@ -225,7 +226,7 @@ pub fn export_drawing(
     }
     let (page_arcs, replaced_lines) = collect_page_arcs(drawing)?;
     let svg = export_svg(drawing, &lines, &fills, &texts);
-    let pdf = export_pdf(drawing, &lines, &fills, &texts)?;
+    let pdf = export_pdf(drawing, &lines, &fills, &texts);
     let dxf = export_dxf(
         drawing,
         SheetContent {
@@ -236,7 +237,7 @@ pub fn export_drawing(
             marks: &marks,
         },
     )?;
-    if [svg.len(), dxf.len(), pdf.len()]
+    if [svg.len(), dxf.len(), pdf.as_ref().map_or(0, Vec::len)]
         .into_iter()
         .any(|length| length > MAX_EXPORT_BYTES)
     {

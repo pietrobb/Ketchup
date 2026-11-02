@@ -246,10 +246,9 @@ fn dxf_import(insunits: u16, length: f64, lines: usize, padding: usize) -> Docum
 
 /// Review 2026-10-24 MD-20: format 103 was chosen for any document without underlays
 /// and annotations, so a DXF import of more than 341 profiles (a receipt of more than
-/// 1 024 outputs) or of a source over 8 MiB was written as 103, which Kečup 0.1.0 and
-/// 0.2.0 refuse as damaged and open their older `.recovery` instead. Such a document
-/// is written as 104, which they refuse cleanly as newer; one within their limits
-/// stays 103.
+/// 1 024 outputs) or of a source over 8 MiB was written as 103, which Kečup 0.2.0
+/// refuses as damaged and opens its older `.recovery` instead. Such a document is
+/// written as 104, which it refuses cleanly as newer; one within its limits stays 103.
 #[test]
 fn a_document_beyond_what_kecup_0_2_0_reads_is_not_written_as_format_103() {
     assert_eq!(saved_format_of_a_dxf_import(3, 0), 103);

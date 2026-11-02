@@ -736,8 +736,10 @@ fn step_part_with_a_degenerated_edge_imports_and_reports_it_as_degenerate() {
 }
 
 /// The fixture (`tests/native/r0-step-corpus.cpp`) holds a sound block, a
-/// part of a sound block and a solid enclosing no volume (STEP `#720`), and a
-/// part of only such a solid (`#1069`).
+/// part of a sound block and a solid enclosing no volume (STEP `#728`), sound
+/// as a whole, a part of only such a solid (`#1077`), and a part of a sound
+/// block and a solid failing the validity check (`#1756`), and in a
+/// sub-assembly a part of two wires.
 #[test]
 fn step_xde_part_keeps_its_sound_solids_and_names_each_one_it_refuses() {
     let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -746,16 +748,44 @@ fn step_xde_part_keeps_its_sound_solids_and_names_each_one_it_refuses() {
         .parent()
         .unwrap();
     let path = repository.join("corpora/r0/step/self-authored-partly-invalid-assembly.step");
+    let scans = ExactBackend::source_entity_scans_on_this_thread();
+    let apart = ExactBackend::xde_shapes_checked_apart_on_this_thread();
     let document = ExactBackend::new()
         .open_step_xde(path.to_str().unwrap())
         .unwrap();
-    assert_eq!(document.manifest().unwrap().parts.len(), 3);
+    assert_eq!(document.manifest().unwrap().parts.len(), 5);
+    // EX-101: the source entities of the six shapes of its parts are traced
+    // in one pass over the reader's records, not one pass for each.
+    assert_eq!(
+        ExactBackend::source_entity_scans_on_this_thread() - scans,
+        1
+    );
 
     let sound = document.part(0).unwrap();
     assert_eq!(sound.body.topology.solid_count, 1);
     assert!(sound.rejected_shapes.is_empty());
 
-    let mixed = document.part(1).unwrap();
+    // Review 2026-11-01 EX-102 and EX-103: a part sound as a whole is kept as
+    // it is, as a document saved with it reads it again, and checked once.
+    let whole = document.part(1).unwrap();
+    assert_eq!(whole.body.topology.solid_count, 2);
+    assert!(whole.rejected_shapes.is_empty());
+    assert_eq!(
+        ExactBackend::xde_shapes_checked_apart_on_this_thread() - apart,
+        0
+    );
+
+    let refused = document.part(2).unwrap_err();
+    assert_eq!(refused.code, GeometryErrorCode::InvalidShape);
+    assert!(
+        refused.diagnostic.ends_with(
+            "part has no shape that can be kept: solid 1 (entity #1077) encloses no volume"
+        ),
+        "{}",
+        refused.diagnostic
+    );
+
+    let mixed = document.part(3).unwrap();
     assert_eq!(mixed.body.topology.solid_count, 1);
     assert!((mixed.body.topology.volume_mm3 - 1_000.0).abs() < 1e-6);
     assert_eq!(
@@ -763,19 +793,38 @@ fn step_xde_part_keeps_its_sound_solids_and_names_each_one_it_refuses() {
         vec![RejectedShape {
             ordinal: 1,
             kind: "solid".to_owned(),
-            source_entity: Some(720),
-            reason: "encloses no volume".to_owned(),
+            source_entity: Some(1756),
+            reason: "fails the exact-shape validity check (BRepCheck_SelfIntersectingWire)"
+                .to_owned(),
         }]
     );
+    assert_eq!(
+        ExactBackend::xde_shapes_checked_apart_on_this_thread() - apart,
+        2
+    );
 
-    let refused = document.part(2).unwrap_err();
-    assert_eq!(refused.code, GeometryErrorCode::InvalidShape);
-    assert!(
-        refused.diagnostic.ends_with(
-            "part has no shape that can be kept: solid 1 (entity #1069) encloses no volume"
-        ),
-        "{}",
-        refused.diagnostic
+    // EX-104: a part of wires alone is refused for having no face, each edge
+    // named, not for failing "as a whole" without a reason.
+    let wires = document.part(4).unwrap_err();
+    assert_eq!(wires.code, GeometryErrorCode::InvalidShape);
+    let reason = wires
+        .diagnostic
+        .split_once("part has no shape that can be kept: ")
+        .map(|(_, reason)| reason)
+        .unwrap_or_else(|| panic!("{}", wires.diagnostic));
+    // STEP writes the two triangles as a set of six edges.
+    let lines = reason.split("; ").collect::<Vec<_>>();
+    assert_eq!(lines.len(), 6, "{reason}");
+    for (index, line) in lines.iter().enumerate() {
+        assert!(
+            line.starts_with(&format!("edge {} (entity #", index + 1))
+                && line.ends_with(") has no face, so it is neither a solid nor a surface"),
+            "{line}"
+        );
+    }
+    assert_eq!(
+        ExactBackend::source_entity_scans_on_this_thread() - scans,
+        1
     );
 }
 

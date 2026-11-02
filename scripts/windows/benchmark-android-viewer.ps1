@@ -3,7 +3,8 @@
 # package is pushed as benchmark.ketchup-view, the Viewer is restarted and
 # measures it on its window's GPU, and benchmark.txt comes back with the peak
 # memory. Install the Viewer first (build-android-viewer.ps1 -Release
-# -InstallWithModel ...).
+# -Benchmark -InstallWithModel ...): a Viewer built without -Benchmark ignores
+# the pushed package.
 #
 #   scripts\windows\benchmark-android-viewer.ps1 viewer\samples\kitchen.ketchup-view
 [CmdletBinding(PositionalBinding = $false)]

@@ -1151,7 +1151,20 @@ impl KetchupApp {
                 });
             }
             AppCommand::ExportHomagMpr => {
-                if let Some(path) = self.choose_export_path("mpr") {
+                // Several parts get one program per piece in a ZIP (MF-102).
+                let several_parts =
+                    self.current_general_fabrication_projection()
+                        .is_ok_and(|projection| {
+                            projection
+                                .bom
+                                .rows
+                                .iter()
+                                .filter(|row| row.item_kind.is_shop_made())
+                                .count()
+                                > 1
+                        });
+                let extension = if several_parts { "mpr-zip" } else { "mpr" };
+                if let Some(path) = self.choose_export_path(extension) {
                     self.export_current_model_homag_mpr_to(&path).ok();
                 }
             }

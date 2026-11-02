@@ -4,9 +4,17 @@
 #include <BRepCheck_Result.hxx>
 #include <Interface_InterfaceModel.hxx>
 #include <TCollection_HAsciiString.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
 #include <TopoDS_Iterator.hxx>
+#include <TransferBRep.hxx>
+#include <Transfer_ResultFromModel.hxx>
+#include <Transfer_ResultFromTransient.hxx>
+#include <Transfer_TransientProcess.hxx>
 #include <XSControl_TransferReader.hxx>
+#include <XSControl_Utils.hxx>
 #include <XSControl_WorkSession.hxx>
+
+#include <array>
 
 namespace ketchup::exact {
 
@@ -74,35 +82,106 @@ void collect_part_shapes(const TopoDS_Shape& shape, std::vector<TopoDS_Shape>& s
   }
 }
 
-// The number of the source entity `shape` was read from, 0 when unknown.
-std::uint32_t source_entity_number(
+// Passes over a reader's records to trace shapes back to source entities, so
+// a test can prove one pass per source, however many shapes its parts hold
+// (review 2026-11-01 EX-101).
+thread_local std::uint64_t source_entity_scans = 0;
+// Shapes of an XDE part checked one by one, apart from the whole, so a test
+// can prove a part sound as a whole is checked once (review 2026-11-01 EX-103).
+thread_local std::uint64_t xde_shapes_checked_apart = 0;
+
+// The number in an entity's label, "#177564" in STEP, "D123" in IGES; 0 when
+// it has none.
+std::uint32_t entity_label_number(
+    const occ::handle<Interface_InterfaceModel>& model,
+    const occ::handle<Standard_Transient>& entity) {
+  const occ::handle<TCollection_HAsciiString> label = model->StringLabel(entity);
+  if (label.IsNull()) return 0;
+  std::uint64_t number = 0;
+  bool digits = false;
+  for (const char c : std::string(label->ToCString())) {
+    if (!std::isdigit(static_cast<unsigned char>(c))) {
+      if (digits) return 0;
+      continue;
+    }
+    digits = true;
+    number = number * 10 + static_cast<std::uint64_t>(c - '0');
+    if (number > 0xffffffffull) return 0;
+  }
+  return static_cast<std::uint32_t>(number);
+}
+
+// The number of the source entity each of `shapes` was read from, 0 when
+// unknown, as XSControl_TransferReader::EntityFromShapeResult finds it in
+// mode 1 and then mode 3. That looks through every record of the reader for
+// one shape; here one pass over the records serves all the shapes, so the
+// cost grows with the records, not with records times shapes (review
+// 2026-11-01 EX-101). The records are gone once the source is read, before a
+// part is checked, so every shape a part holds is traced, not only those a
+// check later refuses.
+std::vector<std::uint32_t> source_entity_numbers(
     const occ::handle<XSControl_TransferReader>& transfer,
     const occ::handle<Interface_InterfaceModel>& model,
-    const TopoDS_Shape& shape) {
-  if (transfer.IsNull() || model.IsNull()) return 0;
+    const std::vector<TopoDS_Shape>& shapes) {
+  std::vector<std::uint32_t> numbers(shapes.size(), 0);
+  if (transfer.IsNull() || model.IsNull() || shapes.empty()) return numbers;
   try {
-    for (const int mode : {1, 3}) {
-      const occ::handle<Standard_Transient> entity = transfer->EntityFromShapeResult(shape, mode);
-      if (entity.IsNull()) continue;
-      const occ::handle<TCollection_HAsciiString> label = model->StringLabel(entity);
-      if (label.IsNull()) return 0;
-      // "#177564" in STEP, "D123" in IGES.
-      std::uint64_t number = 0;
-      bool digits = false;
-      for (const char c : std::string(label->ToCString())) {
-        if (!std::isdigit(static_cast<unsigned char>(c))) {
-          if (digits) return 0;
-          continue;
-        }
-        digits = true;
-        number = number * 10 + static_cast<std::uint64_t>(c - '0');
-        if (number > 0xffffffffull) return 0;
+    // Keyed by TShape and location; the orientation picks among equals.
+    TopTools_IndexedMapOfShape wanted;
+    for (const TopoDS_Shape& shape : shapes) wanted.Add(shape);
+    // Mode 1: the first record whose shape equals one wanted, else the last
+    // record whose shape is the same up to orientation.
+    std::vector<std::array<occ::handle<Standard_Transient>, 4>> equal(wanted.Extent() + 1);
+    std::vector<occ::handle<Standard_Transient>> same(wanted.Extent() + 1);
+    const occ::handle<Transfer_TransientProcess> process = transfer->TransientProcess();
+    if (!process.IsNull()) {
+      ++source_entity_scans;
+      for (int index = 1; index <= process->NbMapped(); ++index) {
+        const occ::handle<Standard_Transient> entity = process->Mapped(index);
+        const TopoDS_Shape result = TransferBRep::ShapeResult(process, entity);
+        if (result.IsNull()) continue;
+        const int key = wanted.FindIndex(result);
+        if (key == 0) continue;
+        same[key] = entity;
+        occ::handle<Standard_Transient>& first = equal[key][result.Orientation()];
+        if (first.IsNull()) first = entity;
       }
-      return static_cast<std::uint32_t>(number);
+    }
+    std::vector<occ::handle<Standard_Transient>> found(shapes.size());
+    bool missing = false;
+    for (std::size_t index = 0; index < shapes.size(); ++index) {
+      const int key = wanted.FindIndex(shapes[index]);
+      found[index] = equal[key][shapes[index].Orientation()];
+      if (found[index].IsNull()) found[index] = same[key];
+      missing = missing || found[index].IsNull();
+    }
+    // Mode 3: a shape no record maps is looked for, equal, among the results
+    // of each root and its first level of sub-results, again in one pass.
+    if (missing) {
+      ++source_entity_scans;
+      XSControl_Utils utils;
+      for (int number = 1; number <= model->NbEntities(); ++number) {
+        const occ::handle<Transfer_ResultFromModel> record = transfer->ResultFromNumber(number);
+        if (record.IsNull()) continue;
+        const auto results = record->Results(1);
+        for (int item = 1; item <= results->Length(); ++item) {
+          const occ::handle<Transfer_ResultFromTransient> result =
+              occ::down_cast<Transfer_ResultFromTransient>(results->Value(item));
+          if (result.IsNull()) continue;
+          const TopoDS_Shape shape = utils.BinderShape(result->Binder());
+          if (shape.IsNull()) continue;
+          for (std::size_t index = 0; index < shapes.size(); ++index) {
+            if (found[index].IsNull() && shape == shapes[index]) found[index] = result->Start();
+          }
+        }
+      }
+    }
+    for (std::size_t index = 0; index < shapes.size(); ++index) {
+      if (!found[index].IsNull()) numbers[index] = entity_label_number(model, found[index]);
     }
   } catch (...) {
   }
-  return 0;
+  return numbers;
 }
 
 std::string xde_error(const StepXdeData& data, const char* what) {
@@ -343,16 +422,18 @@ bool load_xde(const std::string& path, StepXdeData& data, std::string& error) {
   }
   const auto transfer = session.IsNull() ? occ::handle<XSControl_TransferReader>() : session->TransferReader();
   const auto model = session.IsNull() ? occ::handle<Interface_InterfaceModel>() : session->Model();
+  std::vector<TopoDS_Shape> shapes;
+  std::vector<std::size_t> part_ends;
   for (const TDF_Label& part : data.parts) {
-    std::vector<TopoDS_Shape> shapes;
     const TopoDS_Shape shape = XCAFDoc_ShapeTool::GetShape(part);
     if (!shape.IsNull()) collect_part_shapes(shape, shapes);
-    std::vector<std::uint32_t> entities;
-    entities.reserve(shapes.size());
-    for (const TopoDS_Shape& item : shapes) {
-      entities.push_back(source_entity_number(transfer, model, item));
-    }
-    data.part_shape_entities.push_back(std::move(entities));
+    part_ends.push_back(shapes.size());
+  }
+  const std::vector<std::uint32_t> numbers = source_entity_numbers(transfer, model, shapes);
+  std::size_t start = 0;
+  for (const std::size_t end : part_ends) {
+    data.part_shape_entities.emplace_back(numbers.begin() + start, numbers.begin() + end);
+    start = end;
   }
   return true;
 }
@@ -711,9 +792,15 @@ std::string first_validity_defect(const BRepCheck_Analyzer& analyzer, const Topo
 }
 
 // Why a shape read from a file cannot be kept, or empty when it can: it
-// fails the validity check, or it is a solid that encloses no volume.
+// has no face, fails the validity check, or it is a solid that encloses no
+// volume.
 std::string shape_defect(const TopoDS_Shape& shape) {
   try {
+    // Wires, edges and points are kept by no body: say so rather than let the
+    // part fail as a whole without a reason (review 2026-11-01 EX-104).
+    if (count_subshapes(shape, TopAbs_FACE) == 0) {
+      return "has no face, so it is neither a solid nor a surface";
+    }
     const BRepCheck_Analyzer analyzer(shape, true);
     if (!analyzer.IsValid()) {
       const std::string defect = first_validity_defect(analyzer, shape);
@@ -738,12 +825,18 @@ std::string shape_defect(const TopoDS_Shape& shape) {
   }
 }
 
-std::string describe_rejected(const std::vector<RejectedShapeRecord>& rejected) {
+std::string describe_rejected(
+    const StepXdeData& data, const std::vector<RejectedShapeRecord>& rejected) {
+  // An entity as its format writes it: "#720" in STEP, "D720" in IGES
+  // (review 2026-11-01 EX-104).
+  const char entity_prefix = std::string(data.format) == "IGES" ? 'D' : '#';
   std::ostringstream text;
   for (std::size_t index = 0; index < rejected.size(); ++index) {
     const RejectedShapeRecord& record = rejected[index];
     text << (index == 0 ? "" : "; ") << record.kind << ' ' << record.ordinal + 1;
-    if (record.source_entity != 0) text << " (entity #" << record.source_entity << ')';
+    if (record.source_entity != 0) {
+      text << " (entity " << entity_prefix << record.source_entity << ')';
+    }
     text << ' ' << record.reason;
   }
   return text.str();
@@ -778,24 +871,44 @@ std::unique_ptr<NativeOperationResult> xde_part_result(
   const auto refuse_part = [&](const std::vector<RejectedShapeRecord>& rejected) {
     return error_result(
         STATUS_INVALID_SHAPE,
-        xde_error(data, "part has no shape that can be kept: ") + describe_rejected(rejected));
+        xde_error(data, "part has no shape that can be kept: ") + describe_rejected(data, rejected));
   };
-  // Each shape is checked apart only in a part of several, so a part of one
-  // costs one validity check, as before.
+  // The body checked, or null with why it raised in `failure`.
+  const auto checked = [](const TopoDS_Shape& body, std::string& failure) {
+    const std::uint32_t solids = count_subshapes(body, TopAbs_SOLID);
+    std::unique_ptr<NativeOperationResult> result;
+    try {
+      result = success_result(body, {}, solids >= 2, false, {}, solids == 0);
+    } catch (const Standard_Failure& error) {
+      failure = "raises " + standard_failure_message(error);
+    } catch (const std::exception& error) {
+      failure = std::string("raises ") + error.what();
+    }
+    if (result != nullptr && result->status_code() != STATUS_OK) result.reset();
+    return result;
+  };
+  // The whole part first: a part sound as a whole is kept as it is, so a
+  // document that holds it reads the same body again, and its shapes cost no
+  // check apart (review 2026-11-01 EX-102, EX-103).
+  std::string failure;
+  if (auto whole = checked(shape, failure)) return whole;
+  if (shapes.size() == 1) {
+    std::string defect = failure.empty() ? shape_defect(shape) : failure;
+    return refuse_part({refused(0, defect.empty() ? "fails the exact-shape validity check" : defect)});
+  }
+  // A part of several shapes that fails as a whole keeps those that pass apart.
   std::vector<TopoDS_Shape> kept;
   std::vector<RejectedShapeRecord> rejected;
-  if (shapes.size() > 1) {
-    for (std::size_t index = 0; index < shapes.size(); ++index) {
-      std::string defect = shape_defect(shapes[index]);
-      if (defect.empty()) {
-        kept.push_back(shapes[index]);
-      } else {
-        rejected.push_back(refused(index, std::move(defect)));
-      }
+  for (std::size_t index = 0; index < shapes.size(); ++index) {
+    ++xde_shapes_checked_apart;
+    std::string defect = shape_defect(shapes[index]);
+    if (defect.empty()) {
+      kept.push_back(shapes[index]);
+    } else {
+      rejected.push_back(refused(index, std::move(defect)));
     }
-    if (kept.empty()) return refuse_part(rejected);
   }
-  TopoDS_Shape body = shape;
+  if (kept.empty() && !rejected.empty()) return refuse_part(rejected);
   if (!rejected.empty()) {
     TopoDS_Compound salvaged;
     BRep_Builder builder;
@@ -803,25 +916,12 @@ std::unique_ptr<NativeOperationResult> xde_part_result(
     for (const TopoDS_Shape& part : kept) {
       builder.Add(salvaged, part);
     }
-    body = kept.size() == 1 ? kept.front() : TopoDS_Shape(salvaged);
-  }
-  const std::uint32_t solids = count_subshapes(body, TopAbs_SOLID);
-  std::unique_ptr<NativeOperationResult> result;
-  std::string failure;
-  try {
-    result = success_result(body, {}, solids >= 2, false, {}, solids == 0);
-  } catch (const Standard_Failure& error) {
-    failure = "raises " + standard_failure_message(error);
-  } catch (const std::exception& error) {
-    failure = std::string("raises ") + error.what();
-  }
-  if (result != nullptr && result->status_code() == STATUS_OK) {
-    result->impl().rejected = std::move(rejected);
-    return result;
-  }
-  if (shapes.size() == 1) {
-    std::string defect = failure.empty() ? shape_defect(body) : failure;
-    return refuse_part({refused(0, defect.empty() ? "fails the exact-shape validity check" : defect)});
+    failure.clear();
+    const TopoDS_Shape body = kept.size() == 1 ? kept.front() : TopoDS_Shape(salvaged);
+    if (auto result = checked(body, failure)) {
+      result->impl().rejected = std::move(rejected);
+      return result;
+    }
   }
   // The shapes passed apart but not together.
   return error_result(
@@ -1137,6 +1237,12 @@ rust::String step_length_unit_native(rust::Str path) noexcept {
 std::uint64_t step_source_parses_on_this_thread_native() noexcept { return step_source_parses; }
 
 std::uint64_t iges_source_parses_on_this_thread_native() noexcept { return iges_source_parses; }
+
+std::uint64_t source_entity_scans_on_this_thread_native() noexcept { return source_entity_scans; }
+
+std::uint64_t xde_shapes_checked_apart_on_this_thread_native() noexcept {
+  return xde_shapes_checked_apart;
+}
 
 std::unique_ptr<NativeOperationResult> import_iges_native(rust::Str path) noexcept {
   return guarded([&] {

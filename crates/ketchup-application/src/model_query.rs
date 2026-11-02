@@ -40,6 +40,9 @@ pub const MAX_EDIT_CONTEXT_FACES: usize = 128;
 const MAX_CURSOR_BYTES: usize = 4096;
 const PAGE_ITEM_BYTES: usize = 20 * 1024;
 const MAX_PROPERTY_VALUES: usize = 32;
+/// Imports, and refusals of each, the summary names within its output budget.
+const MAX_PARTIAL_IMPORTS: usize = 8;
+const MAX_REFUSALS_SHOWN: usize = 5;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -360,7 +363,40 @@ impl ModelQuery {
                     "layers_complete":underlay.layers.len() <= MAX_PAGE})
             })
             .collect::<Vec<_>>();
+        // What each import left out of its file, as its receipt recorded it
+        // once confirmed: the import's own answer is gone by now (review
+        // 2026-11-01 EX-100).
+        let mut partial_imports = snapshot
+            .import_receipts()
+            .filter_map(|receipt| {
+                let refused = receipt
+                    .diagnostics()
+                    .iter()
+                    .filter(|diagnostic| diagnostic.code().ends_with("_refused"));
+                let total = refused
+                    .clone()
+                    .map(|diagnostic| u64::from(diagnostic.count()))
+                    .sum::<u64>();
+                (total > 0).then(|| {
+                    let refused = refused
+                        .take(MAX_REFUSALS_SHOWN)
+                        .map(|diagnostic| {
+                            json!({"subject":diagnostic.subject().map(bounded_text),
+                                "count":diagnostic.count()})
+                        })
+                        .collect::<Vec<_>>();
+                    json!({"import_id":receipt.id().0,"format":receipt.format().to_string(),
+                        "source":bounded_text(receipt.source_name()),
+                        "refused_total":total,"refused":refused})
+                })
+            })
+            .take(MAX_PARTIAL_IMPORTS + 1)
+            .collect::<Vec<_>>();
+        let partial_imports_complete = partial_imports.len() <= MAX_PARTIAL_IMPORTS;
+        partial_imports.truncate(MAX_PARTIAL_IMPORTS);
         json!({"identity":identity(snapshot),"coverage":coverage(None),
+            "partial_imports":partial_imports,
+            "partial_imports_complete":partial_imports_complete,
             "tags":tags,"tags_complete":snapshot.tags().count() <= MAX_PAGE,
             "drawing_sheets":drawing_sheets,
             "drawing_sheets_complete":snapshot.drawing_sheets().count() <= MAX_PAGE,

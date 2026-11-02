@@ -4166,19 +4166,22 @@ mod tests {
                 .iter()
                 .map(|part| (part.index, part.solid_count))
                 .collect::<Vec<_>>(),
-            [(0, 1), (1, 1)]
+            [(0, 1), (1, 2), (3, 1)]
         );
         assert!(evidence.parts[0].rejected_shapes.is_empty());
+        // Review 2026-11-01 EX-102: a part sound as a whole is kept whole.
+        assert!(evidence.parts[1].rejected_shapes.is_empty());
         assert_eq!(
-            evidence.parts[1].rejected_shapes,
+            evidence.parts[2].rejected_shapes,
             [StepXdeRejectedShape {
                 ordinal: 1,
                 kind: "solid".to_owned(),
-                source_entity: Some(720),
-                reason: "encloses no volume".to_owned(),
+                source_entity: Some(1756),
+                reason: "fails the exact-shape validity check (BRepCheck_SelfIntersectingWire)"
+                    .to_owned(),
             }]
         );
-        assert_eq!(evidence.rejected_parts.len(), 1);
+        assert_eq!(evidence.rejected_parts.len(), 2);
         let rejected = &evidence.rejected_parts[0];
         assert_eq!(
             (rejected.index, rejected.name.as_str()),
@@ -4187,11 +4190,20 @@ mod tests {
         assert!(
             rejected
                 .reason
-                .ends_with("solid 1 (entity #1069) encloses no volume"),
+                .ends_with("solid 1 (entity #1077) encloses no volume"),
             "{}",
             rejected.reason
         );
-        assert_eq!(evidence.nodes.len(), 4);
+        let wires = &evidence.rejected_parts[1];
+        assert_eq!((wires.index, wires.name.as_str()), (4, "Wire frame"));
+        assert!(
+            wires
+                .reason
+                .ends_with("has no face, so it is neither a solid nor a surface"),
+            "{}",
+            wires.reason
+        );
+        assert_eq!(evidence.nodes.len(), 7);
     }
 
     // Review 2026-10-18 EX-9: converting to IGES wrote a STEP file of a part

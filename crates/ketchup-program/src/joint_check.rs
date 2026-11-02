@@ -7,7 +7,7 @@
 //! density holds only where every joined part's strength class reaches it.
 
 use crate::loads::{JointLoad, LoadReport, Loads, Tension};
-use crate::member_check::{GAMMA_M_CONNECTION, action, kmod, ultimate};
+use crate::member_check::{GAMMA_M_CONNECTION, TimberClass, action, ultimate};
 use crate::model::{Joint, JointRating, ProgramModel};
 use serde::{Deserialize, Serialize};
 
@@ -128,12 +128,12 @@ fn utilization(
     {
         missing.push(service_class_outside(name, class, &rating.service_classes));
     }
-    let service_classes: Option<Vec<u8>> = if rating.basis == "characteristic" {
+    let service_classes: Option<Vec<&TimberClass>> = if rating.basis == "characteristic" {
         if classed.is_empty() {
             missing.push(NO_SERVICE_CLASS.to_owned());
             return (None, missing);
         }
-        Some(classed.iter().map(|(_, class)| *class).collect())
+        Some(joint.parts.iter().filter_map(class_of).collect())
     } else {
         None
     };
@@ -141,7 +141,7 @@ fn utilization(
     // kmod (EN 1995-1-1 2.3.2.1(2)); a single classed part its own.
     let capacity = |load_n: f64, duration: usize| {
         service_classes.as_ref().map_or(load_n, |classes| {
-            let product: f64 = classes.iter().map(|class| kmod(*class, duration)).product();
+            let product: f64 = classes.iter().map(|class| class.kmod(duration)).product();
             let parts = i32::try_from(classes.len()).unwrap_or(i32::MAX);
             product.powf(1.0 / f64::from(parts)) * load_n / GAMMA_M_CONNECTION
         })
@@ -288,6 +288,7 @@ mod tests {
             max_gap_mm: 0.0,
             bearing: true,
             rating: Some(rating.clone()),
+            hardware: std::collections::BTreeMap::new(),
         };
         let load = JointLoad {
             loads_n: Loads::from([
