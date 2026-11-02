@@ -1118,6 +1118,20 @@ fn braced_stretches(
     braced
 }
 
+/// Whether each part is of a load path's `fixed` tags: fastened to what it leans on.
+fn fixed_by_tag(model: &ProgramModel) -> Vec<bool> {
+    model
+        .parts
+        .iter()
+        .map(|part| {
+            model
+                .load_paths
+                .iter()
+                .any(|path| !part.tags.is_disjoint(&path.fixed_tags))
+        })
+        .collect()
+}
+
 /// Loads on every load-path member, when the program declares weights or area loads.
 #[must_use]
 pub fn loads(model: &ProgramModel) -> LoadReport {
@@ -1182,15 +1196,7 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
     // So too a part that carries nothing beside or under a member or the ground
     // leans on it or hangs from it only where a joint ties them; a carrier
     // (sheathing on its studs) and a part of the tags `fixed` lean as they are.
-    let fixed_by_tag: Vec<bool> = parts
-        .iter()
-        .map(|part| {
-            model
-                .load_paths
-                .iter()
-                .any(|path| !part.tags.is_disjoint(&path.fixed_tags))
-        })
-        .collect();
+    let fixed_by_tag = fixed_by_tag(model);
     let fixed: Vec<bool> = fixed_by_tag
         .iter()
         .zip(&may_carry)
