@@ -142,11 +142,14 @@ impl UnderlayLines {
             .filter(|(id, _)| !edits.removed_objects.contains(id))
             .filter_map(|(id, map)| Some((self.capture(*id, &children)?, *map)))
             .collect::<Vec<_>>();
-        let copies = edits
-            .added
-            .iter()
-            .map(|added| self.capture(added.copy_of()?, &children))
-            .collect::<Vec<_>>();
+        // Each object copied is taken once, however many times it is copied
+        // (review 2026-11-01 MD-101).
+        let mut taken = std::collections::BTreeMap::new();
+        for of in edits.added.iter().filter_map(AddedObject::copy_of) {
+            taken
+                .entry(of)
+                .or_insert_with(|| self.capture(of, &children));
+        }
         let removed = self.with_children(|id| edits.removed_objects.contains(&id));
         let moving = self
             .with_children(|id| edits.map_of(id).is_some() && !edits.removed_objects.contains(&id));
@@ -162,7 +165,8 @@ impl UnderlayLines {
         for (captured, map) in &moved {
             self.put(captured, map, true, None, false);
         }
-        for (added_by, (added, copy)) in edits.added.iter().zip(&copies).enumerate() {
+        for (added_by, added) in edits.added.iter().enumerate() {
+            let copy = (added.copy_of()).and_then(|of| taken.get(&of)?.as_ref());
             let added_by = u32::try_from(added_by).expect("an edit count fits u32");
             let first = u32::try_from(self.objects.objects.len()).unwrap_or(u32::MAX);
             let removed = edits.removed_objects.contains(&first);
