@@ -330,6 +330,11 @@ pub enum GeneralFabricationError {
         part: String,
         code: Option<String>,
     },
+    /// `part` has no drilling or pocket, so a woodWOP program of it would only
+    /// lay its blank (review 2026-11-02 MF-124).
+    NothingToMachine {
+        part: String,
+    },
     /// `part` is drilled into both its top and its bottom face, and one
     /// woodWOP setup machines one face and the edges.
     DrilledFromBothFaces {
@@ -463,6 +468,10 @@ impl fmt::Display for GeneralFabricationError {
                     ", and a HOMAG program and its barcode label are named by a code of exactly 12 letters, digits, '-' or '_'; assign production codes (Tools > Assign production codes, or the model operation set_production_code) and save the document",
                 )
             }
+            Self::NothingToMachine { part } => write!(
+                formatter,
+                "part \"{part}\" has no drilling or pocket, so a woodWOP program would only lay its blank; give it holes or pockets, or cut it from the cut list",
+            ),
             Self::BtlxDrillingRefused { part, reason } => write!(
                 formatter,
                 "a hole of part \"{part}\" cannot be written as a BTLx drilling: {reason}",
@@ -1204,12 +1213,17 @@ impl GeneralFabricationProjection {
                 parts => GeneralFabricationError::OneProgramPerPart { parts },
             });
         };
+        let part = snapshot
+            .definition(row.definition_id)
+            .map_or("", |definition| definition.name());
+        // A refusal names the part (review 2026-11-02 MF-124).
+        let blocked = || GeneralFabricationError::ExportBlocked.at_part(part);
         if row.quantity == 0 || row.quantity != row.instances.len() || !row.item_kind.is_shop_made()
         {
-            return Err(GeneralFabricationError::ExportBlocked);
+            return Err(blocked());
         }
         let GeneralBodySource::Exact(_) = &row.source else {
-            return Err(GeneralFabricationError::ExportBlocked);
+            return Err(blocked());
         };
         let matching = self
             .manufacturing
@@ -1218,14 +1232,18 @@ impl GeneralFabricationProjection {
             .filter(|operation| is_row_operation(row, operation))
             .collect::<Vec<_>>();
         if matching.len() != self.manufacturing.operations.len() {
-            return Err(GeneralFabricationError::ExportBlocked);
+            return Err(blocked());
         }
         let [stock, machining @ ..] = matching.as_slice() else {
-            return Err(GeneralFabricationError::ExportBlocked);
+            return Err(blocked());
         };
+        if stock.kind == GeneralManufacturingKind::Stock && machining.is_empty() {
+            return Err(GeneralFabricationError::NothingToMachine {
+                part: part.to_owned(),
+            });
+        }
         if stock.kind != GeneralManufacturingKind::Stock
             || !stock.semantic_inputs.is_empty()
-            || machining.is_empty()
             || machining.iter().any(|operation| {
                 !matches!(
                     operation.kind,
@@ -1236,13 +1254,9 @@ impl GeneralFabricationProjection {
                 .vertical_pocket_tool_number
                 .is_some_and(|tool| tool == 0 || tool > 999_999)
         {
-            return Err(GeneralFabricationError::ExportBlocked);
+            return Err(blocked());
         }
-        let stock_frame =
-            woodwop_stock_frame(&stock.machining).ok_or(GeneralFabricationError::ExportBlocked)?;
-        let part = snapshot
-            .definition(row.definition_id)
-            .map_or("", |definition| definition.name());
+        let stock_frame = woodwop_stock_frame(&stock.machining).ok_or_else(blocked)?;
         let (stock_frame, macros) = woodwop_setup(
             stock_frame,
             &machining_normals(machining.iter().copied(), std::iter::empty()),
@@ -1267,10 +1281,7 @@ impl GeneralFabricationProjection {
                     .collect::<Option<Vec<_>>>()
             },
         )
-        .map_err(|error| match error {
-            GeneralFabricationError::DrilledFromBothFaces { .. } => error.at_part(part),
-            other => other,
-        })?;
+        .map_err(|error| error.at_part(part))?;
         let export_contract = if machining
             .iter()
             .any(|operation| operation.kind == GeneralManufacturingKind::ProfileCut)

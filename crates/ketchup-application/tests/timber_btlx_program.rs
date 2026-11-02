@@ -388,8 +388,10 @@ fn a_rounded_table_top_is_described_and_a_free_form_outline_says_so() {
     // woodWOP lays a rectangular blank: the rounded top is refused by name.
     assert!(matches!(
         projection.production_job(&snapshot, &adapters),
-        Err(GeneralFabricationError::PartExportBlocked { .. }
-            | GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::CannotCarry {
+            element: ShopElement::ShapedBlank,
+            ..
+        })
     ));
 
     let snapshot = coded(apply(
@@ -411,6 +413,83 @@ fn a_rounded_table_top_is_described_and_a_free_form_outline_says_so() {
         ("top", ShopElement::FreeFormBlank)
     );
     assert!(reason.contains("outline"), "{reason}");
+}
+
+/// Review 2026-11-02 MF-123, MF-124: a rounded board dropped a whole HOMAG
+/// package, and a woodWOP program of it or of a board without machining, with a
+/// bare "export blocked". woodWOP and BTLx refuse a blank that is not a
+/// rectangle by its part, with the way out; a part without machining says so.
+#[test]
+fn woodwop_and_btlx_name_a_shaped_blank_and_a_part_without_machining() {
+    use ketchup_manufacturing::fabrication::{GeneralFabricationError, ShopElement, ShopFormat};
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let refused = |error: GeneralFabricationError| match error {
+        GeneralFabricationError::CannotCarry {
+            format,
+            part,
+            element,
+            reason,
+        } => {
+            assert!(reason.contains("production job"), "{reason}");
+            (format, part, element)
+        }
+        other => panic!("{other}"),
+    };
+    const TOP: &str = "extrude('top', profile = round_corners([[0, 0], [800, 0], [800, 500], [0, 500]], 40), \
+         distance = 18, material = 'oak', attributes = {FABRICATION_ROLE: MANUFACTURED_ITEM})\n";
+    let snapshot = apply(&format!(
+        "{TOP}shelf = board('shelf', (600, 300, 18), at = (0, 600, 0))\n\
+         hole(shelf, 'z+', at = (100, 150), diameter = 8, depth = 10)\n"
+    ));
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    let woodwop = ShopFormat::Woodwop {
+        vertical_pocket_tool: false,
+    };
+    let shaped = (woodwop, "top".to_owned(), ShopElement::ShapedBlank);
+    assert_eq!(
+        refused(
+            projection
+                .woodwop_mpr_4_0_production_zip(&snapshot, Default::default())
+                .unwrap_err()
+        ),
+        shaped
+    );
+    let snapshot = apply(TOP);
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        refused(
+            projection
+                .woodwop_mpr_4_0_drill_export(&snapshot)
+                .unwrap_err()
+        ),
+        shaped
+    );
+    let snapshot = apply("board('shelf', (600, 300, 18))\n");
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    let bare = projection
+        .woodwop_mpr_4_0_drill_export(&snapshot)
+        .unwrap_err();
+    assert_eq!(
+        bare,
+        GeneralFabricationError::NothingToMachine {
+            part: "shelf".into()
+        }
+    );
+    assert!(bare.to_string().contains("no drilling or pocket"), "{bare}");
+    let snapshot = apply(
+        "extrude('beam', profile = round_corners([[0, 0], [120, 0], [120, 200], [0, 200]], 10), \
+         distance = 3000, material = 'C24', attributes = {FABRICATION_ROLE: TIMBER_MEMBER})\n",
+    );
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        refused(projection.btlx_2_3_1_export(&snapshot).unwrap_err()),
+        (
+            ShopFormat::Btlx,
+            "beam".to_owned(),
+            ShopElement::ShapedBlank
+        )
+    );
 }
 
 /// Review 2026-11-02 MF-122: the shop drawing of a rounded table top drew the
