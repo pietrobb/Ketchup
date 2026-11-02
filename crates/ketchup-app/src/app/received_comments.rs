@@ -200,41 +200,50 @@ impl KetchupApp {
     }
 
     /// Open the groups and components around `target` so that it can be
-    /// selected, as the author would to pick a part inside a component.
+    /// selected, as the author would to pick a part inside a component. The
+    /// way there is found first: a part out of reach leaves the author where
+    /// they were, with their open import review (review 2026-11-01 VW-100).
     pub(crate) fn open_contexts_to(&mut self, target: &InstancePath) -> bool {
         if self.occurrence_in_active_context(target) {
             return true;
         }
-        let author = self.selection.edit_context.clone();
-        if self.open_contexts_from_the_model_to(target) {
+        let author = std::mem::take(&mut self.selection.edit_context);
+        let reached = self.contexts_from_the_model_to(target);
+        let Some(contexts) = reached else {
+            self.selection.edit_context = author;
+            return false;
+        };
+        if contexts == author {
             return true;
         }
-        // Out of reach: the author stays where they were.
         self.selection.edit_context = author;
-        false
+        self.cancel_transform_session();
+        self.end_transform_correction();
+        self.selection.edit_context = contexts;
+        self.invalidate_pending_import_reviews();
+        self.selection.clear();
+        true
     }
 
-    fn open_contexts_from_the_model_to(&mut self, target: &InstancePath) -> bool {
-        while self.exit_edit_context() {}
+    /// The contexts that hold `target` in reach, opened from the model one
+    /// level at a time. Only the context stack is changed, and it is left as
+    /// those contexts; None when `target` cannot be reached.
+    fn contexts_from_the_model_to(&mut self, target: &InstancePath) -> Option<Vec<EditContext>> {
         // Each level is at most a group and a component.
         for _ in 0..=2 * (target.steps().len() + 1) {
             if self.occurrence_in_active_context(target) {
-                return true;
+                return Some(self.selection.edit_context.clone());
             }
-            let Some(outer) = self
+            let outer = self
                 .active_scene_query()
                 .into_iter()
                 .map(|occurrence| occurrence.instance_path)
                 .filter(|path| path.is_prefix_of(target))
-                .max_by_key(|path| path.steps().len())
-            else {
-                return false;
-            };
-            if !self.enter_occurrence_context(outer) {
-                return false;
-            }
+                .max_by_key(|path| path.steps().len())?;
+            let context = self.context_entering(outer)?;
+            self.selection.edit_context.push(context);
         }
-        false
+        None
     }
 
     /// Where the shown comment's arrows and text land in `rect`: arrows end at

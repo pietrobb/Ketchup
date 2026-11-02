@@ -66,7 +66,6 @@ crates/ketchup-app/src/live_bridge/program_variant_export.rs str_result 3
 crates/ketchup-app/src/live_bridge/program_variants.rs str_result 4
 crates/ketchup-app/src/live_bridge/underlay_binding.rs str_result 3
 crates/ketchup-app/src/live_bridge/underlay_objects.rs str_result 1
-crates/ketchup-app/src/live_bridge/underlay_program.rs dropped_error 2
 crates/ketchup-app/src/live_bridge/underlay_program.rs formatted_cause 2
 crates/ketchup-app/src/live_bridge/underlay_program.rs str_result 8
 crates/ketchup-app/src/live_bridge/underlay_regions.rs dropped_error 4

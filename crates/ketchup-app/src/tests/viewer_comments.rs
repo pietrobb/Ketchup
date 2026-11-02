@@ -281,6 +281,31 @@ fn a_part_out_of_reach_leaves_the_author_in_their_context() {
     assert_eq!(app.edit_context_depth(), 1);
 }
 
+/// Review 2026-11-01 VW-100: a comment on a part out of reach left the
+/// author's contexts while looking for it, and leaving a context invalidates
+/// an open import review, so the review was lost though nothing changed.
+#[test]
+fn a_part_out_of_reach_keeps_an_open_import_review() {
+    let (mut app, package) = exported();
+    assert!(app.enter_occurrence_context(package_part(&package)));
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("plan.dxf");
+    let source = b"0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n\
+        0\nSECTION\n2\nENTITIES\n0\nLINE\n8\n0\n10\n0\n20\n0\n11\n100\n21\n0\n\
+        0\nENDSEC\n0\nEOF\n"
+        .to_vec();
+    app.open_drawing_import(path, source);
+    let open = |app: &KetchupApp| {
+        app.modal
+            .get::<PendingDxfImport>()
+            .map(|pending| pending.invalidated)
+    };
+    assert_eq!(open(&app), Some(false), "{}", app.action_digest());
+    let unreachable = InstancePath::root(OccurrenceId(u64::from(u32::MAX)));
+    assert!(!app.open_contexts_to(&unreachable));
+    assert_eq!(open(&app), Some(false), "the review is still current");
+}
+
 #[test]
 fn deleted_commented_part_is_marked_and_never_selected() {
     let directory = tempfile::tempdir().unwrap();

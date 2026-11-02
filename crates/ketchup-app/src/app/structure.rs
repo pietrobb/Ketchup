@@ -463,22 +463,30 @@ impl KetchupApp {
         true
     }
 
-    pub(crate) fn enter_occurrence_context(&mut self, instance_path: InstancePath) -> bool {
+    /// The edit context entering `instance_path` from the active one opens,
+    /// None when it is not in the active context. Changes nothing.
+    pub(crate) fn context_entering(&self, instance_path: InstancePath) -> Option<EditContext> {
         let snapshot = self.document.current();
         let Ok(resolved) = snapshot.resolve_instance_path(&instance_path) else {
-            return false;
+            return None;
         };
         if !self.occurrence_in_active_context(&instance_path) {
-            return false;
+            return None;
         }
         let root = snapshot.occurrence(instance_path.root_occurrence());
         let parent = root.and_then(|occurrence| occurrence.parent());
-        let context = match (self.selection.edit_context.last(), parent) {
+        Some(match (self.selection.edit_context.last(), parent) {
             (None, Some(parent)) if instance_path.is_root() => EditContext::Group(parent),
             _ => EditContext::Definition {
                 definition_id: resolved.definition_id,
                 instance_path,
             },
+        })
+    }
+
+    pub(crate) fn enter_occurrence_context(&mut self, instance_path: InstancePath) -> bool {
+        let Some(context) = self.context_entering(instance_path) else {
+            return false;
         };
         self.cancel_transform_session();
         self.end_transform_correction();
