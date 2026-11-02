@@ -6,14 +6,19 @@
 use super::{LiveBridge, Request, failed_because, failure};
 use crate::KetchupApp;
 use crate::app::drawing_sheet_export::{DrawingSheetExportError, SheetFileFormat};
-use crate::app::project_drawings::{ProjectDrawingsError, SetFileFormat, SheetRequest};
+use crate::app::project_drawings::{
+    ExportedSet, ProjectDrawingsError, ProjectDrawingsJob, SetFileFormat, SetTargets, SheetRequest,
+    publish_project_drawings,
+};
 use ketchup_manufacturing::dxf_annotations::MAX_PLAN_SCALE;
-use ketchup_manufacturing::title_block::{SheetFormat, TitleField};
+use ketchup_manufacturing::project_drawings::DrawingSet;
+use ketchup_manufacturing::title_block::{SheetFormat, SheetSettings, TitleField};
+use ketchup_model::document::DocumentId;
 use ketchup_model::drawing::DrawingSheetId;
 use ketchup_model::drawing_export::{DxfCurves, SheetAnnotations};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 
 fn sheet_format(name: &str) -> Result<Option<SheetFormat>, &'static str> {
     if name.eq_ignore_ascii_case("auto") {
@@ -35,40 +40,30 @@ impl LiveBridge {
         let Request::ExportDrawings {
             expected,
             path,
-            sheet_id,
+            sheet_id: Some(id),
             format,
             title_block,
             plan_only,
             drawing_scale,
         } = request
         else {
-            return Err("invalid_request");
+            // The project set, drawn here: only the in-process caller waits
+            // for it, as a client's export is a job (review 2026-11-01 UI-100).
+            let (started, job) = start_export(app, request, ui_busy)?;
+            let path = started.path.clone();
+            let made = job.render(started.file_format, &AtomicBool::new(false));
+            return finish_export(app, started, made).map_err(|error| export_failed(&path, error));
         };
         Self::guard(app, &expected)?;
         Self::available(app, ui_busy)?;
-        match sheet_id {
-            Some(id) => {
-                if format.is_some()
-                    || !title_block.is_empty()
-                    || plan_only
-                    || drawing_scale.is_some()
-                {
-                    return Err(failure(
-                        "invalid_params",
-                        "format, title_block, plan_only and drawing_scale belong to the project sheet; a drawing sheet keeps its own page, views, scale and title block.",
-                        json!({"sheet_id": id}),
-                    ));
-                }
-                export_sheet(app, &path, DrawingSheetId(id))
-            }
-            None => {
-                let request = SheetRequest {
-                    plan_only,
-                    scale: drawing_scale.map(sheet_scale).transpose()?,
-                };
-                export(app, &path, format.as_deref(), title_block, request)
-            }
+        if format.is_some() || !title_block.is_empty() || plan_only || drawing_scale.is_some() {
+            return Err(failure(
+                "invalid_params",
+                "format, title_block, plan_only and drawing_scale belong to the project sheet; a drawing sheet keeps its own page, views, scale and title block.",
+                json!({"sheet_id": id}),
+            ));
         }
+        export_sheet(app, &path, DrawingSheetId(id))
     }
 }
 
@@ -194,13 +189,52 @@ fn dxf_curves(curves: &DxfCurves) -> Value {
 /// The one path policy, shared with the MCP server.
 pub(super) use ketchup_mcp::path_policy::local_absolute_path;
 
-fn export(
+/// A project drawings export the window has taken: the settings it keeps in
+/// the document and what restores them when no file is written.
+pub(super) struct StartedDrawings {
+    pub(super) path: String,
+    pub(super) file_format: SetFileFormat,
+    previous: SheetSettings,
+    previously_unsaved: bool,
+    /// The project the set is drawn from.
+    document: DocumentId,
+}
+
+impl StartedDrawings {
+    /// Puts back the settings the export kept: nothing was written.
+    pub(super) fn undo(self, app: &mut KetchupApp) {
+        app.store_sheet_settings(self.previous);
+        app.drawings.unsaved = self.previously_unsaved;
+    }
+}
+
+/// Takes the project set export `request`: keeps its settings in the document
+/// and takes what the set is drawn from; [`finish_export`] writes what was
+/// drawn from it.
+pub(super) fn start_export(
     app: &mut KetchupApp,
-    path: &str,
-    format: Option<&str>,
-    title_block: BTreeMap<TitleField, String>,
-    request: SheetRequest,
-) -> Result<Value, &'static str> {
+    request: Request,
+    ui_busy: bool,
+) -> Result<(StartedDrawings, ProjectDrawingsJob), &'static str> {
+    let Request::ExportDrawings {
+        expected,
+        path,
+        sheet_id: None,
+        format,
+        title_block,
+        plan_only,
+        drawing_scale,
+    } = request
+    else {
+        return Err("invalid_request");
+    };
+    LiveBridge::guard(app, &expected)?;
+    LiveBridge::available(app, ui_busy)?;
+    let request = SheetRequest {
+        plan_only,
+        scale: drawing_scale.map(sheet_scale).transpose()?,
+    };
+    let path = path.as_str();
     let target = Path::new(path);
     let file_format = SetFileFormat::of_path(target).filter(|_| local_absolute_path(path));
     let Some(file_format) = file_format else {
@@ -213,7 +247,7 @@ fn export(
     if file_format == SetFileFormat::Pdf {
         refuse_existing(path)?;
     }
-    let format = format.map(sheet_format).transpose()?;
+    let format = format.as_deref().map(sheet_format).transpose()?;
     if app.exact.task.is_some() {
         return Err(failure(
             "drawings_unavailable",
@@ -243,28 +277,56 @@ fn export(
             json!({}),
         )
     })?;
-    let previously_unsaved = app.drawings.unsaved;
-    let mut settings = previous.clone();
+    let started = StartedDrawings {
+        path: path.to_owned(),
+        file_format,
+        previous: previous.clone(),
+        previously_unsaved: app.drawings.unsaved,
+        document: app.document.current().document_id(),
+    };
+    let mut settings = previous;
     if let Some(format) = format {
         settings.format = format;
     }
     settings.title_block.extend(title_block);
     app.store_sheet_settings(settings);
-    // The settings stay in the document only with the sheet they were written
-    // on, and the sheet only as a new file: one saved at the path while it was
-    // projected is kept (review 2026-10-18 MCP-3).
-    let exported = app
-        .write_project_drawings(target, file_format, request, &Default::default())
-        .map_err(|error| {
-            app.store_sheet_settings(previous);
-            app.drawings.unsaved = previously_unsaved;
-            match error {
-                ProjectDrawingsError::Write(_) => refuse_existing(path)
-                    .err()
-                    .unwrap_or_else(|| drawings_failed(error)),
-                error => drawings_failed(error),
-            }
-        })?;
+    match app.project_drawings_job_for(request) {
+        Ok(job) => Ok((started, job)),
+        Err(error) => {
+            started.undo(app);
+            Err(drawings_failed(error))
+        }
+    }
+}
+
+/// Writes what was `made` for the export `started`, or puts back its
+/// settings. The settings stay in the document only with the sheet they were
+/// written on, and the sheet only as a new file: one saved at the path while
+/// it was projected is kept (review 2026-10-18 MCP-3).
+pub(super) fn finish_export(
+    app: &mut KetchupApp,
+    started: StartedDrawings,
+    made: Result<(DrawingSet, Vec<Vec<u8>>), ProjectDrawingsError>,
+) -> Result<Value, ProjectDrawingsError> {
+    let path = started.path.clone();
+    let file_format = started.file_format;
+    let exported = made.and_then(|(set, files)| {
+        publish_project_drawings(
+            Path::new(&path),
+            file_format,
+            &files,
+            &SetTargets::default(),
+            started.document,
+        )
+        .map(|paths| ExportedSet { set, paths })
+    });
+    let exported = match exported {
+        Ok(exported) => exported,
+        Err(error) => {
+            started.undo(app);
+            return Err(error);
+        }
+    };
     let settings = app.sheet_settings();
     let set = &exported.set;
     let sheets = set
@@ -302,6 +364,16 @@ fn export(
 }
 
 /// The answer to a sheet that could not be written, its cause recorded.
+/// The answer to an export of the set to `path` that failed with `error`.
+pub(super) fn export_failed(path: &str, error: ProjectDrawingsError) -> &'static str {
+    match error {
+        ProjectDrawingsError::Write(_) => refuse_existing(path)
+            .err()
+            .unwrap_or_else(|| drawings_failed(error)),
+        error => drawings_failed(error),
+    }
+}
+
 fn drawings_failed(error: ProjectDrawingsError) -> &'static str {
     match error {
         ProjectDrawingsError::Drawing(
@@ -367,6 +439,30 @@ fn drawings_failed(error: ProjectDrawingsError) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    /// The project set to `path`, drawn and written here.
+    fn export(
+        app: &mut KetchupApp,
+        path: &str,
+        format: Option<&str>,
+        title_block: BTreeMap<TitleField, String>,
+        request: SheetRequest,
+    ) -> Result<Value, &'static str> {
+        LiveBridge::export_drawings(
+            app,
+            Request::ExportDrawings {
+                expected: None,
+                path: path.to_owned(),
+                sheet_id: None,
+                format: format.map(str::to_owned),
+                title_block,
+                plan_only: request.plan_only,
+                drawing_scale: request.scale.map(f64::from),
+            },
+            false,
+        )
+    }
 
     #[test]
     fn an_existing_file_is_never_replaced_and_its_settings_are_not_kept() {
@@ -461,6 +557,7 @@ mod tests {
                 SetFileFormat::Pdf,
                 SheetRequest::default(),
                 &Default::default(),
+                &AtomicBool::new(false),
             )
             .err()
             .unwrap();

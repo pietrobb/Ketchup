@@ -4,12 +4,17 @@
 //! thread reads the file while the window keeps drawing and
 //! names the import as the job it is busy with; a cancelled request kills the worker.
 //! The import itself then runs on the window's thread from what that thread read,
-//! while the job holds a DWG's conversion.
+//! while the job holds a DWG's conversion. A STEP or IGES file is read the same way,
+//! by the exact worker's XDE inspection (review 2026-11-01 MCP-100).
 
+use super::interchange::ReadAlready;
 use super::program_check::ProgramCheckJob;
 use super::program_dry_run::QueuedReply;
 use super::*;
+use crate::ImportFormat;
 use crate::app::dwg_import::{DwgRead, is_dwg_path, read_dwg_file};
+use crate::app::exact_import_activity::{ExactImportRead, read_exact_import};
+use crate::app::import_file::import_format;
 use crate::app::underlay::{UnderlayReadResult, read_underlay_file};
 use ketchup_program::CancelToken;
 
@@ -17,6 +22,7 @@ use ketchup_program::CancelToken;
 enum JobRead {
     Dwg(DwgRead),
     Underlay(Box<UnderlayReadResult>),
+    Exact(ExactImportRead),
 }
 
 pub(super) struct DwgImportJob {
@@ -28,10 +34,15 @@ pub(super) struct DwgImportJob {
     receiver: mpsc::Receiver<JobRead>,
 }
 
-/// Whether `request` imports a DWG file or an underlay, which run as a job.
-pub(super) fn imports_dwg(request: &Request) -> bool {
+/// Whether `request` imports a DWG, STEP or IGES file or an underlay, which run as a job.
+pub(super) fn imports_as_job(request: &Request) -> bool {
     matches!(request, Request::Import { path, as_underlay, .. }
-        if *as_underlay || is_dwg_path(Path::new(path)))
+    if *as_underlay
+        || is_dwg_path(Path::new(path))
+        || matches!(
+            import_format(Path::new(path)),
+            Some(ImportFormat::Step | ImportFormat::Iges)
+        ))
 }
 
 impl LiveBridge {
@@ -58,8 +69,8 @@ impl LiveBridge {
             Self::reply(app, id, &reply, Err(busy));
             return;
         }
-        let (path, unit) = match Self::import_target(app, &request, ui_busy) {
-            Ok((path, _, unit)) => (PathBuf::from(path), unit),
+        let (path, format, unit) = match Self::import_target(app, &request, ui_busy) {
+            Ok((path, format, unit)) => (PathBuf::from(path), format, unit),
             Err(code) => {
                 Self::reply(app, id, &reply, Err(code));
                 return;
@@ -73,6 +84,8 @@ impl LiveBridge {
             }
         );
         let origin = ketchup_model::underlay::placement::geo_origin(&app.document.current());
+        let exact = (!as_underlay && matches!(format, ImportFormat::Step | ImportFormat::Iges))
+            .then(|| app.exact_worker_executable());
         let cancel = CancelToken::default();
         let worker_cancel = cancel.clone();
         let (sender, receiver) = mpsc::sync_channel(1);
@@ -80,7 +93,14 @@ impl LiveBridge {
         let spawn = std::thread::Builder::new()
             .name("ketchup-dwg-import".into())
             .spawn(move || {
-                let read = if as_underlay {
+                let read = if let Some(executable) = exact {
+                    JobRead::Exact(read_exact_import(
+                        format,
+                        &path,
+                        executable,
+                        worker_cancel.flag(),
+                    ))
+                } else if as_underlay {
                     JobRead::Underlay(Box::new(read_underlay_file(
                         &path,
                         unit,
@@ -129,7 +149,7 @@ impl LiveBridge {
             }
             Err(mpsc::TryRecvError::Disconnected) => JobRead::Dwg(Err(crate::ImportError::failed(
                 crate::ImportFormat::Dxf,
-                "the thread that reads the drawing stopped",
+                "the thread that reads the file stopped",
             ))),
         };
         take_error_details();
@@ -145,9 +165,17 @@ impl LiveBridge {
                 &job.request,
                 ui_busy(context),
                 &job.cancelled,
-                Some(source),
+                ReadAlready::Drawing(source),
             ),
             JobRead::Dwg(Err(error)) => Err(interchange::import_failed(path, error)),
+            JobRead::Exact(Ok((source, evidence))) => Self::import_file(
+                app,
+                &job.request,
+                ui_busy(context),
+                &job.cancelled,
+                ReadAlready::Exact(source, evidence),
+            ),
+            JobRead::Exact(Err(error)) => Err(interchange::import_failed(path, error)),
             JobRead::Underlay(read) => match *read {
                 Ok(read) => {
                     Self::add_underlay(app, &job.request, ui_busy(context), &job.cancelled, read)

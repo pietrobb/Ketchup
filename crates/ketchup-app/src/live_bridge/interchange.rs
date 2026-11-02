@@ -17,6 +17,19 @@ use std::sync::{Arc, atomic::AtomicBool};
 
 type Exporter = fn(&mut KetchupApp, &Path) -> Result<Written, ExportError>;
 
+/// What a job's thread has read of a file to import, so the window does not
+/// read it again.
+pub(super) enum ReadAlready {
+    Nothing,
+    /// The bytes of a `.dwg` file.
+    Drawing(Vec<u8>),
+    /// The bytes of a STEP or IGES file and what the exact worker read of them.
+    Exact(
+        Vec<u8>,
+        crate::app::exact_import_activity::ExactImportEvidence,
+    ),
+}
+
 /// Records why the import of `path` failed for the answer.
 pub(super) fn import_failed(path: &str, error: ImportError) -> &'static str {
     record_rejection(
@@ -77,14 +90,14 @@ const EXPORT_FORMATS: [(&str, &[&str], Exporter); 14] = [
 ];
 
 impl LiveBridge {
-    /// Imports the file `request` names. `source` is its bytes when a thread has
-    /// read them already (a `.dwg` file, see [`super::dwg_import`]).
+    /// Imports the file `request` names, from what a job's thread has `read` of
+    /// it already (see [`super::dwg_import`]).
     pub(super) fn import_file(
         app: &mut KetchupApp,
         request: &Request,
         ui_busy: bool,
         cancelled: &AtomicBool,
-        source: Option<Vec<u8>>,
+        read: ReadAlready,
     ) -> Result<Value, &'static str> {
         let (path, format, unit) = Self::import_target(app, request, ui_busy)?;
         if matches!(
@@ -104,9 +117,12 @@ impl LiveBridge {
             return Self::add_underlay(app, request, ui_busy, cancelled, read);
         }
         Self::require_request_authority(cancelled)?;
-        let summary = match source {
-            Some(source) => app.import_drawing(Path::new(&path), source, unit),
-            None => app.import_file(format, Path::new(&path), unit),
+        let summary = match read {
+            ReadAlready::Nothing => app.import_file(format, Path::new(&path), unit),
+            ReadAlready::Drawing(source) => app.import_drawing(Path::new(&path), source, unit),
+            ReadAlready::Exact(source, evidence) => {
+                app.import_exact_read(format, Path::new(&path), source, evidence)
+            }
         }
         .map_err(|error| import_failed(&path, error))?;
         Ok(json!({"imported": true, "path": path, "review": summary, "dirty": app.is_dirty()}))

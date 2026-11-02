@@ -62,6 +62,8 @@ mod product_integration;
 pub(super) mod program_access;
 #[path = "program_tests.rs"]
 mod program_edit;
+#[path = "project_drawings_job_tests.rs"]
+mod project_drawings_job;
 #[path = "underlay_objects_tests.rs"]
 mod underlay_objects;
 #[path = "underlay_program_tests.rs"]

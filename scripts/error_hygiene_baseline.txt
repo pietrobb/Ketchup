@@ -9,7 +9,6 @@ crates/ketchup-app/src/app/exact.rs dropped_error 2
 crates/ketchup-app/src/app/exact.rs str_result 1
 crates/ketchup-app/src/app/export.rs unreachable 1
 crates/ketchup-app/src/app/hole.rs dropped_error 3
-crates/ketchup-app/src/app/import_file.rs dropped_error 1
 crates/ketchup-app/src/app/patterns.rs dropped_error 10
 crates/ketchup-app/src/app/project_drawings.rs dropped_error 4
 crates/ketchup-app/src/app/scale_grips.rs dropped_error 1

@@ -2,7 +2,8 @@
 //! the projection, hidden-line removal and file bytes are made on a thread, so
 //! the window keeps painting and the file activity indication can cancel; the
 //! file is written when they come back, so a cancelled export writes nothing
-//! (review 2026-10-18 UI-11).
+//! (review 2026-10-18 UI-11). The cosmetic bodies of modelled threads are made
+//! there too, by an exact worker that Cancel stops (review 2026-11-01 UI-11).
 
 use super::drawing_sheet_export::{
     DrawingSheetExportError, ExportedDrawingSheet, SheetFileFormat, drawing_sheet_bytes,
@@ -30,7 +31,8 @@ pub(crate) enum MadeDrawing {
     Sheet(Result<(ExportedDrawingSheet, Vec<u8>), DrawingSheetExportError>),
 }
 
-type DrawingWork = Box<dyn FnOnce() -> MadeDrawing + Send>;
+/// Makes the drawing; the flag is set when the export is cancelled.
+type DrawingWork = Box<dyn FnOnce(&AtomicBool) -> MadeDrawing + Send>;
 
 pub(crate) struct DrawingExportTask {
     export: DrawingExport,
@@ -40,6 +42,8 @@ pub(crate) struct DrawingExportTask {
     replacing: SetTargets,
     /// The project the drawing is made from.
     document: DocumentId,
+    /// Set on Cancel: stops the exact worker making cosmetic thread bodies.
+    cancelled: Arc<AtomicBool>,
     receiver: Receiver<MadeDrawing>,
 }
 
@@ -65,7 +69,9 @@ impl KetchupApp {
     ) {
         let work: DrawingWork = match export {
             DrawingExport::Project(format) => match self.project_drawings_job() {
-                Ok(job) => Box::new(move || MadeDrawing::Project(job.render(format))),
+                Ok(job) => {
+                    Box::new(move |cancelled| MadeDrawing::Project(job.render(format, cancelled)))
+                }
                 Err(error) => {
                     self.report_project_drawings(&path, &Err(error));
                     return;
@@ -80,7 +86,7 @@ impl KetchupApp {
                 let snapshot = self.document.current();
                 let results = self.exact.results.clone();
                 let words = self.parts_list_words();
-                Box::new(move || {
+                Box::new(move |_| {
                     MadeDrawing::Sheet(drawing_sheet_bytes(&snapshot, &results, &words, id, format))
                 })
             }
@@ -113,8 +119,10 @@ impl KetchupApp {
         };
         let (sender, receiver) = mpsc::channel();
         let repaint = context.clone();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let thread_cancelled = Arc::clone(&cancelled);
         std::thread::spawn(move || {
-            if sender.send(work()).is_ok() {
+            if sender.send(work(&thread_cancelled)).is_ok() {
                 repaint.request_repaint();
             }
         });
@@ -123,14 +131,18 @@ impl KetchupApp {
             path,
             replacing,
             document,
+            cancelled,
             receiver,
         });
         context.request_repaint();
     }
 
-    /// Drops the export; its thread finishes, but nothing is written.
+    /// Drops the export and stops its worker; its thread finishes, but nothing
+    /// is written.
     pub(super) fn cancel_drawing_export(&mut self) {
-        if self.file.activity.drawing_export.take().is_some() {
+        if let Some(task) = self.file.activity.drawing_export.take() {
+            task.cancelled
+                .store(true, std::sync::atomic::Ordering::Release);
             self.digest = self.catalog.text("digest-cancelled");
         }
     }

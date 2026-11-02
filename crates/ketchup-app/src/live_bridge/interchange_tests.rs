@@ -413,7 +413,10 @@ fn a_plan_of_its_own_is_drawn_as_a_pdf_at_the_scale_the_client_names() {
             scale: Some(250),
         })
         .unwrap()
-        .render(crate::app::project_drawings::SetFileFormat::Pdf)
+        .render(
+            crate::app::project_drawings::SetFileFormat::Pdf,
+            &AtomicBool::new(false),
+        )
         .unwrap()
         .0;
     let texts = set.sheets[0].page.texts().collect::<Vec<_>>();

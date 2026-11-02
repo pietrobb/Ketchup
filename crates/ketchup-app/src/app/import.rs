@@ -1,6 +1,7 @@
 //! Imports with review previews (STL, DXF and DWG, STEP, IGES, SketchUp scenes).
 
 use crate::app::dwg_import::drawing_dxf;
+#[cfg(test)]
 use crate::app::exact_import_activity::{ExactImportEvidence, inspect_exact_import};
 use crate::*;
 use ketchup_model::import::{inspect_sketchup_scene, plan_sketchup_scene_import};
@@ -238,29 +239,18 @@ impl KetchupApp {
         read_import_source(ImportFormat::Step, path)
     }
 
-    /// The XDE evidence of `source` read here, the window waiting for it: for
-    /// a client's import, which answers only once it is done. The menu reads it
-    /// on a thread ([`Self::start_exact_import_read`]).
-    fn inspect_exact_import_now(
-        &mut self,
-        source: &ImportSourcePlan,
-    ) -> Result<ExactImportEvidence, ImportError> {
-        let executable = self
-            .exact_worker_executable()
-            .map_err(|error| source.failed(error))?;
-        inspect_exact_import(
-            source.format,
-            &executable,
-            &source.source,
-            &AtomicBool::new(false),
-        )
-    }
-
+    /// The review of the STEP `source`, read here while the caller waits: for
+    /// tests, which have no window to read it on a thread for.
+    #[cfg(test)]
     pub(crate) fn prepare_step_import_preview_plan(
         &mut self,
         source: ImportSourcePlan,
     ) -> Result<StepImportPreviewPlan, ImportError> {
-        match self.inspect_exact_import_now(&source)? {
+        let executable = self
+            .exact_worker_executable()
+            .map_err(|error| source.failed(error))?;
+        let cancelled = AtomicBool::new(false);
+        match inspect_exact_import(source.format, &executable, &source.source, &cancelled)? {
             ExactImportEvidence::Step(evidence) => {
                 self.step_import_preview_plan_from(source, evidence)
             }
@@ -343,18 +333,6 @@ impl KetchupApp {
         Self::validate_exact_exchange_extension(path, "IGES import", &["iges", "igs"])
             .map_err(|error| ImportError::failed(ImportFormat::Iges, error))?;
         read_import_source(ImportFormat::Iges, path)
-    }
-
-    pub(crate) fn prepare_iges_import_preview_plan(
-        &mut self,
-        source: ImportSourcePlan,
-    ) -> Result<IgesImportPreviewPlan, ImportError> {
-        match self.inspect_exact_import_now(&source)? {
-            ExactImportEvidence::Iges(evidence) => {
-                self.iges_import_preview_plan_from(source, evidence)
-            }
-            ExactImportEvidence::Step(_) => Err(source.failed("the IGES file was read as STEP")),
-        }
     }
 
     /// The review of `source` from the `evidence` the exact worker read of it.
