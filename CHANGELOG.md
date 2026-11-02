@@ -1,0 +1,56 @@
+# Changelog
+
+What changed for users in each Ketchup release. The full notes, downloads, and checksums are on the
+[GitHub releases page](https://github.com/pietrobb/Ketchup/releases).
+
+## Unreleased
+
+**Structural checks and production**
+- A compressed timber edge counts as braced only where a board or sheathing really covers it; otherwise its lateral buckling is checked.
+- Boards such as OSB/3 are checked with their own factors, not those of solid timber.
+- An extrusion's blank is the smallest rectangle around its profile, so a sloped gable rafter gets a realistic blank.
+- The cut list and the cutting plan give dimensions in the same order. A connector that doesn't fit its members still appears in the hardware list with its nails.
+- CNC DXF draws a thread on its own layer or names the part it cannot draw. BTLx saw and mill contours carry the depth of the cut, and a blocked part export names the part.
+
+**Files and imports**
+- A STEP or IGES file with some broken solids imports the rest and names each solid left out with its source entity and the reason, in the import review, the status line, and over MCP.
+- STEP and IGES imports started over MCP run in the background and can be cancelled.
+- Starting Ketchup with a file that isn't a Ketchup document shows a message instead of a general error.
+- A sheet whose text has a character its typeface lacks refuses only the PDF; its SVG, DXF, and DWG are still written.
+- Hatches and arcs of an edited drawing keep their angle range when exported back to DXF or DWG.
+
+**Programs and modeling**
+- A whole-number parameter refuses a decimal value. Pushing a face all the way through its part is refused instead of leaving a broken part.
+
+**Safety and licences**
+- A plugin argument naming a file in the plugin's folder is never read as an option.
+- Each download carries third-party notices with the copyright and licence text of every component it contains.
+- An Android Viewer release no longer measures a pushed `benchmark.ketchup-view`; only a `-Benchmark` build does.
+
+## 0.3.0 — 2026-10-30
+
+- DXF and DWG drawings under the model (underlays): snap to them, fit them by two points, edit their lines and texts, pull a closed area up into a solid, stand a drawing in space as a view, and export it back to DXF or DWG.
+- Rule programs: `window()` and `door()`, a **Program parameters** section, window edits written back into the program, `from_underlay`.
+- Drawing sets as DXF or DWG sheets with shop drawings of build-ups and window and door marks; cutting plans from `bar_stock()` and `sheet_stock()`; quotes from `price()`; a fastener catalogue (`connector()`); CNC DXF of flat parts.
+- COLLADA (DAE) export for SketchUp; STL, 3MF, GLB, and DAE exports in the background; faster exact checks after an edit.
+- A document is saved in the oldest format that holds it.
+- Ketchup Viewer: language and projection settings, program dimensions, orthographic plans, and a portable download of its own.
+- **Connect AI** and `Ketchup.exe --mcp-setup` set up Claude Code and Codex.
+- Ketchup and Ketchup Viewer build and run on Apple Silicon Macs.
+
+Files from 0.2.0 open in 0.3.0. A file with underlays or annotations needs 0.3.0.
+
+## 0.2.0 — 2026-10-18
+
+- Every value field reads values the same way: the system decimal separator, units, and arithmetic. Scale has grips on the selection box.
+- Sketch, Push/Pull, Move, Rotate, and Scale each make one Undo step; lines drawn on a body lie on its face.
+- Tapped holes use shop tap drills and the DIN 76-1 runout. Mirrored parts get their own BOM row and drawing. Timber members are checked on their real section, or reported as *not verified*.
+- Rule programs and DWG reading run in a separate process with memory and time limits. STEP and IGES export run in the background with Cancel.
+- Plugins run from a hashed private copy; a file from a newer Ketchup is refused instead of losing data.
+- Ketchup Viewer picks faster; on Android it opens packages of 120 MB and recovers an interrupted save.
+
+Files from 0.1.0 open in 0.2.0. A file saved by 0.2.0 may need 0.2.0 to open.
+
+## 0.1.0 — 2026-10-14
+
+First public release: an open-source 2D/3D parametric modeler for Windows with exact geometry, rule programs, production exports, Ketchup Viewer, and AI editing over MCP that goes through the same validation and Undo as a manual edit.

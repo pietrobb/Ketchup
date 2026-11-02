@@ -36,7 +36,7 @@ Ketchup is an AI-native desktop modeler for creating, editing, assembling, valid
 2. Download **`Ketchup-0.3.0-Examples.zip`** from the release, unpack it, and double-click any `.ketchup` file to open it in Ketchup. Double-click `kitchen.ketchup-view` to open it in Ketchup Viewer. The examples are described [below](#examples-you-can-open-right-away).
 3. Optional: connect the AI harness you already use, such as Claude Code, Codex, Claude Desktop, or Cursor. It can then model in the open Ketchup window. See [Connect your AI harness](#connect-your-ai-harness-mcp).
 
-Requires Windows 10 or 11 x64. The installer and the programs are signed by AEON GROUP spol. s r.o. No account, API key, or Python is needed.
+Requires Windows 10 or 11 x64. The installer and the programs are signed by AEON GROUP spol. s r.o. No account, API key, or Python is needed. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
 
 ## What you can do today
 
@@ -130,13 +130,16 @@ The drawing can be edited in 2D. A click picks one of its objects (Shift+click m
 
 ### Imports and exports
 
-- **STEP and IGES:** exact B-Rep import with preserved source bytes. STEP keeps assembly hierarchy, repeated instances, names, and colors; IGES has no hierarchy, so its parts become independent roots.
+- **STEP and IGES:** exact B-Rep import with preserved source bytes. STEP keeps assembly hierarchy, repeated instances, names, and colors; IGES has no hierarchy, so its parts become independent roots. A file with some broken solids still imports the rest: the import review, the status line, and the AI connection name each solid or part left out, with its source entity and the reason.
 - **STL:** binary/ASCII import with declared units and strict closed-manifold validation; no silent repair.
 - **DXF and DWG:** a bounded 2D geometry subset with a loss report, or a whole drawing as an underlay; a DWG is read as the DXF it converts to.
 - **Blender GLB:** mesh import preserving names, hierarchy, transforms, opaque colors, and shared instances. Imported geometry stays a mesh; boxes, cylinders, and linear extrusions can be converted to exact features after verification.
 - **SketchUp bridge:** open `.kscene` interchange subset rather than native `.skp` parsing.
 - **Export:** the visible exact model to STEP and IGES; tessellation to STL, 3MF, and Blender GLB; COLLADA for SketchUp, where equal parts become one component; and a `.ketchup-view` package for Ketchup Viewer. All exports check freshness and write a loss report where something is left out.
 - **Production:** cut lists, hardware lists, bar schedules, and material takeoff as CSV or XLSX; a general BOM with drawings; Hundegger BTLx 2.3.1 for timber members; HOMAG woodWOP drilling programs, one per piece in a ZIP when several parts are made; a reviewed ISO metric CAM program; sheet-metal flat patterns with bend tables; and weldment cut lists.
+- **Cutting plans and quotes:** when a program declares the bars and sheets its materials come in (`bar_stock`, `sheet_stock`), the takeoff window exports a cutting plan of every piece on bars and sheets with kerf, trim, and offcuts; with a `price_list` it exports a quote of materials, bought items, and machining, listing whatever has no price. Ketchup has no prices of its own.
+- **CNC DXF:** every made flat part as an AutoCAD R12 DXF in a ZIP, with its outline, cut-outs, holes, and pockets on named layers, and `parts.csv` saying why a part could not be drawn.
+- **Drawing sets:** **File → Export → Drawings (PDF, DXF, DWG)…** writes the visible model as a numbered set of sheets with frame and title block: a floor plan of each storey, sections, elevations, a shop drawing of each wall or floor build-up with its pieces numbered and dimensioned, and a schedule of windows and doors, as one PDF or a DXF or DWG file per sheet.
 
 ### Ketchup Viewer
 
