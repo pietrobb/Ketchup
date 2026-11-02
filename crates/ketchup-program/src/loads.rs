@@ -1126,8 +1126,10 @@ pub fn loads(model: &ProgramModel) -> LoadReport {
 
 /// [`loads`] reusing the contacts the load path already measured into `faces`.
 pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'a>) -> LoadReport {
-    if model.load_paths.is_empty() || (model.weight_scope.is_empty() && model.area_loads.is_empty())
-    {
+    // Members to check without any load are listed as missing it (review
+    // 2026-11-02 PG-105), never left out as if there were none.
+    let unloaded = model.weight_scope.is_empty() && model.area_loads.is_empty();
+    if model.load_paths.is_empty() || (unloaded && model.strength_classes.is_empty()) {
         return LoadReport::default();
     }
     let parts = &model.parts;
@@ -1510,6 +1512,9 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
         let mut reasons = missing[item].clone();
         if !done[item] {
             reasons.insert("the parts it carries lean on each other in a loop".to_owned());
+        }
+        if unloaded {
+            reasons.insert("no load is declared (self_weight() or area_load())".to_owned());
         }
         report.members.push(member_load(
             part,

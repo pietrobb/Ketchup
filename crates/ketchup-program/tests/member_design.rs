@@ -603,6 +603,26 @@ fn load_path_members_without_timber_design_are_not_verified() {
     );
 }
 
+/// PG-105 (review 2026-11-02, the rest): load_path() and timber_design()
+/// without any declared load came out with statics "none" and rc 0, as if
+/// there were nothing to check. Each member is not verified for want of loads.
+#[test]
+fn timber_design_without_any_load_is_not_verified() {
+    let source = beam("C24", 100.0, 200.0).replace(
+        "area_load(\"live\", kind = \"imposed\", kn_m2 = 2.0, on = [\"deck\"], source = \"test\")\n",
+        "",
+    );
+    let unloaded = report(&source, &[]);
+    assert_eq!(unloaded.statics(), ketchup_program::Statics::NotVerified);
+    let beam = member(&unloaded, "beam");
+    assert_eq!(beam.status, "not_verified");
+    assert!(
+        beam.missing.iter().any(|reason| reason.contains("no load")),
+        "{:?}",
+        beam.missing
+    );
+}
+
 /// A 60 x 140 mm post 500 mm high on a grounded slab under a deck loaded with about
 /// 17 kN (enough for a readable utilization), with a
 /// 10 mm deep notch from z = 250 to 310 in one side when `notched`.
