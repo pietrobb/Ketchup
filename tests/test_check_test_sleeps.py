@@ -33,6 +33,32 @@ def test_counts_only_test_code(tmp_path):
     }
 
 
+def test_counts_test_functions_and_impls_in_production_files(tmp_path):
+    # Review 2026-11-01 TST-101: only a `#[cfg(test)] mod` was scanned, so a test helper's
+    # sleep loop in a `#[cfg(test)] impl` of a production file went unseen.
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "fn poll() { std::thread::sleep(POLL); }\n"
+        "#[cfg(test)]\n"
+        "impl App {\n"
+        "    pub(crate) fn finish(&mut self) {\n"
+        "        std::thread::sleep(TICK);\n"
+        "    }\n"
+        "}\n"
+        "mod inner {\n"
+        "    #[cfg(all(test, windows))]\n"
+        "    pub(crate) fn wait(\n"
+        "        tick: Duration,\n"
+        "    ) {\n"
+        "        std::thread::sleep(tick);\n"
+        "    }\n"
+        "    fn run() { std::thread::sleep(POLL); }\n"
+        "}\n",
+    )
+    assert checker.current_counts(tmp_path) == {"crates/a/src/lib.rs": 2}
+
+
 def test_counts_the_viewer_crates_too(tmp_path):
     write(tmp_path, "viewer/android/src/lib.rs", PRODUCTION)
     write(tmp_path, "viewer/web/tests/smoke.rs", "fn t() { sleep(A); }\n")

@@ -47,10 +47,14 @@ LIMIT_FLOOR = 8
 LEN_COMPARE = re.compile(r"\.len\(\)\s*(?:[<>]=?|[!=]=)\s*(\d[\d_]*)\b(?!\.)"
                          r"|(?<![\w.])(\d[\d_]*)\s*(?:[<>]=?|[!=]=)\s*[\w.]+\.len\(\)")
 LEN_RANGE = re.compile(r"\(\s*[\w:]+\s*\.\.=?\s*(\d[\d_]*)\s*\)\s*\.contains\(\s*&[^)]*\.len\(\)")
-# An inline `#[cfg(test)] mod name { ... }` at the top level of a Rust file, up to its
-# closing brace in column 0; test assertions may state their own precision.
-TEST_MODULE = re.compile(r"^#\[cfg\(test\)\]\s*\n(?:#\[[^\n]*\]\s*\n)*mod \w+ \{\n.*?^\}",
-                         re.MULTILINE | re.DOTALL)
+# Test code inside a production file: a `#[cfg(test)]` module, function or impl, at any
+# indentation and under `#[cfg(all(test, windows))]` and the like, up to its closing brace at
+# the indentation it opened at (review 2026-11-01 TST-101: a `#[cfg(test)] fn` with a sleep
+# loop was never scanned). Test assertions may state their own precision.
+TEST_MODULE = re.compile(
+    r"^([ \t]*)#\[cfg\((?:test|(?:all|any)\([^()\n]*\btest\b[^()\n]*\))\)\][ \t]*\n(?:[ \t]*#\[[^\n]*\][ \t]*\n)*"
+    r"[ \t]*(?:pub(?:\([^)]*\))?\s+)?(?:mod \w+|(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?fn \w+[^{;]*|impl\b[^{;]*) \{\n"
+    r".*?^\1\}", re.MULTILINE | re.DOTALL)
 
 
 # A documented exception: a number that looks like a tolerance but is a view limit, a

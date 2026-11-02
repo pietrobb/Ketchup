@@ -51,11 +51,8 @@ PERF_CALL = re.compile(r"(?<!fn )\bperf_\w+\s*\(")
 # Code that reads the clock; elsewhere a `Duration` compared is a computed value
 # (a retry delay), not a measured one.
 CLOCK = re.compile(r"Instant::now\(\)|\.elapsed\(\)")
-# Unit tests inside a production file, at any indentation (a `mod tests` in a `mod`), also
-# under `#[cfg(all(test, windows))]` and the like.
-TEST_MODULE = re.compile(
-    r"^([ \t]*)#\[cfg\((?:test|(?:all|any)\([^()\n]*\btest\b[^()\n]*\))\)\][ \t]*\n(?:[ \t]*#\[[^\n]*\][ \t]*\n)*"
-    r"[ \t]*(?:pub(?:\([^)]*\))?\s+)?mod \w+ \{\n.*?^\1\}", re.M | re.S)
+# Unit tests inside a production file (review 2026-11-01 TST-101: functions and impls too).
+from check_tolerance_literals import TEST_MODULE  # noqa: E402
 # A comparison operator between spaces: not a generic (`Vec<u8>`), `->`, `=>` or a shift.
 COMPARISON = re.compile(r"(?<=\s)(<=?|>=?)(?=\s)")
 MEASURED = re.compile(
