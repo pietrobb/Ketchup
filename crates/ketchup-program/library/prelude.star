@@ -2177,7 +2177,9 @@ def no_window_over(part, tag = "window", margin = 300, height = 1500):
 #     centres of the nearest framed layer, a whole number of spacings apart, and along u
 #     every board height; no joint where one board covers the rest, and joints moved to
 #     other stud centres so no board is narrower than "min_width" (default 200 mm) at the
-#     end or beside an opening (a warning naming the boards where no stud allows it). In a wall that framed layer gets a "joint noggin" behind every
+#     end or beside an opening, and the joints along u onto or away from an opening's top
+#     and bottom so no board over or under it is lower (a warning naming the boards where
+#     no joint allows it). In a wall that framed layer gets a "joint noggin" behind every
 #     horizontal joint; in a floor or roof a warning names them. Its "grain": "u" or "v" gives every piece the grain attribute
 #     sheet_stock(grain = True) keeps (topic cutting). A framed layer adds "spacing" (stud
 #     centres from u = 0 in mm; a stud at each end), "stud" (stud width, default 60), "header" (depth of the headers
@@ -2376,13 +2378,14 @@ def _board_joints(span, size, step, grid, narrowest, fixed = []):
         return joints, False
     return joints, True
 
-def _sheet_joints(name, layers, layer, length, points, edges_u):
+def _sheet_joints(name, layers, layer, length, points, edges_u, edges_v):
     """The joints of a sheet layer laid from boards layer["sheet"] = (u, v) mm: lines
     u = ... on the nearest framed layer's stud centres, a whole number of spacings
     apart (else the board width), and lines v = ... a board height apart; none where
     one board covers the rest, and none leaving a board narrower than layer["min_width"]
-    (default 200 mm) beside the run's end or an opening's edge at u = edges_u where the
-    joint can move. Also whether a narrower board stays at the end."""
+    (default 200 mm) beside the run's end or an opening's edge at u = edges_u or
+    v = edges_v where the joint can move (review 2026-11-01 PG-103: a 50 mm board
+    over a header). Also whether a narrower board stays at the end."""
     sheet = layer.get("sheet")
     if sheet == None:
         return [], [], False
@@ -2398,7 +2401,7 @@ def _sheet_joints(name, layers, layer, length, points, edges_u):
         grid = float(layers[framed]["spacing"])
         step = int(size_u / grid + 0.001) * grid
     joints_u, narrow_u = _board_joints(length, size_u, step, grid, narrowest, edges_u)
-    joints_v, narrow_v = _board_joints(max([p[1] for p in points]), size_v, size_v, 0.0, narrowest)
+    joints_v, narrow_v = _board_joints(max([p[1] for p in points]), size_v, size_v, 0.0, narrowest, edges_v)
     return joints_u, joints_v, narrow_u or narrow_v
 
 def buildup(name, origin, along, up, length, layers, height = None, top = None, openings = [], tags = [],
@@ -2459,10 +2462,11 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
     # horizontal joints with noggins.
     sheet_joints = []
     hole_edges = {e: 0 for o in holes for e in (o[0], o[0] + o[2])}
+    hole_edges_v = {e: 0 for o in holes for e in (o[1], o[1] + o[3])}
     for k in range(len(layers)):
         inner = sum([l["thickness"] for l in layers[:k]])
         sheet_joints.append(_sheet_joints(name, layers, layers[k], length, _outline(name, length, height, top, inner),
-                                          list(hole_edges.keys()))
+                                          list(hole_edges.keys()), list(hole_edges_v.keys()))
                             if "spacing" not in layers[k] else ([], [], False))
     offset = 0.0
     for here in range(len(layers)):
@@ -2508,8 +2512,14 @@ def buildup(name, origin, along, up, length, layers, height = None, top = None, 
                     lowest = min([p[1] for p in _under(points, flat, a, b, 0.0)[2:]])
                     blocks += [(v, v) for v in joints_v if v <= lowest - 1]
                 column = _column(points, flat, a, b, 0.0, blocks)
-                if strip:
-                    strips += list(range(len(parts), len(parts) + len(column)))
+                # A board lower than the minimum over or under an opening (review 2026-11-01 PG-103).
+                opening_v = [e for o in covering(a, b) for e in (o[1], o[1] + o[3])]
+                for j in range(len(column)):
+                    low = min([p[1] for p in column[j]])
+                    high = max([p[1] for p in column[j]])
+                    near = [e for e in opening_v if abs(e - low) < 0.001 or abs(e - high) < 0.001]
+                    if strip or (high - low < narrowest - 0.001 and near):
+                        strips.append(len(parts) + j)
                 parts += column
             boards = [piece(label if len(parts) == 1 else "%s %d" % (label, k + 1), parts[k], offset, thickness, material, color, layer_tags, role, extra)
                       for k in range(len(parts))]

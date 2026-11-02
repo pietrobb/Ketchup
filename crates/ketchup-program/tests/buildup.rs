@@ -839,13 +839,64 @@ fn sheet_joints_leave_no_strip_beside_an_opening_and_report_one_they_cannot_avoi
 
     // An opening 30 mm from the end leaves a strip no joint can avoid.
     let model = wall("(30, 800, 900, 1200)");
-    let warnings = narrow(&model);
+    assert_strips_reported(&model, narrow(&model), 0);
+}
+
+/// Review 2026-11-01 PG-103: the horizontal joints did not move at openings.
+/// A 2 700 mm wall of 2 500 mm boards with a header at v = 2 450 got a
+/// 900 x 50 board over the opening, without a warning. The joint moves onto
+/// or away from the opening's edge, and a strip no joint avoids is reported.
+#[test]
+fn horizontal_sheet_joints_leave_no_strip_over_an_opening_and_report_one_they_cannot_avoid() {
+    let wall = |opening: &str| {
+        eval(
+            &format!(
+                "buildup('wall', (0, 0, 0), (1, 0, 0), (0, 0, 1), 3000, height = 2700,\n\
+                 layers = [{{'name': 'frame', 'thickness': 140, 'material': 'C24', 'spacing': 600}},\n\
+                           {{'name': 'osb', 'thickness': 15, 'material': 'OSB', 'sheet': (1250, 2500)}}],\n\
+                 openings = [{opening}])\n"
+            ),
+            &[],
+        )
+    };
+    let narrow = |model: &ProgramModel| {
+        validate(model)
+            .into_iter()
+            .filter(|issue| {
+                issue.severity == Severity::Warning && issue.message.contains("narrower")
+            })
+            .map(|issue| (issue.message, issue.parts))
+            .collect::<Vec<_>>()
+    };
+    let model = wall("(1200, 1250, 900, 1200)");
+    for part in model
+        .parts
+        .iter()
+        .filter(|part| part.name.starts_with("wall/osb"))
+    {
+        let (min, max) = part.world_bounds();
+        let high = max[2] - min[2];
+        assert!(
+            (200.0 - 1e-6..=2500.0 + 1e-6).contains(&high),
+            "{} is {high} high",
+            part.name
+        );
+    }
+    assert_eq!(narrow(&model), Vec::new());
+
+    // An opening 150 mm under the top leaves a strip no joint can avoid.
+    let model = wall("(1200, 1350, 900, 1200)");
+    assert_strips_reported(&model, narrow(&model), 2);
+}
+
+/// One warning naming only strips: pieces under 200 mm along world `axis`.
+fn assert_strips_reported(model: &ProgramModel, warnings: Vec<(String, Vec<String>)>, axis: usize) {
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     let strips = &warnings[0].1;
     assert!(!strips.is_empty(), "{warnings:?}");
     for name in strips {
         let part = model.parts.iter().find(|part| &part.name == name).unwrap();
         let (min, max) = part.world_bounds();
-        assert!(max[0] - min[0] < 200.0, "{name} is not a strip");
+        assert!(max[axis] - min[axis] < 200.0, "{name} is not a strip");
     }
 }
