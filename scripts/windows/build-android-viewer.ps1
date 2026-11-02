@@ -5,6 +5,9 @@ param(
     # ABIs to include: arm64-v8a for phones, x86_64 for the emulator.
     [string[]]$Abi = @("arm64-v8a", "x86_64"),
     [switch]$Release,
+    # Builds a Viewer that measures a pushed benchmark.ketchup-view
+    # (benchmark-android-viewer.ps1); never for customers.
+    [switch]$Benchmark,
     # Installs the APK on the single connected device/emulator and starts it,
     # with this .ketchup-view as the opened model.
     [string]$InstallWithModel,
@@ -45,6 +48,7 @@ foreach ($abi in $Abi) {
     & rustup target add $triple | Out-Null
     $cargoArgs = @("build", "--locked", "-p", "ketchup-viewer-android", "--target", $triple, "--manifest-path", (Join-Path $root "Cargo.toml"))
     if ($Release) { $cargoArgs += "--release" }
+    if ($Benchmark) { $cargoArgs += @("--features", "benchmark") }
     & cargo @cargoArgs
     if ($LASTEXITCODE -ne 0) { throw "Rust build for $abi failed" }
     $libDir = New-Item (Join-Path $stage "lib\$abi") -ItemType Directory -Force

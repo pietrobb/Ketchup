@@ -135,7 +135,7 @@ so it could read the file itself. That is not true of every client: an AI
 client may run its tools in a sandbox that keeps it out of some folders. Such
 a client, steered by text it read (prompt injection), can still have the
 window load any local file of a type Kečup reads (a `.ketchup` document,
-STEP, IGES, STL, DXF, DWG, an image underlay) and then read what it holds
+STEP, IGES, STL, DXF, DWG, GLB or a SketchUp scene) and then read what it holds
 back through MCP queries and inspections, past its own sandbox.
 
 What the window still refuses for any client is a path that is not an

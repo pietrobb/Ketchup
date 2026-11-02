@@ -2,13 +2,18 @@
 //! install pushes `benchmark.ketchup-view` next to `model.ketchup-view`; the
 //! next start measures it on the window's GPU, writes `benchmark.txt` beside
 //! it with the peak memory added, and removes the request so later starts are
-//! normal. scripts/windows/benchmark-android-viewer.ps1 drives it.
+//! normal. scripts/windows/benchmark-android-viewer.ps1 drives it. Only a
+//! build with the `benchmark` feature (build-android-viewer.ps1 -Benchmark)
+//! takes the request: the Viewer customers install ignores the file (review
+//! 2026-11-01).
 
 use std::path::{Path, PathBuf};
 
-/// The package a development install asked to be measured, if any.
+/// The package a development install asked to be measured, if any; never in
+/// a build without the `benchmark` feature.
 pub fn request(external: &Path) -> Option<PathBuf> {
-    Some(external.join("benchmark.ketchup-view")).filter(|path| path.is_file())
+    Some(external.join("benchmark.ketchup-view"))
+        .filter(|path| cfg!(feature = "benchmark") && path.is_file())
 }
 
 /// Where the report of `request` is written.
@@ -38,6 +43,7 @@ pub fn report_with_peak(report: &str, peak: Option<u64>) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "benchmark")]
     #[test]
     fn only_a_pushed_benchmark_package_is_a_request() {
         let dir = std::env::temp_dir().join(format!("ketchup-benchmark-{}", std::process::id()));
@@ -49,6 +55,16 @@ mod tests {
         std::fs::write(&pushed, b"x").unwrap();
         assert_eq!(request(&dir), Some(pushed.clone()));
         assert_eq!(report_path(&pushed), dir.join("benchmark.txt"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(not(feature = "benchmark"))]
+    #[test]
+    fn a_build_without_the_benchmark_feature_measures_no_pushed_package() {
+        let dir = std::env::temp_dir().join(format!("ketchup-no-benchmark-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("benchmark.ketchup-view"), b"x").unwrap();
+        assert_eq!(request(&dir), None);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
