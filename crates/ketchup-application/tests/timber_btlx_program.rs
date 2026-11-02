@@ -351,6 +351,96 @@ fn the_shop_drawing_draws_a_blank_that_is_not_a_rectangle() {
     assert!(!plain.contains("blank outline"), "{plain}");
 }
 
+/// Review 2026-11-02 MF-121: a round table top drawn as a circle (or two half
+/// arcs a profile joins into one) is one circle, which the blank did not take:
+/// the top was undescribed, with the reason that its cuts could not be
+/// described, and blocked the job. A circle is two arcs.
+#[test]
+fn a_round_table_top_is_described_as_two_arcs() {
+    use ketchup_assistant::sidecar::*;
+    use ketchup_manufacturing::fabrication::{
+        FABRICATION_ROLE_DIMENSION_V1, MANUFACTURED_ITEM_ROLE_V1,
+    };
+    use ketchup_model::document::{
+        CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId, CommandBatch,
+    };
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let mut session = DocumentSession::default();
+    session
+        .apply_cad_program(
+            &AssistantCadEditProgram {
+                operations: vec![AssistantCadEditOperation::CreatePart {
+                    holes: Vec::new(),
+                    pockets: Vec::new(),
+                    name: "top".into(),
+                    workplane: AssistantWorkplaneSpec::Principal {
+                        plane: AssistantPrincipalPlane::Xy,
+                    },
+                    entities: vec![AssistantSketchEntity::Circle {
+                        id: 1,
+                        center_mm: [400.0, 400.0],
+                        radius_mm: 400.0,
+                    }],
+                    constraints: vec![],
+                    feature: AssistantCadPartFeature::Extrusion { distance_mm: 18.0 },
+                    translation_mm: [0.0, 0.0, 0.0],
+                    rotation: None,
+                }],
+            },
+            &std::collections::BTreeSet::new(),
+        )
+        .unwrap();
+    let snapshot = session.snapshot();
+    let profiles = graph(&snapshot, "top").profiles;
+    assert!(
+        matches!(
+            profiles[0].geometry,
+            ketchup_model::exact_brep_graph::ExactBRepPlanarGeometry::Circle { .. }
+        ),
+        "{profiles:#?}"
+    );
+    let top = snapshot.scene_query()[0].instance_path.clone();
+    let (dimension, category) = (
+        ClassificationDimensionId(900),
+        ClassificationCategoryId(901),
+    );
+    let snapshot = snapshot
+        .preview_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertClassificationDimension {
+                id: dimension,
+                name: FABRICATION_ROLE_DIMENSION_V1.into(),
+                categories: vec![(category, MANUFACTURED_ITEM_ROLE_V1.into())],
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: top.root_occurrence(),
+                dimension_id: dimension,
+                category_id: Some(category),
+            },
+            CanonicalCommand::SetProductionCode {
+                instance_path: top,
+                code: Some("000000000001".into()),
+            },
+        ]))
+        .unwrap();
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    assert!(
+        projection.manufacturing.undescribed_sources.is_empty(),
+        "{:#?}",
+        projection.manufacturing.undescribed_sources
+    );
+    let job = projection
+        .production_job(&snapshot, &[])
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        job["parts"][0]["dimensions_mm"],
+        serde_json::json!([800.0, 800.0, 18.0]),
+        "{job}"
+    );
+    let drawing = String::from_utf8(projection.drawing_svg(&snapshot).unwrap()).unwrap();
+    assert_eq!(drawing.matches("A 400 400 0").count(), 2, "{drawing}");
+}
+
 /// Idea #128: a drilled library board on its own is one woodWOP program and
 /// one part of a production job, a manufactured row of the BOM.
 #[test]

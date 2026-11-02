@@ -64,8 +64,9 @@ pub enum ShopElement {
     /// and cuts are unknown to every format (review 2026-10-31 MF-80).
     UndescribedMachining,
     /// A blank whose outline has an edge that is neither a line nor a
-    /// circular arc (a cubic Bezier curve): no format describes the blank,
-    /// so the part's machining has no frame (review 2026-11-01 MF-103).
+    /// circular arc (a cubic Bezier curve, a spline) or holes of its own: no
+    /// format describes the blank, so the part's machining has no frame
+    /// (review 2026-11-01 MF-103, 2026-11-02 MF-121).
     FreeFormBlank,
 }
 
@@ -118,9 +119,10 @@ pub(super) const DRAWING_UNDESCRIBED: &str = "the drawing shows the part's outli
 const UNDESCRIBED: &str = "the part's cuts could not be described as drillings, profile or \
      through cuts, so it would be made without them; model its machining as holes, pockets and \
      cuts, or make it from the model";
-const FREE_FORM_BLANK: &str = "the outline of the part's blank has a free-form (Bezier) edge, \
-     and a blank is described by lines and circular arcs only, so its holes and cuts have no \
-     frame; make the outline of lines and arcs, or make the part from the model";
+const FREE_FORM_BLANK: &str = "the outline of the part's blank has a free-form edge (a Bezier \
+     curve or a spline) or holes of its own, and a blank is one outline of lines and circular \
+     arcs, so its holes and cuts have no frame; make the outline of lines and arcs and cut its \
+     openings as holes or cuts, or make the part from the model";
 const WOODWOP_PROFILE_WITHOUT_TOOL: &str =
     "a profile cut is milled as a vertical pocket; choose the vertical pocket tool number";
 const WOODWOP_OTHER_CUT: &str =

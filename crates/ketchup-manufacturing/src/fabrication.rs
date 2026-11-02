@@ -3087,8 +3087,9 @@ pub fn project_general_fabrication(
     })
 }
 
-/// Whether the blank `graph` starts from, its first extrusion, has an
-/// outline edge that is neither a line nor a circular arc.
+/// Whether the blank `graph` starts from, its first extrusion, is no single
+/// outline of lines and circular arcs: a Bezier edge, a closed spline, or an
+/// outline with holes (review 2026-11-02 MF-121).
 fn has_free_form_blank(graph: &ExactBRepGraph) -> bool {
     let Some(ExactBRepOperation::Extrude { profile, .. }) =
         graph.nodes.first().map(|node| &node.operation)
@@ -3098,15 +3099,17 @@ fn has_free_form_blank(graph: &ExactBRepGraph) -> bool {
     usize::try_from(profile.0)
         .ok()
         .and_then(|index| graph.profiles.get(index))
-        .is_some_and(|profile| {
-            matches!(
-                &profile.geometry,
-                ExactBRepPlanarGeometry::Boundary { segments, .. }
-                    if segments.iter().any(|segment| {
-                        matches!(segment, ExactBRepPlanarSegment::CubicBezier { .. })
-                    })
-            )
-        })
+        .is_some_and(|profile| is_free_form_outline(&profile.geometry))
+}
+
+fn is_free_form_outline(geometry: &ExactBRepPlanarGeometry) -> bool {
+    match geometry {
+        ExactBRepPlanarGeometry::Boundary { segments, .. } => segments
+            .iter()
+            .any(|segment| matches!(segment, ExactBRepPlanarSegment::CubicBezier { .. })),
+        ExactBRepPlanarGeometry::Spline { .. } | ExactBRepPlanarGeometry::Region { .. } => true,
+        ExactBRepPlanarGeometry::Circle { .. } => false,
+    }
 }
 
 fn graph_manufacturing_operations(
@@ -3399,12 +3402,33 @@ fn prismatic_stock_geometry(
     interval: ExactBRepLinearInterval,
 ) -> Option<GeneralMachiningGeometry> {
     let frame = machining_frame(profile, interval.direction())?;
-    let ExactBRepPlanarGeometry::Boundary {
-        closed: true,
-        segments,
-    } = &profile.geometry
-    else {
-        return None;
+    let segments = match &profile.geometry {
+        ExactBRepPlanarGeometry::Boundary {
+            closed: true,
+            segments,
+        } => segments.clone(),
+        // A round table top: its circle as two half arcs (review 2026-11-02 MF-121).
+        ExactBRepPlanarGeometry::Circle {
+            center_bits,
+            radius_bits,
+        } => {
+            let [x, y] = center_bits.map(f64::from_bits);
+            let radius = f64::from_bits(*radius_bits);
+            let [east, west] =
+                [[x + radius, y], [x - radius, y]].map(|point| point.map(f64::to_bits));
+            [(east, west), (west, east)]
+                .into_iter()
+                .map(
+                    |(start_bits, end_bits)| ExactBRepPlanarSegment::CircularArc {
+                        start_bits,
+                        end_bits,
+                        center_bits: *center_bits,
+                        clockwise: false,
+                    },
+                )
+                .collect()
+        }
+        _ => return None,
     };
     // Lines and circular arcs (a rounded table top, review 2026-11-01
     // MF-103); a Bezier edge leaves the part undescribed.
