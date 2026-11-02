@@ -2988,7 +2988,9 @@ def _opening_in(name, o, origin, along, up, out, depth, length, top_v):
 #   The report's loads.members lists every load_path() member: its length and axis, the
 #   loads on it by kind (newtons, characteristic, unfactored), where they act (patches
 #   along the member: own weight, area loads, parts it carries) and what it passes to
-#   each support (reactions, with the bearing joint). A beam shares its load among its
+#   each support (reactions, with the bearing joint), and braced_mm, the stretches along
+#   it where a part resting on it and on something else too (decking, battens, joists)
+#   holds it sideways. A beam shares its load among its
 #   supports by the lever rule, over more supports as simple spans between them; other
 #   parts share theirs by contact area. Missing inputs are listed, never guessed.
 #   Example:
@@ -3132,7 +3134,9 @@ def price_list(prices, currency = None, source = None):
 #   largest utilization and status: "pass", "fail" or "not_verified" when an input is
 #   missing (the utilization is then from the known loads only; also a column whose
 #   section changes along it by another cut, pocket, shell, boolean or face offset,
-#   which has no compression check). design.basis states the
+#   which has no compression check; a beam that lateral torsional buckling may govern
+#   where nothing holds it sideways, so brace it or check it by hand; every member when
+#   no timber_design() names its material). design.basis states the
 #   factors and assumptions. A computed check, not an authorized structural design.
 #   Example:
 #     timber_design({"KVH C24": "C24", "BSH GL24h": "GL24h"}, service_class = 1)

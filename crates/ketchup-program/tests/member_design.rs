@@ -386,6 +386,79 @@ fn beam_named(material: &str) -> String {
     beam(material, 100.0, 200.0)
 }
 
+/// A GL24h 80 x 400 beam on two grounded posts (span 5800 mm between their
+/// centres) under about 13 kN on a 300 mm pad at its middle; with `battens`,
+/// 50 mm battens rest on its top and on a grounded wall beside it.
+fn slender_beam(battens: &[f64]) -> String {
+    let mut source = String::from(
+        "load_path(only = [\"frame\"], carriers = [\"pad\"])
+area_load(\"point\", kind = \"imposed\", kn_m2 = 560, on = [\"pad\"], source = \"test\")
+timber_design({\"GL24h\": \"GL24h\"})
+box(\"post a\", (100, 80, 2000), material = \"GL24h\", grounded = True)
+box(\"post b\", (100, 80, 2000), at = (5800, 0, 0), material = \"GL24h\", grounded = True)
+box(\"beam\", (5900, 80, 400), at = (0, 0, 2000), material = \"GL24h\", tags = [\"frame\"])
+box(\"pad\", (300, 80, 50), at = (2800, 0, 2400), material = \"GL24h\", tags = [\"pad\"])
+",
+    );
+    if !battens.is_empty() {
+        source.push_str(
+            "box(\"wall\", (5900, 100, 2400), at = (0, 1000, 0), material = \"GL24h\", grounded = True)\n",
+        );
+    }
+    for (index, x) in battens.iter().enumerate() {
+        source.push_str(&format!(
+            "box(\"batten {index}\", (50, 1100, 50), at = ({x}, 0, 2400), material = \"GL24h\")\n"
+        ));
+    }
+    source
+}
+
+/// PG-100 (review 2026-11-01): kcrit = 1 was assumed for every beam, "braced by
+/// the decking", without looking for any. A free GL24h 80 x 400 beam over 5.8 m
+/// passed at 0.834, while EN 1995-1-1 6.3.3 gives kcrit about 0.78 and fails
+/// it. Lateral torsional buckling that may govern leaves it not verified; held
+/// along its top by battens that also rest on a wall it passes.
+#[test]
+fn a_slender_beam_free_along_its_top_is_not_verified_and_passes_when_braced() {
+    let free = report(&slender_beam(&[]), &[]);
+    let beam = member(&free, "beam");
+    close(utilization(beam, "bending"), 0.834);
+    assert_eq!(beam.status, "not_verified", "{beam:?}");
+    assert!(
+        beam.missing
+            .iter()
+            .any(|reason| reason.contains("lateral torsional buckling")),
+        "{:?}",
+        beam.missing
+    );
+    assert_eq!(free.statics(), ketchup_program::Statics::NotVerified);
+
+    let braced = report(
+        &slender_beam(&[300.0, 1200.0, 2100.0, 3600.0, 4500.0, 5400.0]),
+        &[],
+    );
+    let beam = member(&braced, "beam");
+    close(utilization(beam, "bending"), 0.834);
+    assert_eq!(beam.missing, Vec::<String>::new(), "{beam:?}");
+    assert_eq!(beam.status, "pass");
+}
+
+/// PG-105 (review 2026-11-01): loads on load-path members without
+/// timber_design() came out with statics "none", which says there are no
+/// members. Each member is listed as not verified for want of a strength class.
+#[test]
+fn load_path_members_without_timber_design_are_not_verified() {
+    let source = beam("C24", 100.0, 200.0).replace("timber_design({\"C24\": \"C24\"})\n", "");
+    let unclassed = report(&source, &[]);
+    assert_eq!(unclassed.statics(), ketchup_program::Statics::NotVerified);
+    let beam = member(&unclassed, "beam");
+    assert_eq!(beam.status, "not_verified");
+    assert_eq!(
+        beam.missing,
+        ["material \"C24\" has no timber strength class (timber_strength)"]
+    );
+}
+
 /// A 60 x 140 mm post 500 mm high on a grounded slab under a deck loaded with about
 /// 17 kN (enough for a readable utilization), with a
 /// 10 mm deep notch from z = 250 to 310 in one side when `notched`.
