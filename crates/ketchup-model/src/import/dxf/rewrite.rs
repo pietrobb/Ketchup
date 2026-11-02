@@ -333,6 +333,13 @@ struct BlockAt {
     endblk: Option<usize>,
 }
 
+/// The objects the import read, and the entities they are by order when the drawing has
+/// no handles.
+struct ReadObjects<'o> {
+    objects: &'o [UnderlayObject],
+    by_order: Option<Vec<Option<usize>>>,
+}
+
 /// How [`Drawing::map_groups`] maps the groups of one record.
 struct GroupMap<'a> {
     map: &'a Affine,
@@ -668,6 +675,35 @@ impl<'a> Drawing<'a> {
             .ok_or(DxfEditRefusal::Malformed.into())
     }
 
+    /// The entity of the drawing that top-level object `object` of the import is.
+    fn entity_of(&self, read: &ReadObjects, object: u32) -> Result<usize, EditedDxfError> {
+        let read_by_order = read.by_order.as_ref();
+        let index = usize::try_from(object).unwrap_or(usize::MAX);
+        let read = read
+            .objects
+            .get(index)
+            .filter(|read| read.parent.is_none())
+            .ok_or(DxfEditRefusal::NoHandle { object })?;
+        if read.handle == 0 {
+            return read_by_order
+                .and_then(|entities| entities.get(index).copied().flatten())
+                .ok_or(DxfEditRefusal::NoHandle { object }.into());
+        }
+        let mut found = self
+            .entities
+            .iter()
+            .enumerate()
+            .filter(|(_, entity)| entity.handle == Some(read.handle));
+        match (found.next(), found.next()) {
+            (Some((index, _)), None) => Ok(index),
+            _ => Err(DxfEditRefusal::HandleMissing {
+                object,
+                handle: read.handle,
+            }
+            .into()),
+        }
+    }
+
     fn write(
         &self,
         lines: &UnderlayLines,
@@ -676,33 +712,11 @@ impl<'a> Drawing<'a> {
     ) -> Result<Vec<u8>, EditedDxfError> {
         let objects = &lines.objects().objects;
         let read_count = u32::try_from(objects.len()).unwrap_or(u32::MAX);
-        let by_order = self.entities_by_order(objects);
-        let entity_of = |object: u32| -> Result<usize, EditedDxfError> {
-            let index = usize::try_from(object).unwrap_or(usize::MAX);
-            let read = objects
-                .get(index)
-                .filter(|read| read.parent.is_none())
-                .ok_or(DxfEditRefusal::NoHandle { object })?;
-            if read.handle == 0 {
-                return by_order
-                    .as_ref()
-                    .and_then(|entities| entities.get(index).copied().flatten())
-                    .ok_or(DxfEditRefusal::NoHandle { object }.into());
-            }
-            let mut found = self
-                .entities
-                .iter()
-                .enumerate()
-                .filter(|(_, entity)| entity.handle == Some(read.handle));
-            match (found.next(), found.next()) {
-                (Some((index, _)), None) => Ok(index),
-                _ => Err(DxfEditRefusal::HandleMissing {
-                    object,
-                    handle: read.handle,
-                }
-                .into()),
-            }
+        let read = ReadObjects {
+            objects,
+            by_order: self.entities_by_order(objects),
         };
+        let entity_of = |object: u32| self.entity_of(&read, object);
         // Per entity of the drawing: left out, mapped, or kept.
         let mut replaced = vec![None::<Option<Vec<u8>>>; self.entities.len()];
         for &object in edits.removed_objects.iter().filter(|id| **id < read_count) {
@@ -778,31 +792,22 @@ impl<'a> Drawing<'a> {
             let mapped = self.mapped(object, entity, &map, false, &mut handles, &mut blocks)?;
             replaced[entity] = Some(Some(mapped));
         }
-        let added = self.added_objects(
-            objects,
-            edits,
-            frame,
-            &removed,
-            &entity_of,
-            &mut handles,
-            &mut blocks,
-        )?;
+        let added = self.added_objects(&read, edits, frame, &removed, &mut handles, &mut blocks)?;
         Ok(self.spliced(handles, objects_edits, &removed, replaced, added, blocks))
     }
 
     /// The objects `edits` adds, copied or drawn, as entities written at the end of the
     /// ENTITIES section.
-    #[allow(clippy::too_many_arguments)]
     fn added_objects(
         &self,
-        objects: &[UnderlayObject],
+        read: &ReadObjects,
         edits: &UnderlayEdits,
         frame: &Frame,
         removed: &BTreeSet<u64>,
-        entity_of: &impl Fn(u32) -> Result<usize, EditedDxfError>,
         handles: &mut Option<u64>,
         blocks: &mut NewBlocks,
     ) -> Result<Vec<u8>, EditedDxfError> {
+        let objects = read.objects;
         let read_count = u32::try_from(objects.len()).unwrap_or(u32::MAX);
         // How many objects each object of the drawing is with all it placed: a copy of it
         // takes as many ids.
@@ -831,7 +836,7 @@ impl<'a> Drawing<'a> {
             }
             match edit {
                 AddedObject::Copy { of, map } | AddedObject::Stretched { of, map } => {
-                    let entity = entity_of(*of)?;
+                    let entity = self.entity_of(read, *of)?;
                     let map = Mapping {
                         map: frame.map(map),
                         stretch: matches!(edit, AddedObject::Stretched { .. }),
