@@ -313,6 +313,44 @@ fn a_rounded_table_top_is_described_and_a_free_form_outline_says_so() {
     assert!(reason.contains("outline"), "{reason}");
 }
 
+/// Review 2026-11-02 MF-122: the shop drawing of a rounded table top drew the
+/// three rectangles of its bounding box, without the radius or a word, and the
+/// shop cut sharp corners. A blank that is not a rectangle is drawn as its
+/// cross-section, arcs included; a rectangular one stays the views alone.
+#[test]
+fn the_shop_drawing_draws_a_blank_that_is_not_a_rectangle() {
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let drawing = |worker: &mut ExactWorkerSupervisor, source: &str| {
+        let snapshot = apply(source);
+        let projection = fabrication(worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+        String::from_utf8(projection.drawing_svg(&snapshot).unwrap()).unwrap()
+    };
+    let rounded = drawing(
+        &mut worker,
+        "extrude('top', profile = round_corners([[0, 0], [800, 0], [800, 500], [0, 500]], 20), \
+         distance = 18, material = 'oak', attributes = {FABRICATION_ROLE: MANUFACTURED_ITEM})\n",
+    );
+    assert!(
+        rounded.contains("blank outline (the views show its bounding box): width=800 mm, height=500 mm, length=18 mm"),
+        "{rounded}"
+    );
+    assert_eq!(rounded.matches("A 20 20 0").count(), 4, "{rounded}");
+    let shaped = drawing(
+        &mut worker,
+        "extrude('shelf', profile = [[0, 0], [800, 0], [800, 200], [300, 200], [300, 500], [0, 500]], \
+         distance = 18, material = 'oak', attributes = {FABRICATION_ROLE: MANUFACTURED_ITEM})\n",
+    );
+    assert!(
+        shaped.contains(
+            "blank outline (the views show its bounding box): width=800 mm, height=500 mm"
+        ),
+        "{shaped}"
+    );
+    let plain = drawing(&mut worker, "board('shelf', (600, 300, 18))\n");
+    assert!(!plain.contains("blank outline"), "{plain}");
+}
+
 /// Idea #128: a drilled library board on its own is one woodWOP program and
 /// one part of a production job, a manufactured row of the BOM.
 #[test]

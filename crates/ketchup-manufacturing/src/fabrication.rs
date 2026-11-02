@@ -991,7 +991,7 @@ impl GeneralFabricationProjection {
             for operation in drawing
                 .machining_operations
                 .iter()
-                .filter(|operation| operation.kind != GeneralManufacturingKind::Stock)
+                .filter(|operation| has_machining_detail(operation))
             {
                 let (minimum, maximum) = machining_detail_bounds(&operation.machining)
                     .ok_or(GeneralFabricationError::ExportBlocked)?;
@@ -1075,7 +1075,7 @@ impl GeneralFabricationProjection {
             for operation in drawing
                 .machining_operations
                 .iter()
-                .filter(|operation| operation.kind != GeneralManufacturingKind::Stock)
+                .filter(|operation| has_machining_detail(operation))
             {
                 let (minimum, maximum) = machining_detail_bounds(&operation.machining)
                     .expect("machining detail bounds were validated during sheet sizing");
@@ -4002,30 +4002,22 @@ fn machining_detail_bounds(geometry: &GeneralMachiningGeometry) -> Option<([f64;
         }
     };
     match geometry {
-        GeneralMachiningGeometry::PrismaticStock { .. } => return None,
-        GeneralMachiningGeometry::ProfileCut { segments, .. } => {
-            for segment in segments {
-                match segment {
-                    GeneralMachiningSegment::Line { start_mm, end_mm } => {
-                        include(*start_mm);
-                        include(*end_mm);
-                    }
-                    GeneralMachiningSegment::CircularArc {
-                        start_mm,
-                        end_mm,
-                        center_mm,
-                        ..
-                    } => {
-                        let radius = ((start_mm[0] - center_mm[0]).powi(2)
-                            + (start_mm[1] - center_mm[1]).powi(2))
-                        .sqrt();
-                        include(*start_mm);
-                        include(*end_mm);
-                        include([center_mm[0] - radius, center_mm[1] - radius]);
-                        include([center_mm[0] + radius, center_mm[1] + radius]);
-                    }
-                }
+        // A rectangular blank is the views' own outline; any other blank is
+        // drawn as its cross-section (review 2026-11-02 MF-122).
+        GeneralMachiningGeometry::PrismaticStock { cross_section, .. } => {
+            if blank_is_rectangle(cross_section) {
+                return None;
             }
+            cross_section
+                .iter()
+                .flat_map(segment_extent)
+                .for_each(&mut include);
+        }
+        GeneralMachiningGeometry::ProfileCut { segments, .. } => {
+            segments
+                .iter()
+                .flat_map(segment_extent)
+                .for_each(&mut include);
         }
         GeneralMachiningGeometry::CircularDrill {
             center_mm,
@@ -4045,6 +4037,100 @@ fn machining_detail_bounds(geometry: &GeneralMachiningGeometry) -> Option<([f64;
         .all(f64::is_finite)
         && size.into_iter().all(|value| value > 0.0))
     .then_some((minimum, maximum))
+}
+
+/// Points whose box holds `segment`: an arc's whole circle, as it may bulge.
+fn segment_extent(segment: &GeneralMachiningSegment) -> Vec<[f64; 2]> {
+    match *segment {
+        GeneralMachiningSegment::Line { start_mm, end_mm } => vec![start_mm, end_mm],
+        GeneralMachiningSegment::CircularArc {
+            start_mm,
+            end_mm,
+            center_mm,
+            ..
+        } => {
+            let radius = ((start_mm[0] - center_mm[0]).powi(2)
+                + (start_mm[1] - center_mm[1]).powi(2))
+            .sqrt();
+            vec![
+                start_mm,
+                end_mm,
+                [center_mm[0] - radius, center_mm[1] - radius],
+                [center_mm[0] + radius, center_mm[1] + radius],
+            ]
+        }
+    }
+}
+
+/// Four straight sides along the frame's axes: the box the views draw.
+fn blank_is_rectangle(cross_section: &[GeneralMachiningSegment]) -> bool {
+    cross_section.len() == 4
+        && cross_section.iter().all(|segment| match segment {
+            GeneralMachiningSegment::Line { start_mm, end_mm } => {
+                (start_mm[0] - end_mm[0]).abs() <= ROUNDING
+                    || (start_mm[1] - end_mm[1]).abs() <= ROUNDING
+            }
+            GeneralMachiningSegment::CircularArc { .. } => false,
+        })
+}
+
+/// The operations a drawing shows in detail: every machining, and a blank
+/// that is not the views' rectangle.
+fn has_machining_detail(operation: &GeneralManufacturingOperation) -> bool {
+    operation.kind != GeneralManufacturingKind::Stock
+        || machining_detail_bounds(&operation.machining).is_some()
+}
+
+/// An SVG path through `segments`, closed, each point placed by `point`.
+fn segments_svg_path(
+    segments: &[GeneralMachiningSegment],
+    point: impl Fn([f64; 2]) -> [f64; 2],
+) -> String {
+    let mut path = String::new();
+    for (index, segment) in segments.iter().enumerate() {
+        let (start_mm, end_mm) = match *segment {
+            GeneralMachiningSegment::Line { start_mm, end_mm }
+            | GeneralMachiningSegment::CircularArc {
+                start_mm, end_mm, ..
+            } => (start_mm, end_mm),
+        };
+        let start = point(start_mm);
+        let end = point(end_mm);
+        if index == 0 {
+            path.push_str(&format!(
+                "M {} {} ",
+                format_number(start[0]),
+                format_number(start[1])
+            ));
+        }
+        match *segment {
+            GeneralMachiningSegment::Line { .. } => path.push_str(&format!(
+                "L {} {} ",
+                format_number(end[0]),
+                format_number(end[1])
+            )),
+            GeneralMachiningSegment::CircularArc {
+                center_mm,
+                clockwise,
+                ..
+            } => {
+                let radius = ((start_mm[0] - center_mm[0]).powi(2)
+                    + (start_mm[1] - center_mm[1]).powi(2))
+                .sqrt();
+                let (large_arc, sweep_flag) = svg_arc_flags(start_mm, end_mm, center_mm, clockwise);
+                path.push_str(&format!(
+                    "A {0} {0} 0 {1} {2} {3} {4} ",
+                    format_number(radius),
+                    u8::from(large_arc),
+                    u8::from(sweep_flag),
+                    format_number(end[0]),
+                    format_number(end[1])
+                ));
+            }
+        }
+    }
+    path.push('Z');
+    path
 }
 
 fn append_machining_detail(
@@ -4072,57 +4158,7 @@ fn append_machining_detail(
             end_mm,
             ..
         } => {
-            let mut path = String::new();
-            for (index, segment) in segments.iter().enumerate() {
-                match segment {
-                    GeneralMachiningSegment::Line { start_mm, end_mm } => {
-                        let start = point(*start_mm);
-                        let end = point(*end_mm);
-                        if index == 0 {
-                            path.push_str(&format!(
-                                "M {} {} ",
-                                format_number(start[0]),
-                                format_number(start[1])
-                            ));
-                        }
-                        path.push_str(&format!(
-                            "L {} {} ",
-                            format_number(end[0]),
-                            format_number(end[1])
-                        ));
-                    }
-                    GeneralMachiningSegment::CircularArc {
-                        start_mm,
-                        end_mm,
-                        center_mm,
-                        clockwise,
-                    } => {
-                        let start = point(*start_mm);
-                        let end = point(*end_mm);
-                        let radius = ((start_mm[0] - center_mm[0]).powi(2)
-                            + (start_mm[1] - center_mm[1]).powi(2))
-                        .sqrt();
-                        if index == 0 {
-                            path.push_str(&format!(
-                                "M {} {} ",
-                                format_number(start[0]),
-                                format_number(start[1])
-                            ));
-                        }
-                        let (large_arc, sweep_flag) =
-                            svg_arc_flags(*start_mm, *end_mm, *center_mm, *clockwise);
-                        path.push_str(&format!(
-                            "A {0} {0} 0 {1} {2} {3} {4} ",
-                            format_number(radius),
-                            u8::from(large_arc),
-                            u8::from(sweep_flag),
-                            format_number(end[0]),
-                            format_number(end[1])
-                        ));
-                    }
-                }
-            }
-            path.push('Z');
+            let path = segments_svg_path(segments, point);
             svg.push_str(&format!(
                 "<path id=\"{}/geometry\" d=\"{}\" fill=\"white\" />\n<text x=\"{}\" y=\"{}\" fill=\"black\" stroke=\"none\">{}: width={} mm, height={} mm, depth={} mm</text>\n",
                 operation.stable_operation_id,
@@ -4168,8 +4204,24 @@ fn append_machining_detail(
                 }
             ));
         }
-        // Stock is the blank the operations cut, not a machining: it has no detail.
-        GeneralMachiningGeometry::PrismaticStock { .. } => {}
+        // A blank that is not the views' rectangle: its cross-section with its
+        // arcs, so the shop does not cut the bounding box (review 2026-11-02 MF-122).
+        GeneralMachiningGeometry::PrismaticStock {
+            cross_section,
+            length_mm,
+            ..
+        } => {
+            svg.push_str(&format!(
+                "<path id=\"{}/geometry\" d=\"{}\" fill=\"white\" />\n<text x=\"{}\" y=\"{}\" fill=\"black\" stroke=\"none\">blank outline (the views show its bounding box): width={} mm, height={} mm, length={} mm</text>\n",
+                operation.stable_operation_id,
+                segments_svg_path(cross_section, point),
+                format_number(x),
+                format_number(y + height + 20.0),
+                format_number(width),
+                format_number(height),
+                format_number(*length_mm)
+            ));
+        }
     }
     svg.push_str("</g>\n");
 }
