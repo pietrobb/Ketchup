@@ -156,9 +156,11 @@ jobs:
         run: mkdir -m 700 -p "$XDG_RUNTIME_DIR"
       - name: rustfmt
         run: cargo fmt --all -- --check
+      # Code behind a feature off by default is linted with it on (review
+      # 2026-11-01 TST-102).
       - name: clippy
         if: ${{ !cancelled() }}
-        run: cargo clippy --locked $CRATES --all-targets -- -D warnings
+        run: cargo clippy --locked $CRATES --all-targets --features ketchup-model/saved-files,ketchup-viewer-android/benchmark -- -D warnings
       # Every file the tests save also goes to KETCHUP_SAVED_FILES_DIR for the next step.
       - name: tests
         if: ${{ !cancelled() }}

@@ -201,3 +201,31 @@ def test_every_workspace_crate_is_checked_in_ci():
         crates, checker.linted_crates(workflows), checker.tested_crates(workflows), checker.crates_with_tests(ROOT)
     )
     assert problems == []
+
+
+def test_a_feature_off_by_default_counts_only_when_some_clippy_turns_it_on():
+    # Review 2026-11-01 TST-102: the code behind ketchup-model's saved-files was never linted.
+    workflow = """name: CI
+jobs:
+  linted:
+    env:
+      CRATES: >-
+        -p alpha -p beta
+    steps:
+      - run: cargo clippy $CRATES --all-targets --features alpha/kept,shared -- -D warnings
+      - run: cargo test $CRATES --features beta/tested
+      - if: false
+        run: cargo clippy -p beta --features never
+"""
+    linted = checker.linted_features([workflow])
+    assert linted == {("alpha", "kept"), ("alpha", "shared"), ("beta", "shared")}
+    declared = {("alpha", "kept"), ("beta", "tested"), ("beta", "never")}
+    assert checker.unlinted_features(declared, linted) == [
+        "beta: feature never is off by default and no CI job runs cargo clippy with it on",
+        "beta: feature tested is off by default and no CI job runs cargo clippy with it on",
+    ]
+
+
+def test_every_feature_of_the_workspace_is_linted_in_ci():
+    workflows = [path.read_text(encoding="utf-8") for path in sorted((ROOT / ".github/workflows").glob("*.yml"))]
+    assert checker.unlinted_features(checker.crate_features(ROOT), checker.linted_features(workflows)) == []

@@ -21,6 +21,11 @@ with OCCT were compiled on Windows only, so code for the other systems broke
 unseen): every crate on Linux, a crate that builds on OCCT on Windows too, and a
 crate for one system only on that one. A job runs on the systems of its
 `runs-on` (or its `matrix.os`), a step on those its `runner.os` condition leaves.
+
+A feature a crate declares off by default is linted with it on by some `cargo
+clippy` (review 2026-11-01 TST-102: the code behind `saved-files` was never
+linted), except `testing`, which a crate's own tests turn on through its
+dev-dependencies.
 """
 
 import re
@@ -29,6 +34,9 @@ import tomllib
 from pathlib import Path
 
 PACKAGE_FLAG = re.compile(r"(?:^|\s)-p\s+([\w-]+)")
+FEATURES_FLAG = re.compile(r"(?:^|\s)(?:--features|-F)[\s=]+([\w/,-]+)")
+# Features the crate's tests turn on through its dev-dependencies, so --all-targets lints them.
+TEST_FEATURES = {"default", "testing"}
 JOB = re.compile(r"^  [\w-]+:\s*$", re.MULTILINE)
 CRATE_LIST = re.compile(r"CRATES:\s*>-\n((?:[ \t]+-p\b.*\n)+)")
 # A `#` at a line start or after a space opens a comment in YAML and in shell.
@@ -214,6 +222,43 @@ def cargo_crates(workflows, subcommand, system=None):
     return crates
 
 
+def crate_features(root):
+    """Every (crate, feature) a workspace member declares off by default, but those its tests turn on."""
+    return {
+        (name, feature)
+        for name, directory in workspace_members(root).items()
+        for feature in tomllib.loads((directory / "Cargo.toml").read_text(encoding="utf-8")).get("features", {})
+        if feature not in TEST_FEATURES
+    }
+
+
+def linted_features(workflows):
+    """Every (crate, feature) a running `cargo clippy` turns on: `crate/feature`, or a bare
+    feature of each crate the run names."""
+    features = set()
+    for workflow in workflows:
+        nightly = nightly_variables(workflow)
+        for job in jobs(workflow):
+            listed = set(PACKAGE_FLAG.findall("".join(CRATE_LIST.findall(job))))
+            for step in pull_request_steps(job, nightly):
+                for name, arguments, _ in CARGO.findall(CONTINUATION.sub(" ", folded(step))):
+                    if name != "clippy":
+                        continue
+                    crates = set(PACKAGE_FLAG.findall(arguments)) | (listed if "CRATES" in arguments else set())
+                    for value in FEATURES_FLAG.findall(arguments):
+                        for feature in filter(None, value.split(",")):
+                            crate, _, own = feature.rpartition("/")
+                            features |= {(crate, own)} if crate else {(each, own) for each in crates}
+    return features
+
+
+def unlinted_features(declared, linted):
+    return [
+        f"{crate}: feature {feature} is off by default and no CI job runs cargo clippy with it on"
+        for crate, feature in sorted(declared - linted)
+    ]
+
+
 def linted_crates(workflows, system=None):
     return cargo_crates(workflows, "clippy", system)
 
@@ -278,6 +323,7 @@ def main():
         {system: tested_crates(workflows, system) for system in SYSTEMS.values()},
         crates_with_tests(root),
     )
+    problems += unlinted_features(crate_features(root), linted_features(workflows))
     for problem in problems:
         print(problem)
     if not problems:
