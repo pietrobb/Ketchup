@@ -179,7 +179,7 @@ jobs:
       - name: released versions read the files written for them
         if: ${{ !cancelled() && (runner.os == 'Linux') }}
         run: |
-          git fetch --no-tags --depth=1 origin tag v0.2.0 tag v0.3.0
+          git fetch --no-tags --depth=1 origin tag v0.2.0 tag v0.3.0 tag v0.3.1
           python3 scripts/release_reads.py --files "$RUNNER_TEMP/saved-files"
       # Time budgets live only in ignored perf_* tests, checked in release
       # (review 2026-10-17 TST-3).
@@ -297,7 +297,7 @@ jobs:
       - name: released versions read the files the application tests wrote
         if: ${{ !cancelled() }}
         run: |
-          git fetch --no-tags --depth=1 origin tag v0.2.0 tag v0.3.0
+          git fetch --no-tags --depth=1 origin tag v0.2.0 tag v0.3.0 tag v0.3.1
           python scripts/release_reads.py --files "$env:RUNNER_TEMP\saved-files"
       # The Viewer's comment save has its own Windows code, which the Linux
       # Viewer job never compiles (review 2026-10-19).
@@ -481,7 +481,7 @@ jobs:
       - name: released versions read the files the tests wrote
         if: ${{ !cancelled() }}
         run: |
-          git fetch --no-tags --depth=1 origin tag v0.2.0 tag v0.3.0
+          git fetch --no-tags --depth=1 origin tag v0.2.0 tag v0.3.0 tag v0.3.1
           python3 scripts/release_reads.py --files "$RUNNER_TEMP/saved-files"
 
   viewer-targets:
