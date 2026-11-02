@@ -15,10 +15,14 @@
 //! - `CONTOUR` the outline, `CUTOUT` a cut through the whole part;
 //! - `DRILL_D8_Z12` a hole 8 across and 12 deep drilled from the face seen,
 //!   a through hole as deep as the part; `DRILL_D8_Z12_BOTTOM` from the face
-//!   below;
+//!   below. A blind hole deeper than the part is drawn as deep as the part,
+//!   never deeper (the machine would drill into its table);
+//! - `TAP_M8X1_25_Z10` the thread of a tapped hole, its size and pitch, as a
+//!   circle over the drilling, `_BOTTOM` from below as the drilling; its depth
+//!   is the thread's, cut back to the drilling's;
 //! - `HDRILL_D8_Z30_H9` a hole drilled into an edge, a line from where it
 //!   enters to its bottom, its axis 9 above the face below (the drawing is
-//!   flat: a reader drops a line's height);
+//!   flat: a reader drops a line's height), its thread on `HTAP_M8X1_25_Z10_H9`;
 //! - `POCKET_Z5` a pocket or a cut 5 deep from the face seen,
 //!   `POCKET_Z5_BOTTOM` from the face below;
 //! - `PART_NAME` the part's name as text, its accents as `\U+XXXX`.
