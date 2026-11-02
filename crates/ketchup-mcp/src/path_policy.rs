@@ -27,7 +27,7 @@ pub fn local_absolute_path(path: &str) -> bool {
         && !path.contains('\0')
         && Path::new(path).is_absolute()
         && (!cfg!(windows) || local_windows_path(path, remote_drive))
-        && (!cfg!(target_os = "macos") || mounts().is_some_and(|m| local_macos_path(path, &m)))
+        && (!cfg!(target_os = "macos") || mounts().is_ok_and(|m| local_macos_path(path, &m)))
 }
 
 /// Top-level directories macOS's automounter serves from the network.
@@ -88,19 +88,17 @@ fn lexical_components(path: &str) -> Vec<String> {
 }
 
 #[cfg(target_os = "macos")]
-fn mounts() -> Option<Vec<Mount>> {
+fn mounts() -> std::io::Result<Vec<Mount>> {
     let table = crate::local_auth::mount_table()?;
-    Some(
-        table
-            .iter()
-            .map(|(on, local)| Mount::new(on, *local))
-            .collect(),
-    )
+    Ok(table
+        .iter()
+        .map(|(on, local)| Mount::new(on, *local))
+        .collect())
 }
 
 #[cfg(not(target_os = "macos"))]
-fn mounts() -> Option<Vec<Mount>> {
-    Some(Vec::new())
+fn mounts() -> std::io::Result<Vec<Mount>> {
+    Ok(Vec::new())
 }
 
 fn local_windows_path(path: &str, remote_drive: impl Fn(u8) -> bool) -> bool {
@@ -211,7 +209,7 @@ mod macos_tests {
 
     #[test]
     fn no_path_on_a_mount_of_this_computer_that_is_not_local_is_local() {
-        let table = crate::local_auth::mount_table().unwrap();
+        let table = crate::local_auth::mount_table().expect("the mount table of this computer");
         assert!(table.iter().any(|(on, local)| on == "/" && *local));
         for (on, _) in table.iter().filter(|(_, local)| !local) {
             assert!(!local_absolute_path(&format!("{on}/x.pdf")), "{on}");

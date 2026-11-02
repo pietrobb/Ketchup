@@ -91,22 +91,25 @@ mod platform {
     use super::*;
     /// The mount table: each mount point and whether it is a local file system,
     /// for the path policy. `MNT_NOWAIT` answers from the kernel's table without
-    /// asking any file system, so a network share is not contacted. `None` when
-    /// the table cannot be read.
+    /// asking any file system, so a network share is not contacted.
     #[cfg(target_os = "macos")]
-    pub fn mount_table() -> Option<Vec<(String, bool)>> {
+    pub fn mount_table() -> io::Result<Vec<(String, bool)>> {
         let mut capacity = 32_usize;
         loop {
             // SAFETY: `statfs` is plain data; getfsstat fills in the entries it reports.
             let mut table = vec![unsafe { std::mem::zeroed::<libc::statfs>() }; capacity];
-            let bytes =
-                libc::c_int::try_from(capacity * std::mem::size_of::<libc::statfs>()).ok()?;
+            let bytes = libc::c_int::try_from(capacity * std::mem::size_of::<libc::statfs>())
+                .map_err(io::Error::other)?;
             // SAFETY: `table` is writable for `bytes` bytes.
             let count = unsafe { libc::getfsstat(table.as_mut_ptr(), bytes, libc::MNT_NOWAIT) };
-            let count = usize::try_from(count).ok()?;
+            // getfsstat answers -1 and sets errno when it fails.
+            let count = match usize::try_from(count) {
+                Ok(count) => count,
+                Err(_negative) => return Err(io::Error::last_os_error()),
+            };
             if count < capacity {
                 table.truncate(count);
-                return Some(table.iter().map(mount_entry).collect());
+                return Ok(table.iter().map(mount_entry).collect());
             }
             capacity *= 2;
         }
