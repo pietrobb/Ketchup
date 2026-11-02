@@ -4110,25 +4110,44 @@ fn machining_detail_bounds(geometry: &GeneralMachiningGeometry) -> Option<([f64;
     .then_some((minimum, maximum))
 }
 
-/// Points whose box holds `segment`: an arc's whole circle, as it may bulge.
+/// Points whose box is the box of `segment`: an arc's ends and those of its
+/// circle's four axis extremes it sweeps through, so a shallow bow adds its
+/// bulge and not its whole circle (review 2026-11-02 MF-122 follow-up).
 fn segment_extent(segment: &GeneralMachiningSegment) -> Vec<[f64; 2]> {
+    use std::f64::consts::{FRAC_PI_2, TAU};
     match *segment {
         GeneralMachiningSegment::Line { start_mm, end_mm } => vec![start_mm, end_mm],
         GeneralMachiningSegment::CircularArc {
             start_mm,
             end_mm,
             center_mm,
-            ..
+            clockwise,
         } => {
+            let angle = |point: [f64; 2]| (point[1] - center_mm[1]).atan2(point[0] - center_mm[0]);
             let radius = ((start_mm[0] - center_mm[0]).powi(2)
                 + (start_mm[1] - center_mm[1]).powi(2))
             .sqrt();
-            vec![
-                start_mm,
-                end_mm,
-                [center_mm[0] - radius, center_mm[1] - radius],
-                [center_mm[0] + radius, center_mm[1] + radius],
-            ]
+            // Counterclockwise from `from` to `to`; ends that meet sweep the circle.
+            let (from, to) = if clockwise {
+                (angle(end_mm), angle(start_mm))
+            } else {
+                (angle(start_mm), angle(end_mm))
+            };
+            let sweep = match (to - from).rem_euclid(TAU) {
+                sweep if sweep <= f64::EPSILON => TAU,
+                sweep => sweep,
+            };
+            let mut points = vec![start_mm, end_mm];
+            for quarter in 0..4 {
+                let extreme = f64::from(quarter) * FRAC_PI_2;
+                if (extreme - from).rem_euclid(TAU) <= sweep {
+                    points.push([
+                        center_mm[0] + radius * extreme.cos(),
+                        center_mm[1] + radius * extreme.sin(),
+                    ]);
+                }
+            }
+            points
         }
     }
 }

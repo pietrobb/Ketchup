@@ -526,6 +526,19 @@ fn the_shop_drawing_draws_a_blank_that_is_not_a_rectangle() {
         ),
         "{shaped}"
     );
+    // A shallow bow (R 1625) is sized by the arc that is cut, not its circle.
+    let bowed = drawing(
+        &mut worker,
+        "extrude('top', profile = [['front', [0, 0], [800, 0], {'through': (400, -50)}], \
+         ['right', [800, 0], [800, 500]], ['back', [800, 500], [0, 500]], ['left', [0, 500], [0, 0]]], \
+         distance = 18, material = 'oak', attributes = {FABRICATION_ROLE: MANUFACTURED_ITEM})\n",
+    );
+    assert!(
+        bowed.contains(
+            "blank outline (the views show its bounding box): width=800 mm, height=550 mm"
+        ),
+        "{bowed}"
+    );
     let plain = drawing(&mut worker, "board('shelf', (600, 300, 18))\n");
     assert!(!plain.contains("blank outline"), "{plain}");
 }
