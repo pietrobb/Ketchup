@@ -164,9 +164,12 @@ both parts' limits without aborting the model. A missing contact or impossible b
 `load_path()` member of the named materials after EN 1995-1-1 (EC5), e.g.
 `{"KVH C24": "C24"}`; `TIMBER_CLASSES` holds C16, C24 (EN 338:2016), GL24h and
 GL28h (EN 14080:2013). Report section `design.members` gives each member's checks
-(bending, shear, shear_notch, deflection_inst, deflection_fin, bearing and
-buckling of columns) with their utilization and `pass`, `fail` or `not_verified`
-when an input is missing. It is a computed check, not an authorized structural design.
+(bending, lateral_torsional, shear, shear_notch, deflection_inst, deflection_fin,
+bearing and buckling of columns) with their utilization and `pass`, `fail` or
+`not_verified` when an input is missing. Lateral torsional buckling counts only
+parts that hold the compressed edge (the top under sagging, the bottom under
+hogging) and are screwed to the beam by `joint()` or also bear on a grounded part;
+`loads.members[].braced_by` lists them. It is a computed check, not an authorized structural design.
 
 `connector(a, b, fastener, ratings=None, fasteners=None, name=None)` joins two
 parts with a bought connector rated from the catalogue `CONNECTOR_RATINGS`

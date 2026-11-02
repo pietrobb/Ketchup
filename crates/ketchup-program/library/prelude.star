@@ -3002,9 +3002,12 @@ def _opening_in(name, o, origin, along, up, out, depth, length, top_v):
 #   The report's loads.members lists every load_path() member: its length and axis, the
 #   loads on it by kind (newtons, characteristic, unfactored), where they act (patches
 #   along the member: own weight, area loads, parts it carries) and what it passes to
-#   each support (reactions, with the bearing joint), and braced_mm, the stretches along
-#   it where a part resting on it and on something else too (decking, battens, joists)
-#   holds it sideways. A beam shares its load among its
+#   each support (reactions, with the bearing joint), and braced_by, the parts holding
+#   it sideways (part, edge top or bottom, from_mm, to_mm): a part bearing on it and on
+#   something else too (decking, battens, a ceiling), screwed to it by a joint() (or of
+#   the fixed tags) or also bearing on a grounded part; a loose plank across free beams
+#   holds nothing. The top braces against a sagging moment, the bottom against a
+#   hogging one (lateral torsional buckling, check lateral_torsional). A beam shares its load among its
 #   supports by the lever rule, over more supports as simple spans between them; other
 #   parts share theirs by contact area. Missing inputs are listed, never guessed.
 #   Example:
@@ -3150,7 +3153,8 @@ def price_list(prices, currency = None, source = None):
 #     is refused. A class of the classes table may give it as "product".
 #   The report's design.members lists every load-path member: role (beam or column),
 #   section [width, depth], the checks with their utilization, governing combination and
-#   place (bending, shear, shear_notch, deflection_inst, deflection_fin, bearing =
+#   place (bending, lateral_torsional = bending over kcrit on the stretch of its
+#   compressed edge nothing braces, shear, shear_notch, deflection_inst, deflection_fin, bearing =
 #   compression perpendicular to the grain, compression with buckling for columns on the
 #   real area and least radius of gyration of the profile less bores cut through it), the
 #   largest utilization and status: "pass", "fail" or "not_verified" when an input is
