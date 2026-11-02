@@ -18,9 +18,6 @@ pub const LENGTH_AXIS: &str = "length_axis";
 /// The part attribute naming the local axis of a sheet's thickness, or of a
 /// bar's section side that is a layer's thickness (library `buildup()`).
 pub const THICKNESS_AXIS: &str = "thickness_axis";
-/// The part attribute naming the local axis its material's grain runs along
-/// (library `board(grain=)`, `member()`).
-pub const GRAIN: &str = "grain";
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Param {
@@ -1162,8 +1159,9 @@ impl Part {
     /// axis each lies nearest: an extrusion's in its profile's plane are
     /// those of the smallest rectangle around its profile (review 2026-11-01
     /// PG-101: a sloping plate is cut from a plank along its slope, not from
-    /// its box in the wall's axes); other parts', and those of a part whose
-    /// grain runs in its profile's plane, are their [`Self::local_bounds`].
+    /// its box in the wall's axes); other parts', and those of a part that
+    /// ties an attribute to an axis of its profile's plane, are their
+    /// [`Self::local_bounds`].
     #[must_use]
     pub fn blank_size(&self) -> [f64; 3] {
         if let ProgramPartBody::Extrusion {
@@ -1172,12 +1170,7 @@ impl Part {
             caps,
         } = &self.body
             && self.joined().next().is_none()
-            // A grain in the profile's plane holds the blank square to it
-            // (review 2026-11-02 PG-125: it followed the turned rectangle).
-            && !matches!(
-                self.attributes.get(GRAIN).map(String::as_str),
-                Some("x" | "X" | "y" | "Y")
-            )
+            && !self.ties_a_profile_axis()
         {
             let (profile, span, grow) = self.pulled_profile(segments, *distance_mm, caps);
             let (along, widths) = smallest_enclosing_rectangle(&profile);
@@ -1204,6 +1197,20 @@ impl Part {
         }
         let (min, max) = self.local_bounds();
         std::array::from_fn(|axis| max[axis] - min[axis])
+    }
+
+    /// Whether a plain attribute other than [`LENGTH_AXIS`] and
+    /// [`THICKNESS_AXIS`] names a local axis in the profile's plane: it ties
+    /// a property of the material to that axis, which the cut list writes as
+    /// a side of the blank, so the blank stays square to it (review 2026-11-02
+    /// PG-125: it followed the turned rectangle).
+    fn ties_a_profile_axis(&self) -> bool {
+        self.attributes.iter().any(|(name, value)| {
+            !name.contains(':')
+                && name != LENGTH_AXIS
+                && name != THICKNESS_AXIS
+                && matches!(value.as_str(), "x" | "X" | "y" | "Y")
+        })
     }
 
     /// Bounds in this part's frame of its own body and of each body joined in,
