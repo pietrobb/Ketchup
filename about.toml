@@ -15,8 +15,8 @@ accepted = [
     "Ubuntu-font-1.0",
     "MPL-2.0",
 ]
-# The desktop packages: the Windows release and the Linux build.
-targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]
+# The desktop packages: the Windows release, the Linux build and the macOS bundles.
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]
 ignore-build-dependencies = true
 ignore-dev-dependencies = true
 ignore-transitive-dependencies = false

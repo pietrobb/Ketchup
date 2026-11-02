@@ -1,6 +1,6 @@
 Open CASCADE Technology (OCCT) 8.0.1
 
-Files:    TK*.dll in the program folder
+Files:    {library} in {library_folder}
 License:  GNU Lesser General Public License 2.1 with the Open CASCADE
           exception: LICENSE-OCCT-LGPL-2.1.txt, LICENSE-OCCT-LGPL-EXCEPTION.txt
 Source:   https://github.com/Open-Cascade-SAS/OCCT
@@ -9,8 +9,8 @@ Copyright (c) 1991-1999 Matra Datavision
 Copyright (c) 1999-2014 OPEN CASCADE SAS
 
 The OCCT source is used unmodified and dynamically linked: Kecup loads the
-TK*.dll libraries at run time. Each TK*.dll is built with CORE-MATH (below)
+{library} libraries at run time. Each {library} is built with CORE-MATH (below)
 linked in, so its math functions are correctly rounded; the build script is
-scripts/windows/build-occt.ps1 of the Kecup source repository. You may replace
+{occt_build} of the Kecup source repository. You may replace
 the libraries with your own build of the same OCCT version from the source
 above.
