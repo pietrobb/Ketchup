@@ -292,6 +292,11 @@ pub enum GeneralFabricationError {
         role: String,
     },
     UnsupportedOrUnavailableGeometry,
+    /// `part` has no current exact body or supported geometry to fabricate
+    /// from (review 2026-11-01 MF-106).
+    PartGeometryUnavailable {
+        part: String,
+    },
     BodyValidation(GeneralBodyValidationError),
     InvalidGeometry,
     ExactGraph(ExactBRepGraphError),
@@ -307,6 +312,11 @@ pub enum GeneralFabricationError {
     ScaledPlacement(ScaledPlacement),
     /// The machine file cannot describe this part's stock or machining.
     PartExportBlocked {
+        part: String,
+    },
+    /// A production job cannot lay `part`: it is not one exact body with a
+    /// stock blank the job can lay (review 2026-11-01 MF-106).
+    PartJobBlocked {
         part: String,
     },
     /// A made piece of `part` has no production code, so a production job
@@ -360,6 +370,9 @@ impl GeneralFabricationError {
             Self::DrilledFromBothFaces { .. } => Self::DrilledFromBothFaces {
                 part: part.to_owned(),
             },
+            Self::UnsupportedOrUnavailableGeometry => Self::PartGeometryUnavailable {
+                part: part.to_owned(),
+            },
             other => other,
         }
     }
@@ -398,6 +411,10 @@ impl fmt::Display for GeneralFabricationError {
             Self::UnsupportedOrUnavailableGeometry => formatter.write_str(
                 "a visible geometry-bearing occurrence has unsupported or unavailable evidence",
             ),
+            Self::PartGeometryUnavailable { part } => write!(
+                formatter,
+                "part \"{part}\" has no current exact body or supported geometry to fabricate from; evaluate the model again",
+            ),
             Self::InvalidGeometry => {
                 formatter.write_str("accepted fabrication geometry has invalid local bounds")
             }
@@ -418,6 +435,10 @@ impl fmt::Display for GeneralFabricationError {
             Self::PartExportBlocked { part } => write!(
                 formatter,
                 "part \"{part}\" cannot be written to the machine file: its stock is not a rectangular box, a cut is not one the format describes, reaches outside the stock or starts inside the material (a cavity, or a cut that opens only to a side and is not rectangular), or its exact result is stale; let each cut tool reach past the face it enters, or evaluate the model again",
+            ),
+            Self::PartJobBlocked { part } => write!(
+                formatter,
+                "a production job cannot lay part \"{part}\": it lays one exact body of each part with the stock blank it is cut from, and this part has none it can lay; evaluate the model again",
             ),
             Self::PartWithoutProductionCode { part } => write!(
                 formatter,
@@ -2810,7 +2831,8 @@ pub fn project_general_fabrication(
         {
             return Err(GeneralFabricationError::ValidationBindingMismatch);
         }
-        let dimensions = local_dimensions(snapshot, registry, participant.source())?;
+        let dimensions = local_dimensions(snapshot, registry, participant.source())
+            .map_err(|error| error.at_part(definition.name()))?;
         accepted.push((participant, dimensions, metadata.clone()));
     }
     if accepted.is_empty() {
@@ -2954,7 +2976,12 @@ pub fn project_general_fabrication(
                     .filter(|package| package.is_current(snapshot));
                 let Some(package) = package else {
                     if required {
-                        return Err(GeneralFabricationError::UnsupportedOrUnavailableGeometry);
+                        let part = snapshot
+                            .definition(row.definition_id)
+                            .map_or("", |part| part.name());
+                        return Err(
+                            GeneralFabricationError::UnsupportedOrUnavailableGeometry.at_part(part)
+                        );
                     }
                     unresolved(&row.source);
                     continue;
@@ -3169,7 +3196,7 @@ fn machined_nodes(
         if let ExactBRepOperation::Extrude { .. } = node.operation {
             let (operation, terminal) =
                 boolean_prism_cut(row, source, graph, stock, previous, index)?;
-            operations.push(operation);
+            operations.extend(operation);
             index = graph.nodes.iter().position(|node| node.id == terminal.id)? + 1;
             previous = terminal;
             continue;
@@ -3190,6 +3217,10 @@ fn machined_nodes(
         }
         let profile = graph.profiles.get(profile.0 as usize)?;
         let mut machining = profile_cut_geometry(profile, interval, depth_bits.is_none())?;
+        if !cuts_stock(&machining, graph.node_bounds_mm(stock.id).ok().flatten()?) {
+            previous = node;
+            continue;
+        }
         if depth_bits.is_some() && blind_cut_enters_at_end(graph, stock, profile, interval)? {
             machining = entering_from_end(machining);
         }
@@ -3232,7 +3263,8 @@ fn machined_nodes(
 
 /// The Boolean cut whose prism tool starts at `graph.nodes[index]`: the tool
 /// extrusion, optionally one rigid placement of it, then the cut of `previous`.
-/// Returns the operation and the cut node.
+/// Returns the operation, none for a tool that takes nothing from the stock,
+/// and the cut node.
 fn boolean_prism_cut<'graph>(
     row: &GeneralBomRow,
     source: &ketchup_model::exact_product::ExactResultKey,
@@ -3240,7 +3272,7 @@ fn boolean_prism_cut<'graph>(
     stock: &ExactBRepNode,
     previous: &ExactBRepNode,
     index: usize,
-) -> Option<(GeneralManufacturingOperation, &'graph ExactBRepNode)> {
+) -> Option<(Option<GeneralManufacturingOperation>, &'graph ExactBRepNode)> {
     let tool = graph.nodes.get(index)?;
     let ExactBRepOperation::Extrude {
         profile: tool_profile,
@@ -3286,7 +3318,11 @@ fn boolean_prism_cut<'graph>(
     if let Some((_, matrix)) = placement {
         machining = placed_profile_cut(machining, matrix)?;
     }
-    let machining = within_stock(machining, graph.node_bounds_mm(stock.id).ok().flatten()?)?;
+    let bounds = graph.node_bounds_mm(stock.id).ok().flatten()?;
+    if !cuts_stock(&machining, bounds) {
+        return Some((None, terminal));
+    }
+    let machining = within_stock(machining, bounds)?;
     let operation = GeneralManufacturingOperation {
         stable_operation_id: format!(
             "definition-{}/feature-{}/{}",
@@ -3307,7 +3343,7 @@ fn boolean_prism_cut<'graph>(
         source: source.clone(),
         thread: None,
     };
-    Some((operation, terminal))
+    Some((Some(operation), terminal))
 }
 
 /// A profile cut moved by a rigid row-major 4x4 `matrix`: its frame turns and
@@ -3529,6 +3565,56 @@ fn extent_along(
 /// that face. None when nothing of the tool lies in the stock, or when no
 /// description enters through a face (another profile open only to a side, or
 /// a cavity): the tool would have to pass through material that stays.
+/// Whether the profile cut `machining` takes anything from the stock of
+/// `bounds`: a tool beside the stock or past its end removes nothing, so it is
+/// not machined, neither refused nor written beside the part (review
+/// 2026-11-01 MF-105). An arc is taken as its whole circle, so a tool near the
+/// stock is kept.
+fn cuts_stock(machining: &GeneralMachiningGeometry, bounds: [[f64; 3]; 2]) -> bool {
+    let GeneralMachiningGeometry::ProfileCut {
+        frame,
+        segments,
+        start_mm,
+        end_mm,
+    } = machining
+    else {
+        return true;
+    };
+    let mut low = [f64::INFINITY; 2];
+    let mut high = [f64::NEG_INFINITY; 2];
+    let mut take = |point: [f64; 2], reach: f64| {
+        for axis in 0..2 {
+            low[axis] = low[axis].min(point[axis] - reach);
+            high[axis] = high[axis].max(point[axis] + reach);
+        }
+    };
+    for segment in segments {
+        match segment {
+            GeneralMachiningSegment::Line { start_mm, end_mm } => {
+                take(*start_mm, 0.0);
+                take(*end_mm, 0.0);
+            }
+            GeneralMachiningSegment::CircularArc {
+                start_mm,
+                end_mm,
+                center_mm,
+                ..
+            } => {
+                let radius = (start_mm[0] - center_mm[0]).hypot(start_mm[1] - center_mm[1]);
+                take(*center_mm, radius);
+                take(*end_mm, 0.0);
+            }
+        }
+    }
+    let overlaps = |axis: [f64; 3], first: f64, last: f64| {
+        let (low, high) = extent_along(bounds, frame.origin_mm, axis);
+        last.min(high) - first.max(low) > ROUNDING
+    };
+    overlaps(frame.normal, *start_mm, *end_mm)
+        && overlaps(frame.x_axis, low[0], high[0])
+        && overlaps(frame.y_axis, low[1], high[1])
+}
+
 fn within_stock(
     machining: GeneralMachiningGeometry,
     bounds: [[f64; 3]; 2],

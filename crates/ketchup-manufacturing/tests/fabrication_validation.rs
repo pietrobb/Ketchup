@@ -946,6 +946,21 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
         "{through_xml}"
     );
     assert_btlx_machining_lies_in_its_blank(&through_xml, "through cut");
+    // Review 2026-11-01 MF-104: with the default saw-then-mill strategy the saw
+    // and mill contours of the same cut are not bounded either.
+    let through_xml = String::from_utf8(
+        through_cut
+            .btlx_2_3_1_export_with_options(&through_cut_snapshot, BtlxExportOptions::default())
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        through_xml.contains("<SawContour")
+            && through_xml.contains("<MillContour")
+            && !through_xml.contains("DepthBounded=\"yes\"")
+            && through_xml.contains("<Contour DepthBounded=\"no\" Depth=\"1000\""),
+        "{through_xml}"
+    );
 
     let (boolean_cut_snapshot, boolean_cut) =
         graph_fabrication_projection(BooleanOperation::Cut, true, "m17-btlx-boolean-cut");
@@ -3706,6 +3721,15 @@ fn rectangular_through_cut_document() -> DocumentStore {
 }
 
 fn rectangular_profile_removal_document(through: bool) -> DocumentStore {
+    rectangular_removal_document(
+        through,
+        &[[10.0, 10.0], [30.0, 10.0], [30.0, 25.0], [10.0, 25.0]],
+    )
+}
+
+/// A 100 x 50 x 1000 timber with the rectangle `tool` cut from it, through or
+/// 20 mm deep.
+fn rectangular_removal_document(through: bool, tool: &[[f64; 2]]) -> DocumentStore {
     let mut document = DocumentStore::new();
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -3732,12 +3756,7 @@ fn rectangular_profile_removal_document(through: bool) -> DocumentStore {
                 id: GRAPH_TOOL_PROFILE,
                 definition_id: GRAPH_DEFINITION,
                 name: "20 x 15 rectangular profile cut".to_owned(),
-                kind: FeatureKind::polygon(&[
-                    [10.0, 10.0],
-                    [30.0, 10.0],
-                    [30.0, 25.0],
-                    [10.0, 25.0],
-                ]),
+                kind: FeatureKind::polygon(tool),
             },
             CanonicalCommand::CreateFeature {
                 id: GRAPH_BOOLEAN,
@@ -4306,4 +4325,40 @@ fn mixed_mechanical_projection(
 
     let projection = project_shown(&snapshot, &registry, &cases, &report, tolerance).unwrap();
     (snapshot, projection)
+}
+
+/// Review 2026-11-01 MF-105: a cut whose tool lies beside the part, through it
+/// or 20 mm deep, removes nothing; it is not machined, not written to the
+/// machine file as a cut beside the part. A cut over the part's edge is.
+#[test]
+fn a_cut_beside_its_part_is_not_machined() {
+    let beside = [[110.0, 10.0], [130.0, 10.0], [130.0, 25.0], [110.0, 25.0]];
+    let over_the_edge = [[90.0, 10.0], [110.0, 10.0], [110.0, 25.0], [90.0, 25.0]];
+    for through in [true, false] {
+        let (snapshot, projection) = exact_graph_document_fabrication_projection(
+            rectangular_removal_document(through, &beside),
+            "mf-105-beside",
+            GRAPH_BOOLEAN,
+        );
+        let kinds = (projection.manufacturing.operations.iter())
+            .map(|operation| operation.kind)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            [GeneralManufacturingKind::Stock],
+            "through {through}"
+        );
+        let xml = String::from_utf8(projection.btlx_2_3_1_export(&snapshot).unwrap()).unwrap();
+        assert!(!xml.contains("<FreeContour"), "{xml}");
+        let (_, projection) = exact_graph_document_fabrication_projection(
+            rectangular_removal_document(through, &over_the_edge),
+            "mf-105-edge",
+            GRAPH_BOOLEAN,
+        );
+        assert_eq!(
+            projection.manufacturing.operations.len(),
+            2,
+            "through {through}"
+        );
+    }
 }

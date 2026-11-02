@@ -83,7 +83,7 @@ impl BtlxProcessing {
                 let mut xml = format!(
                     "          <FreeContour Name=\"Ketchup profile cut\" ProcessID=\"{process_id}\" ReferencePlaneID=\"{reference_plane_id}\" ToolPosition=\"{}\">\n            <Contour DepthBounded=\"{}\" Depth=\"{}\" Inclination=\"0\">\n              <StartPoint X=\"{}\" Y=\"{}\" Z=\"0\"/>\n",
                     contour.tool_position,
-                    if contour.depth_bounded { "yes" } else { "no" },
+                    yes_no(contour.depth_bounded),
                     contour.depth,
                     contour.start_point[0],
                     contour.start_point[1]
@@ -95,8 +95,9 @@ impl BtlxProcessing {
                 xml
             }
             Self::SawContour(contour) => format!(
-                "          <SawContour Name=\"Ketchup groove edge pre-cut\" ProcessID=\"{process_id}\" ReferencePlaneID=\"{reference_plane_id}\" ToolPosition=\"{}\">\n            <Contour DepthBounded=\"yes\" Depth=\"{}\" Inclination=\"0\">\n              <StartPoint X=\"{}\" Y=\"{}\" Z=\"0\"/>\n              <Line><EndPoint X=\"{}\" Y=\"{}\" Z=\"0\"/></Line>\n            </Contour>\n          </SawContour>\n",
+                "          <SawContour Name=\"Ketchup groove edge pre-cut\" ProcessID=\"{process_id}\" ReferencePlaneID=\"{reference_plane_id}\" ToolPosition=\"{}\">\n            <Contour DepthBounded=\"{}\" Depth=\"{}\" Inclination=\"0\">\n              <StartPoint X=\"{}\" Y=\"{}\" Z=\"0\"/>\n              <Line><EndPoint X=\"{}\" Y=\"{}\" Z=\"0\"/></Line>\n            </Contour>\n          </SawContour>\n",
                 contour.tool_position,
+                yes_no(contour.depth_bounded),
                 contour.depth,
                 contour.start_point[0],
                 contour.start_point[1],
@@ -105,8 +106,9 @@ impl BtlxProcessing {
             ),
             Self::MillContour(contour) => {
                 let mut xml = format!(
-                    "          <MillContour Name=\"Ketchup groove interior milling\" ProcessID=\"{process_id}\" ReferencePlaneID=\"{reference_plane_id}\" ToolPosition=\"{}\">\n            <Contour DepthBounded=\"yes\" Depth=\"{}\" Inclination=\"0\">\n              <StartPoint X=\"{}\" Y=\"{}\" Z=\"0\"/>\n",
+                    "          <MillContour Name=\"Ketchup groove interior milling\" ProcessID=\"{process_id}\" ReferencePlaneID=\"{reference_plane_id}\" ToolPosition=\"{}\">\n            <Contour DepthBounded=\"{}\" Depth=\"{}\" Inclination=\"0\">\n              <StartPoint X=\"{}\" Y=\"{}\" Z=\"0\"/>\n",
                     contour.tool_position,
+                    yes_no(contour.depth_bounded),
                     contour.depth,
                     contour.start_point[0],
                     contour.start_point[1]
@@ -119,6 +121,10 @@ impl BtlxProcessing {
             }
         }
     }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -146,6 +152,8 @@ pub(super) struct BtlxSawContour {
     start_point: [String; 2],
     end_point: [String; 2],
     depth: String,
+    /// As the cut's: false for a cut through the blank (review 2026-11-01 MF-104).
+    depth_bounded: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -294,6 +302,7 @@ fn btlx_edge_saw_contours(
         start_point: start.map(format_number),
         end_point: end.map(format_number),
         depth: contour.depth.clone(),
+        depth_bounded: contour.depth_bounded,
     };
     let mut result = Vec::with_capacity(usize::from(intermediate_saw_cuts) + 2);
     result.push(saw_contour(first_boundary, contour.tool_position));

@@ -106,7 +106,7 @@ impl GeneralFabricationProjection {
                 .definition(row.definition_id)
                 .ok_or(GeneralFabricationError::ExportBlocked)?
                 .name();
-            let (matching, frame) = row_stock(row, &self.manufacturing.operations)?;
+            let (matching, frame) = row_stock(row, part, &self.manufacturing.operations)?;
             let JobStockFrame {
                 dimensions_mm,
                 rectangular,
@@ -226,16 +226,17 @@ impl GeneralFabricationProjection {
 /// A row's operations with their index in the projection's operation list.
 pub(super) type RowOperations<'a> = Vec<(usize, &'a GeneralManufacturingOperation)>;
 
-/// The operations that machine `row`, its stock first, and the frame of
-/// that stock. These refusals guard the projection's own consistency, which
-/// the exports a production job runs first already check, so they stay the
-/// general ExportBlocked: PartExportBlocked gives a machine file's reasons
-/// (stock shape, cut reach), not the job's.
+/// The operations that machine `row`, of `part`, its stock first, and the
+/// frame of that stock. A refusal names the part as the job's own, not with a
+/// machine file's reasons (stock shape, cut reach) (review 2026-11-01 MF-106).
 pub(super) fn row_stock<'a>(
     row: &GeneralBomRow,
+    part: &str,
     operations: &'a [GeneralManufacturingOperation],
 ) -> Result<(RowOperations<'a>, JobStockFrame), GeneralFabricationError> {
-    let blocked = || GeneralFabricationError::ExportBlocked;
+    let blocked = || GeneralFabricationError::PartJobBlocked {
+        part: part.to_owned(),
+    };
     if !matches!(row.source, GeneralBodySource::Exact(_))
         || row.quantity == 0
         || row.quantity != row.instances.len()
