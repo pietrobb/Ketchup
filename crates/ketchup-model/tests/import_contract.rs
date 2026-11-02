@@ -800,6 +800,9 @@ fn step_and_iges_xde_imports_keep_the_parts_read_and_name_the_refused() {
         node(4, Some(0), None, "Refused group"),
         node(5, Some(4), Some(1), "Crossed prism 2"),
         node(6, Some(0), None, "Empty in the source"),
+        // Review 2026-11-02 EX-120: an empty group inside the group left out
+        // goes with it; the plan panicked on its missing parent.
+        node(7, Some(4), None, "Empty in the refused group"),
     ]);
     let mut document = DocumentStore::new();
     let batch = plan_step_xde_import(&document.current(), source, "partly.step", &grouped).unwrap();
