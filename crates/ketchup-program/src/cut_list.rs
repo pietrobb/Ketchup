@@ -59,8 +59,7 @@ pub fn cut_list_table(model: &ProgramModel, counted: impl Fn(&str) -> bool) -> T
     let mut groups: BTreeMap<(String, [i64; 3], Vec<String>), Group> = BTreeMap::new();
     for part in parts {
         // The blank: grown by push_pull and union, unlike the declared size.
-        let (min, max) = part.local_bounds();
-        let extent: [f64; 3] = std::array::from_fn(|axis| max[axis] - min[axis]);
+        let extent = part.blank_size();
         let mut axis_order = [0, 1, 2];
         axis_order.sort_by(|left, right| extent[*right].total_cmp(&extent[*left]));
         let dimensions_mm = axis_order.map(|axis| extent[axis]);

@@ -174,8 +174,7 @@ pub fn bom(model: &ProgramModel) -> Bom {
             continue;
         }
         // The blank: grown by push_pull and union, unlike the declared size.
-        let (min, max) = part.local_bounds();
-        let mut dimensions: [f64; 3] = std::array::from_fn(|axis| max[axis] - min[axis]);
+        let mut dimensions = part.blank_size();
         dimensions.sort_by(|left, right| right.total_cmp(left));
         let material = part
             .material

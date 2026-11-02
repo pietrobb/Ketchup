@@ -259,6 +259,31 @@ impl ProgramProfileSegment {
         CubicBezier::new([self.start_mm, c1, c2, self.end_mm]).eval(t)
     }
 
+    /// The point at `t` in 0..=1 along the segment: on its line, arc or curve.
+    #[must_use]
+    pub fn point_at(&self, t: f64) -> [f64; 2] {
+        if self.bezier.is_some() {
+            return self.bezier_point(t);
+        }
+        let Some(arc) = self.arc else {
+            return std::array::from_fn(|i| {
+                self.start_mm[i] + t * (self.end_mm[i] - self.start_mm[i])
+            });
+        };
+        let c = arc.center_mm;
+        let radius = (self.start_mm[0] - c[0]).hypot(self.start_mm[1] - c[1]);
+        let angle = |p: [f64; 2]| (p[1] - c[1]).atan2(p[0] - c[0]);
+        let ccw = (angle(self.end_mm) - angle(self.start_mm)).rem_euclid(std::f64::consts::TAU);
+        let sweep = match (arc.clockwise, ccw <= ROUNDING) {
+            (false, true) => std::f64::consts::TAU,
+            (true, true) => -std::f64::consts::TAU,
+            (false, false) => ccw,
+            (true, false) => ccw - std::f64::consts::TAU,
+        };
+        let at = angle(self.start_mm) + t * sweep;
+        [c[0] + radius * at.cos(), c[1] + radius * at.sin()]
+    }
+
     /// The largest `direction · p` over the segment's points.
     #[must_use]
     pub fn support(&self, direction: [f64; 2]) -> f64 {
@@ -336,6 +361,70 @@ pub fn profile_bounds(segments: &[ProgramProfileSegment]) -> ([f64; 2], [f64; 2]
         [-reach([-1.0, 0.0]), -reach([0.0, -1.0])],
         [reach([1.0, 0.0]), reach([0.0, 1.0])],
     )
+}
+
+/// The smallest rectangle around a closed profile: the unit direction of one
+/// of its sides and the profile's widths along and across it. One side of
+/// the smallest rectangle lies along an edge of the profile's convex hull
+/// (curves are sampled to find the hull, the widths are exact); the
+/// profile's own axes win a tie.
+#[must_use]
+pub fn smallest_enclosing_rectangle(segments: &[ProgramProfileSegment]) -> ([f64; 2], [f64; 2]) {
+    const STEPS: u32 = 16;
+    let reach = |direction: [f64; 2]| {
+        segments
+            .iter()
+            .map(|segment| segment.support(direction))
+            .fold(f64::NEG_INFINITY, f64::max)
+    };
+    let width = |d: [f64; 2]| reach(d) + reach([-d[0], -d[1]]);
+    let mut points = Vec::new();
+    for segment in segments {
+        let steps = if segment.is_line() { 1 } else { STEPS };
+        points.extend((0..steps).map(|i| segment.point_at(f64::from(i) / f64::from(steps))));
+    }
+    let mut best = ([1.0, 0.0], [width([1.0, 0.0]), width([0.0, 1.0])]);
+    let hull = convex_hull(points);
+    for (index, a) in hull.iter().enumerate() {
+        let b = hull[(index + 1) % hull.len()];
+        let length = (b[0] - a[0]).hypot(b[1] - a[1]);
+        if length <= ROUNDING {
+            continue;
+        }
+        let along = [(b[0] - a[0]) / length, (b[1] - a[1]) / length];
+        let widths = [width(along), width([-along[1], along[0]])];
+        let [w, h] = best.1;
+        if widths[0] * widths[1] < w * h - ROUNDING * (w + h) {
+            best = (along, widths);
+        }
+    }
+    best
+}
+
+/// The convex hull of `points`, counter-clockwise (Andrew's monotone chain).
+fn convex_hull(mut points: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
+    points.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+    points.dedup();
+    if points.len() < 3 {
+        return points;
+    }
+    let turn = |o: [f64; 2], a: [f64; 2], b: [f64; 2]| {
+        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    };
+    let mut hull: Vec<[f64; 2]> = Vec::with_capacity(2 * points.len());
+    for pass in [points.clone(), points.into_iter().rev().collect()] {
+        let start = hull.len();
+        for point in pass {
+            while hull.len() >= start + 2
+                && turn(hull[hull.len() - 2], hull[hull.len() - 1], point) <= 0.0
+            {
+                hull.pop();
+            }
+            hull.push(point);
+        }
+        hull.pop();
+    }
+    hull
 }
 
 /// Ends of the straight side `index` of a closed profile after it moves by
@@ -1053,6 +1142,34 @@ impl Part {
                 )
             })
             .unwrap_or_else(|| self.body_bounds())
+    }
+
+    /// The sizes of the part's blank, the box it is cut from, by the local
+    /// axis each lies nearest: an extrusion's in its profile's plane are
+    /// those of the smallest rectangle around its profile (review 2026-11-01
+    /// PG-101: a sloping plate is cut from a plank along its slope, not from
+    /// its box in the wall's axes); other parts' are their [`Self::local_bounds`].
+    #[must_use]
+    pub fn blank_size(&self) -> [f64; 3] {
+        if let ProgramPartBody::Extrusion {
+            segments,
+            distance_mm,
+            caps,
+        } = &self.body
+            && self.joined().next().is_none()
+        {
+            let (profile, span, grow) = self.pulled_profile(segments, *distance_mm, caps);
+            let (along, widths) = smallest_enclosing_rectangle(&profile);
+            let [u, v] = widths.map(|width| width + 2.0 * grow);
+            let depth = span[1] - span[0] + 2.0 * grow;
+            return if along[0].abs() >= along[1].abs() {
+                [u, v, depth]
+            } else {
+                [v, u, depth]
+            };
+        }
+        let (min, max) = self.local_bounds();
+        std::array::from_fn(|axis| max[axis] - min[axis])
     }
 
     /// Bounds in this part's frame of its own body and of each body joined in,

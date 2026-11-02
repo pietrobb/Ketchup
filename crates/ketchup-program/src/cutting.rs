@@ -223,8 +223,7 @@ pub const THICKNESS_AXIS: &str = "thickness_axis";
 /// was thick, or a bar shorter than its section was wide, was grouped by the
 /// wrong size).
 fn blank(part: &Part, kind: StockKind) -> ([f64; 3], [usize; 3]) {
-    let (min, max) = part.local_bounds();
-    let extent: [f64; 3] = std::array::from_fn(|axis| max[axis] - min[axis]);
+    let extent = part.blank_size();
     let longest_first = |axes: &mut [usize]| {
         axes.sort_by(|left, right| extent[*right].total_cmp(&extent[*left]));
     };
@@ -684,6 +683,33 @@ fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -
             placed: Vec::new(),
         }
     };
+    // Pieces keeping a factory edge are laid first, the others then inside the
+    // trim of what they leave: one inside the trim laid first took the edge
+    // from the whole rest of its rectangle (review 2026-11-01 PG-102).
+    let spanned = |piece: f64, sheet: f64| {
+        trim > EPS && piece > sheet - 2.0 * trim + EPS && piece <= sheet + EPS
+    };
+    let keeps_edge = |piece: &Piece| {
+        let turns: &[bool] = match piece.turned {
+            Some(turned) => {
+                if turned {
+                    &[true]
+                } else {
+                    &[false]
+                }
+            }
+            None => &[false, true],
+        };
+        sizes.iter().any(|size| {
+            turns.iter().any(|&turned| {
+                let [l, w] = piece.size;
+                let [a, b] = if turned { [w, l] } else { [l, w] };
+                spanned(a, size[0]) || spanned(b, size[1])
+            })
+        })
+    };
+    let mut pieces = pieces;
+    pieces.sort_by_key(|piece| !keeps_edge(piece));
     let mut sheets: Vec<Sheet> = Vec::new();
     for piece in pieces {
         let orientations: Vec<bool> = match piece.turned {
@@ -704,9 +730,6 @@ fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -
         // 2 500 sheet trimmed 10 were not planned); without trim nothing differs.
         let spans = |size: [f64; 2], turned: bool| {
             let [w, h] = footprint(turned);
-            let spanned = |piece: f64, sheet: f64| {
-                trim > EPS && piece > sheet - 2.0 * trim + EPS && piece <= sheet + EPS
-            };
             [spanned(w - kerf, size[0]), spanned(h - kerf, size[1])]
         };
         // (short side leftover, long side leftover, sheet, free rect, the

@@ -192,7 +192,9 @@ roles below. Topic `buildup` lists every key.
 
 `bar_stock(material, lengths, kerf=4, trim=0)` and `sheet_stock(material,
 sheets, kerf=4, trim=10, grain=False)` declare what a material's made parts are
-cut from. Report section `cutting` (`bom.cutting`) then lays them out: lengths
+cut from. A part's blank is the box it is cut from: an extrusion's is the
+smallest rectangle around its profile times its depth, so a sloping plate is
+cut from a plank along its slope. Report section `cutting` (`bom.cutting`) then lays them out: lengths
 on bars per cross-section, rectangles guillotine-packed on sheets per thickness
 (`grain=True` keeps a part's grain along the sheet; a piece as long or as wide
 as a stock sheet, like a buildup layer's whole board, keeps the sheet's factory
