@@ -186,9 +186,38 @@ fn dos_code_pages_are_read_and_a_doubtful_code_page_is_warned_of() {
         counted(&underlay, "dxf.text-code-page-doubtful", Some("ANSI_1252")),
         Some(1)
     );
+    // Review 2026-11-01 UL-100: Slovak in CP1250 declared ANSI_1252 read „Obývaèka“ and
+    // „Kúpe¾“ with no warning, as ý beside è is no Western language's word and ¾ follows
+    // no letter in one; the drawing reads in 1250. Each is the only word of its drawing.
+    for (layer, expected) in [
+        (b"Ob\xFDva\xE8ka".as_slice(), "Obývačka"),
+        (b"K\xFApe\xBE", "Kúpeľ"),
+        (b"Dla\x9Eba \xE8ist\xE1", "Dlažba čistá"),
+    ] {
+        let underlay = read("ANSI_1252", layer, b"A");
+        assert_eq!(underlay.layers, [expected]);
+        assert_eq!(
+            counted(&underlay, "dxf.text-code-page-doubtful", Some("ANSI_1252")),
+            Some(1),
+            "{expected}: {:?}",
+            underlay.diagnostics
+        );
+    }
     // Western text in 1252 stays 1252 and undoubted: Danish ø beside æ, å and é, Italian
-    // ì, ò, ù and à ending a word, French è and ê within one.
+    // ì, ò, ù and à ending a word, French è and ê within one, Spanish, German and
+    // Icelandic, and fractions and powers after a number or a unit (UL-100).
     for (layer, text, expected) in [
+        (
+            b"Ba\xF1o se\xF1or".as_slice(),
+            b"\xBFQu\xE9?".as_slice(),
+            "Baño señor",
+        ),
+        (
+            b"Gr\xF6\xDFe T\xFCr",
+            b"m\xB3 m\xB2 3\xBE\" 1\xBCin",
+            "Größe Tür",
+        ),
+        (b"\xDEj\xF3\xF0vegur", b"N\xFDr", "Þjóðvegur"),
         (
             b"S\xF8jle G\xE5rd".as_slice(),
             b"Caf\xE9 \xF8l".as_slice(),

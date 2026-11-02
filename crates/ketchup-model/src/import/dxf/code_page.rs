@@ -110,7 +110,81 @@ fn misread_in_1252(word: &[u8]) -> bool {
         .rev()
         .skip(1)
         .any(|byte| matches!(byte, 0xEC | 0xF2 | 0xF9 | 0xCC | 0xD2 | 0xD9));
-    (slashed_o && beside_slashed_o) || inner_grave
+    (slashed_o && beside_slashed_o)
+        || inner_grave
+        || fraction_after_letter(word)
+        || written_in_no_western_language(word)
+}
+
+/// Whether `word`, read in Windows-1252, has ¼ or ¾ after a letter: 1250's Ľ and ľ, as
+/// „Kúpeľ“ reads „Kúpe¾“; a fraction follows a number (review 2026-11-01 UL-100).
+fn fraction_after_letter(word: &[u8]) -> bool {
+    let Some(western) =
+        encoding_rs::WINDOWS_1252.decode_without_bom_handling_and_without_replacement(word)
+    else {
+        return false;
+    };
+    let characters = western.chars().collect::<Vec<_>>();
+    characters
+        .windows(2)
+        .any(|pair| pair[0].is_alphabetic() && matches!(pair[1], '¼' | '¾'))
+}
+
+/// The accented letters of the Western languages written in Windows-1252.
+const WESTERN: &[&str] = &[
+    "àâæçéèêëîïôœùûüÿ", // French
+    "áéíñóúü",          // Spanish
+    "áâãàçéêíóôõú",     // Portuguese
+    "àèéìíîòóùú",       // Italian
+    "àçèéíïòóúü",       // Catalan
+    "äöüß",             // German
+    "éèëïöüà",          // Dutch
+    "æøåéó",            // Danish and Norwegian
+    "åäöé",             // Swedish
+    "áðéíóúýþæö",       // Icelandic
+    "áðíóúýæø",         // Faroese
+    "äöåšž",            // Finnish
+    "äöõüšž",           // Estonian
+    "áéíóú",            // Irish
+];
+
+/// The accented letters of the Central European languages written in Windows-1250.
+const CENTRAL_EUROPEAN: &[&str] = &[
+    "áčďéěíňóřšťúůýž",   // Czech
+    "áäčďéíĺľňóôŕšťúýž", // Slovak
+    "ąćęłńóśźż",         // Polish
+    "áéíóöőúüű",         // Hungarian
+    "čćđšž",             // Slovenian and Croatian
+    "ăâîşţ",             // Romanian
+    "äöüß",              // German
+];
+
+/// Whether `word`'s accented letters, read in Windows-1252, are of no one Western
+/// language but, read in Windows-1250, of a Central European one: „Obývačka“ reads
+/// „Obývaèka“, ý of Icelandic beside è of French (review 2026-11-01 UL-100).
+fn written_in_no_western_language(word: &[u8]) -> bool {
+    let accented = |encoding: &'static encoding_rs::Encoding| {
+        let text = encoding.decode_without_bom_handling_and_without_replacement(word)?;
+        Some(
+            text.chars()
+                .filter(|character| !character.is_ascii() && character.is_alphabetic())
+                .flat_map(char::to_lowercase)
+                .collect::<Vec<_>>(),
+        )
+    };
+    let of_one = |letters: &[char], languages: &[&str]| {
+        languages
+            .iter()
+            .any(|language| letters.iter().all(|letter| language.contains(*letter)))
+    };
+    let Some(western) = accented(encoding_rs::WINDOWS_1252) else {
+        return false;
+    };
+    if western.is_empty() || of_one(&western, WESTERN) {
+        return false;
+    }
+    accented(encoding_rs::WINDOWS_1250)
+        .is_some_and(|central| !central.is_empty() && of_one(&central, CENTRAL_EUROPEAN))
 }
 
 /// Windows-1250, which Central European text read wrongly in Windows-1252 was written in.
