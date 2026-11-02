@@ -2218,6 +2218,76 @@ fn the_production_job_stock_frame_is_right_handed_and_the_woodwop_frame() {
         "XA={xa} YA={ya} ZA={za}\n{mpr}"
     );
 }
+/// Review 2026-11-01 MF-102: one MPR program machines one cut-list row, so a
+/// single program of several parts says how many and where to export them;
+/// the package ZIP holds a program and a barcode label per coded piece.
+#[test]
+fn several_parts_are_counted_for_one_program_and_packaged_one_program_per_piece() {
+    // One drilled part in two materials: two cut-list rows.
+    let mut document = circular_drill_document_at([20.0, 15.0]);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertClassificationDimension {
+                id: MATERIAL_DIMENSION,
+                name: MATERIAL_DIMENSION_V1.to_owned(),
+                categories: vec![
+                    (STEEL_MATERIAL_CATEGORY, "C30".to_owned()),
+                    (C24_MATERIAL_CATEGORY, "C24".to_owned()),
+                ],
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: GRAPH_LEFT,
+                dimension_id: MATERIAL_DIMENSION,
+                category_id: Some(C24_MATERIAL_CATEGORY),
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: GRAPH_RIGHT,
+                dimension_id: MATERIAL_DIMENSION,
+                category_id: Some(STEEL_MATERIAL_CATEGORY),
+            },
+            CanonicalCommand::SetProductionCode {
+                instance_path: InstancePath::root(GRAPH_LEFT),
+                code: Some("000000000046".to_owned()),
+            },
+            CanonicalCommand::SetProductionCode {
+                instance_path: InstancePath::root(GRAPH_RIGHT),
+                code: Some("000000000047".to_owned()),
+            },
+        ]))
+        .unwrap();
+    let (snapshot, projection) =
+        exact_graph_document_fabrication_projection(document, "mf-102-rows", GRAPH_BOOLEAN);
+    let parts = projection
+        .bom
+        .rows
+        .iter()
+        .filter(|row| row.item_kind.is_shop_made())
+        .count();
+    assert!(parts > 1, "{parts}");
+    let refused = projection
+        .woodwop_mpr_4_0_drill_export(&snapshot)
+        .unwrap_err();
+    assert_eq!(
+        refused,
+        GeneralFabricationError::OneProgramPerPart { parts }
+    );
+    assert!(refused.to_string().contains(".zip"), "{refused}");
+    let package = projection
+        .woodwop_mpr_4_0_production_package(&snapshot, Default::default())
+        .unwrap();
+    assert!(!package.is_empty());
+    let zip = projection
+        .woodwop_mpr_4_0_production_zip(&snapshot, Default::default())
+        .unwrap();
+    assert!(zip.starts_with(b"PK\x03\x04"));
+    let contains = |needle: &[u8]| zip.windows(needle.len()).any(|window| window == needle);
+    for program in &package {
+        assert!(contains(format!("{}.mpr", program.program_name).as_bytes()));
+        assert!(contains(format!("{}.svg", program.program_name).as_bytes()));
+        assert!(contains(&program.mpr));
+    }
+}
+
 #[test]
 fn production_adapters_share_saved_codes_and_are_opt_in() {
     use ketchup_manufacturing::fabrication::production::{HomagWoodwopAdapter, ProductionAdapter};

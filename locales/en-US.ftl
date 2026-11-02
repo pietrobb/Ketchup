@@ -677,6 +677,7 @@ file-filter-general-bom = General fabrication BOM
 file-filter-cut-list-xlsx = Cut list workbook
 file-filter-cam-gcode = Reviewed ISO metric CAM program
 file-filter-homag-mpr = HOMAG woodWOP MPR program
+file-filter-homag-mpr-zip = HOMAG woodWOP MPR programs, one per piece (ZIP)
 file-filter-btlx = Hundegger BTLx 2.3.1
 file-import-stl = Import STL mesh…
 dialog-import-stl-title = Import STL mesh

@@ -222,10 +222,14 @@ drawn as one AutoCAD R12 DXF, ASCII without blocks, in mm from (0, 0): a box see
 on its largest face, any other profile along its extrusion, in the frame its
 woodWOP program lays it in (x along the longer side; a part drilled or pocketed
 only from below turned underside up). Layers: `CONTOUR`
-the outline (arcs as arcs), `CUTOUT` a `cut(through=True)`, `DRILL_D8_Z12` a hole
-8 across and 12 deep from the face seen (a through hole as deep as the part),
+the outline (arcs as arcs), `CUTOUT` a `cut(through=True)` or a pocket or cut as
+deep as the part, `DRILL_D8_Z12` a hole
+8 across and 12 deep from the face seen (a through hole, or one as deep as the
+part or deeper, as deep as the part),
 `DRILL_D8_Z12_BOTTOM` from the face below, `HDRILL_D8_Z30_H9` a hole into an edge
-drawn as a line, its axis 9 above the face below, `POCKET_Z5` a pocket or blind
+drawn as a line, its axis 9 above the face below, `TAP_M6X1_Z8` the thread of a
+tapped hole, size, pitch and depth, on the same circle (`_BOTTOM` from below;
+`HTAP_M6X1_Z8_H9` in an edge hole), `POCKET_Z5` a pocket or blind
 cut 5 deep (`_BOTTOM` from below) and `PART_NAME` the name (accents as
 `\U+XXXX`); a decimal point in a layer is `_` (`DRILL_D4_5_Z10`). A part with a
 boolean, mirror, shell, face offset or edge finish, a slanted hole or a pocket in

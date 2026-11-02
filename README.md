@@ -136,7 +136,7 @@ The drawing can be edited in 2D. A click picks one of its objects (Shift+click m
 - **Blender GLB:** mesh import preserving names, hierarchy, transforms, opaque colors, and shared instances. Imported geometry stays a mesh; boxes, cylinders, and linear extrusions can be converted to exact features after verification.
 - **SketchUp bridge:** open `.kscene` interchange subset rather than native `.skp` parsing.
 - **Export:** the visible exact model to STEP and IGES; tessellation to STL, 3MF, and Blender GLB; COLLADA for SketchUp, where equal parts become one component; and a `.ketchup-view` package for Ketchup Viewer. All exports check freshness and write a loss report where something is left out.
-- **Production:** cut lists, hardware lists, bar schedules, and material takeoff as CSV or XLSX; a general BOM with drawings; Hundegger BTLx 2.3.1 for timber members; HOMAG woodWOP drilling programs; a reviewed ISO metric CAM program; sheet-metal flat patterns with bend tables; and weldment cut lists.
+- **Production:** cut lists, hardware lists, bar schedules, and material takeoff as CSV or XLSX; a general BOM with drawings; Hundegger BTLx 2.3.1 for timber members; HOMAG woodWOP drilling programs, one per piece in a ZIP when several parts are made; a reviewed ISO metric CAM program; sheet-metal flat patterns with bend tables; and weldment cut lists.
 
 ### Ketchup Viewer
 

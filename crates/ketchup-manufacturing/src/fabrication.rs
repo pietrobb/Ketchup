@@ -340,6 +340,13 @@ pub enum GeneralFabricationError {
         thread: String,
         mismatch: TappedHoleMismatch,
     },
+    /// One woodWOP program machines one part, and `parts` different parts
+    /// are made: the production package writes one program per piece.
+    OneProgramPerPart {
+        parts: usize,
+    },
+    /// The production package could not be packed into one ZIP.
+    Package(ketchup_model::exact_product::ExactProductError),
 }
 
 impl GeneralFabricationError {
@@ -441,6 +448,11 @@ impl fmt::Display for GeneralFabricationError {
                 formatter,
                 "part \"{part}\" has a hole that does not take its thread {thread}: {mismatch}; tap the hole again or change the thread",
             ),
+            Self::OneProgramPerPart { parts } => write!(
+                formatter,
+                "{parts} different parts are made, and one HOMAG MPR program machines one part; export the HOMAG MPR to a .zip destination for one program and barcode label per piece, named by its production code",
+            ),
+            Self::Package(error) => write!(formatter, "the production package was not packed: {error}"),
         }
     }
 }
@@ -453,6 +465,7 @@ impl std::error::Error for GeneralFabricationError {
             Self::ExactGraph(error) => Some(error),
             Self::BodyValidation(error) => Some(error),
             Self::Classification(error) => Some(error),
+            Self::Package(error) => Some(error),
             _ => None,
         }
     }
@@ -677,6 +690,9 @@ pub struct GeneralManufacturingProjection {
     /// so no export may present the part as fully machined (review
     /// 2026-10-31 MF-80).
     pub undescribed_sources: Vec<GeneralBodySource>,
+    /// Those of `undescribed_sources` whose blank outline has a free-form
+    /// edge, so the blank itself is not described (review 2026-11-01 MF-103).
+    pub free_form_sources: Vec<GeneralBodySource>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1131,14 +1147,22 @@ impl GeneralFabricationProjection {
         self.manufacturing_export(snapshot)?;
         // One program machines every copy of the row, so a part with its mirrored
         // copies, a row of their own, is refused as mirrored rather than as two rows.
-        self.admit(
-            snapshot,
-            ShopFormat::Woodwop {
-                vertical_pocket_tool: options.vertical_pocket_tool_number.is_some(),
-            },
-        )?;
-        let [row] = self.bom.rows.as_slice() else {
-            return Err(GeneralFabricationError::ExportBlocked);
+        let format = ShopFormat::Woodwop {
+            vertical_pocket_tool: options.vertical_pocket_tool_number.is_some(),
+        };
+        self.admit(snapshot, format)?;
+        // Bought and site-built rows are not machined (review 2026-11-01 MF-102).
+        let rows = self
+            .bom
+            .rows
+            .iter()
+            .filter(|row| format.writes(row.item_kind))
+            .collect::<Vec<_>>();
+        let [row] = rows.as_slice() else {
+            return Err(match rows.len() {
+                0 => GeneralFabricationError::ExportBlocked,
+                parts => GeneralFabricationError::OneProgramPerPart { parts },
+            });
         };
         if row.quantity == 0 || row.quantity != row.instances.len() || !row.item_kind.is_shop_made()
         {
@@ -1238,6 +1262,40 @@ impl GeneralFabricationProjection {
                 })
             })
             .collect()
+    }
+
+    /// The production package as one stored ZIP: `<code>.mpr` and its
+    /// barcode label `<code>.svg` for every piece the package programs.
+    pub fn woodwop_mpr_4_0_production_zip(
+        &self,
+        snapshot: &Snapshot,
+        options: WoodwopMprOptions,
+    ) -> Result<Vec<u8>, GeneralFabricationError> {
+        let programs = self.woodwop_mpr_4_0_production_package(snapshot, options)?;
+        if programs.is_empty() {
+            return Err(GeneralFabricationError::ExportBlocked);
+        }
+        let names = programs
+            .iter()
+            .map(|program| {
+                [
+                    format!("{}.mpr", program.program_name),
+                    format!("{}.svg", program.program_name),
+                ]
+            })
+            .collect::<Vec<_>>();
+        let entries = programs
+            .iter()
+            .zip(&names)
+            .flat_map(|(program, [mpr, svg])| {
+                [
+                    (mpr.as_str(), program.mpr.as_slice()),
+                    (svg.as_str(), program.barcode_svg.as_slice()),
+                ]
+            })
+            .collect::<Vec<_>>();
+        crate::three_mf_export::encode_package(&entries, usize::MAX)
+            .map_err(GeneralFabricationError::Package)
     }
 
     /// Only the existing top-face/edge setup; no inferred workpiece flip or labels.
@@ -2105,10 +2163,18 @@ impl StockBlank {
 /// coordinates: an arc reaches below its ends where it passes the lowest point
 /// of its circle along an axis (review 2026-10-31 MF-85).
 fn profile_minimum(cross_section: &[GeneralMachiningSegment]) -> Option<[f64; 2]> {
+    profile_bounds(cross_section).map(|[minimum, _]| minimum)
+}
+
+/// Minimum and maximum corner of a cross-section of lines and circular arcs:
+/// an arc reaches past its ends where it passes an extreme point of its circle.
+fn profile_bounds(cross_section: &[GeneralMachiningSegment]) -> Option<[[f64; 2]; 2]> {
     let mut minimum = [f64::INFINITY; 2];
+    let mut maximum = [f64::NEG_INFINITY; 2];
     let mut include = |point: [f64; 2]| {
         for axis in 0..2 {
             minimum[axis] = minimum[axis].min(point[axis]);
+            maximum[axis] = maximum[axis].max(point[axis]);
         }
     };
     for segment in cross_section {
@@ -2140,19 +2206,30 @@ fn profile_minimum(cross_section: &[GeneralMachiningSegment]) -> Option<[f64; 2]
                 };
                 let passes =
                     |direction: f64| (direction - from).rem_euclid(std::f64::consts::TAU) <= sweep;
-                if passes(std::f64::consts::PI) {
-                    include([center_mm[0] - radius, center_mm[1]]);
-                }
-                if passes(-std::f64::consts::FRAC_PI_2) {
-                    include([center_mm[0], center_mm[1] - radius]);
+                for (direction, point) in [
+                    (0.0, [center_mm[0] + radius, center_mm[1]]),
+                    (
+                        std::f64::consts::FRAC_PI_2,
+                        [center_mm[0], center_mm[1] + radius],
+                    ),
+                    (std::f64::consts::PI, [center_mm[0] - radius, center_mm[1]]),
+                    (
+                        -std::f64::consts::FRAC_PI_2,
+                        [center_mm[0], center_mm[1] - radius],
+                    ),
+                ] {
+                    if passes(direction) {
+                        include(point);
+                    }
                 }
             }
         }
     }
     minimum
         .iter()
+        .chain(&maximum)
         .all(|value| value.is_finite())
-        .then_some(minimum)
+        .then_some([minimum, maximum])
 }
 
 fn rectangular_stock(geometry: &GeneralMachiningGeometry) -> Option<StockBlank> {
@@ -2847,6 +2924,7 @@ pub fn project_general_fabrication(
     let mut operations = Vec::new();
     let mut unresolved_sources = Vec::new();
     let mut undescribed_sources = Vec::new();
+    let mut free_form_sources = Vec::new();
     for row in &bom.rows {
         // A member must be described; a manufactured item is machined
         // (woodWOP, production job) when it can be, and otherwise those exports
@@ -2892,6 +2970,11 @@ pub fn project_general_fabrication(
                     ExactBodyPackage::Imported(_) => None,
                 };
                 let Some(mut row_operations) = row_operations else {
+                    if let ExactBodyPackage::Graph(package) = package.as_ref()
+                        && has_free_form_blank(&package.graph)
+                    {
+                        free_form_sources.push(row.source.clone());
+                    }
                     unresolved(&row.source);
                     continue;
                 };
@@ -2925,6 +3008,8 @@ pub fn project_general_fabrication(
     unresolved_sources.dedup();
     undescribed_sources.sort();
     undescribed_sources.dedup();
+    free_form_sources.sort();
+    free_form_sources.dedup();
     let manufacturing_status =
         if validation_state == ValidationState::Passed && unresolved_sources.is_empty() {
             ProjectionStatus::Complete
@@ -2948,6 +3033,7 @@ pub fn project_general_fabrication(
         operations,
         unresolved_sources,
         undescribed_sources,
+        free_form_sources,
     };
     let drawings = bom
         .rows
@@ -2972,6 +3058,28 @@ pub fn project_general_fabrication(
         manufacturing,
         weldment,
     })
+}
+
+/// Whether the blank `graph` starts from, its first extrusion, has an
+/// outline edge that is neither a line nor a circular arc.
+fn has_free_form_blank(graph: &ExactBRepGraph) -> bool {
+    let Some(ExactBRepOperation::Extrude { profile, .. }) =
+        graph.nodes.first().map(|node| &node.operation)
+    else {
+        return false;
+    };
+    usize::try_from(profile.0)
+        .ok()
+        .and_then(|index| graph.profiles.get(index))
+        .is_some_and(|profile| {
+            matches!(
+                &profile.geometry,
+                ExactBRepPlanarGeometry::Boundary { segments, .. }
+                    if segments.iter().any(|segment| {
+                        matches!(segment, ExactBRepPlanarSegment::CubicBezier { .. })
+                    })
+            )
+        })
 }
 
 fn graph_manufacturing_operations(
@@ -3262,42 +3370,33 @@ fn prismatic_stock_geometry(
     else {
         return None;
     };
-    let mut points = Vec::new();
-    let mut cross_section = Vec::new();
-    for segment in segments {
-        let ExactBRepPlanarSegment::Line {
-            start_bits,
-            end_bits,
-        } = segment
-        else {
-            return None;
-        };
-        let start_mm = start_bits.map(f64::from_bits);
-        let end_mm = end_bits.map(f64::from_bits);
-        points.push(start_mm);
-        points.push(end_mm);
-        cross_section.push(GeneralMachiningSegment::Line { start_mm, end_mm });
-    }
-    let minimum = [
-        points
-            .iter()
-            .map(|point| point[0])
-            .fold(f64::INFINITY, f64::min),
-        points
-            .iter()
-            .map(|point| point[1])
-            .fold(f64::INFINITY, f64::min),
-    ];
-    let maximum = [
-        points
-            .iter()
-            .map(|point| point[0])
-            .fold(f64::NEG_INFINITY, f64::max),
-        points
-            .iter()
-            .map(|point| point[1])
-            .fold(f64::NEG_INFINITY, f64::max),
-    ];
+    // Lines and circular arcs (a rounded table top, review 2026-11-01
+    // MF-103); a Bezier edge leaves the part undescribed.
+    let cross_section = segments
+        .iter()
+        .map(|segment| match segment {
+            ExactBRepPlanarSegment::Line {
+                start_bits,
+                end_bits,
+            } => Some(GeneralMachiningSegment::Line {
+                start_mm: start_bits.map(f64::from_bits),
+                end_mm: end_bits.map(f64::from_bits),
+            }),
+            ExactBRepPlanarSegment::CircularArc {
+                start_bits,
+                end_bits,
+                center_bits,
+                clockwise,
+            } => Some(GeneralMachiningSegment::CircularArc {
+                start_mm: start_bits.map(f64::from_bits),
+                end_mm: end_bits.map(f64::from_bits),
+                center_mm: center_bits.map(f64::from_bits),
+                clockwise: *clockwise,
+            }),
+            ExactBRepPlanarSegment::CubicBezier { .. } => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let [minimum, maximum] = profile_bounds(&cross_section)?;
     let width = maximum[0] - minimum[0];
     let height = maximum[1] - minimum[1];
     let direction = interval.direction();

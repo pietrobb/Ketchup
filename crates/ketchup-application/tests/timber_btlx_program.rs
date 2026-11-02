@@ -214,10 +214,103 @@ fn library_members_boards_and_fasteners_carry_their_fabrication_role() {
         .woodwop_mpr_4_0_setup_a_programs(&snapshot, Default::default())
         .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(programs.len(), 2);
+    // Review 2026-11-01 MF-102: one MPR program says it machines one of the
+    // two made parts and points to the package, which programs both.
+    assert_eq!(
+        projection.woodwop_mpr_4_0_drill_export(&snapshot).err(),
+        Some(
+            ketchup_manufacturing::fabrication::GeneralFabricationError::OneProgramPerPart {
+                parts: 2
+            }
+        )
+    );
+    let zip = projection
+        .woodwop_mpr_4_0_production_zip(&snapshot, Default::default())
+        .unwrap_or_else(|error| panic!("{error}"));
+    for name in ["000000000001.mpr", "000000000002.mpr"] {
+        assert!(
+            zip.windows(name.len())
+                .any(|window| window == name.as_bytes()),
+            "{name}"
+        );
+    }
     let job = projection
         .production_job(&snapshot, &[])
         .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(job["parts"].as_array().map(Vec::len), Some(2), "{job}");
+}
+
+/// Review 2026-11-01 MF-103: a table top with rounded corners, a profile of
+/// lines and arcs, has a blank around its arcs and a production job; an
+/// outline with a free-form edge is refused for its outline, not its cuts.
+#[test]
+fn a_rounded_table_top_is_described_and_a_free_form_outline_says_so() {
+    use ketchup_manufacturing::fabrication::production::{HomagWoodwopAdapter, ProductionAdapter};
+    use ketchup_manufacturing::fabrication::{GeneralFabricationError, ShopElement};
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let coded = |snapshot: Snapshot| {
+        use ketchup_model::document::{CanonicalCommand, CommandBatch};
+        let top = snapshot.scene_query()[0].instance_path.clone();
+        snapshot
+            .preview_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetProductionCode {
+                    instance_path: top,
+                    code: Some("000000000001".into()),
+                },
+            ]))
+            .unwrap()
+    };
+    let snapshot = coded(apply(
+        "top = extrude('top', profile = round_corners([[0, 0], [800, 0], [800, 500], [0, 500]], 40), \
+         distance = 18, material = 'oak', attributes = {FABRICATION_ROLE: MANUFACTURED_ITEM})\n",
+    ));
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    assert!(
+        projection.manufacturing.undescribed_sources.is_empty(),
+        "{:#?}",
+        projection.manufacturing.undescribed_sources
+    );
+    let woodwop = HomagWoodwopAdapter {
+        options: Default::default(),
+    };
+    let adapters: [&dyn ProductionAdapter; 1] = [&woodwop];
+    let job = projection
+        .production_job(&snapshot, &[])
+        .unwrap_or_else(|error| panic!("{error}"));
+    let part = &job["parts"][0];
+    assert_eq!(part["stock_shape"], "profile_extrusion", "{job}");
+    assert_eq!(
+        part["dimensions_mm"],
+        serde_json::json!([800.0, 500.0, 18.0]),
+        "{job}"
+    );
+    // woodWOP lays a rectangular blank: the rounded top is refused by name.
+    assert!(matches!(
+        projection.production_job(&snapshot, &adapters),
+        Err(GeneralFabricationError::PartExportBlocked { .. }
+            | GeneralFabricationError::ExportBlocked)
+    ));
+
+    let snapshot = coded(apply(
+        "top = extrude('top', profile = ellipse(400, 250, center = (400, 250)), distance = 18, \
+         material = 'oak', attributes = {FABRICATION_ROLE: MANUFACTURED_ITEM})\n",
+    ));
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    let Err(GeneralFabricationError::CannotCarry {
+        part,
+        element,
+        reason,
+        ..
+    }) = projection.production_job(&snapshot, &[])
+    else {
+        panic!("a free-form outline must be refused");
+    };
+    assert_eq!(
+        (part.as_str(), element),
+        ("top", ShopElement::FreeFormBlank)
+    );
+    assert!(reason.contains("outline"), "{reason}");
 }
 
 /// Idea #128: a drilled library board on its own is one woodWOP program and

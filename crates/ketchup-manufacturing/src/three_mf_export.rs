@@ -619,7 +619,8 @@ fn write_xml_escaped(xml: &mut BoundedString, value: &str) -> Result<(), ExactPr
     Ok(())
 }
 
-fn encode_package(
+/// A stored (uncompressed) ZIP of `entries`, at most `archive_limit` bytes.
+pub(crate) fn encode_package(
     entries: &[(&str, &[u8])],
     archive_limit: usize,
 ) -> Result<Vec<u8>, ExactProductError> {

@@ -70,7 +70,7 @@ const EXPORT_FORMATS: [(&str, &[&str], Exporter); 14] = [
     ),
     (
         "homag_mpr",
-        &["mpr"],
+        &["mpr", "zip"],
         KetchupApp::export_current_model_homag_mpr_to,
     ),
     ("btlx", &["btlx"], KetchupApp::export_current_model_btlx_to),

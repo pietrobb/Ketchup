@@ -3112,11 +3112,14 @@ def price_list(prices, currency = None, source = None):
 #   longer side, y along the shorter, a part machined from below only turned underside
 #   up. Layers (a decimal point written "_"):
 #     CONTOUR              the outline, arcs as arcs
-#     CUTOUT               a cut(..., through=True)
-#     DRILL_D8_Z12         a hole 8 across, 12 deep from the face seen (through: the thickness)
+#     CUTOUT               a cut(..., through=True), or a pocket or cut as deep as the part
+#     DRILL_D8_Z12         a hole 8 across, 12 deep from the face seen (through, or as deep
+#                          as the part or deeper: the thickness)
 #     DRILL_D8_Z12_BOTTOM  the same from the face below
 #     HDRILL_D8_Z30_H9     a hole into an edge, a line from its entry to its bottom, its
-#                          axis 9 above the face below
+#                          axis 9 above the face below (at most across the part)
+#     TAP_M6X1_Z8          the thread of a tapped hole: size, pitch, depth, on its circle
+#                          (TAP_..._BOTTOM from below, HTAP_M6X1_Z8_H9 in an edge hole)
 #     POCKET_Z5            a pocket or a blind cut 5 deep (POCKET_Z5_BOTTOM from below)
 #     PART_NAME            the part's name, accents as \U+XXXX
 #   A part with a boolean, mirror, shell, push_pull or fillet/chamfer, a slanted hole, a

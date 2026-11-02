@@ -677,6 +677,7 @@ file-filter-general-bom = Všeobecný výrobný kusovník
 file-filter-cut-list-xlsx = Zošit kusovníka
 file-filter-cam-gcode = Skontrolovaný ISO metrický CAM program
 file-filter-homag-mpr = Program HOMAG woodWOP MPR
+file-filter-homag-mpr-zip = Programy HOMAG woodWOP MPR, jeden na kus (ZIP)
 file-filter-btlx = Hundegger BTLx 2.3.1
 file-import-stl = Importovať sieť STL…
 dialog-import-stl-title = Import siete STL
