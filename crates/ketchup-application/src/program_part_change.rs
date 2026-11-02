@@ -287,15 +287,29 @@ fn coloured_at_once(
             part.color = *color;
         }
     }
+    // The line that makes the first part coloured otherwise, to show where to change it
+    // (review 2026-10-26 WB-45: the refusal had no place).
+    let otherwise = (expected.parts.iter())
+        .find(|part| after.model.part(&part.name).map(|made| made.color) != Some(part.color))
+        .map(|part| part.name.clone());
     let expected = Expected::Same(Box::new(expected));
     if !expected.holds(&evaluated.model, &after.model) {
-        return Err(refused(
-            "program_part_change_mismatch",
-            format!(
-                "the program did not colour the parts as the edit asked: {}; change it in the program",
-                expected.difference(&evaluated.model, &after.model)
-            ),
-        ));
+        let message = format!(
+            "the program did not colour the parts as the edit asked: {}; change it in the program",
+            expected.difference(&evaluated.model, &after.model)
+        );
+        let call = otherwise.as_ref().and_then(|name| {
+            let edit = Edit {
+                source,
+                evaluated,
+                name,
+            };
+            Some((edit.found_call()?.lines.first, edit))
+        });
+        return Err(match call {
+            Some((line, edit)) => edit.refused_on(line, "program_part_change_mismatch", message),
+            None => refused("program_part_change_mismatch", message),
+        });
     }
     Ok(Some(RewrittenProgram {
         source: rewritten,

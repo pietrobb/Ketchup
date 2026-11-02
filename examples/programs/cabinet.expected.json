@@ -279,7 +279,9 @@
       "max": 8.0,
       "min": 0.0,
       "name": "shelves",
-      "value": 2.0
+      "plain": true,
+      "value": 2.0,
+      "whole": true
     }
   ],
   "relations": [

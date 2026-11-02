@@ -1497,3 +1497,31 @@ fn a_later_change_of_a_batch_is_refused_on_the_users_lines() {
         "{message}"
     );
 }
+
+/// Review 2026-10-26 WB-45: colouring several parts at once that the program does not make
+/// as asked (a mirrored copy takes its source's colour too) was refused without a place, so
+/// the window could not show the line to change. It names the line of the first part whose
+/// colour comes out otherwise.
+#[test]
+fn a_batch_of_colours_refused_names_the_line() {
+    let source = "box(\"z\", (5, 5, 5), at=(50, 0, 0))\n\
+                  box(\"a\", (10, 20, 30), at=(100, 0, 0))\n\
+                  mirrored(\"a\", \"a mirrored\", point=(0, 0, 0), normal=(1, 0, 0))\n";
+    let both = ["z", "a"].map(|name| (name.to_owned(), PartChange::Color(Some([9, 9, 9]))));
+    let refused = rewrite_rule_program_parts(&program(source), &both).expect_err("refused");
+    let RuleProgramApplyError::Program {
+        code,
+        message,
+        location,
+    } = refused
+    else {
+        panic!("{refused:?}");
+    };
+    assert_eq!(code, "program_part_change_mismatch", "{message}");
+    assert!(message.contains("\"a mirrored\""), "{message}");
+    assert_eq!(
+        location.map(|location| location.at.line),
+        Some(3),
+        "{message}"
+    );
+}

@@ -31,6 +31,130 @@ pub struct TimberClass {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rho_k: Option<f64>,
     pub source: String,
+    /// The product of EN 1995-1-1 table 3.1 ([`PRODUCTS`]) whose kmod, kdef and gamma_M
+    /// apply; empty for solid timber, or glulam when `glulam`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub product: String,
+}
+
+impl TimberClass {
+    /// The product whose factors apply (review 2026-11-01 PG-106: every material took
+    /// those of solid timber).
+    #[must_use]
+    pub fn product(&self) -> &'static Product {
+        let name = match self.product.as_str() {
+            "" if self.glulam => "glulam",
+            "" => "solid",
+            name => name,
+        };
+        product(name).unwrap_or(&PRODUCTS[0])
+    }
+
+    /// kmod (table 3.1) of the load-duration class `duration` in its service class.
+    #[must_use]
+    pub fn kmod(&self, duration: usize) -> f64 {
+        self.product().kmod[usize::from(self.service_class) - 1].map_or(0.0, |row| row[duration])
+    }
+}
+
+/// A product of EN 1995-1-1 table 3.1 with its kmod in each service class (none where the
+/// standard does not use it there), kdef (table 3.2) and gamma_M (table 2.3).
+#[derive(Debug)]
+pub struct Product {
+    pub name: &'static str,
+    pub label: &'static str,
+    /// By service class, by load-duration class: permanent, long, medium, short,
+    /// instantaneous.
+    pub kmod: [Option<[f64; 5]>; 3],
+    pub kdef: [f64; 3],
+    pub gamma_m: f64,
+}
+
+const TIMBER_DRY: [f64; 5] = [0.6, 0.7, 0.8, 0.9, 1.1];
+const TIMBER_WET: [f64; 5] = [0.5, 0.55, 0.65, 0.7, 0.9];
+const BOARD_DRY: [f64; 5] = [0.4, 0.5, 0.7, 0.9, 1.1];
+const BOARD_HUMID: [f64; 5] = [0.3, 0.4, 0.55, 0.7, 0.9];
+const LOW_DRY: [f64; 5] = [0.3, 0.45, 0.65, 0.85, 1.1];
+const LOW_HUMID: [f64; 5] = [0.2, 0.3, 0.45, 0.6, 0.8];
+
+/// The products `timber_strength(product=)` names. Plywood is EN 636-3 (any service class).
+pub const PRODUCTS: [Product; 10] = [
+    Product {
+        name: "solid",
+        label: "solid timber (EN 14081-1)",
+        kmod: [Some(TIMBER_DRY), Some(TIMBER_DRY), Some(TIMBER_WET)],
+        kdef: [0.6, 0.8, 2.0],
+        gamma_m: 1.3,
+    },
+    Product {
+        name: "glulam",
+        label: "glued laminated timber (EN 14080)",
+        kmod: [Some(TIMBER_DRY), Some(TIMBER_DRY), Some(TIMBER_WET)],
+        kdef: [0.6, 0.8, 2.0],
+        gamma_m: 1.25,
+    },
+    Product {
+        name: "lvl",
+        label: "LVL (EN 14374, EN 14279)",
+        kmod: [Some(TIMBER_DRY), Some(TIMBER_DRY), Some(TIMBER_WET)],
+        kdef: [0.6, 0.8, 2.0],
+        gamma_m: 1.2,
+    },
+    Product {
+        name: "plywood",
+        label: "plywood (EN 636-3)",
+        kmod: [Some(TIMBER_DRY), Some(TIMBER_DRY), Some(TIMBER_WET)],
+        kdef: [0.8, 1.0, 2.5],
+        gamma_m: 1.2,
+    },
+    Product {
+        name: "osb2",
+        label: "OSB/2 (EN 300)",
+        kmod: [Some(LOW_DRY), None, None],
+        kdef: [2.25, 0.0, 0.0],
+        gamma_m: 1.2,
+    },
+    Product {
+        name: "osb3",
+        label: "OSB/3 (EN 300)",
+        kmod: [Some(BOARD_DRY), Some(BOARD_HUMID), None],
+        kdef: [1.5, 2.25, 0.0],
+        gamma_m: 1.2,
+    },
+    Product {
+        name: "osb4",
+        label: "OSB/4 (EN 300)",
+        kmod: [Some(BOARD_DRY), Some(BOARD_HUMID), None],
+        kdef: [1.5, 2.25, 0.0],
+        gamma_m: 1.2,
+    },
+    Product {
+        name: "particleboard_p5",
+        label: "particleboard P5 (EN 312)",
+        kmod: [Some(LOW_DRY), Some(LOW_HUMID), None],
+        kdef: [2.25, 3.0, 0.0],
+        gamma_m: 1.3,
+    },
+    Product {
+        name: "particleboard_p6",
+        label: "particleboard P6 (EN 312)",
+        kmod: [Some(BOARD_DRY), None, None],
+        kdef: [1.5, 0.0, 0.0],
+        gamma_m: 1.3,
+    },
+    Product {
+        name: "particleboard_p7",
+        label: "particleboard P7 (EN 312)",
+        kmod: [Some(BOARD_DRY), Some(BOARD_HUMID), None],
+        kdef: [1.5, 2.25, 0.0],
+        gamma_m: 1.3,
+    },
+];
+
+/// The product named `name`.
+#[must_use]
+pub fn product(name: &str) -> Option<&'static Product> {
+    PRODUCTS.iter().find(|product| product.name == name)
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -167,7 +291,7 @@ pub const BASIS: [&str; 9] = [
     "scope: vertical (gravity) loads only, permanent, imposed, roof and snow; wind, horizontal stability (bracing, racking) and bending combined with axial force (EN 1995-1-1 6.2.3, 6.2.4, 6.3.2 (6.23, 6.24)) are not checked",
     "EN 1990 6.4.3.2 (6.10): 1.35 G + 1.5 Q1 + 1.5 psi0 Qi; SLS characteristic, w_fin with kdef and psi2 (recommended values, the national annex may differ)",
     "psi0/psi2 (EN 1990 table A1.1): imposed category A 0.7/0.3, roof category H 0/0 and never with snow (EN 1991-1-1 3.3.2), snow below 1000 m 0.5/0",
-    "load duration (EN 1995-1-1 2.3.1.2): permanent G, medium-term imposed, short-term roof and snow; kmod table 3.1, kdef table 3.2, gamma_M 1.3 solid / 1.25 glulam (table 2.3)",
+    "load duration (EN 1995-1-1 2.3.1.2): permanent G, medium-term imposed, short-term roof and snow; kmod table 3.1, kdef table 3.2 and gamma_M table 2.3 of the product each class names (solid timber 1.3, glulam 1.25, LVL, plywood and OSB 1.2, particleboard 1.3)",
     "bending with kh (3.2, 3.3); lateral torsional buckling (6.3.3) between the places that hold the member sideways (its bearings, and parts resting on it that rest on something else too: decking, battens, joists), with kcrit (6.34) of sigma_m,crit (6.32) over lef at the upper bound of table 6.1 (the stretch, plus 2h where the top is compressed): a member whose bending over kcrit exceeds the strength there is not verified",
     "shear with kcr = 0.67 (6.1.7); notches at bearings with kv (6.5.2), right-angled, x from the middle of the reaction to the corner of the notch, kv = 1 for a notch in the top over a bearing under the member (fig. 6.11(b)); elsewhere a change in depth steeper than 1:10 on the side in tension is not verified (6.5.1(2))",
     "compression perpendicular to the grain with kc90 = 1 on the contact area (6.1.5, without the 30 mm extension); compression with kc (6.3.2) on the full member length about both axes, sheathing not counted, and without kc on the net section at notches in a side (6.1.4) more than twice the member width from its ends; axial force in sloped beams neglected",
@@ -175,9 +299,6 @@ pub const BASIS: [&str; 9] = [
     "a computed check, not an authorized structural design",
 ];
 
-/// Load duration classes: permanent, long, medium, short, instantaneous.
-const KMOD: [[f64; 5]; 2] = [[0.6, 0.7, 0.8, 0.9, 1.1], [0.5, 0.55, 0.65, 0.7, 0.9]];
-const KDEF: [f64; 3] = [0.6, 0.8, 2.0];
 const GAMMA_G: f64 = 1.35;
 const GAMMA_Q: f64 = 1.5;
 const KCR: f64 = 0.67;
@@ -288,11 +409,6 @@ fn combinations(
 
 /// gamma_M of connections (EN 1995-1-1 table 2.3).
 pub(crate) const GAMMA_M_CONNECTION: f64 = 1.3;
-
-/// kmod (table 3.1) of a service class and load-duration class.
-pub(crate) fn kmod(service_class: u8, duration: usize) -> f64 {
-    KMOD[usize::from(service_class == 3)][duration]
-}
 
 /// `loads` in every ultimate combination (6.10): design value, load-duration
 /// class and label.
@@ -1401,7 +1517,7 @@ struct Design<'a> {
 
 impl Design<'_> {
     fn kmod(&self, duration: usize) -> f64 {
-        kmod(self.class.service_class, duration)
+        self.class.kmod(duration)
     }
 
     fn strength(&self, characteristic: f64, duration: usize) -> f64 {
@@ -2266,8 +2382,8 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
         };
         let design = Design {
             class,
-            gamma_m: if class.glulam { 1.25 } else { 1.3 },
-            kdef: KDEF[usize::from(class.service_class) - 1],
+            gamma_m: class.product().gamma_m,
+            kdef: class.product().kdef[usize::from(class.service_class) - 1],
         };
         let present: Vec<&'static str> = LOAD_KINDS[1..]
             .iter()

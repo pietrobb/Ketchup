@@ -1242,6 +1242,48 @@ fn push_pull_to(part: &Part, face: &str, to: f64) -> anyhow::Result<Option<f64>>
     Ok(((to - long).abs() > CONTACT_FIT_MM).then_some(to - long))
 }
 
+/// How far `by` moves `face` of `part`; refuses pulling a planar face in so far that it
+/// reaches the far side of the part behind it (review 2026-10-26 WB-43: -20 on a 10 mm
+/// cube was taken, and the part's bounds went to -10..0).
+fn pulled_distance(by: &PushPullBy, part: &Part, face: &str) -> anyhow::Result<Option<f64>> {
+    let distance = by.distance(part, face)?;
+    let Some(distance_mm) = distance.filter(|distance_mm| *distance_mm < 0.0) else {
+        return Ok(distance);
+    };
+    let Ok(frame) = part.face_frame(face) else {
+        return Ok(distance);
+    };
+    if frame.kind != FaceKind::Planar {
+        return Ok(distance);
+    }
+    let (min, max) = part.local_bounds();
+    let depth = (0..8)
+        .map(|corner| {
+            let point: [f64; 3] = std::array::from_fn(|axis| {
+                if corner >> axis & 1 == 0 {
+                    min[axis]
+                } else {
+                    max[axis]
+                }
+            });
+            ketchup_geometry::linalg::dot(
+                std::array::from_fn(|axis| frame.origin_mm[axis] - point[axis]),
+                frame.normal,
+            )
+        })
+        .fold(0.0_f64, f64::max);
+    if -distance_mm >= depth - CONTACT_FIT_MM {
+        let shown = |value: f64| (value * 1000.0).round() / 1000.0;
+        anyhow::bail!(
+            "push_pull on {:?}: pulling face {face:?} in by {} mm leaves nothing of it; the part is {} mm deep behind face {face:?}",
+            part.name,
+            shown(-distance_mm),
+            shown(depth)
+        );
+    }
+    Ok(distance)
+}
+
 /// A sweep path: 3D points (a polyline whose corners `bend` rounds), or
 /// segments `[start, end]` and `[start, end, curve]` with the curve an arc
 /// `{"through": p}` or `{"center": c, "normal": n}` (counter-clockwise
@@ -2074,7 +2116,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
             reject_swept(part, "push_pull")?;
             part.exact_face_label(face)
                 .map_err(|error| anyhow::anyhow!("push_pull on {part_name:?}: {error}"))?;
-            let Some(distance_mm) = by.distance(part, face)? else {
+            let Some(distance_mm) = pulled_distance(&by, part, face)? else {
                 return Ok(NoneType);
             };
             add_operation(

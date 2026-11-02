@@ -283,6 +283,32 @@ fn counting_more_than_one_alternative_representation_is_a_warning() {
     );
 }
 
+/// Review 2026-11-01 PG-104: the hint said to name the representation made in
+/// production(tags=[…]); followed, it left every other part out of production unsaid. It
+/// names the tags of the other parts made too, and the parts that carry no tag.
+#[test]
+fn the_hint_for_alternatives_keeps_the_other_parts_made() {
+    let source = "box(\"beam simple\", (2000, 100, 200), material = \"KVH\", tags = [\"simple\"])\n\
+         box(\"beam detailed\", (2000, 100, 200), material = \"KVH\", tags = [\"detailed\"])\n\
+         box(\"plate\", (2000, 100, 20), at = (0, 0, 300), material = \"KVH\", tags = [\"frame\"])\n\
+         box(\"post\", (100, 100, 2000), at = (0, 500, 0), material = \"KVH\")\n\
+         alternatives([\"simple\", \"detailed\"])\n";
+    let (_, report) = run("t.star", source, &BTreeMap::new()).unwrap();
+    let counted = report
+        .issues
+        .iter()
+        .find(|issue| issue.kind == "production_counts_alternatives")
+        .unwrap_or_else(|| panic!("{:#?}", report.issues));
+    assert!(
+        counted
+            .hint
+            .contains("production(tags = [\"detailed\", \"frame\"])"),
+        "{}",
+        counted.hint
+    );
+    assert!(counted.hint.contains("post"), "{}", counted.hint);
+}
+
 #[test]
 fn the_cut_list_gives_the_blank_a_push_pull_grew() {
     let (_, report) = run(
@@ -683,6 +709,52 @@ fn params_take_overrides_report_unknown_ones_and_check_ranges() {
             .issues
             .iter()
             .any(|issue| issue.kind == "param_out_of_range")
+    );
+}
+
+/// Review 2026-10-26 WB-42: a switch param(…, min = 0, max = 1) took the override 0.001
+/// and a count 2.5 without a word. A param declared whole = True takes whole numbers only.
+#[test]
+fn a_whole_param_refuses_a_fraction() {
+    let source = "n = param(\"count\", 2, min = 1, max = 4, whole = True, unit = \"\")\n\
+                  s = param(\"switch\", 0, min = 0, max = 1, whole = True, unit = \"\")\n\
+                  w = param(\"width\", 0, min = 0, max = 1)\n\
+                  box(\"p\", (10, 10, 10))\n";
+    let overrides = BTreeMap::from([
+        ("count".to_owned(), 2.5),
+        ("switch".to_owned(), 0.001),
+        ("width".to_owned(), 0.5),
+    ]);
+    let (_, report) = run("t.star", source, &overrides).unwrap();
+    let fractions = report
+        .issues
+        .iter()
+        .filter(|issue| issue.kind == "param_not_whole")
+        .map(|issue| (issue.severity, issue.message.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        fractions,
+        [
+            (
+                Severity::Error,
+                "param count = 2.5 takes whole numbers only".to_owned()
+            ),
+            (
+                Severity::Error,
+                "param switch = 0.001 takes whole numbers only".to_owned()
+            ),
+        ]
+    );
+    let whole_default = run(
+        "t.star",
+        "n = param(\"count\", 2.5, whole = True)\n",
+        &BTreeMap::new(),
+    );
+    assert!(
+        whole_default
+            .unwrap_err()
+            .to_string()
+            .contains("whole = True needs a whole default")
     );
 }
 

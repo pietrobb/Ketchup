@@ -755,3 +755,34 @@ fn a_cutting_plan_takes_the_layer_thickness_and_the_member_section() {
     let kvh = plans.iter().find(|plan| plan.material == "KVH").unwrap();
     assert_eq!(kvh.layouts.len(), 1, "{kvh:#?}");
 }
+
+/// Review 2026-11-01 PG-108: the cut list gave every blank longest side first, while the
+/// cutting plan of the same part took the sides its axes name: a strip 15 wide ripped from
+/// an 18 mm board was 2000 x 18 x 15 in the cut list and 2000 x 15 on an 18 mm sheet in the
+/// plan. Both give a blank as length, width, thickness the same way.
+#[test]
+fn the_cut_list_and_the_cutting_plan_give_a_blank_in_the_same_order() {
+    let source = "board('strip', (2000, 15, 18), material = 'OSB', thickness_axis = 'z')\n\
+         board('loose strip', (2000, 15, 18), at = (0, 100, 0), material = 'MDF', thickness_axis = 'z')\n\
+         sheet_stock('OSB', [(2500, 1250)])\n";
+    let (_, report) = ketchup_program::run("cutting.star", source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"));
+    let plan = &report.bom.cutting[0];
+    let piece = &plan.layouts[0].pieces[0];
+    assert_eq!(
+        [piece.size_mm.clone(), plan.section_mm.clone()].concat(),
+        [2000.0, 15.0, 18.0]
+    );
+    let listed = |material: &str| {
+        report
+            .bom
+            .cut_list
+            .iter()
+            .find(|row| row.material == material)
+            .unwrap_or_else(|| panic!("{:#?}", report.bom.cut_list))
+            .dimensions_mm
+    };
+    // With stock or without, a part that names its thickness gives it last.
+    assert_eq!(listed("OSB"), [2000.0, 15.0, 18.0]);
+    assert_eq!(listed("MDF"), [2000.0, 15.0, 18.0]);
+}

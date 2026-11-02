@@ -173,9 +173,9 @@ pub fn bom(model: &ProgramModel) -> Bom {
             row.parts.push(part.name.clone());
             continue;
         }
-        // The blank: grown by push_pull and union, unlike the declared size.
-        let mut dimensions = part.blank_size();
-        dimensions.sort_by(|left, right| right.total_cmp(left));
+        // The blank: grown by push_pull and union, unlike the declared size; its sides in
+        // the order of the cutting plan.
+        let dimensions = crate::cutting::blank_dimensions(model, part);
         let material = part
             .material
             .clone()
@@ -200,9 +200,10 @@ pub fn bom(model: &ProgramModel) -> Bom {
             .rating
             .as_ref()
             .map(|rating| &rating.hardware)
-            .filter(|hardware| !hardware.is_empty());
+            .filter(|hardware| !hardware.is_empty())
+            .or_else(|| Some(&joint.hardware).filter(|hardware| !hardware.is_empty()));
         if let Some(hardware_of_one) = rated_hardware {
-            // What one rated connection is bought as: the connector and its nails.
+            // What one connection is bought as: the connector and its nails, rated or not.
             for (item, count) in hardware_of_one {
                 bought(&mut hardware, item, BTreeMap::new()).count += count;
             }

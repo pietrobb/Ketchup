@@ -1626,3 +1626,38 @@ fn large_house_every_member_of_the_house_has_a_utilization_and_passes_once_the_s
         }
     }
 }
+
+/// Review 2026-11-01 PG-106: kmod, kdef and gamma_M came from the rows of solid timber
+/// for every material, so an OSB/3 member had kmod 0.6 for permanent loads instead of 0.4.
+/// They come from the product the class names (EN 1995-1-1 tables 2.3, 3.1 and 3.2).
+#[test]
+fn a_panel_product_takes_its_own_kmod_kdef_and_gamma_m() {
+    let osb = |service_class: u32| {
+        beam("panel", 100.0, 200.0).replace(
+            "timber_design({\"C24\": \"C24\"})",
+            &format!(
+                "timber_design({{\"C24\": \"C24\"}})\n\
+                 timber_strength(\"panel\", strength_class = \"OSB/3\", \
+                 service_class = {service_class}, glulam = False, product = \"osb3\", \
+                 fm_k = 24, fv_k = 4.0, fc0_k = 21, fc90_k = 2.5, e0_mean = 11000, \
+                 e0_05 = 7400, source = \"test\")"
+            ),
+        )
+    };
+    let report = report(&osb(1), &[]);
+    let panel = member(&report, "beam");
+    // As the C24 beam of the hand calculation, with OSB/3 in service class 1: kmod 0.7 for
+    // the medium-term imposed load and gamma_M 1.2.
+    let (q, l) = (1.2, 3900.0);
+    let moment = 1.5 * q * l * l / 8.0;
+    close(
+        utilization(panel, "bending"),
+        moment / (100.0 * 200.0 * 200.0 / 6.0) / (0.7 * 24.0 / 1.2),
+    );
+    // OSB/3 is not used in service class 3.
+    let error = run("design.star", &osb(3), &BTreeMap::new()).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("service class 3"),
+        "{error:#}"
+    );
+}

@@ -7,9 +7,10 @@
 
 #@topic basics: Parts, frames, faces, parameters, numbers
 #
-#   param(name, default, min=, max=, doc=, unit="mm")  -> number the user can override;
-#     unit="" for a count, a factor or an angle: the window then takes no length unit
-#     ("3 m"), else it reads one as millimetres
+#   param(name, default, min=, max=, doc=, unit="mm", whole=False)  -> number the user can
+#     override; unit="" for a count, a factor or an angle: the window then takes no length
+#     unit ("3 m"), else it reads one as millimetres; whole=True for a count or a switch,
+#     whose fraction is the error param_not_whole
 #   box(name, size, at=, material=, color=, attributes=, tool=)  -> part
 #   board(name, size, at=, material=, grain=, edges=, color=)  -> a panel for the cut list
 #   Every body (box, extrude, revolve, sweep, loft) takes material=, color=
@@ -921,7 +922,9 @@ def boss(part, face, profile, height, name = "boss"):
 #     Hardware omitted means metadata only; linked solids must already exist.
 #     records that a and b are joined (the part is carried, not floating);
 #     Fastener world centres follow the first endpoint a when it is placed/moved/rotated after declaration; moving b does not double-transform them or repair a separated joint.
-#     fastener names are counted in the report's hardware list. The parts
+#     fastener names are counted in the report's hardware list; hardware={item: count}
+#     instead counts what one connection is bought as when no rating counts it (connector()
+#     passes its rating's, so a connector refused for its members keeps its nails). The parts
 #     must touch, or stay within max_gap mm (a door on hinges across its
 #     reveal: joint(door, side, kind="hinge", max_gap=3)).
 #     bearing=True: the joint carries a's weight into b (a hanger, a joist hanger,
@@ -1216,7 +1219,8 @@ def connector(a, b, fastener, ratings = None, fasteners = None, name = None, pic
         fasteners = [] if touch == None else [vec_scale(vec_add(touch.min, touch.max), 0.5)]
     who = "connector(%s, %s, %r)" % (part_info(a).name, part_info(b).name, fastener)
     joint(a, b, kind = "connector", fastener = fastener, bearing = rating.load_n != None,
-          fasteners = fasteners, rating = _rated_connector(who, a, b, fastener, rating), name = name)
+          fasteners = fasteners, rating = _rated_connector(who, a, b, fastener, rating), name = name,
+          hardware = getattr(rating, "hardware", None))
     return fastener
 
 def arunda(a, b, template = "80 B", name = None):
@@ -3136,9 +3140,14 @@ def price_list(prices, currency = None, source = None):
 #     member of such a material is checked on the loads of the loads topic.
 #   TIMBER_CLASSES: C16, C24 (EN 338:2016), GL24h, GL28h (EN 14080:2013) characteristic values.
 #   timber_strength(material, strength_class=, service_class=, glulam=, fm_k=, fv_k=, fc0_k=,
-#     fc90_k=, e0_mean=, e0_05=, source=, rho_k=None): the builtin behind timber_design for
-#     one material with its own characteristic values in N/mm² (rho_k, the characteristic
-#     density in kg/m³, is what a connector rating's density_kg_m3 is compared with).
+#     fc90_k=, e0_mean=, e0_05=, source=, rho_k=None, product=None): the builtin behind
+#     timber_design for one material with its own characteristic values in N/mm² (rho_k, the
+#     characteristic density in kg/m³, is what a connector rating's density_kg_m3 is compared
+#     with). product names the EN 1995-1-1 table 3.1 row whose kmod, kdef (table 3.2) and
+#     gamma_M (table 2.3) apply: "solid" (default), "glulam" (default with glulam=True),
+#     "lvl", "plywood" (EN 636-3), "osb2", "osb3", "osb4", "particleboard_p5",
+#     "particleboard_p6" or "particleboard_p7"; a service class the product is not used in
+#     is refused. A class of the classes table may give it as "product".
 #   The report's design.members lists every load-path member: role (beam or column),
 #   section [width, depth], the checks with their utilization, governing combination and
 #   place (bending, shear, shear_notch, deflection_inst, deflection_fin, bearing =

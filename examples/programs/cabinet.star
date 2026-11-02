@@ -8,7 +8,7 @@ H = param("height", 720, min = 300, max = 2400, doc = "outer height")
 D = param("depth", 350, min = 200, max = 650, doc = "outer depth")
 T = param("thickness", 18, doc = "carcass board thickness")
 BACK = param("back_thickness", 4, doc = "back panel thickness (HDF)")
-SHELVES = param("shelves", 2, min = 0, max = 8)
+SHELVES = param("shelves", 2, min = 0, max = 8, whole = True, unit = "")
 
 GROOVE_DEPTH = 8
 GROOVE_FROM_BACK = 10          # groove starts this far from the back edge

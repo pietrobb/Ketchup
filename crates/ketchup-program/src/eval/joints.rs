@@ -125,25 +125,7 @@ fn parse_rating<'v>(
         })
         .collect::<anyhow::Result<Vec<u8>>>()?,
     };
-    let mut hardware = BTreeMap::new();
-    if let Some(items) = given_field("hardware") {
-        let dict = DictRef::from_value(items).ok_or_else(|| {
-            anyhow::anyhow!("rating hardware must be a dict of item name to count")
-        })?;
-        for (item, count) in dict.iter() {
-            let item = item.unpack_str().ok_or_else(|| {
-                anyhow::anyhow!("rating hardware must be a dict of item name to count")
-            })?;
-            let count = count
-                .unpack_i32()
-                .and_then(|count| usize::try_from(count).ok())
-                .filter(|count| *count > 0)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("rating hardware {item:?}: the count must be a positive whole number, got {count}")
-                })?;
-            hardware.insert(item.to_owned(), count);
-        }
-    }
+    let hardware = parse_hardware(given_field("hardware"), "rating hardware")?;
     Ok(Some(JointRating {
         load_n,
         basis,
@@ -154,6 +136,32 @@ fn parse_rating<'v>(
         service_classes,
         hardware,
     }))
+}
+
+/// What one connection is bought as, `items` {item name: count}; `what` names it in errors.
+fn parse_hardware(items: Option<Value<'_>>, what: &str) -> anyhow::Result<BTreeMap<String, usize>> {
+    let mut hardware = BTreeMap::new();
+    let Some(items) = items else {
+        return Ok(hardware);
+    };
+    let dict = DictRef::from_value(items)
+        .ok_or_else(|| anyhow::anyhow!("{what} must be a dict of item name to count"))?;
+    for (item, count) in dict.iter() {
+        let item = item
+            .unpack_str()
+            .ok_or_else(|| anyhow::anyhow!("{what} must be a dict of item name to count"))?;
+        let count = count
+            .unpack_i32()
+            .and_then(|count| usize::try_from(count).ok())
+            .filter(|count| *count > 0)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{what} {item:?}: the count must be a positive whole number, got {count}"
+                )
+            })?;
+        hardware.insert(item.to_owned(), count);
+    }
+    Ok(hardware)
 }
 
 /// Referential integrity only: ownership is explicit, never reconstructed by proximity.
@@ -379,10 +387,12 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] position: Option<Value<'v>>,
         #[starlark(require = named, default = false)] bearing: bool,
         #[starlark(require = named)] rating: Option<Value<'v>>,
+        #[starlark(require = named)] hardware: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
         let heap = eval.heap();
         let rating = parse_rating(rating, heap)?;
+        let hardware = parse_hardware(given(hardware), "hardware")?;
         match &rating {
             Some(rating) if rating.load_n.is_some() && !bearing => anyhow::bail!(
                 "a rating with load_n applies to a bearing joint; add bearing=True, or rate only tension_n for a connector that holds a part down"
@@ -399,6 +409,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         let mut model = state.model.borrow_mut();
         if let Some(motion) = given(motion) {
             if bearing
+                || !hardware.is_empty()
                 || [fasteners, fastener, volume, max_gap, links]
                     .into_iter()
                     .any(|v| given(v).is_some())
@@ -468,6 +479,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
             max_gap_mm: max_gap,
             bearing,
             rating,
+            hardware,
         });
         Ok(NoneType)
     }

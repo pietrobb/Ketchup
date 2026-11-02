@@ -517,6 +517,37 @@ fn a_face_pulled_in_shrinks_the_bounds_and_the_reach() {
     assert_near(part(source, "b").at_mm, [0.0, 0.0, 712.0], "b on a");
 }
 
+/// Review 2026-10-26 WB-43: a face pulled in past the opposite side of the part (-20 on a
+/// 10 mm cube) was accepted, and the part's bounds went to -10..0. A Push/Pull that leaves
+/// no material behind the face is refused with the depth there is.
+#[test]
+fn a_face_pulled_through_the_part_is_refused() {
+    let source = |distance: f64| {
+        format!(
+            "a = box(\"a\", (10, 10, 10))\n\
+             push_pull(a, face = \"z+\", distance = -3, name = \"first\")\n\
+             push_pull(a, face = \"z+\", distance = {distance}, name = \"in\")\n"
+        )
+    };
+    for distance in [-20.0, -7.0] {
+        let error = run(
+            "t.star",
+            &source(distance),
+            &std::collections::BTreeMap::new(),
+        )
+        .err()
+        .unwrap_or_else(|| panic!("{distance} was accepted"));
+        assert!(
+            error
+                .to_string()
+                .contains("the part is 7 mm deep behind face \"z+\""),
+            "{error}"
+        );
+    }
+    let a = part(&source(-6.0), "a");
+    assert_near(a.world_bounds().1, [10.0, 10.0, 1.0], "max");
+}
+
 /// WB-40 (review 2026-10-26): a through slot splits the top in two, and
 /// pulling in only its second half (`z+#2`) shrank the whole part to 712 mm,
 /// so the cutting list gave 712 for a part whose first half is 720 tall. A

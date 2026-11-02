@@ -28,6 +28,10 @@ pub struct Param {
     /// 2026-10-24 WB-27).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub plain: bool,
+    /// Declared with `whole=True`: a count or a switch, which takes whole numbers only
+    /// (review 2026-10-26 WB-42).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub whole: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -1884,6 +1888,10 @@ pub struct Joint {
     /// The load the connection may carry, as its maker publishes it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rating: Option<JointRating>,
+    /// What one connection is bought as when no rating counts it, e.g. a catalogued
+    /// connector whose rating was refused, with its nails (review 2026-11-01 PG-107).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub hardware: BTreeMap<String, usize>,
 }
 
 /// A published load rating of one connection, with where it comes from.

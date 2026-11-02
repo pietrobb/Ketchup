@@ -259,6 +259,27 @@ fn blank(part: &Part, kind: StockKind) -> ([f64; 3], [usize; 3]) {
     (order.map(|axis| extent[axis]), order)
 }
 
+/// The blank of `part` as the cut list and the cutting plan both give it: length, width,
+/// thickness, as [`blank`] lays it on the stock of `model`, or, without stock, as the axes
+/// the part names (review 2026-11-01 PG-108: the cut list sorted it longest first).
+#[must_use]
+pub fn blank_dimensions(model: &ProgramModel, part: &Part) -> [f64; 3] {
+    let kind = match part
+        .material
+        .as_ref()
+        .and_then(|material| model.stock.get(material))
+    {
+        Some(stock) => stock.kind,
+        None if part.attributes.contains_key(THICKNESS_AXIS)
+            && !part.attributes.contains_key(LENGTH_AXIS) =>
+        {
+            StockKind::Sheets
+        }
+        None => StockKind::Lengths,
+    };
+    blank(part, kind).0
+}
+
 /// The parts of one material and section or thickness.
 struct Group {
     section: Vec<f64>,

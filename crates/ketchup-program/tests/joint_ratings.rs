@@ -617,3 +617,28 @@ fn large_house_every_bearing_joint_of_the_house_is_listed_with_its_rating_or_as_
         );
     }
 }
+
+/// Review 2026-11-01 PG-107: a catalogued connector that does not fit its members loses
+/// its rating, and with it the nails the rating counted: the hardware list bought the
+/// hanger without them. What one connection is bought as does not depend on whether its
+/// published values hold.
+#[test]
+fn a_connector_that_does_not_fit_is_still_bought_with_its_nails() {
+    let flat =
+        format!("{FRAME}connector(joist, header, \"SAE250\")\n").replace("60, 200)", "100, 60)");
+    let report = report(&flat);
+    assert!(report.joints[0].rating.is_none(), "{:?}", report.joints);
+    let bought = report
+        .bom
+        .hardware
+        .iter()
+        .map(|row| (row.item.clone(), row.count))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        bought,
+        [
+            ("SAE250".to_owned(), 1),
+            ("square twist nail 3.75x30".to_owned(), 19)
+        ]
+    );
+}
