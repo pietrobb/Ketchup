@@ -18,6 +18,9 @@ pub const LENGTH_AXIS: &str = "length_axis";
 /// The part attribute naming the local axis of a sheet's thickness, or of a
 /// bar's section side that is a layer's thickness (library `buildup()`).
 pub const THICKNESS_AXIS: &str = "thickness_axis";
+/// The part attribute naming the local axis its material's grain runs along
+/// (library `board(grain=)`, `member()`).
+pub const GRAIN: &str = "grain";
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Param {
@@ -1159,7 +1162,8 @@ impl Part {
     /// axis each lies nearest: an extrusion's in its profile's plane are
     /// those of the smallest rectangle around its profile (review 2026-11-01
     /// PG-101: a sloping plate is cut from a plank along its slope, not from
-    /// its box in the wall's axes); other parts' are their [`Self::local_bounds`].
+    /// its box in the wall's axes); other parts', and those of a part whose
+    /// grain runs in its profile's plane, are their [`Self::local_bounds`].
     #[must_use]
     pub fn blank_size(&self) -> [f64; 3] {
         if let ProgramPartBody::Extrusion {
@@ -1168,6 +1172,12 @@ impl Part {
             caps,
         } = &self.body
             && self.joined().next().is_none()
+            // A grain in the profile's plane holds the blank square to it
+            // (review 2026-11-02 PG-125: it followed the turned rectangle).
+            && !matches!(
+                self.attributes.get(GRAIN).map(String::as_str),
+                Some("x" | "X" | "y" | "Y")
+            )
         {
             let (profile, span, grow) = self.pulled_profile(segments, *distance_mm, caps);
             let (along, widths) = smallest_enclosing_rectangle(&profile);

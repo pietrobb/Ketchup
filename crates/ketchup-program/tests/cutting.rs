@@ -333,6 +333,47 @@ fn many_sheet_pieces_stay_cuttable_and_never_overlap() {
     assert_eq!(plans[0].layouts.len(), 3, "{plans:#?}");
 }
 
+/// Review 2026-11-02 PG-125: the blank of a profile is the smallest rectangle
+/// around it (PG-101), which may lie turned; a part whose grain runs in the
+/// profile's plane had its grain follow that turned rectangle, so the board
+/// cut along the sheet's grain did not have it where the part names it. Such
+/// a blank stays square to the grain; a grain along the extrusion (or none)
+/// leaves it free to turn.
+#[test]
+fn a_blank_keeps_the_grain_the_part_names_in_its_profile_plane() {
+    let (c, s) = (30f64.to_radians().cos(), 30f64.to_radians().sin());
+    let corner = |x: f64, y: f64| format!("({}, {})", x * c - y * s, x * s + y * c);
+    let profile = format!(
+        "[{}, {}, {}, {}]",
+        corner(0.0, 0.0),
+        corner(1000.0, 0.0),
+        corner(1000.0, 300.0),
+        corner(0.0, 300.0)
+    );
+    let blank = |grain: &str| {
+        let source = format!(
+            "extrude('panel', profile = {profile}, distance = 18, material = 'OSB'{grain})\n"
+        );
+        let model = ketchup_program::evaluate("cutting.star", &source, &BTreeMap::new())
+            .unwrap_or_else(|error| panic!("{error}"))
+            .model;
+        bom(&model).cut_list[0].dimensions_mm
+    };
+    let near = |a: [f64; 3], b: [f64; 3]| a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 0.01);
+    for grain in ["", ", attributes = {'grain': 'z'}"] {
+        assert!(
+            near(blank(grain), [1000.0, 300.0, 18.0]),
+            "{grain}: {:?}",
+            blank(grain)
+        );
+    }
+    for axis in ["x", "y"] {
+        let box_ = [1000.0 * c + 300.0 * s, 1000.0 * s + 300.0 * c, 18.0];
+        let named = blank(&format!(", attributes = {{'grain': '{axis}'}}"));
+        assert!(near(named, box_), "{axis}: {named:?}");
+    }
+}
+
 #[test]
 fn grain_keeps_a_part_along_the_sheet_and_refuses_what_cannot_lie_that_way() {
     let source = "sheet_stock(\"OSB\", [(2500, 1250)], kerf = 4, trim = 10, grain = True)
