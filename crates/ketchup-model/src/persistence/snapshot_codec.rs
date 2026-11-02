@@ -34,14 +34,15 @@ use std::collections::BTreeMap;
 pub(super) const SNAPSHOT_FORMAT: u16 = 107;
 
 /// The oldest format this version writes. A snapshot is written in the oldest format
-/// that holds it ([`format_of`]), so Kečup 0.1.0 and 0.2.0, which read 103, open a
-/// document without underlays and annotations; any format from this one on reads as
-/// written by this version.
+/// that holds it ([`format_of`]), so Kečup 0.2.0, which reads 103, opens a document
+/// without underlays and annotations; any format from this one on reads as written by
+/// this version. Kečup 0.1.0 is no such reader: it takes every newer format, and a
+/// 103 document with a `program.json`, for damage (review 2026-11-01 DOC-100).
 pub(super) const OLDEST_WRITTEN_FORMAT: u16 = 103;
 
 /// 107 with a line of an underlay's drawing stretched, else 106 with an underlay whose
 /// drawing was edited or that stands as a view, else 105 with annotations, else 104
-/// with underlays or with what Kečup 0.1.0 and 0.2.0 refuse to read, else 103.
+/// with underlays or with what Kečup 0.2.0 refuses to read, else 103.
 fn format_of(product: &ProductModel) -> u16 {
     let stretched = |edits: &crate::underlay::edits::UnderlayEdits| {
         !edits.stretched_objects.is_empty()
@@ -71,11 +72,11 @@ fn format_of(product: &ProductModel) -> u16 {
     }
 }
 
-/// Whether Kečup 0.1.0 and 0.2.0, which read format 103, accept every import receipt
-/// of `product`: at most 1 024 outputs, a source within their reader's limit and a
-/// length unit they know. A file they refuse as damaged makes them open an older
-/// `.recovery` instead and overwrite the newer file at its next Save; format 104 they
-/// refuse as newer (review 2026-10-24 MD-20, 2026-10-29 MD-60).
+/// Whether Kečup 0.2.0, which reads format 103, accepts every import receipt of
+/// `product`: at most 1 024 outputs, a source within its reader's limit and a length
+/// unit it knows. A file it refuses as damaged makes it open an older `.recovery`
+/// instead and overwrite the newer file at its next Save; format 104 it refuses as
+/// newer (review 2026-10-24 MD-20, 2026-10-29 MD-60).
 fn fits_format_103(product: &ProductModel) -> bool {
     use crate::import::{ImportFormat, ImportLengthUnit};
     // The units of `ImportLengthUnit` in Kečup 0.2.0.
