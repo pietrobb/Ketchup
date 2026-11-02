@@ -261,9 +261,11 @@ fn the_author_sees_the_customer_s_comment(
     let mut desk = Harness::builder()
         .with_size(Vec2::new(1600.0, 1000.0))
         .build_state(|context, app: &mut KetchupApp| app.ui(context), author);
-    desk.run();
+    // The comment list scrolls to its newest row: a few frames, however
+    // long the scroll takes to settle on a loaded machine.
+    desk.run_steps(8);
     desk.get_by_label("Jana").click();
-    desk.run();
+    desk.run_steps(8);
     let app = desk.state();
     assert_eq!(app.edit_context_depth(), 1, "the desk component is opened");
     let rect = app.camera.viewport_rect.unwrap();
