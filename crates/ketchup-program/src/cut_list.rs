@@ -16,8 +16,7 @@ pub(crate) fn plain_attribute(name: &str) -> bool {
 }
 
 /// An attribute naming a local axis ("x", "y", "z") is written as the cut-list
-/// dimension that axis became, since the cut list orders the dimensions from
-/// longest to shortest.
+/// dimension that axis became on the cut list's blank.
 fn workshop_value(value: &str, axis_order: [usize; 3]) -> String {
     let axis = match value {
         "x" | "X" => 0,
@@ -58,11 +57,9 @@ pub fn cut_list_table(model: &ProgramModel, counted: impl Fn(&str) -> bool) -> T
         .collect();
     let mut groups: BTreeMap<(String, [i64; 3], Vec<String>), Group> = BTreeMap::new();
     for part in parts {
-        // The blank: grown by push_pull and union, unlike the declared size.
-        let extent = part.blank_size();
-        let mut axis_order = [0, 1, 2];
-        axis_order.sort_by(|left, right| extent[*right].total_cmp(&extent[*left]));
-        let dimensions_mm = axis_order.map(|axis| extent[axis]);
+        // The blank of the cut list (review 2026-11-02 PG-123): grown by
+        // push_pull and union, its thickness the one the part names.
+        let (dimensions_mm, axis_order) = crate::cutting::blank_axes(model, part);
         let material = part
             .material
             .clone()

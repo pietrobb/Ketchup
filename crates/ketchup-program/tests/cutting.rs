@@ -722,6 +722,122 @@ fn a_sloping_plate_is_cut_from_the_smallest_rectangle_around_it() {
     }
 }
 
+/// Review 2026-11-02 PG-123 (rest of PG-108): the shop drawing took a part's
+/// box in its own axes, longest first (a 46° gable plate 1 747 x 1 545 x 140
+/// against 2 331 x 140 x 60 on the cut list); the exported cut list sorted the
+/// blank longest first (a strip of an 18 mm board 15 mm wide as 2 000 x 18 x 15,
+/// its thickness_axis "width"); the CNC drawing took the thinnest side as the
+/// thickness. All four give the blank of the cut list.
+#[test]
+fn the_shop_drawing_cut_list_export_cutting_plan_and_cnc_give_one_blank() {
+    use ketchup_program::cnc_dxf::cnc_parts;
+    use ketchup_program::cut_list::cut_list_table;
+    use ketchup_program::shop_drawing::shop_drawings;
+    use ketchup_program::table::Cell;
+    let rise = 3000.0 * 46f64.to_radians().tan();
+    let source = format!(
+        "buildup('gable', (0, 0, 0), (1, 0, 0), (0, 0, 1), 6000,\n\
+         layers = [{{'name': 'frame', 'thickness': 140, 'material': 'C24', 'spacing': 600}}],\n\
+         top = [(0, 2600), (3000, {}), (6000, 2600)])\n\
+         bar_stock('C24', [9000])\n\
+         board('strip', [2000, 15, 18], at = (0, 9000, 0), material = 'OSB', thickness_axis = 'z')\n\
+         sheet_stock('OSB', [(2500, 1250)])\n",
+        2600.0 + rise
+    );
+    let model = ketchup_program::evaluate("cutting.star", &source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{error}"))
+        .model;
+    let bom = bom(&model);
+    let blank = |part: &str| {
+        bom.cut_list
+            .iter()
+            .find(|row| row.parts.iter().any(|name| name == part))
+            .unwrap_or_else(|| panic!("{part} is not on the cut list"))
+            .dimensions_mm
+    };
+    assert_eq!(blank("strip"), [2000.0, 15.0, 18.0]);
+    let close = |a: &[f64], b: &[f64]| {
+        a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6)
+    };
+
+    // The exported cut list, and the dimension its axis attributes name.
+    let table = cut_list_table(&model, |_| true);
+    let column = |name: &str| table.header.iter().position(|title| title == name).unwrap();
+    let [length, thickness_axis] = [column("length_mm"), column("thickness_axis")];
+    let mut exported = 0;
+    for row in &table.rows {
+        let Cell::Text(parts) = &row[1] else { panic!() };
+        let numbers: Vec<f64> = row[length..length + 3]
+            .iter()
+            .map(|cell| match cell {
+                Cell::Number(value) => *value,
+                _ => panic!(),
+            })
+            .collect();
+        for part in parts.split(", ") {
+            assert!(
+                close(&numbers, &blank(part)),
+                "{part}: {numbers:?} {:?}",
+                blank(part)
+            );
+            exported += 1;
+        }
+        if parts == "strip" {
+            assert!(
+                matches!(&row[thickness_axis], Cell::Text(axis) if axis == "thickness"),
+                "{row:?}"
+            );
+        }
+    }
+    assert_eq!(
+        exported,
+        bom.cut_list
+            .iter()
+            .map(|row| row.parts.len())
+            .sum::<usize>()
+    );
+
+    // The shop drawing's positions.
+    let drawings = shop_drawings(&model);
+    let mut drawn = 0;
+    for position in drawings.iter().flat_map(|drawing| &drawing.positions) {
+        for part in &position.parts {
+            assert!(
+                close(&position.dimensions_mm, &blank(part)),
+                "{part}: {position:?}"
+            );
+            drawn += 1;
+        }
+    }
+    assert!(drawn > 10, "{drawings:#?}");
+
+    // The cutting plan's sections.
+    for plan in &bom.cutting {
+        for piece in plan.layouts.iter().flat_map(|layout| &layout.pieces) {
+            let [l, w, t] = blank(&piece.part);
+            let section: &[f64] = if plan.section_mm.len() == 2 {
+                &[w, t]
+            } else {
+                &[t]
+            };
+            assert!(close(&plan.section_mm, section), "{}: {plan:?}", piece.part);
+            assert!(
+                (piece.size_mm[0] - l).abs() < 1e-6 || piece.turned,
+                "{piece:?}"
+            );
+        }
+    }
+
+    // The CNC drawing's thickness and size.
+    let cnc = cnc_parts(&model);
+    let strip = cnc.parts.iter().find(|part| part.part == "strip");
+    let strip = strip.unwrap_or_else(|| panic!("{:?}", cnc.not_drawn));
+    assert_eq!(strip.thickness_mm, 18.0, "{:?}", strip.size_mm);
+    let mut size = strip.size_mm;
+    size.sort_by(|a, b| b.total_cmp(a));
+    assert_eq!(size, [2000.0, 15.0]);
+}
+
 /// Review 2026-10-29 PG-61: the cutting plan took a part's thinnest extent
 /// as a sheet's thickness and its two thinnest as a bar's section, so a
 /// sheathing piece narrower than the layer was thick made a phantom

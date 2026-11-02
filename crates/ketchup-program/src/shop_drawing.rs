@@ -18,7 +18,7 @@ pub const SHEET: &str = "drawing:sheet";
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ShopPosition {
     pub material: String,
-    /// The blank, longest first, as the cut list gives it.
+    /// The blank as the cut list gives it: length, width, thickness.
     pub dimensions_mm: [f64; 3],
     pub parts: Vec<String>,
     /// The number of the position whose parts these mirror: the same made
@@ -59,9 +59,7 @@ pub fn shop_drawings(model: &ProgramModel) -> Vec<ShopDrawing> {
                 });
                 drawings.len() - 1
             });
-        let (min, max) = part.local_bounds();
-        let mut dimensions: [f64; 3] = std::array::from_fn(|axis| max[axis] - min[axis]);
-        dimensions.sort_by(|left, right| right.total_cmp(left));
+        let dimensions = crate::cutting::blank_dimensions(model, part);
         let material = part
             .material
             .clone()

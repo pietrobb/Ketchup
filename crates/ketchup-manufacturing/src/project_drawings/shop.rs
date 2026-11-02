@@ -43,7 +43,7 @@ const COARSEST_SCALE: u32 = 50;
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShopPosition {
     pub material: String,
-    /// The blank, longest first.
+    /// The blank as the cut list gives it: length, width, thickness.
     pub dimensions_mm: [f64; 3],
     pub solids: Vec<String>,
     pub count: usize,

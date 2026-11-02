@@ -259,6 +259,14 @@ fn blank(part: &Part, kind: StockKind) -> ([f64; 3], [usize; 3]) {
 /// the part names (review 2026-11-01 PG-108: the cut list sorted it longest first).
 #[must_use]
 pub fn blank_dimensions(model: &ProgramModel, part: &Part) -> [f64; 3] {
+    blank_axes(model, part).0
+}
+
+/// [`blank_dimensions`] and the local axis each became: the one blank the cut
+/// list, its export, the cutting plan, the shop drawing and the CNC drawing all
+/// give (review 2026-11-02 PG-123).
+#[must_use]
+pub fn blank_axes(model: &ProgramModel, part: &Part) -> ([f64; 3], [usize; 3]) {
     let kind = match part
         .material
         .as_ref()
@@ -272,7 +280,7 @@ pub fn blank_dimensions(model: &ProgramModel, part: &Part) -> [f64; 3] {
         }
         None => StockKind::Lengths,
     };
-    blank(part, kind).0
+    blank(part, kind)
 }
 
 /// The parts of one material and section or thickness.
