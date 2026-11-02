@@ -95,10 +95,12 @@ jobs:
   dependencies:
     name: dependency advisories, licenses and sources
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
       DENY_VERSION: 0.20.2
       DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+      ABOUT_VERSION: 0.9.2
+      ABOUT_SHA256: 9099a59e820c38a68b9d65f300662a567d56562f9a10f6aa4c7e86c17c2566af
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -113,6 +115,18 @@ jobs:
           echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
       - name: check
         run: cargo deny --locked check
+      # Review 2026-11-01 REL-100: the notices of each package name every crate
+      # its programs compile in, with its copyright and license text.
+      - name: cargo-about
+        run: |
+          name="cargo-about-$ABOUT_VERSION-x86_64-unknown-linux-musl"
+          curl --fail --silent --show-error --location --output "$RUNNER_TEMP/about.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-about/releases/download/$ABOUT_VERSION/$name.tar.gz"
+          echo "$ABOUT_SHA256  $RUNNER_TEMP/about.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/about.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
+      - name: third-party notices of every package
+        run: python3 scripts/third_party_notices.py --check
 
   rust-without-occt:
     name: format, clippy and tests of the crates without OCCT on ${{ matrix.os }}

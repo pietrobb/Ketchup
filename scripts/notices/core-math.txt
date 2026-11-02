@@ -1,0 +1,9 @@
+CORE-MATH (correctly rounded math functions)
+
+Files:    linked into every TK*.dll and into the Kecup programs
+License:  MIT: LICENSE-CORE-MATH-MIT.txt
+Source:   https://gitlab.inria.fr/core-math/core-math
+          commit 81a899d67953a619d703660fd9630f0554673524
+
+CORE-MATH is used unmodified, behind a small shim in third_party/crmath of the
+Kecup source repository that gives its functions the standard names.

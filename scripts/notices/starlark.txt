@@ -1,0 +1,14 @@
+starlark 0.13.0 (the language of Kecup programs), modified
+
+License:  Apache License 2.0: LICENSE-Starlark-Apache-2.0.txt
+Source:   https://crates.io/crates/starlark/0.13.0
+          https://github.com/facebook/starlark-rust
+Copyright 2019 The Starlark in Rust Authors.
+Copyright (c) Facebook, Inc. and its affiliates.
+
+Kecup builds a modified copy. The changes run the statement hook once per
+loop iteration and bound the memory that string, list and tuple operations
+may allocate, so a program cannot run or allocate without limit. Each changed
+file carries a "Modified for Kecup" line; the list of changes and the reasons
+are in third_party/starlark/PATCH.md of the Kecup source repository:
+https://github.com/pietrobb/Ketchup/blob/main/third_party/starlark/PATCH.md

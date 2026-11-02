@@ -245,7 +245,7 @@ foreach ($record in @($occtManifest.shared_libraries)) {
     Copy-Item $source (Join-Path $payloadDir $name)
 }
 . (Join-Path $PSScriptRoot "package-notices.ps1")
-Copy-PackageNotices $repoRoot $OcctRoot $payloadDir
+Copy-PackageNotices $repoRoot $OcctRoot $payloadDir "ketchup"
 if ($Sign) {
     Invoke-AzureSigning (Join-Path $payloadDir "Ketchup.exe")
     Invoke-AzureSigning (Join-Path $payloadDir "ketchup-exact-worker.exe")
@@ -483,14 +483,14 @@ Remove-Item $issPath -Force
 
 Compress-Archive -Path (Join-Path $payloadDir "*") -DestinationPath $zipPath -CompressionLevel Optimal
 Assert-Leaf $zipPath "portable archive"
-Assert-PackageNotices $zipPath "The portable archive"
+Assert-PackageNotices $zipPath "The portable archive" "ketchup"
 
 # The Viewer alone, for a customer who only opens .ketchup-view packages: the same
 # (signed) KetchupViewer.exe as in the installer, with the notices and a short note.
 $viewerStageDir = Join-Path $OutputDir "viewer-payload"
 [void](New-Item $viewerStageDir -ItemType Directory)
 Copy-Item (Join-Path $payloadDir "KetchupViewer.exe") $viewerStageDir
-Copy-PackageNotices $repoRoot $OcctRoot $viewerStageDir
+Copy-PackageNotices $repoRoot $OcctRoot $viewerStageDir "viewer"
 $viewerReadme = @"
 Ketchup Viewer $Version
 Windows x64
@@ -504,7 +504,7 @@ Write-Utf8 (Join-Path $viewerStageDir "README.txt") ($viewerReadme.TrimStart() +
 Compress-Archive -Path (Join-Path $viewerStageDir "*") -DestinationPath $viewerZipPath -CompressionLevel Optimal
 Remove-Item $viewerStageDir -Recurse -Force
 Assert-Leaf $viewerZipPath "Viewer portable archive"
-Assert-PackageNotices $viewerZipPath "The Viewer portable archive"
+Assert-PackageNotices $viewerZipPath "The Viewer portable archive" "viewer"
 
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("ketchup-installer-verify-" + [Guid]::NewGuid().ToString("N"))
 $installedDir = Join-Path $tempRoot "installed"
@@ -536,7 +536,7 @@ try {
             throw "Installed payload fingerprint mismatch: $($record.path)"
         }
     }
-    Assert-PackageNotices $installedDir "The installed program"
+    Assert-PackageNotices $installedDir "The installed program" "ketchup"
 
     . (Join-Path $PSScriptRoot "exact-worker-handshake.ps1")
     Assert-ExactWorkerHandshake (Join-Path $installedDir "ketchup-exact-worker.exe") "Installed exact worker"

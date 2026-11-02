@@ -1,0 +1,8 @@
+acadrust 0.6.4 (DWG and DXF reading and writing)
+
+License:  Mozilla Public License 2.0, https://mozilla.org/MPL/2.0/
+Source:   https://crates.io/crates/acadrust/0.6.4
+          https://github.com/hakanaktt/acadrust
+
+acadrust is used unmodified. Its source code is available at the addresses
+above under the terms of the MPL 2.0.
