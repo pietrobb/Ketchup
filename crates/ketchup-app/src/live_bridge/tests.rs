@@ -700,6 +700,36 @@ fn open_is_revision_bound_and_uses_the_live_gui_discard_consent() {
     assert_eq!(bridge.observed, Some(approved.live_bridge_stamp()));
 }
 
+/// #2689: a document an AI client opened is offered in File > Open Recent too.
+#[test]
+fn a_document_opened_through_mcp_joins_open_recent() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("live-recent.ketchup");
+    let mut source = KetchupApp::new();
+    assert!(source.create_box());
+    assert!(source.save_document_to(&path));
+
+    let store = crate::recent_files::MemoryRecentFiles::default();
+    let mut app = KetchupApp::new()
+        .with_dialogs(Box::new(ScriptedFileDialogs::new().always_discard()))
+        .with_recent_files(Box::new(store.clone()));
+    let mut bridge = transport::start(egui::Context::default()).unwrap();
+    let expected = app.live_bridge_stamp();
+    bridge
+        .execute(
+            &mut app,
+            Request::Open {
+                expected: Some(expected),
+                path: path.to_string_lossy().into_owned(),
+            },
+            false,
+        )
+        .unwrap();
+
+    assert_eq!(app.recent_files(), std::slice::from_ref(&path));
+    assert_eq!(store.stored(), vec![path]);
+}
+
 #[test]
 fn open_names_a_file_that_fails_to_load() {
     let directory = tempfile::tempdir().unwrap();

@@ -491,7 +491,8 @@ def distribute(parts, a, b, face = None):
 #
 # Swept and lofted parts (curved rails, bent tubes, tapered legs). Both take
 # at= and tool=True like extrude(), and subtract()/intersect() in either role;
-# fillet/chamfer/cut/push_pull do not apply to them.
+# fillet/chamfer/cut/push_pull do not apply to them; shell() hollows a lofted
+# part open at "start" and/or "end".
 #   sweep(name, profile=, path=, bend=None, up=None, at=, tool=)
 #     carries a closed profile along a smooth path in the part's frame. path
 #     is 3D points [(x, y, z), ...] whose corners bend=r rounds with tangent
@@ -690,7 +691,8 @@ def round_thread(radius, name = "thread"):
 #   copy(part, name)  -> a new identical part
 #   shell(part, thickness=, open=[faces], name=)  -> part: hollowed to walls
 #     `thickness` thick inside it, open at the listed faces (at least one);
-#     the inner wall along face F is "<name>.F"
+#     the inner wall along face F is "<name>.F"; a lofted part opens at
+#     "start" and "end", its first and last section (a membrane)
 #   mirror(part, axis="x", name=)  -> part: its solid reflected across its
 #     own middle plane across local axis; faces keep their names, so later
 #     steps find them where they now are

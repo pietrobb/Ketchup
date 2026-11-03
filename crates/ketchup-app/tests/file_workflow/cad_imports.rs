@@ -29,7 +29,7 @@ fn file_import_dxf_reviews_and_commits_one_canonical_profile_transaction_offscre
         .filter(|feature| matches!(feature.kind(), FeatureKind::Profile { .. }))
         .count();
 
-    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.click_import(AppCommand::ImportDrawingDxf);
     shell.click_button_label(&shell.catalog().text("dialog-import-dxf-confirm"));
 
     assert!(
@@ -486,11 +486,11 @@ fn file_menu_dxf_export_is_layered_authorized_atomic_and_non_mutating_offscreen(
         .queue_export(&exported_path)
         .always_confirm_high_risk_as(117);
     let mut shell = Shell::with_dialogs(script.clone());
-    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.click_import(AppCommand::ImportDrawingDxf);
     shell.click_button_label(&shell.catalog().text("dialog-import-dxf-confirm"));
     let before_export = canonical_state(&shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ExportDrawingDxf);
+    shell.click_export(AppCommand::ExportDrawingDxf);
     assert_eq!(canonical_state(&shell), before_export);
     let first_dxf = std::fs::read(&exported_path).unwrap();
     let first_report = std::fs::read_to_string(&report_path).unwrap();
@@ -504,7 +504,7 @@ fn file_menu_dxf_export_is_layered_authorized_atomic_and_non_mutating_offscreen(
 
     std::fs::write(&exported_path, b"stale primary").unwrap();
     std::fs::write(&report_path, b"stale report").unwrap();
-    shell.click_menu_command("menu-file", AppCommand::ExportDrawingDxf);
+    shell.click_export(AppCommand::ExportDrawingDxf);
     assert_eq!(canonical_state(&shell), before_export);
     assert_eq!(std::fs::read(&exported_path).unwrap(), first_dxf);
     assert_eq!(std::fs::read_to_string(&report_path).unwrap(), first_report);
@@ -546,14 +546,14 @@ fn file_menu_refuses_a_dxf_named_dwg_and_writes_profiles_to_a_dwg_destination_as
     let before = canonical_state(&shell);
 
     // A .dwg file is read as DWG; a DXF under that name is no DWG.
-    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.click_import(AppCommand::ImportDrawingDxf);
     assert_eq!(canonical_state(&shell), before);
     assert!(digest_starts_like(&shell, "error-import-dxf"));
     let digest = shell.app().action_digest();
     assert!(digest.contains("DWG file"), "{digest}");
 
     // A .dwg destination gets the plan as a real AutoCAD 2018 DWG, after consent.
-    shell.click_menu_command("menu-file", AppCommand::ExportDrawingDxf);
+    shell.click_export(AppCommand::ExportDrawingDxf);
     assert_eq!(canonical_state(&shell), before);
     assert!(digest_starts_like(&shell, "digest-exported-dxf"));
     assert!(std::fs::read(&destination).unwrap().starts_with(b"AC1032"));
@@ -588,19 +588,19 @@ fn exact_exchange_refuses_native_solidworks_and_parasolid_without_preview_or_sid
     let mut shell = Shell::with_dialogs(script.clone());
     let before = canonical_state(&shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_import(AppCommand::ImportExactStep);
     assert_eq!(canonical_state(&shell), before);
     assert!(shell.app().action_digest().contains("SolidWorks"));
 
-    shell.click_menu_command("menu-file", AppCommand::ImportExactIges);
+    shell.click_import(AppCommand::ImportExactIges);
     assert_eq!(canonical_state(&shell), before);
     assert!(shell.app().action_digest().contains("Parasolid"));
 
-    shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
+    shell.click_export(AppCommand::ExportExactStep);
     assert_eq!(canonical_state(&shell), before);
     assert!(shell.app().action_digest().contains("SolidWorks"));
 
-    shell.click_menu_command("menu-file", AppCommand::ExportExactIges);
+    shell.click_export(AppCommand::ExportExactIges);
     assert_eq!(canonical_state(&shell), before);
     assert!(shell.app().action_digest().contains("Parasolid"));
 
@@ -686,7 +686,7 @@ fn file_import_exact_step_commits_undoes_and_persists_source_blob_offscreen() {
     shell.settle();
     let before = canonical_state(&shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_import(AppCommand::ImportExactStep);
     shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
     let imported_feature_id = imported_exact_feature_id(&shell);
 
@@ -745,7 +745,7 @@ fn file_import_exact_step_commits_undoes_and_persists_source_blob_offscreen() {
         "an imported STEP body must be pickable where it is painted"
     );
     let before_export = canonical_state(&shell);
-    shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
+    shell.click_export(AppCommand::ExportExactStep);
     assert_eq!(canonical_state(&shell), before_export);
     assert!(
         exported_path.is_file(),
@@ -854,7 +854,7 @@ fn file_import_exact_step_keeps_the_readable_parts_and_names_the_refused_offscre
         .connect_exact_worker(exact_worker_path())
         .expect("the partial STEP import requires the real exact worker");
     let before = canonical_state(&shell);
-    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_import(AppCommand::ImportExactStep);
     assert!(shell.has_visible_label(&shell.catalog().text("dialog-import-step-refused")));
     for refusal in &refusals {
         assert!(shell.has_visible_label(refusal), "{refusal}");
@@ -947,7 +947,7 @@ fn file_import_exact_step_preserves_a_real_nested_repeated_xde_assembly_offscree
     let before = canonical_state(&shell);
     let before_groups = shell.app().group_count();
 
-    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_import(AppCommand::ImportExactStep);
     shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
 
     assert_eq!(shell.app().document_revision(), before.revision + 1);
@@ -1091,7 +1091,7 @@ fn file_import_exact_step_preserves_a_real_nested_repeated_xde_assembly_offscree
     );
 
     let before_export = canonical_state(&shell);
-    shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
+    shell.click_export(AppCommand::ExportExactStep);
     assert_eq!(canonical_state(&shell), before_export);
     assert!(
         exported_path.is_file(),
@@ -1186,7 +1186,7 @@ fn file_import_exact_step_preserves_a_real_nested_repeated_xde_assembly_offscree
             .contains("repeated part definitions")
     );
 
-    shell.click_menu_command("menu-file", AppCommand::ExportExactIges);
+    shell.click_export(AppCommand::ExportExactIges);
     assert_eq!(canonical_state(&shell), before_export);
     let exported_iges = std::fs::read(&exported_iges_path).unwrap();
     let iges_roundtrip = inspector
@@ -1258,7 +1258,7 @@ fn moving_an_imported_step_body_keeps_it_painted_and_drops_it_when_the_import_is
     assert!(shell.app_mut().delete_selected());
     shell.settle();
 
-    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_import(AppCommand::ImportExactStep);
     shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
     let imported_feature_id = imported_exact_feature_id(&shell);
     for _ in 0..100 {
@@ -1388,7 +1388,7 @@ fn rotating_an_imported_step_body_keeps_it_painted_pickable_and_turnable_again()
     assert!(shell.app_mut().delete_selected());
     shell.settle();
 
-    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_import(AppCommand::ImportExactStep);
     shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
     let imported_feature_id = imported_exact_feature_id(&shell);
     for _ in 0..100 {
@@ -1526,7 +1526,7 @@ fn file_import_transformed_multi_solid_step_round_trips_through_save_open_and_oc
         std::thread::sleep(Duration::from_millis(20));
     }
     assert_eq!(source_shell.app().exact_render_body_count(), 1);
-    source_shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
+    source_shell.click_export(AppCommand::ExportExactStep);
     assert!(
         source_path.is_file(),
         "multi-solid STEP source export failed with digest {:?}",
@@ -1581,7 +1581,7 @@ fn file_import_transformed_multi_solid_step_round_trips_through_save_open_and_oc
     shell.settle();
     let before = canonical_state(&shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_import(AppCommand::ImportExactStep);
     shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
     let mut imported_feature_ids = shell
         .app()
@@ -1641,7 +1641,7 @@ fn file_import_transformed_multi_solid_step_round_trips_through_save_open_and_oc
     );
 
     let before_export = canonical_state(&shell);
-    shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
+    shell.click_export(AppCommand::ExportExactStep);
     assert_eq!(canonical_state(&shell), before_export);
     assert!(
         exported_path.is_file(),
@@ -1728,10 +1728,10 @@ fn file_import_step_cancel_worker_source_and_stale_refuse_without_mutation() {
     let before = canonical_state(&shell);
     let before_history = reachable_history_digests(&mut shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_import(AppCommand::ImportExactStep);
     assert_state_and_history_unchanged(&mut shell, &before, &before_history);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_import(AppCommand::ImportExactStep);
     shell.click_button_label(&shell.catalog().text("dialog-import-step-cancel"));
     assert_state_and_history_unchanged(&mut shell, &before, &before_history);
 
@@ -1739,7 +1739,7 @@ fn file_import_step_cancel_worker_source_and_stale_refuse_without_mutation() {
         .app_mut()
         .connect_exact_worker(&unavailable_worker)
         .unwrap();
-    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_import(AppCommand::ImportExactStep);
     assert!(digest_starts_like(&shell, "error-import-step"));
     assert_state_and_history_unchanged(&mut shell, &before, &before_history);
     shell
@@ -1747,7 +1747,7 @@ fn file_import_step_cancel_worker_source_and_stale_refuse_without_mutation() {
         .connect_exact_worker(exact_worker_path())
         .unwrap();
 
-    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_import(AppCommand::ImportExactStep);
     let mut changed = original.clone();
     changed[0] ^= 1;
     std::fs::write(&source, &changed).unwrap();
@@ -1756,7 +1756,7 @@ fn file_import_step_cancel_worker_source_and_stale_refuse_without_mutation() {
     assert_state_and_history_unchanged(&mut shell, &before, &before_history);
     std::fs::write(&source, &original).unwrap();
 
-    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_import(AppCommand::ImportExactStep);
     shell.click_menu_command("menu-edit", AppCommand::Redo);
     let after_redo = canonical_state(&shell);
     let after_redo_history = reachable_history_digests(&mut shell);
@@ -1767,13 +1767,13 @@ fn file_import_step_cancel_worker_source_and_stale_refuse_without_mutation() {
     for _ in 0..2 {
         let before_refusal = canonical_state(&shell);
         let before_refusal_history = reachable_history_digests(&mut shell);
-        shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+        shell.click_import(AppCommand::ImportExactStep);
         assert!(digest_starts_like(&shell, "error-import-step"));
         assert_state_and_history_unchanged(&mut shell, &before_refusal, &before_refusal_history);
     }
 
     shell.click_at(shell.viewport_rect().center());
-    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_import(AppCommand::ImportExactStep);
     assert!(shell.app_mut().move_selected(Vec3::new(10.0, 0.0, 0.0)));
     let after_document_change = canonical_state(&shell);
     let after_document_change_history = reachable_history_digests(&mut shell);
@@ -1785,7 +1785,7 @@ fn file_import_step_cancel_worker_source_and_stale_refuse_without_mutation() {
         &after_document_change_history,
     );
 
-    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_import(AppCommand::ImportExactStep);
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     let after_undo = canonical_state(&shell);
     let after_undo_history = reachable_history_digests(&mut shell);
@@ -1793,7 +1793,7 @@ fn file_import_step_cancel_worker_source_and_stale_refuse_without_mutation() {
     assert!(digest_starts_like(&shell, "error-import-step"));
     assert_state_and_history_unchanged(&mut shell, &after_undo, &after_undo_history);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_import(AppCommand::ImportExactStep);
     shell.click_menu_command("menu-file", AppCommand::Open);
     let after_open = canonical_state(&shell);
     let after_open_history = reachable_history_digests(&mut shell);
@@ -1939,7 +1939,7 @@ fn step_iges_sketchup_scene_and_glb_sources_over_32_mib_import_save_and_open() {
 
     for (format, _, source, command, confirm) in &sources {
         let before = canonical_state(&shell);
-        shell.click_menu_command("menu-file", *command);
+        shell.click_import(*command);
         shell.click_button_label(&shell.catalog().text(confirm));
         assert_eq!(
             shell.app().import_receipt_count(),
@@ -1981,7 +1981,7 @@ fn file_import_unitless_dxf_requires_and_persists_explicit_user_units() {
     let mut shell = Shell::with_dialogs(script);
     let before = canonical_state(&shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.click_import(AppCommand::ImportDrawingDxf);
     shell.click_button_label(&shell.catalog().text("dialog-import-dxf-confirm"));
     assert_eq!(canonical_state(&shell), before);
 
@@ -2014,9 +2014,9 @@ fn file_import_dxf_dialog_and_review_cancel_leave_canonical_state_unchanged() {
     let before = canonical_state(&shell);
     let history = reachable_history_digests(&mut shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.click_import(AppCommand::ImportDrawingDxf);
     assert_state_and_history_unchanged(&mut shell, &before, &history);
-    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.click_import(AppCommand::ImportDrawingDxf);
     shell.click_button_label(&shell.catalog().text("dialog-import-dxf-cancel"));
     assert_state_and_history_unchanged(&mut shell, &before, &history);
 }
@@ -2053,7 +2053,7 @@ fn file_import_dxf_refusals_preserve_exact_state_and_reachable_history() {
     assert!(before.redo_steps > 0);
 
     for _ in 0..2 {
-        shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+        shell.click_import(AppCommand::ImportDrawingDxf);
         assert!(digest_starts_like(&shell, "error-import-dxf"));
         assert_state_and_history_unchanged(&mut shell, &before, &history);
     }
@@ -2073,7 +2073,7 @@ fn file_import_dxf_over_8_mib_is_not_refused_for_its_size() {
     let mut shell = Shell::with_dialogs(script);
     let before = canonical_state(&shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.click_import(AppCommand::ImportDrawingDxf);
     shell.click_button_label(&shell.catalog().text("dialog-import-dxf-confirm"));
 
     assert!(
@@ -2107,7 +2107,7 @@ fn file_import_dxf_rejects_source_document_history_and_open_staleness() {
 
     let before_source_change = canonical_state(&shell);
     let before_source_history = reachable_history_digests(&mut shell);
-    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.click_import(AppCommand::ImportDrawingDxf);
     let mut same_length_change = valid_dxf_subset().to_vec();
     same_length_change[0] = b'1';
     std::fs::write(&source, same_length_change).unwrap();
@@ -2117,7 +2117,7 @@ fn file_import_dxf_rejects_source_document_history_and_open_staleness() {
 
     std::fs::write(&source, valid_dxf_subset()).unwrap();
     compose_two_shared_occurrences(&mut shell);
-    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.click_import(AppCommand::ImportDrawingDxf);
     assert!(shell.app_mut().move_selected(Vec3::new(10.0, 0.0, 0.0)));
     let after_document_change = canonical_state(&shell);
     let after_document_history = reachable_history_digests(&mut shell);
@@ -2125,7 +2125,7 @@ fn file_import_dxf_rejects_source_document_history_and_open_staleness() {
     assert!(digest_starts_like(&shell, "error-import-dxf"));
     assert_state_and_history_unchanged(&mut shell, &after_document_change, &after_document_history);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.click_import(AppCommand::ImportDrawingDxf);
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     let after_undo = canonical_state(&shell);
     let after_undo_history = reachable_history_digests(&mut shell);
@@ -2133,7 +2133,7 @@ fn file_import_dxf_rejects_source_document_history_and_open_staleness() {
     assert!(digest_starts_like(&shell, "error-import-dxf"));
     assert_state_and_history_unchanged(&mut shell, &after_undo, &after_undo_history);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.click_import(AppCommand::ImportDrawingDxf);
     shell.click_menu_command("menu-edit", AppCommand::Redo);
     let after_redo = canonical_state(&shell);
     let after_redo_history = reachable_history_digests(&mut shell);
@@ -2141,7 +2141,7 @@ fn file_import_dxf_rejects_source_document_history_and_open_staleness() {
     assert!(digest_starts_like(&shell, "error-import-dxf"));
     assert_state_and_history_unchanged(&mut shell, &after_redo, &after_redo_history);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.click_import(AppCommand::ImportDrawingDxf);
     shell.click_menu_command("menu-file", AppCommand::Open);
     let after_open = canonical_state(&shell);
     let after_open_history = reachable_history_digests(&mut shell);
@@ -2161,7 +2161,7 @@ fn file_import_dxf_undo_redo_round_trip_cannot_restore_confirmability() {
     let before = canonical_state(&shell);
     let history = reachable_history_digests(&mut shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.click_import(AppCommand::ImportDrawingDxf);
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     shell.click_menu_command("menu-edit", AppCommand::Redo);
     assert_eq!(canonical_state(&shell), before);
@@ -2185,7 +2185,7 @@ fn file_import_dxf_edit_context_navigation_invalidates_review() {
     let before = canonical_state(&shell);
     let history = reachable_history_digests(&mut shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportDrawingDxf);
+    shell.click_import(AppCommand::ImportDrawingDxf);
     shell.press_key(Key::Escape);
     assert_eq!(shell.app().edit_context_depth(), 0);
     shell.click_button_label(&shell.catalog().text("dialog-import-dxf-confirm"));
@@ -2209,7 +2209,7 @@ fn file_import_binary_stl_commits_through_the_same_headless_workflow() {
     let mut shell = Shell::with_dialogs(script);
     let before = canonical_state(&shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    shell.click_import(AppCommand::ImportMeshStl);
     shell.click_button_label(&shell.catalog().text("dialog-import-stl-confirm"));
 
     assert_eq!(shell.app().document_revision(), before.revision + 1);
@@ -2248,7 +2248,7 @@ fn file_import_stl_review_applies_and_persists_every_declared_unit() {
             .queue_save(&document_path);
         let mut shell = Shell::with_dialogs(script);
 
-        shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+        shell.click_import(AppCommand::ImportMeshStl);
         shell.click_role_and_label(Role::RadioButton, &shell.catalog().text(label_key));
         shell.click_button_label(&shell.catalog().text("dialog-import-stl-confirm"));
         shell.click_menu_command("menu-file", AppCommand::Save);
@@ -2300,26 +2300,26 @@ fn file_import_stl_cancel_and_every_refusal_leave_canonical_state_unchanged() {
     let before_history = reachable_history_digests(&mut shell);
     assert!(before.redo_steps > 0);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    shell.click_import(AppCommand::ImportMeshStl);
     assert_state_and_history_unchanged(&mut shell, &before, &before_history);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    shell.click_import(AppCommand::ImportMeshStl);
     shell.click_button_label(&shell.catalog().text("dialog-import-stl-cancel"));
     assert_state_and_history_unchanged(&mut shell, &before, &before_history);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    shell.click_import(AppCommand::ImportMeshStl);
     assert!(digest_starts_like(&shell, "error-import-stl"));
     assert_state_and_history_unchanged(&mut shell, &before, &before_history);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    shell.click_import(AppCommand::ImportMeshStl);
     assert!(digest_starts_like(&shell, "error-import-stl"));
     assert_state_and_history_unchanged(&mut shell, &before, &before_history);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    shell.click_import(AppCommand::ImportMeshStl);
     assert!(digest_starts_like(&shell, "error-import-stl"));
     assert_state_and_history_unchanged(&mut shell, &before, &before_history);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    shell.click_import(AppCommand::ImportMeshStl);
     assert!(digest_starts_like(&shell, "error-import-stl"));
     assert!(
         shell
@@ -2354,7 +2354,7 @@ fn file_import_stl_rejects_source_document_history_and_open_staleness() {
 
     let before_source_change = canonical_state(&shell);
     let before_source_history = reachable_history_digests(&mut shell);
-    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    shell.click_import(AppCommand::ImportMeshStl);
     let mut same_length_change = valid_ascii_tetrahedron().to_vec();
     same_length_change[0] = b'S';
     std::fs::write(&source, same_length_change).unwrap();
@@ -2364,7 +2364,7 @@ fn file_import_stl_rejects_source_document_history_and_open_staleness() {
 
     std::fs::write(&source, valid_ascii_tetrahedron()).unwrap();
     compose_two_shared_occurrences(&mut shell);
-    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    shell.click_import(AppCommand::ImportMeshStl);
     assert!(shell.app_mut().move_selected(Vec3::new(10.0, 0.0, 0.0)));
     let after_document_change = canonical_state(&shell);
     let after_document_history = reachable_history_digests(&mut shell);
@@ -2372,7 +2372,7 @@ fn file_import_stl_rejects_source_document_history_and_open_staleness() {
     assert!(digest_starts_like(&shell, "error-import-stl"));
     assert_state_and_history_unchanged(&mut shell, &after_document_change, &after_document_history);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    shell.click_import(AppCommand::ImportMeshStl);
     shell.click_menu_command("menu-edit", AppCommand::Undo);
     let after_undo = canonical_state(&shell);
     let after_undo_history = reachable_history_digests(&mut shell);
@@ -2380,7 +2380,7 @@ fn file_import_stl_rejects_source_document_history_and_open_staleness() {
     assert!(digest_starts_like(&shell, "error-import-stl"));
     assert_state_and_history_unchanged(&mut shell, &after_undo, &after_undo_history);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    shell.click_import(AppCommand::ImportMeshStl);
     shell.click_menu_command("menu-edit", AppCommand::Redo);
     let after_redo = canonical_state(&shell);
     let after_redo_history = reachable_history_digests(&mut shell);
@@ -2388,7 +2388,7 @@ fn file_import_stl_rejects_source_document_history_and_open_staleness() {
     assert!(digest_starts_like(&shell, "error-import-stl"));
     assert_state_and_history_unchanged(&mut shell, &after_redo, &after_redo_history);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    shell.click_import(AppCommand::ImportMeshStl);
     shell.click_menu_command("menu-file", AppCommand::Open);
     let after_open = canonical_state(&shell);
     let after_open_history = reachable_history_digests(&mut shell);
