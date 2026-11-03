@@ -425,7 +425,20 @@ pub(super) fn binding_data(
 pub(super) const BEGIN: &str = "# underlay data";
 pub(super) const END: &str = "# end of underlay data";
 
+/// Words the program language keeps for itself (Starlark keywords and reserved words) and
+/// its constants: a name written as one of them makes the program fail to load (review
+/// 2026-11-02 UO-51).
+const RESERVED_NAMES: [&str; 36] = [
+    "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif",
+    "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda",
+    "load", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while", "with", "yield",
+    "None", "True", "False",
+];
+
 pub(super) fn is_identifier(name: &str) -> bool {
+    if RESERVED_NAMES.contains(&name) {
+        return false;
+    }
     let mut characters = name.chars();
     characters
         .next()
@@ -848,7 +861,9 @@ pub(crate) fn nested_rings(mut rings: Vec<Ring>) -> Result<(Ring, Vec<Ring>), us
 
 /// Whether `outer` holds `ring`, rings of one object that do not cross: the first of its
 /// corners, or else of the middles of its sides, off the edge of `outer` lies inside it.
-/// A ring may touch the edge of the one holding it (review 2026-11-01 UO-101).
+/// A ring may touch the edge of the one holding it (review 2026-11-01 UO-101): lie within
+/// the distance line ends join at, as drawn lines miss by, and at most a thousandth of the
+/// size of `outer` (review 2026-11-02 UO-121; it was a billionth, 0.00001 mm at 10 m).
 fn holds(outer: &[[f64; 2]], ring: &[[f64; 2]]) -> bool {
     let (low, high) = outer.iter().fold(
         ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]),
@@ -859,7 +874,8 @@ fn holds(outer: &[[f64; 2]], ring: &[[f64; 2]]) -> bool {
             )
         },
     );
-    let tolerance = ketchup_model::tolerance::ROUNDING * (high[0] - low[0]).hypot(high[1] - low[1]);
+    let size = (high[0] - low[0]).hypot(high[1] - low[1]);
+    let tolerance = ketchup_model::tolerance::UNDERLAY_JOIN_MM.min(size / 1_000.0);
     let sides = |points: &[[f64; 2]]| {
         points
             .iter()

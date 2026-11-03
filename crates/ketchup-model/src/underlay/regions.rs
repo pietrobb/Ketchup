@@ -45,8 +45,18 @@ impl Region {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegionError {
-    TooManySegments { count: usize, limit: usize },
-    TooManyCrossings { limit: usize },
+    TooManySegments {
+        count: usize,
+        limit: usize,
+    },
+    TooManyCrossings {
+        limit: usize,
+    },
+    /// The pieces lie over more cells of the search's grid than it takes: lines far longer
+    /// than most, however few of them cross (review 2026-11-02 UO-49).
+    TooSpread {
+        limit: usize,
+    },
 }
 
 impl std::fmt::Display for RegionError {
@@ -59,6 +69,11 @@ impl std::fmt::Display for RegionError {
             Self::TooManyCrossings { limit } => {
                 write!(formatter, "the pieces cross more than {limit} times")
             }
+            Self::TooSpread { limit } => write!(
+                formatter,
+                "the pieces lie over more than {limit} cells of the search: some are far \
+                 longer than most"
+            ),
         }
     }
 }
@@ -69,7 +84,8 @@ impl std::error::Error for RegionError {}
 /// `tolerance_mm` taken as one point, largest first.
 ///
 /// # Errors
-/// More pieces than [`MAX_REGION_SEGMENTS`] or crossings than [`MAX_REGION_CROSSINGS`].
+/// More pieces than [`MAX_REGION_SEGMENTS`], or crossings or cells of the search than
+/// [`MAX_REGION_CROSSINGS`].
 pub fn find_regions(
     segments: &[[[f64; 2]; 2]],
     tolerance_mm: f64,
@@ -98,7 +114,7 @@ pub fn find_figures(
             outline.reverse();
             Region {
                 bounds: bounds_of(ring),
-                outline,
+                outline: straightened(outline),
                 holes: Vec::new(),
                 area_mm2: *area,
             }
@@ -115,7 +131,7 @@ pub fn find_figures(
             // Turned as `faces` turns a hole.
             let mut hole = ring.clone();
             hole.reverse();
-            figures[index].holes.push(hole);
+            figures[index].holes.push(straightened(hole));
             figures[index].area_mm2 -= area;
         }
     }
@@ -149,13 +165,24 @@ fn plane_graph(segments: &[[[f64; 2]; 2]], tolerance_mm: f64) -> Result<PlaneGra
     for end in ends {
         vertices.id(end);
     }
-    let segments = segments
+    // The pieces, too, each from its lower end and in the order of their coordinates: the
+    // crossings are then found and given vertices in an order of their own, not in the
+    // order the pieces came in (review 2026-11-02 UO-120).
+    let lower = |a: &[f64; 2], b: &[f64; 2]| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1]));
+    let mut segments = segments
         .iter()
         .filter_map(|[a, b]| {
             let (a, b) = (vertices.id(*a), vertices.id(*b));
-            (a != b).then(|| [vertices.points[a], vertices.points[b]])
+            let (a, b) = (vertices.points[a], vertices.points[b]);
+            match lower(&a, &b) {
+                std::cmp::Ordering::Equal => None,
+                std::cmp::Ordering::Less => Some([a, b]),
+                std::cmp::Ordering::Greater => Some([b, a]),
+            }
         })
         .collect::<Vec<_>>();
+    segments.sort_by(|[a, b], [c, d]| lower(a, c).then_with(|| lower(b, d)));
+    segments.dedup();
     let cuts = cuts(&segments, tolerance)?;
     let mut edges = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -295,6 +322,10 @@ const TOO_MANY_CROSSINGS: RegionError = RegionError::TooManyCrossings {
     limit: MAX_REGION_CROSSINGS,
 };
 
+const TOO_SPREAD: RegionError = RegionError::TooSpread {
+    limit: MAX_REGION_CROSSINGS,
+};
+
 /// The side of the square holding as many of `centers` as it may hold of them, the
 /// farthest fiftieth on each side left out: a stray line kilometres from the plan does
 /// not make its cells so large that the whole plan falls in one (review 2026-10-26 UO-40).
@@ -364,7 +395,7 @@ fn cuts(segments: &[[[f64; 2]; 2]], tolerance: f64) -> Result<Vec<Vec<f64>>, Reg
         }
         registered += covered;
         if registered > MAX_REGION_CROSSINGS {
-            return Err(TOO_MANY_CROSSINGS);
+            return Err(TOO_SPREAD);
         }
         cells(from, to, |key| grid.entry(key).or_default().push(index));
     }
@@ -413,7 +444,7 @@ fn cuts(segments: &[[[f64; 2]; 2]], tolerance: f64) -> Result<Vec<Vec<f64>>, Reg
         };
         registered += steps;
         if registered > MAX_REGION_CROSSINGS {
-            return Err(TOO_MANY_CROSSINGS);
+            return Err(TOO_SPREAD);
         }
         let path = path_cells(segments[index], size, steps.max(1));
         for [column, row] in &path {
@@ -599,6 +630,46 @@ fn signed_area(ring: &[[f64; 2]]) -> f64 {
         / 2.0
 }
 
+/// `ring` without the corners where it runs straight on, as where a partition meets a
+/// wall: such a corner is no corner of the region (review 2026-11-02 UO-48; a corridor
+/// with 19 partitions had 23 corners). Only one lying on the line of its neighbours, to
+/// rounding, between them, goes: a ring of short chords keeps its shape.
+fn straightened(ring: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
+    let straight = |a: [f64; 2], p: [f64; 2], b: [f64; 2]| {
+        let along = [b[0] - a[0], b[1] - a[1]];
+        let (to_p, past_p) = ([p[0] - a[0], p[1] - a[1]], [b[0] - p[0], b[1] - p[1]]);
+        let size = [a, p, b]
+            .iter()
+            .flatten()
+            .fold(0.0_f64, |size, value| size.max(value.abs()));
+        let tolerance = ketchup_tolerance::APPROXIMATION.max(ROUNDING * size);
+        let length = along[0].hypot(along[1]);
+        length > 0.0 && cross2(along, to_p).abs() <= tolerance * length && dot2(to_p, past_p) > 0.0
+    };
+    let mut kept: Vec<[f64; 2]> = Vec::with_capacity(ring.len());
+    for point in ring {
+        kept.push(point);
+        while let &[.., a, p, b] = &kept[..]
+            && straight(a, p, b)
+        {
+            let at = kept.len() - 2;
+            kept.remove(at);
+        }
+    }
+    // Where the ring closes, round its first and last corners.
+    while kept.len() > 3 {
+        let last = kept.len() - 1;
+        if straight(kept[last - 1], kept[last], kept[0]) {
+            kept.pop();
+        } else if straight(kept[last], kept[0], kept[1]) {
+            kept.remove(0);
+        } else {
+            break;
+        }
+    }
+    kept
+}
+
 fn bounds_of(ring: &[[f64; 2]]) -> [[f64; 2]; 2] {
     let mut bounds = [ring[0], ring[0]];
     for point in ring {
@@ -616,7 +687,7 @@ fn faces(points: &[[f64; 2]], edges: &[[usize; 2]]) -> Vec<Region> {
         .iter()
         .map(|(ring, area, _)| Region {
             bounds: bounds_of(ring),
-            outline: ring.clone(),
+            outline: straightened(ring.clone()),
             holes: Vec::new(),
             area_mm2: *area,
         })
@@ -633,7 +704,7 @@ fn faces(points: &[[f64; 2]], edges: &[[usize; 2]]) -> Vec<Region> {
         if let Some(index) = around {
             let mut hole = ring;
             hole.reverse();
-            regions[index].holes.push(hole);
+            regions[index].holes.push(straightened(hole));
             regions[index].area_mm2 -= area;
         }
     }
@@ -1036,6 +1107,110 @@ mod tests {
                     (room[0].area_mm2 / (side * side) - 1.0).abs() < 0.04,
                     "drawing {drawing}, order {order}: {}",
                     room[0].area_mm2
+                );
+            }
+        }
+    }
+
+    /// Review 2026-11-02 UO-49: a search refused for the cells its pieces lie over said the
+    /// pieces cross more than two million times, though none crossed. It says what it is.
+    #[test]
+    fn a_search_of_lines_far_longer_than_most_is_refused_for_what_it_is() {
+        let mut lines = (0..1_000)
+            .map(|k| {
+                let x = f64::from(k % 40) * 25.0;
+                let y = f64::from(k / 40) * 40.0;
+                [[x, y], [x + 10.0, y]]
+            })
+            .collect::<Vec<_>>();
+        // A few lines 10 km long, a kilometre apart: none crosses another.
+        lines.extend((0..15).map(|k| {
+            let y = 2_000.0 + f64::from(k) * 1_000_000.0;
+            [[0.0, y], [1.0e7, y]]
+        }));
+        let error = find_regions(&lines, 1.0).unwrap_err();
+        assert_eq!(
+            error,
+            RegionError::TooSpread {
+                limit: MAX_REGION_CROSSINGS
+            }
+        );
+        assert!(!error.to_string().contains("cross"), "{error}");
+    }
+
+    /// Review 2026-11-02 UO-48: each point where a partition met a wall was a corner of the
+    /// region along that wall: a corridor with 19 rooms on one side had 23 corners. Its
+    /// outline has 4, each room's too, and a pillar touching a wall still bends the room.
+    #[test]
+    fn a_region_has_corners_only_where_its_outline_bends() {
+        let mut lines = vec![
+            [[0.0, 0.0], [10_000.0, 0.0]],
+            [[10_000.0, 0.0], [10_000.0, 4_000.0]],
+            [[10_000.0, 4_000.0], [0.0, 4_000.0]],
+            [[0.0, 4_000.0], [0.0, 0.0]],
+            [[0.0, 1_000.0], [10_000.0, 1_000.0]],
+        ];
+        lines.extend((1..20).map(|k| {
+            let x = f64::from(k) * 500.0;
+            [[x, 1_000.0], [x, 4_000.0]]
+        }));
+        let regions = find_regions(&lines, 1.0).unwrap();
+        assert_eq!(regions.len(), 21);
+        assert!(
+            regions.iter().all(|region| region.outline.len() == 4),
+            "{regions:?}"
+        );
+        let corridor = regions
+            .iter()
+            .find(|r| r.contains([5_000.0, 500.0]))
+            .unwrap();
+        assert!((corridor.area_mm2 - 10_000_000.0).abs() < 1e-6);
+        let figures = find_figures(&lines, 1.0).unwrap();
+        assert_eq!(figures[0].outline.len(), 4, "{figures:?}");
+        // A pillar standing against the wall: the room bends round it.
+        let mut room = square(0.0, 100.0);
+        room.extend([
+            [[40.0, 0.0], [40.0, 10.0]],
+            [[40.0, 10.0], [60.0, 10.0]],
+            [[60.0, 10.0], [60.0, 0.0]],
+        ]);
+        let found = find_regions(&room, 0.01).unwrap();
+        let room = found.iter().find(|r| r.contains([50.0, 50.0])).unwrap();
+        assert_eq!(room.outline.len(), 8, "{room:?}");
+    }
+
+    /// Review 2026-11-02 UO-120: the ends took their vertices in an order of their own, but
+    /// the crossings still in the order of the pieces, so in 259 of 300 random drawings the
+    /// number of regions hung on the order the pieces came in. It no longer does.
+    #[test]
+    fn the_regions_of_crossing_pieces_do_not_depend_on_their_order() {
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            f64::from(u32::try_from(seed >> 40).unwrap()) / f64::from(1_u32 << 24) * 100.0
+        };
+        let summary = |lines: &[[[f64; 2]; 2]]| {
+            let found = find_regions(lines, 1.0).unwrap();
+            let holes = found.iter().map(|region| region.holes.len()).sum::<usize>();
+            (found.len(), holes)
+        };
+        for case in 0..300 {
+            let lines = (0..12)
+                .map(|_| [[next(), next()], [next(), next()]])
+                .collect::<Vec<_>>();
+            let reversed = lines.iter().rev().copied().collect::<Vec<_>>();
+            let turned = lines.iter().map(|[a, b]| [*b, *a]).collect::<Vec<_>>();
+            let shuffled = (0..lines.len())
+                .map(|k| lines[k * 5 % lines.len()])
+                .collect::<Vec<_>>();
+            let first = summary(&lines);
+            for (order, pieces) in [&reversed, &turned, &shuffled].into_iter().enumerate() {
+                assert_eq!(
+                    summary(pieces),
+                    first,
+                    "case {case}, order {order}: {lines:?}"
                 );
             }
         }

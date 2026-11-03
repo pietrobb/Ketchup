@@ -1054,17 +1054,17 @@ pub(super) fn local_area(underlay: &Underlay, area: [[f64; 2]; 2]) -> [[f64; 2];
     bounds
 }
 
-/// The straight pieces of `layers` that meet `area`, without those a hatch draws or a
-/// dimension.
+/// The straight pieces of `layers` that meet `area`, without those a hatch draws, a
+/// dimension, or the cross marking a POINT (review 2026-11-02 UO-52).
 fn pieces(lines: &UnderlayLines, layers: &[usize], area: Option<[[f64; 2]; 2]>) -> Vec<Piece> {
     let objects = &lines.objects().objects;
-    // Whether each object is a hatch or dimension or lies below one.
+    // Whether each object is a hatch, dimension or point or lies below one.
     let mut annotation = vec![false; objects.len()];
     for (index, object) in objects.iter().enumerate() {
         let own = matches!(
             object.detail,
             ObjectDetail::Hatch { .. } | ObjectDetail::Dimension { .. }
-        );
+        ) || object.kind.name() == "POINT";
         let inherited = object
             .parent
             .and_then(|parent| annotation.get(usize::try_from(parent).ok()?).copied())
@@ -1096,18 +1096,30 @@ fn pieces(lines: &UnderlayLines, layers: &[usize], area: Option<[[f64; 2]; 2]>) 
             continue;
         };
         let points = drawn.points_mm();
-        let skip = |point: usize| {
-            skipped[layer].iter().any(|range| {
-                let start = usize::try_from(range.start).unwrap_or(usize::MAX);
-                let end = usize::try_from(range.end).unwrap_or(0);
-                point >= start && point + 1 < end
+        // The pieces left out, from each point to the next: marked once per range, not
+        // looked up in every range for each point (review 2026-11-02 UO-54).
+        let mut depth = vec![0_i64; points.len() + 1];
+        for range in &skipped[layer] {
+            let start = usize::try_from(range.start).unwrap_or(usize::MAX);
+            let end = usize::try_from(range.end).unwrap_or(0).min(points.len());
+            if start.saturating_add(1) < end {
+                depth[start] += 1;
+                depth[end - 1] -= 1;
+            }
+        }
+        let mut open = 0;
+        let skip = depth
+            .iter()
+            .map(|change| {
+                open += change;
+                open > 0
             })
-        };
+            .collect::<Vec<_>>();
         let mut start = 0;
         for &end in drawn.polyline_ends() {
             for point in start..end.saturating_sub(1) {
                 let ends = [points[point], points[point + 1]];
-                if !skip(point) && meets(ends) {
+                if !skip[point] && meets(ends) {
                     pieces.push(Piece { ends, layer, point });
                 }
             }
