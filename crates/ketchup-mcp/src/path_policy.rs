@@ -94,6 +94,9 @@ fn local_mounted_path(path: &str, mounts: &[Mount], automounted: &[&str]) -> boo
             !components
                 .first()
                 .is_some_and(|top| automounted.contains(&top.as_str()))
+                // The table lists mounts in mount order, so of two at one point the
+                // later is on top (systemd's autofs trigger under binfmt_misc);
+                // `max_by_key` keeps the last of equals.
                 && mounts
                     .iter()
                     .filter(|mount| components.starts_with(&mount.on))
@@ -305,6 +308,30 @@ mod mount_tests {
         }
     }
 
+    #[test]
+    fn of_two_mounts_at_one_point_the_later_one_on_top_decides() {
+        let covered_trigger = linux_mounts(
+            "/dev/sda1 / ext4 rw 0 0\n\
+             systemd-1 /proc/sys/fs/binfmt_misc autofs rw 0 0\n\
+             binfmt_misc /proc/sys/fs/binfmt_misc binfmt_misc rw 0 0\n",
+        );
+        assert!(local_mounted_path(
+            "/proc/sys/fs/binfmt_misc/x.pdf",
+            &covered_trigger,
+            &[]
+        ));
+        let share_over_disk = linux_mounts(
+            "/dev/sda1 / ext4 rw 0 0\n\
+             /dev/sdb1 /mnt/data ext4 rw 0 0\n\
+             //nas/data /mnt/data cifs rw 0 0\n",
+        );
+        assert!(!local_mounted_path(
+            "/mnt/data/x.pdf",
+            &share_over_disk,
+            &[]
+        ));
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn no_path_on_a_mount_of_this_computer_that_is_not_local_is_local() {
@@ -314,7 +341,10 @@ mod mount_tests {
                 .iter()
                 .any(|mount| mount.on.is_empty() && mount.local)
         );
-        for mount in mounts.iter().filter(|mount| !mount.local) {
+        for (at, mount) in mounts.iter().enumerate().filter(|(_, mount)| !mount.local) {
+            if mounts[at + 1..].iter().any(|over| over.on == mount.on) {
+                continue;
+            }
             let path = format!("/{}/x.pdf", mount.on.join("/"));
             assert!(!super::local_absolute_path(&path), "{path}");
         }
