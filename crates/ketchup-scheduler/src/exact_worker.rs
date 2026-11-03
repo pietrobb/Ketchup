@@ -2038,9 +2038,13 @@ fn exact_brep_loft_face_names(
             Some("loft.end") => (1, "end"),
             _ => continue,
         };
-        let Some(slot) = record
-            .output_face_ordinal
-            .and_then(|face| names.get_mut(usize::try_from(face).ok()?))
+        let Some(face) = record.output_face_ordinal else {
+            continue;
+        };
+        let Some((slot, _)) = names
+            .iter_mut()
+            .zip(0_u32..)
+            .find(|(_, ordinal)| *ordinal == face)
         else {
             continue;
         };
