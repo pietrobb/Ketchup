@@ -1740,7 +1740,10 @@ impl KetchupApp {
                     bridge.start_dwg_import(self, context, queued, request, ui_busy);
                     continue;
                 }
-                request if project_drawings_job::exports_project_drawings(&request) => {
+                request
+                    if project_drawings_job::exports_project_drawings(&request)
+                        || project_drawings_job::waits_for_exact(self, &request) =>
+                {
                     let queued = program_dry_run::QueuedReply {
                         id,
                         reply,

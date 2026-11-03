@@ -202,6 +202,10 @@ impl LiveBridge {
                 "drawing_export",
                 "An underlay drawing is being written to its file.",
             ),
+            Some(Job::ProjectDrawings(job)) if job.awaits_exact() => (
+                "export_drawings",
+                "The drawings wait for the exact evaluation, then are drawn and written.",
+            ),
             Some(Job::ProjectDrawings(_)) => (
                 "export_drawings",
                 "The project drawings are being drawn and written.",
