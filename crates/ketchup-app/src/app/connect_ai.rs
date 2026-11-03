@@ -19,6 +19,12 @@ impl KetchupApp {
             .strong(),
         );
         ui.label(self.catalog.text("connect-ai-description"));
+        if let Some(id) = self.live_consent_instance_id() {
+            ui.weak(self.catalog.format(
+                "connect-ai-this-window",
+                &BTreeMap::from([("name", ketchup_mcp::short_name(id))]),
+            ));
+        }
         let Some(server) = mcp_server_command() else {
             ui.weak(self.catalog.text("connect-ai-executable-unknown"));
             return;
@@ -110,6 +116,9 @@ impl KetchupApp {
             .clicked()
         {
             self.live.harnesses = None;
+        }
+        if set_up.is_some() {
+            self.mark_chosen_window();
         }
         if let Some(index) = set_up
             && let Some(environment) = Environment::current()
@@ -413,6 +422,44 @@ mod tests {
         harness.get_by_label(&again).click();
         harness.run();
         assert!(!files(&harness).contains(&Some(marker)));
+    }
+
+    /// #2687 point 16: Connect in this window's AI tab makes it the window a
+    /// `connect` without an id goes to, and the tab shows the short name the
+    /// AI lists this window by.
+    #[test]
+    fn connect_marks_this_window_for_a_connect_without_an_id() {
+        let folder = tempfile::tempdir().unwrap();
+        let discovery = folder.path().join("live-instances");
+        let mut app = KetchupApp::new();
+        app.enable_live_consent_broker_in(&egui::Context::default(), &discovery)
+            .unwrap();
+        let id = app.live_consent_instance_id().unwrap().to_owned();
+        let config = folder.path().join("mcp_servers.json");
+        app.live.harnesses = Some(vec![HarnessRow {
+            harness: Harness::Supervisor,
+            file: Some(config.clone()),
+            registration: Registration::NotSetUp,
+            setup_error: None,
+        }]);
+        let mut harness = open_section(app);
+        let catalog = harness.state().catalog.clone();
+        assert_eq!(ketchup_mcp::chosen_window(&discovery), None);
+        harness
+            .get_by_label(&catalog.text("connect-ai-set-up"))
+            .click();
+        harness.run();
+        assert_eq!(
+            ketchup_mcp::chosen_window(&discovery).as_deref(),
+            Some(id.as_str())
+        );
+        assert!(config.is_file(), "Connect still writes the client's file");
+        let name = catalog.format(
+            "connect-ai-this-window",
+            &std::collections::BTreeMap::from([("name", ketchup_mcp::short_name(&id))]),
+        );
+        assert!(name.contains(&ketchup_mcp::short_name(&id)), "{name}");
+        harness.get_by_label(&name);
     }
 
     #[test]

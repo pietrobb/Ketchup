@@ -290,6 +290,17 @@ impl KetchupApp {
             .unwrap_or_else(|| self.catalog.text("live-consent-untitled"))
     }
 
+    /// Connect was clicked here (#2687 point 16): an AI's `connect` without an
+    /// id goes to this window, also when several are open.
+    pub(crate) fn mark_chosen_window(&self) {
+        if let Some(broker) = &self.live.consent_broker
+            && let Some(root) = broker.registry_path.parent()
+        {
+            // Only spares the AI a choice; without it the AI asks which window.
+            let _ = ketchup_mcp::mark_chosen(root, &broker.instance_id);
+        }
+    }
+
     /// Whether an AI holds this window, attached here or the one that started it.
     pub(crate) fn ai_attached(&self) -> bool {
         self.live.consent_attached || self.live.launch_attached

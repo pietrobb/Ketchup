@@ -26,6 +26,7 @@ connect-ai-set-up = Pripojiť
 connect-ai-replace = Použiť tento Kečup
 connect-ai-set-up-failed = Nastavenie zlyhalo
 connect-ai-check-again = Skontrolovať znova
+connect-ai-this-window = AI pozná toto okno ako { $name }. Pri viacerých otvorených oknách sa pripojí k tomu, v ktorom ste naposledy klikli Pripojiť.
 connect-ai-manual = Iná AI: nastaviť ručne
 live-plugin-consent-title = Povoliť spustenie tohto pluginu?
 live-plugin-consent-description = Plugin beží ako lokálny program s vašimi právami a môže meniť model s uvedenými oprávneniami. Pri zmene súboru alebo ďalšom oprávnení sa okno spýta znova.

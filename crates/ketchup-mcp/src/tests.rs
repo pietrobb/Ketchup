@@ -897,6 +897,87 @@ fn a_takeover_says_whether_the_request_changed_the_document() {
     );
 }
 
+/// Answers every request on `bridge` as done, like a window that has nothing to say.
+fn answer_every_request(bridge: TcpListener) {
+    std::thread::spawn(move || {
+        for stream in bridge.incoming() {
+            let mut stream = stream.unwrap();
+            loop {
+                let mut header = [0_u8; 4];
+                if stream.read_exact(&mut header).is_err() {
+                    break;
+                }
+                let mut body = vec![0_u8; u32::from_be_bytes(header) as usize];
+                stream.read_exact(&mut body).unwrap();
+                let envelope: Value = serde_json::from_slice(&body).unwrap();
+                let reply = json!({"version": 1, "id": envelope["id"], "ok": true, "result": {},
+                                   "stamp": {"document_id": 1, "revision": 7,
+                                             "canonical_digest": "d", "mutation_epoch": 0}})
+                .to_string();
+                stream
+                    .write_all(&(reply.len() as u32).to_be_bytes())
+                    .unwrap();
+                stream.write_all(reply.as_bytes()).unwrap();
+            }
+        }
+    });
+}
+
+/// #2687 point 16: with several windows open, `connect` without an id goes to
+/// the window whose AI tab Connect was clicked in. Without that click, or once
+/// that window closed, it asks for a choice and names every window by the short
+/// name the window's AI tab shows.
+#[test]
+fn connect_without_an_id_goes_to_the_window_connect_was_clicked_in() {
+    const OTHER: &str = "fedcba9876543210fedcba9876543210";
+    let root = tempfile::tempdir().unwrap();
+    let window = |instance| {
+        let bridge = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (events, received) = mpsc::channel();
+        grant_attaches(root.path(), instance, &bridge, events);
+        answer_every_request(bridge);
+        received
+    };
+    let first = window(INSTANCE);
+    let second = window(OTHER);
+    let mut tools = Tools::new(None, Some(root.path().to_owned()));
+    let short = crate::discovery::short_name;
+
+    let choose = text(&call(&mut tools, "connect", json!({})));
+    assert_eq!(choose["error"], "choose_window", "{choose}");
+    let names: Vec<Value> = choose["details"]["windows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|window| window["short_name"].clone())
+        .collect();
+    assert_eq!(names, [json!(short(INSTANCE)), json!(short(OTHER))]);
+
+    crate::discovery::mark_chosen(root.path(), OTHER).unwrap();
+    let connected = call(&mut tools, "connect", json!({}));
+    assert_eq!(connected["isError"], false, "{connected}");
+    assert_eq!(
+        second
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap(),
+        "attach"
+    );
+    assert!(first.try_recv().is_err(), "the other window is left alone");
+    let listed = text(&call(&mut tools, "windows", json!({})));
+    let chosen: Vec<Value> = listed["windows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|window| window["chosen"].clone())
+        .collect();
+    assert_eq!(chosen, [json!(false), json!(true)], "{listed}");
+
+    // The window Connect was clicked in closed; another one is not guessed.
+    crate::discovery::mark_chosen(root.path(), &"a".repeat(32)).unwrap();
+    let choose = text(&call(&mut tools, "connect", json!({})));
+    assert_eq!(choose["error"], "choose_window", "{choose}");
+}
+
 /// MECH-1: a client that gave up on a tool call (Codex stops waiting after
 /// 60 s) sends notifications/cancelled. The server stopped waiting for the
 /// window only after the call's whole wait, up to 15 minutes, and the window

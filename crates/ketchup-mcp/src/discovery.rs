@@ -26,6 +26,8 @@ const MAX_LINE_BYTES: u64 = 2048;
 const MAX_REGISTRY_ENTRIES: usize = 4096;
 const MAX_WINDOWS: usize = 64;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+/// Not a window entry: those are named by a 32-digit hex identity.
+const CHOSEN_FILE: &str = "chosen-window.json";
 /// A window grants a local attach at once; this only bounds a hung window.
 const ATTACH_TIMEOUT: Duration = Duration::from_secs(65);
 
@@ -87,6 +89,44 @@ pub fn list_windows(root: &Path) -> Vec<Window> {
     });
     windows.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
     windows
+}
+
+/// The name a window shows in its AI tab and `windows` gives it, so the user
+/// and the agent can tell windows apart that all show "Untitled".
+#[must_use]
+pub fn short_name(instance_id: &str) -> String {
+    instance_id
+        .chars()
+        .take(4)
+        .collect::<String>()
+        .to_uppercase()
+}
+
+/// Connect was clicked in window `instance_id`: a `connect` without an id goes
+/// to it while it is open, until Connect is clicked in another window.
+pub fn mark_chosen(root: &Path, instance_id: &str) -> io::Result<()> {
+    if !is_lower_hex(instance_id, 32) {
+        return Err(invalid("not a window identity"));
+    }
+    let bytes = serde_json::to_vec(&json!({"version": 1, "instance_id": instance_id}))?;
+    let temporary = root.join(format!(".{CHOSEN_FILE}.{}", nonce()?));
+    let written = crate::local_auth::create(&temporary)
+        .and_then(|mut file| file.write_all(&bytes).and_then(|()| file.sync_all()))
+        .and_then(|()| fs::rename(&temporary, root.join(CHOSEN_FILE)));
+    if written.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    written
+}
+
+/// The window Connect was last clicked in, open or not.
+#[must_use]
+pub fn chosen_window(root: &Path) -> Option<String> {
+    let entry: Value =
+        serde_json::from_slice(&crate::local_auth::read_private(&root.join(CHOSEN_FILE)).ok()?)
+            .ok()?;
+    let instance_id = entry["instance_id"].as_str()?;
+    (entry["version"] == 1 && is_lower_hex(instance_id, 32)).then(|| instance_id.to_owned())
 }
 
 /// Readiness comes exclusively from the spawned child's private stdout pipe.

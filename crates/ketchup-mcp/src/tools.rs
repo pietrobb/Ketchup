@@ -579,6 +579,7 @@ impl Tools {
             .attached
             .as_ref()
             .map(|a| a.window.instance_id.as_str());
+        let chosen = self.chosen_window();
         let windows: Vec<Value> = self
             .list_windows()
             .iter()
@@ -586,8 +587,10 @@ impl Tools {
                 let ours = connected == Some(window.instance_id.as_str());
                 json!({
                     "instance_id": window.instance_id,
+                    "short_name": discovery::short_name(&window.instance_id),
                     "document": window.document,
                     "connected": ours,
+                    "chosen": chosen.as_deref() == Some(window.instance_id.as_str()),
                     "used_by_another_client": window.in_use && !ours,
                 })
             })
@@ -666,6 +669,13 @@ impl Tools {
 
     fn sole_window(&self) -> Result<Window, ToolError> {
         let mut windows = self.list_windows();
+        // #2687 point 16: of several, the one Connect was clicked in, while open.
+        if windows.len() > 1
+            && let Some(chosen) = self.chosen_window()
+            && let Some(index) = windows.iter().position(|w| w.instance_id == chosen)
+        {
+            return Ok(windows.swap_remove(index));
+        }
         match windows.len() {
             0 => Err(ToolError::new(
                 "no_window",
@@ -675,15 +685,28 @@ impl Tools {
             _ => {
                 let listed: Vec<Value> = windows
                     .iter()
-                    .map(|w| json!({"instance_id": w.instance_id, "document": w.document}))
+                    .map(|w| {
+                        json!({"instance_id": w.instance_id,
+                               "short_name": discovery::short_name(&w.instance_id),
+                               "document": w.document})
+                    })
                     .collect();
                 Err(ToolError::new(
                     "choose_window",
-                    "Several Kečup windows are open; call connect with one instance_id.",
+                    "Several Kečup windows are open and Connect was not clicked in any of them; \
+                     ask the user which one (each window shows its short_name in its AI tab), \
+                     then call connect with its instance_id.",
                 )
                 .with_details(json!({"windows": listed})))
             }
         }
+    }
+
+    /// The window Connect was last clicked in, open or not.
+    fn chosen_window(&self) -> Option<String> {
+        self.discovery_root
+            .as_deref()
+            .and_then(discovery::chosen_window)
     }
 
     fn attach(&mut self, window: Window) -> Result<(), ToolError> {
