@@ -52,9 +52,13 @@ pub enum BridgeError {
     /// The window had already ended the connection; the request was not sent.
     Closed(io::Error),
     /// Another client took the window over; `sent` tells whether this request
-    /// had reached the window (it may then have been applied).
+    /// had reached the window, `document_changed` whether the document changed
+    /// while it ran (`None` from a window that does not say), and `stamp` is
+    /// the document at the takeover.
     Superseded {
         sent: bool,
+        document_changed: Option<bool>,
+        stamp: Value,
     },
 }
 
@@ -144,7 +148,11 @@ impl Connection {
             .map_err(BridgeError::Transport)?;
         let reply = self.read_reply(wait).map_err(BridgeError::Transport)?;
         if reply["error"] == crate::SUPERSEDED_BY_ANOTHER_CLIENT {
-            return Err(BridgeError::Superseded { sent: true });
+            return Err(BridgeError::Superseded {
+                sent: true,
+                document_changed: reply["result"]["document_changed"].as_bool(),
+                stamp: reply["stamp"].clone(),
+            });
         }
         if reply["id"] != id {
             return Err(BridgeError::Transport(io::Error::new(
@@ -182,7 +190,11 @@ impl Connection {
             Ok(0) => Err(BridgeError::Closed(io::ErrorKind::UnexpectedEof.into())),
             Ok(_) => match self.read_reply(WRITE_TIMEOUT) {
                 Ok(reply) if reply["error"] == crate::SUPERSEDED_BY_ANOTHER_CLIENT => {
-                    Err(BridgeError::Superseded { sent: false })
+                    Err(BridgeError::Superseded {
+                        sent: false,
+                        document_changed: None,
+                        stamp: reply["stamp"].clone(),
+                    })
                 }
                 Ok(_) => Err(BridgeError::Closed(io::Error::new(
                     io::ErrorKind::InvalidData,

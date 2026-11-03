@@ -654,6 +654,8 @@ fn a_program_holding_a_closed_windows_address_cannot_pass_for_it() {
 enum Ending {
     /// Answers the second request: another client took the window over meanwhile.
     SupersededInFlight,
+    /// The same from a window that says the document changed while it ran.
+    SupersededAfterAChange,
     /// Tells the idle client it was taken over, before its next request.
     SupersededIdle,
     /// Just closes, like a window that ends the connection for another reason.
@@ -698,6 +700,13 @@ fn scripted_window(
                 Ending::SupersededInFlight => {
                     let id = read_id(&mut stream);
                     frame(&mut stream, superseded(id));
+                }
+                Ending::SupersededAfterAChange => {
+                    let id = read_id(&mut stream);
+                    let mut last = superseded(id);
+                    last["stamp"] = json!({"revision": 9});
+                    last["result"] = json!({"document_changed": true});
+                    frame(&mut stream, last);
                 }
                 Ending::SupersededIdle => frame(&mut stream, superseded(json!(0))),
                 Ending::Close => {}
@@ -855,6 +864,37 @@ fn a_taken_over_window_is_not_reconnected_silently() {
     let message = idle["message"].as_str().unwrap();
     assert!(message.contains("was not sent"), "{message}");
     assert!(events.try_recv().is_err(), "no third attach");
+}
+
+/// MCP 16a: the window says whether the document changed while the request
+/// that was running when another client took over ran, so the agent does not
+/// have to guess; `windows` says the other client can be taken over (MCP 15).
+#[test]
+fn a_takeover_says_whether_the_request_changed_the_document() {
+    let root = tempfile::tempdir().unwrap();
+    let _events = scripted_window(root.path(), INSTANCE, vec![Ending::SupersededAfterAChange]);
+    let mut tools = Tools::new(None, Some(root.path().to_owned()));
+    let status = json!({"action": "status"});
+    assert_eq!(
+        call(&mut tools, "inspect", status.clone())["isError"],
+        false
+    );
+    let in_flight = text(&call(&mut tools, "inspect", status));
+    assert_eq!(in_flight["error"], "connection_taken_over");
+    let message = in_flight["message"].as_str().unwrap();
+    assert!(message.contains("probably applied"), "{message}");
+    assert_eq!(in_flight["details"]["stamp"]["revision"], 9, "{in_flight}");
+
+    let held = json!({"instance_id": INSTANCE, "used_by_another_client": true});
+    let listed = crate::tools::listed_windows(vec![held]);
+    let note = listed["used_by_another_client"].as_str().unwrap();
+    assert!(note.contains("connect takes such a window over"), "{note}");
+    let free = json!({"instance_id": INSTANCE, "used_by_another_client": false});
+    assert!(
+        crate::tools::listed_windows(vec![free])
+            .get("used_by_another_client")
+            .is_none()
+    );
 }
 
 /// MECH-1: a client that gave up on a tool call (Codex stops waiting after

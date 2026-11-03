@@ -55,7 +55,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
@@ -1460,7 +1460,9 @@ pub(crate) struct LiveBridge {
     token: String,
     stopped: Arc<AtomicBool>,
     /// Set before the bridge stops because another client attached.
-    superseded: Arc<AtomicBool>,
+    superseded: Arc<OnceLock<transport::Takeover>>,
+    /// The document as each connection's latest request found it when it began.
+    started: BTreeMap<u64, Stamp>,
     worker: Option<JoinHandle<()>>,
     #[cfg(test)]
     active_connections: Arc<AtomicUsize>,
@@ -1527,10 +1529,13 @@ impl KetchupApp {
     }
 
     /// Ends every connection because another client takes the window over;
-    /// each one gets a last frame saying so instead of a bare end of stream.
+    /// each one gets a last frame saying so instead of a bare end of stream,
+    /// and a client whose request was running is told whether the document
+    /// changed while it ran (MCP 16a).
     pub(crate) fn supersede_live_bridge(&mut self) {
-        if let Some(bridge) = &self.live.bridge {
-            bridge.superseded.store(true, Ordering::Release);
+        let now = self.live_bridge_stamp();
+        if let Some(bridge) = &mut self.live.bridge {
+            bridge.supersede(now);
         }
         self.disable_live_bridge();
     }
@@ -1600,6 +1605,7 @@ impl KetchupApp {
             }
             bridge.activate_client(queued.session);
             let stamp = self.live_bridge_stamp();
+            bridge.started.insert(queued.session, stamp.clone());
             if bridge.observed.as_ref() != Some(&stamp) {
                 bridge.query.invalidate();
                 for state in bridge.client_states.values_mut() {
@@ -1843,6 +1849,7 @@ impl LiveBridge {
     }
 
     fn remove_client(&mut self, session: u64) {
+        self.started.remove(&session);
         if self.session != session {
             self.client_states.remove(&session);
             return;
