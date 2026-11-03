@@ -160,17 +160,8 @@ pub fn attach(window: &Window) -> io::Result<Grant> {
         ATTACH_TIMEOUT,
         bootstrap,
     )?;
-    if reply["status"] == "busy" {
-        return Err(io::Error::new(
-            io::ErrorKind::WouldBlock,
-            "the window is busy: it is still loading or evaluating, or a dialog in the window is waiting for the user; attach again once it is free",
-        ));
-    }
-    if reply["status"] != "allowed" {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "the window rejected this server's credential; the MCP server and the window are probably different Kečup builds, restart the MCP server from the same build as the window",
-        ));
+    if let Some(refusal) = attach_refusal(reply["status"].as_str().unwrap_or("")) {
+        return Err(refusal);
     }
     let address = reply["live_bridge_address"]
         .as_str()
@@ -182,6 +173,28 @@ pub fn attach(window: &Window) -> io::Result<Grant> {
         .ok_or_else(|| invalid("attach reply without a credential"))?
         .to_owned();
     Ok(Grant { address, token })
+}
+
+/// Why an attach answered `status` gives no grant; `None` for `allowed`.
+fn attach_refusal(status: &str) -> Option<io::Error> {
+    let (kind, message) = match status {
+        "allowed" => return None,
+        "busy" => (
+            io::ErrorKind::WouldBlock,
+            "the window is busy: it is still loading or evaluating, or a dialog in the window is waiting for the user; attach again once it is free",
+        ),
+        // The window allowed the attach but could not open its live bridge
+        // (review 2026-11-02 of 70d56910): not a credential the window refused.
+        "failed" => (
+            io::ErrorKind::Other,
+            "the window could not open its live connection; its status line says why",
+        ),
+        _ => (
+            io::ErrorKind::PermissionDenied,
+            "the window rejected this server's credential; the MCP server and the window are probably different Kečup builds, restart the MCP server from the same build as the window",
+        ),
+    };
+    Some(io::Error::new(kind, message))
 }
 
 fn registry_entry(path: &Path) -> Option<(String, SocketAddr, String)> {
@@ -324,4 +337,23 @@ fn is_lower_hex(text: &str, length: usize) -> bool {
 
 fn invalid(reason: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, reason)
+}
+
+#[cfg(test)]
+mod attach_refusal_tests {
+    use super::attach_refusal;
+
+    /// Review 2026-11-02 (70d56910): a window that failed to open its bridge
+    /// was reported to the client as a refused credential of another build.
+    #[test]
+    fn a_window_that_failed_is_not_a_refused_credential() {
+        assert!(attach_refusal("allowed").is_none());
+        let failed = attach_refusal("failed").unwrap();
+        assert_ne!(failed.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(failed.to_string().contains("status line"), "{failed}");
+        let rejected = attach_refusal("rejected").unwrap();
+        assert_eq!(rejected.kind(), std::io::ErrorKind::PermissionDenied);
+        let busy = attach_refusal("busy").unwrap();
+        assert_eq!(busy.kind(), std::io::ErrorKind::WouldBlock);
+    }
 }

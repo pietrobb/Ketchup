@@ -75,6 +75,10 @@ enum ConsentDecision {
         token: String,
     },
     Reject,
+    /// The user allowed it, but the window could not open its live bridge; the
+    /// status line says why. Not a refusal of the client's credential (review
+    /// 2026-11-02 of 70d56910).
+    Failed,
     /// The window cannot answer now (an earlier attach is pending, or the UI
     /// is held by a long load or a dialog); the credential itself was valid.
     Busy,
@@ -246,13 +250,13 @@ impl KetchupApp {
                         "live-consent-failed",
                         &std::collections::BTreeMap::from([("reason", error.to_string())]),
                     );
-                    let _ = pending.decision.try_send(ConsentDecision::Reject);
+                    let _ = pending.decision.try_send(ConsentDecision::Failed);
                     return;
                 }
             }
         }
         let Some(credentials) = self.live_bridge_credentials() else {
-            let _ = pending.decision.try_send(ConsentDecision::Reject);
+            let _ = pending.decision.try_send(ConsentDecision::Failed);
             return;
         };
         if pending
@@ -756,6 +760,7 @@ fn write_response(
         }
         ConsentDecision::Busy => ("busy", None, None),
         ConsentDecision::Reject => ("rejected", None, None),
+        ConsentDecision::Failed => ("failed", None, None),
     };
     let proof = ketchup_mcp::local_auth::window_attach_proof(
         bootstrap,
@@ -1196,7 +1201,9 @@ mod tests {
             ))
         });
 
-        assert!(matches!(receiver.try_recv(), Ok(ConsentDecision::Reject)));
+        // Review 2026-11-02: the client is told the window failed, not that it
+        // refused the client's credential.
+        assert!(matches!(receiver.try_recv(), Ok(ConsentDecision::Failed)));
         assert!(!app.live_consent_attached());
         assert!(
             app.digest.contains("loopback port blocked by policy"),
