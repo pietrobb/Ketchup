@@ -162,6 +162,7 @@ pub(super) fn apply(
                     name: name.clone(),
                     transform: *transform,
                     parent: *parent,
+                    logical: false,
                 }),
             );
         }
@@ -216,6 +217,14 @@ pub(super) fn apply(
                     ..existing.as_ref().clone()
                 }),
             );
+        }
+        CanonicalCommand::SetGroupLogical { id, logical } => {
+            let existing = edit
+                .product
+                .groups
+                .get_mut(id)
+                .ok_or(CanonicalError::GroupNotFound(*id))?;
+            Arc::make_mut(existing).logical = *logical;
         }
         CanonicalCommand::CloneDefinitionAndRepoint(plan) => {
             clone_definition_and_repoint(&mut edit.product, plan)?;

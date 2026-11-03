@@ -485,6 +485,12 @@ pub enum CanonicalCommand {
         id: GroupId,
         parent: Option<GroupId>,
     },
+    /// A logical group only gathers parts to be found, shown and hidden
+    /// together; it is never checked for contact (Měchenice MECH-8).
+    SetGroupLogical {
+        id: GroupId,
+        logical: bool,
+    },
     CloneDefinitionAndRepoint(CloneDefinitionPlan),
     ConvertGroupToComponent(ConvertGroupPlan),
     ApplySolidTool(SolidToolPlan),

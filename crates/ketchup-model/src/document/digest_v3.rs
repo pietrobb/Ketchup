@@ -2293,6 +2293,10 @@ impl DigestV3 {
         self.bytes(group.name.as_bytes());
         self.transform(group.transform);
         self.optional_id(group.parent.map(|id| id.0));
+        // Only when set, so every document without a logical group keeps its digest.
+        if group.logical {
+            self.bytes(b"logical");
+        }
     }
 
     fn local_group(&mut self, group: &LocalGroup) {
