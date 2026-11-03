@@ -376,6 +376,13 @@ pub fn headless_with_read_handle_lock_failure<T>(operation: impl FnOnce() -> T) 
     operation()
 }
 
+/// A copy of the lock file `lock` holds, as a process started while it is held
+/// keeps until it runs its program.
+#[cfg(feature = "testing")]
+pub fn headless_inherited_lock_file(lock: &WorkRecoveryLock) -> io::Result<fs::File> {
+    lock._file.try_clone()
+}
+
 /// Runs `operation` with `folder` taking no new file on this thread, as a read-only share
 /// does; a real one cannot be made in a test on every platform (Windows ignores a
 /// folder's read-only flag, root ignores its mode).
