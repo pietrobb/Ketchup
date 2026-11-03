@@ -25,6 +25,7 @@ connect-ai-starts-missing = spúšťa program, ktorý už neexistuje, preto jeho
 connect-ai-set-up = Pripojiť
 connect-ai-replace = Použiť tento Kečup
 connect-ai-set-up-failed = Nastavenie zlyhalo
+connect-ai-mark-window-failed = AI sa opýta, ktoré okno použiť, lebo toto sa nepodarilo označiť
 connect-ai-check-again = Skontrolovať znova
 connect-ai-this-window = AI pozná toto okno ako { $name }. Pri viacerých otvorených oknách sa pripojí k tomu, v ktorom ste naposledy klikli Pripojiť.
 connect-ai-manual = Iná AI: nastaviť ručne

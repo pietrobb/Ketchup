@@ -118,7 +118,14 @@ impl KetchupApp {
             self.live.harnesses = None;
         }
         if set_up.is_some() {
-            self.mark_chosen_window();
+            self.live.chosen_window_error = self.mark_chosen_window().err().map(|e| e.to_string());
+        }
+        if let Some(error) = &self.live.chosen_window_error {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                self.catalog
+                    .text_because("connect-ai-mark-window-failed", error),
+            );
         }
         if let Some(index) = set_up
             && let Some(environment) = Environment::current()
@@ -444,15 +451,16 @@ mod tests {
         }]);
         let mut harness = open_section(app);
         let catalog = harness.state().catalog.clone();
-        assert_eq!(ketchup_mcp::chosen_window(&discovery), None);
+        assert_eq!(ketchup_mcp::chosen_window(&discovery).unwrap(), None);
         harness
             .get_by_label(&catalog.text("connect-ai-set-up"))
             .click();
         harness.run();
         assert_eq!(
-            ketchup_mcp::chosen_window(&discovery).as_deref(),
+            ketchup_mcp::chosen_window(&discovery).unwrap().as_deref(),
             Some(id.as_str())
         );
+        assert!(harness.state().live.chosen_window_error.is_none());
         assert!(config.is_file(), "Connect still writes the client's file");
         let name = catalog.format(
             "connect-ai-this-window",

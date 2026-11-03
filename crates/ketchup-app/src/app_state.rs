@@ -60,6 +60,9 @@ pub(crate) struct LiveState {
     pub(crate) edits: live_bridge::window_edit::WindowEdits,
     /// What Claude Code and Codex start as `ketchup`, read when Connect AI opens.
     pub(crate) harnesses: Option<Vec<crate::live_bridge::mcp_setup::HarnessRow>>,
+    /// Why Connect could not make this the window a `connect` without an id
+    /// goes to (#2687 point 16); the AI then asks which window.
+    pub(crate) chosen_window_error: Option<String>,
 }
 
 /// Push/Pull input, its exact face-offset evaluation and the last committed

@@ -292,12 +292,13 @@ impl KetchupApp {
 
     /// Connect was clicked here (#2687 point 16): an AI's `connect` without an
     /// id goes to this window, also when several are open.
-    pub(crate) fn mark_chosen_window(&self) {
-        if let Some(broker) = &self.live.consent_broker
-            && let Some(root) = broker.registry_path.parent()
-        {
-            // Only spares the AI a choice; without it the AI asks which window.
-            let _ = ketchup_mcp::mark_chosen(root, &broker.instance_id);
+    pub(crate) fn mark_chosen_window(&self) -> io::Result<()> {
+        match &self.live.consent_broker {
+            Some(broker) => match broker.registry_path.parent() {
+                Some(root) => ketchup_mcp::mark_chosen(root, &broker.instance_id),
+                None => Ok(()),
+            },
+            None => Ok(()),
         }
     }
 

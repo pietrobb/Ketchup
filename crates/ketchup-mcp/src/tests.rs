@@ -976,6 +976,23 @@ fn connect_without_an_id_goes_to_the_window_connect_was_clicked_in() {
     crate::discovery::mark_chosen(root.path(), &"a".repeat(32)).unwrap();
     let choose = text(&call(&mut tools, "connect", json!({})));
     assert_eq!(choose["error"], "choose_window", "{choose}");
+    assert!(choose["details"].get("chosen_unreadable").is_none());
+
+    // A damaged choice is named to the AI, not taken for "Connect clicked nowhere".
+    let file = root.path().join("chosen-window.json");
+    std::fs::remove_file(&file).unwrap();
+    crate::local_auth::create(&file)
+        .unwrap()
+        .write_all(b"{\"version\": 1")
+        .unwrap();
+    let choose = text(&call(&mut tools, "connect", json!({})));
+    assert_eq!(choose["error"], "choose_window", "{choose}");
+    assert!(
+        choose["details"]["chosen_unreadable"].is_string(),
+        "{choose}"
+    );
+    let listed = text(&call(&mut tools, "windows", json!({})));
+    assert!(listed["chosen_unreadable"].is_string(), "{listed}");
 }
 
 /// MECH-1: a client that gave up on a tool call (Codex stops waiting after

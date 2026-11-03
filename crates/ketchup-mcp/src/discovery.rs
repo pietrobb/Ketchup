@@ -113,20 +113,62 @@ pub fn mark_chosen(root: &Path, instance_id: &str) -> io::Result<()> {
     let written = crate::local_auth::create(&temporary)
         .and_then(|mut file| file.write_all(&bytes).and_then(|()| file.sync_all()))
         .and_then(|()| fs::rename(&temporary, root.join(CHOSEN_FILE)));
-    if written.is_err() {
-        let _ = fs::remove_file(&temporary);
+    let Err(error) = written else {
+        return Ok(());
+    };
+    match fs::remove_file(&temporary) {
+        Err(left) if left.kind() != io::ErrorKind::NotFound => Err(io::Error::new(
+            error.kind(),
+            TemporaryLeft {
+                error,
+                temporary,
+                left,
+            },
+        )),
+        _ => Err(error),
     }
-    written
 }
 
-/// The window Connect was last clicked in, open or not.
-#[must_use]
-pub fn chosen_window(root: &Path) -> Option<String> {
-    let entry: Value =
-        serde_json::from_slice(&crate::local_auth::read_private(&root.join(CHOSEN_FILE)).ok()?)
-            .ok()?;
-    let instance_id = entry["instance_id"].as_str()?;
-    (entry["version"] == 1 && is_lower_hex(instance_id, 32)).then(|| instance_id.to_owned())
+/// Writing the chosen window failed and its temporary could not be removed.
+#[derive(Debug)]
+struct TemporaryLeft {
+    error: io::Error,
+    temporary: PathBuf,
+    left: io::Error,
+}
+
+impl std::fmt::Display for TemporaryLeft {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}; {} stays behind: {}",
+            self.error,
+            self.temporary.display(),
+            self.left
+        )
+    }
+}
+
+impl std::error::Error for TemporaryLeft {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+/// The window Connect was last clicked in, open or not; `None` while Connect
+/// was clicked in none.
+pub fn chosen_window(root: &Path) -> io::Result<Option<String>> {
+    let bytes = match crate::local_auth::read_private(&root.join(CHOSEN_FILE)) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        read => read?,
+    };
+    let entry: Value = serde_json::from_slice(&bytes)?;
+    match entry["instance_id"].as_str() {
+        Some(instance_id) if entry["version"] == 1 && is_lower_hex(instance_id, 32) => {
+            Ok(Some(instance_id.to_owned()))
+        }
+        _ => Err(invalid("not a chosen window entry")),
+    }
 }
 
 /// Readiness comes exclusively from the spawned child's private stdout pipe.
