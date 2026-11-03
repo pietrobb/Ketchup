@@ -3,6 +3,7 @@
 //! server they name, and its tool call reaches this window. A second client
 //! then takes the window over while the first one's request still waits for it.
 use crate::harness::Shell;
+use eframe::egui;
 use ketchup_app::live_bridge::mcp_setup::{Environment, Harness, Registration};
 use serde_json::{Value, json};
 use std::{
@@ -11,6 +12,7 @@ use std::{
     path::Path,
     process::{Child, ChildStdin, Command, Stdio},
     sync::mpsc,
+    time::Duration,
 };
 
 /// The variable both the window and the server find their windows under.
@@ -148,6 +150,37 @@ impl Drop for Client {
     }
 }
 
+/// How long a request sent to the server may take to reach the window.
+const REQUEST_ARRIVAL: Duration = Duration::from_secs(20);
+
+/// One message per frame asked of `context` at once, as a connection does
+/// right after it queued a request for the window. egui tells only of a
+/// request sooner than the one it already has, so `context` must have run
+/// until it asks for no frame.
+fn frame_requests(context: &egui::Context) -> mpsc::Receiver<()> {
+    assert!(
+        !context.has_requested_repaint(),
+        "a frame is still asked for"
+    );
+    let (sender, requests) = mpsc::channel();
+    context.set_request_repaint_callback(move |info| {
+        if info.delay.is_zero() {
+            let _ = sender.send(());
+        }
+    });
+    requests
+}
+
+/// Runs `context`, which nothing paints on, until it asks for no frame.
+fn settle(context: &egui::Context) {
+    for _ in 0..8 {
+        if !context.has_requested_repaint() {
+            return;
+        }
+        let _ = context.run(egui::RawInput::default(), |_| {});
+    }
+}
+
 fn connected_label(shell: &Shell, client: &str) -> String {
     shell.catalog().format(
         "ai-connected",
@@ -176,7 +209,7 @@ fn connect_writes_the_settings_whose_server_drives_this_window_and_a_new_client_
     let settings = environment.config_file(Harness::ClaudeCode).unwrap();
 
     let mut shell = Shell::new();
-    let context = eframe::egui::Context::default();
+    let context = egui::Context::default();
     shell
         .app_mut()
         .enable_live_consent_broker_in(&context, &runtime.join("Ketchup").join("live-instances"))
@@ -205,19 +238,28 @@ fn connect_writes_the_settings_whose_server_drives_this_window_and_a_new_client_
 
     // MECH-1: the window stops answering (it is not run) while the first
     // client waits for a save; its user starts over with the second client,
-    // whose connect reaches the window while the save still waits. The pauses
-    // let both requests arrive before the window runs again; it then grants
-    // the attach before it reads the save, as after a long load.
+    // whose connect reaches the window while the save still waits. Each
+    // request asks the window for a frame once it is queued; the test waits
+    // for both before the window runs again, which then grants the attach
+    // before it reads the save, as after a long load.
     let saved = profile.path().join("frozen.ketchup");
     let before = shell.app().live_bridge_stamp();
+    shell.settle();
+    let save_queued = frame_requests(shell.context());
+    settle(&context);
+    let connect_queued = frame_requests(&context);
     let save = first.send(
         "tools/call",
         json!({"name": "file", "arguments": {"action": "save_as",
                "path": saved.to_str().unwrap(), "expected": status["stamp"]}}),
     );
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    save_queued
+        .recv_timeout(REQUEST_ARRIVAL)
+        .expect("the save reaches the window");
     let connect = second.send("tools/call", json!({"name": "connect", "arguments": {}}));
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    connect_queued
+        .recv_timeout(REQUEST_ARRIVAL)
+        .expect("the connect reaches the window");
     let (failed, taken) = tool_result(&second.answer(&mut shell, connect, "connect"));
     assert!(!failed, "the window is taken over, not refused: {taken}");
     assert!(shell.has_visible_label(&connected_label(&shell, "Codex")));
