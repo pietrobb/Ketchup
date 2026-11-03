@@ -81,6 +81,39 @@ fn a_shell_open_at_two_faces_is_a_tube() {
     );
 }
 
+/// Měchenice MECH-7: a membrane is a lofted part hollowed open at an end.
+#[test]
+fn a_lofted_part_is_shelled_open_at_its_end_section() {
+    let mut worker = worker();
+    let square = |side: f64| {
+        let low = -side / 2.0;
+        let high = side / 2.0;
+        format!("[({low}, {low}), ({high}, {low}), ({high}, {high}), ({low}, {high})]")
+    };
+    let prism = format!(
+        "skin = loft(\"skin\", sections = [({}, 0), ({}, 100)])\n\
+         shell(skin, thickness = 4, open = [\"end\"])",
+        square(40.0),
+        square(40.0)
+    );
+    assert_volume(
+        volume(&mut worker, &prism, "skin"),
+        40.0 * 40.0 * 100.0 - 32.0 * 32.0 * 96.0,
+    );
+    // Four sides, the floor and the rim, and their five inner walls.
+    assert_eq!(face_count(&mut worker, &prism, "skin"), 11);
+
+    let tapered = format!(
+        "skin = loft(\"skin\", sections = [({}, 0), ({}, 300)])\n\
+         shell(skin, thickness = 5, open = [\"start\", \"end\"], name = \"membrane\")",
+        square(200.0),
+        square(120.0)
+    );
+    let full = 300.0 / 3.0 * (200.0 * 200.0 + 200.0 * 120.0 + 120.0 * 120.0);
+    let walls = volume(&mut worker, &tapered, "skin");
+    assert!(walls > 0.0 && walls < 0.2 * full, "{walls} of {full}");
+}
+
 #[test]
 fn impossible_shells_are_refused() {
     let closed = eval_error(&format!("{BLOCK}shell(block, thickness=5, open=[])"));
