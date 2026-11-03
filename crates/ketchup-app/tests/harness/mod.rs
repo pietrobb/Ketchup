@@ -272,6 +272,12 @@ impl Shell {
         self.harness.state_mut()
     }
 
+    /// The context the window paints on; its background work, such as a live
+    /// bridge connection that queued a request, asks it for a frame.
+    pub fn context(&self) -> &egui::Context {
+        &self.harness.ctx
+    }
+
     /// The localization catalog the shell paints with.
     pub fn catalog(&self) -> &LocaleCatalog {
         self.app().catalog()

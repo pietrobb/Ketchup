@@ -6,7 +6,8 @@
 use serde_json::{Value, json};
 use std::{
     io::{self, Read, Write},
-    net::{SocketAddr, TcpStream},
+    net::{Shutdown, SocketAddr, TcpStream},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::Duration,
 };
 
@@ -51,10 +52,63 @@ pub enum BridgeError {
     /// The window had already ended the connection; the request was not sent.
     Closed(io::Error),
     /// Another client took the window over; `sent` tells whether this request
-    /// had reached the window (it may then have been applied).
+    /// had reached the window, `document_changed` whether the document changed
+    /// while it ran (`None` from a window that does not say), and `stamp` is
+    /// the document at the takeover.
     Superseded {
         sent: bool,
+        document_changed: Option<bool>,
+        stamp: Value,
     },
+}
+
+/// Ends, from another thread, the window connection of a tool call the client
+/// cancelled: the call's wait for the window fails at once, and the window,
+/// seeing the connection end, stops the job (MECH-1).
+#[derive(Clone, Default)]
+pub struct Cancel(Arc<Mutex<Armed>>);
+
+#[derive(Default)]
+struct Armed {
+    cancelled: bool,
+    /// The connection of the request being waited for.
+    stream: Option<TcpStream>,
+}
+
+impl Cancel {
+    /// Cancels the request being waited for, or the next one before it is sent.
+    pub fn cancel(&self) -> io::Result<()> {
+        let mut armed = self.armed();
+        armed.cancelled = true;
+        match armed.stream.take() {
+            Some(stream) => stream.shutdown(Shutdown::Both),
+            None => Ok(()),
+        }
+    }
+
+    /// A new tool call starts, not cancelled.
+    pub fn clear(&self) {
+        *self.armed() = Armed::default();
+    }
+
+    /// Lets [`Self::cancel`] end `connection` until [`Self::disarm`]; false
+    /// when the call was cancelled already and the request must not be sent.
+    pub fn arm(&self, connection: &Connection) -> io::Result<bool> {
+        let mut armed = self.armed();
+        if armed.cancelled {
+            return Ok(false);
+        }
+        armed.stream = Some(connection.stream.try_clone()?);
+        Ok(true)
+    }
+
+    pub fn disarm(&self) {
+        self.armed().stream = None;
+    }
+
+    fn armed(&self) -> MutexGuard<'_, Armed> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 impl Connection {
@@ -94,7 +148,11 @@ impl Connection {
             .map_err(BridgeError::Transport)?;
         let reply = self.read_reply(wait).map_err(BridgeError::Transport)?;
         if reply["error"] == crate::SUPERSEDED_BY_ANOTHER_CLIENT {
-            return Err(BridgeError::Superseded { sent: true });
+            return Err(BridgeError::Superseded {
+                sent: true,
+                document_changed: reply["result"]["document_changed"].as_bool(),
+                stamp: reply["stamp"].clone(),
+            });
         }
         if reply["id"] != id {
             return Err(BridgeError::Transport(io::Error::new(
@@ -132,7 +190,11 @@ impl Connection {
             Ok(0) => Err(BridgeError::Closed(io::ErrorKind::UnexpectedEof.into())),
             Ok(_) => match self.read_reply(WRITE_TIMEOUT) {
                 Ok(reply) if reply["error"] == crate::SUPERSEDED_BY_ANOTHER_CLIENT => {
-                    Err(BridgeError::Superseded { sent: false })
+                    Err(BridgeError::Superseded {
+                        sent: false,
+                        document_changed: None,
+                        stamp: reply["stamp"].clone(),
+                    })
                 }
                 Ok(_) => Err(BridgeError::Closed(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -141,6 +203,15 @@ impl Connection {
                 Err(error) => Err(BridgeError::Closed(error)),
             },
         }
+    }
+
+    /// Blocks up to `wait` until the window has sent something this side can
+    /// read (or ended the connection): a test's stand-in window writing a
+    /// frame does not mean it has arrived here yet.
+    #[cfg(test)]
+    pub(crate) fn wait_readable(&self, wait: Duration) -> io::Result<()> {
+        self.stream.set_read_timeout(Some(wait))?;
+        self.stream.peek(&mut [0_u8; 1]).map(drop)
     }
 
     /// The framed body of the next request.

@@ -19,7 +19,6 @@ crates/ketchup-app/src/drawn_shape.rs:house 1
 crates/ketchup-app/src/helix_ui.rs:panel 2
 crates/ketchup-app/src/lib.rs:panel 3
 crates/ketchup-app/src/live_bridge.rs:stud 1
-crates/ketchup-app/src/live_bridge/consent.rs:panel 1
 crates/ketchup-app/src/program_evaluation.rs:house 2
 crates/ketchup-app/src/theme.rs:panel 1
 crates/ketchup-app/src/validator_ui.rs:panel 26

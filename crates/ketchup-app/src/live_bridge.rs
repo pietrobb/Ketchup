@@ -55,7 +55,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
@@ -81,6 +81,7 @@ mod program_dry_run;
 mod program_navigation;
 pub use program_access::{ReportSection, SourceEdit};
 pub use program_variant_export::CsvDecimal;
+mod mcp_config;
 pub mod mcp_setup;
 mod measurement;
 mod plugin;
@@ -95,6 +96,7 @@ mod program_validation_summary;
 mod program_variant_export;
 mod program_variants;
 mod project_drawings_job;
+mod running_programs;
 #[cfg(test)]
 mod tests;
 mod transport;
@@ -739,6 +741,10 @@ pub enum Request {
         offset_mm: Option<f64>,
     },
     Image(ImageRequest),
+    /// The name the AI gives itself, shown in the window while it is attached.
+    Hello {
+        client: String,
+    },
     Disconnect {},
 }
 
@@ -1455,7 +1461,9 @@ pub(crate) struct LiveBridge {
     token: String,
     stopped: Arc<AtomicBool>,
     /// Set before the bridge stops because another client attached.
-    superseded: Arc<AtomicBool>,
+    superseded: Arc<OnceLock<transport::Takeover>>,
+    /// The document as each connection's latest request found it when it began.
+    started: BTreeMap<u64, Stamp>,
     worker: Option<JoinHandle<()>>,
     #[cfg(test)]
     active_connections: Arc<AtomicUsize>,
@@ -1522,10 +1530,13 @@ impl KetchupApp {
     }
 
     /// Ends every connection because another client takes the window over;
-    /// each one gets a last frame saying so instead of a bare end of stream.
+    /// each one gets a last frame saying so instead of a bare end of stream,
+    /// and a client whose request was running is told whether the document
+    /// changed while it ran (MCP 16a).
     pub(crate) fn supersede_live_bridge(&mut self) {
-        if let Some(bridge) = &self.live.bridge {
-            bridge.superseded.store(true, Ordering::Release);
+        let now = self.live_bridge_stamp();
+        if let Some(bridge) = &mut self.live.bridge {
+            bridge.supersede(now);
         }
         self.disable_live_bridge();
     }
@@ -1580,6 +1591,7 @@ impl KetchupApp {
                     | Request::ProgramContext { .. }
                     | Request::ProgramPiece { .. }
                     | Request::ProgramReport { .. }
+                    | Request::Hello { .. }
             ) {
                 bridge.supersede_answered_check();
             }
@@ -1594,6 +1606,7 @@ impl KetchupApp {
             }
             bridge.activate_client(queued.session);
             let stamp = self.live_bridge_stamp();
+            bridge.started.insert(queued.session, stamp.clone());
             if bridge.observed.as_ref() != Some(&stamp) {
                 bridge.query.invalidate();
                 for state in bridge.client_states.values_mut() {
@@ -1837,6 +1850,7 @@ impl LiveBridge {
     }
 
     fn remove_client(&mut self, session: u64) {
+        self.started.remove(&session);
         if self.session != session {
             self.client_states.remove(&session);
             return;
@@ -3453,6 +3467,7 @@ impl LiveBridge {
                 Self::guard(app, &expected)?;
                 Err("image_requires_frame_callback")
             }
+            Request::Hello { client } => Ok(consent::hello(app, &client)),
             Request::Disconnect {} => {
                 self.pending = None;
                 self.batch_jobs.clear();

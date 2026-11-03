@@ -26,7 +26,7 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
     let (sender, queue) = mpsc::sync_channel(QUEUE_CAPACITY);
     let stopped = Arc::new(AtomicBool::new(false));
     let stop = Arc::clone(&stopped);
-    let superseded = Arc::new(AtomicBool::new(false));
+    let superseded = Arc::new(OnceLock::new());
     let taken_over = Arc::clone(&superseded);
     let active_connections = Arc::new(AtomicUsize::new(0));
     let connection_count = Arc::clone(&active_connections);
@@ -123,7 +123,7 @@ pub(super) fn local() -> LiveBridge {
         SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0)),
         String::new(),
         Arc::new(AtomicBool::new(true)),
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(OnceLock::new()),
         None,
         queue,
         #[cfg(test)]
@@ -137,7 +137,7 @@ fn assemble(
     address: SocketAddr,
     token: String,
     stopped: Arc<AtomicBool>,
-    superseded: Arc<AtomicBool>,
+    superseded: Arc<OnceLock<Takeover>>,
     worker: Option<JoinHandle<()>>,
     queue: mpsc::Receiver<Queued>,
     #[cfg(test)] active_connections: Arc<AtomicUsize>,
@@ -147,6 +147,7 @@ fn assemble(
         token,
         stopped,
         superseded,
+        started: BTreeMap::new(),
         worker,
         #[cfg(test)]
         active_connections,
@@ -252,6 +253,7 @@ fn has_effect(request: &Request) -> bool {
         | Request::UnderlayObjects { .. }
         | Request::UnderlayRegions { .. }
         | Request::UnderlayParallel { .. }
+        | Request::Hello { .. }
         | Request::Image(_) => false,
         Request::WorksetCreate { .. }
         | Request::BatchJobStart { .. }
@@ -554,10 +556,47 @@ fn await_response(
     }
 }
 
+/// What the window knew when another client took it over.
+pub(super) struct Takeover {
+    /// The document at the takeover.
+    stamp: Stamp,
+    /// Per connection whose request had begun: whether the document changed
+    /// since it began. A request still queued never ran.
+    changed: BTreeMap<u64, bool>,
+}
+
+impl LiveBridge {
+    /// Records the takeover for the connections' last frames; the caller then
+    /// drops the bridge, which ends them.
+    pub(super) fn supersede(&mut self, now: Stamp) {
+        let mut started = std::mem::take(&mut self.started);
+        // Dropping a queued request ends its connection's wait at once, so
+        // the requests are dropped only after the takeover is recorded:
+        // otherwise its connection ends without the last frame (MECH-1 E2E).
+        let never_ran: Vec<Queued> = std::iter::from_fn(|| self.queue.try_recv().ok()).collect();
+        for queued in &never_ran {
+            started.remove(&queued.session);
+        }
+        let changed = started
+            .into_iter()
+            .map(|(session, before)| (session, before != now))
+            .collect();
+        let first = self
+            .superseded
+            .set(Takeover {
+                stamp: now,
+                changed,
+            })
+            .is_ok();
+        debug_assert!(first, "the caller drops a bridge taken over");
+        drop(never_ran);
+    }
+}
+
 /// Why a connection ends: the bridge stopped, and whether another client took it over.
 struct Shutdown<'a> {
     stop: &'a AtomicBool,
-    superseded: &'a AtomicBool,
+    superseded: &'a OnceLock<Takeover>,
 }
 
 fn serve(
@@ -571,14 +610,20 @@ fn serve(
 ) -> io::Result<()> {
     stream.set_nodelay(true)?;
     let mut session_authenticated = false;
-    // A client whose window another client took over is told so in a last frame.
+    // A client whose window another client took over is told so in a last
+    // frame with the document then; a waiting one also whether its request
+    // changed the document, so the agent need not guess.
     let tell_superseded = |stream: &mut TcpStream, id: u64| {
-        if superseded.load(Ordering::Acquire) {
-            let _ = write_response(
-                stream,
-                Response::error(id, SUPERSEDED_BY_ANOTHER_CLIENT),
-                false,
-            );
+        if let Some(takeover) = superseded.get() {
+            let mut response = Response::error(id, SUPERSEDED_BY_ANOTHER_CLIENT);
+            response.stamp = Some(takeover.stamp.clone());
+            if id != 0
+                && let Some(Value::Object(result)) = response.result.as_mut()
+            {
+                let changed = takeover.changed.get(&session).copied().unwrap_or(false);
+                result.insert("document_changed".to_owned(), changed.into());
+            }
+            let _ = write_response(stream, response, false);
         }
     };
     while !stop.load(Ordering::Acquire) {
@@ -1011,12 +1056,21 @@ mod tests {
         assert!(matches!(queued.request, Request::Status { .. }));
     }
 
-    /// MCP-1: when another client takes the window over, each client is told
-    /// so in a last frame instead of a bare end of stream.
-    #[test]
-    fn a_takeover_tells_the_idle_and_the_waiting_client_why_their_connection_ends() {
+    fn stamp(revision: u64) -> Stamp {
+        Stamp {
+            document_id: 1,
+            revision,
+            canonical_digest: format!("d{revision}"),
+            mutation_epoch: revision,
+        }
+    }
+
+    /// The last frames of an idle client and of one waiting for request 5
+    /// when another client takes the window over at `now`; `begun` is the
+    /// document when the window began request 5, `None` if it had not.
+    fn takeover_frames(begun: Option<Stamp>, now: Stamp) -> (Value, Value) {
         let token = "a".repeat(64);
-        let bridge = start_with_token(egui::Context::default(), token.clone()).unwrap();
+        let mut bridge = start_with_token(egui::Context::default(), token.clone()).unwrap();
         let mut idle = TcpStream::connect(bridge.address).unwrap();
         authenticate(&mut idle, &token);
         let mut waiting = TcpStream::connect(bridge.address).unwrap();
@@ -1031,8 +1085,11 @@ mod tests {
         waiting.write_all(&body).unwrap();
         let queued = bridge.queue.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(queued.id, 5, "the request waits for the UI thread");
+        if let Some(begun) = begun {
+            bridge.started.insert(queued.session, begun);
+        }
 
-        bridge.superseded.store(true, Ordering::Release);
+        bridge.supersede(now);
         drop(bridge);
         let last_frame = |stream: &mut TcpStream| {
             stream
@@ -1047,16 +1104,46 @@ mod tests {
             serde_json::from_slice::<Value>(&frame).unwrap()
         };
         let answer = last_frame(&mut waiting);
+        let notice = last_frame(&mut idle);
+        drop(queued);
+        (answer, notice)
+    }
+
+    /// MCP-1: when another client takes the window over, each client is told
+    /// so in a last frame instead of a bare end of stream, with the document
+    /// then; a request the window had not begun never ran (MCP 16a).
+    #[test]
+    fn a_takeover_tells_the_idle_and_the_waiting_client_why_their_connection_ends() {
+        let (answer, notice) = takeover_frames(None, stamp(2));
         assert_eq!(
             (answer["id"].as_u64(), answer["error"].as_str()),
             (Some(5), Some(SUPERSEDED_BY_ANOTHER_CLIENT))
         );
-        let notice = last_frame(&mut idle);
+        assert_eq!(answer["stamp"]["revision"], 2, "{answer}");
+        assert_eq!(answer["result"]["document_changed"], false, "{answer}");
         assert_eq!(
             (notice["id"].as_u64(), notice["error"].as_str()),
             (Some(0), Some(SUPERSEDED_BY_ANOTHER_CLIENT))
         );
-        drop(queued);
+        assert_eq!(notice["stamp"]["revision"], 2, "{notice}");
+        assert!(
+            notice["result"].get("document_changed").is_none(),
+            "{notice}"
+        );
+    }
+
+    /// MCP 16a: a request the window had begun is told whether the document
+    /// changed since, so its agent knows without reading status first.
+    #[test]
+    fn a_takeover_tells_a_begun_request_whether_the_document_changed() {
+        let (unchanged, _) = takeover_frames(Some(stamp(2)), stamp(2));
+        assert_eq!(
+            unchanged["result"]["document_changed"], false,
+            "{unchanged}"
+        );
+        let (changed, _) = takeover_frames(Some(stamp(2)), stamp(3));
+        assert_eq!(changed["result"]["document_changed"], true, "{changed}");
+        assert_eq!(changed["stamp"]["revision"], 3, "{changed}");
     }
 
     #[test]

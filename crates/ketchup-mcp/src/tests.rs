@@ -2,7 +2,10 @@
 //! bridge on loopback that answer like Kečup and record what they received.
 #[path = "measurement_tests.rs"]
 mod measurement;
-use crate::{server::handle, tools::Tools};
+use crate::{
+    server::{Session, handle},
+    tools::Tools,
+};
 use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -17,7 +20,7 @@ fn list_validators_is_discoverable_read_only_and_routes_to_the_host() {
     let received = stand_in_window(root.path());
     let mut tools = Tools::new(None, Some(root.path().to_owned()));
     let listed = handle(
-        &mut tools,
+        &Session::new(&mut tools),
         json!({"jsonrpc":"2.0", "id":1, "method":"tools/list"}),
     )
     .unwrap();
@@ -651,10 +654,14 @@ fn a_program_holding_a_closed_windows_address_cannot_pass_for_it() {
 enum Ending {
     /// Answers the second request: another client took the window over meanwhile.
     SupersededInFlight,
+    /// The same from a window that says the document changed while it ran.
+    SupersededAfterAChange,
     /// Tells the idle client it was taken over, before its next request.
     SupersededIdle,
     /// Just closes, like a window that ends the connection for another reason.
     Close,
+    /// Never answers the second request; the connection ends when the client leaves.
+    Silent,
 }
 
 /// A window `instance` that ends its successive connections as `endings` say.
@@ -664,8 +671,77 @@ fn scripted_window(
     instance: &'static str,
     endings: Vec<Ending>,
 ) -> mpsc::Receiver<&'static str> {
-    let attach = TcpListener::bind("127.0.0.1:0").unwrap();
     let bridge = TcpListener::bind("127.0.0.1:0").unwrap();
+    let (events, received) = mpsc::channel();
+    grant_attaches(root, instance, &bridge, events.clone());
+    std::thread::spawn(move || {
+        let frame = |stream: &mut std::net::TcpStream, value: Value| {
+            let body = value.to_string();
+            stream
+                .write_all(&(body.len() as u32).to_be_bytes())
+                .unwrap();
+            stream.write_all(body.as_bytes()).unwrap();
+        };
+        let read_id = |stream: &mut std::net::TcpStream| read_frame(stream)["id"].clone();
+        let stamp = json!({"document_id": 1, "revision": 7, "canonical_digest": "d",
+                           "mutation_epoch": 0});
+        for ending in endings {
+            let (mut stream, _) = bridge.accept().unwrap();
+            let id = read_id(&mut stream);
+            frame(
+                &mut stream,
+                json!({"version": 1, "id": id, "ok": true, "stamp": stamp, "result": {}}),
+            );
+            let superseded = |id: Value| {
+                json!({"version": 1, "id": id, "ok": false,
+                       "error": crate::SUPERSEDED_BY_ANOTHER_CLIENT})
+            };
+            match ending {
+                Ending::SupersededInFlight => {
+                    let id = read_id(&mut stream);
+                    frame(&mut stream, superseded(id));
+                }
+                Ending::SupersededAfterAChange => {
+                    let id = read_id(&mut stream);
+                    let mut last = superseded(id);
+                    last["stamp"] = json!({"revision": 9});
+                    last["result"] = json!({"document_changed": true});
+                    frame(&mut stream, last);
+                }
+                Ending::SupersededIdle => frame(&mut stream, superseded(json!(0))),
+                Ending::Close => {}
+                Ending::Silent => {
+                    read_id(&mut stream);
+                    events.send("waiting").expect("the test listens");
+                    let after = stream.read_to_end(&mut Vec::new()).map_or(0, |bytes| bytes);
+                    assert_eq!(after, 0, "the client sends nothing more");
+                }
+            }
+            drop(stream);
+            let _ = events.send("ended");
+        }
+    });
+    received
+}
+
+/// One framed request body the client sent.
+fn read_frame(stream: &mut std::net::TcpStream) -> Value {
+    let mut header = [0_u8; 4];
+    stream.read_exact(&mut header).unwrap();
+    let mut body = vec![0_u8; u32::from_be_bytes(header) as usize];
+    stream.read_exact(&mut body).unwrap();
+    serde_json::from_slice(&body).unwrap()
+}
+
+/// Registers window `instance` under `root` and grants every attach to it on
+/// `bridge`, sending "attach" to `attached` for each.
+fn grant_attaches(
+    root: &Path,
+    instance: &'static str,
+    bridge: &TcpListener,
+    attached: mpsc::Sender<&'static str>,
+) {
+    let attach = TcpListener::bind("127.0.0.1:0").unwrap();
     let bridge_address = bridge.local_addr().unwrap().to_string();
     let mut registry = crate::local_auth::create(&root.join(format!("{instance}.json"))).unwrap();
     write!(
@@ -676,8 +752,6 @@ fn scripted_window(
     )
     .unwrap();
     drop(registry);
-    let (events, received) = mpsc::channel();
-    let attached = events.clone();
     std::thread::spawn(move || {
         for stream in attach.incoming() {
             let mut stream = stream.unwrap();
@@ -698,47 +772,53 @@ fn scripted_window(
             stream.write_all(format!("{reply}\n").as_bytes()).unwrap();
         }
     });
+}
+
+/// #2687 P1 (point 4): the window is told which AI attached, in the words the
+/// client's users know, before the call that attached; a window too old to
+/// know `hello` refuses it and the call still goes through.
+#[test]
+fn the_window_hears_which_ai_attached_before_its_first_call() {
+    let root = tempfile::tempdir().unwrap();
+    let bridge = TcpListener::bind("127.0.0.1:0").unwrap();
+    grant_attaches(root.path(), INSTANCE, &bridge, mpsc::channel().0);
+    let (requests, received) = mpsc::channel();
     std::thread::spawn(move || {
-        let frame = |stream: &mut std::net::TcpStream, value: Value| {
-            let body = value.to_string();
+        let (mut stream, _) = bridge.accept().unwrap();
+        for _ in 0..2 {
+            let envelope = read_frame(&mut stream);
+            let request = envelope["request"].clone();
+            let reply = if request["method"] == "hello" {
+                json!({"version": 1, "id": envelope["id"], "ok": false, "error": "invalid_params",
+                       "result": {"reason": "unknown variant `hello`"}})
+            } else {
+                json!({"version": 1, "id": envelope["id"], "ok": true, "result": {},
+                       "stamp": {"document_id": 1, "revision": 7, "canonical_digest": "d",
+                                 "mutation_epoch": 0}})
+            };
+            let body = reply.to_string();
             stream
                 .write_all(&(body.len() as u32).to_be_bytes())
                 .unwrap();
             stream.write_all(body.as_bytes()).unwrap();
-        };
-        let read_id = |stream: &mut std::net::TcpStream| {
-            let mut header = [0_u8; 4];
-            stream.read_exact(&mut header).unwrap();
-            let mut body = vec![0_u8; u32::from_be_bytes(header) as usize];
-            stream.read_exact(&mut body).unwrap();
-            serde_json::from_slice::<Value>(&body).unwrap()["id"].clone()
-        };
-        let stamp = json!({"document_id": 1, "revision": 7, "canonical_digest": "d",
-                           "mutation_epoch": 0});
-        for ending in endings {
-            let (mut stream, _) = bridge.accept().unwrap();
-            let id = read_id(&mut stream);
-            frame(
-                &mut stream,
-                json!({"version": 1, "id": id, "ok": true, "stamp": stamp, "result": {}}),
-            );
-            let superseded = |id: Value| {
-                json!({"version": 1, "id": id, "ok": false,
-                       "error": crate::SUPERSEDED_BY_ANOTHER_CLIENT})
-            };
-            match ending {
-                Ending::SupersededInFlight => {
-                    let id = read_id(&mut stream);
-                    frame(&mut stream, superseded(id));
-                }
-                Ending::SupersededIdle => frame(&mut stream, superseded(json!(0))),
-                Ending::Close => {}
-            }
-            drop(stream);
-            let _ = events.send("ended");
+            requests.send(request).unwrap();
         }
     });
-    received
+    let session = Session::new(Tools::new(None, Some(root.path().to_owned())));
+    let initialize = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                            "params": {"clientInfo": {"name": "claude-code", "version": "2.1"}}});
+    assert!(handle(&session, initialize).is_some());
+    let status = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                        "params": {"name": "inspect", "arguments": {"action": "status"}}});
+    assert_eq!(
+        handle(&session, status).unwrap()["result"]["isError"],
+        false
+    );
+    assert_eq!(
+        received.recv().unwrap(),
+        json!({"method": "hello", "client": "Claude Code"})
+    );
+    assert_eq!(received.recv().unwrap()["method"], "status");
 }
 
 /// MCP-1: a window another client took over is not taken back behind the
@@ -776,11 +856,82 @@ fn a_taken_over_window_is_not_reconnected_silently() {
     assert_eq!(call(&mut tools, "connect", json!({}))["isError"], false);
     assert_eq!(events.recv().unwrap(), "attach");
     assert_eq!(events.recv().unwrap(), "ended");
+    // The window wrote its last frame before it ended, but on a loaded machine
+    // the frame can reach this side later (#152): the call must find it there.
+    tools.wait_for_window_frame(std::time::Duration::from_secs(5));
     let idle = text(&call(&mut tools, "inspect", status));
     assert_eq!(idle["error"], "connection_taken_over");
     let message = idle["message"].as_str().unwrap();
     assert!(message.contains("was not sent"), "{message}");
     assert!(events.try_recv().is_err(), "no third attach");
+}
+
+/// MCP 16a: the window says whether the document changed while the request
+/// that was running when another client took over ran, so the agent does not
+/// have to guess; `windows` says the other client can be taken over (MCP 15).
+#[test]
+fn a_takeover_says_whether_the_request_changed_the_document() {
+    let root = tempfile::tempdir().unwrap();
+    let _events = scripted_window(root.path(), INSTANCE, vec![Ending::SupersededAfterAChange]);
+    let mut tools = Tools::new(None, Some(root.path().to_owned()));
+    let status = json!({"action": "status"});
+    assert_eq!(
+        call(&mut tools, "inspect", status.clone())["isError"],
+        false
+    );
+    let in_flight = text(&call(&mut tools, "inspect", status));
+    assert_eq!(in_flight["error"], "connection_taken_over");
+    let message = in_flight["message"].as_str().unwrap();
+    assert!(message.contains("probably applied"), "{message}");
+    assert_eq!(in_flight["details"]["stamp"]["revision"], 9, "{in_flight}");
+
+    let held = json!({"instance_id": INSTANCE, "used_by_another_client": true});
+    let listed = crate::tools::listed_windows(vec![held]);
+    let note = listed["used_by_another_client"].as_str().unwrap();
+    assert!(note.contains("connect takes such a window over"), "{note}");
+    let free = json!({"instance_id": INSTANCE, "used_by_another_client": false});
+    assert!(
+        crate::tools::listed_windows(vec![free])
+            .get("used_by_another_client")
+            .is_none()
+    );
+}
+
+/// MECH-1: a client that gave up on a tool call (Codex stops waiting after
+/// 60 s) sends notifications/cancelled. The server stopped waiting for the
+/// window only after the call's whole wait, up to 15 minutes, and the window
+/// went on working for nobody. Now the call ends at once without a reply, and
+/// its connection ends, which tells the window to stop the job.
+#[test]
+fn a_cancelled_call_stops_waiting_and_lets_the_window_go() {
+    let root = tempfile::tempdir().unwrap();
+    let events = scripted_window(root.path(), INSTANCE, vec![Ending::Silent]);
+    let session = std::sync::Arc::new(Session::new(Tools::new(None, Some(root.path().to_owned()))));
+    let status = |id: u64| {
+        json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+               "params": {"name": "inspect", "arguments": {"action": "status"}}})
+    };
+    assert_eq!(
+        handle(&session, status(1)).unwrap()["result"]["isError"],
+        false
+    );
+    assert_eq!(events.recv().unwrap(), "attach");
+    let (send_reply, reply) = mpsc::channel();
+    let waiting = std::sync::Arc::clone(&session);
+    std::thread::spawn(move || send_reply.send(handle(&waiting, status(7))));
+    assert_eq!(events.recv().unwrap(), "waiting");
+    let cancel = json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                        "params": {"requestId": 7, "reason": "timed out"}});
+    assert!(handle(&session, cancel).is_none());
+    let reply = reply
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the cancelled call ends within 5 s");
+    assert!(reply.is_none(), "a cancelled call gets no reply: {reply:?}");
+    assert_eq!(
+        events.recv_timeout(std::time::Duration::from_secs(5)),
+        Ok("ended"),
+        "the window sees the connection end"
+    );
 }
 
 /// MCP-2: after its window closed, the server never moves to another window.
@@ -845,7 +996,7 @@ fn open_window_refuses_a_document_named_through_a_share_or_device_prefix() {
 fn call(tools: &mut Tools, name: &str, arguments: Value) -> Value {
     let request = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                          "params": {"name": name, "arguments": arguments}});
-    handle(tools, request).unwrap()["result"].clone()
+    handle(&Session::new(tools), request).unwrap()["result"].clone()
 }
 
 fn text(result: &Value) -> Value {
@@ -854,9 +1005,9 @@ fn text(result: &Value) -> Value {
 
 #[test]
 fn a_client_initializes_and_lists_every_tool() {
-    let mut tools = Tools::new(None, None);
+    let tools = Session::new(Tools::new(None, None));
     let initialized = handle(
-        &mut tools,
+        &tools,
         json!({"jsonrpc": "2.0", "id": 0, "method": "initialize",
                "params": {"protocolVersion": "2025-03-26", "capabilities": {}}}),
     )
@@ -864,9 +1015,9 @@ fn a_client_initializes_and_lists_every_tool() {
     assert_eq!(initialized["result"]["protocolVersion"], "2025-03-26");
     assert_eq!(initialized["result"]["serverInfo"]["name"], "ketchup");
     let notification = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
-    assert!(handle(&mut tools, notification).is_none());
+    assert!(handle(&tools, notification).is_none());
     let listed = handle(
-        &mut tools,
+        &tools,
         json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
     )
     .unwrap();
@@ -895,7 +1046,7 @@ fn a_client_initializes_and_lists_every_tool() {
         ]
     );
     let unknown = handle(
-        &mut tools,
+        &tools,
         json!({"jsonrpc": "2.0", "id": 2, "method": "resources/list"}),
     )
     .unwrap();

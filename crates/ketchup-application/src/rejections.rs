@@ -762,7 +762,7 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "superseded_by_another_client",
         Io,
         "window",
-        "Another AI client attached to this window and took it over; this connection ended. A request that was running may or may not have been applied.",
+        "Another AI client attached to this window and took it over; this connection ended. The stamp is the document at the takeover; for a request that was running, document_changed says whether the document changed while it ran.",
         "Connect again only if the user wants this client back, then read inspect action=status before changing anything.",
     ),
     entry(

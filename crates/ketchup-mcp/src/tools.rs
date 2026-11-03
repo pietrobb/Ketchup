@@ -4,7 +4,7 @@
 //! (`reason`, `fix_hint`); this layer only routes, renames a few arguments and
 //! keeps one connection to the attached window.
 use crate::{
-    bridge::{BridgeError, Connection, MAX_REQUEST_BYTES, Reply},
+    bridge::{BridgeError, Cancel, Connection, MAX_REQUEST_BYTES, Reply},
     discovery::{self, Window},
     docs, stage,
 };
@@ -13,6 +13,7 @@ use std::{
     io::{self, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::{Arc, Mutex, PoisonError},
     time::Duration,
 };
 
@@ -25,6 +26,10 @@ const OPEN_WAIT: Duration = crate::OPEN_RESPONSE_WAIT.saturating_add(DELIVERY_MA
 const DRAWINGS_WAIT: Duration = crate::DRAWINGS_RESPONSE_WAIT.saturating_add(DELIVERY_MARGIN);
 const DEFAULT_APPLY_AND_VERIFY_MS: u64 = 60_000;
 const DEFAULT_PLUGIN_MS: u64 = 30_000;
+/// What `windows` says when another AI client holds a window.
+const TAKEOVER_NOTE: &str = "connect takes such a window over at once; the other AI client is \
+    disconnected and told so. Do it when the user wants this client to work in that window; \
+    there is nothing to wait for.";
 
 /// How long the client waits for a verified edit of `timeout_ms`.
 fn apply_and_verify_wait(timeout_ms: u64) -> Duration {
@@ -178,7 +183,14 @@ pub struct Tools {
     window_id: Option<String>,
     /// Another client took that window over; only connect or open_window ends this.
     taken_over: bool,
+    /// Stops the window request of a call the client cancelled.
+    cancel: Cancel,
+    client: ClientName,
 }
+
+/// The name the MCP client gave in `initialize`; each window it attaches to
+/// is told it, to show which AI holds the window (#2687).
+pub type ClientName = Arc<Mutex<Option<String>>>;
 
 impl Tools {
     pub fn new(app_executable: Option<PathBuf>, discovery_root: Option<PathBuf>) -> Self {
@@ -188,7 +200,51 @@ impl Tools {
             attached: None,
             window_id: None,
             taken_over: false,
+            cancel: Cancel::default(),
+            client: ClientName::default(),
         }
+    }
+
+    /// Where `initialize` puts the client's name, set from another thread.
+    pub fn client_name(&self) -> ClientName {
+        Arc::clone(&self.client)
+    }
+
+    /// Tells the window just attached which AI this is. A window too old to
+    /// know `hello` answers an error and keeps the connection.
+    fn introduce(&mut self) {
+        let client = self
+            .client
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let Some(client) = client else {
+            return;
+        };
+        let name = Map::from_iter([("client".to_owned(), Value::from(client))]);
+        if let Err(error) = self.request("hello", name, DEFAULT_WAIT) {
+            eprintln!(
+                "ketchup-mcp: the window was not told which AI attached: {}",
+                error.message
+            );
+        }
+    }
+
+    /// Blocks up to `wait` until the attached window's last frame (or end of
+    /// connection) is readable here.
+    #[cfg(test)]
+    pub(crate) fn wait_for_window_frame(&self, wait: std::time::Duration) {
+        let attached = self.attached.as_ref().expect("attached to a window");
+        attached
+            .connection
+            .wait_readable(wait)
+            .expect("the window's frame arrives");
+    }
+
+    /// Cancels the call in progress from another thread; cleared by the
+    /// caller before each call.
+    pub fn cancel(&self) -> Cancel {
+        self.cancel.clone()
     }
 
     pub fn call(&mut self, name: &str, mut arguments: Map<String, Value>) -> ToolOutput {
@@ -536,7 +592,7 @@ impl Tools {
                 })
             })
             .collect();
-        ToolOutput::text(&json!({"windows": windows}))
+        ToolOutput::text(&listed_windows(windows))
     }
 
     fn connect(&mut self, instance_id: Option<&str>) -> Result<ToolOutput, ToolError> {
@@ -597,6 +653,7 @@ impl Tools {
         self.window_id = Some(window.instance_id.clone());
         self.taken_over = false;
         self.attached = Some(Attached { window, connection });
+        self.introduce();
         self.send("status", Map::new(), DEFAULT_WAIT)
     }
 
@@ -649,6 +706,7 @@ impl Tools {
         self.window_id = Some(window.instance_id.clone());
         self.taken_over = false;
         self.attached = Some(Attached { connection, window });
+        self.introduce();
         Ok(())
     }
 
@@ -722,7 +780,19 @@ impl Tools {
             ));
         };
         args.insert("method".into(), method.into());
-        match attached.connection.request(Value::Object(args), wait) {
+        let armed = self.cancel.arm(&attached.connection);
+        let sent = match armed {
+            Ok(true) => attached.connection.request(Value::Object(args), wait),
+            Ok(false) => {
+                return Err(ToolError::new(
+                    "cancelled",
+                    "The client cancelled this call; it was not sent to the window.",
+                ));
+            }
+            Err(error) => Err(BridgeError::Closed(error)),
+        };
+        self.cancel.disarm();
+        match sent {
             Ok(reply) => Ok(reply),
             Err(BridgeError::TooLarge { bytes }) => Err(ToolError::new(
                 "request_too_large",
@@ -752,20 +822,65 @@ impl Tools {
                     ),
                 ))
             }
-            Err(BridgeError::Superseded { sent }) => {
+            Err(BridgeError::Superseded {
+                sent,
+                document_changed,
+                stamp,
+            }) => {
                 self.attached = None;
                 self.taken_over = true;
-                Err(taken_over(Some(sent)))
+                let request = match (sent, document_changed) {
+                    (false, _) => Interrupted::NotSent,
+                    (true, Some(false)) => Interrupted::Unchanged,
+                    (true, Some(true)) => Interrupted::Changed,
+                    (true, None) => Interrupted::Unknown,
+                };
+                let error = taken_over(Some(request));
+                Err(if stamp.is_null() {
+                    error
+                } else {
+                    error.with_details(json!({"stamp": stamp}))
+                })
             }
         }
     }
 }
 
-/// `sent`: whether the request had reached the window; `None` for a later call.
-fn taken_over(sent: Option<bool>) -> ToolError {
-    let request = match sent {
-        Some(true) => "The request in progress may or may not have been applied. ",
-        Some(false) => "This request was not sent. ",
+/// The answer of `windows`. MCP 15: an agent that sees a window held by
+/// another client is told it can take it over, instead of waiting for it.
+pub(crate) fn listed_windows(windows: Vec<Value>) -> Value {
+    let held = windows.iter().any(|w| w["used_by_another_client"] == true);
+    let mut listed = json!({"windows": windows});
+    if held {
+        listed["used_by_another_client"] = TAKEOVER_NOTE.into();
+    }
+    listed
+}
+
+/// What became of the request in progress when another client took the window over.
+#[derive(Clone, Copy)]
+enum Interrupted {
+    NotSent,
+    Unchanged,
+    Changed,
+    /// An older window does not say.
+    Unknown,
+}
+
+/// `request`: the call the takeover interrupted; `None` for a later call.
+fn taken_over(request: Option<Interrupted>) -> ToolError {
+    let request = match request {
+        Some(Interrupted::NotSent) => "This request was not sent. ",
+        Some(Interrupted::Unchanged) => {
+            "The request in progress was stopped and the document did not change while it \
+             ran (details.stamp is the document now). "
+        }
+        Some(Interrupted::Changed) => {
+            "The document changed while the request in progress ran, so it was probably \
+             applied (details.stamp is the document now); read inspect action=status before \
+             repeating it. "
+        }
+        Some(Interrupted::Unknown) => "The request in progress may or may not have been applied. ",
         None => "",
     };
     ToolError::new(
