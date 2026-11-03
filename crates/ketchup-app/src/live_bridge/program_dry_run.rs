@@ -14,7 +14,7 @@ use ketchup_model::persistence::ContainerData;
 pub(super) struct DryRunJob {
     id: u64,
     reply: mpsc::SyncSender<Response>,
-    cancelled: Arc<AtomicBool>,
+    pub(super) cancelled: Arc<AtomicBool>,
     before: Stamp,
     started: Instant,
     /// What the request's deadline left when the check started.

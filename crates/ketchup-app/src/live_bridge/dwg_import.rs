@@ -28,10 +28,12 @@ enum JobRead {
 pub(super) struct DwgImportJob {
     id: u64,
     reply: mpsc::SyncSender<Response>,
-    cancelled: Arc<AtomicBool>,
+    pub(super) cancelled: Arc<AtomicBool>,
     cancel: CancelToken,
     request: Request,
     receiver: mpsc::Receiver<JobRead>,
+    /// The document the file is imported into (review 2026-11-02 MCP-122).
+    epoch: u64,
 }
 
 /// Whether `request` imports a DWG, STEP or IGES file or an underlay, which run as a job.
@@ -125,6 +127,7 @@ impl LiveBridge {
             cancel,
             request,
             receiver,
+            epoch: self.document_epoch,
         }));
         context.request_repaint_after(Duration::from_millis(10));
     }
@@ -135,6 +138,12 @@ impl LiveBridge {
         context: &egui::Context,
         job: DwgImportJob,
     ) {
+        // Without `expected` it would land in the document opened meanwhile.
+        if job.epoch != self.document_epoch {
+            job.cancel.cancel();
+            Self::reply(app, job.id, &job.reply, Err(Self::document_replaced()));
+            return;
+        }
         if job.cancelled.load(Ordering::Acquire) {
             job.cancel.cancel();
             Self::reply(app, job.id, &job.reply, Err("request_cancelled"));

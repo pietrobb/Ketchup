@@ -95,6 +95,28 @@ pub(super) enum ProgramCheckJob {
     Reporting(super::program_access::ProgramReportJob),
 }
 
+impl ProgramCheckJob {
+    /// The flag that ends the job as its client giving up the request does:
+    /// each job's poll stops its worker and answers once it is set.
+    pub(super) fn request_cancelled(&self) -> &AtomicBool {
+        match self {
+            Self::Planning(job) => &job.cancelled,
+            Self::Checking(job) => &job.cancelled,
+            Self::Validating(job) => &job.cancelled,
+            Self::Measuring(job) => &job.cancelled,
+            Self::DryRun(job) => &job.cancelled,
+            Self::PluginPreparing(job) => &job.answer.cancelled,
+            Self::Plugin(job) => &job.cancelled,
+            Self::VariantExport(job) => &job.cancelled,
+            Self::DwgImport(job) => &job.cancelled,
+            Self::ExchangeExport(job) => &job.cancelled,
+            Self::DrawingExport(job) => &job.cancelled,
+            Self::ProjectDrawings(job) => &job.cancelled,
+            Self::Reporting(job) => &job.answer.cancelled,
+        }
+    }
+}
+
 pub(super) struct ProgramPlanJob {
     id: u64,
     reply: mpsc::SyncSender<Response>,

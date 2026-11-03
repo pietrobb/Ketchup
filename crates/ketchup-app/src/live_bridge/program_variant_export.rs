@@ -19,7 +19,7 @@ use ketchup_program::table::{DecimalSeparator, Table};
 pub(super) struct VariantExportJob {
     id: u64,
     reply: mpsc::SyncSender<Response>,
-    cancelled: Arc<AtomicBool>,
+    pub(super) cancelled: Arc<AtomicBool>,
     cancel: CancelToken,
     receiver: mpsc::Receiver<Result<Value, Failed>>,
 }

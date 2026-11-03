@@ -316,6 +316,10 @@ impl KetchupApp {
                         1,
                     )
                     .expect("an opened document accepts the application confirmation policy");
+                // A client's job was asked of the document that goes (review 2026-11-02 MCP-122).
+                if let Some(bridge) = self.live.bridge.as_mut() {
+                    bridge.invalidate_document_context();
+                }
                 self.document = document;
                 self.file.container_data = container_data;
                 self.file.review_candidate = None;

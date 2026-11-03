@@ -159,6 +159,7 @@ fn assemble(
         next_proposal: 1,
         apply_and_verify_job: None,
         program_check_job: None,
+        document_epoch: 0,
         program_report: None,
         exact_baseline: None,
         #[cfg(test)]

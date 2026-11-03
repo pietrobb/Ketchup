@@ -473,7 +473,7 @@ pub(super) struct ReportPageRequest {
 
 /// A report page whose report is being made in the program worker.
 pub(super) struct ProgramReportJob {
-    answer: program_dry_run::QueuedReply,
+    pub(super) answer: program_dry_run::QueuedReply,
     page: ReportPageRequest,
     receiver: mpsc::Receiver<Result<ketchup_program::Report, ketchup_program::ProgramError>>,
 }

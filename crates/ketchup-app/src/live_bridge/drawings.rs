@@ -198,11 +198,20 @@ pub(super) struct StartedDrawings {
     previously_unsaved: bool,
     /// The project the set is drawn from.
     document: DocumentId,
+    /// The settings as the export left them in the document.
+    kept: Option<SheetSettings>,
 }
 
 impl StartedDrawings {
-    /// Puts back the settings the export kept: nothing was written.
+    /// Puts back the settings the export kept: nothing was written. Settings
+    /// the user changed since, or another document's, stay as they are; they
+    /// are kept in the file, outside Undo (review 2026-11-02 MCP-122).
     pub(super) fn undo(self, app: &mut KetchupApp) {
+        if app.document.current().document_id() != self.document
+            || app.stored_sheet_settings().ok() != self.kept
+        {
+            return;
+        }
         app.store_sheet_settings(self.previous);
         app.drawings.unsaved = self.previously_unsaved;
     }
@@ -277,12 +286,13 @@ pub(super) fn start_export(
             json!({}),
         )
     })?;
-    let started = StartedDrawings {
+    let mut started = StartedDrawings {
         path: path.to_owned(),
         file_format,
         previous: previous.clone(),
         previously_unsaved: app.drawings.unsaved,
         document: app.document.current().document_id(),
+        kept: None,
     };
     let mut settings = previous;
     if let Some(format) = format {
@@ -290,6 +300,7 @@ pub(super) fn start_export(
     }
     settings.title_block.extend(title_block);
     app.store_sheet_settings(settings);
+    started.kept = app.stored_sheet_settings().ok();
     match app.project_drawings_job_for(request) {
         Ok(job) => Ok((started, job)),
         Err(error) => {

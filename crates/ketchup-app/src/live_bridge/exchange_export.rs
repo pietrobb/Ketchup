@@ -12,7 +12,7 @@ use crate::app::exchange_export::{ClientExchangeExport, ExchangeFormat};
 pub(super) struct ExchangeExportJob {
     id: u64,
     reply: mpsc::SyncSender<Response>,
-    cancelled: Arc<AtomicBool>,
+    pub(super) cancelled: Arc<AtomicBool>,
     path: String,
     export_format: String,
     receiver: mpsc::Receiver<ClientExchangeExport>,

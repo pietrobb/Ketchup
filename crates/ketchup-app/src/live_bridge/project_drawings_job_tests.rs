@@ -137,3 +137,99 @@ fn a_cancelled_drawings_export_writes_nothing_and_keeps_no_settings() {
     assert!(!app.drawings.unsaved);
     assert!(!pdf.exists(), "the window writes only what it publishes");
 }
+
+fn started_export(
+    bridge: &mut LiveBridge,
+    app: &mut KetchupApp,
+    pdf: &Path,
+) -> (mpsc::Receiver<Response>, Arc<AtomicBool>) {
+    let (reply, answers) = mpsc::sync_channel(1);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let queued = QueuedReply {
+        id: 1,
+        reply,
+        cancelled: Arc::clone(&cancelled),
+    };
+    bridge.start_project_drawings_export(
+        app,
+        &egui::Context::default(),
+        queued,
+        export(pdf),
+        false,
+    );
+    assert!(exporting(bridge));
+    (answers, cancelled)
+}
+
+/// Review 2026-11-02 MCP-122: the window stays usable while a set is drawn.
+/// New and Open did not end the job, and its end put the first document's
+/// settings into the one open then, outside Undo, and marked them saved.
+#[test]
+fn new_and_open_end_a_drawings_export_without_touching_the_next_document() {
+    let directory = tempfile::tempdir().unwrap();
+    let pdf = directory.path().join("screwed.pdf");
+    let other = directory.path().join("other.ketchup");
+    let mut saved = KetchupApp::new();
+    assert!(saved.save_document_to(&other), "{}", saved.digest);
+    let users = |author: &str| {
+        let mut settings = ketchup_manufacturing::title_block::SheetSettings::default();
+        settings
+            .title_block
+            .insert(TitleField::Author, author.to_owned());
+        settings
+    };
+    let context = egui::Context::default();
+    for open in [false, true] {
+        let (_, mut bridge) = setup();
+        let mut app = screwed_window();
+        let (answers, _cancelled) = started_export(&mut bridge, &mut app, &pdf);
+        app.live.bridge = Some(bridge);
+        if open {
+            assert!(app.open_document_from(&other), "{}", app.digest);
+        } else {
+            app.new_document();
+        }
+        let mut bridge = app.live.bridge.take().unwrap();
+        // The user fills in the next document's title block.
+        app.store_sheet_settings(users("Owner"));
+        app.drawings.unsaved = true;
+        bridge.poll_program_check_job(&mut app, &context);
+
+        let answer = answers.try_recv().expect("answered in the next poll");
+        assert_eq!(
+            answer.error.as_deref(),
+            Some("stale_document"),
+            "open {open}"
+        );
+        assert!(bridge.program_check_job.is_none());
+        assert_eq!(app.stored_sheet_settings().unwrap(), users("Owner"));
+        assert!(
+            app.drawings.unsaved,
+            "the user's settings are still unsaved"
+        );
+        assert!(!pdf.exists());
+    }
+}
+
+/// The user changes the title block in the window while the set is drawn,
+/// then the client gives up: the user's change stays.
+#[test]
+fn a_cancelled_drawings_export_keeps_what_the_user_changed_meanwhile() {
+    let directory = tempfile::tempdir().unwrap();
+    let pdf = directory.path().join("screwed.pdf");
+    let (_, mut bridge) = setup();
+    let mut app = screwed_window();
+    let (answers, cancelled) = started_export(&mut bridge, &mut app, &pdf);
+    let mut users = app.stored_sheet_settings().unwrap();
+    users
+        .title_block
+        .insert(TitleField::Author, "Owner".to_owned());
+    app.store_sheet_settings(users.clone());
+    cancelled.store(true, Ordering::Release);
+    bridge.poll_program_check_job(&mut app, &egui::Context::default());
+
+    let answer = answers.try_recv().expect("answered in the same poll");
+    assert_eq!(answer.error.as_deref(), Some("request_cancelled"));
+    assert_eq!(app.stored_sheet_settings().unwrap(), users);
+    assert!(app.drawings.unsaved);
+}

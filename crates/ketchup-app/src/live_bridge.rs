@@ -1439,6 +1439,10 @@ pub(crate) struct LiveBridge {
     next_proposal: u64,
     apply_and_verify_job: Option<ApplyAndVerifyJob>,
     program_check_job: Option<program_check::ProgramCheckJob>,
+    /// Counts the documents the window held: New, Open and a program that
+    /// replaces the document each start another. A job that changes the
+    /// document it was started for answers `stale_document` in another one.
+    document_epoch: u64,
     program_report: Option<(Stamp, ketchup_program::Report, &'static str, Option<Value>)>,
     /// The last complete exact check of an applied program: the next apply
     /// measures again only the pairs its change can have touched.
@@ -1816,6 +1820,12 @@ impl LiveBridge {
     }
 
     pub(super) fn invalidate_document_context(&mut self) {
+        // The running job was asked of the document that goes: it stops, and
+        // one that would change it answers stale_document (review 2026-11-02 MCP-122).
+        self.document_epoch = self.document_epoch.wrapping_add(1);
+        if let Some(job) = &self.program_check_job {
+            job.request_cancelled().store(true, Ordering::Release);
+        }
         self.observed = None;
         self.client_states.clear();
         self.pending = None;
@@ -1824,6 +1834,15 @@ impl LiveBridge {
         self.next_batch_job = 1;
         self.query.invalidate();
         self.image.revoke();
+    }
+
+    /// The answer to a job whose document the window no longer holds.
+    pub(super) fn document_replaced() -> &'static str {
+        failure(
+            "stale_document",
+            "The window started or opened another document while the job ran; it changed nothing in the document now open.",
+            json!({"canonical_mutation": false}),
+        )
     }
 
     fn batch_job_handle(&self, id: u64) -> String {
