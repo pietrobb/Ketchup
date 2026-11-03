@@ -20,6 +20,9 @@ pub fn folders_of_running(word: &str) -> Vec<PathBuf> {
 
     let word = word.to_lowercase();
     let mut folders = Vec::new();
+    let Ok(entry_size) = u32::try_from(std::mem::size_of::<PROCESSENTRY32W>()) else {
+        return folders;
+    };
     // SAFETY: takes no pointers; the handle is checked and closed below.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
@@ -27,7 +30,7 @@ pub fn folders_of_running(word: &str) -> Vec<PathBuf> {
     }
     // SAFETY: PROCESSENTRY32W is plain data, valid zeroed.
     let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
-    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    entry.dwSize = entry_size;
     // SAFETY: the snapshot is open and `entry` is owned here with its size set.
     let mut more = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
     while more {
@@ -67,8 +70,8 @@ fn program_folder(id: u32) -> Option<PathBuf> {
     if process.is_null() {
         return None;
     }
-    let mut path = vec![0u16; 32_768];
-    let mut length = path.len() as u32;
+    let mut length: u32 = 32_768;
+    let mut path = vec![0u16; usize::try_from(length).ok()?];
     // SAFETY: `path` holds `length` units and outlives the call, which writes at
     // most that many and sets `length` to the units written.
     let found = unsafe {
@@ -79,7 +82,8 @@ fn program_folder(id: u32) -> Option<PathBuf> {
     if !found {
         return None;
     }
-    let program = PathBuf::from(std::ffi::OsString::from_wide(&path[..length as usize]));
+    let written = path.get(..usize::try_from(length).ok()?)?;
+    let program = PathBuf::from(std::ffi::OsString::from_wide(written));
     program.parent().map(PathBuf::from)
 }
 
