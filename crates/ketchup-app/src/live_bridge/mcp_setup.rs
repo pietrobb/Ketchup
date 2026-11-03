@@ -300,6 +300,23 @@ impl Environment {
         self.set_up_in(harness, self.config_file(harness), executable)
     }
 
+    /// `--mcp-setup`: connects every installed client in its default file, so
+    /// of Supervisor only the installed one; another running instance changes
+    /// only when the user clicks Connect on its row.
+    pub fn set_up_installed(&self, executable: &Path) -> Vec<HarnessRow> {
+        Harness::ALL
+            .into_iter()
+            .map(|harness| {
+                let found = self.row(harness, self.config_file(harness), executable);
+                if found.registration == Registration::NotInstalled {
+                    found
+                } else {
+                    self.set_up_in(harness, found.file, executable)
+                }
+            })
+            .collect()
+    }
+
     /// Replaces the `ketchup` server in `file`, the one a row describes.
     pub fn set_up_in(
         &self,
@@ -456,12 +473,7 @@ pub fn set_up_installed_harnesses() -> Result<String, SetupFailure> {
     let environment = Environment::current().ok_or(SetupFailure::UnknownHome)?;
     let mut report = String::new();
     let mut any = false;
-    for found in environment.rows(&executable) {
-        let row = if found.registration == Registration::NotInstalled {
-            found
-        } else {
-            environment.set_up_in(found.harness, found.file, &executable)
-        };
+    for row in environment.set_up_installed(&executable) {
         any |= row.registration == Registration::ThisKetchup;
         report.push_str(&describe(&row, &executable));
         report.push('\n');

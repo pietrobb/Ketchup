@@ -155,7 +155,7 @@ Set it up once, in any of these ways:
 
 - **Installer:** keep *Connect your AI clients to Ketchup* checked on its last page.
 - **Window:** the **Connect AI** section of the side panel shows what Claude Code, Codex, Claude Desktop and Supervisor start as `ketchup`. **Connect** writes this Ketchup into the client's own configuration file (`.claude.json`, `.codex\config.toml`, `claude_desktop_config.json`, Supervisor's `skills\mcp_servers.json`), so it works even when the client's command is not on the window's PATH; **Use this Ketchup** replaces an entry that starts another program, for example a development build that was deleted (the harness then only reports *connection closed*).
-- **Terminal:** `& "$env:LOCALAPPDATA\Programs\Ketchup\Ketchup.exe" --mcp-setup | Out-Host` sets up every client it finds and prints what each starts now.
+- **Terminal:** `& "$env:LOCALAPPDATA\Programs\Ketchup\Ketchup.exe" --mcp-setup | Out-Host` sets up every client it finds and prints what each starts now. Of Supervisor it sets up only the installed one; another running Supervisor instance changes only when you click **Connect** on its row.
 - **By hand**, with the default installation:
 
 Claude Code (PowerShell). `--scope user` makes the server available in every folder; without it Claude Code keeps it for the current folder only:

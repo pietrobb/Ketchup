@@ -115,6 +115,44 @@ fn connecting_supervisor_again_replaces_its_old_copy_and_keeps_its_other_servers
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// The installer runs `--mcp-setup` hidden: it connects the installed
+/// Supervisor, while a running dev instance keeps its own Kečup until the
+/// user clicks Connect on its row.
+#[test]
+fn mcp_setup_connects_the_installed_supervisor_and_leaves_other_instances() {
+    let home = temporary_home("installed-only");
+    let dev = home.join("DevSupervisor");
+    let environment = Environment {
+        supervisor_folders: vec![dev.clone()],
+        ..clean_profile(&home)
+    };
+    let installed = environment.config_file(Harness::Supervisor).unwrap();
+    create_parent(&installed);
+    let skills = dev.join("skills");
+    std::fs::create_dir_all(&skills).unwrap();
+    std::fs::write(skills.join("mcp_bridge.py"), "").unwrap();
+    let dev_file = skills.join("mcp_servers.json");
+    let dev_servers = serde_json::json!({"mcpServers": {
+        "ketchup": {"command": r"C:\dev\ketchup-mcp-server.cmd", "args": ["--mcp"]}
+    }})
+    .to_string();
+    std::fs::write(&dev_file, &dev_servers).unwrap();
+    let this = std::env::current_exe().unwrap();
+    let rows = environment.set_up_installed(&this);
+    assert_eq!(std::fs::read_to_string(&dev_file).unwrap(), dev_servers);
+    let supervisor: Vec<_> = rows
+        .iter()
+        .filter(|row| row.harness == Harness::Supervisor)
+        .map(|row| (row.file.clone(), row.registration.clone()))
+        .collect();
+    assert_eq!(
+        supervisor,
+        [(Some(installed), Registration::ThisKetchup)],
+        "only the installed Supervisor is reported and connected"
+    );
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 /// The installed Supervisor of 9. 10. starts
 /// `%LOCALAPPDATA%\Programs\Supervisor\Kecup\ketchup-app.exe`, and its
 /// `mcp_bridge.py` expands the variables (`os.path.expandvars`): the row names
