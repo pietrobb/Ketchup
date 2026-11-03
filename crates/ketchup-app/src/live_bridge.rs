@@ -81,6 +81,7 @@ mod program_dry_run;
 mod program_navigation;
 pub use program_access::{ReportSection, SourceEdit};
 pub use program_variant_export::CsvDecimal;
+mod mcp_config;
 pub mod mcp_setup;
 mod measurement;
 mod plugin;

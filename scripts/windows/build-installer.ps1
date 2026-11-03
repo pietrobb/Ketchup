@@ -456,7 +456,7 @@ Root: HKA; Subkey: "Software\Classes\Ketchup.ViewerComments\DefaultIcon"; ValueT
 Root: HKA; Subkey: "Software\Classes\Ketchup.ViewerComments\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\KetchupViewer.exe"" ""%1"""
 
 [Run]
-Filename: "{app}\Ketchup.exe"; Parameters: "--mcp-setup"; Description: "Connect Claude Code and Codex to Ketchup (if installed)"; WorkingDir: "{app}"; Flags: postinstall runhidden skipifsilent
+Filename: "{app}\Ketchup.exe"; Parameters: "--mcp-setup"; Description: "Connect your AI clients (Claude Code, Codex, Claude Desktop, Supervisor) to Ketchup"; WorkingDir: "{app}"; Flags: postinstall runhidden skipifsilent
 Filename: "{app}\Ketchup.exe"; Description: "Launch Ketchup"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
 
 [Code]

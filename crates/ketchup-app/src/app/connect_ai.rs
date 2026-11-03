@@ -1,7 +1,9 @@
 //! "Connect AI": Kečup has no built-in chat. Any MCP client (Claude Code,
 //! Codex, …) starts `ketchup --mcp` and drives this window after the user
-//! approves it here; this section shows the status, what Claude Code and Codex
-//! start as `ketchup` with a button that sets them up, and the set-up to copy.
+//! approves it here; this section shows the status, what each known client
+//! (Claude Code, Codex, Claude Desktop, Supervisor) starts as `ketchup` with a
+//! Connect button that writes its configuration, and, folded away, the set-up
+//! to copy into any other client.
 
 use crate::live_bridge::mcp_setup::{Environment, Harness, HarnessRow, Registration, entry_point};
 use crate::*;
@@ -22,20 +24,25 @@ impl KetchupApp {
         };
         self.show_harnesses(ui, Path::new(&server));
         ui.add_space(6.0);
-        ui.weak(self.catalog.text("connect-ai-manual"));
-        for (label, text) in client_setups(&server) {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.strong(self.catalog.text(label));
-                if ui
-                    .small_button(self.catalog.text("connect-ai-copy"))
-                    .clicked()
-                {
-                    ui.ctx().copy_text(text.clone());
+        // Copying is the fallback for a client Connect does not know.
+        egui::CollapsingHeader::new(self.catalog.text("connect-ai-manual"))
+            .id_salt("connect-ai-manual")
+            .default_open(false)
+            .show(ui, |ui| {
+                for (label, text) in client_setups(&server) {
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.strong(self.catalog.text(label));
+                        if ui
+                            .small_button(self.catalog.text("connect-ai-copy"))
+                            .clicked()
+                        {
+                            ui.ctx().copy_text(text.clone());
+                        }
+                    });
+                    ui.add(egui::Label::new(egui::RichText::new(text).monospace().small()).wrap());
                 }
             });
-            ui.add(egui::Label::new(egui::RichText::new(text).monospace().small()).wrap());
-        }
     }
 
     /// One line per harness: what it starts as `ketchup`, and Set up when that
@@ -124,11 +131,11 @@ fn client_setups(executable: &str) -> [(&'static str, String); 3] {
     [
         (
             "connect-ai-claude-code",
-            Harness::ClaudeCode.add_command_line(executable),
+            Harness::ClaudeCode.add_command_line("claude", executable),
         ),
         (
             "connect-ai-codex",
-            Harness::Codex.add_command_line(executable),
+            Harness::Codex.add_command_line("codex", executable),
         ),
         (
             "connect-ai-json",
@@ -155,12 +162,38 @@ mod tests {
     }
 
     #[test]
-    fn the_section_shows_the_status_and_three_set_ups_to_copy() {
-        let harness = open_section(KetchupApp::new());
+    fn the_section_shows_the_status_and_folds_away_three_set_ups_to_copy() {
+        let mut harness = open_section(KetchupApp::new());
         let waiting = harness.state().catalog.text("connect-ai-waiting");
         harness.get_by_label(&waiting);
         let copy = harness.state().catalog.text("connect-ai-copy");
+        assert_eq!(harness.query_all_by_label(&copy).count(), 0);
+        let manual = harness.state().catalog.text("connect-ai-manual");
+        harness.get_by_label(&manual).click();
+        harness.run();
         assert_eq!(harness.get_all_by_label(&copy).count(), 3);
+    }
+
+    #[test]
+    fn every_known_client_has_a_row_and_one_not_set_up_offers_connect() {
+        let mut app = KetchupApp::new();
+        let row = |harness, registration| HarnessRow {
+            harness,
+            registration,
+            setup_error: None,
+        };
+        app.live.harnesses = Some(vec![
+            row(Harness::ClaudeCode, Registration::ThisKetchup),
+            row(Harness::Codex, Registration::NotInstalled),
+            row(Harness::ClaudeDesktop, Registration::NotInstalled),
+            row(Harness::Supervisor, Registration::NotSetUp),
+        ]);
+        let harness = open_section(app);
+        for client in Harness::ALL {
+            harness.get_by_label(client.name());
+        }
+        let connect = harness.state().catalog.text("connect-ai-set-up");
+        assert_eq!(harness.get_all_by_label(&connect).count(), 1);
     }
 
     #[test]

@@ -153,9 +153,9 @@ Ketchup has no built-in chat. Instead, you connect the AI harness you already us
 
 Set it up once, in any of these ways:
 
-- **Installer:** keep *Connect Claude Code and Codex to Ketchup* checked on its last page.
-- **Window:** the **Connect AI** section of the side panel shows what Claude Code and Codex start as `ketchup`. **Set up** adds this Ketchup to the harness; **Use this Ketchup** replaces an entry that starts another program, for example a development build that was deleted (the harness then only reports *connection closed*).
-- **Terminal:** `& "$env:LOCALAPPDATA\Programs\Ketchup\Ketchup.exe" --mcp-setup | Out-Host` sets up every harness it finds and prints what each starts now.
+- **Installer:** keep *Connect your AI clients to Ketchup* checked on its last page.
+- **Window:** the **Connect AI** section of the side panel shows what Claude Code, Codex, Claude Desktop and Supervisor start as `ketchup`. **Connect** writes this Ketchup into the client's own configuration file (`.claude.json`, `.codex\config.toml`, `claude_desktop_config.json`, Supervisor's `skills\mcp_servers.json`), so it works even when the client's command is not on the window's PATH; **Use this Ketchup** replaces an entry that starts another program, for example a development build that was deleted (the harness then only reports *connection closed*).
+- **Terminal:** `& "$env:LOCALAPPDATA\Programs\Ketchup\Ketchup.exe" --mcp-setup | Out-Host` sets up every client it finds and prints what each starts now.
 - **By hand**, with the default installation:
 
 Claude Code (PowerShell). `--scope user` makes the server available in every folder; without it Claude Code keeps it for the current folder only:
@@ -180,7 +180,7 @@ Then start a new session of the harness (it reads its MCP servers when a session
 
 The tools connect to the open window by themselves (with several windows open the agent picks one); if none is open, the agent can start one. A newly connected client replaces the previous one, and the window shows a Disconnect button while a client is connected.
 
-When an agent also develops Ketchup in this checkout, use `scripts\ketchup-mcp-server.cmd` as the command instead. It runs the server from `target\mcp-server` and the windows it opens from copies of the newest build under `target\mcp-windows`, so `cargo build --release` can replace `target\release` while those windows stay open. A window built in this checkout shows this script in **Connect AI**, and its **Set up** and `--mcp-setup` register it. To do it by hand, run this from the checkout root (PowerShell):
+When an agent also develops Ketchup in this checkout, use `scripts\ketchup-mcp-server.cmd` as the command instead. It runs the server from `target\mcp-server` and the windows it opens from copies of the newest build under `target\mcp-windows`, so `cargo build --release` can replace `target\release` while those windows stay open. A window built in this checkout shows this script in **Connect AI**, and its **Connect** and `--mcp-setup` register it. To do it by hand, run this from the checkout root (PowerShell):
 
 ```powershell
 claude mcp add --scope user ketchup -- "$PWD\scripts\ketchup-mcp-server.cmd"
