@@ -669,40 +669,9 @@ fn scripted_window(
     instance: &'static str,
     endings: Vec<Ending>,
 ) -> mpsc::Receiver<&'static str> {
-    let attach = TcpListener::bind("127.0.0.1:0").unwrap();
     let bridge = TcpListener::bind("127.0.0.1:0").unwrap();
-    let bridge_address = bridge.local_addr().unwrap().to_string();
-    let mut registry = crate::local_auth::create(&root.join(format!("{instance}.json"))).unwrap();
-    write!(
-        registry,
-        "{}",
-        json!({"version": 1, "instance_id": instance,
-        "consent_address": attach.local_addr().unwrap().to_string(), "bootstrap": TOKEN})
-    )
-    .unwrap();
-    drop(registry);
     let (events, received) = mpsc::channel();
-    let attached = events.clone();
-    std::thread::spawn(move || {
-        for stream in attach.incoming() {
-            let mut stream = stream.unwrap();
-            let mut line = String::new();
-            BufReader::new(&stream).read_line(&mut line).unwrap();
-            let request: Value = serde_json::from_str(&line).unwrap();
-            let mut reply = json!({"version": 1, "nonce": request["nonce"], "instance_id": instance,
-                                   "status": "available", "document": "stolik.ketchup"});
-            if request["action"] == "attach" {
-                reply["status"] = "allowed".into();
-                reply["live_bridge_address"] = bridge_address.clone().into();
-                reply["token"] = TOKEN.into();
-                reply["proof"] = crate::discovery::window_proof(TOKEN, &reply).into();
-                let _ = attached.send("attach");
-            } else {
-                reply["proof"] = crate::discovery::window_list_proof_of(TOKEN, &reply).into();
-            }
-            stream.write_all(format!("{reply}\n").as_bytes()).unwrap();
-        }
-    });
+    grant_attaches(root, instance, &bridge, events.clone());
     std::thread::spawn(move || {
         let frame = |stream: &mut std::net::TcpStream, value: Value| {
             let body = value.to_string();
@@ -711,13 +680,7 @@ fn scripted_window(
                 .unwrap();
             stream.write_all(body.as_bytes()).unwrap();
         };
-        let read_id = |stream: &mut std::net::TcpStream| {
-            let mut header = [0_u8; 4];
-            stream.read_exact(&mut header).unwrap();
-            let mut body = vec![0_u8; u32::from_be_bytes(header) as usize];
-            stream.read_exact(&mut body).unwrap();
-            serde_json::from_slice::<Value>(&body).unwrap()["id"].clone()
-        };
+        let read_id = |stream: &mut std::net::TcpStream| read_frame(stream)["id"].clone();
         let stamp = json!({"document_id": 1, "revision": 7, "canonical_digest": "d",
                            "mutation_epoch": 0});
         for ending in endings {
@@ -750,6 +713,103 @@ fn scripted_window(
         }
     });
     received
+}
+
+/// One framed request body the client sent.
+fn read_frame(stream: &mut std::net::TcpStream) -> Value {
+    let mut header = [0_u8; 4];
+    stream.read_exact(&mut header).unwrap();
+    let mut body = vec![0_u8; u32::from_be_bytes(header) as usize];
+    stream.read_exact(&mut body).unwrap();
+    serde_json::from_slice(&body).unwrap()
+}
+
+/// Registers window `instance` under `root` and grants every attach to it on
+/// `bridge`, sending "attach" to `attached` for each.
+fn grant_attaches(
+    root: &Path,
+    instance: &'static str,
+    bridge: &TcpListener,
+    attached: mpsc::Sender<&'static str>,
+) {
+    let attach = TcpListener::bind("127.0.0.1:0").unwrap();
+    let bridge_address = bridge.local_addr().unwrap().to_string();
+    let mut registry = crate::local_auth::create(&root.join(format!("{instance}.json"))).unwrap();
+    write!(
+        registry,
+        "{}",
+        json!({"version": 1, "instance_id": instance,
+        "consent_address": attach.local_addr().unwrap().to_string(), "bootstrap": TOKEN})
+    )
+    .unwrap();
+    drop(registry);
+    std::thread::spawn(move || {
+        for stream in attach.incoming() {
+            let mut stream = stream.unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            let mut reply = json!({"version": 1, "nonce": request["nonce"], "instance_id": instance,
+                                   "status": "available", "document": "stolik.ketchup"});
+            if request["action"] == "attach" {
+                reply["status"] = "allowed".into();
+                reply["live_bridge_address"] = bridge_address.clone().into();
+                reply["token"] = TOKEN.into();
+                reply["proof"] = crate::discovery::window_proof(TOKEN, &reply).into();
+                let _ = attached.send("attach");
+            } else {
+                reply["proof"] = crate::discovery::window_list_proof_of(TOKEN, &reply).into();
+            }
+            stream.write_all(format!("{reply}\n").as_bytes()).unwrap();
+        }
+    });
+}
+
+/// #2687 P1 (point 4): the window is told which AI attached, in the words the
+/// client's users know, before the call that attached; a window too old to
+/// know `hello` refuses it and the call still goes through.
+#[test]
+fn the_window_hears_which_ai_attached_before_its_first_call() {
+    let root = tempfile::tempdir().unwrap();
+    let bridge = TcpListener::bind("127.0.0.1:0").unwrap();
+    grant_attaches(root.path(), INSTANCE, &bridge, mpsc::channel().0);
+    let (requests, received) = mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut stream, _) = bridge.accept().unwrap();
+        for _ in 0..2 {
+            let envelope = read_frame(&mut stream);
+            let request = envelope["request"].clone();
+            let reply = if request["method"] == "hello" {
+                json!({"version": 1, "id": envelope["id"], "ok": false, "error": "invalid_params",
+                       "result": {"reason": "unknown variant `hello`"}})
+            } else {
+                json!({"version": 1, "id": envelope["id"], "ok": true, "result": {},
+                       "stamp": {"document_id": 1, "revision": 7, "canonical_digest": "d",
+                                 "mutation_epoch": 0}})
+            };
+            let body = reply.to_string();
+            stream
+                .write_all(&(body.len() as u32).to_be_bytes())
+                .unwrap();
+            stream.write_all(body.as_bytes()).unwrap();
+            requests.send(request).unwrap();
+        }
+    });
+    let session = Session::new(Tools::new(None, Some(root.path().to_owned())));
+    let initialize = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                            "params": {"clientInfo": {"name": "claude-code", "version": "2.1"}}});
+    assert!(handle(&session, initialize).is_some());
+    let status = json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                        "params": {"name": "inspect", "arguments": {"action": "status"}}});
+    assert_eq!(
+        handle(&session, status).unwrap()["result"]["isError"],
+        false
+    );
+    assert_eq!(
+        received.recv().unwrap(),
+        json!({"method": "hello", "client": "Claude Code"})
+    );
+    assert_eq!(received.recv().unwrap()["method"], "status");
 }
 
 /// MCP-1: a window another client took over is not taken back behind the

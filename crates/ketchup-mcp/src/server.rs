@@ -2,7 +2,7 @@
 use crate::{
     bridge::Cancel,
     discovery, schema,
-    tools::{ToolOutput, Tools},
+    tools::{ClientName, ToolOutput, Tools},
 };
 use serde_json::{Map, Value, json};
 use std::{
@@ -137,6 +137,7 @@ pub(crate) struct Session<T> {
     tools: Mutex<T>,
     cancel: Cancel,
     calls: Mutex<Calls>,
+    client: ClientName,
 }
 
 /// Tool calls waiting for the tools or running on them.
@@ -151,9 +152,17 @@ impl<T: BorrowMut<Tools>> Session<T> {
     pub(crate) fn new(tools: T) -> Self {
         Self {
             cancel: Borrow::<Tools>::borrow(&tools).cancel(),
+            client: Borrow::<Tools>::borrow(&tools).client_name(),
             tools: Mutex::new(tools),
             calls: Mutex::new(Calls::default()),
         }
+    }
+
+    /// Keeps the name the client gives in `initialize` for the windows it
+    /// attaches to; never waits for a tool call.
+    fn remember_client(&self, params: &Value) {
+        *self.client.lock().unwrap_or_else(PoisonError::into_inner) =
+            client_name(&params["clientInfo"]);
     }
 
     fn calls(&self) -> MutexGuard<'_, Calls> {
@@ -211,7 +220,10 @@ pub(crate) fn handle(session: &Session<impl BorrowMut<Tools>>, message: Value) -
     };
     let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
     let result = match method {
-        "initialize" => initialize(&params),
+        "initialize" => {
+            session.remember_client(&params);
+            initialize(&params)
+        }
         "ping" => json!({}),
         "tools/list" => json!({"tools": schema::tools()}),
         "tools/call" => {
@@ -242,6 +254,24 @@ fn initialize(params: &Value) -> Value {
         "serverInfo": {"name": "ketchup", "title": "Kečup", "version": env!("CARGO_PKG_VERSION")},
         "instructions": schema::INSTRUCTIONS,
     })
+}
+
+/// How the window names the client: its title, or the name a known client
+/// gives itself in the words its users know.
+fn client_name(info: &Value) -> Option<String> {
+    let title = info["title"].as_str().map(str::trim);
+    if let Some(title) = title.filter(|title| !title.is_empty()) {
+        return Some(title.to_owned());
+    }
+    let name = info["name"].as_str()?.trim();
+    let known = match name {
+        "" => return None,
+        "claude-code" => "Claude Code",
+        "claude-ai" => "Claude Desktop",
+        "codex" | "codex-mcp-client" => "Codex",
+        other => other,
+    };
+    Some(known.to_owned())
 }
 
 fn failure(id: Value, code: i64, message: &str) -> Value {

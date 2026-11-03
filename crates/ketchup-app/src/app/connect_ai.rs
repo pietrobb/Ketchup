@@ -11,17 +11,31 @@ use crate::*;
 impl KetchupApp {
     pub(crate) fn show_connect_ai(&mut self, ui: &mut egui::Ui) {
         section_header(ui, self.palette(), &self.catalog.text("connect-ai-title"));
-        let status = if self.live.consent_attached || self.live.launch_attached {
-            "connect-ai-connected"
-        } else {
-            "connect-ai-waiting"
-        };
-        ui.label(egui::RichText::new(self.catalog.text(status)).strong());
+        ui.label(
+            egui::RichText::new(
+                self.connected_ai_text()
+                    .unwrap_or_else(|| self.catalog.text("connect-ai-waiting")),
+            )
+            .strong(),
+        );
         ui.label(self.catalog.text("connect-ai-description"));
         let Some(server) = mcp_server_command() else {
             ui.weak(self.catalog.text("connect-ai-executable-unknown"));
             return;
         };
+        let attached = self.ai_attached();
+        let set_up = attached
+            || self.live.harnesses.as_ref().is_some_and(|rows| {
+                rows.iter()
+                    .any(|row| row.registration == Registration::ThisKetchup)
+            });
+        for (key, done) in [
+            ("connect-ai-step-connect", set_up),
+            ("connect-ai-step-restart", attached),
+            ("connect-ai-step-attached", attached),
+        ] {
+            self.show_step(ui, key, done);
+        }
         self.show_harnesses(ui, Path::new(&server));
         ui.add_space(6.0);
         // Copying is the fallback for a client Connect does not know.
@@ -93,6 +107,50 @@ impl KetchupApp {
             {
                 *slot = row;
             }
+        }
+    }
+
+    /// One numbered step, marked done or not from what the window sees.
+    fn show_step(&self, ui: &mut egui::Ui, key: &str, done: bool) {
+        let (mark, color, state) = if done {
+            ("✔", self.palette().code().ok, "connect-ai-step-done")
+        } else {
+            ("✖", self.palette().faint, "connect-ai-step-not-done")
+        };
+        let text = self.catalog.text(key);
+        let response = ui
+            .horizontal(|ui| {
+                ui.colored_label(color, mark);
+                ui.label(&text);
+            })
+            .response;
+        // A screen reader hears the step and whether it is done, not a glyph.
+        let spoken = format!("{text} {}", self.catalog.text(state));
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &spoken));
+    }
+
+    /// "Connected AI: <name>" while an AI holds the window.
+    fn connected_ai_text(&self) -> Option<String> {
+        self.ai_attached().then(|| match &self.live.client_name {
+            Some(name) => self
+                .catalog
+                .format("ai-connected", &BTreeMap::from([("client", name.clone())])),
+            None => self.catalog.text("ai-connected-unnamed"),
+        })
+    }
+
+    /// The status line's always visible part of the connection: which AI holds
+    /// the window, and Disconnect.
+    pub(crate) fn show_connected_ai(&mut self, ui: &mut egui::Ui) {
+        let Some(text) = self.connected_ai_text() else {
+            return;
+        };
+        ui.label(egui::RichText::new(text).color(self.palette().accent));
+        if ui
+            .small_button(self.catalog.text("ai-disconnect"))
+            .clicked()
+        {
+            self.disconnect_ai();
         }
     }
 
@@ -194,6 +252,51 @@ mod tests {
         }
         let connect = harness.state().catalog.text("connect-ai-set-up");
         assert_eq!(harness.get_all_by_label(&connect).count(), 1);
+        // Claude Code starts this Kečup, but no AI has attached yet.
+        let catalog = &harness.state().catalog;
+        let step =
+            |key: &str, state: &str| format!("{} {}", catalog.text(key), catalog.text(state));
+        harness.get_by_label(&step("connect-ai-step-connect", "connect-ai-step-done"));
+        harness.get_by_label(&step("connect-ai-step-restart", "connect-ai-step-not-done"));
+        harness.get_by_label(&step(
+            "connect-ai-step-attached",
+            "connect-ai-step-not-done",
+        ));
+    }
+
+    /// #2687 P1 (points 4, 9, 10): which AI holds the window stays in the
+    /// status line next to Disconnect, and every step is done.
+    #[test]
+    fn an_attached_ai_is_named_in_the_status_line_with_disconnect() {
+        let mut app = KetchupApp::new();
+        app.live.consent_attached = true;
+        app.live.client_name = Some("Claude Code".to_owned());
+        app.live.harnesses = Some(Vec::new());
+        let mut harness = open_section(app);
+        let catalog = harness.state().catalog.clone();
+        let named = catalog.format(
+            "ai-connected",
+            &std::collections::BTreeMap::from([("client", "Claude Code".to_owned())]),
+        );
+        assert_eq!(
+            harness.get_all_by_label(&named).count(),
+            2,
+            "status line and AI tab"
+        );
+        let done = catalog.text("connect-ai-step-done");
+        for key in [
+            "connect-ai-step-connect",
+            "connect-ai-step-restart",
+            "connect-ai-step-attached",
+        ] {
+            harness.get_by_label(&format!("{} {done}", catalog.text(key)));
+        }
+
+        harness.get_by_label(&catalog.text("ai-disconnect")).click();
+        harness.run();
+        assert!(!harness.state().ai_attached());
+        assert!(harness.query_by_label(&named).is_none());
+        harness.get_by_label(&catalog.text("connect-ai-waiting"));
     }
 
     #[test]

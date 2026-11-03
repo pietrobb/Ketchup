@@ -253,6 +253,7 @@ impl PendingBootstrap {
             app.disable_live_bridge();
         } else {
             app.live.launch_attached = true;
+            app.live.client_name = None;
         }
         result
     }

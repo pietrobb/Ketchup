@@ -740,6 +740,10 @@ pub enum Request {
         offset_mm: Option<f64>,
     },
     Image(ImageRequest),
+    /// The name the AI gives itself, shown in the window while it is attached.
+    Hello {
+        client: String,
+    },
     Disconnect {},
 }
 
@@ -1581,6 +1585,7 @@ impl KetchupApp {
                     | Request::ProgramContext { .. }
                     | Request::ProgramPiece { .. }
                     | Request::ProgramReport { .. }
+                    | Request::Hello { .. }
             ) {
                 bridge.supersede_answered_check();
             }
@@ -3454,6 +3459,7 @@ impl LiveBridge {
                 Self::guard(app, &expected)?;
                 Err("image_requires_frame_callback")
             }
+            Request::Hello { client } => Ok(consent::hello(app, &client)),
             Request::Disconnect {} => {
                 self.pending = None;
                 self.batch_jobs.clear();

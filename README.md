@@ -178,7 +178,7 @@ Other harnesses take the same command in their MCP configuration. Replace `<you>
 
 Then start a new session of the harness (it reads its MCP servers when a session starts) and ask the agent, for example, to *"open tiny-house.ketchup in Ketchup and make the house 1 m longer"* or *"model a 120 × 60 cm desk with two drawers"*.
 
-The tools connect to the open window by themselves (with several windows open the agent picks one); if none is open, the agent can start one. A newly connected client replaces the previous one, and the window shows a Disconnect button while a client is connected.
+The tools connect to the open window by themselves (with several windows open the agent picks one); if none is open, the agent can start one. A newly connected client replaces the previous one. While a client is connected, the status line names it (*Connected AI: Claude Code*, from the name the client gives itself) next to a **Disconnect** button.
 
 When an agent also develops Ketchup in this checkout, use `scripts\ketchup-mcp-server.cmd` as the command instead. It runs the server from `target\mcp-server` and the windows it opens from copies of the newest build under `target\mcp-windows`, so `cargo build --release` can replace `target\release` while those windows stay open. A window built in this checkout shows this script in **Connect AI**, and its **Connect** and `--mcp-setup` register it. To do it by hand, run this from the checkout root (PowerShell):
 

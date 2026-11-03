@@ -13,6 +13,7 @@ use std::{
     io::{self, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::{Arc, Mutex, PoisonError},
     time::Duration,
 };
 
@@ -180,7 +181,12 @@ pub struct Tools {
     taken_over: bool,
     /// Stops the window request of a call the client cancelled.
     cancel: Cancel,
+    client: ClientName,
 }
+
+/// The name the MCP client gave in `initialize`; each window it attaches to
+/// is told it, to show which AI holds the window (#2687).
+pub type ClientName = Arc<Mutex<Option<String>>>;
 
 impl Tools {
     pub fn new(app_executable: Option<PathBuf>, discovery_root: Option<PathBuf>) -> Self {
@@ -191,6 +197,32 @@ impl Tools {
             window_id: None,
             taken_over: false,
             cancel: Cancel::default(),
+            client: ClientName::default(),
+        }
+    }
+
+    /// Where `initialize` puts the client's name, set from another thread.
+    pub fn client_name(&self) -> ClientName {
+        Arc::clone(&self.client)
+    }
+
+    /// Tells the window just attached which AI this is. A window too old to
+    /// know `hello` answers an error and keeps the connection.
+    fn introduce(&mut self) {
+        let client = self
+            .client
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let Some(client) = client else {
+            return;
+        };
+        let name = Map::from_iter([("client".to_owned(), Value::from(client))]);
+        if let Err(error) = self.request("hello", name, DEFAULT_WAIT) {
+            eprintln!(
+                "ketchup-mcp: the window was not told which AI attached: {}",
+                error.message
+            );
         }
     }
 
@@ -617,6 +649,7 @@ impl Tools {
         self.window_id = Some(window.instance_id.clone());
         self.taken_over = false;
         self.attached = Some(Attached { window, connection });
+        self.introduce();
         self.send("status", Map::new(), DEFAULT_WAIT)
     }
 
@@ -669,6 +702,7 @@ impl Tools {
         self.window_id = Some(window.instance_id.clone());
         self.taken_over = false;
         self.attached = Some(Attached { connection, window });
+        self.introduce();
         Ok(())
     }
 

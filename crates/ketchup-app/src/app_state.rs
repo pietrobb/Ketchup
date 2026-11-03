@@ -42,6 +42,9 @@ pub(crate) struct LiveState {
     /// The client that started this window (`open_window`) holds it until its
     /// connection ends; another client's attach then takes the window over.
     pub(crate) launch_attached: bool,
+    /// The name the attached AI gives itself (MCP `clientInfo`), shown in the
+    /// status line; cleared on each new attach.
+    pub(crate) client_name: Option<String>,
     /// An export a client asked for is running: its loss report goes back to the
     /// client instead of a lossy-conversion prompt, and it never replaces a file.
     /// Holds the request's cancel flag, set once the client's connection ends.

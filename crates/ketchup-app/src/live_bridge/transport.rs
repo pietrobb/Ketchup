@@ -252,6 +252,7 @@ fn has_effect(request: &Request) -> bool {
         | Request::UnderlayObjects { .. }
         | Request::UnderlayRegions { .. }
         | Request::UnderlayParallel { .. }
+        | Request::Hello { .. }
         | Request::Image(_) => false,
         Request::WorksetCreate { .. }
         | Request::BatchJobStart { .. }

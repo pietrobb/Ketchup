@@ -65,6 +65,7 @@ impl KetchupApp {
                 consent_broker: None,
                 consent_attached: false,
                 launch_attached: false,
+                client_name: None,
                 client_export: None,
                 plugin_consents: Vec::new(),
                 plugin_menu: live_bridge::plugin_menu::PluginMenu::new(),
@@ -1373,6 +1374,7 @@ impl KetchupApp {
                     .strong()
                     .color(palette.text),
             );
+            self.show_connected_ai(ui);
 
             // Everything after the tool name is running commentary, so it is set
             // in the tertiary tone and truncated rather than allowed to push the
@@ -1599,7 +1601,6 @@ impl KetchupApp {
         self.show_program_detach_notice(context);
         self.show_material_takeoff_window(context);
         self.show_project_drawings_window(context);
-        self.show_live_consent(context);
         self.finish_live_image_frame(context);
         self.finish_file_activity_frame(context);
         self.show_close_guard(context);
