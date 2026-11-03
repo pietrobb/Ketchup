@@ -154,12 +154,12 @@ mod native_document_inspection;
 mod occurrence_color_ui;
 mod planar_push_pull;
 mod program_detach;
-use program_detach::ProgramDetachNotice;
 mod program_edit;
 mod program_evaluation;
 mod program_source_ui;
 mod program_transform;
 mod program_variants_ui;
+pub mod recent_files;
 mod refusal;
 mod selection_mass_ui;
 mod selection_measures_ui;
@@ -2076,7 +2076,7 @@ pub struct KetchupApp {
     remember_language: bool,
     /// The program the last edit detached, while the one-time notice about it
     /// is on screen.
-    program_detach_notice: Option<ProgramDetachNotice>,
+    program_detach_notice: Option<program_detach::ProgramDetachNotice>,
     /// The notice is shown for the first detaching edit of a session only.
     program_detach_warned: bool,
     assembly_editor: assembly_ui::AssemblyEditorState,

@@ -22,6 +22,8 @@ pub(crate) struct FileState {
         Option<(PathBuf, ketchup_model::persistence::FileIdentity)>,
     pub(crate) work_recovery_digest: Option<String>,
     pub(crate) saved_digest: String,
+    /// File > Open Recent; outlives the document, so File > New carries it over.
+    pub(crate) recent: crate::recent_files::RecentFiles,
 }
 
 /// A file opened from a recovery copy in place of the one the user asked for.

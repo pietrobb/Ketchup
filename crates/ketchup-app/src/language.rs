@@ -88,8 +88,9 @@ impl UiLanguage {
     }
 }
 
+/// The user settings of Kečup: this choice and File > Open Recent.
 #[cfg(windows)]
-const SETTINGS_KEY: &str = r"Software\Ketchup";
+pub(crate) const SETTINGS_KEY: &str = r"Software\Ketchup";
 #[cfg(windows)]
 const LANGUAGE_VALUE: &str = "Language";
 

@@ -151,6 +151,10 @@ fn perf_menu_export_and_save_within_budget(
     ui.get_by_role_and_label(eframe::egui::accesskit::Role::Button, &file)
         .click();
     ui.run();
+    let viewer = format!("{} ⏵", ui.state().catalog().text("menu-file-viewer"));
+    ui.get_by_role_and_label(eframe::egui::accesskit::Role::Button, &viewer)
+        .click();
+    ui.run();
     let export = ui
         .state()
         .command_label(ketchup_app::AppCommand::ExportViewer);

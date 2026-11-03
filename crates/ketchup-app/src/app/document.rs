@@ -138,6 +138,7 @@ impl KetchupApp {
         let dimensions_visible = self.panels.dimensions_visible;
         let manual_cad_tools_visible = self.panels.manual_cad_tools_visible;
         let about_open = self.panels.about_open;
+        let recent_files = std::mem::take(&mut self.file.recent);
         let exact_worker_path = self.exact.worker_path.clone();
         let exact_worker_attempted = self.exact.worker_attempted;
         // The graphics device outlives the document: losing its target format
@@ -161,6 +162,7 @@ impl KetchupApp {
         self.panels.dimensions_visible = dimensions_visible;
         self.panels.manual_cad_tools_visible = manual_cad_tools_visible;
         self.panels.about_open = about_open;
+        self.file.recent = recent_files;
         self.digest = self.catalog.text("digest-new-document");
     }
 
@@ -434,6 +436,7 @@ impl KetchupApp {
                 } else {
                     warnings.join(" ")
                 };
+                self.remember_recent_file(path);
                 true
             }
             Err(error) => {
@@ -868,6 +871,9 @@ impl KetchupApp {
                     self.file.pending_work_recovery_cleanup =
                         Some((recovery_path, recovery_identity));
                 }
+                // Save As and the first save of a new model; a plain Save
+                // leaves Open Recent as it is.
+                let new_name = self.file.path.as_deref() != Some(path);
                 self.file.path = Some(path.to_owned());
                 self.file.recovery_open = None;
                 self.file.identity = Some(saved_identity);
@@ -882,6 +888,9 @@ impl KetchupApp {
                     "digest-saved-document",
                     &BTreeMap::from([("path", path.display().to_string())]),
                 );
+                if new_name {
+                    self.remember_recent_file(path);
+                }
                 if let Some(error) = publication_error {
                     self.report_file_persistence_error("error-save-document", path, &error);
                     return Err(SaveFailure::Failed);

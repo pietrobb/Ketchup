@@ -5,6 +5,21 @@ use super::*;
 use ketchup_assistant::sidecar::AssistantCadEditOperation;
 use ketchup_assistant::sidecar::AssistantCadEntitySelector;
 
+/// Open File, then the submenu `submenu_key` that holds the format (#2689).
+fn open_file_submenu(harness: &mut Harness<'_, KetchupApp>, submenu_key: &str) {
+    let file_menu = harness.state().catalog.text("menu-file");
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
+        .click();
+    harness.run();
+    // egui names a submenu button by its text and the arrow it draws.
+    let submenu = format!("{} ⏵", harness.state().catalog.text(submenu_key));
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &submenu)
+        .click();
+    harness.run();
+}
+
 #[test]
 fn homag_mpr_program_names_are_exactly_twelve_machine_safe_characters() {
     assert_eq!(
@@ -71,11 +86,7 @@ fn blender_glb_file_command_exports_current_scene_with_loss_report() {
         .with_size(Vec2::new(1600.0, 1000.0))
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
     harness.run();
-    let file_menu = harness.state().catalog.text("menu-file");
-    harness
-        .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
-        .click();
-    harness.run();
+    open_file_submenu(&mut harness, "menu-file-export");
     let export = harness.state().command_label(AppCommand::ExportBlenderGlb);
     harness
         .get_by_role_and_label(egui::accesskit::Role::Button, &export)
@@ -126,11 +137,7 @@ fn sketchup_dae_file_command_exports_current_scene_with_loss_report() {
         .with_size(Vec2::new(1600.0, 1000.0))
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
     harness.run();
-    let file_menu = harness.state().catalog.text("menu-file");
-    harness
-        .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
-        .click();
-    harness.run();
+    open_file_submenu(&mut harness, "menu-file-export");
     let export = harness.state().command_label(AppCommand::ExportSketchupDae);
     harness
         .get_by_role_and_label(egui::accesskit::Role::Button, &export)
@@ -184,11 +191,7 @@ fn a_mesh_export_is_made_while_the_window_paints_and_cancel_writes_nothing() {
             .with_size(Vec2::new(1600.0, 1000.0))
             .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
         harness.run();
-        let file_menu = harness.state().catalog.text("menu-file");
-        harness
-            .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
-            .click();
-        harness.run();
+        open_file_submenu(&mut harness, "menu-file-export");
         let export = harness.state().command_label(command);
         harness
             .get_by_role_and_label(egui::accesskit::Role::Button, &export)
@@ -242,11 +245,7 @@ fn viewer_menu_exports_saved_scenes_and_package_without_editing_cad() {
         .with_size(Vec2::new(1600.0, 1000.0))
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
     harness.run();
-    let file_menu = harness.state().catalog.text("menu-file");
-    harness
-        .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
-        .click();
-    harness.run();
+    open_file_submenu(&mut harness, "menu-file-viewer");
     let export = harness.state().command_label(AppCommand::ExportViewer);
     harness
         .get_by_role_and_label(egui::accesskit::Role::Button, &export)
@@ -553,7 +552,6 @@ fn sheet_metal_manufacturing_export_requires_release_and_bound_overwrite_consent
         .with_size(Vec2::new(1600.0, 1000.0))
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
     harness.run();
-    let file_menu = harness.state().catalog.text("menu-file");
     let export = harness
         .state()
         .command_label(AppCommand::ExportSheetMetalManufacturing);
@@ -573,10 +571,7 @@ fn sheet_metal_manufacturing_export_requires_release_and_bound_overwrite_consent
         assert!(harness.state().file_activity_label().is_none());
     };
 
-    harness
-        .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
-        .click();
-    harness.run();
+    open_file_submenu(&mut harness, "menu-file-manufacturing");
     harness
         .get_by_role_and_label(egui::accesskit::Role::Button, &export)
         .click();
@@ -585,10 +580,7 @@ fn sheet_metal_manufacturing_export_requires_release_and_bound_overwrite_consent
     assert!(!bend_table.exists());
     assert!(harness.state().side_effect_receipts.is_empty());
 
-    harness
-        .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
-        .click();
-    harness.run();
+    open_file_submenu(&mut harness, "menu-file-manufacturing");
     harness
         .get_by_role_and_label(egui::accesskit::Role::Button, &export)
         .click();
@@ -607,10 +599,7 @@ fn sheet_metal_manufacturing_export_requires_release_and_bound_overwrite_consent
         "release-sheet-metal-flat-pattern-and-bend-table"
     );
 
-    harness
-        .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
-        .click();
-    harness.run();
+    open_file_submenu(&mut harness, "menu-file-manufacturing");
     harness
         .get_by_role_and_label(egui::accesskit::Role::Button, &export)
         .click();
@@ -761,14 +750,10 @@ fn general_fabrication_file_command_exports_one_authoritative_mixed_nested_packa
             build_app(refused_dialogs),
         );
     refused.run();
-    let file_menu = refused.state().catalog.text("menu-file");
     let export = refused
         .state()
         .command_label(AppCommand::ExportGeneralFabrication);
-    refused
-        .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
-        .click();
-    refused.run();
+    open_file_submenu(&mut refused, "menu-file-manufacturing");
     refused
         .get_by_role_and_label(egui::accesskit::Role::Button, &export)
         .click();
@@ -790,14 +775,10 @@ fn general_fabrication_file_command_exports_one_authoritative_mixed_nested_packa
         .with_size(Vec2::new(1600.0, 1000.0))
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
     harness.run();
-    let file_menu = harness.state().catalog.text("menu-file");
     let export = harness
         .state()
         .command_label(AppCommand::ExportGeneralFabrication);
-    harness
-        .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
-        .click();
-    harness.run();
+    open_file_submenu(&mut harness, "menu-file-manufacturing");
     harness
         .get_by_role_and_label(egui::accesskit::Role::Button, &export)
         .click();
@@ -897,11 +878,7 @@ fn hundegger_btlx_file_command_exports_validated_timber_with_support_report() {
         .with_size(Vec2::new(1600.0, 1000.0))
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
     harness.run();
-    let file_menu = harness.state().catalog.text("menu-file");
-    harness
-        .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
-        .click();
-    harness.run();
+    open_file_submenu(&mut harness, "menu-file-manufacturing");
     let export = harness
         .state()
         .command_label(AppCommand::ExportHundeggerBtlx);
@@ -951,19 +928,15 @@ fn hundegger_btlx_file_menu_configures_profile_strategy_and_intermediate_cuts() 
         );
     harness.run();
 
-    let file_menu = harness.state().catalog.text("menu-file");
     let options = format!(
         "{} ⏵",
-        harness.state().catalog.text("file-export-btlx-options")
+        harness.state().catalog.text("file-short-btlx-options")
     );
     let portable = harness
         .state()
         .catalog
         .text("file-export-btlx-portable-contour");
-    harness
-        .get_by_role_and_label(egui::accesskit::Role::Button, &file_menu)
-        .click();
-    harness.run();
+    open_file_submenu(&mut harness, "menu-file-manufacturing");
     harness
         .get_by_role_and_label(egui::accesskit::Role::Button, &options)
         .click();
