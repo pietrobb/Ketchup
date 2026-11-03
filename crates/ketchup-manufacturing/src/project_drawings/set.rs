@@ -18,7 +18,7 @@ use super::levels::{level_heights, level_text};
 use super::openings::{OpeningSchedule, draw_schedule, opening_points, schedule_format};
 use super::shop::{PlannedShop, ShopDrawings, ShopSummary, plan_shop};
 use super::visible::{VisibleLine, visible_lines};
-use super::{Annotation, AnnotationCounts};
+use super::{Annotation, AnnotationCounts, PlanAnnotations};
 use super::{
     DrawingSolid, DrawnView, ProjectDrawingError, ProjectView, SheetViews, Storey, VIEW_PAD_MM,
     ViewSummary, annotation_bounds, bounds, choose_layout_scale, draw_view, draw_view_on_page,
@@ -343,7 +343,7 @@ pub fn drawing_set_until(
             .cloned()
             .collect::<Vec<_>>();
         if !annotations.is_empty() {
-            drawn.annotate(&frame, &annotations);
+            drawn.annotate(PlanAnnotations::project(&frame, &annotations));
         }
         let marks = opening_points
             .iter()
@@ -371,6 +371,10 @@ pub fn drawing_set_until(
                 .map(|(view, frame)| {
                     let mut drawn = draw_view(*view, *frame, solids, &edges);
                     drawn.levels.clone_from(&levels);
+                    let upright = PlanAnnotations::project_upright(frame, &options.annotations);
+                    if upright.counts.dimensions > 0 {
+                        drawn.annotate(upright);
+                    }
                     (drawn, title_of(*view))
                 })
                 .collect::<Vec<_>>()
@@ -534,13 +538,12 @@ pub fn drawing_set_until(
                 levels: view.levels.iter().map(|(_, text)| text.clone()).collect(),
             })
             .collect();
-        let annotations = sheet
-            .views
-            .views
-            .iter()
-            .find_map(|view| view.annotations.as_ref())
-            .map(|annotations| annotations.counts.clone())
-            .unwrap_or_default();
+        let mut annotations = AnnotationCounts::default();
+        for view in &sheet.views.views {
+            if let Some(drawn) = &view.annotations {
+                annotations.add(&drawn.counts);
+            }
+        }
         let openings = sheet
             .views
             .views

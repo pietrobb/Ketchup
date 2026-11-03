@@ -481,8 +481,7 @@ struct DrawnView {
 
 impl DrawnView {
     /// Draws `annotations` in this view and grows it to hold them.
-    fn annotate(&mut self, frame: &ViewFrame, annotations: &[Annotation]) {
-        let annotations = PlanAnnotations::project(frame, annotations);
+    fn annotate(&mut self, annotations: PlanAnnotations) {
         for point in annotations.points() {
             for (axis, value) in point.into_iter().enumerate() {
                 self.min[axis] = self.min[axis].min(value);
@@ -1262,6 +1261,41 @@ mod tests {
             assert!(texts(&sheet.page).contains(&"+2,500"), "{kind:?}");
             assert!(texts(&sheet.lines).contains(&"±0,000"), "{kind:?} DXF");
         }
+    }
+
+    /// Měchenice MECH-6: a vertical dimension of the program has no length in plan;
+    /// the sections and elevations draw it where they show its true length, a
+    /// section only beyond its cut. A horizontal one stays in the plan.
+    #[test]
+    fn sections_and_elevations_draw_the_vertical_dimensions() {
+        use ketchup_model::annotation::AnnotationMark;
+        let dimension = |name: &str, from_mm, to_mm| Annotation {
+            name: name.to_owned(),
+            tags: std::collections::BTreeSet::new(),
+            mark: AnnotationMark::Dimension {
+                from_mm,
+                to_mm,
+                offset_mm: 500.0,
+                height_mm: 2.5,
+            },
+        };
+        let mut options = options(&room(), None);
+        options.annotations = vec![
+            dimension("length", [0.0, -500.0, 0.0], [6000.0, -500.0, 0.0]),
+            // Beyond both cuts (y 1500, x 3000).
+            dimension("beyond", [6000.0, 2000.0, 200.0], [6000.0, 2000.0, 2350.0]),
+            // In front of both cuts.
+            dimension("before", [1000.0, 1000.0, 200.0], [1000.0, 1000.0, 1200.0]),
+        ];
+        let set = drawing_set(&room(), &options).unwrap();
+        let counts = |kind| &sheet_of(&set, kind).annotations;
+        let plan = counts(SheetKind::Plan { storey: 0 });
+        assert_eq!((plan.dimensions, plan.outside_plan), (1, 2));
+        assert_eq!(counts(SheetKind::Sections).dimensions, 2);
+        assert_eq!(counts(SheetKind::Elevations).dimensions, 8);
+        let elevations = sheet_of(&set, SheetKind::Elevations);
+        assert!(texts(&elevations.page).contains(&"2150"));
+        assert!(texts(&elevations.lines).contains(&"2150"), "DXF");
     }
 
     /// MF-4: a half millimetre rounds up, as a drawing reads, not to the even neighbour.
