@@ -28,6 +28,9 @@ const IMPORTED_LAYER_PREFIX: &str = "DXF profile · ";
 pub struct DxfProfileExport {
     pub dxf: Vec<u8>,
     pub loss_report: String,
+    /// Visible parts left out of the plan because their profiles do not lie in
+    /// a plane parallel to XY under a uniform scale, each named once.
+    pub omitted_parts: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,7 +42,8 @@ pub enum DxfProfileExportError {
     Sketch(SketchError),
     UnsupportedCurve,
     /// The profiles of `part` do not lie in a plane parallel to world XY, or
-    /// are scaled unevenly or sheared.
+    /// are scaled unevenly or sheared, and no other visible part or annotation
+    /// is left to draw.
     UnsupportedTransform {
         part: String,
     },
@@ -165,6 +169,7 @@ pub fn export_visible_plan_dxf(
         })
         .collect::<Vec<_>>();
     r12_layers.claim(part_sources.iter().map(String::as_str));
+    let mut omitted_parts = Vec::<String>::new();
     for occurrence in snapshot
         .scene_query()
         .into_iter()
@@ -173,6 +178,13 @@ pub fn export_visible_plan_dxf(
         let definition = snapshot
             .definition(occurrence.definition_id)
             .ok_or(DxfProfileExportError::InvalidGeometry)?;
+        // A part is drawn whole or not at all (Měchenice MECH-9): one whose
+        // profiles leave the XY plane is named and the rest of the plan drawn.
+        let mut part_profiles = Vec::new();
+        let mut part_segments = 0_usize;
+        let mut part_elevated = 0_usize;
+        let mut part_renamed = Vec::new();
+        let mut flat = true;
         for feature_id in definition.feature_ids() {
             let feature = snapshot
                 .feature(*feature_id)
@@ -201,43 +213,57 @@ pub fn export_visible_plan_dxf(
             };
             let layer = r12_layers.layer(source_layer);
             if layer != source_layer {
-                renamed_layers.insert(source_layer.to_owned());
+                part_renamed.push(source_layer.to_owned());
             }
             for (source_segments, closed) in source_profiles {
-                segment_count = segment_count
+                part_segments = part_segments
                     .checked_add(source_segments.len())
                     .ok_or(DxfProfileExportError::TooManySegments)?;
-                if segment_count > MAX_EXPORT_SEGMENTS {
+                if segment_count.saturating_add(part_segments) > MAX_EXPORT_SEGMENTS {
                     return Err(DxfProfileExportError::TooManySegments);
                 }
-                let vertices =
-                    polyline_vertices(&source_segments, closed, transform).map_err(|error| {
-                        match error {
-                            DxfProfileExportError::UnsupportedTransform { .. } => {
-                                DxfProfileExportError::UnsupportedTransform {
-                                    part: definition.name().to_owned(),
-                                }
-                            }
-                            other => other,
-                        }
-                    })?;
+                let vertices = match polyline_vertices(&source_segments, closed, transform) {
+                    Ok(vertices) => vertices,
+                    Err(DxfProfileExportError::UnsupportedTransform { .. }) => {
+                        flat = false;
+                        break;
+                    }
+                    Err(other) => return Err(other),
+                };
                 if transform.matrix()[11].abs() > EPSILON {
-                    elevated_profile_count += 1;
+                    part_elevated += 1;
                 }
-                profiles.push(ExportProfile {
+                part_profiles.push(ExportProfile {
                     layer: layer.clone(),
                     closed,
                     vertices,
                 });
-                if profiles.len() > MAX_EXPORT_PROFILES {
+                if profiles.len() + part_profiles.len() > MAX_EXPORT_PROFILES {
                     return Err(DxfProfileExportError::TooManyProfiles);
                 }
             }
+            if !flat {
+                break;
+            }
         }
+        if !flat {
+            let name = definition.name().to_owned();
+            if !omitted_parts.contains(&name) {
+                omitted_parts.push(name);
+            }
+            continue;
+        }
+        segment_count += part_segments;
+        elevated_profile_count += part_elevated;
+        renamed_layers.extend(part_renamed);
+        profiles.append(&mut part_profiles);
     }
     let annotations = plan_annotations(snapshot, scale, &mut r12_layers);
     if profiles.is_empty() && annotations.is_empty() {
-        return Err(DxfProfileExportError::Empty);
+        return Err(match omitted_parts.into_iter().next() {
+            Some(part) => DxfProfileExportError::UnsupportedTransform { part },
+            None => DxfProfileExportError::Empty,
+        });
     }
 
     let layers = profiles
@@ -281,14 +307,20 @@ pub fn export_visible_plan_dxf(
         })
         .count();
     let loss_report = format!(
-        "schema={DXF_PROFILE_EXPORT_SCHEMA_V1}\nauthority=current canonical snapshot\nformat=ASCII DXF R12 (AC1009)\nunit=millimetre\ngeometry=one 2D POLYLINE per profile, circular arcs as bulges\nlayers=imported DXF layer identity or canonical definition name, written in ASCII (accents dropped, other characters as _)\nrenamed_layer_count={}\nprofile_count={}\nsegment_count={segment_count}\nelevated_profile_count={elevated_profile_count}\nelevation=a profile in a plane parallel to XY above or below z = 0 is drawn where it lies in plan; its height is not written\nlayer_count={}\nsource_digest={}\neditability_loss=constraints, dimensions, feature dependencies, body topology, materials, colors, and Undo history are not preserved\nprofile_identity_loss=occurrence and feature names are not written; each profile is one polyline on its layer\ndwg=a .dwg destination gets this drawing as AutoCAD 2018 DWG, its dimensions still DIMENSION on the layers of their tags; a DWG drawing imports through its DXF conversion\nomitted_non_profile_feature_count={omitted_feature_count}\n{}",
+        "schema={DXF_PROFILE_EXPORT_SCHEMA_V1}\nauthority=current canonical snapshot\nformat=ASCII DXF R12 (AC1009)\nunit=millimetre\ngeometry=one 2D POLYLINE per profile, circular arcs as bulges\nlayers=imported DXF layer identity or canonical definition name, written in ASCII (accents dropped, other characters as _)\nrenamed_layer_count={}\nprofile_count={}\nsegment_count={segment_count}\nelevated_profile_count={elevated_profile_count}\nelevation=a profile in a plane parallel to XY above or below z = 0 is drawn where it lies in plan; its height is not written\nlayer_count={}\nsource_digest={}\neditability_loss=constraints, dimensions, feature dependencies, body topology, materials, colors, and Undo history are not preserved\nprofile_identity_loss=occurrence and feature names are not written; each profile is one polyline on its layer\ndwg=a .dwg destination gets this drawing as AutoCAD 2018 DWG, its dimensions still DIMENSION on the layers of their tags; a DWG drawing imports through its DXF conversion\nomitted_non_profile_feature_count={omitted_feature_count}\nomitted_part_count={}\nomitted_parts={}\nomitted_part=a visible part whose profiles do not lie in a plane parallel to XY under a uniform scale is left out whole; export_drawings projects it\n{}",
         renamed_layers.len(),
         profiles.len(),
         layers.len(),
         snapshot.canonical_digest(),
+        omitted_parts.len(),
+        omitted_parts.join("; "),
         annotation_report(&annotations, scale),
     );
-    Ok(DxfProfileExport { dxf, loss_report })
+    Ok(DxfProfileExport {
+        dxf,
+        loss_report,
+        omitted_parts,
+    })
 }
 
 /// The lines of the loss report about the annotations.

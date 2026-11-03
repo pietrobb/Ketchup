@@ -940,6 +940,7 @@ error-export-btlx = Export Hundegger BTLx do { $path } bol zablokovaný: { $reas
 digest-exported-homag-mpr = Aktuálny vŕtací program HOMAG woodWOP bol exportovaný do { $path }
 error-export-homag-mpr = Export HOMAG woodWOP MPR do { $path } bol zablokovaný: { $reason }
 digest-exported-dxf = Aktuálne 2D profily a ich správa o stratách boli exportované do { $path }
+digest-exported-dxf-omitted = Aktuálne 2D profily boli exportované do { $path } bez dielov, ktoré neležia rovnobežne s XY: { $parts }. Do výkresu ich premietne export výkresov.
 digest-exported-step = Aktuálny presný model bol exportovaný do { $path }
 digest-exported-iges = Aktuálny presný model IGES a správa o stratách boli exportované do { $path }
 digest-exported-stl = Aktuálny sieťový model bol exportovaný do { $path }

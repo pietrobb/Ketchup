@@ -159,8 +159,6 @@ fn wrong_sheet_requests_are_refused_by_name() {
     let (stamp, undo, bytes) = (app.live_bridge_stamp(), app.undo_step_count(), saved(&app));
     let directory = tempfile::tempdir().unwrap();
     let file = |name: &str| directory.path().join(name);
-    let existing = file("existing.dwg");
-    std::fs::write(&existing, b"user file").unwrap();
 
     for (path, extra, code) in [
         (file("house.txt"), json!({}), "invalid_path"),
@@ -181,19 +179,11 @@ fn wrong_sheet_requests_are_refused_by_name() {
             json!({"sheet_id": id, "title_block": {"author": "AI"}}),
             "invalid_params",
         ),
-        (
-            existing.clone(),
-            json!({"sheet_id": id}),
-            "drawings_target_exists",
-        ),
     ] {
         let refused = bridge.execute(&mut app, export_drawings(&path, extra.clone()), false);
         assert_eq!(refused, Err(code), "{} {extra}", path.display());
-        if path != existing {
-            assert!(!path.exists(), "{} was written", path.display());
-        }
+        assert!(!path.exists(), "{} was written", path.display());
     }
-    assert_eq!(std::fs::read(&existing).unwrap(), b"user file");
     assert_eq!(app.live_bridge_stamp(), stamp);
     assert_eq!(app.undo_step_count(), undo);
     assert_eq!(saved(&app), bytes);
@@ -201,8 +191,9 @@ fn wrong_sheet_requests_are_refused_by_name() {
 
 /// The project drawings as DXF are a file per sheet beside the path,
 /// numbered, each with the title block saying which sheet of how many it is;
-/// as DWG the same sheets in AutoCAD 2018. A sheet file already there refuses
-/// the set and leaves nothing of it behind.
+/// as DWG the same sheets in AutoCAD 2018. A file named like a sheet that no
+/// earlier set of this project wrote refuses the set and leaves nothing of it
+/// behind.
 #[test]
 fn the_project_drawings_are_written_as_a_dxf_or_dwg_per_sheet() {
     let (mut app, mut bridge) = setup();
@@ -262,7 +253,7 @@ fn the_project_drawings_are_written_as_a_dxf_or_dwg_per_sheet() {
             export_drawings(&file("taken.dxf"), json!({})),
             false
         ),
-        Err("drawings_write_failed")
+        Err("drawings_target_exists")
     );
     assert!(
         !file("taken-01.dxf").exists(),
@@ -272,6 +263,130 @@ fn the_project_drawings_are_written_as_a_dxf_or_dwg_per_sheet() {
     assert_eq!(std::fs::read(file("taken-02.dxf")).unwrap(), b"user file");
     assert_eq!(app.live_bridge_stamp(), stamp, "an export is no edit");
     assert_eq!(app.undo_step_count(), undo);
+}
+
+/// The names of the files in `directory`, sorted.
+fn names_in(directory: &Path) -> Vec<String> {
+    let mut names = std::fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+}
+
+/// MECH-2 (Měchenice 2026-11-03): the drawings exported again after an edit
+/// replace their files at the same path, as a PDF, a DXF set and a drawing
+/// sheet, and MECH-3: nothing is left beside them, no lock, no temporary
+/// file, no backup.
+#[test]
+fn the_drawings_exported_again_replace_their_files() {
+    let (mut app, mut bridge) = setup();
+    let id = sheet_of_the_block(&mut app, &mut bridge);
+    let directory = tempfile::tempdir().unwrap();
+    let file = |name: &str| directory.path().join(name);
+    std::fs::write(file("house.pdf"), b"an older set").unwrap();
+    std::fs::write(file("block.dwg"), b"an older sheet").unwrap();
+    for _ in 0..2 {
+        for (path, extra) in [
+            (file("house.pdf"), json!({})),
+            (file("house.dxf"), json!({})),
+            (file("block.dwg"), json!({"sheet_id": id})),
+        ] {
+            let exported = bridge
+                .execute(&mut app, export_drawings(&path, extra.clone()), false)
+                .unwrap_or_else(|code| panic!("{code} {extra}: {:?}", take_error_details()));
+            assert_eq!(exported["exported"], true, "{exported}");
+        }
+    }
+    assert!(
+        std::fs::read(file("house.pdf"))
+            .unwrap()
+            .starts_with(b"%PDF-")
+    );
+    assert!(
+        std::fs::read(file("block.dwg"))
+            .unwrap()
+            .starts_with(b"AC1032")
+    );
+    assert_eq!(
+        names_in(directory.path()),
+        [
+            "block.dwg",
+            "house-01.dxf",
+            "house-02.dxf",
+            "house-03.dxf",
+            "house.dxf.sheets.txt",
+            "house.pdf",
+        ]
+    );
+}
+
+/// MECH-2: a PDF another program holds open (a PDF viewer shares it for
+/// reading only) cannot be replaced: the answer names the file and says to
+/// close it, the file keeps its bytes and nothing is left beside it.
+#[cfg(windows)]
+#[test]
+fn a_drawing_held_open_elsewhere_is_named_and_kept() {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    const FILE_SHARE_READ: u32 = 1;
+    let (mut app, mut bridge) = setup();
+    evaluate_exact(&mut app);
+    let directory = tempfile::tempdir().unwrap();
+    let pdf = directory.path().join("house.pdf");
+    std::fs::write(&pdf, b"open in a viewer").unwrap();
+    let viewer = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(&pdf)
+        .unwrap();
+    assert_eq!(
+        bridge.execute(&mut app, export_drawings(&pdf, json!({})), false),
+        Err("drawings_target_in_use")
+    );
+    let answer = take_error_details().unwrap_or_default().to_string();
+    assert!(answer.contains("house.pdf"), "{answer}");
+    drop(viewer);
+    assert_eq!(std::fs::read(&pdf).unwrap(), b"open in a viewer");
+    assert_eq!(names_in(directory.path()), ["house.pdf"]);
+}
+
+/// MECH-2 (operator 2026-11-03): a set replaces only the sheets this
+/// project's earlier export wrote; a file of someone else's named like one of
+/// its sheets refuses the export, and the answer names the file and says what
+/// to do: rename or move it, or export to another folder.
+#[test]
+fn a_file_of_someone_elses_named_like_a_sheet_is_named_and_kept() {
+    let (mut app, mut bridge) = setup();
+    evaluate_exact(&mut app);
+    let directory = tempfile::tempdir().unwrap();
+    let file = |name: &str| directory.path().join(name);
+    for foreign in ["house-02.dxf", "house-09.dxf"] {
+        std::fs::write(file(foreign), b"another project's sheet").unwrap();
+        assert_eq!(
+            bridge.execute(
+                &mut app,
+                export_drawings(&file("house.dxf"), json!({})),
+                false
+            ),
+            Err("drawings_target_exists"),
+            "{foreign}"
+        );
+        let answer = take_error_details().unwrap_or_default().to_string();
+        for said in [foreign, "rename", "another folder"] {
+            assert!(answer.contains(said), "{said:?} missing: {answer}");
+        }
+        assert_eq!(
+            std::fs::read(file(foreign)).unwrap(),
+            b"another project's sheet"
+        );
+        assert_eq!(
+            names_in(directory.path()),
+            [foreign],
+            "nothing else written"
+        );
+        std::fs::remove_file(file(foreign)).unwrap();
+    }
 }
 
 /// One DXF entity: its type, layer, numeric codes and KETCHUP id.

@@ -942,6 +942,7 @@ error-export-btlx = Hundegger BTLx export to { $path } was blocked: { $reason }
 digest-exported-homag-mpr = Exported the current HOMAG woodWOP drilling program to { $path }
 error-export-homag-mpr = HOMAG woodWOP MPR export to { $path } was blocked: { $reason }
 digest-exported-dxf = Exported current 2D profiles and their loss report to { $path }
+digest-exported-dxf-omitted = Exported current 2D profiles to { $path } without the parts that do not lie parallel to XY: { $parts }. The drawing export projects them onto a sheet.
 digest-exported-step = Exported current exact model to { $path }
 digest-exported-iges = Exported current exact IGES model and loss report to { $path }
 digest-exported-stl = Exported current mesh model to { $path }

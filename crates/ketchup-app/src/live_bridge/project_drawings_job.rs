@@ -4,6 +4,10 @@
 //! thread while the window keeps drawing and names the export as the job it is
 //! busy with. A cancelled request stops the worker, writes no file and puts back
 //! the settings the export kept.
+//!
+//! Sent while the exact evaluation runs, an export of the set or of one sheet
+//! waits in the window for it and is then drawn from its solids, in the same
+//! request (Měchenice MECH-4); it was refused, and the client had to poll.
 
 use super::drawings::{StartedDrawings, export_failed, finish_export, start_export};
 use super::program_check::ProgramCheckJob;
@@ -14,19 +18,47 @@ use ketchup_manufacturing::project_drawings::DrawingSet;
 
 type Made = Result<(DrawingSet, Vec<Vec<u8>>), ProjectDrawingsError>;
 
+/// No export waits longer for the exact evaluation: the drawing itself still
+/// needs time within what the connection waits for its answer.
+const EXACT_WAIT_MOST: Duration = Duration::from_secs(5 * 60);
+
 pub(super) struct ProjectDrawingsExportJob {
     id: u64,
     reply: mpsc::SyncSender<Response>,
     pub(super) cancelled: Arc<AtomicBool>,
-    started: StartedDrawings,
-    receiver: mpsc::Receiver<Made>,
+    stage: Stage,
     /// The document the set is drawn from and keeps its settings in.
     epoch: u64,
+}
+
+enum Stage {
+    /// Held until the exact evaluation ends, then started as it was sent.
+    AwaitingExact {
+        request: Request,
+        ui_busy: bool,
+        until: Instant,
+    },
+    Drawing {
+        started: StartedDrawings,
+        receiver: mpsc::Receiver<Made>,
+    },
+}
+
+impl ProjectDrawingsExportJob {
+    pub(super) const fn awaits_exact(&self) -> bool {
+        matches!(self.stage, Stage::AwaitingExact { .. })
+    }
 }
 
 /// Whether `request` exports the project set, which runs as a job.
 pub(super) fn exports_project_drawings(request: &Request) -> bool {
     matches!(request, Request::ExportDrawings { sheet_id: None, .. })
+}
+
+/// Whether `request` exports drawings while the exact evaluation runs, so it
+/// waits for the evaluation as a job.
+pub(super) fn waits_for_exact(app: &KetchupApp, request: &Request) -> bool {
+    app.exact.task.is_some() && matches!(request, Request::ExportDrawings { .. })
 }
 
 impl LiveBridge {
@@ -35,7 +67,7 @@ impl LiveBridge {
         app: &mut KetchupApp,
         context: &egui::Context,
         queued: QueuedReply,
-        request: Request,
+        mut request: Request,
         ui_busy: bool,
     ) {
         let QueuedReply {
@@ -55,6 +87,39 @@ impl LiveBridge {
         }
         if let Err(code) = Self::require_request_authority(&cancelled) {
             Self::reply(app, id, &reply, Err(code));
+            return;
+        }
+        if waits_for_exact(app, &request) {
+            if let Request::ExportDrawings { expected, .. } = &mut request {
+                if let Err(code) = Self::guard(app, expected) {
+                    Self::reply(app, id, &reply, Err(code));
+                    return;
+                }
+                // The client saw the document the evaluation runs for;
+                // publishing its solids is the next mutation, so the stamp is
+                // checked now.
+                *expected = None;
+            }
+            self.program_check_job =
+                Some(ProgramCheckJob::ProjectDrawings(ProjectDrawingsExportJob {
+                    id,
+                    reply,
+                    cancelled,
+                    stage: Stage::AwaitingExact {
+                        request,
+                        ui_busy,
+                        until: Instant::now() + EXACT_WAIT_MOST,
+                    },
+                    epoch: self.document_epoch,
+                }));
+            context.request_repaint_after(Duration::from_millis(50));
+            return;
+        }
+        if !exports_project_drawings(&request) {
+            // One sheet is drawn in the frame, as when nothing was evaluated.
+            let result = self.execute_authorized(app, request, ui_busy, &cancelled);
+            Self::reply(app, id, &reply, result);
+            context.request_repaint();
             return;
         }
         let (started, job) = match start_export(app, request, ui_busy) {
@@ -83,8 +148,7 @@ impl LiveBridge {
             id,
             reply,
             cancelled,
-            started,
-            receiver,
+            stage: Stage::Drawing { started, receiver },
             epoch: self.document_epoch,
         }));
         context.request_repaint_after(Duration::from_millis(10));
@@ -103,16 +167,78 @@ impl LiveBridge {
             Self::reply(app, job.id, &job.reply, Err(Self::document_replaced()));
             return;
         }
+        let ProjectDrawingsExportJob {
+            id,
+            reply,
+            cancelled,
+            stage,
+            epoch,
+        } = job;
+        let (started, receiver) = match stage {
+            Stage::AwaitingExact {
+                request,
+                ui_busy,
+                until,
+            } => {
+                if cancelled.load(Ordering::Acquire) {
+                    Self::reply(app, id, &reply, Err("request_cancelled"));
+                    return;
+                }
+                if app.exact.task.is_none() {
+                    let queued = QueuedReply {
+                        id,
+                        reply,
+                        cancelled,
+                    };
+                    self.start_project_drawings_export(app, context, queued, request, ui_busy);
+                    return;
+                }
+                if Instant::now() >= until {
+                    let waited = failure(
+                        "drawings_unavailable",
+                        format!(
+                            "The exact evaluation still runs after {} minutes, so nothing was drawn or written. Export again when inspect action=status reports it complete.",
+                            EXACT_WAIT_MOST.as_secs() / 60
+                        ),
+                        json!({"exact_evaluation_pending": true}),
+                    );
+                    Self::reply(app, id, &reply, Err(waited));
+                    return;
+                }
+                self.program_check_job =
+                    Some(ProgramCheckJob::ProjectDrawings(ProjectDrawingsExportJob {
+                        id,
+                        reply,
+                        cancelled,
+                        stage: Stage::AwaitingExact {
+                            request,
+                            ui_busy,
+                            until,
+                        },
+                        epoch,
+                    }));
+                context.request_repaint_after(Duration::from_millis(50));
+                return;
+            }
+            Stage::Drawing { started, receiver } => (started, receiver),
+        };
         // The worker sees the same flag and stops; nothing is written.
-        if job.cancelled.load(Ordering::Acquire) {
-            job.started.undo(app);
-            Self::reply(app, job.id, &job.reply, Err("request_cancelled"));
+        if cancelled.load(Ordering::Acquire) {
+            started.undo(app);
+            Self::reply(app, id, &reply, Err("request_cancelled"));
             return;
         }
-        let made = match job.receiver.try_recv() {
+        let made = match receiver.try_recv() {
             Ok(made) => made,
             Err(mpsc::TryRecvError::Empty) => {
-                self.program_check_job = Some(ProgramCheckJob::ProjectDrawings(job));
+                self.program_check_job =
+                    Some(ProgramCheckJob::ProjectDrawings(ProjectDrawingsExportJob {
+                        id,
+                        reply,
+                        cancelled,
+                        stage: Stage::Drawing { started, receiver },
+                        epoch,
+                    }));
                 context.request_repaint_after(Duration::from_millis(10));
                 return;
             }
@@ -121,10 +247,8 @@ impl LiveBridge {
             )),
         };
         take_error_details();
-        let path = job.started.path.clone();
-        let result =
-            finish_export(app, job.started, made).map_err(|error| export_failed(&path, error));
-        Self::reply(app, job.id, &job.reply, result);
+        let result = finish_export(app, started, made).map_err(export_failed);
+        Self::reply(app, id, &reply, result);
         context.request_repaint();
     }
 }

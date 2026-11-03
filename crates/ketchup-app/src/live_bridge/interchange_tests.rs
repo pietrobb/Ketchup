@@ -251,6 +251,41 @@ fn a_dxf_without_units_needs_a_unit_and_nothing_changes_until_it_has_one() {
     assert_eq!(std::fs::read(&target).unwrap(), b"user drawing");
 }
 
+/// Měchenice 2026-11-02 MECH-9: `file export dxf/dwg` failed whole on one
+/// upright pipe. The plan is written without it and the answer names it.
+#[test]
+fn a_plan_export_writes_the_flat_parts_and_names_the_part_it_left_out() {
+    let (mut app, mut bridge, directory) = window();
+    bridge
+        .execute(
+            &mut app,
+            super::program_access::apply_source(
+                "box('floor', (3000, 40, 5))\n\
+                 pipe = extrude('pipe', profile=[(-50, -50), (50, -50), (50, 50), (-50, 50)], distance=700, at=(1000, 1000, 0))\n\
+                 rotate(pipe, axis=(1, 0, 0), angle=90, pivot=(1000, 1000, 0))\n",
+            ),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    for format in ["dxf", "dwg"] {
+        let target = directory.path().join(format!("plan.{format}"));
+        let exported = bridge
+            .execute(&mut app, export(&target, format), false)
+            .unwrap_or_else(|code| panic!("{format} {code}: {}", app.action_digest()));
+        assert_eq!(exported["omitted_parts"], json!(["pipe"]), "{exported}");
+        assert!(target.is_file());
+        // The window's status line names it too, for a user exporting by hand.
+        let status = app.action_digest();
+        assert!(status.contains("pipe") && status.contains("XY"), "{status}");
+        let report =
+            std::fs::read_to_string(target.with_extension(format!("{format}.loss.txt"))).unwrap();
+        assert!(
+            report.lines().any(|line| line == "omitted_parts=pipe"),
+            "{report}"
+        );
+    }
+}
+
 /// Review 2026-10-17 MCP-1: the answer guessed `<path>.<extension>.loss.txt`,
 /// but a `.stp` export writes `x.step.loss.txt`, so a client was told nothing
 /// was lost. The answer names the files the exporter wrote.

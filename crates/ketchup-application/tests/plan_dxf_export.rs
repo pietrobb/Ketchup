@@ -70,6 +70,44 @@ fn a_profile_extruded_above_the_floor_exports_where_it_lies_in_plan() {
     );
 }
 
+/// Měchenice 2026-11-02 MECH-9: one pipe standing upright made the whole plan
+/// fail. The plan leaves that part out, names it, and draws everything else.
+#[test]
+fn a_part_whose_profile_is_not_parallel_to_xy_is_left_out_of_the_plan_and_named() {
+    let (session, _) = applied(
+        "box('floor', (3000, 40, 5), at=(0, 0, 0))\n\
+         pipe = extrude('pipe', profile=[(-50, -50), (50, -50), (50, 50), (-50, 50)], distance=700, at=(1000, 1000, 0))\n\
+         rotate(pipe, axis=(1, 0, 0), angle=90, pivot=(1000, 1000, 0))\n",
+    );
+    let exported = export_visible_profiles_dxf(&session.snapshot()).unwrap();
+    let inspected = inspect_dxf(&exported.dxf, DxfImportOptions::new(None)).unwrap();
+    assert_eq!(inspected.profiles().len(), 1, "only the floor is drawn");
+    assert_eq!(exported.omitted_parts, ["pipe"]);
+    for line in [
+        "omitted_part_count=1",
+        "omitted_parts=pipe",
+        "profile_count=1",
+    ] {
+        assert!(
+            exported.loss_report.lines().any(|found| found == line),
+            "{line} in {}",
+            exported.loss_report
+        );
+    }
+
+    // With nothing else to draw the plan is still refused, naming the part.
+    let (pipe_only, _) = applied(
+        "pipe = extrude('pipe', profile=[(-50, -50), (50, -50), (50, 50), (-50, 50)], distance=700)\n\
+         rotate(pipe, axis=(1, 0, 0), angle=90, pivot=(0, 0, 0))\n",
+    );
+    assert_eq!(
+        export_visible_profiles_dxf(&pipe_only.snapshot()),
+        Err(DxfProfileExportError::UnsupportedTransform {
+            part: "pipe".to_owned()
+        })
+    );
+}
+
 /// The entities of one section of a DXF file, each as its type and its pairs.
 fn section(dxf: &[u8], name: &str) -> Vec<(String, Vec<(i32, String)>)> {
     let text = std::str::from_utf8(dxf).unwrap();

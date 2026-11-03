@@ -638,7 +638,7 @@ def test_house_project_drawings_pdf_with_title_block_through_public_mcp(mcp, tmp
     saved = tmp_path / "house.ketchup"
     mcp("file", action="save_as", path=str(saved))
     mcp("file", action="open", path=str(saved))
-    # An existing sheet is never replaced, so the second export writes a new file.
+    # The reopened document exports with the title block it kept.
     again = export(tmp_path / "domcek-2.pdf")
     assert again["title_block"]["location"] == "Žilina, parc. č. 1234/5" and again["dirty"] is False, again
 

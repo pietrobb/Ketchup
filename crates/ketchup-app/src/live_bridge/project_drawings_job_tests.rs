@@ -216,6 +216,164 @@ fn new_and_open_end_a_drawings_export_without_touching_the_next_document() {
     }
 }
 
+/// `app` evaluating its exact solids again, as after an edit.
+fn evaluating(app: &mut KetchupApp) {
+    app.exact.task = Some(ketchup_application::evaluation::start_exact_evaluation(
+        app.document.current(),
+        &app.file.container_data,
+        &app.exact.results,
+        &app.exact.topology_results,
+        app.exact.worker_path.clone(),
+        || {},
+    ));
+}
+
+/// Měchenice MECH-4: `export_drawings` sent while the exact evaluation still
+/// ran was refused ("the sheet would miss parts"), so the client had to poll
+/// and send it again. It now waits in the window for the evaluation and then
+/// draws the set from its solids, in the one request.
+#[test]
+fn a_drawings_export_sent_during_the_exact_evaluation_waits_for_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let pdf = directory.path().join("screwed.pdf");
+    let (_, mut bridge) = setup();
+    let mut app = screwed_window();
+    evaluating(&mut app);
+    let context = egui::Context::default();
+    let (answers, _cancelled) = {
+        let (reply, answers) = mpsc::sync_channel(1);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let queued = QueuedReply {
+            id: 1,
+            reply,
+            cancelled: Arc::clone(&cancelled),
+        };
+        bridge.start_project_drawings_export(&mut app, &context, queued, export(&pdf), false);
+        (answers, cancelled)
+    };
+    if let Ok(answer) = answers.try_recv() {
+        panic!("answered before the evaluation ended: {answer:?}");
+    }
+    assert!(exporting(&bridge), "the export does not wait as a job");
+    let busy = serde_json::to_value(bridge.busy_jobs()).unwrap();
+    assert_eq!(busy[0]["target"], "export_drawings", "{busy}");
+    assert_eq!(
+        busy[0]["reason"],
+        "The drawings wait for the exact evaluation, then are drawn and written.",
+        "{busy}"
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let answer = loop {
+        assert!(Instant::now() < deadline, "the export did not finish");
+        app.refresh_exact_products(&context);
+        bridge.poll_program_check_job(&mut app, &context);
+        if let Ok(answer) = answers.try_recv() {
+            break answer;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert!(app.exact.task.is_none(), "answered before the evaluation");
+    assert!(answer.ok, "{answer:?}");
+    assert_eq!(answer.result.unwrap()["exported"], true);
+    assert!(std::fs::read(&pdf).unwrap().starts_with(b"%PDF"));
+}
+
+/// MECH-4 for one drawing sheet, sent through the socket: it waited for no
+/// evaluation either ("the sheet would draw old solids").
+#[test]
+fn a_sheet_exported_during_the_exact_evaluation_waits_for_it() {
+    let (mut app, mut bridge) = setup();
+    let id = super::drawing_sheet::sheet_of_parts(&mut app, &mut bridge, 1);
+    drop(bridge);
+    let directory = tempfile::tempdir().unwrap();
+    let dxf = directory.path().join("block.dxf");
+    let mut wire = Wire::connect(app);
+    wire.call(Request::Status {});
+    evaluating(&mut wire.app);
+    let mut request = export(&dxf);
+    if let Request::ExportDrawings {
+        sheet_id,
+        title_block,
+        ..
+    } = &mut request
+    {
+        *sheet_id = Some(id);
+        title_block.clear();
+    }
+    wire.send(request, false);
+    let mut reader = wire.stream.try_clone().unwrap();
+    reader
+        .set_read_timeout(Some(Duration::from_secs(120)))
+        .unwrap();
+    let (sender, answers) = mpsc::channel();
+    let reading = std::thread::spawn(move || {
+        let mut header = [0; 4];
+        reader.read_exact(&mut header).unwrap();
+        let mut bytes = vec![0; u32::from_be_bytes(header) as usize];
+        reader.read_exact(&mut bytes).unwrap();
+        sender
+            .send(serde_json::from_slice::<Response>(&bytes).unwrap())
+            .unwrap();
+    });
+    // The evaluation is not taken in until the window holds the request.
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while !exporting(wire.app.live.bridge.as_ref().unwrap()) {
+        assert!(Instant::now() < deadline, "the sheet never waited as a job");
+        wire.app.poll_live_bridge(&wire.context);
+        if let Ok(answer) = answers.recv_timeout(Duration::from_millis(5)) {
+            panic!("answered before the evaluation ended: {answer:?}");
+        }
+    }
+    let answer = loop {
+        assert!(Instant::now() < deadline, "the sheet was not exported");
+        wire.app.refresh_exact_products(&wire.context);
+        wire.app.poll_live_bridge(&wire.context);
+        if let Ok(answer) = answers.recv_timeout(Duration::from_millis(5)) {
+            break answer;
+        }
+    };
+    reading.join().unwrap();
+    assert!(wire.app.exact.task.is_none());
+    assert!(answer.ok, "{answer:?}");
+    assert_eq!(answer.result.unwrap()["sheet_id"], id);
+    assert!(std::fs::read_to_string(&dxf).unwrap().contains("ENTITIES"));
+}
+
+/// A client that gives up while the export waits for the evaluation gets
+/// nothing written and leaves the window's settings as they were.
+#[test]
+fn a_drawings_export_cancelled_while_it_waits_writes_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    let pdf = directory.path().join("screwed.pdf");
+    let (_, mut bridge) = setup();
+    let mut app = screwed_window();
+    let settings = app.stored_sheet_settings().unwrap();
+    evaluating(&mut app);
+    let context = egui::Context::default();
+    let (reply, answers) = mpsc::sync_channel(1);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let queued = QueuedReply {
+        id: 1,
+        reply,
+        cancelled: Arc::clone(&cancelled),
+    };
+    bridge.start_project_drawings_export(&mut app, &context, queued, export(&pdf), false);
+    assert!(
+        answers.try_recv().is_err(),
+        "answered before the evaluation ended"
+    );
+    cancelled.store(true, Ordering::Release);
+    bridge.poll_program_check_job(&mut app, &context);
+
+    let answer = answers.try_recv().expect("answered in the same poll");
+    assert_eq!(answer.error.as_deref(), Some("request_cancelled"));
+    assert!(bridge.program_check_job.is_none());
+    assert_eq!(app.stored_sheet_settings().unwrap(), settings);
+    assert!(!app.drawings.unsaved);
+    assert!(!pdf.exists());
+}
+
 /// The user changes the title block in the window while the set is drawn,
 /// then the client gives up: the user's change stays.
 #[test]

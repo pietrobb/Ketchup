@@ -174,8 +174,15 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "drawings_target_exists",
         Request,
         "path",
-        "A file already exists at the drawing path; it is never replaced without the user's confirmation.",
-        "Export to a new file name, or let the user export from the window, which asks before replacing.",
+        "A file already exists at the drawing path that this request may not replace (a file named like a sheet that this project's earlier export did not write, or the drawing being edited); the reason names it.",
+        "Rename or move that file, or write to another folder or file name.",
+    ),
+    entry(
+        "drawings_target_in_use",
+        Io,
+        "path",
+        "Another program holds the drawing file open (a PDF viewer or a CAD program), so it cannot be replaced; the reason names the file. Nothing was written and the file is as it was.",
+        "Ask the user to close the file in that program, then export again.",
     ),
     entry(
         "drawings_unavailable",

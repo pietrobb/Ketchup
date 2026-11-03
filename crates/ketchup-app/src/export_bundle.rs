@@ -333,6 +333,9 @@ pub(crate) struct Written {
     pub(crate) support_report: Option<PathBuf>,
     /// Further files of the release (`x.drawings.svg`, `x.bends.csv`).
     pub(crate) companions: Vec<PathBuf>,
+    /// Visible parts the export left out, by name (a plan DXF/DWG leaves out
+    /// a part whose profiles are not parallel to XY, Měchenice MECH-9).
+    pub(crate) omitted_parts: Vec<String>,
 }
 
 impl Written {
@@ -1229,6 +1232,14 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert_eq!(names, ["drawing.svg"]);
+        // Měchenice MECH-3: nor does an export that is refused.
+        assert!(write_export_artifact_if_unchanged(&target, b"third", None).is_err());
+        let names: Vec<_> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["drawing.svg"]);
+        assert_eq!(std::fs::read(&target).unwrap(), b"second");
     }
 
     /// Removing the lock file must not let two exports in at once: one that
