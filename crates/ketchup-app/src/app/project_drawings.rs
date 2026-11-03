@@ -17,7 +17,7 @@ use ketchup_application::threads::{
 use ketchup_manufacturing::project_drawings::{
     CuttingPiece, CuttingSheet, CuttingStock, DrawingOpening, DrawingSet, DrawingSetOptions,
     DrawingSolid, DrawingThread, OpeningSchedule, PlanSheet, ProjectDrawingError, ProjectView,
-    SCALES, SheetTitles, ShopDrawings, ShopPosition, ShopSheet, Storey, drawing_set, storeys,
+    SCALES, SheetTitles, ShopDrawings, ShopPosition, ShopSheet, Storey, drawing_set_until, storeys,
 };
 use ketchup_manufacturing::title_block::{
     DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM, SheetFormat, SheetSettings, TitleField,
@@ -174,7 +174,7 @@ pub(crate) struct ProjectDrawingsJob {
 
 impl ProjectDrawingsJob {
     /// Projects the solids and removes the hidden lines; `cancelled` stops
-    /// the worker making cosmetic thread bodies.
+    /// the worker making cosmetic thread bodies and the hidden-line removal.
     fn set(self, cancelled: &AtomicBool) -> Result<(DrawingSet, PdfInfo), ProjectDrawingsError> {
         let Self {
             solids,
@@ -183,7 +183,8 @@ impl ProjectDrawingsJob {
             info,
         } = self;
         let solids = solids.drawn(executable.as_deref(), cancelled)?;
-        let set = drawing_set(&solids, &options).map_err(ProjectDrawingsError::Drawing)?;
+        let set = drawing_set_until(&solids, &options, cancelled)
+            .map_err(ProjectDrawingsError::Drawing)?;
         Ok((set, info))
     }
 
@@ -1102,6 +1103,9 @@ impl KetchupApp {
                 "drawings-cosmetic-threads-failed",
                 &BTreeMap::from([("part", part.clone()), ("reason", cause.to_string())]),
             ),
+            ProjectDrawingsError::Drawing(error @ ProjectDrawingError::Cancelled) => {
+                error.to_string()
+            }
             ProjectDrawingsError::Dwg(error) => error.to_string(),
             ProjectDrawingsError::Write(error) => error.to_string(),
         }

@@ -447,10 +447,14 @@ pub(super) fn plan_shop(
 }
 
 impl PlannedShop {
-    /// The visible lines of each view, the members' first.
-    pub(super) fn visible_lines(&self) -> Vec<Vec<VisibleLine>> {
+    /// The visible lines of each view, the members' first; `stop` as
+    /// [`super::visible::visible_lines`] takes it.
+    pub(super) fn visible_lines(
+        &self,
+        stop: &std::sync::atomic::AtomicBool,
+    ) -> Vec<Vec<VisibleLine>> {
         views(&self.view, &self.layers)
-            .map(super::visible::visible_lines)
+            .map(|view| super::visible::visible_lines(view, stop))
             .collect()
     }
 

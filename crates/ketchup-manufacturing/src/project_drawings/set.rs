@@ -30,6 +30,7 @@ use crate::title_block::{
 use ketchup_model::sheet_pdf::{Page, PdfInfo, pages_pdf};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The plan of one storey and the texts it is titled with.
 #[derive(Clone, Debug, PartialEq)]
@@ -268,6 +269,26 @@ pub fn drawing_set(
     solids: &[DrawingSolid],
     options: &DrawingSetOptions,
 ) -> Result<DrawingSet, ProjectDrawingError> {
+    drawing_set_until(solids, options, &AtomicBool::new(false))
+}
+
+/// [`drawing_set`] that stops once `stop` is set, also while it removes the
+/// hidden lines of a view.
+///
+/// # Errors
+/// As [`drawing_set`]; [`ProjectDrawingError::Cancelled`] once `stop` is set.
+pub fn drawing_set_until(
+    solids: &[DrawingSolid],
+    options: &DrawingSetOptions,
+    stop: &AtomicBool,
+) -> Result<DrawingSet, ProjectDrawingError> {
+    let stopped = || {
+        if stop.load(Ordering::Relaxed) {
+            Err(ProjectDrawingError::Cancelled)
+        } else {
+            Ok(())
+        }
+    };
     let annotated = annotation_bounds(&options.annotations);
     let (min, max) = match (bounds(solids), annotated) {
         (Some((min, max)), Some((low, high))) => (
@@ -483,8 +504,9 @@ pub fn drawing_set(
             .views
             .views
             .iter()
-            .map(visible_lines)
+            .map(|view| visible_lines(view, stop))
             .collect::<Vec<_>>();
+        stopped()?;
         let mut lines = blank();
         draw_views(&mut lines, &sheet, format, scale, Some(&visible));
         draw_frame_and_title_block(&mut lines, format, &options.title_labels, &values)?;
@@ -543,7 +565,9 @@ pub fn drawing_set(
             &options.shop.columns,
             &options.title_labels,
             &values,
+            stop,
         )?);
+        stopped()?;
     }
     let mut page_of_plan = 0;
     for (index, cutting) in cuttings.iter().enumerate() {
@@ -620,6 +644,7 @@ fn shop_sheet(
     columns: &[String; 4],
     labels: &BTreeMap<TitleField, String>,
     values: &TitleBlock,
+    stop: &AtomicBool,
 ) -> Result<SetSheet, ProjectDrawingError> {
     let blank = || Page {
         size_mm: shop.format.size_mm(),
@@ -628,7 +653,7 @@ fn shop_sheet(
     let mut page = blank();
     shop.draw(&mut page, columns, None);
     draw_frame_and_title_block(&mut page, shop.format, labels, values)?;
-    let visible = shop.visible_lines();
+    let visible = shop.visible_lines(stop);
     let mut lines = blank();
     shop.draw(&mut lines, columns, Some(&visible));
     draw_frame_and_title_block(&mut lines, shop.format, labels, values)?;

@@ -36,6 +36,7 @@ use ketchup_model::annotation::Annotation;
 pub use openings::{DrawingOpening, OpeningSchedule, ScheduleRow};
 pub use set::{
     DrawingSet, DrawingSetOptions, PlanSheet, SetSheet, SheetKind, SheetTitles, drawing_set,
+    drawing_set_until,
 };
 pub use shop::{ShopDrawings, ShopPosition, ShopSheet, ShopSummary};
 pub use threads::DrawingThread;
@@ -119,6 +120,8 @@ pub enum ProjectDrawingError {
     },
     /// A title block value would be cut short.
     TitleValueDoesNotFit(TitleValueDoesNotFit),
+    /// The caller stopped the set before it was drawn.
+    Cancelled,
 }
 
 impl From<TitleValueDoesNotFit> for ProjectDrawingError {
@@ -142,6 +145,7 @@ impl std::fmt::Display for ProjectDrawingError {
                 )
             ),
             Self::TitleValueDoesNotFit(error) => error.fmt(formatter),
+            Self::Cancelled => formatter.write_str("the drawing was cancelled"),
         }
     }
 }
@@ -1549,7 +1553,7 @@ mod tests {
             painted_inside,
             "the PDF paints the hidden box's edges, then the wall over them"
         );
-        let lines = visible::visible_lines(&drawn);
+        let lines = visible::visible_lines(&drawn, &std::sync::atomic::AtomicBool::new(false));
         let on = |value: f64, wanted: f64| (value - wanted).abs() < 1e-6;
         for line in &lines {
             let [a, b] = [line.points[0], line.points[1]];
@@ -1586,6 +1590,39 @@ mod tests {
                 .count(),
             1,
             "{lines:?}"
+        );
+    }
+
+    /// A cancelled set stops removing hidden lines instead of finishing every
+    /// view, and is answered as cancelled, not drawn (review 2026-11-02 MCP-121).
+    #[test]
+    fn a_cancelled_set_stops_removing_hidden_lines() {
+        use std::sync::atomic::AtomicBool;
+        let solids = vec![
+            cuboid("wall", [0.0, 0.0, 0.0], [4000.0, 200.0, 2500.0]),
+            cuboid("box", [500.0, 1000.0, 0.0], [1500.0, 2000.0, 1000.0]),
+        ];
+        let edges = solids.iter().map(solid_edges).collect::<Vec<_>>();
+        let (min, max) = bounds(&solids).unwrap();
+        let (view, front) = view_frames(min, max, 1200.0, false)[3];
+        let drawn = draw_view(view, front, &solids, &edges);
+        assert!(!visible::visible_lines(&drawn, &AtomicBool::new(false)).is_empty());
+        assert!(visible::visible_lines(&drawn, &AtomicBool::new(true)).is_empty());
+        assert!(matches!(
+            drawing_set_until(
+                &solids,
+                &options(&solids, Some(1200.0)),
+                &AtomicBool::new(true)
+            ),
+            Err(ProjectDrawingError::Cancelled)
+        ));
+        assert!(
+            drawing_set_until(
+                &solids,
+                &options(&solids, Some(1200.0)),
+                &AtomicBool::new(false)
+            )
+            .is_ok()
         );
     }
 
@@ -2112,7 +2149,7 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        let views = shop.visible_lines();
+        let views = shop.visible_lines(&std::sync::atomic::AtomicBool::new(false));
         let drawn = |view: usize, x: f64, from: f64, to: f64| {
             views[view]
                 .iter()
