@@ -115,6 +115,79 @@ fn connecting_supervisor_again_replaces_its_old_copy_and_keeps_its_other_servers
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// Capability review run 432: a Supervisor reads `skills\mcp_servers.json` of
+/// its own instance folder (its `load_skills(cwd)`, and `mcp_bridge.py` takes
+/// the file next to itself), so the dev checkout and every project's instance
+/// have their own file besides the installed copy.
+#[test]
+fn every_supervisor_instance_is_a_row_and_connect_writes_only_its_file() {
+    let home = temporary_home("supervisor-instances");
+    let mut environment = clean_profile(&home);
+    let installed = environment.config_file(Harness::Supervisor).unwrap();
+    create_parent(&installed);
+    std::fs::write(&installed, r#"{"mcpServers": {}}"#).unwrap();
+    let dev = home.join("Sources").join("Supervisor");
+    let reviewer = home.join("Sources").join("Ketchup").join("Dohlad");
+    for folder in [&dev, &reviewer] {
+        std::fs::create_dir_all(folder.join("skills")).unwrap();
+        std::fs::write(folder.join("skills").join("mcp_bridge.py"), "").unwrap();
+    }
+    let old = home.join("old").join("Ketchup.exe");
+    let reviewer_file = reviewer.join("skills").join("mcp_servers.json");
+    let servers = serde_json::json!({"mcpServers": {"ketchup": {"command": old}}});
+    std::fs::write(&reviewer_file, servers.to_string()).unwrap();
+    // An instance without the MCP bridge reads no MCP servers.
+    let without_bridge = home.join("Sources").join("Django");
+    std::fs::create_dir_all(without_bridge.join("skills")).unwrap();
+    // The installed copy, also found running, is listed once.
+    let installed_folder = installed.parent().unwrap().parent().unwrap().to_owned();
+    std::fs::write(installed.with_file_name("mcp_bridge.py"), "").unwrap();
+    environment.supervisor_folders = vec![
+        dev.clone(),
+        installed_folder,
+        reviewer.clone(),
+        without_bridge,
+        dev.clone(),
+    ];
+    let this = std::env::current_exe().unwrap();
+
+    let rows: Vec<HarnessRow> = environment
+        .rows(&this)
+        .into_iter()
+        .filter(|row| row.harness == Harness::Supervisor)
+        .collect();
+    let dev_file = dev.join("skills").join("mcp_servers.json");
+    let files: Vec<_> = rows.iter().map(|row| row.file.clone().unwrap()).collect();
+    assert_eq!(
+        files,
+        [installed.clone(), dev_file.clone(), reviewer_file.clone()]
+    );
+    assert_eq!(rows[1].registration, Registration::NotSetUp);
+    assert_eq!(
+        rows[2].registration,
+        Registration::Elsewhere {
+            command: old.to_string_lossy().into_owned(),
+            exists: false
+        }
+    );
+
+    let connected = environment.set_up_in(Harness::Supervisor, rows[1].file.clone(), &this);
+    assert_eq!(connected.registration, Registration::ThisKetchup);
+    assert_eq!(connected.file.as_ref(), Some(&dev_file));
+    let config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&dev_file).unwrap()).unwrap();
+    assert_eq!(config["mcpServers"]["ketchup"]["args"][0], "--mcp");
+    assert_eq!(
+        std::fs::read_to_string(&installed).unwrap(),
+        r#"{"mcpServers": {}}"#
+    );
+    assert_eq!(
+        std::fs::read_to_string(&reviewer_file).unwrap(),
+        servers.to_string()
+    );
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 #[test]
 fn a_configuration_kecup_cannot_read_is_named_and_left_alone() {
     let home = temporary_home("broken");

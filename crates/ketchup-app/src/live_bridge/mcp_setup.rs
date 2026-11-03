@@ -94,6 +94,8 @@ pub enum Registration {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HarnessRow {
     pub harness: Harness,
+    /// The configuration file the row reads and Connect writes, if known.
+    pub file: Option<PathBuf>,
     pub registration: Registration,
     pub setup_error: Option<String>,
 }
@@ -110,6 +112,9 @@ pub struct Environment {
     pub claude_config_dir: Option<PathBuf>,
     /// `CODEX_HOME`, Codex's folder instead of `~/.codex`.
     pub codex_home: Option<PathBuf>,
+    /// Folders of Supervisor instances. Each reads the MCP servers from its
+    /// own `skills\mcp_servers.json`, next to its `skills\mcp_bridge.py`.
+    pub supervisor_folders: Vec<PathBuf>,
 }
 
 impl Environment {
@@ -122,6 +127,7 @@ impl Environment {
             local_app_data: None,
             claude_config_dir: None,
             codex_home: None,
+            supervisor_folders: Vec::new(),
         }
     }
 
@@ -134,6 +140,7 @@ impl Environment {
             local_app_data: folder("LOCALAPPDATA"),
             claude_config_dir: folder("CLAUDE_CONFIG_DIR"),
             codex_home: folder("CODEX_HOME"),
+            supervisor_folders: super::running_programs::folders_of_running("supervisor"),
             ..Self::in_home(PathBuf::from(home))
         })
     }
@@ -187,20 +194,39 @@ impl Environment {
     /// Whether the client is on this computer: its command, or the folder it
     /// keeps its configuration in (for Claude Code, the file itself, since that
     /// is in the home folder).
-    fn installed(&self, harness: Harness) -> bool {
+    fn installed(&self, harness: Harness, file: Option<&Path>) -> bool {
         if self.cli(harness).is_some() {
             return true;
         }
-        match self.config_file(harness) {
+        match file {
             Some(file) if harness == Harness::ClaudeCode => file.is_file(),
             Some(file) => file.parent().is_some_and(Path::is_dir),
             None => false,
         }
     }
 
+    /// Every file `harness` reads its MCP servers from: one per Supervisor
+    /// instance (the installed one first), one for each other client.
+    pub fn config_files(&self, harness: Harness) -> Vec<PathBuf> {
+        let mut files: Vec<PathBuf> = self.config_file(harness).into_iter().collect();
+        if harness == Harness::Supervisor {
+            for folder in &self.supervisor_folders {
+                let skills = folder.join("skills");
+                let file = skills.join("mcp_servers.json");
+                // Without the bridge the instance reads no MCP servers.
+                if skills.join("mcp_bridge.py").is_file()
+                    && !files.iter().any(|known| same_program(known, &file))
+                {
+                    files.push(file);
+                }
+            }
+        }
+        files
+    }
+
     /// The program the client starts as `ketchup` for every project, if any.
-    fn registered_command(&self, harness: Harness) -> Option<String> {
-        let text = std::fs::read_to_string(self.config_file(harness)?).ok()?;
+    fn registered_command(harness: Harness, file: &Path) -> Option<String> {
+        let text = std::fs::read_to_string(file).ok()?;
         match harness {
             Harness::Codex => codex_command(&text),
             Harness::ClaudeCode | Harness::ClaudeDesktop | Harness::Supervisor => {
@@ -213,8 +239,18 @@ impl Environment {
         }
     }
 
+    /// What the client starts, as its default file says.
     pub fn registration(&self, harness: Harness, executable: &Path) -> Registration {
-        match self.registered_command(harness) {
+        self.registration_in(harness, self.config_file(harness).as_deref(), executable)
+    }
+
+    fn registration_in(
+        &self,
+        harness: Harness,
+        file: Option<&Path>,
+        executable: &Path,
+    ) -> Registration {
+        match file.and_then(|file| Self::registered_command(harness, file)) {
             Some(command) if same_program(Path::new(&command), executable) => {
                 Registration::ThisKetchup
             }
@@ -222,39 +258,63 @@ impl Environment {
                 exists: Path::new(&command).is_file(),
                 command,
             },
-            None if self.installed(harness) => Registration::NotSetUp,
+            None if self.installed(harness, file) => Registration::NotSetUp,
             None => Registration::NotInstalled,
         }
     }
 
+    fn row(&self, harness: Harness, file: Option<PathBuf>, executable: &Path) -> HarnessRow {
+        HarnessRow {
+            harness,
+            registration: self.registration_in(harness, file.as_deref(), executable),
+            file,
+            setup_error: None,
+        }
+    }
+
+    /// A row per configuration file: a client whose folder is unknown here
+    /// still gets one, as not installed.
     pub fn rows(&self, executable: &Path) -> Vec<HarnessRow> {
         Harness::ALL
             .into_iter()
-            .map(|harness| HarnessRow {
-                harness,
-                registration: self.registration(harness, executable),
-                setup_error: None,
+            .flat_map(|harness| {
+                let files = self.config_files(harness);
+                if files.is_empty() {
+                    vec![self.row(harness, None, executable)]
+                } else {
+                    files
+                        .into_iter()
+                        .map(|file| self.row(harness, Some(file), executable))
+                        .collect()
+                }
             })
             .collect()
     }
 
     /// Replaces the client's `ketchup` server with this executable, in its
-    /// configuration file.
+    /// default configuration file.
     pub fn set_up(&self, harness: Harness, executable: &Path) -> HarnessRow {
+        self.set_up_in(harness, self.config_file(harness), executable)
+    }
+
+    /// Replaces the `ketchup` server in `file`, the one a row describes.
+    pub fn set_up_in(
+        &self,
+        harness: Harness,
+        file: Option<PathBuf>,
+        executable: &Path,
+    ) -> HarnessRow {
+        let setup_error = Self::write(harness, file.as_deref(), executable)
+            .err()
+            .map(|error| format!("{error}"));
         HarnessRow {
-            harness,
-            setup_error: self
-                .write(harness, executable)
-                .err()
-                .map(|error| format!("{error}")),
-            registration: self.registration(harness, executable),
+            setup_error,
+            ..self.row(harness, file, executable)
         }
     }
 
-    fn write(&self, harness: Harness, executable: &Path) -> Result<(), WriteError> {
-        let file = self
-            .config_file(harness)
-            .ok_or(WriteError::NoConfigurationFolder)?;
+    fn write(harness: Harness, file: Option<&Path>, executable: &Path) -> Result<(), WriteError> {
+        let file = file.ok_or(WriteError::NoConfigurationFolder)?.to_owned();
         let failed = |error| WriteError::File {
             file: file.clone(),
             error,
@@ -366,15 +426,11 @@ pub fn set_up_installed_harnesses() -> Result<String, SetupFailure> {
     let environment = Environment::current().ok_or(SetupFailure::UnknownHome)?;
     let mut report = String::new();
     let mut any = false;
-    for harness in Harness::ALL {
-        let row = if environment.installed(harness) {
-            environment.set_up(harness, &executable)
+    for found in environment.rows(&executable) {
+        let row = if found.registration == Registration::NotInstalled {
+            found
         } else {
-            HarnessRow {
-                harness,
-                registration: Registration::NotInstalled,
-                setup_error: None,
-            }
+            environment.set_up_in(found.harness, found.file, &executable)
         };
         any |= row.registration == Registration::ThisKetchup;
         report.push_str(&describe(&row, &executable));
@@ -408,6 +464,12 @@ fn describe(row: &HarnessRow, executable: &Path) -> String {
             command,
             exists: false,
         } => format!("starts a program that does not exist: {command}"),
+    };
+    let name = match &row.file {
+        Some(file) if row.registration != Registration::NotInstalled => {
+            format!("{name} ({})", file.display())
+        }
+        _ => name.to_owned(),
     };
     match &row.setup_error {
         Some(error) => format!("{name}: {state} (set-up failed: {error})"),

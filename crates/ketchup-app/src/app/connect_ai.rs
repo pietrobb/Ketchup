@@ -59,23 +59,34 @@ impl KetchupApp {
             });
     }
 
-    /// One line per harness: what it starts as `ketchup`, and Set up when that
-    /// is not this Kečup.
+    /// One line per configuration file of a harness (one per Supervisor
+    /// instance): what it starts as `ketchup`, and Set up when that is not
+    /// this Kečup. The environment, which lists the running Supervisors, is
+    /// read only when the rows are, not every frame.
     fn show_harnesses(&mut self, ui: &mut egui::Ui, executable: &Path) {
-        let Some(environment) = Environment::current() else {
-            return;
+        let rows = match &self.live.harnesses {
+            Some(rows) => rows.clone(),
+            None => {
+                let Some(environment) = Environment::current() else {
+                    return;
+                };
+                self.live
+                    .harnesses
+                    .insert(environment.rows(executable))
+                    .clone()
+            }
         };
-        let rows = self
-            .live
-            .harnesses
-            .get_or_insert_with(|| environment.rows(executable))
-            .clone();
         let mut set_up = None;
-        for row in &rows {
+        for (index, row) in rows.iter().enumerate() {
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
                 ui.strong(row.harness.name());
                 ui.label(self.harness_state(row));
+                if let Some(file) = &row.file
+                    && row.registration != Registration::NotInstalled
+                {
+                    ui.weak(file.display().to_string());
+                }
                 let action = match row.registration {
                     Registration::NotInstalled | Registration::ThisKetchup => None,
                     Registration::NotSetUp => Some("connect-ai-set-up"),
@@ -84,7 +95,7 @@ impl KetchupApp {
                 if let Some(action) = action
                     && ui.button(self.catalog.text(action)).clicked()
                 {
-                    set_up = Some(row.harness);
+                    set_up = Some(index);
                 }
             });
             if let Some(error) = &row.setup_error {
@@ -100,10 +111,16 @@ impl KetchupApp {
         {
             self.live.harnesses = None;
         }
-        if let Some(harness) = set_up {
-            let row = environment.set_up(harness, executable);
-            if let Some(rows) = &mut self.live.harnesses
-                && let Some(slot) = rows.iter_mut().find(|slot| slot.harness == harness)
+        if let Some(index) = set_up
+            && let Some(environment) = Environment::current()
+        {
+            let row = &rows[index];
+            let row = environment.set_up_in(row.harness, row.file.clone(), executable);
+            if let Some(slot) = self
+                .live
+                .harnesses
+                .as_mut()
+                .and_then(|rows| rows.get_mut(index))
             {
                 *slot = row;
             }
@@ -237,6 +254,7 @@ mod tests {
         let mut app = KetchupApp::new();
         let row = |harness, registration| HarnessRow {
             harness,
+            file: None,
             registration,
             setup_error: None,
         };
@@ -306,6 +324,7 @@ mod tests {
         app.live.harnesses = Some(vec![
             HarnessRow {
                 harness: Harness::ClaudeCode,
+                file: None,
                 registration: Registration::Elsewhere {
                     command: gone.to_owned(),
                     exists: false,
@@ -314,6 +333,7 @@ mod tests {
             },
             HarnessRow {
                 harness: Harness::Codex,
+                file: None,
                 registration: Registration::NotInstalled,
                 setup_error: None,
             },

@@ -96,6 +96,7 @@ mod program_validation_summary;
 mod program_variant_export;
 mod program_variants;
 mod project_drawings_job;
+mod running_programs;
 #[cfg(test)]
 mod tests;
 mod transport;
