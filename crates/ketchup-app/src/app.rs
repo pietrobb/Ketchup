@@ -35,6 +35,7 @@ pub(crate) mod exchange_export;
 mod export;
 mod fea_review;
 pub(crate) mod file_activity;
+mod file_menu;
 #[cfg(test)]
 #[path = "app/hidden_selection_tests.rs"]
 mod hidden_selection_tests;

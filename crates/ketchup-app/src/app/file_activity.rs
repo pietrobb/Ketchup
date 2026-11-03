@@ -182,6 +182,20 @@ impl KetchupApp {
         context.request_repaint();
     }
 
+    /// Open `path` like Open does in the window: after the frame that shows the
+    /// indication, and not while another file task runs. `false` without a
+    /// window, where the caller opens it at once.
+    pub(crate) fn defer_open_of(&mut self, path: &Path) -> bool {
+        let queued_before = self.file.activity.pending.is_some();
+        if !self.defer_file_activity(AppCommand::Open) {
+            return false;
+        }
+        if !queued_before && let Some(pending) = self.file.activity.pending.as_mut() {
+            pending.path = Some(path.to_owned());
+        }
+        true
+    }
+
     pub(crate) fn defer_file_activity(&mut self, command: AppCommand) -> bool {
         if self.file.activity.pending.is_some()
             || self.file.activity.opening.is_some()
