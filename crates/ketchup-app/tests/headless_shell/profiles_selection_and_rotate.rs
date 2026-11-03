@@ -2424,11 +2424,14 @@ fn move_axis_constraint_does_not_leak_across_tool_changes() {
     shell.type_text("25");
     shell.press_key(Key::Enter);
 
+    // A leaked green pin would carry the distance along Y; with no pin and no
+    // way shown it goes nowhere.
+    assert_eq!(shell.app().occurrence_box_geometry(1).unwrap().0, origin);
     assert_eq!(
-        shell.app().occurrence_box_geometry(1).unwrap().0,
-        origin + Vec3::new(25.0, 0.0, 0.0)
+        shell.app().action_digest(),
+        shell.catalog().text("digest-move-direction-missing")
     );
-    assert_eq!(shell.app().undo_step_count(), undo_steps + 1);
+    assert_eq!(shell.app().undo_step_count(), undo_steps);
 }
 
 #[test]
@@ -2500,13 +2503,13 @@ fn move_rejects_an_outliner_selection_change_during_the_gesture() {
         shell.catalog().text("error-preview-stale")
     );
     assert_eq!(shell.app().canonical_digest(), digest);
-    shell.type_text("25");
+    shell.type_text("25;0;0");
     shell.press_key(Key::Enter);
     assert_eq!(
         shell.app().action_digest(),
         shell.catalog().format(
             "digest-exact-move-applied",
-            &BTreeMap::from([("value", "+25 mm".to_owned())]),
+            &BTreeMap::from([("value", "25,0,0 mm".to_owned())]),
         )
     );
     assert_eq!(shell.app().undo_step_count(), undo_steps + 1);

@@ -174,7 +174,21 @@ fn a_value_typed_for_a_gesture_the_selection_left_is_refused_by_every_tool() {
         app.set_move_session(ToolSessionPhase::Gesture, drag);
         app.select_from_outliner(InstancePath::root(OccurrenceId(2)), false);
         app.value_box.input = value.to_owned();
-        assert_refused_then_applied_to_the_second_box_alone(&mut app, tool);
+        if tool == "Move vector" {
+            assert_refused_then_applied_to_the_second_box_alone(&mut app, tool);
+            continue;
+        }
+        // The ended drag took its way with it: a distance has none to go.
+        let digest = app.canonical_digest();
+        assert!(!app.apply_value_input(), "{tool}: {}", app.digest);
+        assert_eq!(app.digest, app.catalog.text("error-preview-stale"));
+        assert!(no_gesture(&app), "{tool}");
+        assert!(!app.apply_value_input(), "{tool} again: {}", app.digest);
+        assert_eq!(
+            app.digest,
+            app.catalog.text("digest-move-direction-missing")
+        );
+        assert_eq!(app.canonical_digest(), digest, "{tool}");
     }
 
     let mut app = two_boxes_first_selected();
@@ -361,6 +375,231 @@ fn every_registered_gesture_ends_on_ctrl_z_and_esc_and_drops_when_stale() {
         );
         assert!(!app.gesture_open(), "{tool} stale ended");
         assert_eq!(app.canonical_digest(), digest, "{tool}");
+    }
+}
+
+/// The first box selected in Move, `axis` pinned, and a drag standing
+/// `shown_mm` away the way the pointer points.
+fn move_dragging(axis: Option<Axis>, shown_mm: Vec3) -> (KetchupApp, Vec3) {
+    let mut app = KetchupApp::new();
+    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    let (origin, _) = app.occurrence_box_geometry(1).unwrap();
+    app.dispatch_command(AppCommand::Move);
+    app.set_move_axis_lock(axis);
+    let mut drag = move_drag(&app, shown_mm);
+    drag.axis = axis;
+    app.set_move_session(ToolSessionPhase::Gesture, drag);
+    (app, origin)
+}
+
+fn travel(app: &KetchupApp, origin: Vec3) -> Vec3 {
+    app.occurrence_box_geometry(1).unwrap().0 - origin
+}
+
+/// The preview above the Move field naming `delta_mm` before Enter: how far
+/// and which way along a pinned `axis`, the vector without one.
+fn move_preview(app: &KetchupApp, axis: Option<Axis>, delta_mm: Vec3) -> Option<String> {
+    let Some(axis) = axis else {
+        return vector_preview(app, delta_mm);
+    };
+    let (along, name) = match axis {
+        Axis::X => (delta_mm.x, "X"),
+        Axis::Y => (delta_mm.y, "Y"),
+        Axis::Z => (delta_mm.z, "Z"),
+    };
+    let sign = if along < 0.0 { '−' } else { '+' };
+    Some(app.catalog.format(
+        "value-move-axis-preview",
+        &BTreeMap::from([
+            ("value", format_height(along.abs())),
+            ("direction", format!("{sign}{name}")),
+        ]),
+    ))
+}
+
+/// The preview above the Move field naming the vector `delta_mm` before Enter.
+fn vector_preview(app: &KetchupApp, delta_mm: Vec3) -> Option<String> {
+    let value = [delta_mm.x, delta_mm.y, delta_mm.z]
+        .map(|value| format_height(value + 0.0))
+        .join("; ");
+    Some(
+        app.catalog
+            .format("value-length-preview", &BTreeMap::from([("value", value)])),
+    )
+}
+
+/// Operator report 2026-11-03: with the axis pinned by an arrow key, a typed
+/// distance went along +X/+Y/+Z whichever way the pointer showed, so 5000
+/// jumped one way or the other depending on the side of the drag. A positive
+/// distance now goes the way the pointer points, a negative one against it,
+/// pinned or not, and the field shows before Enter how far and which way
+/// along the pinned axis, or the resulting vector.
+#[test]
+fn a_typed_move_distance_goes_the_way_the_pointer_points() {
+    for (axis, shown_mm, input, expected) in [
+        (
+            Some(Axis::X),
+            Vec3::new(-40.0, 0.0, 0.0),
+            "5000",
+            Vec3::new(-5000.0, 0.0, 0.0),
+        ),
+        (
+            Some(Axis::X),
+            Vec3::new(-40.0, 0.0, 0.0),
+            "-5000",
+            Vec3::new(5000.0, 0.0, 0.0),
+        ),
+        (
+            Some(Axis::X),
+            Vec3::new(40.0, 0.0, 0.0),
+            "5000",
+            Vec3::new(5000.0, 0.0, 0.0),
+        ),
+        (
+            Some(Axis::Z),
+            Vec3::new(0.0, 0.0, -30.0),
+            "8000",
+            Vec3::new(0.0, 0.0, -8000.0),
+        ),
+        (
+            Some(Axis::Y),
+            Vec3::new(0.0, -12.0, 0.0),
+            "-250",
+            Vec3::new(0.0, 250.0, 0.0),
+        ),
+        (
+            None,
+            Vec3::new(-40.0, 0.0, 0.0),
+            "5000",
+            Vec3::new(-5000.0, 0.0, 0.0),
+        ),
+        (
+            None,
+            Vec3::new(-40.0, 0.0, 0.0),
+            "-5000",
+            Vec3::new(5000.0, 0.0, 0.0),
+        ),
+        (
+            None,
+            Vec3::new(0.0, 0.0, -30.0),
+            "8000",
+            Vec3::new(0.0, 0.0, -8000.0),
+        ),
+    ] {
+        let case = format!("{axis:?} toward {shown_mm:?} typed {input}");
+        let (mut app, origin) = move_dragging(axis, shown_mm);
+        app.value_box.input = input.to_owned();
+        assert_eq!(
+            app.value_box_length_preview(),
+            move_preview(&app, axis, expected),
+            "{case}"
+        );
+        assert!(app.apply_value_input(), "{case}: {}", app.digest);
+        assert!(
+            length(travel(&app, origin) - expected) < 1e-6,
+            "{case} travelled {:?}",
+            travel(&app, origin)
+        );
+    }
+}
+
+/// A number typed after a finished drag corrects that drag along the way it
+/// went, pinned or not: a drag toward -X corrected to 5000 ends 5000 mm
+/// toward -X as one step, not 5000 mm toward +X on top of the drag.
+#[test]
+fn a_typed_distance_after_a_drag_corrects_it_the_way_it_went() {
+    for axis in [Some(Axis::X), None] {
+        for (input, expected) in [
+            ("5000", Vec3::new(-5000.0, 0.0, 0.0)),
+            ("-5000", Vec3::new(5000.0, 0.0, 0.0)),
+        ] {
+            let case = format!("{axis:?} typed {input}");
+            let (mut app, origin) = move_dragging(axis, Vec3::new(-40.0, 0.0, 0.0));
+            let undo_steps = app.undo_step_count();
+            let drag = app.take_move_session(None).unwrap();
+            assert!(app.commit_move_drag(&drag), "{case}: {}", app.digest);
+            app.value_box.input = input.to_owned();
+            assert_eq!(
+                app.value_box_length_preview(),
+                move_preview(&app, axis, expected),
+                "{case}"
+            );
+            assert!(app.apply_value_input(), "{case}: {}", app.digest);
+            assert!(
+                length(travel(&app, origin) - expected) < 1e-6,
+                "{case} travelled {:?}",
+                travel(&app, origin)
+            );
+            assert_eq!(app.undo_step_count(), undo_steps + 1, "{case}");
+        }
+    }
+}
+
+/// With no drag, no Move to correct and no pinned axis there is no way to
+/// go: the distance moves nothing and says so, where it once went along +X.
+#[test]
+fn a_typed_move_distance_without_a_way_moves_nothing() {
+    let mut app = KetchupApp::new();
+    app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    app.dispatch_command(AppCommand::Move);
+    let digest = app.canonical_digest();
+    app.value_box.input = "5000".to_owned();
+    assert!(!app.apply_value_input());
+    assert_eq!(
+        app.digest,
+        app.catalog.text("digest-move-direction-missing")
+    );
+    assert_eq!(app.canonical_digest(), digest);
+}
+
+fn first_box_matrix(app: &KetchupApp) -> Vec<f64> {
+    app.document
+        .current()
+        .occurrence(OccurrenceId(1))
+        .unwrap()
+        .transform()
+        .matrix()
+        .to_vec()
+}
+
+/// The rule Move follows holds for Rotate's angle: typed while the pointer
+/// turns the part clockwise, or right after such a turn, 90 turns it 90°
+/// clockwise, where it once turned counter-clockwise whatever the pointer
+/// showed.
+#[test]
+fn a_typed_angle_turns_the_way_the_pointer_turned() {
+    let mut expected = KetchupApp::new();
+    expected.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+    expected.dispatch_command(AppCommand::Rotate);
+    expected.value_box.input = "-90".to_owned();
+    assert!(expected.apply_value_input(), "{}", expected.digest);
+    let clockwise = first_box_matrix(&expected);
+
+    for finished in [false, true] {
+        let mut app = KetchupApp::new();
+        app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
+        app.dispatch_command(AppCommand::Rotate);
+        let mut drag = rotate_drag(&app, Axis::Z);
+        drag.angle_degrees = -30.0;
+        app.set_rotate_session(ToolSessionPhase::Gesture, drag);
+        if finished {
+            let drag = app.take_rotate_session(None).unwrap();
+            assert!(app.commit_rotate_drag(&drag), "{}", app.digest);
+        }
+        app.value_box.input = "90".to_owned();
+        assert!(
+            app.apply_value_input(),
+            "finished {finished}: {}",
+            app.digest
+        );
+        let turned = first_box_matrix(&app);
+        assert!(
+            turned
+                .iter()
+                .zip(&clockwise)
+                .all(|(a, b)| (a - b).abs() < 1e-9),
+            "finished {finished}: {turned:?} is not 90° clockwise {clockwise:?}"
+        );
     }
 }
 

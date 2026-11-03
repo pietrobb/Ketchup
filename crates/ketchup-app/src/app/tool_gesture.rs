@@ -507,6 +507,19 @@ impl KetchupApp {
             self.digest = self.catalog.text("digest-rotate-invalid-angle");
             return false;
         };
+        // As in Move, the angle turns the way the pointer turned, or the
+        // way the turn it corrects went.
+        let turned = match self.rotate_session() {
+            Some((drag, _)) => drag.angle_degrees,
+            None => self
+                .current_rotate_correction()
+                .map_or(0.0, |(_, previous)| previous.angle_degrees),
+        };
+        let angle_degrees = if turned < 0.0 {
+            -angle_degrees
+        } else {
+            angle_degrees
+        };
         // With no gesture in flight the value box edits the turn that just
         // happened rather than adding a second one.
         if self.rotate_session().is_none() && self.correct_last_rotation(angle_degrees) {
@@ -623,11 +636,18 @@ impl KetchupApp {
             return false;
         }
         match self.typed_move() {
-            Some(TypedMove::AlongAxis { delta_mm, .. }) => {
-                self.apply_typed_move_vector(delta_mm, false)
+            Some(TypedMove::AlongAxis {
+                delta_mm: Some(delta_mm),
+                ..
+            }) => self.apply_typed_move_vector(delta_mm, false),
+            Some(TypedMove::AlongAxis { delta_mm: None, .. }) => {
+                self.digest = self.catalog.text("digest-move-direction-missing");
+                false
             }
             Some(TypedMove::Vector(delta_mm)) => self.apply_typed_move_vector(delta_mm, true),
-            Some(TypedMove::Distance(distance_mm)) => self.apply_typed_move_distance(distance_mm),
+            Some(TypedMove::Distance { distance_mm, .. }) => {
+                self.apply_typed_move_distance(distance_mm)
+            }
             None => {
                 self.digest = self.catalog.text("digest-nothing-to-apply");
                 false
@@ -639,18 +659,58 @@ impl KetchupApp {
     /// the preview above the field.
     pub(crate) fn typed_move(&self) -> Option<TypedMove> {
         let input = &self.value_box.input;
+        let way = self.typed_move_way();
         // A pinned axis turns a plain number into travel along that axis,
-        // which is how a part gets set down exactly 25 mm higher.
+        // which is how a part gets set down exactly 25 mm higher. It goes
+        // the way the pointer points along the axis, the axis itself when
+        // no drag shows one, and nowhere while a drag shows none yet.
         let axis_travel = self.gesture.transform.move_axis_lock.and_then(|axis| {
             let distance_mm = parse_distance_mm(input, self.value_box.decimal)?;
+            let unit = axis_direction(axis);
+            let toward = match way.map(|way| dot(way, unit)) {
+                Some(along) if along.abs() >= ketchup_model::tolerance::ROUNDING => {
+                    Some(along.signum())
+                }
+                Some(_) => Some(1.0),
+                None if self.move_session().is_some() => None,
+                None => Some(1.0),
+            };
             (distance_mm.abs() >= 0.01).then(|| TypedMove::AlongAxis {
-                delta_mm: axis_direction(axis) * distance_mm,
+                axis,
+                delta_mm: toward.map(|toward| unit * (toward * distance_mm)),
                 distance_mm,
             })
         });
         axis_travel
             .or_else(|| parse_move_vector(input, self.value_box.decimal).map(TypedMove::Vector))
-            .or_else(|| parse_distance_mm(input, self.value_box.decimal).map(TypedMove::Distance))
+            .or_else(|| {
+                let distance_mm = parse_distance_mm(input, self.value_box.decimal)?;
+                Some(TypedMove::Distance {
+                    delta_mm: way.map(|way| way * (distance_mm / length(way))),
+                    distance_mm,
+                })
+            })
+    }
+
+    /// The way a typed Move distance goes: the way a drag in flight shows,
+    /// else the way the Move it corrects went. None while a drag shows no
+    /// way yet, and with nothing to correct.
+    fn typed_move_way(&self) -> Option<Vec3> {
+        if let Some((drag, _)) = self.move_session() {
+            return (length(drag.delta_mm) >= 0.01).then_some(drag.delta_mm);
+        }
+        let session = self
+            .transform_tool
+            .correction
+            .as_ref()
+            .filter(|session| self.correction_session_is_current(session))?;
+        match &session.operation {
+            CorrectionOperation::Move(previous) => Some(previous.direction),
+            CorrectionOperation::MoveCopy(previous) => {
+                (length(previous.delta_mm) > 0.0).then_some(previous.delta_mm)
+            }
+            CorrectionOperation::Rotate(_) | CorrectionOperation::Scale(_) => None,
+        }
     }
 
     /// Moves by `delta_mm`; `exact_vector` when it was typed as a vector, which
@@ -675,9 +735,11 @@ impl KetchupApp {
             }
             self.end_transform_correction();
         }
+        // A distance along the pinned axis corrects any Move; a vector only
+        // one typed as a vector.
         let previous = self
             .current_move_correction()
-            .filter(|(_, operation)| operation.accepts_vector_correction);
+            .filter(|(_, operation)| operation.accepts_vector_correction || !exact_vector);
         if self.transform_tool.correction.is_some() && previous.is_none() {
             self.end_transform_correction();
         }
@@ -744,10 +806,8 @@ impl KetchupApp {
             self.end_transform_correction();
             return false;
         }
-        if self.move_selected(Vec3::new(distance_mm, 0.0, 0.0)) {
-            return self.move_applied(applied);
-        }
-        self.digest = self.catalog.text("digest-nothing-to-apply");
+        // Neither a drag nor a Move to correct shows a way to go.
+        self.digest = self.catalog.text("digest-move-direction-missing");
         false
     }
 
@@ -813,10 +873,18 @@ fn parse_move_copy_array(
 
 /// A typed Move value: a distance along the pinned axis, a vector, or a
 /// distance the way the gesture points.
+/// `delta_mm` is where a distance goes, once a way to go is known.
 pub(crate) enum TypedMove {
-    AlongAxis { delta_mm: Vec3, distance_mm: f64 },
+    AlongAxis {
+        axis: Axis,
+        delta_mm: Option<Vec3>,
+        distance_mm: f64,
+    },
     Vector(Vec3),
-    Distance(f64),
+    Distance {
+        delta_mm: Option<Vec3>,
+        distance_mm: f64,
+    },
 }
 
 /// A typed Move vector: two or three lengths separated like any values of

@@ -688,18 +688,48 @@ impl KetchupApp {
     }
 
     /// The Move field's preview, read by the same `typed_move` the move is:
-    /// a typed vector always ("= 2; 5; 0 mm"), a distance when it is an
-    /// expression or a conversion, a copy array count never.
+    /// how far and which way along a pinned axis ("= 80,6 mm (+Z)" on a comma
+    /// system), a vector
+    /// ("= 2; 5; 0 mm") typed or where a distance goes the way the pointer
+    /// points, a distance with no way yet when it is an expression or a
+    /// conversion, a copy array count never.
     fn move_preview(&self) -> Option<String> {
         let input = self.value_box.input.trim();
         if super::tool_gesture::is_move_copy_array(input) {
             return None;
         }
         let value = match self.typed_move()? {
-            TypedMove::Vector(delta_mm) => [delta_mm.x, delta_mm.y, delta_mm.z]
-                .map(format_height)
+            TypedMove::AlongAxis {
+                axis,
+                delta_mm: Some(delta_mm),
+                distance_mm,
+            } => {
+                let sign = if dot(delta_mm, axis_direction(axis)) < 0.0 {
+                    '−'
+                } else {
+                    '+'
+                };
+                let direction = format!("{sign}{}", super::transform::alignment_axis_label(axis));
+                let mut value = format_height(distance_mm.abs());
+                // How far is one number, so it is written as the user writes
+                // numbers (operator 2026-11-03: "= 80,6 mm (+Z)").
+                if self.value_box.decimal == crate::length_input::DecimalSeparator::Comma {
+                    value = value.replace('.', ",");
+                }
+                return Some(self.catalog.format(
+                    "value-move-axis-preview",
+                    &BTreeMap::from([("value", value), ("direction", direction)]),
+                ));
+            }
+            TypedMove::Vector(delta_mm)
+            | TypedMove::Distance {
+                delta_mm: Some(delta_mm),
+                ..
+            } => [delta_mm.x, delta_mm.y, delta_mm.z]
+                // `+ 0.0` shows -0 as 0.
+                .map(|value| format_height(value + 0.0))
                 .join("; "),
-            TypedMove::AlongAxis { distance_mm, .. } | TypedMove::Distance(distance_mm) => {
+            TypedMove::AlongAxis { distance_mm, .. } | TypedMove::Distance { distance_mm, .. } => {
                 // A comma once separated Move values: `80,60` is 80.6 mm now.
                 if crate::length_input::is_plain_mm(input, self.value_box.decimal)
                     && !input.contains(',')

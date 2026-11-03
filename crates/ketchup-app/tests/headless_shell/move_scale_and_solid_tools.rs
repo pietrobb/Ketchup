@@ -406,7 +406,7 @@ fn typed_move_correction_replaces_group_distance_in_one_undo_step() {
     let initial_undo_steps = shell.app().undo_step_count();
 
     shell.click_command(AppCommand::Move);
-    shell.type_text("25");
+    shell.type_text("25;0;0");
     shell.press_key(Key::Enter);
     let first_undo_steps = shell.app().undo_step_count();
     assert_eq!(first_undo_steps, initial_undo_steps + 1);
@@ -477,7 +477,7 @@ fn stale_numeric_move_correction_targets_the_current_selection() {
     assert!(shell.app_mut().create_box());
     let second_before_move = shell.app().occurrence_box_geometry(2).unwrap().0;
     let undo_steps = shell.app().undo_step_count();
-    shell.type_text("40");
+    shell.type_text("40;0;0");
     shell.press_key(Key::Enter);
 
     assert_eq!(
@@ -554,7 +554,7 @@ fn reselecting_after_numeric_move_starts_a_new_history_step() {
 
     shell.click_command(AppCommand::Move);
     shell.focus_text_input(&shell.catalog().text("value-label-distance"));
-    shell.type_text("25");
+    shell.type_text("25;0;0");
     shell.press_key(Key::Enter);
     assert_eq!(shell.app().undo_step_count(), initial_undo_steps + 1);
 
@@ -562,7 +562,7 @@ fn reselecting_after_numeric_move_starts_a_new_history_step() {
     shell.click_row(&first_row);
     shell.click_command(AppCommand::Move);
     shell.focus_text_input(&shell.catalog().text("value-label-distance"));
-    shell.type_text("40");
+    shell.type_text("40;0;0");
     shell.press_key(Key::Enter);
 
     assert_eq!(
@@ -675,7 +675,7 @@ fn escape_ends_numeric_move_correction_before_reselecting_the_same_occurrence() 
     assert!(shell.app_mut().headless_select_occurrence(OccurrenceId(1)));
     assert!(shell.app().occurrence_is_selected(OccurrenceId(1)));
     shell.click_command(AppCommand::Move);
-    shell.type_text("40");
+    shell.type_text("40;0;0");
     shell.press_key(Key::Enter);
 
     assert_eq!(
@@ -1034,7 +1034,7 @@ fn undo_redo_ends_numeric_move_correction() {
     shell.key(Key::Y, ctrl());
     assert_eq!(shell.app().canonical_digest(), first_move);
 
-    shell.type_text("40");
+    shell.type_text("40;0;0");
     shell.press_key(Key::Enter);
 
     assert_eq!(
@@ -1095,7 +1095,7 @@ fn changing_and_releasing_the_move_axis_ends_numeric_correction() {
 
     shell.press_key(Key::ArrowRight);
     shell.press_key(Key::ArrowRight);
-    shell.type_text("40");
+    shell.type_text("40;0;0");
     shell.press_key(Key::Enter);
 
     assert_eq!(
@@ -1152,7 +1152,7 @@ fn switching_away_from_move_ends_numeric_correction() {
 
     shell.click_command(AppCommand::Select);
     shell.click_command(AppCommand::Move);
-    shell.type_text("40");
+    shell.type_text("40;0;0");
     shell.press_key(Key::Enter);
 
     assert_eq!(
@@ -1344,6 +1344,12 @@ fn a_pinned_move_travels_along_the_blue_axis_and_the_arrow_releases_the_pin() {
     shell.click_command(AppCommand::Move);
     let anchor = Vec3::new(top_centre.x, top_centre.y, raised.z + size.z);
     shell.click_at(shell.app().project_to_screen(anchor, rect));
+    // The pointer shows which way along the pin, here up.
+    shell.move_pointer(
+        shell
+            .app()
+            .project_to_screen(anchor + Vec3::new(0.0, 0.0, 10.0), rect),
+    );
     let before_steps = shell.app().undo_step_count();
     shell.type_text("25");
     shell.press_key(Key::Enter);
