@@ -288,8 +288,8 @@ pub fn tools() -> Value {
             "name": "view",
             "description": "selection sets the window selection; view sets the camera (iso/top/front are orthographic; iso has Z up; zoom_fit preserves projection; every view frames the whole model); \
     image returns a PNG render of the CAD viewport (not a screenshot, not a geometry check). \
-    Saved views (stored in the document, never detach a program): saved_views lists them with hidden tag names; \
-    save_view stores the current camera, display style and hidden tags under name (same name replaces; one Undo step); \
+    Saved views (stored in the document, never detach a program): saved_views lists them with hidden tag names and whether each is a Viewer scene; \
+    save_view stores the current camera, display style and hidden tags under name (same name replaces; one Undo step); viewer true shares it as a Viewer scene, false leaves it out, unset keeps it; \
     show_view name restores one (tag visibility is one Undo step). tag_visibility name visible hides or shows every part of a tag, or an underlay or one of its layers by their tags (summary lists tags and underlays): \
     one Undo step, no geometry change, no validation, never detaches a program. \
     section cuts the viewport open: everything on the side normal points to is hidden, cut solids show their inside in red; \
@@ -298,6 +298,7 @@ pub fn tools() -> Value {
                 "action": {"type": "string", "enum": ["selection", "view", "image", "saved_views", "save_view", "show_view", "tag_visibility", "section", "close_section"]},
                 "name": {"type": "string", "description": "For save_view and show_view: the saved view name; for tag_visibility: the tag name."},
                 "visible": {"type": "boolean", "description": "For tag_visibility: true shows the tag, false hides it."},
+                "viewer": {"type": "boolean", "description": "For save_view: true shares the view as a Viewer scene (file export to viewer needs one), false leaves it out; unset keeps it."},
                 "normal": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "For section: direction of the hidden side, e.g. [0,0,1] hides everything above."},
                 "offset_mm": {"type": "number", "description": "For section: plane distance from the origin along normal, e.g. 1200 cuts at z=1200 for [0,0,1]."},
                 "occurrence_ids": {"type": "array", "items": {"type": "integer"}, "description": "For selection; [] clears it."},

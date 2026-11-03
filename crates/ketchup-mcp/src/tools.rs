@@ -472,9 +472,12 @@ impl Tools {
         }
         if matches!(action.as_str(), "saved_views" | "save_view" | "show_view") {
             // Clients often fill every schema field with its default; a saved-view
-            // action reads only the view name and the stamp guard.
+            // action reads only the view name and the stamp guard, save_view also viewer.
             args.retain(|key, value| {
-                (key == "expected" || (key == "name" && action != "saved_views")) && is_set(value)
+                (key == "expected"
+                    || (key == "name" && action != "saved_views")
+                    || (key == "viewer" && action == "save_view"))
+                    && is_set(value)
             });
             return self.send(&action, args, DEFAULT_WAIT);
         }
