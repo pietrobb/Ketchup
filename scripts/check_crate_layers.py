@@ -356,8 +356,8 @@ CASTS_AND_ALLOWS = {
     "ketchup-analysis allows": 1,
     "ketchup-analysis casts": 6,
     # Includes the audited WSAPoll / poll of live_bridge::transport::wait_readable (SEC-61)
-    # and the Toolhelp / QueryFullProcessImageNameW calls of live_bridge::running_programs
-    # (#2687: each Supervisor instance reads the MCP servers in its own folder).
+    # and PR #21 running_programs: Toolhelp32, audited (live_bridge::running_programs;
+    # #2687: each Supervisor instance reads the MCP servers in its own folder).
     "ketchup-app allows": 12,
     "ketchup-app casts": 216,
     "ketchup-application allows": 9,
