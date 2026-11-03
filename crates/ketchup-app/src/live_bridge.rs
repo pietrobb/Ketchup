@@ -2943,7 +2943,7 @@ impl LiveBridge {
                 Self::available(app, ui_busy)?;
                 // Unreadable Viewer settings are refused before the view is saved.
                 if viewer.is_some() && app.stored_viewer_settings().is_err() {
-                    return Err("saved_view_rejected");
+                    return Err("viewer_settings_unreadable");
                 }
                 Self::require_request_authority(cancelled)?;
                 let id = app.save_view(&name).ok_or("saved_view_rejected")?;

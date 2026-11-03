@@ -636,6 +636,13 @@ fn save_view_shares_a_view_with_the_viewer_or_leaves_it_out() {
     };
     let shared =
         |app: &KetchupApp| app.viewer_export_scenes(&app.stored_viewer_settings().unwrap());
+    let listed = bridge
+        .execute(&mut app, save("Draft", None), false)
+        .unwrap();
+    assert_eq!(
+        listed["saved_views"][0]["viewer"], true,
+        "a new view is a Viewer scene until one is picked: {listed}"
+    );
     let undo_steps = app.undo_step_count();
     bridge
         .execute(&mut app, save("Draft", Some(false)), false)
@@ -661,6 +668,28 @@ fn save_view_shares_a_view_with_the_viewer_or_leaves_it_out() {
         .execute(&mut app, save("Situation", Some(false)), false)
         .unwrap();
     assert!(shared(&app).is_empty());
+
+    // Unreadable Viewer settings refuse viewer by name and save nothing; a save without
+    // viewer still works and lists viewer as unknown.
+    let corrupt = b"{\"scenes\": 7".to_vec();
+    app.file.container_data.set_extension(
+        ketchup_model::persistence::ExtensionEntry::new(
+            "org.ketchup.viewer",
+            "sharing-v1.json",
+            false,
+            corrupt,
+        )
+        .unwrap(),
+    );
+    let undo_steps = app.undo_step_count();
+    assert_eq!(
+        bridge.execute(&mut app, save("Late", Some(true)), false),
+        Err("viewer_settings_unreadable")
+    );
+    assert_eq!(app.saved_view_id("Late"), None);
+    assert_eq!(app.undo_step_count(), undo_steps);
+    let listed = bridge.execute(&mut app, save("Late", None), false).unwrap();
+    assert_eq!(listed["saved_views"][2]["viewer"], Value::Null, "{listed}");
 }
 
 #[test]

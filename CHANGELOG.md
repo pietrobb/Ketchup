@@ -5,7 +5,7 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 
 ## Unreleased
 
-- An AI can share a saved view with the Viewer: `save_view` takes `viewer` (true shares it, false leaves it out) and `saved_views` says which views are Viewer scenes. A Viewer export through MCP used to stop at "No shared saved scene… tick Viewer", which only the window could tick.
+- An AI can share a saved view with the Viewer: `save_view` takes `viewer` (true shares it, false leaves it out) and `saved_views` says which views are Viewer scenes; unreadable Viewer settings refuse `viewer` as `viewer_settings_unreadable` and save nothing. A Viewer export through MCP used to stop at "No shared saved scene… tick Viewer", which only the window could tick.
 - The sections and elevations of the project drawings carry level marks for the building office: ±0,000 at the floor of the lowest storey, each storey's floor and the top, in metres with a decimal comma on Czech and Slovak sheets.
 - The vertical dimensions a program draws with `dim()`, which a plan cannot show, appear in the sections and elevations that show their true length (a section only those beyond its cut); the sheet summary counts the dimensions of all its views.
 - A lofted part can be hollowed with `shell()`, open at its first or last section (`open=["start"]`, `["end"]` or both), e.g. a membrane over a frame; it used to be refused, so the inner loft had to be subtracted by hand.
