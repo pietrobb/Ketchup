@@ -152,6 +152,57 @@ fn a_group_and_a_joint_in_contact_for_the_program_are_in_contact_here() {
     assert_eq!(report["group_connectivity"]["checked_joint_count"], 1);
 }
 
+/// Měchenice MECH-8: a logical group (kerbs, doors, technology of a site) is
+/// never checked for contact here either, also once the program is detached
+/// and the document reopened; an assembly group inside it still is.
+#[test]
+fn a_logical_group_is_not_checked_for_contact_even_after_detach_and_reopen() {
+    let _turn = crate::integration_support::file_turn();
+    let mut session = session(
+        "a=box('kerb 1',(100,10,10))\nb=box('kerb 2',(100,10,10),at=(500,0,0))\n\
+         c=box('leaf',(10,10,10),at=(0,500,0))\nd=box('frame',(10,10,10),at=(200,500,0))\n\
+         door=group('door',[c,d])\ngroup('site',[a,b,door],kind='logical')",
+    );
+    let flagged = |report: &Value| {
+        report["group_connectivity"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|issue| issue["kind"] == "disconnected_group")
+            .map(|issue| issue["group"]["name"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let report = check(&session.snapshot(), false);
+    assert_eq!(report["complete"], true, "{report:#}");
+    assert_eq!(flagged(&report), ["door"], "{report:#}");
+
+    let id = session
+        .snapshot()
+        .occurrences()
+        .find(|part| part.name() == "kerb 2")
+        .unwrap()
+        .id();
+    let proposal = session
+        .plan_commands(CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceTransform {
+                id,
+                transform: Transform::from_translation(600., 0., 0.).unwrap(),
+            },
+        ]))
+        .unwrap();
+    session.apply_proposal(&proposal).unwrap();
+    assert!(session.rule_program().is_none());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("site.ketchup");
+    session
+        .save(&path, SaveOptions { overwrite: false })
+        .unwrap();
+    drop(session);
+    let reopened = DocumentSession::open(&path, SessionSettings::default()).unwrap();
+    let report = check(&reopened.snapshot(), false);
+    assert_eq!(flagged(&report), ["door"], "{report:#}");
+}
+
 #[test]
 fn cancelled_or_non_native_contact_is_incomplete_not_disconnected_or_passed() {
     let _turn = crate::integration_support::file_turn();

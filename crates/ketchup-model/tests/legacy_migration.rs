@@ -58,6 +58,8 @@ const NEWER_THAN_OLDEST: &[(&str, u16)] = &[
     ("release-0.3.0.bin", 106),
     // A stretched line.
     ("format107.bin", 107),
+    // A logical group.
+    ("format108.bin", 108),
 ];
 
 fn resaved_schema(path: &Path) -> u16 {

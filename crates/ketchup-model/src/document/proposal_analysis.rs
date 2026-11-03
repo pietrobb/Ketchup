@@ -465,7 +465,8 @@ pub(super) fn authoritative_writes(
             CanonicalCommand::CreateGroup { id, .. }
             | CanonicalCommand::DeleteGroup { id }
             | CanonicalCommand::SetGroupTransform { id, .. }
-            | CanonicalCommand::SetGroupParent { id, .. } => {
+            | CanonicalCommand::SetGroupParent { id, .. }
+            | CanonicalCommand::SetGroupLogical { id, .. } => {
                 writes.insert(AuthoritativeDependency::Group(*id));
             }
             CanonicalCommand::CloneDefinitionAndRepoint(plan) => {
@@ -545,7 +546,8 @@ fn add_structure_command_dependencies(
             dependencies.insert(AuthoritativeDependency::Group(*id));
             dependencies.insert(AuthoritativeDependency::GroupChildren(*id));
         }
-        CanonicalCommand::SetGroupTransform { id, .. } => {
+        CanonicalCommand::SetGroupTransform { id, .. }
+        | CanonicalCommand::SetGroupLogical { id, .. } => {
             dependencies.insert(AuthoritativeDependency::Group(*id));
         }
         CanonicalCommand::UpsertSavedView(view) => {
@@ -757,6 +759,33 @@ fn add_clone_definition_dependencies(
         dependencies.insert(AuthoritativeDependency::Feature(*new_id));
     }
     add_direct_member_dependencies(snapshot, plan.source_definition_id, dependencies);
+}
+
+/// Applying a solid tool reads both occurrences and their feature closures and
+/// writes the result definition and features.
+fn add_solid_tool_dependencies(
+    snapshot: &Snapshot,
+    plan: &SolidToolPlan,
+    dependencies: &mut BTreeSet<AuthoritativeDependency>,
+) {
+    dependencies.insert(AuthoritativeDependency::Occurrence(
+        plan.target_occurrence_id,
+    ));
+    dependencies.insert(AuthoritativeDependency::Occurrence(plan.tool_occurrence_id));
+    dependencies.insert(AuthoritativeDependency::OccurrenceCollections(
+        plan.tool_occurrence_id,
+    ));
+    add_feature_dependency_closure(snapshot, plan.target_feature_id, dependencies);
+    add_feature_dependency_closure(snapshot, plan.tool_feature_id, dependencies);
+    dependencies.insert(AuthoritativeDependency::Definition(
+        plan.result_definition_id,
+    ));
+    dependencies.extend(
+        plan.result_feature_ids
+            .iter()
+            .cloned()
+            .map(AuthoritativeDependency::Feature),
+    );
 }
 
 /// Converting a group moves its occurrences, so every collection that names them by path
@@ -1342,6 +1371,7 @@ pub(super) fn authoritative_dependencies(
             | CanonicalCommand::DeleteGroup { .. }
             | CanonicalCommand::SetGroupTransform { .. }
             | CanonicalCommand::SetGroupParent { .. }
+            | CanonicalCommand::SetGroupLogical { .. }
             | CanonicalCommand::UpsertSavedView(_)
             | CanonicalCommand::DeleteSavedView { .. }
             | CanonicalCommand::UpsertUnderlay(_)
@@ -1356,24 +1386,7 @@ pub(super) fn authoritative_dependencies(
                 add_group_conversion_dependencies(snapshot, plan, &mut dependencies);
             }
             CanonicalCommand::ApplySolidTool(plan) => {
-                dependencies.insert(AuthoritativeDependency::Occurrence(
-                    plan.target_occurrence_id,
-                ));
-                dependencies.insert(AuthoritativeDependency::Occurrence(plan.tool_occurrence_id));
-                dependencies.insert(AuthoritativeDependency::OccurrenceCollections(
-                    plan.tool_occurrence_id,
-                ));
-                add_feature_dependency_closure(snapshot, plan.target_feature_id, &mut dependencies);
-                add_feature_dependency_closure(snapshot, plan.tool_feature_id, &mut dependencies);
-                dependencies.insert(AuthoritativeDependency::Definition(
-                    plan.result_definition_id,
-                ));
-                dependencies.extend(
-                    plan.result_feature_ids
-                        .iter()
-                        .cloned()
-                        .map(AuthoritativeDependency::Feature),
-                );
+                add_solid_tool_dependencies(snapshot, plan, &mut dependencies);
             }
             CanonicalCommand::CreateExpressionNode { id, expression, .. }
             | CanonicalCommand::CreateRuleNode { id, expression, .. } => {

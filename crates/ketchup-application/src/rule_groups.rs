@@ -132,6 +132,16 @@ pub(crate) fn reconcile_members<'a>(
             commands.push(CanonicalCommand::SetGroupParent { id: *id, parent });
         }
     }
+    for group in new {
+        let id = groups[&group.name];
+        let current = snapshot.group(id).is_some_and(|group| group.logical());
+        if current != group.logical {
+            commands.push(CanonicalCommand::SetGroupLogical {
+                id,
+                logical: group.logical,
+            });
+        }
+    }
     for group in old {
         if !new.iter().any(|item| item.name == group.name) {
             commands.push(CanonicalCommand::DeleteGroup {
