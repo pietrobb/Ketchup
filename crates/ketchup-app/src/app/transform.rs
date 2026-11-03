@@ -597,6 +597,7 @@ impl KetchupApp {
                     copy_source_occurrence_ids: None,
                     centre_mm,
                     axis,
+                    angle_degrees,
                 }),
             ),
             None => self.end_transform_correction(),
@@ -798,7 +799,13 @@ impl KetchupApp {
         previous: RotateCorrection,
         angle_degrees: f64,
     ) -> bool {
-        self.record_transform_correction(selection, CorrectionOperation::Rotate(previous.clone()));
+        self.record_transform_correction(
+            selection,
+            CorrectionOperation::Rotate(RotateCorrection {
+                angle_degrees,
+                ..previous.clone()
+            }),
+        );
         self.status_key = "status-object-rotated";
         self.digest = self.catalog.format(
             "digest-rotate-committed",

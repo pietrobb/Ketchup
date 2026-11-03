@@ -1909,6 +1909,7 @@ impl KetchupApp {
                 copy_source_occurrence_ids: Some(source_ids),
                 centre_mm,
                 axis,
+                angle_degrees,
             }),
         );
         self.status_key = "status-object-rotated";

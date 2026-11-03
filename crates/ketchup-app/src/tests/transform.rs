@@ -637,7 +637,7 @@ fn a_typed_move_vector_reads_each_value_as_a_length() {
         }
     }
     for (input, distance) in [("10+5,20", 15.2), ("2*20,30", 40.6), ("30*20", 600.0)] {
-        let (_, _, travel) = typed_move(DecimalSeparator::Comma, None, input);
+        let (_, _, travel) = typed_move(DecimalSeparator::Comma, Some(Axis::X), input);
         assert!(
             (travel.length() - distance).abs() < 0.01,
             "{input:?} moved {travel:?}"
@@ -647,13 +647,19 @@ fn a_typed_move_vector_reads_each_value_as_a_length() {
 
 #[test]
 fn a_typed_length_expression_moves_by_its_value_and_previews_it() {
+    // Along a pinned axis the preview says how far and which way, not a
+    // vector that is zero but for one value (operator 2026-11-03).
     let (preview, _, _) = typed_move(DecimalSeparator::Comma, Some(Axis::Z), "25");
-    assert_eq!(preview, None);
+    assert_eq!(preview.as_deref(), Some("= 25 mm (+Z)"));
     let (preview, moved, travel) =
         typed_move(DecimalSeparator::Comma, Some(Axis::Z), "2cm + 2*2,5");
-    assert!(preview.unwrap().contains("25 mm"));
+    assert_eq!(preview.as_deref(), Some("= 25 mm (+Z)"));
     assert!(moved);
     assert_eq!(travel, Vec3::new(0.0, 0.0, 25.0));
+    let (preview, moved, travel) = typed_move(DecimalSeparator::Point, Some(Axis::X), "-40");
+    assert_eq!(preview.as_deref(), Some("= 40 mm (−X)"));
+    assert!(moved);
+    assert_eq!(travel, Vec3::new(-40.0, 0.0, 0.0));
 }
 
 /// D-1 and D-2 (review 2026-10-17): the preview above the Move field reads the
@@ -662,16 +668,18 @@ fn a_typed_length_expression_moves_by_its_value_and_previews_it() {
 #[test]
 fn the_move_preview_shows_what_the_move_does() {
     use DecimalSeparator::{Comma, Point};
+    // A distance with no drag to point a way previews and moves nothing
+    // (operator report 2026-11-03); it once went along +X.
     for (decimal, input, preview, expected) in [
-        (Comma, "2*20,30", "= 40.6 mm", Vec3::new(40.6, 0.0, 0.0)),
-        (Comma, "2*1,5", "= 3 mm", Vec3::new(3.0, 0.0, 0.0)),
+        (Comma, "2*20,30", "= 40.6 mm", Vec3::ZERO),
+        (Comma, "2*1,5", "= 3 mm", Vec3::ZERO),
         (
             Comma,
             "12,5x3",
             "= 12.5; 3; 0 mm",
             Vec3::new(12.5, 3.0, 0.0),
         ),
-        (Point, "2*20.30", "= 40.6 mm", Vec3::new(40.6, 0.0, 0.0)),
+        (Point, "2*20.30", "= 40.6 mm", Vec3::ZERO),
         (Point, "10;20", "= 10; 20; 0 mm", Vec3::new(10.0, 20.0, 0.0)),
         (
             Point,
@@ -684,7 +692,12 @@ fn the_move_preview_shows_what_the_move_does() {
         let (shown, moved, travel) = typed_move(decimal, None, input);
         if expected == Vec3::ZERO {
             assert!(!moved, "{input:?} {decimal:?}");
-            assert!(shown.unwrap().contains("80;60"), "{input:?}");
+            assert_eq!(travel, Vec3::ZERO, "{input:?} {decimal:?}");
+            if preview.is_empty() {
+                assert!(shown.unwrap().contains("80;60"), "{input:?}");
+            } else {
+                assert_eq!(shown.as_deref(), Some(preview), "{input:?} {decimal:?}");
+            }
         } else {
             assert_eq!(shown.as_deref(), Some(preview), "{input:?} {decimal:?}");
             assert!(moved, "{input:?} {decimal:?}");
@@ -719,13 +732,16 @@ fn a_separator_that_may_mean_something_else_on_a_comma_system_is_previewed() {
     assert_eq!(preview_in(ActiveTool::PushPull, "1200"), None);
     assert_eq!(preview_in(ActiveTool::PushPull, "12,5"), None);
     assert_eq!(preview_in(ActiveTool::Rectangle, "80;60"), None);
+    // On a locked axis the preview is the move itself (#2690), so it says
+    // what the comma or point was read as, written with a point like every
+    // other preview (operator 2026-11-03).
     let (preview, moved, _) = typed_move(DecimalSeparator::Comma, Some(Axis::Z), "80,60");
-    assert_eq!(preview.as_deref(), Some("= 80.6 mm"));
+    assert_eq!(preview.as_deref(), Some("= 80.6 mm (+Z)"));
     assert!(moved);
     let (preview, _, _) = typed_move(DecimalSeparator::Comma, Some(Axis::Z), "1.200");
-    assert_eq!(preview.as_deref(), Some("= 1.2 mm"));
+    assert_eq!(preview.as_deref(), Some("= 1.2 mm (+Z)"));
     let (preview, _, _) = typed_move(DecimalSeparator::Point, Some(Axis::Z), "1.200");
-    assert_eq!(preview, None);
+    assert_eq!(preview.as_deref(), Some("= 1.2 mm (+Z)"));
 }
 
 /// D-2 (review 2026-10-17): where the decimal separator is a point a comma is

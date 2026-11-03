@@ -379,6 +379,8 @@ pub(crate) struct RotateCorrection {
     pub(crate) copy_source_occurrence_ids: Option<Vec<OccurrenceId>>,
     pub(crate) centre_mm: Vec3,
     pub(crate) axis: Axis,
+    /// Signed angle of the turn, so a typed correction keeps its direction.
+    pub(crate) angle_degrees: f64,
 }
 
 #[derive(Clone)]

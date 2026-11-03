@@ -1837,6 +1837,7 @@ value-label-radius-distance = POLOMER / VZDIALENOSŤ (MM)
 value-label-distance = VZDIALENOSŤ (MM)
 value-placeholder = zadajte presnú hodnotu
 value-length-preview = = { $value } mm
+value-move-axis-preview = = { $value } mm ({ $direction })
 value-comma-not-decimal = Čiarka tu nie je desatinná: píš 12.5 a hodnoty oddeľ ; x alebo : (80;60)
 value-unreadable = nie je to číslo, dĺžka ani výraz
 value-x-separates = x oddeľuje hodnoty a toto pole berie jednu: násobí sa * (3*200)

@@ -390,11 +390,13 @@ fn the_keys_of_one_slow_frame_are_read_in_order_with_the_value_they_begin() {
     };
     let none = egui::Modifiers::NONE;
 
-    // "100" and Enter in one frame move the part by the typed 100 mm.
+    // "100" and Enter in one frame move the part by the typed 100 mm along
+    // the locked axis (a distance with no way to go moves nothing).
     let mut app = KetchupApp::new();
     app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
     let origin = app.occurrence_box_geometry(1).unwrap().0;
     app.dispatch_command(AppCommand::Move);
+    app.set_move_axis_lock(Some(Axis::X));
     let mut harness = shell(app);
     text(&mut harness, "100");
     raw(&mut harness, egui::Key::Enter, none);
