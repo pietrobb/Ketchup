@@ -1,103 +1,68 @@
-//! Sets this Kečup up as the `ketchup` MCP server of the AI harnesses the user
-//! has (Claude Code, Codex), and tells what each one would start now. A harness
-//! whose entry names a program that is gone only reports "connection closed",
-//! so the window and `--mcp-setup` name that program and replace it.
+//! Connects this Kečup as the `ketchup` MCP server of the AI clients the user
+//! has (Claude Code, Codex, Claude Desktop, Supervisor), and tells what each one
+//! would start now. Connect writes the client's own configuration file, so it
+//! works when the client's command is not on the window's PATH. A client whose
+//! entry names a program that is gone only reports "connection closed", so the
+//! window and `--mcp-setup` name that program and replace it.
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-/// The server name Kečup registers under.
-const SERVER: &str = "ketchup";
+use super::mcp_config::{
+    SERVER, codex_command, read_or_empty, replace_file, with_codex_server, with_json_server,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Harness {
     ClaudeCode,
     Codex,
+    ClaudeDesktop,
+    Supervisor,
 }
 
 impl Harness {
-    pub const ALL: [Harness; 2] = [Harness::ClaudeCode, Harness::Codex];
+    pub const ALL: [Harness; 4] = [
+        Harness::ClaudeCode,
+        Harness::Codex,
+        Harness::ClaudeDesktop,
+        Harness::Supervisor,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             Harness::ClaudeCode => "Claude Code",
             Harness::Codex => "Codex",
+            Harness::ClaudeDesktop => "Claude Desktop",
+            Harness::Supervisor => "Supervisor",
         }
     }
 
-    fn cli(self) -> &'static str {
+    /// The client's command line program, for the clients that have one.
+    fn cli(self) -> Option<&'static str> {
         match self {
-            Harness::ClaudeCode => "claude",
-            Harness::Codex => "codex",
+            Harness::ClaudeCode => Some("claude"),
+            Harness::Codex => Some("codex"),
+            Harness::ClaudeDesktop | Harness::Supervisor => None,
         }
     }
 
-    /// The command that sets this executable up, for every project of the user.
-    pub fn add_arguments(self, executable: &str) -> Vec<String> {
-        let mut arguments = vec!["mcp".to_owned(), "add".to_owned()];
-        if self == Harness::ClaudeCode {
-            // Without a scope Claude Code keeps the server for the current folder only.
-            arguments.extend(["--scope".to_owned(), "user".to_owned()]);
-        }
-        arguments.extend([
-            SERVER.to_owned(),
-            "--".to_owned(),
-            executable.to_owned(),
-            "--mcp".to_owned(),
-        ]);
-        arguments
-    }
-
-    fn remove_arguments(self) -> Vec<&'static str> {
-        match self {
-            Harness::ClaudeCode => vec!["mcp", "remove", SERVER, "--scope", "user"],
-            Harness::Codex => vec!["mcp", "remove", SERVER],
-        }
-    }
-
-    /// The command line to paste into a terminal.
-    pub fn add_command_line(self, executable: &str) -> String {
-        let mut line = self.cli().to_owned();
-        for argument in self.add_arguments(executable) {
-            line.push(' ');
-            if argument == executable {
-                line.push_str(&format!("\"{argument}\""));
-            } else {
-                line.push_str(&argument);
-            }
-        }
-        line
-    }
-
-    /// The program the harness starts as `ketchup` for every project, if any.
-    fn registered_command(self, home: &Path) -> Option<String> {
-        match self {
-            Harness::ClaudeCode => {
-                let directory = std::env::var_os("CLAUDE_CONFIG_DIR")
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| home.to_owned());
-                let text = std::fs::read_to_string(directory.join(".claude.json")).ok()?;
-                let config: serde_json::Value = serde_json::from_str(&text).ok()?;
-                config["mcpServers"][SERVER]["command"]
-                    .as_str()
-                    .map(str::to_owned)
-            }
-            Harness::Codex => {
-                let directory = std::env::var_os("CODEX_HOME")
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| home.join(".codex"));
-                let text = std::fs::read_to_string(directory.join("config.toml")).ok()?;
-                codex_command(&text)
-            }
-        }
+    /// The command line to paste into a terminal: `program mcp add`, for every
+    /// project of the user.
+    pub fn add_command_line(self, program: &str, executable: &str) -> String {
+        // Without a scope Claude Code keeps the server for the current folder only.
+        let scope = if self == Harness::ClaudeCode {
+            " --scope user"
+        } else {
+            ""
+        };
+        format!("{program} mcp add{scope} {SERVER} -- \"{executable}\" --mcp")
     }
 }
 
 /// The development checkout's server script, relative to the checkout.
 const CHECKOUT_SERVER: [&str; 2] = ["scripts", "ketchup-mcp-server.cmd"];
 
-/// The program a harness should start for this Kečup. A build inside a
+/// The program a client should start for this Kečup. A build inside a
 /// checkout's `target` (a cargo build, or a window's copy under
 /// `target\mcp-windows`) is replaced or deleted by the next build, so there it
 /// is the checkout's server script, which always starts the newest build.
@@ -111,10 +76,10 @@ pub fn entry_point(executable: &Path) -> PathBuf {
         .unwrap_or_else(|| executable.to_owned())
 }
 
-/// What a harness starts for `ketchup`.
+/// What a client starts for `ketchup`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Registration {
-    /// The harness's command is not installed.
+    /// The client is not on this computer.
     NotInstalled,
     /// Installed, without a `ketchup` server for every project.
     NotSetUp,
@@ -125,35 +90,170 @@ pub enum Registration {
     Elsewhere { command: String, exists: bool },
 }
 
-/// One harness, what it starts and, after a set-up, how that went.
+/// One client, what it starts and, after a Connect, how that went.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HarnessRow {
     pub harness: Harness,
+    /// The configuration file the row reads and Connect writes, if known.
+    pub file: Option<PathBuf>,
     pub registration: Registration,
     pub setup_error: Option<String>,
 }
 
-/// Where the harnesses keep their configuration and how they are found.
+/// Where the clients keep their configuration and how they are found.
 pub struct Environment {
     pub home: PathBuf,
     pub path: OsString,
+    /// `%APPDATA%`: Claude Desktop's folder and npm's commands on Windows.
+    pub app_data: Option<PathBuf>,
+    /// `%LOCALAPPDATA%`: the installed Supervisor on Windows.
+    pub local_app_data: Option<PathBuf>,
+    /// `CLAUDE_CONFIG_DIR`, where Claude Code keeps `.claude.json` instead of home.
+    pub claude_config_dir: Option<PathBuf>,
+    /// `CODEX_HOME`, Codex's folder instead of `~/.codex`.
+    pub codex_home: Option<PathBuf>,
+    /// Folders of Supervisor instances. Each reads the MCP servers from its
+    /// own `skills\mcp_servers.json`, next to its `skills\mcp_bridge.py`.
+    pub supervisor_folders: Vec<PathBuf>,
 }
 
 impl Environment {
+    /// Only `home`: no PATH and no other folders.
+    pub fn in_home(home: PathBuf) -> Self {
+        Self {
+            home,
+            path: OsString::new(),
+            app_data: None,
+            local_app_data: None,
+            claude_config_dir: None,
+            codex_home: None,
+            supervisor_folders: Vec::new(),
+        }
+    }
+
     pub fn current() -> Option<Self> {
         let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })?;
+        let folder = |name| std::env::var_os(name).map(PathBuf::from);
         Some(Self {
-            home: PathBuf::from(home),
             path: std::env::var_os("PATH").unwrap_or_default(),
+            app_data: folder("APPDATA"),
+            local_app_data: folder("LOCALAPPDATA"),
+            claude_config_dir: folder("CLAUDE_CONFIG_DIR"),
+            codex_home: folder("CODEX_HOME"),
+            supervisor_folders: super::running_programs::folders_of_running("supervisor"),
+            ..Self::in_home(PathBuf::from(home))
         })
     }
 
-    fn cli(&self, harness: Harness) -> Option<PathBuf> {
-        find_program(&self.path, harness.cli())
+    /// The file where `harness` keeps its MCP servers, if it has one here.
+    pub fn config_file(&self, harness: Harness) -> Option<PathBuf> {
+        Some(match harness {
+            Harness::ClaudeCode => self
+                .claude_config_dir
+                .clone()
+                .unwrap_or_else(|| self.home.clone())
+                .join(".claude.json"),
+            Harness::Codex => self
+                .codex_home
+                .clone()
+                .unwrap_or_else(|| self.home.join(".codex"))
+                .join("config.toml"),
+            Harness::ClaudeDesktop => {
+                let folder = if cfg!(windows) {
+                    self.app_data.as_ref()?.join("Claude")
+                } else if cfg!(target_os = "macos") {
+                    self.home
+                        .join("Library")
+                        .join("Application Support")
+                        .join("Claude")
+                } else {
+                    self.home.join(".config").join("Claude")
+                };
+                folder.join("claude_desktop_config.json")
+            }
+            Harness::Supervisor => self
+                .local_app_data
+                .as_ref()?
+                .join("Programs")
+                .join("Supervisor")
+                .join("skills")
+                .join("mcp_servers.json"),
+        })
     }
 
+    /// The client's command: on PATH, or where its installer puts it, since a
+    /// window keeps the PATH of the time the user signed in.
+    fn cli(&self, harness: Harness) -> Option<PathBuf> {
+        let name = harness.cli()?;
+        let mut folders: Vec<PathBuf> = std::env::split_paths(&self.path).collect();
+        folders.push(self.home.join(".local").join("bin"));
+        folders.extend(self.app_data.iter().map(|folder| folder.join("npm")));
+        find_program(&folders, name)
+    }
+
+    /// Whether the client is on this computer: its command, or the folder it
+    /// keeps its configuration in (for Claude Code, the file itself, since that
+    /// is in the home folder).
+    fn installed(&self, harness: Harness, file: Option<&Path>) -> bool {
+        if self.cli(harness).is_some() {
+            return true;
+        }
+        match file {
+            Some(file) if harness == Harness::ClaudeCode => file.is_file(),
+            Some(file) => file.parent().is_some_and(Path::is_dir),
+            None => false,
+        }
+    }
+
+    /// Every file `harness` reads its MCP servers from: one per Supervisor
+    /// instance (the installed one first), one for each other client.
+    pub fn config_files(&self, harness: Harness) -> Vec<PathBuf> {
+        let mut files: Vec<PathBuf> = self.config_file(harness).into_iter().collect();
+        if harness == Harness::Supervisor {
+            for folder in &self.supervisor_folders {
+                let skills = folder.join("skills");
+                let file = skills.join("mcp_servers.json");
+                // Without the bridge the instance reads no MCP servers.
+                if skills.join("mcp_bridge.py").is_file()
+                    && !files.iter().any(|known| same_program(known, &file))
+                {
+                    files.push(file);
+                }
+            }
+        }
+        files
+    }
+
+    /// The program the client starts as `ketchup` for every project, if any.
+    fn registered_command(harness: Harness, file: &Path) -> Option<String> {
+        let text = std::fs::read_to_string(file).ok()?;
+        match harness {
+            Harness::Codex => codex_command(&text),
+            Harness::ClaudeCode | Harness::ClaudeDesktop | Harness::Supervisor => {
+                // A file that is no JSON shows as not set up; Connect names it.
+                let config: serde_json::Value = serde_json::from_str(&text).ok()?;
+                let command = config["mcpServers"][SERVER]["command"].as_str()?;
+                Some(if harness == Harness::Supervisor {
+                    expand_variables(command)
+                } else {
+                    command.to_owned()
+                })
+            }
+        }
+    }
+
+    /// What the client starts, as its default file says.
     pub fn registration(&self, harness: Harness, executable: &Path) -> Registration {
-        match harness.registered_command(&self.home) {
+        self.registration_in(harness, self.config_file(harness).as_deref(), executable)
+    }
+
+    fn registration_in(
+        &self,
+        harness: Harness,
+        file: Option<&Path>,
+        executable: &Path,
+    ) -> Registration {
+        match file.and_then(|file| Self::registered_command(harness, file)) {
             Some(command) if same_program(Path::new(&command), executable) => {
                 Registration::ThisKetchup
             }
@@ -161,84 +261,137 @@ impl Environment {
                 exists: Path::new(&command).is_file(),
                 command,
             },
-            None if self.cli(harness).is_some() => Registration::NotSetUp,
+            None if self.installed(harness, file) => Registration::NotSetUp,
             None => Registration::NotInstalled,
         }
     }
 
+    fn row(&self, harness: Harness, file: Option<PathBuf>, executable: &Path) -> HarnessRow {
+        HarnessRow {
+            harness,
+            registration: self.registration_in(harness, file.as_deref(), executable),
+            file,
+            setup_error: None,
+        }
+    }
+
+    /// A row per configuration file: a client whose folder is unknown here
+    /// still gets one, as not installed.
     pub fn rows(&self, executable: &Path) -> Vec<HarnessRow> {
         Harness::ALL
             .into_iter()
-            .map(|harness| HarnessRow {
-                harness,
-                registration: self.registration(harness, executable),
-                setup_error: None,
+            .flat_map(|harness| {
+                let files = self.config_files(harness);
+                if files.is_empty() {
+                    vec![self.row(harness, None, executable)]
+                } else {
+                    files
+                        .into_iter()
+                        .map(|file| self.row(harness, Some(file), executable))
+                        .collect()
+                }
             })
             .collect()
     }
 
-    /// Replaces the harness's `ketchup` server with this executable.
+    /// Replaces the client's `ketchup` server with this executable, in its
+    /// default configuration file.
     pub fn set_up(&self, harness: Harness, executable: &Path) -> HarnessRow {
-        let setup_error = match self.cli(harness) {
-            None => Some(format!("the {} command was not found", harness.cli())),
-            Some(cli) => {
-                // A missing entry makes the removal fail; only the addition counts.
-                let _ = run(&cli, harness.remove_arguments().into_iter().map(OsStr::new));
-                let executable = executable.to_string_lossy().into_owned();
-                run(
-                    &cli,
-                    harness
-                        .add_arguments(&executable)
-                        .iter()
-                        .map(|argument| OsStr::new(argument.as_str())),
-                )
-                .err()
-                .map(|error| format!("{error}"))
+        self.set_up_in(harness, self.config_file(harness), executable)
+    }
+
+    /// `--mcp-setup`: connects every installed client in its default file, so
+    /// of Supervisor only the installed one; another running instance changes
+    /// only when the user clicks Connect on its row.
+    pub fn set_up_installed(&self, executable: &Path) -> Vec<HarnessRow> {
+        Harness::ALL
+            .into_iter()
+            .map(|harness| {
+                let found = self.row(harness, self.config_file(harness), executable);
+                if found.registration == Registration::NotInstalled {
+                    found
+                } else {
+                    self.set_up_in(harness, found.file, executable)
+                }
+            })
+            .collect()
+    }
+
+    /// Replaces the `ketchup` server in `file`, the one a row describes.
+    pub fn set_up_in(
+        &self,
+        harness: Harness,
+        file: Option<PathBuf>,
+        executable: &Path,
+    ) -> HarnessRow {
+        let setup_error = Self::write(harness, file.as_deref(), executable)
+            .err()
+            .map(|error| format!("{error}"));
+        HarnessRow {
+            setup_error,
+            ..self.row(harness, file, executable)
+        }
+    }
+
+    fn write(harness: Harness, file: Option<&Path>, executable: &Path) -> Result<(), WriteError> {
+        let file = file.ok_or(WriteError::NoConfigurationFolder)?.to_owned();
+        let failed = |error| WriteError::File {
+            file: file.clone(),
+            error,
+        };
+        let text = read_or_empty(&file).map_err(failed)?;
+        let executable = executable.to_string_lossy();
+        let text = match harness {
+            Harness::Codex => with_codex_server(&text, &executable),
+            Harness::ClaudeCode | Harness::ClaudeDesktop | Harness::Supervisor => {
+                with_json_server(&text, &executable, harness == Harness::ClaudeCode)
+                    .map_err(failed)?
             }
         };
-        HarnessRow {
-            harness,
-            registration: self.registration(harness, executable),
-            setup_error,
-        }
+        replace_file(&file, &text).map_err(failed)
     }
 }
 
-/// Why a harness command did not register Kečup.
+/// Why Connect did not write a client's configuration.
 #[derive(Debug)]
-pub enum RunError {
-    /// The command could not start.
-    Start(std::io::Error),
-    /// It ran and refused, with what it printed.
-    Refused { output: String },
+pub enum WriteError {
+    /// The folder the client keeps it in is unknown (no `%APPDATA%`).
+    NoConfigurationFolder,
+    /// The file could not be read, is not a configuration, or could not be written.
+    File {
+        file: PathBuf,
+        error: std::io::Error,
+    },
 }
 
-impl std::fmt::Display for RunError {
+impl std::fmt::Display for WriteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Start(error) => write!(f, "{error}"),
-            Self::Refused { output } => f.write_str(output),
+            Self::NoConfigurationFolder => {
+                f.write_str("the client's configuration folder is unknown")
+            }
+            Self::File { file, error } => write!(f, "{}: {error}", file.display()),
         }
     }
 }
 
-impl std::error::Error for RunError {
+impl std::error::Error for WriteError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Start(error) => Some(error),
-            Self::Refused { .. } => None,
+            Self::NoConfigurationFolder => None,
+            Self::File { error, .. } => Some(error),
         }
     }
 }
 
-/// Why `--mcp-setup` left no harness starting this Kečup.
+/// Why `--mcp-setup` left no client starting this Kečup.
 #[derive(Debug)]
 pub enum SetupFailure {
     /// This executable's own path is unknown.
     Executable(std::io::Error),
     /// Neither USERPROFILE nor HOME is set.
     UnknownHome,
-    /// No harness starts this Kečup; the report says what each one starts.
+    /// No client starts this Kečup; the report says what each one starts.
     NoHarness { report: String },
 }
 
@@ -261,44 +414,46 @@ impl std::error::Error for SetupFailure {
     }
 }
 
-fn run<'a>(program: &Path, arguments: impl Iterator<Item = &'a OsStr>) -> Result<(), RunError> {
-    let mut command = Command::new(program);
-    command.args(arguments);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt as _;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    let output = command.output().map_err(RunError::Start)?;
-    if output.status.success() {
-        return Ok(());
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let message = if stderr.trim().is_empty() {
-        stdout
-    } else {
-        stderr
-    };
-    Err(RunError::Refused {
-        output: message.trim().to_owned(),
-    })
-}
-
-/// The program `name` on `path`, as a shell would find it.
-fn find_program(path: &OsStr, name: &str) -> Option<PathBuf> {
+/// The program `name` in one of `folders`, as a shell would find it.
+fn find_program(folders: &[PathBuf], name: &str) -> Option<PathBuf> {
     let extensions: &[&str] = if cfg!(windows) {
         &[".exe", ".cmd", ".bat"]
     } else {
         &[""]
     };
-    std::env::split_paths(path).find_map(|directory| {
+    folders.iter().find_map(|folder| {
         extensions
             .iter()
-            .map(|extension| directory.join(format!("{name}{extension}")))
+            .map(|extension| folder.join(format!("{name}{extension}")))
             .find(|candidate| candidate.is_file())
     })
+}
+
+/// `text` with each `%NAME%` replaced by the variable's value, as Supervisor's
+/// `mcp_bridge.py` reads its commands (`os.path.expandvars`): an unknown name
+/// stays as written and `%%` is one `%`.
+fn expand_variables(text: &str) -> String {
+    let mut expanded = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find('%') {
+        expanded.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('%') else {
+            rest = &rest[start..];
+            break;
+        };
+        let name = &after[..end];
+        if name.is_empty() {
+            expanded.push('%');
+        } else if let Some(value) = std::env::var_os(name) {
+            expanded.push_str(&value.to_string_lossy());
+        } else {
+            expanded.push_str(&rest[start..start + end + 2]);
+        }
+        rest = &after[end + 1..];
+    }
+    expanded.push_str(rest);
+    expanded
 }
 
 fn same_program(command: &Path, executable: &Path) -> bool {
@@ -311,73 +466,26 @@ fn same_program(command: &Path, executable: &Path) -> bool {
     }
 }
 
-/// The `command` of `[mcp_servers.ketchup]` in a Codex config.toml.
-fn codex_command(toml: &str) -> Option<String> {
-    let mut in_section = false;
-    for line in toml.lines().map(str::trim) {
-        if line.starts_with('[') {
-            let header = line.trim_matches(|c| c == '[' || c == ']').trim();
-            in_section = header == format!("mcp_servers.{SERVER}")
-                || header == format!("mcp_servers.\"{SERVER}\"");
-            continue;
-        }
-        if !in_section {
-            continue;
-        }
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        if key.trim() != "command" {
-            continue;
-        }
-        let value = value.trim();
-        if let Some(literal) = value.strip_prefix('\'') {
-            return literal.split('\'').next().map(str::to_owned);
-        }
-        let basic = value.strip_prefix('"')?;
-        let mut command = String::new();
-        let mut characters = basic.chars();
-        while let Some(character) = characters.next() {
-            match character {
-                '"' => return Some(command),
-                '\\' => command.push(characters.next()?),
-                other => command.push(other),
-            }
-        }
-        return None;
-    }
-    None
-}
-
-/// `Ketchup --mcp-setup`: sets up every installed harness and says what each
-/// starts now. Ok when at least one harness starts this Kečup.
+/// `Ketchup --mcp-setup`: connects every installed client and says what each
+/// starts now. Ok when at least one client starts this Kečup.
 pub fn set_up_installed_harnesses() -> Result<String, SetupFailure> {
     let executable = entry_point(&std::env::current_exe().map_err(SetupFailure::Executable)?);
     let environment = Environment::current().ok_or(SetupFailure::UnknownHome)?;
     let mut report = String::new();
     let mut any = false;
-    for harness in Harness::ALL {
-        let row = if environment.cli(harness).is_some() {
-            environment.set_up(harness, &executable)
-        } else {
-            HarnessRow {
-                harness,
-                registration: Registration::NotInstalled,
-                setup_error: None,
-            }
-        };
+    for row in environment.set_up_installed(&executable) {
         any |= row.registration == Registration::ThisKetchup;
         report.push_str(&describe(&row, &executable));
         report.push('\n');
     }
     if any {
         report.push_str(
-            "Start a new session of the harness; its ketchup tools then work in the open Kečup window.\n",
+            "Restart the AI client; its ketchup tools then work in the open Kečup window.\n",
         );
         Ok(report)
     } else {
         report.push_str(&format!(
-            "No harness was set up. Add this command as an MCP server: \"{}\" --mcp\n",
+            "No client was set up. Add this command as an MCP server: \"{}\" --mcp\n",
             executable.display()
         ));
         Err(SetupFailure::NoHarness { report })
@@ -399,6 +507,12 @@ fn describe(row: &HarnessRow, executable: &Path) -> String {
             exists: false,
         } => format!("starts a program that does not exist: {command}"),
     };
+    let name = match &row.file {
+        Some(file) if row.registration != Registration::NotInstalled => {
+            format!("{name} ({})", file.display())
+        }
+        _ => name.to_owned(),
+    };
     match &row.setup_error {
         Some(error) => format!("{name}: {state} (set-up failed: {error})"),
         None => format!("{name}: {state}"),
@@ -406,157 +520,5 @@ fn describe(row: &HarnessRow, executable: &Path) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn temporary_home(name: &str) -> PathBuf {
-        let home =
-            std::env::temp_dir().join(format!("ketchup-mcp-setup-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
-        std::fs::create_dir_all(&home).unwrap();
-        home
-    }
-
-    #[test]
-    fn claude_code_is_set_up_for_every_project_and_codex_with_the_same_server() {
-        let executable = r"C:\Users\me\AppData\Local\Programs\Ketchup\Ketchup.exe";
-        assert_eq!(
-            Harness::ClaudeCode.add_command_line(executable),
-            r#"claude mcp add --scope user ketchup -- "C:\Users\me\AppData\Local\Programs\Ketchup\Ketchup.exe" --mcp"#
-        );
-        assert_eq!(
-            Harness::Codex.add_command_line(executable),
-            r#"codex mcp add ketchup -- "C:\Users\me\AppData\Local\Programs\Ketchup\Ketchup.exe" --mcp"#
-        );
-    }
-
-    #[test]
-    fn a_claude_code_entry_naming_a_deleted_build_is_reported_with_its_path() {
-        let home = temporary_home("stale");
-        let gone = home.join("target").join("release").join("ketchup-app.exe");
-        let config = serde_json::json!({
-            "mcpServers": {"ketchup": {"type": "stdio", "command": gone, "args": ["--mcp"]}}
-        });
-        std::fs::write(home.join(".claude.json"), config.to_string()).unwrap();
-        let environment = Environment {
-            home: home.clone(),
-            path: OsString::new(),
-        };
-        let this = std::env::current_exe().unwrap();
-        assert_eq!(
-            environment.registration(Harness::ClaudeCode, &this),
-            Registration::Elsewhere {
-                command: gone.to_string_lossy().into_owned(),
-                exists: false
-            }
-        );
-        let config = serde_json::json!({
-            "mcpServers": {"ketchup": {"command": this, "args": ["--mcp"]}}
-        });
-        std::fs::write(home.join(".claude.json"), config.to_string()).unwrap();
-        assert_eq!(
-            environment.registration(Harness::ClaudeCode, &this),
-            Registration::ThisKetchup
-        );
-        let _ = std::fs::remove_dir_all(home);
-    }
-
-    #[test]
-    fn a_build_inside_a_checkout_is_started_through_its_server_script() {
-        let checkout = temporary_home("checkout");
-        let script = checkout.join("scripts").join("ketchup-mcp-server.cmd");
-        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
-        std::fs::write(&script, "").unwrap();
-        let target = checkout.join("target");
-        for build in [
-            target.join("release").join("ketchup-app.exe"),
-            target
-                .join("mcp-windows")
-                .join("0123abcd")
-                .join("ketchup-app.exe"),
-            target
-                .join("worktree")
-                .join("release")
-                .join("ketchup-app.exe"),
-        ] {
-            assert_eq!(entry_point(&build), script, "{}", build.display());
-        }
-        // A window the dev server opened sees the registered script as itself,
-        // so it offers no replacement with its own temporary copy.
-        let config = serde_json::json!({
-            "mcpServers": {"ketchup": {"command": script, "args": ["--mcp"]}}
-        });
-        std::fs::write(checkout.join(".claude.json"), config.to_string()).unwrap();
-        let environment = Environment {
-            home: checkout.clone(),
-            path: OsString::new(),
-        };
-        let window = target
-            .join("mcp-windows")
-            .join("0123abcd")
-            .join("ketchup-app.exe");
-        assert_eq!(
-            environment.registration(Harness::ClaudeCode, &entry_point(&window)),
-            Registration::ThisKetchup
-        );
-        let installed = checkout
-            .join("Programs")
-            .join("Ketchup")
-            .join("Ketchup.exe");
-        assert_eq!(entry_point(&installed), installed);
-        std::fs::remove_file(&script).unwrap();
-        let build = target.join("release").join("ketchup-app.exe");
-        assert_eq!(entry_point(&build), build);
-        let _ = std::fs::remove_dir_all(checkout);
-    }
-
-    #[test]
-    fn a_harness_without_its_command_or_entry_is_told_apart() {
-        let home = temporary_home("absent");
-        let bin = home.join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        let program = if cfg!(windows) {
-            "claude.cmd"
-        } else {
-            "claude"
-        };
-        std::fs::write(bin.join(program), "").unwrap();
-        let environment = Environment {
-            home: home.clone(),
-            path: std::env::join_paths([&bin]).unwrap(),
-        };
-        let this = std::env::current_exe().unwrap();
-        assert_eq!(
-            environment.registration(Harness::ClaudeCode, &this),
-            Registration::NotSetUp
-        );
-        let rows = environment.rows(&this);
-        assert_eq!(rows[1].registration, Registration::NotInstalled);
-        let _ = std::fs::remove_dir_all(home);
-    }
-
-    #[test]
-    fn the_codex_command_is_read_from_its_ketchup_section_only() {
-        let toml = r#"
-model = "gpt"
-[mcp_servers.other]
-command = "other.exe"
-
-[mcp_servers.ketchup]
-args = ["--mcp"]
-command = "C:\\Program Files\\Ketchup\\Ketchup.exe"
-"#;
-        assert_eq!(
-            codex_command(toml).as_deref(),
-            Some(r"C:\Program Files\Ketchup\Ketchup.exe")
-        );
-        assert_eq!(
-            codex_command("[mcp_servers.ketchup]\ncommand = 'C:\\k\\Ketchup.exe'\n").as_deref(),
-            Some(r"C:\k\Ketchup.exe")
-        );
-        assert_eq!(
-            codex_command("[mcp_servers.other]\ncommand = \"x\"\n"),
-            None
-        );
-    }
-}
+#[path = "mcp_setup_tests.rs"]
+mod tests;

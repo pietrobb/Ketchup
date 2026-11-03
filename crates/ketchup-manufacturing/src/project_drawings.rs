@@ -471,6 +471,8 @@ struct DrawnView {
     /// The extent of the solids alone, which the overall dimensions measure.
     solids: Option<([f64; 2], [f64; 2])>,
     annotations: Option<PlanAnnotations>,
+    /// The underlay lines a plan draws beneath the model, cut at its extent.
+    underlay: Vec<[[f64; 2]; 2]>,
     /// Boxed marks where they stand: the windows and doors a plan shows, the
     /// position numbers of a shop drawing.
     marks: Vec<([f64; 2], String)>,
@@ -489,6 +491,20 @@ impl DrawnView {
             }
         }
         self.annotations = Some(annotations);
+    }
+
+    /// Lays the underlay `lines` beneath this view, cut at what it draws: an
+    /// underlay as large as a cadastral map never grows the view.
+    fn lay_underlay(&mut self, frame: &ViewFrame, lines: &[[Point; 2]]) {
+        if !self.min[0].is_finite() {
+            return;
+        }
+        self.underlay = lines
+            .iter()
+            .filter_map(|[a, b]| {
+                clip_to_box(frame.project(*a), frame.project(*b), self.min, self.max)
+            })
+            .collect();
     }
 
     /// Marks the windows and doors standing at `points` in this view.
@@ -617,6 +633,7 @@ fn draw_view(
         max,
         solids: min[0].is_finite().then_some((min, max)),
         annotations: None,
+        underlay: Vec::new(),
         marks: Vec::new(),
         levels: Vec::new(),
         // `cut` is measured along the depth direction, which is ±1 on the
@@ -628,6 +645,32 @@ fn draw_view(
             cut / frame.depth[axis]
         }),
     }
+}
+
+/// The piece of the line from `a` to `b` inside the box `min`..`max`, if any
+/// (Liang–Barsky).
+fn clip_to_box(a: [f64; 2], b: [f64; 2], min: [f64; 2], max: [f64; 2]) -> Option<[[f64; 2]; 2]> {
+    let delta = [b[0] - a[0], b[1] - a[1]];
+    let (mut enter, mut leave) = (0.0_f64, 1.0_f64);
+    for axis in 0..2 {
+        for (toward, room) in [
+            (-delta[axis], a[axis] - min[axis]),
+            (delta[axis], max[axis] - a[axis]),
+        ] {
+            if toward.abs() > 0.0 {
+                let at = room / toward;
+                if toward < 0.0 {
+                    enter = enter.max(at);
+                } else {
+                    leave = leave.min(at);
+                }
+            } else if room < 0.0 {
+                return None;
+            }
+        }
+    }
+    let point = |t: f64| [a[0] + delta[0] * t, a[1] + delta[1] * t];
+    (enter < leave).then(|| [point(enter), point(leave)])
 }
 
 fn polygon_area(points: &[[f64; 2]]) -> f64 {
@@ -695,6 +738,9 @@ pub const SCALES: [u32; 10] = [10, 20, 25, 50, 75, 100, 200, 250, 500, 1000];
 // not a tolerance: the pen width of a visible edge on the sheet.
 const EDGE_STROKE_MM: f64 = 0.18;
 const EDGE_COLOR: [u8; 3] = [34, 34, 34];
+// not a tolerance: the pen width of an underlay line, thinner than an edge.
+const UNDERLAY_STROKE_MM: f64 = 0.13;
+const UNDERLAY_COLOR: [u8; 3] = [160, 160, 160];
 // not a tolerance: the pen width of a cut edge on the sheet.
 const CUT_STROKE_MM: f64 = 0.5;
 const DIMENSION_TEXT_MM: f64 = 2.5;
@@ -800,6 +846,17 @@ fn draw_view_on_page(
         color: EDGE_COLOR,
         dash_mm: Vec::new(),
     };
+    // First, so the model is drawn over it.
+    for [a, b] in &view.underlay {
+        page.line(
+            vec![at(*a), at(*b)],
+            Stroke {
+                width_mm: UNDERLAY_STROKE_MM,
+                color: UNDERLAY_COLOR,
+                dash_mm: Vec::new(),
+            },
+        );
+    }
     let thread_line = |page: &mut Page, points: &[[f64; 2]], width_mm: f64| {
         page.line(
             points.iter().map(|point| at(*point)).collect(),

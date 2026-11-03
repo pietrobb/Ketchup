@@ -27,6 +27,7 @@ const DECISION_DEADLINE: Duration = Duration::from_secs(60);
 const MAX_CONNECTIONS: usize = 8;
 const DISCOVERY_DIRECTORY: &str = "Ketchup/live-instances";
 const INSTANCE_ID_BYTES: usize = 16;
+const MAX_CLIENT_NAME_CHARS: usize = 40;
 
 pub(crate) struct ConsentBroker {
     address: SocketAddr,
@@ -182,7 +183,7 @@ impl KetchupApp {
     }
 
     /// Local attach requests are granted immediately; the window stays usable and
-    /// shows only a passive "connected" panel with a disconnect button.
+    /// its status line names the attached AI next to Disconnect.
     pub(crate) fn poll_live_consent(&mut self, context: &egui::Context) {
         let delivery_failed = self.live.consent_broker.as_ref().is_some_and(|broker| {
             let mut failed = false;
@@ -268,6 +269,7 @@ impl KetchupApp {
             .is_ok()
         {
             self.live.consent_attached = true;
+            self.live.client_name = None;
         } else {
             self.disable_live_bridge();
         }
@@ -288,24 +290,37 @@ impl KetchupApp {
             .unwrap_or_else(|| self.catalog.text("live-consent-untitled"))
     }
 
-    pub(crate) fn show_live_consent(&mut self, context: &egui::Context) {
-        if self.live.consent_attached {
-            let mut revoke = false;
-            egui::Window::new(self.catalog.text("live-consent-connected-title"))
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::RIGHT_BOTTOM, egui::Vec2::new(-12.0, -44.0))
-                .show(context, |ui| {
-                    ui.label(self.catalog.text("live-consent-connected-description"));
-                    revoke = ui
-                        .button(self.catalog.text("live-consent-disconnect"))
-                        .clicked();
-                });
-            if revoke {
-                self.revoke_live_consent();
-            }
-        }
+    /// Whether an AI holds this window, attached here or the one that started it.
+    pub(crate) fn ai_attached(&self) -> bool {
+        self.live.consent_attached || self.live.launch_attached
     }
+
+    /// Disconnect in the status line: the AI's credential ends, whichever way
+    /// it attached.
+    pub(crate) fn disconnect_ai(&mut self) {
+        self.live.launch_attached = false;
+        self.live.client_name = None;
+        self.revoke_live_consent();
+    }
+}
+
+/// `hello`: the attached AI's own name, shown in the status line.
+pub(crate) fn hello(app: &mut KetchupApp, client: &str) -> serde_json::Value {
+    app.live.client_name = shown_client_name(client);
+    serde_json::json!({"shown": app.live.client_name})
+}
+
+/// The client's own name as the window shows it: printable, at most
+/// [`MAX_CLIENT_NAME_CHARS`] characters, `None` when nothing is left. It is
+/// what the client says it is, not a verified identity.
+pub(crate) fn shown_client_name(name: &str) -> Option<String> {
+    let name: String = name
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(MAX_CLIENT_NAME_CHARS)
+        .collect();
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_owned())
 }
 
 fn default_discovery_root() -> io::Result<PathBuf> {
@@ -1209,6 +1224,61 @@ mod tests {
             app.digest.contains("loopback port blocked by policy"),
             "the window must say why: {}",
             app.digest
+        );
+    }
+
+    /// #2687 P1 (points 4, 9, 10): the window names the attached AI as it names
+    /// itself, forgets the name when the next one attaches, and Disconnect
+    /// ends the credential.
+    #[test]
+    fn the_window_names_the_attached_ai_until_the_next_attach_or_disconnect() {
+        let context = egui::Context::default();
+        let mut app = KetchupApp::new();
+        let attach = |app: &mut KetchupApp| {
+            let (decision, receiver) = mpsc::sync_channel(1);
+            let pending = PendingConsent {
+                decision,
+                abandoned: Arc::new(Mutex::new(false)),
+            };
+            app.answer_live_consent(&context, pending);
+            assert!(matches!(
+                receiver.try_recv(),
+                Ok(ConsentDecision::Allow { .. })
+            ));
+        };
+        attach(&mut app);
+        let hello = |client: &str| super::super::Request::Hello {
+            client: client.to_owned(),
+        };
+        let mut bridge = app.live.bridge.take().unwrap();
+        assert_eq!(
+            bridge.execute(&mut app, hello(" Claude Code\u{7}\n"), false),
+            Ok(serde_json::json!({"shown": "Claude Code"}))
+        );
+        app.live.bridge = Some(bridge);
+        assert_eq!(app.live.client_name.as_deref(), Some("Claude Code"));
+
+        attach(&mut app);
+        assert!(app.ai_attached());
+        assert_eq!(
+            app.live.client_name, None,
+            "the next AI did not say its name"
+        );
+
+        app.live.client_name = Some("Codex".to_owned());
+        app.disconnect_ai();
+        assert!(!app.ai_attached());
+        assert_eq!(app.live.client_name, None);
+        assert!(app.live_bridge_credentials().is_none());
+    }
+
+    #[test]
+    fn a_client_name_is_shown_printable_and_short_or_not_at_all() {
+        assert_eq!(shown_client_name("codex"), Some("codex".to_owned()));
+        assert_eq!(shown_client_name(" \u{1b}\t "), None);
+        assert_eq!(
+            shown_client_name(&"ž".repeat(100)).map(|name| name.chars().count()),
+            Some(MAX_CLIENT_NAME_CHARS)
         );
     }
 

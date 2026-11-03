@@ -899,7 +899,7 @@ fn local_attach_is_granted_without_prompt_and_disconnect_revokes_the_credential(
     let address = allowed["live_bridge_address"].as_str().unwrap();
     assert!(address.starts_with("127.0.0.1:"));
     assert!(shell.app().live_consent_attached());
-    assert!(shell.has_visible_label(&shell.catalog().text("live-consent-connected-title")));
+    assert!(shell.has_visible_label(&shell.catalog().text("ai-connected-unnamed")));
 
     // A new attach takes the window over even though the first client never
     // disconnected (it may be gone or forgotten); the old credential dies.

@@ -355,8 +355,10 @@ LINT_ALLOW = re.compile(r"#!?\[allow\(")
 CASTS_AND_ALLOWS = {
     "ketchup-analysis allows": 1,
     "ketchup-analysis casts": 6,
-    # Includes the audited WSAPoll / poll of live_bridge::transport::wait_readable (SEC-61).
-    "ketchup-app allows": 11,
+    # Includes the audited WSAPoll / poll of live_bridge::transport::wait_readable (SEC-61)
+    # and PR #21 running_programs: Toolhelp32, audited (live_bridge::running_programs;
+    # #2687: each Supervisor instance reads the MCP servers in its own folder).
+    "ketchup-app allows": 12,
     "ketchup-app casts": 216,
     "ketchup-application allows": 9,
     "ketchup-application casts": 29,
