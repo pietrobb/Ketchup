@@ -89,7 +89,20 @@ fn record_written(path: &Path, observed: Observed) -> FileIdentity {
 /// lock on process exit; the lock file itself must never be unlinked.
 #[derive(Debug)]
 pub struct WorkRecoveryLock {
-    _file: fs::File,
+    file: fs::File,
+}
+
+/// Released explicitly, not only by closing the file: a process another thread
+/// starts while the lock is held (the exact worker) keeps a copy of the file until
+/// it runs its program, and on Linux and macOS the lock lasts while any copy is
+/// open. Opening a file right after saving it was then refused as changed by
+/// another program (idea #150).
+impl Drop for WorkRecoveryLock {
+    fn drop(&mut self) {
+        // Drop has no caller to report to and this crate has no log. If unlocking
+        // fails, the lock ends as before: when the last copy of the file closes.
+        let _ = self.file.unlock();
+    }
 }
 
 impl WorkRecoveryLock {
@@ -103,7 +116,7 @@ impl WorkRecoveryLock {
             .truncate(false)
             .open(lock_path)?;
         match file.try_lock() {
-            Ok(()) => Ok(Self { _file: file }),
+            Ok(()) => Ok(Self { file }),
             Err(std::fs::TryLockError::WouldBlock) => Err(FilePersistenceError::ExternalConflict),
             Err(std::fs::TryLockError::Error(error)) => Err(FilePersistenceError::Io(error)),
         }
@@ -134,7 +147,7 @@ impl WorkRecoveryLock {
         lock_path.push(".work-recovery-lock");
         let held = match fs::File::open(lock_path) {
             Ok(file) => match read_handle_lock(&file) {
-                Ok(()) => Some(Some(Self { _file: file })),
+                Ok(()) => Some(Some(Self { file })),
                 Err(std::fs::TryLockError::WouldBlock) => {
                     return Err(FilePersistenceError::ExternalConflict);
                 }
@@ -380,7 +393,7 @@ pub fn headless_with_read_handle_lock_failure<T>(operation: impl FnOnce() -> T) 
 /// keeps until it runs its program.
 #[cfg(feature = "testing")]
 pub fn headless_inherited_lock_file(lock: &WorkRecoveryLock) -> io::Result<fs::File> {
-    lock._file.try_clone()
+    lock.file.try_clone()
 }
 
 /// Runs `operation` with `folder` taking no new file on this thread, as a read-only share
