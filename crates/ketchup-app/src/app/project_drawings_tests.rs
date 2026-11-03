@@ -1011,16 +1011,38 @@ fn the_drawings_window_keeps_the_sheet_language_and_the_default_title_follows_it
     assert!(app.drawings.unsaved);
 }
 
-/// Měchenice MECH-6: the level marks of Czech and Slovak sheets write a decimal
-/// comma (+2,850), English ones a point.
+/// Měchenice MECH-6: the sections the window exports mark the floor and the
+/// top, with a decimal comma on Czech and Slovak sheets (+2,500) and a point
+/// on English ones, whatever the window's language.
 #[test]
 fn the_level_marks_take_the_decimal_separator_of_the_sheet_language() {
-    for (catalog, separator) in [
-        (LocaleCatalog::czech_sheets(), ","),
-        (LocaleCatalog::slovak(), ","),
-        (LocaleCatalog::english(), "."),
+    let mut app = KetchupApp::new();
+    add_box(&mut app, 901, "wall A", 0.0);
+    // The floor the wall stands on: its top at 0.
+    app.document
+        .apply_batch(&crate::app::drawing::create_box_batch(
+            DefinitionId(903),
+            [FeatureId(9030), FeatureId(9031)],
+            OccurrenceId(903),
+            ["slab", "profile", "extrusion", "slab"],
+            Vec3::new(0.0, 0.0, -200.0),
+            Vec3::new(3000.0, 3000.0, 200.0),
+        ))
+        .unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    for (language, levels) in [
+        (SheetLanguage::Czech, ["±0,000", "+2,500"]),
+        (SheetLanguage::Slovak, ["±0,000", "+2,500"]),
+        (SheetLanguage::English, ["±0.000", "+2.500"]),
     ] {
-        assert_eq!(catalog.text("drawings-sheet-decimal-separator"), separator);
+        let mut settings = app.sheet_settings();
+        settings.language = Some(language);
+        app.store_sheet_settings(settings);
+        let set = app.project_drawings().unwrap();
+        let section = views(&set)
+            .find(|summary| summary.view == ProjectView::LongitudinalSection)
+            .unwrap();
+        assert_eq!(section.levels, levels, "{language:?}");
     }
 }
 
