@@ -1150,6 +1150,17 @@ fn insert_profile_part(
     )
 }
 
+/// A loft can be hollowed open at its `start`/`end` section; a sweep cannot.
+fn reject_swept_shell(part: &Part) -> anyhow::Result<()> {
+    if matches!(part.body, ProgramPartBody::Sweep { .. }) {
+        anyhow::bail!(
+            "shell on {:?}: a swept part has no named faces to open; shape it with subtract() and a tool body",
+            part.name
+        );
+    }
+    Ok(())
+}
+
 fn reject_swept(part: &Part, operation: &str) -> anyhow::Result<()> {
     if matches!(
         part.body,
@@ -2198,11 +2209,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
         let state = state(eval)?;
         record_source(eval, &state, &[&part_name]);
         with_part(&state, &part_name, |part| {
-            if matches!(part.body, ProgramPartBody::Sweep { .. }) {
-                anyhow::bail!(
-                    "shell on {part_name:?}: a swept part has no named faces to open; shape it with subtract() and a tool body"
-                );
-            }
+            reject_swept_shell(part)?;
             if open.is_empty() {
                 anyhow::bail!(
                     "shell({part_name:?}): open at least one face, e.g. open=[\"z+\"]; a closed hollow is not supported"

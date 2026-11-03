@@ -1124,14 +1124,7 @@ fn evaluate_exact_brep_graph(
                     _ => backend.boolean_bodies(
                         &outputs[target.0 as usize].body,
                         &outputs[tool.0 as usize].body,
-                        match operation {
-                            ExactBRepBooleanOperation::Cut => ExactBodyBooleanOperation::Cut,
-                            ExactBRepBooleanOperation::Union => ExactBodyBooleanOperation::Union,
-                            ExactBRepBooleanOperation::Intersect => {
-                                ExactBodyBooleanOperation::Intersect
-                            }
-                            ExactBRepBooleanOperation::Split => ExactBodyBooleanOperation::Split,
-                        },
+                        body_boolean(operation),
                     )?,
                 }
             }
@@ -2021,6 +2014,15 @@ fn exact_brep_loft(
     Ok(output)
 }
 
+const fn body_boolean(operation: &ExactBRepBooleanOperation) -> ExactBodyBooleanOperation {
+    match operation {
+        ExactBRepBooleanOperation::Cut => ExactBodyBooleanOperation::Cut,
+        ExactBRepBooleanOperation::Union => ExactBodyBooleanOperation::Union,
+        ExactBRepBooleanOperation::Intersect => ExactBodyBooleanOperation::Intersect,
+        ExactBRepBooleanOperation::Split => ExactBodyBooleanOperation::Split,
+    }
+}
+
 /// Program face names of a lofted solid: its first and last section's caps
 /// are `start` and `end` as the loft builder reports them; every other face
 /// is a `side`, which no program can name.
@@ -2038,7 +2040,7 @@ fn exact_brep_loft_face_names(
         };
         let Some(slot) = record
             .output_face_ordinal
-            .and_then(|face| names.get_mut(face as usize))
+            .and_then(|face| names.get_mut(usize::try_from(face).ok()?))
         else {
             continue;
         };
