@@ -980,6 +980,30 @@ impl KetchupApp {
         schedule
     }
 
+    /// The lines of every shown layer of every shown underlay lying flat, in
+    /// the world, which the plans draw beneath the model (Měchenice MECH-10);
+    /// an underlay whose lines do not read draws nothing, as in the window.
+    fn drawing_underlay(&self, snapshot: &Snapshot) -> Vec<[[f64; 3]; 2]> {
+        let shown = |tag| snapshot.tag(tag).is_some_and(|tag| tag.visible());
+        let mut lines = Vec::new();
+        for underlay in snapshot
+            .underlays()
+            .filter(|underlay| underlay.lies_flat() && shown(underlay.tag))
+        {
+            let Some(drawn) = self.cached_underlay_lines(underlay) else {
+                continue;
+            };
+            let placement = underlay.world_transform();
+            let world = |[x, y]: [f64; 2]| placement.transform_point([x, y, 0.0]);
+            for (layer, layer_lines) in underlay.layers.iter().zip(drawn.layers()) {
+                if shown(layer.tag) {
+                    lines.extend(layer_lines.segments().map(|[a, b]| [world(a), world(b)]));
+                }
+            }
+        }
+        lines
+    }
+
     /// The job of the set `request` asks for: all sheets or the plans alone,
     /// at the scale it fixes or the one the set picks.
     pub(crate) fn project_drawings_job_for(
@@ -1065,6 +1089,7 @@ impl KetchupApp {
                 plan_only: request.plan_only,
                 scale: request.scale,
                 annotations,
+                underlay: self.drawing_underlay(&snapshot),
                 openings,
                 shop,
                 cutting,

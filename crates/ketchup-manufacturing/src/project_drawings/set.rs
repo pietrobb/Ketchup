@@ -77,6 +77,11 @@ pub struct DrawingSetOptions {
     /// The annotations; each plan draws those of its storey (from its floor
     /// up to the next storey's floor; the lowest plan also those below it).
     pub annotations: Vec<Annotation>,
+    /// The lines of the shown underlays lying flat, in world millimetres:
+    /// each plan draws those of its storey (parted like the annotations, by
+    /// their lower end) thin and grey beneath the model, cut at what the plan
+    /// draws, which they never grow.
+    pub underlay: Vec<[[f64; 3]; 2]>,
     /// The windows and doors: each plan marks those of its storey (parted
     /// like the annotations, by their lowest point), and their schedule is
     /// the last sheet.
@@ -128,6 +133,8 @@ pub struct SetSheet {
     pub views: Vec<ViewSummary>,
     /// The annotations its plan draws (none on the other sheets).
     pub annotations: AnnotationCounts,
+    /// The underlay lines its plan draws (none on the other sheets).
+    pub underlay_lines: usize,
     /// The marks of the windows and doors its plan draws, one per opening.
     pub openings: Vec<String>,
     /// What a shop drawing shows.
@@ -340,6 +347,13 @@ pub fn drawing_set_until(
         if !annotations.is_empty() {
             drawn.annotate(&frame, &annotations);
         }
+        let underlay = options
+            .underlay
+            .iter()
+            .filter(|[a, b]| (below..above).contains(&a[2].min(b[2])))
+            .copied()
+            .collect::<Vec<_>>();
+        drawn.lay_underlay(&frame, &underlay);
         let marks = opening_points
             .iter()
             .filter(|(_, point)| (below..above).contains(&point[2]))
@@ -545,6 +559,12 @@ pub fn drawing_set_until(
             lines,
             views,
             annotations,
+            underlay_lines: sheet
+                .views
+                .views
+                .iter()
+                .map(|view| view.underlay.len())
+                .sum(),
             openings,
             shop: None,
             cutting: None,
@@ -599,6 +619,7 @@ pub fn drawing_set_until(
             page,
             views: Vec::new(),
             annotations: AnnotationCounts::default(),
+            underlay_lines: 0,
             openings: Vec::new(),
             shop: None,
             cutting: Some(summary),
@@ -628,6 +649,7 @@ pub fn drawing_set_until(
             page,
             views: Vec::new(),
             annotations: AnnotationCounts::default(),
+            underlay_lines: 0,
             openings: Vec::new(),
             shop: None,
             cutting: None,
@@ -680,6 +702,7 @@ fn shop_sheet(
         page,
         lines,
         annotations: AnnotationCounts::default(),
+        underlay_lines: 0,
         openings: Vec::new(),
         shop: Some(shop.summary),
         cutting: None,

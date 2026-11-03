@@ -6,6 +6,7 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 ## Unreleased
 
 - 0.3.1 reads some drawings differently from 0.3.0 (skipped or empty entities, CP1250 text, files with a BOM), so it often refused to export a drawing edited in 0.3.0. Such a drawing exports again: the edits find their entities by DXF handle, and an entity not edited is written as the file has it.
+- The floor plans of the project drawings show the visible layers of an imported DXF or DWG underlay, thin and grey beneath the model. A large map such as a cadastral one is cut at the edge of the plan, so it does not make the sheet larger.
 
 ## 0.3.1 — 2026-11-02
 
