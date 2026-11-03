@@ -50,6 +50,11 @@ fn counted<T>(run: impl FnOnce() -> T) -> (T, usize, usize) {
 
 /// A drawing of `count` lines with handles, in millimetres or with no unit.
 fn drawing(count: usize, unit: bool) -> Vec<u8> {
+    drawing_from_handle(0x100, count, unit)
+}
+
+/// [`drawing`] with its handles counted from `first`.
+fn drawing_from_handle(first: usize, count: usize, unit: bool) -> Vec<u8> {
     let mut text = String::from("0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n");
     if unit {
         text.push_str("9\n$INSUNITS\n70\n4\n");
@@ -61,7 +66,7 @@ fn drawing(count: usize, unit: bool) -> Vec<u8> {
         text.push_str(&format!(
             "0\nLINE\n5\n{:X}\n330\n1F\n100\nAcDbEntity\n8\nwalls\n100\nAcDbLine\n\
              10\n{x}\n20\n{y}\n30\n0.0\n11\n{}\n21\n{}\n31\n0.0\n",
-            index + 0x100,
+            index + first,
             x + 120.0,
             y + 45.5,
         ));
@@ -146,8 +151,10 @@ fn a_drawing_without_a_unit_is_not_read_in_every_unit_before_it_is_refused() {
     let source = drawing(5_000, false);
     let options = DxfImportOptions::new(Some(ImportLengthUnit::Millimetre));
     let (read, _, one_read) = counted(|| read_dxf_underlay(&source, options).unwrap());
-    // Lines read from another drawing are found in none of the units.
-    let other = read_dxf_underlay(&drawing(4_999, false), options)
+    // Lines read from another drawing, of other entities, are found in none of the units.
+    // (Lines of entities the source has, read differently, are bound to them again: review
+    // 2026-11-02 CD-120.)
+    let other = read_dxf_underlay(&drawing_from_handle(0x10_0000, 4_999, false), options)
         .unwrap()
         .lines;
     drop(read);

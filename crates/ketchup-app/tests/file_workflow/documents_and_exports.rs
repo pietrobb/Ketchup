@@ -1877,9 +1877,13 @@ fn a_failed_open_leaves_the_active_document_untouched() {
     );
     assert_eq!(shell.app().document_revision(), revision);
     assert_eq!(shell.app().document_path(), None);
+    // A file that does not begin as a document is refused before it is opened (review
+    // 2026-11-02 UI-101); a damaged document is still reported by the open itself, as
+    // `corrupt_persisted_history_fails_open_without_replacing_the_active_document` checks.
     assert!(
-        digest_starts_like(&shell, "error-open-document"),
-        "a failed Open must report the localized open error, digest was {:?}",
+        digest_has(&shell, "error-not-document")
+            && shell.app().action_digest().contains("malformed.ketchup"),
+        "a failed Open must report the localized refusal, digest was {:?}",
         shell.app().action_digest()
     );
 }
