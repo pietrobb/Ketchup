@@ -20,11 +20,21 @@ use ketchup_manufacturing::project_drawings::{
     SCALES, SheetTitles, ShopDrawings, ShopPosition, ShopSheet, Storey, drawing_set_until, storeys,
 };
 use ketchup_manufacturing::title_block::{
-    DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM, SheetFormat, SheetSettings, TitleField,
+    DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM, SheetFormat, SheetLanguage, SheetSettings, TitleField,
 };
 use ketchup_model::sheet_pdf::PdfInfo;
 use ketchup_program::Evaluated;
+use std::borrow::Cow;
 use std::sync::Arc;
+
+/// A sheet language as its speakers name it, whatever the window's language.
+const fn sheet_language_name(language: SheetLanguage) -> &'static str {
+    match language {
+        SheetLanguage::Czech => "Čeština",
+        SheetLanguage::Slovak => "Slovenčina",
+        SheetLanguage::English => "English",
+    }
+}
 
 /// Colour of a solid with no colour of its own.
 const DEFAULT_SOLID_COLOR: [u8; 3] = [190, 190, 190];
@@ -654,7 +664,7 @@ impl KetchupApp {
     /// defaults (the export refuses them, see `project_drawings`).
     pub(crate) fn sheet_settings(&self) -> SheetSettings {
         let mut settings = self.stored_sheet_settings().unwrap_or_default();
-        for (field, value) in self.title_defaults() {
+        for (field, value) in self.title_defaults(settings.language) {
             let entry = settings.title_block.entry(field).or_default();
             if entry.trim().is_empty() {
                 *entry = value;
@@ -663,14 +673,25 @@ impl KetchupApp {
         settings
     }
 
+    /// The texts the sheets are titled with: those of `language`, the
+    /// window's when none (Měchenice MECH-5).
+    fn sheet_catalog(&self, language: Option<SheetLanguage>) -> Cow<'_, LocaleCatalog> {
+        match language {
+            None => Cow::Borrowed(&self.catalog),
+            Some(SheetLanguage::Czech) => Cow::Owned(LocaleCatalog::czech_sheets()),
+            Some(SheetLanguage::Slovak) => Cow::Owned(LocaleCatalog::slovak()),
+            Some(SheetLanguage::English) => Cow::Owned(LocaleCatalog::english()),
+        }
+    }
+
     /// What the title block shows where the user wrote nothing: the document
-    /// name, the sheet title in the language of the window, today's date.
-    fn title_defaults(&self) -> BTreeMap<TitleField, String> {
+    /// name, the sheet title in the sheets' `language`, today's date.
+    fn title_defaults(&self, language: Option<SheetLanguage>) -> BTreeMap<TitleField, String> {
         BTreeMap::from([
             (TitleField::Project, self.drawing_document_name()),
             (
                 TitleField::Drawing,
-                self.catalog.text("drawings-default-sheet"),
+                self.sheet_catalog(language).text("drawings-default-sheet"),
             ),
             (TitleField::Date, today()),
         ])
@@ -681,7 +702,8 @@ impl KetchupApp {
     /// when a sheet is drawn and never frozen in the document (review
     /// 2026-10-18 UI-12).
     fn without_title_defaults(&self, settings: SheetSettings) -> SheetSettings {
-        Self::without_these_defaults(settings, &self.title_defaults())
+        let defaults = self.title_defaults(settings.language);
+        Self::without_these_defaults(settings, &defaults)
     }
 
     fn without_these_defaults(
@@ -719,16 +741,11 @@ impl KetchupApp {
         self.drawings.unsaved = true;
     }
 
-    fn title_labels(&self) -> BTreeMap<TitleField, String> {
+    fn title_labels(catalog: &LocaleCatalog) -> BTreeMap<TitleField, String> {
         TitleField::EDITABLE
             .into_iter()
             .chain([TitleField::Scale, TitleField::Format, TitleField::Sheet])
-            .map(|field| {
-                (
-                    field,
-                    self.catalog.text(&format!("title-field-{}", field.key())),
-                )
-            })
+            .map(|field| (field, catalog.text(&format!("title-field-{}", field.key()))))
             .collect()
     }
 
@@ -745,9 +762,9 @@ impl KetchupApp {
         self.project_drawings_job_for(SheetRequest::default())
     }
 
-    /// The plan sheet of each storey, titled in the window's language: by
-    /// the height of its cut, and by its storey when there are several.
-    fn plan_sheets(&self, storeys: Vec<Storey>) -> Vec<PlanSheet> {
+    /// The plan sheet of each storey, titled from `catalog`: by the height
+    /// of its cut, and by its storey when there are several.
+    fn plan_sheets(catalog: &LocaleCatalog, storeys: Vec<Storey>) -> Vec<PlanSheet> {
         let several = storeys.len() > 1;
         storeys
             .into_iter()
@@ -764,8 +781,8 @@ impl KetchupApp {
                 };
                 PlanSheet {
                     storey,
-                    view_title: self.catalog.format(view, &arguments),
-                    sheet_title: self.catalog.format(sheet, &arguments),
+                    view_title: catalog.format(view, &arguments),
+                    sheet_title: catalog.format(sheet, &arguments),
                 }
             })
             .collect()
@@ -799,10 +816,10 @@ impl KetchupApp {
             .collect()
     }
 
-    /// The program's shop drawings, titled in the window's language, their
-    /// parts named as the solids they are drawn as.
+    /// The program's shop drawings, titled from `catalog`, their parts named
+    /// as the solids they are drawn as.
     fn drawing_shop(
-        &self,
+        catalog: &LocaleCatalog,
         evaluated: Option<&Evaluated>,
         solid_names: &BTreeMap<String, String>,
     ) -> ShopDrawings {
@@ -811,7 +828,7 @@ impl KetchupApp {
             .unwrap_or_default()
             .into_iter()
             .map(|drawing| ShopSheet {
-                title: self.catalog.format(
+                title: catalog.format(
                     "drawings-sheet-shop",
                     &BTreeMap::from([("name", drawing.name)]),
                 ),
@@ -837,14 +854,17 @@ impl KetchupApp {
         ShopDrawings {
             sheets,
             columns: ["position", "material", "size", "count"]
-                .map(|column| self.catalog.text(&format!("drawings-shop-{column}"))),
-            mirror_of: self.catalog.text("drawings-shop-mirror-of"),
+                .map(|column| catalog.text(&format!("drawings-shop-{column}"))),
+            mirror_of: catalog.text("drawings-shop-mirror-of"),
         }
     }
 
     /// The program's cutting plans (the report's bom.cutting) as sheets of
-    /// the set, titled and captioned in the window's language.
-    fn drawing_cutting(&self, evaluated: Option<&Evaluated>) -> Vec<CuttingSheet> {
+    /// the set, titled and captioned from `catalog`.
+    fn drawing_cutting(
+        catalog: &LocaleCatalog,
+        evaluated: Option<&Evaluated>,
+    ) -> Vec<CuttingSheet> {
         let Some(evaluated) = evaluated else {
             return Vec::new();
         };
@@ -866,7 +886,7 @@ impl KetchupApp {
                     .iter()
                     .enumerate()
                     .map(|(index, layout)| CuttingStock {
-                        caption: self.catalog.format(
+                        caption: catalog.format(
                             "drawings-cutting-stock",
                             &BTreeMap::from([
                                 ("number", (index + 1).to_string()),
@@ -899,7 +919,7 @@ impl KetchupApp {
                     })
                     .collect();
                 CuttingSheet {
-                    title: self.catalog.format(
+                    title: catalog.format(
                         "drawings-sheet-cutting",
                         &BTreeMap::from([
                             ("material", plan.material.clone()),
@@ -919,15 +939,15 @@ impl KetchupApp {
     /// row of the hardware list; their pieces named as the solids they are
     /// drawn as.
     fn drawing_openings(
-        &self,
+        catalog: &LocaleCatalog,
         evaluated: Option<&Evaluated>,
         solid_names: &BTreeMap<String, String>,
     ) -> OpeningSchedule {
         let mut schedule = OpeningSchedule {
             openings: Vec::new(),
-            title: self.catalog.text("drawings-sheet-openings"),
+            title: catalog.text("drawings-sheet-openings"),
             columns: ["mark", "designation", "count"]
-                .map(|column| self.catalog.text(&format!("drawings-openings-{column}"))),
+                .map(|column| catalog.text(&format!("drawings-openings-{column}"))),
         };
         let Some(evaluated) = evaluated else {
             return schedule;
@@ -945,7 +965,7 @@ impl KetchupApp {
                 .count()
                 + 1;
             schedule.openings.push(DrawingOpening {
-                mark: self.catalog.format(
+                mark: catalog.format(
                     &format!("drawings-mark-{}", opening.kind),
                     &BTreeMap::from([("number", number.to_string())]),
                 ),
@@ -971,17 +991,18 @@ impl KetchupApp {
         let snapshot = self.document.current();
         let solids = self.visible_job_solids(&snapshot)?;
         let evaluated = self.drawing_program()?;
+        let settings = self.sheet_settings();
+        let catalog = self.sheet_catalog(settings.language);
         let solid_names = Self::drawing_solid_names(&snapshot);
-        let openings = self.drawing_openings(evaluated.as_deref(), &solid_names);
-        let shop = self.drawing_shop(evaluated.as_deref(), &solid_names);
-        let cutting = self.drawing_cutting(evaluated.as_deref());
+        let openings = Self::drawing_openings(&catalog, evaluated.as_deref(), &solid_names);
+        let shop = Self::drawing_shop(&catalog, evaluated.as_deref(), &solid_names);
+        let cutting = Self::drawing_cutting(&catalog, evaluated.as_deref());
         let annotations = snapshot
             .annotations()
             .iter()
             .filter(|annotation| snapshot.tags_visible(&annotation.tags))
             .cloned()
             .collect::<Vec<_>>();
-        let settings = self.sheet_settings();
         // The storeys are found from the bodies as evaluated: a thread's
         // grooves never make a floor.
         let mut storeys = storeys(&solids.solids, settings.plan_cut_above_floor_mm());
@@ -1001,14 +1022,12 @@ impl KetchupApp {
             .map(|view| {
                 let title = match view {
                     ProjectView::Plan | ProjectView::Shop => String::new(),
-                    ProjectView::LongitudinalSection => {
-                        self.catalog.text("drawings-view-longitudinal")
-                    }
-                    ProjectView::CrossSection => self.catalog.text("drawings-view-cross"),
-                    ProjectView::Front => self.catalog.text("drawings-view-front"),
-                    ProjectView::Back => self.catalog.text("drawings-view-back"),
-                    ProjectView::Left => self.catalog.text("drawings-view-left"),
-                    ProjectView::Right => self.catalog.text("drawings-view-right"),
+                    ProjectView::LongitudinalSection => catalog.text("drawings-view-longitudinal"),
+                    ProjectView::CrossSection => catalog.text("drawings-view-cross"),
+                    ProjectView::Front => catalog.text("drawings-view-front"),
+                    ProjectView::Back => catalog.text("drawings-view-back"),
+                    ProjectView::Left => catalog.text("drawings-view-left"),
+                    ProjectView::Right => catalog.text("drawings-view-right"),
                 };
                 (view, title)
             })
@@ -1033,15 +1052,15 @@ impl KetchupApp {
             solids,
             executable: self.drawing_worker(),
             options: DrawingSetOptions {
-                plans: self.plan_sheets(storeys),
+                plans: Self::plan_sheets(&catalog, storeys),
                 sheet_titles: SheetTitles {
-                    sections: self.catalog.text("drawings-sheet-sections"),
-                    elevations: self.catalog.text("drawings-sheet-elevations"),
+                    sections: catalog.text("drawings-sheet-sections"),
+                    elevations: catalog.text("drawings-sheet-elevations"),
                 },
                 view_titles,
                 format: settings.format,
                 coarsest_scale: Some(settings.coarsest_scale()),
-                title_labels: self.title_labels(),
+                title_labels: Self::title_labels(&catalog),
                 title_block: settings.title_block,
                 plan_only: request.plan_only,
                 scale: request.scale,
@@ -1191,7 +1210,7 @@ impl KetchupApp {
     /// The window's fields from the document's stored settings, read once.
     fn read_sheet_settings_into_window(&mut self) {
         self.drawings.editing = self.sheet_settings();
-        self.drawings.shown_defaults = self.title_defaults();
+        self.drawings.shown_defaults = self.title_defaults(self.drawings.editing.language);
         self.drawings.kept = self.without_title_defaults(self.drawings.editing.clone());
         self.note_seen_sheet_settings();
     }
@@ -1220,7 +1239,7 @@ impl KetchupApp {
         let mut editing = std::mem::take(&mut self.drawings.editing);
         // A field still showing its default follows it when the default
         // changes: past midnight, after Save As, in another language.
-        let defaults = self.title_defaults();
+        let defaults = self.title_defaults(editing.language);
         for (field, shown) in &self.drawings.shown_defaults {
             if let Some(value) = editing.title_block.get_mut(field)
                 && value == shown
@@ -1267,6 +1286,27 @@ impl KetchupApp {
                                     .chain(SheetFormat::ALL.into_iter().map(Some))
                                 {
                                     ui.selectable_value(&mut editing.format, format, name(format));
+                                }
+                            });
+                        ui.end_row();
+                        ui.label(self.catalog.text("drawings-language"));
+                        let language_name = |language: Option<SheetLanguage>| {
+                            language.map_or_else(
+                                || self.catalog.text("drawings-language-auto"),
+                                |language| sheet_language_name(language).to_owned(),
+                            )
+                        };
+                        egui::ComboBox::from_id_salt("project-drawings-language")
+                            .selected_text(language_name(editing.language))
+                            .show_ui(ui, |ui| {
+                                for language in std::iter::once(None)
+                                    .chain(SheetLanguage::ALL.into_iter().map(Some))
+                                {
+                                    ui.selectable_value(
+                                        &mut editing.language,
+                                        language,
+                                        language_name(language),
+                                    );
                                 }
                             });
                         ui.end_row();
@@ -1349,7 +1389,9 @@ impl KetchupApp {
         let kept = Self::without_these_defaults(editing.clone(), &defaults);
         self.drawings.shown_defaults = defaults;
         if kept != self.drawings.kept {
-            self.store_sheet_settings(editing.clone());
+            // Without the defaults shown: a sheet title left at its default
+            // follows a change of the sheet language, never kept in the old one.
+            self.store_sheet_settings(kept.clone());
             self.note_seen_sheet_settings();
             self.drawings.kept = kept;
         }

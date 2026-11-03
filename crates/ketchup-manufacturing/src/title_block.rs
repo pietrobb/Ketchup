@@ -91,6 +91,42 @@ pub struct SheetSettings {
     /// [`DEFAULT_COARSEST_SCALE`] when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coarsest_scale: Option<u32>,
+    /// The language the sheets are titled in; the window's when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<SheetLanguage>,
+}
+
+/// A language the sheets can be titled in, whatever the window's: a Czech
+/// project goes to a Czech building office.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub enum SheetLanguage {
+    #[serde(rename = "cs")]
+    Czech,
+    #[serde(rename = "sk")]
+    Slovak,
+    #[serde(rename = "en")]
+    English,
+}
+
+impl SheetLanguage {
+    pub const ALL: [Self; 3] = [Self::Czech, Self::Slovak, Self::English];
+
+    /// The ISO 639-1 code it is kept and asked for by.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Czech => "cs",
+            Self::Slovak => "sk",
+            Self::English => "en",
+        }
+    }
+
+    #[must_use]
+    pub fn from_code(code: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|language| language.code() == code)
+    }
 }
 
 /// The usual plan cut: at window-sill height, 1.2 m above the floor.

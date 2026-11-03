@@ -891,6 +891,43 @@ impl LocaleCatalog {
         catalog
     }
 
+    /// The prefixes of the keys a drawing sheet is titled with: a locale of
+    /// the sheets alone holds exactly these keys.
+    pub const SHEET_KEY_PREFIXES: [&str; 8] = [
+        "drawings-view-",
+        "drawings-sheet-",
+        "drawings-openings-",
+        "drawings-mark-",
+        "drawings-shop-",
+        "drawings-cutting-",
+        "drawings-default-sheet",
+        "title-field-",
+    ];
+
+    /// The Czech texts of the drawing sheets, which a Czech project needs
+    /// whatever the window's language; Czech has Slovak's plural categories.
+    #[must_use]
+    pub fn czech_sheets() -> Self {
+        let catalog = Self {
+            plurals: PluralRules::Slovak,
+            ..Self::parse(include_str!("../../../locales/sheets/cs-CZ.ftl"))
+                .expect("the embedded Czech sheet locale must be valid")
+        };
+        catalog
+            .validate_complete_against(&Self::english().sheet_keys_only())
+            .expect("the embedded Czech sheet locale must match the English sheet keys");
+        catalog
+    }
+
+    fn sheet_keys_only(mut self) -> Self {
+        self.messages.retain(|key, _| {
+            Self::SHEET_KEY_PREFIXES
+                .iter()
+                .any(|prefix| key.starts_with(prefix))
+        });
+        self
+    }
+
     #[must_use]
     pub fn pseudo() -> Self {
         let english = Self::english();

@@ -5,7 +5,7 @@ use crate::app::project_drawings::ProjectDrawingsError;
 use crate::tests::shell::step_until;
 use crate::*;
 use ketchup_manufacturing::project_drawings::{DrawingSet, ProjectView, ViewSummary};
-use ketchup_manufacturing::title_block::{SheetFormat, TitleField};
+use ketchup_manufacturing::title_block::{SheetFormat, SheetLanguage, TitleField};
 use ketchup_model::sheet_pdf::Mark;
 use std::time::Duration;
 
@@ -975,6 +975,40 @@ fn the_title_block_keeps_only_what_the_user_wrote_and_defaults_follow_the_docume
         .insert(TitleField::Project, "Dom Novák".to_owned());
     harness.step();
     assert_eq!(stored(harness.state())[&TitleField::Project], "Dom Novák");
+}
+
+/// Měchenice MECH-5: the user picks the language of the drawings in the
+/// window; the document keeps it, and the sheet title left at its default
+/// follows into that language instead of being kept in the window's.
+#[test]
+fn the_drawings_window_keeps_the_sheet_language_and_the_default_title_follows_it() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1600.0, 1200.0))
+        .build_state(
+            |context, app: &mut KetchupApp| app.ui(context),
+            KetchupApp::new(),
+        );
+    harness.state_mut().open_project_drawings_window();
+    harness.step();
+    let label = harness.state().catalog.text("drawings-language");
+    harness.get_by_label(&label);
+
+    harness.state_mut().drawings.editing.language = Some(SheetLanguage::Czech);
+    harness.step();
+    let app = harness.state();
+    let stored = app.stored_sheet_settings().unwrap();
+    assert_eq!(stored.language, Some(SheetLanguage::Czech));
+    assert!(stored.title_block.is_empty(), "{:?}", stored.title_block);
+    assert_eq!(
+        app.drawings.editing.title_block[&TitleField::Drawing],
+        "Projektová dokumentace"
+    );
+    assert_eq!(
+        app.sheet_settings().title_block[&TitleField::Drawing],
+        "Projektová dokumentace"
+    );
+    assert!(app.drawings.unsaved);
 }
 
 /// Review 2026-10-19 P3: the open window read the document's sheet settings
