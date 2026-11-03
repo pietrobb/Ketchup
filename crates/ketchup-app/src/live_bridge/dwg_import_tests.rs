@@ -257,6 +257,75 @@ fn a_cancelled_dwg_import_changes_nothing() {
     assert_eq!(app.undo_step_count(), undo);
 }
 
+/// Review 2026-11-02 MCP-122: an import without `expected` landed in the
+/// document the user started while the file was read.
+#[test]
+fn an_import_started_before_new_does_not_land_in_the_new_document() {
+    let directory = tempfile::tempdir().unwrap();
+    let dwg = layered_dwg(directory.path(), "plan.dwg");
+    let (mut app, mut bridge) = setup();
+    let context = egui::Context::default();
+    let (reply, answers) = mpsc::sync_channel(1);
+    let queued = QueuedReply {
+        id: 1,
+        reply,
+        cancelled: Arc::new(AtomicBool::new(false)),
+    };
+    bridge.start_dwg_import(&mut app, &context, queued, import(&dwg), false);
+    assert!(importing_dwg(&bridge));
+    app.live.bridge = Some(bridge);
+    app.new_document();
+    let mut bridge = app.live.bridge.take().unwrap();
+    let (digest, undo) = (app.canonical_digest(), app.undo_step_count());
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let answer = loop {
+        bridge.poll_program_check_job(&mut app, &context);
+        if let Ok(answer) = answers.recv_timeout(Duration::from_millis(5)) {
+            break answer;
+        }
+        assert!(Instant::now() < deadline, "the import did not finish");
+    };
+    assert_eq!(
+        answer.error.as_deref(),
+        Some("stale_document"),
+        "{answer:?}"
+    );
+    assert!(bridge.program_check_job.is_none());
+    assert_eq!(app.canonical_digest(), digest);
+    assert_eq!(app.undo_step_count(), undo);
+}
+
+/// Review 2026-11-02 MCP-123: the reading thread was "ketchup-dwg-import"
+/// for a STEP or IGES file and an underlay too.
+#[test]
+fn the_import_thread_and_busy_reason_name_what_is_read() {
+    use crate::live_bridge::dwg_import::import_job_names;
+    assert_eq!(
+        import_job_names(ImportFormat::Step, false).0,
+        "ketchup-step-import"
+    );
+    assert_eq!(
+        import_job_names(ImportFormat::Iges, false).0,
+        "ketchup-iges-import"
+    );
+    assert_eq!(
+        import_job_names(ImportFormat::Dxf, true).0,
+        "ketchup-underlay-import"
+    );
+    assert_eq!(
+        import_job_names(ImportFormat::Dxf, false).0,
+        "ketchup-dwg-import"
+    );
+    for (format, underlay) in [
+        (ImportFormat::Step, false),
+        (ImportFormat::Iges, false),
+        (ImportFormat::Dxf, true),
+    ] {
+        assert!(!import_job_names(format, underlay).1.contains("DWG"));
+    }
+}
+
 fn step_box() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpora/r0/step/self-authored-box.step")
 }
@@ -359,6 +428,13 @@ fn a_cancelled_step_import_changes_nothing_and_an_uncancelled_one_imports() {
     assert_eq!(app.undo_step_count(), undo);
 
     let (answers, _cancelled) = start(&mut bridge, &mut app);
+    // Review 2026-11-02 MCP-123: it said "DWG import" for a STEP file too.
+    let busy = serde_json::to_value(bridge.busy_jobs()).unwrap();
+    assert_eq!(busy[0]["target"], "import", "{busy}");
+    assert_eq!(
+        busy[0]["reason"], "A STEP file is being imported.",
+        "{busy}"
+    );
     let deadline = Instant::now() + Duration::from_secs(60);
     let answer = loop {
         bridge.poll_program_check_job(&mut app, &context);

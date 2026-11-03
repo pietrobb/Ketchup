@@ -159,7 +159,8 @@ pub fn product(name: &str) -> Option<&'static Product> {
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Check {
-    /// bending, shear, shear_notch, deflection_inst, deflection_fin, compression, bearing.
+    /// bending, lateral_torsional, shear, shear_notch, deflection_inst,
+    /// deflection_fin, compression, bearing.
     #[serde(deserialize_with = "crate::wire_names::name")]
     pub name: crate::wire_names::Name,
     pub utilization: f64,
@@ -292,7 +293,7 @@ pub const BASIS: [&str; 9] = [
     "EN 1990 6.4.3.2 (6.10): 1.35 G + 1.5 Q1 + 1.5 psi0 Qi; SLS characteristic, w_fin with kdef and psi2 (recommended values, the national annex may differ)",
     "psi0/psi2 (EN 1990 table A1.1): imposed category A 0.7/0.3, roof category H 0/0 and never with snow (EN 1991-1-1 3.3.2), snow below 1000 m 0.5/0",
     "load duration (EN 1995-1-1 2.3.1.2): permanent G, medium-term imposed, short-term roof and snow; kmod table 3.1, kdef table 3.2 and gamma_M table 2.3 of the product each class names (solid timber 1.3, glulam 1.25, LVL, plywood and OSB 1.2, particleboard 1.3)",
-    "bending with kh (3.2, 3.3); lateral torsional buckling (6.3.3) between the places that hold the member sideways (its bearings, and parts resting on it that rest on something else too: decking, battens, joists), with kcrit (6.34) of sigma_m,crit (6.32) over lef at the upper bound of table 6.1 (the stretch, plus 2h where the top is compressed): a member whose bending over kcrit exceeds the strength there is not verified",
+    "bending with kh (3.2, 3.3); lateral torsional buckling (6.3.3) between the places that hold its compressed edge sideways (its bearings, and parts bearing on that edge and on something else too, screwed to it by a joint or also bearing on a grounded part: decking, battens, a ceiling; the top under sagging, the bottom under hogging), with kcrit (6.34) of sigma_m,crit (6.32) over lef at the upper bound of table 6.1 (the stretch, plus 2h where the top is compressed): bending over kcrit is the check lateral_torsional, and a member where it exceeds the strength is not verified",
     "shear with kcr = 0.67 (6.1.7); notches at bearings with kv (6.5.2), right-angled, x from the middle of the reaction to the corner of the notch, kv = 1 for a notch in the top over a bearing under the member (fig. 6.11(b)); elsewhere a change in depth steeper than 1:10 on the side in tension is not verified (6.5.1(2))",
     "compression perpendicular to the grain with kc90 = 1 on the contact area (6.1.5, without the 30 mm extension); compression with kc (6.3.2) on the full member length about both axes, sheathing not counted, and without kc on the net section at notches in a side (6.1.4) more than twice the member width from its ends; axial force in sloped beams neglected",
     "moments, shear and deflection: bending stress, shear stress and curvature on the section at each place along the member (a notch drawn in its side profile included), taken in the vertical plane across its grain so that a vertical load bends a turned section about both its axes, and its deflection is the resultant of the vertical and the sideways part, each at its own worst load pattern; spans continuous over the supports (three-moment equation, constant section) and cantilevers clamped at their support, as the loads are passed down; variable loads laid span by span and overhang by overhang where they add to the effect (load patterns), permanent load with 1.35 or, where it relieves the effect, 1.0 (EN 1990 table A1.2(B)); w_inst <= l/300 and w_fin <= l/250, cantilevers l/150 and l/125 (EN 1995-1-1 table 7.2, the lenient ends of the ranges)",
@@ -1809,9 +1810,10 @@ fn beam_checks(
         bearing_checks(load, shape, design, uls, &zones, &segments, &kinds);
     checks.extend(at_bearings);
     unchecked.extend(tension_notch(shape, &segments, &zones, uls, &kinds));
-    unchecked.extend(lateral_buckling(
-        load, shape, design, uls, &zones, &segments, &kinds,
-    ));
+    let (buckling, not_verified) =
+        lateral_buckling(load, shape, design, uls, &zones, &segments, &kinds);
+    checks.extend(buckling);
+    unchecked.extend(not_verified);
     (checks, spans_checked, unchecked)
 }
 
@@ -1835,28 +1837,19 @@ fn kcrit(lambda_rel: f64) -> f64 {
     }
 }
 
-/// Why lateral torsional buckling may govern a beam (review 2026-11-01
-/// PG-100). Between its bearings and the parts that brace it nothing holds it
-/// sideways; over each such stretch the bending there, divided by kcrit
-/// (6.3.3) of an effective length at its upper bound (table 6.1: the stretch,
-/// plus 2h where the load bears on the compressed top), must stay within the
-/// strength, or the beam is not verified. A stretch fully braced, or so short
-/// that kcrit is 1, adds nothing; nor does a place where bending alone
-/// already fails it.
-fn lateral_buckling(
-    load: &MemberLoad,
-    shape: &Shape,
-    design: &Design,
-    uls: &[Combination],
-    zones: &[Zone],
-    segments: &[(Segment, Vec<Option<Bending>>)],
-    kinds: &[usize],
-) -> Option<String> {
-    let class = design.class;
+/// Where nothing holds a member's top edge (or its bottom) sideways: between
+/// its bearings and the parts bracing that edge (review 2026-11-02 PG-120).
+fn free_stretches(load: &MemberLoad, zones: &[Zone], top: bool) -> Vec<(f64, f64)> {
+    let edge = if top { "top" } else { "bottom" };
     let mut held: Vec<(f64, f64)> = zones
         .iter()
         .map(|zone| (zone.lo, zone.hi))
-        .chain(load.braced_mm.iter().map(|s| (s[0], s[1])))
+        .chain(
+            load.braced_by
+                .iter()
+                .filter(|brace| brace.edge == edge)
+                .map(|brace| (brace.from_mm, brace.to_mm)),
+        )
         .collect();
     held.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut free: Vec<(f64, f64)> = Vec::new();
@@ -1867,72 +1860,140 @@ fn lateral_buckling(
         }
         reached = reached.max(hi);
     }
+    free
+}
+
+/// The worst bending over kcrit on one free stretch of one edge.
+struct Buckling {
+    utilization: f64,
+    lambda: f64,
+    lef: f64,
+    lo: f64,
+    hi: f64,
+    top: bool,
+    combination: usize,
+}
+
+/// Lateral torsional buckling of a beam (review 2026-11-01 PG-100). Between
+/// its bearings and the parts that brace its compressed edge nothing holds it
+/// sideways: the top under a sagging moment, the bottom under hogging (review
+/// 2026-11-02 PG-120). Over each such stretch the bending there, divided by
+/// kcrit (6.3.3) of an effective length at its upper bound (table 6.1: the
+/// stretch, plus 2h where the load bears on the compressed top), must stay
+/// within the strength. Within it, the worst is the `lateral_torsional` check
+/// beside plain `bending` (review 2026-11-02 PG-122); beyond it the beam is not
+/// verified, lef being only an upper bound. A stretch fully braced, or so short
+/// that kcrit is 1, adds nothing; nor does a place where bending alone already
+/// fails it.
+fn lateral_buckling(
+    load: &MemberLoad,
+    shape: &Shape,
+    design: &Design,
+    uls: &[Combination],
+    zones: &[Zone],
+    segments: &[(Segment, Vec<Option<Bending>>)],
+    kinds: &[usize],
+) -> (Option<Check>, Option<String>) {
+    let class = design.class;
     let h = shape.h;
     // An equivalent width that is the width of a rectangle and less for a
     // section with less material (6.32).
     let b = shape.b.min(shape.area / h);
     let kh = size_factor(class, h);
-    // Utilization, lambda_rel,m, lef and the stretch.
-    let mut worst: Option<[f64; 5]> = None;
-    for (lo, hi) in free {
-        let length = (hi - lo) * shape.arc;
-        if length <= 1.0 {
-            continue;
-        }
-        // The top in compression (sagging) and the bottom (hogging).
-        let lambdas = [length + 2.0 * h, length].map(|lef| {
+    let mut worst: Option<Buckling> = None;
+    for top in [true, false] {
+        for (lo, hi) in free_stretches(load, zones, top) {
+            let length = (hi - lo) * shape.arc;
+            if length <= 1.0 {
+                continue;
+            }
+            // A load bearing on the compressed top lengthens it by 2h (table 6.1).
+            let lef = if top { length + 2.0 * h } else { length };
             let sigma_crit = 0.78 * b * b * class.e0_05 / (h * lef);
-            (lef, (class.fm_k / sigma_crit).sqrt())
-        });
-        if lambdas.iter().all(|(_, lambda)| kcrit(*lambda) >= 1.0) {
-            continue;
-        }
-        // The bending alone over the strength, which fails the member anyway.
-        let mut plain_most = 0.0_f64;
-        let mut stretch_worst: Option<[f64; 5]> = None;
-        for (seg, sections) in segments {
-            for (j, x) in seg.xs.iter().enumerate() {
-                let Some(section) = sections[j].as_ref().filter(|_| lo <= *x && *x <= hi) else {
-                    continue;
-                };
-                let components: Vec<f64> = seg.moments.iter().map(|m| m[j]).collect();
-                for combination in uls {
-                    let (sagging, hogging) = extremes(
-                        &combination.factors,
-                        kinds,
-                        &components,
-                        Some(GAMMA_G_FAVOURABLE),
-                    );
-                    let strength =
-                        section.modulus * design.strength(class.fm_k, combination.duration) * kh;
-                    for (moment, (lef, lambda)) in [sagging, -hogging].into_iter().zip(lambdas) {
+            let lambda = (class.fm_k / sigma_crit).sqrt();
+            if kcrit(lambda) >= 1.0 {
+                continue;
+            }
+            // The bending alone over the strength, which fails the member anyway.
+            let mut plain_most = 0.0_f64;
+            let mut stretch_worst: Option<Buckling> = None;
+            for (seg, sections) in segments {
+                for (j, x) in seg.xs.iter().enumerate() {
+                    let Some(section) = sections[j].as_ref().filter(|_| lo <= *x && *x <= hi)
+                    else {
+                        continue;
+                    };
+                    let components: Vec<f64> = seg.moments.iter().map(|m| m[j]).collect();
+                    for (index, combination) in uls.iter().enumerate() {
+                        let (sagging, hogging) = extremes(
+                            &combination.factors,
+                            kinds,
+                            &components,
+                            Some(GAMMA_G_FAVOURABLE),
+                        );
+                        let strength = section.modulus
+                            * design.strength(class.fm_k, combination.duration)
+                            * kh;
+                        let moment = if top { sagging } else { -hogging };
                         let plain = moment.max(0.0) / strength;
                         plain_most = plain_most.max(plain);
                         let utilization = plain / kcrit(lambda);
-                        if stretch_worst.is_none_or(|w| utilization > w[0]) {
-                            stretch_worst = Some([utilization, lambda, lef, lo, hi]);
+                        if stretch_worst
+                            .as_ref()
+                            .is_none_or(|w| utilization > w.utilization)
+                        {
+                            stretch_worst = Some(Buckling {
+                                utilization,
+                                lambda,
+                                lef,
+                                lo,
+                                hi,
+                                top,
+                                combination: index,
+                            });
                         }
                     }
                 }
             }
-        }
-        if let Some(found) = stretch_worst.filter(|w| plain_most <= 1.0 && w[0] > 1.0)
-            && worst.is_none_or(|w| found[0] > w[0])
-        {
-            worst = Some(found);
+            if let Some(found) = stretch_worst.filter(|w| plain_most <= 1.0 && w.utilization > 0.0)
+                && worst
+                    .as_ref()
+                    .is_none_or(|w| found.utilization > w.utilization)
+            {
+                worst = Some(found);
+            }
         }
     }
-    worst.map(|[utilization, lambda, lef, lo, hi]| {
-        format!(
-            "lateral torsional buckling is not verified: nothing holds it sideways from {} to {} mm, and over lef = {} mm (EN 1995-1-1 6.3.3, table 6.1 at most) lambda_rel,m = {:.2} and kcrit = {:.2} would put its bending at {:.3}; brace its compressed edge (decking or battens resting on it and on the next member) or check it by hand",
-            lo.round(),
-            hi.round(),
-            lef.round(),
-            lambda,
-            kcrit(lambda),
-            utilization
-        )
-    })
+    let Some(worst) = worst else {
+        return (None, None);
+    };
+    let edge = if worst.top { "top" } else { "bottom" };
+    if worst.utilization <= 1.0 {
+        let check = Check {
+            name: "lateral_torsional",
+            utilization: worst.utilization,
+            combination: uls[worst.combination].label.clone(),
+            at: format!(
+                "{edge} free {}-{} mm, lef {} mm, lambda_rel,m {:.2}, kcrit {:.2}",
+                worst.lo.round(),
+                worst.hi.round(),
+                worst.lef.round(),
+                worst.lambda,
+                kcrit(worst.lambda)
+            ),
+        };
+        return (Some(check), None);
+    }
+    let reason = format!(
+        "lateral torsional buckling is not verified: nothing holds its compressed {edge} sideways from {} to {} mm, and over lef = {} mm (EN 1995-1-1 6.3.3, table 6.1 at most) lambda_rel,m = {:.2} and kcrit = {:.2} would put its bending at {:.3}; brace that edge (decking or battens screwed to it, or resting on it and on a grounded part) or check it by hand",
+        worst.lo.round(),
+        worst.hi.round(),
+        worst.lef.round(),
+        worst.lambda,
+        kcrit(worst.lambda),
+        worst.utilization
+    );
+    (None, Some(reason))
 }
 
 /// Shear at notched bearings (6.5.2) and compression perpendicular to the
@@ -2380,6 +2441,16 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
             members.push(check);
             continue;
         };
+        // Review 2026-11-02 PG-106: solid timber's factors are no default
+        // for a material that names no product (an OSB took kmod 0.6, not 0.4).
+        if class.product.is_empty() && !class.glulam {
+            missing.push(format!(
+                "timber_strength({material:?}) names no product (product=\"solid\", \"osb3\", ...), so its kmod, kdef and gamma_M are unknown"
+            ));
+            check.missing = missing;
+            members.push(check);
+            continue;
+        }
         let design = Design {
             class,
             gamma_m: class.product().gamma_m,

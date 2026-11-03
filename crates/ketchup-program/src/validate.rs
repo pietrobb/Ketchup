@@ -721,20 +721,6 @@ fn params(model: &ProgramModel, issues: &mut Vec<Issue>) {
                 hint: "Choose a value inside the declared range.".to_owned(),
             });
         }
-        if param.whole && param.value.fract() != 0.0 {
-            issues.push(Issue {
-                source_lines: Vec::new(),
-                severity: Severity::Error,
-                kind: "param_not_whole",
-                parts: Vec::new(),
-                message: format!(
-                    "param {} = {} takes whole numbers only",
-                    param.name, param.value
-                ),
-                where_mm: None,
-                hint: "Choose a whole number.".to_owned(),
-            });
-        }
     }
 }
 

@@ -15,7 +15,7 @@ use ketchup_program::CancelToken;
 pub(super) struct DrawingExportJob {
     id: u64,
     reply: mpsc::SyncSender<Response>,
-    cancelled: Arc<AtomicBool>,
+    pub(super) cancelled: Arc<AtomicBool>,
     target: DrawingExportTarget,
     cancel: CancelToken,
     gate: PublishGate,

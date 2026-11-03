@@ -268,18 +268,36 @@ fn a_sheet_keeping_a_factory_edge_takes_other_pieces_inside_its_trim() {
 /// Review 2026-11-01 PG-102: a piece inside the trim, laid before a second
 /// piece spanning the sheet, took the factory edge from the whole rest of
 /// the sheet, so 2 500 x 600, 800 x 500 and 2 500 x 120 took two sheets
-/// where one holds them.
+/// where one holds them. Review 2026-11-02 PG-102 (rest): with a narrower
+/// second size of the same length they still took two or three sheets, each
+/// piece keeping the edge opening the smallest it spans.
 #[test]
 fn a_piece_inside_the_trim_leaves_the_factory_edge_to_the_pieces_spanning_the_sheet() {
-    let source = "sheet_stock(\"OSB\", [(2500, 1250)], kerf = 4, trim = 10)\n\
-                  board(\"wide\", (2500, 600, 18), material = \"OSB\")\n\
-                  board(\"panel\", (800, 500, 18), at = (0, 0, 30), material = \"OSB\")\n\
-                  board(\"strip\", (2500, 120, 18), at = (0, 0, 60), material = \"OSB\")\n";
-    let plans = plans(source);
-    let plan = &plans[0];
-    assert!(plan.unplaced.is_empty(), "{plan:#?}");
-    assert_eq!(plan.layouts.len(), 1, "{plan:#?}");
-    assert_cuttable_keeping_factory_edges(&plan.layouts[0], 4.0, 10.0);
+    for sizes in [
+        "[(2500, 1250)]",
+        "[(2500, 1250), (2500, 625)]",
+        "[(2500, 900), (2500, 1250)]",
+        "[(2500, 1250), (2500, 750)]",
+        "[(2510, 1250), (2500, 1250)]",
+        "[(2500, 1250), (2800, 2070)]",
+    ] {
+        let source = format!(
+            "sheet_stock(\"OSB\", {sizes}, kerf = 4, trim = 10)\n\
+             board(\"wide\", (2500, 600, 18), material = \"OSB\")\n\
+             board(\"panel\", (800, 500, 18), at = (0, 0, 30), material = \"OSB\")\n\
+             board(\"strip\", (2500, 120, 18), at = (0, 0, 60), material = \"OSB\")\n"
+        );
+        let plans = plans(&source);
+        let plan = &plans[0];
+        assert!(plan.unplaced.is_empty(), "{sizes}: {plan:#?}");
+        assert_eq!(plan.layouts.len(), 1, "{sizes}: {plan:#?}");
+        assert_eq!(
+            plan.layouts[0].stock_mm,
+            [2500.0, 1250.0],
+            "{sizes}: {plan:#?}"
+        );
+        assert_cuttable_keeping_factory_edges(&plan.layouts[0], 4.0, 10.0);
+    }
 }
 
 #[test]
@@ -313,6 +331,47 @@ fn many_sheet_pieces_stay_cuttable_and_never_overlap() {
     }
     // 11.0 m2 of pieces on 5.796 m2 sheets: two would need 95 %.
     assert_eq!(plans[0].layouts.len(), 3, "{plans:#?}");
+}
+
+/// Review 2026-11-02 PG-125: the blank of a profile is the smallest rectangle
+/// around it (PG-101), which may lie turned; a part whose grain runs in the
+/// profile's plane had its grain follow that turned rectangle, so the board
+/// cut along the sheet's grain did not have it where the part names it. Such
+/// a blank stays square to the grain; a grain along the extrusion (or none)
+/// leaves it free to turn.
+#[test]
+fn a_blank_keeps_the_grain_the_part_names_in_its_profile_plane() {
+    let (c, s) = (30f64.to_radians().cos(), 30f64.to_radians().sin());
+    let corner = |x: f64, y: f64| format!("({}, {})", x * c - y * s, x * s + y * c);
+    let profile = format!(
+        "[{}, {}, {}, {}]",
+        corner(0.0, 0.0),
+        corner(1000.0, 0.0),
+        corner(1000.0, 300.0),
+        corner(0.0, 300.0)
+    );
+    let blank = |grain: &str| {
+        let source = format!(
+            "extrude('panel', profile = {profile}, distance = 18, material = 'OSB'{grain})\n"
+        );
+        let model = ketchup_program::evaluate("cutting.star", &source, &BTreeMap::new())
+            .unwrap_or_else(|error| panic!("{error}"))
+            .model;
+        bom(&model).cut_list[0].dimensions_mm
+    };
+    let near = |a: [f64; 3], b: [f64; 3]| a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 0.01);
+    for grain in ["", ", attributes = {'grain': 'z'}"] {
+        assert!(
+            near(blank(grain), [1000.0, 300.0, 18.0]),
+            "{grain}: {:?}",
+            blank(grain)
+        );
+    }
+    for axis in ["x", "y"] {
+        let box_ = [1000.0 * c + 300.0 * s, 1000.0 * s + 300.0 * c, 18.0];
+        let named = blank(&format!(", attributes = {{'grain': '{axis}'}}"));
+        assert!(near(named, box_), "{axis}: {named:?}");
+    }
 }
 
 #[test]
@@ -681,40 +740,161 @@ fn members_name_their_length_and_boards_their_thickness() {
 /// axes, 3 000 x 1 801 x 140: the cutting plan made a 1 801 x 140 section of
 /// it and the quote bought 0.975 m3 for 0.24 m3 of plates. A blank is the
 /// smallest rectangle around the profile: 60 x 140 along the slope, as long
-/// as the slope plus the plumb cut at the ridge.
+/// as the slope plus the plumb cut at the ridge. Review 2026-11-02 PG-121:
+/// above 45° the long side lay nearer the wall's height than its length and
+/// became the plate's width, 60 x 4 381 x 140 at 46°; the long side is the
+/// length the part names, at any pitch.
 #[test]
 fn a_sloping_plate_is_cut_from_the_smallest_rectangle_around_it() {
-    let rise = 3000.0 * 30f64.to_radians().tan();
+    for pitch in [30f64, 46.0, 60.0] {
+        let rise = 3000.0 * pitch.to_radians().tan();
+        let source = format!(
+            "buildup('gable', (0, 0, 0), (1, 0, 0), (0, 0, 1), 6000,\n\
+             layers = [{{'name': 'frame', 'thickness': 140, 'material': 'C24', 'spacing': 600}}],\n\
+             top = [(0, 2600), (3000, {}), (6000, 2600)])\n\
+             bar_stock('C24', [9000])\n",
+            2600.0 + rise
+        );
+        let model = ketchup_program::evaluate("cutting.star", &source, &BTreeMap::new())
+            .unwrap_or_else(|error| panic!("{error}"))
+            .model;
+        let bom = bom(&model);
+        let plates: Vec<_> = bom
+            .cut_list
+            .iter()
+            .filter(|row| row.parts.iter().any(|part| part.contains("top plate")))
+            .collect();
+        assert_eq!(plates.len(), 1, "{pitch}: {plates:#?}");
+        let length = 3000.0 / pitch.to_radians().cos() + 60.0 * pitch.to_radians().tan();
+        let [l, w, t] = plates[0].dimensions_mm;
+        assert!(
+            (l - length).abs() < 0.01 && (w - 140.0).abs() < 1e-6 && (t - 60.0).abs() < 1e-6,
+            "{pitch}: {plates:#?}"
+        );
+        let c24 = bom
+            .cutting
+            .iter()
+            .find(|plan| plan.material == "C24")
+            .unwrap();
+        assert_eq!(c24.section_mm, [140.0, 60.0], "{pitch}: {c24:#?}");
+        assert!(c24.unplaced.is_empty(), "{pitch}: {c24:#?}");
+    }
+}
+
+/// Review 2026-11-02 PG-123 (rest of PG-108): the shop drawing took a part's
+/// box in its own axes, longest first (a 46° gable plate 1 747 x 1 545 x 140
+/// against 2 331 x 140 x 60 on the cut list); the exported cut list sorted the
+/// blank longest first (a strip of an 18 mm board 15 mm wide as 2 000 x 18 x 15,
+/// its thickness_axis "width"); the CNC drawing took the thinnest side as the
+/// thickness. All four give the blank of the cut list.
+#[test]
+fn the_shop_drawing_cut_list_export_cutting_plan_and_cnc_give_one_blank() {
+    use ketchup_program::cnc_dxf::cnc_parts;
+    use ketchup_program::cut_list::cut_list_table;
+    use ketchup_program::shop_drawing::shop_drawings;
+    use ketchup_program::table::Cell;
+    let rise = 3000.0 * 46f64.to_radians().tan();
     let source = format!(
         "buildup('gable', (0, 0, 0), (1, 0, 0), (0, 0, 1), 6000,\n\
          layers = [{{'name': 'frame', 'thickness': 140, 'material': 'C24', 'spacing': 600}}],\n\
          top = [(0, 2600), (3000, {}), (6000, 2600)])\n\
-         bar_stock('C24', [6000])\n",
+         bar_stock('C24', [9000])\n\
+         board('strip', [2000, 15, 18], at = (0, 9000, 0), material = 'OSB', thickness_axis = 'z')\n\
+         sheet_stock('OSB', [(2500, 1250)])\n",
         2600.0 + rise
     );
     let model = ketchup_program::evaluate("cutting.star", &source, &BTreeMap::new())
         .unwrap_or_else(|error| panic!("{error}"))
         .model;
     let bom = bom(&model);
-    let plates: Vec<_> = bom
-        .cut_list
-        .iter()
-        .filter(|row| row.parts.iter().any(|part| part.contains("top plate")))
-        .collect();
-    assert_eq!(plates.len(), 1, "{plates:#?}");
-    let length = 3000.0 / 30f64.to_radians().cos() + 60.0 * 30f64.to_radians().tan();
-    let [l, w, t] = plates[0].dimensions_mm;
-    assert!(
-        (l - length).abs() < 0.01 && (w - 140.0).abs() < 1e-6 && (t - 60.0).abs() < 1e-6,
-        "{plates:#?}"
+    let blank = |part: &str| {
+        bom.cut_list
+            .iter()
+            .find(|row| row.parts.iter().any(|name| name == part))
+            .unwrap_or_else(|| panic!("{part} is not on the cut list"))
+            .dimensions_mm
+    };
+    assert_eq!(blank("strip"), [2000.0, 15.0, 18.0]);
+    let close = |a: &[f64], b: &[f64]| {
+        a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6)
+    };
+
+    // The exported cut list, and the dimension its axis attributes name.
+    let table = cut_list_table(&model, |_| true);
+    let column = |name: &str| table.header.iter().position(|title| title == name).unwrap();
+    let [length, thickness_axis] = [column("length_mm"), column("thickness_axis")];
+    let mut exported = 0;
+    for row in &table.rows {
+        let Cell::Text(parts) = &row[1] else { panic!() };
+        let numbers: Vec<f64> = row[length..length + 3]
+            .iter()
+            .map(|cell| match cell {
+                Cell::Number(value) => *value,
+                _ => panic!(),
+            })
+            .collect();
+        for part in parts.split(", ") {
+            assert!(
+                close(&numbers, &blank(part)),
+                "{part}: {numbers:?} {:?}",
+                blank(part)
+            );
+            exported += 1;
+        }
+        if parts == "strip" {
+            assert!(
+                matches!(&row[thickness_axis], Cell::Text(axis) if axis == "thickness"),
+                "{row:?}"
+            );
+        }
+    }
+    assert_eq!(
+        exported,
+        bom.cut_list
+            .iter()
+            .map(|row| row.parts.len())
+            .sum::<usize>()
     );
-    let c24 = bom
-        .cutting
-        .iter()
-        .find(|plan| plan.material == "C24")
-        .unwrap();
-    assert_eq!(c24.section_mm, [140.0, 60.0], "{c24:#?}");
-    assert!(c24.unplaced.is_empty(), "{c24:#?}");
+
+    // The shop drawing's positions.
+    let drawings = shop_drawings(&model);
+    let mut drawn = 0;
+    for position in drawings.iter().flat_map(|drawing| &drawing.positions) {
+        for part in &position.parts {
+            assert!(
+                close(&position.dimensions_mm, &blank(part)),
+                "{part}: {position:?}"
+            );
+            drawn += 1;
+        }
+    }
+    assert!(drawn > 10, "{drawings:#?}");
+
+    // The cutting plan's sections.
+    for plan in &bom.cutting {
+        for piece in plan.layouts.iter().flat_map(|layout| &layout.pieces) {
+            let [l, w, t] = blank(&piece.part);
+            let section: &[f64] = if plan.section_mm.len() == 2 {
+                &[w, t]
+            } else {
+                &[t]
+            };
+            assert!(close(&plan.section_mm, section), "{}: {plan:?}", piece.part);
+            assert!(
+                (piece.size_mm[0] - l).abs() < 1e-6 || piece.turned,
+                "{piece:?}"
+            );
+        }
+    }
+
+    // The CNC drawing's thickness and size.
+    let cnc = cnc_parts(&model);
+    let strip = cnc.parts.iter().find(|part| part.part == "strip");
+    let strip = strip.unwrap_or_else(|| panic!("{:?}", cnc.not_drawn));
+    assert_eq!(strip.thickness_mm, 18.0, "{:?}", strip.size_mm);
+    let mut size = strip.size_mm;
+    size.sort_by(|a, b| b.total_cmp(a));
+    assert_eq!(size, [2000.0, 15.0]);
 }
 
 /// Review 2026-10-29 PG-61: the cutting plan took a part's thinnest extent

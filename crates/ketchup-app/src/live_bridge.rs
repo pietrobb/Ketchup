@@ -1291,6 +1291,31 @@ struct Pending {
     /// The program the edit was written into, bound with the proposal.
     program: Option<RuleProgramSource>,
 }
+/// Why MCP `open` leaves the window's document as it is before reading the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenRefusal {
+    NotDocument,
+    DiscardDeclined,
+}
+impl OpenRefusal {
+    fn code(self) -> &'static str {
+        match self {
+            Self::NotDocument => "not_a_document",
+            Self::DiscardDeclined => "discard_declined",
+        }
+    }
+}
+/// Another kind of file, such as a PDF, is refused before the user is asked to
+/// discard changes and before it is locked (review 2026-11-02 UI-101).
+fn confirm_open(app: &mut KetchupApp, path: &Path) -> Result<(), OpenRefusal> {
+    if app.refuse_non_document(path) {
+        return Err(OpenRefusal::NotDocument);
+    }
+    if !app.confirm_discard_if_dirty() {
+        return Err(OpenRefusal::DiscardDeclined);
+    }
+    Ok(())
+}
 #[derive(Debug)]
 pub(crate) enum PlanRejection {
     Code(&'static str),
@@ -1439,6 +1464,10 @@ pub(crate) struct LiveBridge {
     next_proposal: u64,
     apply_and_verify_job: Option<ApplyAndVerifyJob>,
     program_check_job: Option<program_check::ProgramCheckJob>,
+    /// Counts the documents the window held: New, Open and a program that
+    /// replaces the document each start another. A job that changes the
+    /// document it was started for answers `stale_document` in another one.
+    document_epoch: u64,
     program_report: Option<(Stamp, ketchup_program::Report, &'static str, Option<Value>)>,
     /// The last complete exact check of an applied program: the next apply
     /// measures again only the pairs its change can have touched.
@@ -1816,6 +1845,12 @@ impl LiveBridge {
     }
 
     pub(super) fn invalidate_document_context(&mut self) {
+        // The running job was asked of the document that goes: it stops, and
+        // one that would change it answers stale_document (review 2026-11-02 MCP-122).
+        self.document_epoch = self.document_epoch.wrapping_add(1);
+        if let Some(job) = &self.program_check_job {
+            job.request_cancelled().store(true, Ordering::Release);
+        }
         self.observed = None;
         self.client_states.clear();
         self.pending = None;
@@ -1824,6 +1859,15 @@ impl LiveBridge {
         self.next_batch_job = 1;
         self.query.invalidate();
         self.image.revoke();
+    }
+
+    /// The answer to a job whose document the window no longer holds.
+    pub(super) fn document_replaced() -> &'static str {
+        failure(
+            "stale_document",
+            "The window started or opened another document while the job ran; it changed nothing in the document now open.",
+            json!({"canonical_mutation": false}),
+        )
     }
 
     fn batch_job_handle(&self, id: u64) -> String {
@@ -2107,6 +2151,7 @@ impl LiveBridge {
                 | AssistantCadEditOperation::Transform { selector, .. }
                 | AssistantCadEditOperation::SetColor { selector, .. }
                 | AssistantCadEditOperation::SetGrounded { selector, .. }
+                | AssistantCadEditOperation::SetProductionCode { selector, .. }
                 | AssistantCadEditOperation::SetOccurrenceClassification { selector, .. }
                 | AssistantCadEditOperation::Copy { selector, .. }
                 | AssistantCadEditOperation::LinearPattern { selector, .. }
@@ -3328,9 +3373,7 @@ impl LiveBridge {
                 if !drawings::local_absolute_path(&path) || !Path::new(&path).is_file() {
                     return Err("invalid_path");
                 }
-                if !app.confirm_discard_if_dirty() {
-                    return Err("discard_declined");
-                }
+                confirm_open(app, Path::new(&path)).map_err(OpenRefusal::code)?;
                 Self::require_request_authority(cancelled)?;
                 if !app.open_document_with_discard(Path::new(&path), true) {
                     return Err("open_rejected");

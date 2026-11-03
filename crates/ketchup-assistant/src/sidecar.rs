@@ -2037,6 +2037,12 @@ pub enum AssistantCadEditOperation {
         selector: AssistantCadEntitySelector,
         grounded: bool,
     },
+    /// The production code naming each selected part's piece in a production job
+    /// and its HOMAG program (12 letters, digits, '-' or '_' for HOMAG); null clears it.
+    SetProductionCode {
+        selector: AssistantCadEntitySelector,
+        code: Option<String>,
+    },
     CreateTag {
         tag_id: u64,
         name: String,
@@ -3154,6 +3160,7 @@ impl AssistantCadEditProgram {
             AssistantCadEditOperation::Delete { selector, .. }
             | AssistantCadEditOperation::SetColor { selector, .. }
             | AssistantCadEditOperation::SetGrounded { selector, .. }
+            | AssistantCadEditOperation::SetProductionCode { selector, .. }
             | AssistantCadEditOperation::SetOccurrenceTag { selector, .. }
             | AssistantCadEditOperation::SetOccurrenceClassification { selector, .. }
             | AssistantCadEditOperation::Transform { selector, .. }
@@ -3995,6 +4002,17 @@ impl AssistantCadEditProgram {
             AssistantCadEditOperation::SetTagVisibility { tag_id, .. } => {
                 if *tag_id == 0 {
                     return Err(AssistantRequestInvalid::invalid("CAD tag visibility"));
+                }
+                0
+            }
+            AssistantCadEditOperation::SetProductionCode {
+                code: Some(code), ..
+            } => {
+                if code.is_empty()
+                    || code.len() > limits::NAME_BYTES
+                    || code.chars().any(char::is_control)
+                {
+                    return Err(AssistantRequestInvalid::invalid("CAD production code"));
                 }
                 0
             }

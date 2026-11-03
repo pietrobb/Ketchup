@@ -279,6 +279,32 @@ fn rotated_text_is_located_by_its_letters_and_crossing_text_is_ambiguous() {
     assert_eq!(ambiguous["candidate_regions"], json!([0, 1]), "{ambiguous}");
 }
 
+/// Review 2026-11-02 UO-52: the cross a POINT is drawn as took part in the search for
+/// regions: one in the corner of a room closed a square of its own with the walls and put
+/// corners in the room's outline. A point marks a place; it bounds nothing.
+#[test]
+fn the_cross_of_a_point_bounds_no_region() {
+    let drawing = walled_room().replace(
+        "0\nENDSEC\n0\nEOF\n",
+        "0\nPOINT\n8\nwalls\n10\n330\n20\n330\n30\n0\n0\nENDSEC\n0\nEOF\n",
+    );
+    let (mut app, mut bridge, _) = imported(&drawing);
+    let regions = bridge
+        .execute(
+            &mut app,
+            ask("underlay_regions", json!({"min_area_m2": 0.0})),
+            false,
+        )
+        .unwrap();
+    let rows = regions["regions"].as_array().unwrap();
+    let areas = rows
+        .iter()
+        .map(|row| (row["area_m2"].as_f64().unwrap() * 100.0).round() / 100.0)
+        .collect::<Vec<_>>();
+    assert_eq!(areas, [50.76, 9.24], "{regions}");
+    assert_eq!(rows[0]["corners"], 4, "{regions}");
+}
+
 #[test]
 fn a_client_finds_the_rooms_walls_enclose_with_their_names_and_wall_thickness() {
     let (mut app, mut bridge, offset) = imported(&walled_room());

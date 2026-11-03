@@ -41,6 +41,18 @@ def test_inline_test_modules_are_not_production_code(tmp_path):
     assert checker.current_counts(tmp_path) == {"crates/a/src/lib.rs": 3}
 
 
+def test_code_under_any_test_is_production_code(tmp_path):
+    # Review 2026-11-02 TST-120: `#[cfg(any(test, windows))]` is built on every Windows
+    # release, yet it was left out as test code.
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "#[cfg(any(test, windows))]\npub fn snap(d: f64) -> bool {\n    d < 1.0e-7\n}\n"
+        "#[cfg(all(test, windows))]\nfn check(d: f64) -> bool {\n    d < 1.0e-9\n}\n",
+    )
+    assert checker.current_counts(tmp_path) == {"crates/a/src/lib.rs": 1}
+
+
 def test_documented_exceptions_are_not_counted(tmp_path):
     write(
         tmp_path,

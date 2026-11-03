@@ -67,26 +67,57 @@ def test_the_kecup_notice_names_its_components_before_the_crates():
 
 def test_a_compiled_crate_without_a_license_text_is_refused():
     licenses = notices.merge([report(("MIT", MIT, [("a", ["Jane"])]))])
-    compiled = {("a", "1.0.0", True), ("b", "2.0.0", True), ("ketchup-x", "0.3.1", False)}
+    compiled = {("a", "1.0.0", False), ("b", "2.0.0", False), ("ketchup-x", "0.3.1", True)}
     with pytest.raises(notices.NoticeError, match="b 2.0.0"):
         notices.verify(viewer(), licenses, compiled)
+
+
+def test_a_vendored_crate_without_a_license_text_is_refused():
+    """Review 2026-11-02 CI-121: only crates from a registry were checked, so a
+    crate patched in from third_party/ (starlark, process-wrap) or taken from
+    git could ship without its license text. Only the workspace's own
+    packages are exempt."""
+    licenses = notices.merge([report(("MIT", MIT, [("a", ["Jane"])]))])
+    compiled = {("a", "1.0.0", False), ("process-wrap", "10.0.0", False), ("ketchup-x", "0.3.1", True)}
+    with pytest.raises(notices.NoticeError, match="process-wrap 10.0.0"):
+        notices.verify(viewer(), licenses, compiled)
+
+
+def test_a_crate_of_the_workspace_is_ours_and_any_other_is_third_party(monkeypatch):
+    out = "\n".join(
+        [
+            r"ketchup-app v0.3.1 (C:\k\crates\ketchup-app)",
+            "serde v1.0.229",
+            "serde v1.0.229 (*)",
+            r"process-wrap v10.0.0 (C:\k\third_party\process-wrap)",
+            "gitcrate v0.1.0 (https://github.com/x/gitcrate#0123abcd)",
+        ]
+    )
+    monkeypatch.setattr(notices, "run", lambda args: out)
+    monkeypatch.setattr(notices, "workspace", lambda: {"ketchup-app": "Cargo.toml"})
+    assert notices.tree("ketchup-app", notices.TARGET) == {
+        ("ketchup-app", "0.3.1", True),
+        ("serde", "1.0.229", False),
+        ("process-wrap", "10.0.0", False),
+        ("gitcrate", "0.1.0", False),
+    }
 
 
 def test_an_mit_text_without_copyright_needs_the_crate_authors():
     bare = "Permission is hereby granted, free of charge"
     licenses = notices.merge([report(("MIT", bare, [("a", ["Jane"])]))])
-    notices.verify(viewer(), licenses, {("a", "1.0.0", True)})
+    notices.verify(viewer(), licenses, {("a", "1.0.0", False)})
     licenses = notices.merge([report(("MIT", bare, [("a", [])]))])
     with pytest.raises(notices.NoticeError, match="no copyright holder"):
-        notices.verify(viewer(), licenses, {("a", "1.0.0", True)})
+        notices.verify(viewer(), licenses, {("a", "1.0.0", False)})
 
 
 def test_a_component_section_is_there_exactly_when_its_crate_is_compiled_in():
     licenses = notices.merge([report(("MIT", MIT, [("starlark", ["Meta"])]))])
     with pytest.raises(notices.NoticeError, match="starlark section must be there"):
-        notices.verify(viewer(), licenses, {("starlark", "1.0.0", True)})
+        notices.verify(viewer(), licenses, {("starlark", "1.0.0", False)})
     with pytest.raises(notices.NoticeError, match="must be left out"):
-        notices.verify(notices.PACKAGES["ketchup"], licenses, {("starlark", "1.0.0", True)})
+        notices.verify(notices.PACKAGES["ketchup"], licenses, {("starlark", "1.0.0", False)})
 
 
 def test_cargo_about_accepts_what_cargo_deny_allows():
@@ -122,6 +153,24 @@ def test_each_macos_bundle_carries_the_notices_of_the_programs_it_builds():
         assert set(package.programs) == set(re.findall(r"-p (\S+)", build)), name
         assert f"scripts/third_party_notices.py --package {name} --output" in script, script_name
         assert 'for notice in "${notices[@]}"' in script, script_name
+
+
+def test_the_apk_and_the_web_viewer_carry_the_notices_of_what_they_build():
+    """Review 2026-11-02 REL-121: the Android APK and the web Viewer carried no
+    notices. Each build script makes them for its own program and target and
+    ships them: inside the APK as an asset, beside the WebAssembly module."""
+    for script_name, name, triple, shipped in (
+        ("build-android-viewer.ps1", "viewer-android", "aarch64-linux-android", '"assets/THIRD_PARTY_NOTICES.txt"'),
+        ("build-web-viewer.ps1", "viewer-web", "wasm32-unknown-unknown", "--output $OutputDir"),
+    ):
+        script = (ROOT / "scripts" / "windows" / script_name).read_text(encoding="utf-8-sig")
+        package = notices.PACKAGES[name]
+        assert package.target == triple, name
+        assert triple in script, script_name
+        built = set(re.findall(r'-p"?,? "?(ketchup-[\w-]+)', script))
+        assert set(package.programs) == built, name
+        assert f"scripts\\third_party_notices.py\") --package {name} --output" in script, script_name
+        assert shipped in script, script_name
 
 
 def test_the_component_sections_name_the_files_of_their_platform():

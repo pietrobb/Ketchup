@@ -53,9 +53,19 @@ mod tests {
         assert_eq!(request(&dir), None, "the shown model is not measured");
         let pushed = dir.join("benchmark.ketchup-view");
         std::fs::write(&pushed, b"x").unwrap();
-        assert_eq!(request(&dir), Some(pushed.clone()));
-        assert_eq!(report_path(&pushed), dir.join("benchmark.txt"));
+        assert_eq!(request(&dir), Some(pushed));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    // Review 2026-11-02 TST-123: in a build without the feature only this test
+    // used report_path, so clippy without features found it dead.
+    #[test]
+    fn the_report_is_written_beside_the_request() {
+        let pushed = Path::new("external").join("benchmark.ketchup-view");
+        assert_eq!(
+            report_path(&pushed),
+            Path::new("external").join("benchmark.txt")
+        );
     }
 
     #[cfg(not(feature = "benchmark"))]

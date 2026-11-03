@@ -1,4 +1,6 @@
 //! Narrow, exception-safe exact geometry boundary used by the A0 gate.
+// An error is carried, never dropped (review 2026-11-02 TST-121).
+#![deny(clippy::map_err_ignore)]
 
 use ketchup_tolerance::{
     ACCUMULATED_ROUNDING, APPROXIMATION, DEFAULT_ANGULAR_TOLERANCE_RAD,

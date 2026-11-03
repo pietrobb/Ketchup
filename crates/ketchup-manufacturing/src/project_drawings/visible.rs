@@ -10,6 +10,7 @@ use super::{DrawnView, EDGE_STROKE_MM, Item};
 use ketchup_geometry::linalg::{cross2, dot2};
 use ketchup_model::tolerance::HIDDEN_LINE_TOUCH_MM;
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// One visible line of the view in view millimetres, with its pen width on paper.
 #[derive(Clone, Debug, PartialEq)]
@@ -245,8 +246,12 @@ struct Piece {
     width_mm: f64,
 }
 
-/// The visible lines of `view`.
-pub(super) fn visible_lines(view: &DrawnView) -> Vec<VisibleLine> {
+/// How many lines are cleared of what hides them between two looks at the stop flag.
+const LINES_PER_STOP_CHECK: usize = 256;
+
+/// The visible lines of `view`; once `stop` is set it gives up and returns
+/// what it has, which the caller then throws away.
+pub(super) fn visible_lines(view: &DrawnView, stop: &AtomicBool) -> Vec<VisibleLine> {
     let mut occluders = Vec::new();
     let mut segments = Vec::new();
     for (order, item) in view.items.iter().enumerate() {
@@ -277,6 +282,9 @@ pub(super) fn visible_lines(view: &DrawnView) -> Vec<VisibleLine> {
     let mut seen = vec![usize::MAX; occluders.len()];
     let mut pieces = Vec::new();
     for (index, (order, a, b, width_mm)) in segments.into_iter().enumerate() {
+        if index % LINES_PER_STOP_CHECK == 0 && stop.load(Ordering::Relaxed) {
+            break;
+        }
         let (low, high) = (
             [a[0].min(b[0]), a[1].min(b[1])],
             [a[0].max(b[0]), a[1].max(b[1])],

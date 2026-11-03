@@ -52,7 +52,7 @@ PERF_CALL = re.compile(r"(?<!fn )\bperf_\w+\s*\(")
 # (a retry delay), not a measured one.
 CLOCK = re.compile(r"(?:Instant|SystemTime)::now\(\)|\.elapsed\(\)")
 # Unit tests inside a production file (review 2026-11-01 TST-101: functions and impls too).
-from check_tolerance_literals import TEST_MODULE  # noqa: E402
+from check_tolerance_literals import TEST_BUILD_MODULE as TEST_MODULE  # noqa: E402
 # A comparison operator between spaces: not a generic (`Vec<u8>`), `->`, `=>` or a shift.
 COMPARISON = re.compile(r"(?<=\s)(<=?|>=?)(?=\s)")
 MEASURED = re.compile(

@@ -4,6 +4,8 @@
 //! of their own, so one thing (the Python interpreter, refreshing golden files,
 //! where measurements go) is set the same way for the whole workspace.
 //! `scripts/check_test_env.py` keeps other variable names out of test code.
+// An error is carried, never dropped (review 2026-11-02 TST-121).
+#![deny(clippy::let_underscore_must_use, clippy::map_err_ignore)]
 
 use std::ffi::OsString;
 use std::path::PathBuf;

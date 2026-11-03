@@ -863,6 +863,19 @@ fn an_objects_rings_nest_by_what_holds_what() {
         assert_eq!(outline, square(0.0, 0.0, 100.0));
         assert_eq!(holes.len(), 1);
     }
+    // Review 2026-11-02 UO-121: in a slab of 10 m, a notch whose corner misses the edge by
+    // 0.001 mm, outside, was a second outline: the edge was 0.00001 mm wide there.
+    let notch = vec![
+        [10_000.001, 4_000.0],
+        [8_000.0, 4_000.0],
+        [8_000.0, 6_000.0],
+        [10_000.001, 6_000.0],
+    ];
+    let (outline, holes) =
+        crate::live_bridge::underlay_program::nested_rings(vec![square(0.0, 0.0, 10_000.0), notch])
+            .unwrap_or_else(|outlines| panic!("{outlines} outlines"));
+    assert_eq!(outline, square(0.0, 0.0, 10_000.0));
+    assert_eq!(holes.len(), 1);
     // Two islands, or an island in the hole: separate outlines, refused with their count.
     for rings in [
         vec![square(0.0, 0.0, 100.0), square(200.0, 0.0, 50.0)],
@@ -1174,6 +1187,10 @@ fn block_linework_becomes_shared_native_instances_and_a_wrong_question_changes_n
     let steps = app.undo_step_count();
     for (arguments, field) in [
         (json!({"name": "1DOORS", "block": "door_80"}), "name"),
+        // Review 2026-11-02 UO-51: a keyword or constant of the language is no name either.
+        (json!({"name": "pass", "block": "door_80"}), "name"),
+        (json!({"name": "def", "block": "door_80"}), "name"),
+        (json!({"name": "None", "block": "door_80"}), "name"),
         (json!({"name": "DOORS", "block": "WINDOW"}), "block"),
         (
             json!({"name": "DOORS", "block": "door_80", "point_mm": [0, 0]}),

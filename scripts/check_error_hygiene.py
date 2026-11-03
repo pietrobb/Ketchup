@@ -43,6 +43,11 @@ Two forms are counted in production source (crates/*/src, test modules and
   closure when it carries nothing. A text check cannot tell a content-free error here.
 - dropped_quietly: `.or_else(|_| ...)` and `Err(_) => None` drop the error as
   `map_err(|_| ...)` does.
+- dropped_arm: any other arm `Err(_) =>` or `Err(_name) =>`, such as
+  `Err(_) => { return Err(..) }` (review 2026-11-02 TST-121).
+- dropped_closure: `.unwrap_or_else(|_| ...)` answers an error with a value.
+- let_underscore: `let _ = call(...);` throws away what the call answers; clippy's
+  `let_underscore_must_use` sees the same where a crate holds none (TST-121).
 
 The check is a ratchet: scripts/error_hygiene_baseline.txt records what still
 exists, per file and form. A count may only go down; a new file or a higher count
@@ -119,6 +124,15 @@ STRINGIFIED_FIELD = re.compile(r"\b\w+\s*:\s*&?\b" + ERROR_NAME + r"\s*\.\s*to_s
 LET_ELSE_ERROR = re.compile(r"^\s*let\s+Ok\(", re.MULTILINE)
 DROPPED_QUIETLY = re.compile(
     r"\.or_else\(\s*(?:move\s*)?\|\s*_\w*\s*\||\bErr\(\s*_\s*\)\s*=>\s*(?:return\s+)?None\b")
+# Every other arm that takes an error and names it `_` or `_name` (review 2026-11-02
+# TST-121): `Err(_) => { return Err(..) }`, `Err(_ignored) => continue`; the arms
+# discard and dropped_quietly count (`Err(_) => Err(`, `Err(_) => None`) are left to them.
+ERR_ARM = re.compile(r"\bErr\(\s*(_\w*)\s*\)\s*=>")
+COUNTED_ARM = re.compile(r"\s*(?:return\s+)?(?:Err\(|None\b)")
+# `.unwrap_or_else(|_| ...)`: an Option's closure takes nothing, so `_` is an error.
+DROPPED_CLOSURE = re.compile(r"\.unwrap_or_else\(\s*(?:move\s*)?\|\s*_\w*\s*(?::[^|]*)?\|")
+# `let _ = call(...);` throws away what the call answers, an error with it.
+LET_UNDERSCORE = re.compile(r"\blet\s+_\s*=\s*[^;]*\)\s*;")
 # A variant of an error type (`...Error::Name(_)`) matched to a bare string.
 DROPPED_VARIANT = re.compile(r"\b\w*Error::\w+\(\s*_\s*\)\s*=>\s*\"")
 # An inline test module at the top level of a Rust file: `#[cfg(test)]` or
@@ -182,7 +196,11 @@ def file_counts(text: str) -> dict[str, int]:
             "formatted_cause": len(FORMATTED_CAUSE.findall(text)),
             "stringified_field": len(STRINGIFIED_FIELD.findall(text)),
             "let_else_error": len(LET_ELSE_ERROR.findall(text)),
-            "dropped_quietly": len(DROPPED_QUIETLY.findall(text))}
+            "dropped_quietly": len(DROPPED_QUIETLY.findall(text)),
+            "dropped_arm": sum(1 for arm in ERR_ARM.finditer(text)
+                               if arm.group(1) != "_" or not COUNTED_ARM.match(text, arm.end())),
+            "dropped_closure": len(DROPPED_CLOSURE.findall(text)),
+            "let_underscore": len(LET_UNDERSCORE.findall(text))}
 
 
 FORMS = tuple(file_counts(""))

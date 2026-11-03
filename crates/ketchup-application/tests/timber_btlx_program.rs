@@ -240,6 +240,106 @@ fn library_members_boards_and_fasteners_carry_their_fabrication_role() {
     assert_eq!(job["parts"].as_array().map(Vec::len), Some(2), "{job}");
 }
 
+/// Review 2026-11-02 MF-120: a HOMAG package of pieces without a usable
+/// production code was a bare "export blocked"; it names the part and the code
+/// it needs. The codes are assigned for every made piece, the program keeps
+/// owning the document and still names them after it is applied again, and the
+/// package is written.
+#[test]
+fn a_homag_package_names_the_piece_without_a_code_and_assigned_codes_pass() {
+    use ketchup_assistant::sidecar::{
+        AssistantCadEditOperation, AssistantCadEditProgram, AssistantCadEntitySelector,
+    };
+    use ketchup_manufacturing::fabrication::GeneralFabricationError;
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let program = |diameter: u32| RuleProgramSource {
+        variants: Default::default(),
+        file_name: "member.star".into(),
+        source: format!(
+            "rail = member('rail', (0, 0, 0), (1000, 0, 0), (60, 80))\n\
+             hole(rail, 'y+', at = (30, 500), diameter = {diameter}, depth = 20)\n\
+             shelf = board('shelf', (600, 300, 18), at = (0, 300, 0))\n\
+             hole(shelf, 'z+', at = (100, 150), diameter = 8, depth = 10)\n"
+        ),
+        overrides: Default::default(),
+    };
+    let mut session = DocumentSession::default();
+    session.apply_rule_program(program(8), false).unwrap();
+    let set_code = |session: &mut DocumentSession, name: &str, code: Option<&str>| {
+        let snapshot = session.snapshot();
+        let occurrence = snapshot.occurrences().find(|o| o.name() == name).unwrap();
+        session
+            .apply_cad_program(
+                &AssistantCadEditProgram {
+                    operations: vec![AssistantCadEditOperation::SetProductionCode {
+                        selector: AssistantCadEntitySelector::Occurrences {
+                            occurrence_ids: vec![occurrence.id().0],
+                        },
+                        code: code.map(str::to_owned),
+                    }],
+                },
+                &std::collections::BTreeSet::new(),
+            )
+            .unwrap();
+    };
+    set_code(&mut session, "shelf", Some("TOP-A"));
+    assert!(
+        session.rule_program().is_some(),
+        "a code detached the program"
+    );
+    let snapshot = session.snapshot();
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    let refusal = projection
+        .woodwop_mpr_4_0_production_zip(&snapshot, Default::default())
+        .unwrap_err();
+    assert_eq!(
+        refusal,
+        GeneralFabricationError::HomagProgramCodeUnusable {
+            part: "rail".into(),
+            code: None
+        }
+    );
+    assert!(refusal.to_string().contains("exactly 12"), "{refusal}");
+    set_code(&mut session, "rail", Some("000000000007"));
+    let snapshot = session.snapshot();
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        projection
+            .woodwop_mpr_4_0_production_zip(&snapshot, Default::default())
+            .err(),
+        Some(GeneralFabricationError::HomagProgramCodeUnusable {
+            part: "shelf".into(),
+            code: Some("TOP-A".into())
+        })
+    );
+    // The rail keeps its code; the shelf's unusable one is replaced, counting on.
+    let assignments = projection.production_code_assignments(&snapshot);
+    assert_eq!(
+        assignments
+            .iter()
+            .map(|(_, code)| code.as_str())
+            .collect::<Vec<_>>(),
+        ["000000000008"]
+    );
+    set_code(&mut session, "shelf", Some(&assignments[0].1));
+    session.apply_rule_program(program(10), false).unwrap();
+    assert!(session.rule_program().is_some());
+    let snapshot = session.snapshot();
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    assert!(projection.production_code_assignments(&snapshot).is_empty());
+    let zip = projection
+        .woodwop_mpr_4_0_production_zip(&snapshot, Default::default())
+        .unwrap_or_else(|error| panic!("{error}"));
+    for name in ["000000000007.mpr", "000000000008.svg"] {
+        assert!(
+            zip.windows(name.len())
+                .any(|window| window == name.as_bytes()),
+            "{name}"
+        );
+    }
+}
+
 /// Review 2026-11-01 MF-103: a table top with rounded corners, a profile of
 /// lines and arcs, has a blank around its arcs and a production job; an
 /// outline with a free-form edge is refused for its outline, not its cuts.
@@ -288,8 +388,10 @@ fn a_rounded_table_top_is_described_and_a_free_form_outline_says_so() {
     // woodWOP lays a rectangular blank: the rounded top is refused by name.
     assert!(matches!(
         projection.production_job(&snapshot, &adapters),
-        Err(GeneralFabricationError::PartExportBlocked { .. }
-            | GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::CannotCarry {
+            element: ShopElement::ShapedBlank,
+            ..
+        })
     ));
 
     let snapshot = coded(apply(
@@ -311,6 +413,224 @@ fn a_rounded_table_top_is_described_and_a_free_form_outline_says_so() {
         ("top", ShopElement::FreeFormBlank)
     );
     assert!(reason.contains("outline"), "{reason}");
+}
+
+/// Review 2026-11-02 MF-123, MF-124: a rounded board dropped a whole HOMAG
+/// package, and a woodWOP program of it or of a board without machining, with a
+/// bare "export blocked". woodWOP and BTLx refuse a blank that is not a
+/// rectangle by its part, with the way out; a part without machining says so.
+#[test]
+fn woodwop_and_btlx_name_a_shaped_blank_and_a_part_without_machining() {
+    use ketchup_manufacturing::fabrication::{GeneralFabricationError, ShopElement, ShopFormat};
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let refused = |error: GeneralFabricationError| match error {
+        GeneralFabricationError::CannotCarry {
+            format,
+            part,
+            element,
+            reason,
+        } => {
+            assert!(reason.contains("production job"), "{reason}");
+            (format, part, element)
+        }
+        other => panic!("{other}"),
+    };
+    const TOP: &str = "extrude('top', profile = round_corners([[0, 0], [800, 0], [800, 500], [0, 500]], 40), \
+         distance = 18, material = 'oak', attributes = {FABRICATION_ROLE: MANUFACTURED_ITEM})\n";
+    let snapshot = apply(&format!(
+        "{TOP}shelf = board('shelf', (600, 300, 18), at = (0, 600, 0))\n\
+         hole(shelf, 'z+', at = (100, 150), diameter = 8, depth = 10)\n"
+    ));
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    let woodwop = ShopFormat::Woodwop {
+        vertical_pocket_tool: false,
+    };
+    let shaped = (woodwop, "top".to_owned(), ShopElement::ShapedBlank);
+    assert_eq!(
+        refused(
+            projection
+                .woodwop_mpr_4_0_production_zip(&snapshot, Default::default())
+                .unwrap_err()
+        ),
+        shaped
+    );
+    let snapshot = apply(TOP);
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        refused(
+            projection
+                .woodwop_mpr_4_0_drill_export(&snapshot)
+                .unwrap_err()
+        ),
+        shaped
+    );
+    let snapshot = apply("board('shelf', (600, 300, 18))\n");
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    let bare = projection
+        .woodwop_mpr_4_0_drill_export(&snapshot)
+        .unwrap_err();
+    assert_eq!(
+        bare,
+        GeneralFabricationError::NothingToMachine {
+            part: "shelf".into()
+        }
+    );
+    assert!(bare.to_string().contains("no drilling or pocket"), "{bare}");
+    let snapshot = apply(
+        "extrude('beam', profile = round_corners([[0, 0], [120, 0], [120, 200], [0, 200]], 10), \
+         distance = 3000, material = 'C24', attributes = {FABRICATION_ROLE: TIMBER_MEMBER})\n",
+    );
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        refused(projection.btlx_2_3_1_export(&snapshot).unwrap_err()),
+        (
+            ShopFormat::Btlx,
+            "beam".to_owned(),
+            ShopElement::ShapedBlank
+        )
+    );
+}
+
+/// Review 2026-11-02 MF-122: the shop drawing of a rounded table top drew the
+/// three rectangles of its bounding box, without the radius or a word, and the
+/// shop cut sharp corners. A blank that is not a rectangle is drawn as its
+/// cross-section, arcs included; a rectangular one stays the views alone.
+#[test]
+fn the_shop_drawing_draws_a_blank_that_is_not_a_rectangle() {
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let drawing = |worker: &mut ExactWorkerSupervisor, source: &str| {
+        let snapshot = apply(source);
+        let projection = fabrication(worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+        String::from_utf8(projection.drawing_svg(&snapshot).unwrap()).unwrap()
+    };
+    let rounded = drawing(
+        &mut worker,
+        "extrude('top', profile = round_corners([[0, 0], [800, 0], [800, 500], [0, 500]], 20), \
+         distance = 18, material = 'oak', attributes = {FABRICATION_ROLE: MANUFACTURED_ITEM})\n",
+    );
+    assert!(
+        rounded.contains("blank outline (the views show its bounding box): width=800 mm, height=500 mm, length=18 mm"),
+        "{rounded}"
+    );
+    assert_eq!(rounded.matches("A 20 20 0").count(), 4, "{rounded}");
+    let shaped = drawing(
+        &mut worker,
+        "extrude('shelf', profile = [[0, 0], [800, 0], [800, 200], [300, 200], [300, 500], [0, 500]], \
+         distance = 18, material = 'oak', attributes = {FABRICATION_ROLE: MANUFACTURED_ITEM})\n",
+    );
+    assert!(
+        shaped.contains(
+            "blank outline (the views show its bounding box): width=800 mm, height=500 mm"
+        ),
+        "{shaped}"
+    );
+    // A shallow bow (R 1625) is sized by the arc that is cut, not its circle.
+    let bowed = drawing(
+        &mut worker,
+        "extrude('top', profile = [['front', [0, 0], [800, 0], {'through': (400, -50)}], \
+         ['right', [800, 0], [800, 500]], ['back', [800, 500], [0, 500]], ['left', [0, 500], [0, 0]]], \
+         distance = 18, material = 'oak', attributes = {FABRICATION_ROLE: MANUFACTURED_ITEM})\n",
+    );
+    assert!(
+        bowed.contains(
+            "blank outline (the views show its bounding box): width=800 mm, height=550 mm"
+        ),
+        "{bowed}"
+    );
+    let plain = drawing(&mut worker, "board('shelf', (600, 300, 18))\n");
+    assert!(!plain.contains("blank outline"), "{plain}");
+}
+
+/// Review 2026-11-02 MF-121: a round table top drawn as a circle (or two half
+/// arcs a profile joins into one) is one circle, which the blank did not take:
+/// the top was undescribed, with the reason that its cuts could not be
+/// described, and blocked the job. A circle is two arcs.
+#[test]
+fn a_round_table_top_is_described_as_two_arcs() {
+    use ketchup_assistant::sidecar::*;
+    use ketchup_manufacturing::fabrication::{
+        FABRICATION_ROLE_DIMENSION_V1, MANUFACTURED_ITEM_ROLE_V1,
+    };
+    use ketchup_model::document::{
+        CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId, CommandBatch,
+    };
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let mut session = DocumentSession::default();
+    session
+        .apply_cad_program(
+            &AssistantCadEditProgram {
+                operations: vec![AssistantCadEditOperation::CreatePart {
+                    holes: Vec::new(),
+                    pockets: Vec::new(),
+                    name: "top".into(),
+                    workplane: AssistantWorkplaneSpec::Principal {
+                        plane: AssistantPrincipalPlane::Xy,
+                    },
+                    entities: vec![AssistantSketchEntity::Circle {
+                        id: 1,
+                        center_mm: [400.0, 400.0],
+                        radius_mm: 400.0,
+                    }],
+                    constraints: vec![],
+                    feature: AssistantCadPartFeature::Extrusion { distance_mm: 18.0 },
+                    translation_mm: [0.0, 0.0, 0.0],
+                    rotation: None,
+                }],
+            },
+            &std::collections::BTreeSet::new(),
+        )
+        .unwrap();
+    let snapshot = session.snapshot();
+    let profiles = graph(&snapshot, "top").profiles;
+    assert!(
+        matches!(
+            profiles[0].geometry,
+            ketchup_model::exact_brep_graph::ExactBRepPlanarGeometry::Circle { .. }
+        ),
+        "{profiles:#?}"
+    );
+    let top = snapshot.scene_query()[0].instance_path.clone();
+    let (dimension, category) = (
+        ClassificationDimensionId(900),
+        ClassificationCategoryId(901),
+    );
+    let snapshot = snapshot
+        .preview_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertClassificationDimension {
+                id: dimension,
+                name: FABRICATION_ROLE_DIMENSION_V1.into(),
+                categories: vec![(category, MANUFACTURED_ITEM_ROLE_V1.into())],
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: top.root_occurrence(),
+                dimension_id: dimension,
+                category_id: Some(category),
+            },
+            CanonicalCommand::SetProductionCode {
+                instance_path: top,
+                code: Some("000000000001".into()),
+            },
+        ]))
+        .unwrap();
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    assert!(
+        projection.manufacturing.undescribed_sources.is_empty(),
+        "{:#?}",
+        projection.manufacturing.undescribed_sources
+    );
+    let job = projection
+        .production_job(&snapshot, &[])
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        job["parts"][0]["dimensions_mm"],
+        serde_json::json!([800.0, 800.0, 18.0]),
+        "{job}"
+    );
+    let drawing = String::from_utf8(projection.drawing_svg(&snapshot).unwrap()).unwrap();
+    assert_eq!(drawing.matches("A 400 400 0").count(), 2, "{drawing}");
 }
 
 /// Idea #128: a drilled library board on its own is one woodWOP program and

@@ -55,7 +55,7 @@ pub struct RunPluginRequest {
 pub(super) struct PluginJob {
     id: u64,
     reply: mpsc::SyncSender<Response>,
-    cancelled: Arc<AtomicBool>,
+    pub(super) cancelled: Arc<AtomicBool>,
     worker_cancelled: Arc<AtomicBool>,
     before: Stamp,
     validators: Vec<String>,
@@ -76,7 +76,7 @@ type Prepared = Result<PluginLaunch, (&'static str, Option<Value>)>;
 /// A plugin folder or command line being read, staged and hashed off the UI
 /// thread; the user is asked once it is ready.
 pub(super) struct PluginPrepareJob {
-    answer: PluginAnswer,
+    pub(super) answer: PluginAnswer,
     request: RunPluginRequest,
     receiver: mpsc::Receiver<Prepared>,
 }

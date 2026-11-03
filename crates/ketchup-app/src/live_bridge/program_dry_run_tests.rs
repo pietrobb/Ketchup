@@ -192,3 +192,29 @@ fn a_rejected_or_ambiguous_check_publishes_nothing() {
         assert_eq!(app.document.current_rule_program().unwrap().source, SOURCE);
     }
 }
+
+/// Review 2026-11-02 MCP-101: the planner of a check ran its program worker
+/// with a token no one held, so a check its client gave up kept the worker
+/// busy for the rest of its time (45 s). The request's flag now ends it.
+#[test]
+fn a_cancelled_check_stops_its_program_worker() {
+    let source = RuleProgramSource {
+        file_name: "check.star".into(),
+        source: "n = 0\nfor i in range(1000000):\n    n += i\nb = box(\"b\", (10, 20, 30))".into(),
+        overrides: BTreeMap::new(),
+        variants: BTreeMap::new(),
+    };
+    let result = super::check(
+        DocumentStore::new(),
+        &source,
+        &ContainerData::default(),
+        None,
+        Arc::new(AtomicBool::new(true)),
+        CheckDeadline::after(Duration::from_secs(60)),
+    );
+    match result {
+        Err(RuleProgramApplyError::Program { code, .. }) => assert_eq!(code, "cancelled"),
+        Err(other) => panic!("{other:?}"),
+        Ok(checked) => panic!("a cancelled check planned the program: {}", checked.change),
+    }
+}

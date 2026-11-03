@@ -28,10 +28,33 @@ enum JobRead {
 pub(super) struct DwgImportJob {
     id: u64,
     reply: mpsc::SyncSender<Response>,
-    cancelled: Arc<AtomicBool>,
+    pub(super) cancelled: Arc<AtomicBool>,
     cancel: CancelToken,
     request: Request,
     receiver: mpsc::Receiver<JobRead>,
+    /// The document the file is imported into (review 2026-11-02 MCP-122).
+    epoch: u64,
+    /// What the window answers busy with while the file is read.
+    pub(super) reason: &'static str,
+}
+
+/// The name of the thread reading a file of `format` (or a drawing
+/// `as_underlay`) and the busy reason naming it (review 2026-11-02 MCP-123).
+pub(super) fn import_job_names(
+    format: ImportFormat,
+    as_underlay: bool,
+) -> (&'static str, &'static str) {
+    if as_underlay {
+        return (
+            "ketchup-underlay-import",
+            "A drawing is being read as an underlay.",
+        );
+    }
+    match format {
+        ImportFormat::Step => ("ketchup-step-import", "A STEP file is being imported."),
+        ImportFormat::Iges => ("ketchup-iges-import", "An IGES file is being imported."),
+        _ => ("ketchup-dwg-import", "A DWG file is being imported."),
+    }
 }
 
 /// Whether `request` imports a DWG, STEP or IGES file or an underlay, which run as a job.
@@ -86,12 +109,13 @@ impl LiveBridge {
         let origin = ketchup_model::underlay::placement::geo_origin(&app.document.current());
         let exact = (!as_underlay && matches!(format, ImportFormat::Step | ImportFormat::Iges))
             .then(|| app.exact_worker_executable());
+        let (thread, reason) = import_job_names(format, as_underlay);
         let cancel = CancelToken::default();
         let worker_cancel = cancel.clone();
         let (sender, receiver) = mpsc::sync_channel(1);
         let repaint = context.clone();
         let spawn = std::thread::Builder::new()
-            .name("ketchup-dwg-import".into())
+            .name(thread.into())
             .spawn(move || {
                 let read = if let Some(executable) = exact {
                     JobRead::Exact(read_exact_import(
@@ -125,6 +149,8 @@ impl LiveBridge {
             cancel,
             request,
             receiver,
+            epoch: self.document_epoch,
+            reason,
         }));
         context.request_repaint_after(Duration::from_millis(10));
     }
@@ -135,6 +161,12 @@ impl LiveBridge {
         context: &egui::Context,
         job: DwgImportJob,
     ) {
+        // Without `expected` it would land in the document opened meanwhile.
+        if job.epoch != self.document_epoch {
+            job.cancel.cancel();
+            Self::reply(app, job.id, &job.reply, Err(Self::document_replaced()));
+            return;
+        }
         if job.cancelled.load(Ordering::Acquire) {
             job.cancel.cancel();
             Self::reply(app, job.id, &job.reply, Err("request_cancelled"));

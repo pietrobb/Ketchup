@@ -7,6 +7,8 @@
 //! 0xc0000374 freeing a debug-layer root signature as a render state was dropped). An
 //! `egui_kittest` harness without an explicit renderer makes its own instance when it
 //! renders, so harnesses that render take `renderer()`.
+// An error is carried, never dropped (review 2026-11-02 TST-121).
+#![deny(clippy::let_underscore_must_use, clippy::map_err_ignore)]
 
 use std::sync::OnceLock;
 

@@ -102,12 +102,25 @@ pub struct MemberLoad {
     pub loads_n: Loads,
     pub patches: Vec<Patch>,
     pub reactions: Vec<Reaction>,
-    /// Stretches (from, to) along the member where a part resting on it and
-    /// on something else too (decking, battens, joists) holds it sideways.
+    /// Where parts hold the member sideways along it (decking, battens, a
+    /// ceiling), each on the edge it touches.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub braced_mm: Vec<[f64; 2]>,
+    pub braced_by: Vec<Brace>,
     /// Why the loads are incomplete; empty when every input was known.
     pub missing: Vec<String>,
+}
+
+/// A part holding a member sideways over a stretch of one edge (review
+/// 2026-11-02 PG-120): it bears on the member and on another part, and is
+/// screwed to the member by a joint (or is of the load path's `fixed` tags) or
+/// also bears on a grounded part. A part only lying on free members moves with them.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct Brace {
+    pub part: String,
+    /// `top` (compressed under a sagging moment) or `bottom` (under hogging).
+    pub edge: String,
+    pub from_mm: f64,
+    pub to_mm: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -305,6 +318,27 @@ impl Frame {
 
     fn along(&self, point: [f64; 3]) -> f64 {
         dot(sub(point, self.centre), self.axis) + self.length / 2.0
+    }
+
+    /// The edge `points` touch: Some(true) on top, Some(false) underneath,
+    /// None from the side.
+    fn edge(&self, points: &[[f64; 3]]) -> Option<bool> {
+        if points.is_empty() {
+            return None;
+        }
+        // The middle of the points' box: on the face they lie on.
+        let middle: [f64; 3] = std::array::from_fn(|i| {
+            let (lo, hi) = points.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| {
+                (lo.min(p[i]), hi.max(p[i]))
+            });
+            (lo + hi) / 2.0
+        });
+        let offset = sub(middle, self.centre);
+        let along = dot(offset, self.axis);
+        let across: [f64; 3] = std::array::from_fn(|i| offset[i] - along * self.axis[i]);
+        // NaN (points on the axis itself) holds no edge.
+        let up = across[2] / length(across);
+        (up.abs() > 0.3).then_some(up > 0.0)
     }
 
     fn range(&self, points: &[[f64; 3]]) -> (f64, f64) {
@@ -975,20 +1009,31 @@ fn member_load(
     frame: &Frame,
     patches: &[Patch],
     reactions: Vec<Reaction>,
-    braced: &[(f64, f64)],
+    braced: &[Bracing],
+    parts: &[Part],
     missing: BTreeSet<String>,
 ) -> MemberLoad {
-    let mut stretches: Vec<(f64, f64)> = braced
+    let mut stretches: Vec<Bracing> = braced
         .iter()
-        .map(|&(lo, hi)| (lo.max(0.0), hi.min(frame.length)))
-        .filter(|(lo, hi)| hi >= lo)
+        .map(|brace| Bracing {
+            from: brace.from.max(0.0),
+            to: brace.to.min(frame.length),
+            ..*brace
+        })
+        .filter(|brace| brace.to >= brace.from)
         .collect();
-    stretches.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut braced_mm: Vec<[f64; 2]> = Vec::new();
-    for (lo, hi) in stretches {
-        match braced_mm.last_mut() {
-            Some(last) if lo <= last[1] => last[1] = last[1].max(hi),
-            _ => braced_mm.push([lo, hi]),
+    stretches.sort_by(|a, b| {
+        (a.by, a.top)
+            .cmp(&(b.by, b.top))
+            .then(a.from.total_cmp(&b.from))
+    });
+    let mut merged: Vec<Bracing> = Vec::new();
+    for brace in stretches {
+        match merged.last_mut() {
+            Some(last) if last.by == brace.by && last.top == brace.top && brace.from <= last.to => {
+                last.to = last.to.max(brace.to);
+            }
+            _ => merged.push(brace),
         }
     }
     let mut total = Loads::new();
@@ -1011,30 +1056,80 @@ fn member_load(
             })
             .collect(),
         reactions,
-        braced_mm: braced_mm.into_iter().map(|s| s.map(round)).collect(),
+        braced_by: merged
+            .into_iter()
+            .map(|brace| Brace {
+                part: parts[brace.by].name.clone(),
+                edge: if brace.top { "top" } else { "bottom" }.to_owned(),
+                from_mm: round(brace.from),
+                to_mm: round(brace.to),
+            })
+            .collect(),
         missing: missing.into_iter().collect(),
     }
 }
 
-/// Where each member is held sideways, along it. A part held by more than one
-/// part ties each member it rests on to the others there (review 2026-11-01
-/// PG-100); one resting on a single member (a pad, a post) moves with it.
+/// A stretch `from`..`to` of a member's top (or bottom) edge that part `by` holds.
+#[derive(Clone, Copy)]
+struct Bracing {
+    by: usize,
+    top: bool,
+    from: f64,
+    to: f64,
+}
+
+/// Where each member is held sideways, along it, and on which edge. A part
+/// held by more than one part ties each member it bears on to the others there
+/// (review 2026-11-01 PG-100), but only where it is fastened to the member or
+/// itself bears on a grounded part (review 2026-11-02 PG-120): a loose plank
+/// on two free beams lets both buckle together. One resting on a single member
+/// (a pad, a post) moves with it; one touching it from the side holds no edge.
 fn braced_stretches(
     supports: &[Vec<Support>],
     member: &[bool],
+    sink: &[bool],
     frames: &[Frame],
-) -> Vec<Vec<(f64, f64)>> {
-    let mut braced: Vec<Vec<(f64, f64)>> = frames.iter().map(|_| Vec::new()).collect();
-    for list in supports {
+    fastened: impl Fn(usize, usize) -> bool,
+) -> Vec<Vec<Bracing>> {
+    let mut braced: Vec<Vec<Bracing>> = frames.iter().map(|_| Vec::new()).collect();
+    for (item, list) in supports.iter().enumerate() {
         let held_by: BTreeSet<usize> = list.iter().map(|support| support.supporter).collect();
         if held_by.len() < 2 {
             continue;
         }
+        let anchored = held_by.iter().any(|supporter| sink[*supporter]);
         for support in list.iter().filter(|support| member[support.supporter]) {
-            braced[support.supporter].push(frames[support.supporter].range(&support.points));
+            let frame = &frames[support.supporter];
+            if !(anchored || fastened(item, support.supporter)) {
+                continue;
+            }
+            let Some(top) = frame.edge(&support.points) else {
+                continue;
+            };
+            let (from, to) = frame.range(&support.points);
+            braced[support.supporter].push(Bracing {
+                by: item,
+                top,
+                from,
+                to,
+            });
         }
     }
     braced
+}
+
+/// Whether each part is of a load path's `fixed` tags: fastened to what it leans on.
+fn fixed_by_tag(model: &ProgramModel) -> Vec<bool> {
+    model
+        .parts
+        .iter()
+        .map(|part| {
+            model
+                .load_paths
+                .iter()
+                .any(|path| !part.tags.is_disjoint(&path.fixed_tags))
+        })
+        .collect()
 }
 
 /// Loads on every load-path member, when the program declares weights or area loads.
@@ -1045,8 +1140,10 @@ pub fn loads(model: &ProgramModel) -> LoadReport {
 
 /// [`loads`] reusing the contacts the load path already measured into `faces`.
 pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'a>) -> LoadReport {
-    if model.load_paths.is_empty() || (model.weight_scope.is_empty() && model.area_loads.is_empty())
-    {
+    // Members to check without any load are listed as missing it (review
+    // 2026-11-02 PG-105), never left out as if there were none.
+    let unloaded = model.weight_scope.is_empty() && model.area_loads.is_empty();
+    if model.load_paths.is_empty() || (unloaded && model.strength_classes.is_empty()) {
         return LoadReport::default();
     }
     let parts = &model.parts;
@@ -1099,16 +1196,11 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
     // So too a part that carries nothing beside or under a member or the ground
     // leans on it or hangs from it only where a joint ties them; a carrier
     // (sheathing on its studs) and a part of the tags `fixed` lean as they are.
-    let fixed: Vec<bool> = parts
+    let fixed_by_tag = fixed_by_tag(model);
+    let fixed: Vec<bool> = fixed_by_tag
         .iter()
         .zip(&may_carry)
-        .map(|(part, carries)| {
-            *carries
-                || model
-                    .load_paths
-                    .iter()
-                    .any(|path| !part.tags.is_disjoint(&path.fixed_tags))
-        })
+        .map(|(tagged, carries)| *tagged || *carries)
         .collect();
     let mut fix_to = |item: usize, carrier: usize, support: Support, lean: bool| {
         if lean && fixed[item] {
@@ -1208,7 +1300,9 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
         .collect();
 
     let (mut patches, mut missing) = own_loads(model, &frames);
-    let braced = braced_stretches(&supports, &member, &frames);
+    let braced = braced_stretches(&supports, &member, &sink, &frames, |item, held| {
+        fixed_by_tag[item] || joined(&parts[item].name, &parts[held].name)
+    });
 
     // Pass the loads down, each part after everything it carries.
     let mut pending = vec![0usize; parts.len()];
@@ -1425,12 +1519,16 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
         if !done[item] {
             reasons.insert("the parts it carries lean on each other in a loop".to_owned());
         }
+        if unloaded {
+            reasons.insert("no load is declared (self_weight() or area_load())".to_owned());
+        }
         report.members.push(member_load(
             part,
             &frames[item],
             &patches[item],
             std::mem::take(&mut reactions[item]),
             &braced[item],
+            parts,
             reasons,
         ));
     }

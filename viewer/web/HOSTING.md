@@ -3,6 +3,8 @@
 The web Viewer is a static site: `index.html`, `main.js`, `viewer.css`,
 `ketchup_viewer_web.js` and `ketchup_viewer_web_bg.wasm`, built by
 `scripts/windows/build-web-viewer.ps1 -OutputDir <folder> [-Model <file.ketchup-view>]`.
+Serve `THIRD_PARTY_NOTICES.txt` with them: it carries the copyright notice and
+license text of every crate compiled into the WebAssembly module.
 It runs entirely in the customer's browser. Nothing is uploaded, no account is
 needed and there is no server-side code; the host only serves files.
 

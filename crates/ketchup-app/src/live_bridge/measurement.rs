@@ -17,7 +17,7 @@ pub enum MeasurementMode {
 pub(super) struct MeasurementJob {
     id: u64,
     reply: mpsc::SyncSender<Response>,
-    cancelled: Arc<AtomicBool>,
+    pub(super) cancelled: Arc<AtomicBool>,
     before: Stamp,
     started: Instant,
     receiver: mpsc::Receiver<Result<Value, Rejection>>,

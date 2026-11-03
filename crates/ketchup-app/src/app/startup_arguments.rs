@@ -49,9 +49,9 @@ impl KetchupApp {
                 // Any other file that is not a document, e.g. a PDF (review 2026-11-01 UI-101);
                 // one that cannot be read is left to Open, which says why.
                 Ok(path)
-                    if !ketchup_model::persistence::begins_as_document(&path).unwrap_or(true) =>
+                    if !ketchup_model::persistence::may_open_as_document(&path).unwrap_or(true) =>
                 {
-                    Some(refused("error-startup-not-document", &path))
+                    Some(refused("error-not-document", &path))
                 }
                 Ok(path) => {
                     self.queue_open_document_path(&path);
@@ -109,8 +109,8 @@ mod tests {
         let renamed = directory.path().join("short.ketchup");
         std::fs::write(&renamed, b"KETCHUP").unwrap();
         let cases = [
-            (offer.clone().into(), "error-startup-not-document"),
-            (renamed.clone().into(), "error-startup-not-document"),
+            (offer.clone().into(), "error-not-document"),
+            (renamed.clone().into(), "error-not-document"),
             (OsString::from("--help"), "error-startup-switch"),
             (directory.path().into(), "error-startup-folder"),
             (missing.clone().into(), "error-startup-missing"),

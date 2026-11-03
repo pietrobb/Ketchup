@@ -106,7 +106,7 @@ point and outward normal in the part's frame and in the world. An edge gives
 
 | Builtin | Purpose |
 |---|---|
-| `param(name, default, min=, max=, doc=, unit=, whole=)` | a number the caller can override; `whole=True` for a count or a switch |
+| `param(name, default, min=, max=, doc=, unit=, whole=)` | a number the caller can override; `whole=True` for a count or a switch, whose fraction stops the program at `param()`, naming the parameter, and is refused by the window's field |
 | `box(name, size, at=, material=, color=, attributes=)` | an axis-aligned part; `at` is its minimum corner. Every body (`box`, `extrude`, `revolve`, `sweep`, `loft`) takes `material=`, `color=` and `attributes=` (a dict of strings kept on the part; the library's `board(grain=)` stores `"grain"` there) |
 | `part_info(part)` | current `name`, `size`, `at`, `max` of a part |
 | `face(part, name)`, `faces(part)`, `face_at(part, point)` | a flat or round face of any part in world: `kind`, `origin`, `normal`, `u`, `v`, `min`, `max`, `radius`, `center` |
@@ -131,7 +131,7 @@ point and outward normal in the part's frame and in the world. An edge gives
 | `keep_clear(zone, name=, only=, ignore=[], hint=)`, `load_path(only=, carriers=[], fixed=[], name=, ignore=[], hint=)` | a zone no part may reach into; members that must pass their weight down (a part leaning on or hanging from them needs a `joint()` or a `fixed` tag) |
 | `material_weight(material, source=, kg_m3=, kg_m2=)`, `weight_scope(tags)`, `area_load(name, kind=, kn_m2=, on=[tags], projected=True, source=)` | self weight and area loads in kN/m² on the load-path members |
 | `text(name, value, at=, height_mm=2.5, tags=)`, `dim(name, a, b, offset_mm=0, height_mm=2.5, tags=)`, `leader(name, value, point=, at=, height_mm=2.5, tags=)`, `polyline(name, points, closed=False, tags=)` | drawing annotations, no parts (never in the cut list, collisions, mass or takeoff): a text at a point, a dimension whose value Kečup measures between two points, an arrow from a point to a text, drawn lines; text height in mm on paper, the dimension offset in model mm; the library's `chain_dim(name, points, offset_mm=)` dimensions neighbouring points |
-| `timber_strength(material, strength_class=, service_class=, glulam=, fm_k=, fv_k=, fc0_k=, fc90_k=, e0_mean=, e0_05=, source=, rho_k=, product=)` | the EC5 characteristic values in N/mm² of one material, behind the library's `timber_design`; `product` (solid, glulam, lvl, plywood, osb2, osb3, osb4, particleboard_p5/p6/p7) picks its kmod, kdef and gamma_M |
+| `timber_strength(material, strength_class=, service_class=, glulam=, fm_k=, fv_k=, fc0_k=, fc90_k=, e0_mean=, e0_05=, source=, rho_k=, product=)` | the EC5 characteristic values in N/mm² of one material, behind the library's `timber_design`; `product` (solid, glulam, lvl, plywood, osb2, osb3, osb4, particleboard_p5/p6/p7) picks its kmod, kdef and gamma_M; without it (and not `glulam`) the material's members are not verified |
 | `stock(material, lengths=None, sheets=None, kerf=0, trim=0, along=None)` | the stock lengths (bars) or sheets the made parts of a material are cut from, behind the library's `bar_stock` and `sheet_stock` and report section `cutting` |
 | `price(item, value, per, currency=None, source=None)` | the unit price of a material (per `m3`, `m2`, `m`, `piece`), a bought item (`piece`), a bar grade (`kg`, `m`, `piece`) or a machining operation (`operation`), behind the library's `price_list` and report section `quote` |
 
@@ -164,9 +164,12 @@ both parts' limits without aborting the model. A missing contact or impossible b
 `load_path()` member of the named materials after EN 1995-1-1 (EC5), e.g.
 `{"KVH C24": "C24"}`; `TIMBER_CLASSES` holds C16, C24 (EN 338:2016), GL24h and
 GL28h (EN 14080:2013). Report section `design.members` gives each member's checks
-(bending, shear, shear_notch, deflection_inst, deflection_fin, bearing and
-buckling of columns) with their utilization and `pass`, `fail` or `not_verified`
-when an input is missing. It is a computed check, not an authorized structural design.
+(bending, lateral_torsional, shear, shear_notch, deflection_inst, deflection_fin,
+bearing and buckling of columns) with their utilization and `pass`, `fail` or
+`not_verified` when an input is missing. Lateral torsional buckling counts only
+parts that hold the compressed edge (the top under sagging, the bottom under
+hogging) and are screwed to the beam by `joint()` or also bear on a grounded part;
+`loads.members[].braced_by` lists them. It is a computed check, not an authorized structural design.
 
 `connector(a, b, fastener, ratings=None, fasteners=None, name=None)` joins two
 parts with a bought connector rated from the catalogue `CONNECTOR_RATINGS`
@@ -348,7 +351,6 @@ outside it.
 | `hole_wall_too_thin` | warning | a blind hole leaves less than 3 mm of the part behind it |
 | `joint_without_contact` | error | a joint connects parts that are further apart than its `max_gap` |
 | `param_out_of_range` | error | a parameter is outside its `min`/`max` |
-| `param_not_whole` | error | a parameter declared `whole=True` has a fraction |
 | `program_condition_failed` | error | `check(condition, message, parts=[...], hint=...)` found a library design problem; evaluation continues and the condition is returned |
 | `floating_part` | warning | a part touches nothing that rests on z = 0 |
 | `production_tag_unused` | error / warning | no part carries a tag of `production(tags=…)`; an error when therefore nothing is made, a warning when another tag still makes parts |

@@ -51,10 +51,20 @@ LEN_RANGE = re.compile(r"\(\s*[\w:]+\s*\.\.=?\s*(\d[\d_]*)\s*\)\s*\.contains\(\s
 # indentation and under `#[cfg(all(test, windows))]` and the like, up to its closing brace at
 # the indentation it opened at (review 2026-11-01 TST-101: a `#[cfg(test)] fn` with a sleep
 # loop was never scanned). Test assertions may state their own precision.
-TEST_MODULE = re.compile(
-    r"^([ \t]*)#\[cfg\((?:test|(?:all|any)\([^()\n]*\btest\b[^()\n]*\))\)\][ \t]*\n(?:[ \t]*#\[[^\n]*\][ \t]*\n)*"
-    r"[ \t]*(?:pub(?:\([^)]*\))?\s+)?(?:mod \w+|(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?fn \w+[^{;]*|impl\b[^{;]*) \{\n"
-    r".*?^\1\}", re.MULTILINE | re.DOTALL)
+def _cfg_block(combinators: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"^([ \t]*)#\[cfg\((?:test|(?:{combinators})\([^()\n]*\btest\b[^()\n]*\))\)\][ \t]*\n"
+        r"(?:[ \t]*#\[[^\n]*\][ \t]*\n)*"
+        r"[ \t]*(?:pub(?:\([^)]*\))?\s+)?(?:mod \w+|(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?fn \w+[^{;]*|impl\b[^{;]*) \{\n"
+        r".*?^\1\}", re.MULTILINE | re.DOTALL)
+
+
+# Only test code: `#[cfg(test)]` and `#[cfg(all(test, ...))]`. Code under
+# `#[cfg(any(test, X))]` is production code wherever X holds, so the checks that leave
+# test code out keep it (review 2026-11-02 TST-120).
+TEST_MODULE = _cfg_block("all")
+# Code a test build compiles, `any(test, X)` too: for the checks that scan test code.
+TEST_BUILD_MODULE = _cfg_block("all|any")
 
 
 # A documented exception: a number that looks like a tolerance but is a view limit, a

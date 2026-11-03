@@ -402,6 +402,37 @@ fn large_house_the_house_rafters_are_seated_on_a_ridge_beam_and_wall_plates_that
     }
 }
 
+/// Review 2026-11-02 PG-121: at a roof pitch above 45° the sloping plates of
+/// the gables were cut from a blank as wide as the gable is tall, 60 x 2 578 x
+/// 140 at 46° and 60 x 2 790 x 140 at 50°. No framing member's blank is wider
+/// than the deepest section of the house.
+#[test]
+#[ignore = "large-house: runs in full suite"]
+fn large_house_the_gable_plates_are_cut_along_their_slope_at_steep_pitches() {
+    for pitch in [46.0, 50.0] {
+        let overrides: BTreeMap<_, _> = [("roof_pitch".to_owned(), pitch)].into_iter().collect();
+        let (evaluated, _) =
+            run("tiny-house.star", HOUSE, &overrides).unwrap_or_else(|error| panic!("{error}"));
+        let cut_list = ketchup_program::bom::bom(&evaluated.model).cut_list;
+        let plates: Vec<_> = cut_list
+            .iter()
+            .filter(|row| {
+                row.parts
+                    .iter()
+                    .any(|part| part.contains("štít") && part.contains("plate"))
+            })
+            .collect();
+        assert!(!plates.is_empty(), "{pitch}: {cut_list:#?}");
+        for row in plates {
+            let [length, width, thickness] = row.dimensions_mm;
+            assert!(
+                length > 1000.0 && width <= 300.0 && thickness <= 300.0,
+                "{pitch}: {row:#?}"
+            );
+        }
+    }
+}
+
 #[test]
 #[ignore = "large-house: runs in full suite"]
 fn large_house_the_house_floor_lies_on_the_ground_floor_walls_and_carries_the_attic_walls() {

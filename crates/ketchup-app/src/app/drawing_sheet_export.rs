@@ -15,7 +15,7 @@ use ketchup_model::drawing::{
     DrawingError, DrawingSheetId, PartsListWords, project_orthographic_drawing_in,
 };
 use ketchup_model::drawing_export::{
-    DrawingExportError, DxfCurves, SheetAnnotations, export_drawing,
+    DrawingExportError, DxfCurves, SheetAnnotations, export_drawing_dxf,
 };
 use ketchup_model::exact_product::ExactResultRegistry;
 
@@ -112,7 +112,8 @@ pub(crate) fn drawing_sheet_bytes(
         .ok_or(DrawingSheetExportError::NotFound(id))?;
     let drawing = project_orthographic_drawing_in(snapshot, results, sheet, words)
         .map_err(DrawingSheetExportError::Projection)?;
-    let bundle = export_drawing(snapshot, &drawing).map_err(DrawingSheetExportError::Export)?;
+    // The DXF alone: the sheet is never written as SVG or PDF (review 2026-11-02 MF-125).
+    let bundle = export_drawing_dxf(snapshot, &drawing).map_err(DrawingSheetExportError::Export)?;
     let dxf = bundle.dxf().to_vec();
     let bytes = match format {
         SheetFileFormat::Dxf => dxf,

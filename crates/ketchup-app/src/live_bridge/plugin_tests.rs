@@ -1465,6 +1465,32 @@ fn a_folder_file_named_like_an_option_is_no_script() {
     );
 }
 
+/// Review 2026-11-02 SEC-121: the check of an argument starting with `-` asked
+/// the plugin folder whether it names a file, while the script check asked
+/// the staged copy that runs. A file `-m` deleted from the folder after it was
+/// copied made `python -m pip` pass: no file in the folder, the hashed script
+/// in the copy. Both now ask the copy.
+#[test]
+fn an_option_named_file_is_judged_by_the_staged_copy() {
+    use crate::live_bridge::plugin_manifest::{Manifest, outside_files};
+    let directory = tempfile::tempdir().unwrap();
+    let (folder, _) = height_folder(directory.path());
+    let mut manifest: Value = serde_json::from_str(&folder_manifest(&["set_dimension"])).unwrap();
+    manifest["executable"] = json!(python());
+    manifest["arguments"] = json!(["-m", "pip", "install", "requests"]);
+    let manifest: Manifest = serde_json::from_value(manifest).unwrap();
+    // The stage holds `-m`; the folder no longer does.
+    assert!(!folder.join("-m").exists());
+    let staged = [
+        ("-m".to_owned(), "0".repeat(64)),
+        ("plugin.json".to_owned(), "1".repeat(64)),
+    ];
+    assert_eq!(
+        outside_files(&folder, &manifest, &staged, None).err(),
+        Some("plugin_manifest_invalid")
+    );
+}
+
 /// Review 2026-10-18 SEC-8: the window refused a list of code options, which
 /// was never complete (`pwsh -C cmdlet hashed.txt` ran the cmdlet), took any
 /// hashed file anywhere on the line for the script, and did not hash the

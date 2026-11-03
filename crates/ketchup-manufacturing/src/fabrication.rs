@@ -324,6 +324,17 @@ pub enum GeneralFabricationError {
     PartWithoutProductionCode {
         part: String,
     },
+    /// A HOMAG program of `part` is named by its piece's production code, and
+    /// `code` (or none) is not [`is_homag_program_code`] (review 2026-11-02 MF-120).
+    HomagProgramCodeUnusable {
+        part: String,
+        code: Option<String>,
+    },
+    /// `part` has no drilling or pocket, so a woodWOP program of it would only
+    /// lay its blank (review 2026-11-02 MF-124).
+    NothingToMachine {
+        part: String,
+    },
     /// `part` is drilled into both its top and its bottom face, and one
     /// woodWOP setup machines one face and the edges.
     DrilledFromBothFaces {
@@ -443,6 +454,23 @@ impl fmt::Display for GeneralFabricationError {
             Self::PartWithoutProductionCode { part } => write!(
                 formatter,
                 "part \"{part}\" has no production code, so a production job cannot name its piece; give every made piece a code and save the document",
+            ),
+            Self::HomagProgramCodeUnusable { part, code } => {
+                match code {
+                    None => write!(formatter, "part \"{part}\" has no production code")?,
+                    Some(code) => write!(
+                        formatter,
+                        "part \"{part}\" has the production code \"{code}\""
+                    )?,
+                }
+                write!(
+                    formatter,
+                    ", and a HOMAG program and its barcode label are named by a code of exactly 12 letters, digits, '-' or '_'; assign production codes (Tools > Assign production codes, or the model operation set_production_code) and save the document",
+                )
+            }
+            Self::NothingToMachine { part } => write!(
+                formatter,
+                "part \"{part}\" has no drilling or pocket, so a woodWOP program would only lay its blank; give it holes or pockets, or cut it from the cut list",
             ),
             Self::BtlxDrillingRefused { part, reason } => write!(
                 formatter,
@@ -991,7 +1019,7 @@ impl GeneralFabricationProjection {
             for operation in drawing
                 .machining_operations
                 .iter()
-                .filter(|operation| operation.kind != GeneralManufacturingKind::Stock)
+                .filter(|operation| has_machining_detail(operation))
             {
                 let (minimum, maximum) = machining_detail_bounds(&operation.machining)
                     .ok_or(GeneralFabricationError::ExportBlocked)?;
@@ -1075,7 +1103,7 @@ impl GeneralFabricationProjection {
             for operation in drawing
                 .machining_operations
                 .iter()
-                .filter(|operation| operation.kind != GeneralManufacturingKind::Stock)
+                .filter(|operation| has_machining_detail(operation))
             {
                 let (minimum, maximum) = machining_detail_bounds(&operation.machining)
                     .expect("machining detail bounds were validated during sheet sizing");
@@ -1185,12 +1213,17 @@ impl GeneralFabricationProjection {
                 parts => GeneralFabricationError::OneProgramPerPart { parts },
             });
         };
+        let part = snapshot
+            .definition(row.definition_id)
+            .map_or("", |definition| definition.name());
+        // A refusal names the part (review 2026-11-02 MF-124).
+        let blocked = || GeneralFabricationError::ExportBlocked.at_part(part);
         if row.quantity == 0 || row.quantity != row.instances.len() || !row.item_kind.is_shop_made()
         {
-            return Err(GeneralFabricationError::ExportBlocked);
+            return Err(blocked());
         }
         let GeneralBodySource::Exact(_) = &row.source else {
-            return Err(GeneralFabricationError::ExportBlocked);
+            return Err(blocked());
         };
         let matching = self
             .manufacturing
@@ -1199,14 +1232,18 @@ impl GeneralFabricationProjection {
             .filter(|operation| is_row_operation(row, operation))
             .collect::<Vec<_>>();
         if matching.len() != self.manufacturing.operations.len() {
-            return Err(GeneralFabricationError::ExportBlocked);
+            return Err(blocked());
         }
         let [stock, machining @ ..] = matching.as_slice() else {
-            return Err(GeneralFabricationError::ExportBlocked);
+            return Err(blocked());
         };
+        if stock.kind == GeneralManufacturingKind::Stock && machining.is_empty() {
+            return Err(GeneralFabricationError::NothingToMachine {
+                part: part.to_owned(),
+            });
+        }
         if stock.kind != GeneralManufacturingKind::Stock
             || !stock.semantic_inputs.is_empty()
-            || machining.is_empty()
             || machining.iter().any(|operation| {
                 !matches!(
                     operation.kind,
@@ -1217,13 +1254,9 @@ impl GeneralFabricationProjection {
                 .vertical_pocket_tool_number
                 .is_some_and(|tool| tool == 0 || tool > 999_999)
         {
-            return Err(GeneralFabricationError::ExportBlocked);
+            return Err(blocked());
         }
-        let stock_frame =
-            woodwop_stock_frame(&stock.machining).ok_or(GeneralFabricationError::ExportBlocked)?;
-        let part = snapshot
-            .definition(row.definition_id)
-            .map_or("", |definition| definition.name());
+        let stock_frame = woodwop_stock_frame(&stock.machining).ok_or_else(blocked)?;
         let (stock_frame, macros) = woodwop_setup(
             stock_frame,
             &machining_normals(machining.iter().copied(), std::iter::empty()),
@@ -1248,10 +1281,7 @@ impl GeneralFabricationProjection {
                     .collect::<Option<Vec<_>>>()
             },
         )
-        .map_err(|error| match error {
-            GeneralFabricationError::DrilledFromBothFaces { .. } => error.at_part(part),
-            other => other,
-        })?;
+        .map_err(|error| error.at_part(part))?;
         let export_contract = if machining
             .iter()
             .any(|operation| operation.kind == GeneralManufacturingKind::ProfileCut)
@@ -1780,15 +1810,36 @@ fn woodwop_direction(definition_vector: [f64; 3], stock_frame: WoodwopStockFrame
     vector
 }
 
+/// Whether `code` names a HOMAG program and its Code 128 barcode label: exactly
+/// 12 ASCII letters, digits, '-' or '_'.
+#[must_use]
+pub fn is_homag_program_code(code: &str) -> bool {
+    code.len() == 12
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+/// The production code naming the HOMAG program of the piece at
+/// `instance_path`, or a refusal naming its part (review 2026-11-02 MF-120).
 fn homag_program_name(
     snapshot: &Snapshot,
     instance_path: &InstancePath,
 ) -> Result<String, GeneralFabricationError> {
-    snapshot
-        .production_code(instance_path)
-        .filter(|code| code.len() == 12)
-        .map(str::to_owned)
-        .ok_or(GeneralFabricationError::ExportBlocked)
+    let code = snapshot.production_code(instance_path);
+    if let Some(code) = code.filter(|code| is_homag_program_code(code)) {
+        return Ok(code.to_owned());
+    }
+    let resolved = snapshot
+        .resolve_instance_path(instance_path)
+        .map_err(GeneralFabricationError::UnresolvedInstance)?;
+    let part = snapshot
+        .definition(resolved.definition_id)
+        .map_or("", |definition| definition.name());
+    Err(GeneralFabricationError::HomagProgramCodeUnusable {
+        part: part.to_owned(),
+        code: code.map(str::to_owned),
+    })
 }
 
 fn woodwop_mpr_output(
@@ -1878,11 +1929,7 @@ fn woodwop_pin_macro(hole: &PinHole, stock_frame: WoodwopStockFrame) -> Option<S
 }
 
 fn homag_code128_svg(program_name: &str) -> Option<Vec<u8>> {
-    if program_name.len() != 12
-        || !program_name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-    {
+    if !is_homag_program_code(program_name) {
         return None;
     }
     const PATTERNS: [&str; 107] = [
@@ -3087,8 +3134,9 @@ pub fn project_general_fabrication(
     })
 }
 
-/// Whether the blank `graph` starts from, its first extrusion, has an
-/// outline edge that is neither a line nor a circular arc.
+/// Whether the blank `graph` starts from, its first extrusion, is no single
+/// outline of lines and circular arcs: a Bezier edge, a closed spline, or an
+/// outline with holes (review 2026-11-02 MF-121).
 fn has_free_form_blank(graph: &ExactBRepGraph) -> bool {
     let Some(ExactBRepOperation::Extrude { profile, .. }) =
         graph.nodes.first().map(|node| &node.operation)
@@ -3098,15 +3146,17 @@ fn has_free_form_blank(graph: &ExactBRepGraph) -> bool {
     usize::try_from(profile.0)
         .ok()
         .and_then(|index| graph.profiles.get(index))
-        .is_some_and(|profile| {
-            matches!(
-                &profile.geometry,
-                ExactBRepPlanarGeometry::Boundary { segments, .. }
-                    if segments.iter().any(|segment| {
-                        matches!(segment, ExactBRepPlanarSegment::CubicBezier { .. })
-                    })
-            )
-        })
+        .is_some_and(|profile| is_free_form_outline(&profile.geometry))
+}
+
+fn is_free_form_outline(geometry: &ExactBRepPlanarGeometry) -> bool {
+    match geometry {
+        ExactBRepPlanarGeometry::Boundary { segments, .. } => segments
+            .iter()
+            .any(|segment| matches!(segment, ExactBRepPlanarSegment::CubicBezier { .. })),
+        ExactBRepPlanarGeometry::Spline { .. } | ExactBRepPlanarGeometry::Region { .. } => true,
+        ExactBRepPlanarGeometry::Circle { .. } => false,
+    }
 }
 
 fn graph_manufacturing_operations(
@@ -3399,12 +3449,33 @@ fn prismatic_stock_geometry(
     interval: ExactBRepLinearInterval,
 ) -> Option<GeneralMachiningGeometry> {
     let frame = machining_frame(profile, interval.direction())?;
-    let ExactBRepPlanarGeometry::Boundary {
-        closed: true,
-        segments,
-    } = &profile.geometry
-    else {
-        return None;
+    let segments = match &profile.geometry {
+        ExactBRepPlanarGeometry::Boundary {
+            closed: true,
+            segments,
+        } => segments.clone(),
+        // A round table top: its circle as two half arcs (review 2026-11-02 MF-121).
+        ExactBRepPlanarGeometry::Circle {
+            center_bits,
+            radius_bits,
+        } => {
+            let [x, y] = center_bits.map(f64::from_bits);
+            let radius = f64::from_bits(*radius_bits);
+            let [east, west] =
+                [[x + radius, y], [x - radius, y]].map(|point| point.map(f64::to_bits));
+            [(east, west), (west, east)]
+                .into_iter()
+                .map(
+                    |(start_bits, end_bits)| ExactBRepPlanarSegment::CircularArc {
+                        start_bits,
+                        end_bits,
+                        center_bits: *center_bits,
+                        clockwise: false,
+                    },
+                )
+                .collect()
+        }
+        _ => return None,
     };
     // Lines and circular arcs (a rounded table top, review 2026-11-01
     // MF-103); a Bezier edge leaves the part undescribed.
@@ -4002,30 +4073,22 @@ fn machining_detail_bounds(geometry: &GeneralMachiningGeometry) -> Option<([f64;
         }
     };
     match geometry {
-        GeneralMachiningGeometry::PrismaticStock { .. } => return None,
-        GeneralMachiningGeometry::ProfileCut { segments, .. } => {
-            for segment in segments {
-                match segment {
-                    GeneralMachiningSegment::Line { start_mm, end_mm } => {
-                        include(*start_mm);
-                        include(*end_mm);
-                    }
-                    GeneralMachiningSegment::CircularArc {
-                        start_mm,
-                        end_mm,
-                        center_mm,
-                        ..
-                    } => {
-                        let radius = ((start_mm[0] - center_mm[0]).powi(2)
-                            + (start_mm[1] - center_mm[1]).powi(2))
-                        .sqrt();
-                        include(*start_mm);
-                        include(*end_mm);
-                        include([center_mm[0] - radius, center_mm[1] - radius]);
-                        include([center_mm[0] + radius, center_mm[1] + radius]);
-                    }
-                }
+        // A rectangular blank is the views' own outline; any other blank is
+        // drawn as its cross-section (review 2026-11-02 MF-122).
+        GeneralMachiningGeometry::PrismaticStock { cross_section, .. } => {
+            if blank_is_rectangle(cross_section) {
+                return None;
             }
+            cross_section
+                .iter()
+                .flat_map(segment_extent)
+                .for_each(&mut include);
+        }
+        GeneralMachiningGeometry::ProfileCut { segments, .. } => {
+            segments
+                .iter()
+                .flat_map(segment_extent)
+                .for_each(&mut include);
         }
         GeneralMachiningGeometry::CircularDrill {
             center_mm,
@@ -4045,6 +4108,119 @@ fn machining_detail_bounds(geometry: &GeneralMachiningGeometry) -> Option<([f64;
         .all(f64::is_finite)
         && size.into_iter().all(|value| value > 0.0))
     .then_some((minimum, maximum))
+}
+
+/// Points whose box is the box of `segment`: an arc's ends and those of its
+/// circle's four axis extremes it sweeps through, so a shallow bow adds its
+/// bulge and not its whole circle (review 2026-11-02 MF-122 follow-up).
+fn segment_extent(segment: &GeneralMachiningSegment) -> Vec<[f64; 2]> {
+    use std::f64::consts::{FRAC_PI_2, TAU};
+    match *segment {
+        GeneralMachiningSegment::Line { start_mm, end_mm } => vec![start_mm, end_mm],
+        GeneralMachiningSegment::CircularArc {
+            start_mm,
+            end_mm,
+            center_mm,
+            clockwise,
+        } => {
+            let angle = |point: [f64; 2]| (point[1] - center_mm[1]).atan2(point[0] - center_mm[0]);
+            let radius = ((start_mm[0] - center_mm[0]).powi(2)
+                + (start_mm[1] - center_mm[1]).powi(2))
+            .sqrt();
+            // Counterclockwise from `from` to `to`; ends that meet sweep the circle.
+            let (from, to) = if clockwise {
+                (angle(end_mm), angle(start_mm))
+            } else {
+                (angle(start_mm), angle(end_mm))
+            };
+            let sweep = match (to - from).rem_euclid(TAU) {
+                sweep if sweep <= f64::EPSILON => TAU,
+                sweep => sweep,
+            };
+            let mut points = vec![start_mm, end_mm];
+            for quarter in 0..4 {
+                let extreme = f64::from(quarter) * FRAC_PI_2;
+                if (extreme - from).rem_euclid(TAU) <= sweep {
+                    points.push([
+                        center_mm[0] + radius * extreme.cos(),
+                        center_mm[1] + radius * extreme.sin(),
+                    ]);
+                }
+            }
+            points
+        }
+    }
+}
+
+/// Four straight sides along the frame's axes: the box the views draw.
+fn blank_is_rectangle(cross_section: &[GeneralMachiningSegment]) -> bool {
+    cross_section.len() == 4
+        && cross_section.iter().all(|segment| match segment {
+            GeneralMachiningSegment::Line { start_mm, end_mm } => {
+                (start_mm[0] - end_mm[0]).abs() <= ROUNDING
+                    || (start_mm[1] - end_mm[1]).abs() <= ROUNDING
+            }
+            GeneralMachiningSegment::CircularArc { .. } => false,
+        })
+}
+
+/// The operations a drawing shows in detail: every machining, and a blank
+/// that is not the views' rectangle.
+fn has_machining_detail(operation: &GeneralManufacturingOperation) -> bool {
+    operation.kind != GeneralManufacturingKind::Stock
+        || machining_detail_bounds(&operation.machining).is_some()
+}
+
+/// An SVG path through `segments`, closed, each point placed by `point`.
+fn segments_svg_path(
+    segments: &[GeneralMachiningSegment],
+    point: impl Fn([f64; 2]) -> [f64; 2],
+) -> String {
+    let mut path = String::new();
+    for (index, segment) in segments.iter().enumerate() {
+        let (start_mm, end_mm) = match *segment {
+            GeneralMachiningSegment::Line { start_mm, end_mm }
+            | GeneralMachiningSegment::CircularArc {
+                start_mm, end_mm, ..
+            } => (start_mm, end_mm),
+        };
+        let start = point(start_mm);
+        let end = point(end_mm);
+        if index == 0 {
+            path.push_str(&format!(
+                "M {} {} ",
+                format_number(start[0]),
+                format_number(start[1])
+            ));
+        }
+        match *segment {
+            GeneralMachiningSegment::Line { .. } => path.push_str(&format!(
+                "L {} {} ",
+                format_number(end[0]),
+                format_number(end[1])
+            )),
+            GeneralMachiningSegment::CircularArc {
+                center_mm,
+                clockwise,
+                ..
+            } => {
+                let radius = ((start_mm[0] - center_mm[0]).powi(2)
+                    + (start_mm[1] - center_mm[1]).powi(2))
+                .sqrt();
+                let (large_arc, sweep_flag) = svg_arc_flags(start_mm, end_mm, center_mm, clockwise);
+                path.push_str(&format!(
+                    "A {0} {0} 0 {1} {2} {3} {4} ",
+                    format_number(radius),
+                    u8::from(large_arc),
+                    u8::from(sweep_flag),
+                    format_number(end[0]),
+                    format_number(end[1])
+                ));
+            }
+        }
+    }
+    path.push('Z');
+    path
 }
 
 fn append_machining_detail(
@@ -4072,57 +4248,7 @@ fn append_machining_detail(
             end_mm,
             ..
         } => {
-            let mut path = String::new();
-            for (index, segment) in segments.iter().enumerate() {
-                match segment {
-                    GeneralMachiningSegment::Line { start_mm, end_mm } => {
-                        let start = point(*start_mm);
-                        let end = point(*end_mm);
-                        if index == 0 {
-                            path.push_str(&format!(
-                                "M {} {} ",
-                                format_number(start[0]),
-                                format_number(start[1])
-                            ));
-                        }
-                        path.push_str(&format!(
-                            "L {} {} ",
-                            format_number(end[0]),
-                            format_number(end[1])
-                        ));
-                    }
-                    GeneralMachiningSegment::CircularArc {
-                        start_mm,
-                        end_mm,
-                        center_mm,
-                        clockwise,
-                    } => {
-                        let start = point(*start_mm);
-                        let end = point(*end_mm);
-                        let radius = ((start_mm[0] - center_mm[0]).powi(2)
-                            + (start_mm[1] - center_mm[1]).powi(2))
-                        .sqrt();
-                        if index == 0 {
-                            path.push_str(&format!(
-                                "M {} {} ",
-                                format_number(start[0]),
-                                format_number(start[1])
-                            ));
-                        }
-                        let (large_arc, sweep_flag) =
-                            svg_arc_flags(*start_mm, *end_mm, *center_mm, *clockwise);
-                        path.push_str(&format!(
-                            "A {0} {0} 0 {1} {2} {3} {4} ",
-                            format_number(radius),
-                            u8::from(large_arc),
-                            u8::from(sweep_flag),
-                            format_number(end[0]),
-                            format_number(end[1])
-                        ));
-                    }
-                }
-            }
-            path.push('Z');
+            let path = segments_svg_path(segments, point);
             svg.push_str(&format!(
                 "<path id=\"{}/geometry\" d=\"{}\" fill=\"white\" />\n<text x=\"{}\" y=\"{}\" fill=\"black\" stroke=\"none\">{}: width={} mm, height={} mm, depth={} mm</text>\n",
                 operation.stable_operation_id,
@@ -4168,8 +4294,24 @@ fn append_machining_detail(
                 }
             ));
         }
-        // Stock is the blank the operations cut, not a machining: it has no detail.
-        GeneralMachiningGeometry::PrismaticStock { .. } => {}
+        // A blank that is not the views' rectangle: its cross-section with its
+        // arcs, so the shop does not cut the bounding box (review 2026-11-02 MF-122).
+        GeneralMachiningGeometry::PrismaticStock {
+            cross_section,
+            length_mm,
+            ..
+        } => {
+            svg.push_str(&format!(
+                "<path id=\"{}/geometry\" d=\"{}\" fill=\"white\" />\n<text x=\"{}\" y=\"{}\" fill=\"black\" stroke=\"none\">blank outline (the views show its bounding box): width={} mm, height={} mm, length={} mm</text>\n",
+                operation.stable_operation_id,
+                segments_svg_path(cross_section, point),
+                format_number(x),
+                format_number(y + height + 20.0),
+                format_number(width),
+                format_number(height),
+                format_number(*length_mm)
+            ));
+        }
     }
     svg.push_str("</g>\n");
 }

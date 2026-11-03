@@ -495,6 +495,50 @@ impl KetchupApp {
         self.report_export_outcome("homag-mpr", path, result)
     }
 
+    /// Tools > Assign production codes: every made piece without a code a HOMAG
+    /// program can be named by gets the next free 12-digit one, one Undo step;
+    /// pieces with a usable code keep it (review 2026-11-02 MF-120). False when
+    /// no piece needs one or the made pieces are not known yet.
+    pub(crate) fn assign_production_codes(&mut self) -> bool {
+        let snapshot = self.document.current();
+        let assignments = match self.current_general_fabrication_projection() {
+            Ok(projection) => projection.production_code_assignments(&snapshot),
+            Err(rejection) => {
+                self.digest = self.catalog.format(
+                    "digest-production-codes-failed",
+                    &BTreeMap::from([("reason", rejection.to_string())]),
+                );
+                return false;
+            }
+        };
+        if assignments.is_empty() {
+            self.digest = self.catalog.text("digest-production-codes-kept");
+            return false;
+        }
+        let count = assignments.len();
+        let commands = assignments
+            .into_iter()
+            .map(
+                |(instance_path, code)| CanonicalCommand::SetProductionCode {
+                    instance_path,
+                    code: Some(code),
+                },
+            )
+            .collect();
+        if let Err(error) = self.apply_batch_with_work_recovery(&CommandBatch::new(commands)) {
+            self.digest = self.catalog.format(
+                "digest-production-codes-failed",
+                &BTreeMap::from([("reason", error.to_string())]),
+            );
+            return false;
+        }
+        self.digest = self.catalog.format(
+            "digest-production-codes-assigned",
+            &BTreeMap::from([("count", count.to_string())]),
+        );
+        true
+    }
+
     pub(crate) fn export_current_model_btlx_to(
         &mut self,
         path: &Path,

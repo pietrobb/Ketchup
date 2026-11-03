@@ -6,6 +6,8 @@
 //! the window's live bridge: it finds windows in the per-user discovery
 //! directory, attaches through the window's local attach endpoint and forwards
 //! tool calls as bridge requests. The window validates everything itself.
+// An error is carried, never dropped (review 2026-11-02 TST-121).
+#![deny(clippy::map_err_ignore)]
 // The tool schemas are single `json!` literals deeper than the default limit of 128.
 #![recursion_limit = "256"]
 
@@ -50,6 +52,10 @@ pub fn import_response_wait(path: &str) -> std::time::Duration {
         .saturating_add(IMPORT_WAIT_PER_MIB.saturating_mul(mib))
         .min(IMPORT_WAIT_MOST)
 }
+/// A set of project drawings or a drawing sheet runs as a window job (hidden
+/// lines of every view of a large model, many threads), which the connection
+/// cancels when it stops waiting; it is given this long.
+pub const DRAWINGS_RESPONSE_WAIT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 /// Every request the window answers within this, whatever the request.
 pub const DEFAULT_RESPONSE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 /// The window's last frame on a connection it ends because another client

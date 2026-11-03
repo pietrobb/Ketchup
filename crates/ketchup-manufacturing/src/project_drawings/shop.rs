@@ -43,7 +43,7 @@ const COARSEST_SCALE: u32 = 50;
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShopPosition {
     pub material: String,
-    /// The blank, longest first.
+    /// The blank as the cut list gives it: length, width, thickness.
     pub dimensions_mm: [f64; 3],
     pub solids: Vec<String>,
     pub count: usize,
@@ -447,10 +447,14 @@ pub(super) fn plan_shop(
 }
 
 impl PlannedShop {
-    /// The visible lines of each view, the members' first.
-    pub(super) fn visible_lines(&self) -> Vec<Vec<VisibleLine>> {
+    /// The visible lines of each view, the members' first; `stop` as
+    /// [`super::visible::visible_lines`] takes it.
+    pub(super) fn visible_lines(
+        &self,
+        stop: &std::sync::atomic::AtomicBool,
+    ) -> Vec<Vec<VisibleLine>> {
         views(&self.view, &self.layers)
-            .map(super::visible::visible_lines)
+            .map(|view| super::visible::visible_lines(view, stop))
             .collect()
     }
 

@@ -148,14 +148,15 @@ impl RuleProgramPlan {
     /// only callers that answer with it compute it. Checks that do not finish
     /// within the worker's limits give a report that says so (review
     /// 2026-10-16 N-12): validation reports and does not block the edit.
+    /// `cancel` ends the worker's checks when the request is given up.
     #[must_use]
-    pub fn report(&self, deadline: crate::program_isolation::CheckDeadline) -> Report {
-        crate::program_isolation::report_program(
-            &self.evaluated,
-            deadline,
-            &ketchup_program::CancelToken::default(),
-        )
-        .unwrap_or_else(|stopped| Report::unfinished(&self.evaluated, &stopped))
+    pub fn report(
+        &self,
+        deadline: crate::program_isolation::CheckDeadline,
+        cancel: &ketchup_program::CancelToken,
+    ) -> Report {
+        crate::program_isolation::report_program(&self.evaluated, deadline, cancel)
+            .unwrap_or_else(|stopped| Report::unfinished(&self.evaluated, &stopped))
     }
 
     /// [`Self::report`] of an edit whose exact check follows, which re-derives
@@ -164,13 +165,13 @@ impl RuleProgramPlan {
     /// [`crate::program_isolation::complete_pending_checks`] lists the rest
     /// when the report is published without that check.
     #[must_use]
-    pub fn report_before_exact(&self, deadline: crate::program_isolation::CheckDeadline) -> Report {
-        crate::program_isolation::report_program_before_exact(
-            &self.evaluated,
-            deadline,
-            &ketchup_program::CancelToken::default(),
-        )
-        .unwrap_or_else(|stopped| Report::unfinished(&self.evaluated, &stopped))
+    pub fn report_before_exact(
+        &self,
+        deadline: crate::program_isolation::CheckDeadline,
+        cancel: &ketchup_program::CancelToken,
+    ) -> Report {
+        crate::program_isolation::report_program_before_exact(&self.evaluated, deadline, cancel)
+            .unwrap_or_else(|stopped| Report::unfinished(&self.evaluated, &stopped))
     }
 }
 
@@ -184,25 +185,43 @@ pub fn plan_rule_program(
     document: &DocumentStore,
     source: &RuleProgramSource,
 ) -> Result<RuleProgramPlan, RuleProgramApplyError> {
+    // The caller waits for the plan on its own thread; no one else can end it.
+    plan_rule_program_cancellable(document, source, &ketchup_program::CancelToken::default())
+}
+
+/// [`plan_rule_program`] that a request's `cancel` ends: its evaluations in
+/// the program worker stop at their next statement check, so a request given
+/// up does not hold the worker for the rest of its time (review 2026-11-02
+/// MCP-101).
+///
+/// # Errors
+/// As [`plan_rule_program`], or `cancelled`.
+pub fn plan_rule_program_cancellable(
+    document: &DocumentStore,
+    source: &RuleProgramSource,
+    cancel: &ketchup_program::CancelToken,
+) -> Result<RuleProgramPlan, RuleProgramApplyError> {
     plan_rule_program_by(
         document,
         source,
         crate::program_isolation::CheckDeadline::start(),
+        cancel,
     )
 }
 
-/// [`plan_rule_program`] whose evaluations end by `deadline`, the one the
-/// checks of the plan share.
+/// [`plan_rule_program_cancellable`] whose evaluations end by `deadline`, the
+/// one the checks of the plan share.
 ///
 /// # Errors
-/// As [`plan_rule_program`].
+/// As [`plan_rule_program_cancellable`].
 pub fn plan_rule_program_by(
     document: &DocumentStore,
     source: &RuleProgramSource,
     deadline: crate::program_isolation::CheckDeadline,
+    cancel: &ketchup_program::CancelToken,
 ) -> Result<RuleProgramPlan, RuleProgramApplyError> {
-    let evaluated = evaluate_by(source, deadline)?;
-    plan_evaluated(document, source, evaluated, None, deadline)
+    let evaluated = evaluate_by(source, deadline, cancel)?;
+    plan_evaluated(document, source, evaluated, None, deadline, cancel)
 }
 
 /// [`plan_rule_program`] of `source` the caller already evaluated as
@@ -223,6 +242,8 @@ pub fn plan_rule_program_from(
         evaluated,
         current,
         crate::program_isolation::CheckDeadline::start(),
+        // A window edit, waited for on the window's thread.
+        &ketchup_program::CancelToken::default(),
     )
 }
 
@@ -232,13 +253,14 @@ fn plan_evaluated(
     evaluated: ketchup_program::Evaluated,
     current_evaluated: Option<&ketchup_program::Evaluated>,
     deadline: crate::program_isolation::CheckDeadline,
+    cancel: &ketchup_program::CancelToken,
 ) -> Result<RuleProgramPlan, RuleProgramApplyError> {
     let change = match document.current_rule_program() {
         Some(current) if current == source => RuleProgramChange::Unchanged,
         Some(current) => {
             let old = match current_evaluated {
                 Some(old) => std::borrow::Cow::Borrowed(old),
-                None => std::borrow::Cow::Owned(evaluate_by(current, deadline)?),
+                None => std::borrow::Cow::Owned(evaluate_by(current, deadline, cancel)?),
             };
             let reference = evaluated.reference_model();
             let mut baseline = document.fork_for_planning();
@@ -307,8 +329,10 @@ impl DocumentSession {
         allow_replacement: bool,
         deadline: crate::program_isolation::CheckDeadline,
     ) -> Result<RuleProgramApplyResult, RuleProgramApplyError> {
-        let plan = plan_rule_program_by(self.document_store(), &source, deadline)?;
-        let report = plan.report(deadline);
+        // A session call, waited for on its caller's thread.
+        let cancel = ketchup_program::CancelToken::default();
+        let plan = plan_rule_program_by(self.document_store(), &source, deadline, &cancel)?;
+        let report = plan.report(deadline, &cancel);
         let RuleProgramPlan { evaluated, change } = plan;
         let snapshot = match change {
             RuleProgramChange::Unchanged => self.snapshot(),
@@ -578,7 +602,12 @@ fn replacement_batch(
 pub(crate) fn evaluate(
     source: &RuleProgramSource,
 ) -> Result<ketchup_program::Evaluated, RuleProgramApplyError> {
-    evaluate_by(source, crate::program_isolation::CheckDeadline::start())
+    evaluate_by(
+        source,
+        crate::program_isolation::CheckDeadline::start(),
+        // Window edits of program parts, waited for on the window's thread.
+        &ketchup_program::CancelToken::default(),
+    )
 }
 
 #[cfg(test)]
@@ -591,6 +620,7 @@ thread_local! {
 fn evaluate_by(
     source: &RuleProgramSource,
     deadline: crate::program_isolation::CheckDeadline,
+    cancel: &ketchup_program::CancelToken,
 ) -> Result<ketchup_program::Evaluated, RuleProgramApplyError> {
     #[cfg(test)]
     EVALUATIONS.set(EVALUATIONS.get() + 1);
@@ -599,7 +629,7 @@ fn evaluate_by(
         &source.source,
         &source.overrides,
         deadline,
-        &ketchup_program::CancelToken::default(),
+        cancel,
     )
     .map_err(RuleProgramApplyError::from)
 }
@@ -1047,7 +1077,7 @@ mod tests {
         let deadline = crate::program_isolation::CheckDeadline::start();
         let plan = plan_rule_program(session.document_store(), &with_apron).unwrap();
         assert!(matches!(plan.change, RuleProgramChange::Incremental(_)));
-        let report = plan.report(deadline);
+        let report = plan.report(deadline, &ketchup_program::CancelToken::default());
         assert!(report.ok, "{:?}", report.issues);
         let added = session.apply_rule_program(with_apron, false).unwrap();
         assert!(!added.replaced_document);

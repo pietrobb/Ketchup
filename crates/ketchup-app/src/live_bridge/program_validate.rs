@@ -14,7 +14,7 @@ use ketchup_model::persistence::ContainerData;
 pub(super) struct ProgramValidationJob {
     id: u64,
     reply: mpsc::SyncSender<Response>,
-    cancelled: Arc<AtomicBool>,
+    pub(super) cancelled: Arc<AtomicBool>,
     before: Stamp,
     started: Instant,
     receiver:

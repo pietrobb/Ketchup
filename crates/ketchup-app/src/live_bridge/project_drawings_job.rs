@@ -17,9 +17,11 @@ type Made = Result<(DrawingSet, Vec<Vec<u8>>), ProjectDrawingsError>;
 pub(super) struct ProjectDrawingsExportJob {
     id: u64,
     reply: mpsc::SyncSender<Response>,
-    cancelled: Arc<AtomicBool>,
+    pub(super) cancelled: Arc<AtomicBool>,
     started: StartedDrawings,
     receiver: mpsc::Receiver<Made>,
+    /// The document the set is drawn from and keeps its settings in.
+    epoch: u64,
 }
 
 /// Whether `request` exports the project set, which runs as a job.
@@ -83,6 +85,7 @@ impl LiveBridge {
             cancelled,
             started,
             receiver,
+            epoch: self.document_epoch,
         }));
         context.request_repaint_after(Duration::from_millis(10));
     }
@@ -93,6 +96,13 @@ impl LiveBridge {
         context: &egui::Context,
         job: ProjectDrawingsExportJob,
     ) {
+        // The settings it kept went with that document: putting them back
+        // would write them into the one open now (review 2026-11-02 MCP-122).
+        if job.epoch != self.document_epoch {
+            job.cancelled.store(true, Ordering::Release);
+            Self::reply(app, job.id, &job.reply, Err(Self::document_replaced()));
+            return;
+        }
         // The worker sees the same flag and stops; nothing is written.
         if job.cancelled.load(Ordering::Acquire) {
             job.started.undo(app);

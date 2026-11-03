@@ -57,6 +57,48 @@ pub fn instance_path_value(path: &InstancePath) -> Value {
 }
 
 impl GeneralFabricationProjection {
+    /// A production code for every made piece a production job or HOMAG program
+    /// names that has none a HOMAG program can be named by: 12 digits, counting on
+    /// from the highest such code of the document and skipping every code in use
+    /// (review 2026-11-02 MF-120). Pieces with a usable code keep it.
+    #[must_use]
+    pub fn production_code_assignments(&self, snapshot: &Snapshot) -> Vec<(InstancePath, String)> {
+        let used = snapshot
+            .production_codes()
+            .map(|(_, code)| code.to_owned())
+            .collect::<BTreeSet<_>>();
+        let mut next = used
+            .iter()
+            .filter(|code| is_homag_program_code(code))
+            .filter_map(|code| code.parse::<u64>().ok())
+            .max()
+            .unwrap_or(0);
+        let mut assignments = Vec::new();
+        for path in self
+            .bom
+            .rows
+            .iter()
+            .filter(|row| ShopFormat::ProductionJob.writes(row.item_kind))
+            .flat_map(|row| &row.instances)
+        {
+            if snapshot
+                .production_code(path)
+                .is_some_and(is_homag_program_code)
+            {
+                continue;
+            }
+            let code = loop {
+                next += 1;
+                let code = format!("{next:012}");
+                if !used.contains(&code) {
+                    break code;
+                }
+            };
+            assignments.push((path.clone(), code));
+        }
+        assignments
+    }
+
     /// One physical piece per entry, with definition-local machining coordinates.
     /// dimensions_mm are descending stock-frame bounding extents, not necessarily a cut piece.
     /// stock_frame maps those axes and a corner of the blank to definition-local mm;

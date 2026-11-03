@@ -443,6 +443,150 @@ fn a_slender_beam_free_along_its_top_is_not_verified_and_passes_when_braced() {
     assert_eq!(beam.status, "pass");
 }
 
+/// The slender beam of [`slender_beam`] beside a second one 1000 mm away on its
+/// own posts, with `extra` lines.
+fn slender_pair(extra: &str) -> String {
+    format!(
+        "{}box(\"post c\", (100, 80, 2000), at = (0, 1000, 0), material = \"GL24h\", grounded = True)
+box(\"post d\", (100, 80, 2000), at = (5800, 1000, 0), material = \"GL24h\", grounded = True)
+box(\"beam 2\", (5900, 80, 400), at = (0, 1000, 2000), material = \"GL24h\", tags = [\"frame\"])
+{extra}",
+        slender_beam(&[])
+    )
+}
+
+fn ltb_not_verified(report: &Report) -> bool {
+    member(report, "beam")
+        .missing
+        .iter()
+        .any(|reason| reason.contains("lateral torsional buckling"))
+}
+
+/// PG-120 (review 2026-11-02): any part resting on two members braced both
+/// where it touched them, whatever edge and however loose. A single plank lying
+/// on two otherwise free beams let both pass, though they can buckle together
+/// (EN 1995-1-1 9.2.5.3 asks for a stiff, connected bracing); screwed to them
+/// by joint() it holds their compressed tops.
+#[test]
+fn a_loose_plank_on_two_free_beams_does_not_brace_them_and_a_screwed_one_does() {
+    let plank = "box(\"plank\", (100, 1080, 50), at = (2650, 0, 2400), material = \"GL24h\")\n";
+    let loose = report(&slender_pair(plank), &[]);
+    assert!(ltb_not_verified(&loose), "{:?}", member(&loose, "beam"));
+    assert_eq!(member(&loose, "beam").status, "not_verified");
+
+    let screwed = report(
+        &slender_pair(&format!(
+            "{plank}joint(\"plank\", \"beam\", kind = \"screw\")\njoint(\"plank\", \"beam 2\", kind = \"screw\")\n"
+        )),
+        &[],
+    );
+    let beam = member(&screwed, "beam");
+    assert_eq!(beam.missing, Vec::<String>::new(), "{beam:?}");
+    assert_eq!(beam.status, "pass");
+    // PG-122: kcrit below 1 within the strength is its own check, above bending.
+    let buckling = utilization(beam, "lateral_torsional");
+    assert!(
+        utilization(beam, "bending") < buckling && buckling <= 1.0,
+        "{:?}",
+        beam.checks
+    );
+    assert_eq!(beam.governing.as_deref(), Some("lateral_torsional"));
+    let load = screwed
+        .loads
+        .members
+        .iter()
+        .find(|load| load.part == "beam")
+        .expect("loads of the beam");
+    assert!(
+        load.braced_by
+            .iter()
+            .any(|brace| brace.part == "plank" && brace.edge == "top"),
+        "{:?}",
+        load.braced_by
+    );
+}
+
+/// PG-120 (review 2026-11-02): a ceiling board screwed under two beams held
+/// their tension edge, yet counted as bracing the compressed top: a GL24h
+/// 80 x 400 beam over 5.8 m at 1.185 with kcrit passed.
+#[test]
+fn a_ceiling_screwed_under_the_beams_does_not_brace_their_compressed_top() {
+    let ceiling = report(
+        &slender_pair(
+            "box(\"ceiling\", (5500, 1080, 20), at = (200, 0, 1980), material = \"OSB\")
+joint(\"ceiling\", \"beam\", kind = \"screw\")
+joint(\"ceiling\", \"beam 2\", kind = \"screw\")
+",
+        ),
+        &[],
+    );
+    assert!(ltb_not_verified(&ceiling), "{:?}", member(&ceiling, "beam"));
+    assert_eq!(member(&ceiling, "beam").status, "not_verified");
+}
+
+/// A GL24h 72 x 400 beam over two spans of 5.8 m on three grounded posts, with
+/// a pad loaded at the middle of each span (a wider post in the middle) and battens screwed along its top
+/// every 900 mm, and `extra` lines.
+fn two_span_beam(extra: &str) -> String {
+    let mut source = String::from(
+        "load_path(only = [\"frame\"], carriers = [\"pad\"])
+area_load(\"point\", kind = \"imposed\", kn_m2 = 800, on = [\"pad\"], source = \"test\")
+timber_design({\"GL24h\": \"GL24h\"})
+box(\"post a\", (100, 80, 2000), material = \"GL24h\", grounded = True)
+box(\"post b\", (400, 80, 2000), at = (5650, 0, 0), material = \"GL24h\", grounded = True)
+box(\"post c\", (100, 80, 2000), at = (11600, 0, 0), material = \"GL24h\", grounded = True)
+box(\"beam\", (11700, 72, 400), at = (0, 4, 2000), material = \"GL24h\", tags = [\"frame\"])
+box(\"pad a\", (300, 72, 50), at = (2800, 4, 2400), material = \"GL24h\", tags = [\"pad\"])
+box(\"pad b\", (300, 72, 50), at = (8600, 4, 2400), material = \"GL24h\", tags = [\"pad\"])
+box(\"wall\", (11700, 100, 2400), at = (0, 1000, 0), material = \"GL24h\", grounded = True)
+",
+    );
+    let mut x = 300.0;
+    while x < 11500.0 {
+        if !(2700.0..3200.0).contains(&x) && !(8500.0..9000.0).contains(&x) {
+            source.push_str(&format!(
+                "box(\"batten {x}\", (50, 1100, 50), at = ({x}, 0, 2400), material = \"GL24h\")\n"
+            ));
+        }
+        x += 900.0;
+    }
+    source.push_str(extra);
+    source
+}
+
+/// PG-120 (review 2026-11-02): battens on a beam's top held its bottom too,
+/// which a hogging moment over a middle post compresses. Only a ceiling
+/// screwed underneath holds that edge.
+#[test]
+fn battens_on_top_do_not_brace_the_bottom_a_hogging_moment_compresses() {
+    let top_only = report(&two_span_beam(""), &[]);
+    let beam = member(&top_only, "beam");
+    assert!(ltb_not_verified(&top_only), "{beam:?}");
+    assert!(
+        beam.missing
+            .iter()
+            .any(|reason| reason.contains("compressed bottom")),
+        "{:?}",
+        beam.missing
+    );
+
+    let ceiling = report(
+        &two_span_beam(
+            "box(\"ceiling a\", (5400, 1260, 20), at = (200, -260, 1980), material = \"OSB\")
+box(\"ceiling b\", (5400, 1260, 20), at = (6100, -260, 1980), material = \"OSB\")
+joint(\"ceiling a\", \"beam\", kind = \"screw\")
+joint(\"ceiling a\", \"wall\", kind = \"screw\")
+joint(\"ceiling b\", \"beam\", kind = \"screw\")
+joint(\"ceiling b\", \"wall\", kind = \"screw\")
+",
+        ),
+        &[],
+    );
+    let beam = member(&ceiling, "beam");
+    assert_eq!(beam.missing, Vec::<String>::new(), "{beam:?}");
+    assert_eq!(beam.status, "pass", "{:?}", beam.checks);
+}
+
 /// PG-105 (review 2026-11-01): loads on load-path members without
 /// timber_design() came out with statics "none", which says there are no
 /// members. Each member is listed as not verified for want of a strength class.
@@ -456,6 +600,26 @@ fn load_path_members_without_timber_design_are_not_verified() {
     assert_eq!(
         beam.missing,
         ["material \"C24\" has no timber strength class (timber_strength)"]
+    );
+}
+
+/// PG-105 (review 2026-11-02, the rest): load_path() and timber_design()
+/// without any declared load came out with statics "none" and rc 0, as if
+/// there were nothing to check. Each member is not verified for want of loads.
+#[test]
+fn timber_design_without_any_load_is_not_verified() {
+    let source = beam("C24", 100.0, 200.0).replace(
+        "area_load(\"live\", kind = \"imposed\", kn_m2 = 2.0, on = [\"deck\"], source = \"test\")\n",
+        "",
+    );
+    let unloaded = report(&source, &[]);
+    assert_eq!(unloaded.statics(), ketchup_program::Statics::NotVerified);
+    let beam = member(&unloaded, "beam");
+    assert_eq!(beam.status, "not_verified");
+    assert!(
+        beam.missing.iter().any(|reason| reason.contains("no load")),
+        "{:?}",
+        beam.missing
     );
 }
 
@@ -1644,8 +1808,8 @@ fn a_panel_product_takes_its_own_kmod_kdef_and_gamma_m() {
             ),
         )
     };
-    let report = report(&osb(1), &[]);
-    let panel = member(&report, "beam");
+    let named = report(&osb(1), &[]);
+    let panel = member(&named, "beam");
     // As the C24 beam of the hand calculation, with OSB/3 in service class 1: kmod 0.7 for
     // the medium-term imposed load and gamma_M 1.2.
     let (q, l) = (1.2, 3900.0);
@@ -1660,4 +1824,21 @@ fn a_panel_product_takes_its_own_kmod_kdef_and_gamma_m() {
         format!("{error:#}").contains("service class 3"),
         "{error:#}"
     );
+
+    // Review 2026-11-02 PG-106: without product= it took solid timber's factors
+    // and passed; a class naming no product leaves its members not verified.
+    let unnamed = report(&osb(1).replace(" product = \"osb3\",", ""), &[]);
+    let panel = member(&unnamed, "beam");
+    assert_eq!(panel.status, "not_verified", "{panel:?}");
+    assert!(
+        panel
+            .missing
+            .iter()
+            .any(|reason| reason.contains("product")),
+        "{:?}",
+        panel.missing
+    );
+    // The library's classes name theirs.
+    let c24 = report(&beam("C24", 100.0, 200.0), &[]);
+    assert_eq!(member(&c24, "beam").status, "pass");
 }

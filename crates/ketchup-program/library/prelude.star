@@ -10,7 +10,7 @@
 #   param(name, default, min=, max=, doc=, unit="mm", whole=False)  -> number the user can
 #     override; unit="" for a count, a factor or an angle: the window then takes no length
 #     unit ("3 m"), else it reads one as millimetres; whole=True for a count or a switch,
-#     whose fraction is the error param_not_whole
+#     whose fraction stops the program at param(), naming it
 #   box(name, size, at=, material=, color=, attributes=, tool=)  -> part
 #   board(name, size, at=, material=, grain=, edges=, color=)  -> a panel for the cut list
 #   Every body (box, extrude, revolve, sweep, loft) takes material=, color=
@@ -3002,9 +3002,12 @@ def _opening_in(name, o, origin, along, up, out, depth, length, top_v):
 #   The report's loads.members lists every load_path() member: its length and axis, the
 #   loads on it by kind (newtons, characteristic, unfactored), where they act (patches
 #   along the member: own weight, area loads, parts it carries) and what it passes to
-#   each support (reactions, with the bearing joint), and braced_mm, the stretches along
-#   it where a part resting on it and on something else too (decking, battens, joists)
-#   holds it sideways. A beam shares its load among its
+#   each support (reactions, with the bearing joint), and braced_by, the parts holding
+#   it sideways (part, edge top or bottom, from_mm, to_mm): a part bearing on it and on
+#   something else too (decking, battens, a ceiling), screwed to it by a joint() (or of
+#   the fixed tags) or also bearing on a grounded part; a loose plank across free beams
+#   holds nothing. The top braces against a sagging moment, the bottom against a
+#   hogging one (lateral torsional buckling, check lateral_torsional). A beam shares its load among its
 #   supports by the lever rule, over more supports as simple spans between them; other
 #   parts share theirs by contact area. Missing inputs are listed, never guessed.
 #   Example:
@@ -3111,8 +3114,9 @@ def price_list(prices, currency = None, source = None):
 #
 #   Every made part in the production scope with role MANUFACTURED_ITEM whose body is an
 #   extrusion (board(), extrude(), a buildup sheet piece) is drawn as one AutoCAD R12 DXF:
-#   ASCII, no blocks, mm, from (0, 0). A box is seen on its largest face, any other profile
-#   along its extrusion, the face seen up, as its woodWOP program lays it: x along the
+#   ASCII, no blocks, mm, from (0, 0). A box is seen along the thickness of its cut-list
+#   blank (the THICKNESS_AXIS it names, else its thinnest side), any other profile along
+#   its extrusion, the face seen up, as its woodWOP program lays it: x along the
 #   longer side, y along the shorter, a part machined from below only turned underside
 #   up. Layers (a decimal point written "_"):
 #     CONTOUR              the outline, arcs as arcs
@@ -3144,13 +3148,16 @@ def price_list(prices, currency = None, source = None):
 #     timber_design for one material with its own characteristic values in N/mm² (rho_k, the
 #     characteristic density in kg/m³, is what a connector rating's density_kg_m3 is compared
 #     with). product names the EN 1995-1-1 table 3.1 row whose kmod, kdef (table 3.2) and
-#     gamma_M (table 2.3) apply: "solid" (default), "glulam" (default with glulam=True),
+#     gamma_M (table 2.3) apply: "solid", "glulam" (default with glulam=True),
 #     "lvl", "plywood" (EN 636-3), "osb2", "osb3", "osb4", "particleboard_p5",
 #     "particleboard_p6" or "particleboard_p7"; a service class the product is not used in
-#     is refused. A class of the classes table may give it as "product".
+#     is refused. A class of the classes table gives it as "product". Without product (and
+#     not glulam) the members of the material are not verified: kmod, kdef and gamma_M of
+#     solid timber would overstate a panel product.
 #   The report's design.members lists every load-path member: role (beam or column),
 #   section [width, depth], the checks with their utilization, governing combination and
-#   place (bending, shear, shear_notch, deflection_inst, deflection_fin, bearing =
+#   place (bending, lateral_torsional = bending over kcrit on the stretch of its
+#   compressed edge nothing braces, shear, shear_notch, deflection_inst, deflection_fin, bearing =
 #   compression perpendicular to the grain, compression with buckling for columns on the
 #   real area and least radius of gyration of the profile less bores cut through it), the
 #   largest utilization and status: "pass", "fail" or "not_verified" when an input is
@@ -3165,13 +3172,13 @@ def price_list(prices, currency = None, source = None):
 
 TIMBER_CLASSES = {
     "C16": {"glulam": False, "fm_k": 16, "fv_k": 3.2, "fc0_k": 17, "fc90_k": 2.2, "e0_mean": 8000, "e0_05": 5400, "rho_k": 310,
-            "source": "EN 338:2016 table 1, C16"},
+            "source": "EN 338:2016 table 1, C16", "product": "solid"},
     "C24": {"glulam": False, "fm_k": 24, "fv_k": 4.0, "fc0_k": 21, "fc90_k": 2.5, "e0_mean": 11000, "e0_05": 7400, "rho_k": 350,
-            "source": "EN 338:2016 table 1, C24"},
+            "source": "EN 338:2016 table 1, C24", "product": "solid"},
     "GL24h": {"glulam": True, "fm_k": 24, "fv_k": 3.5, "fc0_k": 24, "fc90_k": 2.5, "e0_mean": 11500, "e0_05": 9600, "rho_k": 385,
-              "source": "EN 14080:2013 table 5, GL24h"},
+              "source": "EN 14080:2013 table 5, GL24h", "product": "glulam"},
     "GL28h": {"glulam": True, "fm_k": 28, "fv_k": 3.5, "fc0_k": 28, "fc90_k": 2.5, "e0_mean": 12600, "e0_05": 10500, "rho_k": 425,
-              "source": "EN 14080:2013 table 5, GL28h"},
+              "source": "EN 14080:2013 table 5, GL28h", "product": "glulam"},
 }
 
 def timber_design(materials, service_class = 1, classes = None):

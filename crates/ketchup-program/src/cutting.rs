@@ -209,12 +209,7 @@ fn percent(part: f64, whole: f64) -> f64 {
     (part / whole * 1000.0).round() / 10.0
 }
 
-/// The part attribute naming the local axis ("x", "y" or "z") a bar's length
-/// runs along (library `member()`).
-pub const LENGTH_AXIS: &str = "length_axis";
-/// The part attribute naming the local axis of a sheet's thickness, or of a
-/// bar's section side that is a layer's thickness (library `buildup()`).
-pub const THICKNESS_AXIS: &str = "thickness_axis";
+pub use crate::model::{LENGTH_AXIS, THICKNESS_AXIS};
 
 /// The blank of a part: its length (longest first), section or size and
 /// thickness, and which local axis each became. The axes a part names by
@@ -264,6 +259,14 @@ fn blank(part: &Part, kind: StockKind) -> ([f64; 3], [usize; 3]) {
 /// the part names (review 2026-11-01 PG-108: the cut list sorted it longest first).
 #[must_use]
 pub fn blank_dimensions(model: &ProgramModel, part: &Part) -> [f64; 3] {
+    blank_axes(model, part).0
+}
+
+/// [`blank_dimensions`] and the local axis each became: the one blank the cut
+/// list, its export, the cutting plan, the shop drawing and the CNC drawing all
+/// give (review 2026-11-02 PG-123).
+#[must_use]
+pub fn blank_axes(model: &ProgramModel, part: &Part) -> ([f64; 3], [usize; 3]) {
     let kind = match part
         .material
         .as_ref()
@@ -277,7 +280,7 @@ pub fn blank_dimensions(model: &ProgramModel, part: &Part) -> [f64; 3] {
         }
         None => StockKind::Lengths,
     };
-    blank(part, kind).0
+    blank(part, kind)
 }
 
 /// The parts of one material and section or thickness.
@@ -780,10 +783,13 @@ fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -
         };
         let mut best = consider(&sheets);
         if best.is_none() {
-            // The smallest stock sheet the piece spans and fits, keeping its
-            // factory edges, else the largest it fits trimmed all round.
+            // The largest stock sheet the piece spans and fits, keeping its
+            // factory edges, else the largest it fits trimmed all round; the
+            // sheet shrinks below to the smallest that holds its pieces (review
+            // 2026-11-02 PG-102: opening the smallest it spans left no room for
+            // the others, two or three narrow sheets where one holds them all).
             let mut openings: Vec<([f64; 2], [bool; 2])> = Vec::new();
-            for &size in &sizes {
+            for &size in sizes.iter().rev() {
                 for &turned in &orientations {
                     let edges = spans(size, turned);
                     if edges.contains(&true) {
@@ -884,24 +890,26 @@ fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -
     sheets
         .into_iter()
         .map(|sheet| {
-            let reach = sheet.placed.iter().fold([0.0f64; 2], |reach, piece| {
-                [
-                    reach[0].max(piece.at_mm[0] + piece.size_mm[0] + kerf),
-                    reach[1].max(piece.at_mm[1] + piece.size_mm[1] + kerf),
-                ]
-            });
-            let size = if sheet.edges.contains(&true) {
-                sheet.size
-            } else {
-                sizes
-                    .iter()
-                    .copied()
-                    .find(|size| {
-                        let [w, h] = usable(*size);
-                        reach[0] - trim <= w + EPS && reach[1] - trim <= h + EPS
+            // The smallest stock size holding the pieces where they lie: a
+            // piece keeping a factory edge still spans it, the others lie
+            // inside its trim.
+            let holds = |size: [f64; 2]| {
+                sheet.placed.iter().all(|piece| {
+                    (0..2).all(|axis| {
+                        let length = piece.size_mm[axis];
+                        if sheet.edges[axis] && spanned(length, sheet.size[axis]) {
+                            spanned(length, size[axis])
+                        } else {
+                            piece.at_mm[axis] + length <= size[axis] - trim + EPS
+                        }
                     })
-                    .unwrap_or(sheet.size)
+                })
             };
+            let size = sizes
+                .iter()
+                .copied()
+                .find(|size| holds(*size))
+                .unwrap_or(sheet.size);
             let area: f64 = sheet
                 .placed
                 .iter()

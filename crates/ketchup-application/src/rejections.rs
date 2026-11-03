@@ -402,6 +402,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Create the workset again from the current document.",
     ),
     entry(
+        "not_a_document",
+        Validation,
+        "path",
+        "The file is not a Kečup document; nothing was locked and the active model was not changed.",
+        "Pass the path of a .ketchup document; bring drawings and models in with file action=import.",
+    ),
+    entry(
         "open_rejected",
         Validation,
         "path",

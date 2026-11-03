@@ -1,6 +1,8 @@
 //! Android entry point of the Kečup Viewer: opens packages and comment files
 //! other apps hand over or the customer picks, and the package placed in the
 //! app's external data directory by the development install.
+// An error is carried, never dropped (review 2026-11-02 TST-121).
+#![deny(clippy::map_err_ignore)]
 
 #[cfg(any(test, target_os = "android"))]
 mod benchmark;

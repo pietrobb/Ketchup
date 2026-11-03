@@ -1166,12 +1166,25 @@ pub fn plan_step_xde_import(
         }
     }
     // The nodes imported: all but those placing a part not read and the
-    // groups that would be left empty by them (review 2026-11-01 EX-104).
+    // groups that would be left empty by them (review 2026-11-01 EX-104), with
+    // everything below a group left out: parents come before their children, so
+    // one pass forward sees each parent decided (review 2026-11-02 EX-120).
+    let mut kept = vec![false; evidence.nodes.len()];
+    for (index, node) in evidence.nodes.iter().enumerate() {
+        let (any, read) = holds[index];
+        let parent_kept = node.parent_id.is_none_or(|parent| {
+            usize::try_from(parent)
+                .ok()
+                .and_then(|parent| kept.get(parent))
+                .is_some_and(|kept| *kept)
+        });
+        kept[index] = parent_kept && (read || !any);
+    }
     let kept_nodes = evidence
         .nodes
         .iter()
-        .zip(&holds)
-        .filter(|(_, (any, read))| *read || !*any)
+        .zip(&kept)
+        .filter(|(_, kept)| **kept)
         .map(|(node, _)| node)
         .collect::<Vec<_>>();
     if !evidence.nodes.iter().any(|node| node.parent_id.is_none())
@@ -1279,7 +1292,15 @@ pub fn plan_step_xde_import(
     let mut next_occurrence = occurrence_start;
     let mut assembly_color_flattened = 0_u32;
     for &node in &kept_nodes {
-        let parent = node.parent_id.map(|id| groups[&id]);
+        let parent = node
+            .parent_id
+            .map(|id| {
+                groups
+                    .get(&id)
+                    .copied()
+                    .ok_or(StepImportPlanError::InvalidWorkerEvidence)
+            })
+            .transpose()?;
         if let Some(part_index) = node.part_index {
             let part_position = position(part_index).expect("kept nodes place parts read");
             let occurrence_id = OccurrenceId(next_occurrence);

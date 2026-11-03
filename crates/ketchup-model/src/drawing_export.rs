@@ -205,10 +205,73 @@ impl PageText {
     }
 }
 
+/// The DXF of a drawing alone, for a sheet written as DXF or DWG: the SVG and
+/// PDF it does not write are not drawn (review 2026-11-02 MF-125).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DrawingDxfExport {
+    dxf: Vec<u8>,
+    dxf_curves: DxfCurves,
+    annotations: SheetAnnotations,
+}
+
+impl DrawingDxfExport {
+    #[must_use]
+    pub fn dxf(&self) -> &[u8] {
+        &self.dxf
+    }
+
+    #[must_use]
+    pub fn dxf_curves(&self) -> &DxfCurves {
+        &self.dxf_curves
+    }
+
+    /// The plan annotations the top views drew, and those left out.
+    #[must_use]
+    pub fn annotations(&self) -> &SheetAnnotations {
+        &self.annotations
+    }
+}
+
 pub fn export_drawing(
     snapshot: &Snapshot,
     drawing: &OrthographicDrawing,
 ) -> Result<DrawingExportBundle, DrawingExportError> {
+    let (dxf, (svg, pdf)) = export_sheet(snapshot, drawing, |lines, fills, texts| {
+        (
+            export_svg(drawing, lines, fills, texts),
+            export_pdf(drawing, lines, fills, texts),
+        )
+    })?;
+    if [svg.len(), pdf.as_ref().map_or(0, Vec::len)]
+        .into_iter()
+        .any(|length| length > MAX_EXPORT_BYTES)
+    {
+        return Err(DrawingExportError::ResourceLimit);
+    }
+    Ok(DrawingExportBundle {
+        svg,
+        dxf: dxf.dxf,
+        pdf,
+        dxf_curves: dxf.dxf_curves,
+        annotations: dxf.annotations,
+    })
+}
+
+/// [`export_drawing`]'s DXF without its SVG and PDF.
+pub fn export_drawing_dxf(
+    snapshot: &Snapshot,
+    drawing: &OrthographicDrawing,
+) -> Result<DrawingDxfExport, DrawingExportError> {
+    export_sheet(snapshot, drawing, |_, _, _| ()).map(|(dxf, ())| dxf)
+}
+
+/// The DXF of `drawing` and what `paper` draws of the sheet's lines, fills
+/// and texts.
+fn export_sheet<P>(
+    snapshot: &Snapshot,
+    drawing: &OrthographicDrawing,
+    paper: impl FnOnce(&[PageLine], &[PageFill], &[PageText]) -> P,
+) -> Result<(DrawingDxfExport, P), DrawingExportError> {
     let sheet = validate_contract(snapshot, drawing)?;
     let (mut lines, mut texts) = collect_page_content(drawing)?;
     let (annotations, marks) = annotations::draw_sheet_annotations(snapshot, sheet, drawing);
@@ -225,8 +288,7 @@ pub fn export_drawing(
         return Err(DrawingExportError::ResourceLimit);
     }
     let (page_arcs, replaced_lines) = collect_page_arcs(drawing)?;
-    let svg = export_svg(drawing, &lines, &fills, &texts);
-    let pdf = export_pdf(drawing, &lines, &fills, &texts);
+    let drawn = paper(&lines, &fills, &texts);
     let dxf = export_dxf(
         drawing,
         SheetContent {
@@ -237,10 +299,7 @@ pub fn export_drawing(
             marks: &marks,
         },
     )?;
-    if [svg.len(), dxf.len(), pdf.as_ref().map_or(0, Vec::len)]
-        .into_iter()
-        .any(|length| length > MAX_EXPORT_BYTES)
-    {
+    if dxf.len() > MAX_EXPORT_BYTES {
         return Err(DrawingExportError::ResourceLimit);
     }
     debug_assert_eq!(sheet.id(), drawing.sheet_id);
@@ -254,13 +313,14 @@ pub fn export_drawing(
             .flat_map(|view| view.polyline_curves.iter().cloned())
             .collect(),
     };
-    Ok(DrawingExportBundle {
-        svg,
-        dxf,
-        pdf,
-        dxf_curves,
-        annotations,
-    })
+    Ok((
+        DrawingDxfExport {
+            dxf,
+            dxf_curves,
+            annotations,
+        },
+        drawn,
+    ))
 }
 
 fn validate_contract<'a>(

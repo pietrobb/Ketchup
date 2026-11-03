@@ -88,6 +88,9 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           python -m pip install --quiet --require-hashes -r tests/requirements-ci.txt
+          # The published releases, which test_release_reads.py compares with what
+          # release_reads.py checks (review 2026-11-02 CI-120: checkout has no tags).
+          git fetch --no-tags --depth=1 origin '+refs/tags/v*:refs/tags/v*'
           python -m pytest -q tests sdk/python/tests
       - name: BTLx schemas into the cache
         if: always() && steps.btlx.outputs.cache-hit != 'true' && hashFiles('target/btlx-schema/BTLx_2_3_1.xsd') != ''
@@ -192,14 +195,17 @@ jobs:
       # The tests of the 750-part house are ignored in every step (AGENTS.md
       # section 6, scripts/check_large_house_tests.py) and run nightly here,
       # on every push to main, and in a pull request that changes what they
-      # evaluate (review 2026-10-24 CI-23, review 2026-10-26 CI-43).
+      # evaluate (review 2026-10-24 CI-23, review 2026-10-26 CI-43). They are
+      # built with the features of the tests step, so they reuse its binaries:
+      # a second build of every test binary filled the runner's disk (PR #14).
+      # Without KETCHUP_SAVED_FILES_DIR the feature keeps nothing.
       - name: whether the change reaches the house
         if: ${{ !cancelled() }}
         id: house
         run: python3 scripts/changes_reach_the_house.py
       - name: large-house tests
         if: ${{ !cancelled() && (runner.os == 'Linux' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || steps.house.outputs.run == 'true')) }}
-        run: cargo test --locked $CRATES --no-fail-fast -- --ignored large_house
+        run: cargo test --locked $CRATES --features ketchup-model/saved-files --no-fail-fast -- --ignored large_house
       # The plugin host's Unix process group lives in the vendored process-wrap
       # (PATCH.md); ketchup-scheduler, which uses it, needs OCCT and is tested
       # on Windows only, so the group's own unit tests run here (review

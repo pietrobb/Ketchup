@@ -15,10 +15,14 @@
 //! - `CONTOUR` the outline, `CUTOUT` a cut through the whole part;
 //! - `DRILL_D8_Z12` a hole 8 across and 12 deep drilled from the face seen,
 //!   a through hole as deep as the part; `DRILL_D8_Z12_BOTTOM` from the face
-//!   below;
+//!   below. A blind hole deeper than the part is drawn as deep as the part,
+//!   never deeper (the machine would drill into its table);
+//! - `TAP_M8X1_25_Z10` the thread of a tapped hole, its size and pitch, as a
+//!   circle over the drilling, `_BOTTOM` from below as the drilling; its depth
+//!   is the thread's, cut back to the drilling's;
 //! - `HDRILL_D8_Z30_H9` a hole drilled into an edge, a line from where it
 //!   enters to its bottom, its axis 9 above the face below (the drawing is
-//!   flat: a reader drops a line's height);
+//!   flat: a reader drops a line's height), its thread on `HTAP_M8X1_25_Z10_H9`;
 //! - `POCKET_Z5` a pocket or a cut 5 deep from the face seen,
 //!   `POCKET_Z5_BOTTOM` from the face below;
 //! - `PART_NAME` the part's name as text, its accents as `\U+XXXX`.
@@ -196,7 +200,7 @@ pub fn cnc_parts(model: &ProgramModel) -> CncExport {
                 continue;
             }
         }
-        match drawing(part) {
+        match drawing(model, part) {
             Ok((thickness_mm, size_mm, entities)) => export.parts.push(CncPart {
                 part: part.name.clone(),
                 file: format!("{}.dxf", files.layer(&part.name)),
@@ -316,7 +320,7 @@ enum Entered {
 
 type Drawing = (f64, [f64; 2], Vec<Entity>);
 
-fn drawing(part: &Part) -> Result<Drawing, Undrawable> {
+fn drawing(model: &ProgramModel, part: &Part) -> Result<Drawing, Undrawable> {
     let ProgramPartBody::Extrusion {
         segments,
         distance_mm,
@@ -331,22 +335,16 @@ fn drawing(part: &Part) -> Result<Drawing, Undrawable> {
         [x1, y1, distance_mm.max(0.0)],
     );
     let rectangle = axis_aligned_rectangle(segments);
-    // A box is seen on its largest face, its thinnest side the thickness as
-    // woodWOP takes it (of equal sides the last); a profile only along its
-    // extrusion.
+    // A box is seen along the thickness of its blank as the cut list gives it
+    // (review 2026-11-02 PG-123): the axis the part names, else its thinnest
+    // side as woodWOP takes it; a profile only along its extrusion.
     let normal = if rectangle {
-        let mut axes = [0, 1, 2];
-        axes.sort_by(|left, right| {
-            (max[*right] - min[*right])
-                .total_cmp(&(max[*left] - min[*left]))
-                .then(left.cmp(right))
-        });
-        axes[2]
+        crate::cutting::blank_axes(model, part).1[2]
     } else {
         2
     };
     let mut view = View::along(normal, min, max);
-    if view.size.iter().any(|across| view.thickness > *across) {
+    if !rectangle && view.size.iter().any(|across| view.thickness > *across) {
         return Err(Undrawable::NotFlat {
             thickness_mm: view.thickness,
         });

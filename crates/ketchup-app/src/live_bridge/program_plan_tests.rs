@@ -23,6 +23,7 @@ fn cancelled_or_replaced_document_never_publishes_a_finished_plan() {
             &source,
             CheckDeadline::start(),
             true,
+            &ketchup_program::CancelToken::default(),
         )
         .unwrap();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -107,6 +108,7 @@ fn client_eof_while_program_plan_is_pending_prevents_publication() {
         &source,
         CheckDeadline::start(),
         true,
+        &ketchup_program::CancelToken::default(),
     )
     .unwrap();
     sender.send(Ok(plan)).unwrap();

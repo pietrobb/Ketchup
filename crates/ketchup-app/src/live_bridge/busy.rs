@@ -186,7 +186,33 @@ impl LiveBridge {
     }
 
     pub(super) fn busy_jobs(&self) -> Vec<Blocker> {
+        use program_check::ProgramCheckJob as Job;
         let mut out = Vec::new();
+        // Each job names itself: before, every one said "DWG import" among
+        // others (review 2026-11-02 MCP-123).
+        let (job_target, job_reason) = match &self.program_check_job {
+            Some(Job::Validating(_)) => ("program_validate", "A program validation is running."),
+            Some(Job::Measuring(_)) => ("measure_faces", "A face measurement is running."),
+            Some(Job::Plugin(_) | Job::PluginPreparing(_)) => {
+                ("run_plugin", "A plugin is running.")
+            }
+            Some(Job::DwgImport(job)) => ("import", job.reason),
+            Some(Job::ExchangeExport(_)) => ("export", "An export file is being written."),
+            Some(Job::DrawingExport(_)) => (
+                "drawing_export",
+                "An underlay drawing is being written to its file.",
+            ),
+            Some(Job::ProjectDrawings(_)) => (
+                "export_drawings",
+                "The project drawings are being drawn and written.",
+            ),
+            Some(Job::Reporting(_)) => ("program_report", "A program report is being made."),
+            Some(Job::VariantExport(_)) => (
+                "program_apply",
+                "The program's variants are being evaluated for their cut lists.",
+            ),
+            _ => ("program_apply", "A program is being evaluated or checked."),
+        };
         for (active, target, reason) in [
             (
                 self.image.is_pending(),
@@ -198,24 +224,7 @@ impl LiveBridge {
                 "apply_and_verify",
                 "An apply-and-verify job is running.",
             ),
-            (
-                self.program_check_job.is_some(),
-                match self.program_check_job {
-                    Some(program_check::ProgramCheckJob::Validating(_)) => "program_validate",
-                    Some(program_check::ProgramCheckJob::Measuring(_)) => "measure_faces",
-                    Some(
-                        program_check::ProgramCheckJob::Plugin(_)
-                        | program_check::ProgramCheckJob::PluginPreparing(_),
-                    ) => "run_plugin",
-                    Some(program_check::ProgramCheckJob::DwgImport(_)) => "import",
-                    Some(program_check::ProgramCheckJob::ExchangeExport(_)) => "export",
-                    Some(program_check::ProgramCheckJob::DrawingExport(_)) => "drawing_export",
-                    Some(program_check::ProgramCheckJob::ProjectDrawings(_)) => "export_drawings",
-                    Some(program_check::ProgramCheckJob::Reporting(_)) => "program_report",
-                    _ => "program_apply",
-                },
-                "A program evaluation, geometry validation, report, plugin or DWG import is running.",
-            ),
+            (self.program_check_job.is_some(), job_target, job_reason),
         ] {
             if active {
                 out.push(Blocker::new("job", target, reason));

@@ -527,9 +527,11 @@ fn a_client_exports_the_edited_drawing_as_a_dxf_that_imports_as_edited() {
         .unwrap();
     assert_eq!(from_dwg["kinds"], edited["kinds"], "{from_dwg}\n{edited}");
 
-    // Another drawing named as the source is refused, and nothing is written.
+    // Another drawing named as the source, its wall of another handle, is refused, and
+    // nothing is written. One whose entities only read differently is bound again by
+    // their handles (review 2026-11-02 CD-120).
     let other = directory.path().join("other.dxf");
-    std::fs::write(&other, DRAWING.replace("2630", "2640")).unwrap();
+    std::fs::write(&other, DRAWING.replace("5\n2A\n", "5\n2B\n")).unwrap();
     let refused = directory.path().join("refused.dxf");
     assert_eq!(
         bridge

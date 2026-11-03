@@ -18,8 +18,8 @@ const RESERVED: [&str; 6] = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"];
 /// that is a drive letter not mapped to a share and a root (`C:\…` or `C:/…`)
 /// and nothing else: no share or device however its separators are mixed (`\\server`, `\/server`,
 /// `\\?\`, `\\.\`), no alternate data stream (`file.pdf:stream`) and no device
-/// name. On macOS it is a path on no network mount and in no directory the
-/// automounter serves (`/net`, `/Network`, `/home`).
+/// name. On macOS and Linux it is a path on no network mount, nor one the automounter
+/// serves (on macOS also `/net`, `/Network`, `/home`; on Linux an `autofs` mount).
 #[must_use]
 pub fn local_absolute_path(path: &str) -> bool {
     !path.is_empty()
@@ -27,11 +27,38 @@ pub fn local_absolute_path(path: &str) -> bool {
         && !path.contains('\0')
         && Path::new(path).is_absolute()
         && (!cfg!(windows) || local_windows_path(path, remote_drive))
-        && (!cfg!(target_os = "macos") || mounts().is_ok_and(|m| local_macos_path(path, &m)))
+        && (!cfg!(any(target_os = "macos", target_os = "linux"))
+            || mounts().is_ok_and(|m| local_mounted_path(path, &m, AUTOMOUNTED)))
 }
 
-/// Top-level directories macOS's automounter serves from the network.
-const AUTOMOUNTED: [&str; 3] = ["net", "network", "home"];
+/// Top-level directories macOS's automounter serves from the network; on Linux
+/// `/home` is a local directory and the automounter shows as an `autofs` mount.
+const AUTOMOUNTED: &[&str] = if cfg!(target_os = "macos") {
+    &["net", "network", "home"]
+} else {
+    &[]
+};
+
+/// Linux file systems that reach another computer, or that the automounter mounts
+/// from one when a path under them is touched (review 2026-11-02 SEC-101).
+const NETWORK_FILE_SYSTEMS: [&str; 16] = [
+    "autofs",
+    "nfs",
+    "nfs4",
+    "cifs",
+    "smb3",
+    "smbfs",
+    "afs",
+    "ceph",
+    "glusterfs",
+    "lustre",
+    "ncpfs",
+    "coda",
+    "davfs",
+    "fuse.sshfs",
+    "fuse.davfs2",
+    "fuse.glusterfs",
+];
 
 /// The data volume's firmlinks make `/System/Volumes/Data/Volumes` the same
 /// directory as `/Volumes`, and so for every top-level directory.
@@ -45,7 +72,10 @@ pub(crate) struct Mount {
 }
 
 impl Mount {
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    #[cfg_attr(
+        not(any(target_os = "macos", target_os = "linux", test)),
+        allow(dead_code)
+    )]
     pub(crate) fn new(on: &str, local: bool) -> Self {
         Self {
             on: lexical_components(on),
@@ -54,7 +84,7 @@ impl Mount {
     }
 }
 
-fn local_macos_path(path: &str, mounts: &[Mount]) -> bool {
+fn local_mounted_path(path: &str, mounts: &[Mount], automounted: &[&str]) -> bool {
     let components = lexical_components(path);
     let through_data_volume = components.strip_prefix(&DATA_VOLUME.map(str::to_owned)[..]);
     [Some(&components[..]), through_data_volume]
@@ -63,7 +93,10 @@ fn local_macos_path(path: &str, mounts: &[Mount]) -> bool {
         .all(|components| {
             !components
                 .first()
-                .is_some_and(|top| AUTOMOUNTED.contains(&top.as_str()))
+                .is_some_and(|top| automounted.contains(&top.as_str()))
+                // The table lists mounts in mount order, so of two at one point the
+                // later is on top (systemd's autofs trigger under binfmt_misc);
+                // `max_by_key` keeps the last of equals.
                 && mounts
                     .iter()
                     .filter(|mount| components.starts_with(&mount.on))
@@ -96,9 +129,57 @@ fn mounts() -> std::io::Result<Vec<Mount>> {
         .collect())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+fn mounts() -> std::io::Result<Vec<Mount>> {
+    Ok(linux_mounts(&std::fs::read_to_string("/proc/self/mounts")?))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn mounts() -> std::io::Result<Vec<Mount>> {
     Ok(Vec::new())
+}
+
+/// The mounts of a Linux mount table (`/proc/self/mounts`): `device mount-point type
+/// options ...` per line, a space, tab, newline or backslash in the mount point written
+/// as its octal escape (`\040`).
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+fn linux_mounts(table: &str) -> Vec<Mount> {
+    table
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split(' ');
+            let (_device, on, kind) = (fields.next()?, fields.next()?, fields.next()?);
+            Some(Mount::new(
+                &unescape_mount_point(on),
+                !NETWORK_FILE_SYSTEMS.contains(&kind),
+            ))
+        })
+        .collect()
+}
+
+fn unescape_mount_point(on: &str) -> String {
+    let bytes = on.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        let octal = bytes.get(at + 1..at + 4).filter(|digits| {
+            bytes[at] == b'\\' && digits.iter().all(|digit| (b'0'..=b'7').contains(digit))
+        });
+        match octal {
+            Some(digits) => {
+                let value = digits
+                    .iter()
+                    .fold(0u32, |value, digit| value * 8 + u32::from(digit - b'0'));
+                out.push(u8::try_from(value).unwrap_or(b'?'));
+                at += 4;
+            }
+            None => {
+                out.push(bytes[at]);
+                at += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn local_windows_path(path: &str, remote_drive: impl Fn(u8) -> bool) -> bool {
@@ -187,9 +268,92 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod mount_tests {
+    use super::{linux_mounts, local_mounted_path};
+
+    // Review 2026-11-02 SEC-101: on Linux a share and an automounted directory passed.
+    #[test]
+    fn a_path_on_a_linux_network_or_automounted_file_system_is_not_local() {
+        let mounts = linux_mounts(
+            "/dev/nvme0n1p2 / ext4 rw,relatime 0 0\n\
+             /dev/nvme0n1p3 /home ext4 rw,relatime 0 0\n\
+             //nas/backup /mnt/backup cifs rw,vers=3.1.1 0 0\n\
+             nas:/export /srv/export nfs4 rw 0 0\n\
+             systemd-1 /net autofs rw,fd=40 0 0\n\
+             auto.misc /misc autofs rw 0 0\n\
+             user@host:/ /home/me/remote fuse.sshfs rw 0 0\n\
+             //nas/shared\\040files /mnt/shared\\040files smb3 rw 0 0\n\
+             /dev/sdb1 /mnt/usb\\040stick vfat rw 0 0\n",
+        );
+        for local in [
+            "/home/me/desk.pdf",
+            "/mnt/usb stick/x.pdf",
+            "/mnt/backup2/x.pdf",
+            "/tmp/x.pdf",
+        ] {
+            assert!(local_mounted_path(local, &mounts, &[]), "{local:?}");
+        }
+        for remote in [
+            "/mnt/backup/x.pdf",
+            "/mnt/./backup/x.pdf",
+            "/srv/export/x.pdf",
+            "/net/server/x.pdf",
+            "/misc/cd/x.pdf",
+            "/home/me/remote/x.pdf",
+            "/mnt/shared files/x.pdf",
+            "/mnt/usb stick/../backup/x.pdf",
+        ] {
+            assert!(!local_mounted_path(remote, &mounts, &[]), "{remote:?}");
+        }
+    }
+
+    #[test]
+    fn of_two_mounts_at_one_point_the_later_one_on_top_decides() {
+        let covered_trigger = linux_mounts(
+            "/dev/sda1 / ext4 rw 0 0\n\
+             systemd-1 /proc/sys/fs/binfmt_misc autofs rw 0 0\n\
+             binfmt_misc /proc/sys/fs/binfmt_misc binfmt_misc rw 0 0\n",
+        );
+        assert!(local_mounted_path(
+            "/proc/sys/fs/binfmt_misc/x.pdf",
+            &covered_trigger,
+            &[]
+        ));
+        let share_over_disk = linux_mounts(
+            "/dev/sda1 / ext4 rw 0 0\n\
+             /dev/sdb1 /mnt/data ext4 rw 0 0\n\
+             //nas/data /mnt/data cifs rw 0 0\n",
+        );
+        assert!(!local_mounted_path(
+            "/mnt/data/x.pdf",
+            &share_over_disk,
+            &[]
+        ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn no_path_on_a_mount_of_this_computer_that_is_not_local_is_local() {
+        let mounts = super::mounts().expect("the mount table of this computer");
+        assert!(
+            mounts
+                .iter()
+                .any(|mount| mount.on.is_empty() && mount.local)
+        );
+        for (at, mount) in mounts.iter().enumerate().filter(|(_, mount)| !mount.local) {
+            if mounts[at + 1..].iter().any(|over| over.on == mount.on) {
+                continue;
+            }
+            let path = format!("/{}/x.pdf", mount.on.join("/"));
+            assert!(!super::local_absolute_path(&path), "{path}");
+        }
+    }
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod macos_tests {
-    use super::{Mount, local_absolute_path, local_macos_path};
+    use super::{AUTOMOUNTED, Mount, local_absolute_path, local_mounted_path};
 
     // Review 2026-11-01 SEC-101: the automounter reaches the host named in the path.
     #[test]
@@ -230,7 +394,7 @@ mod macos_tests {
             "/Volumes/backup2/x.pdf",
             "/Volumes/USB/../USB/x.pdf",
         ] {
-            assert!(local_macos_path(local, &mounts), "{local:?}");
+            assert!(local_mounted_path(local, &mounts, AUTOMOUNTED), "{local:?}");
         }
         for remote in [
             "/Volumes/backup",
@@ -240,7 +404,10 @@ mod macos_tests {
             "/Volumes/USB/../backup/x.pdf",
             "/System/Volumes/Data/Volumes/backup/x.pdf",
         ] {
-            assert!(!local_macos_path(remote, &mounts), "{remote:?}");
+            assert!(
+                !local_mounted_path(remote, &mounts, AUTOMOUNTED),
+                "{remote:?}"
+            );
         }
     }
 }

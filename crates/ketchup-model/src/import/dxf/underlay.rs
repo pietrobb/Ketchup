@@ -381,21 +381,28 @@ fn read_sections(
 }
 
 /// The encoding of `source`'s text, as the profile import decides it for the whole file:
-/// UTF-8 (`None`) when all of it is, otherwise the code page its `$DWGCODEPAGE` names when
-/// it is older than DXF 2007, or the one read in its place ([`text_code_page`]).
+/// UTF-8 (`None`) when all of it is and it names no code page it does not
+/// [fit](utf8_fits), otherwise the code page its `$DWGCODEPAGE` names when it is older
+/// than DXF 2007, or the one read in its place ([`text_code_page`]).
 pub(super) fn text_encoding(
     source: &mut (impl BufRead + Seek),
 ) -> Result<Option<(CodePage, CodePageRead)>, DxfImportError> {
     source.seek(SeekFrom::Start(0)).map_err(read_error)?;
     let mut line = Vec::new();
     let (mut utf8, mut empty) = (true, true);
+    let mut beyond_ascii = std::collections::BTreeSet::new();
     let mut high = HighBytes::default();
     // A header variable's value is the second line after its name.
     let mut acadver = HeaderValue::default();
     let mut code_page = HeaderValue::default();
     while read_line(source, &mut line)? {
         empty = false;
-        utf8 &= std::str::from_utf8(&line).is_ok();
+        match std::str::from_utf8(&line) {
+            Ok(text) if utf8 => {
+                beyond_ascii.extend(text.chars().filter(|character| !character.is_ascii()));
+            }
+            _ => utf8 = false,
+        }
         high.see(&line);
         let trimmed = line.trim_ascii();
         acadver.see(trimmed, b"$ACADVER");
@@ -404,15 +411,20 @@ pub(super) fn text_encoding(
     if empty {
         return Err(DxfImportError::Empty);
     }
-    if utf8 {
-        return Ok(None);
-    }
-    acadver
+    let name = acadver
         .value
         .is_none_or(|version| version.as_slice() < b"AC1021".as_slice())
         .then_some(code_page.value)
-        .flatten()
-        .and_then(|name| text_code_page(&name, &high))
+        .flatten();
+    if utf8
+        && name
+            .as_deref()
+            .and_then(code_page_encoding)
+            .is_none_or(|named| utf8_fits(beyond_ascii, named))
+    {
+        return Ok(None);
+    }
+    name.and_then(|name| text_code_page(&name, &high))
         .map(Some)
         .ok_or(DxfImportError::NonAscii)
 }

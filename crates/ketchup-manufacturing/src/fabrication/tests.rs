@@ -1235,3 +1235,37 @@ fn btlx_woodwop_and_the_job_frame_place_a_hole_alike_in_every_axis_order() {
 fn blank_point(blank: StockBlank, local: [f64; 3]) -> [f64; 3] {
     std::array::from_fn(|axis| local[axis] + blank.corner_mm[axis])
 }
+
+/// Review 2026-11-02 MF-121: a closed spline or an outline with holes was refused as
+/// "cuts could not be described"; it is a blank no format describes, refused for its
+/// outline. A circle is two arcs, described like any outline of lines and arcs.
+#[test]
+fn a_spline_or_holed_outline_is_a_free_form_blank_and_a_circle_is_not() {
+    let point = |x: f64, y: f64| [x.to_bits(), y.to_bits()];
+    let lines = ExactBRepPlanarGeometry::Boundary {
+        closed: true,
+        segments: vec![ExactBRepPlanarSegment::Line {
+            start_bits: point(0.0, 0.0),
+            end_bits: point(1.0, 0.0),
+        }],
+    };
+    assert!(!is_free_form_outline(&lines));
+    assert!(!is_free_form_outline(&ExactBRepPlanarGeometry::Circle {
+        center_bits: point(0.0, 0.0),
+        radius_bits: 100.0_f64.to_bits(),
+    }));
+    assert!(is_free_form_outline(&ExactBRepPlanarGeometry::Spline {
+        control_point_bits: vec![point(0.0, 0.0), point(1.0, 0.0), point(0.0, 1.0)],
+    }));
+    assert!(is_free_form_outline(&ExactBRepPlanarGeometry::Region {
+        outer: ketchup_model::exact_brep_graph::ExactBRepPlanarLoop::Boundary {
+            segments: Vec::new(),
+        },
+        holes: vec![
+            ketchup_model::exact_brep_graph::ExactBRepPlanarLoop::Circle {
+                center_bits: point(0.0, 0.0),
+                radius_bits: 10.0_f64.to_bits(),
+            }
+        ],
+    }));
+}

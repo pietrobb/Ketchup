@@ -20,7 +20,6 @@ crates/ketchup-app/src/live_bridge/topology_recovery_tests.rs 2
 crates/ketchup-app/src/live_bridge/transport.rs 7
 crates/ketchup-app/src/live_bridge/window_edit.rs 1
 crates/ketchup-app/src/planar_push_pull_tests.rs 10
-crates/ketchup-app/src/program_variants_ui_tests.rs 35
 crates/ketchup-app/src/push_pull_snapping_tests.rs 2
 crates/ketchup-app/src/tests/exact_modeling.rs 4
 crates/ketchup-app/src/tests/shell.rs 2

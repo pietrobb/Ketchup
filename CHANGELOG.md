@@ -3,6 +3,10 @@
 What changed for users in each Ketchup release. The full notes, downloads, and checksums are on the
 [GitHub releases page](https://github.com/pietrobb/Ketchup/releases).
 
+## Unreleased
+
+- 0.3.1 reads some drawings differently from 0.3.0 (skipped or empty entities, CP1250 text, files with a BOM), so it often refused to export a drawing edited in 0.3.0. Such a drawing exports again: the edits find their entities by DXF handle, and an entity not edited is written as the file has it.
+
 ## 0.3.1 — 2026-11-02
 
 **Structural checks and production**
@@ -27,6 +31,14 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 - Each download carries third-party notices with the copyright and licence text of every component it contains.
 - An Android Viewer release no longer measures a pushed `benchmark.ketchup-view`; only a `-Benchmark` build does.
 
+**Also fixed**
+- woodWOP refuses by name a blind hole as deep as its part; BTLx and the production job drill it through.
+- Drawing PDFs embed the sheet typeface, so ö, ü, ß, ř, ě, ů and ł print.
+- The MCP connection survives a reset or aborted client instead of hanging the window.
+- Files saved by 0.3.1 never make 0.2.0 open the older `.recovery` copy: 0.2.0 refuses a file it cannot read and leaves it unchanged.
+- The portable Ketchup Viewer runs on a clean Windows without the Visual C++ Redistributable.
+- A Ketchup.app built from 0.3.1 carries the program worker, so program evaluation, DWG import and underlay export work on macOS. 0.3.1 published no macOS download.
+
 Files from 0.3.0 open in 0.3.1. A file with a trimmed, extended or offset drawing line needs 0.3.1.
 
 ## 0.3.0 — 2026-10-30
@@ -38,7 +50,7 @@ Files from 0.3.0 open in 0.3.1. A file with a trimmed, extended or offset drawin
 - A document is saved in the oldest format that holds it.
 - Ketchup Viewer: language and projection settings, program dimensions, orthographic plans, and a portable download of its own.
 - **Connect AI** and `Ketchup.exe --mcp-setup` set up Claude Code and Codex.
-- Ketchup and Ketchup Viewer build and run on Apple Silicon Macs.
+- Ketchup and Ketchup Viewer build on Apple Silicon Macs. Correction: a Ketchup.app built from 0.3.0 lacks the program worker, so program evaluation and DWG import fail there; 0.3.0 published no macOS download. Build from 0.3.1 or later.
 
 Files from 0.2.0 open in 0.3.0. A file with underlays or annotations needs 0.3.0.
 

@@ -1,3 +1,5 @@
+// An error is carried, never dropped (review 2026-11-02 TST-121).
+#![deny(clippy::map_err_ignore)]
 mod json_input;
 mod protocol;
 use ketchup_application::SessionSettings;

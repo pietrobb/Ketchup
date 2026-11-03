@@ -64,9 +64,15 @@ pub enum ShopElement {
     /// and cuts are unknown to every format (review 2026-10-31 MF-80).
     UndescribedMachining,
     /// A blank whose outline has an edge that is neither a line nor a
-    /// circular arc (a cubic Bezier curve): no format describes the blank,
-    /// so the part's machining has no frame (review 2026-11-01 MF-103).
+    /// circular arc (a cubic Bezier curve, a spline) or holes of its own: no
+    /// format describes the blank, so the part's machining has no frame
+    /// (review 2026-11-01 MF-103, 2026-11-02 MF-121).
     FreeFormBlank,
+    /// A blank of lines and circular arcs that is not a rectangle (a rounded
+    /// corner, an L-shaped outline): the production job and the drawing carry
+    /// its outline, BTLx and woodWOP set a part up on a rectangular blank only
+    /// (review 2026-11-02 MF-123).
+    ShapedBlank,
 }
 
 impl fmt::Display for ShopElement {
@@ -80,6 +86,7 @@ impl fmt::Display for ShopElement {
             Self::HoleToFarFace => formatter.write_str("a blind hole as deep as the part"),
             Self::UndescribedMachining => formatter.write_str("machining that is not described"),
             Self::FreeFormBlank => formatter.write_str("a blank with a free-form outline"),
+            Self::ShapedBlank => formatter.write_str("a blank that is not a rectangle"),
         }
     }
 }
@@ -118,9 +125,16 @@ pub(super) const DRAWING_UNDESCRIBED: &str = "the drawing shows the part's outli
 const UNDESCRIBED: &str = "the part's cuts could not be described as drillings, profile or \
      through cuts, so it would be made without them; model its machining as holes, pockets and \
      cuts, or make it from the model";
-const FREE_FORM_BLANK: &str = "the outline of the part's blank has a free-form (Bezier) edge, \
-     and a blank is described by lines and circular arcs only, so its holes and cuts have no \
-     frame; make the outline of lines and arcs, or make the part from the model";
+const FREE_FORM_BLANK: &str = "the outline of the part's blank has a free-form edge (a Bezier \
+     curve or a spline) or holes of its own, and a blank is one outline of lines and circular \
+     arcs, so its holes and cuts have no frame; make the outline of lines and arcs and cut its \
+     openings as holes or cuts, or make the part from the model";
+const WOODWOP_SHAPED_BLANK: &str = "a woodWOP program here is set up on a rectangular blank, and \
+     this part's outline has arcs or edges off its rectangle, which the program would not cut; \
+     export the production job, which carries the outline, or make the part's blank a rectangle";
+const BTLX_SHAPED_BLANK: &str = "a BTLx part is a rectangular raw member, and this part's \
+     outline has arcs or edges off its rectangle, which BTLx would not cut; export the production \
+     job, which carries the outline, or make the member's cross-section a rectangle";
 const WOODWOP_PROFILE_WITHOUT_TOOL: &str =
     "a profile cut is milled as a vertical pocket; choose the vertical pocket tool number";
 const WOODWOP_OTHER_CUT: &str =
@@ -136,6 +150,11 @@ pub fn carriage(format: ShopFormat, element: &ShopElement) -> Carriage {
         }
         (_, ShopElement::UndescribedMachining) => Carriage::Refuses(UNDESCRIBED),
         (_, ShopElement::FreeFormBlank) => Carriage::Refuses(FREE_FORM_BLANK),
+        (ShopFormat::Woodwop { .. }, ShopElement::ShapedBlank) => {
+            Carriage::Refuses(WOODWOP_SHAPED_BLANK)
+        }
+        (ShopFormat::Btlx, ShopElement::ShapedBlank) => Carriage::Refuses(BTLX_SHAPED_BLANK),
+        (ShopFormat::ProductionJob, ShopElement::ShapedBlank) => Carriage::Carries,
         (ShopFormat::Drawing | ShopFormat::Btlx, ShopElement::PinHole(_)) => {
             Carriage::Refuses(UNDRILLED_PIN_HOLE)
         }
@@ -218,10 +237,14 @@ impl GeneralFabricationProjection {
                 .iter()
                 .filter(|operation| is_row_operation(row, operation))
                 .collect::<Vec<_>>();
-            let blank = operations
+            let stock = operations
                 .iter()
-                .find(|operation| operation.kind == GeneralManufacturingKind::Stock)
-                .and_then(|stock| rectangular_stock(&stock.machining));
+                .find(|operation| operation.kind == GeneralManufacturingKind::Stock);
+            let blank = stock.and_then(|stock| rectangular_stock(&stock.machining));
+            if stock.is_some() && blank.is_none() && !elements.contains(&ShopElement::FreeFormBlank)
+            {
+                elements.push(ShopElement::ShapedBlank);
+            }
             for operation in operations {
                 elements.push(ShopElement::Operation(operation.kind));
                 if let GeneralMachiningGeometry::CircularDrill { through: true, .. } =

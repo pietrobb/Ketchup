@@ -22,6 +22,7 @@ const DELIVERY_MARGIN: Duration = Duration::from_secs(5);
 const DEFAULT_WAIT: Duration = crate::DEFAULT_RESPONSE_WAIT.saturating_add(DELIVERY_MARGIN);
 const APPLY_PROGRAM_WAIT: Duration = crate::PROGRAM_RESPONSE_WAIT.saturating_add(DELIVERY_MARGIN);
 const OPEN_WAIT: Duration = crate::OPEN_RESPONSE_WAIT.saturating_add(DELIVERY_MARGIN);
+const DRAWINGS_WAIT: Duration = crate::DRAWINGS_RESPONSE_WAIT.saturating_add(DELIVERY_MARGIN);
 const DEFAULT_APPLY_AND_VERIFY_MS: u64 = 60_000;
 const DEFAULT_PLUGIN_MS: u64 = 30_000;
 
@@ -33,6 +34,15 @@ fn apply_and_verify_wait(timeout_ms: u64) -> Duration {
 fn import_wait(args: &Map<String, Value>) -> Duration {
     let path = args.get("path").and_then(Value::as_str).unwrap_or_default();
     crate::import_response_wait(path) + DELIVERY_MARGIN
+}
+/// How long the client waits for the `file` tool's `action`.
+fn file_wait(action: &str, args: &Map<String, Value>) -> Duration {
+    match action {
+        "import" => import_wait(args),
+        "open" | "export" => OPEN_WAIT,
+        "export_drawings" => DRAWINGS_WAIT,
+        _ => DEFAULT_WAIT,
+    }
 }
 const IMAGE_PROTOCOL_VERSION: u32 = 4;
 const WINDOW_START_TIMEOUT: Duration = Duration::from_secs(30);
@@ -233,13 +243,7 @@ impl Tools {
                         "export_drawings",
                     ],
                 )?;
-                let wait = if action == "import" {
-                    import_wait(&args)
-                } else if matches!(action.as_str(), "open" | "export") {
-                    OPEN_WAIT
-                } else {
-                    DEFAULT_WAIT
-                };
+                let wait = file_wait(&action, &args);
                 self.send(&action, args, wait)
             }
             "drawing" => {
@@ -1015,6 +1019,18 @@ mod wait_tests {
         );
         let args = json!({"path": relative}).as_object().unwrap().clone();
         assert_eq!(import_wait(&args), OPEN_WAIT);
+    }
+
+    /// Review 2026-11-02 MCP-121: export_drawings runs as a window job that the
+    /// connection cancels when it stops waiting; given the default 30 s, a set
+    /// whose hidden lines take longer was never written through MCP.
+    #[test]
+    fn the_client_waits_for_a_drawing_set_longer_than_the_default() {
+        let args = Map::new();
+        assert_eq!(file_wait("export_drawings", &args), DRAWINGS_WAIT);
+        assert!(DRAWINGS_WAIT > crate::DRAWINGS_RESPONSE_WAIT);
+        assert!(crate::DRAWINGS_RESPONSE_WAIT >= std::time::Duration::from_secs(10 * 60));
+        assert_eq!(file_wait("save", &args), DEFAULT_WAIT);
     }
 
     /// A window started with a document loads it before it reports ready.

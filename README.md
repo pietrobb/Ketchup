@@ -36,7 +36,7 @@ Ketchup is an AI-native desktop modeler for creating, editing, assembling, valid
 2. Download **`Ketchup-0.3.1-Examples.zip`** from the release, unpack it, and double-click any `.ketchup` file to open it in Ketchup. Double-click `kitchen.ketchup-view` to open it in Ketchup Viewer. The examples are described [below](#examples-you-can-open-right-away).
 3. Optional: connect the AI harness you already use, such as Claude Code, Codex, Claude Desktop, or Cursor. It can then model in the open Ketchup window. See [Connect your AI harness](#connect-your-ai-harness-mcp).
 
-Requires Windows 10 or 11 x64. The installer and the programs are signed by AEON GROUP spol. s r.o. No account, API key, or Python is needed. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
+Requires Windows 10 or 11 x64; the Visual C++ runtime the programs need comes with them. The installer and the programs are signed by AEON GROUP spol. s r.o. No account, API key, or Python is needed. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
 
 ## What you can do today
 
@@ -223,7 +223,20 @@ export RUSTFLAGS="-C link-arg=-Wl,-rpath,$PWD/third_party/occt-install-r0-v1/lib
 cargo build --locked --release
 ```
 
-`KETCHUP_OCCT_ROOT` points the build at an install elsewhere. CI builds and tests the crates with OCCT on Linux and Windows on every pull request.
+On an Apple Silicon Mac, with the Xcode command line tools, CMake and Ninja, `scripts/macos/build-occt.sh` builds the same pinned OCCT 8.0.1 with CORE-MATH linked in (arm64; `KETCHUP_OCCT_ARCHS` for others). The libraries carry their install path, so `cargo build` and `cargo test` find them without an rpath:
+
+```bash
+git clone https://github.com/Open-Cascade-SAS/OCCT.git third_party/occt-src
+git -C third_party/occt-src checkout b8f597c677811d1f9f4d8a97f5ae2825c0353a42
+scripts/macos/build-occt.sh
+cargo build --locked --release
+scripts/macos/build-app.sh            # Kečup.app and a .dmg in artifacts/macos-app/<version>
+scripts/macos/build-viewer-app.sh     # Kečup Viewer.app (arm64 + x86_64) and a .dmg
+```
+
+Both app scripts sign ad hoc, for this Mac; `--sign "Developer ID Application: …"` signs for other Macs, and notarization is a separate step.
+
+`KETCHUP_OCCT_ROOT` points the build at an install elsewhere. CI builds and tests the crates with OCCT on Linux and Windows on every pull request, and on macOS builds the app bundle and runs the live tests against it.
 
 No stable public API or long-term native file-format compatibility is promised yet. Undo/Redo lives in memory for the session and reaches back 30 edits: Save writes only the current revision, and reopening a file starts a new Undo history. A named checkpoint in the revision catalog is saved with the file only when it names the revision you save, so save right after naming it; a checkpoint on an earlier edit lasts only for the session, and 30 newer edits drop it. While you work, a work-recovery copy beside the file keeps your edits and their Undo steps, so a crash loses neither.
 
