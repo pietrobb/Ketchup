@@ -157,4 +157,76 @@ mod tests {
         assert_eq!(replies[1]["error"]["code"], -32600);
         assert_eq!(replies[2]["id"], 2);
     }
+
+    /// Lines the test sends, read as stdin.
+    struct Lines(std::sync::mpsc::Receiver<Vec<u8>>, Vec<u8>);
+
+    impl io::Read for Lines {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if self.1.is_empty() {
+                match self.0.recv() {
+                    Ok(line) => self.1 = line,
+                    Err(std::sync::mpsc::RecvError) => return Ok(0),
+                }
+            }
+            let taken = buffer.len().min(self.1.len());
+            buffer[..taken].copy_from_slice(&self.1[..taken]);
+            self.1.drain(..taken);
+            Ok(taken)
+        }
+    }
+
+    /// Replies the server writes on stdout, one per line.
+    struct Replies(std::sync::mpsc::Sender<Value>, Vec<u8>);
+
+    impl Write for Replies {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.1.extend_from_slice(bytes);
+            while let Some(end) = self.1.iter().position(|byte| *byte == b'\n') {
+                let line: Vec<u8> = self.1.drain(..=end).collect();
+                let reply = serde_json::from_slice(&line).map_err(io::Error::other)?;
+                self.0.send(reply).map_err(io::Error::other)?;
+            }
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// MECH-1 (Měchenice 2026-11-02): a tools/call the window did not answer
+    /// left the server silent, with a ping sent meanwhile unanswered until the
+    /// call ended (up to 15 minutes for drawings), so the client saw a dead
+    /// server and the window stayed used_by_another_client. A request sent
+    /// while a call waits is answered within seconds.
+    #[test]
+    fn a_ping_is_answered_while_a_tool_call_waits_for_the_window() {
+        let (send_line, lines) = std::sync::mpsc::channel();
+        let (send_reply, replies) = std::sync::mpsc::channel();
+        let (answer_the_call, window_answers) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            let input = io::BufReader::new(Lines(lines, Vec::new()));
+            serve(input, Replies(send_reply, Vec::new()), |message| {
+                let id = message.get("id").cloned()?;
+                if message["method"] == "tools/call" {
+                    // A window that does not answer this request.
+                    let _ = window_answers.recv_timeout(std::time::Duration::from_secs(60));
+                }
+                Some(json!({"jsonrpc": "2.0", "id": id, "result": {}}))
+            })
+        });
+        let call = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "inspect", "arguments": {"action": "status"}}});
+        let ping = json!({"jsonrpc": "2.0", "id": 2, "method": "ping"});
+        for message in [call, ping] {
+            send_line
+                .send(format!("{message}\n").into_bytes())
+                .expect("the server reads");
+        }
+        let first = replies.recv_timeout(std::time::Duration::from_secs(5));
+        drop(answer_the_call);
+        let first = first.expect("no reply within 5 s while a tool call waits for the window");
+        assert_eq!(first["id"], 2, "{first}");
+    }
 }
