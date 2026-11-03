@@ -121,9 +121,7 @@ impl LiveBridge {
             )),
         };
         take_error_details();
-        let path = job.started.path.clone();
-        let result =
-            finish_export(app, job.started, made).map_err(|error| export_failed(&path, error));
+        let result = finish_export(app, job.started, made).map_err(export_failed);
         Self::reply(app, job.id, &job.reply, result);
         context.request_repaint();
     }

@@ -8,8 +8,9 @@ use crate::KetchupApp;
 use crate::app::drawing_sheet_export::{DrawingSheetExportError, SheetFileFormat};
 use crate::app::project_drawings::{
     ExportedSet, ProjectDrawingsError, ProjectDrawingsJob, SetFileFormat, SetTargets, SheetRequest,
-    publish_project_drawings,
+    project_drawings_targets, publish_project_drawings,
 };
+use crate::export_bundle::ExportTransactionError;
 use ketchup_manufacturing::dxf_annotations::MAX_PLAN_SCALE;
 use ketchup_manufacturing::project_drawings::DrawingSet;
 use ketchup_manufacturing::title_block::{SheetFormat, SheetSettings, TitleField};
@@ -50,9 +51,8 @@ impl LiveBridge {
             // The project set, drawn here: only the in-process caller waits
             // for it, as a client's export is a job (review 2026-11-01 UI-100).
             let (started, job) = start_export(app, request, ui_busy)?;
-            let path = started.path.clone();
             let made = job.render(started.file_format, &AtomicBool::new(false));
-            return finish_export(app, started, made).map_err(|error| export_failed(&path, error));
+            return finish_export(app, started, made).map_err(export_failed);
         };
         Self::guard(app, &expected)?;
         Self::available(app, ui_busy)?;
@@ -96,6 +96,51 @@ pub(super) fn refuse_existing(path: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// The file `error` failed on because another program holds it open (a PDF
+/// viewer, a CAD program), so Windows refuses to replace it.
+fn held_open<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a Path> {
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    const ERROR_LOCK_VIOLATION: i32 = 33;
+    let mut next = Some(error);
+    while let Some(error) = next {
+        if let Some(ExportTransactionError::Io { path, cause }) =
+            error.downcast_ref::<ExportTransactionError>()
+            && cfg!(windows)
+            && matches!(
+                cause.raw_os_error(),
+                Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION)
+            )
+        {
+            return Some(path);
+        }
+        // An I/O error made of another error does not give it as its source.
+        next = match error
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::get_ref)
+        {
+            Some(inner) => Some(inner as &(dyn std::error::Error + 'static)),
+            None => error.source(),
+        };
+    }
+    None
+}
+
+/// The answer to a drawing that could not be written because of `error`; a
+/// file another program holds open is named, so the user can close it.
+fn write_failed(error: impl std::error::Error + Send + Sync + 'static) -> &'static str {
+    let Some(file) = held_open(&error).map(Path::to_path_buf) else {
+        return failed_because("drawings_write_failed", error);
+    };
+    failure(
+        "drawings_target_in_use",
+        format!(
+            "{} is open in another program (a PDF viewer or a CAD program), so it cannot be replaced; close it there and export again. Nothing was written; the file is as it was.",
+            file.display()
+        ),
+        json!({"path": file.display().to_string()}),
+    )
+}
+
 /// Drawing sheet `id` of the document as DXF, or that DXF as an AutoCAD
 /// 2018 DWG: exact views, hidden edges on their own layer.
 fn export_sheet(app: &KetchupApp, path: &str, id: DrawingSheetId) -> Result<Value, &'static str> {
@@ -107,11 +152,13 @@ fn export_sheet(app: &KetchupApp, path: &str, id: DrawingSheetId) -> Result<Valu
             json!({"path": path}),
         ));
     };
-    refuse_existing(path)?;
-    // Written only as a new file: one saved at the path while the sheet was
-    // projected is kept (review 2026-10-18 MCP-3).
+    // A file at the path is replaced, as the sheet is exported again after an
+    // edit (Měchenice MECH-2); one saved there while the sheet was projected
+    // is kept (review 2026-10-18 MCP-3).
+    let replacing = crate::app::drawing_sheet_export::drawing_sheet_target(Path::new(path))
+        .map_err(write_failed)?;
     let sheet = app
-        .write_drawing_sheet(id, Path::new(path), format, None)
+        .write_drawing_sheet(id, Path::new(path), format, replacing.as_deref())
         .map_err(|error| match error {
             DrawingSheetExportError::NotFound(_) => failure(
                 "drawing_sheet_not_found",
@@ -130,9 +177,7 @@ fn export_sheet(app: &KetchupApp, path: &str, id: DrawingSheetId) -> Result<Valu
                 failed_because("drawings_unavailable", error)
             }
             DrawingSheetExportError::Dwg(_) => failed_because("dwg_conversion_failed", error),
-            DrawingSheetExportError::Write(_) => refuse_existing(path)
-                .err()
-                .unwrap_or_else(|| failed_because("drawings_write_failed", error)),
+            DrawingSheetExportError::Write(_) => write_failed(error),
         })?;
     Ok(json!({
         "exported": true,
@@ -194,6 +239,8 @@ pub(super) use ketchup_mcp::path_policy::local_absolute_path;
 pub(super) struct StartedDrawings {
     pub(super) path: String,
     pub(super) file_format: SetFileFormat,
+    /// The files there the set may replace, taken before it is drawn.
+    targets: SetTargets,
     previous: SheetSettings,
     previously_unsaved: bool,
     /// The project the set is drawn from.
@@ -253,9 +300,6 @@ pub(super) fn start_export(
             json!({"path": path}),
         ));
     };
-    if file_format == SetFileFormat::Pdf {
-        refuse_existing(path)?;
-    }
     let format = format.as_deref().map(sheet_format).transpose()?;
     if app.exact.task.is_some() {
         return Err(failure(
@@ -277,6 +321,12 @@ pub(super) fn start_export(
             json!({}),
         ));
     }
+    // The set exported again after an edit replaces its files (Měchenice
+    // MECH-2): the PDF at the path, or the sheets of this project's earlier
+    // set; one saved there while the set is drawn is kept (review 2026-10-18
+    // MCP-3).
+    let document = app.document.current().document_id();
+    let targets = project_drawings_targets(target, file_format, document).map_err(export_failed)?;
     let previous = app.stored_sheet_settings().map_err(|reason| {
         failure(
             "drawings_unavailable",
@@ -289,9 +339,10 @@ pub(super) fn start_export(
     let mut started = StartedDrawings {
         path: path.to_owned(),
         file_format,
+        targets,
         previous: previous.clone(),
         previously_unsaved: app.drawings.unsaved,
-        document: app.document.current().document_id(),
+        document,
         kept: None,
     };
     let mut settings = previous;
@@ -305,7 +356,7 @@ pub(super) fn start_export(
         Ok(job) => Ok((started, job)),
         Err(error) => {
             started.undo(app);
-            Err(drawings_failed(error))
+            Err(export_failed(error))
         }
     }
 }
@@ -326,7 +377,7 @@ pub(super) fn finish_export(
             Path::new(&path),
             file_format,
             &files,
-            &SetTargets::default(),
+            &started.targets,
             started.document,
         )
         .map(|paths| ExportedSet { set, paths })
@@ -374,18 +425,9 @@ pub(super) fn finish_export(
     }))
 }
 
-/// The answer to a sheet that could not be written, its cause recorded.
-/// The answer to an export of the set to `path` that failed with `error`.
-pub(super) fn export_failed(path: &str, error: ProjectDrawingsError) -> &'static str {
-    match error {
-        ProjectDrawingsError::Write(_) => refuse_existing(path)
-            .err()
-            .unwrap_or_else(|| drawings_failed(error)),
-        error => drawings_failed(error),
-    }
-}
-
-fn drawings_failed(error: ProjectDrawingsError) -> &'static str {
+/// The answer to an export of the set that failed with `error`, its cause
+/// recorded.
+pub(super) fn export_failed(error: ProjectDrawingsError) -> &'static str {
     match error {
         ProjectDrawingsError::Drawing(
             error @ ketchup_manufacturing::project_drawings::ProjectDrawingError::DoesNotFit {
@@ -443,7 +485,7 @@ fn drawings_failed(error: ProjectDrawingsError) -> &'static str {
             json!({"part": part}),
         ),
         ProjectDrawingsError::Dwg(error) => failed_because("dwg_conversion_failed", error),
-        ProjectDrawingsError::Write(error) => failed_because("drawings_write_failed", error),
+        ProjectDrawingsError::Write(error) => write_failed(error),
     }
 }
 
@@ -476,13 +518,14 @@ mod tests {
     }
 
     #[test]
-    fn an_existing_file_is_never_replaced_and_its_settings_are_not_kept() {
+    fn a_failed_export_keeps_the_file_there_and_not_its_settings() {
         let directory = tempfile::tempdir().unwrap();
         let target = directory.path().join("sheet.pdf");
         std::fs::write(&target, b"user file").unwrap();
         let mut app = KetchupApp::new();
         let before = app.stored_sheet_settings().unwrap();
         let title = BTreeMap::from([(TitleField::Author, "AI".to_owned())]);
+        // The empty document has no exact solid to draw.
         assert_eq!(
             export(
                 &mut app,
@@ -491,7 +534,7 @@ mod tests {
                 title,
                 SheetRequest::default()
             ),
-            Err("drawings_target_exists")
+            Err("drawings_unavailable")
         );
         assert_eq!(std::fs::read(&target).unwrap(), b"user file");
         assert_eq!(app.stored_sheet_settings().unwrap(), before);
@@ -622,7 +665,7 @@ mod tests {
                 unreadable_reason,
             ),
         ] {
-            assert_eq!(drawings_failed(error), "drawings_unavailable");
+            assert_eq!(export_failed(error), "drawings_unavailable");
             let details = crate::live_bridge::take_error_details().unwrap_or_default();
             assert!(
                 details.to_string().contains(&cause),
@@ -642,7 +685,7 @@ mod tests {
             length: 240,
         };
         assert_eq!(
-            drawings_failed(ProjectDrawingsError::Drawing(refused.into())),
+            export_failed(ProjectDrawingsError::Drawing(refused.into())),
             "title_value_does_not_fit"
         );
         let answer = crate::live_bridge::take_error_details().unwrap_or_default();

@@ -178,6 +178,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Export to a new file name, or let the user export from the window, which asks before replacing.",
     ),
     entry(
+        "drawings_target_in_use",
+        Io,
+        "path",
+        "Another program holds the drawing file open (a PDF viewer or a CAD program), so it cannot be replaced; the reason names the file. Nothing was written and the file is as it was.",
+        "Ask the user to close the file in that program, then export again.",
+    ),
+    entry(
         "drawings_unavailable",
         Validation,
         "document",

@@ -1229,6 +1229,14 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert_eq!(names, ["drawing.svg"]);
+        // Měchenice MECH-3: nor does an export that is refused.
+        assert!(write_export_artifact_if_unchanged(&target, b"third", None).is_err());
+        let names: Vec<_> = std::fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["drawing.svg"]);
+        assert_eq!(std::fs::read(&target).unwrap(), b"second");
     }
 
     /// Removing the lock file must not let two exports in at once: one that
