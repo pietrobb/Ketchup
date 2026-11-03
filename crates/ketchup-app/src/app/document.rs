@@ -135,7 +135,7 @@ impl KetchupApp {
         let outliner_visible = self.panels.outliner_visible;
         let tags_visible = self.panels.tags_visible;
         let dimensions_visible = self.panels.dimensions_visible;
-        let manual_cad_panels_visible = self.panels.manual_cad_panels_visible;
+        let manual_cad_tools_visible = self.panels.manual_cad_tools_visible;
         let about_open = self.panels.about_open;
         let exact_worker_path = self.exact.worker_path.clone();
         let exact_worker_attempted = self.exact.worker_attempted;
@@ -157,7 +157,7 @@ impl KetchupApp {
         self.panels.outliner_visible = outliner_visible;
         self.panels.tags_visible = tags_visible;
         self.panels.dimensions_visible = dimensions_visible;
-        self.panels.manual_cad_panels_visible = manual_cad_panels_visible;
+        self.panels.manual_cad_tools_visible = manual_cad_tools_visible;
         self.panels.about_open = about_open;
         self.digest = self.catalog.text("digest-new-document");
     }

@@ -171,9 +171,18 @@ pub(crate) struct Panels {
     pub(crate) outliner_visible: bool,
     pub(crate) tags_visible: bool,
     pub(crate) dimensions_visible: bool,
-    pub(crate) manual_cad_panels_visible: bool,
+    pub(crate) manual_cad_tools_visible: bool,
     pub(crate) shortcuts_open: bool,
     pub(crate) about_open: bool,
+}
+
+/// The right dock's pages.
+#[derive(Default)]
+pub(crate) struct Dock {
+    /// The page the user picked; `None` lets the dock choose.
+    pub(crate) tab: Option<crate::DockTab>,
+    /// The program page brings the selected part's lines into view again.
+    pub(crate) reveal_program_lines: bool,
 }
 
 /// The command search field: typed text, highlighted result, focus request.

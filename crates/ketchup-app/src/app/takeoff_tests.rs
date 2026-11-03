@@ -72,6 +72,7 @@ fn takeoff_window_follows_layer_visibility() {
     );
     assert!(harness.query_all_by_label("obal").next().is_some());
 
+    crate::tests::shell::open_dock_tab(&mut harness, crate::DockTab::Layers);
     harness
         .get_by_role_and_label(Role::CheckBox, &concept_layer)
         .click();

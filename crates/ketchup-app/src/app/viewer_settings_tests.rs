@@ -381,6 +381,7 @@ fn inspector_note_field_stores_the_occurrence_note_without_editing_cad() {
     harness.run();
     harness.state_mut().selection.select_occurrence(root, false);
     harness.run();
+    crate::tests::shell::open_dock_tab(&mut harness, crate::DockTab::Views);
     let title = harness.state().catalog.text("viewer-notes-title");
     harness.get_by_label(&title).click();
     harness.run();

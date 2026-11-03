@@ -106,7 +106,7 @@ impl KetchupApp {
                         executable,
                         Duration::from_secs(30),
                     );
-                let _ = sender.send(validator_panel_report(&validation));
+                let _ = sender.send(validator_report(&validation));
                 repaint.request_repaint();
             });
         self.validator_panel.report = None;
@@ -193,7 +193,7 @@ mod tests {
 
     fn pending(app: &mut KetchupApp) -> (mpsc::Sender<ValidatorPanelReport>, ValidatorPanelReport) {
         let snapshot = app.document.current();
-        let report = validator_panel_report(&serde_json::json!({
+        let report = validator_report(&serde_json::json!({
             "revision": snapshot.revision_id(),
             "canonical_digest": snapshot.canonical_digest(),
             "state": "not_evaluated", "complete": false,
@@ -216,14 +216,13 @@ mod tests {
         let context = egui::Context::default();
         assert!(!app.start_validator_panel(&context));
         app.run_validator_panel();
-        assert!(app.validator_panel_report().is_none());
+        assert!(app.validator_report().is_none());
         let run = app.catalog.text("validators-run");
         let pending_label = app.catalog.text("validators-pending");
         let mut harness = Harness::new_state(
             |context, app: &mut KetchupApp| {
                 app.poll_validator_panel(context);
-                egui::CentralPanel::default()
-                    .show(context, |ui| app.show_validator_panel_content(ui));
+                egui::CentralPanel::default().show(context, |ui| app.show_validator_content(ui));
             },
             app,
         );
@@ -235,7 +234,7 @@ mod tests {
         harness.step();
         harness.step();
         assert!(!harness.state().validator_panel_pending());
-        let report = harness.state().validator_panel_report().unwrap();
+        let report = harness.state().validator_report().unwrap();
         assert!(!report.complete);
         assert!(report.findings.is_empty());
         assert_eq!(report.not_evaluated[0].1, "worker_unavailable");
@@ -268,7 +267,7 @@ mod tests {
             sender.send(report).unwrap();
             app.poll_validator_panel(&egui::Context::default());
             assert!(!app.validator_panel_pending());
-            assert!(app.validator_panel_report().is_none());
+            assert!(app.validator_report().is_none());
             assert_eq!(app.validator_panel.state.notice, Some("validators-stale"));
         }
     }
@@ -280,7 +279,7 @@ mod tests {
         drop(sender);
         app.poll_validator_panel(&egui::Context::default());
         assert!(!app.validator_panel_pending());
-        assert!(app.validator_panel_report().is_none());
+        assert!(app.validator_report().is_none());
         assert_eq!(
             app.validator_panel.state.notice,
             Some("validators-run-unavailable")
@@ -293,14 +292,14 @@ mod tests {
         let (sender, report) = pending(&mut app);
         sender.send(report).unwrap();
         app.poll_validator_panel(&egui::Context::default());
-        assert!(app.validator_panel_report().is_some());
+        assert!(app.validator_report().is_some());
         app.validator_panel
             .state
             .report_source
             .as_mut()
             .unwrap()
             .revision += 1;
-        assert!(app.validator_panel_report().is_none());
+        assert!(app.validator_report().is_none());
         app.poll_validator_panel(&egui::Context::default());
         assert!(app.validator_panel.report.is_none());
         assert_eq!(app.validator_panel.state.notice, Some("validators-stale"));

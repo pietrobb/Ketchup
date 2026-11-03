@@ -110,6 +110,7 @@ fn no_symbol_only_button_bypasses_icon_button() {
 #[test]
 fn layer_icon_buttons_explain_themselves_on_hover() {
     let mut harness = harness();
+    crate::tests::shell::open_dock_tab(&mut harness, crate::DockTab::Layers);
     for key in ["tags-hide-all", "tags-select-untagged", "scenes-add"] {
         let name = harness.state().catalog.text(key);
         harness.get_by_role_and_label(Role::Button, &name).hover();

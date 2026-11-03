@@ -4,8 +4,6 @@ use crate::*;
 
 impl KetchupApp {
     pub(crate) fn show_outliner(&mut self, ui: &mut egui::Ui) {
-        self.show_pocket_properties(ui);
-        self.show_classification_dimensions(ui);
         if self.panels.outliner_visible {
             let groups = self.outliner_groups();
             let entries = self.outliner_query();
@@ -130,23 +128,14 @@ impl KetchupApp {
             self.show_spaces_section(ui);
             self.show_dimensions_section(ui);
             self.show_joints_section(ui);
-            self.show_variants_section(ui);
         }
+        self.show_pocket_properties(ui);
+        self.show_classification_dimensions(ui);
     }
 
-    /// Whether the layers lead the dock: once the document has layers,
-    /// switching what is visible must not need scrolling past other sections.
-    pub(crate) fn layers_lead_dock(&self) -> bool {
-        self.document.current().tags().next().is_some()
-    }
-
-    /// Layers, saved views and the section plane, separated from the sections
-    /// below (`first`) or above it.
-    pub(crate) fn show_layers_section(&mut self, ui: &mut egui::Ui, first: bool) {
+    /// The layers, with what each holds and its visibility.
+    pub(crate) fn show_layers_section(&mut self, ui: &mut egui::Ui) {
         if self.panels.tags_visible {
-            if !first {
-                ui.separator();
-            }
             section_header(ui, self.palette(), &self.catalog.text("dock-tags"));
             ui.horizontal_wrapped(|ui| {
                 let create_enabled = self.can_begin_tag_creation(None);
@@ -356,11 +345,7 @@ impl KetchupApp {
                 self.command_button(ui, AppCommand::Hide);
                 self.command_button(ui, AppCommand::Unhide);
             });
-            self.saved_views_ui(ui);
-            self.section_ui(ui);
-            if first {
-                ui.separator();
-            }
+            ui.separator();
         }
     }
 }

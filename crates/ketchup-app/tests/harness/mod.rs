@@ -20,7 +20,7 @@ pub mod contract;
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use ketchup_app::dialogs::ScriptedFileDialogs;
-use ketchup_app::{AppCommand, KetchupApp};
+use ketchup_app::{AppCommand, DockTab, KetchupApp};
 use ketchup_assistant::sidecar::{
     AssistantCadDeletePolicy, AssistantCadEditOperation, AssistantCadEditProgram,
     AssistantCadEntitySelector, AssistantCadPartFeature, AssistantCadRotation,
@@ -215,7 +215,7 @@ impl Shell {
     fn build_at_size(mut app: KetchupApp, size: Vec2) -> Self {
         let turn = file_turn();
         // The product hides the manual CAD panels; most shell tests drive them.
-        app.set_manual_cad_panels_visible(true);
+        app.set_manual_cad_tools_visible(true);
         let mut harness = Harness::builder()
             .with_size(size)
             // Exact workers can legitimately request more than the default four
@@ -275,6 +275,42 @@ impl Shell {
     /// Run frames until the shell stops asking for a repaint.
     pub fn settle(&mut self) {
         self.run_idle();
+    }
+
+    /// The dock shows one tab at a time. Like a user looking for a control,
+    /// try the open tab first, then the others; stay on the tab that has it,
+    /// or go back to the open one when none does. An open menu or list is
+    /// looked at as it is: switching tabs would close it.
+    fn reveal(&mut self, found: impl Fn(&Harness<'static, KetchupApp>) -> bool) -> bool {
+        if found(&self.harness) {
+            return true;
+        }
+        if egui::Popup::is_any_open(&self.harness.ctx) {
+            return false;
+        }
+        let open = self.app().dock_tab();
+        for tab in DockTab::ALL.into_iter().filter(|tab| *tab != open) {
+            self.show_dock_tab(tab);
+            if found(&self.harness) {
+                return true;
+            }
+        }
+        self.show_dock_tab(open);
+        false
+    }
+
+    pub fn show_dock_tab(&mut self, tab: DockTab) {
+        self.app_mut().set_dock_tab(tab);
+        self.run_idle();
+    }
+
+    fn reveal_role_and_label(&mut self, role: Role, label: &str) -> bool {
+        self.reveal(|harness| {
+            harness
+                .query_all_by_role_and_label(role, label)
+                .next()
+                .is_some()
+        })
     }
 
     /// Like `Harness::run`, but a shell still repainting for background work (an exact
@@ -462,6 +498,7 @@ impl Shell {
 
     /// Move keyboard focus to a labeled text input through AccessKit.
     pub fn focus_text_input(&mut self, label: &str) {
+        self.reveal_role_and_label(Role::TextInput, label);
         self.harness
             .get_by_role_and_label(Role::TextInput, label)
             .focus();
@@ -469,6 +506,7 @@ impl Shell {
     }
 
     pub fn focus_text_input_once(&mut self, label: &str) {
+        self.reveal_role_and_label(Role::TextInput, label);
         self.harness
             .get_by_role_and_label(Role::TextInput, label)
             .focus();
@@ -476,6 +514,7 @@ impl Shell {
     }
 
     pub fn focus_combo_box(&mut self, label: &str) {
+        self.reveal_role_and_label(Role::ComboBox, label);
         self.harness
             .get_by_role_and_label(Role::ComboBox, label)
             .focus();
@@ -483,24 +522,24 @@ impl Shell {
     }
 
     /// Whether a button with `label` is marked selected (a highlighted row).
-    pub fn button_is_selected(&self, label: &str) -> bool {
+    pub fn button_is_selected(&mut self, label: &str) -> bool {
+        self.reveal_role_and_label(Role::Button, label);
         self.harness
             .query_all_by_role_and_label(Role::Button, label)
             .any(|node| node.accesskit_node().toggled() == Some(egui::accesskit::Toggled::True))
     }
 
     /// Whether a button with `label` exists and takes a click.
-    pub fn button_is_enabled(&self, label: &str) -> bool {
+    pub fn button_is_enabled(&mut self, label: &str) -> bool {
+        self.reveal_role_and_label(Role::Button, label);
         self.harness
             .query_all_by_role_and_label(Role::Button, label)
             .any(|node| !node.accesskit_node().is_disabled())
     }
 
-    pub fn has_role_and_label(&self, role: Role, label: &str) -> bool {
-        self.harness
-            .query_all_by_role_and_label(role, label)
-            .next()
-            .is_some()
+    /// Whether the dock (on any tab) or the window offers a `role` named `label`.
+    pub fn has_role_and_label(&mut self, role: Role, label: &str) -> bool {
+        self.reveal_role_and_label(role, label)
     }
 
     pub fn click_role_and_label(&mut self, role: Role, label: &str) {
@@ -566,16 +605,19 @@ impl Shell {
             .collect()
     }
 
-    /// Whether assistive technology can currently see a node with `label`.
-    pub fn has_visible_label(&self, label: &str) -> bool {
-        self.harness
-            .query_all_by(|node| {
-                !node.is_hidden()
-                    && (node.label().as_deref() == Some(label)
-                        || node.value().as_deref() == Some(label))
-            })
-            .next()
-            .is_some()
+    /// Whether assistive technology can see a node with `label`, on the
+    /// dock tab that has it.
+    pub fn has_visible_label(&mut self, label: &str) -> bool {
+        self.reveal(|harness| {
+            harness
+                .query_all_by(|node| {
+                    !node.is_hidden()
+                        && (node.label().as_deref() == Some(label)
+                            || node.value().as_deref() == Some(label))
+                })
+                .next()
+                .is_some()
+        })
     }
 
     /// Click the control that dispatches `command`.
@@ -635,6 +677,7 @@ impl Shell {
     /// then land on nothing. Screen-reader activation is what a keyboard or
     /// AT user does, and it reaches the control wherever it sits.
     pub fn activate_role_and_label(&mut self, role: Role, label: &str) {
+        self.reveal_role_and_label(role, label);
         self.gap();
         self.harness
             .get_by_role_and_label(role, label)
@@ -643,6 +686,7 @@ impl Shell {
     }
 
     pub fn click_button_label(&mut self, label: &str) {
+        self.reveal_role_and_label(Role::Button, label);
         self.gap();
         self.harness
             .get_by_role_and_label(Role::Button, label)
@@ -653,6 +697,7 @@ impl Shell {
     /// Click a button and run the one frame that handles the click, so a test
     /// sees the background work it starts before that work can finish.
     pub fn click_button_label_once(&mut self, label: &str) {
+        self.reveal_role_and_label(Role::Button, label);
         self.gap();
         self.harness
             .get_by_role_and_label(Role::Button, label)
@@ -682,6 +727,7 @@ impl Shell {
 
     /// Click the outliner row whose accessible name is `label`.
     pub fn click_row(&mut self, label: &str) {
+        self.reveal_role_and_label(Role::Button, label);
         self.gap();
         self.harness
             .get_by_role_and_label(Role::Button, label)
@@ -691,6 +737,7 @@ impl Shell {
 
     /// Double-click the outliner row whose accessible name is `label`.
     pub fn double_click_row(&mut self, label: &str) {
+        self.reveal_role_and_label(Role::Button, label);
         let position = self
             .harness
             .get_by_role_and_label(Role::Button, label)
@@ -701,6 +748,7 @@ impl Shell {
 
     /// Click the outliner row while holding keyboard modifiers.
     pub fn click_row_with(&mut self, label: &str, modifiers: Modifiers) {
+        self.reveal_role_and_label(Role::Button, label);
         let position = self
             .harness
             .get_by_role_and_label(Role::Button, label)

@@ -114,7 +114,11 @@ fn the_dock_shows_measures_only_while_something_is_selected() {
         .with_size(Vec2::new(1600.0, 1000.0))
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
     harness.run_steps(2);
-    let title = harness.state().catalog.text("selection-measures-title");
+    let title = harness
+        .state()
+        .catalog
+        .text("selection-measures-title")
+        .to_uppercase();
     assert!(harness.query_by_label(&title).is_none());
     harness.state_mut().selection.select_occurrence(a, false);
     harness.run_steps(2);

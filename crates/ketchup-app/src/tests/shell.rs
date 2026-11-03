@@ -23,6 +23,21 @@ pub(crate) fn step_until(
     }
 }
 
+/// Clicks a tab of the right dock by its localized name, as a user would,
+/// then lets the double-click time pass so the next click is a single one.
+pub(crate) fn open_dock_tab(harness: &mut Harness<'_, KetchupApp>, tab: crate::DockTab) {
+    let name = harness.state().catalog.text(tab.label_key());
+    harness.get_by_label(&name).click();
+    let double_click = harness
+        .ctx
+        .options(|options| options.input_options.max_double_click_delay);
+    let started = harness.ctx.input(|input| input.time);
+    while harness.ctx.input(|input| input.time) - started <= double_click {
+        harness.step();
+    }
+    harness.run_steps(1);
+}
+
 /// How long a test may hold work before a frame still waiting for it counts as
 /// hung: far longer than any frame, far shorter than a CI job's timeout.
 const HANG_PATIENCE: Duration = Duration::from_secs(120);

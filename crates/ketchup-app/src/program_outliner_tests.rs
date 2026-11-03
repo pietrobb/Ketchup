@@ -45,6 +45,7 @@ fn component_tree_shows_local_group_hierarchy_and_selects_only_its_instance() {
         .with_step_dt(1.0 / 60.0)
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
     harness.run_steps(3);
+    crate::tests::shell::open_dock_tab(&mut harness, crate::DockTab::Layers);
     assert!(
         harness.query_by_label(&wrapper).is_some(),
         "wrapper group missing"
@@ -122,6 +123,7 @@ fn grounding_a_local_group_preserves_headless_selection_and_sibling_geometry() {
         .with_size(Vec2::new(1600., 1800.))
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
     harness.run_steps(3);
+    crate::tests::shell::open_dock_tab(&mut harness, crate::DockTab::Layers);
     harness.get_by_label(&inner).click();
     harness.run_steps(3);
     let selected = harness.state().selected_instance_paths();
@@ -167,6 +169,7 @@ fn posed_component_still_selects_its_member_in_headless_outliner() {
         .with_step_dt(1.0 / 60.0)
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
     harness.run_steps(3);
+    crate::tests::shell::open_dock_tab(&mut harness, crate::DockTab::Layers);
     harness.get_by_label(&inner).click();
     harness.run_steps(3);
     let selected = harness.state().selected_instance_paths();
@@ -218,6 +221,7 @@ fn internal_shared_motion_keeps_local_group_selection_and_world_placement() {
         .with_step_dt(1. / 60.)
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
     harness.run_steps(3);
+    crate::tests::shell::open_dock_tab(&mut harness, crate::DockTab::Layers);
     harness.get_by_label(&inner).click();
     harness.run_steps(3);
     let selected = harness.state().selected_instance_paths();
@@ -281,6 +285,7 @@ fn continued_shared_member_is_named_and_selected_in_the_outliner() {
         .with_step_dt(1.0 / 60.0)
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
     harness.run_steps(3);
+    crate::tests::shell::open_dock_tab(&mut harness, crate::DockTab::Layers);
     assert!(harness.query_by_label(&old_label).is_none());
     harness.get_by_label(&new_label).click();
     harness.run_steps(3);
@@ -326,6 +331,7 @@ fn nested_component_context_selects_only_leaves_of_the_chosen_inner_copy() {
         .with_step_dt(1.0 / 60.0)
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
     harness.run_steps(3);
+    crate::tests::shell::open_dock_tab(&mut harness, crate::DockTab::Layers);
     assert!(harness.query_by_label(&pair).is_none());
     assert!(harness.get_by_label(&label).rect().max.y < 1800.0);
     harness.get_by_label(&label).click();

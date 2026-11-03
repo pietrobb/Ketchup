@@ -994,7 +994,7 @@ impl KetchupApp {
 
     /// The findings of the last manual validator run, if one has been made.
     #[must_use]
-    pub fn validator_panel_report(&self) -> Option<&ValidatorPanelReport> {
+    pub fn validator_report(&self) -> Option<&ValidatorPanelReport> {
         self.validator_panel
             .state
             .report_source
@@ -1022,18 +1022,11 @@ impl KetchupApp {
         self.validator_panel.state.report_source =
             Some(validator_ui::ValidatorSnapshot::new(&snapshot));
         self.validator_panel.state.notice = None;
-        self.validator_panel.report = Some(validator_panel_report(&validation));
+        self.validator_panel.report = Some(validator_report(&validation));
     }
 
-    pub(crate) fn show_validator_panel(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new(self.catalog.text("validators-title"))
-            .id_salt("validator-panel")
-            .default_open(false)
-            .show(ui, |ui| self.show_validator_panel_content(ui));
-        ui.separator();
-    }
-
-    pub(crate) fn show_validator_panel_content(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn show_validator_content(&mut self, ui: &mut egui::Ui) {
+        section_header(ui, self.palette(), &self.catalog.text("validators-title"));
         for validator in ASSISTANT_VALIDATOR_IDS {
             let mut enabled = self.validator_panel.selection.contains(validator);
             let label = self.catalog.text(&format!("validator-{validator}-name"));
@@ -1069,7 +1062,7 @@ impl KetchupApp {
         if let Some(notice) = self.validator_panel.state.notice {
             ui.label(self.catalog.text(notice));
         }
-        let Some(report) = self.validator_panel_report() else {
+        let Some(report) = self.validator_report() else {
             if !self.validator_panel_pending() && self.validator_panel.state.notice.is_none() {
                 ui.label(self.catalog.text("validators-not-run"));
             }

@@ -173,6 +173,7 @@ mod validator_ui;
 use validator_ui::validator_finding_parts;
 mod view_settings;
 mod viewport_feedback;
+pub use app::dock::DockTab;
 pub use face_workflow_ui::HeadlessFaceWorkflowFailure;
 pub use helix_ui::{AxisSpec, HelixHandedness, HelixToolParameters, helix_segments};
 pub use native_document_inspection::{
@@ -274,7 +275,7 @@ pub struct ValidatorPanelReport {
     pub not_evaluated: Vec<(String, String)>,
 }
 
-fn validator_panel_report(validation: &serde_json::Value) -> ValidatorPanelReport {
+fn validator_report(validation: &serde_json::Value) -> ValidatorPanelReport {
     let executed = ASSISTANT_VALIDATOR_IDS
         .into_iter()
         .filter(|validator| {
@@ -2119,6 +2120,7 @@ pub struct KetchupApp {
     hover: app_state::HoverState,
     active_tool: ActiveTool,
     panels: app_state::Panels,
+    dock: app_state::Dock,
     command_search: app_state::CommandSearch,
     takeoff: app_state::TakeoffState,
     drawings: app_state::DrawingsState,
@@ -2364,8 +2366,6 @@ mod mesh_snapping_tests;
 mod nested_transform_tests;
 #[cfg(test)]
 mod planar_offset_tests;
-#[cfg(test)]
-mod program_source_ui_tests;
 #[cfg(test)]
 mod program_variants_ui_tests;
 #[cfg(test)]

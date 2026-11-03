@@ -273,7 +273,7 @@ fn clearance_findings(harness: &mut Shell) -> Vec<ValidatorPanelFinding> {
     app.validator_panel.selection = BTreeSet::from(["clearance_occupancy"]);
     app.run_validator_panel();
     harness.run_steps(2);
-    let report = harness.state().validator_panel_report();
+    let report = harness.state().validator_report();
     report.expect("a report on this revision").findings.clone()
 }
 
@@ -296,9 +296,7 @@ fn a_clearance_finding_shows_the_part_and_the_volume_in_its_way() {
         (finding.occurrences.as_slice(), finding.clearance_volume),
         ([board].as_slice(), Some(ClearanceVolumeId(2)))
     );
-    let title = harness.state().catalog.text("validators-title");
-    harness.get_by_role_and_label(Role::Button, &title).click();
-    harness.run_steps(2);
+    crate::tests::shell::open_dock_tab(&mut harness, crate::DockTab::Checks);
     click_row(&mut harness, "clearance.occupied");
     assert_eq!(
         harness.state().selected_instance_paths(),
@@ -317,14 +315,15 @@ fn a_clearance_finding_shows_the_part_and_the_volume_in_its_way() {
         digest
     );
 
-    // The validation panel stays open: the dock scrolls the fields into view.
+    // The picked volume's fields are on the Layers page.
+    crate::tests::shell::open_dock_tab(&mut harness, crate::DockTab::Layers);
     retype(&mut harness, "spaces-field-position", Some("Y"), "1000");
     click_button(&mut harness, "spaces-apply");
     assert_ne!(
         harness.state().document.current().canonical_digest(),
         digest
     );
-    assert!(harness.state().validator_panel_report().is_none());
+    assert!(harness.state().validator_report().is_none());
     assert_eq!(clearance_findings(&mut harness), Vec::new());
 
     undo(&mut harness);
@@ -343,12 +342,9 @@ fn delete_takes_the_selected_part_before_the_picked_volume() {
     let mut harness = harness();
     let digest = harness.state().document.current().canonical_digest();
     clearance_findings(&mut harness);
-    let title = harness.state().catalog.text("validators-title");
-    harness.get_by_role_and_label(Role::Button, &title).click();
-    harness.run_steps(2);
+    crate::tests::shell::open_dock_tab(&mut harness, crate::DockTab::Checks);
     click_row(&mut harness, "clearance.occupied");
-    harness.get_by_role_and_label(Role::Button, &title).click();
-    harness.run_steps(2);
+    crate::tests::shell::open_dock_tab(&mut harness, crate::DockTab::Layers);
     assert_eq!(harness.state().selected_instance_paths().len(), 1);
     assert!(picked_box(&harness).is_some());
 

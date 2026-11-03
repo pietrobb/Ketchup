@@ -13,6 +13,7 @@ pub(crate) mod dimensions_ui;
 #[cfg(test)]
 #[path = "app/dimensions_ui_tests.rs"]
 mod dimensions_ui_tests;
+pub(crate) mod dock;
 mod document;
 pub(crate) mod draft;
 mod drawing;

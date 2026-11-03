@@ -124,7 +124,7 @@ fn run_validators(shell: &mut Shell) -> ValidatorPanelReport {
     }
     shell
         .app()
-        .validator_panel_report()
+        .validator_report()
         .expect("running the panel must produce a report")
         .clone()
 }
