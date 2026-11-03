@@ -1,11 +1,16 @@
 //! MCP over stdio: one JSON-RPC 2.0 message per line in each direction.
-use crate::{discovery, schema, tools::Tools};
+use crate::{
+    bridge::Cancel,
+    discovery, schema,
+    tools::{ToolOutput, Tools},
+};
 use serde_json::{Map, Value, json};
 use std::{
-    borrow::BorrowMut,
+    borrow::{Borrow, BorrowMut},
+    collections::HashMap,
     io::{self, BufRead, Write},
     path::PathBuf,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
     thread,
 };
 
@@ -17,9 +22,9 @@ const MAX_LINE_BYTES: usize = 32 * 1024 * 1024;
 
 /// Serves MCP until stdin closes. `app_executable` starts new windows for `open_window`.
 pub fn serve_stdio(app_executable: Option<PathBuf>) -> io::Result<()> {
-    let tools = Mutex::new(Tools::new(app_executable, discovery::default_root()));
+    let session = Session::new(Tools::new(app_executable, discovery::default_root()));
     serve(io::stdin().lock(), io::stdout(), move |message| {
-        handle(&tools, message)
+        handle(&session, message)
     })
 }
 
@@ -126,9 +131,80 @@ fn read_line(input: &mut impl BufRead) -> io::Result<Option<Option<Vec<u8>>>> {
     Ok(read.then_some((!oversized).then_some(line)))
 }
 
+/// The tools and the tool calls in progress, shared by the threads that
+/// answer messages.
+pub(crate) struct Session<T> {
+    tools: Mutex<T>,
+    cancel: Cancel,
+    calls: Mutex<Calls>,
+}
+
+/// Tool calls waiting for the tools or running on them.
+#[derive(Default)]
+struct Calls {
+    /// By request id: whether the client cancelled the call.
+    cancelled: HashMap<String, bool>,
+    running: Option<String>,
+}
+
+impl<T: BorrowMut<Tools>> Session<T> {
+    pub(crate) fn new(tools: T) -> Self {
+        Self {
+            cancel: Borrow::<Tools>::borrow(&tools).cancel(),
+            tools: Mutex::new(tools),
+            calls: Mutex::new(Calls::default()),
+        }
+    }
+
+    fn calls(&self) -> MutexGuard<'_, Calls> {
+        self.calls.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Runs one tool call when its turn comes; `None` when the client
+    /// cancelled it meanwhile, which then gets no reply.
+    fn call(&self, id: &Value, name: &str, arguments: Map<String, Value>) -> Option<ToolOutput> {
+        let key = id.to_string();
+        self.calls().cancelled.insert(key.clone(), false);
+        let mut tools = self.tools.lock().unwrap_or_else(PoisonError::into_inner);
+        {
+            let mut calls = self.calls();
+            if calls.cancelled.get(&key) == Some(&true) {
+                calls.cancelled.remove(&key);
+                return None;
+            }
+            self.cancel.clear();
+            calls.running = Some(key.clone());
+        }
+        let output = BorrowMut::<Tools>::borrow_mut(&mut *tools).call(name, arguments);
+        let mut calls = self.calls();
+        calls.running = None;
+        (calls.cancelled.remove(&key) != Some(true)).then_some(output)
+    }
+
+    /// `notifications/cancelled`: the call stops waiting for the window, or
+    /// is not started when still waiting for its turn.
+    fn cancelled(&self, params: &Value) {
+        let key = params["requestId"].to_string();
+        let mut calls = self.calls();
+        let Some(cancelled) = calls.cancelled.get_mut(&key) else {
+            return;
+        };
+        *cancelled = true;
+        if calls.running.as_ref() == Some(&key)
+            && let Err(error) = self.cancel.cancel()
+        {
+            eprintln!("ketchup-mcp: the cancelled call {key} still waits for the window: {error}");
+        }
+    }
+}
+
 /// The reply to one message; notifications get none. Tool calls take turns
-/// on `tools`; every other request is answered without waiting for them.
-pub(crate) fn handle(tools: &Mutex<impl BorrowMut<Tools>>, message: Value) -> Option<Value> {
+/// on the tools; every other request is answered without waiting for them.
+pub(crate) fn handle(session: &Session<impl BorrowMut<Tools>>, message: Value) -> Option<Value> {
+    if message["method"] == "notifications/cancelled" {
+        session.cancelled(&message["params"]);
+        return None;
+    }
     let id = message.get("id").cloned()?;
     let Some(method) = message.get("method").and_then(Value::as_str) else {
         return Some(failure(id, -32600, "a request needs a method"));
@@ -147,8 +223,7 @@ pub(crate) fn handle(tools: &Mutex<impl BorrowMut<Tools>>, message: Value) -> Op
                 Some(Value::Object(arguments)) => arguments.clone(),
                 Some(_) => return Some(failure(id, -32602, "arguments must be an object")),
             };
-            let mut tools = tools.lock().unwrap_or_else(PoisonError::into_inner);
-            let output = BorrowMut::<Tools>::borrow_mut(&mut *tools).call(name, arguments);
+            let output = session.call(&id, name, arguments)?;
             json!({"content": output.content, "isError": output.is_error})
         }
         _ => return Some(failure(id, -32601, &format!("method not found: {method}"))),

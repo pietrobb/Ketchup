@@ -4,7 +4,7 @@
 //! (`reason`, `fix_hint`); this layer only routes, renames a few arguments and
 //! keeps one connection to the attached window.
 use crate::{
-    bridge::{BridgeError, Connection, MAX_REQUEST_BYTES, Reply},
+    bridge::{BridgeError, Cancel, Connection, MAX_REQUEST_BYTES, Reply},
     discovery::{self, Window},
     docs, stage,
 };
@@ -178,6 +178,8 @@ pub struct Tools {
     window_id: Option<String>,
     /// Another client took that window over; only connect or open_window ends this.
     taken_over: bool,
+    /// Stops the window request of a call the client cancelled.
+    cancel: Cancel,
 }
 
 impl Tools {
@@ -188,7 +190,14 @@ impl Tools {
             attached: None,
             window_id: None,
             taken_over: false,
+            cancel: Cancel::default(),
         }
+    }
+
+    /// Cancels the call in progress from another thread; cleared by the
+    /// caller before each call.
+    pub fn cancel(&self) -> Cancel {
+        self.cancel.clone()
     }
 
     pub fn call(&mut self, name: &str, mut arguments: Map<String, Value>) -> ToolOutput {
@@ -722,7 +731,19 @@ impl Tools {
             ));
         };
         args.insert("method".into(), method.into());
-        match attached.connection.request(Value::Object(args), wait) {
+        let armed = self.cancel.arm(&attached.connection);
+        let sent = match armed {
+            Ok(true) => attached.connection.request(Value::Object(args), wait),
+            Ok(false) => {
+                return Err(ToolError::new(
+                    "cancelled",
+                    "The client cancelled this call; it was not sent to the window.",
+                ));
+            }
+            Err(error) => Err(BridgeError::Closed(error)),
+        };
+        self.cancel.disarm();
+        match sent {
             Ok(reply) => Ok(reply),
             Err(BridgeError::TooLarge { bytes }) => Err(ToolError::new(
                 "request_too_large",

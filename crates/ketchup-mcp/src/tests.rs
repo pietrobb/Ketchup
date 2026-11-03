@@ -2,7 +2,10 @@
 //! bridge on loopback that answer like Kečup and record what they received.
 #[path = "measurement_tests.rs"]
 mod measurement;
-use crate::{server::handle, tools::Tools};
+use crate::{
+    server::{Session, handle},
+    tools::Tools,
+};
 use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -17,7 +20,7 @@ fn list_validators_is_discoverable_read_only_and_routes_to_the_host() {
     let received = stand_in_window(root.path());
     let mut tools = Tools::new(None, Some(root.path().to_owned()));
     let listed = handle(
-        &std::sync::Mutex::new(&mut tools),
+        &Session::new(&mut tools),
         json!({"jsonrpc":"2.0", "id":1, "method":"tools/list"}),
     )
     .unwrap();
@@ -655,6 +658,8 @@ enum Ending {
     SupersededIdle,
     /// Just closes, like a window that ends the connection for another reason.
     Close,
+    /// Never answers the second request; the connection ends when the client leaves.
+    Silent,
 }
 
 /// A window `instance` that ends its successive connections as `endings` say.
@@ -733,6 +738,12 @@ fn scripted_window(
                 }
                 Ending::SupersededIdle => frame(&mut stream, superseded(json!(0))),
                 Ending::Close => {}
+                Ending::Silent => {
+                    read_id(&mut stream);
+                    events.send("waiting").expect("the test listens");
+                    let after = stream.read_to_end(&mut Vec::new()).map_or(0, |bytes| bytes);
+                    assert_eq!(after, 0, "the client sends nothing more");
+                }
             }
             drop(stream);
             let _ = events.send("ended");
@@ -781,6 +792,43 @@ fn a_taken_over_window_is_not_reconnected_silently() {
     let message = idle["message"].as_str().unwrap();
     assert!(message.contains("was not sent"), "{message}");
     assert!(events.try_recv().is_err(), "no third attach");
+}
+
+/// MECH-1: a client that gave up on a tool call (Codex stops waiting after
+/// 60 s) sends notifications/cancelled. The server stopped waiting for the
+/// window only after the call's whole wait, up to 15 minutes, and the window
+/// went on working for nobody. Now the call ends at once without a reply, and
+/// its connection ends, which tells the window to stop the job.
+#[test]
+fn a_cancelled_call_stops_waiting_and_lets_the_window_go() {
+    let root = tempfile::tempdir().unwrap();
+    let events = scripted_window(root.path(), INSTANCE, vec![Ending::Silent]);
+    let session = std::sync::Arc::new(Session::new(Tools::new(None, Some(root.path().to_owned()))));
+    let status = |id: u64| {
+        json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+               "params": {"name": "inspect", "arguments": {"action": "status"}}})
+    };
+    assert_eq!(
+        handle(&session, status(1)).unwrap()["result"]["isError"],
+        false
+    );
+    assert_eq!(events.recv().unwrap(), "attach");
+    let (send_reply, reply) = mpsc::channel();
+    let waiting = std::sync::Arc::clone(&session);
+    std::thread::spawn(move || send_reply.send(handle(&waiting, status(7))));
+    assert_eq!(events.recv().unwrap(), "waiting");
+    let cancel = json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                        "params": {"requestId": 7, "reason": "timed out"}});
+    assert!(handle(&session, cancel).is_none());
+    let reply = reply
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the cancelled call ends within 5 s");
+    assert!(reply.is_none(), "a cancelled call gets no reply: {reply:?}");
+    assert_eq!(
+        events.recv_timeout(std::time::Duration::from_secs(5)),
+        Ok("ended"),
+        "the window sees the connection end"
+    );
 }
 
 /// MCP-2: after its window closed, the server never moves to another window.
@@ -845,7 +893,7 @@ fn open_window_refuses_a_document_named_through_a_share_or_device_prefix() {
 fn call(tools: &mut Tools, name: &str, arguments: Value) -> Value {
     let request = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                          "params": {"name": name, "arguments": arguments}});
-    handle(&std::sync::Mutex::new(tools), request).unwrap()["result"].clone()
+    handle(&Session::new(tools), request).unwrap()["result"].clone()
 }
 
 fn text(result: &Value) -> Value {
@@ -854,7 +902,7 @@ fn text(result: &Value) -> Value {
 
 #[test]
 fn a_client_initializes_and_lists_every_tool() {
-    let tools = std::sync::Mutex::new(Tools::new(None, None));
+    let tools = Session::new(Tools::new(None, None));
     let initialized = handle(
         &tools,
         json!({"jsonrpc": "2.0", "id": 0, "method": "initialize",

@@ -6,7 +6,8 @@
 use serde_json::{Value, json};
 use std::{
     io::{self, Read, Write},
-    net::{SocketAddr, TcpStream},
+    net::{Shutdown, SocketAddr, TcpStream},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::Duration,
 };
 
@@ -55,6 +56,55 @@ pub enum BridgeError {
     Superseded {
         sent: bool,
     },
+}
+
+/// Ends, from another thread, the window connection of a tool call the client
+/// cancelled: the call's wait for the window fails at once, and the window,
+/// seeing the connection end, stops the job (MECH-1).
+#[derive(Clone, Default)]
+pub struct Cancel(Arc<Mutex<Armed>>);
+
+#[derive(Default)]
+struct Armed {
+    cancelled: bool,
+    /// The connection of the request being waited for.
+    stream: Option<TcpStream>,
+}
+
+impl Cancel {
+    /// Cancels the request being waited for, or the next one before it is sent.
+    pub fn cancel(&self) -> io::Result<()> {
+        let mut armed = self.armed();
+        armed.cancelled = true;
+        match armed.stream.take() {
+            Some(stream) => stream.shutdown(Shutdown::Both),
+            None => Ok(()),
+        }
+    }
+
+    /// A new tool call starts, not cancelled.
+    pub fn clear(&self) {
+        *self.armed() = Armed::default();
+    }
+
+    /// Lets [`Self::cancel`] end `connection` until [`Self::disarm`]; false
+    /// when the call was cancelled already and the request must not be sent.
+    pub fn arm(&self, connection: &Connection) -> io::Result<bool> {
+        let mut armed = self.armed();
+        if armed.cancelled {
+            return Ok(false);
+        }
+        armed.stream = Some(connection.stream.try_clone()?);
+        Ok(true)
+    }
+
+    pub fn disarm(&self) {
+        self.armed().stream = None;
+    }
+
+    fn armed(&self) -> MutexGuard<'_, Armed> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 impl Connection {
