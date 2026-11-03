@@ -50,9 +50,11 @@ pub enum DxfEditRefusal {
     /// The source drawing is not the one the underlay was read from: an entity of it is
     /// missing or of another kind.
     NotTheSource,
-    /// The source has every entity the underlay was read from, but they read as other
-    /// lines: changed in the file since, or read differently by this Kečup than by the
-    /// one that imported it (review 2026-10-29 CD-64).
+    /// The source has every entity the underlay was read from, but one moved, stretched
+    /// or copied, or every one, reads as other lines: changed in the file since, or read
+    /// differently by this Kečup than by the one that imported it (review 2026-10-29
+    /// CD-64). Entities not edited that read differently are written as the file has them
+    /// (review 2026-11-02 CD-120).
     ReadDifferently,
     /// The source's groups do not pair up into sections and entities.
     Malformed,
@@ -97,10 +99,11 @@ impl fmt::Display for DxfEditRefusal {
                 "the file is not the drawing the underlay was read from: its entities differ",
             ),
             Self::ReadDifferently => formatter.write_str(
-                "the file has the entities the underlay was read from, but they read as other \
-                 lines now: either they were changed in the file since it was imported, or \
-                 this Kečup reads drawings differently from the one that imported it; import \
-                 the drawing again to write it with changes",
+                "the file has the entities the underlay was read from, but the ones moved or \
+                 copied in Kečup, or all of them, read as other lines now: either they were \
+                 changed in the file since it was imported, or this Kečup reads drawings \
+                 differently from the one that imported it; import the drawing again to \
+                 write it with changes",
             ),
             Self::Malformed => formatter
                 .write_str("the source drawing's groups do not pair up into sections and entities"),
@@ -136,7 +139,7 @@ pub fn write_edited_dxf(
 ) -> Result<Vec<u8>, EditedDxfError> {
     // The read is let go before the drawing is parsed, so the two are not held at once
     // (review 2026-10-29 CD-63).
-    let frame = frame_of(source, options, lines)?;
+    let frame = frame_of(source, options, lines, edits)?;
     let encoding = text_encoding(&mut Cursor::new(source))
         .map_err(EditedDxfError::Read)?
         .map(|(encoding, ..)| encoding);
@@ -154,20 +157,21 @@ pub fn write_edited_dxf(
     drawing.write(lines, edits, &frame)
 }
 
-/// How `lines` lie against the units of `source`, when reading it gives them: as `options`
-/// read it, or for a drawing that declares no unit, in the unit its lines are scaled by
-/// against that read. At most two reads, not one in each unit (review 2026-10-29 CD-63).
+/// How `lines` lie against the units of `source`, when reading it gives them (or, for
+/// `edits`, binds them again: [`rebinds`]): as `options` read it, or for a drawing that
+/// declares no unit, in the unit its lines are scaled by against that read. At most two reads, not one in each unit (review 2026-10-29 CD-63).
 fn frame_of(
     source: &[u8],
     options: DxfImportOptions,
     lines: &UnderlayLines,
+    edits: &UnderlayEdits,
 ) -> Result<Option<Frame>, EditedDxfError> {
     let read = read_dxf_underlay(source, options).map_err(EditedDxfError::Read)?;
     let frame = |read: &super::underlay::DxfUnderlay| Frame {
         mm_per_unit: read.units.millimetres_per_unit(),
         offset_mm: read.offset_mm,
     };
-    if read.lines == *lines {
+    if read.lines == *lines || rebinds(&read.lines, lines, edits) {
         return Ok(Some(frame(&read)));
     }
     if read.units.authority() != ImportUnitAuthority::UserDeclared {
@@ -183,6 +187,80 @@ fn frame_of(
     )
     .map_err(EditedDxfError::Read)?;
     Ok((other.lines == *lines).then(|| frame(&other)))
+}
+
+/// Whether `edits` of `lines`, read from a drawing by an earlier Kečup, are bound again to
+/// that drawing as this Kečup reads it, `read`, though some entities read as other lines
+/// now (review 2026-11-02 CD-120): each top-level object of `lines` is an object of `read`
+/// of its handle and kind (the n-th of them, in a drawing without handles), so the edits
+/// name the same entities; each object moved, stretched or copied lies where it lay, so
+/// an edit does to it what was seen; and at least one object does, so both lie alike
+/// against the drawing's units. The entities are written from the file, not from either
+/// read, so one read differently and not edited, or taken out, is written as the file has
+/// it.
+fn rebinds(read: &UnderlayLines, lines: &UnderlayLines, edits: &UnderlayEdits) -> bool {
+    type Key = (u64, &'static str, usize);
+    /// The top-level objects by key, each with its id.
+    fn tops(lines: &UnderlayLines) -> BTreeMap<Key, usize> {
+        let mut seen = BTreeMap::<(u64, &'static str), usize>::new();
+        let mut tops = BTreeMap::new();
+        for (id, object) in lines.objects().objects.iter().enumerate() {
+            if object.parent.is_some() {
+                continue;
+            }
+            let kind = object.kind.name();
+            let nth = seen.entry((object.handle, kind)).or_default();
+            tops.insert((object.handle, kind, *nth), id);
+            *nth += 1;
+        }
+        tops
+    }
+    /// The points of object `id` and of every object it placed, which follow it.
+    fn points(lines: &UnderlayLines, id: usize) -> Vec<&[[f64; 2]]> {
+        let objects = &lines.objects().objects;
+        let mut placed = BTreeSet::from([id]);
+        let mut runs = Vec::new();
+        for (at, object) in objects.iter().enumerate().skip(id) {
+            let parent = object
+                .parent
+                .and_then(|parent| usize::try_from(parent).ok());
+            if at != id && !parent.is_some_and(|parent| placed.contains(&parent)) {
+                break;
+            }
+            placed.insert(at);
+            runs.extend(object.parts.iter().filter_map(|part| {
+                let layer = lines.layers().get(usize::try_from(part.layer).ok()?)?;
+                let range = place(part.points.start)..place(part.points.end);
+                layer.points_mm().get(range)
+            }));
+        }
+        runs
+    }
+    let (now, then) = (tops(read), tops(lines));
+    if then.is_empty() {
+        return false;
+    }
+    let edited: BTreeSet<usize> = edits
+        .moved_objects
+        .keys()
+        .chain(edits.stretched_objects.keys())
+        .copied()
+        .chain(edits.added.iter().filter_map(AddedObject::copy_of))
+        .filter_map(|id| usize::try_from(id).ok())
+        .collect();
+    let mut lies_alike = false;
+    for (key, &id) in &then {
+        let Some(&found) = now.get(key) else {
+            return false;
+        };
+        let at = points(lines, id);
+        let alike = at == points(read, found);
+        if !alike && edited.contains(&id) {
+            return false;
+        }
+        lies_alike |= alike && at.iter().any(|run| !run.is_empty());
+    }
+    lies_alike
 }
 
 /// The unit of [`UNITS`], other than the one `read` was read in, whose scale against it
@@ -616,7 +694,7 @@ impl<'a> Drawing<'a> {
 
     /// For a drawing without handles (DXF R12, Kečup's own sheets), the entity of each
     /// top-level object of `objects` by their order: the n-th is the n-th entity of model
-    /// space of a kind objects are kept of. `None` unless both are without handles and each
+    /// space of a kind objects are kept of, not hidden. `None` unless both are without handles and each
     /// object has the kind of its entity, one for one (review 2026-10-29 CD-66).
     fn entities_by_order(&self, objects: &[UnderlayObject]) -> Option<Vec<Option<usize>>> {
         if self.entities.iter().any(|entity| entity.handle.is_some()) {
@@ -631,10 +709,12 @@ impl<'a> Drawing<'a> {
                     .records
                     .get(1)
                     .map_or(entity.pairs.end, |record| record.0);
-                let paper = self.pairs[entity.pairs.start..head]
-                    .iter()
-                    .any(|pair| pair.code == 67 && self.source[pair.value()].trim_ascii() == b"1");
-                !paper && ObjectKind::from_dxf(&entity.records[0].1).is_some()
+                // Not read: in paper space (67 = 1) or hidden by its author (60 = 1, review
+                // 2026-11-02 CD-121).
+                let left_out = self.pairs[entity.pairs.start..head].iter().any(|pair| {
+                    matches!(pair.code, 60 | 67) && self.source[pair.value()].trim_ascii() == b"1"
+                });
+                !left_out && ObjectKind::from_dxf(&entity.records[0].1).is_some()
             })
             .map(|(index, entity)| (index, entity.records[0].1.as_str()));
         let mut entities = vec![None; objects.len()];
@@ -2334,15 +2414,16 @@ fn turned(degrees: f64, turn: f64, mirrored: bool) -> f64 {
 
 /// The angles `from` to `to` of an arc, in a full turn of `period`, written from within one
 /// turn. A whole turn keeps its span, so `0 / 360` moved stays a whole circle and is not
-/// written `0 / 0`, which other readers take as nothing (review 2026-11-01 CD-100).
+/// written `0 / 0`, which other readers take as nothing (review 2026-11-01 CD-100). It has
+/// no start to see, so it is written `0 / period` however it was turned, not `30 / 390`
+/// past one turn (review 2026-11-02 CD-100).
 fn arc_angles(from: f64, to: f64, period: f64) -> (f64, f64) {
-    let start = from.rem_euclid(period);
     let span = to - from;
     let turns = (span / period).round();
     if turns != 0.0 && (span - turns * period).abs() <= ketchup_tolerance::ROUNDING * period {
-        (start, start + turns * period)
+        (0.0, period)
     } else {
-        (start, to.rem_euclid(period))
+        (from.rem_euclid(period), to.rem_euclid(period))
     }
 }
 

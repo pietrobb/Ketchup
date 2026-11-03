@@ -541,6 +541,59 @@ fn whole_circles_and_ellipses_keep_their_full_turn_when_moved_or_mirrored() {
     );
 }
 
+/// Review 2026-11-02 CD-100: an ARC of a whole turn, `0 / 360`, turned by 30° was written
+/// `30 / 390`, past one turn. A whole turn has no start to see: it stays `0 / 360`, turned,
+/// mirrored or copied, as each whole edge of a hatch does.
+#[test]
+fn a_whole_turn_is_written_within_one_turn_when_turned_or_mirrored() {
+    let entities = concat!(
+        "0\nSECTION\n2\nENTITIES\n",
+        "0\nARC\n5\nC4\n330\n1F\n100\nAcDbEntity\n8\nwalls\n100\nAcDbCircle\n",
+        "10\n7000\n20\n1000\n30\n0\n40\n400\n100\nAcDbArc\n50\n0\n51\n360\n",
+        "0\nHATCH\n5\nC5\n330\n1F\n100\nAcDbEntity\n8\nwalls\n100\nAcDbHatch\n10\n0\n20\n0\n30\n0\n",
+        "210\n0\n220\n0\n230\n1\n2\nSOLID\n70\n1\n71\n0\n91\n1\n92\n1\n93\n1\n",
+        "72\n2\n10\n1000\n20\n1000\n40\n300\n50\n0\n51\n360\n73\n1\n",
+        "97\n0\n75\n0\n76\n1\n98\n0\n",
+        "0\nENDSEC\n",
+    );
+    let source = format!("{HEADER}{TABLES}{entities}0\nEOF\n");
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let turn = similarity([500.0, 200.0], 30.0, 1.0, [0.0, 0.0], None);
+    let mirror = similarity(
+        [0.0, 0.0],
+        0.0,
+        1.0,
+        [0.0, 0.0],
+        Some([[0.0, 5000.0], [1.0, 5000.0]]),
+    );
+    let mut edits = UnderlayEdits::default();
+    for handle in [0xC4, 0xC5] {
+        edits.moved_objects.insert(id_of(lines, handle), turn);
+        edits.added.push(AddedObject::Copy {
+            of: id_of(lines, handle),
+            map: mirror,
+        });
+    }
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let text = String::from_utf8(written).unwrap();
+    let records = [records_of(&text, "ARC"), records_of(&text, "HATCH")].concat();
+    assert_eq!(records.len(), 4);
+    for record in &records {
+        let angle = |code: i32| {
+            let (_, value) = record.iter().find(|(at, _)| *at == code).unwrap();
+            value.parse::<f64>().unwrap()
+        };
+        assert_eq!([angle(50), angle(51)], [0.0, 360.0], "{record:?}");
+    }
+}
+
 fn underlay_layers(names: &[String]) -> Vec<UnderlayLayer> {
     names
         .iter()
@@ -1318,11 +1371,19 @@ fn another_drawing_and_one_read_differently_are_refused_apart() {
     let source = source();
     let original = read(source.as_bytes());
     let lines = &original.lines;
+    let moved = |id: u32| {
+        let mut edits = UnderlayEdits::default();
+        edits
+            .moved_objects
+            .insert(id, [[1.0, 0.0, 0.0], [0.0, 1.0, 700.0]]);
+        edits
+    };
+    let line = id_of(lines, 0xA0);
     let refusal = |other: &str, lines: &UnderlayLines| match write_edited_dxf(
         other.as_bytes(),
         DxfImportOptions::new(None),
         lines,
-        &UnderlayEdits::default(),
+        &moved(line),
     ) {
         Err(EditedDxfError::Refused(refusal)) => refusal,
         other => panic!("{other:?}"),
@@ -1330,9 +1391,21 @@ fn another_drawing_and_one_read_differently_are_refused_apart() {
     // An entity of another handle: another drawing.
     let renamed = source.replace("0\nLINE\n5\nA0\n", "0\nLINE\n5\nF0\n");
     assert_eq!(refusal(&renamed, lines), DxfEditRefusal::NotTheSource);
-    // The same entities, one of them longer: they read differently.
+    // The same entities, the line moved longer: it reads differently.
     let longer = source.replace("11\n4000\n21\n0\n", "11\n4100\n21\n0\n");
     assert_eq!(refusal(&longer, lines), DxfEditRefusal::ReadDifferently);
+    // Review 2026-11-02 CD-120: another entity moved is bound again by its handle, and
+    // the longer line is written as the file has it.
+    let text = write_edited_dxf(
+        longer.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &moved(id_of(lines, 0xA7)),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let text = String::from_utf8(text).unwrap();
+    assert!(text.contains("11\n4100\n21\n0\n"), "{text}");
+    assert!(text.contains("10\n6000\n20\n700\n"), "{text}");
     // The same file, its lines as an older import drew them (here: moved).
     let mut older = UnderlayEdits::default();
     older
@@ -1354,6 +1427,40 @@ fn another_drawing_and_one_read_differently_are_refused_apart() {
         refused.to_string().contains("import the drawing again"),
         "{refused}"
     );
+    // The line read otherwise then is taken out, the circle moved: both are written.
+    let mut edits = moved(id_of(&as_drawn_then, 0xA7));
+    edits.removed_objects.insert(id_of(&as_drawn_then, 0xA0));
+    let text = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        &as_drawn_then,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let text = String::from_utf8(text).unwrap();
+    assert!(!text.contains("0\nLINE\n5\nA0\n"), "{text}");
+    assert!(text.contains("10\n6000\n20\n700\n"), "{text}");
+    // Nothing lies where it lay: the drawing is not bound again.
+    let everything = lines.clone().edited(
+        &UnderlayEdits {
+            moved_objects: (0..u32::try_from(lines.objects().objects.len()).unwrap())
+                .filter(|id| lines.objects().objects[*id as usize].parent.is_none())
+                .map(|id| (id, [[1.0, 0.0, 5.0], [0.0, 1.0, 0.0]]))
+                .collect(),
+            ..UnderlayEdits::default()
+        },
+        &layers,
+    );
+    let refused = match write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        &everything,
+        &UnderlayEdits::default(),
+    ) {
+        Err(EditedDxfError::Refused(refusal)) => refusal,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(refused, DxfEditRefusal::ReadDifferently);
 }
 
 /// Review 2026-10-29 CD-63: a drawing that declares no unit, read in centimetres and
@@ -1652,6 +1759,40 @@ fn a_drawing_without_handles_and_with_a_line_of_no_length_is_written_with_its_ed
     // The line of no length is kept as it was.
     assert!(
         text.contains("10\n50\n20\n50\n30\n0\n11\n50\n21\n50\n"),
+        "{text}"
+    );
+}
+
+/// Review 2026-11-02 CD-121: an entity its author hid (group 60 = 1) is not read, yet in a
+/// drawing without handles it was counted among the entities of model space: the objects
+/// no longer lined up with them, and every edit was refused as without handle.
+#[test]
+fn a_drawing_without_handles_and_with_a_hidden_entity_is_written_with_its_edits() {
+    let hidden = R12.replace(
+        "0\nCIRCLE\n",
+        "0\nLINE\n8\nwalls\n60\n1\n10\n70\n20\n70\n30\n0\n11\n90\n21\n90\n31\n0\n0\nCIRCLE\n",
+    );
+    let original = read(hidden.as_bytes());
+    let objects = &original.lines.objects().objects;
+    let circle = objects
+        .iter()
+        .position(|object| object.kind.name() == "CIRCLE")
+        .map(|index| u32::try_from(index).unwrap())
+        .unwrap();
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(circle);
+    let written = write_edited_dxf(
+        hidden.as_bytes(),
+        DxfImportOptions::new(None),
+        &original.lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let text = String::from_utf8(written).unwrap();
+    assert!(!text.contains("CIRCLE"), "{text}");
+    // The hidden line is kept as it was.
+    assert!(
+        text.contains("60\n1\n10\n70\n20\n70\n30\n0\n11\n90\n21\n90\n"),
         "{text}"
     );
 }
