@@ -194,6 +194,17 @@ impl Tools {
         }
     }
 
+    /// Blocks up to `wait` until the attached window's last frame (or end of
+    /// connection) is readable here.
+    #[cfg(test)]
+    pub(crate) fn wait_for_window_frame(&self, wait: std::time::Duration) {
+        let attached = self.attached.as_ref().expect("attached to a window");
+        attached
+            .connection
+            .wait_readable(wait)
+            .expect("the window's frame arrives");
+    }
+
     /// Cancels the call in progress from another thread; cleared by the
     /// caller before each call.
     pub fn cancel(&self) -> Cancel {

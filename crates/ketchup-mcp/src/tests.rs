@@ -787,6 +787,9 @@ fn a_taken_over_window_is_not_reconnected_silently() {
     assert_eq!(call(&mut tools, "connect", json!({}))["isError"], false);
     assert_eq!(events.recv().unwrap(), "attach");
     assert_eq!(events.recv().unwrap(), "ended");
+    // The window wrote its last frame before it ended, but on a loaded machine
+    // the frame can reach this side later (#152): the call must find it there.
+    tools.wait_for_window_frame(std::time::Duration::from_secs(5));
     let idle = text(&call(&mut tools, "inspect", status));
     assert_eq!(idle["error"], "connection_taken_over");
     let message = idle["message"].as_str().unwrap();

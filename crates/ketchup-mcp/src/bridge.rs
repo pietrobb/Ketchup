@@ -193,6 +193,15 @@ impl Connection {
         }
     }
 
+    /// Blocks up to `wait` until the window has sent something this side can
+    /// read (or ended the connection): a test's stand-in window writing a
+    /// frame does not mean it has arrived here yet.
+    #[cfg(test)]
+    pub(crate) fn wait_readable(&self, wait: Duration) -> io::Result<()> {
+        self.stream.set_read_timeout(Some(wait))?;
+        self.stream.peek(&mut [0_u8; 1]).map(drop)
+    }
+
     /// The framed body of the next request.
     fn envelope(&self, request: &Value) -> Vec<u8> {
         json!({"version": 1, "id": self.last_id + 1, "token": self.token, "request": request})
