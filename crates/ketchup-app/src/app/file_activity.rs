@@ -599,6 +599,41 @@ mod tests {
         assert!(app.file.path.is_none());
     }
 
+    /// Review 2026-11-02 UI-101: that gate still lets a document an interrupted save
+    /// damaged reach the open, which opens it from its `.recovery` backup.
+    #[test]
+    fn a_damaged_document_with_a_backup_still_opens_from_the_backup() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("doc.ketchup");
+        let mut author = KetchupApp::new();
+        assert!(author.create_box());
+        let first_digest = author.document.current().canonical_digest();
+        ketchup_model::persistence::save_atomic(&path, &author.document.current()).unwrap();
+        assert!(author.create_box());
+        ketchup_model::persistence::save_atomic(&path, &author.document.current()).unwrap();
+        assert!(path.with_extension("ketchup.recovery").is_file());
+        std::fs::write(&path, b"interrupted replacement").unwrap();
+
+        let mut started = KetchupApp::new();
+        started.queue_startup_arguments(vec![path.clone().into_os_string()]);
+        assert!(
+            started.file.activity.pending.is_some(),
+            "{}",
+            started.digest
+        );
+        let mut handed_over = KetchupApp::new();
+        handed_over.queue_open_document_path(&path);
+        assert!(
+            handed_over.file.activity.pending.is_some(),
+            "{}",
+            handed_over.digest
+        );
+
+        let mut app = KetchupApp::new();
+        assert!(app.open_document_from(&path), "{}", app.digest);
+        assert_eq!(app.document.current().canonical_digest(), first_digest);
+    }
+
     #[test]
     fn startup_path_opens_the_existing_document_it_was_given() {
         let directory = tempfile::tempdir().unwrap();

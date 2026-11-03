@@ -1677,10 +1677,18 @@ fn open_backup(
     })
 }
 
-/// Whether the file at `path` begins as every native document does; reads its
-/// first bytes only, so a window can refuse another kind of file before it
-/// locks it (review 2026-11-01 UI-101: a `.pdf`).
-pub fn begins_as_document(path: &Path) -> io::Result<bool> {
+/// Whether opening `path` may give a document: it begins as every native document
+/// does, or it does not and its `.recovery` backup, which [`load_file`] opens in
+/// place of a damaged file, does. Reads first bytes only, so a window can refuse
+/// another kind of file, such as a `.pdf`, before it locks it (review UI-101).
+pub fn may_open_as_document(path: &Path) -> io::Result<bool> {
+    if begins_as_document(path)? {
+        return Ok(true);
+    }
+    Ok(begins_as_document(&recovery_path(path)).unwrap_or(false))
+}
+
+fn begins_as_document(path: &Path) -> io::Result<bool> {
     let mut head = [0; MAGIC.len()];
     match fs::File::open(path)?.read_exact(&mut head) {
         Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(false),

@@ -49,7 +49,7 @@ impl KetchupApp {
                 // Any other file that is not a document, e.g. a PDF (review 2026-11-01 UI-101);
                 // one that cannot be read is left to Open, which says why.
                 Ok(path)
-                    if !ketchup_model::persistence::begins_as_document(&path).unwrap_or(true) =>
+                    if !ketchup_model::persistence::may_open_as_document(&path).unwrap_or(true) =>
                 {
                     Some(refused("error-not-document", &path))
                 }
