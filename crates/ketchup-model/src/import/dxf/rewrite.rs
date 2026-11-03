@@ -229,7 +229,7 @@ fn rebinds(read: &UnderlayLines, lines: &UnderlayLines, edits: &UnderlayEdits) -
             }
             placed.insert(at);
             runs.extend(object.parts.iter().filter_map(|part| {
-                let layer = lines.layers().get(usize::try_from(part.layer).ok()?)?;
+                let layer = lines.layers().get(place(part.layer))?;
                 let range = place(part.points.start)..place(part.points.end);
                 layer.points_mm().get(range)
             }));
