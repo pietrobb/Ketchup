@@ -68,6 +68,12 @@ $classFiles = @((Get-ChildItem $classes -Recurse -Filter *.class).FullName)
 & (Join-Path $buildTools.FullName "d8.bat") --min-api 28 --lib $androidJar --output $stage @classFiles
 if ($LASTEXITCODE -ne 0) { throw "d8 failed" }
 
+# The crates compiled into the library, each with its copyright notice and
+# license text, travel inside the APK (review 2026-11-02 REL-121).
+$notices = Join-Path $stage "notices"
+& python (Join-Path $root "scripts\third_party_notices.py") --package viewer-android --output $notices
+if ($LASTEXITCODE -ne 0) { throw "The third-party notices of the Android Viewer could not be made." }
+
 $unsigned = Join-Path $targetDir "unsigned.apk"
 $aligned = Join-Path $targetDir "aligned.apk"
 # The manifest states no version: the APK gets the one in Cargo.toml.
@@ -80,6 +86,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [System.IO.Compression.ZipFile]::Open($unsigned, "Update")
 try {
     [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, (Join-Path $stage "classes.dex"), "classes.dex")
+    [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, (Join-Path $notices "THIRD_PARTY_NOTICES.txt"), "assets/THIRD_PARTY_NOTICES.txt")
     foreach ($so in Get-ChildItem (Join-Path $stage "lib") -Recurse -File) {
         $entry = "lib/" + $so.Directory.Name + "/" + $so.Name
         [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $so.FullName, $entry)

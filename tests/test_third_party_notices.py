@@ -155,6 +155,24 @@ def test_each_macos_bundle_carries_the_notices_of_the_programs_it_builds():
         assert 'for notice in "${notices[@]}"' in script, script_name
 
 
+def test_the_apk_and_the_web_viewer_carry_the_notices_of_what_they_build():
+    """Review 2026-11-02 REL-121: the Android APK and the web Viewer carried no
+    notices. Each build script makes them for its own program and target and
+    ships them: inside the APK as an asset, beside the WebAssembly module."""
+    for script_name, name, triple, shipped in (
+        ("build-android-viewer.ps1", "viewer-android", "aarch64-linux-android", '"assets/THIRD_PARTY_NOTICES.txt"'),
+        ("build-web-viewer.ps1", "viewer-web", "wasm32-unknown-unknown", "--output $OutputDir"),
+    ):
+        script = (ROOT / "scripts" / "windows" / script_name).read_text(encoding="utf-8-sig")
+        package = notices.PACKAGES[name]
+        assert package.target == triple, name
+        assert triple in script, script_name
+        built = set(re.findall(r'-p"?,? "?(ketchup-[\w-]+)', script))
+        assert set(package.programs) == built, name
+        assert f"scripts\\third_party_notices.py\") --package {name} --output" in script, script_name
+        assert shipped in script, script_name
+
+
 def test_the_component_sections_name_the_files_of_their_platform():
     """Review 2026-11-01 PL-62: OCCT's LGPL notice names the libraries a user may
     replace and how they are built, on each platform as it ships them."""

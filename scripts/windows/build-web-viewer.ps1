@@ -30,6 +30,10 @@ $wasm = Join-Path $env:CARGO_TARGET_DIR "wasm32-unknown-unknown\release\ketchup_
 & wasm-bindgen --target web --no-typescript --out-dir $OutputDir $wasm
 if ($LASTEXITCODE -ne 0) { throw "wasm-bindgen failed" }
 Copy-Item (Join-Path $root "viewer\web\static\*") $OutputDir
+# The crates compiled into the WebAssembly module, each with its copyright
+# notice and license text, are served beside it (review 2026-11-02 REL-121).
+& python (Join-Path $root "scripts\third_party_notices.py") --package viewer-web --output $OutputDir
+if ($LASTEXITCODE -ne 0) { throw "The third-party notices of the web Viewer could not be made." }
 if ($Model) {
     Copy-Item $Model (Join-Path $OutputDir "model.ketchup-view")
 }

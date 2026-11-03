@@ -88,6 +88,11 @@ PACKAGES = {
         MACOS,
     ),
     "viewer-macos": Package("Kecup Viewer", ("ketchup-viewer-macos",), (), MACOS),
+    # The APK and the static web Viewer carry their notices too (review
+    # 2026-11-02 REL-121). The APK's x86_64 library, for the emulator, compiles
+    # in the same crates as its arm64 one.
+    "viewer-android": Package("Kecup Viewer", ("ketchup-viewer-android",), (), "aarch64-linux-android"),
+    "viewer-web": Package("Kecup Viewer", ("ketchup-viewer-web",), (), "wasm32-unknown-unknown"),
 }
 
 
