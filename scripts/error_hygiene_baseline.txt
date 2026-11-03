@@ -241,7 +241,8 @@ crates/ketchup-model/src/persistence/sheet_metal_v1.rs dropped_error 2
 crates/ketchup-model/src/persistence/snapshot_codec.rs dropped_error 1
 crates/ketchup-model/src/persistence/snapshot_codec.rs let_else_error 1
 crates/ketchup-model/src/persistence/work_recovery.rs dropped_quietly 1
-crates/ketchup-model/src/persistence/work_recovery.rs let_underscore 1
+# +1 approved by the owner 2026-11-03 (#2692): WorkRecoveryLock::drop unlocks explicitly and has nowhere to report a failed unlock.
+crates/ketchup-model/src/persistence/work_recovery.rs let_underscore 2
 crates/ketchup-model/src/persistence/work_recovery_steps.rs dropped_error 18
 crates/ketchup-model/src/persistence/work_recovery_steps.rs formatted_cause 1
 crates/ketchup-model/src/shared_change.rs stringified_variant 22

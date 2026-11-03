@@ -3178,3 +3178,22 @@ fn a_lock_file_locked_only_shared_still_keeps_a_second_user_out() {
     permissions.set_readonly(false);
     std::fs::set_permissions(&lock, permissions).unwrap();
 }
+
+/// A process the window starts while a file is being saved (the exact worker)
+/// keeps a copy of the save's lock file until it runs its program. The lock ends
+/// with the save all the same, so the file opens right after it is saved instead
+/// of being refused as changed by another program (idea #150, Linux CI).
+#[cfg(unix)]
+#[test]
+fn a_process_started_during_a_save_does_not_keep_the_file_locked() {
+    use ketchup_model::persistence::WorkRecoveryLock;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("saved.ketchup");
+    let save = WorkRecoveryLock::acquire(&path).unwrap();
+    // The copy a child holds between fork and exec: the same open file description.
+    let worker_copy = persistence::headless_inherited_lock_file(&save).unwrap();
+    drop(save);
+    let reopened = WorkRecoveryLock::acquire(&path);
+    drop(worker_copy);
+    assert!(reopened.is_ok(), "{reopened:?}");
+}

@@ -31,8 +31,8 @@ pub use pipeline::{
 pub use work_recovery::{WorkRecoveryLock, check_work_recovery_identity, set_aside_work_recovery};
 #[cfg(feature = "testing")]
 pub use work_recovery::{
-    headless_with_parent_sync_failure, headless_with_read_handle_lock_failure,
-    headless_with_read_only_folder,
+    headless_inherited_lock_file, headless_with_parent_sync_failure,
+    headless_with_read_handle_lock_failure, headless_with_read_only_folder,
 };
 #[cfg(feature = "testing")]
 pub use work_recovery_steps::headless_with_checkpoint_assembly_budget;
