@@ -68,11 +68,13 @@ def test_the_runtime_and_what_it_needs_in_turn_ship_beside_the_program(tmp_path)
     (runtime / "concrt140.dll").write_bytes(pe_image())
 
     copied = run(
-        f"Copy-MissingPeImports '{payload.as_posix()}' '{runtime.as_posix()}' '{system.as_posix()}' | Sort-Object; "
+        f"Copy-MissingPeImports '{payload.as_posix()}' '{runtime.as_posix()}' '{system.as_posix()}'; "
         f"'unresolved=' + @(Get-UnresolvedPeImports '{payload.as_posix()}' '{system.as_posix()}').Count"
     )
 
-    assert copied == ["msvcp140.dll", "msvcp140_2.dll", "vcruntime140.dll", "vcruntime140_1.dll", "unresolved=0"]
+    # Sorted here: Sort-Object orders "_" against "." by culture, differently on Linux.
+    assert sorted(copied[:-1]) == ["msvcp140.dll", "msvcp140_2.dll", "vcruntime140.dll", "vcruntime140_1.dll"]
+    assert copied[-1] == "unresolved=0"
     assert not (payload / "concrt140.dll").exists()
 
 
