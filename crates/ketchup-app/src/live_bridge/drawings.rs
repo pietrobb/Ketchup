@@ -13,7 +13,7 @@ use crate::app::project_drawings::{
 use crate::export_bundle::ExportTransactionError;
 use ketchup_manufacturing::dxf_annotations::MAX_PLAN_SCALE;
 use ketchup_manufacturing::project_drawings::DrawingSet;
-use ketchup_manufacturing::title_block::{SheetFormat, SheetSettings, TitleField};
+use ketchup_manufacturing::title_block::{SheetFormat, SheetLanguage, SheetSettings, TitleField};
 use ketchup_model::document::DocumentId;
 use ketchup_model::drawing::DrawingSheetId;
 use ketchup_model::drawing_export::{DxfCurves, SheetAnnotations};
@@ -46,6 +46,7 @@ impl LiveBridge {
             title_block,
             plan_only,
             drawing_scale,
+            sheet_language,
         } = request
         else {
             // The project set, drawn here: only the in-process caller waits
@@ -56,10 +57,15 @@ impl LiveBridge {
         };
         Self::guard(app, &expected)?;
         Self::available(app, ui_busy)?;
-        if format.is_some() || !title_block.is_empty() || plan_only || drawing_scale.is_some() {
+        if format.is_some()
+            || !title_block.is_empty()
+            || plan_only
+            || drawing_scale.is_some()
+            || sheet_language.is_some()
+        {
             return Err(failure(
                 "invalid_params",
-                "format, title_block, plan_only and drawing_scale belong to the project sheet; a drawing sheet keeps its own page, views, scale and title block.",
+                "format, title_block, plan_only, drawing_scale and sheet_language belong to the project sheet; a drawing sheet keeps its own page, views, scale and title block.",
                 json!({"sheet_id": id}),
             ));
         }
@@ -297,6 +303,7 @@ pub(super) fn start_export(
         title_block,
         plan_only,
         drawing_scale,
+        sheet_language,
     } = request
     else {
         return Err("invalid_request");
@@ -318,6 +325,18 @@ pub(super) fn start_export(
         ));
     };
     let format = format.as_deref().map(sheet_format).transpose()?;
+    // Unset keeps the stored language; `auto` stores none, the window's language.
+    let language = match sheet_language.as_deref() {
+        None => None,
+        Some("auto") => Some(None),
+        Some(code) => Some(Some(SheetLanguage::from_code(code).ok_or_else(|| {
+            failure(
+                "invalid_params",
+                "sheet_language is cs, sk or en, the language the sheets are titled in, or auto for the window's language.",
+                json!({"sheet_language": code}),
+            )
+        })?)),
+    };
     if app.exact.task.is_some() {
         return Err(failure(
             "drawings_unavailable",
@@ -365,6 +384,9 @@ pub(super) fn start_export(
     let mut settings = previous;
     if let Some(format) = format {
         settings.format = format;
+    }
+    if let Some(language) = language {
+        settings.language = language;
     }
     settings.title_block.extend(title_block);
     app.store_sheet_settings(settings);
@@ -436,6 +458,7 @@ pub(super) fn finish_export(
         "annotations": set.annotations(),
         "printed_as_question_mark": set.printed_as_question_mark(),
         "format_setting": settings.format.map_or("auto", SheetFormat::name),
+        "sheet_language": settings.language.map_or("auto", SheetLanguage::code),
         "title_block": settings.title_block,
         "basis": "visible_layers_exact_solids",
         "dirty": app.is_dirty(),
@@ -529,6 +552,7 @@ mod tests {
                 title_block,
                 plan_only: request.plan_only,
                 drawing_scale: request.scale.map(f64::from),
+                sheet_language: None,
             },
             false,
         )

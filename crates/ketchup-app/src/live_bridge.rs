@@ -409,6 +409,10 @@ pub enum Request {
         /// N of the scale 1:N the sheet is drawn at; the sheet picks it when absent.
         #[serde(default)]
         drawing_scale: Option<f64>,
+        /// The language the sheets are titled in, kept in the document:
+        /// cs, sk or en, auto for the window's; absent keeps the document's.
+        #[serde(default)]
+        sheet_language: Option<String>,
     },
     /// Imports a STEP, IGES, STL, DXF, GLB or SketchUp scene file as one Undo step;
     /// `as_underlay` keeps a DXF or DWG drawing under the model as an underlay instead.

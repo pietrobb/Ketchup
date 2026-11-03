@@ -433,6 +433,109 @@ fn a_plan_exports_its_annotations_at_the_drawing_scale_the_client_names() {
     }
 }
 
+/// A Czech project for the building office gets Czech sheets in a window of
+/// another language (Měchenice MECH-5): the client names the sheet language
+/// once and the document keeps it, `auto` gives the sheets back the window's
+/// language, and a language without sheet texts is refused by name.
+#[test]
+fn the_sheets_are_titled_in_the_language_the_client_names_and_the_document_keeps_it() {
+    let (mut app, mut bridge, directory) = window();
+    let program = Request::ApplyProgram {
+        expected: None,
+        source: "text('S-01', 'S-01', at=(0, 0), height_mm=3.5, tags='plan')\n".into(),
+        overrides: None,
+        file_name: Some("plan.star".into()),
+        replace_document: true,
+    };
+    bridge
+        .execute(&mut app, program, false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let drawings = |path: &Path, language: Option<&str>| {
+        let mut request = json!({
+            "method": "export_drawings",
+            "path": path.display().to_string(),
+            "plan_only": true,
+            "drawing_scale": 250,
+        });
+        if let Some(language) = language {
+            request["sheet_language"] = json!(language);
+        }
+        serde_json::from_value::<Request>(request).unwrap()
+    };
+    let texts = |app: &KetchupApp| {
+        let set = app
+            .project_drawings_job_for(crate::app::project_drawings::SheetRequest {
+                plan_only: true,
+                scale: Some(250),
+            })
+            .unwrap()
+            .render(
+                crate::app::project_drawings::SetFileFormat::Pdf,
+                &AtomicBool::new(false),
+            )
+            .unwrap()
+            .0;
+        set.sheets[0]
+            .page
+            .texts()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let stored_language = |app: &KetchupApp| {
+        serde_json::to_value(app.stored_sheet_settings().unwrap()).unwrap()["language"].clone()
+    };
+    let shows = |texts: &[String], wanted: &str| texts.iter().any(|text| text.contains(wanted));
+
+    let czech = directory.path().join("czech.pdf");
+    let written = bridge
+        .execute(&mut app, drawings(&czech, Some("cs")), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["sheet_language"], "cs", "{written}");
+    assert_eq!(stored_language(&app), "cs");
+    let window_plan = app.catalog.text("drawings-sheet-plan");
+    let czech_texts = texts(&app);
+    for wanted in [
+        "Půdorys",
+        "řez ve výšce",
+        "Měřítko",
+        "Datum",
+        "Projektová dokumentace",
+    ] {
+        assert!(
+            shows(&czech_texts, wanted),
+            "{wanted} not in {czech_texts:?}"
+        );
+    }
+    assert!(!shows(&czech_texts, &window_plan), "{czech_texts:?}");
+
+    // The document keeps the language for the next export.
+    let again = directory.path().join("again.pdf");
+    let written = bridge
+        .execute(&mut app, drawings(&again, None), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["sheet_language"], "cs", "{written}");
+
+    // A language with no sheet texts is refused and changes nothing.
+    let german = directory.path().join("german.pdf");
+    assert_eq!(
+        bridge.execute(&mut app, drawings(&german, Some("de")), false),
+        Err("invalid_params")
+    );
+    assert!(!german.exists());
+    assert_eq!(stored_language(&app), "cs");
+
+    // auto: the window's language again, and the document keeps no language.
+    let auto = directory.path().join("auto.pdf");
+    let written = bridge
+        .execute(&mut app, drawings(&auto, Some("auto")), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["sheet_language"], "auto", "{written}");
+    assert_eq!(stored_language(&app), Value::Null);
+    let window_texts = texts(&app);
+    assert!(shows(&window_texts, &window_plan), "{window_texts:?}");
+    assert!(!shows(&window_texts, "Půdorys"), "{window_texts:?}");
+}
+
 /// A client writes the plan alone as a PDF at the scale it names: the sheet holds
 /// one view, the texts and the measured value of the dimension, and says what it drew.
 #[test]
@@ -461,6 +564,7 @@ fn a_plan_of_its_own_is_drawn_as_a_pdf_at_the_scale_the_client_names() {
                 title_block: BTreeMap::new(),
                 plan_only,
                 drawing_scale,
+                sheet_language: None,
             }
         };
 
@@ -569,6 +673,7 @@ fn a_sheet_names_the_letters_it_prints_as_question_marks() {
                 )]),
                 plan_only: true,
                 drawing_scale: Some(250.0),
+                sheet_language: None,
             },
             false,
         )

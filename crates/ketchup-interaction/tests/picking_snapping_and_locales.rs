@@ -354,6 +354,22 @@ fn real_and_pseudo_locales_match_the_complete_english_key_set() {
     assert_ne!(slovak.text("menu-file"), english.text("menu-file"));
 }
 
+/// The Czech sheet texts cover every key a sheet is titled with, and no other.
+#[test]
+fn the_czech_sheet_locale_holds_exactly_the_sheet_keys() {
+    let english = LocaleCatalog::english();
+    let czech = LocaleCatalog::czech_sheets();
+    assert!(czech.key_count() > 40 && czech.key_count() < english.key_count());
+    assert_eq!(czech.text("drawings-sheet-plan"), "Půdorys");
+    assert_eq!(czech.text("title-field-scale"), "Měřítko");
+    assert_ne!(
+        czech.text("drawings-view-front"),
+        english.text("drawings-view-front")
+    );
+    assert!(!czech.contains("menu-file"));
+    assert!(!czech.contains("drawings-unavailable"));
+}
+
 #[test]
 fn locale_completeness_rejects_missing_and_extra_keys() {
     let reference = LocaleCatalog::parse("app-title = Ketchup\nmenu-file = File").unwrap();
