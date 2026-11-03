@@ -317,6 +317,75 @@ mod tests {
         harness.get_by_label(&catalog.text("connect-ai-waiting"));
     }
 
+    /// #2687 P1 (point 3): before anything is set up the AI tab lists steps
+    /// 1, 2, 3 top to bottom, each heard as not done.
+    #[test]
+    fn the_steps_are_numbered_top_to_bottom_and_none_is_done_before_set_up() {
+        let mut app = KetchupApp::new();
+        app.live.harnesses = Some(Vec::new());
+        let harness = open_section(app);
+        let catalog = harness.state().catalog.clone();
+        let not_done = catalog.text("connect-ai-step-not-done");
+        let tops: Vec<f32> = [
+            "connect-ai-step-connect",
+            "connect-ai-step-restart",
+            "connect-ai-step-attached",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(index, key)| {
+            let text = catalog.text(key);
+            assert!(text.starts_with(&format!("{}.", index + 1)), "{text}");
+            harness
+                .get_by_label(&format!("{text} {not_done}"))
+                .rect()
+                .min
+                .y
+        })
+        .collect();
+        assert!(tops.windows(2).all(|pair| pair[0] < pair[1]), "{tops:?}");
+        let done = catalog.text("connect-ai-step-done");
+        assert!(
+            harness
+                .query_by_label_contains(&format!(" {done}"))
+                .is_none()
+        );
+    }
+
+    /// #2687 P1 (points 4, 9): with another tab open the status line still
+    /// names the attached AI next to Disconnect, and Disconnect detaches it.
+    #[test]
+    fn the_attached_ai_and_disconnect_stay_visible_with_the_ai_tab_closed() {
+        let mut app = KetchupApp::new();
+        app.live.consent_attached = true;
+        app.live.client_name = Some("Codex".to_owned());
+        let mut harness = Kittest::builder()
+            .with_size(egui::Vec2::new(1600.0, 1000.0))
+            .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+        harness.run();
+        let catalog = harness.state().catalog.clone();
+        assert!(
+            harness
+                .query_by_label(&catalog.text("connect-ai-title"))
+                .is_none(),
+            "the AI tab is not open"
+        );
+        let named = catalog.format(
+            "ai-connected",
+            &std::collections::BTreeMap::from([("client", "Codex".to_owned())]),
+        );
+        assert_eq!(harness.get_all_by_label(&named).count(), 1);
+        harness.get_by_label(&catalog.text("ai-disconnect")).click();
+        harness.run();
+        assert!(!harness.state().ai_attached());
+        assert!(harness.query_by_label(&named).is_none());
+        assert!(
+            harness
+                .query_by_label(&catalog.text("ai-disconnect"))
+                .is_none()
+        );
+    }
+
     #[test]
     fn a_harness_starting_a_deleted_build_is_named_with_its_path_and_offered_a_replacement() {
         let mut app = KetchupApp::new();
