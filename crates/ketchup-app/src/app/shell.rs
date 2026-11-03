@@ -688,8 +688,8 @@ impl KetchupApp {
     }
 
     /// The Move field's preview, read by the same `typed_move` the move is:
-    /// how far and which way along a pinned axis ("= 80.6 mm (+Z)"), a vector
-    /// ("= 2; 5; 0 mm") typed or where a distance goes the way the pointer
+    /// how far and which way along a pinned axis ("= 80,6 mm (+Z)" on a comma
+    /// system), a vector ("= 12,5; 3; 0 mm") typed or where a distance goes the way the pointer
     /// points, a distance with no way yet when it is an expression or a
     /// conversion, a copy array count never.
     fn move_preview(&self) -> Option<String> {
@@ -697,6 +697,18 @@ impl KetchupApp {
         if super::tool_gesture::is_move_copy_array(input) {
             return None;
         }
+        // Every number of the Move preview is written as the user writes
+        // numbers, with the system's decimal separator; values stay apart by
+        // "; ", so a comma never reads as one (operator 2026-11-03: one tool,
+        // one format). Other fields' previews follow separately (#2691).
+        let number = |value: f64| {
+            let text = format_height(value);
+            if self.value_box.decimal == crate::length_input::DecimalSeparator::Comma {
+                text.replace('.', ",")
+            } else {
+                text
+            }
+        };
         let value = match self.typed_move()? {
             TypedMove::AlongAxis {
                 axis,
@@ -709,10 +721,7 @@ impl KetchupApp {
                     '+'
                 };
                 let direction = format!("{sign}{}", super::transform::alignment_axis_label(axis));
-                // Written with a point like every other preview (operator
-                // 2026-11-03); the system's decimal comma in previews is a
-                // separate fix for all of them.
-                let value = format_height(distance_mm.abs());
+                let value = number(distance_mm.abs());
                 return Some(self.catalog.format(
                     "value-move-axis-preview",
                     &BTreeMap::from([("value", value), ("direction", direction)]),
@@ -724,7 +733,7 @@ impl KetchupApp {
                 ..
             } => [delta_mm.x, delta_mm.y, delta_mm.z]
                 // `+ 0.0` shows -0 as 0.
-                .map(|value| format_height(value + 0.0))
+                .map(|value| number(value + 0.0))
                 .join("; "),
             TypedMove::AlongAxis { distance_mm, .. } | TypedMove::Distance { distance_mm, .. } => {
                 // A comma once separated Move values: `80,60` is 80.6 mm now.
@@ -733,7 +742,7 @@ impl KetchupApp {
                 {
                     return None;
                 }
-                format_height(distance_mm)
+                number(distance_mm)
             }
         };
         Some(
