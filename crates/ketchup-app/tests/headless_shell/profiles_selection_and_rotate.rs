@@ -1345,7 +1345,7 @@ fn imported_exact_finishes_and_face_push_pull_recompute_through_headless_ui() {
     assert!(shell.app_mut().delete_selected());
     shell.settle();
 
-    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_import(AppCommand::ImportExactStep);
     shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
     wait_for_one_exact_body(&mut shell);
     let snapshot = shell.app().document_snapshot();

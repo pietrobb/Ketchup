@@ -18,6 +18,7 @@ fn add_group(
     name: &str,
     members: Vec<String>,
     grounded: bool,
+    logical: bool,
 ) -> anyhow::Result<()> {
     check_name(state, name)?;
     if model.groups.len() >= MAX_PARTS {
@@ -46,6 +47,7 @@ fn add_group(
         name: name.to_owned(),
         grounded,
         members,
+        logical,
     };
     state.take_group(&group);
     model.groups.push(group);
@@ -148,6 +150,7 @@ fn instance_groups(component: &ProgramComponent, instance: &ProgramInstance) -> 
                 .iter()
                 .map(|member| format!("{}/{}", instance.name, member))
                 .collect(),
+            logical: group.logical,
         })
         .collect()
 }
@@ -324,13 +327,24 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         Ok(part_value(&copy, heap))
     }
 
-    /// Groups existing parts or groups without moving their world frames.
+    /// Groups existing parts or groups without moving their world frames:
+    /// `kind="assembly"` (the default), whose members must touch, or
+    /// `kind="logical"`, grouped only to be found, shown and hidden together
+    /// and never checked for contact.
     fn group<'v>(
         #[starlark(require = pos)] name: &str,
         #[starlark(require = pos)] items: Value<'v>,
         #[starlark(require = named, default = false)] grounded: bool,
+        #[starlark(require = named, default = "assembly")] kind: &str,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<Value<'v>> {
+        let logical = match kind {
+            "assembly" => false,
+            "logical" => true,
+            other => anyhow::bail!(
+                "group {name:?}: kind {other:?} is \"assembly\" (its members must touch; the default) or \"logical\" (grouped only to be found, shown and hidden together, never checked for contact)"
+            ),
+        };
         let heap = eval.heap();
         let members = members(items, heap)?;
         let state = state(eval)?;
@@ -340,6 +354,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
             name,
             members,
             grounded,
+            logical,
         )?;
         Ok(heap.alloc(AllocStruct([("name", heap.alloc(name))])))
     }
@@ -416,7 +431,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         let members = members(items, heap)?;
         let state = state(eval)?;
         let mut model = state.model.borrow_mut();
-        add_group(&state, &mut model, name, members, grounded)?;
+        add_group(&state, &mut model, name, members, grounded, false)?;
         let component = capture(&model, name)?;
         model.components.push(component);
         Ok(heap.alloc(AllocStruct([("name", heap.alloc(name))])))

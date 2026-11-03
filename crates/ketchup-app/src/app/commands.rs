@@ -681,11 +681,17 @@ impl KetchupApp {
     }
 
     pub(crate) fn menu_command(&mut self, ui: &mut egui::Ui, id: AppCommand) {
+        self.menu_command_as(ui, id, CommandRegistry::spec(id).label_key);
+    }
+
+    /// A menu item that paints `label_key` instead of the command's own name,
+    /// e.g. "STEP…" inside Export; its accessible name stays the full one.
+    pub(crate) fn menu_command_as(&mut self, ui: &mut egui::Ui, id: AppCommand, label_key: &str) {
         let spec = CommandRegistry::spec(id);
         let label = self.catalog.format(
             "menu-command",
             &BTreeMap::from([
-                ("label", self.catalog.text(spec.label_key)),
+                ("label", self.catalog.text(label_key)),
                 ("shortcut", keymap::shortcut_text(&self.catalog, id)),
             ]),
         );

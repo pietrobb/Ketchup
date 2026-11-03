@@ -53,7 +53,7 @@ pub(crate) fn issues(model: &ProgramModel, exact: &ExactShapes, issues: &mut Vec
         .map(|group| (group.name.as_str(), group))
         .collect();
     let mut pairs = BTreeMap::new();
-    for group in &model.groups {
+    for group in model.groups.iter().filter(|group| !group.logical) {
         let mut leaves = BTreeSet::new();
         let mut pending = group.members.iter().map(String::as_str).collect::<Vec<_>>();
         while let Some(name) = pending.pop() {

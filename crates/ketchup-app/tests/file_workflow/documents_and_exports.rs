@@ -91,7 +91,11 @@ fn assistant_sheet_metal_reaches_exact_worker_and_file_export_through_accesskit(
     let before_export = canonical_state(&shell);
     let before_history = reachable_history_digests(&mut shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ExportSheetMetalManufacturing);
+    shell.click_submenu_command(
+        "menu-file",
+        "menu-file-manufacturing",
+        AppCommand::ExportSheetMetalManufacturing,
+    );
     assert!(flat_pattern.is_file(), "{}", shell.app().action_digest());
     assert!(bend_table.is_file());
     let parsed = inspect_dxf(
@@ -199,14 +203,22 @@ fn assistant_cam_setup_reviews_exact_simulation_and_exports_through_accesskit() 
     );
     let setup_state = canonical_state(&shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ReviewCamExport);
+    shell.click_submenu_command(
+        "menu-file",
+        "menu-file-manufacturing",
+        AppCommand::ReviewCamExport,
+    );
     let cancel = shell.catalog().text("dialog-cancel");
     wait_for_visible_label(&mut shell, &cancel);
     shell.click_button_label(&cancel);
     assert!(!output.exists());
     assert_eq!(canonical_state(&shell), setup_state);
 
-    shell.click_menu_command("menu-file", AppCommand::ReviewCamExport);
+    shell.click_submenu_command(
+        "menu-file",
+        "menu-file-manufacturing",
+        AppCommand::ReviewCamExport,
+    );
     let preview = shell.catalog().text("cam-review-preview");
     shell.click_button_label(&preview);
     assert!(shell.has_visible_label("mm: G54"));
@@ -308,13 +320,21 @@ fn static_fea_review_runs_through_offscreen_accesskit_without_mutation() {
     shell.settle();
     let baseline = canonical_state(&shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ReviewStaticFea);
+    shell.click_submenu_command(
+        "menu-tools",
+        "menu-tools-analysis",
+        AppCommand::ReviewStaticFea,
+    );
     let cancel = shell.catalog().text("dialog-cancel");
     wait_for_visible_label(&mut shell, &cancel);
     shell.click_button_label(&cancel);
     assert_eq!(canonical_state(&shell), baseline);
 
-    shell.click_menu_command("menu-file", AppCommand::ReviewStaticFea);
+    shell.click_submenu_command(
+        "menu-tools",
+        "menu-tools-analysis",
+        AppCommand::ReviewStaticFea,
+    );
     let run = shell.catalog().text("fea-review-run-confirmed");
     wait_for_visible_label(&mut shell, &run);
     assert_eq!(canonical_state(&shell), baseline);
@@ -382,14 +402,22 @@ fn local_pdm_root_child_and_verified_open_run_through_offscreen_accesskit() {
     let root_state = canonical_state(&shell);
     let root_history = reachable_history_digests(&mut shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ReviewLocalPdm);
+    shell.click_submenu_command(
+        "menu-tools",
+        "menu-tools-analysis",
+        AppCommand::ReviewLocalPdm,
+    );
     let cancel = shell.catalog().text("dialog-cancel");
     wait_for_visible_label(&mut shell, &cancel);
     shell.click_button_label(&cancel);
     assert!(!repository.exists());
     assert_state_and_history_unchanged(&mut shell, &root_state, &root_history);
 
-    shell.click_menu_command("menu-file", AppCommand::ReviewLocalPdm);
+    shell.click_submenu_command(
+        "menu-tools",
+        "menu-tools-analysis",
+        AppCommand::ReviewLocalPdm,
+    );
     let confirm = shell.catalog().text("pdm-confirm-create");
     wait_for_visible_label(&mut shell, &confirm);
     shell.click_button_label(&confirm);
@@ -410,7 +438,11 @@ fn local_pdm_root_child_and_verified_open_run_through_offscreen_accesskit() {
     let child_history = reachable_history_digests(&mut shell);
     assert_ne!(child_state.digest, root_state.digest);
 
-    shell.click_menu_command("menu-file", AppCommand::ReviewLocalPdm);
+    shell.click_submenu_command(
+        "menu-tools",
+        "menu-tools-analysis",
+        AppCommand::ReviewLocalPdm,
+    );
     let refresh = shell.catalog().text("pdm-catalog-refresh");
     wait_for_visible_label(&mut shell, &refresh);
     shell.click_button_label(&refresh);
@@ -438,7 +470,11 @@ fn local_pdm_root_child_and_verified_open_run_through_offscreen_accesskit() {
     );
     shell.click_button_label(&cancel);
 
-    shell.click_menu_command("menu-file", AppCommand::ReviewLocalPdm);
+    shell.click_submenu_command(
+        "menu-tools",
+        "menu-tools-analysis",
+        AppCommand::ReviewLocalPdm,
+    );
     wait_for_visible_label(&mut shell, &refresh);
     shell.click_button_label(&refresh);
     let verify = shell.catalog().text("pdm-open-release");
@@ -665,11 +701,19 @@ fn assistant_weldment_recomputes_and_exports_cut_list_through_accesskit() {
     let before_export = canonical_state(&shell);
     let before_history = reachable_history_digests(&mut shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ExportWeldmentCutList);
+    shell.click_submenu_command(
+        "menu-file",
+        "menu-file-manufacturing",
+        AppCommand::ExportWeldmentCutList,
+    );
     assert!(!cut_list.exists());
     assert!(!drawing.exists());
     assert!(shell.app().last_side_effect_receipt().is_none());
-    shell.click_menu_command("menu-file", AppCommand::ExportWeldmentCutList);
+    shell.click_submenu_command(
+        "menu-file",
+        "menu-file-manufacturing",
+        AppCommand::ExportWeldmentCutList,
+    );
     assert!(cut_list.is_file(), "{}", shell.app().action_digest());
     assert!(drawing.is_file());
     let csv = std::fs::read_to_string(&cut_list).unwrap();
@@ -1634,12 +1678,12 @@ fn step_import_publishes_its_blob_in_the_same_work_recovery_transaction() {
     let baseline = canonical_state(&shell);
 
     std::fs::create_dir(&recovery).unwrap();
-    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_import(AppCommand::ImportExactStep);
     shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
     assert_eq!(canonical_state(&shell), baseline);
     std::fs::remove_dir(&recovery).unwrap();
 
-    shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    shell.click_import(AppCommand::ImportExactStep);
     shell.click_button_label(&shell.catalog().text("dialog-import-step-confirm"));
 
     assert_eq!(shell.app().import_receipt_count(), 1);
@@ -1964,9 +2008,9 @@ fn file_menu_exports_fail_closed_when_current_exact_evidence_is_unavailable() {
     assert_eq!(shell.app().exact_render_body_count(), 0);
     let before = canonical_state(&shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ExportMeshStl);
+    shell.click_export(AppCommand::ExportMeshStl);
     assert_eq!(canonical_state(&shell), before);
-    shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
+    shell.click_export(AppCommand::ExportExactStep);
     assert_eq!(canonical_state(&shell), before);
 
     assert_eq!(std::fs::read(&stl).unwrap(), original_stl);
@@ -2015,9 +2059,9 @@ fn file_menu_exports_current_visible_exact_model_without_mutating_canonical_stat
     wait_for_current_exact_body(&mut shell);
     let before = canonical_state(&shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ExportMeshStl);
+    shell.click_export(AppCommand::ExportMeshStl);
     assert_eq!(canonical_state(&shell), before);
-    shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
+    shell.click_export(AppCommand::ExportExactStep);
     assert_eq!(canonical_state(&shell), before);
     assert_eq!(
         std::fs::read_dir(directory.path()).unwrap().count(),
@@ -2030,20 +2074,20 @@ fn file_menu_exports_current_visible_exact_model_without_mutating_canonical_stat
     let original_loss = b"existing STL loss report must survive refusal";
     std::fs::write(&protected_stl, original_stl).unwrap();
     std::fs::write(&protected_loss, original_loss).unwrap();
-    shell.click_menu_command("menu-file", AppCommand::ExportMeshStl);
+    shell.click_export(AppCommand::ExportMeshStl);
     assert_eq!(std::fs::read(&protected_stl).unwrap(), original_stl);
     assert_eq!(std::fs::read(&protected_loss).unwrap(), original_loss);
     assert!(shell.app().last_side_effect_receipt().is_none());
     assert_eq!(canonical_state(&shell), before);
 
-    shell.click_menu_command("menu-file", AppCommand::ExportMeshStl);
+    shell.click_export(AppCommand::ExportMeshStl);
     assert_ne!(std::fs::read(&protected_stl).unwrap(), original_stl);
     assert_ne!(std::fs::read(&protected_loss).unwrap(), original_loss);
     assert_eq!(canonical_state(&shell), before);
 
-    shell.click_menu_command("menu-file", AppCommand::ExportMeshStl);
+    shell.click_export(AppCommand::ExportMeshStl);
     assert_eq!(canonical_state(&shell), before);
-    shell.click_menu_command("menu-file", AppCommand::ExportMeshStl);
+    shell.click_export(AppCommand::ExportMeshStl);
     assert_eq!(canonical_state(&shell), before);
     let first_stl_bytes = std::fs::read(&first_stl).unwrap();
     let second_stl_bytes = std::fs::read(&second_stl).unwrap();
@@ -2062,7 +2106,7 @@ fn file_menu_exports_current_visible_exact_model_without_mutating_canonical_stat
     assert!(stl_loss.contains("topology_loss="));
     assert!(stl_loss.contains(&format!("source_digest={}", before.digest)));
 
-    shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
+    shell.click_export(AppCommand::ExportExactStep);
     assert_eq!(canonical_state(&shell), before);
     assert!(
         step.is_file(),
@@ -2141,13 +2185,13 @@ fn file_menu_three_mf_export_is_localized_atomic_and_non_mutating() {
     let before = canonical_state(&shell);
     let history = reachable_history_digests(&mut shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ExportPrintThreeMf);
+    shell.click_export(AppCommand::ExportPrintThreeMf);
     assert_eq!(std::fs::read(&three_mf).unwrap(), original_model);
     assert_eq!(std::fs::read(&loss).unwrap(), original_loss);
     assert!(shell.app().last_side_effect_receipt().is_none());
     assert_state_and_history_unchanged(&mut shell, &before, &history);
 
-    shell.click_menu_command("menu-file", AppCommand::ExportPrintThreeMf);
+    shell.click_export(AppCommand::ExportPrintThreeMf);
     let package = std::fs::read(&three_mf).unwrap();
     assert_eq!(&package[..4], b"PK\x03\x04");
     assert!(
@@ -2209,14 +2253,14 @@ fn file_menu_round_trips_mixed_exact_and_imported_mesh_scene_to_stl_glb_and_thre
         .unwrap();
     wait_for_current_exact_body(&mut shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportBlenderGlb);
+    shell.click_import(AppCommand::ImportBlenderGlb);
     shell.click_button_label(&shell.catalog().text("dialog-import-glb-confirm"));
     let before = canonical_state(&shell);
     let history = reachable_history_digests(&mut shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ExportMeshStl);
-    shell.click_menu_command("menu-file", AppCommand::ExportBlenderGlb);
-    shell.click_menu_command("menu-file", AppCommand::ExportPrintThreeMf);
+    shell.click_export(AppCommand::ExportMeshStl);
+    shell.click_export(AppCommand::ExportBlenderGlb);
+    shell.click_export(AppCommand::ExportPrintThreeMf);
 
     let stl_bytes = std::fs::read(&stl).unwrap();
     assert!(ascii_stl_facet_count(&stl_bytes) > 1_000);
@@ -2292,13 +2336,13 @@ fn file_menu_step_export_requires_bound_overwrite_approval_without_canonical_mut
     let before = canonical_state(&shell);
     let history = reachable_history_digests(&mut shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
+    shell.click_export(AppCommand::ExportExactStep);
     assert_eq!(std::fs::read(&step).unwrap(), original_step);
     assert_eq!(std::fs::read(&loss).unwrap(), original_loss);
     assert!(shell.app().last_side_effect_receipt().is_none());
     assert_state_and_history_unchanged(&mut shell, &before, &history);
 
-    shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
+    shell.click_export(AppCommand::ExportExactStep);
     assert_ne!(std::fs::read(&step).unwrap(), original_step);
     assert_ne!(std::fs::read(&loss).unwrap(), original_loss);
     assert!(
@@ -2373,7 +2417,7 @@ fn file_menu_iges_export_and_localized_import_are_bound_atomic_and_renderable() 
     export_shell.click_at(export_shell.viewport_rect().center());
     assert!(export_shell.app_mut().delete_selected());
     export_shell.settle();
-    export_shell.click_menu_command("menu-file", AppCommand::ImportExactStep);
+    export_shell.click_import(AppCommand::ImportExactStep);
     export_shell.click_button_label(&export_shell.catalog().text("dialog-import-step-confirm"));
     let export_feature = imported_exact_feature_id(&export_shell);
     for _ in 0..100 {
@@ -2401,7 +2445,7 @@ fn file_menu_iges_export_and_localized_import_are_bound_atomic_and_renderable() 
         [export_feature]
     );
 
-    export_shell.click_menu_command("menu-file", AppCommand::ExportExactIges);
+    export_shell.click_export(AppCommand::ExportExactIges);
     assert_eq!(std::fs::read(&exported).unwrap(), original_export);
     assert_eq!(std::fs::read(&exported_loss).unwrap(), original_loss);
     assert_state_and_history_unchanged(&mut export_shell, &export_before, &export_history);
@@ -2417,7 +2461,7 @@ fn file_menu_iges_export_and_localized_import_are_bound_atomic_and_renderable() 
         [export_feature]
     );
 
-    export_shell.click_menu_command("menu-file", AppCommand::ExportExactIges);
+    export_shell.click_export(AppCommand::ExportExactIges);
     let exported_bytes = std::fs::read(&exported).unwrap();
     assert_ne!(
         exported_bytes,
@@ -2459,7 +2503,7 @@ fn file_menu_iges_export_and_localized_import_are_bound_atomic_and_renderable() 
     let import_before = canonical_state(&import_shell);
     let import_history = reachable_history_digests(&mut import_shell);
 
-    import_shell.click_menu_command("menu-file", AppCommand::ImportExactIges);
+    import_shell.click_import(AppCommand::ImportExactIges);
     let confirm = import_shell.catalog().text("dialog-import-iges-confirm");
     assert!(import_shell.has_role_and_label(Role::Button, &confirm));
     std::fs::write(&import_source, b"changed after IGES preview").unwrap();
@@ -2468,7 +2512,7 @@ fn file_menu_iges_export_and_localized_import_are_bound_atomic_and_renderable() 
     assert_state_and_history_unchanged(&mut import_shell, &import_before, &import_history);
 
     std::fs::write(&import_source, &source_bytes).unwrap();
-    import_shell.click_menu_command("menu-file", AppCommand::ImportExactIges);
+    import_shell.click_import(AppCommand::ImportExactIges);
     import_shell.click_button_label(&confirm);
     assert_eq!(
         import_shell.app().document_revision(),
@@ -2530,7 +2574,7 @@ fn file_import_sketchup_scene_preserves_shared_instances_offscreen() {
     let mut shell = Shell::with_dialogs(script.clone());
     let before = canonical_state(&shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportSketchupScene);
+    shell.click_import(AppCommand::ImportSketchupScene);
     shell.click_button_label(&shell.catalog().text("dialog-import-sketchup-scene-confirm"));
 
     assert_eq!(shell.app().document_revision(), before.revision + 1);
@@ -2601,7 +2645,7 @@ fn file_import_blender_glb_reviews_and_commits_one_mesh_scene_offscreen() {
     let mut shell = Shell::with_dialogs(script.clone());
     let before = canonical_state(&shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportBlenderGlb);
+    shell.click_import(AppCommand::ImportBlenderGlb);
     shell.click_button_label(&shell.catalog().text("dialog-import-glb-confirm"));
 
     assert_eq!(shell.app().document_revision(), before.revision + 1);
@@ -2665,11 +2709,11 @@ fn file_import_blender_glb_cancel_source_change_and_stale_review_do_not_mutate()
     let before = canonical_state(&shell);
     let before_history = reachable_history_digests(&mut shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportBlenderGlb);
+    shell.click_import(AppCommand::ImportBlenderGlb);
     shell.click_button_label(&shell.catalog().text("dialog-import-glb-cancel"));
     assert_state_and_history_unchanged(&mut shell, &before, &before_history);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportBlenderGlb);
+    shell.click_import(AppCommand::ImportBlenderGlb);
     let mut replacement = original.clone();
     replacement[0] ^= 1;
     std::fs::write(&source, replacement).unwrap();
@@ -2678,7 +2722,7 @@ fn file_import_blender_glb_cancel_source_change_and_stale_review_do_not_mutate()
     assert_state_and_history_unchanged(&mut shell, &before, &before_history);
 
     std::fs::write(&source, original).unwrap();
-    shell.click_menu_command("menu-file", AppCommand::ImportBlenderGlb);
+    shell.click_import(AppCommand::ImportBlenderGlb);
     shell.click_menu_command("menu-edit", AppCommand::Redo);
     let after_redo = canonical_state(&shell);
     let after_redo_history = reachable_history_digests(&mut shell);
@@ -2698,7 +2742,7 @@ fn blender_mesh_exact_conversion_requires_review_and_one_confirmed_undo_step() {
         .headless_force_exact_worker_path(exact_worker_path());
     shell.settle();
 
-    shell.click_menu_command("menu-file", AppCommand::ImportBlenderGlb);
+    shell.click_import(AppCommand::ImportBlenderGlb);
     shell.click_button_label(&shell.catalog().text("dialog-import-glb-confirm"));
     let snapshot = shell.app().document_snapshot();
     let recognized = snapshot
@@ -2795,12 +2839,12 @@ fn imported_blender_mesh_blocks_exact_and_btlx_exports_before_side_effects() {
         .always_confirm_high_risk_as(91);
     let mut shell = Shell::with_dialogs(script.clone());
 
-    shell.click_menu_command("menu-file", AppCommand::ImportBlenderGlb);
+    shell.click_import(AppCommand::ImportBlenderGlb);
     shell.click_button_label(&shell.catalog().text("dialog-import-glb-confirm"));
     let imported = canonical_state(&shell);
     let imported_history = reachable_history_digests(&mut shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
+    shell.click_export(AppCommand::ExportExactStep);
     assert!(digest_starts_like(&shell, "error-export-step"));
     assert!(
         shell.app().action_digest().contains("mesh body"),
@@ -2810,7 +2854,11 @@ fn imported_blender_mesh_blocks_exact_and_btlx_exports_before_side_effects() {
     assert!(!step.exists());
     assert_state_and_history_unchanged(&mut shell, &imported, &imported_history);
 
-    shell.click_menu_command("menu-file", AppCommand::ExportHundeggerBtlx);
+    shell.click_submenu_command(
+        "menu-file",
+        "menu-file-manufacturing",
+        AppCommand::ExportHundeggerBtlx,
+    );
     assert!(digest_starts_like(&shell, "error-export-btlx"));
     assert!(shell.app().action_digest().contains("mesh body"));
     assert!(!btlx.exists());
@@ -2829,7 +2877,7 @@ fn file_import_sketchup_scene_rejects_source_substitution_after_review() {
     let mut shell = Shell::with_dialogs(script);
     let before = canonical_state(&shell);
 
-    shell.click_menu_command("menu-file", AppCommand::ImportSketchupScene);
+    shell.click_import(AppCommand::ImportSketchupScene);
     std::fs::write(&path, b"{}" as &[u8]).unwrap();
     shell.click_button_label(&shell.catalog().text("dialog-import-sketchup-scene-confirm"));
 
@@ -2852,7 +2900,7 @@ fn file_import_stl_commits_one_canonical_mesh_transaction_offscreen() {
     let before = canonical_state(&shell);
     let before_definitions = shell.app().definition_count();
 
-    shell.click_menu_command("menu-file", AppCommand::ImportMeshStl);
+    shell.click_import(AppCommand::ImportMeshStl);
     shell.click_button_label(&shell.catalog().text("dialog-import-stl-confirm"));
 
     assert_eq!(shell.app().mesh_body_count(), 1);
