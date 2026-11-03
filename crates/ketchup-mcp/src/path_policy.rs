@@ -28,7 +28,7 @@ pub fn local_absolute_path(path: &str) -> bool {
         && Path::new(path).is_absolute()
         && (!cfg!(windows) || local_windows_path(path, remote_drive))
         && (!cfg!(any(target_os = "macos", target_os = "linux"))
-            || mounts().is_ok_and(|m| local_mounted_path(path, &m)))
+            || mounts().is_ok_and(|m| local_mounted_path(path, &m, AUTOMOUNTED)))
 }
 
 /// Top-level directories macOS's automounter serves from the network; on Linux
@@ -84,7 +84,7 @@ impl Mount {
     }
 }
 
-fn local_mounted_path(path: &str, mounts: &[Mount]) -> bool {
+fn local_mounted_path(path: &str, mounts: &[Mount], automounted: &[&str]) -> bool {
     let components = lexical_components(path);
     let through_data_volume = components.strip_prefix(&DATA_VOLUME.map(str::to_owned)[..]);
     [Some(&components[..]), through_data_volume]
@@ -93,7 +93,7 @@ fn local_mounted_path(path: &str, mounts: &[Mount]) -> bool {
         .all(|components| {
             !components
                 .first()
-                .is_some_and(|top| AUTOMOUNTED.contains(&top.as_str()))
+                .is_some_and(|top| automounted.contains(&top.as_str()))
                 && mounts
                     .iter()
                     .filter(|mount| components.starts_with(&mount.on))
@@ -289,7 +289,7 @@ mod mount_tests {
             "/mnt/backup2/x.pdf",
             "/tmp/x.pdf",
         ] {
-            assert!(local_mounted_path(local, &mounts), "{local:?}");
+            assert!(local_mounted_path(local, &mounts, &[]), "{local:?}");
         }
         for remote in [
             "/mnt/backup/x.pdf",
@@ -301,7 +301,7 @@ mod mount_tests {
             "/mnt/shared files/x.pdf",
             "/mnt/usb stick/../backup/x.pdf",
         ] {
-            assert!(!local_mounted_path(remote, &mounts), "{remote:?}");
+            assert!(!local_mounted_path(remote, &mounts, &[]), "{remote:?}");
         }
     }
 
@@ -323,7 +323,7 @@ mod mount_tests {
 
 #[cfg(all(test, target_os = "macos"))]
 mod macos_tests {
-    use super::{Mount, local_absolute_path, local_mounted_path};
+    use super::{AUTOMOUNTED, Mount, local_absolute_path, local_mounted_path};
 
     // Review 2026-11-01 SEC-101: the automounter reaches the host named in the path.
     #[test]
@@ -364,7 +364,7 @@ mod macos_tests {
             "/Volumes/backup2/x.pdf",
             "/Volumes/USB/../USB/x.pdf",
         ] {
-            assert!(local_mounted_path(local, &mounts), "{local:?}");
+            assert!(local_mounted_path(local, &mounts, AUTOMOUNTED), "{local:?}");
         }
         for remote in [
             "/Volumes/backup",
@@ -374,7 +374,10 @@ mod macos_tests {
             "/Volumes/USB/../backup/x.pdf",
             "/System/Volumes/Data/Volumes/backup/x.pdf",
         ] {
-            assert!(!local_mounted_path(remote, &mounts), "{remote:?}");
+            assert!(
+                !local_mounted_path(remote, &mounts, AUTOMOUNTED),
+                "{remote:?}"
+            );
         }
     }
 }
