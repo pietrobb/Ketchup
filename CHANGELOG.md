@@ -9,6 +9,7 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 - **Connect AI** shows three numbered steps, each ticked once the window sees it done. The status line names the connected AI, for example *Connected AI: Claude Code*, next to **Disconnect**. This replaces the small window that called it an "unverified local application".
 - While an AI tool call waits for the Ketchup window, the AI client still gets answers to its pings, and a call it cancels stops at once instead of running on for minutes.
 - When a second AI connects to a window another AI is using, the first one is told whether the document changed while its last request ran, instead of "may or may not have been applied". The list of windows also says that connecting takes such a window over, so an AI no longer waits for the other one to leave.
+- A lofted part can be hollowed with `shell()`, open at its first or last section (`open=["start"]`, `["end"]` or both), e.g. a membrane over a frame; it used to be refused, so the inner loft had to be subtracted by hand.
 - 0.3.1 reads some drawings differently from 0.3.0 (skipped or empty entities, CP1250 text, files with a BOM), so it often refused to export a drawing edited in 0.3.0. Such a drawing exports again: the edits find their entities by DXF handle, and an entity not edited is written as the file has it.
 
 ## 0.3.1 — 2026-11-02

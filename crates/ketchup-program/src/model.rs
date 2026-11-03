@@ -760,7 +760,7 @@ pub enum FaceNameError {
         operation: String,
         part: String,
     },
-    /// The part is swept or lofted: its own faces have no names.
+    /// The part is swept: its own faces have no names.
     Unnamed { part: String },
     Unknown {
         name: String,
@@ -808,7 +808,7 @@ impl std::fmt::Display for FaceNameError {
             ),
             Self::Unnamed { part } => write!(
                 f,
-                "{part:?} is swept or lofted and its faces have no names; faces left by subtract()/intersect() are <operation name>.<tool face>"
+                "{part:?} is swept and its faces have no names; faces left by subtract()/intersect() are <operation name>.<tool face>"
             ),
             Self::Unknown { name, part, faces } => write!(
                 f,
@@ -985,7 +985,8 @@ impl Part {
     /// Names of the faces of the body before any operation: the caps and the
     /// segment names of an extruded profile ("z-", "z+", "y-", "x+", "y+",
     /// "x-" on a box); "start", "end" and the segment names of a revolved
-    /// one. Swept and lofted bodies have none.
+    /// one; "start" and "end", its first and last section, of a lofted one.
+    /// Swept bodies have none.
     #[must_use]
     pub fn body_face_names(&self) -> Vec<String> {
         match &self.body {
@@ -999,9 +1000,8 @@ impl Part {
                 .map(str::to_owned)
                 .chain(segments.iter().map(|segment| segment.name.clone()))
                 .collect(),
-            ProgramPartBody::Profile { .. }
-            | ProgramPartBody::Sweep { .. }
-            | ProgramPartBody::Loft { .. } => Vec::new(),
+            ProgramPartBody::Loft { .. } => vec!["start".to_owned(), "end".to_owned()],
+            ProgramPartBody::Profile { .. } | ProgramPartBody::Sweep { .. } => Vec::new(),
         }
     }
 
@@ -1122,6 +1122,7 @@ impl Part {
                     .map(|index| segment_label(segments, index))
                     .ok_or_else(unknown)
             }
+            ProgramPartBody::Loft { .. } if name == "start" || name == "end" => Ok(name.to_owned()),
             ProgramPartBody::Profile { .. }
             | ProgramPartBody::Sweep { .. }
             | ProgramPartBody::Loft { .. } => Err(unknown()),

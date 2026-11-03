@@ -220,6 +220,29 @@ fn grouped_profiles_keep_exact_collision_and_empty_corner_answers() {
     assert_eq!(summary["cleared"], 1);
 }
 
+/// Měchenice MECH-7: a membrane is a shelled loft, so a mast through its top
+/// collides with the skin and a lamp hanging in the hollow does not.
+#[test]
+fn a_shelled_loft_membrane_collides_only_where_its_skin_is() {
+    let _turn = crate::integration_support::file_turn();
+    let (report, summary) = checked(
+        r#"
+skin = loft("membrane", sections=[([(-2000,-2000),(2000,-2000),(2000,2000),(-2000,2000)], 0),
+                                  ([(-500,-500),(500,-500),(500,500),(-500,500)], 3000)])
+shell(skin, thickness=5, open=["start"])
+box("mast", (100,100,4000), at=(-50,-50,0))
+box("lamp", (100,100,100), at=(300,300,1000))
+"#
+        .to_owned(),
+        false,
+    );
+    assert_verified(&report, &summary);
+    assert_eq!(
+        collision_pairs(&report),
+        expected_pairs(&[&["membrane", "mast"]])
+    );
+}
+
 #[test]
 fn shared_component_leaves_have_distinct_exact_pairs_in_each_rotated_instance() {
     let _turn = crate::integration_support::file_turn();
