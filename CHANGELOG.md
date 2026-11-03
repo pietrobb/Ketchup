@@ -9,8 +9,11 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 - **Connect AI** shows three numbered steps, each ticked once the window sees it done. The status line names the connected AI, for example *Connected AI: Claude Code*, next to **Disconnect**. This replaces the small window that called it an "unverified local application".
 - While an AI tool call waits for the Ketchup window, the AI client still gets answers to its pings, and a call it cancels stops at once instead of running on for minutes.
 - When a second AI connects to a window another AI is using, the first one is told whether the document changed while its last request ran, instead of "may or may not have been applied". The list of windows also says that connecting takes such a window over, so an AI no longer waits for the other one to leave.
+- The sections and elevations of the project drawings carry level marks for the building office: ±0,000 at the floor of the lowest storey, each storey's floor and the top, in metres with a decimal comma on Czech and Slovak sheets.
+- The vertical dimensions a program draws with `dim()`, which a plan cannot show, appear in the sections and elevations that show their true length (a section only those beyond its cut); the sheet summary counts the dimensions of all its views.
 - A lofted part can be hollowed with `shell()`, open at its first or last section (`open=["start"]`, `["end"]` or both), e.g. a membrane over a frame; it used to be refused, so the inner loft had to be subtracted by hand.
 - 0.3.1 reads some drawings differently from 0.3.0 (skipped or empty entities, CP1250 text, files with a BOM), so it often refused to export a drawing edited in 0.3.0. Such a drawing exports again: the edits find their entities by DXF handle, and an entity not edited is written as the file has it.
+- A program can group parts that do not touch, such as the kerbs, doors and technology of a site, with `group(..., kind="logical")`. Such a group is only for finding, showing and hiding them together, so the contact check no longer reports it as falling apart; an assembly inside it is still checked. A document with a logical group is saved in the new format 108, which Kečup 0.3.1 and older refuse to open as newer instead of losing the mark; any other document is saved as before.
 
 ## 0.3.1 — 2026-11-02
 

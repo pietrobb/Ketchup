@@ -6,6 +6,8 @@ drawings-view-plan-storey = Půdorys { $storey }. podlaží, řez ve výšce { $
 drawings-sheet-plan = Půdorys
 drawings-sheet-plan-storey = Půdorys { $storey }. podlaží
 drawings-sheet-sections = Řezy
+# Desetinný oddělovač výškových kót na řezech a pohledech (+2,850).
+drawings-sheet-decimal-separator = ,
 drawings-sheet-elevations = Pohledy
 drawings-sheet-openings = Okna a dveře
 drawings-openings-mark = Značka

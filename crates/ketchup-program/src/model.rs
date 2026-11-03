@@ -1968,6 +1968,10 @@ pub struct ProgramGroup {
     pub grounded: bool,
     /// Direct members: parts or previously declared groups, each with one parent.
     pub members: Vec<String>,
+    /// Grouped to be found, shown and hidden together, not as an assembly,
+    /// so never checked for contact (Měchenice MECH-8).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub logical: bool,
 }
 
 /// One shared assembly definition; its original group is also its first instance.

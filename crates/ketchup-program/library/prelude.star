@@ -48,6 +48,7 @@
 #     and typed edits that detach the program. This is support, not a lock on explicit placement.
 #   group(name, members, grounded=False) -> group in the document tree, without moving parts.
 #     Members are existing parts/groups (or their names), each with one parent.
+#     kind="logical" groups only to find/show/hide together, never checked for contact.
 #     Declare children before parents; names are unique across parts and groups.
 #     Group names preserve document IDs across apply, including membership edits.
 #     Reports warn about disconnected sets of members, even when grounded. Contact outside the

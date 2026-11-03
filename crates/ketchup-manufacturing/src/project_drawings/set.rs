@@ -7,16 +7,18 @@
 //! of parts the caller names, at its own scale (see [`super::shop`]), then the
 //! cutting plans the caller gives (see [`super::cutting`]). When the
 //! model has windows or doors, each plan marks those of its storey and a last
-//! sheet lists them (see [`super::openings`]).
+//! sheet lists them (see [`super::openings`]). The sections and elevations mark
+//! their levels against ±0,000 (see [`super::levels`]).
 //!
 //! Each sheet is drawn twice: painted far to near for the PDF, and as its
 //! visible lines alone for a DXF, which cannot paint faces over lines.
 
 use super::cutting::{CuttingSheet, CuttingSummary, plan_cutting};
+use super::levels::{level_heights, level_text};
 use super::openings::{OpeningSchedule, draw_schedule, opening_points, schedule_format};
 use super::shop::{PlannedShop, ShopDrawings, ShopSummary, plan_shop};
 use super::visible::{VisibleLine, visible_lines};
-use super::{Annotation, AnnotationCounts};
+use super::{Annotation, AnnotationCounts, PlanAnnotations};
 use super::{
     DrawingSolid, DrawnView, ProjectDrawingError, ProjectView, SheetViews, Storey, VIEW_PAD_MM,
     ViewSummary, annotation_bounds, bounds, choose_layout_scale, draw_view, draw_view_on_page,
@@ -86,6 +88,9 @@ pub struct DrawingSetOptions {
     /// The cutting plans, after the shop drawings: each on as many sheets as
     /// its bars or sheets of stock need, at its own scale.
     pub cutting: Vec<CuttingSheet>,
+    /// The level marks write a decimal comma ("+2,850"), as Czech and Slovak
+    /// drawings do, instead of a point.
+    pub decimal_comma: bool,
 }
 
 /// What a sheet of the set shows.
@@ -338,7 +343,7 @@ pub fn drawing_set_until(
             .cloned()
             .collect::<Vec<_>>();
         if !annotations.is_empty() {
-            drawn.annotate(&frame, &annotations);
+            drawn.annotate(PlanAnnotations::project(&frame, &annotations));
         }
         let marks = opening_points
             .iter()
@@ -358,11 +363,20 @@ pub fn drawing_set_until(
     }
     if !options.plan_only {
         let frames = view_frames(min, max, first_cut, false);
+        let levels = section_levels(solids, options);
         let drawn = |wanted: &[ProjectView]| {
             frames
                 .iter()
                 .filter(|(view, _)| wanted.contains(view))
-                .map(|(view, frame)| (draw_view(*view, *frame, solids, &edges), title_of(*view)))
+                .map(|(view, frame)| {
+                    let mut drawn = draw_view(*view, *frame, solids, &edges);
+                    drawn.levels.clone_from(&levels);
+                    let upright = PlanAnnotations::project_upright(frame, &options.annotations);
+                    if upright.counts.dimensions > 0 {
+                        drawn.annotate(upright);
+                    }
+                    (drawn, title_of(*view))
+                })
                 .collect::<Vec<_>>()
         };
         let named = |title: &str, fallback: &str| {
@@ -521,15 +535,15 @@ pub fn drawing_set_until(
                 cut_solids: view.cuts.len(),
                 cut_at_mm: view.cut_at_mm,
                 extent_mm: extent(view).map(|value| (value * 10.0).round() / 10.0),
+                levels: view.levels.iter().map(|(_, text)| text.clone()).collect(),
             })
             .collect();
-        let annotations = sheet
-            .views
-            .views
-            .iter()
-            .find_map(|view| view.annotations.as_ref())
-            .map(|annotations| annotations.counts.clone())
-            .unwrap_or_default();
+        let mut annotations = AnnotationCounts::default();
+        for view in &sheet.views.views {
+            if let Some(drawn) = &view.annotations {
+                annotations.add(&drawn.counts);
+            }
+        }
         let openings = sheet
             .views
             .views
@@ -636,6 +650,26 @@ pub fn drawing_set_until(
     Ok(DrawingSet { sheets, scale })
 }
 
+/// The level marks of the sections and elevations: ±0,000 at the floor of the
+/// lowest storey (z = 0 without one), each storey's floor and the model's top
+/// (Měchenice MECH-6).
+fn section_levels(solids: &[DrawingSolid], options: &DrawingSetOptions) -> Vec<(f64, String)> {
+    let Some((low, high)) = bounds(solids) else {
+        return Vec::new();
+    };
+    let floors = options
+        .plans
+        .iter()
+        .filter_map(|plan| plan.storey.floor_mm)
+        .collect::<Vec<_>>();
+    let datum = floors.first().copied().unwrap_or(0.0);
+    let separator = if options.decimal_comma { ',' } else { '.' };
+    level_heights(datum, &floors, low[2], high[2])
+        .into_iter()
+        .map(|height| (height, level_text(height - datum, separator)))
+        .collect()
+}
+
 /// Shop drawing `drawing` as sheet `number`, its title block filled with `values`.
 fn shop_sheet(
     drawing: usize,
@@ -663,6 +697,7 @@ fn shop_sheet(
         cut_solids: 0,
         cut_at_mm: None,
         extent_mm: extent(view).map(|value| (value * 10.0).round() / 10.0),
+        levels: Vec::new(),
     };
     let views = std::iter::once(summary(&shop.title, &shop.view))
         .chain(
