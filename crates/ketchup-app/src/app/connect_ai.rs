@@ -386,6 +386,35 @@ mod tests {
         );
     }
 
+    /// #2687 P1: the running Supervisors are listed (a scan of every process)
+    /// when the AI tab first shows its rows and on Check again, not on every
+    /// frame: rows already read stay as they are while the tab repaints.
+    #[test]
+    fn the_rows_are_read_once_and_on_check_again_not_every_frame() {
+        let mut harness = open_section(KetchupApp::new());
+        assert!(harness.state().live.harnesses.is_some());
+        let marker = std::path::PathBuf::from(r"C:\not-read-from-disk\config.toml");
+        harness.state_mut().live.harnesses = Some(vec![HarnessRow {
+            harness: Harness::Codex,
+            file: Some(marker.clone()),
+            registration: Registration::NotSetUp,
+            setup_error: None,
+        }]);
+        let files = |harness: &Kittest<'_, KetchupApp>| -> Vec<Option<std::path::PathBuf>> {
+            let rows = harness.state().live.harnesses.as_ref();
+            rows.map(|rows| rows.iter().map(|row| row.file.clone()).collect())
+                .unwrap_or_default()
+        };
+        for _ in 0..10 {
+            harness.step();
+        }
+        assert_eq!(files(&harness), vec![Some(marker.clone())]);
+        let again = harness.state().catalog.text("connect-ai-check-again");
+        harness.get_by_label(&again).click();
+        harness.run();
+        assert!(!files(&harness).contains(&Some(marker)));
+    }
+
     #[test]
     fn a_harness_starting_a_deleted_build_is_named_with_its_path_and_offered_a_replacement() {
         let mut app = KetchupApp::new();
