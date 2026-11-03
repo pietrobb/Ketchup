@@ -1,7 +1,7 @@
 //! #2687 (d): Connect AI end to end, from a profile no AI client has used
 //! with Kečup: Connect writes the client's settings, the client starts the
 //! server they name, and its tool call reaches this window. A second client
-//! then takes the window over from the first, which stopped answering.
+//! then takes the window over while the first one's request still waits for it.
 use crate::harness::Shell;
 use ketchup_app::live_bridge::mcp_setup::{Environment, Harness, Registration};
 use serde_json::{Value, json};
@@ -89,12 +89,23 @@ impl Client {
         client
     }
 
-    /// Sends one request and runs the window until its answer arrives.
-    fn ask(&mut self, shell: &mut Shell, method: &str, params: Value) -> Value {
+    /// Sends one request without running the window; returns its id.
+    fn send(&mut self, method: &str, params: Value) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         let request = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
         writeln!(self.input, "{request}").unwrap();
+        id
+    }
+
+    /// Sends one request and runs the window until its answer arrives.
+    fn ask(&mut self, shell: &mut Shell, method: &str, params: Value) -> Value {
+        let id = self.send(method, params);
+        self.answer(shell, id, method)
+    }
+
+    /// Runs the window until the answer to request `id` arrives.
+    fn answer(&mut self, shell: &mut Shell, id: u64, method: &str) -> Value {
         let mut answer = None;
         let answered = shell.wait_until(|shell| {
             shell.step();
@@ -116,13 +127,18 @@ impl Client {
             "tools/call",
             json!({"name": tool, "arguments": arguments}),
         );
-        let result = &answer["result"];
-        let text = result["content"][0]["text"].as_str().unwrap();
-        (
-            result["isError"] == true,
-            serde_json::from_str(text).unwrap(),
-        )
+        tool_result(&answer)
     }
+}
+
+/// A tool call's answer as the agent reads it: whether it failed, and its text.
+fn tool_result(answer: &Value) -> (bool, Value) {
+    let result = &answer["result"];
+    let text = result["content"][0]["text"].as_str().unwrap();
+    (
+        result["isError"] == true,
+        serde_json::from_str(text).unwrap(),
+    )
 }
 
 impl Drop for Client {
@@ -178,7 +194,6 @@ fn connect_writes_the_settings_whose_server_drives_this_window_and_a_new_client_
         "the status line names the AI"
     );
 
-    // The first client stops answering its user; a second one is started.
     let mut second = Client::start(&mut shell, &settings, &runtime, "codex");
     let (failed, windows) = second.call(&mut shell, "windows", json!({}));
     assert!(!failed, "{windows}");
@@ -187,10 +202,36 @@ fn connect_writes_the_settings_whose_server_drives_this_window_and_a_new_client_
         "{windows}"
     );
     assert!(windows["used_by_another_client"].is_string(), "{windows}");
-    let (failed, taken) = second.call(&mut shell, "connect", json!({}));
+
+    // MECH-1: the window stops answering (it is not run) while the first
+    // client waits for a save; its user starts over with the second client,
+    // whose connect reaches the window while the save still waits. The pauses
+    // let both requests arrive before the window runs again; it then grants
+    // the attach before it reads the save, as after a long load.
+    let saved = profile.path().join("frozen.ketchup");
+    let before = shell.app().live_bridge_stamp();
+    let save = first.send(
+        "tools/call",
+        json!({"name": "file", "arguments": {"action": "save_as",
+               "path": saved.to_str().unwrap(), "expected": status["stamp"]}}),
+    );
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let connect = second.send("tools/call", json!({"name": "connect", "arguments": {}}));
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let (failed, taken) = tool_result(&second.answer(&mut shell, connect, "connect"));
     assert!(!failed, "the window is taken over, not refused: {taken}");
     assert!(shell.has_visible_label(&connected_label(&shell, "Codex")));
     assert!(!shell.has_visible_label(&named));
+
+    // The first agent learns its save never ran and what the document is now.
+    let (failed, told) = tool_result(&first.answer(&mut shell, save, "file"));
+    assert!(failed, "{told}");
+    assert_eq!(told["error"], "connection_taken_over", "{told}");
+    let message = told["message"].as_str().unwrap();
+    assert!(message.contains("did not change"), "{message}");
+    assert_eq!(told["details"]["stamp"], json!(before), "{told}");
+    assert_eq!(shell.app().live_bridge_stamp(), before);
+    assert!(!saved.exists(), "the save that waited never ran");
 
     let (failed, told) = first.call(&mut shell, "inspect", json!({"action": "status"}));
     assert!(failed);

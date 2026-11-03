@@ -570,7 +570,11 @@ impl LiveBridge {
     /// drops the bridge, which ends them.
     pub(super) fn supersede(&mut self, now: Stamp) {
         let mut started = std::mem::take(&mut self.started);
-        while let Ok(queued) = self.queue.try_recv() {
+        // Dropping a queued request ends its connection's wait at once, so
+        // the requests are dropped only after the takeover is recorded:
+        // otherwise its connection ends without the last frame (MECH-1 E2E).
+        let never_ran: Vec<Queued> = std::iter::from_fn(|| self.queue.try_recv().ok()).collect();
+        for queued in &never_ran {
             started.remove(&queued.session);
         }
         let changed = started
@@ -585,6 +589,7 @@ impl LiveBridge {
             })
             .is_ok();
         debug_assert!(first, "the caller drops a bridge taken over");
+        drop(never_ran);
     }
 }
 
