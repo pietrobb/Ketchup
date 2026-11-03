@@ -317,6 +317,16 @@ fn a_client_without_its_command_or_folder_is_told_apart() {
     };
     let this = std::env::current_exe().unwrap();
     let rows = environment.rows(&this);
+    // Every client gets a row, also the ones not on this computer.
+    assert_eq!(
+        rows.iter().map(|row| row.harness).collect::<Vec<_>>(),
+        [
+            Harness::ClaudeCode,
+            Harness::Codex,
+            Harness::ClaudeDesktop,
+            Harness::Supervisor
+        ]
+    );
     assert_eq!(rows[0].registration, Registration::NotSetUp);
     for row in &rows[1..] {
         assert_eq!(
