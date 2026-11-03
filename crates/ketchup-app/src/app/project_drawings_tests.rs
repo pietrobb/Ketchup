@@ -1020,7 +1020,7 @@ fn the_level_marks_take_the_decimal_separator_of_the_sheet_language() {
         (LocaleCatalog::slovak(), ","),
         (LocaleCatalog::english(), "."),
     ] {
-        assert_eq!(catalog.text("drawings-decimal-separator"), separator);
+        assert_eq!(catalog.text("drawings-sheet-decimal-separator"), separator);
     }
 }
 
