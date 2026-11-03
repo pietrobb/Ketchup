@@ -47,9 +47,12 @@ pub(super) fn too_many_arguments(arguments: &[String]) -> Option<String> {
 /// An absolute file path and its SHA-256.
 type HashedFile = (PathBuf, String);
 
+/// A plugin folder and whether a path inside it names one of its staged files.
+pub(super) type StagedFolder<'a> = (&'a Path, &'a dyn Fn(&Path) -> bool);
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Manifest {
+pub(super) struct Manifest {
     name: String,
     /// Absolute path of an interpreter, or of a program relative to the folder.
     executable: String,
@@ -473,13 +476,15 @@ pub(super) fn plain_value(value: &str) -> bool {
 /// stays as given, with `..` resolved so it cannot lead out of the stage; a
 /// file outside is given by its absolute path; an argument naming no file
 /// reaches the process as given only when it cannot leave the run's private
-/// directory. `refuse` gives the caller's refusal for an argument that joins
-/// `..` or an absolute path to an option, `limit` its code for files past the
-/// limits of `plugin_files`.
+/// directory. `folder` comes with what says whether a path names one of its
+/// staged files: the copy that runs, not the folder, which may change after
+/// it was copied (review 2026-11-02 SEC-121). `refuse` gives the caller's
+/// refusal for an argument that joins `..` or an absolute path to an option,
+/// `limit` its code for files past the limits of `plugin_files`.
 pub(super) fn resolve_argument(
     argument: &str,
     base: &Path,
-    folder: Option<&Path>,
+    folder: Option<StagedFolder<'_>>,
     held: Option<&mut HeldFiles>,
     refuse: impl FnOnce(String) -> &'static str,
     limit: &'static str,
@@ -491,14 +496,15 @@ pub(super) fn resolve_argument(
     let parent_dir = Path::new(argument)
         .components()
         .any(|component| component == Component::ParentDir);
-    if folder.is_some_and(|folder| candidate.starts_with(folder)) {
-        if !plain_value(argument) && !candidate.is_file() {
+    if let Some((_, staged)) = folder.filter(|(folder, _)| candidate.starts_with(folder)) {
+        let staged = staged(&candidate);
+        if !plain_value(argument) && !staged {
             return Err(refuse(format!("argument {argument:?} {NOT_PLAIN}")));
         }
         // It reaches the process as written: a file named `-m` counted as the
         // hashed script while Python took `-m pip` as an option (review
         // 2026-11-01 SEC-100).
-        if argument.starts_with('-') && candidate.is_file() {
+        if argument.starts_with('-') && staged {
             return Err(refuse(format!(
                 "argument {argument:?} names a file of the plugin folder but starts with -, \
                  so an interpreter takes it for an option; write it ./{argument}"
@@ -558,7 +564,7 @@ pub(super) const NO_SCRIPT: &str = "The plugin's command line names no script fi
 /// hashed (with `held`, through handles held until the run ends). A relative
 /// argument naming a file outside the folder is given as its absolute path,
 /// so it names the same file wherever the process runs.
-fn outside_files(
+pub(super) fn outside_files(
     folder: &Path,
     manifest: &Manifest,
     files: &[(String, String)],
@@ -611,7 +617,7 @@ fn outside_files(
         let (given, file) = resolve_argument(
             argument,
             folder,
-            Some(folder),
+            Some((folder, &in_folder)),
             held.as_deref_mut(),
             invalid,
             "plugin_manifest_invalid",
