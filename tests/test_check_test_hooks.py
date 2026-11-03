@@ -80,5 +80,16 @@ def test_test_code_may_name_functions_headless(tmp_path):
     assert checker.check(tmp_path) == 0
 
 
+def test_a_hook_under_any_test_and_another_option_is_not_test_code(tmp_path):
+    # Review 2026-11-02 TST-120: the impl was left out as test code, so its hook was not seen.
+    write(tmp_path, "crates/a/src/lib.rs", (
+        '#[cfg(any(test, feature = "headless"))]\n'
+        "impl E {\n"
+        "    pub fn headless_install_result() {}\n"
+        "}\n"
+    ))
+    assert checker.ungated_hooks(tmp_path) == ["crates/a/src/lib.rs: headless_install_result"]
+
+
 def test_the_repository_has_no_ungated_hooks():
     assert checker.ungated_hooks(ROOT) == []

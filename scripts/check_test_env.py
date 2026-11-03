@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from source_roots import package_files  # noqa: E402
 from check_test_sleeps import is_test_file  # noqa: E402
-from check_tolerance_literals import TEST_MODULE  # noqa: E402  (a Rust file's unit tests)
+from check_tolerance_literals import TEST_BUILD_MODULE as TEST_MODULE  # noqa: E402  (a Rust file's unit tests)
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = "crates/ketchup-test-env/"
