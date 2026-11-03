@@ -17,7 +17,7 @@ fn list_validators_is_discoverable_read_only_and_routes_to_the_host() {
     let received = stand_in_window(root.path());
     let mut tools = Tools::new(None, Some(root.path().to_owned()));
     let listed = handle(
-        &mut tools,
+        &std::sync::Mutex::new(&mut tools),
         json!({"jsonrpc":"2.0", "id":1, "method":"tools/list"}),
     )
     .unwrap();
@@ -845,7 +845,7 @@ fn open_window_refuses_a_document_named_through_a_share_or_device_prefix() {
 fn call(tools: &mut Tools, name: &str, arguments: Value) -> Value {
     let request = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                          "params": {"name": name, "arguments": arguments}});
-    handle(tools, request).unwrap()["result"].clone()
+    handle(&std::sync::Mutex::new(tools), request).unwrap()["result"].clone()
 }
 
 fn text(result: &Value) -> Value {
@@ -854,9 +854,9 @@ fn text(result: &Value) -> Value {
 
 #[test]
 fn a_client_initializes_and_lists_every_tool() {
-    let mut tools = Tools::new(None, None);
+    let tools = std::sync::Mutex::new(Tools::new(None, None));
     let initialized = handle(
-        &mut tools,
+        &tools,
         json!({"jsonrpc": "2.0", "id": 0, "method": "initialize",
                "params": {"protocolVersion": "2025-03-26", "capabilities": {}}}),
     )
@@ -864,9 +864,9 @@ fn a_client_initializes_and_lists_every_tool() {
     assert_eq!(initialized["result"]["protocolVersion"], "2025-03-26");
     assert_eq!(initialized["result"]["serverInfo"]["name"], "ketchup");
     let notification = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
-    assert!(handle(&mut tools, notification).is_none());
+    assert!(handle(&tools, notification).is_none());
     let listed = handle(
-        &mut tools,
+        &tools,
         json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
     )
     .unwrap();
@@ -895,7 +895,7 @@ fn a_client_initializes_and_lists_every_tool() {
         ]
     );
     let unknown = handle(
-        &mut tools,
+        &tools,
         json!({"jsonrpc": "2.0", "id": 2, "method": "resources/list"}),
     )
     .unwrap();

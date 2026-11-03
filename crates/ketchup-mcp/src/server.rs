@@ -2,8 +2,11 @@
 use crate::{discovery, schema, tools::Tools};
 use serde_json::{Map, Value, json};
 use std::{
+    borrow::BorrowMut,
     io::{self, BufRead, Write},
     path::PathBuf,
+    sync::{Arc, Mutex, PoisonError},
+    thread,
 };
 
 /// Protocol versions this server speaks, newest first.
@@ -14,40 +17,84 @@ const MAX_LINE_BYTES: usize = 32 * 1024 * 1024;
 
 /// Serves MCP until stdin closes. `app_executable` starts new windows for `open_window`.
 pub fn serve_stdio(app_executable: Option<PathBuf>) -> io::Result<()> {
-    let mut tools = Tools::new(app_executable, discovery::default_root());
-    serve(io::stdin().lock(), io::stdout().lock(), |message| {
-        handle(&mut tools, message)
+    let tools = Mutex::new(Tools::new(app_executable, discovery::default_root()));
+    serve(io::stdin().lock(), io::stdout(), move |message| {
+        handle(&tools, message)
     })
 }
 
-/// Answers each line of `input` on `output` until `input` ends. A line that is
-/// no JSON, or longer than [`MAX_LINE_BYTES`], gets an error reply and the
-/// server goes on with the next (review 2026-10-31 P3).
+/// Answers each line of `input` on `output` until `input` ends, each message
+/// on its own thread, so a ping or tools/list is answered while a tool call
+/// waits for the window (MECH-1). A line that is no JSON, or longer than
+/// [`MAX_LINE_BYTES`], gets an error reply and the server goes on with the
+/// next (review 2026-10-31 P3). Requests still running when `input` ends are
+/// answered before this returns.
 fn serve(
     mut input: impl BufRead,
-    mut output: impl Write,
-    mut handle: impl FnMut(Value) -> Option<Value>,
+    output: impl Write + Send + 'static,
+    handle: impl Fn(Value) -> Option<Value> + Send + Sync + 'static,
 ) -> io::Result<()> {
+    let output = Arc::new(Mutex::new(output));
+    let handle = Arc::new(handle);
+    let mut running = Vec::new();
     while let Some(line) = read_line(&mut input)? {
-        let reply = match line {
-            None => Some(failure(
+        let message = match line {
+            None => Err(failure(
                 Value::Null,
                 -32600,
                 &format!("a message is at most {} MiB", MAX_LINE_BYTES >> 20),
             )),
             Some(bytes) if bytes.trim_ascii().is_empty() => continue,
-            Some(bytes) => match serde_json::from_slice::<Value>(&bytes) {
-                Ok(message) => handle(message),
-                Err(error) => Some(failure(Value::Null, -32700, &error.to_string())),
-            },
+            Some(bytes) => serde_json::from_slice::<Value>(&bytes)
+                .map_err(|error| failure(Value::Null, -32700, &error.to_string())),
         };
-        if let Some(reply) = reply {
-            serde_json::to_writer(&mut output, &reply)?;
-            output.write_all(b"\n")?;
-            output.flush()?;
+        match message {
+            Ok(message) => {
+                let (output, handle) = (Arc::clone(&output), Arc::clone(&handle));
+                running.push(thread::spawn(move || match handle(message) {
+                    Some(reply) => write_reply(&output, &reply),
+                    None => Ok(()),
+                }));
+            }
+            Err(reply) => write_reply(&output, &reply)?,
+        }
+        finish(&mut running, false)?;
+    }
+    finish(&mut running, true)
+}
+
+/// Joins the request threads that have ended, or all of them with `wait`,
+/// and returns the first failure to write a reply.
+fn finish(running: &mut Vec<thread::JoinHandle<io::Result<()>>>, wait: bool) -> io::Result<()> {
+    let mut first_failure = Ok(());
+    for request in std::mem::take(running) {
+        if !wait && !request.is_finished() {
+            running.push(request);
+            continue;
+        }
+        let ended = match request.join() {
+            Ok(ended) => ended,
+            Err(panic) => Err(io::Error::other(format!(
+                "a request failed unexpectedly: {}",
+                panic
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+                    .unwrap_or("no message")
+            ))),
+        };
+        if first_failure.is_ok() {
+            first_failure = ended;
         }
     }
-    Ok(())
+    first_failure
+}
+
+fn write_reply(output: &Mutex<impl Write>, reply: &Value) -> io::Result<()> {
+    let mut output = output.lock().unwrap_or_else(PoisonError::into_inner);
+    serde_json::to_writer(&mut *output, reply)?;
+    output.write_all(b"\n")?;
+    output.flush()
 }
 
 /// The next line without its end: `None` when input has ended, `Some(None)`
@@ -79,8 +126,9 @@ fn read_line(input: &mut impl BufRead) -> io::Result<Option<Option<Vec<u8>>>> {
     Ok(read.then_some((!oversized).then_some(line)))
 }
 
-/// The reply to one message; notifications get none.
-pub(crate) fn handle(tools: &mut Tools, message: Value) -> Option<Value> {
+/// The reply to one message; notifications get none. Tool calls take turns
+/// on `tools`; every other request is answered without waiting for them.
+pub(crate) fn handle(tools: &Mutex<impl BorrowMut<Tools>>, message: Value) -> Option<Value> {
     let id = message.get("id").cloned()?;
     let Some(method) = message.get("method").and_then(Value::as_str) else {
         return Some(failure(id, -32600, "a request needs a method"));
@@ -99,7 +147,8 @@ pub(crate) fn handle(tools: &mut Tools, message: Value) -> Option<Value> {
                 Some(Value::Object(arguments)) => arguments.clone(),
                 Some(_) => return Some(failure(id, -32602, "arguments must be an object")),
             };
-            let output = tools.call(name, arguments);
+            let mut tools = tools.lock().unwrap_or_else(PoisonError::into_inner);
+            let output = BorrowMut::<Tools>::borrow_mut(&mut *tools).call(name, arguments);
             json!({"content": output.content, "isError": output.is_error})
         }
         _ => return Some(failure(id, -32601, &format!("method not found: {method}"))),
@@ -129,17 +178,13 @@ mod tests {
     use super::*;
 
     fn replies(input: &[u8]) -> Vec<Value> {
-        let mut output = Vec::new();
-        serve(input, &mut output, |message| {
+        let (send_reply, replies) = std::sync::mpsc::channel();
+        serve(input, Replies(send_reply, Vec::new()), |message| {
             let id = message.get("id").cloned()?;
             Some(json!({"jsonrpc": "2.0", "id": id, "result": {}}))
         })
         .expect("served to the end");
-        output
-            .split(|byte| *byte == b'\n')
-            .filter(|line| !line.is_empty())
-            .map(|line| serde_json::from_slice(line).expect("a JSON reply"))
-            .collect()
+        replies.try_iter().collect()
     }
 
     /// Review 2026-10-31 P3: one byte that is not UTF-8 ended the server, and a
@@ -205,13 +250,16 @@ mod tests {
         let (send_line, lines) = std::sync::mpsc::channel();
         let (send_reply, replies) = std::sync::mpsc::channel();
         let (answer_the_call, window_answers) = std::sync::mpsc::channel::<()>();
+        let window_answers = Mutex::new(window_answers);
         std::thread::spawn(move || {
             let input = io::BufReader::new(Lines(lines, Vec::new()));
-            serve(input, Replies(send_reply, Vec::new()), |message| {
+            serve(input, Replies(send_reply, Vec::new()), move |message| {
                 let id = message.get("id").cloned()?;
                 if message["method"] == "tools/call" {
-                    // A window that does not answer this request.
-                    let _ = window_answers.recv_timeout(std::time::Duration::from_secs(60));
+                    // A window that does not answer this request until the test ends.
+                    let window = window_answers.lock().expect("one call at a time");
+                    let answered = window.recv_timeout(std::time::Duration::from_secs(60));
+                    assert!(answered.is_err(), "the test never answers the call");
                 }
                 Some(json!({"jsonrpc": "2.0", "id": id, "result": {}}))
             })
