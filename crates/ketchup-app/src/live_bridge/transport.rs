@@ -219,6 +219,7 @@ fn response_wait(request: &Request) -> Duration {
         Request::Open { .. } | Request::Export { .. } | Request::DrawingExport { .. } => {
             ketchup_mcp::OPEN_RESPONSE_WAIT
         }
+        Request::ExportDrawings { .. } => ketchup_mcp::DRAWINGS_RESPONSE_WAIT,
         _ => DEFAULT_RESPONSE_WAIT,
     }
 }
@@ -1162,6 +1163,21 @@ mod tests {
             serde_json::from_value(json!({"method": "open", "path": "C:\\house.ketchup"})).unwrap();
         assert_eq!(response_wait(&open), ketchup_mcp::OPEN_RESPONSE_WAIT);
         assert!(response_wait(&open) > DEFAULT_RESPONSE_WAIT);
+    }
+
+    /// Review 2026-11-02 MCP-121: a drawing set or sheet is a job the transport
+    /// cancels when its wait ends (nothing written, settings undone); with the
+    /// default 30 s a set of a large house never exported through MCP.
+    #[test]
+    fn a_drawing_export_outlasts_the_default_wait() {
+        for request in [
+            json!({"method": "export_drawings", "path": "C:\\set.pdf"}),
+            json!({"method": "export_drawings", "path": "C:\\sheet.dxf", "sheet_id": 1}),
+        ] {
+            let request: Request = serde_json::from_value(request).unwrap();
+            assert_eq!(response_wait(&request), ketchup_mcp::DRAWINGS_RESPONSE_WAIT);
+            assert!(response_wait(&request) > Duration::from_secs(10 * 60));
+        }
     }
 
     /// Review 2026-10-21: an import was given 120 s whatever its file, then
