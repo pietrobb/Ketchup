@@ -209,6 +209,8 @@ mod tests {
         let path = directory.path().join("House.ketchup");
         std::fs::write(&path, b"x").unwrap();
         let other = directory.path().join("other.ketchup");
+        // On Unix `sub/..` names the directory only when `sub` exists.
+        std::fs::create_dir(directory.path().join("sub")).unwrap();
         let mut recent = list(&MemoryRecentFiles::default());
         recent.add(&path).unwrap();
         recent.add(&other).unwrap();
