@@ -2,6 +2,8 @@
 //! what was refused (`code`), when (`phase`), which field, part or program line
 //! (`target`), why (`reason`), what to change (`fix_hint`), and keeps the error
 //! that caused it (`source`).
+// An error is carried, never dropped (review 2026-11-02 TST-121).
+#![deny(clippy::let_underscore_must_use, clippy::map_err_ignore)]
 
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;

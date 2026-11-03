@@ -3,6 +3,8 @@
 //! the application delegate to itself, so the app registers its own Apple
 //! Event handler once AppKit has installed its defaults.
 #![cfg(target_os = "macos")]
+// An error is carried, never dropped (review 2026-11-02 TST-121).
+#![deny(clippy::let_underscore_must_use, clippy::map_err_ignore)]
 // The whole crate is the Objective-C bridge: defining the handler class and
 // registering its selectors with AppKit is unsafe by nature.
 #![allow(unsafe_code)]

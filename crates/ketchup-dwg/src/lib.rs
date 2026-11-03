@@ -6,6 +6,8 @@
 //! bytes cross this API, so no other crate depends on acadrust's types. A panic inside acadrust
 //! is caught and returned as [`DwgError::Panicked`] with its message; an error of acadrust is
 //! kept as the cause of [`DwgError::Library`].
+// An error is carried, never dropped (review 2026-11-02 TST-121).
+#![deny(clippy::let_underscore_must_use, clippy::map_err_ignore)]
 
 use std::any::Any;
 use std::error::Error;

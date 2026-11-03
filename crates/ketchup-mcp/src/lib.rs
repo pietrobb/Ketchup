@@ -6,6 +6,8 @@
 //! the window's live bridge: it finds windows in the per-user discovery
 //! directory, attaches through the window's local attach endpoint and forwards
 //! tool calls as bridge requests. The window validates everything itself.
+// An error is carried, never dropped (review 2026-11-02 TST-121).
+#![deny(clippy::map_err_ignore)]
 // The tool schemas are single `json!` literals deeper than the default limit of 128.
 #![recursion_limit = "256"]
 

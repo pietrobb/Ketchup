@@ -244,6 +244,32 @@ def test_an_error_the_else_branch_cannot_see_counts(tmp_path):
     }
 
 
+def test_the_arms_closures_and_lets_that_drop_an_error_count(tmp_path):
+    # Review 2026-11-02 TST-121: none of these was seen.
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "let a = match parse(b) { Ok(v) => v, Err(_) => {\n    return Err(Invalid);\n} };\n"
+        "let b = match call() { Ok(v) => v, Err(_ignored) => continue };\n"
+        "let c = match call() { Ok(v) => v, Err(_named) => None };\n"
+        'let d = parse(e).unwrap_or_else(|_| "0".to_owned());\n'
+        "let _ = sender.send(message);\n"
+        "// Counted by the forms before them, or dropping no error.\n"
+        "let f = match call() { Ok(v) => v, Err(_) => return Err(Invalid) };\n"
+        "let g = match call() { Ok(v) => Some(v), Err(_) => None };\n"
+        "let h = value.unwrap_or_else(|| fallback());\n"
+        "let _ = &mut borrowed;\n"
+        "let _guard = lock(span);\n",
+    )
+    assert checker.current_counts(tmp_path) == {
+        "crates/a/src/lib.rs dropped_arm": 3,
+        "crates/a/src/lib.rs dropped_closure": 1,
+        "crates/a/src/lib.rs let_underscore": 1,
+        "crates/a/src/lib.rs discard": 1,
+        "crates/a/src/lib.rs dropped_quietly": 1,
+    }
+
+
 def test_a_new_form_is_recorded_once_and_then_may_only_shrink(tmp_path):
     # A form the baseline does not list yet is recorded as found when it is
     # added to the check; a form it lists may never grow, even from zero.

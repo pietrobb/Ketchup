@@ -7,6 +7,8 @@
 //!
 //! The limits below bound the model space. They are not tolerances; they keep every
 //! coordinate where `f64` still resolves the linear tolerance with margin.
+// An error is carried, never dropped (review 2026-11-02 TST-121).
+#![deny(clippy::let_underscore_must_use, clippy::map_err_ignore)]
 use std::fmt;
 
 pub mod limits;

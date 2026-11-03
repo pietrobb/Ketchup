@@ -7,6 +7,8 @@
 //!
 //! Domain vocabulary (boards, dowels, grooves) lives in
 //! `library/prelude.star`, not in Rust.
+// An error is carried, never dropped (review 2026-11-02 TST-121).
+#![deny(clippy::map_err_ignore)]
 
 pub mod bom;
 pub mod cad;

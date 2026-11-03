@@ -2,6 +2,8 @@
 //! rule-output identities, sketches and prismatic checks. It depends on nothing but the
 //! tolerance crate, so a change here never waits for the document model to build.
 #![forbid(unsafe_code)]
+// An error is carried, never dropped (review 2026-11-02 TST-121).
+#![deny(clippy::let_underscore_must_use)]
 
 pub mod contact_patch;
 pub mod derived;

@@ -2,6 +2,8 @@
 //! WebAssembly. It opens the model a shared link names (`?model=`), lets the
 //! customer open local files and downloads their comments; nothing is uploaded.
 #![cfg(target_arch = "wasm32")]
+// An error is carried, never dropped (review 2026-11-02 TST-121).
+#![deny(clippy::map_err_ignore)]
 // wasm-bindgen exports expand to unsafe ABI shims; this file has no unsafe blocks.
 #![allow(unsafe_code)]
 
