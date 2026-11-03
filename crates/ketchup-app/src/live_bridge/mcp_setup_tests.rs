@@ -115,6 +115,46 @@ fn connecting_supervisor_again_replaces_its_old_copy_and_keeps_its_other_servers
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// The installed Supervisor of 9. 10. starts
+/// `%LOCALAPPDATA%\Programs\Supervisor\Kecup\ketchup-app.exe`, and its
+/// `mcp_bridge.py` expands the variables (`os.path.expandvars`): the row names
+/// the program that exists, not a missing one. Cargo names the package's
+/// folder to the tests it runs, so the program here is its `Cargo.toml`.
+#[test]
+fn a_supervisor_command_with_a_windows_variable_names_the_program_it_starts() {
+    let home = temporary_home("supervisor-variable");
+    let environment = clean_profile(&home);
+    let file = environment.config_file(Harness::Supervisor).unwrap();
+    create_parent(&file);
+    let command = Path::new("%CARGO_MANIFEST_DIR%").join("Cargo.toml");
+    let servers = serde_json::json!({"mcpServers": {"ketchup": {"command": command}}});
+    std::fs::write(&file, servers.to_string()).unwrap();
+    let program = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let this = std::env::current_exe().unwrap();
+    assert_eq!(
+        environment.registration(Harness::Supervisor, &this),
+        Registration::Elsewhere {
+            command: program.to_string_lossy().into_owned(),
+            exists: true
+        }
+    );
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn variables_are_expanded_as_supervisor_does_and_an_unknown_one_stays() {
+    // Cargo names the package to the tests it runs.
+    assert_eq!(
+        expand_variables(r"a\%CARGO_PKG_NAME%\b"),
+        r"a\ketchup-app\b"
+    );
+    assert_eq!(
+        expand_variables("%KETCHUP_NO_SUCH_VARIABLE%\\x"),
+        "%KETCHUP_NO_SUCH_VARIABLE%\\x"
+    );
+    assert_eq!(expand_variables("100%% and 5%"), "100% and 5%");
+}
+
 /// Capability review run 432: a Supervisor reads `skills\mcp_servers.json` of
 /// its own instance folder (its `load_skills(cwd)`, and `mcp_bridge.py` takes
 /// the file next to itself), so the dev checkout and every project's instance

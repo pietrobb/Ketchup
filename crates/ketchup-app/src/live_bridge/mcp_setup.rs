@@ -232,9 +232,12 @@ impl Environment {
             Harness::ClaudeCode | Harness::ClaudeDesktop | Harness::Supervisor => {
                 // A file that is no JSON shows as not set up; Connect names it.
                 let config: serde_json::Value = serde_json::from_str(&text).ok()?;
-                config["mcpServers"][SERVER]["command"]
-                    .as_str()
-                    .map(str::to_owned)
+                let command = config["mcpServers"][SERVER]["command"].as_str()?;
+                Some(if harness == Harness::Supervisor {
+                    expand_variables(command)
+                } else {
+                    command.to_owned()
+                })
             }
         }
     }
@@ -407,6 +410,33 @@ fn find_program(folders: &[PathBuf], name: &str) -> Option<PathBuf> {
             .map(|extension| folder.join(format!("{name}{extension}")))
             .find(|candidate| candidate.is_file())
     })
+}
+
+/// `text` with each `%NAME%` replaced by the variable's value, as Supervisor's
+/// `mcp_bridge.py` reads its commands (`os.path.expandvars`): an unknown name
+/// stays as written and `%%` is one `%`.
+fn expand_variables(text: &str) -> String {
+    let mut expanded = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find('%') {
+        expanded.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('%') else {
+            rest = &rest[start..];
+            break;
+        };
+        let name = &after[..end];
+        if name.is_empty() {
+            expanded.push('%');
+        } else if let Some(value) = std::env::var_os(name) {
+            expanded.push_str(&value.to_string_lossy());
+        } else {
+            expanded.push_str(&rest[start..start + end + 2]);
+        }
+        rest = &after[end + 1..];
+    }
+    expanded.push_str(rest);
+    expanded
 }
 
 fn same_program(command: &Path, executable: &Path) -> bool {
