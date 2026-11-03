@@ -50,6 +50,12 @@ impl DockTab {
 }
 
 const TAB_HEIGHT: f32 = 50.0;
+/// The tabs share the dock's width equally.
+const TAB_SHARE: f32 = 1.0 / 5.0;
+const _: () = assert!(
+    DockTab::ALL.len() == 5,
+    "TAB_SHARE follows the number of tabs"
+);
 
 /// The size of one part along its own axes, else of the selection's world box.
 fn shown_size(measures: &SelectionMeasures) -> [f64; 3] {
@@ -172,10 +178,10 @@ impl KetchupApp {
             for tag in &tags {
                 tag_chip(ui, palette, tag);
             }
-            if let Some(source) = source {
+            if let Some(lines) = source {
                 let link = ui.add(
                     egui::Label::new(
-                        egui::RichText::new(format!("{source} →"))
+                        egui::RichText::new(format!("{lines} →"))
                             .monospace()
                             .color(palette.accent),
                     )
@@ -237,7 +243,7 @@ impl KetchupApp {
             .validator_report()
             .map_or(0, |report| report.issue_count);
         let connected = self.live.consent_attached || self.live.launch_attached;
-        let width = ui.available_width() / DockTab::ALL.len() as f32;
+        let width = ui.available_width() * TAB_SHARE;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             for tab in DockTab::ALL {

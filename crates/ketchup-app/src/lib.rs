@@ -167,7 +167,6 @@ mod selection_state;
 use ketchup_rejection::{Rejection, RejectionPhase};
 use refusal::{Refuse, failed, show_value_refusal, value_field};
 mod slot;
-mod starlark_source;
 mod tool_preview;
 mod transform_operation;
 mod validator_ui;
@@ -2367,8 +2366,6 @@ mod mesh_snapping_tests;
 mod nested_transform_tests;
 #[cfg(test)]
 mod planar_offset_tests;
-#[cfg(test)]
-mod program_source_ui_tests;
 #[cfg(test)]
 mod program_variants_ui_tests;
 #[cfg(test)]

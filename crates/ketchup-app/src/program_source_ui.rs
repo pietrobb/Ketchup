@@ -3,12 +3,16 @@
 //! lines that build the selected part highlighted; then the program's
 //! parameters and variants.
 
+mod starlark_source;
+#[cfg(test)]
+mod tests;
+
 use super::*;
 use crate::program_evaluation::Lookup;
-use crate::starlark_source::{self, Function, Token};
 use crate::theme::CodeColors;
 use ketchup_application::SourceLines;
 use ketchup_model::document::RuleProgramSource;
+use starlark_source::{Function, Token};
 
 /// Program evaluated once per source revision, so selecting parts stays cheap.
 #[derive(Clone)]

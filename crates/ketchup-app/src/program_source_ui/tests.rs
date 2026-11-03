@@ -1,9 +1,9 @@
-use super::program_source_ui::program_source_line_label;
-use super::tests::through_cut_document;
+use super::program_source_line_label;
 use super::*;
+use crate::tests::through_cut_document;
 use egui_kittest::kittest::Queryable;
 
-const TABLE: &str = include_str!("../../../examples/programs/table.star");
+const TABLE: &str = include_str!("../../../../examples/programs/table.star");
 
 fn open_table(directory: &std::path::Path) -> KetchupApp {
     let path = directory.join("table.ketchup");
