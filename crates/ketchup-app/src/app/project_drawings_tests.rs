@@ -1011,6 +1011,19 @@ fn the_drawings_window_keeps_the_sheet_language_and_the_default_title_follows_it
     assert!(app.drawings.unsaved);
 }
 
+/// Měchenice MECH-6: the level marks of Czech and Slovak sheets write a decimal
+/// comma (+2,850), English ones a point.
+#[test]
+fn the_level_marks_take_the_decimal_separator_of_the_sheet_language() {
+    for (catalog, separator) in [
+        (LocaleCatalog::czech_sheets(), ","),
+        (LocaleCatalog::slovak(), ","),
+        (LocaleCatalog::english(), "."),
+    ] {
+        assert_eq!(catalog.text("drawings-decimal-separator"), separator);
+    }
+}
+
 /// Review 2026-10-19 P3: the open window read the document's sheet settings
 /// in every frame and wrote its own fields back whenever they differed, so
 /// settings the AI wrote, or those of a document opened meanwhile, were

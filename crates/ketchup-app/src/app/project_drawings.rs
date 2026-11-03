@@ -1068,6 +1068,7 @@ impl KetchupApp {
                 openings,
                 shop,
                 cutting,
+                decimal_comma: catalog.text("drawings-decimal-separator") == ",",
             },
             info,
         })

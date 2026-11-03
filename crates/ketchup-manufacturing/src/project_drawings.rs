@@ -22,6 +22,7 @@ use std::collections::BTreeMap;
 
 mod annotations;
 mod cutting;
+mod levels;
 mod openings;
 mod set;
 mod shop;
@@ -105,6 +106,9 @@ pub struct ViewSummary {
     pub cut_at_mm: Option<f64>,
     /// Model extent of the view: width and height.
     pub extent_mm: [f64; 2],
+    /// The level marks of a section or an elevation, lowest first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub levels: Vec<String>,
 }
 
 /// Why no sheet could be drawn.
@@ -470,6 +474,8 @@ struct DrawnView {
     /// Boxed marks where they stand: the windows and doors a plan shows, the
     /// position numbers of a shop drawing.
     marks: Vec<([f64; 2], String)>,
+    /// The level marks right of a section or an elevation: view height and text.
+    levels: Vec<(f64, String)>,
     cut_at_mm: Option<f64>,
 }
 
@@ -613,6 +619,7 @@ fn draw_view(
         solids: min[0].is_finite().then_some((min, max)),
         annotations: None,
         marks: Vec::new(),
+        levels: Vec::new(),
         // `cut` is measured along the depth direction, which is ±1 on the
         // world axis the plane is normal to: divide to get that coordinate.
         cut_at_mm: frame.cut.map(|cut| {
@@ -846,6 +853,12 @@ fn draw_view_on_page(
     for (point, mark) in &view.marks {
         openings::draw_mark(page, at(*point), mark, visible.is_none());
     }
+    let levels = view
+        .levels
+        .iter()
+        .map(|(height, text)| (at([view.min[0], *height])[1], text.clone()))
+        .collect::<Vec<_>>();
+    levels::draw_levels(page, at(view.max)[0], &levels);
     let [outer_left, outer_bottom] = at(view.min);
     // Overall width below the view and overall height on its left, outside
     // whatever the view draws.
@@ -1229,6 +1242,26 @@ mod tests {
             .flat_map(|sheet| &sheet.views)
             .find(|summary| summary.view == view)
             .unwrap()
+    }
+
+    /// Měchenice MECH-6: the sections and elevations mark ±0,000 at the floor and
+    /// the top above it; the plans mark no level.
+    #[test]
+    fn sections_and_elevations_mark_their_levels_against_the_floor() {
+        let options = DrawingSetOptions {
+            decimal_comma: true,
+            ..options(&room(), None)
+        };
+        let set = drawing_set(&room(), &options).unwrap();
+        for view in [ProjectView::LongitudinalSection, ProjectView::Front] {
+            assert_eq!(summary(&set, view).levels, ["±0,000", "+2,500"], "{view:?}");
+        }
+        assert!(summary(&set, ProjectView::Plan).levels.is_empty());
+        for kind in [SheetKind::Sections, SheetKind::Elevations] {
+            let sheet = sheet_of(&set, kind);
+            assert!(texts(&sheet.page).contains(&"+2,500"), "{kind:?}");
+            assert!(texts(&sheet.lines).contains(&"±0,000"), "{kind:?} DXF");
+        }
     }
 
     /// MF-4: a half millimetre rounds up, as a drawing reads, not to the even neighbour.
