@@ -1011,6 +1011,41 @@ fn the_drawings_window_keeps_the_sheet_language_and_the_default_title_follows_it
     assert!(app.drawings.unsaved);
 }
 
+/// Měchenice MECH-6: the sections the window exports mark the floor and the
+/// top, with a decimal comma on Czech and Slovak sheets (+2,500) and a point
+/// on English ones, whatever the window's language.
+#[test]
+fn the_level_marks_take_the_decimal_separator_of_the_sheet_language() {
+    let mut app = KetchupApp::new();
+    add_box(&mut app, 901, "wall A", 0.0);
+    // The floor the wall stands on: its top at 0.
+    app.document
+        .apply_batch(&crate::app::drawing::create_box_batch(
+            DefinitionId(903),
+            [FeatureId(9030), FeatureId(9031)],
+            OccurrenceId(903),
+            ["slab", "profile", "extrusion", "slab"],
+            Vec3::new(0.0, 0.0, -200.0),
+            Vec3::new(3000.0, 3000.0, 200.0),
+        ))
+        .unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    for (language, levels) in [
+        (SheetLanguage::Czech, ["±0,000", "+2,500"]),
+        (SheetLanguage::Slovak, ["±0,000", "+2,500"]),
+        (SheetLanguage::English, ["±0.000", "+2.500"]),
+    ] {
+        let mut settings = app.sheet_settings();
+        settings.language = Some(language);
+        app.store_sheet_settings(settings);
+        let set = app.project_drawings().unwrap();
+        let section = views(&set)
+            .find(|summary| summary.view == ProjectView::LongitudinalSection)
+            .unwrap();
+        assert_eq!(section.levels, levels, "{language:?}");
+    }
+}
+
 /// Review 2026-10-19 P3: the open window read the document's sheet settings
 /// in every frame and wrote its own fields back whenever they differed, so
 /// settings the AI wrote, or those of a document opened meanwhile, were
