@@ -171,9 +171,24 @@ impl KetchupApp {
                 bundle.loss_report.as_bytes(),
                 &precondition,
             )?;
-            Ok(Written::with_loss_report(path, &report_path))
+            Ok(Written {
+                omitted_parts: bundle.omitted_parts,
+                ..Written::with_loss_report(path, &report_path)
+            })
         });
-        self.report_export_outcome("dxf", path, result)
+        let result = self.report_export_outcome("dxf", path, result);
+        if let Ok(written) = &result
+            && !written.omitted_parts.is_empty()
+        {
+            self.digest = self.catalog.format(
+                "digest-exported-dxf-omitted",
+                &BTreeMap::from([
+                    ("path", path.display().to_string()),
+                    ("parts", written.omitted_parts.join(", ")),
+                ]),
+            );
+        }
+        result
     }
 
     pub(crate) fn export_current_model_stl_to(

@@ -333,6 +333,9 @@ pub(crate) struct Written {
     pub(crate) support_report: Option<PathBuf>,
     /// Further files of the release (`x.drawings.svg`, `x.bends.csv`).
     pub(crate) companions: Vec<PathBuf>,
+    /// Visible parts the export left out, by name (a plan DXF/DWG leaves out
+    /// a part whose profiles are not parallel to XY, Měchenice MECH-9).
+    pub(crate) omitted_parts: Vec<String>,
 }
 
 impl Written {

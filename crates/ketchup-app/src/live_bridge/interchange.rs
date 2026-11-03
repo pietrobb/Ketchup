@@ -295,6 +295,8 @@ impl LiveBridge {
             // BTLx names what it cannot carry, such as threads, in its support report.
             "support_report": written.support_report.as_deref().map(shown),
             "companions": written.companions.iter().map(|path| shown(path)).collect::<Vec<_>>(),
+            // A plan DXF/DWG draws the rest and names the parts it could not.
+            "omitted_parts": written.omitted_parts,
             "basis": "visible_parts",
         }))
     }
