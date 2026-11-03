@@ -138,6 +138,30 @@ fn a_loft_tapers_between_its_sections_and_orders_them_upwards() {
     assert!(cut.contains("subtract()"), "{cut}");
 }
 
+/// Měchenice MECH-7: a lofted membrane is hollowed open at its end sections;
+/// a swept part still has no end faces to open.
+#[test]
+fn a_loft_shells_open_at_its_start_and_end_sections() {
+    const SKIN: &str = "skin = loft(\"skin\", sections = [([(0, 0), (40, 0), (40, 40), (0, 40)], 0), \
+                        ([(8, 8), (32, 8), (32, 32), (8, 32)], 300)])\n";
+    let skin = part(
+        &format!("{SKIN}shell(skin, thickness = 3, open = [\"start\", \"end\"])"),
+        "skin",
+    );
+    assert_eq!(
+        skin.exact_face_label("skin shell.start").unwrap(),
+        "skin shell.start"
+    );
+    let side = error(&format!(
+        "{SKIN}shell(skin, thickness = 3, open = [\"side\"])"
+    ));
+    assert!(side.contains("start") && side.contains("end"), "{side}");
+    let swept = error(&format!(
+        "{RAIL}shell(\"rail\", thickness = 2, open = [\"start\"])"
+    ));
+    assert!(swept.contains("swept"), "{swept}");
+}
+
 #[test]
 fn a_point_path_refusal_names_its_kind_and_the_offending_point() {
     let flat = [[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [100.0, 100.0, 0.0]];

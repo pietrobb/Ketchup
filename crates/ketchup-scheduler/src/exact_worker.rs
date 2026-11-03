@@ -1203,7 +1203,14 @@ fn evaluate_exact_brep_graph(
                 sections,
                 guide,
                 continuity,
-            } => exact_brep_loft(backend, graph, sections, guide.as_ref(), *continuity, true)?,
+            } => {
+                let output =
+                    exact_brep_loft(backend, graph, sections, guide.as_ref(), *continuity, true)?;
+                if needs_names[node_index] {
+                    produced_face_names = Some(exact_brep_loft_face_names(graph, &output)?);
+                }
+                output
+            }
             ExactBRepOperation::LoftSurface {
                 sections,
                 guide,
@@ -2012,6 +2019,39 @@ fn exact_brep_loft(
             backend.boolean_bodies(&output.body, &tool.body, ExactBodyBooleanOperation::Cut)?;
     }
     Ok(output)
+}
+
+/// Program face names of a lofted solid: its first and last section's caps
+/// are `start` and `end` as the loft builder reports them; every other face
+/// is a `side`, which no program can name.
+fn exact_brep_loft_face_names(
+    graph: &ExactBRepGraph,
+    output: &ExactOpOutput,
+) -> Result<Vec<String>, ketchup_exact::GeometryError> {
+    let mut names = vec!["side".to_owned(); output.body.topology.faces.len()];
+    let mut caps = [0_usize; 2];
+    for record in &output.topology_history {
+        let (cap, name) = match record.semantic_role.as_deref() {
+            Some("loft.start") => (0, "start"),
+            Some("loft.end") => (1, "end"),
+            _ => continue,
+        };
+        let Some(slot) = record
+            .output_face_ordinal
+            .and_then(|face| names.get_mut(face as usize))
+        else {
+            continue;
+        };
+        *slot = name.to_owned();
+        caps[cap] += 1;
+    }
+    if caps != [1, 1] {
+        return Err(exact_brep_graph_error(
+            graph,
+            "the loft has no single start and end section face to name (a loft with holes or a guide has none)",
+        ));
+    }
+    Ok(names)
 }
 
 fn exact_brep_revolve(
