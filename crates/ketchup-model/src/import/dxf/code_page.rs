@@ -38,11 +38,24 @@ impl CodePage {
 
     /// Whether the text `high` saw reads wrong in this code page: a byte of it reads as a
     /// C1 control character, which no drawing writes but a Windows code page reads a byte
-    /// it leaves undefined as; or, in Windows-1252, a word of it reads as Central European
-    /// text read in 1252 does ([`HighBytes::misread_words`]). Either way the text was most
-    /// likely written in another code page than its header names.
+    /// it leaves undefined as; or, in Windows-1252, more of its words read rightly only in
+    /// Windows-1250 than only in 1252 ([`HighBytes::see`]), so that one word does not turn
+    /// a Western drawing (review 2026-11-02 UL-120). Either way the text was most likely
+    /// written in another code page than its header names.
     pub(super) fn doubtful(self, high: &HighBytes) -> bool {
-        self.reads_c1(high) || (self.is(encoding_rs::WINDOWS_1252) && high.misread_words > 0)
+        self.reads_c1(high)
+            || (self.is(encoding_rs::WINDOWS_1252) && high.central_words > high.western_words)
+    }
+
+    /// Whether this code page has a byte for `character`.
+    fn writes(self, character: char) -> bool {
+        match self {
+            Self::Standard(encoding) => {
+                let mut buffer = [0; 4];
+                !encoding.encode(character.encode_utf8(&mut buffer)).2
+            }
+            Self::Dos(high) => high.contains(&character),
+        }
     }
 
     fn is(self, encoding: &'static encoding_rs::Encoding) -> bool {
@@ -65,87 +78,227 @@ impl CodePage {
     }
 }
 
-/// Which of the bytes 128 to 255 a text holds, and how many of its words read as Central
-/// European text read in Windows-1252.
+/// Which of the bytes 128 to 255 a text holds, and how many of its words read rightly
+/// only in Windows-1252 and how many only in Windows-1250.
 pub(super) struct HighBytes {
     seen: [bool; 128],
-    misread_words: usize,
+    western_words: usize,
+    central_words: usize,
 }
 
 impl Default for HighBytes {
     fn default() -> Self {
         Self {
             seen: [false; 128],
-            misread_words: 0,
+            western_words: 0,
+            central_words: 0,
         }
     }
 }
 
 impl HighBytes {
-    /// Sees a line of the text.
+    /// Sees a line of the text, and of each of its words which of Windows-1252 and
+    /// Windows-1250 alone reads it rightly ([`reading_of`]).
     pub(super) fn see(&mut self, bytes: &[u8]) {
         for byte in bytes {
             if let Some(at) = byte.checked_sub(128) {
                 self.seen[usize::from(at)] = true;
             }
         }
-        let words = bytes.split(|byte| !(byte.is_ascii_alphabetic() || *byte >= 128));
-        self.misread_words += words.filter(|word| misread_in_1252(word)).count();
+        let in_word = |byte: u8| byte.is_ascii_alphabetic() || byte >= 128;
+        let mut at = 0;
+        while at < bytes.len() {
+            if !in_word(bytes[at]) {
+                at += 1;
+                continue;
+            }
+            let start = at;
+            while bytes.get(at).is_some_and(|byte| in_word(*byte)) {
+                at += 1;
+            }
+            match reading_of(&bytes[start..at], bytes.get(at) == Some(&b'.')) {
+                Some(Reading::Western) => self.western_words += 1,
+                Some(Reading::CentralEuropean) => self.central_words += 1,
+                None => {}
+            }
+        }
     }
 }
 
-/// Whether `word`, read in Windows-1252, reads as Central European text written in
-/// Windows-1250 does, which no language written in 1252 spells (review 2026-10-26 UL-43:
-/// „Příčka“ read „Pøíèka“). 1250's ř, ě, ň and ů are 1252's ø, ì, ò and ù: ø stands
-/// beside no accented letter but the Nordic ones and é, and ì, ò and ù end a word
-/// (Italian „più“, French „où“) but stand in one only as ě, ň and ů do.
-fn misread_in_1252(word: &[u8]) -> bool {
-    const NORDIC: &[u8] = b"\xE6\xC6\xE5\xC5\xE4\xC4\xF6\xD6\xFC\xDC\xE9\xC9\xF8\xD8";
-    let slashed_o = word.iter().any(|byte| matches!(byte, 0xF8 | 0xD8));
-    let beside_slashed_o = word
+/// The code page a word reads rightly in.
+#[derive(Debug, PartialEq)]
+enum Reading {
+    Western,
+    CentralEuropean,
+}
+
+/// Which of Windows-1252 and Windows-1250 alone reads `word` as a word of its languages
+/// ([`western_word`], [`central_word`]); `None` where both read it alike, or both or
+/// neither read it rightly. `abbreviation`: a period follows it. ª and º, 1252's ordinal
+/// indicators and 1250's Ş and ş, are left out: „Nº“, „1ª“ and „45º“ tell neither
+/// (review 2026-11-02 UL-120).
+fn reading_of(word: &[u8], abbreviation: bool) -> Option<Reading> {
+    let word = word
         .iter()
-        .any(|byte| *byte >= 128 && !NORDIC.contains(byte));
+        .copied()
+        .filter(|byte| !matches!(byte, 0xAA | 0xBA))
+        .collect::<Vec<_>>();
+    let read = |encoding: &'static encoding_rs::Encoding| {
+        encoding
+            .decode_without_bom_handling_and_without_replacement(&word)
+            .map(|text| text.chars().collect::<Vec<_>>())
+    };
+    let (Some(western), Some(central)) = (
+        read(encoding_rs::WINDOWS_1252),
+        read(encoding_rs::WINDOWS_1250),
+    ) else {
+        return None;
+    };
+    if western == central {
+        return None;
+    }
+    match (
+        western_word(&western, &central, abbreviation),
+        central_word(&central),
+    ) {
+        (true, false) => Some(Reading::Western),
+        (false, true) => Some(Reading::CentralEuropean),
+        _ => None,
+    }
+}
+
+/// Whether a character is a C1 control character, which no drawing writes but a Windows
+/// code page reads a byte it leaves undefined as.
+fn c1(character: &char) -> bool {
+    ('\u{80}'..='\u{9F}').contains(character)
+}
+
+/// Whether `western`, a word read in Windows-1252 that Windows-1250 reads `central`, is a
+/// word of a Western language. It is not where 1252 reads a sign that 1250 reads as a
+/// letter standing as one: between letters, or ending a word after a vowel („Kúpe¾“ for
+/// „Kúpeľ“, while „G¾“, „3¾“ and „m³“ keep their signs; review 2026-11-02 UL-120); nor
+/// where ø stands beside an accented letter of no Nordic language, or ì, ò or ù inside a
+/// word („Pøíèka“, „mìsto“; review 2026-10-26 UL-43); nor where a grave-accented vowel
+/// alone is abbreviated, as no Western word begins with one („è. 1“ for „č. 1“); nor
+/// where its letters are of no one Western language ([`WesternLanguage::spells`]).
+fn western_word(western: &[char], central: &[char], abbreviation: bool) -> bool {
+    if western.iter().any(c1) {
+        return false;
+    }
+    let vowel = |character: &char| !character.is_ascii() || "aeiouyAEIOUY".contains(*character);
+    let letter_read_as_sign = (0..western.len()).any(|at| {
+        let after_letter = at > 0 && western[at - 1].is_alphabetic();
+        let before_letter = western.get(at + 1).is_some_and(|next| next.is_alphabetic());
+        let ending = at + 1 == western.len() && western[..at].iter().any(vowel);
+        !western[at].is_alphabetic()
+            && central[at].is_alphabetic()
+            && after_letter
+            && (before_letter || ending)
+    });
+    let word = western
+        .iter()
+        .flat_map(|character| character.to_lowercase())
+        .collect::<Vec<_>>();
+    const NORDIC: &str = "æåäöüéø";
+    let slashed_o_beside_other = word.contains(&'ø')
+        && word.iter().any(|letter| {
+            letter.is_alphabetic() && !letter.is_ascii() && !NORDIC.contains(*letter)
+        });
     let inner_grave = word
         .iter()
         .rev()
         .skip(1)
-        .any(|byte| matches!(byte, 0xEC | 0xF2 | 0xF9 | 0xCC | 0xD2 | 0xD9));
-    (slashed_o && beside_slashed_o)
-        || inner_grave
-        || fraction_after_letter(word)
-        || written_in_no_western_language(word)
+        .any(|letter| matches!(letter, 'ì' | 'ò' | 'ù'));
+    let abbreviated_grave = abbreviation && matches!(word[..], ['à' | 'è' | 'ì' | 'ò' | 'ù']);
+    !(letter_read_as_sign || slashed_o_beside_other || inner_grave || abbreviated_grave)
+        && WESTERN.iter().any(|language| language.spells(&word))
 }
 
-/// Whether `word`, read in Windows-1252, has ¼ or ¾ after a letter: 1250's Ľ and ľ, as
-/// „Kúpeľ“ reads „Kúpe¾“; a fraction follows a number (review 2026-11-01 UL-100).
-fn fraction_after_letter(word: &[u8]) -> bool {
-    let Some(western) =
-        encoding_rs::WINDOWS_1252.decode_without_bom_handling_and_without_replacement(word)
-    else {
+/// Whether `central`, a word read in Windows-1250, has its accented letters of one
+/// Central European language.
+fn central_word(central: &[char]) -> bool {
+    if central.iter().any(c1) {
         return false;
-    };
-    let characters = western.chars().collect::<Vec<_>>();
-    characters
-        .windows(2)
-        .any(|pair| pair[0].is_alphabetic() && matches!(pair[1], '¼' | '¾'))
+    }
+    let accented = central
+        .iter()
+        .filter(|character| !character.is_ascii() && character.is_alphabetic())
+        .flat_map(|character| character.to_lowercase())
+        .collect::<Vec<_>>();
+    CENTRAL_EUROPEAN
+        .iter()
+        .any(|language| accented.iter().all(|letter| language.contains(*letter)))
 }
 
-/// The accented letters of the Western languages written in Windows-1252.
-const WESTERN: &[&str] = &[
-    "àâæçéèêëîïôœùûüÿ", // French
-    "áéíñóúü",          // Spanish
-    "áâãàçéêíóôõú",     // Portuguese
-    "àèéìíîòóùú",       // Italian
-    "àçèéíïòóúü",       // Catalan
-    "äöüß",             // German
-    "éèëïöüà",          // Dutch
-    "æøåéó",            // Danish and Norwegian
-    "åäöé",             // Swedish
-    "áðéíóúýþæö",       // Icelandic
-    "áðíóúýæø",         // Faroese
-    "äöåšž",            // Finnish
-    "äöõüšž",           // Estonian
-    "áéíóú",            // Irish
+/// A Western language written in Windows-1252, as far as telling its words from Central
+/// European words read in 1252 needs.
+struct WesternLanguage {
+    /// Its accented letters.
+    accented: &'static str,
+    /// The letters of the Latin alphabet no native word of it spells: no Italian word has
+    /// k or y, so „Kuchynì“ is „Kuchyně“.
+    foreign: &'static str,
+    /// Whether it accents a stressed vowel ending a word only after a consonant or i or u
+    /// (Italian „città“, „più“, „può“), so that „Predsieò“ is „Predsieň“.
+    stressed_end: bool,
+}
+
+impl WesternLanguage {
+    const fn new(accented: &'static str) -> Self {
+        Self {
+            accented,
+            foreign: "",
+            stressed_end: false,
+        }
+    }
+
+    /// Whether the lower-case `word` is spelt in this language.
+    fn spells(&self, word: &[char]) -> bool {
+        let letters = word.iter().all(|letter| {
+            if letter.is_ascii() {
+                !self.foreign.contains(*letter)
+            } else {
+                !letter.is_alphabetic() || self.accented.contains(*letter)
+            }
+        });
+        let stressed_end_after_vowel =
+            matches!(word, [.., 'a' | 'e' | 'o', 'à' | 'è' | 'ì' | 'ò' | 'ù']);
+        letters && !(self.stressed_end && stressed_end_after_vowel)
+    }
+}
+
+/// The Western languages written in Windows-1252.
+const WESTERN: &[WesternLanguage] = &[
+    WesternLanguage::new("àâæçéèêëîïôœùûüÿ"), // French
+    WesternLanguage::new("áéíñóúü"),          // Spanish
+    WesternLanguage::new("áâãàçéêíóôõú"),     // Portuguese
+    WesternLanguage {
+        foreign: "jkwxy",
+        stressed_end: true,
+        ..WesternLanguage::new("àèéìíîòóùú")
+    }, // Italian
+    WesternLanguage {
+        stressed_end: true,
+        ..WesternLanguage::new("àçèéíïòóúü")
+    }, // Catalan
+    WesternLanguage::new("äöüß"),             // German
+    WesternLanguage::new("éèëïöüà"),          // Dutch
+    WesternLanguage {
+        foreign: "cqwxz",
+        ..WesternLanguage::new("æøåéó")
+    }, // Danish and Norwegian
+    WesternLanguage::new("åäöé"),             // Swedish
+    WesternLanguage {
+        foreign: "cqwz",
+        ..WesternLanguage::new("áðéíóúýþæö")
+    }, // Icelandic
+    WesternLanguage {
+        foreign: "cqwxz",
+        ..WesternLanguage::new("áðíóúýæø")
+    }, // Faroese
+    WesternLanguage::new("äöåšž"),            // Finnish
+    WesternLanguage::new("äöõüšž"),           // Estonian
+    WesternLanguage::new("áéíóú"),            // Irish
 ];
 
 /// The accented letters of the Central European languages written in Windows-1250.
@@ -158,34 +311,6 @@ const CENTRAL_EUROPEAN: &[&str] = &[
     "ăâîşţ",             // Romanian
     "äöüß",              // German
 ];
-
-/// Whether `word`'s accented letters, read in Windows-1252, are of no one Western
-/// language but, read in Windows-1250, of a Central European one: „Obývačka“ reads
-/// „Obývaèka“, ý of Icelandic beside è of French (review 2026-11-01 UL-100).
-fn written_in_no_western_language(word: &[u8]) -> bool {
-    let accented = |encoding: &'static encoding_rs::Encoding| {
-        let text = encoding.decode_without_bom_handling_and_without_replacement(word)?;
-        Some(
-            text.chars()
-                .filter(|character| !character.is_ascii() && character.is_alphabetic())
-                .flat_map(char::to_lowercase)
-                .collect::<Vec<_>>(),
-        )
-    };
-    let of_one = |letters: &[char], languages: &[&str]| {
-        languages
-            .iter()
-            .any(|language| letters.iter().all(|letter| language.contains(*letter)))
-    };
-    let Some(western) = accented(encoding_rs::WINDOWS_1252) else {
-        return false;
-    };
-    if western.is_empty() || of_one(&western, WESTERN) {
-        return false;
-    }
-    accented(encoding_rs::WINDOWS_1250)
-        .is_some_and(|central| !central.is_empty() && of_one(&central, CENTRAL_EUROPEAN))
-}
 
 /// Windows-1250, which Central European text read wrongly in Windows-1252 was written in.
 const CENTRAL_EUROPE: CodePage = CodePage::Standard(encoding_rs::WINDOWS_1250);
@@ -212,8 +337,8 @@ pub(super) type CodePageRead = (String, Option<String>);
 
 /// The text of a DXF file, and the code page it was read in, if any. DXF 2007 and later
 /// are UTF-8; an older file is written in the code page its `$DWGCODEPAGE` header names,
-/// so a file that is not UTF-8 is read in that code page when it is older than 2007 and
-/// names one.
+/// so a file is read in that code page when it is older than 2007 and names one, unless
+/// it is UTF-8 that [fits](utf8_fits) the code page, as some programs write.
 pub(super) fn dxf_source_text(
     source: &[u8],
 ) -> Result<(Cow<'_, str>, Option<CodePageRead>), DxfImportError> {
@@ -224,9 +349,6 @@ pub(super) fn dxf_source_text(
     let source = source
         .strip_prefix(super::BYTE_ORDER_MARK)
         .unwrap_or(source);
-    if let Ok(text) = std::str::from_utf8(source) {
-        return Ok((Cow::Borrowed(text), None));
-    }
     let header_value = |variable: &[u8]| {
         let mut lines = source.split(|byte| *byte == b'\n').map(<[u8]>::trim_ascii);
         lines.position(|line| line == variable)?;
@@ -235,8 +357,15 @@ pub(super) fn dxf_source_text(
     let name = header_value(b"$ACADVER")
         .is_none_or(|version| version < b"AC1021".as_slice())
         .then(|| header_value(b"$DWGCODEPAGE"))
-        .flatten()
-        .ok_or(DxfImportError::NonAscii)?;
+        .flatten();
+    if let Ok(text) = std::str::from_utf8(source)
+        && name
+            .and_then(code_page_encoding)
+            .is_none_or(|named| utf8_fits(text.chars(), named))
+    {
+        return Ok((Cow::Borrowed(text), None));
+    }
+    let name = name.ok_or(DxfImportError::NonAscii)?;
     let mut high = HighBytes::default();
     for line in source.split(|byte| *byte == b'\n') {
         high.see(line);
@@ -244,6 +373,21 @@ pub(super) fn dxf_source_text(
     let (code_page, read) = text_code_page(name, &high).ok_or(DxfImportError::NonAscii)?;
     let text = code_page.decode(source).ok_or(DxfImportError::NonAscii)?;
     Ok((text, Some(read)))
+}
+
+/// Whether `text`, a file older than DXF 2007 that is valid UTF-8, was written in UTF-8
+/// rather than in the code page `named` its header names: each character beyond ASCII is
+/// one `named` writes or a Latin letter. Bytes of a code page form valid UTF-8 only by
+/// chance, and then mostly characters of other scripts: „Rohr Ø½“ in Windows-1252 is
+/// „Rohr ؽ“ (review 2026-11-02 UL-121).
+pub(super) fn utf8_fits(text: impl IntoIterator<Item = char>, named: CodePage) -> bool {
+    text.into_iter()
+        .filter(|character| !character.is_ascii())
+        .all(|character| {
+            let latin = matches!(character, '\u{C0}'..='\u{24F}' | '\u{1E00}'..='\u{1EFF}')
+                && character.is_alphabetic();
+            latin || named.writes(character)
+        })
 }
 
 /// A `$DWGCODEPAGE` name [`code_page_encoding`] reads, as AutoCAD writes it: `ANSI_1250`.

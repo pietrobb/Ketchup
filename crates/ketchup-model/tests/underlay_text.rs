@@ -115,6 +115,31 @@ fn an_underlay_read_in_a_code_page_names_it() {
     );
 }
 
+/// Review 2026-11-02 UL-121: a pre-2007 drawing in Windows-1252 whose bytes happen to be
+/// valid UTF-8 was read as UTF-8: „Rohr Ø½“ (0xD8 0xBD) read „Rohr ؽ“. UTF-8 of letters
+/// its code page or the Latin script has is still read as UTF-8.
+#[test]
+fn a_code_page_drawing_that_is_valid_utf8_by_chance_is_read_in_its_code_page() {
+    let source = |layer: &[u8]| {
+        let mut source = b"0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nLINE\n8\n".to_vec();
+        source.extend_from_slice(layer);
+        source.extend_from_slice(b"\n10\n0\n20\n0\n11\n100\n21\n0\n0\nENDSEC\n0\nEOF\n");
+        source
+    };
+    let underlay =
+        read_dxf_underlay(&source(b"Rohr \xD8\xBD"), DxfImportOptions::new(None)).unwrap();
+    assert_eq!(underlay.layers, ["Rohr Ø½"]);
+    assert_eq!(
+        counted(&underlay, "dxf.text-code-page", Some("ANSI_1252")),
+        Some(1)
+    );
+    for utf8 in ["Rohr Ø½", "Příčka", "Größe €"] {
+        let underlay =
+            read_dxf_underlay(&source(utf8.as_bytes()), DxfImportOptions::new(None)).unwrap();
+        assert_eq!(underlay.layers, [utf8]);
+    }
+}
+
 /// Review 2026-10-24: DOS850, DOS852 and DOS866 refused the whole drawing, and a drawing
 /// declared ANSI_1252 but written in CP1250 read „žlu\u{9d}oučký“ with no warning.
 #[test]
@@ -193,6 +218,14 @@ fn dos_code_pages_are_read_and_a_doubtful_code_page_is_warned_of() {
         (b"Ob\xFDva\xE8ka".as_slice(), "Obývačka"),
         (b"K\xFApe\xBE", "Kúpeľ"),
         (b"Dla\x9Eba \xE8ist\xE1", "Dlažba čistá"),
+        // Review 2026-11-02 UL-100: each of these alone stayed in 1252. No Italian word
+        // has k or y, nor ends in an accented vowel after e; no Danish one has c or z; no
+        // Western word begins with è, as the abbreviation „č.“ would.
+        (b"Predsie\xF2", "Predsieň"),
+        (b"Kuchyn\xEC", "Kuchyně"),
+        (b"\xD8EZ A-A", "ŘEZ A-A"),
+        (b"St\xF8echa", "Střecha"),
+        (b"Izba \xE8. 1", "Izba č. 1"),
     ] {
         let underlay = read("ANSI_1252", layer, b"A");
         assert_eq!(underlay.layers, [expected]);
@@ -225,6 +258,13 @@ fn dos_code_pages_are_read_and_a_doubtful_code_page_is_warned_of() {
         ),
         (b"Citt\xE0 pi\xF9", b"per\xF2 cos\xEC", "Città più"),
         (b"Pi\xE8ce tr\xE8s", b"fen\xEAtre o\xF9", "Pièce très"),
+        // Review 2026-11-02 UL-120: one „Nº“, „1ª“, „45º“, „G¾“ or „m³“ turned a whole
+        // Western drawing to 1250 („Bańo seńor“, „Cittŕ“, „Coraçăo“, „Gľ“, „mł“).
+        (b"Ba\xF1o N\xBA 3", b"1\xAA se\xF1or", "Baño Nº 3"),
+        (b"Citt\xE0 45\xBA", b"Cora\xE7\xE3o", "Città 45º"),
+        (b"Anschluss G\xBE", b"R\xBE m\xB3", "Anschluss G¾"),
+        // A word that reads as Central European is outvoted by the Western ones.
+        (b"Cora\xE7\xE3o \xBFQu\xE9", b"Dvo\xF8\xE1k", "Coração ¿Qué"),
     ] {
         let underlay = read("ANSI_1252", layer, text);
         assert_eq!(underlay.layers, [expected]);
