@@ -67,26 +67,57 @@ def test_the_kecup_notice_names_its_components_before_the_crates():
 
 def test_a_compiled_crate_without_a_license_text_is_refused():
     licenses = notices.merge([report(("MIT", MIT, [("a", ["Jane"])]))])
-    compiled = {("a", "1.0.0", True), ("b", "2.0.0", True), ("ketchup-x", "0.3.1", False)}
+    compiled = {("a", "1.0.0", False), ("b", "2.0.0", False), ("ketchup-x", "0.3.1", True)}
     with pytest.raises(notices.NoticeError, match="b 2.0.0"):
         notices.verify(viewer(), licenses, compiled)
+
+
+def test_a_vendored_crate_without_a_license_text_is_refused():
+    """Review 2026-11-02 CI-121: only crates from a registry were checked, so a
+    crate patched in from third_party/ (starlark, process-wrap) or taken from
+    git could ship without its license text. Only the workspace's own
+    packages are exempt."""
+    licenses = notices.merge([report(("MIT", MIT, [("a", ["Jane"])]))])
+    compiled = {("a", "1.0.0", False), ("process-wrap", "10.0.0", False), ("ketchup-x", "0.3.1", True)}
+    with pytest.raises(notices.NoticeError, match="process-wrap 10.0.0"):
+        notices.verify(viewer(), licenses, compiled)
+
+
+def test_a_crate_of_the_workspace_is_ours_and_any_other_is_third_party(monkeypatch):
+    out = "\n".join(
+        [
+            r"ketchup-app v0.3.1 (C:\k\crates\ketchup-app)",
+            "serde v1.0.229",
+            "serde v1.0.229 (*)",
+            r"process-wrap v10.0.0 (C:\k\third_party\process-wrap)",
+            "gitcrate v0.1.0 (https://github.com/x/gitcrate#0123abcd)",
+        ]
+    )
+    monkeypatch.setattr(notices, "run", lambda args: out)
+    monkeypatch.setattr(notices, "workspace", lambda: {"ketchup-app": "Cargo.toml"})
+    assert notices.tree("ketchup-app", notices.TARGET) == {
+        ("ketchup-app", "0.3.1", True),
+        ("serde", "1.0.229", False),
+        ("process-wrap", "10.0.0", False),
+        ("gitcrate", "0.1.0", False),
+    }
 
 
 def test_an_mit_text_without_copyright_needs_the_crate_authors():
     bare = "Permission is hereby granted, free of charge"
     licenses = notices.merge([report(("MIT", bare, [("a", ["Jane"])]))])
-    notices.verify(viewer(), licenses, {("a", "1.0.0", True)})
+    notices.verify(viewer(), licenses, {("a", "1.0.0", False)})
     licenses = notices.merge([report(("MIT", bare, [("a", [])]))])
     with pytest.raises(notices.NoticeError, match="no copyright holder"):
-        notices.verify(viewer(), licenses, {("a", "1.0.0", True)})
+        notices.verify(viewer(), licenses, {("a", "1.0.0", False)})
 
 
 def test_a_component_section_is_there_exactly_when_its_crate_is_compiled_in():
     licenses = notices.merge([report(("MIT", MIT, [("starlark", ["Meta"])]))])
     with pytest.raises(notices.NoticeError, match="starlark section must be there"):
-        notices.verify(viewer(), licenses, {("starlark", "1.0.0", True)})
+        notices.verify(viewer(), licenses, {("starlark", "1.0.0", False)})
     with pytest.raises(notices.NoticeError, match="must be left out"):
-        notices.verify(notices.PACKAGES["ketchup"], licenses, {("starlark", "1.0.0", True)})
+        notices.verify(notices.PACKAGES["ketchup"], licenses, {("starlark", "1.0.0", False)})
 
 
 def test_cargo_about_accepts_what_cargo_deny_allows():

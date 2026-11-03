@@ -105,9 +105,14 @@ def run(args: list[str]) -> str:
 
 
 @cache
-def manifest(program: str) -> str:
+def workspace() -> dict[str, str]:
+    """Manifest path of each of the workspace's own packages."""
     metadata = json.loads(run(["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"]))
-    return next(package["manifest_path"] for package in metadata["packages"] if package["name"] == program)
+    return {package["name"]: package["manifest_path"] for package in metadata["packages"]}
+
+
+def manifest(program: str) -> str:
+    return workspace()[program]
 
 
 def about(program: str, target: str, offline: bool) -> dict:
@@ -121,16 +126,21 @@ def about(program: str, target: str, offline: bool) -> dict:
 
 
 def tree(program: str, target: str) -> set[tuple[str, str, bool]]:
-    """(name, version, from a registry) of every crate the program compiles in."""
+    """(name, version, one of the workspace's own) of every crate the program
+    compiles in. A crate from a path outside the workspace or from git is
+    third-party as one from a registry is: third_party/starlark and
+    third_party/process-wrap patch crates.io (review 2026-11-02 CI-121)."""
     out = run(
         ["cargo", "tree", "--locked", "-p", program, "-e", "normal", "--prefix", "none"]
         + ["--target", target, "--format", "{p}"]
     )
+    own = workspace()
     crates = set()
     for line in out.splitlines():
         match = re.match(r"(\S+) v(\S+)( \(.*?\))?", line.strip())
         if match:
-            crates.add((match[1], match[2], match[3] is None or "registry" in match[3]))
+            ours = match[1] in own and match[3] is not None and "registry" not in match[3]
+            crates.add((match[1], match[2], ours))
     return crates
 
 
@@ -161,8 +171,8 @@ def verify(package: Package, licenses: list[dict], compiled: set[tuple[str, str,
     listed = {key for entry in licenses for key in entry["crates"]}
     missing = sorted(
         f"{name} {version}"
-        for name, version, registry in compiled
-        if registry and (name, version) not in listed
+        for name, version, ours in compiled
+        if not ours and (name, version) not in listed
     )
     if missing:
         raise NoticeError(f"{package.title}: no license text for {', '.join(missing)}")
