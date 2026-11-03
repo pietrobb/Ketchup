@@ -733,13 +733,13 @@ fn a_separator_that_may_mean_something_else_on_a_comma_system_is_previewed() {
     assert_eq!(preview_in(ActiveTool::PushPull, "12,5"), None);
     assert_eq!(preview_in(ActiveTool::Rectangle, "80;60"), None);
     // On a locked axis the preview is the move itself (#2690), so it says
-    // what the comma or point was read as, written with the system's
-    // decimal separator (operator 2026-11-03).
+    // what the comma or point was read as, written with a point like every
+    // other preview (operator 2026-11-03).
     let (preview, moved, _) = typed_move(DecimalSeparator::Comma, Some(Axis::Z), "80,60");
-    assert_eq!(preview.as_deref(), Some("= 80,6 mm (+Z)"));
+    assert_eq!(preview.as_deref(), Some("= 80.6 mm (+Z)"));
     assert!(moved);
     let (preview, _, _) = typed_move(DecimalSeparator::Comma, Some(Axis::Z), "1.200");
-    assert_eq!(preview.as_deref(), Some("= 1,2 mm (+Z)"));
+    assert_eq!(preview.as_deref(), Some("= 1.2 mm (+Z)"));
     let (preview, _, _) = typed_move(DecimalSeparator::Point, Some(Axis::Z), "1.200");
     assert_eq!(preview.as_deref(), Some("= 1.2 mm (+Z)"));
 }

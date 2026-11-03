@@ -688,8 +688,7 @@ impl KetchupApp {
     }
 
     /// The Move field's preview, read by the same `typed_move` the move is:
-    /// how far and which way along a pinned axis ("= 80,6 mm (+Z)" on a comma
-    /// system), a vector
+    /// how far and which way along a pinned axis ("= 80.6 mm (+Z)"), a vector
     /// ("= 2; 5; 0 mm") typed or where a distance goes the way the pointer
     /// points, a distance with no way yet when it is an expression or a
     /// conversion, a copy array count never.
@@ -710,12 +709,10 @@ impl KetchupApp {
                     '+'
                 };
                 let direction = format!("{sign}{}", super::transform::alignment_axis_label(axis));
-                let mut value = format_height(distance_mm.abs());
-                // How far is one number, so it is written as the user writes
-                // numbers (operator 2026-11-03: "= 80,6 mm (+Z)").
-                if self.value_box.decimal == crate::length_input::DecimalSeparator::Comma {
-                    value = value.replace('.', ",");
-                }
+                // Written with a point like every other preview (operator
+                // 2026-11-03); the system's decimal comma in previews is a
+                // separate fix for all of them.
+                let value = format_height(distance_mm.abs());
                 return Some(self.catalog.format(
                     "value-move-axis-preview",
                     &BTreeMap::from([("value", value), ("direction", direction)]),
