@@ -143,6 +143,7 @@ impl BatchEdit {
             | CanonicalCommand::SetLocalGroupParent { .. }
             | CanonicalCommand::SetGroupTransform { .. }
             | CanonicalCommand::SetGroupParent { .. }
+            | CanonicalCommand::SetGroupLogical { .. }
             | CanonicalCommand::CloneDefinitionAndRepoint(..)
             | CanonicalCommand::ConvertGroupToComponent(..)
             | CanonicalCommand::ApplySolidTool(..) => occurrences::apply(self, command)?,

@@ -3763,6 +3763,7 @@ fn read_product(
             name: reader.string()?,
             transform: reader.transform()?,
             parent: reader.optional_id()?.map(GroupId),
+            logical: false,
         };
         if product.groups.insert(id, Arc::new(group)).is_some() {
             return Err(PersistenceError::Legacy(LegacyError::DuplicateGroup(id)));

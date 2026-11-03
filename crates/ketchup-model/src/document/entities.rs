@@ -2369,9 +2369,18 @@ pub struct Group {
     pub(crate) name: String,
     pub(crate) transform: Transform,
     pub(crate) parent: Option<GroupId>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) logical: bool,
 }
 
 impl Group {
+    /// Gathers parts only to find, show and hide them together, so it is
+    /// never checked for contact.
+    #[must_use]
+    pub const fn logical(&self) -> bool {
+        self.logical
+    }
+
     #[must_use]
     pub const fn id(&self) -> GroupId {
         self.id

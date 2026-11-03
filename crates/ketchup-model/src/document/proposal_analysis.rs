@@ -465,7 +465,8 @@ pub(super) fn authoritative_writes(
             CanonicalCommand::CreateGroup { id, .. }
             | CanonicalCommand::DeleteGroup { id }
             | CanonicalCommand::SetGroupTransform { id, .. }
-            | CanonicalCommand::SetGroupParent { id, .. } => {
+            | CanonicalCommand::SetGroupParent { id, .. }
+            | CanonicalCommand::SetGroupLogical { id, .. } => {
                 writes.insert(AuthoritativeDependency::Group(*id));
             }
             CanonicalCommand::CloneDefinitionAndRepoint(plan) => {
@@ -545,7 +546,8 @@ fn add_structure_command_dependencies(
             dependencies.insert(AuthoritativeDependency::Group(*id));
             dependencies.insert(AuthoritativeDependency::GroupChildren(*id));
         }
-        CanonicalCommand::SetGroupTransform { id, .. } => {
+        CanonicalCommand::SetGroupTransform { id, .. }
+        | CanonicalCommand::SetGroupLogical { id, .. } => {
             dependencies.insert(AuthoritativeDependency::Group(*id));
         }
         CanonicalCommand::UpsertSavedView(view) => {
@@ -1342,6 +1344,7 @@ pub(super) fn authoritative_dependencies(
             | CanonicalCommand::DeleteGroup { .. }
             | CanonicalCommand::SetGroupTransform { .. }
             | CanonicalCommand::SetGroupParent { .. }
+            | CanonicalCommand::SetGroupLogical { .. }
             | CanonicalCommand::UpsertSavedView(_)
             | CanonicalCommand::DeleteSavedView { .. }
             | CanonicalCommand::UpsertUnderlay(_)

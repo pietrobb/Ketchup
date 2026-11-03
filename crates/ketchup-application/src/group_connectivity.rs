@@ -33,8 +33,12 @@ fn groups(snapshot: &Snapshot) -> Result<BTreeMap<GroupKey, Vec<SceneOccurrence>
             .occurrence(leaf.instance_path.root_occurrence())
             .and_then(|root| root.parent());
         while let Some(id) = parent {
-            keys.push(GroupKey::Root(id));
-            parent = snapshot.group(id).and_then(|group| group.parent());
+            let group = snapshot.group(id);
+            // A logical group gathers parts only to find, show and hide them (MECH-8).
+            if !group.is_some_and(|group| group.logical()) {
+                keys.push(GroupKey::Root(id));
+            }
+            parent = group.and_then(|group| group.parent());
             if keys.len() > limits::INSTANCE_PATH_STEPS {
                 return Err(json!({"reason":"group_depth_limit"}));
             }
