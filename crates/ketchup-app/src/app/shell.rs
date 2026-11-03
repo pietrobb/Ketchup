@@ -87,6 +87,7 @@ impl KetchupApp {
                 pending_work_recovery_cleanup: None,
                 work_recovery_digest: None,
                 saved_digest,
+                recent: recent_files::RecentFiles::default(),
             },
             confirmation_surface,
             side_effect_receipts: Vec::new(),
@@ -268,6 +269,12 @@ impl KetchupApp {
         let mut app =
             Self::with_catalog_and_initial_box(language::UiLanguage::at_startup().catalog(), false);
         app.remember_language = true;
+        #[cfg(windows)]
+        {
+            app.file.recent = recent_files::RecentFiles::from_store(Box::new(
+                recent_files::RegistryRecentFiles::user_settings(),
+            ));
+        }
         app.value_box.decimal = crate::length_input::DecimalSeparator::at_startup();
         app.dialogs = Box::new(NativeFileDialogs::with_parent(
             DialogParentWindow::from_creation_context(context),
@@ -295,6 +302,19 @@ impl KetchupApp {
     pub fn with_dialogs(mut self, dialogs: Box<dyn FileDialogs>) -> Self {
         self.dialogs = dialogs;
         self
+    }
+
+    /// Keep File > Open Recent in `store` instead of in memory.
+    #[must_use]
+    pub fn with_recent_files(mut self, store: Box<dyn recent_files::RecentFilesStore>) -> Self {
+        self.file.recent = recent_files::RecentFiles::from_store(store);
+        self
+    }
+
+    /// The documents File > Open Recent offers, newest first.
+    #[must_use]
+    pub fn recent_files(&self) -> &[PathBuf] {
+        self.file.recent.files()
     }
 
     pub(crate) fn choose_open_path(&mut self) -> Option<PathBuf> {
@@ -1008,57 +1028,7 @@ impl KetchupApp {
             widgets.open.bg_stroke = Stroke::NONE;
             ui.spacing_mut().item_spacing.x = 2.0;
             ui.spacing_mut().button_padding = Vec2::new(9.0, 3.0);
-            ui.menu_button(self.catalog.text("menu-file"), |ui| {
-                self.menu_command(ui, AppCommand::New);
-                self.menu_command(ui, AppCommand::Open);
-                self.menu_command(ui, AppCommand::Save);
-                self.menu_command(ui, AppCommand::SaveAs);
-                ui.separator();
-                self.menu_command(ui, AppCommand::ImportMeshStl);
-                self.menu_command(ui, AppCommand::ImportDrawingDxf);
-                self.menu_command(ui, AppCommand::ImportDrawingUnderlay);
-                self.menu_command(ui, AppCommand::ImportExactStep);
-                self.menu_command(ui, AppCommand::ImportExactIges);
-                self.menu_command(ui, AppCommand::ImportSketchupScene);
-                self.menu_command(ui, AppCommand::ImportBlenderGlb);
-                ui.separator();
-                self.menu_command(ui, AppCommand::ExportDrawingDxf);
-                self.menu_command(ui, AppCommand::ExportExactStep);
-                self.menu_command(ui, AppCommand::ExportExactIges);
-                self.menu_command(ui, AppCommand::ExportMeshStl);
-                self.menu_command(ui, AppCommand::ExportPrintThreeMf);
-                self.menu_command(ui, AppCommand::ExportBlenderGlb);
-                self.menu_command(ui, AppCommand::ExportSketchupDae);
-                self.menu_command(ui, AppCommand::ExportViewer);
-                self.menu_command(ui, AppCommand::OpenViewerComments);
-                self.menu_command(ui, AppCommand::ExportGeneralFabrication);
-                self.menu_command(ui, AppCommand::ExportWeldmentCutList);
-                self.menu_command(ui, AppCommand::ExportProjectDrawings);
-                self.menu_command(ui, AppCommand::ExportSheetMetalManufacturing);
-                self.menu_command(ui, AppCommand::ExportHomagMpr);
-                self.menu_command(ui, AppCommand::ReviewCamExport);
-                self.menu_command(ui, AppCommand::ReviewStaticFea);
-                self.menu_command(ui, AppCommand::ReviewLocalPdm);
-                ui.menu_button(self.catalog.text("file-export-btlx-options"), |ui| {
-                    ui.selectable_value(
-                        &mut self.btlx_profile_strategy,
-                        BtlxProfileStrategy::PortableFreeContour,
-                        self.catalog.text("file-export-btlx-portable-contour"),
-                    );
-                    ui.selectable_value(
-                        &mut self.btlx_profile_strategy,
-                        BtlxProfileStrategy::EdgeSawCutsThenMillContour,
-                        self.catalog.text("file-export-btlx-saw-then-mill"),
-                    );
-                    ui.add_enabled(
-                        self.btlx_profile_strategy
-                            == BtlxProfileStrategy::EdgeSawCutsThenMillContour,
-                        egui::Slider::new(&mut self.btlx_intermediate_saw_cuts, 0..=32)
-                            .text(self.catalog.text("file-export-btlx-intermediate-saw-cuts")),
-                    );
-                });
-                self.menu_command(ui, AppCommand::ExportHundeggerBtlx);
-            });
+            ui.menu_button(self.catalog.text("menu-file"), |ui| self.file_menu(ui));
             ui.menu_button(self.catalog.text("menu-edit"), |ui| {
                 self.menu_command(ui, AppCommand::Undo);
                 self.menu_command(ui, AppCommand::Redo);
@@ -1155,6 +1125,7 @@ impl KetchupApp {
                 self.menu_command(ui, AppCommand::Mirror);
                 self.menu_command(ui, AppCommand::Scale);
                 self.menu_command(ui, AppCommand::Measure);
+                self.analysis_menu(ui);
                 self.menu_command(ui, AppCommand::FitUnderlay);
                 ui.checkbox(
                     &mut self.gesture.underlay_fit.scaled,

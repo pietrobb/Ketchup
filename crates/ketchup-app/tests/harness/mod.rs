@@ -208,6 +208,11 @@ impl Shell {
         Self::build_at_size(KetchupApp::new().with_dialogs(Box::new(dialogs)), size)
     }
 
+    /// Start a shell on an app the test arranged, e.g. with its own settings store.
+    pub fn from_app(app: KetchupApp) -> Self {
+        Self::build(app)
+    }
+
     fn build(app: KetchupApp) -> Self {
         Self::build_at_size(app, SCREEN)
     }
@@ -723,6 +728,73 @@ impl Shell {
     pub fn click_menu_command(&mut self, menu_key: &str, command: AppCommand) {
         self.open_menu(menu_key);
         self.click_command(command);
+    }
+
+    /// Open a submenu of the open menu, identified by its localization key.
+    pub fn open_submenu(&mut self, key: &str) {
+        self.gap();
+        let label = format!("{} ⏵", self.catalog().text(key));
+        self.harness
+            .get_by_role_and_label(Role::Button, &label)
+            .click();
+        // Like a menu, a submenu is painted where it takes clicks one frame
+        // after its sizing pass.
+        self.harness.step();
+        self.harness.step();
+    }
+
+    /// Open a menu, then one of its submenus, and click a command in it.
+    pub fn click_submenu_command(
+        &mut self,
+        menu_key: &str,
+        submenu_key: &str,
+        command: AppCommand,
+    ) {
+        self.open_menu(menu_key);
+        self.open_submenu(submenu_key);
+        self.click_command(command);
+    }
+
+    /// File > Import ▸ `command`.
+    pub fn click_import(&mut self, command: AppCommand) {
+        self.click_submenu_command("menu-file", "menu-file-import", command);
+    }
+
+    /// File > Export ▸ `command`.
+    pub fn click_export(&mut self, command: AppCommand) {
+        self.click_submenu_command("menu-file", "menu-file-export", command);
+    }
+
+    /// Whether the last frame painted `text` as one piece of text, surrounding
+    /// spaces aside; for a control whose accessible name is longer than what
+    /// it shows.
+    pub fn paints_text(&self, text: &str) -> bool {
+        fn paints(shape: &egui::Shape, text: &str) -> bool {
+            match shape {
+                egui::Shape::Text(shape) => shape.galley.text().trim() == text,
+                egui::Shape::Vec(shapes) => shapes.iter().any(|shape| paints(shape, text)),
+                _ => false,
+            }
+        }
+        self.output_shapes()
+            .iter()
+            .any(|clipped| paints(&clipped.shape, text))
+    }
+
+    /// Accessible names of the visible buttons, top to bottom: what an open
+    /// menu and its open submenus offer.
+    pub fn visible_button_labels(&self) -> Vec<String> {
+        let mut buttons: Vec<(Rect, String)> = self
+            .harness
+            .query_all_by(|node| !node.is_hidden() && node.role() == Role::Button)
+            .filter_map(|node| Some((node.rect(), node.accesskit_node().label()?)))
+            .collect();
+        buttons.sort_by(|(a, _), (b, _)| {
+            a.top()
+                .total_cmp(&b.top())
+                .then(a.left().total_cmp(&b.left()))
+        });
+        buttons.into_iter().map(|(_, label)| label).collect()
     }
 
     /// Click the outliner row whose accessible name is `label`.

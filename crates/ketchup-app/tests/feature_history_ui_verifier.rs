@@ -850,8 +850,8 @@ fn component_replacement_serial_accesskit_replay_is_atomic_local_exportable_and_
     let replaced_digest = shell.app().canonical_digest();
 
     let before_exports = stamp(&shell);
-    shell.click_menu_command("menu-file", AppCommand::ExportMeshStl);
-    shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
+    shell.click_export(AppCommand::ExportMeshStl);
+    shell.click_export(AppCommand::ExportExactStep);
     assert_eq!(stamp(&shell), before_exports);
     assert!(stl.is_file(), "{}", shell.app().action_digest());
     assert!(step.is_file(), "{}", shell.app().action_digest());
@@ -1221,8 +1221,8 @@ fn shared_change_serial_accesskit_replay_rebinds_dependencies_exports_and_persis
     assert_eq!(mate_fingerprints(&shell), edited_fingerprints);
 
     let before_exports = stamp(&shell);
-    shell.click_menu_command("menu-file", AppCommand::ExportMeshStl);
-    shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
+    shell.click_export(AppCommand::ExportMeshStl);
+    shell.click_export(AppCommand::ExportExactStep);
     assert_eq!(stamp(&shell), before_exports);
     assert!(stl.is_file(), "{}", shell.app().action_digest());
     assert!(step.is_file(), "{}", shell.app().action_digest());
@@ -1401,8 +1401,8 @@ fn make_unique_serial_accesskit_replay_rebinds_locally_exports_and_persists() {
     );
 
     let before_exports = stamp(&shell);
-    shell.click_menu_command("menu-file", AppCommand::ExportMeshStl);
-    shell.click_menu_command("menu-file", AppCommand::ExportExactStep);
+    shell.click_export(AppCommand::ExportMeshStl);
+    shell.click_export(AppCommand::ExportExactStep);
     assert_eq!(stamp(&shell), before_exports);
     assert!(stl.is_file(), "{}", shell.app().action_digest());
     assert!(step.is_file(), "{}", shell.app().action_digest());
@@ -1640,7 +1640,7 @@ fn make_unique_lost_dependency_refuses_atomically_and_keeps_last_valid_export() 
         transforms_before
     );
 
-    shell.click_menu_command("menu-file", AppCommand::ExportMeshStl);
+    shell.click_export(AppCommand::ExportMeshStl);
     assert!(stl.is_file(), "{}", shell.app().action_digest());
     assert_eq!(stamp(&shell), before);
 }
@@ -1694,7 +1694,7 @@ fn make_unique_worker_failure_preserves_history_dependencies_and_last_valid_outp
     assert_eq!(mate_fingerprints(&shell), mates_before);
 
     std::fs::rename(&parked_worker, &worker).unwrap();
-    shell.click_menu_command("menu-file", AppCommand::ExportMeshStl);
+    shell.click_export(AppCommand::ExportMeshStl);
     assert!(stl.is_file(), "{}", shell.app().action_digest());
     assert_eq!(stamp(&shell), before);
 }
@@ -1749,7 +1749,7 @@ fn shared_change_worker_failure_preserves_history_dependencies_and_last_valid_ex
     );
 
     std::fs::rename(&parked_worker, &worker).unwrap();
-    shell.click_menu_command("menu-file", AppCommand::ExportMeshStl);
+    shell.click_export(AppCommand::ExportMeshStl);
     assert!(stl.is_file(), "{}", shell.app().action_digest());
     assert_eq!(stamp(&shell), before);
 }
