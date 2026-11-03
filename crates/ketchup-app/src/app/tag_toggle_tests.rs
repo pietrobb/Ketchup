@@ -56,6 +56,7 @@ fn toggling_a_house_layer_repaints_without_exact_reevaluation() {
         |app| app.exact.task.is_none() && app.exact.source.is_some(),
     );
     harness.run_steps(2);
+    crate::tests::shell::open_dock_tab(&mut harness, crate::DockTab::Layers);
     let results = harness.state().exact.results.len();
     assert!(results > 20, "{results} exact bodies");
     assert!(harness.state().exact.producers_requested > 0);

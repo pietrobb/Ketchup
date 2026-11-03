@@ -550,7 +550,7 @@ impl KetchupApp {
             painter.rect_filled(response.rect.expand(2.0), corner, palette.accent_wash(56));
             painter.rect_filled(response.rect, corner, palette.accent);
         } else if enabled && response.hovered() {
-            painter.rect_filled(response.rect, corner, palette.panel2);
+            painter.rect_filled(response.rect, corner, palette.surface_raised);
         }
         let ink = if !enabled {
             palette.faint

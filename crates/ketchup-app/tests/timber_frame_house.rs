@@ -1230,7 +1230,7 @@ fn assistant_opening_survives_accesskit_undo_redo_validation_and_reopen() {
     assert!((package.volume_mm3 - expected_volume).abs() <= 1.0e-6);
 
     let run = shell.catalog().text("validators-run");
-    shell.click_role_and_label(Role::Button, &shell.catalog().text("validators-title"));
+    shell.show_dock_tab(ketchup_app::DockTab::Checks);
     for validator in ASSISTANT_VALIDATOR_IDS {
         if validator != "collision" {
             let label = shell.catalog().text(&format!("validator-{validator}-name"));
@@ -1249,7 +1249,7 @@ fn assistant_opening_survives_accesskit_undo_redo_validation_and_reopen() {
     }
     let report = shell
         .app()
-        .validator_panel_report()
+        .validator_report()
         .expect("the reopened exact model must produce a validator report");
     assert_eq!(report.revision, committed_revision);
     assert_eq!(report.canonical_digest, committed_digest);

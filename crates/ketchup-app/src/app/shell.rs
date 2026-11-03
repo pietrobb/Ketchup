@@ -181,10 +181,11 @@ impl KetchupApp {
                 outliner_visible: true,
                 tags_visible: true,
                 dimensions_visible: true,
-                manual_cad_panels_visible: false,
+                manual_cad_tools_visible: false,
                 shortcuts_open: false,
                 about_open: false,
             },
+            dock: app_state::Dock::default(),
             command_search: app_state::CommandSearch::default(),
             takeoff: app_state::TakeoffState::default(),
             drawings: app_state::DrawingsState::default(),
@@ -543,12 +544,12 @@ impl KetchupApp {
     }
 
     #[must_use]
-    pub const fn manual_cad_panels_visible(&self) -> bool {
-        self.panels.manual_cad_panels_visible
+    pub const fn manual_cad_tools_visible(&self) -> bool {
+        self.panels.manual_cad_tools_visible
     }
 
-    pub fn set_manual_cad_panels_visible(&mut self, visible: bool) {
-        self.panels.manual_cad_panels_visible = visible;
+    pub fn set_manual_cad_tools_visible(&mut self, visible: bool) {
+        self.panels.manual_cad_tools_visible = visible;
     }
 
     #[must_use]
@@ -864,8 +865,11 @@ impl KetchupApp {
             palette.dim
         };
         if enabled && response.hovered() {
-            ui.painter()
-                .rect_filled(response.rect, egui::CornerRadius::same(6), palette.panel2);
+            ui.painter().rect_filled(
+                response.rect,
+                egui::CornerRadius::same(6),
+                palette.surface_raised,
+            );
         }
         theme::paint_icon(
             ui.painter(),
@@ -936,7 +940,7 @@ impl KetchupApp {
         let painter = ui.painter();
         let corner = egui::CornerRadius::same(6);
         if selected {
-            painter.rect_filled(rect, corner, palette.panel2);
+            painter.rect_filled(rect, corner, palette.surface_raised);
             painter.rect_stroke(
                 rect,
                 corner,
@@ -944,7 +948,7 @@ impl KetchupApp {
                 egui::StrokeKind::Inside,
             );
         } else if response.hovered() {
-            painter.rect_filled(rect, corner, palette.panel);
+            painter.rect_filled(rect, corner, palette.surface);
         }
         painter.rect_filled(
             Rect::from_center_size(
@@ -1213,7 +1217,7 @@ impl KetchupApp {
                     self.catalog.text("dock-dimensions"),
                 );
                 ui.checkbox(
-                    &mut self.panels.manual_cad_panels_visible,
+                    &mut self.panels.manual_cad_tools_visible,
                     self.catalog.text("dock-manual-cad"),
                 );
                 ui.separator();
@@ -1245,8 +1249,8 @@ impl KetchupApp {
 
     /// Feature history, bodies and assembly joints serve manual CAD editing only;
     /// they stay hidden unless Window > Manual CAD panels turns them on.
-    pub(crate) fn show_manual_cad_panels(&mut self, ui: &mut egui::Ui) {
-        if !self.panels.manual_cad_panels_visible {
+    pub(crate) fn show_manual_cad_tools(&mut self, ui: &mut egui::Ui) {
+        if !self.panels.manual_cad_tools_visible {
             return;
         }
         self.show_feature_history(ui);
@@ -1533,28 +1537,7 @@ impl KetchupApp {
             )
             .show(context, |ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                dock_scroll_area().show(ui, |ui| {
-                    let layers_first = self.layers_lead_dock();
-                    self.show_face_workflow_ui(ui);
-                    if layers_first {
-                        self.show_layers_section(ui, true);
-                    }
-                    self.show_selection_measures(ui);
-                    self.show_program_source(ui);
-                    self.show_manual_cad_panels(ui);
-                    self.show_occurrence_color_editor(ui);
-                    self.show_viewer_notes(ui);
-                    self.show_viewer_dimensions(ui);
-                    self.show_received_comments(ui);
-                    self.show_helix_tool(ui);
-                    self.show_parameter_editor(ui);
-                    self.show_connect_ai(ui);
-                    self.show_validator_panel(ui);
-                    self.show_outliner(ui);
-                    if !layers_first {
-                        self.show_layers_section(ui, false);
-                    }
-                });
+                self.show_right_dock(ui);
             });
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(palette.viewport_outer))
@@ -1610,28 +1593,28 @@ fn apply_shell_style(context: &egui::Context, palette: Palette) {
     };
     visuals.override_text_color = Some(palette.text);
     visuals.panel_fill = palette.chrome;
-    visuals.window_fill = palette.panel;
+    visuals.window_fill = palette.surface;
     visuals.window_stroke = Stroke::new(1.0_f32, palette.line);
     visuals.extreme_bg_color = palette.bg;
     visuals.selection.bg_fill = palette.accent_wash(90);
     visuals.selection.stroke = Stroke::new(1.0_f32, palette.accent);
     visuals.hyperlink_color = palette.accent;
-    visuals.widgets.noninteractive.bg_fill = palette.panel;
+    visuals.widgets.noninteractive.bg_fill = palette.surface;
     visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, palette.line);
     visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, palette.dim);
-    visuals.widgets.inactive.weak_bg_fill = palette.panel;
-    visuals.widgets.inactive.bg_fill = palette.panel;
+    visuals.widgets.inactive.weak_bg_fill = palette.surface;
+    visuals.widgets.inactive.bg_fill = palette.surface;
     visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, palette.line);
     visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, palette.text);
-    visuals.widgets.hovered.weak_bg_fill = palette.panel2;
-    visuals.widgets.hovered.bg_fill = palette.panel2;
+    visuals.widgets.hovered.weak_bg_fill = palette.surface_raised;
+    visuals.widgets.hovered.bg_fill = palette.surface_raised;
     visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, palette.line);
     visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, palette.text);
-    visuals.widgets.active.weak_bg_fill = palette.panel2;
-    visuals.widgets.active.bg_fill = palette.panel2;
+    visuals.widgets.active.weak_bg_fill = palette.surface_raised;
+    visuals.widgets.active.bg_fill = palette.surface_raised;
     visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, palette.accent);
     visuals.widgets.active.fg_stroke = Stroke::new(1.0_f32, palette.text);
-    visuals.widgets.open.weak_bg_fill = palette.panel2;
+    visuals.widgets.open.weak_bg_fill = palette.surface_raised;
     visuals.widgets.open.bg_stroke = Stroke::new(1.0_f32, palette.line);
     for widget in [
         &mut visuals.widgets.noninteractive,
@@ -1685,7 +1668,7 @@ fn apply_shell_style(context: &egui::Context, palette: Palette) {
 /// unreachable: the panel below the fold is painted outside the dock and no
 /// click ever lands on it, which reads as a dead button rather than as
 /// content that is merely out of view.
-fn dock_scroll_area() -> egui::ScrollArea {
+pub(crate) fn dock_scroll_area() -> egui::ScrollArea {
     egui::ScrollArea::vertical()
         .id_salt("right-dock-scroll")
         .auto_shrink([false, false])
@@ -1716,7 +1699,7 @@ fn status_chip(ui: &mut egui::Ui, palette: Palette, text: &str) {
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
     let painter = ui.painter();
     let corner = egui::CornerRadius::same(5);
-    painter.rect_filled(rect, corner, palette.panel);
+    painter.rect_filled(rect, corner, palette.surface);
     painter.rect_stroke(
         rect,
         corner,
@@ -1745,7 +1728,7 @@ fn vertical_rule(ui: &mut egui::Ui, palette: Palette) {
 /// rounded tray whose children are flush pills.
 pub(crate) fn segmented(ui: &mut egui::Ui, palette: Palette, content: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::new()
-        .fill(palette.panel)
+        .fill(palette.surface)
         .stroke(Stroke::new(1.0_f32, palette.line))
         .corner_radius(egui::CornerRadius::same(9))
         .inner_margin(egui::Margin::same(3))

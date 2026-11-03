@@ -567,8 +567,11 @@ impl KetchupApp {
         for occurrence in projection.occurrences() {
             sizes
                 .entry(occurrence.body.definition_id)
-                .or_insert_with(|| occurrence.local_box.map(|local_box| local_box.size_mm));
+                .or_insert(occurrence.local_box);
         }
+        // Program and imported parts have no canonical box; read them the way
+        // the selection readout does instead of claiming 0 × 0 × 0.
+        let exact = self.exact_results_for_snapshot(&snapshot);
         let mut by_definition = BTreeMap::<_, Vec<_>>::new();
         for item in &scene {
             by_definition
@@ -580,11 +583,21 @@ impl KetchupApp {
             .definitions()
             .filter(|definition| !scoped || by_definition.contains_key(&definition.id()))
             .map(|definition| {
-                let size = sizes
-                    .get(&definition.id())
-                    .copied()
-                    .flatten()
-                    .unwrap_or(Vec3::ZERO);
+                let local_box = sizes.get(&definition.id()).copied().flatten();
+                let specification =
+                    Self::definition_bounds(&snapshot, exact, definition.id(), local_box)
+                        .map_or_else(
+                            || "—".to_owned(),
+                            |[minimum, maximum]| {
+                                let size = maximum - minimum;
+                                format!(
+                                    "{} × {} × {}",
+                                    format_height(size.x),
+                                    format_height(size.y),
+                                    format_height(size.z)
+                                )
+                            },
+                        );
                 let occurrences = by_definition
                     .get(&definition.id())
                     .into_iter()
@@ -609,12 +622,7 @@ impl KetchupApp {
                 OutlinerDefinition {
                     id: definition.id(),
                     name: definition.name().to_owned(),
-                    specification: format!(
-                        "{} × {} × {}",
-                        format_height(size.x),
-                        format_height(size.y),
-                        format_height(size.z)
-                    ),
+                    specification,
                     occurrences,
                 }
             })

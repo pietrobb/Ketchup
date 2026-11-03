@@ -239,7 +239,11 @@ fn picking_a_dimension_outlines_the_part_it_measures() {
         harness.state().dimension_parts(PersistentDimensionId(7)),
         BTreeSet::from([InstancePath::root(stlpik)])
     );
-    harness.get(by().label_contains("500 mm"));
+    let row = harness.get(by().label_contains("Výška stĺpika:"));
+    let value = egui_kittest::kittest::NodeT::accesskit_node(&row)
+        .label()
+        .unwrap_or_default();
+    assert!(value.ends_with("500 mm"), "{value}");
     assert_eq!(digest(&harness), before);
 
     let noha = part(&harness, "noha");

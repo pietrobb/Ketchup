@@ -167,12 +167,14 @@ mod selection_state;
 use ketchup_rejection::{Rejection, RejectionPhase};
 use refusal::{Refuse, failed, show_value_refusal, value_field};
 mod slot;
+mod starlark_source;
 mod tool_preview;
 mod transform_operation;
 mod validator_ui;
 use validator_ui::validator_finding_parts;
 mod view_settings;
 mod viewport_feedback;
+pub use app::dock::DockTab;
 pub use face_workflow_ui::HeadlessFaceWorkflowFailure;
 pub use helix_ui::{AxisSpec, HelixHandedness, HelixToolParameters, helix_segments};
 pub use native_document_inspection::{
@@ -274,7 +276,7 @@ pub struct ValidatorPanelReport {
     pub not_evaluated: Vec<(String, String)>,
 }
 
-fn validator_panel_report(validation: &serde_json::Value) -> ValidatorPanelReport {
+fn validator_report(validation: &serde_json::Value) -> ValidatorPanelReport {
     let executed = ASSISTANT_VALIDATOR_IDS
         .into_iter()
         .filter(|validator| {
@@ -2119,6 +2121,7 @@ pub struct KetchupApp {
     hover: app_state::HoverState,
     active_tool: ActiveTool,
     panels: app_state::Panels,
+    dock: app_state::Dock,
     command_search: app_state::CommandSearch,
     takeoff: app_state::TakeoffState,
     drawings: app_state::DrawingsState,

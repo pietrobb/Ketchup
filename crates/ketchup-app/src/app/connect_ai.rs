@@ -8,38 +8,34 @@ use crate::*;
 
 impl KetchupApp {
     pub(crate) fn show_connect_ai(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new(self.catalog.text("connect-ai-title"))
-            .id_salt("connect-ai")
-            .default_open(false)
-            .show(ui, |ui| {
-                let status = if self.live.consent_attached || self.live.launch_attached {
-                    "connect-ai-connected"
-                } else {
-                    "connect-ai-waiting"
-                };
-                ui.label(egui::RichText::new(self.catalog.text(status)).strong());
-                ui.label(self.catalog.text("connect-ai-description"));
-                let Some(server) = mcp_server_command() else {
-                    ui.weak(self.catalog.text("connect-ai-executable-unknown"));
-                    return;
-                };
-                self.show_harnesses(ui, Path::new(&server));
-                ui.add_space(6.0);
-                ui.weak(self.catalog.text("connect-ai-manual"));
-                for (label, text) in client_setups(&server) {
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.strong(self.catalog.text(label));
-                        if ui
-                            .small_button(self.catalog.text("connect-ai-copy"))
-                            .clicked()
-                        {
-                            ui.ctx().copy_text(text.clone());
-                        }
-                    });
-                    ui.add(egui::Label::new(egui::RichText::new(text).monospace().small()).wrap());
+        section_header(ui, self.palette(), &self.catalog.text("connect-ai-title"));
+        let status = if self.live.consent_attached || self.live.launch_attached {
+            "connect-ai-connected"
+        } else {
+            "connect-ai-waiting"
+        };
+        ui.label(egui::RichText::new(self.catalog.text(status)).strong());
+        ui.label(self.catalog.text("connect-ai-description"));
+        let Some(server) = mcp_server_command() else {
+            ui.weak(self.catalog.text("connect-ai-executable-unknown"));
+            return;
+        };
+        self.show_harnesses(ui, Path::new(&server));
+        ui.add_space(6.0);
+        ui.weak(self.catalog.text("connect-ai-manual"));
+        for (label, text) in client_setups(&server) {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.strong(self.catalog.text(label));
+                if ui
+                    .small_button(self.catalog.text("connect-ai-copy"))
+                    .clicked()
+                {
+                    ui.ctx().copy_text(text.clone());
                 }
             });
+            ui.add(egui::Label::new(egui::RichText::new(text).monospace().small()).wrap());
+        }
     }
 
     /// One line per harness: what it starts as `ketchup`, and Set up when that
@@ -154,9 +150,7 @@ mod tests {
             .with_size(egui::Vec2::new(1600.0, 1000.0))
             .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
         harness.run();
-        let title = harness.state().catalog.text("connect-ai-title");
-        harness.get_by_label(&title).click();
-        harness.run();
+        crate::tests::shell::open_dock_tab(&mut harness, crate::DockTab::Ai);
         harness
     }
 

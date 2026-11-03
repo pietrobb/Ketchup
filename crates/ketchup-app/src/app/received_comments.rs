@@ -113,6 +113,8 @@ impl KetchupApp {
                         ("unchanged", counts.unchanged.to_string()),
                     ]),
                 );
+                // The list lives on the Views page: show what was just read.
+                self.set_dock_tab(DockTab::Views);
                 Ok(counts)
             }
             Err(error) => {

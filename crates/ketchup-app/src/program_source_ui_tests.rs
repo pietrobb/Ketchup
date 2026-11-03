@@ -78,19 +78,31 @@ fn program_is_always_shown_and_selection_highlights_its_lines() {
             .is_some()
     );
     assert!(harness.query_by_label(&line_label(13, false)).is_some());
-    // Groups, components and layers are shown; manual CAD panels are not.
-    for key in ["dock-outliner", "dock-tags"] {
-        assert!(
-            harness.query_by_label(&catalog.text(key)).is_some(),
-            "{key}"
-        );
-    }
+    // The table's functions are offered as chips; manual CAD panels are not shown.
     for key in ["feature-history-title", "body-title", "assembly-title"] {
         assert!(
             harness.query_by_label(&catalog.text(key)).is_none(),
             "{key}"
         );
     }
+    // Groups, components and layers are one tab away.
+    harness
+        .get_by_label(&catalog.text("dock-tab-layers"))
+        .click();
+    harness.run_steps(2);
+    for key in ["dock-outliner", "dock-tags"] {
+        assert!(
+            harness
+                .query_by_label(&catalog.text(key).to_uppercase())
+                .is_some(),
+            "{key}"
+        );
+    }
+    assert!(harness.query_by_label(&title).is_none());
+    harness
+        .get_by_label(&catalog.text("dock-tab-program"))
+        .click();
+    harness.run_steps(2);
 
     harness.state_mut().selection.select_occurrence(leg, false);
     harness.run_steps(3);
@@ -126,6 +138,77 @@ fn program_is_always_shown_and_selection_highlights_its_lines() {
     );
     assert!(harness.query_by_label(&line_label(9, true)).is_some());
     assert!(harness.query_by_label(&line_label(13, false)).is_some());
+}
+
+/// The dock at its narrowest, as if dragged there.
+fn narrowest_dock(harness: &egui_kittest::Harness<'static, KetchupApp>) {
+    harness.ctx.data_mut(|data| {
+        data.insert_persisted(
+            egui::Id::new("right-dock"),
+            egui::containers::panel::PanelState {
+                rect: Rect::from_min_size(
+                    egui::pos2(1600.0 - 380.0, 0.0),
+                    Vec2::new(380.0, 1000.0),
+                ),
+            },
+        );
+    });
+}
+
+#[test]
+fn long_program_lines_wrap_inside_the_narrowest_dock() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut app = open_table(directory.path());
+    app.set_ui_language(crate::language::UiLanguage::Slovak);
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(Vec2::new(1600.0, 1000.0))
+        .with_step_dt(1.0 / 60.0)
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    narrowest_dock(&harness);
+    harness.run_steps(1);
+    crate::tests::shell::step_until(
+        &mut harness,
+        std::time::Duration::from_secs(60),
+        "the opened program was never evaluated",
+        |app| !app.program_is_planning(),
+    );
+    harness.run_steps(2);
+    let short = harness.get_by_label(&line_label(10, false)).rect();
+    let long = harness.get_by_label(&line_label(14, false)).rect();
+    assert!(short.left() >= 1600.0 - 380.0, "{short:?}");
+    // The whole line stays inside the window, continued below itself.
+    assert!(long.right() <= 1600.0, "{long:?}");
+    assert!(
+        long.height() >= 2.0 * short.height(),
+        "{long:?} vs {short:?}"
+    );
+    for number in 1..=TABLE.lines().count() {
+        let line = harness.get_by_label(&line_label(number, false)).rect();
+        assert!(line.right() <= 1600.0, "line {number}: {line:?}");
+    }
+}
+
+#[test]
+fn outliner_reports_real_size_of_program_parts() {
+    let directory = tempfile::tempdir().unwrap();
+    let app = open_table(directory.path());
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(Vec2::new(1600.0, 1000.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.run_steps(1);
+    crate::tests::shell::step_until(
+        &mut harness,
+        std::time::Duration::from_secs(60),
+        "the opened program was never evaluated",
+        |app| !app.program_is_planning(),
+    );
+    let top = harness
+        .state()
+        .outliner_query()
+        .into_iter()
+        .find(|definition| definition.name == "table/top")
+        .unwrap();
+    assert_eq!(top.specification, "1200 × 700 × 25");
 }
 
 #[test]

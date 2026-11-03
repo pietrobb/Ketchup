@@ -1954,7 +1954,7 @@ fn zoom_steps_are_localized_keyboard_accessible_bounded_and_document_preserving(
 
 #[test]
 fn status_bar_shows_the_exact_build_version() {
-    let shell = Shell::new();
+    let mut shell = Shell::new();
 
     assert!(shell.has_visible_label(&format!("v{}", KetchupApp::build_version())));
 }

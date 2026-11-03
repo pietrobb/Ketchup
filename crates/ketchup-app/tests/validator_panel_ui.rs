@@ -8,9 +8,7 @@ use eframe::egui::accesskit::Role;
 use harness::Shell;
 use ketchup_app::KetchupApp;
 fn open_validator_panel(shell: &mut Shell) {
-    let title = shell.catalog().text("validators-title");
-    shell.click_role_and_label(Role::Button, &title);
-    shell.settle();
+    shell.show_dock_tab(ketchup_app::DockTab::Checks);
 }
 
 fn build_two_colliding_columns(shell: &mut Shell) {
@@ -72,7 +70,7 @@ fn running_the_panel_reports_findings_that_name_the_offending_parts() {
     build_two_colliding_columns(&mut shell);
     shell.settle();
     open_validator_panel(&mut shell);
-    assert!(shell.app().validator_panel_report().is_none());
+    assert!(shell.app().validator_report().is_none());
 
     let revision_before = shell.app().document_revision();
     let digest_before = shell.app().canonical_digest();
@@ -82,7 +80,7 @@ fn running_the_panel_reports_findings_that_name_the_offending_parts() {
 
     let report = shell
         .app()
-        .validator_panel_report()
+        .validator_report()
         .expect("clicking run must produce a report")
         .clone();
     assert_eq!(report.revision, revision_before);
@@ -128,7 +126,7 @@ fn the_panel_runs_only_the_validators_the_operator_selected() {
     shell.click_button_label(&shell.catalog().text("validators-run"));
     wait_for_validation(&mut shell);
 
-    let report = shell.app().validator_panel_report().unwrap();
+    let report = shell.app().validator_report().unwrap();
     assert_eq!(report.executed, vec!["collision"]);
     assert!(
         report

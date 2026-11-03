@@ -51,9 +51,9 @@ pub struct Palette {
     /// Title bar, menu bar, tool rail and status bar fill.
     pub chrome: Color32,
     /// Raised surface: cards, inputs, segmented controls.
-    pub panel: Color32,
+    pub surface: Color32,
     /// Hover and pressed state of a raised surface.
-    pub panel2: Color32,
+    pub surface_raised: Color32,
     /// Hairline separator between surfaces.
     pub line: Color32,
     /// Primary text.
@@ -85,8 +85,8 @@ impl Palette {
             ThemeKind::Graphite => Self {
                 bg: Color32::from_rgb(16, 16, 19),
                 chrome: Color32::from_rgb(23, 23, 27),
-                panel: Color32::from_rgb(29, 29, 34),
-                panel2: Color32::from_rgb(38, 38, 45),
+                surface: Color32::from_rgb(29, 29, 34),
+                surface_raised: Color32::from_rgb(38, 38, 45),
                 line: Color32::from_rgb(46, 46, 55),
                 text: Color32::from_rgb(236, 234, 231),
                 dim: Color32::from_rgb(166, 163, 172),
@@ -102,8 +102,8 @@ impl Palette {
             ThemeKind::Paper => Self {
                 bg: Color32::from_rgb(231, 229, 223),
                 chrome: Color32::from_rgb(247, 246, 242),
-                panel: Color32::from_rgb(255, 255, 255),
-                panel2: Color32::from_rgb(238, 236, 230),
+                surface: Color32::from_rgb(255, 255, 255),
+                surface_raised: Color32::from_rgb(238, 236, 230),
                 line: Color32::from_rgb(219, 215, 206),
                 text: Color32::from_rgb(32, 30, 27),
                 dim: Color32::from_rgb(106, 101, 95),
@@ -119,8 +119,8 @@ impl Palette {
             ThemeKind::Blueprint => Self {
                 bg: Color32::from_rgb(6, 23, 38),
                 chrome: Color32::from_rgb(10, 33, 50),
-                panel: Color32::from_rgb(15, 43, 63),
-                panel2: Color32::from_rgb(21, 55, 77),
+                surface: Color32::from_rgb(15, 43, 63),
+                surface_raised: Color32::from_rgb(21, 55, 77),
                 line: Color32::from_rgb(27, 70, 97),
                 text: Color32::from_rgb(223, 237, 248),
                 dim: Color32::from_rgb(149, 183, 207),
@@ -136,8 +136,8 @@ impl Palette {
             ThemeKind::Ketchup => Self {
                 bg: Color32::from_rgb(21, 11, 9),
                 chrome: Color32::from_rgb(32, 17, 13),
-                panel: Color32::from_rgb(42, 21, 16),
-                panel2: Color32::from_rgb(54, 28, 21),
+                surface: Color32::from_rgb(42, 21, 16),
+                surface_raised: Color32::from_rgb(54, 28, 21),
                 line: Color32::from_rgb(71, 36, 24),
                 text: Color32::from_rgb(251, 237, 231),
                 dim: Color32::from_rgb(197, 162, 150),
@@ -166,6 +166,56 @@ impl Palette {
         let [red, green, blue, _] = self.accent.to_array();
         Color32::from_rgba_unmultiplied(red, green, blue, alpha)
     }
+
+    /// Colours of program source painted on [`Self::bg`], and of the
+    /// program's status line.
+    #[must_use]
+    pub const fn code(self) -> CodeColors {
+        if self.dark {
+            CodeColors {
+                keyword: Color32::from_rgb(255, 128, 92),
+                constant: Color32::from_rgb(255, 140, 160),
+                string: Color32::from_rgb(178, 216, 132),
+                number: Color32::from_rgb(132, 186, 255),
+                comment: self.faint,
+                call: Color32::from_rgb(244, 172, 118),
+                definition: Color32::from_rgb(255, 196, 120),
+                ok: Color32::from_rgb(110, 210, 130),
+                error: Color32::from_rgb(255, 118, 118),
+            }
+        } else {
+            CodeColors {
+                keyword: Color32::from_rgb(178, 52, 14),
+                constant: Color32::from_rgb(168, 26, 78),
+                string: Color32::from_rgb(36, 104, 36),
+                number: Color32::from_rgb(22, 82, 178),
+                comment: self.dim,
+                call: Color32::from_rgb(138, 70, 12),
+                definition: Color32::from_rgb(150, 60, 0),
+                ok: Color32::from_rgb(28, 112, 52),
+                error: Color32::from_rgb(176, 30, 30),
+            }
+        }
+    }
+}
+
+/// Syntax and status colours of the program view.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CodeColors {
+    pub keyword: Color32,
+    /// `True`, `False`, `None`.
+    pub constant: Color32,
+    pub string: Color32,
+    pub number: Color32,
+    pub comment: Color32,
+    /// A called name.
+    pub call: Color32,
+    /// The name a `def` introduces.
+    pub definition: Color32,
+    /// The shown source is the model.
+    pub ok: Color32,
+    /// The source does not evaluate.
+    pub error: Color32,
 }
 
 /// One icon in the shell's icon set.
@@ -196,6 +246,11 @@ pub enum Icon {
     Copy,
     Send,
     Logo,
+    Layers,
+    Code,
+    Checklist,
+    Camera,
+    Plug,
 }
 
 impl Icon {
@@ -270,6 +325,23 @@ impl Icon {
             Self::Copy => ["M8 8 H19 V19 H8 Z", "M5 5 H16 V8 M5 5 V16 H8"],
             Self::Send => ["M3.5 5 L21 12 L3.5 19 L7 12 Z", "M7 12 H14"],
             Self::Logo => ["M8 5 V19 M17 5 L9.5 12 L17 19", ""],
+            Self::Layers => [
+                "M12 4 L20 8.5 L12 13 L4 8.5 Z",
+                "M4 12.5 L12 17 L20 12.5 M4 16 L12 20.5 L20 16",
+            ],
+            Self::Code => ["M8 7 L3 12 L8 17 M16 7 L21 12 L16 17", ""],
+            Self::Checklist => [
+                "M3.5 6 l1.6 1.6 L8 4.8 M3.5 12 l1.6 1.6 L8 10.8 M3.5 18 l1.6 1.6 L8 16.8",
+                "M11 6.5 H20.5 M11 12.5 H20.5 M11 18.5 H20.5",
+            ],
+            Self::Camera => [
+                "M3 8 h4.2 l1.8 -2.6 h6 l1.8 2.6 H21 V19 H3 Z",
+                "M8.6 13 a3.4 3.4 0 1 1 6.8 0 a3.4 3.4 0 1 1 -6.8 0",
+            ],
+            Self::Plug => [
+                "M9 3 V7.5 M15 3 V7.5 M6.5 7.5 H17.5 V11 a5.5 5.5 0 0 1 -11 0 Z",
+                "M12 16.5 V21",
+            ],
         }
     }
 
@@ -281,6 +353,7 @@ impl Icon {
     pub const fn accent_stroke(self) -> &'static str {
         match self {
             Self::PushPull => "M12 8.4 V2.6 M8.6 6 L12 2.4 L15.4 6",
+            Self::Code => "M14 5 L10 19",
             _ => "",
         }
     }
@@ -712,6 +785,11 @@ mod tests {
             Icon::Copy,
             Icon::Send,
             Icon::Logo,
+            Icon::Layers,
+            Icon::Code,
+            Icon::Checklist,
+            Icon::Camera,
+            Icon::Plug,
         ] {
             let polylines = parse_path(icon.strokes()[0]);
             assert!(!polylines.is_empty(), "{icon:?} drew nothing");
@@ -767,7 +845,7 @@ mod tests {
                 "{kind:?} primary text is not legible on chrome"
             );
             assert!(
-                contrast(palette.text, palette.panel) >= 4.5,
+                contrast(palette.text, palette.surface) >= 4.5,
                 "{kind:?} primary text is not legible on a panel"
             );
             assert!(
@@ -789,6 +867,26 @@ mod tests {
             assert!(
                 contrast(palette.accent, palette.viewport_outer) >= 2.9,
                 "{kind:?} selection is not visible in the viewport"
+            );
+            let code = palette.code();
+            for (name, color) in [
+                ("keyword", code.keyword),
+                ("constant", code.constant),
+                ("string", code.string),
+                ("number", code.number),
+                ("call", code.call),
+                ("definition", code.definition),
+                ("ok", code.ok),
+                ("error", code.error),
+            ] {
+                assert!(
+                    contrast(color, palette.bg) >= 4.5,
+                    "{kind:?} {name} code is not legible on the code background"
+                );
+            }
+            assert!(
+                contrast(code.comment, palette.bg) >= 3.0,
+                "{kind:?} comments are not legible on the code background"
             );
         }
     }

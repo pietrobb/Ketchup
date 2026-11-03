@@ -125,20 +125,54 @@ impl KetchupApp {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn selection_measure_lines(&self, measures: &SelectionMeasures) -> Vec<String> {
-        let format = |key: &str, arguments: &[(&'static str, String)]| {
-            self.catalog
-                .format(key, &arguments.iter().cloned().collect::<BTreeMap<_, _>>())
+        self.measure_rows(measures)
+            .into_iter()
+            .map(|(_, line)| line)
+            .collect()
+    }
+
+    /// The lines under the dock's size tiles: what the tiles do not show
+    /// (the world box around a turned part), the position and the volume,
+    /// then the mass always in its three rows, so the volume and mass
+    /// arriving with the exact solids move nothing below them.
+    pub(crate) fn selection_detail_lines(&self, measures: &SelectionMeasures) -> Vec<String> {
+        let turned = measures.own_size_mm.is_some();
+        let mut lines = self
+            .measure_rows(measures)
+            .into_iter()
+            .filter(|(key, _)| match *key {
+                "selection-measures-world-box" => turned,
+                "selection-measures-parts"
+                | "selection-measures-own-size"
+                | "selection-measures-size" => false,
+                _ => true,
+            })
+            .map(|(_, line)| line)
+            .collect::<Vec<_>>();
+        let mut mass = self.selection_mass_lines(&self.selection_mass(measures));
+        mass.resize(mass.len().max(MASS_ROWS), String::new());
+        lines.extend(mass);
+        lines
+    }
+
+    fn measure_rows(&self, measures: &SelectionMeasures) -> Vec<(&'static str, String)> {
+        let format = |key: &'static str, arguments: &[(&'static str, String)]| {
+            let line = self
+                .catalog
+                .format(key, &arguments.iter().cloned().collect::<BTreeMap<_, _>>());
+            (key, line)
         };
-        let mut lines = Vec::new();
+        let mut rows = Vec::new();
         if measures.parts > 1 {
-            lines.push(format(
+            rows.push(format(
                 "selection-measures-parts",
                 &[("count", measures.parts.to_string())],
             ));
         }
         if let Some(own) = measures.own_size_mm {
-            lines.push(format(
+            rows.push(format(
                 "selection-measures-own-size",
                 &[("size", size_text(own))],
             ));
@@ -148,16 +182,16 @@ impl KetchupApp {
         } else {
             "selection-measures-size"
         };
-        lines.push(format(
+        rows.push(format(
             world_key,
             &[("size", size_text(measures.world_size_mm))],
         ));
         let [x, y, z] = measures.world_min_mm.map(length);
-        lines.push(format(
+        rows.push(format(
             "selection-measures-position",
             &[("x", x), ("y", y), ("z", z)],
         ));
-        lines.push(match (measures.volume_mm3, measures.scaled_placement) {
+        rows.push(match (measures.volume_mm3, measures.scaled_placement) {
             (_, Some(scaled)) => format(
                 "selection-measures-volume-refused",
                 &[("occurrence", scaled.occurrence_id.0.to_string())],
@@ -169,37 +203,8 @@ impl KetchupApp {
                     ("cubic", format!("{:.4}", volume / 1.0e9)),
                 ],
             ),
-            (None, None) => self.catalog.text("selection-measures-volume-pending"),
+            (None, None) => format("selection-measures-volume-pending", &[]),
         });
-        lines
-    }
-
-    /// Shows the size, position and volume of the selection; nothing when
-    /// nothing is selected, so the dock does not grow.
-    pub(super) fn show_selection_measures(&mut self, ui: &mut egui::Ui) {
-        let Some(measures) = self.selection_measures() else {
-            return;
-        };
-        let mass = self.selection_mass(&measures);
-        // The volume and mass arrive with the exact solids while the user may
-        // be reaching for a button below: one row per line, the mass always
-        // in its three rows, so nothing under this section moves.
-        let mut mass_lines = self.selection_mass_lines(&mass);
-        if mass_lines.len() < MASS_ROWS {
-            mass_lines.resize(MASS_ROWS, String::new());
-        }
-        egui::CollapsingHeader::new(self.catalog.text("selection-measures-title"))
-            .id_salt("selection-measures")
-            .default_open(true)
-            .show(ui, |ui| {
-                for line in self
-                    .selection_measure_lines(&measures)
-                    .into_iter()
-                    .chain(mass_lines)
-                {
-                    ui.add(egui::Label::new(line).truncate());
-                }
-            });
-        ui.separator();
+        rows
     }
 }
