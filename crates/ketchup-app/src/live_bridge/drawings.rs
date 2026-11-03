@@ -96,22 +96,14 @@ pub(super) fn refuse_existing(path: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// The file `error` failed on because another program holds it open (a PDF
-/// viewer, a CAD program), so Windows refuses to replace it.
-fn held_open<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a Path> {
-    const ERROR_SHARING_VIOLATION: i32 = 32;
-    const ERROR_LOCK_VIOLATION: i32 = 33;
+/// The export transaction's own reason within `error`.
+fn transaction_error<'a>(
+    error: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a ExportTransactionError> {
     let mut next = Some(error);
     while let Some(error) = next {
-        if let Some(ExportTransactionError::Io { path, cause }) =
-            error.downcast_ref::<ExportTransactionError>()
-            && cfg!(windows)
-            && matches!(
-                cause.raw_os_error(),
-                Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION)
-            )
-        {
-            return Some(path);
+        if let Some(found) = error.downcast_ref::<ExportTransactionError>() {
+            return Some(found);
         }
         // An I/O error made of another error does not give it as its source.
         next = match error
@@ -126,15 +118,40 @@ fn held_open<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a Pat
 }
 
 /// The answer to a drawing that could not be written because of `error`; a
-/// file another program holds open is named, so the user can close it.
+/// file another program holds open (a PDF viewer, a CAD program, which
+/// Windows will not let be replaced) or one the export may not replace is
+/// named, with what the user can do about it.
 fn write_failed(error: impl std::error::Error + Send + Sync + 'static) -> &'static str {
-    let Some(file) = held_open(&error).map(Path::to_path_buf) else {
-        return failed_because("drawings_write_failed", error);
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    const ERROR_LOCK_VIOLATION: i32 = 33;
+    let (code, reason, file) = match transaction_error(&error) {
+        Some(ExportTransactionError::Io { path, cause })
+            if cfg!(windows)
+                && matches!(
+                    cause.raw_os_error(),
+                    Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION)
+                ) =>
+        {
+            (
+                "drawings_target_in_use",
+                "is open in another program (a PDF viewer or a CAD program), so it cannot be replaced; close it there and export again",
+                path,
+            )
+        }
+        Some(
+            ExportTransactionError::TargetChanged { path }
+            | ExportTransactionError::OriginalPreserved { path, .. },
+        ) => (
+            "drawings_target_exists",
+            "is not a file this project's earlier export of these drawings wrote (or it changed while they were drawn), so it is not replaced; rename or move it, or export the drawings to another folder",
+            path,
+        ),
+        _ => return failed_because("drawings_write_failed", error),
     };
     failure(
-        "drawings_target_in_use",
+        code,
         format!(
-            "{} is open in another program (a PDF viewer or a CAD program), so it cannot be replaced; close it there and export again. Nothing was written; the file is as it was.",
+            "{} {reason}. Nothing was written; the file is as it was.",
             file.display()
         ),
         json!({"path": file.display().to_string()}),

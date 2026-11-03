@@ -253,7 +253,7 @@ fn the_project_drawings_are_written_as_a_dxf_or_dwg_per_sheet() {
             export_drawings(&file("taken.dxf"), json!({})),
             false
         ),
-        Err("drawings_write_failed")
+        Err("drawings_target_exists")
     );
     assert!(
         !file("taken-01.dxf").exists(),
@@ -349,6 +349,44 @@ fn a_drawing_held_open_elsewhere_is_named_and_kept() {
     drop(viewer);
     assert_eq!(std::fs::read(&pdf).unwrap(), b"open in a viewer");
     assert_eq!(names_in(directory.path()), ["house.pdf"]);
+}
+
+/// MECH-2 (operator 2026-11-03): a set replaces only the sheets this
+/// project's earlier export wrote; a file of someone else's named like one of
+/// its sheets refuses the export, and the answer names the file and says what
+/// to do: rename or move it, or export to another folder.
+#[test]
+fn a_file_of_someone_elses_named_like_a_sheet_is_named_and_kept() {
+    let (mut app, mut bridge) = setup();
+    evaluate_exact(&mut app);
+    let directory = tempfile::tempdir().unwrap();
+    let file = |name: &str| directory.path().join(name);
+    for foreign in ["house-02.dxf", "house-09.dxf"] {
+        std::fs::write(file(foreign), b"another project's sheet").unwrap();
+        assert_eq!(
+            bridge.execute(
+                &mut app,
+                export_drawings(&file("house.dxf"), json!({})),
+                false
+            ),
+            Err("drawings_target_exists"),
+            "{foreign}"
+        );
+        let answer = take_error_details().unwrap_or_default().to_string();
+        for said in [foreign, "rename", "another folder"] {
+            assert!(answer.contains(said), "{said:?} missing: {answer}");
+        }
+        assert_eq!(
+            std::fs::read(file(foreign)).unwrap(),
+            b"another project's sheet"
+        );
+        assert_eq!(
+            names_in(directory.path()),
+            [foreign],
+            "nothing else written"
+        );
+        std::fs::remove_file(file(foreign)).unwrap();
+    }
 }
 
 /// One DXF entity: its type, layer, numeric codes and KETCHUP id.
