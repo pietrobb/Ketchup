@@ -180,6 +180,9 @@ impl KetchupApp {
         discard_confirmed: bool,
         context: Option<&egui::Context>,
     ) -> bool {
+        if self.refuse_non_document(path) {
+            return false;
+        }
         let discard_owned = discard_confirmed
             && self.file.work_recovery_lock.is_some()
             && (self.file.path.as_deref() == Some(path)
@@ -225,6 +228,22 @@ impl KetchupApp {
             recovery_lock,
             ketchup_model::persistence::load_file_with_source(path),
         )
+    }
+
+    /// Refuses a file that does not begin as a Kečup document, such as a PDF, before
+    /// it is locked or the user is asked to discard changes: every way a file reaches
+    /// the window (start, the macOS open event, MCP `open`, the Open command) passes
+    /// here (review 2026-11-01/11-02 UI-101). A file that cannot be read is left to
+    /// the open, which says why.
+    pub(crate) fn refuse_non_document(&mut self, path: &Path) -> bool {
+        if ketchup_model::persistence::begins_as_document(path).unwrap_or(true) {
+            return false;
+        }
+        self.digest = self.catalog.format(
+            "error-not-document",
+            &BTreeMap::from([("path", path.display().to_string())]),
+        );
+        true
     }
 
     pub(crate) fn install_loaded_document(

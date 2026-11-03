@@ -385,7 +385,8 @@ fn file_workflow_round_trips_composed_model_and_tracks_dirty_state() {
 fn failed_open_and_save_preserve_the_active_document_and_file_identity() {
     let directory = tempfile::tempdir().unwrap();
     let malformed = directory.path().join("malformed.ketchup");
-    std::fs::write(&malformed, b"not a ketchup document").unwrap();
+    // Begins as a document, so the open itself reads it and fails.
+    std::fs::write(&malformed, b"KETCHUPDOC but cut short").unwrap();
     let mut app = KetchupApp::new();
     assert!(app.create_box());
     let before_digest = app.document.current().canonical_digest();

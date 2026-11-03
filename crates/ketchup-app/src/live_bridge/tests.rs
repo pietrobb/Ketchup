@@ -704,7 +704,8 @@ fn open_is_revision_bound_and_uses_the_live_gui_discard_consent() {
 fn open_names_a_file_that_fails_to_load() {
     let directory = tempfile::tempdir().unwrap();
     let broken = directory.path().join("broken.ketchup");
-    std::fs::write(&broken, b"not a Kecup document").unwrap();
+    // Begins as a document, so the open itself reads it and fails.
+    std::fs::write(&broken, b"KETCHUPDOC but cut short").unwrap();
 
     let mut app = KetchupApp::new();
     app.live.consent_attached = true;
@@ -719,6 +720,38 @@ fn open_names_a_file_that_fails_to_load() {
         Err("open_rejected")
     );
     assert!(app.digest.contains("broken.ketchup"), "{}", app.digest);
+    assert_eq!(app.document_snapshot().canonical_digest(), before);
+    assert!(app.document_path().is_none());
+}
+
+/// Review 2026-11-02 UI-101: only start-up arguments were checked; MCP `open` of a
+/// PDF asked the user to discard their changes, left `offer.pdf.work-recovery-lock`
+/// beside it and failed with a general error.
+#[test]
+fn open_refuses_a_file_that_is_not_a_document_before_asking_or_locking() {
+    let directory = tempfile::tempdir().unwrap();
+    let offer = directory.path().join("offer.pdf");
+    std::fs::write(&offer, b"%PDF-1.7\n").unwrap();
+    let lock = directory.path().join("offer.pdf.work-recovery-lock");
+
+    let dialogs = ScriptedFileDialogs::new().always_discard();
+    let probe = dialogs.clone();
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    assert!(app.create_box());
+    let before = app.document_snapshot().canonical_digest();
+    let mut bridge = transport::start(egui::Context::default()).unwrap();
+    let request = Request::Open {
+        expected: Some(app.live_bridge_stamp()),
+        path: offer.to_string_lossy().into_owned(),
+    };
+    assert_eq!(
+        bridge.execute(&mut app, request, false),
+        Err("not_a_document")
+    );
+    assert_eq!(probe.discard_prompts(), 0);
+    assert!(!lock.exists());
+    assert!(app.digest.contains("offer.pdf"), "{}", app.digest);
+    assert!(app.is_dirty());
     assert_eq!(app.document_snapshot().canonical_digest(), before);
     assert!(app.document_path().is_none());
 }

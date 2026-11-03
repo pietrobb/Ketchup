@@ -98,6 +98,9 @@ impl FileActivity {
 impl KetchupApp {
     /// Queue a startup document; the native window paints before disk I/O begins.
     pub fn queue_open_document_path(&mut self, path: &Path) {
+        if self.refuse_non_document(path) {
+            return;
+        }
         let snapshot = self.document.current();
         self.file.activity.pending = Some(Pending {
             command: AppCommand::Open,
@@ -568,6 +571,32 @@ mod tests {
         assert_eq!(harness.state().document.history_digest(), before);
         assert!(harness.state().file.path.is_none());
         assert!(harness.state().digest.contains("missing.ketchup"));
+    }
+
+    /// Review 2026-11-02 UI-101: a file the macOS open event hands over, or one the
+    /// Open command is given, was locked and read before it was found not to be a
+    /// document; now it is refused first, and nothing waits to ask about changes.
+    #[test]
+    fn a_handed_over_file_that_is_not_a_document_is_refused_before_it_is_locked() {
+        let directory = tempfile::tempdir().unwrap();
+        let offer = directory.path().join("offer.pdf");
+        std::fs::write(&offer, b"%PDF-1.7\n").unwrap();
+        let lock = directory.path().join("offer.pdf.work-recovery-lock");
+        let mut app = KetchupApp::new();
+        let before = app.document.history_digest();
+
+        app.queue_open_document_path(&offer);
+        assert!(app.file.activity.pending.is_none());
+        assert!(app.digest.contains("offer.pdf"), "{}", app.digest);
+
+        app.digest.clear();
+        assert!(!app.open_document_in_context(&offer, true, Some(&egui::Context::default())));
+        assert!(app.file.activity.opening.is_none());
+        assert!(app.digest.contains("offer.pdf"), "{}", app.digest);
+
+        assert!(!lock.exists());
+        assert_eq!(app.document.history_digest(), before);
+        assert!(app.file.path.is_none());
     }
 
     #[test]

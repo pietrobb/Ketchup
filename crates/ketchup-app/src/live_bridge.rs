@@ -1291,6 +1291,31 @@ struct Pending {
     /// The program the edit was written into, bound with the proposal.
     program: Option<RuleProgramSource>,
 }
+/// Why MCP `open` leaves the window's document as it is before reading the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenRefusal {
+    NotDocument,
+    DiscardDeclined,
+}
+impl OpenRefusal {
+    fn code(self) -> &'static str {
+        match self {
+            Self::NotDocument => "not_a_document",
+            Self::DiscardDeclined => "discard_declined",
+        }
+    }
+}
+/// Another kind of file, such as a PDF, is refused before the user is asked to
+/// discard changes and before it is locked (review 2026-11-02 UI-101).
+fn confirm_open(app: &mut KetchupApp, path: &Path) -> Result<(), OpenRefusal> {
+    if app.refuse_non_document(path) {
+        return Err(OpenRefusal::NotDocument);
+    }
+    if !app.confirm_discard_if_dirty() {
+        return Err(OpenRefusal::DiscardDeclined);
+    }
+    Ok(())
+}
 #[derive(Debug)]
 pub(crate) enum PlanRejection {
     Code(&'static str),
@@ -3348,9 +3373,7 @@ impl LiveBridge {
                 if !drawings::local_absolute_path(&path) || !Path::new(&path).is_file() {
                     return Err("invalid_path");
                 }
-                if !app.confirm_discard_if_dirty() {
-                    return Err("discard_declined");
-                }
+                confirm_open(app, Path::new(&path)).map_err(OpenRefusal::code)?;
                 Self::require_request_authority(cancelled)?;
                 if !app.open_document_with_discard(Path::new(&path), true) {
                     return Err("open_rejected");
