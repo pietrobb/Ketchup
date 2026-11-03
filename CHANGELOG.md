@@ -6,7 +6,7 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 ## Unreleased
 
 - 0.3.1 reads some drawings differently from 0.3.0 (skipped or empty entities, CP1250 text, files with a BOM), so it often refused to export a drawing edited in 0.3.0. Such a drawing exports again: the edits find their entities by DXF handle, and an entity not edited is written as the file has it.
-- A program can group parts that do not touch, such as the kerbs, doors and technology of a site, with `group(..., kind="logical")`. Such a group is only for finding, showing and hiding them together, so the contact check no longer reports it as falling apart; an assembly inside it is still checked.
+- A program can group parts that do not touch, such as the kerbs, doors and technology of a site, with `group(..., kind="logical")`. Such a group is only for finding, showing and hiding them together, so the contact check no longer reports it as falling apart; an assembly inside it is still checked. A document with a logical group is saved in the new format 108, which Kečup 0.3.1 and older refuse to open as newer instead of losing the mark; any other document is saved as before.
 
 ## 0.3.1 — 2026-11-02
 
