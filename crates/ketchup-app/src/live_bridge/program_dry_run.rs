@@ -60,8 +60,11 @@ fn check(
     cancelled: Arc<AtomicBool>,
     deadline: CheckDeadline,
 ) -> Result<Checked, RuleProgramApplyError> {
-    let plan = ketchup_application::plan_rule_program(&document, source)?;
-    let mut report = plan.report(deadline);
+    // The request's flag ends the planner's worker too, not only the exact
+    // check (review 2026-11-02 MCP-101).
+    let cancel = ketchup_program::CancelToken::from(Arc::clone(&cancelled));
+    let plan = ketchup_application::plan_rule_program_cancellable(&document, source, &cancel)?;
+    let mut report = plan.report(deadline, &cancel);
     let before = document.current();
     let (change, after) = match plan.change {
         RuleProgramChange::Unchanged => ("unchanged", before.clone()),

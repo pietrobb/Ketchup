@@ -19,18 +19,20 @@ use ketchup_program::{ProgramModel, Report, exact_candidates};
 /// check follows (`exact_follows` and the model has candidates), it re-derives
 /// the issues and relations, so the report lists only the collisions it
 /// settles; [`complete_pending_checks`] lists the rest wherever the report is
-/// published without that check.
+/// published without that check. `cancel` is the request's: a request given up
+/// ends the planner's worker instead of leaving it busy (review 2026-11-02 MCP-101).
 fn plan_with_report(
     document: &DocumentStore,
     source: &RuleProgramSource,
     deadline: CheckDeadline,
     exact_follows: bool,
+    cancel: &ketchup_program::CancelToken,
 ) -> Result<(RuleProgramPlan, Report), RuleProgramApplyError> {
-    let plan = ketchup_application::plan_rule_program(document, source)?;
+    let plan = ketchup_application::plan_rule_program_cancellable(document, source, cancel)?;
     let report = if exact_follows && !exact_candidates(&plan.evaluated.model).is_empty() {
-        plan.report_before_exact(deadline)
+        plan.report_before_exact(deadline, cancel)
     } else {
-        plan.report(deadline)
+        plan.report(deadline, cancel)
     };
     Ok((plan, report))
 }
@@ -325,8 +327,14 @@ impl LiveBridge {
         let (source, replace) = Self::program_source(app, request, ui_busy, cancelled)?;
         let before = app.live_bridge_stamp();
         // This path answers without an exact check.
-        let planned = plan_with_report(&app.document, &source, program_request_deadline(), false)
-            .map_err(program_failure)?;
+        let planned = plan_with_report(
+            &app.document,
+            &source,
+            program_request_deadline(),
+            false,
+            &ketchup_program::CancelToken::default(),
+        )
+        .map_err(program_failure)?;
         self.publish_program(app, source, replace, planned, &before, cancelled)
     }
 
@@ -409,12 +417,13 @@ impl LiveBridge {
         let document = app.document.fork_for_planning();
         let before = app.live_bridge_stamp();
         let worker_source = source.clone();
+        let cancel = ketchup_program::CancelToken::from(Arc::clone(&cancelled));
         let (sender, receiver) = mpsc::sync_channel(1);
         let repaint = context.clone();
         let spawn = std::thread::Builder::new()
             .name("ketchup-live-program-plan".into())
             .spawn(move || {
-                let result = plan_with_report(&document, &worker_source, deadline, true);
+                let result = plan_with_report(&document, &worker_source, deadline, true, &cancel);
                 let _ = sender.try_send(result);
                 repaint.request_repaint();
             });

@@ -3,6 +3,8 @@
 mod append_feature;
 pub mod batch_task;
 pub mod cam_workflow;
+#[cfg(test)]
+mod cancel_ratchet_tests;
 mod collision;
 mod contact_joints;
 mod creation;
@@ -71,7 +73,7 @@ pub use rule_groups::plan_rule_model_batch;
 pub use rule_instances::{made_parts, rule_program_part_name};
 pub use rule_program::{
     RuleProgramApplyError, RuleProgramApplyResult, RuleProgramChange, RuleProgramPlan,
-    plan_rule_program, plan_rule_program_from,
+    plan_rule_program, plan_rule_program_cancellable, plan_rule_program_from,
 };
 
 mod session;

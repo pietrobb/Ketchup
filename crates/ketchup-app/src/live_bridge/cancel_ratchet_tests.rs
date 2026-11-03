@@ -26,6 +26,11 @@ const ONLY_IN_PROCESS: &[(&str, &str, &str)] = &[
         "project_drawings_job::exports_project_drawings",
     ),
     (
+        "live_bridge/program_check.rs",
+        "apply_program",
+        "start_queued_apply_program",
+    ),
+    (
         "live_bridge/program_access.rs",
         "program_report_page",
         "Request::ProgramReport",
