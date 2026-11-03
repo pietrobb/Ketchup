@@ -87,6 +87,11 @@ fn a_clients_drawings_of_modelled_threads_are_made_off_the_windows_thread() {
     let bridge = wire.app.live.bridge.as_ref().unwrap();
     let busy = serde_json::to_value(bridge.busy_jobs()).unwrap();
     assert_eq!(busy[0]["target"], "export_drawings", "{busy}");
+    // Review 2026-11-02 MCP-123: it said "DWG import" among other jobs.
+    assert_eq!(
+        busy[0]["reason"], "The project drawings are being drawn and written.",
+        "{busy}"
+    );
     assert!(!pdf.exists(), "written only when the window publishes it");
 
     let answer = loop {
