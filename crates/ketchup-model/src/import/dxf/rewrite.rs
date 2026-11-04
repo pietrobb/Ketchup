@@ -136,6 +136,18 @@ pub struct EditedDxf {
     /// changed in the file since it was imported, or read differently by this Kečup. They
     /// are written as the file has them, and said (review 2026-11-04 CD-140).
     pub changed_in_file: usize,
+    /// The entities the file has that the underlay has no object of: added to the file
+    /// since it was imported. They are written as the file has them, and said. A count of
+    /// 0 for both does not prove the file unchanged: an entity no line was read from is
+    /// not compared.
+    pub added_in_file: usize,
+}
+
+/// What [`rebinds`] found of a file that reads as other lines than the underlay's.
+#[derive(Clone, Copy, Default)]
+struct Rebound {
+    changed: usize,
+    added: usize,
 }
 
 /// `source`, the drawing `lines` were read from with `options`, written with `edits`. A
@@ -154,7 +166,7 @@ pub fn write_edited_dxf(
         .map_err(EditedDxfError::Read)?
         .code_page;
     let drawing = Drawing::parse(source, encoding)?;
-    let Some((frame, changed_in_file)) = frame else {
+    let Some((frame, rebound)) = frame else {
         // The file is blamed only when its entities are not those the lines were read
         // from (review 2026-10-29 CD-64).
         return Err(if drawing.has_entities_of(&lines.objects().objects) {
@@ -166,27 +178,28 @@ pub fn write_edited_dxf(
     };
     Ok(EditedDxf {
         dxf: drawing.write(lines, edits, &frame)?,
-        changed_in_file,
+        changed_in_file: rebound.changed,
+        added_in_file: rebound.added,
     })
 }
 
 /// How `lines` lie against the units of `source`, when reading it gives them (or, for
 /// `edits`, binds them again: [`rebinds`]): as `options` read it, or for a drawing that
 /// declares no unit, in the unit its lines are scaled by against that read; with the
-/// number of entities bound again that read as other lines. At most two reads, not one in
-/// each unit (review 2026-10-29 CD-63).
+/// entities bound again that read as other lines, and those added. At most two reads, not
+/// one in each unit (review 2026-10-29 CD-63).
 fn frame_of(
     source: &[u8],
     options: DxfImportOptions,
     lines: &UnderlayLines,
     edits: &UnderlayEdits,
-) -> Result<Option<(Frame, usize)>, EditedDxfError> {
+) -> Result<Option<(Frame, Rebound)>, EditedDxfError> {
     let read = read_dxf_underlay(source, options).map_err(EditedDxfError::Read)?;
     // Bound as read, or again (review 2026-11-04 P3: also in the unit a drawing that
     // declares none was read in).
     let bound = |read: &super::underlay::DxfUnderlay| {
         let changed = if read.lines == *lines {
-            Some(0)
+            Some(Rebound::default())
         } else {
             rebinds(&read.lines, lines, edits)
         };
@@ -223,9 +236,10 @@ fn frame_of(
 /// name the same entities; each object moved, stretched, copied or taken out lies where it
 /// lay, so an edit does to it what was seen; and at least one object does, so both lie
 /// alike against the drawing's units. The entities are written from the file, not from
-/// either read, so one read differently and not edited is written as the file has it:
-/// how many of them, when bound again.
-fn rebinds(read: &UnderlayLines, lines: &UnderlayLines, edits: &UnderlayEdits) -> Option<usize> {
+/// either read, so one read differently and not edited is written as the file has it, as
+/// is one the file gained since (review 2026-11-04 CD-140): how many of each, when bound
+/// again.
+fn rebinds(read: &UnderlayLines, lines: &UnderlayLines, edits: &UnderlayEdits) -> Option<Rebound> {
     type Key = (u64, &'static str, usize);
     /// The top-level objects by key, each with its id.
     fn tops(lines: &UnderlayLines) -> BTreeMap<Key, usize> {
@@ -305,7 +319,8 @@ fn rebinds(read: &UnderlayLines, lines: &UnderlayLines, edits: &UnderlayEdits) -
         lies_alike |= alike && at.iter().any(|run| !run.is_empty());
         changed += usize::from(!alike);
     }
-    lies_alike.then_some(changed)
+    let added = now.keys().filter(|key| !then.contains_key(*key)).count();
+    lies_alike.then_some(Rebound { changed, added })
 }
 
 /// The unit of [`UNITS`], other than the one `read` was read in, whose scale against it

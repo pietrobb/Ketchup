@@ -448,9 +448,11 @@ impl DrawingExportTarget {
                 "record_type": record_type,
                 "count": count,
             })).collect::<Vec<_>>(),
-            // Entities not edited that changed in the file since it was imported are
-            // written as it has them now (review 2026-11-04 CD-140).
+            // Entities not edited that changed in the file since it was imported, and
+            // those added to it, are written as it has them now (review 2026-11-04
+            // CD-140). Entities no line is read from are not compared.
             "changed_in_file": written.changed_in_file,
+            "added_in_file": written.added_in_file,
         });
         // A DWG is written in one version whatever the source's was (review 2026-10-31 P3).
         if crate::app::dwg_import::is_dwg_path(Path::new(&self.path)) {

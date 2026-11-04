@@ -1548,6 +1548,29 @@ fn an_entity_taken_out_that_lies_elsewhere_in_the_file_now_is_refused() {
     );
 }
 
+/// Review 2026-11-04 CD-140: a newer revision of the file that only gained an entity was
+/// bound again and written with it, and said nothing had changed in it since the import.
+#[test]
+fn an_entity_added_to_the_file_since_the_import_is_said() {
+    let source = source();
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(id_of(lines, 0xA0));
+    let added = "0\nLINE\n5\nB0\n330\n1F\n100\nAcDbEntity\n8\nwalls\n100\nAcDbLine\n\
+                 10\n0\n20\n-3000\n30\n0\n11\n2000\n21\n-3000\n31\n0\n";
+    let newer = source.replace(
+        "0\nENDSEC\n0\nEOF\n",
+        &format!("{added}0\nENDSEC\n0\nEOF\n"),
+    );
+    assert_ne!(newer, source);
+    let written = write_reported(newer.as_bytes(), DxfImportOptions::new(None), lines, &edits)
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!((written.changed_in_file, written.added_in_file), (0, 1));
+    let text = String::from_utf8(written.dxf).unwrap();
+    assert!(text.contains("0\nLINE\n5\nB0\n"), "{text}");
+}
+
 /// Review 2026-10-29 CD-63: a drawing that declares no unit, read in centimetres and
 /// written as if read in millimetres, is found in its unit by the size of its lines, not
 /// read once in each unit.

@@ -110,6 +110,8 @@ struct WrittenDrawing {
     skipped: Vec<(String, usize)>,
     /// The entities not edited written as the file has them now.
     changed_in_file: usize,
+    /// The entities the file gained since it was imported.
+    added_in_file: usize,
 }
 
 /// Whether a drawing written on a thread may still take the place of the file named:
@@ -148,6 +150,7 @@ impl WrittenDrawing {
             bytes: u64::try_from(self.bytes.len()).unwrap_or(u64::MAX),
             skipped: self.skipped,
             changed_in_file: self.changed_in_file,
+            added_in_file: self.added_in_file,
         })
     }
 }
@@ -206,6 +209,7 @@ impl UnderlayExportJob {
             replacing: self.replacing,
             skipped: worker.skipped,
             changed_in_file: worker.changed_in_file,
+            added_in_file: worker.added_in_file,
         })
     }
 }
@@ -451,16 +455,28 @@ impl KetchupApp {
                 &BTreeMap::from([("reason", error.to_string())]),
             ),
         };
-        // Entities changed in the file since it was imported are written as it has them,
-        // and said (review 2026-11-04 CD-140).
-        if let Ok(written) = &result
-            && written.changed_in_file > 0
-        {
-            self.digest.push(' ');
-            self.digest.push_str(&self.catalog.format(
-                "digest-underlay-exported-changed-in-file",
-                &BTreeMap::from([("count", written.changed_in_file.to_string())]),
-            ));
+        // Entities changed in, or added to, the file since it was imported are written as
+        // it has them, and said (review 2026-11-04 CD-140).
+        if let Ok(written) = &result {
+            for (key, count) in [
+                (
+                    "digest-underlay-exported-changed-in-file",
+                    written.changed_in_file,
+                ),
+                (
+                    "digest-underlay-exported-added-in-file",
+                    written.added_in_file,
+                ),
+            ] {
+                if count > 0 {
+                    self.digest.push(' ');
+                    self.digest.push_str(
+                        &self
+                            .catalog
+                            .format(key, &BTreeMap::from([("count", count.to_string())])),
+                    );
+                }
+            }
         }
         // A DWG is written in one version whatever the source's was (review 2026-10-31 P3).
         if result.is_ok() && crate::app::dwg_import::is_dwg_path(output) {

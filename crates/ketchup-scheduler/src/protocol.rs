@@ -403,6 +403,8 @@ pub struct UnderlayWritten {
     /// The entities, none of them edited, that read as other lines than the underlay's:
     /// written as the file has them now (review 2026-11-04 CD-140).
     pub changed_in_file: usize,
+    /// The entities the file gained since it was imported, written as it has them.
+    pub added_in_file: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

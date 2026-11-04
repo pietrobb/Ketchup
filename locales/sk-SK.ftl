@@ -1711,6 +1711,7 @@ digest-underlay-exported-incomplete = Výkres so zmenami je zapísaný do { $pat
        *[other] { $count } záznamov, ktoré čítačka DWG nevedela dekódovať alebo ktoré DWG nevie uložiť.
     }
 digest-underlay-exported-changed-in-file = Neupravené entity ({ $count }) sa v súbore od importu zmenili; zapíšu sa tak, ako sú v súbore teraz.
+digest-underlay-exported-added-in-file = Súbor má entity ({ $count }), ktoré pri importe nemal; zapíšu sa tiež.
 digest-underlay-exported-dwg-version = Je to DWG AutoCAD 2018 ({ $version }) bez ohľadu na verziu zdroja; pre starší AutoCAD exportujte výkres do DXF.
 digest-underlay-export-failed = Výkres sa nezapísal: { $reason }
 digest-underlay-text-required = Najprv napíš text, potom klikni, kde začína

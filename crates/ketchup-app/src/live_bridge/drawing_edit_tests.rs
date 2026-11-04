@@ -481,8 +481,10 @@ fn a_client_exports_the_edited_drawing_as_a_dxf_that_imports_as_edited() {
         json!({"removed": 1, "moved": 1, "stretched": 0, "added": 1}),
         "{answer}"
     );
-    // Nothing changed in the file since it was imported (review 2026-11-04 CD-140).
+    // The source is the file imported: no entity read as other lines, none added (review
+    // 2026-11-04 CD-140).
     assert_eq!(answer["changed_in_file"], 0, "{answer}");
+    assert_eq!(answer["added_in_file"], 0, "{answer}");
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(std::fs::read_to_string(&source).unwrap(), DRAWING);
     let written = std::fs::read_to_string(&output).unwrap();
