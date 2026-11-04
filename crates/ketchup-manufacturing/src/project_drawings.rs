@@ -731,6 +731,9 @@ fn view_frames(
 /// Share of the largest horizontal level a level needs to be the floor (not a
 /// tolerance: a ratio of areas).
 const FLOOR_SHARE_OF_LARGEST_LEVEL: f64 = 0.5;
+/// The narrowest a level a person stands on is, a gallery or a landing; the
+/// top of a wall or a parapet is narrower (not a tolerance: a clear width).
+const STANDING_WIDTH_MM: f64 = 1000.0;
 /// Room around a view for its dimensions and title, in page millimetres.
 const VIEW_PAD_MM: f64 = 22.0;
 pub const SCALES: [u32; 10] = [10, 20, 25, 50, 75, 100, 200, 250, 500, 1000];
@@ -997,13 +1000,23 @@ fn bounds(solids: &[DrawingSolid]) -> Option<(Point, Point)> {
         .then_some((min, max))
 }
 
-/// The floors: the upward-facing horizontal levels, lowest first, that carry
-/// at least half of the area of the largest such level, so small tops below a
-/// large deck do not count as a floor.
-fn floor_levels(solids: &[DrawingSolid]) -> Vec<f64> {
-    let mut levels = BTreeMap::<i64, f64>::new();
+/// An upward-facing horizontal level of the model.
+#[derive(Default)]
+struct UpwardLevel {
+    /// Of all the solids' faces at the level.
+    area: f64,
+    /// Of the widest solid's faces there: twice their area over the length
+    /// of their outline, the width of a strip.
+    widest_mm: f64,
+}
+
+/// The upward-facing horizontal levels of `solids`, lowest first.
+fn upward_levels(solids: &[DrawingSolid]) -> BTreeMap<i64, UpwardLevel> {
+    let mut levels = BTreeMap::<i64, UpwardLevel>::new();
     for solid in solids {
         let outward = if winds_inward(solid) { -1.0 } else { 1.0 };
+        // Per level: the area and each mesh edge with how many facets share it.
+        let mut faces = BTreeMap::<i64, (f64, BTreeMap<[[i64; 3]; 2], (usize, f64)>)>::new();
         for triangle in &solid.triangles {
             let [a, b, c] = triangle;
             let Some(normal) = unit_normal(triangle) else {
@@ -1012,19 +1025,61 @@ fn floor_levels(solids: &[DrawingSolid]) -> Vec<f64> {
             if normal[2] * outward < 1.0 - ROUNDING {
                 continue;
             }
-            let area = cross(sub(*b, *a), sub(*c, *a))[2].abs() / 2.0;
             #[allow(clippy::cast_possible_truncation)]
             let level = ((a[2] + b[2] + c[2]) / 3.0).round() as i64;
-            *levels.entry(level).or_default() += area;
+            let (area, edges) = faces.entry(level).or_default();
+            *area += cross(sub(*b, *a), sub(*c, *a))[2].abs() / 2.0;
+            for [p, q] in [[a, b], [b, c], [c, a]] {
+                let mut key = [grid_key(*p), grid_key(*q)];
+                key.sort_unstable();
+                let along = sub(*q, *p);
+                edges.entry(key).or_insert((0, dot(along, along).sqrt())).0 += 1;
+            }
+        }
+        for (level, (area, edges)) in faces {
+            let outline: f64 = edges
+                .values()
+                .filter(|(facets, _)| *facets == 1)
+                .map(|(_, length)| length)
+                .sum();
+            let entry = levels.entry(level).or_default();
+            entry.area += area;
+            if outline > 0.0 {
+                entry.widest_mm = entry.widest_mm.max(2.0 * area / outline);
+            }
         }
     }
-    let largest = levels.values().copied().fold(0.0, f64::max);
-    #[allow(clippy::cast_precision_loss)]
+    levels
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn levels_where(solids: &[DrawingSolid], is_floor: impl Fn(&UpwardLevel, f64) -> bool) -> Vec<f64> {
+    let levels = upward_levels(solids);
+    let largest = levels.values().map(|level| level.area).fold(0.0, f64::max);
     levels
         .into_iter()
-        .filter(|(_, area)| *area >= largest * FLOOR_SHARE_OF_LARGEST_LEVEL)
-        .map(|(level, _)| level as f64)
+        .filter(|(_, level)| is_floor(level, largest))
+        .map(|(height, _)| height as f64)
         .collect()
+}
+
+/// The floors of the plans: the upward-facing horizontal levels, lowest
+/// first, that carry at least half of the area of the largest such level, so
+/// small tops below a large deck do not count as a storey.
+fn floor_levels(solids: &[DrawingSolid]) -> Vec<f64> {
+    levels_where(solids, |level, largest| {
+        level.area >= largest * FLOOR_SHARE_OF_LARGEST_LEVEL
+    })
+}
+
+/// The floors the sections and elevations mark, lowest first: those of the
+/// plans and every level a person stands on, however small, such as a
+/// gallery or a mezzanine; not the top of a wall, a knee wall or a parapet
+/// (review 2026-11-04 MF-141).
+fn marked_floor_levels(solids: &[DrawingSolid]) -> Vec<f64> {
+    levels_where(solids, |level, largest| {
+        level.area >= largest * FLOOR_SHARE_OF_LARGEST_LEVEL || level.widest_mm >= STANDING_WIDTH_MM
+    })
 }
 
 /// Where ±0,000 is by default, as Czech and Slovak drawings put it: the floor
@@ -1346,7 +1401,9 @@ mod tests {
 
     /// Review 2026-11-04 MF-141: ±0,000 was the lowest floor, so a basement
     /// was ±0,000 and the ground floor +3,000; the foundations were never
-    /// marked, nor an attic floor without a plan of its own. ±0,000 is the
+    /// marked, nor an attic floor or a gallery without a plan of its own, a
+    /// gallery not even after the first fix, under half the floor's area
+    /// (review finding run 480). ±0,000 is the
     /// ground floor, the lowest at or above z = 0, unless the sheet sets it;
     /// every floor and the bottom below ±0,000 are marked.
     #[test]
@@ -1367,6 +1424,12 @@ mod tests {
             [6000.0, 3000.0, 2900.0],
         ));
         house.push(cuboid("knee", [0.0, 0.0, 2900.0], [6000.0, 150.0, 3500.0]));
+        // A 2 × 3 m gallery: a third of the floor's area, a floor all the same.
+        house.push(cuboid(
+            "gallery",
+            [0.0, 0.0, 1400.0],
+            [2000.0, 3000.0, 1600.0],
+        ));
         let mut options = DrawingSetOptions {
             decimal_comma: true,
             ..options(&house, None)
@@ -1379,13 +1442,13 @@ mod tests {
         };
         assert_eq!(
             levels(&options),
-            ["-3,200", "-3,000", "±0,000", "+2,700", "+3,300"]
+            ["-3,200", "-3,000", "±0,000", "+1,400", "+2,700", "+3,300"]
         );
         // The basement floor set as ±0,000.
         options.zero_level_mm = Some(-2800.0);
         assert_eq!(
             levels(&options),
-            ["-0,200", "±0,000", "+3,000", "+5,700", "+6,300"]
+            ["-0,200", "±0,000", "+3,000", "+4,400", "+5,700", "+6,300"]
         );
     }
 

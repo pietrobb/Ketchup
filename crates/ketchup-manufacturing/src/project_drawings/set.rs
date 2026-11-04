@@ -22,7 +22,8 @@ use super::{Annotation, AnnotationCounts, PlanAnnotations};
 use super::{
     DrawingSolid, DrawnView, ProjectDrawingError, ProjectView, SheetViews, Storey, VIEW_PAD_MM,
     ViewSummary, annotation_bounds, bounds, choose_layout_scale, draw_view, draw_view_on_page,
-    extent, floor_levels, format_at_scale, ground_floor_of, lerp, solid_edges, view_frames,
+    extent, floor_levels, format_at_scale, ground_floor_of, lerp, marked_floor_levels, solid_edges,
+    view_frames,
 };
 use crate::sheet_dxf::page_dxf;
 use crate::title_block::{
@@ -701,12 +702,11 @@ fn section_levels(solids: &[DrawingSolid], options: &DrawingSetOptions) -> Vec<(
     let Some((low, high)) = bounds(solids) else {
         return Vec::new();
     };
-    let floors = floor_levels(solids);
     let datum = options
         .zero_level_mm
-        .unwrap_or_else(|| ground_floor_of(&floors));
+        .unwrap_or_else(|| ground_floor_of(&floor_levels(solids)));
     let separator = options.decimal_separator();
-    level_heights(datum, &floors, low[2], high[2])
+    level_heights(datum, &marked_floor_levels(solids), low[2], high[2])
         .into_iter()
         .map(|height| (height, level_text(height - datum, separator)))
         .collect()
