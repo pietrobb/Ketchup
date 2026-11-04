@@ -254,6 +254,7 @@ if ($unresolvedImports.Count -ne 0) {
 }
 . (Join-Path $PSScriptRoot "package-notices.ps1")
 Copy-PackageNotices $repoRoot $OcctRoot $payloadDir "ketchup"
+Assert-RuntimeNotices $payloadDir $vcRuntime
 if ($Sign) {
     Invoke-AzureSigning (Join-Path $payloadDir "Ketchup.exe")
     Invoke-AzureSigning (Join-Path $payloadDir "ketchup-exact-worker.exe")
