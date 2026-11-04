@@ -24,6 +24,9 @@ pub(super) fn height(app: &KetchupApp) -> f64 {
 pub(super) fn plugin_wire_answering(dialogs: ScriptedFileDialogs) -> Wire {
     let mut app = grounded_app();
     app.dialogs = Box::new(dialogs);
+    // The bridge drops a client silent for 2 s; asking Python where it lives
+    // starts a process, so that happens before connecting, once.
+    python();
     Wire::connect(app)
 }
 
@@ -34,11 +37,16 @@ fn plugin_wire() -> Wire {
 
 /// The bridge takes only an absolute executable path.
 pub(super) fn python() -> String {
-    let output = std::process::Command::new(ketchup_test_env::python())
-        .args(["-c", "import sys; print(sys.executable)"])
-        .output()
-        .unwrap();
-    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    static PYTHON: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PYTHON
+        .get_or_init(|| {
+            let output = std::process::Command::new(ketchup_test_env::python())
+                .args(["-c", "import sys; print(sys.executable)"])
+                .output()
+                .unwrap();
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        })
+        .clone()
 }
 
 fn plugin_request(arguments: Vec<String>) -> RunPluginRequest {
@@ -701,12 +709,13 @@ fn a_link_in_or_as_a_plugin_folder_is_refused_without_a_prompt() {
     std::fs::write(elsewhere.join("module.py"), "x = 1\n").unwrap();
     let dialogs = ScriptedFileDialogs::new().always_confirm_high_risk_as(1);
     let probe = dialogs.clone();
+    // A link inside the folder would bring in files the consent never hashed.
+    // Made before connecting: starting `cmd` can outlast the 2 s token wait.
+    link_directory(&folder.join("linked"), &elsewhere);
     let mut wire = plugin_wire_answering(dialogs);
     let original = height(&wire.app);
     let undo = wire.app.undo_step_count();
 
-    // A link inside the folder would bring in files the consent never hashed.
-    link_directory(&folder.join("linked"), &elsewhere);
     let request = folder_request(&folder, json!({"height_mm": 35}));
     assert_refused_without_prompt(
         &mut wire,
