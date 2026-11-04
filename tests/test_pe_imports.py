@@ -177,3 +177,9 @@ def test_the_runtime_visual_studio_installed_with_the_toolset_ships_for_it(tmp_p
     assert found("14.34").stdout.split() == ["14.34.31931"]
     refused = found("14.36")
     assert refused.returncode != 0 and "14.36" in refused.stderr
+
+
+def test_a_machine_without_visual_studio_has_no_installations():
+    # Release 0.3.2 CI: Linux and macOS have no ProgramFiles(x86), and looking for
+    # Visual Studio there failed every runtime lookup instead of finding none.
+    assert run("${env:ProgramFiles(x86)} = $null; @(Get-VsInstallations).Count") == ["0"]

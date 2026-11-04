@@ -119,6 +119,7 @@ function Get-PeToolsetVersion([string]$Directory) {
 }
 
 function Get-VsInstallations {
+    if ([string]::IsNullOrWhiteSpace(${env:ProgramFiles(x86)})) { return @() }
     $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
     if (-not (Test-Path $vswhere -PathType Leaf)) { return @() }
     return @(& $vswhere -all -products * -property installationPath)
