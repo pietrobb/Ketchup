@@ -22,7 +22,7 @@ use super::{Annotation, AnnotationCounts, PlanAnnotations};
 use super::{
     DrawingSolid, DrawnView, ProjectDrawingError, ProjectView, SheetViews, Storey, VIEW_PAD_MM,
     ViewSummary, annotation_bounds, bounds, choose_layout_scale, draw_view, draw_view_on_page,
-    extent, format_at_scale, solid_edges, view_frames,
+    extent, format_at_scale, lerp, solid_edges, view_frames,
 };
 use crate::sheet_dxf::page_dxf;
 use crate::title_block::{
@@ -385,7 +385,11 @@ pub fn drawing_set_until(
                 .map(|(view, frame)| {
                     let mut drawn = draw_view(*view, *frame, solids, &edges);
                     drawn.levels.clone_from(&levels);
-                    let upright = PlanAnnotations::project_upright(frame, &options.annotations);
+                    let upright = PlanAnnotations::project_upright(
+                        frame,
+                        &options.annotations,
+                        lerp(min, max, 0.5),
+                    );
                     if upright.counts.dimensions > 0 {
                         drawn.annotate(upright);
                     }

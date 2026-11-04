@@ -98,7 +98,11 @@ impl PlanAnnotations {
     /// and in a section only those at or beyond the cut. A plan leaves a vertical
     /// one out. Its offset, along −x as [`DimensionLayout`] sets it, has no length
     /// in a view along x: the line is set off to the left in the view there.
-    pub(super) fn project_upright(frame: &ViewFrame, annotations: &[Annotation]) -> Self {
+    pub(super) fn project_upright(
+        frame: &ViewFrame,
+        annotations: &[Annotation],
+        centre: [f64; 3],
+    ) -> Self {
         let mut marks = Vec::new();
         for annotation in annotations {
             let AnnotationMark::Dimension {
@@ -111,11 +115,22 @@ impl PlanAnnotations {
                 continue;
             };
             let layout = DimensionLayout::new(*from_mm, *to_mm, *offset_mm);
-            if layout.along[2].abs() <= ROUNDING
-                || dot(layout.along, frame.depth).abs() > ROUNDING
+            // Upright and parallel to the view within the shortest length a
+            // drawing gives (review 2026-11-04: 1e-9 of a unit vector dropped
+            // one 1e-5 mm off upright from every view).
+            let run = |axis: [f64; 3]| (dot(*to_mm, axis) - dot(*from_mm, axis)).abs();
+            let depth = (dot(*from_mm, frame.depth) + dot(*to_mm, frame.depth)) / 2.0;
+            let near = depth - dot(centre, frame.depth);
+            // An elevation draws those of its own half of the model, so the
+            // opposite one does not repeat them; one in the middle goes to the
+            // view looking along +x or +y.
+            let own_half = near < -MIN_DIMENSION_MM
+                || (near <= MIN_DIMENSION_MM && frame.depth[0] + frame.depth[1] > 0.0);
+            if run([0.0, 0.0, 1.0]) <= MIN_DIMENSION_MM
+                || run(frame.depth) > MIN_DIMENSION_MM
                 || frame
                     .cut
-                    .is_some_and(|cut| dot(*from_mm, frame.depth) < cut - ROUNDING)
+                    .map_or(!own_half, |cut| dot(*from_mm, frame.depth) < cut - ROUNDING)
             {
                 continue;
             }
@@ -352,11 +367,60 @@ mod tests {
                 height_mm: 2.5,
             },
         };
-        let drawn = PlanAnnotations::project_upright(&side, &[vertical]);
+        let drawn = PlanAnnotations::project_upright(&side, &[vertical], [500.0; 3]);
         let Some(Projected::Dimension { measured, line, .. }) = drawn.marks.first() else {
             panic!("the vertical dimension is drawn");
         };
         assert_eq!(*measured, [[0.0, 0.0], [0.0, 2000.0]]);
         assert_eq!(*line, [[-400.0, 0.0], [-400.0, 2000.0]]);
+    }
+
+    /// Review 2026-11-04 (P3): a vertical dimension 1e-5 mm off upright left
+    /// every view (parallel within 1e-9 of a unit vector), and an upright one
+    /// was drawn on the front and the back elevation both. It is drawn within
+    /// the drawing's shortest length, on the elevation of its own half.
+    #[test]
+    fn a_vertical_dimension_is_drawn_once_on_the_elevation_of_its_side() {
+        let front = ViewFrame {
+            right: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            depth: [0.0, 1.0, 0.0],
+            cut: None,
+        };
+        let back = ViewFrame {
+            right: [-1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            depth: [0.0, -1.0, 0.0],
+            cut: None,
+        };
+        let vertical = |y: f64, lean: f64| Annotation {
+            name: "height".to_owned(),
+            tags: std::collections::BTreeSet::new(),
+            mark: AnnotationMark::Dimension {
+                from_mm: [0.0, y, 0.0],
+                to_mm: [0.0, y + lean, 2000.0],
+                offset_mm: 400.0,
+                height_mm: 2.5,
+            },
+        };
+        let centre = [2000.0, 500.0, 1000.0];
+        let count = |frame: &ViewFrame, annotation: Annotation| {
+            PlanAnnotations::project_upright(frame, &[annotation], centre)
+                .counts
+                .dimensions
+        };
+        for lean in [0.0, 1.0e-5] {
+            assert_eq!(count(&front, vertical(0.0, lean)), 1, "{lean}");
+            assert_eq!(count(&back, vertical(0.0, lean)), 0, "{lean}");
+            assert_eq!(count(&front, vertical(1000.0, lean)), 0, "{lean}");
+            assert_eq!(count(&back, vertical(1000.0, lean)), 1, "{lean}");
+        }
+        // One in the middle is drawn on one of the two.
+        assert_eq!(
+            count(&front, vertical(500.0, 0.0)) + count(&back, vertical(500.0, 0.0)),
+            1
+        );
+        // Leaning a millimetre towards the viewer, it is no true length.
+        assert_eq!(count(&front, vertical(0.0, 1.0)), 0);
     }
 }

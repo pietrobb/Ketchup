@@ -1349,7 +1349,9 @@ mod tests {
         let plan = counts(SheetKind::Plan { storey: 0 });
         assert_eq!((plan.dimensions, plan.outside_plan), (1, 2));
         assert_eq!(counts(SheetKind::Sections).dimensions, 2);
-        assert_eq!(counts(SheetKind::Elevations).dimensions, 8);
+        // Each on the elevation of its own half, front or back and left or
+        // right, not on the opposite one too (review 2026-11-04).
+        assert_eq!(counts(SheetKind::Elevations).dimensions, 4);
         let elevations = sheet_of(&set, SheetKind::Elevations);
         assert!(texts(&elevations.page).contains(&"2150"));
         assert!(texts(&elevations.lines).contains(&"2150"), "DXF");
