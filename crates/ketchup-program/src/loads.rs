@@ -110,10 +110,11 @@ pub struct MemberLoad {
     pub missing: Vec<String>,
 }
 
-/// A part holding a member sideways over a stretch of one edge (review
-/// 2026-11-02 PG-120): it bears on the member and on another part, and is
-/// screwed to the member by a joint (or is of the load path's `fixed` tags) or
-/// also bears on a grounded part. A part only lying on free members moves with them.
+/// A part holding a member sideways at one edge (review 2026-11-02 PG-120,
+/// 2026-11-04 PG-140 to PG-142): it bears on the member and on a grounded
+/// part, and is fastened to both by a joint (or is of the load path's `fixed`
+/// tags). It holds the member at its fasteners, or at the middle of where it
+/// touches when the joint names none; `from_mm` equals `to_mm` then.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Brace {
     pub part: String,
@@ -1079,40 +1080,50 @@ struct Bracing {
 }
 
 /// Where each member is held sideways, along it, and on which edge. A part
-/// held by more than one part ties each member it bears on to the others there
-/// (review 2026-11-01 PG-100), but only where it is fastened to the member or
-/// itself bears on a grounded part (review 2026-11-02 PG-120): a loose plank
-/// on two free beams lets both buckle together. One resting on a single member
-/// (a pad, a post) moves with it; one touching it from the side holds no edge.
+/// bearing on a member and on a grounded part ties the member to the ground
+/// there (review 2026-11-01 PG-100), but only when it is fastened to both
+/// (review 2026-11-04 PG-140, PG-141): a plank screwed to two free beams lets
+/// both buckle together, and a loose lath lying along a beam's top moves with
+/// it however firmly the lath's end leans on a wall. It holds the member at
+/// its fasteners only, so the stretch between two is free (PG-142); a joint
+/// naming none holds it at the middle of where they touch. One resting on a
+/// single member (a pad, a post) moves with it; one touching it from the side
+/// holds no edge.
 fn braced_stretches(
     supports: &[Vec<Support>],
     member: &[bool],
     sink: &[bool],
     frames: &[Frame],
-    fastened: impl Fn(usize, usize) -> bool,
+    fastening: impl Fn(usize, usize) -> Option<Vec<[f64; 3]>>,
 ) -> Vec<Vec<Bracing>> {
     let mut braced: Vec<Vec<Bracing>> = frames.iter().map(|_| Vec::new()).collect();
     for (item, list) in supports.iter().enumerate() {
-        let held_by: BTreeSet<usize> = list.iter().map(|support| support.supporter).collect();
-        if held_by.len() < 2 {
+        let anchored = list
+            .iter()
+            .any(|support| sink[support.supporter] && fastening(item, support.supporter).is_some());
+        if !anchored {
             continue;
         }
-        let anchored = held_by.iter().any(|supporter| sink[*supporter]);
         for support in list.iter().filter(|support| member[support.supporter]) {
             let frame = &frames[support.supporter];
-            if !(anchored || fastened(item, support.supporter)) {
+            let Some(fasteners) = fastening(item, support.supporter) else {
                 continue;
-            }
+            };
             let Some(top) = frame.edge(&support.points) else {
                 continue;
             };
             let (from, to) = frame.range(&support.points);
-            braced[support.supporter].push(Bracing {
+            let at: Vec<f64> = if fasteners.is_empty() {
+                vec![(from + to) / 2.0]
+            } else {
+                fasteners.iter().map(|point| frame.along(*point)).collect()
+            };
+            braced[support.supporter].extend(at.into_iter().map(|at| Bracing {
                 by: item,
                 top,
-                from,
-                to,
-            });
+                from: at,
+                to: at,
+            }));
         }
     }
     braced
@@ -1301,7 +1312,17 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
 
     let (mut patches, mut missing) = own_loads(model, &frames);
     let braced = braced_stretches(&supports, &member, &sink, &frames, |item, held| {
-        fixed_by_tag[item] || joined(&parts[item].name, &parts[held].name)
+        let (a, b) = (parts[item].name.as_str(), parts[held].name.as_str());
+        let fasteners: Vec<[f64; 3]> = model
+            .joints
+            .iter()
+            .filter(|joint| {
+                let [x, y] = [joint.parts[0].as_str(), joint.parts[1].as_str()];
+                (x, y) == (a, b) || (x, y) == (b, a)
+            })
+            .flat_map(|joint| joint.fasteners_mm.iter().copied())
+            .collect();
+        (fixed_by_tag[item] || joined(a, b)).then_some(fasteners)
     });
 
     // Pass the loads down, each part after everything it carries.

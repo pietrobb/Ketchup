@@ -388,7 +388,7 @@ fn beam_named(material: &str) -> String {
 
 /// A GL24h 80 x 400 beam on two grounded posts (span 5800 mm between their
 /// centres) under about 13 kN on a 300 mm pad at its middle; with `battens`,
-/// 50 mm battens rest on its top and on a grounded wall beside it.
+/// 50 mm battens rest on its top and on a grounded wall beside it, screwed to both.
 fn slender_beam(battens: &[f64]) -> String {
     let mut source = String::from(
         "load_path(only = [\"frame\"], carriers = [\"pad\"])
@@ -407,7 +407,10 @@ box(\"pad\", (300, 80, 50), at = (2800, 0, 2400), material = \"GL24h\", tags = [
     }
     for (index, x) in battens.iter().enumerate() {
         source.push_str(&format!(
-            "box(\"batten {index}\", (50, 1100, 50), at = ({x}, 0, 2400), material = \"GL24h\")\n"
+            "box(\"batten {index}\", (50, 1100, 50), at = ({x}, 0, 2400), material = \"GL24h\")
+joint(\"batten {index}\", \"beam\", kind = \"screw\")
+joint(\"batten {index}\", \"wall\", kind = \"screw\")
+"
         ));
     }
     source
@@ -465,10 +468,12 @@ fn ltb_not_verified(report: &Report) -> bool {
 /// PG-120 (review 2026-11-02): any part resting on two members braced both
 /// where it touched them, whatever edge and however loose. A single plank lying
 /// on two otherwise free beams let both pass, though they can buckle together
-/// (EN 1995-1-1 9.2.5.3 asks for a stiff, connected bracing); screwed to them
-/// by joint() it holds their compressed tops.
+/// (EN 1995-1-1 9.2.5.3 asks for a stiff, connected bracing). PG-140 (review
+/// 2026-11-04): screwed to both by joint() it still braced them, passing a
+/// beam at 1.185 with 0.926, though both can still buckle together; it holds
+/// the compressed top only when also fastened to a grounded wall.
 #[test]
-fn a_loose_plank_on_two_free_beams_does_not_brace_them_and_a_screwed_one_does() {
+fn a_plank_on_two_free_beams_does_not_brace_them_loose_or_screwed() {
     let plank = "box(\"plank\", (100, 1080, 50), at = (2650, 0, 2400), material = \"GL24h\")\n";
     let loose = report(&slender_pair(plank), &[]);
     assert!(ltb_not_verified(&loose), "{:?}", member(&loose, "beam"));
@@ -481,16 +486,21 @@ fn a_loose_plank_on_two_free_beams_does_not_brace_them_and_a_screwed_one_does() 
         &[],
     );
     let beam = member(&screwed, "beam");
+    assert!(ltb_not_verified(&screwed), "{beam:?}");
+    assert_eq!(beam.status, "not_verified", "{:?}", beam.checks);
+}
+
+/// The plank of a plank across the beam, resting on it and on a grounded wall
+/// beside it and screwed to both, holds its compressed top (PG-140).
+#[test]
+fn a_plank_screwed_to_the_beam_and_a_grounded_wall_braces_its_top() {
+    let screwed = report(
+        &slender_beam(&[300.0, 1200.0, 2100.0, 3600.0, 4500.0, 5400.0]),
+        &[],
+    );
+    let beam = member(&screwed, "beam");
     assert_eq!(beam.missing, Vec::<String>::new(), "{beam:?}");
     assert_eq!(beam.status, "pass");
-    // PG-122: kcrit below 1 within the strength is its own check, above bending.
-    let buckling = utilization(beam, "lateral_torsional");
-    assert!(
-        utilization(beam, "bending") < buckling && buckling <= 1.0,
-        "{:?}",
-        beam.checks
-    );
-    assert_eq!(beam.governing.as_deref(), Some("lateral_torsional"));
     let load = screwed
         .loads
         .members
@@ -500,10 +510,124 @@ fn a_loose_plank_on_two_free_beams_does_not_brace_them_and_a_screwed_one_does() 
     assert!(
         load.braced_by
             .iter()
-            .any(|brace| brace.part == "plank" && brace.edge == "top"),
+            .any(|brace| brace.part == "batten 0" && brace.edge == "top"),
         "{:?}",
         load.braced_by
     );
+}
+
+/// The slender beam with two 40 x 40 laths lying along its top, from beyond
+/// each end to either side of the pad, each resting on a grounded block past
+/// the beam's end, and `extra` lines.
+fn laths_along(extra: &str) -> String {
+    format!(
+        "{}box(\"block a\", (300, 80, 2400), at = (-400, 0, 0), material = \"GL24h\", grounded = True)
+box(\"block b\", (300, 80, 2400), at = (6000, 0, 0), material = \"GL24h\", grounded = True)
+box(\"lath a\", (3050, 40, 40), at = (-300, 20, 2400), material = \"GL24h\")
+box(\"lath b\", (3050, 40, 40), at = (3150, 20, 2400), material = \"GL24h\")
+{extra}",
+        slender_beam(&[])
+    )
+}
+
+/// PG-141 (review 2026-11-04): a part leaning on a grounded part braced a
+/// member it merely lay on. Two loose laths along the beam's top, each on a
+/// grounded block past an end, held it over 0-2750 and 3150-5900 mm without a
+/// single joint, and the beam passed. Lying along the beam, a lath moves with it.
+#[test]
+fn loose_laths_along_the_top_leaning_on_grounded_blocks_do_not_brace_it() {
+    let loose = report(&laths_along(""), &[]);
+    let beam = member(&loose, "beam");
+    assert!(ltb_not_verified(&loose), "{beam:?}");
+    assert_eq!(beam.status, "not_verified");
+
+    let anchored_only = report(
+        &laths_along(
+            "joint(\"lath a\", \"block a\", kind = \"screw\")\njoint(\"lath b\", \"block b\", kind = \"screw\")\n",
+        ),
+        &[],
+    );
+    assert!(
+        ltb_not_verified(&anchored_only),
+        "{:?}",
+        member(&anchored_only, "beam")
+    );
+}
+
+/// PG-142 (review 2026-11-04): where a joint's fasteners are was ignored. Each
+/// lath screwed to the beam by one screw at its end over the beam's bearing
+/// braced all its 2550 mm of contact; it holds the beam at that screw only.
+/// Two screws at the pad hold the beam there, which leaves two shorter free
+/// stretches; screwed every 300 mm, the laths hold its whole top.
+#[test]
+fn a_lath_holds_the_beam_at_its_fasteners_only() {
+    let anchors = "joint(\"lath a\", \"block a\", kind = \"screw\")\njoint(\"lath b\", \"block b\", kind = \"screw\")\n";
+    let at = |a: f64, b: f64| {
+        report(
+            &laths_along(&format!(
+                "{anchors}joint(\"lath a\", \"beam\", kind = \"screw\", fasteners = [({a}, 40, 2400)])
+joint(\"lath b\", \"beam\", kind = \"screw\", fasteners = [({b}, 40, 2400)])
+"
+            )),
+            &[],
+        )
+    };
+    let ends = at(150.0, 5750.0);
+    let beam = member(&ends, "beam");
+    assert!(ltb_not_verified(&ends), "{beam:?}");
+    assert_eq!(beam.status, "not_verified");
+    let load = ends
+        .loads
+        .members
+        .iter()
+        .find(|load| load.part == "beam")
+        .expect("loads of the beam");
+    let held: Vec<(f64, f64)> = load
+        .braced_by
+        .iter()
+        .map(|brace| (brace.from_mm, brace.to_mm))
+        .collect();
+    assert_eq!(
+        held,
+        [(150.0, 150.0), (5750.0, 5750.0)],
+        "{:?}",
+        load.braced_by
+    );
+
+    // Held at 2700 and 3200 mm, each free stretch is 2.6 m: kcrit 0.94 within the strength.
+    let middle = at(2700.0, 3200.0);
+    let beam = member(&middle, "beam");
+    assert_eq!(beam.status, "pass", "{beam:?}");
+    let buckling = beam
+        .checks
+        .iter()
+        .find(|check| check.name == "lateral_torsional")
+        .expect("the free stretches are checked");
+    assert!(
+        buckling.at.starts_with("top free 100-2700 mm"),
+        "{buckling:?}"
+    );
+
+    let screws = |from: i32, to: i32| {
+        (from..=to)
+            .step_by(300)
+            .map(|x| format!("({x}, 40, 2400)"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let many = report(
+        &laths_along(&format!(
+            "{anchors}joint(\"lath a\", \"beam\", kind = \"screw\", fasteners = [{}])
+joint(\"lath b\", \"beam\", kind = \"screw\", fasteners = [{}])
+",
+            screws(150, 2700),
+            screws(3200, 5750)
+        )),
+        &[],
+    );
+    let beam = member(&many, "beam");
+    assert_eq!(beam.missing, Vec::<String>::new(), "{beam:?}");
+    assert_eq!(beam.status, "pass", "{:?}", beam.checks);
 }
 
 /// PG-120 (review 2026-11-02): a ceiling board screwed under two beams held
@@ -541,14 +665,19 @@ box(\"pad b\", (300, 72, 50), at = (8600, 4, 2400), material = \"GL24h\", tags =
 box(\"wall\", (11700, 100, 2400), at = (0, 1000, 0), material = \"GL24h\", grounded = True)
 ",
     );
-    let mut x = 300.0;
-    while x < 11500.0 {
-        if !(2700.0..3200.0).contains(&x) && !(8500.0..9000.0).contains(&x) {
-            source.push_str(&format!(
-                "box(\"batten {x}\", (50, 1100, 50), at = ({x}, 0, 2400), material = \"GL24h\")\n"
-            ));
-        }
-        x += 900.0;
+    for step in 0..13 {
+        // Each batten holds the beam at its middle (PG-142); the one over a pad
+        // goes just before it.
+        let x = match 300 + 900 * step {
+            3000 => 2740,
+            x => x,
+        };
+        source.push_str(&format!(
+            "box(\"batten {x}\", (50, 1100, 50), at = ({x}, 0, 2400), material = \"GL24h\")
+joint(\"batten {x}\", \"beam\", kind = \"screw\")
+joint(\"batten {x}\", \"wall\", kind = \"screw\")
+"
+        ));
     }
     source.push_str(extra);
     source
@@ -570,16 +699,26 @@ fn battens_on_top_do_not_brace_the_bottom_a_hogging_moment_compresses() {
         beam.missing
     );
 
+    // Screwed to the beam every 300 mm (PG-142: it holds the beam at its screws).
+    let screws = |from: i32, to: i32| {
+        (from..=to)
+            .step_by(300)
+            .map(|x| format!("({x}, 40, 2000)"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     let ceiling = report(
-        &two_span_beam(
+        &two_span_beam(&format!(
             "box(\"ceiling a\", (5400, 1260, 20), at = (200, -260, 1980), material = \"OSB\")
 box(\"ceiling b\", (5400, 1260, 20), at = (6100, -260, 1980), material = \"OSB\")
-joint(\"ceiling a\", \"beam\", kind = \"screw\")
+joint(\"ceiling a\", \"beam\", kind = \"screw\", fasteners = [{}])
 joint(\"ceiling a\", \"wall\", kind = \"screw\")
-joint(\"ceiling b\", \"beam\", kind = \"screw\")
+joint(\"ceiling b\", \"beam\", kind = \"screw\", fasteners = [{}])
 joint(\"ceiling b\", \"wall\", kind = \"screw\")
 ",
-        ),
+            screws(250, 5550),
+            screws(6150, 11450)
+        )),
         &[],
     );
     let beam = member(&ceiling, "beam");

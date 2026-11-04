@@ -3006,9 +3006,11 @@ def _opening_in(name, o, origin, along, up, out, depth, length, top_v):
 #   loads on it by kind (newtons, characteristic, unfactored), where they act (patches
 #   along the member: own weight, area loads, parts it carries) and what it passes to
 #   each support (reactions, with the bearing joint), and braced_by, the parts holding
-#   it sideways (part, edge top or bottom, from_mm, to_mm): a part bearing on it and on
-#   something else too (decking, battens, a ceiling), screwed to it by a joint() (or of
-#   the fixed tags) or also bearing on a grounded part; a loose plank across free beams
+#   it sideways (part, edge top or bottom, from_mm = to_mm, the place it holds): a part
+#   bearing on it and on a grounded part (decking, battens, a ceiling) and fastened to both
+#   by a joint() (or of the fixed tags). It holds the member at the joint's fasteners
+#   points, or at the middle of where they touch when the joint lists none, so name the
+#   fasteners of a lath along a beam. A plank screwed only to free beams, or lying loose,
 #   holds nothing. The top braces against a sagging moment, the bottom against a
 #   hogging one (lateral torsional buckling, check lateral_torsional). A beam shares its load among its
 #   supports by the lever rule, over more supports as simple spans between them; other
