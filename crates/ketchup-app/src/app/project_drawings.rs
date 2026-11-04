@@ -66,9 +66,22 @@ pub(crate) enum ProjectDrawingsError {
     /// The named part's modelled threads could not be made cosmetic for the
     /// sheet, which would otherwise draw every edge of their helices.
     CosmeticThreads(String, CosmeticThreadBodyError),
+    /// The named shown underlay's lines do not read, the plans would leave it
+    /// out: `None` when the document holds no blob of them.
+    UnderlayUnreadable(String, Option<ketchup_model::underlay::UnderlayLinesError>),
     /// A sheet's DXF did not convert to DWG.
     Dwg(ketchup_dwg::DwgError),
     Write(std::io::Error),
+}
+
+/// Why a shown underlay's lines do not read, in words.
+pub(crate) fn underlay_unreadable_reason(
+    cause: Option<&ketchup_model::underlay::UnderlayLinesError>,
+) -> String {
+    cause.map_or_else(
+        || "the document holds none of its lines".to_owned(),
+        ToString::to_string,
+    )
 }
 
 /// What a client asks of the set beyond the settings the document keeps: the
@@ -1158,18 +1171,22 @@ impl KetchupApp {
     }
 
     /// The lines of every shown layer of every shown underlay lying flat, in
-    /// the world, which the plans draw beneath the model (Měchenice MECH-10);
-    /// an underlay whose lines do not read draws nothing, as in the window.
-    fn drawing_underlay(&self, snapshot: &Snapshot) -> Vec<[[f64; 3]; 2]> {
+    /// the world, which the plans draw beneath the model (Měchenice MECH-10).
+    /// A shown underlay whose lines do not read refuses the set: the plans
+    /// would leave it out unsaid (review 2026-11-04 P3).
+    fn drawing_underlay(
+        &self,
+        snapshot: &Snapshot,
+    ) -> Result<Vec<[[f64; 3]; 2]>, ProjectDrawingsError> {
         let shown = |tag| snapshot.tag(tag).is_some_and(|tag| tag.visible());
         let mut lines = Vec::new();
         for underlay in snapshot
             .underlays()
             .filter(|underlay| underlay.lies_flat() && shown(underlay.tag))
         {
-            let Some(drawn) = self.cached_underlay_lines(underlay) else {
-                continue;
-            };
+            let drawn = self.underlay_lines_or_reason(underlay).map_err(|cause| {
+                ProjectDrawingsError::UnderlayUnreadable(underlay.name.clone(), cause)
+            })?;
             let placement = underlay.world_transform();
             let world = |[x, y]: [f64; 2]| placement.transform_point([x, y, 0.0]);
             for (layer, layer_lines) in underlay.layers.iter().zip(drawn.layers()) {
@@ -1178,7 +1195,7 @@ impl KetchupApp {
                 }
             }
         }
-        lines
+        Ok(lines)
     }
 
     /// The job of the set `request` asks for: all sheets or the plans alone,
@@ -1267,7 +1284,7 @@ impl KetchupApp {
                 plan_only: request.plan_only,
                 scale: request.scale,
                 annotations,
-                underlay: self.drawing_underlay(&snapshot),
+                underlay: self.drawing_underlay(&snapshot)?,
                 openings,
                 shop,
                 cutting,
@@ -1326,6 +1343,13 @@ impl KetchupApp {
             ProjectDrawingsError::CosmeticThreads(part, cause) => self.catalog.format(
                 "drawings-cosmetic-threads-failed",
                 &BTreeMap::from([("part", part.clone()), ("reason", cause.to_string())]),
+            ),
+            ProjectDrawingsError::UnderlayUnreadable(name, cause) => self.catalog.format(
+                "drawings-underlay-unreadable",
+                &BTreeMap::from([
+                    ("name", name.clone()),
+                    ("reason", underlay_unreadable_reason(cause.as_ref())),
+                ]),
             ),
             ProjectDrawingsError::Drawing(error @ ProjectDrawingError::Cancelled) => {
                 error.to_string()

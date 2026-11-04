@@ -578,6 +578,14 @@ pub(super) fn export_failed(error: ProjectDrawingsError) -> &'static str {
             ),
             json!({"part": part}),
         ),
+        ProjectDrawingsError::UnderlayUnreadable(name, cause) => failure(
+            "drawings_unavailable",
+            format!(
+                "The lines of the shown underlay {name} cannot be read ({}), so the plans would leave it out. Import the drawing again, or hide the underlay to draw the plans without it.",
+                crate::app::project_drawings::underlay_unreadable_reason(cause.as_ref())
+            ),
+            json!({"underlay": name}),
+        ),
         ProjectDrawingsError::Dwg(error) => failed_because("dwg_conversion_failed", error),
         ProjectDrawingsError::Write(error) => write_failed(error),
     }

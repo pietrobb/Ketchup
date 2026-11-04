@@ -2181,6 +2181,7 @@ drawings-settings-unreadable = The title block and sheet format stored in the do
 drawings-part-bodies-unresolved = The bodies of { $part } do not resolve to one exact solid each ({ $reason }), so the sheet would leave it out. Give each extrusion its own body, or suppress one, then export again.
 drawings-cosmetic-threads-failed = The modelled threads of { $part } cannot be drawn by ISO 6410 ({ $reason }); the sheet would show every edge of their helices. Export again, or switch the threads to cosmetic.
 drawings-settings-unreadable-edit = The title block stored in the document cannot be read ({ $reason }). Any change made here replaces it.
+drawings-underlay-unreadable = The lines of the shown underlay { $name } cannot be read ({ $reason }), so the plans would leave it out. Import the drawing again, or hide the underlay to draw the plans without it.
 digest-exported-project-drawings = Project drawings ({ $sheets ->
         [one] { $sheets } sheet
        *[other] { $sheets } sheets

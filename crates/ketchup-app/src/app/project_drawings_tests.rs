@@ -1510,3 +1510,39 @@ fn a_plan_draws_the_visible_underlay_beneath_the_model_within_its_extent() {
     let hidden = app.project_drawings().unwrap();
     assert!(underlay_lines(&hidden.sheets[0].page).is_empty());
 }
+
+/// Review 2026-11-04 P3: a shown underlay whose lines did not read was left
+/// off the plans unsaid (`.ok()`). The set is refused and names it; hidden,
+/// the plans are drawn without it.
+#[test]
+fn a_shown_underlay_that_does_not_read_refuses_the_set_and_is_named() {
+    use crate::app::project_drawings::ProjectDrawingsError;
+    let mut app = KetchupApp::new();
+    add_box(&mut app, 901, "wall A", 0.0);
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("site.dxf");
+    std::fs::write(
+        &path,
+        concat!(
+            "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n",
+            "0\nSECTION\n2\nENTITIES\n",
+            "0\nLINE\n8\nparcel\n10\n-500\n20\n100\n30\n0\n11\n1500\n21\n100\n31\n0\n",
+            "0\nENDSEC\n0\nEOF\n",
+        ),
+    )
+    .unwrap();
+    app.start_underlay_read(path, None);
+    let underlay = app.document.current().underlays().next().cloned().unwrap();
+    // The document lost the blob of its lines.
+    app.file.container_data = ketchup_model::persistence::ContainerData::default();
+    app.render.underlay_lines.borrow_mut().clear();
+    app.render.underlay_decoded.borrow_mut().clear();
+
+    let Err(ProjectDrawingsError::UnderlayUnreadable(name, None)) = app.project_drawings() else {
+        panic!("the plans were drawn without the underlay, unsaid");
+    };
+    assert_eq!(name, underlay.name);
+    assert!(app.set_tag_visibility(underlay.tag, false));
+    assert!(app.project_drawings().is_ok());
+}

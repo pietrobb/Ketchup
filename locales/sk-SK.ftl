@@ -2096,6 +2096,7 @@ drawings-settings-unreadable = Rohová pečiatka a formát výkresu uložené v 
 drawings-part-bodies-unresolved = Telesá dielu { $part } sa nedajú určiť každé ako jedno presné teleso ({ $reason }), takže by ho výkres vynechal. Daj každému vytiahnutiu vlastné teleso alebo jedno potlač a exportuj znova.
 drawings-cosmetic-threads-failed = Vymodelované závity dielu { $part } sa nedajú nakresliť podľa ISO 6410 ({ $reason }); výkres by ukázal všetky hrany ich skrutkovíc. Exportuj znova alebo prepni závity na kozmetické.
 drawings-settings-unreadable-edit = Rohová pečiatka uložená v dokumente sa nedá prečítať ({ $reason }). Každá zmena tu ju nahradí.
+drawings-underlay-unreadable = Čiary zobrazeného podkladu { $name } sa nedajú prečítať ({ $reason }), takže by ho pôdorysy vynechali. Importuj výkres znova alebo podklad skry a pôdorysy sa nakreslia bez neho.
 digest-exported-project-drawings = Projektové výkresy ({ $sheets ->
         [one] { $sheets } list
         [few] { $sheets } listy
