@@ -277,7 +277,7 @@ impl KetchupApp {
             ));
         }
         #[cfg(not(windows))]
-        if let Some(settings) = crate::user_settings::SettingsFile::of_user() {
+        if let Some(settings) = recent_files::user_settings::SettingsFile::of_user() {
             app.file.recent = recent_files::RecentFiles::from_store(Box::new(settings));
         }
         app.value_box.decimal = crate::length_input::DecimalSeparator::at_startup();

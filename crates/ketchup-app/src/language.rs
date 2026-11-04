@@ -108,7 +108,7 @@ fn saved_choice() -> Option<String> {
 
 #[cfg(not(windows))]
 fn saved_choice() -> Option<String> {
-    crate::user_settings::SettingsFile::of_user()?.language()
+    crate::recent_files::user_settings::SettingsFile::of_user()?.language()
 }
 
 /// Remember `language` for the next start.
@@ -123,7 +123,7 @@ pub fn save_choice(language: UiLanguage) -> std::io::Result<()> {
 
 #[cfg(not(windows))]
 pub fn save_choice(language: UiLanguage) -> std::io::Result<()> {
-    crate::user_settings::SettingsFile::of_user()
+    crate::recent_files::user_settings::SettingsFile::of_user()
         .ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
