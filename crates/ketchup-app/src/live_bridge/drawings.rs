@@ -443,6 +443,7 @@ pub(super) fn finish_export(
                 "format": sheet.format.name(),
                 "views": sheet.views,
                 "annotations": sheet.annotations,
+                "underlay_lines": sheet.underlay_lines,
                 "path": file.map(|file| file.display().to_string()),
             })
         })

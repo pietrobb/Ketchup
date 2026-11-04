@@ -22,6 +22,31 @@ fn anchored_group_reports_separate_contact_islands_not_unrelated_bodies() {
     );
 }
 
+/// Měchenice MECH-8: the kerbs, doors and technology of a site are grouped to
+/// be found, shown and hidden together, not because they touch. A logical
+/// group is never checked for contact; an assembly in it still is.
+#[test]
+fn a_logical_group_is_not_checked_for_contact_but_an_assembly_in_it_is() {
+    let source = "a=box('kerb 1',(100,10,10))\nb=box('kerb 2',(100,10,10),at=(500,0,0))\n\
+        c=box('leaf',(10,10,10),at=(0,500,0))\nd=box('frame',(10,10,10),at=(200,500,0))\n\
+        door=group('door',[c,d])\ngroup('site',[a,b,door],kind='logical')";
+    let (_, report) = run("contacts.star", source, &BTreeMap::new()).unwrap();
+    let flagged = report
+        .issues
+        .iter()
+        .filter(|i| matches!(i.kind, "disconnected_group" | "group_contact_unverified"))
+        .map(|i| i.parts.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(flagged, [["frame", "leaf"]], "{report:?}");
+
+    let loose = "a=box('a',(1,1,1))\nb=box('b',(1,1,1))\ngroup('g',[a,b],kind='loose')";
+    let refused = run("contacts.star", loose, &BTreeMap::new()).unwrap_err();
+    assert!(
+        format!("{refused:#}").contains("\"logical\""),
+        "{refused:#}"
+    );
+}
+
 #[test]
 fn contact_through_an_external_body_does_not_connect_group_members() {
     let source = "a=box('a',(10,10,10))\nb=box('b',(10,10,10),at=(30,0,0))\nbox('bridge',(20,10,10),at=(10,0,0))\ngroup('g',[a,b])";

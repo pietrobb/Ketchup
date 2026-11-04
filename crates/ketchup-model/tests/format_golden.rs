@@ -9,7 +9,9 @@
 //! golden of the new format. Regenerate only for a new format with
 //! `KETCHUP_UPDATE_GOLDEN=1`.
 use ketchup_model::annotation::{Annotation, AnnotationMark};
-use ketchup_model::document::{CanonicalCommand, CommandBatch, DocumentStore, TagId};
+use ketchup_model::document::{
+    CanonicalCommand, CommandBatch, DocumentStore, GroupId, TagId, Transform,
+};
 use ketchup_model::persistence::{self, ContainerData, LoadNotice, LoadOutcome};
 use ketchup_model::underlay::drawn::{AddedObject, DrawnShape};
 use std::collections::BTreeSet;
@@ -62,10 +64,16 @@ const SAVED_106: &str = concat!(
     "/tests/fixtures/persistence/format106.bin"
 );
 
+/// Format 107 as Save wrote it: the format 106 file with a stretched line.
+const SAVED_107: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/persistence/format107.bin"
+);
+
 /// The current format as Save writes it: the current revision alone.
 const GOLDEN: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/persistence/format107.bin"
+    "/tests/fixtures/persistence/format108.bin"
 );
 
 /// Canonical digest of the current revision each fixture was written with.
@@ -75,6 +83,7 @@ const DIGEST_104: &str = "36c397ed20d2ec76";
 const DIGEST_105: &str = "fdcd5e8c616c1323";
 const DIGEST_106: &str = "29680d90129178f6";
 const DIGEST_107: &str = "294cafaafcee8159";
+const DIGEST_108: &str = "e83d7833a1941e55";
 const DIGEST_RELEASE_0_3_0: &str = "3e767c0ebaf2d5b1";
 
 /// The document of a fixture, checked to open at `digest` with no Undo steps.
@@ -177,7 +186,8 @@ fn a_file_saved_by_kecup_0_3_0_opens_with_its_text_and_view_and_saves_the_same()
 /// and 0.2.0, which read format 103, refused every file saved since. A document is saved
 /// in the oldest format that holds it: without underlays and annotations as format 103,
 /// the very snapshot bytes 0.2.0 itself saved, with an underlay as format 104; with
-/// annotations 105; with an edited underlay 106; with a stretched line 107 (the golden).
+/// annotations 105; with an edited underlay 106; with a stretched line 107; with a
+/// logical group 108 (the golden).
 #[test]
 fn a_document_is_saved_in_the_oldest_format_that_holds_it() {
     for (path, schema, digest) in [
@@ -186,6 +196,7 @@ fn a_document_is_saved_in_the_oldest_format_that_holds_it() {
         (SAVED_104, 104, DIGEST_104),
         (SAVED_105, 105, DIGEST_105),
         (SAVED_106, 106, DIGEST_106),
+        (SAVED_107, 107, DIGEST_107),
     ] {
         let (document, _) = opened(path, schema, digest);
         let snapshot = persistence::save(&document.current());
@@ -352,11 +363,12 @@ fn files_for_released_versions_are_in_the_format_their_document_needs() {
         ("annotations", SAVED_105, 105, DIGEST_105),
         ("edited-underlay", SAVED_106, 106, DIGEST_106),
         ("release-0.3.0", RELEASE_0_3_0, 106, DIGEST_RELEASE_0_3_0),
+        ("stretched-line", SAVED_107, 107, DIGEST_107),
         (
-            "stretched-line",
+            "logical-group",
             GOLDEN,
             persistence::CURRENT_SCHEMA,
-            DIGEST_107,
+            DIGEST_108,
         ),
     ] {
         let (document, container) = opened(path, schema, digest);
@@ -516,7 +528,7 @@ fn a_format_105_document_with_an_edited_underlay_saves_the_format_106_file() {
 /// CD-61): the format 106 file with object 2 of its drawing made shorter and a longer
 /// copy of it added.
 #[test]
-fn a_format_107_file_with_a_stretched_line_saves_the_golden() {
+fn a_format_106_document_with_a_stretched_line_saves_the_format_107_file() {
     let (mut document, container) = opened(SAVED_106, 106, DIGEST_106);
     let mut underlay = document.current().underlays().next().unwrap().clone();
     let shorter = [[0.5, 0.0, 0.0], [0.0, 0.5, 0.0]];
@@ -533,6 +545,37 @@ fn a_format_107_file_with_a_stretched_line_saves_the_golden() {
         .unwrap();
     assert_eq!(document.current().canonical_digest(), DIGEST_107);
     let saved = persistence::save_document_store_current_snapshot(&document, &container).unwrap();
+    assert_eq!(saved, std::fs::read(SAVED_107).unwrap());
+    let (reopened, _) = opened(SAVED_107, 107, DIGEST_107);
+    assert_eq!(reopened.current().underlays().next(), Some(&underlay));
+    assert_eq!(reopened.current().annotations(), annotations());
+}
+
+/// The group of the format 108 golden, logical.
+const LOGICAL_GROUP: GroupId = GroupId(900);
+
+/// Format 108 adds logical groups (Měchenice MECH-8): Kečup 0.3.1 reads 107 and would
+/// drop the mark, so the group would be checked for contact again after its next Save.
+/// The format 107 file with a logical group of kerbs.
+#[test]
+fn a_format_107_document_with_a_logical_group_saves_the_golden() {
+    let (mut document, container) = opened(SAVED_107, 107, DIGEST_107);
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateGroup {
+                id: LOGICAL_GROUP,
+                name: "kerbs".to_owned(),
+                transform: Transform::identity(),
+                parent: None,
+            },
+            CanonicalCommand::SetGroupLogical {
+                id: LOGICAL_GROUP,
+                logical: true,
+            },
+        ]))
+        .unwrap();
+    assert_eq!(document.current().canonical_digest(), DIGEST_108);
+    let saved = persistence::save_document_store_current_snapshot(&document, &container).unwrap();
     if ketchup_test_env::update_golden() {
         std::fs::write(GOLDEN, saved).unwrap();
         panic!("wrote {GOLDEN}");
@@ -542,13 +585,53 @@ fn a_format_107_file_with_a_stretched_line_saves_the_golden() {
         saved, golden,
         "the saved form changed; see the module comment"
     );
-    let (reopened, container) = opened(GOLDEN, persistence::CURRENT_SCHEMA, DIGEST_107);
-    assert_eq!(reopened.current().underlays().next(), Some(&underlay));
+    let (reopened, container) = opened(GOLDEN, persistence::CURRENT_SCHEMA, DIGEST_108);
+    assert!(reopened.current().group(LOGICAL_GROUP).unwrap().logical());
     assert_eq!(reopened.current().annotations(), annotations());
     assert_eq!(
         persistence::save_document_store_current_snapshot(&reopened, &container).unwrap(),
         golden
     );
+}
+
+/// Only a logical group needs format 108: the format 107 file with a group saves as 107,
+/// and with the group made logical as 108, which Kečup 0.3.1 refuses as newer instead
+/// of dropping the mark.
+#[test]
+fn a_logical_group_needs_format_108_and_a_plain_one_does_not() {
+    let (mut document, container) = opened(SAVED_107, 107, DIGEST_107);
+    let saved_format = |document: &DocumentStore| {
+        let saved =
+            persistence::save_document_store_current_snapshot(document, &container).unwrap();
+        let LoadOutcome::Editable {
+            audit, document, ..
+        } = persistence::load(&saved).unwrap()
+        else {
+            panic!("the document reopens editable")
+        };
+        (
+            audit.source_schema,
+            document.current().group(LOGICAL_GROUP).unwrap().logical(),
+        )
+    };
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::CreateGroup {
+            id: LOGICAL_GROUP,
+            name: "kerbs".to_owned(),
+            transform: Transform::identity(),
+            parent: None,
+        }]))
+        .unwrap();
+    assert_eq!(saved_format(&document), (107, false));
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetGroupLogical {
+                id: LOGICAL_GROUP,
+                logical: true,
+            },
+        ]))
+        .unwrap();
+    assert_eq!(saved_format(&document), (108, true));
 }
 
 /// A drawing stood up as a view, its lines unedited, needs 106 as well: written as 104,
@@ -582,7 +665,8 @@ fn a_drawing_standing_as_a_view_is_saved_as_format_106() {
 /// does not know and loses it at its next Save, so a new optional field of the saved
 /// document needs a new format number like any other new field (PS-4): `underlays` and an
 /// underlay's `placement` came with format 104, `annotations` with 105, an underlay's
-/// `edits` and `view` with 106, its `stretched_objects` with 107.
+/// `edits` and `view` with 106, its `stretched_objects` with 107, a group's `logical`
+/// with 108.
 const OPTIONAL_FIELDS: &[&str] = &[
     "document.rs: annotations",
     "document.rs: contact_joints",
@@ -594,6 +678,7 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "document.rs: shaft_threads",
     "document.rs: tolerance",
     "document.rs: underlays",
+    "document/entities.rs: logical",
     "document/entities.rs: modeled",
     "document/entities.rs: section",
     "document/entities.rs: up",

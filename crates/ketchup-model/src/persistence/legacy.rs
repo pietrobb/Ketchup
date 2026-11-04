@@ -2922,6 +2922,28 @@ fn read_sheet_metal_v1(reader: &mut Reader<'_>) -> Result<SheetMetalV1, Persiste
     })
 }
 
+/// The groups of a legacy product; none of them is logical, a kind legacy
+/// files cannot hold.
+fn read_groups(
+    reader: &mut Reader<'_>,
+    product: &mut ProductModel,
+) -> Result<(), PersistenceError> {
+    for _ in 0..reader.count()? {
+        let id = GroupId(reader.u64()?);
+        let group = Group {
+            id,
+            name: reader.string()?,
+            transform: reader.transform()?,
+            parent: reader.optional_id()?.map(GroupId),
+            logical: false,
+        };
+        if product.groups.insert(id, Arc::new(group)).is_some() {
+            return Err(PersistenceError::Legacy(LegacyError::DuplicateGroup(id)));
+        }
+    }
+    Ok(())
+}
+
 fn read_product(
     reader: &mut Reader<'_>,
     capabilities: ProductSchemaCapabilities,
@@ -3756,18 +3778,7 @@ fn read_product(
             )));
         }
     }
-    for _ in 0..reader.count()? {
-        let id = GroupId(reader.u64()?);
-        let group = Group {
-            id,
-            name: reader.string()?,
-            transform: reader.transform()?,
-            parent: reader.optional_id()?.map(GroupId),
-        };
-        if product.groups.insert(id, Arc::new(group)).is_some() {
-            return Err(PersistenceError::Legacy(LegacyError::DuplicateGroup(id)));
-        }
-    }
+    read_groups(reader, &mut product)?;
     if capabilities.current {
         for _ in 0..reader.count()? {
             let key = LocalGroupKey {

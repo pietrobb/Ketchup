@@ -22,6 +22,7 @@ use std::collections::BTreeMap;
 
 mod annotations;
 mod cutting;
+mod levels;
 mod openings;
 mod set;
 mod shop;
@@ -105,6 +106,9 @@ pub struct ViewSummary {
     pub cut_at_mm: Option<f64>,
     /// Model extent of the view: width and height.
     pub extent_mm: [f64; 2],
+    /// The level marks of a section or an elevation, lowest first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub levels: Vec<String>,
 }
 
 /// Why no sheet could be drawn.
@@ -467,16 +471,19 @@ struct DrawnView {
     /// The extent of the solids alone, which the overall dimensions measure.
     solids: Option<([f64; 2], [f64; 2])>,
     annotations: Option<PlanAnnotations>,
+    /// The underlay lines a plan draws beneath the model, cut at its extent.
+    underlay: Vec<[[f64; 2]; 2]>,
     /// Boxed marks where they stand: the windows and doors a plan shows, the
     /// position numbers of a shop drawing.
     marks: Vec<([f64; 2], String)>,
+    /// The level marks right of a section or an elevation: view height and text.
+    levels: Vec<(f64, String)>,
     cut_at_mm: Option<f64>,
 }
 
 impl DrawnView {
     /// Draws `annotations` in this view and grows it to hold them.
-    fn annotate(&mut self, frame: &ViewFrame, annotations: &[Annotation]) {
-        let annotations = PlanAnnotations::project(frame, annotations);
+    fn annotate(&mut self, annotations: PlanAnnotations) {
         for point in annotations.points() {
             for (axis, value) in point.into_iter().enumerate() {
                 self.min[axis] = self.min[axis].min(value);
@@ -484,6 +491,20 @@ impl DrawnView {
             }
         }
         self.annotations = Some(annotations);
+    }
+
+    /// Lays the underlay `lines` beneath this view, cut at what it draws: an
+    /// underlay as large as a cadastral map never grows the view.
+    fn lay_underlay(&mut self, frame: &ViewFrame, lines: &[[Point; 2]]) {
+        if !self.min[0].is_finite() {
+            return;
+        }
+        self.underlay = lines
+            .iter()
+            .filter_map(|[a, b]| {
+                clip_to_box(frame.project(*a), frame.project(*b), self.min, self.max)
+            })
+            .collect();
     }
 
     /// Marks the windows and doors standing at `points` in this view.
@@ -612,7 +633,9 @@ fn draw_view(
         max,
         solids: min[0].is_finite().then_some((min, max)),
         annotations: None,
+        underlay: Vec::new(),
         marks: Vec::new(),
+        levels: Vec::new(),
         // `cut` is measured along the depth direction, which is ±1 on the
         // world axis the plane is normal to: divide to get that coordinate.
         cut_at_mm: frame.cut.map(|cut| {
@@ -622,6 +645,32 @@ fn draw_view(
             cut / frame.depth[axis]
         }),
     }
+}
+
+/// The piece of the line from `a` to `b` inside the box `min`..`max`, if any
+/// (Liang–Barsky).
+fn clip_to_box(a: [f64; 2], b: [f64; 2], min: [f64; 2], max: [f64; 2]) -> Option<[[f64; 2]; 2]> {
+    let delta = [b[0] - a[0], b[1] - a[1]];
+    let (mut enter, mut leave) = (0.0_f64, 1.0_f64);
+    for axis in 0..2 {
+        for (toward, room) in [
+            (-delta[axis], a[axis] - min[axis]),
+            (delta[axis], max[axis] - a[axis]),
+        ] {
+            if toward.abs() > 0.0 {
+                let at = room / toward;
+                if toward < 0.0 {
+                    enter = enter.max(at);
+                } else {
+                    leave = leave.min(at);
+                }
+            } else if room < 0.0 {
+                return None;
+            }
+        }
+    }
+    let point = |t: f64| [a[0] + delta[0] * t, a[1] + delta[1] * t];
+    (enter < leave).then(|| [point(enter), point(leave)])
 }
 
 fn polygon_area(points: &[[f64; 2]]) -> f64 {
@@ -689,6 +738,9 @@ pub const SCALES: [u32; 10] = [10, 20, 25, 50, 75, 100, 200, 250, 500, 1000];
 // not a tolerance: the pen width of a visible edge on the sheet.
 const EDGE_STROKE_MM: f64 = 0.18;
 const EDGE_COLOR: [u8; 3] = [34, 34, 34];
+// not a tolerance: the pen width of an underlay line, thinner than an edge.
+const UNDERLAY_STROKE_MM: f64 = 0.13;
+const UNDERLAY_COLOR: [u8; 3] = [160, 160, 160];
 // not a tolerance: the pen width of a cut edge on the sheet.
 const CUT_STROKE_MM: f64 = 0.5;
 const DIMENSION_TEXT_MM: f64 = 2.5;
@@ -794,6 +846,17 @@ fn draw_view_on_page(
         color: EDGE_COLOR,
         dash_mm: Vec::new(),
     };
+    // First, so the model is drawn over it.
+    for [a, b] in &view.underlay {
+        page.line(
+            vec![at(*a), at(*b)],
+            Stroke {
+                width_mm: UNDERLAY_STROKE_MM,
+                color: UNDERLAY_COLOR,
+                dash_mm: Vec::new(),
+            },
+        );
+    }
     let thread_line = |page: &mut Page, points: &[[f64; 2]], width_mm: f64| {
         page.line(
             points.iter().map(|point| at(*point)).collect(),
@@ -846,6 +909,12 @@ fn draw_view_on_page(
     for (point, mark) in &view.marks {
         openings::draw_mark(page, at(*point), mark, visible.is_none());
     }
+    let levels = view
+        .levels
+        .iter()
+        .map(|(height, text)| (at([view.min[0], *height])[1], text.clone()))
+        .collect::<Vec<_>>();
+    levels::draw_levels(page, at(view.max)[0], &levels);
     let [outer_left, outer_bottom] = at(view.min);
     // Overall width below the view and overall height on its left, outside
     // whatever the view draws.
@@ -1229,6 +1298,61 @@ mod tests {
             .flat_map(|sheet| &sheet.views)
             .find(|summary| summary.view == view)
             .unwrap()
+    }
+
+    /// Měchenice MECH-6: the sections and elevations mark ±0,000 at the floor and
+    /// the top above it; the plans mark no level.
+    #[test]
+    fn sections_and_elevations_mark_their_levels_against_the_floor() {
+        let options = DrawingSetOptions {
+            decimal_comma: true,
+            ..options(&room(), None)
+        };
+        let set = drawing_set(&room(), &options).unwrap();
+        for view in [ProjectView::LongitudinalSection, ProjectView::Front] {
+            assert_eq!(summary(&set, view).levels, ["±0,000", "+2,500"], "{view:?}");
+        }
+        assert!(summary(&set, ProjectView::Plan).levels.is_empty());
+        for kind in [SheetKind::Sections, SheetKind::Elevations] {
+            let sheet = sheet_of(&set, kind);
+            assert!(texts(&sheet.page).contains(&"+2,500"), "{kind:?}");
+            assert!(texts(&sheet.lines).contains(&"±0,000"), "{kind:?} DXF");
+        }
+    }
+
+    /// Měchenice MECH-6: a vertical dimension of the program has no length in plan;
+    /// the sections and elevations draw it where they show its true length, a
+    /// section only beyond its cut. A horizontal one stays in the plan.
+    #[test]
+    fn sections_and_elevations_draw_the_vertical_dimensions() {
+        use ketchup_model::annotation::AnnotationMark;
+        let dimension = |name: &str, from_mm, to_mm| Annotation {
+            name: name.to_owned(),
+            tags: std::collections::BTreeSet::new(),
+            mark: AnnotationMark::Dimension {
+                from_mm,
+                to_mm,
+                offset_mm: 500.0,
+                height_mm: 2.5,
+            },
+        };
+        let mut options = options(&room(), None);
+        options.annotations = vec![
+            dimension("length", [0.0, -500.0, 0.0], [6000.0, -500.0, 0.0]),
+            // Beyond both cuts (y 1500, x 3000).
+            dimension("beyond", [6000.0, 2000.0, 200.0], [6000.0, 2000.0, 2350.0]),
+            // In front of both cuts.
+            dimension("before", [1000.0, 1000.0, 200.0], [1000.0, 1000.0, 1200.0]),
+        ];
+        let set = drawing_set(&room(), &options).unwrap();
+        let counts = |kind| &sheet_of(&set, kind).annotations;
+        let plan = counts(SheetKind::Plan { storey: 0 });
+        assert_eq!((plan.dimensions, plan.outside_plan), (1, 2));
+        assert_eq!(counts(SheetKind::Sections).dimensions, 2);
+        assert_eq!(counts(SheetKind::Elevations).dimensions, 8);
+        let elevations = sheet_of(&set, SheetKind::Elevations);
+        assert!(texts(&elevations.page).contains(&"2150"));
+        assert!(texts(&elevations.lines).contains(&"2150"), "DXF");
     }
 
     /// MF-4: a half millimetre rounds up, as a drawing reads, not to the even neighbour.

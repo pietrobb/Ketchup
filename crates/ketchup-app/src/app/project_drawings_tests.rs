@@ -1011,6 +1011,41 @@ fn the_drawings_window_keeps_the_sheet_language_and_the_default_title_follows_it
     assert!(app.drawings.unsaved);
 }
 
+/// Měchenice MECH-6: the sections the window exports mark the floor and the
+/// top, with a decimal comma on Czech and Slovak sheets (+2,500) and a point
+/// on English ones, whatever the window's language.
+#[test]
+fn the_level_marks_take_the_decimal_separator_of_the_sheet_language() {
+    let mut app = KetchupApp::new();
+    add_box(&mut app, 901, "wall A", 0.0);
+    // The floor the wall stands on: its top at 0.
+    app.document
+        .apply_batch(&crate::app::drawing::create_box_batch(
+            DefinitionId(903),
+            [FeatureId(9030), FeatureId(9031)],
+            OccurrenceId(903),
+            ["slab", "profile", "extrusion", "slab"],
+            Vec3::new(0.0, 0.0, -200.0),
+            Vec3::new(3000.0, 3000.0, 200.0),
+        ))
+        .unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    for (language, levels) in [
+        (SheetLanguage::Czech, ["±0,000", "+2,500"]),
+        (SheetLanguage::Slovak, ["±0,000", "+2,500"]),
+        (SheetLanguage::English, ["±0.000", "+2.500"]),
+    ] {
+        let mut settings = app.sheet_settings();
+        settings.language = Some(language);
+        app.store_sheet_settings(settings);
+        let set = app.project_drawings().unwrap();
+        let section = views(&set)
+            .find(|summary| summary.view == ProjectView::LongitudinalSection)
+            .unwrap();
+        assert_eq!(section.levels, levels, "{language:?}");
+    }
+}
+
 /// Review 2026-10-19 P3: the open window read the document's sheet settings
 /// in every frame and wrote its own fields back whenever they differed, so
 /// settings the AI wrote, or those of a document opened meanwhile, were
@@ -1267,4 +1302,106 @@ fn sheets_of_another_project_under_the_same_name_are_neither_replaced_nor_remove
         [sheet(1), sheet(2)]
     );
     assert!(!sheet(3).exists());
+}
+
+/// Měchenice MECH-10 (b): an imported site drawing was in the model but on no
+/// sheet. The plan draws the lines of the visible underlay layers, thin and
+/// grey beneath the model, cut at the plan's extent so a large cadastral map
+/// does not grow the sheet; a hidden layer or underlay draws nothing.
+#[test]
+fn a_plan_draws_the_visible_underlay_beneath_the_model_within_its_extent() {
+    use ketchup_manufacturing::project_drawings::SheetKind;
+    use ketchup_model::sheet_pdf::{Page, Stroke};
+    let mut app = KetchupApp::new();
+    add_box(&mut app, 901, "wall A", 0.0);
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("site.dxf");
+    std::fs::write(
+        &path,
+        concat!(
+            "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n",
+            "0\nSECTION\n2\nENTITIES\n",
+            // The parcel line across the wall, reaching past it on both sides.
+            "0\nLINE\n8\nparcel\n10\n-500\n20\n100\n30\n0\n11\n1500\n21\n100\n31\n0\n",
+            // A neighbour's house 50 m away, off the plan.
+            "0\nLINE\n8\nparcel\n10\n50000\n20\n50000\n30\n0\n11\n60000\n21\n50000\n31\n0\n",
+            // A tree on a layer the user hides, across the wall.
+            "0\nLINE\n8\ntrees\n10\n500\n20\n-300\n30\n0\n11\n500\n21\n500\n31\n0\n",
+            "0\nENDSEC\n0\nEOF\n",
+        ),
+    )
+    .unwrap();
+    app.start_underlay_read(path, None);
+    let underlay = app
+        .document
+        .current()
+        .underlays()
+        .next()
+        .cloned()
+        .expect("the site drawing is an underlay");
+    let trees = underlay
+        .layers
+        .iter()
+        .find(|layer| layer.name == "trees")
+        .unwrap()
+        .tag;
+    assert!(app.set_tag_visibility(trees, false));
+
+    // Thinner than a model edge, and a light neutral grey.
+    let grey = |stroke: &Stroke| {
+        let [red, green, blue] = stroke.color;
+        stroke.width_mm < 0.18 && red == green && green == blue && red >= 128
+    };
+    let underlay_lines = |page: &Page| {
+        page.marks
+            .iter()
+            .enumerate()
+            .filter_map(|(index, mark)| match mark {
+                Mark::Line { points, stroke, .. } if grey(stroke) => Some((index, points.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let set = app.project_drawings().unwrap();
+    let plan = &set.sheets[0];
+    assert!(
+        matches!(plan.kind, SheetKind::Plan { .. }),
+        "{:?}",
+        plan.kind
+    );
+    assert_eq!(
+        plan.views[0].extent_mm,
+        [1000.0, 200.0],
+        "the underlay does not grow the plan"
+    );
+    let drawn = underlay_lines(&plan.page);
+    assert_eq!(drawn.len(), 1, "the parcel line alone: {drawn:?}");
+    assert_eq!(plan.underlay_lines, 1, "the sheet reports it");
+    let (at, points) = &drawn[0];
+    let page_length = 1000.0 / f64::from(set.scale);
+    assert!(
+        ((points[1][0] - points[0][0]).abs() - page_length).abs() < 1e-6
+            && (points[1][1] - points[0][1]).abs() < 1e-9,
+        "cut at the plan's extent, {page_length} mm long: {points:?}"
+    );
+    let first_fill = plan
+        .page
+        .marks
+        .iter()
+        .position(|mark| matches!(mark, Mark::Fill { .. }))
+        .unwrap();
+    assert!(*at < first_fill, "drawn beneath the model");
+    assert_eq!(
+        underlay_lines(&plan.lines).len(),
+        1,
+        "the DXF carries it too"
+    );
+    for sheet in &set.sheets[1..] {
+        assert!(underlay_lines(&sheet.page).is_empty(), "{:?}", sheet.kind);
+    }
+
+    assert!(app.set_tag_visibility(underlay.tag, false));
+    let hidden = app.project_drawings().unwrap();
+    assert!(underlay_lines(&hidden.sheets[0].page).is_empty());
 }
