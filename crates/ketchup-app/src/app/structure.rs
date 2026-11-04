@@ -590,12 +590,12 @@ impl KetchupApp {
                             || "—".to_owned(),
                             |[minimum, maximum]| {
                                 let size = maximum - minimum;
-                                format!(
+                                self.user_decimal(format!(
                                     "{} × {} × {}",
                                     format_height(size.x),
                                     format_height(size.y),
                                     format_height(size.z)
-                                )
+                                ))
                             },
                         );
                 let occurrences = by_definition

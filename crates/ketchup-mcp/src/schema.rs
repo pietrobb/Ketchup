@@ -193,7 +193,7 @@ pub fn tools() -> Value {
         },
         {
             "name": "file",
-            "description": "save the document, save_as an absolute path, or open an absolute path in the window (the user confirms in the window when work would be lost). \
+            "description": "save the document, save_as an absolute path, or open an absolute path in the window (the user confirms in the window when work would be lost); a document saved as or opened this way joins the user's File > Open Recent, as when the user opens it. \
     import adds a file to the open document as one Undo step: STEP (.step/.stp) and IGES (.iges/.igs) as exact solids, STL as a mesh, DXF as 2D profiles, DWG as the 2D profiles of its DXF conversion (the review's dwg names the file version and every record the DWG reader left out), GLB meshes, SketchUp scenes (.kscene); the result reviews what came in (solids and volume, triangles, profiles and layers) and its diagnostics name what was lost; a STEP or IGES part or solid that cannot be read is left out and the rest imported, refused naming each with its source entity, reason and how many times the file places it, and complete=false with left_out {parts, solids, placements} says the import is partial (long lists give the first 20 and a *_total count; the import has happened, do not repeat it). \
     remove_underlay removes an underlay by underlay_id. \
     fit_underlay places underlay_id so that from_mm, two points of its lines where they are drawn now (e.g. inspect action=underlay_snap point_mm), land on the model points to_mm (document XY, mm), as one Undo step saved with the file: it turns and moves the underlay so the first lands exactly and the second on the line from it; scale=true also scales it so the second lands too (default false; the result's length_mismatch_mm says how far the second misses without it). Two points closer than 0.001 mm are refused (invalid_params). Drawing, snapping and underlay_snap then use the placed lines. \
@@ -299,7 +299,7 @@ pub fn tools() -> Value {
                 "action": {"type": "string", "enum": ["selection", "view", "image", "saved_views", "save_view", "show_view", "tag_visibility", "section", "close_section"]},
                 "name": {"type": "string", "description": "For save_view and show_view: the saved view name; for tag_visibility: the tag name."},
                 "visible": {"type": "boolean", "description": "For tag_visibility: true shows the tag, false hides it."},
-                "viewer": {"type": "boolean", "description": "For save_view: true shares the view as a Viewer scene (file export to viewer needs one), false leaves it out; unset keeps it."},
+                "viewer": {"type": "boolean", "description": "For save_view: true shares the view as a Viewer scene (file export to viewer needs one), false leaves it out; unset keeps it, and a new view is shared. When the Viewer settings cannot keep the choice the view is still saved and viewer_not_stored says so."},
                 "normal": {"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "For section: direction of the hidden side, e.g. [0,0,1] hides everything above."},
                 "offset_mm": {"type": "number", "description": "For section: plane distance from the origin along normal, e.g. 1200 cuts at z=1200 for [0,0,1]."},
                 "occurrence_ids": {"type": "array", "items": {"type": "integer"}, "description": "For selection; [] clears it."},

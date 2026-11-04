@@ -692,6 +692,46 @@ fn save_view_shares_a_view_with_the_viewer_or_leaves_it_out() {
     assert_eq!(listed["saved_views"][2]["viewer"], Value::Null, "{listed}");
 }
 
+/// Review 2026-11-04 P3 GUI: save_view passed over Viewer settings that
+/// could not keep the choice and answered as if the view were left out.
+/// Settings it can read but not store (a note with a NUL character) save the
+/// view and say the choice was not kept.
+#[test]
+fn save_view_says_when_the_viewer_settings_cannot_keep_its_choice() {
+    let (mut app, mut bridge) = setup();
+    bridge
+        .execute(
+            &mut app,
+            apply("wall = box(\"wall\", (3000, 150, 2500))\n", true),
+            false,
+        )
+        .unwrap();
+    app.file.container_data.set_extension(
+        ketchup_model::persistence::ExtensionEntry::new(
+            "org.ketchup.viewer",
+            "sharing-v1.json",
+            false,
+            br#"{"definition_notes":{"1":"a\u0000b"}}"#.to_vec(),
+        )
+        .unwrap(),
+    );
+    assert!(app.stored_viewer_settings().is_ok());
+    let listed = bridge
+        .execute(
+            &mut app,
+            Request::SaveView {
+                expected: None,
+                name: "Draft".into(),
+                viewer: Some(false),
+            },
+            false,
+        )
+        .unwrap();
+    assert!(app.saved_view_id("Draft").is_some());
+    assert_eq!(listed["saved_views"][0]["viewer"], true, "{listed}");
+    assert!(listed["viewer_not_stored"].is_string(), "{listed}");
+}
+
 #[test]
 fn saved_views_through_mcp_keep_the_program_and_survive_save_and_open() {
     let (mut app, mut bridge) = setup();

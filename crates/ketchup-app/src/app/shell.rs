@@ -683,10 +683,16 @@ impl KetchupApp {
     /// with the system's decimal separator (#2691). Values stay apart by
     /// `; `, so a decimal comma never reads as a separator.
     fn preview_number(&self, value: f64) -> String {
-        let text = format_height(value);
+        self.user_decimal(format_height(value))
+    }
+
+    /// A number written with a point, as the user writes numbers: with the
+    /// system's decimal separator, so what the window shows reads like
+    /// what they type.
+    pub(crate) fn user_decimal(&self, number: String) -> String {
         match self.value_box.decimal {
-            crate::length_input::DecimalSeparator::Comma => text.replace('.', ","),
-            crate::length_input::DecimalSeparator::Point => text,
+            crate::length_input::DecimalSeparator::Comma => number.replace('.', ","),
+            crate::length_input::DecimalSeparator::Point => number,
         }
     }
 

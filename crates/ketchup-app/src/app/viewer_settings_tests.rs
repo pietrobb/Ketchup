@@ -300,6 +300,56 @@ fn the_author_s_fit_projection_goes_into_the_package_and_survives_reopen() {
     assert_eq!(export(&reopened).package.manifest.fitted_projection, None);
 }
 
+/// Review 2026-11-04 P3 GUI: the settings kept the shared views, so whether
+/// a new view was shared depended on whether one had ever been left out, and
+/// a view saved under the id of a deleted one took its choice. The views left
+/// out are kept instead: a new view is shared until the author leaves it out.
+#[test]
+fn a_new_saved_view_is_shared_whatever_was_left_out_before() {
+    let mut app = cabinet();
+    let front = app.save_view("Front").expect("scene");
+    let scenes =
+        |app: &KetchupApp| app.viewer_export_scenes(&app.stored_viewer_settings().unwrap());
+    assert!(app.set_viewer_scene_shared(front, false));
+    let back = app.save_view("Back").expect("scene");
+    assert_eq!(scenes(&app), [back], "a new view after one left out");
+
+    // Deleted while left out, its id comes back for the next new view.
+    assert!(app.set_viewer_scene_shared(back, false));
+    assert!(app.delete_saved_view(back));
+    let side = app.save_view("Side").expect("scene");
+    assert_eq!(side, back, "the id is reused");
+    assert_eq!(scenes(&app), [side]);
+}
+
+/// Settings written by Kečup 0.3.1 and older name the shared views; the views
+/// they left out stay out, and a view made later is shared.
+#[test]
+fn settings_naming_the_shared_views_keep_the_others_out() {
+    let mut app = cabinet();
+    let front = app.save_view("Front").expect("scene");
+    let back = app.save_view("Back").expect("scene");
+    app.file.container_data.set_extension(
+        ketchup_model::persistence::ExtensionEntry::new(
+            "org.ketchup.viewer",
+            "sharing-v1.json",
+            false,
+            format!("{{\"scenes\":[{}]}}", front.0).into_bytes(),
+        )
+        .unwrap(),
+    );
+    let scenes =
+        |app: &KetchupApp| app.viewer_export_scenes(&app.stored_viewer_settings().unwrap());
+    assert_eq!(scenes(&app), [front]);
+    let side = app.save_view("Side").expect("scene");
+    assert_eq!(scenes(&app), [front, side]);
+    assert!(app.set_viewer_scene_shared(side, false));
+    assert_eq!(
+        app.stored_viewer_settings().unwrap().excluded_scenes,
+        BTreeSet::from([back.0, side.0])
+    );
+}
+
 #[test]
 fn sharing_choices_pick_scenes_start_and_drop_unshared_components() {
     let mut app = cabinet();
@@ -313,7 +363,12 @@ fn sharing_choices_pick_scenes_start_and_drop_unshared_components() {
     assert!(app.set_viewer_start_scene(back));
     assert!(app.set_viewer_scene_shared(front, true));
     assert_eq!(scenes(&app), [back, front], "opening scene first");
-    assert!(app.stored_viewer_settings().unwrap().scenes.is_none());
+    assert!(
+        app.stored_viewer_settings()
+            .unwrap()
+            .excluded_scenes
+            .is_empty()
+    );
     let manifest = export(&app).package.manifest;
     assert_eq!(manifest.start_scene, Some(back.0));
     assert_eq!(manifest.scenes.len(), 2);

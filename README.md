@@ -180,6 +180,8 @@ Then start a new session of the harness (it reads its MCP servers when a session
 
 The tools connect to the open window by themselves (with several windows open the agent picks one); if none is open, the agent can start one. A newly connected client replaces the previous one. While a client is connected, the status line names it (*Connected AI: Claude Code*, from the name the client gives itself) next to a **Disconnect** button.
 
+A document the agent opens or saves under a new name joins **File > Open Recent**, as when you open it yourself, so the list shows the agent's documents as well as yours. **Clear List** at the bottom of that menu empties it.
+
 When an agent also develops Ketchup in this checkout, use `scripts\ketchup-mcp-server.cmd` as the command instead. It runs the server from `target\mcp-server` and the windows it opens from copies of the newest build under `target\mcp-windows`, so `cargo build --release` can replace `target\release` while those windows stay open. A window built in this checkout shows this script in **Connect AI**, and its **Connect** and `--mcp-setup` register it. To do it by hand, run this from the checkout root (PowerShell):
 
 ```powershell

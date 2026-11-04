@@ -116,6 +116,7 @@ use ketchup_pdm::local::{
 };
 use ketchup_scheduler::ExactWorkerSupervisor;
 use modal::Modal;
+use number_text::{fixed_decimals, format_decimals, format_height};
 use slot::Slot;
 use tool_preview::ToolPreview;
 pub use view_settings::{ViewFlag, ViewSettings};
@@ -151,6 +152,7 @@ pub mod live_bridge;
 mod mesh_conversion_ui;
 mod modal;
 mod native_document_inspection;
+mod number_text;
 mod occurrence_color_ui;
 mod planar_push_pull;
 mod program_detach;
@@ -2317,14 +2319,6 @@ fn parse_distance_mm(input: &str, decimal: length_input::DecimalSeparator) -> Op
 fn parse_dimension(input: &str, decimal: length_input::DecimalSeparator) -> Option<Dimension> {
     let millimetres = parse_distance_mm(input, decimal)?;
     Dimension::new(input.trim().to_owned(), millimetres).ok()
-}
-
-fn format_height(height: f64) -> String {
-    let formatted = format!("{height:.2}");
-    formatted
-        .trim_end_matches('0')
-        .trim_end_matches('.')
-        .to_owned()
 }
 
 fn box_corners(width: f64, depth: f64, height: f64) -> [Vec3; 8] {

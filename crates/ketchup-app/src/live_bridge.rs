@@ -2984,11 +2984,17 @@ impl LiveBridge {
                 }
                 Self::require_request_authority(cancelled)?;
                 let id = app.save_view(&name).ok_or("saved_view_rejected")?;
-                if let Some(shared) = viewer {
-                    app.set_viewer_scene_shared(id, shared);
-                }
+                // The view is saved either way; a choice the settings could
+                // not keep is said, not passed over (review 2026-11-04 P3 GUI).
+                let stored = viewer.is_none_or(|shared| app.set_viewer_scene_shared(id, shared));
                 self.query.invalidate();
-                Ok(saved_views_json(app))
+                let mut listed = saved_views_json(app);
+                if !stored {
+                    listed["viewer_not_stored"] = json!(
+                        "the view is saved, but the Viewer settings could not keep its viewer choice; its viewer field says whether it is shared"
+                    );
+                }
+                Ok(listed)
             }
             Request::ShowView { expected, name } => {
                 Self::guard(app, &expected)?;
