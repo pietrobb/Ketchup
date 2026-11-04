@@ -31,15 +31,15 @@ pub struct SituationSheet {
     /// point `[x, y]` of the model's ground plane: row `i` is `[a, b, c]` of
     /// `a·x + b·y + c`.
     pub to_grid_mm: [[f64; 3]; 2],
-    /// The shown image underlays, an orthophoto, printed beneath the model.
-    pub images: Vec<UnderlayImage>,
 }
 
-/// An image underlay: its pixels and its upper-left, upper-right and lower-left
-/// corners in the world.
+/// An image underlay, an orthophoto: its name, its pixels and its upper-left,
+/// upper-right and lower-left corners in the world. Without pixels, as for a DXF or
+/// DWG set, which holds none, it is laid out but left out of the sheet.
 #[derive(Clone, Debug)]
 pub struct UnderlayImage {
-    pub image: Arc<SheetImage>,
+    pub name: String,
+    pub image: Option<Arc<SheetImage>>,
     pub corners: [Point; 3],
 }
 
@@ -79,7 +79,7 @@ pub(super) fn plan(
     site: &SituationSheet,
     solids: &[DrawingSolid],
     edges: &[SolidEdges],
-    underlay: &[[Point; 2]],
+    (underlay, images): (&[[Point; 2]], &[UnderlayImage]),
     requested: Option<SheetFormat>,
 ) -> Result<Option<(SheetViews, SheetFormat, u32)>, ProjectDrawingError> {
     let frame = ViewFrame {
@@ -107,7 +107,7 @@ pub(super) fn plan(
                 view.max[axis] += margin;
             }
             view.lay_underlay(&frame, underlay);
-            view.lay_images(&frame, &site.images);
+            view.lay_images(&frame, images);
             view.grid = crosses(&view, site.to_grid_mm, inverse, step_mm);
             let sheet = SheetViews {
                 views: vec![view],

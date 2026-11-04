@@ -1548,7 +1548,7 @@ fn underlay_north_east(page: &ketchup_model::sheet_pdf::Page) -> [f64; 2] {
 /// Měchenice MECH-10: the coordination site plan was drawn on an orthophoto outside
 /// Kečup. An image underlay in the same S-JTSK coordinates as the cadastre prints on the
 /// site plan beneath the parcel lines and the model, its corners where its world file
-/// puts them, and its pixels go into the PDF; the plans keep to lines.
+/// puts them, and its pixels go into the PDF.
 #[test]
 fn a_site_plan_prints_the_orthophoto_where_its_world_file_puts_it() {
     use ketchup_manufacturing::project_drawings::SheetKind;
@@ -1599,17 +1599,97 @@ fn a_site_plan_prints_the_orthophoto_where_its_world_file_puts_it() {
         pdf.windows(15).any(|window| window == b"/Subtype /Image"),
         "the PDF carries the pixels"
     );
-    for sheet in &set.sheets[1..] {
-        assert!(
-            !sheet
-                .page
-                .marks
-                .iter()
-                .any(|mark| matches!(mark, Mark::Image { .. })),
-            "{:?} keeps to lines",
-            sheet.kind
-        );
+}
+
+/// The image marks of `page`.
+fn printed_images(page: &ketchup_model::sheet_pdf::Page) -> usize {
+    page.marks
+        .iter()
+        .filter(|mark| matches!(mark, Mark::Image { .. }))
+        .count()
+}
+
+/// Měchenice MECH-10: a plan prints the orthophoto beneath the model as the site plan
+/// does, once the model reaches under it; the sections and elevations do not. A DXF
+/// set holds no pixels, so its sheets, and the window's digest after the export, name
+/// the orthophoto they leave out.
+#[test]
+fn a_plan_prints_the_orthophoto_and_a_dxf_names_it_left_out() {
+    use crate::app::project_drawings::SetFileFormat;
+    use ketchup_manufacturing::project_drawings::SheetKind;
+    let (mut app, directory) = house_on_a_parcel_with_an_orthophoto();
+    let plan_of = |set: &DrawingSet| {
+        set.sheets
+            .iter()
+            .find(|sheet| matches!(sheet.kind, SheetKind::Plan { .. }))
+            .unwrap()
+            .clone()
+    };
+    // The house stands in the parcel's south-west corner, the orthophoto covers
+    // its northern half: the plan, cut at the house, does not reach it.
+    let plan = plan_of(&app.project_drawings().unwrap());
+    assert_eq!(
+        printed_images(&plan.page),
+        0,
+        "the orthophoto is beyond the plan"
+    );
+    // A shed 15 m north of the house stands on it.
+    app.document
+        .apply_batch(&crate::app::drawing::create_box_batch(
+            DefinitionId(905),
+            [FeatureId(9050), FeatureId(9051)],
+            OccurrenceId(905),
+            ["shed", "profile", "extrusion", "shed"],
+            Vec3::new(0.0, 15_000.0, 0.0),
+            Vec3::new(1000.0, 1000.0, 2500.0),
+        ))
+        .unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let set = app.project_drawings().unwrap();
+    let plan = plan_of(&set);
+    assert_eq!(
+        printed_images(&plan.page),
+        1,
+        "the orthophoto beneath the shed"
+    );
+    assert_eq!(plan.underlay_images.len(), 1);
+    assert!(plan.underlay_images[0].starts_with("ortofoto"));
+    for sheet in &set.sheets {
+        if matches!(sheet.kind, SheetKind::Sections | SheetKind::Elevations) {
+            assert_eq!(printed_images(&sheet.page), 0, "{:?}", sheet.kind);
+        }
     }
+    assert!(
+        set.underlay_images_left_out().is_empty(),
+        "a PDF leaves none out"
+    );
+
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let (dxf, _) = app
+        .project_drawings_job()
+        .unwrap()
+        .render(SetFileFormat::Dxf, &cancelled)
+        .unwrap();
+    let left_out = dxf.underlay_images_left_out();
+    assert_eq!(
+        left_out, plan.underlay_images,
+        "the DXF names what it leaves out"
+    );
+    let leaving = dxf
+        .sheets
+        .iter()
+        .filter(|sheet| !sheet.underlay_images_left_out.is_empty())
+        .map(|sheet| sheet.kind)
+        .collect::<Vec<_>>();
+    assert_eq!(leaving.len(), 2, "the site plan and the plan: {leaving:?}");
+    assert!(
+        dxf.sheets
+            .iter()
+            .all(|sheet| sheet.underlay_images.is_empty() && printed_images(&sheet.page) == 0)
+    );
+
+    assert!(app.export_project_drawings_to(&directory.path().join("set.dxf")));
+    assert!(app.digest.contains(&left_out[0]), "{}", app.digest);
 }
 
 /// An orthophoto whose bytes no longer decode stops only what prints it: the PDF

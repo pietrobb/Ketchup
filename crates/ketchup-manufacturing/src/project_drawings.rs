@@ -464,6 +464,15 @@ enum Item {
     },
 }
 
+/// An image underlay as a view lays it: its name, its pixels (none in a DXF or
+/// DWG set, which leaves it out) and its upper-left, upper-right and lower-left
+/// corners in view millimetres.
+struct LaidImage {
+    name: String,
+    image: Option<Arc<SheetImage>>,
+    corners: [[f64; 2]; 3],
+}
+
 struct DrawnView {
     view: ProjectView,
     /// Far-to-near faces and edges.
@@ -480,9 +489,8 @@ struct DrawnView {
     annotations: Option<PlanAnnotations>,
     /// The underlay lines a plan draws beneath the model, cut at its extent.
     underlay: Vec<[[f64; 2]; 2]>,
-    /// The images a site plan prints beneath everything: the pixels and their
-    /// upper-left, upper-right and lower-left corners in view millimetres.
-    images: Vec<(Arc<SheetImage>, [[f64; 2]; 3])>,
+    /// The image underlays a site plan or a plan lays beneath everything.
+    images: Vec<LaidImage>,
     /// Boxed marks where they stand: the windows and doors a plan shows, the
     /// position numbers of a shop drawing.
     marks: Vec<([f64; 2], String)>,
@@ -536,8 +544,20 @@ impl DrawnView {
                         && corners.iter().any(|corner| corner[axis] <= self.max[axis])
                 })
             })
-            .map(|(image, corners)| (Arc::clone(&image.image), corners))
+            .map(|(image, corners)| LaidImage {
+                name: image.name.clone(),
+                image: image.image.clone(),
+                corners,
+            })
             .collect();
+    }
+
+    /// The names of the image underlays this view lays, with whether it prints
+    /// their pixels.
+    fn laid_images(&self) -> impl Iterator<Item = (&str, bool)> {
+        self.images
+            .iter()
+            .map(|laid| (laid.name.as_str(), laid.image.is_some()))
     }
 
     /// Marks the windows and doors standing at `points` in this view.
@@ -887,7 +907,12 @@ fn draw_view_on_page(
     };
     // First, so the model is drawn over it; a DXF holds no pixels.
     let [corner, opposite] = [view.min, view.max].map(at);
-    for (image, corners) in view.images.iter().filter(|_| visible.is_none()) {
+    for (image, corners) in view
+        .images
+        .iter()
+        .filter(|_| visible.is_none())
+        .filter_map(|laid| Some((laid.image.as_ref()?, &laid.corners)))
+    {
         page.marks.push(Mark::Image {
             image: Arc::clone(image),
             corners: corners.map(at),

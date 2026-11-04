@@ -185,13 +185,13 @@ pub(crate) struct ProjectDrawingsJob {
     /// The exact worker that makes the cosmetic bodies of modelled threads.
     executable: Option<PathBuf>,
     options: DrawingSetOptions,
-    /// The orthophotos of the site plan, still encoded.
+    /// The orthophotos of the site plan and the plans, still encoded.
     images: Vec<JobImage>,
     info: PdfInfo,
 }
 
-/// A shown flat image underlay the site plan prints, still encoded: the export's
-/// thread decodes and shrinks it, so a large orthophoto never stalls the window.
+/// A shown flat image underlay the site plan and the plans print, still encoded: the
+/// export's thread decodes and shrinks it, so a large orthophoto never stalls the window.
 struct JobImage {
     name: String,
     bytes: Arc<Vec<u8>>,
@@ -205,12 +205,24 @@ impl JobImage {
     /// # Errors
     /// [`ProjectDrawingsError::UnderlayImage`] when the image does not decode.
     fn decoded(self) -> Result<UnderlayImage, ProjectDrawingsError> {
-        let image = RasterImage::decode(&self.bytes, &self.raster)
-            .map_err(|error| ProjectDrawingsError::UnderlayImage(self.name, error))?;
+        let image = match RasterImage::decode(&self.bytes, &self.raster) {
+            Ok(image) => image,
+            Err(error) => return Err(ProjectDrawingsError::UnderlayImage(self.name, error)),
+        };
         Ok(UnderlayImage {
-            image: Arc::new(image.sheet_image(self.shrink)),
+            name: self.name,
+            image: Some(Arc::new(image.sheet_image(self.shrink))),
             corners: self.corners,
         })
+    }
+
+    /// Where it lies, without its pixels: what a DXF or DWG sheet leaves out.
+    fn undecoded(self) -> UnderlayImage {
+        UnderlayImage {
+            name: self.name,
+            image: None,
+            corners: self.corners,
+        }
     }
 }
 
@@ -226,7 +238,8 @@ impl ProjectDrawingsJob {
 
     /// Projects the solids and removes the hidden lines; `cancelled` stops
     /// the worker making cosmetic thread bodies and the hidden-line removal.
-    /// Without `printed_images`, as for DXF and DWG, the orthophotos stay undecoded.
+    /// Without `printed_images`, as for DXF and DWG, the orthophotos stay undecoded
+    /// and the sheets name them left out.
     fn set(
         self,
         printed_images: bool,
@@ -239,12 +252,14 @@ impl ProjectDrawingsJob {
             images,
             info,
         } = self;
-        if let Some(situation) = options.situation.as_mut().filter(|_| printed_images) {
-            situation.images = images
+        options.images = if printed_images {
+            images
                 .into_iter()
                 .map(JobImage::decoded)
-                .collect::<Result<_, _>>()?;
-        }
+                .collect::<Result<_, _>>()?
+        } else {
+            images.into_iter().map(JobImage::undecoded).collect()
+        };
         let solids = solids.drawn(executable.as_deref(), cancelled)?;
         let set = drawing_set_until(&solids, &options, cancelled)
             .map_err(ProjectDrawingsError::Drawing)?;
@@ -1059,15 +1074,16 @@ impl KetchupApp {
         lines
     }
 
-    /// Every shown image underlay lying flat, an orthophoto the site plan prints
-    /// beneath the model (Měchenice MECH-10), with its world corners and how much to
-    /// shrink it: no finer than 300 dpi at the site plan's finest scale. The export's
-    /// thread decodes it; one that does not decode stops the set there.
-    fn drawing_images(&self, snapshot: &Snapshot) -> Vec<JobImage> {
+    /// Every shown image underlay lying flat, an orthophoto the site plan and the
+    /// plans print beneath the model (Měchenice MECH-10), with its world corners and
+    /// how much to shrink it: no finer than 300 dpi at the finest scale 1:`finest` a
+    /// sheet may print it at. The export's thread decodes it; one that does not
+    /// decode stops the PDF there.
+    fn drawing_images(&self, snapshot: &Snapshot, finest: u32) -> Vec<JobImage> {
         // 300 dots per inch of paper.
         const PRINTED_PIXEL_MM: f64 = 25.4 / 300.0;
         let shown = |tag| snapshot.tag(tag).is_some_and(|tag| tag.visible());
-        let finest = f64::from(SITUATION_SCALES[0]);
+        let finest = f64::from(finest);
         snapshot
             .underlays()
             .filter(|underlay| underlay.lies_flat() && shown(underlay.tag))
@@ -1205,13 +1221,10 @@ impl KetchupApp {
                 title: catalog.text("drawings-sheet-situation"),
                 view_title: catalog.text("drawings-view-situation"),
                 to_grid_mm,
-                images: Vec::new(),
             });
-        let images = if situation.is_some() {
-            self.drawing_images(&snapshot)
-        } else {
-            Vec::new()
-        };
+        // The plans at the scale asked for, else at any the set may pick.
+        let finest = request.scale.unwrap_or(SCALES[0]).min(SITUATION_SCALES[0]);
+        let images = self.drawing_images(&snapshot, finest);
         Ok(ProjectDrawingsJob {
             solids,
             executable: self.drawing_worker(),
@@ -1230,6 +1243,8 @@ impl KetchupApp {
                 scale: request.scale,
                 annotations,
                 underlay: self.drawing_underlay(&snapshot),
+                // Filled where the set is drawn, decoded for a PDF.
+                images: Vec::new(),
                 openings,
                 shop,
                 cutting,
@@ -1362,7 +1377,19 @@ impl KetchupApp {
                     arguments.insert("characters", missing.iter().collect());
                     "digest-exported-project-drawings-question-marks"
                 };
-                self.catalog.format(key, &arguments)
+                let digest = self.catalog.format(key, &arguments);
+                let left_out = set.underlay_images_left_out();
+                if left_out.is_empty() {
+                    digest
+                } else {
+                    self.catalog.format(
+                        "digest-exported-project-drawings-images-left-out",
+                        &BTreeMap::from([
+                            ("digest", digest.trim_end_matches('.').to_owned()),
+                            ("names", left_out.join(", ")),
+                        ]),
+                    )
+                }
             }
             Err(error) => self.catalog.format(
                 "error-export-project-drawings",

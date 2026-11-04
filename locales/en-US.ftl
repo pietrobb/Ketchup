@@ -2189,6 +2189,7 @@ digest-exported-project-drawings-question-marks = Project drawings ({ $sheets ->
         [one] { $sheets } sheet
        *[other] { $sheets } sheets
     } at 1:{ $scale }) were exported to { $path }, but the sheet typeface lacks the characters { $characters }: the sheets print them as "?".
+digest-exported-project-drawings-images-left-out = { $digest }. DXF and DWG sheets keep to lines, so they leave out the image underlays { $names }; export a PDF to print them.
 error-export-project-drawings = Project drawings export to { $path } failed: { $reason }
 digest-exported-drawing-sheet-dxf = Drawing sheet { $name } was exported to { $path } as DXF
 digest-exported-drawing-sheet-dwg = Drawing sheet { $name } was exported to { $path } as DWG

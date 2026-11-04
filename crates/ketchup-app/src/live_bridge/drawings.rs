@@ -444,6 +444,8 @@ pub(super) fn finish_export(
                 "views": sheet.views,
                 "annotations": sheet.annotations,
                 "underlay_lines": sheet.underlay_lines,
+                "underlay_images": sheet.underlay_images,
+                "underlay_images_left_out": sheet.underlay_images_left_out,
                 "situation": sheet.situation,
                 "path": file.map(|file| file.display().to_string()),
             })
@@ -459,6 +461,7 @@ pub(super) fn finish_export(
         "sheets": sheets,
         "annotations": set.annotations(),
         "printed_as_question_mark": set.printed_as_question_mark(),
+        "underlay_images_left_out": set.underlay_images_left_out(),
         "format_setting": settings.format.map_or("auto", SheetFormat::name),
         "sheet_language": settings.language.map_or("auto", SheetLanguage::code),
         "title_block": settings.title_block,

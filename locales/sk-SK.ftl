@@ -2106,6 +2106,7 @@ digest-exported-project-drawings-question-marks = Projektové výkresy ({ $sheet
         [few] { $sheets } listy
        *[other] { $sheets } listov
     } v mierke 1:{ $scale }) boli exportované do { $path }, ale písmo listov nemá znaky { $characters }: na listoch sú vytlačené ako „?“.
+digest-exported-project-drawings-images-left-out = { $digest }. Listy DXF a DWG obsahujú len čiary, preto vynechávajú obrázkové podklady { $names }; na ich vytlačenie exportuj PDF.
 error-export-project-drawings = Export projektových výkresov do { $path } zlyhal: { $reason }
 digest-exported-drawing-sheet-dxf = Výkresový list { $name } bol exportovaný do { $path } ako DXF
 digest-exported-drawing-sheet-dwg = Výkresový list { $name } bol exportovaný do { $path } ako DWG

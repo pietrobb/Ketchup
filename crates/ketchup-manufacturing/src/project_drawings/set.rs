@@ -17,7 +17,7 @@ use super::cutting::{CuttingSheet, CuttingSummary, plan_cutting};
 use super::levels::{level_heights, level_text};
 use super::openings::{OpeningSchedule, draw_schedule, opening_points, schedule_format};
 use super::shop::{PlannedShop, ShopDrawings, ShopSummary, plan_shop};
-use super::situation::{self, SituationCross, SituationSheet, SituationSummary};
+use super::situation::{self, SituationCross, SituationSheet, SituationSummary, UnderlayImage};
 use super::visible::{VisibleLine, visible_lines};
 use super::{Annotation, AnnotationCounts, PlanAnnotations};
 use super::{
@@ -85,6 +85,11 @@ pub struct DrawingSetOptions {
     /// their lower end) thin and grey beneath the model, cut at what the plan
     /// draws, which they never grow.
     pub underlay: Vec<[[f64; 3]; 2]>,
+    /// The shown image underlays lying flat, an orthophoto: the site plan lays
+    /// them all, each plan those of its storey (parted like the underlay lines,
+    /// by their lowest corner), beneath everything where they reach into it.
+    /// The PDF prints them; without pixels a sheet names them left out.
+    pub images: Vec<UnderlayImage>,
     /// The windows and doors: each plan marks those of its storey (parted
     /// like the annotations, by their lowest point), and their schedule is
     /// the last sheet.
@@ -146,6 +151,11 @@ pub struct SetSheet {
     pub annotations: AnnotationCounts,
     /// The underlay lines its plan draws (none on the other sheets).
     pub underlay_lines: usize,
+    /// The names of the image underlays it prints beneath the model.
+    pub underlay_images: Vec<String>,
+    /// The names of those it would print but has no pixels of, as a DXF or DWG
+    /// sheet, which keeps to lines.
+    pub underlay_images_left_out: Vec<String>,
     /// The marks of the windows and doors its plan draws, one per opening.
     pub openings: Vec<String>,
     /// What a shop drawing shows.
@@ -204,6 +214,18 @@ impl DrawingSet {
         self.sheets
             .iter()
             .flat_map(|sheet| sheet.page.printed_as_question_mark())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    /// The image underlays some sheet would print but has no pixels of, each
+    /// once: what a DXF or DWG set leaves out.
+    #[must_use]
+    pub fn underlay_images_left_out(&self) -> Vec<String> {
+        self.sheets
+            .iter()
+            .flat_map(|sheet| sheet.underlay_images_left_out.iter().cloned())
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect()
@@ -364,13 +386,9 @@ pub fn drawing_set_until(
         if !annotations.is_empty() {
             drawn.annotate(PlanAnnotations::project(&frame, &annotations));
         }
-        let underlay = options
-            .underlay
-            .iter()
-            .filter(|[a, b]| (below..above).contains(&a[2].min(b[2])))
-            .copied()
-            .collect::<Vec<_>>();
+        let (underlay, images) = storey_underlay(options, below..above);
         drawn.lay_underlay(&frame, &underlay);
+        drawn.lay_images(&frame, &images);
         let marks = opening_points
             .iter()
             .filter(|(_, point)| (below..above).contains(&point[2]))
@@ -585,6 +603,7 @@ pub fn drawing_set_until(
             .iter()
             .flat_map(|view| view.marks.iter().map(|(_, mark)| mark.clone()))
             .collect();
+        let (underlay_images, underlay_images_left_out) = laid_images(&sheet.views);
         sheets.push(SetSheet {
             kind: sheet.kind,
             number,
@@ -600,6 +619,8 @@ pub fn drawing_set_until(
                 .iter()
                 .map(|view| view.underlay.len())
                 .sum(),
+            underlay_images,
+            underlay_images_left_out,
             openings,
             shop: None,
             cutting: None,
@@ -656,6 +677,8 @@ pub fn drawing_set_until(
             views: Vec::new(),
             annotations: AnnotationCounts::default(),
             underlay_lines: 0,
+            underlay_images: Vec::new(),
+            underlay_images_left_out: Vec::new(),
             openings: Vec::new(),
             shop: None,
             cutting: Some(summary),
@@ -687,6 +710,8 @@ pub fn drawing_set_until(
             views: Vec::new(),
             annotations: AnnotationCounts::default(),
             underlay_lines: 0,
+            underlay_images: Vec::new(),
+            underlay_images_left_out: Vec::new(),
             openings: Vec::new(),
             shop: None,
             cutting: None,
@@ -694,6 +719,43 @@ pub fn drawing_set_until(
         });
     }
     Ok(DrawingSet { sheets, scale })
+}
+
+/// The underlay lines and the image underlays of the storey whose plan draws
+/// what lies at `heights`: each by its lowest point, as the annotations.
+fn storey_underlay(
+    options: &DrawingSetOptions,
+    heights: std::ops::Range<f64>,
+) -> (Vec<[[f64; 3]; 2]>, Vec<UnderlayImage>) {
+    let lines = options
+        .underlay
+        .iter()
+        .filter(|[a, b]| heights.contains(&a[2].min(b[2])))
+        .copied()
+        .collect();
+    let images = options
+        .images
+        .iter()
+        .filter(|image| {
+            let lowest = image.corners.iter().map(|corner| corner[2]);
+            heights.contains(&lowest.fold(f64::INFINITY, f64::min))
+        })
+        .cloned()
+        .collect();
+    (lines, images)
+}
+
+/// The names of the image underlays the views lay: those they print, and those
+/// they have no pixels of and leave out.
+fn laid_images(views: &SheetViews) -> (Vec<String>, Vec<String>) {
+    let (printed, left_out): (Vec<_>, Vec<_>) = views
+        .views
+        .iter()
+        .flat_map(DrawnView::laid_images)
+        .partition(|(_, printed)| *printed);
+    let names =
+        |laid: Vec<(&str, bool)>| laid.into_iter().map(|(name, _)| name.to_owned()).collect();
+    (names(printed), names(left_out))
 }
 
 /// The site plan sheet the options ask for, its format and its scale; none with
@@ -706,19 +768,22 @@ fn plan_situation(
     let Some(site) = options.situation.as_ref().filter(|_| !options.plan_only) else {
         return Ok(None);
     };
-    Ok(
-        situation::plan(site, solids, edges, &options.underlay, options.format)?.map(
-            |(views, format, scale)| {
-                let planned = Planned {
-                    kind: SheetKind::Situation,
-                    title: site.title.clone(),
-                    views,
-                    titles: vec![site.view_title.clone()],
-                };
-                (planned, format, scale)
-            },
-        ),
-    )
+    Ok(situation::plan(
+        site,
+        solids,
+        edges,
+        (&options.underlay, &options.images),
+        options.format,
+    )?
+    .map(|(views, format, scale)| {
+        let planned = Planned {
+            kind: SheetKind::Situation,
+            title: site.title.clone(),
+            views,
+            titles: vec![site.view_title.clone()],
+        };
+        (planned, format, scale)
+    }))
 }
 
 /// The scale and the crosses of `sheet` when it is the site plan, its views
@@ -811,6 +876,8 @@ fn shop_sheet(
         lines,
         annotations: AnnotationCounts::default(),
         underlay_lines: 0,
+        underlay_images: Vec::new(),
+        underlay_images_left_out: Vec::new(),
         openings: Vec::new(),
         shop: Some(shop.summary),
         cutting: None,
