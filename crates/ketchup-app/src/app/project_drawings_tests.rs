@@ -1636,9 +1636,35 @@ fn an_orthophoto_that_does_not_decode_stops_the_pdf_but_not_the_dxf() {
     }
 }
 
+/// An orthophoto with a world file as the only georeferenced underlay still makes a
+/// site plan: its crosses, and the image beneath the model, not the house alone on
+/// white paper.
+#[test]
+fn an_orthophoto_alone_makes_a_site_plan_that_prints_it() {
+    use ketchup_manufacturing::project_drawings::SheetKind;
+    let (app, _directory) = house_with_an_orthophoto(false);
+    let set = app.project_drawings().unwrap();
+    let site = &set.sheets[0];
+    assert_eq!(site.kind, SheetKind::Situation);
+    assert_eq!(site.underlay_lines, 0, "no cadastre");
+    assert!(!site.situation.as_ref().unwrap().crosses.is_empty());
+    let images = site
+        .page
+        .marks
+        .iter()
+        .filter(|mark| matches!(mark, Mark::Image { .. }))
+        .count();
+    assert_eq!(images, 1, "the orthophoto is the site plan's underlay");
+}
+
 /// A house on a 20 m S-JTSK parcel, the cadastre and an orthophoto over the
 /// parcel's northern half as shown underlays; the directory holds their files.
 fn house_on_a_parcel_with_an_orthophoto() -> (KetchupApp, tempfile::TempDir) {
+    house_with_an_orthophoto(true)
+}
+
+/// The house and the orthophoto, and the cadastre too if `with_cadastre`.
+fn house_with_an_orthophoto(with_cadastre: bool) -> (KetchupApp, tempfile::TempDir) {
     let mut app = KetchupApp::new();
     add_box(&mut app, 904, "house", 0.0);
     crate::drawn_shape::tests::evaluate_exact(&mut app);
@@ -1670,9 +1696,14 @@ fn house_on_a_parcel_with_an_orthophoto() -> (KetchupApp, tempfile::TempDir) {
         "5.0\n0.0\n0.0\n-5.0\n-742317.5\n-1045202.5\n",
     )
     .unwrap();
-    app.start_underlay_read(cadastre, None);
+    if with_cadastre {
+        app.start_underlay_read(cadastre, None);
+    }
     app.start_underlay_read(ortho, None);
-    assert_eq!(app.document.current().underlays().count(), 2);
+    assert_eq!(
+        app.document.current().underlays().count(),
+        1 + usize::from(with_cadastre)
+    );
     (app, directory)
 }
 
