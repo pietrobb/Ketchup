@@ -1005,8 +1005,8 @@ fn bounds(solids: &[DrawingSolid]) -> Option<(Point, Point)> {
 struct UpwardLevel {
     /// Of all the solids' faces at the level.
     area: f64,
-    /// Of the widest solid's faces there: twice their area over the length
-    /// of their outline, the width of a strip.
+    /// Of the widest solid's faces there: the short side of the rectangle
+    /// with their area and the length of their outline, their clear width.
     widest_mm: f64,
 }
 
@@ -1045,11 +1045,19 @@ fn upward_levels(solids: &[DrawingSolid]) -> BTreeMap<i64, UpwardLevel> {
             let entry = levels.entry(level).or_default();
             entry.area += area;
             if outline > 0.0 {
-                entry.widest_mm = entry.widest_mm.max(2.0 * area / outline);
+                entry.widest_mm = entry.widest_mm.max(clear_width(area, outline));
             }
         }
     }
     levels
+}
+
+/// The short side of the rectangle with `area` and perimeter `outline`: a
+/// w × l rectangle has outline² − 16·area = 4(l − w)², so w is exact for a
+/// rectangle; a rounder shape, with no such rectangle, counts as the square
+/// of its outline.
+fn clear_width(area: f64, outline: f64) -> f64 {
+    (outline - (outline * outline - 16.0 * area).max(0.0).sqrt()) / 4.0
 }
 
 #[allow(clippy::cast_precision_loss)]
@@ -1424,32 +1432,39 @@ mod tests {
             [6000.0, 3000.0, 2900.0],
         ));
         house.push(cuboid("knee", [0.0, 0.0, 2900.0], [6000.0, 150.0, 3500.0]));
-        // A 2 × 3 m gallery: a third of the floor's area, a floor all the same.
-        house.push(cuboid(
-            "gallery",
-            [0.0, 0.0, 1400.0],
+        // Galleries and a landing well under half the floor's area, floors all
+        // the same: 2 × 3 m, 1.2 m wide along 4 m, and a square of 1.8 m
+        // (capability finding 482).
+        for gallery_corner in [
             [2000.0, 3000.0, 1600.0],
-        ));
-        let mut options = DrawingSetOptions {
-            decimal_comma: true,
-            ..options(&house, None)
-        };
-        let levels = |options: &DrawingSetOptions| {
-            let set = drawing_set(&house, options).unwrap();
-            summary(&set, ProjectView::LongitudinalSection)
-                .levels
-                .clone()
-        };
-        assert_eq!(
-            levels(&options),
-            ["-3,200", "-3,000", "±0,000", "+1,400", "+2,700", "+3,300"]
-        );
-        // The basement floor set as ±0,000.
-        options.zero_level_mm = Some(-2800.0);
-        assert_eq!(
-            levels(&options),
-            ["-0,200", "±0,000", "+3,000", "+4,400", "+5,700", "+6,300"]
-        );
+            [4000.0, 1200.0, 1600.0],
+            [1800.0, 1800.0, 1600.0],
+        ] {
+            let mut house = house.clone();
+            house.push(cuboid("gallery", [0.0, 0.0, 1400.0], gallery_corner));
+            let mut options = DrawingSetOptions {
+                decimal_comma: true,
+                ..options(&house, None)
+            };
+            let levels = |options: &DrawingSetOptions| {
+                let set = drawing_set(&house, options).unwrap();
+                summary(&set, ProjectView::LongitudinalSection)
+                    .levels
+                    .clone()
+            };
+            assert_eq!(
+                levels(&options),
+                ["-3,200", "-3,000", "±0,000", "+1,400", "+2,700", "+3,300"],
+                "gallery to {gallery_corner:?}"
+            );
+            // The basement floor set as ±0,000.
+            options.zero_level_mm = Some(-2800.0);
+            assert_eq!(
+                levels(&options),
+                ["-0,200", "±0,000", "+3,000", "+4,400", "+5,700", "+6,300"],
+                "gallery to {gallery_corner:?}"
+            );
+        }
     }
 
     /// Měchenice MECH-6: a vertical dimension of the program has no length in plan;
