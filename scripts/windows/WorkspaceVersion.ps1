@@ -14,8 +14,10 @@ function Get-WorkspaceVersion([string]$RepoRoot) {
     throw "Cargo.toml in $RepoRoot has no [workspace.package] version"
 }
 
-# Android updates an app only to a higher versionCode: major * 1000000 +
-# minor * 1000 + patch of the version, so every later release is higher.
+# Android updates an app only to a higher versionCode: ten times major * 1000000 +
+# minor * 1000 + patch, plus 9 for a release, so every later release is higher and a
+# pre-release such as 0.3.2-dev is below its release 0.3.2, not equal to it (review
+# 2026-11-04 P3 platform). scripts/macos/bundle-version.sh gives the Mac apps the same.
 function Get-AndroidVersionCode([string]$Version) {
     if ($Version -notmatch '^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?$') {
         throw "Version $Version is not major.minor.patch"
@@ -23,8 +25,9 @@ function Get-AndroidVersionCode([string]$Version) {
     $major = [int]$Matches[1]
     $minor = [int]$Matches[2]
     $patch = [int]$Matches[3]
-    if ($minor -gt 999 -or $patch -gt 999 -or $major -gt 2099) {
-        throw "Version $Version does not fit an Android versionCode (minor and patch up to 999)"
+    $release = if ($Matches[4]) { 0 } else { 9 }
+    if ($minor -gt 999 -or $patch -gt 999 -or $major -gt 209) {
+        throw "Version $Version does not fit an Android versionCode (major up to 209, minor and patch up to 999)"
     }
-    return $major * 1000000 + $minor * 1000 + $patch
+    return ($major * 1000000 + $minor * 1000 + $patch) * 10 + $release
 }
