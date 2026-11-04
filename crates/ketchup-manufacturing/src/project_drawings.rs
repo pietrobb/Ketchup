@@ -26,6 +26,7 @@ mod levels;
 mod openings;
 mod set;
 mod shop;
+mod situation;
 mod table;
 mod threads;
 mod visible;
@@ -40,6 +41,7 @@ pub use set::{
     drawing_set_until,
 };
 pub use shop::{ShopDrawings, ShopPosition, ShopSheet, ShopSummary};
+pub use situation::{SituationCross, SituationSheet, SituationSummary};
 pub use threads::DrawingThread;
 use threads::ThreadMarks;
 
@@ -72,6 +74,8 @@ pub enum ProjectView {
     Right,
     /// A shop drawing: its parts seen square on, along their own z.
     Shop,
+    /// The site plan: the model from above on its underlay, with grid crosses.
+    Situation,
 }
 
 impl ProjectView {
@@ -478,6 +482,8 @@ struct DrawnView {
     marks: Vec<([f64; 2], String)>,
     /// The level marks right of a section or an elevation: view height and text.
     levels: Vec<(f64, String)>,
+    /// The grid crosses of a site plan.
+    grid: Vec<situation::GridCross>,
     cut_at_mm: Option<f64>,
 }
 
@@ -636,6 +642,7 @@ fn draw_view(
         underlay: Vec::new(),
         marks: Vec::new(),
         levels: Vec::new(),
+        grid: Vec::new(),
         // `cut` is measured along the depth direction, which is ±1 on the
         // world axis the plane is normal to: divide to get that coordinate.
         cut_at_mm: frame.cut.map(|cut| {
@@ -824,6 +831,15 @@ fn tick(page: &mut Page, [x, y]: [f64; 2]) {
     );
 }
 
+/// Where `point` of `view`, drawn at 1:`scale` with its lower-left corner at
+/// `origin`, lies on the page (y down).
+fn page_point(view: &DrawnView, origin: [f64; 2], scale: f64, point: [f64; 2]) -> [f64; 2] {
+    [
+        origin[0] + (point[0] - view.min[0]) / scale,
+        origin[1] - (point[1] - view.min[1]) / scale,
+    ]
+}
+
 /// Draws one view with its lower-left model corner at `origin` (page mm):
 /// painted far to near, or with `visible` its visible lines alone (no face
 /// fill), as a DXF carries it.
@@ -835,12 +851,7 @@ fn draw_view_on_page(
     scale: f64,
     visible: Option<&[visible::VisibleLine]>,
 ) {
-    let at = |point: [f64; 2]| {
-        [
-            origin[0] + (point[0] - view.min[0]) / scale,
-            origin[1] - (point[1] - view.min[1]) / scale,
-        ]
-    };
+    let at = |point: [f64; 2]| page_point(view, origin, scale, point);
     let edge = Stroke {
         width_mm: EDGE_STROKE_MM,
         color: EDGE_COLOR,
@@ -908,6 +919,9 @@ fn draw_view_on_page(
     }
     for (point, mark) in &view.marks {
         openings::draw_mark(page, at(*point), mark, visible.is_none());
+    }
+    for cross in &view.grid {
+        situation::draw_cross(page, cross, at(cross.at));
     }
     let levels = view
         .levels

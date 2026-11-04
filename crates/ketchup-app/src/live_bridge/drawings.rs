@@ -444,6 +444,7 @@ pub(super) fn finish_export(
                 "views": sheet.views,
                 "annotations": sheet.annotations,
                 "underlay_lines": sheet.underlay_lines,
+                "situation": sheet.situation,
                 "path": file.map(|file| file.display().to_string()),
             })
         })

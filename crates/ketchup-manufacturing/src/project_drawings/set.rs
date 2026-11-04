@@ -17,12 +17,13 @@ use super::cutting::{CuttingSheet, CuttingSummary, plan_cutting};
 use super::levels::{level_heights, level_text};
 use super::openings::{OpeningSchedule, draw_schedule, opening_points, schedule_format};
 use super::shop::{PlannedShop, ShopDrawings, ShopSummary, plan_shop};
+use super::situation::{self, SituationCross, SituationSheet, SituationSummary};
 use super::visible::{VisibleLine, visible_lines};
 use super::{Annotation, AnnotationCounts, PlanAnnotations};
 use super::{
-    DrawingSolid, DrawnView, ProjectDrawingError, ProjectView, SheetViews, Storey, VIEW_PAD_MM,
-    ViewSummary, annotation_bounds, bounds, choose_layout_scale, draw_view, draw_view_on_page,
-    extent, format_at_scale, solid_edges, view_frames,
+    DrawingSolid, DrawnView, ProjectDrawingError, ProjectView, SheetViews, SolidEdges, Storey,
+    VIEW_PAD_MM, ViewSummary, annotation_bounds, bounds, choose_layout_scale, draw_view,
+    draw_view_on_page, extent, format_at_scale, page_point, solid_edges, view_frames,
 };
 use crate::sheet_dxf::page_dxf;
 use crate::title_block::{
@@ -96,12 +97,17 @@ pub struct DrawingSetOptions {
     /// The level marks write a decimal comma ("+2,850"), as Czech and Slovak
     /// drawings do, instead of a point.
     pub decimal_comma: bool,
+    /// The site plan, the first sheet, when the underlay lies in a national grid;
+    /// it draws every underlay line, of whatever storey.
+    pub situation: Option<SituationSheet>,
 }
 
 /// What a sheet of the set shows.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum SheetKind {
+    /// The site plan at its own scale, before the plans.
+    Situation,
     /// The plan of storey `storey` (0 the lowest).
     Plan {
         storey: usize,
@@ -146,6 +152,8 @@ pub struct SetSheet {
     pub shop: Option<ShopSummary>,
     /// What a sheet of a cutting plan shows.
     pub cutting: Option<CuttingSummary>,
+    /// The scale and grid crosses of the site plan.
+    pub situation: Option<SituationSummary>,
 }
 
 /// The sheets, numbered in order, and the scale 1:`scale` of every view.
@@ -234,14 +242,16 @@ fn lowest(annotation: &Annotation) -> f64 {
 }
 
 /// Lays the views of `sheet` out on `page` at 1:`scale`, row under row, each
-/// left to right; with `visible`, as visible lines.
+/// left to right; with `visible`, as visible lines. Returns the page origin of
+/// each view ([`page_point`]).
 fn draw_views(
     page: &mut Page,
     sheet: &Planned,
     format: SheetFormat,
     scale: u32,
     visible: Option<&[Vec<VisibleLine>]>,
-) {
+) -> Vec<[f64; 2]> {
+    let mut origins = vec![[0.0; 2]; sheet.views.views.len()];
     let scale = f64::from(scale);
     let views = &sheet.views.views;
     let [[area_left, mut top], _] = drawing_area(format);
@@ -255,6 +265,7 @@ fn draw_views(
             let view = &views[index];
             let [width, height] = extent(view);
             let origin = [left + VIEW_PAD_MM, top + VIEW_PAD_MM / 2.0 + height / scale];
+            origins[index] = origin;
             draw_view_on_page(
                 page,
                 view,
@@ -267,6 +278,7 @@ fn draw_views(
         }
         top += row_height;
     }
+    origins
 }
 
 /// Draws the project drawings of `solids` as a set of sheets.
@@ -445,10 +457,16 @@ pub fn drawing_set_until(
                 .unwrap_or(preferred)
         }
     };
-    let formats = planned
+    let mut formats = planned
         .iter()
         .map(|sheet| format_at_scale(&sheet.views, options.format, scale))
         .collect::<Result<Vec<_>, _>>()?;
+    let mut scales = vec![scale; planned.len()];
+    if let Some((site, format, site_scale)) = plan_situation(solids, &edges, options)? {
+        planned.insert(0, site);
+        formats.insert(0, format);
+        scales.insert(0, site_scale);
+    }
 
     // The schedule of windows and doors goes with the whole set, not the plans alone.
     let schedule = options.openings.rows();
@@ -518,7 +536,9 @@ pub fn drawing_set_until(
         values
     };
     let mut sheets = Vec::with_capacity(count);
-    for (index, (sheet, format)) in planned.into_iter().zip(formats).enumerate() {
+    for (index, ((sheet, format), scale)) in
+        planned.into_iter().zip(formats).zip(scales).enumerate()
+    {
         let number = index + 1;
         let values = title_values(&sheet.title, format!("1:{scale}"), format, number);
         let blank = || Page {
@@ -526,7 +546,8 @@ pub fn drawing_set_until(
             marks: Vec::new(),
         };
         let mut page = blank();
-        draw_views(&mut page, &sheet, format, scale, None);
+        let origins = draw_views(&mut page, &sheet, format, scale, None);
+        let situation = situation_summary(&sheet, &origins, scale);
         draw_frame_and_title_block(&mut page, format, &options.title_labels, &values)?;
         let visible = sheet
             .views
@@ -582,6 +603,7 @@ pub fn drawing_set_until(
             openings,
             shop: None,
             cutting: None,
+            situation,
         });
     }
     for (drawing, shop) in shops {
@@ -637,6 +659,7 @@ pub fn drawing_set_until(
             openings: Vec::new(),
             shop: None,
             cutting: Some(summary),
+            situation: None,
         });
         page_of_plan += 1;
     }
@@ -667,9 +690,59 @@ pub fn drawing_set_until(
             openings: Vec::new(),
             shop: None,
             cutting: None,
+            situation: None,
         });
     }
     Ok(DrawingSet { sheets, scale })
+}
+
+/// The site plan sheet the options ask for, its format and its scale; none with
+/// the plans alone or without a solid to draw.
+fn plan_situation(
+    solids: &[DrawingSolid],
+    edges: &[SolidEdges],
+    options: &DrawingSetOptions,
+) -> Result<Option<(Planned, SheetFormat, u32)>, ProjectDrawingError> {
+    let Some(site) = options.situation.as_ref().filter(|_| !options.plan_only) else {
+        return Ok(None);
+    };
+    Ok(
+        situation::plan(site, solids, edges, &options.underlay, options.format)?.map(
+            |(views, format, scale)| {
+                let planned = Planned {
+                    kind: SheetKind::Situation,
+                    title: site.title.clone(),
+                    views,
+                    titles: vec![site.view_title.clone()],
+                };
+                (planned, format, scale)
+            },
+        ),
+    )
+}
+
+/// The scale and the crosses of `sheet` when it is the site plan, its views
+/// drawn at `origins` at 1:`scale`.
+fn situation_summary(
+    sheet: &Planned,
+    origins: &[[f64; 2]],
+    scale: u32,
+) -> Option<SituationSummary> {
+    (sheet.kind == SheetKind::Situation).then(|| SituationSummary {
+        scale,
+        crosses: sheet
+            .views
+            .views
+            .iter()
+            .zip(origins)
+            .flat_map(|(view, origin)| {
+                view.grid.iter().map(|cross| SituationCross {
+                    coordinates_m: cross.coordinates_m,
+                    at_mm: page_point(view, *origin, f64::from(scale), cross.at),
+                })
+            })
+            .collect(),
+    })
 }
 
 /// The level marks of the sections and elevations: ±0,000 at the floor of the
@@ -741,5 +814,6 @@ fn shop_sheet(
         openings: Vec::new(),
         shop: Some(shop.summary),
         cutting: None,
+        situation: None,
     })
 }

@@ -9,6 +9,7 @@ drawings-sheet-sections = Řezy
 # Desetinný oddělovač výškových kót na řezech a pohledech (+2,850).
 drawings-sheet-decimal-separator = ,
 drawings-sheet-elevations = Pohledy
+drawings-sheet-situation = Situace
 drawings-sheet-openings = Okna a dveře
 drawings-openings-mark = Značka
 drawings-openings-designation = Označení
@@ -29,6 +30,7 @@ drawings-view-front = Pohled zepředu
 drawings-view-back = Pohled zezadu
 drawings-view-left = Pohled zleva
 drawings-view-right = Pohled zprava
+drawings-view-situation = Situace stavby
 drawings-default-sheet = Projektová dokumentace
 title-field-office = Zpracovatel
 title-field-designer = Zodpovědný projektant
