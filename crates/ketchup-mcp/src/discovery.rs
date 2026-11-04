@@ -26,6 +26,8 @@ const MAX_LINE_BYTES: u64 = 2048;
 const MAX_REGISTRY_ENTRIES: usize = 4096;
 const MAX_WINDOWS: usize = 64;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+/// Not a window entry: those are named by a 32-digit hex identity.
+const CHOSEN_FILE: &str = "chosen-window.json";
 /// A window grants a local attach at once; this only bounds a hung window.
 const ATTACH_TIMEOUT: Duration = Duration::from_secs(65);
 
@@ -82,11 +84,103 @@ pub fn list_windows(root: &Path) -> Vec<Window> {
             .collect();
         probes
             .into_iter()
-            .filter_map(|probe| probe.join().ok()?.ok())
+            .filter_map(|probe| match probe.join() {
+                // A window that does not answer is a stale entry: skipped.
+                Ok(answer) => answer.ok(),
+                Err(panic) => {
+                    let cause = panic
+                        .downcast_ref::<&str>()
+                        .copied()
+                        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+                        .unwrap_or("unknown panic");
+                    eprintln!("ketchup-mcp: probing a window panicked ({cause}); it is left out of the list");
+                    None
+                }
+            })
             .collect()
     });
     windows.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
     windows
+}
+
+/// The name a window shows in its AI tab and `windows` gives it, so the user
+/// and the agent can tell windows apart that all show "Untitled".
+#[must_use]
+pub fn short_name(instance_id: &str) -> String {
+    instance_id
+        .chars()
+        .take(4)
+        .collect::<String>()
+        .to_uppercase()
+}
+
+/// Connect was clicked in window `instance_id`: a `connect` without an id goes
+/// to it while it is open, until Connect is clicked in another window.
+pub fn mark_chosen(root: &Path, instance_id: &str) -> io::Result<()> {
+    if !is_lower_hex(instance_id, 32) {
+        return Err(invalid("not a window identity"));
+    }
+    let bytes = serde_json::to_vec(&json!({"version": 1, "instance_id": instance_id}))?;
+    let temporary = root.join(format!(".{CHOSEN_FILE}.{}", nonce()?));
+    let written = crate::local_auth::create(&temporary)
+        .and_then(|mut file| file.write_all(&bytes).and_then(|()| file.sync_all()))
+        .and_then(|()| fs::rename(&temporary, root.join(CHOSEN_FILE)));
+    let Err(error) = written else {
+        return Ok(());
+    };
+    match fs::remove_file(&temporary) {
+        Err(left) if left.kind() != io::ErrorKind::NotFound => Err(io::Error::new(
+            error.kind(),
+            TemporaryLeft {
+                error,
+                temporary,
+                left,
+            },
+        )),
+        _ => Err(error),
+    }
+}
+
+/// Writing the chosen window failed and its temporary could not be removed.
+#[derive(Debug)]
+struct TemporaryLeft {
+    error: io::Error,
+    temporary: PathBuf,
+    left: io::Error,
+}
+
+impl std::fmt::Display for TemporaryLeft {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}; {} stays behind: {}",
+            self.error,
+            self.temporary.display(),
+            self.left
+        )
+    }
+}
+
+impl std::error::Error for TemporaryLeft {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+/// The window Connect was last clicked in, open or not; `None` while Connect
+/// was clicked in none.
+pub fn chosen_window(root: &Path) -> io::Result<Option<String>> {
+    let bytes = match crate::local_auth::read_private(&root.join(CHOSEN_FILE)) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        read => read?,
+    };
+    let entry: Value = serde_json::from_slice(&bytes)?;
+    match entry["instance_id"].as_str() {
+        Some(instance_id) if entry["version"] == 1 && is_lower_hex(instance_id, 32) => {
+            Ok(Some(instance_id.to_owned()))
+        }
+        _ => Err(invalid("not a chosen window entry")),
+    }
 }
 
 /// Readiness comes exclusively from the spawned child's private stdout pipe.
@@ -202,7 +296,28 @@ fn registry_entry(path: &Path) -> Option<(String, SocketAddr, String)> {
     if !is_lower_hex(instance_id, 32) {
         return None;
     }
-    let entry: Value = serde_json::from_slice(&crate::local_auth::read_private(path).ok()?).ok()?;
+    let bytes = match crate::local_auth::read_private(path) {
+        Ok(bytes) => bytes,
+        // The window closed and removed its entry after it was listed.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            eprintln!(
+                "ketchup-mcp: skipping window entry {}: {error}",
+                path.display()
+            );
+            return None;
+        }
+    };
+    let entry: Value = match serde_json::from_slice(&bytes) {
+        Ok(entry) => entry,
+        Err(error) => {
+            eprintln!(
+                "ketchup-mcp: skipping window entry {}: {error}",
+                path.display()
+            );
+            return None;
+        }
+    };
     if entry["version"] != 1 || entry["instance_id"] != instance_id {
         return None;
     }

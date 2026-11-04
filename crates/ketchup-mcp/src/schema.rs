@@ -41,7 +41,7 @@ pub fn tools() -> Value {
     json!([
         {
             "name": "windows",
-            "description": "List the open Kečup windows (instance_id, document) and which one this server is connected to.",
+            "description": "List the open Kečup windows (instance_id, short_name the window shows in its AI tab, document), which one this server is connected to, and the one the user clicked Connect in (chosen).",
             "inputSchema": {"type": "object", "properties": {}},
             "annotations": {"readOnlyHint": true},
         },
@@ -53,7 +53,7 @@ pub fn tools() -> Value {
         },
         {
             "name": "connect",
-            "description": "Connect to an open Kečup window. Without instance_id connects to the only open window. Replaces any other client connected to that window.",
+            "description": "Connect to an open Kečup window. Without instance_id connects to the only open window, or of several the one the user clicked Connect in (chosen in windows). Replaces any other client connected to that window.",
             "inputSchema": {"type": "object", "properties": {
                 "instance_id": {"type": "string", "description": "32-hex window ID from windows."},
             }},

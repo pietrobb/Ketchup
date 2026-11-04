@@ -24,6 +24,7 @@ mod tests;
 mod tools;
 
 pub use bridge::MAX_UNAUTHENTICATED_REQUEST_BYTES;
+pub use discovery::{chosen_window, mark_chosen, short_name};
 pub use server::serve_stdio;
 
 /// Host response budget includes program planning, publication and the bounded exact check.

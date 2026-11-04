@@ -582,6 +582,11 @@ impl Tools {
             .attached
             .as_ref()
             .map(|a| a.window.instance_id.as_str());
+        let chosen = self.chosen_window();
+        let chosen_id = match &chosen {
+            Ok(Some(id)) => Some(id.as_str()),
+            _ => None,
+        };
         let windows: Vec<Value> = self
             .list_windows()
             .iter()
@@ -589,13 +594,19 @@ impl Tools {
                 let ours = connected == Some(window.instance_id.as_str());
                 json!({
                     "instance_id": window.instance_id,
+                    "short_name": discovery::short_name(&window.instance_id),
                     "document": window.document,
                     "connected": ours,
+                    "chosen": chosen_id == Some(window.instance_id.as_str()),
                     "used_by_another_client": window.in_use && !ours,
                 })
             })
             .collect();
-        ToolOutput::text(&listed_windows(windows))
+        let mut listed = listed_windows(windows);
+        if let Err(error) = &chosen {
+            listed["chosen_unreadable"] = error.to_string().into();
+        }
+        ToolOutput::text(&listed)
     }
 
     fn connect(&mut self, instance_id: Option<&str>) -> Result<ToolOutput, ToolError> {
@@ -669,6 +680,14 @@ impl Tools {
 
     fn sole_window(&self) -> Result<Window, ToolError> {
         let mut windows = self.list_windows();
+        let chosen = self.chosen_window();
+        // #2687 point 16: of several, the one Connect was clicked in, while open.
+        if windows.len() > 1
+            && let Ok(Some(chosen)) = &chosen
+            && let Some(index) = windows.iter().position(|w| &w.instance_id == chosen)
+        {
+            return Ok(windows.swap_remove(index));
+        }
         match windows.len() {
             0 => Err(ToolError::new(
                 "no_window",
@@ -678,14 +697,32 @@ impl Tools {
             _ => {
                 let listed: Vec<Value> = windows
                     .iter()
-                    .map(|w| json!({"instance_id": w.instance_id, "document": w.document}))
+                    .map(|w| {
+                        json!({"instance_id": w.instance_id,
+                               "short_name": discovery::short_name(&w.instance_id),
+                               "document": w.document})
+                    })
                     .collect();
+                let mut details = json!({"windows": listed});
+                if let Err(error) = &chosen {
+                    details["chosen_unreadable"] = error.to_string().into();
+                }
                 Err(ToolError::new(
                     "choose_window",
-                    "Several Kečup windows are open; call connect with one instance_id.",
+                    "Several Kečup windows are open and Connect was not clicked in any of them; \
+                     ask the user which one (each window shows its short_name in its AI tab), \
+                     then call connect with its instance_id.",
                 )
-                .with_details(json!({"windows": listed})))
+                .with_details(details))
             }
+        }
+    }
+
+    /// The window Connect was last clicked in, open or not.
+    fn chosen_window(&self) -> std::io::Result<Option<String>> {
+        match self.discovery_root.as_deref() {
+            Some(root) => discovery::chosen_window(root),
+            None => Ok(None),
         }
     }
 
