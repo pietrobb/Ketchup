@@ -114,6 +114,52 @@ pub fn apply_inherited_memory_limit() -> Result<()> {
 	Ok(())
 }
 
+/// What the footprint watch does after one sample of its child.
+#[cfg(unix)]
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+enum Watch {
+	/// The child is within its limit: sample again.
+	Within,
+	/// The child is past its limit: kill it.
+	Exceeded,
+	/// The child was reaped, or its pid names another process now: nothing is left to watch.
+	Gone,
+	/// The footprint could not be read: the child would run without its limit, so it is killed
+	/// all the same (Ketchup review 2026-11-04: such a sample ended the watch).
+	Unwatchable,
+}
+
+/// Judges one sample, the child's start time and footprint, of a child started at `started`.
+#[cfg(unix)]
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+fn judge(sample: &Result<(u64, u64)>, started: u64, limit: u64) -> Watch {
+	match sample {
+		Ok((now_started, _)) if *now_started != started => Watch::Gone,
+		Ok((_, bytes)) if *bytes > limit => Watch::Exceeded,
+		Ok(_) => Watch::Within,
+		Err(error) if error.raw_os_error() == Some(nix::libc::ESRCH) => Watch::Gone,
+		Err(_) => Watch::Unwatchable,
+	}
+}
+
+#[cfg(all(test, unix))]
+mod watch_tests {
+	use super::{Watch, judge};
+	use std::io::Error;
+
+	#[test]
+	fn a_sample_that_cannot_be_read_stops_the_child_and_only_a_gone_one_ends_the_watch() {
+		assert_eq!(judge(&Ok((7, 100)), 7, 200), Watch::Within);
+		assert_eq!(judge(&Ok((7, 300)), 7, 200), Watch::Exceeded);
+		assert_eq!(judge(&Ok((8, 300)), 7, 200), Watch::Gone);
+		let gone = Error::from_raw_os_error(nix::libc::ESRCH);
+		assert_eq!(judge(&Err(gone), 7, 200), Watch::Gone);
+		let refused = Error::from_raw_os_error(nix::libc::EPERM);
+		assert_eq!(judge(&Err(refused), 7, 200), Watch::Unwatchable);
+	}
+}
+
 #[cfg(target_os = "macos")]
 mod macos {
 	use std::{
@@ -175,15 +221,24 @@ mod macos {
 					while !watch_stop.load(Ordering::Relaxed) {
 						// The start time tells the child from a process that reused its pid
 						// once it was reaped.
-						match footprint(pid) {
-							Ok((now_started, bytes)) if now_started == started => {
-								if bytes > limit {
-									watch_exceeded.store(true, Ordering::Relaxed);
-									kill_group(pid);
-									return;
-								}
+						let sample = footprint(pid);
+						match super::judge(&sample, started, limit) {
+							super::Watch::Within => {}
+							super::Watch::Exceeded => {
+								watch_exceeded.store(true, Ordering::Relaxed);
+								kill_group(pid);
+								return;
 							}
-							_ => return,
+							super::Watch::Gone => return,
+							super::Watch::Unwatchable => {
+								if let Err(error) = sample {
+									eprintln!(
+										"process-wrap: the memory of process {pid} cannot be read ({error}), so it is stopped"
+									);
+								}
+								kill_group(pid);
+								return;
+							}
 						}
 						std::thread::sleep(SAMPLE_EVERY);
 					}
@@ -314,8 +369,18 @@ mod tests {
 	#[test]
 	#[ignore = "child process of the test below"]
 	fn process_writing_more_memory_than_its_limit() {
-		// Written, so it counts in the physical footprint, not only in the address space.
-		let block = vec![1_u8; 512 << 20];
+		// Written, so it counts in the physical footprint, not only in the address space; and
+		// with noise, which macOS's memory compressor cannot shrink below the limit (Ketchup
+		// review 2026-11-04: a block of ones might stay under it, compressed).
+		let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+		let block: Vec<u64> = (0..(512_usize << 20) / 8)
+			.map(|_| {
+				state ^= state << 13;
+				state ^= state >> 7;
+				state ^= state << 17;
+				state
+			})
+			.collect();
 		std::hint::black_box(&block);
 		std::thread::sleep(Duration::from_secs(120));
 	}
