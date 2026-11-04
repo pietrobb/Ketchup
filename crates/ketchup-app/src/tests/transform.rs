@@ -671,12 +671,12 @@ fn the_move_preview_shows_what_the_move_does() {
     // A distance with no drag to point a way previews and moves nothing
     // (operator report 2026-11-03); it once went along +X.
     for (decimal, input, preview, expected) in [
-        (Comma, "2*20,30", "= 40.6 mm", Vec3::ZERO),
+        (Comma, "2*20,30", "= 40,6 mm", Vec3::ZERO),
         (Comma, "2*1,5", "= 3 mm", Vec3::ZERO),
         (
             Comma,
             "12,5x3",
-            "= 12.5; 3; 0 mm",
+            "= 12,5; 3; 0 mm",
             Vec3::new(12.5, 3.0, 0.0),
         ),
         (Point, "2*20.30", "= 40.6 mm", Vec3::ZERO),
@@ -723,25 +723,87 @@ fn a_separator_that_may_mean_something_else_on_a_comma_system_is_previewed() {
     };
     assert_eq!(
         preview_in(ActiveTool::PushPull, "1.200").as_deref(),
-        Some("= 1.2 mm")
+        Some("= 1,2 mm")
     );
     assert_eq!(
         preview_in(ActiveTool::Rectangle, "1.200;600").as_deref(),
-        Some("= 1.2; 600 mm")
+        Some("= 1,2; 600 mm")
     );
     assert_eq!(preview_in(ActiveTool::PushPull, "1200"), None);
     assert_eq!(preview_in(ActiveTool::PushPull, "12,5"), None);
     assert_eq!(preview_in(ActiveTool::Rectangle, "80;60"), None);
     // On a locked axis the preview is the move itself (#2690), so it says
-    // what the comma or point was read as, written with a point like every
-    // other preview (operator 2026-11-03).
+    // what the comma or point was read as, written with the system's decimal
+    // separator like every preview (#2691).
     let (preview, moved, _) = typed_move(DecimalSeparator::Comma, Some(Axis::Z), "80,60");
-    assert_eq!(preview.as_deref(), Some("= 80.6 mm (+Z)"));
+    assert_eq!(preview.as_deref(), Some("= 80,6 mm (+Z)"));
     assert!(moved);
     let (preview, _, _) = typed_move(DecimalSeparator::Comma, Some(Axis::Z), "1.200");
-    assert_eq!(preview.as_deref(), Some("= 1.2 mm (+Z)"));
+    assert_eq!(preview.as_deref(), Some("= 1,2 mm (+Z)"));
     let (preview, _, _) = typed_move(DecimalSeparator::Point, Some(Axis::Z), "1.200");
     assert_eq!(preview.as_deref(), Some("= 1.2 mm (+Z)"));
+}
+
+/// #2691 (operator 2026-11-03): every preview above the value field writes
+/// its numbers with the system's decimal separator, the way the user types
+/// them: a length expression, a radius, a rectangle's sides, and Move's
+/// distance along a locked axis, vector and distance with no way yet alike.
+/// Values stay apart by `; `, so a decimal comma never reads as a separator.
+#[test]
+fn every_value_preview_writes_numbers_with_the_systems_decimal_separator() {
+    use DecimalSeparator::{Comma, Point};
+    let preview_in = |decimal: DecimalSeparator, tool: ActiveTool, input: &str| {
+        let mut app = KetchupApp::new();
+        app.value_box.decimal = decimal;
+        app.active_tool = tool;
+        app.value_box.input = input.to_owned();
+        app.value_box_length_preview()
+    };
+    for (decimal, tool, input, preview) in [
+        (Comma, ActiveTool::Line, "2*20,30", "= 40,6 mm"),
+        (Comma, ActiveTool::PushPull, "1.200", "= 1,2 mm"),
+        (Comma, ActiveTool::Circle, "10/4", "= 2,5 mm"),
+        (Comma, ActiveTool::Shell, "0,5+0,25", "= 0,75 mm"),
+        (
+            Comma,
+            ActiveTool::Rectangle,
+            "2*0,75;1.200",
+            "= 1,5; 1,2 mm",
+        ),
+        (Point, ActiveTool::Line, "2*20.30", "= 40.6 mm"),
+        (Point, ActiveTool::PushPull, "2*0.6", "= 1.2 mm"),
+        (Point, ActiveTool::Circle, "10/4", "= 2.5 mm"),
+        (Point, ActiveTool::Shell, "0.5+0.25", "= 0.75 mm"),
+        (Point, ActiveTool::Rectangle, "2*0.75;1.2", "= 1.5; 1.2 mm"),
+    ] {
+        let text = preview_in(decimal, tool, input);
+        assert_eq!(
+            text.as_deref(),
+            Some(preview),
+            "{tool:?} {input:?} {decimal:?}"
+        );
+    }
+    for (decimal, axis, input, preview) in [
+        (Comma, Some(Axis::Z), "80,6", "= 80,6 mm (+Z)"),
+        (Comma, None, "12,5;3", "= 12,5; 3; 0 mm"),
+        (Comma, None, "0,5x1,25x2,75", "= 0,5; 1,25; 2,75 mm"),
+        (Comma, None, "2*20,30", "= 40,6 mm"),
+        (Point, Some(Axis::Z), "80.6", "= 80.6 mm (+Z)"),
+        (Point, None, "12.5;3", "= 12.5; 3; 0 mm"),
+        (Point, None, "0.5x1.25x2.75", "= 0.5; 1.25; 2.75 mm"),
+        (Point, None, "2*20.30", "= 40.6 mm"),
+    ] {
+        let (text, _, _) = typed_move(decimal, axis, input);
+        assert_eq!(text.as_deref(), Some(preview), "Move {input:?} {decimal:?}");
+    }
+    // Each value of a comma-system vector is one number between `; `.
+    let (text, _, _) = typed_move(Comma, None, "0,5x1,25x2,75");
+    let text = text.unwrap();
+    let values = text.trim_start_matches("= ").trim_end_matches(" mm");
+    assert_eq!(
+        values.split("; ").collect::<Vec<_>>(),
+        ["0,5", "1,25", "2,75"]
+    );
 }
 
 /// D-2 (review 2026-10-17): where the decimal separator is a point a comma is
