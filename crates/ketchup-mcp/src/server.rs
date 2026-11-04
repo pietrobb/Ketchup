@@ -217,6 +217,8 @@ struct Calls {
     /// By request id: whether the client cancelled the call.
     cancelled: HashMap<String, bool>,
     running: Option<String>,
+    /// Calls cancelled after they reached the window, told with the next reply.
+    cancelled_after_sent: Vec<Value>,
 }
 
 impl<T: BorrowMut<Tools>> Session<T> {
@@ -263,7 +265,28 @@ impl<T: BorrowMut<Tools>> Session<T> {
         let output = BorrowMut::<Tools>::borrow_mut(&mut *tools).call(name, arguments);
         let mut calls = self.calls();
         calls.running = None;
-        (calls.cancelled.remove(&key) != Some(true)).then_some(output)
+        if calls.cancelled.remove(&key) != Some(true) {
+            return Some(output);
+        }
+        if let Some(outcome) = cancelled_outcome(id, name, &output) {
+            calls.cancelled_after_sent.push(outcome);
+        }
+        None
+    }
+
+    /// What became of the calls cancelled after they reached the window,
+    /// once: they got no reply, though their change can stay.
+    fn take_cancelled_after_sent(&self) -> Option<Value> {
+        let outcomes = std::mem::take(&mut self.calls().cancelled_after_sent);
+        (!outcomes.is_empty()).then(|| {
+            json!({
+                "cancelled_calls": outcomes,
+                "note": "The client cancelled these calls after they had been sent to the window, \
+                         so they got no reply. A completed one did what it was asked (stamp is the \
+                         document after it); for the others read inspect action=status before \
+                         repeating them.",
+            })
+        })
     }
 
     /// `notifications/cancelled`: the call stops waiting for the window, or
@@ -281,6 +304,24 @@ impl<T: BorrowMut<Tools>> Session<T> {
             eprintln!("ketchup-mcp: the cancelled call {key} still waits for the window: {error}");
         }
     }
+}
+
+/// What a cancelled call's agent needs of its `output`: whether it completed,
+/// and the document after it or why not; `None` when it was never sent.
+fn cancelled_outcome(id: &Value, name: &str, output: &ToolOutput) -> Option<Value> {
+    let answer = output
+        .content
+        .iter()
+        .find_map(|item| item["text"].as_str())
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .unwrap_or(Value::Null);
+    if !output.is_error {
+        return Some(json!({"id": id, "tool": name, "completed": true, "stamp": answer["stamp"]}));
+    }
+    (answer["error"] != "cancelled").then(|| {
+        json!({"id": id, "tool": name, "completed": false,
+               "error": answer["error"], "message": answer["message"]})
+    })
 }
 
 /// The reply to one message; notifications get none. Tool calls take turns
@@ -312,7 +353,11 @@ pub(crate) fn handle(session: &Session<impl BorrowMut<Tools>>, message: Value) -
                 Some(_) => return Some(failure(id, -32602, "arguments must be an object")),
             };
             let output = session.call(&id, name, arguments)?;
-            json!({"content": output.content, "isError": output.is_error})
+            let mut content = output.content;
+            if let Some(earlier) = session.take_cancelled_after_sent() {
+                content.push(json!({"type": "text", "text": earlier.to_string()}));
+            }
+            json!({"content": content, "isError": output.is_error})
         }
         _ => return Some(failure(id, -32601, &format!("method not found: {method}"))),
     };

@@ -226,7 +226,6 @@ crates/ketchup-model/src/exact_product.rs stringified_field 1
 crates/ketchup-model/src/exact_validation.rs let_else_error 4
 crates/ketchup-model/src/import/dxf.rs formatted_cause 1
 crates/ketchup-model/src/import/dxf.rs unreachable 1
-crates/ketchup-model/src/import/dxf/code_page.rs dropped_error 1
 crates/ketchup-model/src/import/dxf/objects.rs dropped_closure 1
 crates/ketchup-model/src/import/dxf/rewrite.rs dropped_error 1
 crates/ketchup-model/src/import/dxf/text.rs dropped_error 1

@@ -1112,6 +1112,91 @@ fn a_cancelled_call_stops_waiting_and_lets_the_window_go() {
     );
 }
 
+/// Review 2026-11-04 P3: a call cancelled after it reached the window gets no
+/// reply, but the window may have applied its edit; its agent was never told.
+/// The next reply now says what became of it. A call cancelled before it was
+/// sent changed nothing and is not named.
+#[test]
+fn the_next_reply_tells_what_became_of_a_call_cancelled_after_it_was_sent() {
+    let root = tempfile::tempdir().unwrap();
+    let events = scripted_window(root.path(), INSTANCE, vec![Ending::Silent, Ending::Close]);
+    let session = std::sync::Arc::new(Session::new(Tools::new(None, Some(root.path().to_owned()))));
+    let status = |id: u64| {
+        json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+               "params": {"name": "inspect", "arguments": {"action": "status"}}})
+    };
+    let reply = handle(&session, status(1)).unwrap();
+    assert_eq!(
+        reply["result"]["content"].as_array().unwrap().len(),
+        1,
+        "{reply}"
+    );
+    assert_eq!(events.recv().unwrap(), "attach");
+    let (send_reply, cancelled_reply) = mpsc::channel();
+    let waiting = std::sync::Arc::clone(&session);
+    std::thread::spawn(move || send_reply.send(handle(&waiting, status(7))));
+    assert_eq!(events.recv().unwrap(), "waiting");
+    let cancel = json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                        "params": {"requestId": 7}});
+    assert!(handle(&session, cancel).is_none());
+    let cancelled_reply = cancelled_reply
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    assert!(cancelled_reply.is_none(), "{cancelled_reply:?}");
+    assert_eq!(events.recv().unwrap(), "ended");
+
+    let next = handle(&session, status(8)).unwrap();
+    assert_eq!(events.recv().unwrap(), "attach");
+    let content = next["result"]["content"].as_array().unwrap();
+    let earlier: Value = serde_json::from_str(content.last().unwrap()["text"].as_str().unwrap())
+        .unwrap_or(Value::Null);
+    let calls = earlier["cancelled_calls"].as_array();
+    assert_eq!(calls.map(Vec::len), Some(1), "{next}");
+    let call = &earlier["cancelled_calls"][0];
+    assert_eq!(
+        (call["id"].clone(), call["tool"].clone()),
+        (json!(7), json!("inspect"))
+    );
+    assert_eq!(call["completed"], false, "{call}");
+    assert_eq!(call["error"], "connection_lost", "{call}");
+
+    // Told once.
+    let again = handle(&session, status(9)).unwrap();
+    assert_eq!(
+        again["result"]["content"].as_array().unwrap().len(),
+        1,
+        "{again}"
+    );
+}
+
+/// Review 2026-11-04 P3: when the system refused to duplicate the socket that
+/// lets a call be cancelled, the agent read that the window had ended the
+/// connection, and the server dropped a working connection. It is this
+/// server's failure: the request is not sent and the connection is kept.
+#[test]
+fn a_call_this_server_cannot_prepare_is_not_blamed_on_the_window() {
+    let root = tempfile::tempdir().unwrap();
+    let events = scripted_window(root.path(), INSTANCE, vec![Ending::SupersededInFlight]);
+    let mut tools = Tools::new(None, Some(root.path().to_owned()));
+    let status = json!({"action": "status"});
+    assert_eq!(
+        call(&mut tools, "inspect", status.clone())["isError"],
+        false
+    );
+    assert_eq!(events.recv().unwrap(), "attach");
+
+    tools.cancel().refuse_next_clone();
+    let refused = text(&call(&mut tools, "inspect", status.clone()));
+    assert_eq!(refused["error"], "call_not_prepared", "{refused}");
+    let message = refused["message"].as_str().unwrap();
+    assert!(!message.contains("window had ended"), "{message}");
+
+    // The next call goes over the same connection: the window answers it.
+    let next = text(&call(&mut tools, "inspect", status));
+    assert_eq!(next["error"], "connection_taken_over", "{next}");
+    assert_eq!(events.recv().unwrap(), "ended", "no second attach");
+}
+
 /// MCP-2: after its window closed, the server never moves to another window.
 #[test]
 fn a_lost_window_is_never_replaced_by_another_open_window() {

@@ -1473,9 +1473,10 @@ pub(crate) struct LiveBridge {
     stopped: Arc<AtomicBool>,
     /// Set before the bridge stops because another client attached.
     superseded: Arc<OnceLock<transport::Takeover>>,
-    /// The document as each connection's latest request found it when it
-    /// began, with what the file keeps beside it (sheet and viewer settings).
-    started: BTreeMap<u64, (Stamp, ketchup_model::persistence::ContainerData)>,
+    /// The id of each connection's latest request that began, and the
+    /// document as it found it, with what the file keeps beside it (sheet and
+    /// viewer settings).
+    started: BTreeMap<u64, (u64, Stamp, ketchup_model::persistence::ContainerData)>,
     worker: Option<JoinHandle<()>>,
     #[cfg(test)]
     active_connections: Arc<AtomicUsize>,
@@ -1622,7 +1623,7 @@ impl KetchupApp {
             }
             bridge.activate_client(queued.session);
             let stamp = self.live_bridge_stamp();
-            let begun = (stamp.clone(), self.file.container_data.clone());
+            let begun = (queued.id, stamp.clone(), self.file.container_data.clone());
             bridge.started.insert(queued.session, begun);
             if bridge.observed.as_ref() != Some(&stamp) {
                 bridge.query.invalidate();

@@ -829,7 +829,19 @@ impl Tools {
                     "The client cancelled this call; it was not sent to the window.",
                 ));
             }
-            Err(error) => Err(BridgeError::Closed(error)),
+            // This server's own failure, not the window's: the connection
+            // stays (review 2026-11-04 P3).
+            Err(error) => {
+                return Err(ToolError::new(
+                    "call_not_prepared",
+                    "This MCP server could not make the call cancellable (details.cause), so it \
+                     did not send it; the connection to the Kečup window is kept. Call again.",
+                )
+                .with_details(json!({"cause": {
+                    "kind": error.kind().to_string(),
+                    "os_error": error.raw_os_error(),
+                }})));
+            }
         };
         self.cancel.disarm();
         match sent {

@@ -561,9 +561,10 @@ fn await_response(
 pub(super) struct Takeover {
     /// The document at the takeover.
     stamp: Stamp,
-    /// Per connection whose request had begun: whether the document changed
-    /// since it began. A request still queued never ran.
-    changed: BTreeMap<u64, bool>,
+    /// Per connection whose request had begun: that request's id, and
+    /// whether the document changed since it began. A request still queued
+    /// never ran, and neither did one of another id (review 2026-11-04 P3).
+    changed: BTreeMap<u64, (u64, bool)>,
 }
 
 impl LiveBridge {
@@ -583,7 +584,7 @@ impl LiveBridge {
         }
         let changed = started
             .into_iter()
-            .map(|(session, (stamp, kept))| (session, stamp != now || kept != *container))
+            .map(|(session, (id, stamp, kept))| (session, (id, stamp != now || kept != *container)))
             .collect();
         let first = self
             .superseded
@@ -624,7 +625,12 @@ fn serve(
             if id != 0
                 && let Some(Value::Object(result)) = response.result.as_mut()
             {
-                let changed = takeover.changed.get(&session).copied().unwrap_or(false);
+                // An earlier request of this connection that began says
+                // nothing about this one, which had not.
+                let changed = takeover
+                    .changed
+                    .get(&session)
+                    .is_some_and(|&(begun, changed)| begun == id && changed);
                 result.insert("document_changed".to_owned(), changed.into());
             }
             let _ = write_response(stream, response, false);
@@ -1073,13 +1079,18 @@ mod tests {
     /// when another client takes the window over at `now`; `begun` is the
     /// document when the window began request 5, `None` if it had not.
     fn takeover_frames(begun: Option<Stamp>, now: Stamp) -> (Value, Value) {
-        takeover_frames_kept(begun, now, &ContainerData::default())
+        takeover_frames_kept(
+            begun.map(|stamp| (5, stamp)),
+            now,
+            &ContainerData::default(),
+        )
     }
 
     /// [`takeover_frames`] where the file keeps `container` beside the
-    /// document at the takeover; the default when the request began.
+    /// document at the takeover; the default when the request began. `begun`
+    /// names the request of that connection the window began last.
     fn takeover_frames_kept(
-        begun: Option<Stamp>,
+        begun: Option<(u64, Stamp)>,
         now: Stamp,
         container: &ContainerData,
     ) -> (Value, Value) {
@@ -1099,10 +1110,10 @@ mod tests {
         waiting.write_all(&body).unwrap();
         let queued = bridge.queue.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(queued.id, 5, "the request waits for the UI thread");
-        if let Some(begun) = begun {
+        if let Some((id, begun)) = begun {
             bridge
                 .started
-                .insert(queued.session, (begun, ContainerData::default()));
+                .insert(queued.session, (id, begun, ContainerData::default()));
         }
 
         bridge.supersede(now, container);
@@ -1172,8 +1183,20 @@ mod tests {
             )
             .unwrap(),
         );
-        let (changed, _) = takeover_frames_kept(Some(stamp(2)), stamp(2), &kept);
+        let (changed, _) = takeover_frames_kept(Some((5, stamp(2))), stamp(2), &kept);
         assert_eq!(changed["result"]["document_changed"], true, "{changed}");
+    }
+
+    /// Review 2026-11-04 P3: the window kept the document as the connection's
+    /// earlier request 4 found it, so a takeover while request 5 had not begun
+    /// told request 5 the document changed and its agent read "probably
+    /// applied" for a request that never ran.
+    #[test]
+    fn a_takeover_tells_a_request_not_begun_that_it_changed_nothing_after_an_earlier_one() {
+        let (answer, _) =
+            takeover_frames_kept(Some((4, stamp(2))), stamp(3), &ContainerData::default());
+        assert_eq!(answer["id"], 5, "{answer}");
+        assert_eq!(answer["result"]["document_changed"], false, "{answer}");
     }
 
     #[test]
