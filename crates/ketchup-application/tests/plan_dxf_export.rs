@@ -95,6 +95,25 @@ fn a_part_whose_profile_is_not_parallel_to_xy_is_left_out_of_the_plan_and_named(
         );
     }
 
+    // The part is named as the model names it, not as its definition (review
+    // 2026-11-04 P3 drawings): renamed, the pipe is reported as the riser it is.
+    let snapshot = session.snapshot();
+    let pipe = snapshot
+        .occurrences()
+        .find(|occurrence| occurrence.name() == "pipe")
+        .unwrap()
+        .id();
+    let renamed = snapshot
+        .preview_batch(&CommandBatch::new(vec![CanonicalCommand::RenameEntity {
+            id: pipe,
+            name: "riser north".into(),
+        }]))
+        .unwrap();
+    assert_eq!(
+        export_visible_profiles_dxf(&renamed).unwrap().omitted_parts,
+        ["riser north"]
+    );
+
     // With nothing else to draw the plan is still refused, naming the part.
     let (pipe_only, _) = applied(
         "pipe = extrude('pipe', profile=[(-50, -50), (50, -50), (50, 50), (-50, 50)], distance=700)\n\
