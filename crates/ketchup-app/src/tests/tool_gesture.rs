@@ -41,6 +41,7 @@ fn move_drag(app: &KetchupApp, delta_mm: Vec3) -> MoveDrag {
         plane_z: 0.0,
         axis: None,
         axis_reference: None,
+        pinned_way: None,
         delta_mm,
         copy: false,
     }
@@ -533,6 +534,56 @@ fn a_typed_distance_after_a_drag_corrects_it_the_way_it_went() {
             assert_eq!(app.undo_step_count(), undo_steps + 1, "{case}");
         }
     }
+}
+
+/// Review 2026-11-04 UI-144: an axis pinned in the middle of a drag, before
+/// the pointer moved again, left the drag showing no way, so a typed 100 said
+/// "Point the direction first" though the axis was pinned. It goes the way
+/// the drag went along that axis, and along +axis when the drag went across it.
+#[test]
+fn an_axis_pinned_mid_drag_keeps_the_way_the_drag_went() {
+    for (shown_mm, pin, expected) in [
+        (
+            Vec3::new(-40.0, 15.0, 0.0),
+            Axis::X,
+            Vec3::new(-100.0, 0.0, 0.0),
+        ),
+        (
+            Vec3::new(-40.0, 15.0, 0.0),
+            Axis::Y,
+            Vec3::new(0.0, 100.0, 0.0),
+        ),
+        (
+            Vec3::new(-40.0, 15.0, 0.0),
+            Axis::Z,
+            Vec3::new(0.0, 0.0, 100.0),
+        ),
+    ] {
+        let case = format!("drag {shown_mm:?} pinned {pin:?}");
+        let (mut app, origin) = move_dragging(None, shown_mm);
+        app.set_move_axis_lock(Some(pin));
+        app.value_box.input = "100".to_owned();
+        assert_eq!(
+            app.value_box_length_preview(),
+            move_preview(&app, Some(pin), expected),
+            "{case}"
+        );
+        assert!(app.apply_value_input(), "{case}: {}", app.digest);
+        assert!(
+            length(travel(&app, origin) - expected) < 1e-6,
+            "{case} travelled {:?}",
+            travel(&app, origin)
+        );
+    }
+    // Released again mid-drag, the drag shows no way until the pointer moves.
+    let (mut app, _) = move_dragging(Some(Axis::X), Vec3::new(-40.0, 0.0, 0.0));
+    app.set_move_axis_lock(None);
+    app.value_box.input = "100".to_owned();
+    assert!(!app.apply_value_input());
+    assert_eq!(
+        app.digest,
+        app.catalog.text("digest-move-direction-missing")
+    );
 }
 
 /// With no drag, no Move to correct and no pinned axis there is no way to

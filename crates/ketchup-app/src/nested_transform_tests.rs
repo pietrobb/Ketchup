@@ -50,6 +50,7 @@ fn nested_gesture_preview_transforms_equal_committed_transforms() {
                     plane_z: 0.0,
                     axis: None,
                     axis_reference: None,
+                    pinned_way: None,
                     delta_mm: Vec3::new(37.0, -19.0, 53.0),
                     copy: false,
                 };
