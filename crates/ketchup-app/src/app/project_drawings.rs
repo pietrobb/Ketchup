@@ -635,6 +635,33 @@ impl KetchupApp {
         })
     }
 
+    /// ±0,000 of the sheets: the height the settings give, else the ground
+    /// floor of every body with its exact solid, shown or hidden, so hiding
+    /// the floor slab does not move it (review 2026-11-04 MF-141).
+    fn zero_level_mm(&self, snapshot: &Snapshot, settings: &SheetSettings) -> f64 {
+        if let Some(height) = settings.zero_level_mm {
+            return f64::from(height);
+        }
+        let exact = self.exact.results.body_values(snapshot).unwrap_or_default();
+        let mut solids = Vec::new();
+        for occurrence in snapshot.scene_query() {
+            for (key, package) in &exact {
+                if key.definition_id != occurrence.definition_id {
+                    continue;
+                }
+                let (triangles, faces) = world_mesh(package, &occurrence.transform);
+                solids.push(DrawingSolid {
+                    name: occurrence.occurrence_name.clone(),
+                    color: DEFAULT_SOLID_COLOR,
+                    triangles,
+                    faces,
+                    threads: Vec::new(),
+                });
+            }
+        }
+        ground_floor(&solids)
+    }
+
     /// The document name: its file name, else the program's.
     fn drawing_document_name(&self) -> String {
         self.file
@@ -715,33 +742,6 @@ impl KetchupApp {
     /// 2026-10-18 UI-12).
     fn without_title_defaults(&self, settings: SheetSettings) -> SheetSettings {
         let defaults = self.title_defaults(settings.language);
-    /// ±0,000 of the sheets: the height the settings give, else the ground
-    /// floor of every body with its exact solid, shown or hidden, so hiding
-    /// the floor slab does not move it (review 2026-11-04 MF-141).
-    fn zero_level_mm(&self, snapshot: &Snapshot, settings: &SheetSettings) -> f64 {
-        if let Some(height) = settings.zero_level_mm {
-            return f64::from(height);
-        }
-        let exact = self.exact.results.body_values(snapshot).unwrap_or_default();
-        let mut solids = Vec::new();
-        for occurrence in snapshot.scene_query() {
-            for (key, package) in &exact {
-                if key.definition_id != occurrence.definition_id {
-                    continue;
-                }
-                let (triangles, faces) = world_mesh(package, &occurrence.transform);
-                solids.push(DrawingSolid {
-                    name: occurrence.occurrence_name.clone(),
-                    color: DEFAULT_SOLID_COLOR,
-                    triangles,
-                    faces,
-                    threads: Vec::new(),
-                });
-            }
-        }
-        ground_floor(&solids)
-    }
-
         Self::without_these_defaults(settings, &defaults)
     }
 
@@ -1115,6 +1115,7 @@ impl KetchupApp {
             author: field(TitleField::Author),
             subject: field(TitleField::Stage),
         };
+        let zero_level_mm = self.zero_level_mm(&snapshot, &settings);
         Ok(ProjectDrawingsJob {
             solids,
             executable: self.drawing_worker(),
@@ -1137,6 +1138,7 @@ impl KetchupApp {
                 shop,
                 cutting,
                 decimal_comma: catalog.text("drawings-sheet-decimal-separator") == ",",
+                zero_level_mm: Some(zero_level_mm),
             },
             info,
         })
@@ -1195,7 +1197,6 @@ impl KetchupApp {
                 error.to_string()
             }
             ProjectDrawingsError::Dwg(error) => error.to_string(),
-        let zero_level_mm = self.zero_level_mm(&snapshot, &settings);
             ProjectDrawingsError::Write(error) => error.to_string(),
         }
     }
@@ -1218,7 +1219,6 @@ impl KetchupApp {
             .render(format, cancelled)?;
         let document = self.document.current().document_id();
         let paths = publish_project_drawings(path, format, &files, targets, document)?;
-                zero_level_mm: Some(zero_level_mm),
         Ok(ExportedSet { set, paths })
     }
 
@@ -1409,6 +1409,29 @@ impl KetchupApp {
                             editing.plan_cut_above_floor_mm = Some(height);
                         }
                         ui.end_row();
+                        // ±0,000: the ground floor, or a height the user sets
+                        // (review 2026-11-04 MF-141).
+                        ui.label(self.catalog.text("drawings-zero-level"));
+                        ui.horizontal(|ui| {
+                            let mut ground = editing.zero_level_mm.is_none();
+                            if ui
+                                .checkbox(
+                                    &mut ground,
+                                    self.catalog.text("drawings-zero-level-ground"),
+                                )
+                                .changed()
+                            {
+                                editing.zero_level_mm = (!ground).then_some(0);
+                            }
+                            if let Some(height) = editing.zero_level_mm.as_mut() {
+                                ui.add(
+                                    egui::DragValue::new(height)
+                                        .range(-MAX_ZERO_LEVEL_MM..=MAX_ZERO_LEVEL_MM)
+                                        .suffix(" mm"),
+                                );
+                            }
+                        });
+                        ui.end_row();
                         for field in TitleField::EDITABLE {
                             ui.label(self.catalog.text(&format!("title-field-{}", field.key())));
                             ui.add(
@@ -1484,26 +1507,3 @@ impl KetchupApp {
         }
     }
 }
-                        // ±0,000: the ground floor, or a height the user sets
-                        // (review 2026-11-04 MF-141).
-                        ui.label(self.catalog.text("drawings-zero-level"));
-                        ui.horizontal(|ui| {
-                            let mut ground = editing.zero_level_mm.is_none();
-                            if ui
-                                .checkbox(
-                                    &mut ground,
-                                    self.catalog.text("drawings-zero-level-ground"),
-                                )
-                                .changed()
-                            {
-                                editing.zero_level_mm = (!ground).then_some(0);
-                            }
-                            if let Some(height) = editing.zero_level_mm.as_mut() {
-                                ui.add(
-                                    egui::DragValue::new(height)
-                                        .range(-MAX_ZERO_LEVEL_MM..=MAX_ZERO_LEVEL_MM)
-                                        .suffix(" mm"),
-                                );
-                            }
-                        });
-                        ui.end_row();
