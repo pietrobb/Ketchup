@@ -268,8 +268,9 @@ impl KetchupApp {
             Ok(result) => result,
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => Err(ImportError::failed(
-                ImportFormat::Dxf,
-                "the thread that reads the drawing stopped",
+                super::raster_underlay::raster_format(&task.path)
+                    .map_or(ImportKind::File(ImportFormat::Dxf), ImportKind::Image),
+                "the thread that reads the underlay stopped",
             )),
         };
         let task = self
@@ -313,7 +314,10 @@ impl KetchupApp {
         path: &Path,
         read: ReadUnderlay,
     ) -> Result<UnderlayId, ImportError> {
-        let failed = |cause: BoxedCause| ImportError::failed(ImportFormat::Dxf, cause);
+        let kind = read.raster.as_ref().map_or(ImportKind::File(ImportFormat::Dxf), |raster| {
+            ImportKind::Image(raster.raster.format)
+        });
+        let failed = |cause: BoxedCause| ImportError::failed(kind, cause);
         let name = path
             .file_stem()
             .map_or_else(|| "underlay".into(), |stem| stem.to_string_lossy());
