@@ -1,0 +1,1 @@
+Correction: also contains the deletion of scripts/windows/build-release-candidate.ps1 and test-release-candidate.ps1, staged by mistake; the retirement is explained in 6cda1bef (review 2026-11-04 P3 platforms).
