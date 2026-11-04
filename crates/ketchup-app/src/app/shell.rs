@@ -72,6 +72,7 @@ impl KetchupApp {
                 variants: Default::default(),
                 edits: Default::default(),
                 harnesses: None,
+                chosen_window_error: None,
             },
             close_guard: close_guard::CloseGuard::default(),
             file: app_state::FileState {

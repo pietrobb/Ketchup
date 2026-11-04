@@ -202,7 +202,6 @@ crates/ketchup-interaction/src/profile_surface.rs dropped_error 1
 crates/ketchup-manufacturing/src/fabrication/btlx.rs dropped_error 3
 crates/ketchup-manufacturing/src/sheet_dxf.rs let_underscore 3
 crates/ketchup-manufacturing/src/viewer_export/received.rs dropped_error 2
-crates/ketchup-mcp/src/discovery.rs dropped_error 3
 crates/ketchup-mcp/src/discovery.rs let_else_error 1
 crates/ketchup-mcp/src/local_auth.rs dropped_arm 1
 crates/ketchup-mcp/src/stage.rs formatted_cause 1

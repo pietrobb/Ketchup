@@ -19,6 +19,21 @@ impl KetchupApp {
             .strong(),
         );
         ui.label(self.catalog.text("connect-ai-description"));
+        if let Some(id) = self.live_consent_instance_id() {
+            ui.weak(self.catalog.format(
+                "connect-ai-this-window",
+                &BTreeMap::from([("name", ketchup_mcp::short_name(id))]),
+            ));
+            // Picking the window is separate from setting up a client: the
+            // client's file is shared by every window and set up only once.
+            if ui
+                .button(self.catalog.text("connect-ai-use-this-window"))
+                .clicked()
+            {
+                self.live.chosen_window_error =
+                    self.mark_chosen_window().err().map(|e| e.to_string());
+            }
+        }
         let Some(server) = mcp_server_command() else {
             ui.weak(self.catalog.text("connect-ai-executable-unknown"));
             return;
@@ -110,6 +125,16 @@ impl KetchupApp {
             .clicked()
         {
             self.live.harnesses = None;
+        }
+        if set_up.is_some() {
+            self.live.chosen_window_error = self.mark_chosen_window().err().map(|e| e.to_string());
+        }
+        if let Some(error) = &self.live.chosen_window_error {
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                self.catalog
+                    .text_because("connect-ai-mark-window-failed", error),
+            );
         }
         if let Some(index) = set_up
             && let Some(environment) = Environment::current()
@@ -413,6 +438,94 @@ mod tests {
         harness.get_by_label(&again).click();
         harness.run();
         assert!(!files(&harness).contains(&Some(marker)));
+    }
+
+    /// #2687 point 16: Connect in this window's AI tab makes it the window a
+    /// `connect` without an id goes to, and the tab shows the short name the
+    /// AI lists this window by.
+    #[test]
+    fn connect_marks_this_window_for_a_connect_without_an_id() {
+        let folder = tempfile::tempdir().unwrap();
+        let discovery = folder.path().join("live-instances");
+        let mut app = KetchupApp::new();
+        app.enable_live_consent_broker_in(&egui::Context::default(), &discovery)
+            .unwrap();
+        let id = app.live_consent_instance_id().unwrap().to_owned();
+        let config = folder.path().join("mcp_servers.json");
+        app.live.harnesses = Some(vec![HarnessRow {
+            harness: Harness::Supervisor,
+            file: Some(config.clone()),
+            registration: Registration::NotSetUp,
+            setup_error: None,
+        }]);
+        let mut harness = open_section(app);
+        let catalog = harness.state().catalog.clone();
+        assert_eq!(ketchup_mcp::chosen_window(&discovery).unwrap(), None);
+        harness
+            .get_by_label(&catalog.text("connect-ai-set-up"))
+            .click();
+        harness.run();
+        assert_eq!(
+            ketchup_mcp::chosen_window(&discovery).unwrap().as_deref(),
+            Some(id.as_str())
+        );
+        assert!(harness.state().live.chosen_window_error.is_none());
+        assert!(config.is_file(), "Connect still writes the client's file");
+        let name = catalog.format(
+            "connect-ai-this-window",
+            &std::collections::BTreeMap::from([("name", ketchup_mcp::short_name(&id))]),
+        );
+        assert!(name.contains(&ketchup_mcp::short_name(&id)), "{name}");
+        harness.get_by_label(&name);
+    }
+
+    /// #2687 point 16 once a client is set up: its file is shared by every
+    /// window, so window B shows the client as starting this Kečup and has
+    /// nothing to set up, yet the user still picks B over A, where Connect
+    /// was clicked earlier.
+    #[test]
+    fn a_second_window_is_picked_after_the_client_is_already_set_up() {
+        let folder = tempfile::tempdir().unwrap();
+        let discovery = folder.path().join("live-instances");
+        let mut first = KetchupApp::new();
+        first
+            .enable_live_consent_broker_in(&egui::Context::default(), &discovery)
+            .unwrap();
+        first.mark_chosen_window().unwrap();
+        let first_id = first.live_consent_instance_id().unwrap().to_owned();
+        let mut second = KetchupApp::new();
+        second
+            .enable_live_consent_broker_in(&egui::Context::default(), &discovery)
+            .unwrap();
+        let second_id = second.live_consent_instance_id().unwrap().to_owned();
+        assert_ne!(first_id, second_id);
+        second.live.harnesses = Some(vec![HarnessRow {
+            harness: Harness::ClaudeCode,
+            file: None,
+            registration: Registration::ThisKetchup,
+            setup_error: None,
+        }]);
+        let mut harness = open_section(second);
+        let catalog = harness.state().catalog.clone();
+        assert!(
+            harness
+                .query_by_label(&catalog.text("connect-ai-set-up"))
+                .is_none(),
+            "the client is already set up"
+        );
+        let pick = catalog.text("connect-ai-use-this-window");
+        assert!(
+            harness.query_by_label(&pick).is_some(),
+            "window B offers no way to be picked; `connect` stays with A"
+        );
+        harness.get_by_label(&pick).click();
+        harness.run();
+        assert_eq!(
+            ketchup_mcp::chosen_window(&discovery).unwrap().as_deref(),
+            Some(second_id.as_str())
+        );
+        assert!(harness.state().live.chosen_window_error.is_none());
+        drop(first);
     }
 
     #[test]
