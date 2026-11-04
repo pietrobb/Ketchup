@@ -8,7 +8,7 @@ reason). Each code fix began with a test that failed before it.
 
 | Finding | Status |
 |---|---|
-| PG-140: bracing not anchored to anything still braces | Fixed, b061b280: bracing counts only on a fastened path to a grounded part, a support or a declared diaphragm; a board on two free beams braces neither |
+| PG-140: bracing not anchored to anything still braces | Fixed, b061b280: bracing counts only on a fastened path to a grounded part or a support; a board on two free beams braces neither. **Deferred:** declaring a sheet rigid in its plane (diaphragm), which the review also asked for, is not implemented; sheathing on free members leaves them `not_verified`, on the safe side (structural proposal 1) |
 | PG-141: friction braces the whole length | Fixed, b061b280 and 98bdc98e: a part along the member needs a fastener on it, and a part anchored only in line with the member does not hold it sideways |
 | PG-142: fastener positions ignored | Fixed, b061b280: with `fasteners`, bracing holds at their positions only |
 | PG-143: an unrelated attribute inflates the cutting plan | Fixed, 91042649 and 23e5c408: only the grain, or the attribute a sheet stock names (`material:axis`), ties a blank to a profile axis; e71f93ed compares the 46° rafter's section within a tolerance, since Linux and macOS compute 140.00000000000023 where Windows computes 140 |
@@ -104,7 +104,8 @@ reason). Each code fix began with a test that failed before it.
 ## Structural proposals
 
 1. Bracing as an explicit model: the implicit part is done (b061b280, 98bdc98e). An
-   explicit `brace()` is not added; PG-124 stays `not_verified`, on the safe side.
+   explicit `brace()` and a declared diaphragm are not added; PG-124 and members braced
+   only by sheathing stay `not_verified`, on the safe side.
 2. One way to edit AI client configuration: done (f00f37d1, 6305ee83, 859e604e).
 3. Splitting `KetchupApp` into window state and document session: not done. UI-140 keeps
    the fields and UI-142 adds one settings file for every platform.
