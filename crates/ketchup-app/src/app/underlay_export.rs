@@ -12,6 +12,7 @@
 //! [`UNDERLAY_EXPORT_TIME`] for it; the thread also puts the drawing in place, unless it
 //! was cancelled first ([`PublishGate`]).
 
+use crate::delivery::Deliver;
 use crate::export_bundle::{ExportTransactionError, write_export_artifact_if_unchanged};
 use crate::*;
 use ketchup_application::program_isolation::{
@@ -514,7 +515,7 @@ fn start_underlay_export_thread(
     std::thread::Builder::new()
         .name("ketchup-drawing-export".into())
         .spawn(move || {
-            let _ = sender.try_send(job.run_unless_cancelled(&thread_cancel, &thread_gate));
+            sender.deliver(job.run_unless_cancelled(&thread_cancel, &thread_gate));
             repaint.request_repaint();
         })
         .map_err(UnderlayExportError::Io)?;

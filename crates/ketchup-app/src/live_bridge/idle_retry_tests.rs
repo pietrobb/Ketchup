@@ -28,7 +28,9 @@ fn assert_idle_retry(failure: Failure) {
             move |context, app: &mut KetchupApp| {
                 let repaint_tx = repaint_tx.clone();
                 context.set_request_repaint_callback(move |info| {
-                    let _ = repaint_tx.send(info.delay);
+                    if repaint_tx.send(info.delay).is_err() {
+                        // The test is over and no longer records repaints.
+                    }
                 });
                 app.refresh_exact_products(context);
             },

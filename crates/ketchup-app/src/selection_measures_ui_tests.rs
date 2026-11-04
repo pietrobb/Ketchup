@@ -1,5 +1,5 @@
-use super::selection_measures_ui::SelectionMeasures;
 use super::*;
+use crate::selection_measures_ui::SelectionMeasures;
 use egui_kittest::kittest::Queryable;
 
 const PARTS: &str = "a = box(\"a\", (20, 30, 40), at = (100, 0, 5))\n\
@@ -129,7 +129,7 @@ fn the_selection_card_writes_numbers_with_the_users_decimal_separator_and_no_min
     let measures = app.selection_measures().unwrap();
     let mut lines = app.selection_measure_lines(&measures);
     lines.extend(
-        app.selection_mass_lines(&super::selection_mass_ui::SelectionMass::Ready(
+        app.selection_mass_lines(&crate::selection_mass_ui::SelectionMass::Ready(
             serde_json::json!({
                 "status": "complete",
                 "mass_kg": 0.1234,

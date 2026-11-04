@@ -1543,7 +1543,9 @@ fn a_fillet_on_a_picked_box_edge_is_written_into_the_program() {
     // The undone program is evaluated by the next frame on a background
     // thread; picking its edges does not evaluate it on the UI thread.
     let context = egui::Context::default();
-    let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+    crate::tests::run_frame(&context, egui::RawInput::default(), |context| {
+        app.ui(context)
+    });
     evaluate_exact(&mut app);
     let edges = picks(&mut app, &mut bridge, "block", TopologicalElementKind::Edge);
     assert!(
@@ -1565,12 +1567,16 @@ fn a_fillet_on_a_picked_box_edge_is_written_into_the_program() {
     assert!(!app.apply_value_input());
     assert_eq!(app.status_key, "status-program-planning");
     assert_eq!(app.document.current_rule_program().unwrap().source, BLOCK);
-    let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+    crate::tests::run_frame(&context, egui::RawInput::default(), |context| {
+        app.ui(context)
+    });
     assert_eq!(app.document.current_rule_program().unwrap().source, BLOCK);
 
     held.send(crate::program_evaluation::ProgramEvaluations::evaluate_for_test(&program))
         .unwrap();
-    let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+    crate::tests::run_frame(&context, egui::RawInput::default(), |context| {
+        app.ui(context)
+    });
     let program = app.document.current_rule_program().unwrap().source.clone();
     assert!(
         program[BLOCK.len()..]
@@ -1590,7 +1596,8 @@ fn a_value_waiting_for_the_evaluation_is_dropped_by_esc_and_by_another_pick() {
     let (mut app, mut bridge) = setup();
     bridge.execute(&mut app, apply(BLOCK, true), false).unwrap();
     evaluate_exact(&mut app);
-    let _ = picks(&mut app, &mut bridge, "block", TopologicalElementKind::Edge);
+    // Listing the picks gives the block's edges their topology, picked below.
+    assert!(!picks(&mut app, &mut bridge, "block", TopologicalElementKind::Edge).is_empty());
     let snapshot = app.document.current();
     let occurrence = snapshot.occurrences().next().unwrap();
     let edge = |ordinal| ketchup_interaction::exact_projection::TopologicalPickLocator {
@@ -1620,7 +1627,9 @@ fn a_value_waiting_for_the_evaluation_is_dropped_by_esc_and_by_another_pick() {
     held.send(crate::program_evaluation::ProgramEvaluations::evaluate_for_test(&program))
         .unwrap();
     for _ in 0..2 {
-        let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+        crate::tests::run_frame(&context, egui::RawInput::default(), |context| {
+            app.ui(context)
+        });
     }
     assert_eq!(source(&app), BLOCK, "{}", app.digest);
 
@@ -1633,7 +1642,9 @@ fn a_value_waiting_for_the_evaluation_is_dropped_by_esc_and_by_another_pick() {
     held.send(crate::program_evaluation::ProgramEvaluations::evaluate_for_test(&program))
         .unwrap();
     for _ in 0..2 {
-        let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+        crate::tests::run_frame(&context, egui::RawInput::default(), |context| {
+            app.ui(context)
+        });
     }
     assert_eq!(source(&app), BLOCK, "{}", app.digest);
 }

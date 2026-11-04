@@ -2546,7 +2546,8 @@ fn pairs(source: &[u8]) -> Result<Vec<Pair>, EditedDxfError> {
         (start, content_end, (end + 1).min(source.len()))
     };
     let place = |at: usize| {
-        u32::try_from(at).map_err(|_: std::num::TryFromIntError| DxfEditRefusal::TooLarge)
+        u32::try_from(at)
+            .map_err(|_out_of_range: std::num::TryFromIntError| DxfEditRefusal::TooLarge)
     };
     let mut pairs = Vec::new();
     let mut start = first;

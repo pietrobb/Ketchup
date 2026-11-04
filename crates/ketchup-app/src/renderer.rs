@@ -771,24 +771,25 @@ fn geometry_fingerprint(
     fingerprint.push_str(kind);
     for vertex in vertices {
         for value in vertex.position.into_iter().chain(vertex.normal) {
-            let _ = write!(fingerprint, ":{:08x}", value.to_bits());
+            write!(fingerprint, ":{:08x}", value.to_bits()).expect("a String takes every write");
         }
     }
     for index in indices {
-        let _ = write!(fingerprint, ":{index:08x}");
+        write!(fingerprint, ":{index:08x}").expect("a String takes every write");
     }
     if vertices.iter().any(|vertex| vertex.color[3] > 0.0) {
         fingerprint.push_str(":colors");
         for vertex in vertices.iter().step_by(3) {
             for value in vertex.color {
-                let _ = write!(fingerprint, ":{:08x}", value.to_bits());
+                write!(fingerprint, ":{:08x}", value.to_bits())
+                    .expect("a String takes every write");
             }
         }
     }
     fingerprint.push_str(":edges");
     for edge in edge_vertices.iter().step_by(6) {
         for value in edge.start.into_iter().chain(edge.end) {
-            let _ = write!(fingerprint, ":{:08x}", value.to_bits());
+            write!(fingerprint, ":{:08x}", value.to_bits()).expect("a String takes every write");
         }
     }
     fingerprint

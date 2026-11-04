@@ -119,7 +119,7 @@ fn busy_diagnostics_headless_keyboard_focus_is_not_pointer_or_editor() {
     let ctx = egui::Context::default();
     let mut text = String::from("human input");
     for _ in 0..2 {
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+        crate::tests::run_frame(&ctx, egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.text_edit_singleline(&mut text).request_focus();
             });
@@ -137,7 +137,8 @@ fn busy_diagnostics_headless_keyboard_focus_is_not_pointer_or_editor() {
     let error = Response::error(3, "busy").result.unwrap();
     assert_eq!(error["details"]["busy_reasons"], status["busy_reasons"]);
     assert_eq!(text, "human input");
-    let _ = ctx.run(
+    crate::tests::run_frame(
+        &ctx,
         egui::RawInput {
             focused: false,
             ..Default::default()

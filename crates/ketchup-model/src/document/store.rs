@@ -156,7 +156,14 @@ fn keep_exact_caches(
     feature_graph: Arc<FeatureDependencyGraph>,
     view_only: bool,
 ) {
-    let _ = product.exact_graphs.dependencies.set(Ok(feature_graph));
+    if product
+        .exact_graphs
+        .dependencies
+        .set(Ok(feature_graph))
+        .is_err()
+    {
+        // A graph set already was drawn from this same product.
+    }
     if view_only {
         product.exact_graphs.inherit_graphs(&previous.exact_graphs);
     }
@@ -237,7 +244,9 @@ impl DocumentStore {
             return Err(HumanConfirmationError::PolicyEpochInvalid);
         }
         let verifying_key = VerifyingKey::from_bytes(&verifying_key).map_err(
-            |_: ed25519_dalek::SignatureError| HumanConfirmationError::InvalidVerifyingKey,
+            |_bad_signature: ed25519_dalek::SignatureError| {
+                HumanConfirmationError::InvalidVerifyingKey
+            },
         )?;
         self.human_confirmation_policy = Some(Box::new(HumanConfirmationPolicy {
             verifying_key,
@@ -2148,7 +2157,7 @@ impl DocumentStore {
                     &approval.signing_payload(),
                     &Signature::from_bytes(&approval.signature),
                 )
-                .map_err(|_: ed25519_dalek::SignatureError| {
+                .map_err(|_bad_signature: ed25519_dalek::SignatureError| {
                     ProposalCommitError::HumanApprovalInvalid
                 })?;
         }
@@ -2202,7 +2211,7 @@ impl DocumentStore {
                     &approval.signing_payload(),
                     &Signature::from_bytes(&approval.signature),
                 )
-                .map_err(|_: ed25519_dalek::SignatureError| {
+                .map_err(|_bad_signature: ed25519_dalek::SignatureError| {
                     SideEffectAuthorizationError::Invalid
                 })?;
         }

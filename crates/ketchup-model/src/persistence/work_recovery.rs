@@ -101,7 +101,9 @@ impl Drop for WorkRecoveryLock {
     fn drop(&mut self) {
         // Drop has no caller to report to and this crate has no log. If unlocking
         // fails, the lock ends as before: when the last copy of the file closes.
-        let _ = self.file.unlock();
+        if self.file.unlock().is_err() {
+            // As said above: the lock ends with the last copy of the file.
+        }
     }
 }
 
@@ -296,7 +298,13 @@ fn append_step(
     if let Err(error) = appended {
         // A step cut short would hide every later one: the checkpoint stays as
         // this writer observed it, so the edit can be retried.
-        let _ = file.set_len(observed_len).and_then(|()| file.sync_all());
+        if file
+            .set_len(observed_len)
+            .and_then(|()| file.sync_all())
+            .is_err()
+        {
+            // The append's error is the one reported, cut short or not.
+        }
         return Err(FilePersistenceError::Io(error));
     }
     let mut hasher = observed.hasher;

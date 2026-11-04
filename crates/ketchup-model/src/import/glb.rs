@@ -314,7 +314,7 @@ pub fn inspect_glb(source: &[u8]) -> Result<ParsedGlbScene, GlbImportError> {
         &mut diagnostic_counts,
         "glb_mesh_hierarchy_transforms_and_instances_preserved",
         u32::try_from(instance_count)
-            .map_err(|_: std::num::TryFromIntError| GlbImportError::TooManyNodes)?,
+            .map_err(|_out_of_range: std::num::TryFromIntError| GlbImportError::TooManyNodes)?,
     )?;
     let mut diagnostics = diagnostic_counts
         .into_iter()
@@ -365,7 +365,7 @@ pub fn plan_glb_import(
     let mut definition_ids = Vec::with_capacity(scene.primitives.len());
     for (offset, primitive) in scene.primitives.iter().enumerate() {
         let offset = u64::try_from(offset)
-            .map_err(|_: std::num::TryFromIntError| GlbImportError::IdSpaceExhausted)?;
+            .map_err(|_out_of_range: std::num::TryFromIntError| GlbImportError::IdSpaceExhausted)?;
         let definition_id = DefinitionId(
             definition_start
                 .checked_add(offset)
@@ -400,10 +400,9 @@ pub fn plan_glb_import(
     for (offset, node_index) in scene.traversal.iter().copied().enumerate() {
         let id = GroupId(
             group_start
-                .checked_add(
-                    u64::try_from(offset)
-                        .map_err(|_: std::num::TryFromIntError| GlbImportError::IdSpaceExhausted)?,
-                )
+                .checked_add(u64::try_from(offset).map_err(
+                    |_out_of_range: std::num::TryFromIntError| GlbImportError::IdSpaceExhausted,
+                )?)
                 .ok_or(GlbImportError::IdSpaceExhausted)?,
         );
         group_ids[node_index] = Some(id);
@@ -510,7 +509,7 @@ fn parse_container(source: &[u8]) -> Result<(&[u8], &[u8]), GlbImportError> {
             return Err(GlbImportError::InvalidContainer);
         }
         let length = usize::try_from(read_u32(source, offset)?)
-            .map_err(|_: std::num::TryFromIntError| GlbImportError::InvalidContainer)?;
+            .map_err(|_out_of_range: std::num::TryFromIntError| GlbImportError::InvalidContainer)?;
         let kind = read_u32(source, offset + 4)?;
         if !length.is_multiple_of(4) {
             return Err(GlbImportError::InvalidContainer);
@@ -680,8 +679,9 @@ fn parse_meshes(
         bump(
             diagnostics,
             "glb_unselected_meshes_ignored",
-            u32::try_from(meshes.len() - selected_meshes.len())
-                .map_err(|_: std::num::TryFromIntError| GlbImportError::TooManyMeshes)?,
+            u32::try_from(meshes.len() - selected_meshes.len()).map_err(
+                |_out_of_range: std::num::TryFromIntError| GlbImportError::TooManyMeshes,
+            )?,
         )?;
     }
     let mut parsed = Vec::new();
@@ -790,7 +790,7 @@ fn closed_shells(
     let mut triangles = Vec::new();
     for piece in &open {
         let offset = u32::try_from(vertices.len())
-            .map_err(|_: std::num::TryFromIntError| GlbImportError::TooManyVertices)?;
+            .map_err(|_out_of_range: std::num::TryFromIntError| GlbImportError::TooManyVertices)?;
         vertices.extend_from_slice(&piece.vertices_mm);
         triangles.extend(
             piece
@@ -813,7 +813,7 @@ fn closed_shells(
         })
         .filter(is_solid);
     let pieces = u32::try_from(open.len())
-        .map_err(|_: std::num::TryFromIntError| GlbImportError::TooManyMeshes)?;
+        .map_err(|_out_of_range: std::num::TryFromIntError| GlbImportError::TooManyMeshes)?;
     if let Some(joined) = joined {
         bump(diagnostics, "glb_material_pieces_joined", pieces)?;
         shells.push(joined);
@@ -858,8 +858,9 @@ fn weld_indexed_geometry(
             welded[slot] = if let Some(index) = index_by_position.get(&key) {
                 *index
             } else {
-                let index = u32::try_from(welded_vertices.len())
-                    .map_err(|_: std::num::TryFromIntError| GlbImportError::TooManyVertices)?;
+                let index = u32::try_from(welded_vertices.len()).map_err(
+                    |_out_of_range: std::num::TryFromIntError| GlbImportError::TooManyVertices,
+                )?;
                 welded_vertices.push(point);
                 index_by_position.insert(key, index);
                 index
@@ -1158,7 +1159,7 @@ fn parse_nodes(
             diagnostics,
             "glb_unselected_nodes_ignored",
             u32::try_from(ignored)
-                .map_err(|_: std::num::TryFromIntError| GlbImportError::TooManyNodes)?,
+                .map_err(|_out_of_range: std::num::TryFromIntError| GlbImportError::TooManyNodes)?,
         )?;
     }
     let instance_count = traversal.iter().try_fold(0_usize, |count, index| {
@@ -1352,8 +1353,9 @@ fn record_document_losses(
             bump(
                 diagnostics,
                 code,
-                u32::try_from(count)
-                    .map_err(|_: std::num::TryFromIntError| GlbImportError::UnsupportedFeature)?,
+                u32::try_from(count).map_err(|_out_of_range: std::num::TryFromIntError| {
+                    GlbImportError::UnsupportedFeature
+                })?,
             )?;
         }
     }
@@ -1491,7 +1493,7 @@ fn optional_u64(object: &Map<String, Value>, name: &str) -> Result<Option<u64>, 
 
 fn usize_value(object: &Map<String, Value>, name: &str) -> Result<usize, GlbImportError> {
     usize::try_from(u64_value(object, name)?)
-        .map_err(|_: std::num::TryFromIntError| GlbImportError::InvalidJson)
+        .map_err(|_out_of_range: std::num::TryFromIntError| GlbImportError::InvalidJson)
 }
 
 fn optional_usize(
@@ -1501,7 +1503,7 @@ fn optional_usize(
     optional_u64(object, name)?
         .map(|value| {
             usize::try_from(value)
-                .map_err(|_: std::num::TryFromIntError| GlbImportError::InvalidJson)
+                .map_err(|_out_of_range: std::num::TryFromIntError| GlbImportError::InvalidJson)
         })
         .transpose()
 }

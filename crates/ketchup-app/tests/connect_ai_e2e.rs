@@ -109,19 +109,8 @@ impl Client {
 
     /// Runs the window until the answer to request `id` arrives.
     fn answer(&mut self, shell: &mut Shell, id: u64, method: &str) -> Value {
-        self.answer_within(shell, id, method, WAIT_DEADLINE)
-    }
-
-    /// Runs the window until the answer to request `id` arrives, at most `within`.
-    fn answer_within(
-        &mut self,
-        shell: &mut Shell,
-        id: u64,
-        method: &str,
-        within: Duration,
-    ) -> Value {
         let mut answer = None;
-        let answered = poll_until(within, || {
+        let answered = poll_until(WAIT_DEADLINE, || {
             shell.step();
             while let Ok(message) = self.lines.try_recv() {
                 if message["id"] == id {
@@ -130,7 +119,7 @@ impl Client {
             }
             answer.is_some()
         });
-        assert!(answered, "no answer to {method} within {within:?}");
+        assert!(answered, "no answer to {method} within {WAIT_DEADLINE:?}");
         answer.unwrap()
     }
 
@@ -157,16 +146,17 @@ fn tool_result(answer: &Value) -> (bool, Value) {
 
 impl Drop for Client {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if self.child.kill().is_err() {
+            // The client has already exited; it is reaped all the same.
+        }
+        if let Err(error) = self.child.wait() {
+            eprintln!("the test client was not reaped: {error}");
+        }
     }
 }
 
 /// How long a request sent to the server may take to reach the window.
 const REQUEST_ARRIVAL: Duration = Duration::from_secs(20);
-/// How long the second client's connect may take while the first one's
-/// request is stuck in the window: its user does not wait for that request.
-const CONNECT_WITHIN: Duration = Duration::from_secs(10);
 
 /// One message per frame asked of `context` at once, as a connection does
 /// right after it queued a request for the window. egui tells only of a
@@ -180,8 +170,8 @@ fn frame_requests(context: &egui::Context) -> mpsc::Receiver<()> {
     );
     let (sender, requests) = mpsc::channel();
     context.set_request_repaint_callback(move |info| {
-        if info.delay.is_zero() {
-            let _ = sender.send(());
+        if info.delay.is_zero() && sender.send(()).is_err() {
+            // The test is over and no longer counts repaints.
         }
     });
     requests
@@ -193,7 +183,8 @@ fn settle(context: &egui::Context) {
         if !context.has_requested_repaint() {
             return;
         }
-        let _ = context.run(egui::RawInput::default(), |_| {});
+        let painted = context.run(egui::RawInput::default(), |_| {});
+        drop(painted);
     }
 }
 
@@ -275,7 +266,8 @@ fn two_clients() -> TwoClients {
 
 /// The second client connects while the first one's request is stuck in the
 /// window, which runs only for the connect from now on; the connect is
-/// answered within [`CONNECT_WITHIN`], as a takeover.
+/// answered as a takeover. That it does not wait for the stuck request the
+/// caller shows by that request's outcome, not by a time (review 2026-11-04 P3).
 fn take_over(clients: &mut TwoClients) {
     let TwoClients {
         second,
@@ -289,7 +281,7 @@ fn take_over(clients: &mut TwoClients) {
     connect_queued
         .recv_timeout(REQUEST_ARRIVAL)
         .expect("the connect reaches the window");
-    let taken = second.answer_within(shell, connect, "connect", CONNECT_WITHIN);
+    let taken = second.answer(shell, connect, "connect");
     let (failed, taken) = tool_result(&taken);
     assert!(!failed, "the window is taken over, not refused: {taken}");
     assert!(shell.has_visible_label(&connected_label(shell, "Codex")));

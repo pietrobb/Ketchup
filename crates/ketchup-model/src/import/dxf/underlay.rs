@@ -50,7 +50,7 @@ pub fn read_dxf_underlay_from(
     mut source: impl BufRead + Seek,
     options: DxfImportOptions,
 ) -> Result<DxfUnderlay, DxfImportError> {
-    let _any_coordinate = AnyFiniteCoordinate::new();
+    let _any_coordinate_guard = AnyFiniteCoordinate::new();
     let encoding = text_encoding(&mut source)?;
     let mut diagnostics = DiagnosticCounts::new(UNDERLAY_READING);
     if let Some(read) = encoding.read {

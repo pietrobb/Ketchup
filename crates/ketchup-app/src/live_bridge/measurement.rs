@@ -1,6 +1,7 @@
 //! Read-only face queries share the existing background-check slot and document guard.
 use super::program_check::{PROGRAM_EXACT_TIMEOUT, ProgramCheckJob};
 use super::*;
+use crate::delivery::Deliver;
 use ketchup_application::measurement::{FaceTarget, SelectedFaceMeasurement};
 use ketchup_rejection::Rejection;
 #[cfg(test)]
@@ -212,7 +213,7 @@ impl LiveBridge {
                     container,
                     worker_cancelled,
                 );
-                let _ = sender.try_send(result);
+                sender.deliver(result);
                 repaint.request_repaint();
             });
         if let Err(error) = spawn {

@@ -659,8 +659,13 @@ impl Tools {
             Ok(launched) => launched,
             Err(error) => {
                 // Only our failed child is stopped; never select or touch another window.
-                let _ = child.kill();
-                let _ = child.wait();
+                // The launch's error is the one reported.
+                if child.kill().is_err() {
+                    // It has exited already; the wait reaps it.
+                }
+                if child.wait().is_err() {
+                    // Nothing is left to reap.
+                }
                 return Err(failed(error));
             }
         };
@@ -969,9 +974,13 @@ fn launch_connection(
         .name("ketchup-child-readiness".into())
         .spawn(move || {
             let ready = discovery::launched_window(&mut output, document);
-            let _ = send.send(ready);
+            if send.send(ready).is_err() {
+                // The launch stopped waiting and reports its own timeout.
+            }
             // The detached window may outlive this MCP connection. Drain, never retain logs.
-            let _ = io::copy(&mut output, &mut io::sink());
+            if io::copy(&mut output, &mut io::sink()).is_err() {
+                // The window closed its output: nothing is left to drain.
+            }
         })?;
     let (window, address) = receive
         .recv_timeout(wait)

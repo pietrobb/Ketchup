@@ -630,7 +630,8 @@ impl fmt::Display for PrismaticError {
 impl std::error::Error for PrismaticError {}
 
 impl From<InvalidTolerance> for PrismaticError {
-    fn from(_: InvalidTolerance) -> Self {
+    // The unit pattern proves the error carries nothing to keep.
+    fn from(InvalidTolerance: InvalidTolerance) -> Self {
         Self::InvalidTolerance
     }
 }

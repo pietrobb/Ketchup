@@ -1,6 +1,7 @@
 //! Transport owns sockets and bounded messages only, never the GUI/store.
 use super::admission::{AUTHENTICATED, EVICTED, PENDING, Pending};
 use super::*;
+use crate::delivery::Deliver;
 use ketchup_model::persistence::ContainerData;
 use std::{
     collections::VecDeque,
@@ -54,11 +55,11 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
                         let stop = Arc::clone(&stop);
                         let taken_over = Arc::clone(&taken_over);
                         let context = context.clone();
-                        let _ = std::thread::Builder::new()
+                        let spawned = std::thread::Builder::new()
                             .name(format!("ketchup-live-client-{session}"))
                             .spawn(move || {
                                 let _permit = permit;
-                                let _ = serve(
+                                let served = serve(
                                     stream,
                                     session,
                                     &secret,
@@ -70,9 +71,13 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
                                     &context,
                                     &authenticated,
                                 );
+                                if served.is_err() {
+                                    // A client that hung up or broke the protocol is
+                                    // disconnected below like one that said goodbye.
+                                }
                                 if authenticated.load(Ordering::Acquire) == AUTHENTICATED {
                                     let (reply, _receiver) = mpsc::sync_channel(1);
-                                    let _ = sender.try_send(Queued {
+                                    sender.deliver(Queued {
                                         session,
                                         id: 0,
                                         request: Request::Disconnect {},
@@ -83,6 +88,10 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
                                     context.request_repaint();
                                 }
                             });
+                        if let Err(error) = spawned {
+                            // The connection closes unserved; the client may try again.
+                            eprintln!("a live connection was not served: {error}");
+                        }
                     }
                     Ok(_) => {}
                     Err(error) => std::thread::sleep(accept_failure_pause(error.kind())),
@@ -633,7 +642,9 @@ fn serve(
                     .is_some_and(|&(begun, changed)| begun == id && changed);
                 result.insert("document_changed".to_owned(), changed.into());
             }
-            let _ = write_response(stream, response, false);
+            if write_response(stream, response, false).is_err() {
+                // The last frame is a courtesy: the connection ends either way.
+            }
         }
     };
     while !stop.load(Ordering::Acquire) {
@@ -969,7 +980,9 @@ mod tests {
             stream
                 .write_all(&(body.len() as u32).to_be_bytes())
                 .unwrap();
-            let _ = stream.write_all(&body);
+            if stream.write_all(&body).is_err() {
+                // The window may close a stranger's connection mid-frame.
+            }
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();

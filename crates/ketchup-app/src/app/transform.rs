@@ -43,6 +43,12 @@ impl KetchupApp {
     }
 
     pub(crate) fn current_transform_correction(&mut self) -> Option<&CorrectionSession> {
+        self.end_stale_transform_correction();
+        self.transform_tool.correction.as_ref()
+    }
+
+    /// Ends the transform correction once the model it was begun on has changed.
+    pub(crate) fn end_stale_transform_correction(&mut self) {
         let stale = self
             .transform_tool
             .correction
@@ -51,7 +57,6 @@ impl KetchupApp {
         if stale {
             self.end_transform_correction();
         }
-        self.transform_tool.correction.as_ref()
     }
 
     pub(crate) fn current_move_correction(

@@ -75,7 +75,7 @@ fn single(function: fn(f32, f32) -> f32) -> u64 {
 #[test]
 fn libm_results_are_correctly_rounded_and_platform_independent() {
     // Linking the crate pulls crmath into this binary.
-    let _ = ketchup_exact::backend_fingerprint();
+    assert!(!ketchup_exact::backend_fingerprint().is_empty());
     // f64::atanh is absent: Rust computes it from ln_1p and basic arithmetic
     // instead of calling libm, which is platform independent but not
     // correctly rounded.

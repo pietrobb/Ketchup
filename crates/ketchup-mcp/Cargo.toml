@@ -28,3 +28,6 @@ unsafe_code = "deny"
 
 [lints.clippy]
 all = "deny"
+map_err_ignore = "deny"
+let_underscore_must_use = "deny"
+let_underscore_untyped = "deny"

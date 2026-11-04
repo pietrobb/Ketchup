@@ -713,25 +713,25 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Decoded, PersistenceError> {
         }
         let manifest_bytes = reader.take(manifest_length)?;
         let payload_length = usize::try_from(u64::from_le_bytes(
-            manifest_bytes[0..8]
-                .try_into()
-                .map_err(|_: std::array::TryFromSliceError| PersistenceError::Truncated)?,
+            manifest_bytes[0..8].try_into().map_err(
+                |_wrong_length: std::array::TryFromSliceError| PersistenceError::Truncated,
+            )?,
         ))
-        .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
+        .map_err(|_out_of_range: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
         // The payload is the rest of the file, checked above to hold the header and manifest.
         if payload_length != bytes.len() - HEADER_BYTES - MANIFEST_BYTES {
             return Err(PersistenceError::Legacy(LegacyError::InvalidEnvelopeLength));
         }
         let checksum: [u8; 32] = manifest_bytes[8..40]
             .try_into()
-            .map_err(|_: std::array::TryFromSliceError| PersistenceError::Truncated)?;
+            .map_err(|_wrong_length: std::array::TryFromSliceError| PersistenceError::Truncated)?;
         let payload = reader.take(payload_length)?;
         if crate::graph::sha256_bytes(payload) != checksum {
             return Err(PersistenceError::ChecksumMismatch);
         }
         let mut manifest = Reader::new(manifest_bytes);
-        let _verified_payload_length = manifest.u64()?;
-        let _verified_checksum = manifest.take(32)?;
+        // The payload length (u64) and checksum (32 bytes) were checked from the raw bytes above.
+        manifest.take(8 + 32)?;
         if manifest.string()? != crate::graph::GRAPH_SCHEMA_ID_V1
             || manifest.string()? != crate::graph::EVALUATOR_ID_V1
             || manifest.string()? != crate::document::TOLERANCE_PROFILE_V1
@@ -1239,7 +1239,7 @@ fn read_topological_reference(
     reader: &mut Reader<'_>,
 ) -> Result<TopologicalElementRef, PersistenceError> {
     let length = usize::try_from(reader.count_with_limit(128 * 1024)?)
-        .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
+        .map_err(|_out_of_range: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
     TopologicalElementRef::from_bytes(reader.take(length)?)
         .map_err(|error| PersistenceError::Legacy(LegacyError::InvalidTopologicalReference(error)))
 }
@@ -1405,7 +1405,7 @@ fn read_import_receipt(
     let source_sha256 = reader
         .take(32)?
         .try_into()
-        .map_err(|_: std::array::TryFromSliceError| PersistenceError::Truncated)?;
+        .map_err(|_wrong_length: std::array::TryFromSliceError| PersistenceError::Truncated)?;
     let source_byte_len = reader.u64()?;
     let source_name = reader.string()?;
     let source_unit = match reader.u8()? {
@@ -3587,10 +3587,9 @@ fn read_product(
             16 if capabilities.imported_exact_body => {
                 let schema = reader.string()?;
                 let import_id = ImportId(reader.u64()?);
-                let source_sha256 = reader
-                    .take(32)?
-                    .try_into()
-                    .map_err(|_: std::array::TryFromSliceError| PersistenceError::Truncated)?;
+                let source_sha256 = reader.take(32)?.try_into().map_err(
+                    |_wrong_length: std::array::TryFromSliceError| PersistenceError::Truncated,
+                )?;
                 let source_byte_len = reader.u64()?;
                 let source_part_index = if capabilities.imported_exact_part {
                     match reader.u8()? {
@@ -4367,17 +4366,17 @@ impl<'a> Reader<'a> {
     }
     fn u16(&mut self) -> Result<u16, PersistenceError> {
         Ok(u16::from_le_bytes(self.take(2)?.try_into().map_err(
-            |_: std::array::TryFromSliceError| PersistenceError::Truncated,
+            |_wrong_length: std::array::TryFromSliceError| PersistenceError::Truncated,
         )?))
     }
     fn u32(&mut self) -> Result<u32, PersistenceError> {
         Ok(u32::from_le_bytes(self.take(4)?.try_into().map_err(
-            |_: std::array::TryFromSliceError| PersistenceError::Truncated,
+            |_wrong_length: std::array::TryFromSliceError| PersistenceError::Truncated,
         )?))
     }
     fn u64(&mut self) -> Result<u64, PersistenceError> {
         Ok(u64::from_le_bytes(self.take(8)?.try_into().map_err(
-            |_: std::array::TryFromSliceError| PersistenceError::Truncated,
+            |_wrong_length: std::array::TryFromSliceError| PersistenceError::Truncated,
         )?))
     }
     fn count(&mut self) -> Result<u32, PersistenceError> {
@@ -4401,7 +4400,7 @@ impl<'a> Reader<'a> {
     }
     fn string(&mut self) -> Result<String, PersistenceError> {
         let length = usize::try_from(self.count_with_limit(MAX_STRING_BYTES)?)
-            .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
+            .map_err(|_out_of_range: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
         self.string_bytes = self
             .string_bytes
             .checked_add(length)

@@ -409,6 +409,7 @@ fn the_draft_analysis_view_is_painted_by_the_gpu_scene_not_face_by_face() {
     }
 
     app.dispatch_command(AppCommand::View(ViewFlag::DraftAnalysis));
-    let _ = app.projected_faces_and_edges(rect);
+    // Projecting the faces paints them; their colours are what is checked.
+    let (_, _) = app.projected_faces_and_edges(rect);
     assert!(triangle_colors(&app).iter().all(Option::is_none));
 }

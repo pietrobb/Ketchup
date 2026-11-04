@@ -53,8 +53,12 @@ impl Client {
 }
 impl Drop for Client {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if self.child.kill().is_err() {
+            // The server has exited already; waiting reaps it.
+        }
+        if self.child.wait().is_err() {
+            // Nothing is left to reap, and a drop cannot fail the test.
+        }
     }
 }
 fn polygon(points: &[[f64; 2]]) -> (Value, Value) {

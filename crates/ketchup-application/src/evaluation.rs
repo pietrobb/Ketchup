@@ -873,7 +873,9 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                 if !requests.is_empty() {
                     match crate::worker_pool::checkout(executable.as_deref(), &worker_cancelled) {
                         // A cancelled spawn evaluated nothing: progress keeps the pending body.
-                        Err(_) if worker_cancelled.load(Ordering::Acquire) => {}
+                        Err(crate::worker_pool::ExactWorkerUnavailable::Checkout {
+                            cause: WorkerError::Cancelled,
+                        }) => {}
                         Err(unavailable) => {
                             let reason = unavailable.to_string();
                             for (key, _) in &requests {
@@ -1121,7 +1123,13 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                                 let (package, topology_package) = match evaluated {
                                     Ok(products) => products,
                                     // Interrupted, not completed: it stays the active body.
-                                    Err(_) if worker_cancelled.load(Ordering::Acquire) => break,
+                                    Err(error) if worker_cancelled.load(Ordering::Acquire) => {
+                                        eprintln!(
+                                            "exact evaluation of definition {} interrupted: {error}",
+                                            definition_id.0
+                                        );
+                                        break;
+                                    }
                                     Err(error) => {
                                         eprintln!(
                                             "exact evaluation rejected definition {}: {error}",

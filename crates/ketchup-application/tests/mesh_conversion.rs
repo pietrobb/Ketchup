@@ -424,14 +424,17 @@ fn background_wait_does_not_join_a_blocked_completion_callback() {
             .expect("build ketchup-exact-worker before this test"),
         Duration::from_secs(5),
         move || {
-            let _ = started_sender.send(());
-            let _ = release_receiver.recv();
+            started_sender.send(()).unwrap();
+            // Released by dropping the sender, which sends nothing.
+            release_receiver.recv().unwrap_err();
         },
     )
     .unwrap();
     let (result_sender, result_receiver) = std::sync::mpsc::channel();
     let waiter = std::thread::spawn(move || {
-        let _ = result_sender.send(task.wait(Duration::from_secs(5)).is_ok());
+        result_sender
+            .send(task.wait(Duration::from_secs(5)).is_ok())
+            .unwrap();
     });
 
     started_receiver

@@ -129,6 +129,7 @@ mod body_ui;
 mod bounded_parser;
 mod close_guard;
 mod command_registry;
+mod delivery;
 pub mod dialogs;
 mod drawn_shape;
 mod export_bundle;
@@ -2352,7 +2353,5 @@ mod rotation_input_tests;
 mod scene_snapping_tests;
 #[cfg(test)]
 mod selection_mass_ui_tests;
-#[cfg(test)]
-mod selection_measures_ui_tests;
 #[cfg(test)]
 mod tests;

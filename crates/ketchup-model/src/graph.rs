@@ -1030,9 +1030,9 @@ fn tokenize(source: &str) -> Result<Vec<Token>, GraphError> {
                 if start == cursor {
                     return Err(GraphError::InvalidNodeReference);
                 }
-                let id = source[start..cursor]
-                    .parse::<u64>()
-                    .map_err(|_: std::num::ParseIntError| GraphError::InvalidNodeReference)?;
+                let id = source[start..cursor].parse::<u64>().map_err(
+                    |_not_a_number: std::num::ParseIntError| GraphError::InvalidNodeReference,
+                )?;
                 if id == 0 {
                     return Err(GraphError::ReservedNodeId);
                 }
@@ -1057,9 +1057,9 @@ fn tokenize(source: &str) -> Result<Vec<Token>, GraphError> {
                         break;
                     }
                 }
-                let value = source[start..cursor]
-                    .parse::<f64>()
-                    .map_err(|_: std::num::ParseFloatError| GraphError::InvalidNumber)?;
+                let value = source[start..cursor].parse::<f64>().map_err(
+                    |_not_a_number: std::num::ParseFloatError| GraphError::InvalidNumber,
+                )?;
                 if !value.is_finite() {
                     return Err(GraphError::InvalidNumber);
                 }

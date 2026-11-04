@@ -48,6 +48,16 @@ Two forms are counted in production source (crates/*/src, test modules and
 - dropped_closure: `.unwrap_or_else(|_| ...)` answers an error with a value.
 - let_underscore: `let _ = call(...);` throws away what the call answers; clippy's
   `let_underscore_must_use` sees the same where a crate holds none (TST-121).
+- guarded_arm: `Err(_) if cond =>` drops the error the guard decides on.
+- named_underscore: `let _name = call();` keeps what the call answers unread; a
+  guard held to the end of the scope (`_lock`, `_guard`, `_permit`, `_reset`,
+  `_restore`) is exempt.
+- ok_statement: a bare `.ok();` throws the error away as `let _ =` does.
+- from_discard: `fn from(_: E)` turns an error into another without its content.
+
+clippy's map_err_ignore, let_underscore_must_use and let_underscore_untyped
+(workspace [lints]) cover the rest; these four are what clippy cannot see
+(review 2026-11-04 TST-140).
 
 The check is a ratchet: scripts/error_hygiene_baseline.txt records what still
 exists, per file and form. A count may only go down; a new file or a higher count
@@ -133,6 +143,36 @@ COUNTED_ARM = re.compile(r"\s*(?:return\s+)?(?:Err\(|None\b)")
 DROPPED_CLOSURE = re.compile(r"\.unwrap_or_else\(\s*(?:move\s*)?\|\s*_\w*\s*(?::[^|]*)?\|")
 # `let _ = call(...);` throws away what the call answers, an error with it.
 LET_UNDERSCORE = re.compile(r"\blet\s+_\s*=\s*[^;]*\)\s*;")
+GUARDED_ARM = re.compile(r"\bErr\(\s*_\w*\s*\)\s*if\b")
+NAMED_UNDERSCORE = re.compile(
+    r"^\s*let\s+_(?!\w*(?:lock|guard|permit|reset|restore)\b)[a-z]\w*\s*(?::[^=]+)?=[^=]",
+    re.MULTILINE)
+OK_STATEMENT = re.compile(r"\.ok\(\)\s*;")
+# What a statement keeps its value with: a binding, an assignment or a return.
+KEPT = re.compile(r"^\s*(?:let|return|break)\b|[^=!<>+\-*/%&|^]=[^=>]")
+
+
+def bare_ok_statements(text: str) -> int:
+    """`.ok();` ending a statement that neither binds nor assigns nor returns it."""
+    found = 0
+    for match in OK_STATEMENT.finditer(text):
+        depth, at = 0, match.start() - 1
+        while at >= 0:
+            char = text[at]
+            if char in ")]":
+                depth += 1
+            elif char in "([":
+                depth -= 1
+            elif char in ";{}" and depth == 0:
+                break
+            at -= 1
+        statement, nested = text[at + 1:match.start()], 1
+        while nested:
+            statement, nested = re.subn(r"\((?!\))[^()]*\)", "()", statement)
+        if not KEPT.search(statement):
+            found += 1
+    return found
+FROM_DISCARD = re.compile(r"\bfn\s+from\(\s*_\w*\s*:")
 # A variant of an error type (`...Error::Name(_)`) matched to a bare string.
 DROPPED_VARIANT = re.compile(r"\b\w*Error::\w+\(\s*_\s*\)\s*=>\s*\"")
 # An inline test module at the top level of a Rust file: `#[cfg(test)]` or
@@ -200,7 +240,11 @@ def file_counts(text: str) -> dict[str, int]:
             "dropped_arm": sum(1 for arm in ERR_ARM.finditer(text)
                                if arm.group(1) != "_" or not COUNTED_ARM.match(text, arm.end())),
             "dropped_closure": len(DROPPED_CLOSURE.findall(text)),
-            "let_underscore": len(LET_UNDERSCORE.findall(text))}
+            "let_underscore": len(LET_UNDERSCORE.findall(text)),
+            "guarded_arm": len(GUARDED_ARM.findall(text)),
+            "named_underscore": len(NAMED_UNDERSCORE.findall(text)),
+            "ok_statement": bare_ok_statements(text),
+            "from_discard": len(FROM_DISCARD.findall(text))}
 
 
 FORMS = tuple(file_counts(""))

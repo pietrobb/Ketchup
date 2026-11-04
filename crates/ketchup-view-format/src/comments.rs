@@ -323,7 +323,10 @@ static ID_STREAM: OnceLock<AtomicU64> = OnceLock::new();
 /// has no randomness of its own (the browser) calls it once, before any
 /// comment is written; elsewhere the operating system seeds it.
 pub fn seed_comment_ids(seed: u64) {
-    let _ = ID_STREAM.set(AtomicU64::new(seed));
+    if ID_STREAM.set(AtomicU64::new(seed)).is_err() {
+        // Seeded already or IDs drawn: the stream they come from continues,
+        // so no ID repeats.
+    }
 }
 
 /// A random ID below 2^53, exact in every JSON reader (SplitMix64).

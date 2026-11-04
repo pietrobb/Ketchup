@@ -60,7 +60,7 @@ OVERSIZED = {}
 # Modules AGENTS.md §6 forbids to grow, with their size: new code goes into new
 # modules, and an entry is lowered whenever its module shrinks (review UI-7).
 FROZEN_MODULES = {
-    "crates/ketchup-app/src/lib.rs": 2358,
+    "crates/ketchup-app/src/lib.rs": 2357,
     "crates/ketchup-model/src/document.rs": 514,
 }
 
@@ -82,8 +82,8 @@ LONG_FUNCTIONS = {
     "crates/ketchup-model/src/document/product_validation.rs::validate_features": 698,
     "crates/ketchup-model/src/document/proposal_analysis.rs::authoritative_dependencies": 755,
     "crates/ketchup-model/src/document/solid_tool.rs::clone_definition_and_repoint": 423,
-    "crates/ketchup-model/src/exact_brep_graph/compiler.rs::compile_node": 571,
-    "crates/ketchup-model/src/persistence/legacy.rs::read_product": 1385,
+    "crates/ketchup-model/src/exact_brep_graph/compiler.rs::compile_node": 568,
+    "crates/ketchup-model/src/persistence/legacy.rs::read_product": 1384,
     "crates/ketchup-model/src/shared_change.rs::commit_occurrence_fork_change": 543,
     "crates/ketchup-model/src/shared_change.rs::project_occurrence_fork_impact": 457,
     "crates/ketchup-program/src/eval.rs::builtins": 674,

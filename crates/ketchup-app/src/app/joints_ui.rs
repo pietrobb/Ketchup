@@ -151,11 +151,12 @@ impl KetchupApp {
             let size = self.catalog.format("spaces-field-size", &arguments);
             field(ui, size, &mut fields.size[index]);
         }
-        let _ = fields
-            .position
-            .iter()
-            .chain(&fields.size)
-            .any(|value| show_value_refusal(ui, &self.catalog, value, self.value_box.decimal));
+        crate::refusal::show_first_value_refusal(
+            ui,
+            &self.catalog,
+            fields.position.iter().chain(&fields.size),
+            self.value_box.decimal,
+        );
         let parsed = |values: &[String; 3]| {
             let [x, y, z] = values
                 .each_ref()

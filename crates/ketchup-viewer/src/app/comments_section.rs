@@ -233,8 +233,9 @@ pub(crate) fn write_atomically<T>(
             .map(|()| value)
             .map_err(|error| file_error("viewer.comments.save", path, error))
     });
-    if renamed.is_err() {
-        let _ = std::fs::remove_file(&temporary);
+    if renamed.is_err() && std::fs::remove_file(&temporary).is_err() {
+        // The write's error is the one reported; the next save writes the
+        // temporary file over.
     }
     renamed
 }

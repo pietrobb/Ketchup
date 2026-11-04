@@ -11,6 +11,7 @@
 //! an optional `expected` stamp only guards against a concurrent human edit.
 //! Images are callback-correlated CAD-only PNG thumbnails; geometry completeness is not claimed.
 
+use crate::delivery::Deliver;
 use crate::{
     ActiveTool, AppCommand, KetchupApp, SaveFailure, SelectionId, WorkRecoveryMutationError,
 };
@@ -1617,8 +1618,11 @@ impl KetchupApp {
                     || bridge.apply_and_verify_job.is_some()
                     || bridge.program_check_job.is_some())
             {
-                let _ = busy::reject_if_busy(&bridge.busy_jobs());
-                let _ = queued.reply.try_send(Response::error(queued.id, "busy"));
+                // Records which job holds the window; the other client is busy either way.
+                let refusal = busy::reject_if_busy(&bridge.busy_jobs())
+                    .err()
+                    .unwrap_or("busy");
+                queued.reply.deliver(Response::error(queued.id, refusal));
                 continue;
             }
             bridge.activate_client(queued.session);
@@ -1821,7 +1825,7 @@ impl KetchupApp {
                 Err(code) => Response::error(id, code),
             };
             response.stamp = Some(self.live_bridge_stamp());
-            let _ = reply.try_send(response);
+            reply.deliver(response);
             context.request_repaint();
             if disconnect {
                 bridge.remove_client(session);
@@ -2327,7 +2331,7 @@ impl LiveBridge {
             Err(code) => Response::error(id, code),
         };
         response.stamp = Some(app.live_bridge_stamp());
-        let _ = reply.try_send(response);
+        reply.deliver(response);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2642,7 +2646,7 @@ impl LiveBridge {
                     #[cfg(test)]
                     fault,
                 );
-                let _ = sender.try_send(result);
+                sender.deliver(result);
                 repaint.request_repaint();
             });
         if spawn.is_err() {
@@ -2778,10 +2782,12 @@ impl LiveBridge {
             });
             match saved {
                 Ok(()) => (true, "saved", None),
-                Err(_) if cancelled.load(Ordering::Acquire) => {
-                    (false, "committed_but_unsaved", Some("request_cancelled"))
-                }
-                Err(_) if started.elapsed() > deadline => {
+                // The save stopped because the request may no longer write: not
+                // cancelled by the client, so its time ran out. A save that failed on
+                // its own is named as such even when the client left meanwhile.
+                Err(SaveFailure::Cancelled)
+                    if !cancelled.load(Ordering::Acquire) && started.elapsed() > deadline =>
+                {
                     (false, "committed_but_unsaved", Some("job_timeout"))
                 }
                 Err(failure) => (

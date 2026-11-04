@@ -440,7 +440,9 @@ fn remote_response_overflow_fails_closed() {
         let (mut stream, _) = listener.accept().unwrap();
         let mut request = Vec::new();
         stream.read_to_end(&mut request).unwrap();
-        let _ = stream.write_all(b"response beyond envelope");
+        if stream.write_all(b"response beyond envelope").is_err() {
+            // The host may close as soon as the response is too long.
+        }
     });
     let host = installed(
         VALID_WASM,

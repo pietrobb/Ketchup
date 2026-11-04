@@ -103,7 +103,13 @@ pub fn stage(source: &Path, root: &Path) -> io::Result<PathBuf> {
     }
     if !verified {
         let partial = root.join(format!("{key}.partial-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&partial);
+        // A partial copy this process left behind must go: whatever stays in it
+        // would be renamed into the staged build unchecked.
+        if let Err(error) = fs::remove_dir_all(&partial)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            return Err(error);
+        }
         fs::create_dir_all(&partial)?;
         fs::write(partial.join(STAGE_MARKER), "")?;
         for file in &files {
@@ -111,7 +117,10 @@ pub fn stage(source: &Path, root: &Path) -> io::Result<PathBuf> {
             fs::copy(file, partial.join(file_name))?;
         }
         if let Err(error) = fs::rename(&partial, &target) {
-            let _ = fs::remove_dir_all(&partial);
+            if fs::remove_dir_all(&partial).is_err() {
+                // What the rename did decides below; a partial copy that stays
+                // is cleared by the next stage of this process, above.
+            }
             // Another server staged the same build concurrently.
             if !is_copy_of(&files, &target)? {
                 return Err(error);
@@ -202,7 +211,9 @@ fn remove_stale(root: &Path, current: &str, name: &std::ffi::OsStr) {
         if window.exists() && fs::remove_file(&window).is_err() {
             continue;
         }
-        let _ = fs::remove_dir_all(dir);
+        if fs::remove_dir_all(dir).is_err() {
+            // A stale copy that stays is tried again by the next stage.
+        }
     }
 }
 

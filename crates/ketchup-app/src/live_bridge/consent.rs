@@ -5,6 +5,7 @@
 //! No manual token entry or additional confirmation is needed.
 use super::admission::{AUTHENTICATED, EVICTED, PENDING, Pending};
 use super::{KetchupApp, egui, transport};
+use crate::delivery::Deliver;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -50,10 +51,19 @@ impl Drop for ConsentBroker {
         // see the stop. Without one it would never return, so do not wait.
         if let Some(worker) = self.worker.take()
             && TcpStream::connect(self.address).is_ok()
+            && worker.join().is_err()
         {
-            let _ = worker.join();
+            // The worker's panic was already reported; the broker is going anyway.
         }
-        let _ = remove_registry_entry_if_unchanged(&self.registry_path, self.registry_identity);
+        // Ok(false): another window has written the entry since, and it stays.
+        if let Err(error) =
+            remove_registry_entry_if_unchanged(&self.registry_path, self.registry_identity)
+        {
+            eprintln!(
+                "the live connection entry {} was not removed: {error}",
+                self.registry_path.display()
+            );
+        }
     }
 }
 
@@ -251,13 +261,13 @@ impl KetchupApp {
                         "live-consent-failed",
                         &std::collections::BTreeMap::from([("reason", error.to_string())]),
                     );
-                    let _ = pending.decision.try_send(ConsentDecision::Failed);
+                    pending.decision.deliver(ConsentDecision::Failed);
                     return;
                 }
             }
         }
         let Some(credentials) = self.live_bridge_credentials() else {
-            let _ = pending.decision.try_send(ConsentDecision::Failed);
+            pending.decision.deliver(ConsentDecision::Failed);
             return;
         };
         if pending
@@ -478,7 +488,9 @@ fn start(
                     break;
                 }
                 while let Some(index) = handlers.iter().position(JoinHandle::is_finished) {
-                    let _ = handlers.swap_remove(index).join();
+                    if handlers.swap_remove(index).join().is_err() {
+                        // The connection's panic was already reported; it is closed.
+                    }
                 }
                 match accepted {
                     Ok((stream, peer)) if peer.ip().is_loopback() => {
@@ -524,12 +536,21 @@ fn start(
                 }
             }
             for handler in handlers {
-                let _ = handler.join();
+                if handler.join().is_err() {
+                    // A connection's panic was already reported; the rest still close.
+                }
             }
         }) {
         Ok(worker) => worker,
         Err(error) => {
-            let _ = remove_registry_entry_if_unchanged(&registry_path, registry_identity);
+            if let Err(removal) =
+                remove_registry_entry_if_unchanged(&registry_path, registry_identity)
+            {
+                eprintln!(
+                    "the live connection entry {} was not removed: {removal}",
+                    registry_path.display()
+                );
+            }
             return Err(error);
         }
     };
@@ -561,7 +582,7 @@ fn serve(
     stop: &AtomicBool,
     state: &AtomicU8,
 ) {
-    let _ = (|| -> io::Result<()> {
+    let answered = (|| -> io::Result<()> {
         stream.set_nonblocking(false)?;
         let read_deadline = Instant::now() + IO_DEADLINE;
         let request = read_request(&mut stream, read_deadline, stop, state)?;
@@ -591,7 +612,7 @@ fn serve(
             }
             let state = discovery
                 .lock()
-                .map_err(|_: std::sync::PoisonError<_>| {
+                .map_err(|_poisoned: std::sync::PoisonError<_>| {
                     io::Error::other("discovery state unavailable")
                 })?
                 .clone();
@@ -621,9 +642,11 @@ fn serve(
         // nobody, so a requester answered busy again and again no longer grows
         // the record for as long as the window lives (review 2026-10-16).
         let answer = {
-            let mut used = used_nonces.lock().map_err(|_: std::sync::PoisonError<_>| {
-                io::Error::other("nonce record unavailable")
-            })?;
+            let mut used = used_nonces
+                .lock()
+                .map_err(|_poisoned: std::sync::PoisonError<_>| {
+                    io::Error::other("nonce record unavailable")
+                })?;
             if used.contains(&nonce) {
                 Some(ConsentDecision::Reject)
             } else if sender.try_send(pending).is_err() {
@@ -647,7 +670,7 @@ fn serve(
             }
             // The window granted access to a requester that already left: free it.
             if matches!(receiver.try_recv(), Ok(ConsentDecision::Allow { .. })) {
-                let _ = delivery_sender.send(false);
+                delivery_sender.deliver(false);
             }
         };
         let decision = match decision {
@@ -667,11 +690,15 @@ fn serve(
         let allowed = matches!(decision, ConsentDecision::Allow { .. });
         let result = write_response(&mut stream, &nonce, instance_id, bootstrap, decision, stop);
         if allowed {
-            let _ = delivery_sender.send(result.is_ok());
+            delivery_sender.deliver(result.is_ok());
             context.request_repaint();
         }
         result
     })();
+    if answered.is_err() {
+        // A requester that hung up, stalled or sent no request is not answered; a
+        // grant it can no longer receive was released above.
+    }
 }
 
 fn wait_for_decision(

@@ -775,7 +775,9 @@ fn scripted_window(
                 }
             }
             drop(stream);
-            let _ = events.send("ended");
+            if events.send("ended").is_err() {
+                // The test has its answer already and stopped listening.
+            }
         }
     });
     received
@@ -822,7 +824,9 @@ fn grant_attaches(
                 reply["live_bridge_address"] = bridge_address.clone().into();
                 reply["token"] = TOKEN.into();
                 reply["proof"] = crate::discovery::window_proof(TOKEN, &reply).into();
-                let _ = attached.send("attach");
+                if attached.send("attach").is_err() {
+                    // The test has its answer already and stopped listening.
+                }
             } else {
                 reply["proof"] = crate::discovery::window_list_proof_of(TOKEN, &reply).into();
             }

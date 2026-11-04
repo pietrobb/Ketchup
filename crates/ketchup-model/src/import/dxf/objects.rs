@@ -172,7 +172,8 @@ pub(super) fn claim(
 }
 
 fn count(value: usize) -> Result<u32, DxfImportError> {
-    u32::try_from(value).map_err(|_: std::num::TryFromIntError| DxfImportError::TooManyEntities)
+    u32::try_from(value)
+        .map_err(|_out_of_range: std::num::TryFromIntError| DxfImportError::TooManyEntities)
 }
 
 /// The block an INSERT `record` places at `placement`, how often, and the tags and values

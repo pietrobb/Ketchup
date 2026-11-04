@@ -315,8 +315,9 @@ fn write_durably(
                 .and_then(|()| sync_directory(path.parent().unwrap_or(Path::new("."))))
                 .map_err(|error| session_error(path, error))
         });
-    if written.is_err() {
-        let _ = std::fs::remove_file(&temporary);
+    if written.is_err() && std::fs::remove_file(&temporary).is_err() {
+        // The write's error is the one reported; the next save writes the
+        // temporary file over.
     }
     written
 }
@@ -327,7 +328,7 @@ fn sync_directory(dir: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     std::fs::File::open(dir)?.sync_all()?;
     #[cfg(not(unix))]
-    let _ = dir;
+    let _: &Path = dir;
     Ok(())
 }
 

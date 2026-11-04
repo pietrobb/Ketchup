@@ -127,7 +127,7 @@ pub fn validate(file: &File) -> io::Result<()> {
         if result != 0 {
             return Err(io::Error::from_raw_os_error(result as i32));
         }
-        let _descriptor = Descriptor(descriptor);
+        let _descriptor_guard = Descriptor(descriptor);
         let mut control = 0;
         let mut revision = 0;
         if owner.is_null()

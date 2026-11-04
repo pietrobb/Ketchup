@@ -176,7 +176,9 @@ fn fuzz(format: &str, seeds: &[Vec<u8>], cases: usize, read: fn(&[u8]), limit: D
             .name(format!("{format}-fuzz-{case}"))
             .spawn(move || {
                 read(&input);
-                let _ = done.send(());
+                if done.send(()).is_err() {
+                    // The fuzz stopped waiting and reports the timeout.
+                }
             })
             .unwrap();
         match finished.recv_timeout(limit) {
@@ -293,7 +295,8 @@ fn fuzz_dxf(limit: Duration) {
         }
     }
     let read: fn(&[u8]) = |bytes| {
-        let _ = inspect_dxf(
+        // Read or refused alike: a fuzz case only has to end without a panic.
+        let _verdict = inspect_dxf(
             bytes,
             DxfImportOptions::new(Some(ImportLengthUnit::Millimetre)),
         );
@@ -328,7 +331,7 @@ fn fuzz_stl(limit: Duration) {
             ImportLengthUnit::Millimetre,
             ImportUnitAuthority::UserDeclared,
         );
-        let _ = parse_stl(bytes, units);
+        let _verdict = parse_stl(bytes, units);
     };
     fuzz("stl", &stl_seeds(), 600, read, limit);
 }
@@ -350,7 +353,7 @@ fn fuzz_scene(limit: Duration) {
         "the seed itself is readable"
     );
     let read: fn(&[u8]) = |bytes| {
-        let _ = inspect_sketchup_scene(bytes);
+        let _verdict = inspect_sketchup_scene(bytes);
     };
     fuzz("kscene", &[scene_seed()], 600, read, limit);
 }
@@ -402,7 +405,7 @@ fn fuzz_glb(limit: Duration) {
     assert_eq!(glb_with_json(&json), seed, "the seed packs back unchanged");
     assert!(inspect_glb(&seed).is_ok(), "the seed itself is readable");
     let read: fn(&[u8]) = |json| {
-        let _ = inspect_glb(&glb_with_json(json));
+        let _verdict = inspect_glb(&glb_with_json(json));
     };
     fuzz("glb", &[json], 300, read, limit);
 }

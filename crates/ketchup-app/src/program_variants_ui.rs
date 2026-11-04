@@ -65,10 +65,11 @@ impl KetchupApp {
             let row = BTreeMap::from([("name", name.clone()), ("values", values_text(values))]);
             let named = BTreeMap::from([("name", name.clone())]);
             ui.horizontal_wrapped(|ui| {
-                let _ = ui.selectable_label(
+                // Shows which variant is active; choosing one is the button beside it.
+                ui.add(egui::Button::selectable(
                     active == Some(name.as_str()),
                     self.catalog.format("variants-row", &row),
-                );
+                ));
                 let use_button = egui::Button::new(self.catalog.format("variants-use", &named));
                 if ui
                     .add_enabled(idle && active != Some(name.as_str()), use_button)

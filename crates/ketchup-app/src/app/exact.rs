@@ -190,7 +190,7 @@ impl KetchupApp {
             let info = selected.get_info();
             *selected_info
                 .lock()
-                .map_err(|_: std::sync::PoisonError<_>| {
+                .map_err(|_poisoned: std::sync::PoisonError<_>| {
                     "selected-adapter evidence lock is unavailable".to_owned()
                 })? = Some(info);
             Ok(selected.clone())

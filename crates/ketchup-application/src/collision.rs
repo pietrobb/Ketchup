@@ -736,8 +736,12 @@ fn send_exact_pair_batches(
                             }
                         }
                         Err(unavailable) => {
-                            let _ = range_tx
-                                .send(Err(ExactPairFailure::WorkerUnavailable(unavailable)));
+                            if range_tx
+                                .send(Err(ExactPairFailure::WorkerUnavailable(unavailable)))
+                                .is_err()
+                            {
+                                // The query that asked has stopped waiting.
+                            }
                         }
                     }
                 } else if let Some(unused) = idle {

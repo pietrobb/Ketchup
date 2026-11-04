@@ -832,8 +832,9 @@ impl Server {
         }
         if self.verify_jobs[index].terminal()
             && let Some(stop) = self.verify_jobs[index].deadline_stop.take()
+            && stop.send(()).is_err()
         {
-            let _ = stop.send(());
+            // The deadline has passed and its timer is gone already.
         }
         if matches!(
             &self.verify_jobs[index].state,

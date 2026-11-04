@@ -1612,12 +1612,11 @@ impl GeneralFabricationProjection {
                 }
                 output.push_str("        </UserReferencePlanes>\n        <Processings>\n");
                 for (processing_index, processing) in processings.iter().enumerate() {
-                    let reference_plane_id =
-                        first_reference_plane_id
-                            .checked_add(u32::try_from(processing_index).map_err(
-                                |_: TryFromIntError| GeneralFabricationError::ExportBlocked,
-                            )?)
-                            .ok_or(GeneralFabricationError::ExportBlocked)?;
+                    let reference_plane_id = first_reference_plane_id
+                        .checked_add(u32::try_from(processing_index).map_err(
+                            |_out_of_range: TryFromIntError| GeneralFabricationError::ExportBlocked,
+                        )?)
+                        .ok_or(GeneralFabricationError::ExportBlocked)?;
                     let process_id = next_process_id;
                     next_process_id = next_process_id
                         .checked_add(1)

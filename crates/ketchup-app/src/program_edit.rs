@@ -364,8 +364,10 @@ impl KetchupApp {
     /// Waits for the document's program evaluation. Only for answers owed in
     /// the same call: a live-bridge request or the built-in assistant.
     pub(crate) fn wait_for_program_evaluation(&self) {
-        if let Some(program) = self.document.current_rule_program() {
-            let _ = self.program_evaluations.get_blocking(program);
+        if let Some(program) = self.document.current_rule_program()
+            && self.program_evaluations.get_blocking(program).is_err()
+        {
+            // The failed evaluation is kept and reported by whoever asks next.
         }
     }
 

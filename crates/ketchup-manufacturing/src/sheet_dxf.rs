@@ -87,10 +87,11 @@ impl Writer {
 
     fn line(&mut self, layer: &str, a: [f64; 2], b: [f64; 2]) {
         let ([ax, ay], [bx, by]) = (self.point(a), self.point(b));
-        let _ = write!(
+        write!(
             self.out,
             "0\nLINE\n8\n{layer}\n10\n{ax}\n20\n{ay}\n30\n0\n11\n{bx}\n21\n{by}\n31\n0\n"
-        );
+        )
+        .expect("a String takes every write");
     }
 
     /// The sides of a polyline as lines; a side of no length draws nothing.
@@ -130,12 +131,12 @@ impl Writer {
                 Anchor::Middle => format!("72\n1\n11\n{x}\n21\n{y}\n31\n0\n"),
                 Anchor::End => format!("72\n2\n11\n{x}\n21\n{y}\n31\n0\n"),
             };
-            let _ = write!(
+            write!(
                 self.out,
                 "0\nTEXT\n8\n{TEXT_LAYER}\n10\n{x}\n20\n{y}\n30\n0\n40\n{}\n1\n{}\n{turn}{justified}",
                 number(height_mm),
                 r12_text::lossy(&piece)
-            );
+            ).expect("a String takes every write");
             down += step;
         }
     }
@@ -183,10 +184,11 @@ pub fn page_dxf(page: &Page) -> Vec<u8> {
     );
     for (layer, dashed, color) in &layers {
         let linetype = if *dashed { "DASHED" } else { "CONTINUOUS" };
-        let _ = write!(
+        write!(
             out,
             "0\nLAYER\n2\n{layer}\n70\n0\n62\n{color}\n6\n{linetype}\n"
-        );
+        )
+        .expect("a String takes every write");
     }
     out.push_str("0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n");
     let mut writer = Writer { height, out };

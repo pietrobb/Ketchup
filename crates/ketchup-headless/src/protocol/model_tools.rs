@@ -259,8 +259,10 @@ impl Server {
                             .min(u128::from(u64::MAX))
                             as u64;
                         self.verify_jobs[index].state = VerifyJobState::Cancelled;
-                        if let Some(stop) = self.verify_jobs[index].deadline_stop.take() {
-                            let _ = stop.send(());
+                        if let Some(stop) = self.verify_jobs[index].deadline_stop.take()
+                            && stop.send(()).is_err()
+                        {
+                            // The deadline has passed and its timer is gone already.
                         }
                     }
                     self.verify_job_value(index)

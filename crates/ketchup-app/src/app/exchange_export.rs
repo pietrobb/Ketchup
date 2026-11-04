@@ -277,8 +277,7 @@ impl KetchupApp {
         match self.exchange_export_job(format, &path) {
             Ok(job) => self.queue_exchange_export(job, context, ExchangeExportJob::run),
             Err(error) => {
-                self.report_export_outcome(format.key(), &path, Err(error))
-                    .ok();
+                self.show_export_outcome(format.key(), &path, Err(&error));
             }
         }
     }
@@ -346,8 +345,7 @@ impl KetchupApp {
                 bytes,
             )
         });
-        self.report_export_outcome(task.format.key(), &task.path, result)
-            .ok();
+        self.show_export_outcome(task.format.key(), &task.path, result.as_ref());
         context.request_repaint();
     }
 

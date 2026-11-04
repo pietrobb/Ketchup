@@ -1609,7 +1609,7 @@ fn file_import_transformed_multi_solid_step_round_trips_through_save_open_and_oc
     assert_eq!(shell.app().canonical_digest(), imported_digest);
     // Under the full workspace run the worker can take longer than 2 s to
     // republish after Open; wait on its state, the asserts below decide.
-    let _ = shell.wait_until(|shell| {
+    let republished = shell.wait_until(|shell| {
         shell.settle();
         let mut producers = shell.app().exact_current_producer_ids();
         producers.sort_unstable();
@@ -1617,7 +1617,10 @@ fn file_import_transformed_multi_solid_step_round_trips_through_save_open_and_oc
     });
     let mut producers = shell.app().exact_current_producer_ids();
     producers.sort_unstable();
-    assert_eq!(producers, imported_feature_ids);
+    assert_eq!(
+        producers, imported_feature_ids,
+        "republished in time: {republished}"
+    );
     assert_eq!(shell.app().exact_render_body_count(), 1);
     shell.settle();
     assert!(

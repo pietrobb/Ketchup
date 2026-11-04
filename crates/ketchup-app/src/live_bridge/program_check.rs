@@ -7,6 +7,7 @@ mod failure_tests;
 #[path = "program_plan_tests.rs"]
 mod tests;
 use super::*;
+use crate::delivery::Deliver;
 use crate::program_edit::ProgramEdit;
 use ketchup_application::program_isolation::{CheckDeadline, complete_pending_checks};
 use ketchup_application::{ExactBaseline, RuleProgramApplyError, RuleProgramPlan};
@@ -190,7 +191,7 @@ impl ExactCheckJob {
             .name("ketchup-live-program-report".into())
             .spawn(move || {
                 complete_pending_checks(&mut report, &model, deadline, &cancel);
-                let _ = sender.try_send(report);
+                sender.deliver(report);
                 repaint.request_repaint();
             });
         match spawn {
@@ -442,7 +443,7 @@ impl LiveBridge {
             .name("ketchup-live-program-plan".into())
             .spawn(move || {
                 let result = plan_with_report(&document, &worker_source, deadline, true, &cancel);
-                let _ = sender.try_send(result);
+                sender.deliver(result);
                 repaint.request_repaint();
             });
         if let Err(error) = spawn {
@@ -562,7 +563,7 @@ impl LiveBridge {
                     deadline,
                     thread_cancelled,
                 );
-                let _ = sender.try_send((report, exact, next));
+                sender.deliver((report, exact, next));
                 repaint.request_repaint();
             });
         if let Err(error) = spawn {

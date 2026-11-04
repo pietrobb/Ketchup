@@ -561,8 +561,10 @@ pub fn plan_sketchup_scene_import(
     let mut commands = Vec::new();
     let mut outputs = Vec::new();
     for (offset, definition) in scene.definitions.iter().enumerate() {
-        let offset = u64::try_from(offset)
-            .map_err(|_: std::num::TryFromIntError| SketchupSceneImportError::IdSpaceExhausted)?;
+        let offset =
+            u64::try_from(offset).map_err(|_out_of_range: std::num::TryFromIntError| {
+                SketchupSceneImportError::IdSpaceExhausted
+            })?;
         let definition_id = DefinitionId(
             definition_start
                 .checked_add(offset)
@@ -593,8 +595,10 @@ pub fn plan_sketchup_scene_import(
         });
     }
     for (offset, instance) in scene.instances.iter().enumerate() {
-        let offset = u64::try_from(offset)
-            .map_err(|_: std::num::TryFromIntError| SketchupSceneImportError::IdSpaceExhausted)?;
+        let offset =
+            u64::try_from(offset).map_err(|_out_of_range: std::num::TryFromIntError| {
+                SketchupSceneImportError::IdSpaceExhausted
+            })?;
         let occurrence_id = OccurrenceId(
             occurrence_start
                 .checked_add(offset)

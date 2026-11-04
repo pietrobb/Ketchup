@@ -210,14 +210,18 @@ fn consumes_only_one_line_and_never_more_than_1024_bytes() {
 struct BlockedRead(mpsc::Receiver<()>);
 impl Read for BlockedRead {
     fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
-        let _ = self.0.recv();
+        if self.0.recv().is_err() {
+            // The test has ended without letting go; the read is over either way.
+        }
         Ok(0)
     }
 }
 struct BlockedWrite(mpsc::Receiver<()>);
 impl Write for BlockedWrite {
     fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-        let _ = self.0.recv();
+        if self.0.recv().is_err() {
+            // The test has ended without letting go; the write fails either way.
+        }
         Err(io::Error::other("test private detail"))
     }
     fn flush(&mut self) -> io::Result<()> {

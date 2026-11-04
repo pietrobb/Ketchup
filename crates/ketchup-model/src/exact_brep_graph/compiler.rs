@@ -680,12 +680,9 @@ impl<'a> GraphCompiler<'a> {
                 self.snapshot.tolerance().linear_mm(),
             )?,
         };
-        let id = ExactBRepNodeId(
-            self.nodes
-                .len()
-                .try_into()
-                .map_err(|_: std::num::TryFromIntError| ExactBRepGraphError::ResourceLimit)?,
-        );
+        let id = ExactBRepNodeId(self.nodes.len().try_into().map_err(
+            |_out_of_range: std::num::TryFromIntError| ExactBRepGraphError::ResourceLimit,
+        )?);
         if self.nodes.len() >= MAX_EXACT_BREP_GRAPH_NODES {
             return Err(ExactBRepGraphError::ResourceLimit);
         }
@@ -1070,9 +1067,11 @@ impl<'a> GraphCompiler<'a> {
                     geometry,
                     (1..=segment_count)
                         .map(|index| {
-                            u64::try_from(index).map_err(|_: std::num::TryFromIntError| {
-                                ExactBRepGraphError::ResourceLimit
-                            })
+                            u64::try_from(index).map_err(
+                                |_out_of_range: std::num::TryFromIntError| {
+                                    ExactBRepGraphError::ResourceLimit
+                                },
+                            )
                         })
                         .collect::<Result<Vec<_>, _>>()?,
                 )
@@ -1106,12 +1105,9 @@ impl<'a> GraphCompiler<'a> {
             ),
             _ => return Err(ExactBRepGraphError::UnsupportedProfile(feature_id)),
         };
-        let id = ExactBRepProfileId(
-            self.profiles
-                .len()
-                .try_into()
-                .map_err(|_: std::num::TryFromIntError| ExactBRepGraphError::ResourceLimit)?,
-        );
+        let id = ExactBRepProfileId(self.profiles.len().try_into().map_err(
+            |_out_of_range: std::num::TryFromIntError| ExactBRepGraphError::ResourceLimit,
+        )?);
         self.profiles.push(ExactBRepProfile {
             id,
             source_feature_id: feature_id.0,
@@ -1138,12 +1134,9 @@ impl<'a> GraphCompiler<'a> {
             .get(source.0 as usize)
             .cloned()
             .ok_or(ExactBRepGraphError::InvalidParameter)?;
-        let id = ExactBRepProfileId(
-            self.profiles
-                .len()
-                .try_into()
-                .map_err(|_: std::num::TryFromIntError| ExactBRepGraphError::ResourceLimit)?,
-        );
+        let id = ExactBRepProfileId(self.profiles.len().try_into().map_err(
+            |_out_of_range: std::num::TryFromIntError| ExactBRepGraphError::ResourceLimit,
+        )?);
         profile.id = id;
         profile.source_feature_id = member_feature_id.0;
         rotate_planar_geometry(&mut profile.geometry, orientation_degrees)?;
@@ -1282,12 +1275,9 @@ impl<'a> GraphCompiler<'a> {
                 offset: [dot(from_start, section_u), dot(from_start, section_v)],
             },
         )?;
-        let id = ExactBRepProfileId(
-            self.profiles
-                .len()
-                .try_into()
-                .map_err(|_: std::num::TryFromIntError| ExactBRepGraphError::ResourceLimit)?,
-        );
+        let id = ExactBRepProfileId(self.profiles.len().try_into().map_err(
+            |_out_of_range: std::num::TryFromIntError| ExactBRepGraphError::ResourceLimit,
+        )?);
         profile.id = id;
         profile.frame_bits = identity_frame();
         self.profiles.push(profile);

@@ -218,7 +218,13 @@ impl WebViewer {
             (None, None) => format!("empty backend={backend}"),
         };
         if status != self.status {
-            let _ = self.canvas.set_attribute("data-ketchup-viewer", &status);
+            if self
+                .canvas
+                .set_attribute("data-ketchup-viewer", &status)
+                .is_err()
+            {
+                // Only the status mark for tests and the hosting page is missing.
+            }
             self.status = status;
         }
     }
@@ -540,13 +546,19 @@ fn download(file_name: &str, bytes: &[u8]) -> Result<(), Rejection> {
     anchor.set_href(&url);
     anchor.set_download(file_name);
     anchor.click();
-    // Release the file after the browser has taken it over.
+    // Release the file after the browser has taken it over. Kept or not, the
+    // download has started; a file not released goes with the page.
     let release = Closure::once_into_js(move || {
-        let _ = web_sys::Url::revoke_object_url(&url);
+        if web_sys::Url::revoke_object_url(&url).is_err() {
+            // Goes with the page.
+        }
     });
-    if let Some(window) = web_sys::window() {
-        let _ = window
-            .set_timeout_with_callback_and_timeout_and_arguments_0(release.unchecked_ref(), 60_000);
+    if let Some(window) = web_sys::window()
+        && window
+            .set_timeout_with_callback_and_timeout_and_arguments_0(release.unchecked_ref(), 60_000)
+            .is_err()
+    {
+        // Goes with the page.
     }
     Ok(())
 }

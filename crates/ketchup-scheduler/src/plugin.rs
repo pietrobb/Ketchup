@@ -285,15 +285,23 @@ fn parse_request(line: &str) -> Result<PluginRequest, PluginHostError> {
 }
 
 fn parse_u64(value: &str, field: &'static str) -> Result<u64, PluginHostError> {
-    value.parse().map_err(|_: std::num::ParseIntError| {
-        PluginHostError::MalformedProtocol(PluginProtocolViolation::NotUnsignedInteger { field })
-    })
+    value
+        .parse()
+        .map_err(|_not_a_number: std::num::ParseIntError| {
+            PluginHostError::MalformedProtocol(PluginProtocolViolation::NotUnsignedInteger {
+                field,
+            })
+        })
 }
 
 fn parse_usize(value: &str, field: &'static str) -> Result<usize, PluginHostError> {
-    value.parse().map_err(|_: std::num::ParseIntError| {
-        PluginHostError::MalformedProtocol(PluginProtocolViolation::NotUnsignedInteger { field })
-    })
+    value
+        .parse()
+        .map_err(|_not_a_number: std::num::ParseIntError| {
+            PluginHostError::MalformedProtocol(PluginProtocolViolation::NotUnsignedInteger {
+                field,
+            })
+        })
 }
 
 fn write_line(writer: &mut impl Write, line: &str) -> Result<(), PluginHostError> {
@@ -314,7 +322,7 @@ fn spawn_bounded_writer(
     mut writer: impl Write + Send + 'static,
 ) -> mpsc::Sender<PluginWriteRequest> {
     let (sender, receiver) = mpsc::channel::<PluginWriteRequest>();
-    let _ = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         for request in receiver {
             let result = write_line(&mut writer, &request.line);
             let terminal = result.is_err();
@@ -341,7 +349,7 @@ fn send_line(
             line,
             acknowledgment,
         })
-        .map_err(|_: mpsc::SendError<PluginWriteRequest>| {
+        .map_err(|_receiver_gone: mpsc::SendError<PluginWriteRequest>| {
             PluginHostError::Transport("plugin writer disconnected".to_owned())
         })?;
     loop {
@@ -368,7 +376,7 @@ fn spawn_bounded_reader(
     stdout: impl io::Read + Send + 'static,
 ) -> Receiver<io::Result<Option<String>>> {
     let (sender, receiver) = mpsc::sync_channel(1);
-    let _ = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         loop {
             let line = read_bounded_line(&mut reader, MAX_PLUGIN_REQUEST_LINE_BYTES);
@@ -601,7 +609,12 @@ mod tests {
         let (ended, end) = mpsc::channel();
         std::thread::spawn(move || {
             let mut rest = Vec::new();
-            let _ = ended.send(io::Read::read_to_end(&mut reader, &mut rest).map(|_| rest));
+            if ended
+                .send(io::Read::read_to_end(&mut reader, &mut rest).map(|_| rest))
+                .is_err()
+            {
+                // The wait below has timed out and reports it.
+            }
         });
         let rest = end
             .recv_timeout(Duration::from_secs(5))

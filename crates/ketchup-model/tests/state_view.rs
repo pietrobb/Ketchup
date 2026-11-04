@@ -385,7 +385,8 @@ fn complete_view_names_every_field_and_text_each_committed_document_stores() {
             .unwrap()
             .snapshot();
         let mut names = std::collections::BTreeSet::new();
-        let _ = ketchup_model::testing::rewrite_saved_snapshot(
+        // Read through the rewrite's edit; the rewritten file is not needed.
+        let _rewritten: Vec<u8> = ketchup_model::testing::rewrite_saved_snapshot(
             &persistence::save(&snapshot),
             |saved| {
                 saved_names(

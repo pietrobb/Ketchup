@@ -14,6 +14,7 @@ use super::program_check::ProgramCheckJob;
 use super::program_dry_run::QueuedReply;
 use super::*;
 use crate::app::project_drawings::ProjectDrawingsError;
+use crate::delivery::Deliver;
 use ketchup_manufacturing::project_drawings::DrawingSet;
 
 type Made = Result<(DrawingSet, Vec<Vec<u8>>), ProjectDrawingsError>;
@@ -160,7 +161,7 @@ impl LiveBridge {
         let spawn = std::thread::Builder::new()
             .name("ketchup-drawings-export".into())
             .spawn(move || {
-                let _ = sender.try_send(job.render(format, &flag));
+                sender.deliver(job.render(format, &flag));
                 repaint.request_repaint();
             });
         if let Err(error) = spawn {

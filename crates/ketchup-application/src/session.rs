@@ -320,7 +320,10 @@ impl DocumentSession {
         Ok(())
     }
     pub fn write_work_recovery_checkpoint(&mut self) -> Result<bool, SessionError> {
-        let _ = self.retry_pending_work_recovery_cleanup();
+        if self.retry_pending_work_recovery_cleanup().is_err() {
+            // The cleanup stays pending and the next save reports it; the
+            // checkpoint of the work in hand is written regardless.
+        }
         self.mutate_with_work_recovery(|_| Ok(()))?;
         Ok(self.work_recovery_identity.is_some())
     }

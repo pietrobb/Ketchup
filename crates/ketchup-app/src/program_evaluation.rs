@@ -7,6 +7,7 @@
 //! thread nor wait for one: they ask with `try_get` and show that they are
 //! planning until it is ready. Only answers owed in the same call (a live-bridge
 //! request, the built-in assistant) wait, with `get_blocking`.
+use crate::delivery::Deliver;
 use ketchup_model::document::RuleProgramSource;
 use ketchup_program::{CancelToken, Evaluated, ProgramError};
 use std::cell::{Cell, RefCell};
@@ -234,7 +235,7 @@ impl ProgramEvaluations {
         let spawned = std::thread::Builder::new()
             .name("ketchup-program-evaluation".into())
             .spawn(move || {
-                let _ = sender.send(evaluate(&worker_source, &worker_cancel));
+                sender.deliver(evaluate(&worker_source, &worker_cancel));
                 if let Some(repaint) = repaint {
                     repaint.request_repaint();
                 }

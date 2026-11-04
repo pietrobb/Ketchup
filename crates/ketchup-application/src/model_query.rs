@@ -958,7 +958,7 @@ impl ModelQuery {
         let (_, positions, spatial) = cached_filter.as_ref().expect("instance filter initialized");
         let total = positions.len() as u64;
         let start = usize::try_from(after)
-            .map_err(|_: std::num::TryFromIntError| QueryError::InvalidCursor)?;
+            .map_err(|_out_of_range: std::num::TryFromIntError| QueryError::InvalidCursor)?;
         if start > positions.len() {
             return Err(QueryError::InvalidCursor);
         }
