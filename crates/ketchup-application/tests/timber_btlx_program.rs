@@ -477,6 +477,23 @@ fn woodwop_and_btlx_name_a_shaped_blank_and_a_part_without_machining() {
         }
     );
     assert!(bare.to_string().contains("no drilling or pocket"), "{bare}");
+    // Review 2026-11-04 MF-123: a pocket tool that is no woodWOP tool number
+    // is named as such, not as a bare "export blocked".
+    for tool in [0, 1_000_000] {
+        let refused = projection
+            .woodwop_mpr_4_0_production_zip(
+                &snapshot,
+                ketchup_manufacturing::fabrication::WoodwopMprOptions {
+                    vertical_pocket_tool_number: Some(tool),
+                },
+            )
+            .unwrap_err();
+        assert_eq!(
+            refused,
+            GeneralFabricationError::PocketToolNumberInvalid { tool }
+        );
+        assert!(refused.to_string().contains("999999"), "{refused}");
+    }
     let snapshot = apply(
         "extrude('beam', profile = round_corners([[0, 0], [120, 0], [120, 200], [0, 200]], 10), \
          distance = 3000, material = 'C24', attributes = {FABRICATION_ROLE: TIMBER_MEMBER})\n",
@@ -631,6 +648,140 @@ fn a_round_table_top_is_described_as_two_arcs() {
     );
     let drawing = String::from_utf8(projection.drawing_svg(&snapshot).unwrap()).unwrap();
     assert_eq!(drawing.matches("A 400 400 0").count(), 2, "{drawing}");
+}
+
+/// Review 2026-11-04 MF-121: a worktop drawn with the opening for its sink, an
+/// outline with a hole, was a blank no format describes and refused by every
+/// export. Its blank is the outline, and the opening is cut through it: the
+/// production job carries it, and woodWOP refuses the cut by name.
+#[test]
+fn a_worktop_drawn_with_its_sink_opening_is_its_outline_cut_through() {
+    use ketchup_assistant::sidecar::*;
+    use ketchup_manufacturing::fabrication::production::{HomagWoodwopAdapter, ProductionAdapter};
+    use ketchup_manufacturing::fabrication::{
+        FABRICATION_ROLE_DIMENSION_V1, GeneralFabricationError, GeneralMachiningGeometry,
+        GeneralManufacturingKind, MANUFACTURED_ITEM_ROLE_V1, ShopElement,
+    };
+    use ketchup_model::document::{
+        CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId, CommandBatch,
+    };
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let rectangle = |first_id: u64, [x0, y0]: [f64; 2], [x1, y1]: [f64; 2]| {
+        let corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+        (0..4).map(move |index| AssistantSketchEntity::Line {
+            id: first_id + index as u64,
+            start_mm: corners[index],
+            end_mm: corners[(index + 1) % 4],
+        })
+    };
+    let mut session = DocumentSession::default();
+    session
+        .apply_cad_program(
+            &AssistantCadEditProgram {
+                operations: vec![AssistantCadEditOperation::CreatePart {
+                    holes: Vec::new(),
+                    pockets: Vec::new(),
+                    name: "worktop".into(),
+                    workplane: AssistantWorkplaneSpec::Principal {
+                        plane: AssistantPrincipalPlane::Xy,
+                    },
+                    entities: rectangle(1, [0.0, 0.0], [1200.0, 600.0])
+                        .chain(rectangle(5, [400.0, 150.0], [800.0, 450.0]))
+                        .collect(),
+                    constraints: vec![],
+                    feature: AssistantCadPartFeature::Extrusion { distance_mm: 38.0 },
+                    translation_mm: [0.0, 0.0, 0.0],
+                    rotation: None,
+                }],
+            },
+            &std::collections::BTreeSet::new(),
+        )
+        .unwrap();
+    let snapshot = session.snapshot();
+    let profiles = graph(&snapshot, "worktop").profiles;
+    assert!(
+        matches!(
+            &profiles[0].geometry,
+            ketchup_model::exact_brep_graph::ExactBRepPlanarGeometry::Region { holes, .. }
+                if holes.len() == 1
+        ),
+        "{profiles:#?}"
+    );
+    let worktop = snapshot.scene_query()[0].instance_path.clone();
+    let (dimension, category) = (
+        ClassificationDimensionId(900),
+        ClassificationCategoryId(901),
+    );
+    let snapshot = snapshot
+        .preview_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertClassificationDimension {
+                id: dimension,
+                name: FABRICATION_ROLE_DIMENSION_V1.into(),
+                categories: vec![(category, MANUFACTURED_ITEM_ROLE_V1.into())],
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: worktop.root_occurrence(),
+                dimension_id: dimension,
+                category_id: Some(category),
+            },
+            CanonicalCommand::SetProductionCode {
+                instance_path: worktop,
+                code: Some("000000000001".into()),
+            },
+        ]))
+        .unwrap();
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    assert!(
+        projection.manufacturing.undescribed_sources.is_empty()
+            && projection.manufacturing.free_form_sources.is_empty(),
+        "{:#?}",
+        projection.manufacturing
+    );
+    let operations = &projection.manufacturing.operations;
+    assert_eq!(
+        operations
+            .iter()
+            .map(|operation| operation.kind)
+            .collect::<Vec<_>>(),
+        [
+            GeneralManufacturingKind::Stock,
+            GeneralManufacturingKind::ThroughCut
+        ]
+    );
+    let GeneralMachiningGeometry::ProfileCut {
+        segments,
+        start_mm,
+        end_mm,
+        ..
+    } = &operations[1].machining
+    else {
+        panic!("{:#?}", operations[1]);
+    };
+    assert_eq!(segments.len(), 4, "{segments:#?}");
+    assert!(
+        (end_mm - start_mm - 38.0).abs() < 1e-6,
+        "{start_mm} {end_mm}"
+    );
+    let job = projection
+        .production_job(&snapshot, &[])
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        job["parts"][0]["dimensions_mm"],
+        serde_json::json!([1200.0, 600.0, 38.0]),
+        "{job}"
+    );
+    let woodwop = HomagWoodwopAdapter {
+        options: Default::default(),
+    };
+    let adapters: [&dyn ProductionAdapter; 1] = [&woodwop];
+    assert!(matches!(
+        projection.production_job(&snapshot, &adapters),
+        Err(GeneralFabricationError::CannotCarry {
+            element: ShopElement::Operation(GeneralManufacturingKind::ThroughCut),
+            ..
+        })
+    ));
 }
 
 /// Idea #128: a drilled library board on its own is one woodWOP program and

@@ -8,8 +8,8 @@ use ketchup_model::document::{
 };
 use ketchup_model::exact_brep_graph::{
     ExactBRepBooleanOperation, ExactBRepGraph, ExactBRepGraphError, ExactBRepLinearInterval,
-    ExactBRepNode, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarSegment,
-    ExactBRepProfile,
+    ExactBRepNode, ExactBRepOperation, ExactBRepPlanarGeometry, ExactBRepPlanarLoop,
+    ExactBRepPlanarSegment, ExactBRepProfile,
 };
 use ketchup_model::exact_product::{ExactBodyPackage, ExactResultRegistry};
 use ketchup_model::exact_validation::{
@@ -335,6 +335,11 @@ pub enum GeneralFabricationError {
     NothingToMachine {
         part: String,
     },
+    /// The vertical pocket tool asked for is not a woodWOP tool number
+    /// (1 to 999 999, review 2026-11-04 MF-123).
+    PocketToolNumberInvalid {
+        tool: u32,
+    },
     /// `part` is drilled into both its top and its bottom face, and one
     /// woodWOP setup machines one face and the edges.
     DrilledFromBothFaces {
@@ -471,6 +476,10 @@ impl fmt::Display for GeneralFabricationError {
             Self::NothingToMachine { part } => write!(
                 formatter,
                 "part \"{part}\" has no drilling or pocket, so a woodWOP program would only lay its blank; give it holes or pockets, or cut it from the cut list",
+            ),
+            Self::PocketToolNumberInvalid { tool } => write!(
+                formatter,
+                "vertical pocket tool {tool} is not a woodWOP tool number; give the number of the pocket tool in the machine's tool list, 1 to 999999",
             ),
             Self::BtlxDrillingRefused { part, reason } => write!(
                 formatter,
@@ -1324,7 +1333,7 @@ impl GeneralFabricationProjection {
     ) -> Result<Vec<u8>, GeneralFabricationError> {
         let programs = self.woodwop_mpr_4_0_production_package(snapshot, options)?;
         if programs.is_empty() {
-            return Err(GeneralFabricationError::ExportBlocked);
+            return Err(GeneralFabricationError::NoSupportedGeometry);
         }
         let names = programs
             .iter()
@@ -1358,11 +1367,11 @@ impl GeneralFabricationProjection {
     ) -> Result<Vec<(InstancePath, Vec<u8>)>, GeneralFabricationError> {
         self.bom_export(snapshot)?;
         self.manufacturing_export(snapshot)?;
-        if options
+        if let Some(tool) = options
             .vertical_pocket_tool_number
-            .is_some_and(|tool| tool == 0 || tool > 999_999)
+            .filter(|tool| *tool == 0 || *tool > 999_999)
         {
-            return Err(GeneralFabricationError::ExportBlocked);
+            return Err(GeneralFabricationError::PocketToolNumberInvalid { tool });
         }
         let format = ShopFormat::Woodwop {
             vertical_pocket_tool: options.vertical_pocket_tool_number.is_some(),
@@ -3134,9 +3143,9 @@ pub fn project_general_fabrication(
     })
 }
 
-/// Whether the blank `graph` starts from, its first extrusion, is no single
-/// outline of lines and circular arcs: a Bezier edge, a closed spline, or an
-/// outline with holes (review 2026-11-02 MF-121).
+/// Whether the blank `graph` starts from, its first extrusion, is no outline
+/// of lines and circular arcs: a Bezier edge or a closed spline (review
+/// 2026-11-02 MF-121). The holes of an outline are openings cut through it.
 fn has_free_form_blank(graph: &ExactBRepGraph) -> bool {
     let Some(ExactBRepOperation::Extrude { profile, .. }) =
         graph.nodes.first().map(|node| &node.operation)
@@ -3154,7 +3163,11 @@ fn is_free_form_outline(geometry: &ExactBRepPlanarGeometry) -> bool {
         ExactBRepPlanarGeometry::Boundary { segments, .. } => segments
             .iter()
             .any(|segment| matches!(segment, ExactBRepPlanarSegment::CubicBezier { .. })),
-        ExactBRepPlanarGeometry::Spline { .. } | ExactBRepPlanarGeometry::Region { .. } => true,
+        ExactBRepPlanarGeometry::Region { outer, holes } => std::iter::once(outer)
+            .chain(holes)
+            .flat_map(loop_segments)
+            .any(|segment| matches!(segment, ExactBRepPlanarSegment::CubicBezier { .. })),
+        ExactBRepPlanarGeometry::Spline { .. } => true,
         ExactBRepPlanarGeometry::Circle { .. } => false,
     }
 }
@@ -3219,6 +3232,7 @@ fn machined_nodes(
     };
     let stock_bounds =
         piece_dimensions_from_bounds(graph.node_bounds_mm(stock.id).ok().flatten()?)?;
+    let stock_profile = graph.profiles.get(stock_profile.0 as usize)?;
     let mut operations = vec![GeneralManufacturingOperation {
         stable_operation_id: format!("definition-{}/stock", row.definition_id.0),
         definition_id: row.definition_id,
@@ -3227,13 +3241,33 @@ fn machined_nodes(
         semantic_inputs: Vec::new(),
         frame: "definition-local",
         bounds: stock_bounds,
-        machining: prismatic_stock_geometry(
-            graph.profiles.get(stock_profile.0 as usize)?,
-            stock_interval,
-        )?,
+        machining: prismatic_stock_geometry(stock_profile, stock_interval)?,
         source: source.clone(),
         thread: None,
     }];
+    for (index, machining) in opening_cuts(stock_profile, stock_interval)?
+        .into_iter()
+        .enumerate()
+    {
+        let kind = GeneralManufacturingKind::ThroughCut;
+        operations.push(GeneralManufacturingOperation {
+            stable_operation_id: format!(
+                "definition-{}/feature-{}/opening-{index}/{}",
+                row.definition_id.0,
+                stock.source_feature_id,
+                kind.token()
+            ),
+            definition_id: row.definition_id,
+            producer_feature_id: FeatureId(stock.source_feature_id),
+            kind,
+            semantic_inputs: vec![FeatureId(stock_profile.source_feature_id)],
+            frame: "definition-local",
+            bounds: row.dimensions,
+            machining,
+            source: source.clone(),
+            thread: None,
+        });
+    }
     if nodes.len() == 1 {
         return Some(operations);
     }
@@ -3458,51 +3492,15 @@ fn prismatic_stock_geometry(
         ExactBRepPlanarGeometry::Circle {
             center_bits,
             radius_bits,
-        } => {
-            let [x, y] = center_bits.map(f64::from_bits);
-            let radius = f64::from_bits(*radius_bits);
-            let [east, west] =
-                [[x + radius, y], [x - radius, y]].map(|point| point.map(f64::to_bits));
-            [(east, west), (west, east)]
-                .into_iter()
-                .map(
-                    |(start_bits, end_bits)| ExactBRepPlanarSegment::CircularArc {
-                        start_bits,
-                        end_bits,
-                        center_bits: *center_bits,
-                        clockwise: false,
-                    },
-                )
-                .collect()
-        }
+        } => half_arcs(*center_bits, *radius_bits),
+        // A worktop with the opening for its sink: the blank is its outline,
+        // the openings are cut through it (review 2026-11-04 MF-121).
+        ExactBRepPlanarGeometry::Region { outer, .. } => loop_segments(outer),
         _ => return None,
     };
     // Lines and circular arcs (a rounded table top, review 2026-11-01
     // MF-103); a Bezier edge leaves the part undescribed.
-    let cross_section = segments
-        .iter()
-        .map(|segment| match segment {
-            ExactBRepPlanarSegment::Line {
-                start_bits,
-                end_bits,
-            } => Some(GeneralMachiningSegment::Line {
-                start_mm: start_bits.map(f64::from_bits),
-                end_mm: end_bits.map(f64::from_bits),
-            }),
-            ExactBRepPlanarSegment::CircularArc {
-                start_bits,
-                end_bits,
-                center_bits,
-                clockwise,
-            } => Some(GeneralMachiningSegment::CircularArc {
-                start_mm: start_bits.map(f64::from_bits),
-                end_mm: end_bits.map(f64::from_bits),
-                center_mm: center_bits.map(f64::from_bits),
-                clockwise: *clockwise,
-            }),
-            ExactBRepPlanarSegment::CubicBezier { .. } => None,
-        })
-        .collect::<Option<Vec<_>>>()?;
+    let cross_section = machining_segments(&segments)?;
     let [minimum, maximum] = profile_bounds(&cross_section)?;
     let width = maximum[0] - minimum[0];
     let height = maximum[1] - minimum[1];
@@ -3553,7 +3551,68 @@ fn profile_cut_geometry(
     else {
         return None;
     };
-    let segments = segments
+    Some(GeneralMachiningGeometry::ProfileCut {
+        frame,
+        segments: machining_segments(segments)?,
+        start_mm: interval.start_mm(),
+        end_mm: interval.end_mm(),
+    })
+}
+
+/// The cuts through a blank of the openings its outline has: each hole of a
+/// region extruded as the stock, cut along the whole extrusion.
+fn opening_cuts(
+    profile: &ExactBRepProfile,
+    interval: ExactBRepLinearInterval,
+) -> Option<Vec<GeneralMachiningGeometry>> {
+    let ExactBRepPlanarGeometry::Region { holes, .. } = &profile.geometry else {
+        return Some(Vec::new());
+    };
+    let frame = machining_frame(profile, interval.direction())?;
+    holes
+        .iter()
+        .map(|hole| {
+            Some(GeneralMachiningGeometry::ProfileCut {
+                frame,
+                segments: machining_segments(&loop_segments(hole))?,
+                start_mm: interval.start_mm(),
+                end_mm: interval.end_mm(),
+            })
+        })
+        .collect()
+}
+
+fn loop_segments(planar_loop: &ExactBRepPlanarLoop) -> Vec<ExactBRepPlanarSegment> {
+    match planar_loop {
+        ExactBRepPlanarLoop::Boundary { segments } => segments.clone(),
+        ExactBRepPlanarLoop::Circle {
+            center_bits,
+            radius_bits,
+        } => half_arcs(*center_bits, *radius_bits),
+    }
+}
+
+/// A circle as its two half arcs, east to west and back.
+fn half_arcs(center_bits: [u64; 2], radius_bits: u64) -> Vec<ExactBRepPlanarSegment> {
+    let [x, y] = center_bits.map(f64::from_bits);
+    let radius = f64::from_bits(radius_bits);
+    let [east, west] = [[x + radius, y], [x - radius, y]].map(|point| point.map(f64::to_bits));
+    [(east, west), (west, east)]
+        .into_iter()
+        .map(
+            |(start_bits, end_bits)| ExactBRepPlanarSegment::CircularArc {
+                start_bits,
+                end_bits,
+                center_bits,
+                clockwise: false,
+            },
+        )
+        .collect()
+}
+
+/// Lines and circular arcs; none for an outline with a Bezier edge.
+fn machining_segments(segments: &[ExactBRepPlanarSegment]) -> Option<Vec<GeneralMachiningSegment>> {
+    segments
         .iter()
         .map(|segment| match segment {
             ExactBRepPlanarSegment::Line {
@@ -3576,13 +3635,7 @@ fn profile_cut_geometry(
             }),
             ExactBRepPlanarSegment::CubicBezier { .. } => None,
         })
-        .collect::<Option<Vec<_>>>()?;
-    Some(GeneralMachiningGeometry::ProfileCut {
-        frame,
-        segments,
-        start_mm: interval.start_mm(),
-        end_mm: interval.end_mm(),
-    })
+        .collect()
 }
 
 /// A blind cut is machined from the stock face it opens on. Returns whether
