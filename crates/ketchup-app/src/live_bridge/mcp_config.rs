@@ -91,16 +91,64 @@ pub(crate) fn with_codex_server(toml: &str, executable: &str) -> io::Result<Stri
     Ok(document.to_string())
 }
 
-/// Replaces `file` with `text` through a sibling file, so a client reading it
-/// meanwhile sees the old or the new configuration, never half of one.
+/// Replaces `file` with `text`, keeping what the file is (review 2026-11-04
+/// SEC-141: `.claude.json` holds the `env` secrets of other servers, and the
+/// write left it readable by everyone and replaced a symlink by a plain file).
+/// A symlink's target is written; the first replacement keeps the original as
+/// `<file>.ketchup.bak`; the text is flushed to disk before it counts. On Unix
+/// it goes through a unique sibling with the file's permissions, renamed over
+/// it, so a client reading meanwhile sees the old or the new configuration. On
+/// Windows the file is written in place, which keeps its ACL: a new file would
+/// take the folder's.
 pub(crate) fn replace_file(file: &Path, text: &str) -> io::Result<()> {
-    if let Some(directory) = file.parent() {
-        std::fs::create_dir_all(directory)?;
+    let target = match std::fs::canonicalize(file) {
+        Ok(target) => target,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let directory = file.parent().unwrap_or(Path::new("."));
+            std::fs::create_dir_all(directory)?;
+            return write_staged(directory, file, text, None);
+        }
+        Err(error) => return Err(error),
+    };
+    let mut backup = target.as_os_str().to_owned();
+    backup.push(".ketchup.bak");
+    let backup = std::path::PathBuf::from(backup);
+    if !backup.exists() {
+        std::fs::copy(&target, &backup)?;
     }
-    let mut staged = file.as_os_str().to_owned();
-    staged.push(".ketchup-new");
-    std::fs::write(&staged, text)?;
-    std::fs::rename(&staged, file)
+    if cfg!(windows) {
+        let mut written = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&target)?;
+        io::Write::write_all(&mut written, text.as_bytes())?;
+        written.sync_all()
+    } else {
+        let permissions = std::fs::metadata(&target)?.permissions();
+        let directory = target.parent().unwrap_or(Path::new("."));
+        write_staged(directory, &target, text, Some(permissions))
+    }
+}
+
+/// Writes `text` to a unique file in `directory`, flushes it and renames it to `file`.
+fn write_staged(
+    directory: &Path,
+    file: &Path,
+    text: &str,
+    permissions: Option<std::fs::Permissions>,
+) -> io::Result<()> {
+    let mut staged = tempfile::Builder::new()
+        .prefix(".ketchup-config-")
+        .tempfile_in(directory)?;
+    if let Some(permissions) = permissions {
+        staged.as_file().set_permissions(permissions)?;
+    }
+    io::Write::write_all(&mut staged, text.as_bytes())?;
+    staged.as_file().sync_all()?;
+    staged.persist(file).map_err(|error| error.error)?;
+    #[cfg(unix)]
+    std::fs::File::open(directory)?.sync_all()?;
+    Ok(())
 }
 
 /// The text of `file`, empty when it does not exist yet.
@@ -184,6 +232,65 @@ command = "C:\\Program Files\\Ketchup\\Ketchup.exe"
             Some(r"C:\Peter's\Ketchup.exe")
         );
         assert!(quoted.contains("[mcp_servers.ketchup]"), "{quoted}");
+    }
+
+    /// Review 2026-11-04 SEC-141: the write made `.claude.json`, which holds
+    /// the `env` secrets of other servers, readable by everyone (0600 came out
+    /// 0644), replaced a symlink by a plain file, and kept no copy of the file.
+    #[test]
+    fn replacing_a_configuration_keeps_what_the_file_is_and_a_first_copy() {
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("config.json");
+        replace_file(&file, "new\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "new\n");
+        let backup = folder.path().join("config.json.ketchup.bak");
+        assert!(!backup.exists(), "nothing to keep of a new file");
+        replace_file(&file, "second\n").unwrap();
+        replace_file(&file, "third\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "third\n");
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "new\n");
+        let names: Vec<_> = std::fs::read_dir(folder.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names.len(), 2, "no staged file is left: {names:?}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let secret = folder.path().join(".claude.json");
+            std::fs::write(&secret, "{}").unwrap();
+            std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+            replace_file(&secret, "{\"a\": 1}").unwrap();
+            let mode = std::fs::metadata(&secret).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+            let link = folder.path().join("link.json");
+            std::os::unix::fs::symlink(&secret, &link).unwrap();
+            replace_file(&link, "{\"b\": 2}").unwrap();
+            assert!(
+                std::fs::symlink_metadata(&link)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(std::fs::read_to_string(&secret).unwrap(), "{\"b\": 2}");
+        }
+        #[cfg(windows)]
+        {
+            let target = folder.path().join("target.json");
+            std::fs::write(&target, "{}").unwrap();
+            let link = folder.path().join("link.json");
+            // Creating a symlink needs developer mode or elevation.
+            if std::os::windows::fs::symlink_file(&target, &link).is_ok() {
+                replace_file(&link, "{\"b\": 2}").unwrap();
+                assert!(
+                    std::fs::symlink_metadata(&link)
+                        .unwrap()
+                        .file_type()
+                        .is_symlink()
+                );
+                assert_eq!(std::fs::read_to_string(&target).unwrap(), "{\"b\": 2}");
+            }
+        }
     }
 
     /// Review 2026-11-04 SEC-140: the line editor knew only a bare
