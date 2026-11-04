@@ -411,9 +411,11 @@ fn an_unrelated_attribute_does_not_keep_the_box_of_a_sloping_rafter() {
             near(blank, [4000.0, 140.0, 60.0]),
             "{attributes}: {blank:?}"
         );
-        assert_eq!(
-            cutting[0].section_mm,
-            [140.0, 60.0],
+        // The section of a turned profile carries the rounding of its turn,
+        // which differs between platforms' sin and cos.
+        let section = &cutting[0].section_mm;
+        assert!(
+            section.len() == 2 && near([section[0], section[1], 0.0], [140.0, 60.0, 0.0]),
             "{attributes}: {cutting:#?}"
         );
     }
