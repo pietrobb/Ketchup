@@ -109,7 +109,13 @@ pub(super) fn validate_underlay(
     if !crate::underlay::placement::within_bounds(&underlay.placement) {
         return Err(CanonicalError::UnderlayPlacementOutOfRange(underlay.id));
     }
-    if !underlay.edits.is_valid() || !underlay.view.is_valid() {
+    if !underlay.edits.is_valid()
+        || !underlay.view.is_valid()
+        || underlay
+            .raster
+            .as_ref()
+            .is_some_and(|raster| !raster.is_valid())
+    {
         return Err(CanonicalError::InvalidUnderlay(underlay.id));
     }
     for layer in &underlay.layers {

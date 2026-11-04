@@ -6,6 +6,7 @@
 
 use super::underlay_snapping::UnderlaySnapSlot;
 use crate::import_source::BoxedCause;
+use crate::renderer::underlay::raster::{RasterDraw, RasterImage};
 use crate::renderer::underlay::{UnderlayDraw, UnderlayGeometry, UnderlayPaintCallback};
 use crate::*;
 use ketchup_application::program_isolation::{
@@ -16,10 +17,11 @@ use ketchup_model::underlay::object_query::ObjectTree;
 use ketchup_model::underlay::placement::{
     UnderlayFit, UnderlayFitError, geo_not_beside, geo_origin, plan_underlay_fit,
 };
+use ketchup_model::underlay::raster::UnderlayRaster;
 use ketchup_model::underlay::snap::UnderlaySnapIndex;
 use ketchup_model::underlay::{
     LayerLines, Underlay, UnderlayId, UnderlayLines, UnderlayLinesError, UnderlayPlanError,
-    plan_underlay, plan_underlay_removal,
+    plan_raster_underlay, plan_underlay, plan_underlay_removal,
 };
 use ketchup_program::CancelToken;
 
@@ -87,13 +89,15 @@ fn underlay_extent(lines: &UnderlayLines) -> UnderlayExtent {
 pub(crate) struct ReadUnderlay {
     pub(crate) read: UnderlayRead,
     /// The encoded lines, the blob the document keeps.
-    bytes: Vec<u8>,
-    lines: UnderlayLines,
+    pub(super) bytes: Vec<u8>,
+    pub(super) lines: UnderlayLines,
     /// The snap index of `lines`, built on the reading thread: the window does not wait for it.
-    snaps: Arc<UnderlaySnapIndex>,
+    pub(super) snaps: Arc<UnderlaySnapIndex>,
     /// The GPU lines of `lines` and of the letters of its texts, laid out on the reading
     /// thread too.
-    geometry: Arc<UnderlayGeometry>,
+    pub(super) geometry: Arc<UnderlayGeometry>,
+    /// The image of an image read as an underlay; none for a drawing.
+    pub(super) raster: Option<super::raster_underlay::ReadRaster>,
 }
 
 impl ReadUnderlay {
@@ -113,6 +117,7 @@ impl ReadUnderlay {
             "diagnostics": read.diagnostics.iter().take(LISTED).collect::<Vec<_>>(),
             "diagnostics_total": read.diagnostics.len(),
             "dwg_version": read.dwg.as_ref().map(|(version, _)| version),
+            "raster": self.raster.as_ref().map(super::raster_underlay::ReadRaster::summary),
         })
     }
 }
@@ -126,6 +131,9 @@ pub(crate) fn read_underlay_file(
     geo_origin_mm: Option<[f64; 2]>,
     cancel: &CancelToken,
 ) -> Result<ReadUnderlay, ImportError> {
+    if let Some(format) = super::raster_underlay::raster_format(path) {
+        return super::raster_underlay::read_raster_file(path, format, unit, geo_origin_mm);
+    }
     let failed = |cause: BoxedCause| ImportError::failed(ImportFormat::Dxf, cause);
     let directory = tempfile::tempdir().map_err(|error| failed(error.into()))?;
     let output = directory.path().join("underlay-lines.bin");
@@ -151,6 +159,7 @@ pub(crate) fn read_underlay_file(
         lines,
         snaps,
         geometry,
+        raster: None,
     })
 }
 
@@ -259,8 +268,9 @@ impl KetchupApp {
             Ok(result) => result,
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => Err(ImportError::failed(
-                ImportFormat::Dxf,
-                "the thread that reads the drawing stopped",
+                super::raster_underlay::raster_format(&task.path)
+                    .map_or(ImportKind::File(ImportFormat::Dxf), ImportKind::Image),
+                "the thread that reads the underlay stopped",
             )),
         };
         let task = self
@@ -304,25 +314,50 @@ impl KetchupApp {
         path: &Path,
         read: ReadUnderlay,
     ) -> Result<UnderlayId, ImportError> {
-        let failed = |cause: BoxedCause| ImportError::failed(ImportFormat::Dxf, cause);
+        let kind = read
+            .raster
+            .as_ref()
+            .map_or(ImportKind::File(ImportFormat::Dxf), |raster| {
+                ImportKind::Image(raster.raster.format)
+            });
+        let failed = |cause: BoxedCause| ImportError::failed(kind, cause);
         let name = path
             .file_stem()
             .map_or_else(|| "underlay".into(), |stem| stem.to_string_lossy());
         let key = sha256_bytes(&read.bytes);
         let not_beside = geo_not_beside(&self.document.current(), read.read.offset_mm);
-        let (batch, id) = plan_underlay(
-            &self.document.current(),
-            &name,
-            &read.read.layers,
-            &read.read.hidden_layers,
-            key,
-            read.read.offset_mm,
-        )
+        let (batch, id) = match &read.raster {
+            Some(raster) => plan_raster_underlay(
+                &self.document.current(),
+                &name,
+                raster.raster.clone(),
+                key,
+                read.read.offset_mm,
+            ),
+            None => plan_underlay(
+                &self.document.current(),
+                &name,
+                &read.read.layers,
+                &read.read.hidden_layers,
+                key,
+                read.read.offset_mm,
+            ),
+        }
         .map_err(|error| failed(error.into()))?;
         let mut container = self.file.container_data.clone();
         container
             .insert_import_blob(read.bytes)
             .map_err(|error| failed(error.into()))?;
+        let raster_digest = read
+            .raster
+            .as_ref()
+            .map(|raster| self.raster_digest(path, raster));
+        let raster = read.raster.map(|raster| (raster.bytes, raster.image));
+        if let Some((bytes, _)) = &raster {
+            container
+                .insert_import_blob(bytes.clone())
+                .map_err(|error| failed(error.into()))?;
+        }
         let proposal = self
             .document
             .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
@@ -330,6 +365,9 @@ impl KetchupApp {
         self.commit_verified_proposal_with_container_work_recovery(&proposal, container)
             .map_err(|error| failed(error.into()))?;
         self.render.underlays.insert(key, read.geometry);
+        if let Some((_, image)) = raster {
+            self.render.underlay_rasters.insert(image.key, Some(image));
+        }
         self.render
             .underlay_snaps
             .get_mut()
@@ -353,6 +391,9 @@ impl KetchupApp {
                 ("texts", read.read.texts.to_string()),
             ]),
         );
+        if let Some(digest) = raster_digest {
+            self.digest = digest;
+        }
         if let Some(not_beside) = not_beside {
             let [x, y] = not_beside.apart_mm;
             let note = self.catalog.format(
@@ -514,12 +555,31 @@ impl KetchupApp {
                 Some((id, edit)) if id == underlay.id => edit.compose(underlay.world_transform()),
                 _ => underlay.world_transform(),
             };
+            let raster = underlay
+                .raster
+                .as_ref()
+                .filter(|_| shown(underlay.tag))
+                .and_then(|raster| {
+                    Some(RasterDraw {
+                        image: self.raster_image(underlay, raster)?,
+                        corners_mm: raster.corners_mm(),
+                    })
+                });
             draws.push(UnderlayDraw {
                 geometry,
                 visible,
                 placement,
+                raster,
             });
         }
+        self.render.underlay_rasters.retain(|key, _| {
+            snapshot.underlays().any(|underlay| {
+                underlay
+                    .raster
+                    .as_ref()
+                    .is_some_and(|raster| raster.image_sha256 == *key)
+            })
+        });
         let named = |key: &[u8; 32]| {
             snapshot
                 .underlays()
@@ -553,6 +613,45 @@ impl KetchupApp {
         draws
     }
 
+    /// The pixels of the image of `underlay`, decoded from the document's blob the first
+    /// time; none, and the reason in the digest, while the document holds no image it can
+    /// decode: the document's other content stays usable.
+    fn raster_image(
+        &mut self,
+        underlay: &Underlay,
+        raster: &UnderlayRaster,
+    ) -> Option<Arc<RasterImage>> {
+        if let Some(image) = self.render.underlay_rasters.get(&raster.image_sha256) {
+            return image.clone();
+        }
+        let decoded = self
+            .file
+            .container_data
+            .blobs()
+            .get(&raster.image_blob())
+            .map(|bytes| RasterImage::decode(bytes, raster));
+        // The typed error stays whole up to here, where it becomes the digest's text.
+        let reason = match decoded {
+            Some(Ok(image)) => {
+                let image = Arc::new(image);
+                self.render
+                    .underlay_rasters
+                    .insert(raster.image_sha256, Some(Arc::clone(&image)));
+                return Some(image);
+            }
+            Some(Err(error)) => error.to_string(),
+            None => format!("the document holds no blob {}", raster.image_blob()),
+        };
+        self.render
+            .underlay_rasters
+            .insert(raster.image_sha256, None);
+        self.digest = self.catalog.format(
+            "error-underlay-lines",
+            &BTreeMap::from([("name", underlay.name.clone()), ("reason", reason)]),
+        );
+        None
+    }
+
     /// The world box of what every shown underlay draws on its shown layers, where it is
     /// placed: one `(origin, size)` per underlay, as [`Self::active_frame_bounds`] takes it.
     pub(crate) fn shown_underlay_bounds(&self, snapshot: &Snapshot) -> Vec<(Vec3, Vec3)> {
@@ -571,6 +670,7 @@ impl KetchupApp {
                     .flat_map(|[low, high]| {
                         [[low[0], low[1]], [high[0], low[1]], [low[0], high[1]], high]
                     })
+                    .chain(underlay.raster.iter().flat_map(UnderlayRaster::corners_mm))
                     .map(|[x, y]| {
                         transform_model_point(underlay.world_transform(), Vec3::new(x, y, 0.0))
                     });

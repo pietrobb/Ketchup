@@ -417,7 +417,8 @@ pub enum Request {
         sheet_language: Option<String>,
     },
     /// Imports a STEP, IGES, STL, DXF, GLB or SketchUp scene file as one Undo step;
-    /// `as_underlay` keeps a DXF or DWG drawing under the model as an underlay instead.
+    /// `as_underlay` keeps a DXF or DWG drawing, or a PNG or JPEG image laid out by its
+    /// world file, under the model as an underlay instead.
     Import {
         #[serde(default)]
         expected: Option<Stamp>,
