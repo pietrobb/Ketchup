@@ -209,7 +209,7 @@ fn percent(part: f64, whole: f64) -> f64 {
     (part / whole * 1000.0).round() / 10.0
 }
 
-pub use crate::model::{GRAIN_AXIS, LENGTH_AXIS, THICKNESS_AXIS};
+pub use crate::model::{LENGTH_AXIS, MATERIAL_AXIS, THICKNESS_AXIS};
 
 /// The blank of a part: its length (longest first), section or size and
 /// thickness, and which local axis each became. The axes a part names by
@@ -229,7 +229,7 @@ fn blank(part: &Part, stock: Option<&Stock>) -> ([f64; 3], [usize; 3]) {
     };
     let along = stock
         .and_then(|stock| stock.along.as_deref())
-        .unwrap_or(GRAIN_AXIS);
+        .unwrap_or(MATERIAL_AXIS);
     let extent = part.blank_size_along(along);
     let longest_first = |axes: &mut [usize]| {
         axes.sort_by(|left, right| extent[*right].total_cmp(&extent[*left]));

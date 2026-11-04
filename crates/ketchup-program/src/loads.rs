@@ -1182,6 +1182,19 @@ pub fn loads(model: &ProgramModel) -> LoadReport {
     loads_with(model, &mut ContactFaces::default())
 }
 
+/// The fasteners of every joint between the parts named `a` and `b`, in millimetres.
+fn fasteners_between(model: &ProgramModel, a: &str, b: &str) -> Vec<[f64; 3]> {
+    model
+        .joints
+        .iter()
+        .filter(|joint| {
+            let [x, y] = [joint.parts[0].as_str(), joint.parts[1].as_str()];
+            (x, y) == (a, b) || (x, y) == (b, a)
+        })
+        .flat_map(|joint| joint.fasteners_mm.iter().copied())
+        .collect()
+}
+
 /// [`loads`] reusing the contacts the load path already measured into `faces`.
 pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'a>) -> LoadReport {
     // Members to check without any load are listed as missing it (review
@@ -1346,16 +1359,7 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
     let (mut patches, mut missing) = own_loads(model, &frames);
     let braced = braced_stretches(&supports, &member, &sink, &frames, |item, held| {
         let (a, b) = (parts[item].name.as_str(), parts[held].name.as_str());
-        let fasteners: Vec<[f64; 3]> = model
-            .joints
-            .iter()
-            .filter(|joint| {
-                let [x, y] = [joint.parts[0].as_str(), joint.parts[1].as_str()];
-                (x, y) == (a, b) || (x, y) == (b, a)
-            })
-            .flat_map(|joint| joint.fasteners_mm.iter().copied())
-            .collect();
-        (fixed_by_tag[item] || joined(a, b)).then_some(fasteners)
+        (fixed_by_tag[item] || joined(a, b)).then(|| fasteners_between(model, a, b))
     });
 
     // Pass the loads down, each part after everything it carries.

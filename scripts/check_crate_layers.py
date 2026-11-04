@@ -86,7 +86,7 @@ LONG_FUNCTIONS = {
     "crates/ketchup-model/src/persistence/legacy.rs::read_product": 1385,
     "crates/ketchup-model/src/shared_change.rs::commit_occurrence_fork_change": 543,
     "crates/ketchup-model/src/shared_change.rs::project_occurrence_fork_impact": 457,
-    "crates/ketchup-program/src/eval.rs::builtins": 677,
+    "crates/ketchup-program/src/eval.rs::builtins": 674,
     "crates/ketchup-scheduler/src/exact_worker.rs::evaluate_exact_brep_graph": 509,
 }
 
@@ -357,8 +357,10 @@ CASTS_AND_ALLOWS = {
     "ketchup-analysis casts": 6,
     # Includes the audited WSAPoll / poll of live_bridge::transport::wait_readable (SEC-61)
     # and PR #21 running_programs: Toolhelp32, audited (live_bridge::running_programs;
-    # #2687: each Supervisor instance reads the MCP servers in its own folder).
-    "ketchup-app allows": 12,
+    # #2687: each Supervisor instance reads the MCP servers in its own folder). Its one
+    # module-wide allowance became one on each of the three items that call the system
+    # (review 2026-11-04 P3: the module-wide one let new unsafe code in), so 12 -> 14.
+    "ketchup-app allows": 14,
     "ketchup-app casts": 216,
     "ketchup-application allows": 9,
     "ketchup-application casts": 29,

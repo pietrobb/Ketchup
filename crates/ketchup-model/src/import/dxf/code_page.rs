@@ -21,19 +21,23 @@ impl CodePage {
             Self::Standard(encoding) => {
                 encoding.decode_without_bom_handling_and_without_replacement(bytes)
             }
-            Self::Dos(high) => Some(if bytes.is_ascii() {
-                Cow::Borrowed(std::str::from_utf8(bytes).ok()?)
-            } else {
-                Cow::Owned(
-                    bytes
-                        .iter()
-                        .map(|byte| match byte.checked_sub(128) {
-                            Some(at) => high[usize::from(at)],
-                            None => char::from(*byte),
-                        })
-                        .collect(),
-                )
-            }),
+            Self::Dos(high) => Some(
+                if bytes.is_ascii()
+                    && let Ok(ascii) = std::str::from_utf8(bytes)
+                {
+                    Cow::Borrowed(ascii)
+                } else {
+                    Cow::Owned(
+                        bytes
+                            .iter()
+                            .map(|byte| match byte.checked_sub(128) {
+                                Some(at) => high[usize::from(at)],
+                                None => char::from(*byte),
+                            })
+                            .collect(),
+                    )
+                },
+            ),
         }
     }
 
@@ -61,10 +65,10 @@ impl CodePage {
                 let (bytes, _, unmapped) = encoding.encode(character.encode_utf8(&mut buffer));
                 (!unmapped).then(|| bytes.into_owned())
             }
-            Self::Dos(high) => {
-                let at = high.iter().position(|own| *own == character)?;
-                Some(vec![u8::try_from(at + 128).ok()?])
-            }
+            Self::Dos(high) => (128..=u8::MAX)
+                .zip(high.iter())
+                .find(|(_, own)| **own == character)
+                .map(|(byte, _)| vec![byte]),
         }
     }
 
@@ -418,15 +422,18 @@ impl TextSeen {
         };
         self.lines += 1;
         if self.utf8 {
-            match std::str::from_utf8(line) {
-                Ok(text) => {
-                    for character in text.chars().filter(|character| !character.is_ascii()) {
-                        *self.beyond_ascii.entry(character).or_default() += 1;
-                    }
+            for chunk in line.utf8_chunks() {
+                for character in chunk
+                    .valid()
+                    .chars()
+                    .filter(|character| !character.is_ascii())
+                {
+                    *self.beyond_ascii.entry(character).or_default() += 1;
                 }
-                Err(_) => {
+                if !chunk.invalid().is_empty() {
                     self.utf8 = false;
                     self.beyond_ascii.clear();
+                    break;
                 }
             }
         }
@@ -515,14 +522,15 @@ pub(super) fn dxf_source_text(
     let source = source
         .strip_prefix(super::BYTE_ORDER_MARK)
         .unwrap_or(source);
-    let text = match encoding.code_page {
-        None => Cow::Borrowed(
-            std::str::from_utf8(source)
-                .ok()
-                .ok_or(DxfImportError::NonAscii)?,
-        ),
-        Some(code_page) => code_page.decode(source).ok_or(DxfImportError::NonAscii)?,
-    };
+    if encoding.code_page.is_none()
+        && let Ok(text) = std::str::from_utf8(source)
+    {
+        return Ok((Cow::Borrowed(text), encoding.read));
+    }
+    let text = encoding
+        .code_page
+        .and_then(|code_page| code_page.decode(source))
+        .ok_or(DxfImportError::NonAscii)?;
     Ok((text, encoding.read))
 }
 

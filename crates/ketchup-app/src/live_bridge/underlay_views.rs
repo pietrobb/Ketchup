@@ -6,7 +6,7 @@
 //! edit, a new placement or a new view of one rewrites its data in the same Undo step.
 
 use super::program_access::invalid;
-use super::underlay_program::{BEGIN, END, is_identifier, with_data};
+use super::underlay_program::{BEGIN, END, TAKEN_NAME_HINT, is_identifier, taken_name, with_data};
 use super::*;
 use ketchup_model::underlay::UnderlayId;
 use ketchup_model::underlay::view::{UnderlayView, ViewPlane, plan_underlay_view};
@@ -166,7 +166,9 @@ impl LiveBridge {
         let current = app.document.current_rule_program();
         let mut source = current.map_or_else(String::new, |program| program.source.clone());
         let solid = intersection(&name, &names, &planes);
-        super::underlay_program::refuse_taken_names(&source, &name, &solid)?;
+        if let Some(taken) = taken_name(&source, &name, &solid) {
+            return Err(invalid("name", taken, TAKEN_NAME_HINT));
+        }
         source = with_data(&source, &name, &solid);
         for (view, data) in views.iter().zip(&names).rev() {
             let request = Request::ProgramFromUnderlay {
@@ -190,7 +192,9 @@ impl LiveBridge {
             binding.frame = true;
             binding.whole = view.whole;
             let written = binding.written(app, &snapshot)?;
-            super::underlay_program::refuse_taken_names(&source, data, &written)?;
+            if let Some(taken) = taken_name(&source, data, &written) {
+                return Err(invalid("name", taken, TAKEN_NAME_HINT));
+            }
             source = with_data(&source, data, &written);
         }
         Self::require_request_authority(cancelled)?;

@@ -18,9 +18,11 @@ pub const LENGTH_AXIS: &str = "length_axis";
 /// The part attribute naming the local axis of a sheet's thickness, or of a
 /// bar's section side that is a layer's thickness (library `buildup()`).
 pub const THICKNESS_AXIS: &str = "thickness_axis";
-/// The part attribute naming the local axis its material's grain runs along
-/// (library `board(grain=)`); a sheet stock keeps it along the sheet.
-pub const GRAIN_AXIS: &str = "grain";
+/// The part attribute naming the local axis ("x", "y" or "z") a direction of
+/// its material runs along, which the cut list keeps square to the blank. The
+/// library sets it beside its own attribute for the workshop; namespaced, it
+/// is no column of the cut list.
+pub const MATERIAL_AXIS: &str = "material:axis";
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Param {
@@ -1164,11 +1166,11 @@ impl Part {
     /// those of the smallest rectangle around its profile (review 2026-11-01
     /// PG-101: a sloping plate is cut from a plank along its slope, not from
     /// its box in the wall's axes); other parts', and those of a part whose
-    /// grain ([`GRAIN_AXIS`]) runs in its profile's plane, are their
-    /// [`Self::local_bounds`].
+    /// material axis ([`MATERIAL_AXIS`]) runs in its profile's plane, are
+    /// their [`Self::local_bounds`].
     #[must_use]
     pub fn blank_size(&self) -> [f64; 3] {
-        self.blank_size_along(GRAIN_AXIS)
+        self.blank_size_along(MATERIAL_AXIS)
     }
 
     /// [`Self::blank_size`] keeping the axis the attribute `along` names
@@ -1210,12 +1212,12 @@ impl Part {
         std::array::from_fn(|axis| max[axis] - min[axis])
     }
 
-    /// Whether the attribute `along` (the grain) names a local axis in the
-    /// profile's plane: it ties the material's grain to that axis, which the
-    /// cut list writes as a side of the blank, so the blank stays square to it
+    /// Whether the attribute `along` names a local axis in the profile's
+    /// plane: it ties a direction of the material to that axis, which the cut
+    /// list writes as a side of the blank, so the blank stays square to it
     /// (review 2026-11-02 PG-125: it followed the turned rectangle). Only that
     /// attribute does: any other that happens to be "x" or "y" (`grid='X'`)
-    /// left a sloping rafter its box, a 6 m lath at 2 % (review 2026-11-04 PG-143).
+    /// left a sloping bar its box, a 6 m length at 2 % (review 2026-11-04 PG-143).
     fn ties_a_profile_axis(&self, along: &str) -> bool {
         self.attributes
             .get(along)

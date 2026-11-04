@@ -116,8 +116,9 @@ impl PlanAnnotations {
             };
             let layout = DimensionLayout::new(*from_mm, *to_mm, *offset_mm);
             // Upright and parallel to the view within the shortest length a
-            // drawing gives (review 2026-11-04: 1e-9 of a unit vector dropped
-            // one 1e-5 mm off upright from every view).
+            // drawing gives (review 2026-11-04: a rounding tolerance on a unit
+            // vector dropped one a hundred-thousandth of a mm off upright from
+            // every view).
             let run = |axis: [f64; 3]| (dot(*to_mm, axis) - dot(*from_mm, axis)).abs();
             let depth = (dot(*from_mm, frame.depth) + dot(*to_mm, frame.depth)) / 2.0;
             let near = depth - dot(centre, frame.depth);

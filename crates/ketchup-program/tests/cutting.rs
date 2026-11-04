@@ -360,7 +360,7 @@ fn a_blank_keeps_the_grain_the_part_names_in_its_profile_plane() {
         bom(&model).cut_list[0].dimensions_mm
     };
     let near = |a: [f64; 3], b: [f64; 3]| a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 0.01);
-    for grain in ["", ", attributes = {'grain': 'z'}"] {
+    for grain in ["", ", attributes = {'material:axis': 'z'}"] {
         assert!(
             near(blank(grain), [1000.0, 300.0, 18.0]),
             "{grain}: {:?}",
@@ -369,7 +369,7 @@ fn a_blank_keeps_the_grain_the_part_names_in_its_profile_plane() {
     }
     for axis in ["x", "y"] {
         let box_ = [1000.0 * c + 300.0 * s, 1000.0 * s + 300.0 * c, 18.0];
-        let named = blank(&format!(", attributes = {{'grain': '{axis}'}}"));
+        let named = blank(&format!(", attributes = {{'material:axis': '{axis}'}}"));
         assert!(near(named, box_), "{axis}: {named:?}");
     }
 }

@@ -1985,6 +1985,7 @@ fn every_body_takes_material_color_and_attributes() {
     assert_eq!(part("e").material.as_deref(), Some("cast"));
     assert_eq!(part("f").material.as_deref(), Some("board"));
     assert_eq!(part("f").attributes["grain"], "x");
+    assert_eq!(part("f").attributes["material:axis"], "x");
     let error = run(
         "bad.star",
         "board(\"g\", [10, 10, 10], grain=\"w\")",

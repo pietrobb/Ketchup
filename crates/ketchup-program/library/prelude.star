@@ -154,7 +154,7 @@ def grain_attributes(grain):
         return {}
     if grain not in AXES:
         fail("grain must be \"x\", \"y\" or \"z\", got %r" % grain)
-    return {"grain": grain}
+    return {"grain": grain, MATERIAL_AXIS: grain}
 
 # The fabrication role a part is exported with (BOM, BTLx, woodWOP, job):
 #   TIMBER_MEMBER      a bar cut and machined from timber stock (BTLx, bar list)
@@ -186,6 +186,10 @@ SHOP_DRAWING = "drawing:sheet"
 # length and the shortest as the thickness.
 LENGTH_AXIS = "length_axis"
 THICKNESS_AXIS = "thickness_axis"
+# Its MATERIAL_AXIS is the local axis a direction of its material runs along (the grain):
+# the cut list keeps its blank square to it. It is namespaced, so the workshop sees only
+# the "grain" attribute beside it.
+MATERIAL_AXIS = "material:axis"
 
 def _role(who, role):
     """`role` if it is a fabrication role, else fail naming `who`."""
