@@ -276,6 +276,10 @@ impl KetchupApp {
                 recent_files::RegistryRecentFiles::user_settings(),
             ));
         }
+        #[cfg(not(windows))]
+        if let Some(settings) = crate::user_settings::SettingsFile::of_user() {
+            app.file.recent = recent_files::RecentFiles::from_store(Box::new(settings));
+        }
         app.value_box.decimal = crate::length_input::DecimalSeparator::at_startup();
         app.dialogs = Box::new(NativeFileDialogs::with_parent(
             DialogParentWindow::from_creation_context(context),
