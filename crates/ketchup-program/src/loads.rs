@@ -1098,10 +1098,14 @@ fn braced_stretches(
 ) -> Vec<Vec<Bracing>> {
     let mut braced: Vec<Vec<Bracing>> = frames.iter().map(|_| Vec::new()).collect();
     for (item, list) in supports.iter().enumerate() {
-        let anchored = list
+        let anchors: Vec<[f64; 3]> = list
             .iter()
-            .any(|support| sink[support.supporter] && fastening(item, support.supporter).is_some());
-        if !anchored {
+            .filter(|support| {
+                sink[support.supporter] && fastening(item, support.supporter).is_some()
+            })
+            .filter_map(|support| middle(&support.points))
+            .collect();
+        if anchors.is_empty() {
             continue;
         }
         for support in list.iter().filter(|support| member[support.supporter]) {
@@ -1112,21 +1116,50 @@ fn braced_stretches(
             let Some(top) = frame.edge(&support.points) else {
                 continue;
             };
-            let (from, to) = frame.range(&support.points);
-            let at: Vec<f64> = if fasteners.is_empty() {
-                vec![(from + to) / 2.0]
+            let points: Vec<[f64; 3]> = if fasteners.is_empty() {
+                middle(&support.points).into_iter().collect()
             } else {
-                fasteners.iter().map(|point| frame.along(*point)).collect()
+                fasteners
             };
-            braced[support.supporter].extend(at.into_iter().map(|at| Bracing {
-                by: item,
-                top,
-                from: at,
-                to: at,
-            }));
+            // Held sideways only from an anchorage across the member: from one
+            // in line with it, the part sways with the member (capability
+            // review 466 of PG-141).
+            let Some(sideways) = linalg::normalize(cross(frame.axis, [0.0, 0.0, 1.0])) else {
+                continue;
+            };
+            let held = |point: [f64; 3]| {
+                anchors.iter().any(|anchor| {
+                    let path = sub(*anchor, point);
+                    dot(path, sideways).abs() >= dot(path, frame.axis).abs()
+                })
+            };
+            braced[support.supporter].extend(
+                points
+                    .into_iter()
+                    .filter(|point| held(*point))
+                    .map(|point| frame.along(point))
+                    .map(|at| Bracing {
+                        by: item,
+                        top,
+                        from: at,
+                        to: at,
+                    }),
+            );
         }
     }
     braced
+}
+
+/// The middle of the box of `points`, None for none.
+fn middle(points: &[[f64; 3]]) -> Option<[f64; 3]> {
+    (!points.is_empty()).then(|| {
+        std::array::from_fn(|i| {
+            let (lo, hi) = points.iter().fold((f64::MAX, f64::MIN), |(lo, hi), p| {
+                (lo.min(p[i]), hi.max(p[i]))
+            });
+            (lo + hi) / 2.0
+        })
+    })
 }
 
 /// Whether each part is of a load path's `fixed` tags: fastened to what it leans on.

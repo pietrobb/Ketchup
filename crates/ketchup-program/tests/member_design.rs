@@ -554,29 +554,24 @@ fn loose_laths_along_the_top_leaning_on_grounded_blocks_do_not_brace_it() {
     );
 }
 
-/// PG-142 (review 2026-11-04): where a joint's fasteners are was ignored. Each
-/// lath screwed to the beam by one screw at its end over the beam's bearing
-/// braced all its 2550 mm of contact; it holds the beam at that screw only.
-/// Two screws at the pad hold the beam there, which leaves two shorter free
-/// stretches; screwed every 300 mm, the laths hold its whole top.
+/// PG-142 (review 2026-11-04): where a joint's fasteners are was ignored. A
+/// board 1000 mm wide across the beam, on it and on the grounded wall and
+/// screwed to both, braced its whole 1000 mm of contact from one screw into
+/// the beam; it holds the beam at that screw only.
 #[test]
-fn a_lath_holds_the_beam_at_its_fasteners_only() {
-    let anchors = "joint(\"lath a\", \"block a\", kind = \"screw\")\njoint(\"lath b\", \"block b\", kind = \"screw\")\n";
-    let at = |a: f64, b: f64| {
-        report(
-            &laths_along(&format!(
-                "{anchors}joint(\"lath a\", \"beam\", kind = \"screw\", fasteners = [({a}, 40, 2400)])
-joint(\"lath b\", \"beam\", kind = \"screw\", fasteners = [({b}, 40, 2400)])
-"
-            )),
-            &[],
-        )
-    };
-    let ends = at(150.0, 5750.0);
-    let beam = member(&ends, "beam");
-    assert!(ltb_not_verified(&ends), "{beam:?}");
-    assert_eq!(beam.status, "not_verified");
-    let load = ends
+fn a_board_holds_the_beam_at_its_fasteners_only() {
+    let board = report(
+        &format!(
+            "{}box(\"wall\", (5900, 100, 2400), at = (0, 1000, 0), material = \"GL24h\", grounded = True)
+box(\"board\", (1000, 1100, 25), at = (1000, 0, 2400), material = \"GL24h\")
+joint(\"board\", \"wall\", kind = \"screw\")
+joint(\"board\", \"beam\", kind = \"screw\", fasteners = [(1500, 40, 2400)])
+",
+            slender_beam(&[])
+        ),
+        &[],
+    );
+    let load = board
         .loads
         .members
         .iter()
@@ -587,15 +582,14 @@ joint(\"lath b\", \"beam\", kind = \"screw\", fasteners = [({b}, 40, 2400)])
         .iter()
         .map(|brace| (brace.from_mm, brace.to_mm))
         .collect();
-    assert_eq!(
-        held,
-        [(150.0, 150.0), (5750.0, 5750.0)],
-        "{:?}",
-        load.braced_by
-    );
+    assert_eq!(held, [(1500.0, 1500.0)], "{:?}", load.braced_by);
+}
 
-    // Held at 2700 and 3200 mm, each free stretch is 2.6 m: kcrit 0.94 within the strength.
-    let middle = at(2700.0, 3200.0);
+/// Held at 2700 and 3200 mm by two battens across to the wall, each free
+/// stretch is 2.6 m: kcrit 0.94 within the strength.
+#[test]
+fn two_battens_across_at_the_pad_leave_two_shorter_free_stretches() {
+    let middle = report(&slender_beam(&[2675.0, 3175.0]), &[]);
     let beam = member(&middle, "beam");
     assert_eq!(beam.status, "pass", "{beam:?}");
     let buckling = beam
@@ -607,6 +601,47 @@ joint(\"lath b\", \"beam\", kind = \"screw\", fasteners = [({b}, 40, 2400)])
         buckling.at.starts_with("top free 100-2700 mm"),
         "{buckling:?}"
     );
+}
+
+/// PG-141 (review 2026-11-04, capability review 466): a lath along the beam,
+/// screwed to it and anchored only at its own end on a block in line with
+/// the beam, still braced it at every screw: with screws at 2700 / 3200 mm or
+/// every 300 mm the beam passed at 1.185. Nothing across the beam holds those
+/// screws sideways; the lath sways with the beam. The counter-batten on a
+/// rafter leaning on a gable (review line 114) is the same case.
+#[test]
+fn laths_along_the_beam_anchored_in_line_do_not_brace_it_at_any_screw() {
+    let anchors = "joint(\"lath a\", \"block a\", kind = \"screw\")\njoint(\"lath b\", \"block b\", kind = \"screw\")\n";
+    let at = |a: f64, b: f64| {
+        report(
+            &laths_along(&format!(
+                "{anchors}joint(\"lath a\", \"beam\", kind = \"screw\", fasteners = [({a}, 40, 2400)])
+joint(\"lath b\", \"beam\", kind = \"screw\", fasteners = [({b}, 40, 2400)])
+"
+            )),
+            &[],
+        )
+    };
+    let unbraced = |report: &Report| {
+        let beam = member(report, "beam");
+        assert!(ltb_not_verified(report), "{beam:?}");
+        assert_eq!(beam.status, "not_verified", "{:?}", beam.checks);
+        let load = report
+            .loads
+            .members
+            .iter()
+            .find(|load| load.part == "beam")
+            .expect("loads of the beam");
+        assert!(
+            load.braced_by
+                .iter()
+                .all(|brace| !brace.part.starts_with("lath")),
+            "{:?}",
+            load.braced_by
+        );
+    };
+    unbraced(&at(150.0, 5750.0));
+    unbraced(&at(2700.0, 3200.0));
 
     let screws = |from: i32, to: i32| {
         (from..=to)
@@ -625,9 +660,7 @@ joint(\"lath b\", \"beam\", kind = \"screw\", fasteners = [{}])
         )),
         &[],
     );
-    let beam = member(&many, "beam");
-    assert_eq!(beam.missing, Vec::<String>::new(), "{beam:?}");
-    assert_eq!(beam.status, "pass", "{:?}", beam.checks);
+    unbraced(&many);
 }
 
 /// PG-120 (review 2026-11-02): a ceiling board screwed under two beams held
