@@ -5,6 +5,7 @@
 //! drawing does to a fraction of a pixel.
 
 use super::SplitPoint;
+use ketchup_model::sheet_pdf::SheetImage;
 use ketchup_model::underlay::raster::{RasterFormat, UnderlayRaster};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -61,6 +62,42 @@ impl RasterImage {
     #[must_use]
     pub fn dimensions(&self) -> [u32; 2] {
         [self.pixels.width(), self.pixels.height()]
+    }
+
+    /// Its pixels as a sheet prints them: `shrink` times fewer across and down, and on
+    /// white paper where they are transparent.
+    #[must_use]
+    pub fn sheet_image(&self, shrink: u32) -> SheetImage {
+        let [width, height] = self
+            .dimensions()
+            .map(|length| length.div_ceil(shrink.max(1)));
+        let shrunk;
+        let pixels = if [width, height] == self.dimensions() {
+            &self.pixels
+        } else {
+            shrunk = image::imageops::resize(
+                &self.pixels,
+                width,
+                height,
+                image::imageops::FilterType::Triangle,
+            );
+            &shrunk
+        };
+        let on_paper = |channel: u8, alpha: u8| {
+            let [channel, alpha] = [channel, alpha].map(u16::from);
+            u8::try_from((channel * alpha + 255 * (255 - alpha) + 127) / 255).unwrap_or(u8::MAX)
+        };
+        SheetImage {
+            width_px: width,
+            height_px: height,
+            rgb: pixels
+                .pixels()
+                .flat_map(|pixel| {
+                    let [red, green, blue, alpha] = pixel.0;
+                    [red, green, blue].map(|channel| on_paper(channel, alpha))
+                })
+                .collect(),
+        }
     }
 
     /// The colour of the pixel `[column, row]`, sRGB and alpha.

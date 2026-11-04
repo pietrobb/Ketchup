@@ -3,7 +3,7 @@
 //! or a DXF or DWG per sheet, with the title block and format kept in the
 //! document; with `sheet_id`, a drawing sheet of the document as DXF or DWG.
 
-use super::{LiveBridge, Request, failed_because, failure};
+use super::{LiveBridge, Request, failed_because, failure, record_rejection, rejected};
 use crate::KetchupApp;
 use crate::app::drawing_sheet_export::{DrawingSheetExportError, SheetFileFormat};
 use crate::app::project_drawings::{
@@ -526,6 +526,21 @@ pub(super) fn export_failed(error: ProjectDrawingsError) -> &'static str {
             ),
             json!({"part": part}),
         ),
+        ProjectDrawingsError::UnderlayImage(name, cause) => {
+            record_rejection(
+                &rejected("drawings_unavailable")
+                    .reason(format!(
+                        "The image of underlay {name} cannot be read, so the site plan would leave the orthophoto out."
+                    ))
+                    .fix_hint(
+                        "Hide that underlay or import its image again, then export again."
+                            .to_owned(),
+                    )
+                    .caused_by(cause),
+                json!({"underlay": name}),
+            );
+            "drawings_unavailable"
+        }
         ProjectDrawingsError::Dwg(error) => failed_because("dwg_conversion_failed", error),
         ProjectDrawingsError::Write(error) => write_failed(error),
     }

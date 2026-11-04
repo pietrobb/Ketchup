@@ -15,10 +15,11 @@
 
 use crate::title_block::{SheetFormat, TITLE_BLOCK_MM, TitleValueDoesNotFit, drawing_area};
 use ketchup_geometry::linalg::{Vec3, cross, cross2, dot, dot2, normalize_within, sub};
-use ketchup_model::sheet_pdf::{Anchor, Mark, Page, Stroke};
+use ketchup_model::sheet_pdf::{Anchor, Mark, Page, SheetImage, Stroke};
 use ketchup_model::tolerance::{HIDDEN_LINE_TOUCH_MM, NEGLIGIBLE, ROUNDING};
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 mod annotations;
 mod cutting;
@@ -41,7 +42,9 @@ pub use set::{
     drawing_set_until,
 };
 pub use shop::{ShopDrawings, ShopPosition, ShopSheet, ShopSummary};
-pub use situation::{SituationCross, SituationSheet, SituationSummary};
+pub use situation::{
+    SITUATION_SCALES, SituationCross, SituationSheet, SituationSummary, UnderlayImage,
+};
 pub use threads::DrawingThread;
 use threads::ThreadMarks;
 
@@ -477,6 +480,9 @@ struct DrawnView {
     annotations: Option<PlanAnnotations>,
     /// The underlay lines a plan draws beneath the model, cut at its extent.
     underlay: Vec<[[f64; 2]; 2]>,
+    /// The images a site plan prints beneath everything: the pixels and their
+    /// upper-left, upper-right and lower-left corners in view millimetres.
+    images: Vec<(Arc<SheetImage>, [[f64; 2]; 3])>,
     /// Boxed marks where they stand: the windows and doors a plan shows, the
     /// position numbers of a shop drawing.
     marks: Vec<([f64; 2], String)>,
@@ -510,6 +516,27 @@ impl DrawnView {
             .filter_map(|[a, b]| {
                 clip_to_box(frame.project(*a), frame.project(*b), self.min, self.max)
             })
+            .collect();
+    }
+
+    /// Lays the `images` beneath this view, those that reach into what it draws.
+    fn lay_images(&mut self, frame: &ViewFrame, images: &[situation::UnderlayImage]) {
+        if !self.min[0].is_finite() {
+            return;
+        }
+        self.images = images
+            .iter()
+            .map(|image| (image, image.corners.map(|corner| frame.project(corner))))
+            .filter(|(_, [upper_left, upper_right, lower_left])| {
+                let lower_right =
+                    [0, 1].map(|axis| upper_right[axis] + lower_left[axis] - upper_left[axis]);
+                let corners = [*upper_left, *upper_right, *lower_left, lower_right];
+                (0..2).all(|axis| {
+                    corners.iter().any(|corner| corner[axis] >= self.min[axis])
+                        && corners.iter().any(|corner| corner[axis] <= self.max[axis])
+                })
+            })
+            .map(|(image, corners)| (Arc::clone(&image.image), corners))
             .collect();
     }
 
@@ -640,6 +667,7 @@ fn draw_view(
         solids: min[0].is_finite().then_some((min, max)),
         annotations: None,
         underlay: Vec::new(),
+        images: Vec::new(),
         marks: Vec::new(),
         levels: Vec::new(),
         grid: Vec::new(),
@@ -857,7 +885,18 @@ fn draw_view_on_page(
         color: EDGE_COLOR,
         dash_mm: Vec::new(),
     };
-    // First, so the model is drawn over it.
+    // First, so the model is drawn over it; a DXF holds no pixels.
+    let [corner, opposite] = [view.min, view.max].map(at);
+    for (image, corners) in view.images.iter().filter(|_| visible.is_none()) {
+        page.marks.push(Mark::Image {
+            image: Arc::clone(image),
+            corners: corners.map(at),
+            clip: Some([
+                [corner[0].min(opposite[0]), corner[1].min(opposite[1])],
+                [corner[0].max(opposite[0]), corner[1].max(opposite[1])],
+            ]),
+        });
+    }
     for [a, b] in &view.underlay {
         page.line(
             vec![at(*a), at(*b)],

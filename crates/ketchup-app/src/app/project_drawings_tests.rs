@@ -1446,27 +1446,8 @@ fn a_site_plan_sheet_draws_the_georeferenced_underlay_with_labelled_grid_crosses
     assert!(site.page.texts().any(|text| text == "1:250"));
     assert_eq!(site.underlay_lines, 4, "the whole parcel");
 
-    // The parcel's north-east corner (Y 742 300, X 1 045 200) on the page: the
-    // rightmost, topmost end of the grey lines.
-    let corner = site
-        .page
-        .marks
-        .iter()
-        .filter_map(|mark| match mark {
-            Mark::Line { points, stroke, .. } if stroke.color == [160, 160, 160] => {
-                Some(points.clone())
-            }
-            _ => None,
-        })
-        .flatten()
-        .reduce(|best, point| {
-            if point[0] > best[0] + 1e-6 || (point[0] > best[0] - 1e-6 && point[1] < best[1]) {
-                point
-            } else {
-                best
-            }
-        })
-        .unwrap();
+    // The parcel's north-east corner (Y 742 300, X 1 045 200) on the page.
+    let corner = underlay_north_east(&site.page);
     // Every 25 m at 1:250 within 25 m around the house: one stands on the corner.
     assert!(
         summary
@@ -1541,6 +1522,158 @@ fn a_site_plan_sheet_draws_the_georeferenced_underlay_with_labelled_grid_crosses
             .iter()
             .all(|sheet| sheet.kind != SheetKind::Situation)
     );
+}
+
+/// The rightmost, topmost end of the grey underlay lines of `page`.
+fn underlay_north_east(page: &ketchup_model::sheet_pdf::Page) -> [f64; 2] {
+    page.marks
+        .iter()
+        .filter_map(|mark| match mark {
+            Mark::Line { points, stroke, .. } if stroke.color == [160, 160, 160] => {
+                Some(points.clone())
+            }
+            _ => None,
+        })
+        .flatten()
+        .reduce(|best, point| {
+            if point[0] > best[0] + 1e-6 || (point[0] > best[0] - 1e-6 && point[1] < best[1]) {
+                point
+            } else {
+                best
+            }
+        })
+        .unwrap()
+}
+
+/// Měchenice MECH-10: the coordination site plan was drawn on an orthophoto outside
+/// Kečup. An image underlay in the same S-JTSK coordinates as the cadastre prints on the
+/// site plan beneath the parcel lines and the model, its corners where its world file
+/// puts them, and its pixels go into the PDF; the plans keep to lines.
+#[test]
+fn a_site_plan_prints_the_orthophoto_where_its_world_file_puts_it() {
+    use ketchup_manufacturing::project_drawings::SheetKind;
+    let (app, _directory) = house_on_a_parcel_with_an_orthophoto();
+    let set = app.project_drawings().unwrap();
+    let site = &set.sheets[0];
+    assert_eq!(site.kind, SheetKind::Situation);
+    assert_eq!(site.situation.as_ref().unwrap().scale, 250);
+    let corner = underlay_north_east(&site.page);
+    let images = site
+        .page
+        .marks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, mark)| match mark {
+            Mark::Image { image, corners, .. } => Some((index, image, corners)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(images.len(), 1, "one orthophoto");
+    let (index, image, corners) = images[0];
+    assert_eq!([image.width_px, image.height_px], [4, 2]);
+    assert_eq!(&image.rgb[..3], &[255, 0, 0], "the top row first");
+    assert_eq!(&image.rgb[21..], &[0, 0, 255]);
+    // 20 m west of the parcel's north-east corner and 10 m south of it, at 1:250.
+    let expected = [
+        [corner[0] - 80.0, corner[1]],
+        corner,
+        [corner[0] - 80.0, corner[1] + 40.0],
+    ];
+    for (at, wanted) in corners.iter().zip(expected) {
+        assert!(
+            (at[0] - wanted[0]).abs() < 1e-6 && (at[1] - wanted[1]).abs() < 1e-6,
+            "upper left, upper right, lower left {corners:?}, the parcel puts them at {expected:?}"
+        );
+    }
+    let first_grey = site
+        .page
+        .marks
+        .iter()
+        .position(
+            |mark| matches!(mark, Mark::Line { stroke, .. } if stroke.color == [160, 160, 160]),
+        )
+        .unwrap();
+    assert!(index < first_grey, "beneath the parcel lines and the model");
+    let pdf = ketchup_model::sheet_pdf::pages_pdf(&[&site.page], &Default::default());
+    assert!(
+        pdf.windows(15).any(|window| window == b"/Subtype /Image"),
+        "the PDF carries the pixels"
+    );
+    for sheet in &set.sheets[1..] {
+        assert!(
+            !sheet
+                .page
+                .marks
+                .iter()
+                .any(|mark| matches!(mark, Mark::Image { .. })),
+            "{:?} keeps to lines",
+            sheet.kind
+        );
+    }
+}
+
+/// An orthophoto whose bytes no longer decode stops only what prints it: the PDF
+/// names it, the DXF sheets, which keep to lines, export without it.
+#[test]
+fn an_orthophoto_that_does_not_decode_stops_the_pdf_but_not_the_dxf() {
+    use crate::app::project_drawings::{ProjectDrawingsError, SetFileFormat};
+    let (app, _directory) = house_on_a_parcel_with_an_orthophoto();
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let spoiled = || {
+        let mut job = app.project_drawings_job().unwrap();
+        job.spoil_images();
+        job
+    };
+    let (set, files) = spoiled()
+        .render(SetFileFormat::Dxf, &cancelled)
+        .unwrap_or_else(|error| panic!("the DXF does not need the image: {error:?}"));
+    assert_eq!(files.len(), set.sheets.len());
+    match spoiled().render(SetFileFormat::Pdf, &cancelled) {
+        Err(ProjectDrawingsError::UnderlayImage(name, _)) => {
+            assert!(name.starts_with("ortofoto"), "{name}");
+        }
+        other => panic!("the PDF names the image it cannot print: {:?}", other.err()),
+    }
+}
+
+/// A house on a 20 m S-JTSK parcel, the cadastre and an orthophoto over the
+/// parcel's northern half as shown underlays; the directory holds their files.
+fn house_on_a_parcel_with_an_orthophoto() -> (KetchupApp, tempfile::TempDir) {
+    let mut app = KetchupApp::new();
+    add_box(&mut app, 904, "house", 0.0);
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let directory = tempfile::tempdir().unwrap();
+    let cadastre = directory.path().join("cadastre.dxf");
+    std::fs::write(
+        &cadastre,
+        concat!(
+            "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n6\n0\nENDSEC\n",
+            "0\nSECTION\n2\nENTITIES\n",
+            "0\nLWPOLYLINE\n8\nparcel\n90\n4\n70\n1\n",
+            "10\n-742320\n20\n-1045220\n",
+            "10\n-742300\n20\n-1045220\n",
+            "10\n-742300\n20\n-1045200\n",
+            "10\n-742320\n20\n-1045200\n",
+            "0\nENDSEC\n0\nEOF\n",
+        ),
+    )
+    .unwrap();
+    // 4 × 2 pixels of 5 m, the top row red and the bottom row blue, over the parcel's
+    // northern half: x −742320…−742300, y −1045210…−1045200 metres.
+    let ortho = directory.path().join("ortofoto.png");
+    let image = image::RgbImage::from_fn(4, 2, |_, row| {
+        image::Rgb(if row == 0 { [255, 0, 0] } else { [0, 0, 255] })
+    });
+    image.save(&ortho).unwrap();
+    std::fs::write(
+        directory.path().join("ortofoto.pgw"),
+        "5.0\n0.0\n0.0\n-5.0\n-742317.5\n-1045202.5\n",
+    )
+    .unwrap();
+    app.start_underlay_read(cadastre, None);
+    app.start_underlay_read(ortho, None);
+    assert_eq!(app.document.current().underlays().count(), 2);
+    (app, directory)
 }
 
 /// `742300.0` as "742 300".

@@ -8,11 +8,12 @@ use super::{
     ViewFrame, draw_view, format_at_scale,
 };
 use crate::title_block::SheetFormat;
-use ketchup_model::sheet_pdf::{Anchor, Mark, Page, Stroke};
+use ketchup_model::sheet_pdf::{Anchor, Mark, Page, SheetImage, Stroke};
 use serde::Serialize;
+use std::sync::Arc;
 
 /// The scales of a site plan, finest first.
-const SITUATION_SCALES: [u32; 2] = [250, 500];
+pub const SITUATION_SCALES: [u32; 2] = [250, 500];
 /// Paper between two grid crosses, and around the model.
 const GRID_PAPER_MM: f64 = 100.0;
 /// Half the length of a cross arm on the paper.
@@ -30,6 +31,16 @@ pub struct SituationSheet {
     /// point `[x, y]` of the model's ground plane: row `i` is `[a, b, c]` of
     /// `a·x + b·y + c`.
     pub to_grid_mm: [[f64; 3]; 2],
+    /// The shown image underlays, an orthophoto, printed beneath the model.
+    pub images: Vec<UnderlayImage>,
+}
+
+/// An image underlay: its pixels and its upper-left, upper-right and lower-left
+/// corners in the world.
+#[derive(Clone, Debug)]
+pub struct UnderlayImage {
+    pub image: Arc<SheetImage>,
+    pub corners: [Point; 3],
 }
 
 /// A grid cross of the site plan.
@@ -96,6 +107,7 @@ pub(super) fn plan(
                 view.max[axis] += margin;
             }
             view.lay_underlay(&frame, underlay);
+            view.lay_images(&frame, &site.images);
             view.grid = crosses(&view, site.to_grid_mm, inverse, step_mm);
             let sheet = SheetViews {
                 views: vec![view],
