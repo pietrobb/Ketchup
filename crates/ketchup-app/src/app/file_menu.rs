@@ -112,8 +112,12 @@ impl KetchupApp {
 
     /// The documents of Open Recent, newest first: the name to read, the
     /// whole path on hover and for screen readers. A document no longer on
-    /// disk stays listed, greyed, until it is clicked.
+    /// disk stays listed, greyed, until it is clicked; the disk is asked once
+    /// when the menu opens, off the UI thread (review 2026-11-04 UI-141).
     fn open_recent_menu(&mut self, ui: &mut egui::Ui) {
+        self.file
+            .recent
+            .shown(ui.ctx().cumulative_pass_nr(), ui.ctx());
         if self.file.recent.files().is_empty() {
             ui.add_enabled(
                 false,
@@ -127,7 +131,7 @@ impl KetchupApp {
             let name = path
                 .file_name()
                 .map_or_else(|| full.clone(), |name| name.to_string_lossy().into_owned());
-            let (text, accessible) = if path.is_file() {
+            let (text, accessible) = if self.file.recent.on_disk(path) != Some(false) {
                 (egui::RichText::new(name), full)
             } else {
                 (
