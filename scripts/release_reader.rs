@@ -10,10 +10,12 @@
 //! when it requires an extension, as in every version); any other must be refused, as
 //! newer or as larger than the release opens. A file the release takes for damaged opens
 //! its `.recovery` in its place, and its next Save would overwrite the newer file with
-//! it: that fails the run.
+//! it: that fails the run. Given a fifth argument, a directory, it saves each file it
+//! opens editable again there, for HEAD to find the same document in it (review
+//! 2026-11-04 REL-143).
 use ketchup_model::document::DocumentStore;
 use ketchup_model::persistence::{
-    self, ContainerData, FilePersistenceError, LoadNotice, PersistenceError,
+    self, ContainerData, FilePersistenceError, LoadNotice, LoadOutcome, PersistenceError,
 };
 use std::path::Path;
 use std::process::ExitCode;
@@ -27,7 +29,9 @@ struct Reads {
 
 fn main() -> ExitCode {
     let mut arguments = std::env::args().skip(1);
-    let directory = arguments.next().expect("the directory of the files to open");
+    let directory = arguments
+        .next()
+        .expect("the directory of the files to open");
     let reads = Reads {
         newest_format: arguments
             .next()
@@ -44,6 +48,7 @@ fn main() -> ExitCode {
             .and_then(|bytes| bytes.parse().ok())
             .filter(|bytes| *bytes > 0),
     };
+    let resaved = arguments.next();
     let backup = persistence::save_document_store(&DocumentStore::new(), &ContainerData::default())
         .expect("an empty document saves");
     let mut files = std::fs::read_dir(&directory)
@@ -62,7 +67,10 @@ fn main() -> ExitCode {
         std::fs::write(&recovery, &backup).expect("write the .recovery");
         let name = path.file_name().unwrap().to_string_lossy();
         let opens = format_of(&name) <= reads.newest_format && fits(path, &reads);
-        match verdict(path, opens, &reads) {
+        match verdict(path, opens, &reads).and_then(|verdict| match &resaved {
+            Some(directory) if verdict == OPENED => save_again(path, directory).map(|()| verdict),
+            _ => Ok(verdict),
+        }) {
             Ok(verdict) => println!("ok      {name}: {verdict}"),
             Err(error) => {
                 failed += 1;
@@ -102,6 +110,26 @@ fn fits(path: &Path, reads: &Reads) -> bool {
     schema.is_some_and(|schema| reads.container_schemas.contains(&schema)) && !larger(path, reads)
 }
 
+const OPENED: &str = "opened";
+
+/// Opens `path` and saves it under its name in `directory`, as a user who opens a file
+/// and saves it does: what the release does not know is gone from that file, which HEAD
+/// then compares with the original (review 2026-11-04 REL-143, `crates/ketchup-model/examples/resaved.rs`).
+fn save_again(path: &Path, directory: &str) -> Result<(), String> {
+    let LoadOutcome::Editable {
+        document,
+        container_data,
+        ..
+    } = persistence::load_file(path).map_err(|error| error.to_string())?
+    else {
+        return Err("opened for review only when saving it again".to_owned());
+    };
+    let file = persistence::save_document_store_current_snapshot(&document, &container_data)
+        .map_err(|error| format!("could not save it again: {error}"))?;
+    std::fs::write(Path::new(directory).join(path.file_name().unwrap()), file)
+        .map_err(|error| format!("could not write it saved again: {error}"))
+}
+
 fn verdict(path: &Path, opens: bool, reads: &Reads) -> Result<&'static str, String> {
     match persistence::load_file(path) {
         Ok(outcome) => {
@@ -135,7 +163,7 @@ fn verdict(path: &Path, opens: bool, reads: &Reads) -> Result<&'static str, Stri
                     audit.migration_losses, audit.override_health
                 ))
             } else {
-                Ok("opened")
+                Ok(OPENED)
             }
         }
         Err(FilePersistenceError::Format(
