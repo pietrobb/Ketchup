@@ -1519,6 +1519,18 @@ fn a_site_plan_sheet_draws_the_georeferenced_underlay_with_labelled_grid_crosses
         assert_ne!(sheet.kind, SheetKind::Situation);
     }
 
+    // A3, kept in the document, never holds 100 mm of paper around the model: the
+    // site plan takes the smallest sheet that does, the other sheets stay on A3.
+    let mut settings = app.sheet_settings();
+    settings.format = Some(SheetFormat::A3);
+    app.store_sheet_settings(settings);
+    let set = app.project_drawings().unwrap();
+    assert_eq!(set.sheets[0].kind, SheetKind::Situation);
+    assert_eq!(set.sheets[0].format, SheetFormat::A2);
+    for sheet in &set.sheets[1..] {
+        assert_eq!(sheet.format, SheetFormat::A3, "{:?}", sheet.kind);
+    }
+
     // A drawing in local coordinates is no site plan.
     let mut local = KetchupApp::new();
     add_box(&mut local, 903, "house", 0.0);
