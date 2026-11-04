@@ -14,10 +14,23 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 - The sections and elevations of the project drawings carry level marks for the building office: ±0,000 at the floor of the lowest storey, each storey's floor and the top, in metres with a decimal comma on Czech and Slovak sheets.
 - The vertical dimensions a program draws with `dim()`, which a plan cannot show, appear in the sections and elevations that show their true length (a section only those beyond its cut); the sheet summary counts the dimensions of all its views.
 - A lofted part can be hollowed with `shell()`, open at its first or last section (`open=["start"]`, `["end"]` or both), e.g. a membrane over a frame; it used to be refused, so the inner loft had to be subtracted by hand.
-- 0.3.1 reads some drawings differently from 0.3.0 (skipped or empty entities, CP1250 text, files with a BOM), so it often refused to export a drawing edited in 0.3.0. Such a drawing exports again: the edits find their entities by DXF handle, and an entity not edited is written as the file has it.
+- 0.3.1 reads some drawings differently from 0.3.0 (skipped or empty entities, CP1250 text, files with a BOM), so it often refused to export a drawing edited in 0.3.0. Most such drawings export again, also one that declares no unit: the edits find their entities by DXF handle, and an entity not edited is written as the file has it. A moved block insert that this version reads differently from 0.3.0 is still refused.
 - The floor plans of the project drawings show the visible layers of an imported DXF or DWG underlay, thin and grey beneath the model. A large map such as a cadastral one is cut at the edge of the plan, so it does not make the sheet larger.
 - A program can group parts that do not touch, such as the kerbs, doors and technology of a site, with `group(..., kind="logical")`. Such a group is only for finding, showing and hiding them together, so the contact check no longer reports it as falling apart; an assembly inside it is still checked. A document with a logical group is saved in the new format 108, which Kečup 0.3.1 and older refuse to open as newer instead of losing the mark; any other document is saved as before.
 - The preview above the value field writes its numbers the way you type them: with a decimal comma where the system uses one (`= 40,6 mm`, `= 12,5; 3; 0 mm`, `= 80,6 mm (+Z)`), for lengths and expressions, radii, a rectangle's sides and every Move value alike; it used to write a point.
+- The Windows installer and the portable package carry the Visual C++ runtime, so Ketchup starts on a Windows without the Visual C++ Redistributable, which 0.3.1 needed.
+- The right dock shows Layers, Program, Checks, Views and AI as tabs side by side. The Program tab colours and wraps the code and marks the lines of the selected part, and its part list gives each part's real size instead of 0 × 0 × 0.
+- **File > Open Recent** lists the documents opened last, and the import and export formats sit in submenus.
+- A typed Move goes the way the pointer or the locked axis points, and its preview shows the distance with its direction (`= 80,6 mm (+Z)`). Typed without any direction, it moves nothing.
+- On Linux and macOS, opening a document right after saving it is no longer refused as changed by another program.
+- A drawings export sent over MCP while the exact evaluation still runs waits for it, up to 5 minutes, instead of being refused. A plan leaves out an upright part such as a standing pipe and names it, instead of refusing the whole plan.
+- A timber member counts as braced against lateral buckling only where its bracing leads to something that holds it: a grounded part, a support or a declared diaphragm. A board on two free beams, laths lying loose along a beam or fixed only in line with it, and a logical group marked grounded no longer brace it, and screws brace only at their positions.
+- The cutting plan takes the length axis of a profile from the attribute reserved for it, so a sloped rafter with an attribute such as `grid='X'` gets its long, narrow blank again instead of a near-square one.
+- **Connect** edits Codex's `config.toml` as TOML, so a commented header, an inline table, a dotted key or a multi-line string no longer leave a file Codex refuses; a file it cannot read is left alone. A client's settings keep their permissions, symlink and other entries, with a backup of the first copy; only the ketchup server's command, args and type change, a project's own entry is seen, and the installer no longer replaces a working registration.
+- **Connect AI** reads a Supervisor's `$VAR` and `${VAR}` as Supervisor does, and says why a settings file or the list of running instances could not be read.
+- A drawing export refuses to take out an entity that now lies elsewhere in the file, and says how many entities changed in the file, or were added to it, since the import.
+- A DXF older than 2007 is read in the right code page more often: a sign such as ², Ø or ¹ no longer turns a western drawing to Central European, real UTF-8 is recognised by its longer characters and by most of its text, and a byte order mark no longer spoils it. Text written into such a drawing uses its code page, with `\U+XXXX` only for what the page lacks.
+- Data taken from a drawing into a program cannot be named like a builtin (`range`, `len`, a library function) or like a name the program already sets, such as another data's `A_POINTS`.
 
 ## 0.3.1 — 2026-11-02
 
@@ -52,6 +65,8 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 - A Ketchup.app built from 0.3.1 carries the program worker, so program evaluation, DWG import and underlay export work on macOS. 0.3.1 published no macOS download.
 
 Files from 0.3.0 open in 0.3.1. A file with a trimmed, extended or offset drawing line needs 0.3.1.
+
+**Known issue:** Ketchup 0.3.1, installed or portable, does not start on a Windows without the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) for x64, version 14.29 or later. Install it, then start Ketchup again. From 0.3.2 on, the runtime comes with the programs.
 
 ## 0.3.0 — 2026-10-30
 
