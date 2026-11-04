@@ -138,6 +138,10 @@ impl KetchupApp {
         let dimensions_visible = self.panels.dimensions_visible;
         let manual_cad_tools_visible = self.panels.manual_cad_tools_visible;
         let about_open = self.panels.about_open;
+        // The window's settings, not the document's (review 2026-11-04 UI-140).
+        let decimal = self.value_box.decimal;
+        let remember_language = self.remember_language;
+        let dock_tab = self.dock.tab;
         let recent_files = std::mem::take(&mut self.file.recent);
         let exact_worker_path = self.exact.worker_path.clone();
         let exact_worker_attempted = self.exact.worker_attempted;
@@ -162,6 +166,9 @@ impl KetchupApp {
         self.panels.dimensions_visible = dimensions_visible;
         self.panels.manual_cad_tools_visible = manual_cad_tools_visible;
         self.panels.about_open = about_open;
+        self.value_box.decimal = decimal;
+        self.remember_language = remember_language;
+        self.dock.tab = dock_tab;
         self.file.recent = recent_files;
         self.digest = self.catalog.text("digest-new-document");
     }

@@ -20,6 +20,29 @@ fn new_document_starts_empty_without_an_inactive_tool_preview() {
     assert_eq!(app.active_tool, ActiveTool::Select);
 }
 
+/// Review 2026-11-04 UI-140: New rebuilt the window and copied back a list of
+/// its settings that missed the decimal separator, whether to remember the
+/// language and the dock page. On Slovak or Czech Windows `12,5` was refused
+/// after New. New starts a document; the window keeps its settings.
+#[test]
+fn new_keeps_the_windows_decimal_separator_language_choice_and_dock_page() {
+    let mut app = KetchupApp::new();
+    app.value_box.decimal = DecimalSeparator::Comma;
+    app.remember_language = true;
+    app.dock.tab = Some(crate::DockTab::Views);
+
+    app.new_document();
+
+    assert_eq!(app.value_box.decimal, DecimalSeparator::Comma);
+    assert_eq!(
+        parse_distance_mm("12,5", app.value_box.decimal),
+        Some(12.5),
+        "a comma is still the decimal separator"
+    );
+    assert!(app.remember_language, "the language choice is still saved");
+    assert_eq!(app.dock.tab, Some(crate::DockTab::Views));
+}
+
 /// After New the window keeps no evaluation of the program it showed before.
 #[test]
 fn a_new_document_lets_go_of_the_old_program_evaluation() {
