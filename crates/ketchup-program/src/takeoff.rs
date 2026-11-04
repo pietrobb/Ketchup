@@ -1,7 +1,8 @@
 //! Material takeoff: the counted parts grouped by category, material and
 //! cross-section, with piece counts, running length, area and volume.
 //!
-//! Sizes are the part's blank (as in the cut list). The volume is the exact
+//! Sizes are the part's blank as the cut list gives it
+//! ([`crate::cutting::blank_dimensions`]). The volume is the exact
 //! solid's when the caller knows it, else the blank's; every row says which.
 //! The area follows the same basis.
 
@@ -45,7 +46,7 @@ impl VolumeBasis {
 pub struct TakeoffRow {
     pub category: String,
     pub material: String,
-    /// The blank's two shorter sides, larger first: width and thickness.
+    /// The blank's width and thickness, as the cut list gives them.
     pub section_mm: [f64; 2],
     pub count: usize,
     /// Sum of the blanks' longest sides.
@@ -154,8 +155,7 @@ pub fn material_takeoff(model: &ProgramModel, counted: &BTreeMap<String, Option<
         };
         let exact_volume = exact_volume.filter(|volume| volume.is_finite() && *volume > 0.0);
         counted_parts += 1;
-        let mut sides = part.blank_size();
-        sides.sort_by(|left, right| right.total_cmp(left));
+        let sides = crate::cutting::blank_dimensions(model, part);
         let material = part
             .material
             .clone()
@@ -338,6 +338,29 @@ box("Stĺpik2", (100, 100, 100), at = (600, 600, 0), material = "drevo")
         let takeoff = material_takeoff(&model(), &counted);
         let osb = &takeoff.materials[0];
         assert_eq!((osb.area_m2, osb.volume_m3), (1.5, 0.0225));
+    }
+
+    /// Review 2026-11-04 (rest of PG-123): the takeoff sorted the blank
+    /// longest first, so a strip of an 18 mm board 15 mm wide counted as
+    /// 18 mm wide and 15 mm thick, its area by 18 mm; it takes the cut list's.
+    #[test]
+    fn a_strip_of_a_board_counts_the_thickness_it_names() {
+        let model = crate::evaluate(
+            "strip.star",
+            "board('strip', [2000, 15, 18], material = 'OSB', thickness_axis = 'z')\n\
+             sheet_stock('OSB', [(2500, 1250)])\n",
+            &BTreeMap::new(),
+        )
+        .unwrap()
+        .model;
+        let takeoff = material_takeoff_of_all(&model);
+        let row = &takeoff.rows[0];
+        assert_eq!(row.section_mm, [15.0, 18.0], "{row:?}");
+        assert_eq!((row.length_m, row.area_m2), (2.0, 0.03), "{row:?}");
+        assert_eq!(
+            crate::cutting::blank_dimensions(&model, &model.parts[0]),
+            [2000.0, 15.0, 18.0]
+        );
     }
 
     /// Review 2026-10-09 (P3): a visible part the program did not make was
