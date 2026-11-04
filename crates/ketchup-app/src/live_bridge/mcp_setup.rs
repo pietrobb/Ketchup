@@ -224,20 +224,36 @@ impl Environment {
         files
     }
 
-    /// The program the client starts as `ketchup` for every project, if any.
-    fn registered_command(harness: Harness, file: &Path) -> Option<String> {
-        let text = std::fs::read_to_string(file).ok()?;
+    /// The program the client starts as `ketchup` for every project, if any,
+    /// and those Claude Code starts in a project of its own `ketchup` entry,
+    /// which wins over the user's there (review 2026-11-04 SEC-142).
+    fn registered_commands(harness: Harness, file: &Path) -> (Option<String>, Vec<String>) {
+        let Ok(text) = std::fs::read_to_string(file) else {
+            return (None, Vec::new());
+        };
         match harness {
-            Harness::Codex => codex_command(&text),
+            Harness::Codex => (codex_command(&text), Vec::new()),
             Harness::ClaudeCode | Harness::ClaudeDesktop | Harness::Supervisor => {
                 // A file that is no JSON shows as not set up; Connect names it.
-                let config: serde_json::Value = serde_json::from_str(&text).ok()?;
-                let command = config["mcpServers"][SERVER]["command"].as_str()?;
-                Some(if harness == Harness::Supervisor {
-                    expand_variables(command)
-                } else {
-                    command.to_owned()
-                })
+                let Ok(config) = serde_json::from_str::<serde_json::Value>(&text) else {
+                    return (None, Vec::new());
+                };
+                let command = |servers: &serde_json::Value| {
+                    let command = servers[SERVER]["command"].as_str()?;
+                    Some(if harness == Harness::Supervisor {
+                        expand_variables(command)
+                    } else {
+                        command.to_owned()
+                    })
+                };
+                let projects = config["projects"]
+                    .as_object()
+                    .filter(|_| harness == Harness::ClaudeCode)
+                    .into_iter()
+                    .flat_map(|projects| projects.values())
+                    .filter_map(|project| command(&project["mcpServers"]))
+                    .collect();
+                (command(&config["mcpServers"]), projects)
             }
         }
     }
@@ -253,16 +269,22 @@ impl Environment {
         file: Option<&Path>,
         executable: &Path,
     ) -> Registration {
-        match file.and_then(|file| Self::registered_command(harness, file)) {
-            Some(command) if same_program(Path::new(&command), executable) => {
-                Registration::ThisKetchup
-            }
-            Some(command) => Registration::Elsewhere {
-                exists: Path::new(&command).is_file(),
-                command,
+        let (user, projects) = file.map_or((None, Vec::new()), |file| {
+            Self::registered_commands(harness, file)
+        });
+        // Any entry starting another program is what some project starts.
+        let elsewhere = user
+            .iter()
+            .chain(&projects)
+            .find(|command| !same_program(Path::new(command), executable));
+        match (elsewhere, user.is_some()) {
+            (Some(command), _) => Registration::Elsewhere {
+                exists: Path::new(command).is_file(),
+                command: command.clone(),
             },
-            None if self.installed(harness, file) => Registration::NotSetUp,
-            None => Registration::NotInstalled,
+            (None, true) => Registration::ThisKetchup,
+            (None, false) if self.installed(harness, file) => Registration::NotSetUp,
+            (None, false) => Registration::NotInstalled,
         }
     }
 
@@ -302,16 +324,19 @@ impl Environment {
 
     /// `--mcp-setup`: connects every installed client in its default file, so
     /// of Supervisor only the installed one; another running instance changes
-    /// only when the user clicks Connect on its row.
+    /// only when the user clicks Connect on its row. A client already starting
+    /// another program that exists keeps it (review 2026-11-04 SEC-142: the
+    /// installer runs this hidden); only a missing or gone one is replaced.
     pub fn set_up_installed(&self, executable: &Path) -> Vec<HarnessRow> {
         Harness::ALL
             .into_iter()
             .map(|harness| {
                 let found = self.row(harness, self.config_file(harness), executable);
-                if found.registration == Registration::NotInstalled {
-                    found
-                } else {
-                    self.set_up_in(harness, found.file, executable)
+                match found.registration {
+                    Registration::NotSetUp | Registration::Elsewhere { exists: false, .. } => {
+                        self.set_up_in(harness, found.file, executable)
+                    }
+                    _ => found,
                 }
             })
             .collect()

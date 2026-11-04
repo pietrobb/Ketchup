@@ -19,6 +19,8 @@ testing = []
 ab_glyph = "0.2.32"
 eframe = { version = "0.32.3", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
 getrandom = "0.3.4"
+# A client's JSON configuration, edited keeping its keys in order (already in the tree).
+indexmap = { version = "2.14.0", features = ["serde"] }
 ketchup-analysis = { path = "../ketchup-analysis" }
 ketchup-application = { path = "../ketchup-application" }
 ketchup-assistant = { path = "../ketchup-assistant" }

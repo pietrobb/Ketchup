@@ -4,41 +4,90 @@
 //! `[mcp_servers.ketchup]` section of Codex's config.toml. Everything else in
 //! the file is kept.
 
+use serde_json::value::RawValue;
 use std::io;
 use std::path::Path;
 
 /// The server name Kečup registers under.
 pub(crate) const SERVER: &str = "ketchup";
 
+/// A JSON object in the order it was written, its values as written.
+type Object = indexmap::IndexMap<String, Box<RawValue>>;
+
+fn invalid_data(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, error)
+}
+
+fn object(text: &str) -> io::Result<Object> {
+    serde_json::from_str(text).map_err(|_| invalid_data("not a JSON object"))
+}
+
+fn raw(value: &impl serde::Serialize) -> io::Result<Box<RawValue>> {
+    let text = serde_json::to_string_pretty(value).map_err(invalid_data)?;
+    RawValue::from_string(text).map_err(invalid_data)
+}
+
+/// `servers` (an `mcpServers` object) with its `ketchup` server starting
+/// `executable --mcp`: a new one, or the one there with only `command`, `args`
+/// and `type` changed.
+fn with_server(
+    servers: Option<&RawValue>,
+    executable: &str,
+    named_transport: bool,
+) -> io::Result<Box<RawValue>> {
+    let mut servers = servers.map_or_else(|| Ok(Object::new()), |raw| object(raw.get()))?;
+    let mut server = match servers.get(SERVER) {
+        Some(server) => object(server.get())?,
+        None => Object::from([("env".to_owned(), raw(&serde_json::json!({}))?)]),
+    };
+    server.insert("command".to_owned(), raw(&executable)?);
+    server.insert("args".to_owned(), raw(&["--mcp"])?);
+    if named_transport {
+        server.insert("type".to_owned(), raw(&"stdio")?);
+    }
+    servers.insert(SERVER.to_owned(), raw(&server)?);
+    raw(&servers)
+}
+
 /// `text` (empty for a new file) with `mcpServers.ketchup` starting
-/// `executable --mcp`. Claude Code also wants the transport named.
+/// `executable --mcp`. Claude Code also wants the transport named, and a
+/// project's own `ketchup` entry (`projects.<folder>.mcpServers`) wins over the
+/// user's there, so it changes too. Every other key keeps its place and its
+/// value as written (review 2026-11-04 SEC-142: serde_json sorted the whole
+/// file and the entry lost its `env`, `timeout` and `disabled`).
 pub(crate) fn with_json_server(
     text: &str,
     executable: &str,
     named_transport: bool,
 ) -> io::Result<String> {
-    let mut config: serde_json::Value = if text.trim().is_empty() {
-        serde_json::json!({})
+    let mut config = if text.trim().is_empty() {
+        Object::new()
     } else {
-        serde_json::from_str(text)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+        object(text)?
     };
-    let not_an_object = || io::Error::new(io::ErrorKind::InvalidData, "not a JSON object");
-    let servers = config
-        .as_object_mut()
-        .ok_or_else(not_an_object)?
-        .entry("mcpServers")
-        .or_insert_with(|| serde_json::json!({}))
-        .as_object_mut()
-        .ok_or_else(not_an_object)?;
-    let mut server = serde_json::json!({"command": executable, "args": ["--mcp"], "env": {}});
-    if named_transport {
-        server["type"] = serde_json::json!("stdio");
+    let servers = with_server(
+        config.get("mcpServers").map(AsRef::as_ref),
+        executable,
+        named_transport,
+    )?;
+    config.insert("mcpServers".to_owned(), servers);
+    if let Some(projects) = config.get("projects") {
+        let mut projects = object(projects.get())?;
+        for project in projects.values_mut() {
+            let mut settings = object(project.get())?;
+            if let Some(servers) = settings.get("mcpServers")
+                && object(servers.get())?.contains_key(SERVER)
+            {
+                let servers = with_server(Some(servers), executable, named_transport)?;
+                settings.insert("mcpServers".to_owned(), servers);
+                *project = raw(&settings)?;
+            }
+        }
+        config.insert("projects".to_owned(), raw(&projects)?);
     }
-    servers.insert(SERVER.to_owned(), server);
     serde_json::to_string_pretty(&config)
         .map(|text| text + "\n")
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+        .map_err(invalid_data)
 }
 
 /// The `ketchup` server's `command` in a Codex config.toml, in any form TOML
@@ -182,6 +231,52 @@ mod tests {
         assert_eq!(config["mcpServers"]["ketchup"]["type"], "stdio");
         assert!(with_json_server("[1, 2]", "k.exe", false).is_err());
         assert!(with_json_server("{not json", "k.exe", false).is_err());
+    }
+
+    /// Review 2026-11-04 SEC-142: serde_json sorted every key of `.claude.json`
+    /// and the whole `ketchup` entry was replaced, so its `env`, `timeout` and
+    /// `disabled` were lost. Only `command`, `args` and `type` change, the keys
+    /// keep their order, and so does a project's own `ketchup` entry, which wins
+    /// over the user's in that project.
+    #[test]
+    fn the_json_server_keeps_its_order_and_its_own_settings() {
+        let text = r#"{
+  "theme": "dark",
+  "mcpServers": {
+    "zeta": {"command": "z.exe"},
+    "ketchup": {"command": "C:\\old\\k.exe", "args": [], "env": {"TOKEN": "x"}, "timeout": 30, "disabled": false}
+  },
+  "projects": {
+    "C:/work": {"mcpServers": {"ketchup": {"command": "C:\\old\\k.exe", "env": {"B": "2"}}}},
+    "C:/other": {"allowedTools": []}
+  },
+  "alpha": 1
+}"#;
+        let written = with_json_server(text, r"C:\new\Ketchup.exe", true).unwrap();
+        let at = |key: &str| {
+            written
+                .find(key)
+                .unwrap_or_else(|| panic!("{key}: {written}"))
+        };
+        assert!(at("\"theme\"") < at("\"mcpServers\""), "{written}");
+        assert!(at("\"mcpServers\"") < at("\"projects\""), "{written}");
+        assert!(at("\"projects\"") < at("\"alpha\""), "{written}");
+        assert!(at("\"zeta\"") < at("\"ketchup\""), "{written}");
+        let config: serde_json::Value = serde_json::from_str(&written).unwrap();
+        let server = &config["mcpServers"]["ketchup"];
+        assert_eq!(server["command"], r"C:\new\Ketchup.exe");
+        assert_eq!(server["args"], serde_json::json!(["--mcp"]));
+        assert_eq!(server["type"], "stdio");
+        assert_eq!(server["env"]["TOKEN"], "x");
+        assert_eq!(
+            (&server["timeout"], &server["disabled"]),
+            (&serde_json::json!(30), &serde_json::json!(false))
+        );
+        let project = &config["projects"]["C:/work"]["mcpServers"]["ketchup"];
+        assert_eq!(project["command"], r"C:\new\Ketchup.exe");
+        assert_eq!(project["env"]["B"], "2");
+        assert!(config["projects"]["C:/other"].get("mcpServers").is_none());
+        assert_eq!(config["mcpServers"]["zeta"]["command"], "z.exe");
     }
 
     #[test]

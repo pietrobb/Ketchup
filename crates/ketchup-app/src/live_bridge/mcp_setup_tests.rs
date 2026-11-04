@@ -332,6 +332,57 @@ fn a_claude_code_entry_naming_a_deleted_build_is_reported_with_its_path() {
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// Review 2026-11-04 SEC-142: a project's own `ketchup` entry wins over the
+/// user's in that project, but the row read only the user's; and the hidden
+/// `--mcp-setup` of the installer replaced a registration that starts another
+/// program that works.
+#[test]
+fn a_project_entry_counts_and_mcp_setup_keeps_a_working_registration() {
+    let home = temporary_home("project-scope");
+    let environment = Environment::in_home(home.clone());
+    let this = std::env::current_exe().unwrap();
+    let gone = home.join("target").join("debug").join("ketchup-app.exe");
+    let file = home.join(".claude.json");
+    let config = serde_json::json!({
+        "mcpServers": {"ketchup": {"command": this, "args": ["--mcp"]}},
+        "projects": {"C:/work": {"mcpServers": {"ketchup": {"command": gone, "args": ["--mcp"]}}}}
+    });
+    std::fs::write(&file, config.to_string()).unwrap();
+    assert_eq!(
+        environment.registration(Harness::ClaudeCode, &this),
+        Registration::Elsewhere {
+            command: gone.to_string_lossy().into_owned(),
+            exists: false
+        }
+    );
+    let row = environment.set_up(Harness::ClaudeCode, &this);
+    assert_eq!(row.registration, Registration::ThisKetchup);
+
+    // Another program that exists stays as the user set it up.
+    let other = home.join("Other").join("Ketchup.exe");
+    create_parent(&other);
+    std::fs::write(&other, "").unwrap();
+    let working = serde_json::json!({
+        "mcpServers": {"ketchup": {"command": other, "args": ["--mcp"]}}
+    })
+    .to_string();
+    std::fs::write(&file, &working).unwrap();
+    let rows = environment.set_up_installed(&this);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), working);
+    let claude = rows
+        .iter()
+        .find(|row| row.harness == Harness::ClaudeCode)
+        .unwrap();
+    assert!(
+        matches!(
+            &claude.registration,
+            Registration::Elsewhere { exists: true, .. }
+        ),
+        "{claude:?}"
+    );
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 #[test]
 fn a_build_inside_a_checkout_is_started_through_its_server_script() {
     let checkout = temporary_home("checkout");
