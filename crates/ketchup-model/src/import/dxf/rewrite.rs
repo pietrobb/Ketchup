@@ -152,7 +152,7 @@ pub fn write_edited_dxf(
     let frame = frame_of(source, options, lines, edits)?;
     let encoding = text_encoding(&mut Cursor::new(source))
         .map_err(EditedDxfError::Read)?
-        .map(|(encoding, ..)| encoding);
+        .code_page;
     let drawing = Drawing::parse(source, encoding)?;
     let Some((frame, changed_in_file)) = frame else {
         // The file is blamed only when its entities are not those the lines were read

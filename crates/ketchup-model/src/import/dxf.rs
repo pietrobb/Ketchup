@@ -129,8 +129,7 @@ mod underlay;
 use block::{BlockDefinition, parse_blocks};
 use chain::{assemble_loose_segments, point_key, without_duplicate_segments};
 use code_page::{
-    CodePage, CodePageRead, HighBytes, code_page_encoding, dxf_source_text, text_code_page,
-    utf8_fits,
+    CodePage, CodePageRead, TextEncoding, TextSeen, code_page_encoding, dxf_source_text,
 };
 use extrusion::{ensure_planar, ensure_planar_ocs, ensure_planar_wcs, extrusion_sign, mirror_ocs};
 use hatch::OrderedFill;

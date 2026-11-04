@@ -181,8 +181,14 @@ fn dos_code_pages_are_read_and_a_doubtful_code_page_is_warned_of() {
         );
     }
     // "žluťoučký" in CP1250 (ť = 0x9D, undefined in CP1252) declared ANSI_1252: 1252 is
-    // doubted, and the text read in 1250, which reads every byte of it (UL-43).
-    let underlay = read("ANSI_1252", b"walls", b"\x9Elu\x9Dou\xE8k\xFD");
+    // doubted, and the text read in 1250, which reads every byte of it (UL-43), as the
+    // word is on its layer too: one Central European word alone is doubted, not obeyed
+    // (review 2026-11-04 UL-140).
+    let underlay = read(
+        "ANSI_1252",
+        b"\x9Elu\x9Dou\xE8k\xFD",
+        b"\x9Elu\x9Dou\xE8k\xFD",
+    );
     assert_eq!(
         counted(&underlay, "dxf.text-code-page-doubtful", Some("ANSI_1252")),
         Some(1),
@@ -275,6 +281,115 @@ fn dos_code_pages_are_read_and_a_doubtful_code_page_is_warned_of() {
             underlay.diagnostics
         );
     }
+}
+
+/// A pre-2007 drawing naming `code_page`, with one TEXT of each of `texts` on layer
+/// `labels`, `bom` first if given.
+fn texts_drawing(bom: &[u8], code_page: &str, texts: &[&[u8]]) -> Vec<u8> {
+    let mut source = bom.to_vec();
+    source.extend_from_slice(format!("0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n9\n$DWGCODEPAGE\n3\n{code_page}\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n").as_bytes());
+    for text in texts {
+        source.extend_from_slice(b"0\nTEXT\n8\nlabels\n10\n0\n20\n0\n40\n2\n1\n");
+        source.extend_from_slice(text);
+        source.push(b'\n');
+    }
+    source.extend_from_slice(b"0\nENDSEC\n0\nEOF\n");
+    source
+}
+
+fn read_texts(underlay: &DxfUnderlay) -> Vec<&str> {
+    texts(underlay, "labels")
+        .iter()
+        .map(|text| text.text.as_str())
+        .collect()
+}
+
+/// Review 2026-11-04 UL-140: one superscript, or one byte Windows-1252 leaves undefined,
+/// turned a whole Western drawing to Windows-1250: „m²“ read „m˛“, „Rohr Ø 100“ „Rohr Ř
+/// 100“, „Pièce à vivre“ „Pičce ŕ vivre“. Signs vote for the West, and the drawing turns
+/// only when Central European words outvote the Western ones well.
+#[test]
+fn one_sign_or_undefined_byte_does_not_turn_a_western_drawing_central_european() {
+    let read = |texts: &[&[u8]]| {
+        read_dxf_underlay(
+            &texts_drawing(b"", "ANSI_1252", texts),
+            DxfImportOptions::new(None),
+        )
+        .unwrap()
+    };
+    let doubted = |underlay: &DxfUnderlay| {
+        counted(underlay, "dxf.text-code-page-doubtful", Some("ANSI_1252"))
+    };
+    let western: [&[u8]; 4] = [
+        b"Fenster\xB9 Achse A\xB3",
+        b"20 m\xB2",
+        b"Rohr \xD8 100",
+        b"Pi\xE8ce \xE0 vivre",
+    ];
+    let underlay = read(&western);
+    assert_eq!(
+        read_texts(&underlay),
+        ["Fenster¹ Achse A³", "20 m²", "Rohr Ø 100", "Pièce à vivre"]
+    );
+    assert_eq!(doubted(&underlay), None, "{:?}", underlay.diagnostics);
+    // One Slovak word among signs is outvoted; alone it is doubted, not obeyed.
+    let underlay = read(&[b"K\xFApe\xBE", b"20 m\xB2 \xBD"]);
+    assert_eq!(read_texts(&underlay), ["Kúpe¾", "20 m² ½"]);
+    assert_eq!(doubted(&underlay), None, "{:?}", underlay.diagnostics);
+    let underlay = read(&[b"K\xFApe\xBE", b"Pi\xE8ce"]);
+    assert_eq!(read_texts(&underlay), ["Kúpe¾", "Pièce"]);
+    assert_eq!(doubted(&underlay), Some(1), "{:?}", underlay.diagnostics);
+    // A byte 1252 leaves undefined is doubted, and alone does not turn the drawing.
+    let underlay = read(&[b"Pi\xE8ce \x8D"]);
+    assert_eq!(read_texts(&underlay), ["Pièce \u{8D}"]);
+    assert_eq!(doubted(&underlay), Some(1), "{:?}", underlay.diagnostics);
+    // Two Slovak words, and none Western, do.
+    let underlay = read(&[b"K\xFApe\xBE", b"Ob\xFDva\xE8ka"]);
+    assert_eq!(read_texts(&underlay), ["Kúpeľ", "Obývačka"]);
+    assert_eq!(
+        counted(&underlay, "dxf.text-code-page", Some("ANSI_1250")),
+        Some(1)
+    );
+}
+
+/// Review 2026-11-04 UL-141: one character its code page cannot write sent a whole UTF-8
+/// drawing through the code page, unwarned: „Größe ⌀ 100“ read „GrÃ¶ÃŸe âŒ€ 100“. A
+/// character of three or four bytes is UTF-8; of two, the most decide, and a drawing both
+/// readings fit is warned of.
+#[test]
+fn a_utf8_drawing_naming_a_code_page_is_read_as_utf8_by_most_of_its_characters() {
+    let read = |bom: &[u8], texts: &[&str]| {
+        let texts = texts.iter().map(|text| text.as_bytes()).collect::<Vec<_>>();
+        read_dxf_underlay(
+            &texts_drawing(bom, "ANSI_1252", &texts),
+            DxfImportOptions::new(None),
+        )
+        .unwrap()
+    };
+    let underlay = read(b"", &["Größe ⌀ 100", "Küche"]);
+    assert_eq!(read_texts(&underlay), ["Größe ⌀ 100", "Küche"]);
+    assert_eq!(
+        counted(&underlay, "dxf.text-code-page-doubtful", Some("ANSI_1252")),
+        None
+    );
+    // Greek 1252 has no letter for, among German it does: UTF-8, warned of.
+    let underlay = read(b"", &["Größe Küche", "α"]);
+    assert_eq!(read_texts(&underlay), ["Größe Küche", "α"]);
+    assert_eq!(
+        counted(&underlay, "dxf.text-code-page-doubtful", Some("ANSI_1252")),
+        Some(1),
+        "{:?}",
+        underlay.diagnostics
+    );
+    assert_eq!(
+        counted(&underlay, "dxf.text-code-page", Some("UTF-8")),
+        Some(1)
+    );
+
+    // Review 2026-11-04 UL-142: the byte order mark of a UTF-8 drawing that names a code
+    // page did not fit it, and „Küche“ read „KÃ¼che“.
+    let underlay = read(b"\xEF\xBB\xBF", &["Küche"]);
+    assert_eq!(read_texts(&underlay), ["Küche"]);
 }
 
 const BLOCKS: &str = concat!(
