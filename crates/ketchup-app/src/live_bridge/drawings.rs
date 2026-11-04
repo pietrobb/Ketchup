@@ -307,13 +307,13 @@ impl StartedDrawings {
     /// Puts back the settings the export kept: nothing was written. Settings
     /// the user changed since, or another document's, stay as they are; they
     /// are kept in the file, outside Undo (review 2026-11-02 MCP-122).
-    pub(super) fn undo(self, app: &mut KetchupApp) {
+    pub(super) fn undo(&self, app: &mut KetchupApp) {
         if app.document.current().document_id() != self.document
             || app.stored_sheet_settings().ok() != self.kept
         {
             return;
         }
-        app.store_sheet_settings(self.previous);
+        app.store_sheet_settings(self.previous.clone());
         app.drawings.unsaved = self.previously_unsaved;
     }
 }

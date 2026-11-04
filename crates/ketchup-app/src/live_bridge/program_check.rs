@@ -123,10 +123,10 @@ impl ProgramCheckJob {
     /// would: its worker stops and what it kept in the window is put back.
     /// It sends no answer, so the connection says why it ended (review
     /// 2026-11-04 MCP-141).
-    pub(super) fn abandon(self, app: &mut KetchupApp, document_epoch: u64) {
+    pub(super) fn abandon(&mut self, app: &mut KetchupApp, document_epoch: u64) {
         self.request_cancelled().store(true, Ordering::Release);
         match self {
-            Self::Checking(mut job) => {
+            Self::Checking(job) => {
                 job.worker_cancelled.store(true, Ordering::Release);
                 job.stop_completion();
             }

@@ -52,8 +52,8 @@ impl ProjectDrawingsExportJob {
     /// Puts back the settings it kept, as a cancelled export does, while the
     /// document it was started for is open (`document_epoch`); its worker
     /// sees the cancelled flag and stops.
-    pub(super) fn abandon(self, app: &mut KetchupApp, document_epoch: u64) {
-        if let Stage::Drawing { started, .. } = self.stage
+    pub(super) fn abandon(&self, app: &mut KetchupApp, document_epoch: u64) {
+        if let Stage::Drawing { started, .. } = &self.stage
             && self.epoch == document_epoch
         {
             started.undo(app);

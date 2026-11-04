@@ -1868,13 +1868,16 @@ impl LiveBridge {
     }
 
     /// Ends the jobs of a bridge about to be dropped as cancelled ones end,
-    /// without an answer (review 2026-11-04 MCP-141).
+    /// without an answer (review 2026-11-04 MCP-141). The jobs stay in the
+    /// bridge: dropping one drops its reply and ends its connection's wait,
+    /// which must come after a takeover is recorded, or the connection ends
+    /// without its last frame.
     fn abandon_jobs(&mut self, app: &mut KetchupApp) {
-        if let Some(job) = self.apply_and_verify_job.take() {
+        if let Some(job) = &self.apply_and_verify_job {
             job.cancelled.store(true, Ordering::Release);
             job.worker_cancelled.store(true, Ordering::Release);
         }
-        if let Some(job) = self.program_check_job.take() {
+        if let Some(job) = &mut self.program_check_job {
             job.abandon(app, self.document_epoch);
         }
     }
