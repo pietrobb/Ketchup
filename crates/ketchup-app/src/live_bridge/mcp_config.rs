@@ -41,88 +41,54 @@ pub(crate) fn with_json_server(
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-/// Whether a TOML table header names the `ketchup` server or one of its
-/// subtables, such as `[mcp_servers.ketchup.env]`.
-fn is_codex_server_header(line: &str) -> bool {
-    let header = line.trim_matches(|c| c == '[' || c == ']').trim();
-    [
-        format!("mcp_servers.{SERVER}"),
-        format!("mcp_servers.\"{SERVER}\""),
-    ]
-    .iter()
-    .any(|name| header == name || header.starts_with(&format!("{name}.")))
-}
-
-/// The `command` of `[mcp_servers.ketchup]` in a Codex config.toml.
+/// The `ketchup` server's `command` in a Codex config.toml, in any form TOML
+/// gives it: a table, an inline table or dotted keys (review 2026-11-04 SEC-140).
 pub(crate) fn codex_command(toml: &str) -> Option<String> {
-    let mut in_section = false;
-    for line in toml.lines().map(str::trim) {
-        if line.starts_with('[') {
-            let header = line.trim_matches(|c| c == '[' || c == ']').trim();
-            in_section = header == format!("mcp_servers.{SERVER}")
-                || header == format!("mcp_servers.\"{SERVER}\"");
-            continue;
-        }
-        if !in_section {
-            continue;
-        }
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        if key.trim() != "command" {
-            continue;
-        }
-        let value = value.trim();
-        if let Some(literal) = value.strip_prefix('\'') {
-            return literal.split('\'').next().map(str::to_owned);
-        }
-        let basic = value.strip_prefix('"')?;
-        let mut command = String::new();
-        let mut characters = basic.chars();
-        while let Some(character) = characters.next() {
-            match character {
-                '"' => return Some(command),
-                '\\' => command.push(characters.next()?),
-                other => command.push(other),
-            }
-        }
-        return None;
-    }
-    None
+    let document: toml_edit::DocumentMut = toml.parse().ok()?;
+    document
+        .get("mcp_servers")?
+        .get(SERVER)?
+        .get("command")?
+        .as_str()
+        .map(str::to_owned)
 }
 
-/// `toml` with its `ketchup` server, subtables included, replaced by one
-/// starting `executable --mcp`; the other lines stay as they were.
-pub(crate) fn with_codex_server(toml: &str, executable: &str) -> String {
-    let mut kept = String::new();
-    let mut in_server = false;
-    for line in toml.lines() {
-        if line.trim_start().starts_with('[') {
-            in_server = is_codex_server_header(line.trim());
-        }
-        if !in_server {
-            kept.push_str(line);
-            kept.push('\n');
-        }
-    }
-    let mut text = kept.trim_end().to_owned();
-    if !text.is_empty() {
-        text.push_str("\n\n");
-    }
+/// `toml` with its `ketchup` server starting `executable --mcp`: only its
+/// `command` and `args` change, every other line stays as written. A file that
+/// is no TOML is refused rather than rewritten (review 2026-11-04 SEC-140: the
+/// line editor made Codex's file declare the server twice).
+pub(crate) fn with_codex_server(toml: &str, executable: &str) -> io::Result<String> {
+    let invalid = |message: String| io::Error::new(io::ErrorKind::InvalidData, message);
+    let mut document: toml_edit::DocumentMut = toml
+        .parse()
+        .map_err(|error: toml_edit::TomlError| invalid(error.to_string()))?;
+    let servers = document
+        .entry("mcp_servers")
+        .or_insert_with(|| {
+            let mut servers = toml_edit::Table::new();
+            servers.set_implicit(true);
+            toml_edit::Item::Table(servers)
+        })
+        .as_table_like_mut()
+        .ok_or_else(|| invalid("mcp_servers is not a table".to_owned()))?;
+    let server = servers
+        .entry(SERVER)
+        .or_insert_with(toml_edit::table)
+        .as_table_like_mut()
+        .ok_or_else(|| invalid(format!("mcp_servers.{SERVER} is not a table")))?;
     // A literal string keeps a Windows path readable; one with a quote in it
-    // is escaped instead.
-    let command = if executable.contains('\'') {
-        format!(
-            "\"{}\"",
-            executable.replace('\\', "\\\\").replace('"', "\\\"")
-        )
-    } else {
-        format!("'{executable}'")
-    };
-    text.push_str(&format!(
-        "[mcp_servers.{SERVER}]\ncommand = {command}\nargs = [\"--mcp\"]\n"
-    ));
-    text
+    // is a basic string.
+    let command = format!("'{executable}'")
+        .parse::<toml_edit::Value>()
+        .ok()
+        .filter(|value| value.as_str() == Some(executable))
+        .unwrap_or_else(|| executable.into());
+    server.insert("command", toml_edit::Item::Value(command));
+    server.insert(
+        "args",
+        toml_edit::value(toml_edit::Array::from_iter(["--mcp"])),
+    );
+    Ok(document.to_string())
 }
 
 /// Replaces `file` with `text` through a sibling file, so a client reading it
@@ -196,22 +162,66 @@ command = "C:\\Program Files\\Ketchup\\Ketchup.exe"
     }
 
     #[test]
-    fn the_codex_server_and_its_subtables_are_replaced_and_the_rest_kept() {
+    fn the_codex_server_command_is_replaced_and_the_rest_kept() {
         let toml = "model = \"gpt\"\n\n[mcp_servers.ketchup]\ncommand = 'C:\\old\\ketchup-app.exe'\n\n[mcp_servers.ketchup.env]\nA = \"1\"\n\n[mcp_servers.other]\ncommand = \"other.exe\"\n";
-        let written = with_codex_server(toml, r"C:\Programs\Ketchup\Ketchup.exe");
+        let written = with_codex_server(toml, r"C:\Programs\Ketchup\Ketchup.exe").unwrap();
         assert_eq!(
             codex_command(&written).as_deref(),
             Some(r"C:\Programs\Ketchup\Ketchup.exe")
         );
         assert!(!written.contains("old"), "{written}");
-        assert!(!written.contains("A = "), "{written}");
+        // Its own settings stay (review 2026-11-04 SEC-142).
+        assert!(
+            written.contains("[mcp_servers.ketchup.env]\nA = \"1\"\n"),
+            "{written}"
+        );
         assert!(written.starts_with("model = \"gpt\"\n"), "{written}");
         assert!(written.contains("[mcp_servers.other]\ncommand = \"other.exe\"\n"));
         assert_eq!(written.matches("[mcp_servers.ketchup]").count(), 1);
-        let quoted = with_codex_server("", r"C:\Peter's\Ketchup.exe");
+        let quoted = with_codex_server("", r"C:\Peter's\Ketchup.exe").unwrap();
         assert_eq!(
             codex_command(&quoted).as_deref(),
             Some(r"C:\Peter's\Ketchup.exe")
         );
+        assert!(quoted.contains("[mcp_servers.ketchup]"), "{quoted}");
+    }
+
+    /// Review 2026-11-04 SEC-140: the line editor knew only a bare
+    /// `[mcp_servers.ketchup]` header, so a header with a comment, an inline
+    /// table, dotted keys or a `"""` string with a line starting `[` came out
+    /// declaring the server twice, and Codex no longer started. Each is read and
+    /// written as TOML; a file that is no TOML is refused, not rewritten.
+    #[test]
+    fn every_form_of_the_codex_server_is_read_and_written_as_toml() {
+        let forms = [
+            "[mcp_servers.ketchup] # Kečup\ncommand = 'C:\\old\\k.exe'\nargs = []\n",
+            "[mcp_servers]\nketchup = { command = 'C:\\old\\k.exe', args = [] }\n",
+            "mcp_servers.ketchup.command = 'C:\\old\\k.exe'\nmcp_servers.ketchup.args = []\n",
+            "[mcp_servers.ketchup]\ncommand = 'C:\\old\\k.exe'\nnote = \"\"\"\n[mcp_servers.ketchup]\n\"\"\"\n",
+        ];
+        for form in forms {
+            assert_eq!(
+                codex_command(form).as_deref(),
+                Some(r"C:\old\k.exe"),
+                "{form}"
+            );
+            let written = with_codex_server(form, r"C:\new\Ketchup.exe").unwrap();
+            let parsed: toml_edit::DocumentMut = written.parse().unwrap_or_else(|error| {
+                panic!("{form}\n->\n{written}\n{error}");
+            });
+            let server = &parsed["mcp_servers"][SERVER];
+            assert_eq!(
+                server["command"].as_str(),
+                Some(r"C:\new\Ketchup.exe"),
+                "{written}"
+            );
+            assert_eq!(server["args"][0].as_str(), Some("--mcp"), "{written}");
+            assert_eq!(
+                codex_command(&written).as_deref(),
+                Some(r"C:\new\Ketchup.exe")
+            );
+        }
+        assert!(with_codex_server("[mcp_servers.ketchup\ncommand = 1", "k.exe").is_err());
+        assert!(with_codex_server("mcp_servers = 5\n", "k.exe").is_err());
     }
 }

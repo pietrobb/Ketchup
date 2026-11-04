@@ -342,7 +342,7 @@ impl Environment {
         let text = read_or_empty(&file).map_err(failed)?;
         let executable = executable.to_string_lossy();
         let text = match harness {
-            Harness::Codex => with_codex_server(&text, &executable),
+            Harness::Codex => with_codex_server(&text, &executable).map_err(failed)?,
             Harness::ClaudeCode | Harness::ClaudeDesktop | Harness::Supervisor => {
                 with_json_server(&text, &executable, harness == Harness::ClaudeCode)
                     .map_err(failed)?

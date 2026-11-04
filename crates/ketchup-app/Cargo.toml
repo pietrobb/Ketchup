@@ -40,6 +40,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }
 sys-locale = "0.3"
 tempfile = "3.23.0"
+# Codex's config.toml, edited keeping every other line as written (already in the tree).
+toml_edit = "0.25.13"
 wgpu = { version = "25.0.2", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
