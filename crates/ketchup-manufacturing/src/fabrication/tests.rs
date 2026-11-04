@@ -701,6 +701,9 @@ fn homag_pin_macro_and_code128_label_share_the_machine_program_identity() {
     let mpr = String::from_utf8(mpr).unwrap();
     assert!(mpr.contains("\\ketchup.homag-bhx-production-package.v1\\"));
     assert_eq!(mpr.matches("\\BohrVert\\").count(), 1);
+    // woodWOP reads a program with bare LF line ends as an empty part.
+    assert!(!mpr.replace("\r\n", "").contains('\n'), "{mpr:?}");
+    assert!(mpr.starts_with("[H\r\nVERSION=\"4.0\"\r\n") && mpr.ends_with("\r\n!\r\n"));
 
     let label = homag_code128_svg("ABCDEF123456").unwrap();
     let label_again = homag_code128_svg("ABCDEF123456").unwrap();

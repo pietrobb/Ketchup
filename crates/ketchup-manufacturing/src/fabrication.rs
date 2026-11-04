@@ -1871,7 +1871,9 @@ fn woodwop_mpr_output(
     if !output.is_ascii() {
         return Err(GeneralFabricationError::ExportBlocked);
     }
-    Ok(output.into_bytes())
+    // woodWOP reads a program with bare LF line ends as an empty 1500 x 120 x 19
+    // part with no machining; it writes and expects CRLF.
+    Ok(output.replace('\n', "\r\n").into_bytes())
 }
 
 fn woodwop_pin_macro(hole: &PinHole, stock_frame: WoodwopStockFrame) -> Option<String> {
