@@ -11,9 +11,9 @@ reason). Each code fix began with a test that failed before it.
 | PG-140: bracing not anchored to anything still braces | Fixed, b061b280: bracing counts only on a fastened path to a grounded part, a support or a declared diaphragm; a board on two free beams braces neither |
 | PG-141: friction braces the whole length | Fixed, b061b280 and 98bdc98e: a part along the member needs a fastener on it, and a part anchored only in line with the member does not hold it sideways |
 | PG-142: fastener positions ignored | Fixed, b061b280: with `fasteners`, bracing holds at their positions only |
-| PG-143: an unrelated attribute inflates the cutting plan | Fixed, 91042649 and 23e5c408: only the grain, or the attribute a sheet stock names (`material:axis`), ties a blank to a profile axis |
+| PG-143: an unrelated attribute inflates the cutting plan | Fixed, 91042649 and 23e5c408: only the grain, or the attribute a sheet stock names (`material:axis`), ties a blank to a profile axis; e71f93ed compares the 46° rafter's section within a tolerance, since Linux and macOS compute 140.00000000000023 where Windows computes 140 |
 | SEC-140: Connect AI breaks Codex's `config.toml` | Fixed, f00f37d1: edited through `toml_edit`; a file that does not parse is left alone |
-| CD-140: a deletion can remove another entity after the source changed | Fixed, c81539db and b5c0342b: removed objects and the children of edited ones are checked in place, an entity lying elsewhere refuses the export, and entities changed or added since the import are counted. **Deferred:** storing the source identity (size, `$HANDSEED`, entity count) at import needs a change of the underlay format with a persistence schema audit; until then a file that changed is detected by its entities, and entities no line was read from are not compared |
+| CD-140: a deletion can remove another entity after the source changed | Fixed, c81539db and b5c0342b: removed objects and the children of edited ones are checked in place, an entity lying elsewhere refuses the export, and entities changed or added since the import are counted; 8615fa09 brings the DXF rewrite fuzz target to the new export result. **Deferred:** storing the source identity (size, `$HANDSEED`, entity count) at import needs a change of the underlay format with a persistence schema audit; until then a file that changed is detected by its entities, and entities no line was read from are not compared |
 | REL-140: README promises the runtime 0.3.1 lacks | Fixed, eb40ffa9 (README, CHANGELOG known issue and Unreleased) |
 
 ## P2
@@ -37,7 +37,7 @@ reason). Each code fix began with a test that failed before it.
 | REL-141: notices omit the Microsoft runtime | Fixed, 0391c1c6 |
 | REL-142: OCCT `TK*.dll` unsigned | Fixed, 1df83b42 |
 | REL-143: the release check misses struct fields | Fixed, a3a22ef9: each released reader opens and saves every file and HEAD compares the result |
-| TST-140: the error ratchet is bypassed | Fixed, 540ebe34: `map_err_ignore`, `let_underscore_must_use` and `let_underscore_untyped` denied in every crate, every site fixed |
+| TST-140: the error ratchet is bypassed | Fixed, 540ebe34: `map_err_ignore`, `let_underscore_must_use` and `let_underscore_untyped` denied in every crate, every site fixed; 66d98ce8 makes the plugin bridge tests do their slow setup before connecting, so a loaded machine no longer outlasts the 2 s token wait |
 
 ## Findings of 11-02 the review found partly done
 
