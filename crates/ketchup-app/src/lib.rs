@@ -142,7 +142,7 @@ use export_bundle::{
 };
 mod import_source;
 mod migration_review;
-use import_source::{ImportError, ImportFailure, ImportSourcePlan, read_import_source};
+use import_source::{ImportError, ImportFailure, ImportKind, ImportSourcePlan, read_import_source};
 mod face_offset_preview;
 mod keymap;
 pub mod language;

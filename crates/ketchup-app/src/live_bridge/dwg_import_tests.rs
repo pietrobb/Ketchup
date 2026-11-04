@@ -300,27 +300,38 @@ fn an_import_started_before_new_does_not_land_in_the_new_document() {
 /// for a STEP or IGES file and an underlay too.
 #[test]
 fn the_import_thread_and_busy_reason_name_what_is_read() {
+    use crate::ImportKind;
     use crate::live_bridge::dwg_import::import_job_names;
+    use ketchup_model::underlay::raster::RasterFormat;
     assert_eq!(
-        import_job_names(ImportFormat::Step, false).0,
+        import_job_names(ImportFormat::Step.into(), false).0,
         "ketchup-step-import"
     );
     assert_eq!(
-        import_job_names(ImportFormat::Iges, false).0,
+        import_job_names(ImportFormat::Iges.into(), false).0,
         "ketchup-iges-import"
     );
     assert_eq!(
-        import_job_names(ImportFormat::Dxf, true).0,
+        import_job_names(ImportFormat::Dxf.into(), true).0,
         "ketchup-underlay-import"
     );
     assert_eq!(
-        import_job_names(ImportFormat::Dxf, false).0,
+        import_job_names(ImportFormat::Dxf.into(), false).0,
         "ketchup-dwg-import"
     );
+    let image = ImportKind::Image(RasterFormat::Png);
+    assert_eq!(
+        import_job_names(image, true),
+        (
+            "ketchup-image-underlay-import",
+            "An image is being read as an underlay."
+        )
+    );
     for (format, underlay) in [
-        (ImportFormat::Step, false),
-        (ImportFormat::Iges, false),
-        (ImportFormat::Dxf, true),
+        (ImportFormat::Step.into(), false),
+        (ImportFormat::Iges.into(), false),
+        (ImportFormat::Dxf.into(), true),
+        (image, true),
     ] {
         assert!(!import_job_names(format, underlay).1.contains("DWG"));
     }

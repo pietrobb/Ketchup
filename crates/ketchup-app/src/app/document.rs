@@ -1029,7 +1029,7 @@ impl KetchupApp {
                 }
             }
             AppCommand::ImportDrawingUnderlay => {
-                if let Some(path) = self.choose_dxf_import_path() {
+                if let Some(path) = self.choose_underlay_import_path() {
                     self.start_underlay_read(path, None);
                 }
             }

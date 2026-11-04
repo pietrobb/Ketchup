@@ -64,6 +64,8 @@ pub(super) mod program_access;
 mod program_edit;
 #[path = "project_drawings_job_tests.rs"]
 mod project_drawings_job;
+#[path = "raster_underlay_tests.rs"]
+mod raster_underlay;
 #[path = "underlay_objects_tests.rs"]
 mod underlay_objects;
 #[path = "underlay_program_tests.rs"]

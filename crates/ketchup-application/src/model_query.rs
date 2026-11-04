@@ -360,6 +360,13 @@ impl ModelQuery {
                 json!({"id":underlay.id.0,"name":bounded_text(&underlay.name),
                     "tag":tag_name(underlay.tag),"layers":layers,
                     "offset_mm":underlay.offset_mm(),
+                    "raster":underlay.raster.as_ref().map(|raster| json!({
+                        "format":raster.format.name(),
+                        "width_px":raster.width_px,"height_px":raster.height_px,
+                        "pixel_mm":raster.pixel_mm(),
+                        // Upper left, upper right, lower right, lower left, where it lies.
+                        "corners_mm":raster.corners_mm().map(|corner| underlay.to_document(corner)),
+                    })),
                     "layers_complete":underlay.layers.len() <= MAX_PAGE})
             })
             .collect::<Vec<_>>();

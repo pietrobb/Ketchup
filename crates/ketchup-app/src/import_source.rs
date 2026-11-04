@@ -3,6 +3,7 @@
 //! user reviewed. Every failure names its format and keeps its cause.
 
 use super::*;
+use ketchup_model::underlay::raster::RasterFormat;
 
 /// The picked source bytes sealed against the document revision they were reviewed for.
 /// `unit` carries the format's own review choice (the declared length unit for STL and DXF).
@@ -42,7 +43,7 @@ impl<U> ImportSourcePlan<U> {
 
     pub(crate) fn error(&self, failure: ImportFailure) -> ImportError {
         ImportError {
-            format: self.format,
+            format: self.format.into(),
             failure,
         }
     }
@@ -95,17 +96,41 @@ pub(crate) fn read_import_source(
 
 pub(crate) type BoxedCause = Box<dyn std::error::Error + Send + Sync>;
 
+/// What one import reads: a file of an import format, or an image read as an underlay
+/// (MECH-10(a)), which is no drawing and names itself so.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ImportKind {
+    File(ImportFormat),
+    Image(RasterFormat),
+}
+
+impl From<ImportFormat> for ImportKind {
+    fn from(format: ImportFormat) -> Self {
+        Self::File(format)
+    }
+}
+
+impl std::fmt::Display for ImportKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::File(format) => format.fmt(formatter),
+            Self::Image(RasterFormat::Png) => formatter.write_str("PNG image"),
+            Self::Image(RasterFormat::Jpeg) => formatter.write_str("JPEG image"),
+        }
+    }
+}
+
 /// Why one import of one format was refused.
 #[derive(Debug)]
 pub(crate) struct ImportError {
-    pub(crate) format: ImportFormat,
+    pub(crate) format: ImportKind,
     pub(crate) failure: ImportFailure,
 }
 
 impl ImportError {
-    pub(crate) fn failed(format: ImportFormat, cause: impl Into<BoxedCause>) -> Self {
+    pub(crate) fn failed(format: impl Into<ImportKind>, cause: impl Into<BoxedCause>) -> Self {
         Self {
-            format,
+            format: format.into(),
             failure: ImportFailure::Failed(cause.into()),
         }
     }
@@ -184,7 +209,10 @@ impl KetchupApp {
             Ok(()) => {
                 self.frame_after_import();
                 self.digest = self.catalog.format(
-                    &format!("digest-imported-{}", import_catalog_key(source.format)),
+                    &format!(
+                        "digest-imported-{}",
+                        import_catalog_key(source.format.into())
+                    ),
                     &BTreeMap::from([("path", source.path.display().to_string())]),
                 );
             }
@@ -204,14 +232,15 @@ impl KetchupApp {
     }
 }
 
-const fn import_catalog_key(format: ImportFormat) -> &'static str {
+const fn import_catalog_key(format: ImportKind) -> &'static str {
     match format {
-        ImportFormat::Stl => "stl",
-        ImportFormat::Dxf => "dxf",
-        ImportFormat::Step => "step",
-        ImportFormat::Iges => "iges",
-        ImportFormat::SketchupScene => "sketchup-scene",
-        ImportFormat::Glb => "glb",
+        ImportKind::File(ImportFormat::Stl) => "stl",
+        ImportKind::File(ImportFormat::Dxf) => "dxf",
+        ImportKind::File(ImportFormat::Step) => "step",
+        ImportKind::File(ImportFormat::Iges) => "iges",
+        ImportKind::File(ImportFormat::SketchupScene) => "sketchup-scene",
+        ImportKind::File(ImportFormat::Glb) => "glb",
+        ImportKind::Image(_) => "image",
     }
 }
 
