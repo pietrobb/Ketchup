@@ -10,8 +10,8 @@ use super::drawing_sheet_export::{
     drawing_sheet_target, publish_drawing_sheet,
 };
 use super::project_drawings::{
-    ExportedSet, ProjectDrawingsError, SetFileFormat, SetTargets, project_drawings_targets,
-    publish_project_drawings, set_export_key, written_files,
+    ExportedSet, ProjectDrawingsError, SetFileFormat, SetOwner, SetTargets,
+    project_drawings_targets, publish_project_drawings, set_export_key, written_files,
 };
 use crate::*;
 use ketchup_manufacturing::project_drawings::DrawingSet;
@@ -41,7 +41,7 @@ pub(crate) struct DrawingExportTask {
     /// started; a file saved there meanwhile is not overwritten.
     replacing: SetTargets,
     /// The project the drawing is made from.
-    document: DocumentId,
+    owner: SetOwner,
     /// Set on Cancel: stops the exact worker making cosmetic thread bodies.
     cancelled: Arc<AtomicBool>,
     receiver: Receiver<MadeDrawing>,
@@ -101,9 +101,9 @@ impl KetchupApp {
         context: &egui::Context,
         work: DrawingWork,
     ) {
-        let document = self.document.current().document_id();
+        let owner = self.drawing_set_owner();
         let replacing = match export {
-            DrawingExport::Project(format) => project_drawings_targets(&path, format, document)
+            DrawingExport::Project(format) => project_drawings_targets(&path, format, &owner)
                 .map_err(|error| self.report_project_drawings(&path, &Err(error))),
             DrawingExport::Sheet(_, format) => drawing_sheet_target(&path)
                 .map(|sha256| {
@@ -130,7 +130,7 @@ impl KetchupApp {
             export,
             path,
             replacing,
-            document,
+            owner,
             cancelled,
             receiver,
         });
@@ -171,12 +171,17 @@ impl KetchupApp {
                     _ => Err(ProjectDrawingsError::Write(ended())),
                 }
                 .and_then(|(set, files)| {
-                    let document = task.document;
-                    publish_project_drawings(&task.path, format, &files, &task.replacing, document)
-                        .map(|paths| {
-                            written = written_files(&paths, &files);
-                            ExportedSet { set, paths }
-                        })
+                    publish_project_drawings(
+                        &task.path,
+                        format,
+                        &files,
+                        &task.replacing,
+                        &task.owner,
+                    )
+                    .map(|paths| {
+                        written = written_files(&paths, &files);
+                        ExportedSet { set, paths }
+                    })
                 });
                 self.wrote_drawings(written);
                 self.report_project_drawings(&task.path, &result);

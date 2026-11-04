@@ -63,7 +63,7 @@ impl ExportTransactionError {
         }
     }
 
-    fn unrecovered(failure: Self, recovery: Self) -> Self {
+    pub(crate) fn unrecovered(failure: Self, recovery: Self) -> Self {
         Self::Unrecovered {
             failure: Box::new(failure),
             recovery: Box::new(recovery),
