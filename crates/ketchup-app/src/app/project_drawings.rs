@@ -17,7 +17,8 @@ use ketchup_application::threads::{
 use ketchup_manufacturing::project_drawings::{
     CuttingPiece, CuttingSheet, CuttingStock, DrawingOpening, DrawingSet, DrawingSetOptions,
     DrawingSolid, DrawingThread, OpeningSchedule, PlanSheet, ProjectDrawingError, ProjectView,
-    SCALES, SheetTitles, ShopDrawings, ShopPosition, ShopSheet, Storey, drawing_set_until, storeys,
+    SCALES, SheetTitles, ShopDrawings, ShopPosition, ShopSheet, SituationSheet, Storey,
+    drawing_set_until, storeys,
 };
 use ketchup_manufacturing::title_block::{
     DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM, SheetFormat, SheetLanguage, SheetSettings, TitleField,
@@ -1004,6 +1005,33 @@ impl KetchupApp {
         lines
     }
 
+    /// How a point of the ground plane maps to the national grid (S-JTSK) of the
+    /// first shown flat underlay that was moved near the origin from it, as the
+    /// site plan's crosses need it (Měchenice MECH-10 (c)); `None` without one.
+    fn drawing_situation(snapshot: &Snapshot) -> Option<[[f64; 3]; 2]> {
+        let shown = |tag| snapshot.tag(tag).is_some_and(|tag| tag.visible());
+        let underlay = snapshot.underlays().find(|underlay| {
+            underlay.lies_flat() && shown(underlay.tag) && underlay.offset_mm() != [0.0, 0.0]
+        })?;
+        // The underlay's own millimetres to the world, an affine map of the plane.
+        let placement = underlay.world_transform();
+        let world = |x: f64, y: f64| placement.transform_point([x, y, 0.0]);
+        let origin = world(0.0, 0.0);
+        let [ux, vx] = [world(1.0, 0.0), world(0.0, 1.0)]
+            .map(|point| [point[0] - origin[0], point[1] - origin[1]]);
+        let det = ux[0] * vx[1] - vx[0] * ux[1];
+        if det.abs() < f64::EPSILON {
+            return None;
+        }
+        // Its inverse, then the offset added back.
+        let rows = [[vx[1] / det, -vx[0] / det], [-ux[1] / det, ux[0] / det]];
+        let offset = underlay.offset_mm();
+        Some([0, 1].map(|row| {
+            let [a, b] = rows[row];
+            [a, b, offset[row] - a * origin[0] - b * origin[1]]
+        }))
+    }
+
     /// The job of the set `request` asks for: all sheets or the plans alone,
     /// at the scale it fixes or the one the set picks.
     pub(crate) fn project_drawings_job_for(
@@ -1045,7 +1073,7 @@ impl KetchupApp {
             .filter(|view| *view != ProjectView::Plan)
             .map(|view| {
                 let title = match view {
-                    ProjectView::Plan | ProjectView::Shop => String::new(),
+                    ProjectView::Plan | ProjectView::Shop | ProjectView::Situation => String::new(),
                     ProjectView::LongitudinalSection => catalog.text("drawings-view-longitudinal"),
                     ProjectView::CrossSection => catalog.text("drawings-view-cross"),
                     ProjectView::Front => catalog.text("drawings-view-front"),
@@ -1094,6 +1122,11 @@ impl KetchupApp {
                 shop,
                 cutting,
                 decimal_comma: catalog.text("drawings-sheet-decimal-separator") == ",",
+                situation: Self::drawing_situation(&snapshot).map(|to_grid_mm| SituationSheet {
+                    title: catalog.text("drawings-sheet-situation"),
+                    view_title: catalog.text("drawings-view-situation"),
+                    to_grid_mm,
+                }),
             },
             info,
         })

@@ -2053,6 +2053,7 @@ drawings-sheet-sections = Rezy
 # Desatinný oddeľovač výškových kót na rezoch a pohľadoch (+2,850).
 drawings-sheet-decimal-separator = ,
 drawings-sheet-elevations = Pohľady
+drawings-sheet-situation = Situácia
 drawings-sheet-openings = Okná a dvere
 drawings-openings-mark = Značka
 drawings-openings-designation = Označenie
@@ -2073,6 +2074,7 @@ drawings-view-front = Pohľad spredu
 drawings-view-back = Pohľad zozadu
 drawings-view-left = Pohľad zľava
 drawings-view-right = Pohľad sprava
+drawings-view-situation = Situácia stavby
 drawings-unavailable = Zatiaľ nie sú viditeľné žiadne presné telesá na kreslenie; počkaj, kým sa model vyhodnotí.
 drawings-do-not-fit = V mierke 1:{ $scale } sa pohľady nezmestia na hárok { $format }; zvoľ hrubšiu mierku alebo väčší formát.
 drawings-title-value-does-not-fit = Hodnota poľa „{ $field }“ sa do bunky pečiatky nezmestí ani písmom 1,6 mm: { $lines ->

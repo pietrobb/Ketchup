@@ -536,6 +536,96 @@ fn the_sheets_are_titled_in_the_language_the_client_names_and_the_document_keeps
     assert!(!shows(&window_texts, "Půdorys"), "{window_texts:?}");
 }
 
+/// Měchenice MECH-10 (c): the client reads the site plan's scale and grid crosses from
+/// the answer of export_drawings; a set without an underlay in a national grid has none.
+#[test]
+fn the_drawings_answer_reports_the_site_plan_and_its_grid_crosses() {
+    let (mut app, mut bridge, directory) = window();
+    bridge
+        .execute(
+            &mut app,
+            super::program_access::apply_source("box('house', (1000, 200, 2500))\n"),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let drawings = |path: &Path| Request::ExportDrawings {
+        expected: None,
+        path: path.display().to_string(),
+        sheet_id: None,
+        format: None,
+        title_block: BTreeMap::new(),
+        plan_only: false,
+        drawing_scale: None,
+        sheet_language: None,
+    };
+    let written = bridge
+        .execute(
+            &mut app,
+            drawings(&directory.path().join("local.pdf")),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let sheets = written["sheets"].as_array().unwrap();
+    assert!(
+        sheets
+            .iter()
+            .all(|sheet| sheet.get("situation") == Some(&Value::Null)),
+        "{written}"
+    );
+
+    // A 20 m parcel in S-JTSK metres (EPSG:5514), moved near the origin on import.
+    let cadastre = directory.path().join("cadastre.dxf");
+    std::fs::write(
+        &cadastre,
+        concat!(
+            "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n6\n0\nENDSEC\n",
+            "0\nSECTION\n2\nENTITIES\n",
+            "0\nLWPOLYLINE\n8\nparcel\n90\n4\n70\n1\n",
+            "10\n-742320\n20\n-1045220\n",
+            "10\n-742300\n20\n-1045220\n",
+            "10\n-742300\n20\n-1045200\n",
+            "10\n-742320\n20\n-1045200\n",
+            "0\nENDSEC\n0\nEOF\n",
+        ),
+    )
+    .unwrap();
+    let import = Request::Import {
+        expected: None,
+        path: cadastre.display().to_string(),
+        unit: None,
+        as_underlay: true,
+    };
+    bridge
+        .execute(&mut app, import, false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let written = bridge
+        .execute(
+            &mut app,
+            drawings(&directory.path().join("site.pdf")),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let site = &written["sheets"][0]["situation"];
+    assert_eq!(site["scale"], 250, "{written}");
+    let crosses = site["crosses"].as_array().unwrap();
+    assert!(
+        crosses
+            .iter()
+            .any(|cross| cross["coordinates_m"] == json!([742_300.0, 1_045_200.0])),
+        "{site}"
+    );
+    for cross in crosses {
+        let at = cross["at_mm"].as_array().unwrap();
+        assert!(at.len() == 2 && at.iter().all(Value::is_f64), "{cross}");
+    }
+    assert!(
+        sheets.len() + 1 == written["sheets"].as_array().unwrap().len(),
+        "the site plan comes before the same sheets: {written}"
+    );
+}
+
 /// A client writes the plan alone as a PDF at the scale it names: the sheet holds
 /// one view, the texts and the measured value of the dimension, and says what it drew.
 #[test]

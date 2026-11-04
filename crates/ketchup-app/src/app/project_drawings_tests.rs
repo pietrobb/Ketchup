@@ -1405,3 +1405,153 @@ fn a_plan_draws_the_visible_underlay_beneath_the_model_within_its_extent() {
     let hidden = app.project_drawings().unwrap();
     assert!(underlay_lines(&hidden.sheets[0].page).is_empty());
 }
+
+/// Měchenice MECH-10 (c): the coordination site plan in S-JTSK was drawn outside Kečup.
+/// With a shown underlay in a national grid the set opens with a site plan sheet at
+/// 1:250 or 1:500: the model seen from above on the whole underlay around it, and grid
+/// crosses every 100 mm of paper labelled with their S-JTSK coordinates (Y and X, as
+/// positive metres) exactly where those coordinates lie on the underlay.
+#[test]
+fn a_site_plan_sheet_draws_the_georeferenced_underlay_with_labelled_grid_crosses() {
+    use ketchup_manufacturing::project_drawings::SheetKind;
+    let mut app = KetchupApp::new();
+    add_box(&mut app, 902, "house", 0.0);
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("cadastre.dxf");
+    // A 20 m parcel in S-JTSK metres (EPSG:5514: x = -Y, y = -X); moved near the
+    // origin, it lies around the house, within 25 m of it.
+    std::fs::write(
+        &path,
+        concat!(
+            "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n6\n0\nENDSEC\n",
+            "0\nSECTION\n2\nENTITIES\n",
+            "0\nLWPOLYLINE\n8\nparcel\n90\n4\n70\n1\n",
+            "10\n-742320\n20\n-1045220\n",
+            "10\n-742300\n20\n-1045220\n",
+            "10\n-742300\n20\n-1045200\n",
+            "10\n-742320\n20\n-1045200\n",
+            "0\nENDSEC\n0\nEOF\n",
+        ),
+    )
+    .unwrap();
+    app.start_underlay_read(path, None);
+    assert!(app.document.current().underlays().next().is_some());
+
+    let set = app.project_drawings().unwrap();
+    let site = &set.sheets[0];
+    assert_eq!(site.kind, SheetKind::Situation, "the site plan comes first");
+    let summary = site.situation.as_ref().expect("it reports its grid");
+    assert_eq!(summary.scale, 250, "a small house takes 1:250");
+    assert!(site.page.texts().any(|text| text == "1:250"));
+    assert_eq!(site.underlay_lines, 4, "the whole parcel");
+
+    // The parcel's north-east corner (Y 742 300, X 1 045 200) on the page: the
+    // rightmost, topmost end of the grey lines.
+    let corner = site
+        .page
+        .marks
+        .iter()
+        .filter_map(|mark| match mark {
+            Mark::Line { points, stroke, .. } if stroke.color == [160, 160, 160] => {
+                Some(points.clone())
+            }
+            _ => None,
+        })
+        .flatten()
+        .reduce(|best, point| {
+            if point[0] > best[0] + 1e-6 || (point[0] > best[0] - 1e-6 && point[1] < best[1]) {
+                point
+            } else {
+                best
+            }
+        })
+        .unwrap();
+    // Every 25 m at 1:250 within 25 m around the house: one stands on the corner.
+    assert!(
+        summary
+            .crosses
+            .iter()
+            .any(|cross| cross.coordinates_m == [742_300.0, 1_045_200.0]),
+        "{:?}",
+        summary.crosses
+    );
+    assert!(summary.crosses.len() >= 4, "{:?}", summary.crosses);
+    for cross in &summary.crosses {
+        let [y, x] = cross.coordinates_m;
+        assert!(y % 25.0 == 0.0 && x % 25.0 == 0.0, "{:?}", cross);
+        // Y grows west (left on the sheet), X grows south (down on the sheet).
+        let expected = [
+            corner[0] - (y - 742_300.0) * 1000.0 / 250.0,
+            corner[1] + (x - 1_045_200.0) * 1000.0 / 250.0,
+        ];
+        assert!(
+            (cross.at_mm[0] - expected[0]).abs() < 1e-6
+                && (cross.at_mm[1] - expected[1]).abs() < 1e-6,
+            "Y {y} X {x} at {:?}, the underlay puts it at {expected:?}",
+            cross.at_mm
+        );
+        let centred = |points: &[[f64; 2]]| {
+            points.len() == 2
+                && (0..2).all(|axis| {
+                    (f64::midpoint(points[0][axis], points[1][axis]) - cross.at_mm[axis]).abs()
+                        < 1e-6
+                })
+        };
+        assert_eq!(
+            site.page
+                .marks
+                .iter()
+                .filter(|mark| matches!(mark, Mark::Line { points, .. } if centred(points)))
+                .count(),
+            2,
+            "two arms cross at Y {y} X {x}"
+        );
+        let texts = site.page.texts().collect::<Vec<_>>();
+        for label in [
+            format!("Y = {}", group_thousands(y)),
+            format!("X = {}", group_thousands(x)),
+        ] {
+            assert!(texts.contains(&label.as_str()), "{label} in {texts:?}");
+        }
+    }
+    for sheet in &set.sheets[1..] {
+        assert_ne!(sheet.kind, SheetKind::Situation);
+    }
+
+    // A3, kept in the document, never holds 100 mm of paper around the model: the
+    // site plan takes the smallest sheet that does, the other sheets stay on A3.
+    let mut settings = app.sheet_settings();
+    settings.format = Some(SheetFormat::A3);
+    app.store_sheet_settings(settings);
+    let set = app.project_drawings().unwrap();
+    assert_eq!(set.sheets[0].kind, SheetKind::Situation);
+    assert_eq!(set.sheets[0].format, SheetFormat::A2);
+    for sheet in &set.sheets[1..] {
+        assert_eq!(sheet.format, SheetFormat::A3, "{:?}", sheet.kind);
+    }
+
+    // A drawing in local coordinates is no site plan.
+    let mut local = KetchupApp::new();
+    add_box(&mut local, 903, "house", 0.0);
+    crate::drawn_shape::tests::evaluate_exact(&mut local);
+    let set = local.project_drawings().unwrap();
+    assert!(
+        set.sheets
+            .iter()
+            .all(|sheet| sheet.kind != SheetKind::Situation)
+    );
+}
+
+/// `742300.0` as "742 300".
+fn group_thousands(value: f64) -> String {
+    let digits = format!("{value:.0}");
+    let mut grouped = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            grouped.push(' ');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}

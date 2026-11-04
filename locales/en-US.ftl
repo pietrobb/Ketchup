@@ -2136,6 +2136,7 @@ drawings-sheet-sections = Sections
 # The decimal separator of the level marks on the sections and elevations (+2.850).
 drawings-sheet-decimal-separator = .
 drawings-sheet-elevations = Elevations
+drawings-sheet-situation = Site plan
 drawings-sheet-openings = Windows and doors
 drawings-openings-mark = Mark
 drawings-openings-designation = Designation
@@ -2156,6 +2157,7 @@ drawings-view-front = Front elevation
 drawings-view-back = Rear elevation
 drawings-view-left = Left elevation
 drawings-view-right = Right elevation
+drawings-view-situation = Site plan
 drawings-unavailable = There are no visible exact solids to draw yet; wait until the model is evaluated.
 drawings-do-not-fit = At 1:{ $scale } the views do not fit an { $format } sheet; choose a coarser scale or a larger format.
 drawings-title-value-does-not-fit = The { $field } value does not fit its title block cell even at 1.6 mm: { $lines ->
