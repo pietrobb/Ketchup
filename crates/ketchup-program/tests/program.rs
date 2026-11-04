@@ -732,6 +732,16 @@ fn a_whole_param_refuses_a_fraction() {
             "{error:#}"
         );
     }
+    // Review 2026-11-04 (rest of WB-42): 1e300 is whole but no int, so range()
+    // failed on it with a general type error.
+    for value in [1e300, -1e300, 3.0e9] {
+        let overrides = BTreeMap::from([("count".to_owned(), value)]);
+        let error = format!("{:#}", run("t.star", source, &overrides).unwrap_err());
+        assert!(
+            error.contains(&format!("param count = {value:e} is too large")),
+            "{error}"
+        );
+    }
     let overrides = BTreeMap::from([("count".to_owned(), 3.0), ("width".to_owned(), 0.5)]);
     let (evaluated, report) = run("t.star", source, &overrides).unwrap();
     assert_eq!(evaluated.model.parts.len(), 3);
