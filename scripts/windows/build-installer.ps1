@@ -256,10 +256,13 @@ if ($unresolvedImports.Count -ne 0) {
 Copy-PackageNotices $repoRoot $OcctRoot $payloadDir "ketchup"
 Assert-RuntimeNotices $payloadDir $vcRuntime
 if ($Sign) {
-    Invoke-AzureSigning (Join-Path $payloadDir "Ketchup.exe")
-    Invoke-AzureSigning (Join-Path $payloadDir "ketchup-exact-worker.exe")
-    Invoke-AzureSigning (Join-Path $payloadDir "ketchup-program-worker.exe")
-    Invoke-AzureSigning (Join-Path $payloadDir "KetchupViewer.exe")
+    # Smart App Control in Windows 11 blocks an unsigned DLL, so the OCCT TK*.dll are
+    # signed with the programs (review 2026-11-04 REL-142), and nothing is left unsigned.
+    foreach ($name in @(Get-PeFilesToSign $payloadDir)) {
+        Invoke-AzureSigning (Join-Path $payloadDir $name)
+    }
+    $unsigned = @(Get-PeFilesToSign $payloadDir)
+    if ($unsigned.Count -ne 0) { throw "The package would ship unsigned: $($unsigned -join ', ')" }
 }
 $publisher = if ($Sign) { "AEON GROUP spol. s r.o." } else { "Ketchup" }
 $distributionNotice = if ($Sign) {

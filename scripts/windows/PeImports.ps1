@@ -85,6 +85,15 @@ function Copy-MissingPeImports([string]$Directory, [string]$RuntimeDirectory, [s
     return $copied.ToArray()
 }
 
+# The executables and libraries in $Directory that carry no valid signature, by name: what
+# a signed package must sign itself, the OCCT TK*.dll as well as the programs (review
+# 2026-11-04 REL-142); the Visual C++ runtime keeps Microsoft's own.
+function Get-PeFilesToSign([string]$Directory) {
+    Get-ChildItem $Directory -File |
+        Where-Object { $_.Extension -in ".exe", ".dll" -and (Get-AuthenticodeSignature $_.FullName).Status -ne "Valid" } |
+        Sort-Object Name | ForEach-Object { $_.Name }
+}
+
 # The Visual C++ runtime DLLs of the newest installed Visual Studio, which Microsoft
 # allows to ship beside the program (app-local deployment).
 function Get-VcRuntimeDirectory {

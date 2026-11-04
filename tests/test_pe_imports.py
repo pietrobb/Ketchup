@@ -87,6 +87,32 @@ def test_windows_itself_counts_and_the_visual_cpp_runtime_does_not():
     ]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="reads Authenticode signatures")
+def test_every_unsigned_program_and_library_is_to_be_signed_and_the_runtime_is_not(tmp_path):
+    # Review 2026-11-04 REL-142: 0.3.2 signed the four programs only, so the OCCT TK*.dll
+    # went out unsigned, which Smart App Control blocks.
+    (tmp_path / "Ketchup.exe").write_bytes(pe_image("TKernel.dll"))
+    (tmp_path / "TKernel.dll").write_bytes(pe_image())
+    (tmp_path / "README.txt").write_text("not a program")
+
+    to_sign = run(
+        f"Copy-Item (Join-Path (Get-VcRuntimeDirectory) 'vcruntime140.dll') '{tmp_path.as_posix()}'; "
+        f"Get-PeFilesToSign '{tmp_path.as_posix()}'"
+    )
+
+    assert to_sign == ["Ketchup.exe", "TKernel.dll"]
+
+
+def test_a_signed_installer_signs_the_whole_payload_and_ships_nothing_unsigned():
+    script = (WINDOWS / "build-installer.ps1").read_text(encoding="utf-8")
+    signed = script.index("foreach ($name in @(Get-PeFilesToSign $payloadDir))")
+    checked = script.index("$unsigned = @(Get-PeFilesToSign $payloadDir)", signed)
+    assert script.index("Copy-MissingPeImports $payloadDir") < signed
+    assert checked < script.index("& $InnoCompilerPath")
+    assert checked < script.index("Compress-Archive -Path (Join-Path $payloadDir")
+    assert 'Invoke-AzureSigning (Join-Path $payloadDir "Ketchup.exe")' not in script
+
+
 def test_the_installer_gates_the_whole_payload_before_packaging_it():
     script = (WINDOWS / "build-installer.ps1").read_text(encoding="utf-8")
     copied = script.index("Copy-MissingPeImports $payloadDir (Get-VcRuntimeDirectory)")
