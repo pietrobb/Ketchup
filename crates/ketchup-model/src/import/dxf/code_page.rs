@@ -50,12 +50,21 @@ impl CodePage {
 
     /// Whether this code page has a byte for `character`.
     fn writes(self, character: char) -> bool {
+        self.encode(character).is_some()
+    }
+
+    /// `character` in this code page; `None` where it has none for it.
+    pub(super) fn encode(self, character: char) -> Option<Vec<u8>> {
         match self {
             Self::Standard(encoding) => {
                 let mut buffer = [0; 4];
-                !encoding.encode(character.encode_utf8(&mut buffer)).2
+                let (bytes, _, unmapped) = encoding.encode(character.encode_utf8(&mut buffer));
+                (!unmapped).then(|| bytes.into_owned())
             }
-            Self::Dos(high) => high.contains(&character),
+            Self::Dos(high) => {
+                let at = high.iter().position(|own| *own == character)?;
+                Some(vec![u8::try_from(at + 128).ok()?])
+            }
         }
     }
 

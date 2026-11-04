@@ -445,6 +445,8 @@ struct Drawing<'a> {
     lightweight: bool,
     /// Whether its texts are UTF-8: DXF 2007 or later.
     utf8: bool,
+    /// The code page its texts are read in, if any.
+    code_page: Option<CodePage>,
     /// The owner (group 330) of the entities of model space.
     owner: Option<Vec<u8>>,
     /// Each layer name as read, with the bytes the drawing writes it in.
@@ -532,6 +534,7 @@ impl<'a> Drawing<'a> {
             subclassed: false,
             lightweight: false,
             utf8: false,
+            code_page: encoding,
             owner: None,
             layers: Vec::new(),
             blocks: Vec::new(),
@@ -2250,8 +2253,10 @@ impl<'a> Drawing<'a> {
     }
 
     /// `text` as the drawing writes a text: UTF-8 from DXF 2007 on, else what is not
-    /// ASCII as `\U+XXXX` for each of its UTF-16 units; a `%%` that would be read as a special character is kept as
-    /// written, and what would end the line is a space.
+    /// ASCII in the drawing's code page, or where that has no byte for it (review
+    /// 2026-11-04 P3: it was always) as `\U+XXXX` for each of its UTF-16 units; a `%%`
+    /// that would be read as a special character is kept as written, and what would end
+    /// the line is a space.
     fn text(&self, text: &str) -> Vec<u8> {
         self.encoded(text, text.contains("%%"))
     }
@@ -2263,21 +2268,26 @@ impl<'a> Drawing<'a> {
     }
 
     fn encoded(&self, text: &str, percent: bool) -> Vec<u8> {
-        let mut out = String::with_capacity(text.len());
+        let mut out = Vec::with_capacity(text.len());
         for character in text.chars() {
             match character {
-                '%' if percent => out.push_str("%%%"),
-                character if character.is_control() => out.push(' '),
-                character if character.is_ascii() || self.utf8 => out.push(character),
-                // Beyond U+FFFF its two UTF-16 units, as a UTF-16 CAD writes it.
-                character => {
-                    for unit in character.encode_utf16(&mut [0; 2]) {
-                        out.push_str(&format!("\\U+{unit:04X}"));
-                    }
+                '%' if percent => out.extend_from_slice(b"%%%"),
+                character if character.is_control() => out.push(b' '),
+                character if character.is_ascii() || self.utf8 => {
+                    out.extend_from_slice(character.encode_utf8(&mut [0; 4]).as_bytes());
                 }
+                character => match self.code_page.and_then(|page| page.encode(character)) {
+                    Some(bytes) => out.extend(bytes),
+                    // Beyond U+FFFF its two UTF-16 units, as a UTF-16 CAD writes it.
+                    None => {
+                        for unit in character.encode_utf16(&mut [0; 2]) {
+                            out.extend_from_slice(format!("\\U+{unit:04X}").as_bytes());
+                        }
+                    }
+                },
             }
         }
-        out.into_bytes()
+        out
     }
 }
 

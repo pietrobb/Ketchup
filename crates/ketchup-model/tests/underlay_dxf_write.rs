@@ -2011,6 +2011,51 @@ fn a_character_beyond_u_ffff_is_written_before_dxf_2007_and_reads_back() {
     );
 }
 
+/// Review 2026-11-04 P3: a text written into a drawing in a code page had each character
+/// beyond ASCII as `\U+XXXX`, „Kúpeľňa“ as „K\U+00FApe\U+013E\U+0148a“, though the page
+/// has them. What the page has is written in it; only what it has not, escaped.
+#[test]
+fn a_text_written_into_a_code_page_drawing_escapes_only_what_the_page_has_not() {
+    let header = HEADER.replace(
+        "9\n$INSUNITS\n",
+        "9\n$DWGCODEPAGE\n3\nANSI_1250\n9\n$INSUNITS\n",
+    );
+    let source = format!("{header}{TABLES}{BLOCKS}{ENTITIES}0\nEOF\n");
+    let original = read(source.as_bytes());
+    let mut edits = UnderlayEdits::default();
+    edits.added.push(AddedObject::Drawn {
+        layer: "notes".to_owned(),
+        shape: DrawnShape::Text {
+            anchor_mm: [0.0, -1000.0],
+            height_mm: 100.0,
+            rotation_deg: 0.0,
+            text: "Kúpeľňa ☺".to_owned(),
+        },
+    });
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        &original.lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let line = b"\nK\xFApe\xBE\xF2a \\U+263A\n";
+    assert!(
+        written.windows(line.len()).any(|window| window == line),
+        "{}",
+        String::from_utf8_lossy(&written)
+    );
+    let again = read(&written);
+    assert!(
+        again
+            .lines
+            .layers()
+            .iter()
+            .flat_map(|layer| layer.texts())
+            .any(|text| text.text == "Kúpeľňa ☺")
+    );
+}
+
 /// Review 2026-10-31 P3: a polyline drawn into an R13 drawing was written as LWPOLYLINE,
 /// which came only with R14. It is a POLYLINE there, with its VERTEX and SEQEND marked as
 /// R13 marks them and owned by it.
