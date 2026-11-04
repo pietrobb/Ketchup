@@ -82,6 +82,50 @@ pub fn creating_call(
     nested.map(|call| with_statement(&ast, source, call))
 }
 
+/// The names a program binds in its own scope, outside its functions: what it assigns,
+/// loops over, defines or loads; `None` when it does not parse. A name written into the
+/// program as one of them takes it over (review 2026-11-04 UO-51).
+#[must_use]
+pub fn top_level_names(file_name: &str, source: &str) -> Option<BTreeSet<String>> {
+    fn bind(statement: &AstStmt, names: &mut BTreeSet<String>) {
+        match &statement.node {
+            StmtP::Assign(assign) => assign.lhs.node.visit_lvalue(|name| {
+                names.insert(name.ident.clone());
+            }),
+            StmtP::AssignModify(target, ..) => target.node.visit_lvalue(|name| {
+                names.insert(name.ident.clone());
+            }),
+            StmtP::For(each) => {
+                each.var.node.visit_lvalue(|name| {
+                    names.insert(name.ident.clone());
+                });
+                bind(&each.body, names);
+            }
+            StmtP::Def(def) => {
+                names.insert(def.name.ident.clone());
+            }
+            StmtP::Load(load) => {
+                names.extend(load.args.iter().map(|arg| arg.local.ident.clone()));
+            }
+            StmtP::Statements(statements) => {
+                for statement in statements {
+                    bind(statement, names);
+                }
+            }
+            StmtP::If(_, then) => bind(then, names),
+            StmtP::IfElse(_, branches) => {
+                bind(&branches.0, names);
+                bind(&branches.1, names);
+            }
+            _ => {}
+        }
+    }
+    let ast = parsed(file_name, source)?;
+    let mut names = BTreeSet::new();
+    bind(ast.statement(), &mut names);
+    Some(names)
+}
+
 fn parsed(file_name: &str, source: &str) -> Option<AstModule> {
     AstModule::parse(file_name, source.to_owned(), &crate::eval::dialect()).ok()
 }

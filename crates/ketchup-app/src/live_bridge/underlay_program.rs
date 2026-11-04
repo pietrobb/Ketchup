@@ -70,7 +70,13 @@ impl LiveBridge {
         let name = name.clone();
         let binding = super::underlay_binding::Binding::new(app, &snapshot, underlay, request)?;
         let written = binding.written(app, &snapshot)?;
-        let (source, overrides, file_name) = match app.document.current_rule_program() {
+        let current = app.document.current_rule_program();
+        refuse_taken_names(
+            current.map_or("", |program| &program.source),
+            &name,
+            &written,
+        )?;
+        let (source, overrides, file_name) = match current {
             Some(program) => (
                 with_data(&program.source, &name, &written),
                 Some(program.overrides.clone()),
@@ -445,6 +451,40 @@ pub(super) fn is_identifier(name: &str) -> bool {
         .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
         && characters.all(|next| next.is_ascii_alphanumeric() || next == '_')
         && name.len() <= ketchup_model::tolerance::limits::NAME_BYTES
+}
+
+/// Refused when `written`, the data of section `name`, binds a name the program sees before
+/// its first line (`range`, `len`, a library function) or binds outside that section, as
+/// another section's `A_POINTS` is the points of the data `A` writes (review 2026-11-04
+/// UO-51): it would take the name over. A program that does not parse is left for its
+/// apply to say.
+pub(super) fn refuse_taken_names(
+    source: &str,
+    name: &str,
+    written: &str,
+) -> Result<(), &'static str> {
+    use ketchup_program::source_edit::top_level_names;
+    let Some(writes) = top_level_names(FILE_NAME, written) else {
+        return Ok(());
+    };
+    let builtins = ketchup_program::eval::builtin_names().unwrap_or_default();
+    let elsewhere = top_level_names(FILE_NAME, &with_data(source, name, "")).unwrap_or_default();
+    let Some(taken) = writes
+        .iter()
+        .find(|written| builtins.contains(*written) || elsewhere.contains(*written))
+    else {
+        return Ok(());
+    };
+    let what = if builtins.contains(taken) {
+        "a name of the program language or library"
+    } else {
+        "a name the program already sets outside this data"
+    };
+    Err(invalid(
+        "name",
+        format!("The data {name:?} would set {taken}, {what}, and take it over."),
+        "Choose a name the program does not use yet, e.g. ROOM_1_01.",
+    ))
 }
 
 /// `source` with the data named `name` replaced by `written`, or with `written` first.

@@ -165,7 +165,9 @@ impl LiveBridge {
             .collect::<Vec<_>>();
         let current = app.document.current_rule_program();
         let mut source = current.map_or_else(String::new, |program| program.source.clone());
-        source = with_data(&source, &name, &intersection(&name, &names, &planes));
+        let solid = intersection(&name, &names, &planes);
+        super::underlay_program::refuse_taken_names(&source, &name, &solid)?;
+        source = with_data(&source, &name, &solid);
         for (view, data) in views.iter().zip(&names).rev() {
             let request = Request::ProgramFromUnderlay {
                 expected: app.live_bridge_stamp(),
@@ -187,7 +189,9 @@ impl LiveBridge {
                 super::underlay_binding::Binding::new(app, &snapshot, underlay, request)?;
             binding.frame = true;
             binding.whole = view.whole;
-            source = with_data(&source, data, &binding.written(app, &snapshot)?);
+            let written = binding.written(app, &snapshot)?;
+            super::underlay_program::refuse_taken_names(&source, data, &written)?;
+            source = with_data(&source, data, &written);
         }
         Self::require_request_authority(cancelled)?;
         let file_name = current.map_or_else(

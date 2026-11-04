@@ -2706,6 +2706,22 @@ fn library() -> Result<(Globals, FrozenModule), ProgramError> {
         .clone()
 }
 
+/// Every name a program sees before its first line: the builtins (`range`, `len`,
+/// `math`, …) and the library's public globals. A program that binds one of them hides it
+/// from itself (review 2026-11-04 UO-51).
+///
+/// # Errors
+/// `prelude_invalid` when the prelude does not evaluate.
+pub fn builtin_names() -> Result<BTreeSet<String>, ProgramError> {
+    let (globals, prelude) = library()?;
+    Ok(globals
+        .names()
+        .chain(prelude.names())
+        .map(|name| name.as_str().to_owned())
+        .filter(|name| !name.starts_with('_'))
+        .collect())
+}
+
 /// `MATERIAL_WEIGHTS` of the prelude in use, material → weight with its source
 /// verbatim, read from the frozen library: the table has no copy in Rust.
 ///
