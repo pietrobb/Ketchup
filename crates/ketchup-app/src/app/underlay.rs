@@ -314,9 +314,12 @@ impl KetchupApp {
         path: &Path,
         read: ReadUnderlay,
     ) -> Result<UnderlayId, ImportError> {
-        let kind = read.raster.as_ref().map_or(ImportKind::File(ImportFormat::Dxf), |raster| {
-            ImportKind::Image(raster.raster.format)
-        });
+        let kind = read
+            .raster
+            .as_ref()
+            .map_or(ImportKind::File(ImportFormat::Dxf), |raster| {
+                ImportKind::Image(raster.raster.format)
+            });
         let failed = |cause: BoxedCause| ImportError::failed(kind, cause);
         let name = path
             .file_stem()
@@ -626,29 +629,27 @@ impl KetchupApp {
             .container_data
             .blobs()
             .get(&raster.image_blob())
-            .ok_or_else(|| format!("the document holds no blob {}", raster.image_blob()))
-            .and_then(|bytes| {
-                RasterImage::decode(bytes, raster).map_err(|error| error.to_string())
-            });
-        match decoded {
-            Ok(image) => {
+            .map(|bytes| RasterImage::decode(bytes, raster));
+        // The typed error stays whole up to here, where it becomes the digest's text.
+        let reason = match decoded {
+            Some(Ok(image)) => {
                 let image = Arc::new(image);
                 self.render
                     .underlay_rasters
                     .insert(raster.image_sha256, Some(Arc::clone(&image)));
-                Some(image)
+                return Some(image);
             }
-            Err(reason) => {
-                self.render
-                    .underlay_rasters
-                    .insert(raster.image_sha256, None);
-                self.digest = self.catalog.format(
-                    "error-underlay-lines",
-                    &BTreeMap::from([("name", underlay.name.clone()), ("reason", reason)]),
-                );
-                None
-            }
-        }
+            Some(Err(error)) => error.to_string(),
+            None => format!("the document holds no blob {}", raster.image_blob()),
+        };
+        self.render
+            .underlay_rasters
+            .insert(raster.image_sha256, None);
+        self.digest = self.catalog.format(
+            "error-underlay-lines",
+            &BTreeMap::from([("name", underlay.name.clone()), ("reason", reason)]),
+        );
+        None
     }
 
     /// The world box of what every shown underlay draws on its shown layers, where it is

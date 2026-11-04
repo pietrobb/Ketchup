@@ -50,7 +50,7 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, BoxedCause> {
     std::fs::File::open(path)?
         .take(limit + 1)
         .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > limit {
+    if !u64::try_from(bytes.len()).is_ok_and(|length| length <= limit) {
         return Err(format!(
             "{} is larger than the {} MiB an image underlay takes",
             path.display(),

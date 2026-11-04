@@ -253,9 +253,13 @@ impl GpuRasters {
         let largest = device.limits().max_texture_dimension_2d.max(1);
         let [width, height] = image.dimensions();
         let scaled;
-        let pixels = if width.max(height) > largest {
-            let fit = f64::from(largest) / f64::from(width.max(height));
-            let side = |length: u32| ((f64::from(length) * fit).floor() as u32).clamp(1, largest);
+        let longest = width.max(height);
+        let pixels = if longest > largest {
+            // Whole pixels: `length <= longest`, so the side never exceeds `largest`.
+            let side = |length: u32| {
+                let fitted = u64::from(length) * u64::from(largest) / u64::from(longest);
+                u32::try_from(fitted).map_or(largest, |fitted| fitted.clamp(1, largest))
+            };
             scaled = image::imageops::resize(
                 &image.pixels,
                 side(width),
