@@ -877,10 +877,14 @@ impl KetchupApp {
         let Some(evaluated) = evaluated else {
             return Vec::new();
         };
+        // The numbers take the sheet's decimal separator, as its level marks
+        // and dimensions do (review 2026-11-04 MF-140).
+        let separator = catalog.text("drawings-sheet-decimal-separator");
+        let number = |value: f64| value.to_string().replace('.', &separator);
         let mm = |values: &[f64]| {
             values
                 .iter()
-                .map(|value| format!("{}", (value * 10.0).round() / 10.0))
+                .map(|value| number((value * 10.0).round() / 10.0))
                 .collect::<Vec<_>>()
                 .join(" x ")
         };
@@ -900,7 +904,7 @@ impl KetchupApp {
                             &BTreeMap::from([
                                 ("number", (index + 1).to_string()),
                                 ("size", mm(&layout.stock_mm)),
-                                ("used", layout.used_percent.to_string()),
+                                ("used", number(layout.used_percent)),
                             ]),
                         ),
                         size_mm: if bars {

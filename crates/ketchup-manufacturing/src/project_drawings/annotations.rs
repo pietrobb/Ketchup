@@ -71,14 +71,23 @@ pub(super) struct PlanAnnotations {
     pub(super) counts: AnnotationCounts,
 }
 
+/// A dimension's value with `separator` before its decimal, as the sheet
+/// writes its numbers (review 2026-11-04 MF-140).
+fn dimension_value(value_mm: f64, separator: char) -> String {
+    dimension_text(value_mm).replace('.', &separator.to_string())
+}
+
 impl PlanAnnotations {
-    pub(super) fn project(frame: &ViewFrame, annotations: &[Annotation]) -> Self {
+    /// The annotations as the plan in `frame` draws them, their dimensions
+    /// written with `separator` before the decimal.
+    pub(super) fn project(frame: &ViewFrame, annotations: &[Annotation], separator: char) -> Self {
         let mut counts = AnnotationCounts::default();
         let mut marks = Vec::with_capacity(annotations.len());
         for annotation in annotations {
             // The view places every point, so only a dimension without length in plan
             // is left out.
-            let Some(mark) = projected(annotation, |point| Some(frame.project(point))) else {
+            let Some(mark) = projected(annotation, |point| Some(frame.project(point)), separator)
+            else {
                 counts.outside_plan += 1;
                 continue;
             };
@@ -102,6 +111,7 @@ impl PlanAnnotations {
         frame: &ViewFrame,
         annotations: &[Annotation],
         centre: [f64; 3],
+        separator: char,
     ) -> Self {
         let mut marks = Vec::new();
         for annotation in annotations {
@@ -151,7 +161,7 @@ impl PlanAnnotations {
             marks.push(Projected::Dimension {
                 measured,
                 line,
-                value: dimension_text(layout.value_mm),
+                value: dimension_value(layout.value_mm, separator),
                 height_mm: *height_mm,
             });
         }
@@ -191,13 +201,14 @@ pub fn annotation_marks(
     project: impl Fn([f64; 3]) -> Option<[f64; 2]>,
 ) -> Option<Vec<Mark>> {
     let mut page = Page::default();
-    projected(annotation, project)?.draw(&mut page, &|point| point);
+    projected(annotation, project, '.')?.draw(&mut page, &|point| point);
     Some(page.marks)
 }
 
 fn projected(
     annotation: &Annotation,
     project: impl Fn([f64; 3]) -> Option<[f64; 2]>,
+    separator: char,
 ) -> Option<Projected> {
     Some(match &annotation.mark {
         AnnotationMark::Text {
@@ -223,7 +234,7 @@ fn projected(
             Projected::Dimension {
                 measured: [project(*from_mm)?, project(*to_mm)?],
                 line,
-                value: dimension_text(layout.value_mm),
+                value: dimension_value(layout.value_mm, separator),
                 height_mm: *height_mm,
             }
         }
@@ -368,7 +379,7 @@ mod tests {
                 height_mm: 2.5,
             },
         };
-        let drawn = PlanAnnotations::project_upright(&side, &[vertical], [500.0; 3]);
+        let drawn = PlanAnnotations::project_upright(&side, &[vertical], [500.0; 3], '.');
         let Some(Projected::Dimension { measured, line, .. }) = drawn.marks.first() else {
             panic!("the vertical dimension is drawn");
         };
@@ -406,7 +417,7 @@ mod tests {
         };
         let centre = [2000.0, 500.0, 1000.0];
         let count = |frame: &ViewFrame, annotation: Annotation| {
-            PlanAnnotations::project_upright(frame, &[annotation], centre)
+            PlanAnnotations::project_upright(frame, &[annotation], centre, '.')
                 .counts
                 .dimensions
         };

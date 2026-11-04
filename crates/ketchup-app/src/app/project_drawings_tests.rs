@@ -1046,6 +1046,54 @@ fn the_level_marks_take_the_decimal_separator_of_the_sheet_language() {
     }
 }
 
+/// Review 2026-11-04 MF-140: the level marks of a Czech sheet wrote a comma
+/// but its dimensions and cutting captions a point ("1234.5", "využito
+/// 87.5 %"), both on one sheet, in the PDF and the DXF. Every number a Czech or
+/// Slovak sheet writes takes the comma.
+#[test]
+fn a_czech_or_slovak_sheet_writes_no_decimal_point() {
+    let decimal_point = |text: &str| {
+        let chars = text.chars().collect::<Vec<_>>();
+        chars
+            .windows(3)
+            .any(|three| three[0].is_ascii_digit() && three[1] == '.' && three[2].is_ascii_digit())
+    };
+    let mut app = KetchupApp::new();
+    let source = format!(
+        "{PANEL}bar_stock('C24', [3000, 5000])\n\
+         dim('length', (0, -500, 0), (1234.5, -500, 0), offset_mm=-300, tags='plan')\n\
+         dim('up', (3000, -500, 0), (3000, -500, 2150.5), offset_mm=300, tags='plan')\n"
+    );
+    let program = ketchup_model::document::RuleProgramSource {
+        variants: Default::default(),
+        file_name: "panel.star".into(),
+        source,
+        overrides: BTreeMap::new(),
+    };
+    app.apply_program_source(program, true).unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    for language in [SheetLanguage::Czech, SheetLanguage::Slovak] {
+        let mut settings = app.sheet_settings();
+        settings.language = Some(language);
+        app.store_sheet_settings(settings);
+        let set = app.project_drawings().unwrap();
+        let written = set
+            .sheets
+            .iter()
+            .flat_map(|sheet| sheet.page.texts().chain(sheet.lines.texts()))
+            .collect::<Vec<_>>();
+        assert!(
+            written.iter().any(|text| text.contains("1234,5")),
+            "{language:?}: {written:?}"
+        );
+        let points = written
+            .iter()
+            .filter(|text| decimal_point(text))
+            .collect::<Vec<_>>();
+        assert!(points.is_empty(), "{language:?}: {points:?}");
+    }
+}
+
 /// Review 2026-10-19 P3: the open window read the document's sheet settings
 /// in every frame and wrote its own fields back whenever they differed, so
 /// settings the AI wrote, or those of a document opened meanwhile, were
