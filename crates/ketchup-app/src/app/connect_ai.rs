@@ -30,13 +30,18 @@ impl KetchupApp {
                 .button(self.catalog.text("connect-ai-use-this-window"))
                 .clicked()
             {
-                self.live.chosen_window_error =
-                    self.mark_chosen_window().err().map(|e| e.to_string());
+                self.live.chosen_window_error = self.mark_chosen_window().err();
             }
         }
-        let Some(server) = mcp_server_command() else {
-            ui.weak(self.catalog.text("connect-ai-executable-unknown"));
-            return;
+        let server = match mcp_server_command() {
+            Ok(server) => server,
+            Err(error) => {
+                ui.weak(
+                    self.catalog
+                        .text_because("connect-ai-executable-unknown", error),
+                );
+                return;
+            }
         };
         let attached = self.ai_attached();
         let set_up = attached
@@ -103,7 +108,10 @@ impl KetchupApp {
                     ui.weak(file.display().to_string());
                 }
                 let action = match row.registration {
-                    Registration::NotInstalled | Registration::ThisKetchup => None,
+                    Registration::NotInstalled
+                    | Registration::ThisKetchup
+                    | Registration::Unreadable { .. }
+                    | Registration::InstancesUnlisted { .. } => None,
                     Registration::NotSetUp => Some("connect-ai-set-up"),
                     Registration::Elsewhere { .. } => Some("connect-ai-replace"),
                 };
@@ -127,7 +135,7 @@ impl KetchupApp {
             self.live.harnesses = None;
         }
         if set_up.is_some() {
-            self.live.chosen_window_error = self.mark_chosen_window().err().map(|e| e.to_string());
+            self.live.chosen_window_error = self.mark_chosen_window().err();
         }
         if let Some(error) = &self.live.chosen_window_error {
             ui.colored_label(
@@ -210,17 +218,30 @@ impl KetchupApp {
                 self.catalog
                     .format(key, &BTreeMap::from([("path", command.clone())]))
             }
+            Registration::Unreadable { reason } => {
+                self.catalog.text_because("connect-ai-unreadable", reason)
+            }
+            Registration::InstancesUnlisted { reason } => self
+                .catalog
+                .text_because("connect-ai-instances-unlisted", reason),
         }
     }
 }
 
 /// The program an MCP client starts: this executable in server mode, or in a
-/// development checkout its server script.
-fn mcp_server_command() -> Option<String> {
-    std::env::current_exe()
-        .ok()
-        .map(|path| entry_point(&path))
-        .and_then(|path| path.to_str().map(str::to_owned))
+/// development checkout its server script. The error says why it is unknown
+/// (review 2026-11-04 P3: the window said only that it was).
+fn mcp_server_command() -> std::io::Result<String> {
+    let program = entry_point(&std::env::current_exe()?);
+    program.into_os_string().into_string().map_err(|program| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "its path is not Unicode text a client can start: {}",
+                Path::new(&program).display()
+            ),
+        )
+    })
 }
 
 /// What to paste into each client, keyed by its label.
@@ -248,7 +269,7 @@ fn client_setups(executable: &str) -> [(&'static str, String); 3] {
 mod tests {
     use super::client_setups;
     use crate::KetchupApp;
-    use crate::live_bridge::mcp_setup::{Harness, HarnessRow, Registration};
+    use crate::live_bridge::mcp_setup::{Harness, HarnessRow, Registration, RowError};
     use eframe::egui;
     use egui_kittest::{Harness as Kittest, kittest::Queryable as _};
 
@@ -569,6 +590,47 @@ mod tests {
                 .query_by_label(&catalog.text("connect-ai-set-up"))
                 .is_none()
         );
+    }
+
+    /// Review 2026-11-04 P3: a file that cannot be read, and Supervisors that
+    /// could not be listed, say why and offer no Connect that would fail.
+    #[test]
+    fn an_unreadable_file_and_unlisted_instances_say_why_without_connect() {
+        let mut app = KetchupApp::new();
+        let row = |harness, registration| HarnessRow {
+            harness,
+            file: None,
+            registration,
+            setup_error: None,
+        };
+        let reason = |text: &str| -> RowError { std::io::Error::other(text.to_owned()).into() };
+        app.live.harnesses = Some(vec![
+            row(
+                Harness::Codex,
+                Registration::Unreadable {
+                    reason: reason("TOML parse error at line 1, column 21"),
+                },
+            ),
+            row(
+                Harness::Supervisor,
+                Registration::InstancesUnlisted {
+                    reason: reason("Access is denied. (os error 5)"),
+                },
+            ),
+        ]);
+        let harness = open_section(app);
+        let catalog = &harness.state().catalog;
+        harness.get_by_label(&catalog.text_because(
+            "connect-ai-unreadable",
+            "TOML parse error at line 1, column 21",
+        ));
+        harness.get_by_label(&catalog.text_because(
+            "connect-ai-instances-unlisted",
+            "Access is denied. (os error 5)",
+        ));
+        for action in ["connect-ai-set-up", "connect-ai-replace"] {
+            assert!(harness.query_by_label(&catalog.text(action)).is_none());
+        }
     }
 
     #[test]

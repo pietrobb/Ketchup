@@ -14,12 +14,15 @@ pub(crate) const SERVER: &str = "ketchup";
 /// A JSON object in the order it was written, its values as written.
 type Object = indexmap::IndexMap<String, Box<RawValue>>;
 
-fn invalid_data(error: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
+pub(crate) fn invalid_data(
+    error: impl Into<Box<dyn std::error::Error + Send + Sync>>,
+) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error)
 }
 
+/// A JSON object; serde's error says where the text stops being one.
 fn object(text: &str) -> io::Result<Object> {
-    serde_json::from_str(text).map_err(|_| invalid_data("not a JSON object"))
+    serde_json::from_str(text).map_err(invalid_data)
 }
 
 fn raw(value: &impl serde::Serialize) -> io::Result<Box<RawValue>> {
@@ -92,14 +95,15 @@ pub(crate) fn with_json_server(
 
 /// The `ketchup` server's `command` in a Codex config.toml, in any form TOML
 /// gives it: a table, an inline table or dotted keys (review 2026-11-04 SEC-140).
-pub(crate) fn codex_command(toml: &str) -> Option<String> {
-    let document: toml_edit::DocumentMut = toml.parse().ok()?;
-    document
-        .get("mcp_servers")?
-        .get(SERVER)?
-        .get("command")?
-        .as_str()
-        .map(str::to_owned)
+/// A file that is no TOML is its parse error, not "no server".
+pub(crate) fn codex_command(toml: &str) -> Result<Option<String>, toml_edit::TomlError> {
+    let document: toml_edit::DocumentMut = toml.parse()?;
+    Ok(document
+        .get("mcp_servers")
+        .and_then(|servers| servers.get(SERVER))
+        .and_then(|server| server.get("command"))
+        .and_then(toml_edit::Item::as_str)
+        .map(str::to_owned))
 }
 
 /// `toml` with its `ketchup` server starting `executable --mcp`: only its
@@ -250,8 +254,7 @@ mod tests {
     "C:/work": {"mcpServers": {"ketchup": {"command": "C:\\old\\k.exe", "env": {"B": "2"}}}},
     "C:/other": {"allowedTools": []}
   },
-  "alpha": 1
-}"#;
+  "alpha": 1 }"#;
         let written = with_json_server(text, r"C:\new\Ketchup.exe", true).unwrap();
         let at = |key: &str| {
             written
@@ -291,15 +294,17 @@ args = ["--mcp"]
 command = "C:\\Program Files\\Ketchup\\Ketchup.exe"
 "#;
         assert_eq!(
-            codex_command(toml).as_deref(),
+            codex_command(toml).unwrap().as_deref(),
             Some(r"C:\Program Files\Ketchup\Ketchup.exe")
         );
         assert_eq!(
-            codex_command("[mcp_servers.ketchup]\ncommand = 'C:\\k\\Ketchup.exe'\n").as_deref(),
+            codex_command("[mcp_servers.ketchup]\ncommand = 'C:\\k\\Ketchup.exe'\n")
+                .unwrap()
+                .as_deref(),
             Some(r"C:\k\Ketchup.exe")
         );
         assert_eq!(
-            codex_command("[mcp_servers.other]\ncommand = \"x\"\n"),
+            codex_command("[mcp_servers.other]\ncommand = \"x\"\n").unwrap(),
             None
         );
     }
@@ -309,7 +314,7 @@ command = "C:\\Program Files\\Ketchup\\Ketchup.exe"
         let toml = "model = \"gpt\"\n\n[mcp_servers.ketchup]\ncommand = 'C:\\old\\ketchup-app.exe'\n\n[mcp_servers.ketchup.env]\nA = \"1\"\n\n[mcp_servers.other]\ncommand = \"other.exe\"\n";
         let written = with_codex_server(toml, r"C:\Programs\Ketchup\Ketchup.exe").unwrap();
         assert_eq!(
-            codex_command(&written).as_deref(),
+            codex_command(&written).unwrap().as_deref(),
             Some(r"C:\Programs\Ketchup\Ketchup.exe")
         );
         assert!(!written.contains("old"), "{written}");
@@ -323,7 +328,7 @@ command = "C:\\Program Files\\Ketchup\\Ketchup.exe"
         assert_eq!(written.matches("[mcp_servers.ketchup]").count(), 1);
         let quoted = with_codex_server("", r"C:\Peter's\Ketchup.exe").unwrap();
         assert_eq!(
-            codex_command(&quoted).as_deref(),
+            codex_command(&quoted).unwrap().as_deref(),
             Some(r"C:\Peter's\Ketchup.exe")
         );
         assert!(quoted.contains("[mcp_servers.ketchup]"), "{quoted}");
@@ -403,7 +408,7 @@ command = "C:\\Program Files\\Ketchup\\Ketchup.exe"
         ];
         for form in forms {
             assert_eq!(
-                codex_command(form).as_deref(),
+                codex_command(form).unwrap().as_deref(),
                 Some(r"C:\old\k.exe"),
                 "{form}"
             );
@@ -419,7 +424,7 @@ command = "C:\\Program Files\\Ketchup\\Ketchup.exe"
             );
             assert_eq!(server["args"][0].as_str(), Some("--mcp"), "{written}");
             assert_eq!(
-                codex_command(&written).as_deref(),
+                codex_command(&written).unwrap().as_deref(),
                 Some(r"C:\new\Ketchup.exe")
             );
         }

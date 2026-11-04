@@ -79,7 +79,6 @@ crates/ketchup-app/src/live_bridge/image.rs let_underscore 2
 crates/ketchup-app/src/live_bridge/image.rs str_result 7
 crates/ketchup-app/src/live_bridge/image_target.rs str_result 6
 crates/ketchup-app/src/live_bridge/interchange.rs str_result 5
-crates/ketchup-app/src/live_bridge/mcp_setup.rs dropped_error 2
 crates/ketchup-app/src/live_bridge/mcp_setup.rs formatted_cause 2
 crates/ketchup-app/src/live_bridge/measurement.rs let_underscore 1
 crates/ketchup-app/src/live_bridge/measurement.rs str_result 3

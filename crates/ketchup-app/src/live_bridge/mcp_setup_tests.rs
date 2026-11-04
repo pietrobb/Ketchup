@@ -123,7 +123,7 @@ fn mcp_setup_connects_the_installed_supervisor_and_leaves_other_instances() {
     let home = temporary_home("installed-only");
     let dev = home.join("DevSupervisor");
     let environment = Environment {
-        supervisor_folders: vec![dev.clone()],
+        supervisor_folders: Ok(vec![dev.clone()]),
         ..clean_profile(&home)
     };
     let installed = environment.config_file(Harness::Supervisor).unwrap();
@@ -149,6 +149,72 @@ fn mcp_setup_connects_the_installed_supervisor_and_leaves_other_instances() {
         supervisor,
         [(Some(installed), Registration::ThisKetchup)],
         "only the installed Supervisor is reported and connected"
+    );
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// Review 2026-11-04 P3: a configuration that is no JSON or TOML showed as
+/// "not set up", and `--mcp-setup` then tried to write it. It says why it
+/// cannot be read and stays as it is; an empty file is a new one.
+#[test]
+fn a_configuration_that_cannot_be_read_says_why_and_is_left_as_it_is() {
+    let home = temporary_home("unreadable");
+    let environment = clean_profile(&home);
+    let claude = environment.config_file(Harness::ClaudeCode).unwrap();
+    let codex = environment.config_file(Harness::Codex).unwrap();
+    create_parent(&codex);
+    let broken_json = "{\"mcpServers\": {\n";
+    let broken_toml = "[mcp_servers.ketchup\ncommand = 'x'\n";
+    std::fs::write(&claude, broken_json).unwrap();
+    std::fs::write(&codex, broken_toml).unwrap();
+    let this = std::env::current_exe().unwrap();
+    let rows = environment.set_up_installed(&this);
+    for harness in [Harness::ClaudeCode, Harness::Codex] {
+        let row = rows.iter().find(|row| row.harness == harness).unwrap();
+        let Registration::Unreadable { reason } = &row.registration else {
+            panic!("{row:?}");
+        };
+        assert!(reason.to_string().contains("line"), "{reason}");
+        assert_eq!(row.setup_error, None, "nothing was written");
+        assert!(describe(row, &this).contains(&reason.to_string()));
+    }
+    assert_eq!(std::fs::read_to_string(&claude).unwrap(), broken_json);
+    assert_eq!(std::fs::read_to_string(&codex).unwrap(), broken_toml);
+    for file in [&claude, &codex] {
+        std::fs::write(file, "").unwrap();
+    }
+    for harness in [Harness::ClaudeCode, Harness::Codex] {
+        assert_eq!(
+            environment.registration(harness, &this),
+            Registration::NotSetUp
+        );
+    }
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// Review 2026-11-04 P3: when the system did not list the running programs
+/// the Supervisor instances were silently none. A row says they could not be
+/// listed and why.
+#[test]
+fn running_supervisors_that_could_not_be_listed_get_a_row_saying_why() {
+    let home = temporary_home("unlisted");
+    let environment = Environment {
+        supervisor_folders: Err(std::io::Error::other("snapshot refused").into()),
+        ..clean_profile(&home)
+    };
+    let this = std::env::current_exe().unwrap();
+    let rows = environment.rows(&this);
+    let unlisted: Vec<_> = rows
+        .iter()
+        .filter(|row| matches!(row.registration, Registration::InstancesUnlisted { .. }))
+        .collect();
+    assert_eq!(unlisted.len(), 1, "{rows:?}");
+    assert_eq!(unlisted[0].harness, Harness::Supervisor);
+    assert_eq!(
+        unlisted[0].registration,
+        Registration::InstancesUnlisted {
+            reason: std::io::Error::other("snapshot refused").into()
+        }
     );
     std::fs::remove_dir_all(home).unwrap();
 }
@@ -193,6 +259,36 @@ fn variables_are_expanded_as_supervisor_does_and_an_unknown_one_stays() {
     assert_eq!(expand_variables("100%% and 5%"), "100% and 5%");
 }
 
+/// Review 2026-11-04 P3: Supervisor's `os.path.expandvars` on Windows also
+/// reads `$NAME` and `${NAME}` and leaves single quoted text alone. Each
+/// expected value is what Python 3.11's `ntpath.expandvars` gives.
+#[test]
+fn dollar_variables_and_quotes_are_read_as_supervisor_reads_them() {
+    for (text, expanded) in [
+        (r"a\$CARGO_PKG_NAME\b", r"a\ketchup-app\b"),
+        (r"a\${CARGO_PKG_NAME}\b", r"a\ketchup-app\b"),
+        (r"$KETCHUP_NO_SUCH\x", r"$KETCHUP_NO_SUCH\x"),
+        ("${KETCHUP_NO_SUCH}", "${KETCHUP_NO_SUCH}"),
+        (
+            "'$CARGO_PKG_NAME' %CARGO_PKG_NAME%",
+            "'$CARGO_PKG_NAME' ketchup-app",
+        ),
+        ("it's '$CARGO_PKG_NAME' here", "it's 'ketchup-app' here"),
+        ("don't $CARGO_PKG_NAME", "don't $CARGO_PKG_NAME"),
+        ("$$CARGO_PKG_NAME", "$CARGO_PKG_NAME"),
+        ("${CARGO_PKG_NAME", "${CARGO_PKG_NAME"),
+        ("$ alone", "$ alone"),
+        ("%CARGO_PKG_NAME", "%CARGO_PKG_NAME"),
+        (
+            "$CARGO_PKG_NAME-$CARGO_PKG_NAME.exe",
+            "$CARGO_PKG_NAME-ketchup-app.exe",
+        ),
+        ("%=x% $", "%=x% $"),
+    ] {
+        assert_eq!(expand_variables(text), expanded, "{text}");
+    }
+}
+
 /// Capability review run 432: a Supervisor reads `skills\mcp_servers.json` of
 /// its own instance folder (its `load_skills(cwd)`, and `mcp_bridge.py` takes
 /// the file next to itself), so the dev checkout and every project's instance
@@ -220,13 +316,13 @@ fn every_supervisor_instance_is_a_row_and_connect_writes_only_its_file() {
     // The installed copy, also found running, is listed once.
     let installed_folder = installed.parent().unwrap().parent().unwrap().to_owned();
     std::fs::write(installed.with_file_name("mcp_bridge.py"), "").unwrap();
-    environment.supervisor_folders = vec![
+    environment.supervisor_folders = Ok(vec![
         dev.clone(),
         installed_folder,
         reviewer.clone(),
         without_bridge,
         dev.clone(),
-    ];
+    ]);
     let this = std::env::current_exe().unwrap();
 
     let rows: Vec<HarnessRow> = environment

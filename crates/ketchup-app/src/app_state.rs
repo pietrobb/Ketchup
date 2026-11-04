@@ -62,7 +62,7 @@ pub(crate) struct LiveState {
     pub(crate) harnesses: Option<Vec<crate::live_bridge::mcp_setup::HarnessRow>>,
     /// Why Connect could not make this the window a `connect` without an id
     /// goes to (#2687 point 16); the AI then asks which window.
-    pub(crate) chosen_window_error: Option<String>,
+    pub(crate) chosen_window_error: Option<std::io::Error>,
 }
 
 /// Push/Pull input, its exact face-offset evaluation and the last committed
