@@ -555,7 +555,8 @@ fn encoded_snapshot(snapshot: &Snapshot) -> Arc<crate::document::EncodedSnapshot
     encoded
 }
 
-/// The blobs `snapshot` reads: the sources of imported bodies and the lines of underlays.
+/// The blobs `snapshot` reads: the sources of imported bodies and the lines and images of
+/// underlays.
 fn imported_source_blob_hashes(snapshot: &Snapshot) -> BTreeSet<String> {
     snapshot
         .features()
@@ -568,12 +569,18 @@ fn imported_source_blob_hashes(snapshot: &Snapshot) -> BTreeSet<String> {
             ),
             _ => None,
         })
-        .chain(
-            snapshot
-                .underlays()
-                .map(crate::underlay::Underlay::lines_blob),
-        )
+        .chain(snapshot.underlays().flat_map(underlay_blobs))
         .collect()
+}
+
+/// The blobs an underlay reads: its lines and, for an image, its file.
+fn underlay_blobs(underlay: &crate::underlay::Underlay) -> impl Iterator<Item = String> {
+    std::iter::once(underlay.lines_blob()).chain(
+        underlay
+            .raster
+            .as_ref()
+            .map(crate::underlay::raster::UnderlayRaster::image_blob),
+    )
 }
 
 fn write_revision_principal(bytes: &mut Vec<u8>, principal: ProposalPrincipal) {
@@ -2891,12 +2898,9 @@ fn load_document(
         }
         Arc::make_mut(&mut container_data.imported_source_blobs).insert(hash);
     }
-    // An underlay's lines, like an imported source, leave the file with the last
-    // revision that names them.
-    for hash in loaded_snapshot
-        .underlays()
-        .map(crate::underlay::Underlay::lines_blob)
-    {
+    // An underlay's lines and image, like an imported source, leave the file with the
+    // last revision that names them.
+    for hash in loaded_snapshot.underlays().flat_map(underlay_blobs) {
         if !container_data.blobs.contains_key(&hash) {
             return Err(PersistenceError::InvalidBlobHash);
         }

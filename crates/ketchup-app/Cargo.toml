@@ -19,6 +19,8 @@ testing = []
 ab_glyph = "0.2.32"
 eframe = { version = "0.32.3", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
 getrandom = "0.3.4"
+# Decodes a raster underlay, an orthophoto or a scanned map (already in the tree via arboard).
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 ketchup-analysis = { path = "../ketchup-analysis" }
 ketchup-application = { path = "../ketchup-application" }
 ketchup-assistant = { path = "../ketchup-assistant" }

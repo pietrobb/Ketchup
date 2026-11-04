@@ -70,10 +70,16 @@ const SAVED_107: &str = concat!(
     "/tests/fixtures/persistence/format107.bin"
 );
 
+/// Format 108 as Save wrote it: the format 107 file with a logical group.
+const SAVED_108: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/persistence/format108.bin"
+);
+
 /// The current format as Save writes it: the current revision alone.
 const GOLDEN: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/persistence/format108.bin"
+    "/tests/fixtures/persistence/format109.bin"
 );
 
 /// Canonical digest of the current revision each fixture was written with.
@@ -84,6 +90,7 @@ const DIGEST_105: &str = "fdcd5e8c616c1323";
 const DIGEST_106: &str = "29680d90129178f6";
 const DIGEST_107: &str = "294cafaafcee8159";
 const DIGEST_108: &str = "e83d7833a1941e55";
+const DIGEST_109: &str = "4d2552cc820fbebc";
 const DIGEST_RELEASE_0_3_0: &str = "3e767c0ebaf2d5b1";
 
 /// The document of a fixture, checked to open at `digest` with no Undo steps.
@@ -187,7 +194,7 @@ fn a_file_saved_by_kecup_0_3_0_opens_with_its_text_and_view_and_saves_the_same()
 /// in the oldest format that holds it: without underlays and annotations as format 103,
 /// the very snapshot bytes 0.2.0 itself saved, with an underlay as format 104; with
 /// annotations 105; with an edited underlay 106; with a stretched line 107; with a
-/// logical group 108 (the golden).
+/// logical group 108; with an image underlay 109 (the golden).
 #[test]
 fn a_document_is_saved_in_the_oldest_format_that_holds_it() {
     for (path, schema, digest) in [
@@ -197,6 +204,7 @@ fn a_document_is_saved_in_the_oldest_format_that_holds_it() {
         (SAVED_105, 105, DIGEST_105),
         (SAVED_106, 106, DIGEST_106),
         (SAVED_107, 107, DIGEST_107),
+        (SAVED_108, 108, DIGEST_108),
     ] {
         let (document, _) = opened(path, schema, digest);
         let snapshot = persistence::save(&document.current());
@@ -364,11 +372,12 @@ fn files_for_released_versions_are_in_the_format_their_document_needs() {
         ("edited-underlay", SAVED_106, 106, DIGEST_106),
         ("release-0.3.0", RELEASE_0_3_0, 106, DIGEST_RELEASE_0_3_0),
         ("stretched-line", SAVED_107, 107, DIGEST_107),
+        ("logical-group", SAVED_108, 108, DIGEST_108),
         (
-            "logical-group",
+            "image-underlay",
             GOLDEN,
             persistence::CURRENT_SCHEMA,
-            DIGEST_108,
+            DIGEST_109,
         ),
     ] {
         let (document, container) = opened(path, schema, digest);
@@ -558,7 +567,7 @@ const LOGICAL_GROUP: GroupId = GroupId(900);
 /// drop the mark, so the group would be checked for contact again after its next Save.
 /// The format 107 file with a logical group of kerbs.
 #[test]
-fn a_format_107_document_with_a_logical_group_saves_the_golden() {
+fn a_format_107_document_with_a_logical_group_saves_the_format_108_file() {
     let (mut document, container) = opened(SAVED_107, 107, DIGEST_107);
     document
         .apply_batch(&CommandBatch::new(vec![
@@ -576,6 +585,49 @@ fn a_format_107_document_with_a_logical_group_saves_the_golden() {
         .unwrap();
     assert_eq!(document.current().canonical_digest(), DIGEST_108);
     let saved = persistence::save_document_store_current_snapshot(&document, &container).unwrap();
+    assert_eq!(saved, std::fs::read(SAVED_108).unwrap());
+    let (reopened, _) = opened(SAVED_108, 108, DIGEST_108);
+    assert!(reopened.current().group(LOGICAL_GROUP).unwrap().logical());
+    assert_eq!(reopened.current().annotations(), annotations());
+}
+
+/// The file of the image underlay of the format 109 golden. Persistence keeps the bytes
+/// as they are and never decodes them, so a PNG signature and a few bytes stand for it.
+const IMAGE: &[u8] = b"\x89PNG\r\n\x1a\nformat 109 golden image";
+
+/// Format 109 adds the image of an underlay (Měchenice MECH-10(a)): Kečup 0.3.1 and the
+/// readers of 108 would drop it and keep an underlay with no lines. The format 108 file
+/// with a 2 × 2 pixel orthophoto of one metre a pixel added as an underlay; the file
+/// keeps its image beside the snapshot.
+#[test]
+fn a_format_108_document_with_an_image_underlay_saves_the_golden() {
+    use ketchup_model::graph::sha256_bytes;
+    use ketchup_model::underlay::raster::{RasterFormat, UnderlayRaster};
+    use ketchup_model::underlay::{UnderlayLines, plan_raster_underlay};
+    let (mut document, mut container) = opened(SAVED_108, 108, DIGEST_108);
+    let lines = UnderlayLines::default().encode();
+    let raster = UnderlayRaster {
+        image_sha256: sha256_bytes(IMAGE),
+        format: RasterFormat::Png,
+        width_px: 2,
+        height_px: 2,
+        origin_mm: [0.0, 2000.0],
+        column_mm: [1000.0, 0.0],
+        row_mm: [0.0, -1000.0],
+    };
+    let (batch, id) = plan_raster_underlay(
+        &document.current(),
+        "ortofoto",
+        raster.clone(),
+        sha256_bytes(&lines),
+        [0.0, 0.0],
+    )
+    .unwrap();
+    container.insert_import_blob(lines).unwrap();
+    container.insert_import_blob(IMAGE.to_vec()).unwrap();
+    document.apply_batch(&batch).unwrap();
+    assert_eq!(document.current().canonical_digest(), DIGEST_109);
+    let saved = persistence::save_document_store_current_snapshot(&document, &container).unwrap();
     if ketchup_test_env::update_golden() {
         std::fs::write(GOLDEN, saved).unwrap();
         panic!("wrote {GOLDEN}");
@@ -585,9 +637,13 @@ fn a_format_107_document_with_a_logical_group_saves_the_golden() {
         saved, golden,
         "the saved form changed; see the module comment"
     );
-    let (reopened, container) = opened(GOLDEN, persistence::CURRENT_SCHEMA, DIGEST_108);
+    let (reopened, container) = opened(GOLDEN, persistence::CURRENT_SCHEMA, DIGEST_109);
+    assert_eq!(
+        reopened.current().underlay(id).unwrap().raster.as_ref(),
+        Some(&raster)
+    );
+    assert_eq!(&container.blobs()[&raster.image_blob()][..], IMAGE);
     assert!(reopened.current().group(LOGICAL_GROUP).unwrap().logical());
-    assert_eq!(reopened.current().annotations(), annotations());
     assert_eq!(
         persistence::save_document_store_current_snapshot(&reopened, &container).unwrap(),
         golden
@@ -666,7 +722,7 @@ fn a_drawing_standing_as_a_view_is_saved_as_format_106() {
 /// document needs a new format number like any other new field (PS-4): `underlays` and an
 /// underlay's `placement` came with format 104, `annotations` with 105, an underlay's
 /// `edits` and `view` with 106, its `stretched_objects` with 107, a group's `logical`
-/// with 108.
+/// with 108, an underlay's `raster` with 109.
 const OPTIONAL_FIELDS: &[&str] = &[
     "document.rs: annotations",
     "document.rs: contact_joints",
@@ -702,6 +758,7 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "exact_brep_graph.rs: up_bits",
     "underlay.rs: edits",
     "underlay.rs: placement",
+    "underlay.rs: raster",
     "underlay.rs: view",
     "underlay/edits.rs: added",
     "underlay/edits.rs: moved_objects",
