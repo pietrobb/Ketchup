@@ -1,0 +1,1 @@
+Precisely: CFBundleShortVersionString and CFBundleVersion must be period-separated integers, so 0.3.2-dev was invalid in both. Now the short version is the release the build leads to (0.3.2) and CFBundleVersion is the Android versionCode number from WorkspaceVersion.ps1, where a pre-release sorts below its release.
