@@ -145,6 +145,41 @@ fn a_cancelled_drawings_export_writes_nothing_and_keeps_no_settings() {
     assert!(!pdf.exists(), "the window writes only what it publishes");
 }
 
+/// Review 2026-11-04 MCP-141: another client taking the window over, or the
+/// user's Disconnect, dropped the bridge with the export job in it, so the
+/// title block the export kept stayed in the document, and the client was
+/// told its request stopped and the document did not change. The job ends as
+/// a cancelled one does: its worker stops and the settings are put back; it
+/// sends no answer, so the connection says why it ended.
+#[test]
+fn a_takeover_or_disconnect_puts_back_what_a_running_export_kept() {
+    let directory = tempfile::tempdir().unwrap();
+    let pdf = directory.path().join("screwed.pdf");
+    let mut app = screwed_window();
+    let settings = app.stored_sheet_settings().unwrap();
+    for takeover in [true, false] {
+        let (_, mut bridge) = setup();
+        let (answers, cancelled) = started_export(&mut bridge, &mut app, &pdf);
+        assert!(exporting(&bridge));
+        assert_ne!(app.stored_sheet_settings().unwrap(), settings);
+        app.live.bridge = Some(bridge);
+        if takeover {
+            app.supersede_live_bridge();
+        } else {
+            app.revoke_live_consent();
+        }
+        assert!(app.live.bridge.is_none());
+        assert!(cancelled.load(Ordering::Acquire), "its worker stops");
+        assert_eq!(app.stored_sheet_settings().unwrap(), settings, "{takeover}");
+        assert!(!app.drawings.unsaved, "{takeover}");
+        assert!(
+            matches!(answers.try_recv(), Err(mpsc::TryRecvError::Disconnected)),
+            "no answer: the connection says why it ended"
+        );
+    }
+    assert!(!pdf.exists());
+}
+
 fn started_export(
     bridge: &mut LiveBridge,
     app: &mut KetchupApp,

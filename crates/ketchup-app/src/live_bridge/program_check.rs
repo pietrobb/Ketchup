@@ -117,6 +117,24 @@ impl ProgramCheckJob {
             Self::Reporting(job) => &job.answer.cancelled,
         }
     }
+
+    /// Ends the job of a bridge being dropped (another client takes the
+    /// window over, or the user disconnects) as its client cancelling it
+    /// would: its worker stops and what it kept in the window is put back.
+    /// It sends no answer, so the connection says why it ended (review
+    /// 2026-11-04 MCP-141).
+    pub(super) fn abandon(self, app: &mut KetchupApp, document_epoch: u64) {
+        self.request_cancelled().store(true, Ordering::Release);
+        match self {
+            Self::Checking(mut job) => {
+                job.worker_cancelled.store(true, Ordering::Release);
+                job.stop_completion();
+            }
+            Self::Plugin(job) => job.stop_worker(),
+            Self::ProjectDrawings(job) => job.abandon(app, document_epoch),
+            _ => {}
+        }
+    }
 }
 
 pub(super) struct ProgramPlanJob {

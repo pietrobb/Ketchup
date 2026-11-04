@@ -1473,8 +1473,9 @@ pub(crate) struct LiveBridge {
     stopped: Arc<AtomicBool>,
     /// Set before the bridge stops because another client attached.
     superseded: Arc<OnceLock<transport::Takeover>>,
-    /// The document as each connection's latest request found it when it began.
-    started: BTreeMap<u64, Stamp>,
+    /// The document as each connection's latest request found it when it
+    /// began, with what the file keeps beside it (sheet and viewer settings).
+    started: BTreeMap<u64, (Stamp, ketchup_model::persistence::ContainerData)>,
     worker: Option<JoinHandle<()>>,
     #[cfg(test)]
     active_connections: Arc<AtomicUsize>,
@@ -1536,20 +1537,24 @@ impl KetchupApp {
         })
     }
 
+    /// Stops the bridge; the jobs running in it end first, as cancelled.
     pub fn disable_live_bridge(&mut self) {
-        self.live.bridge = None;
+        if let Some(mut bridge) = self.live.bridge.take() {
+            bridge.abandon_jobs(self);
+        }
     }
 
     /// Ends every connection because another client takes the window over;
     /// each one gets a last frame saying so instead of a bare end of stream,
     /// and a client whose request was running is told whether the document
-    /// changed while it ran (MCP 16a).
+    /// changed while it ran (MCP 16a), after its job put back what it kept
+    /// (review 2026-11-04 MCP-141).
     pub(crate) fn supersede_live_bridge(&mut self) {
-        let now = self.live_bridge_stamp();
-        if let Some(bridge) = &mut self.live.bridge {
-            bridge.supersede(now);
-        }
-        self.disable_live_bridge();
+        let Some(mut bridge) = self.live.bridge.take() else {
+            return;
+        };
+        bridge.abandon_jobs(self);
+        bridge.supersede(self.live_bridge_stamp(), &self.file.container_data);
     }
 
     pub fn live_bridge_stamp(&self) -> Stamp {
@@ -1617,7 +1622,8 @@ impl KetchupApp {
             }
             bridge.activate_client(queued.session);
             let stamp = self.live_bridge_stamp();
-            bridge.started.insert(queued.session, stamp.clone());
+            let begun = (stamp.clone(), self.file.container_data.clone());
+            bridge.started.insert(queued.session, begun);
             if bridge.observed.as_ref() != Some(&stamp) {
                 bridge.query.invalidate();
                 for state in bridge.client_states.values_mut() {
@@ -1858,6 +1864,18 @@ impl LiveBridge {
         self.batch_job_key = state.batch_job_key;
         self.next_batch_job = state.next_batch_job;
         self.session = session;
+    }
+
+    /// Ends the jobs of a bridge about to be dropped as cancelled ones end,
+    /// without an answer (review 2026-11-04 MCP-141).
+    fn abandon_jobs(&mut self, app: &mut KetchupApp) {
+        if let Some(job) = self.apply_and_verify_job.take() {
+            job.cancelled.store(true, Ordering::Release);
+            job.worker_cancelled.store(true, Ordering::Release);
+        }
+        if let Some(job) = self.program_check_job.take() {
+            job.abandon(app, self.document_epoch);
+        }
     }
 
     fn remove_client(&mut self, session: u64) {

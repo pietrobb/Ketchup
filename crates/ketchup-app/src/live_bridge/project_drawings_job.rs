@@ -48,6 +48,17 @@ impl ProjectDrawingsExportJob {
     pub(super) const fn awaits_exact(&self) -> bool {
         matches!(self.stage, Stage::AwaitingExact { .. })
     }
+
+    /// Puts back the settings it kept, as a cancelled export does, while the
+    /// document it was started for is open (`document_epoch`); its worker
+    /// sees the cancelled flag and stops.
+    pub(super) fn abandon(self, app: &mut KetchupApp, document_epoch: u64) {
+        if let Stage::Drawing { started, .. } = self.stage
+            && self.epoch == document_epoch
+        {
+            started.undo(app);
+        }
+    }
 }
 
 /// Whether `request` exports the project set, which runs as a job.

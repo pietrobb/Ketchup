@@ -63,6 +63,13 @@ pub(super) struct PluginJob {
     receiver: mpsc::Receiver<Result<PluginRunResult, RunFailure>>,
 }
 
+impl PluginJob {
+    /// Stops the plugin process; nothing it made is published.
+    pub(super) fn stop_worker(&self) {
+        self.worker_cancelled.store(true, Ordering::Release);
+    }
+}
+
 /// Why a plugin run ended without its result.
 enum RunFailure {
     /// The allowed files changed between the consent and the start; nothing ran.

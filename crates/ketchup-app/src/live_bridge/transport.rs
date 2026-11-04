@@ -1,6 +1,7 @@
 //! Transport owns sockets and bounded messages only, never the GUI/store.
 use super::admission::{AUTHENTICATED, EVICTED, PENDING, Pending};
 use super::*;
+use ketchup_model::persistence::ContainerData;
 use std::{
     collections::VecDeque,
     io::{Read, Write},
@@ -567,8 +568,11 @@ pub(super) struct Takeover {
 
 impl LiveBridge {
     /// Records the takeover for the connections' last frames; the caller then
-    /// drops the bridge, which ends them.
-    pub(super) fn supersede(&mut self, now: Stamp) {
+    /// drops the bridge, which ends them. A request changed the document when
+    /// its stamp or what the file keeps beside it (`container`: the sheet
+    /// settings an export keeps outside Undo) differs from when it began
+    /// (review 2026-11-04 MCP-141).
+    pub(super) fn supersede(&mut self, now: Stamp, container: &ContainerData) {
         let mut started = std::mem::take(&mut self.started);
         // Dropping a queued request ends its connection's wait at once, so
         // the requests are dropped only after the takeover is recorded:
@@ -579,7 +583,7 @@ impl LiveBridge {
         }
         let changed = started
             .into_iter()
-            .map(|(session, before)| (session, before != now))
+            .map(|(session, (stamp, kept))| (session, stamp != now || kept != *container))
             .collect();
         let first = self
             .superseded
@@ -1069,6 +1073,16 @@ mod tests {
     /// when another client takes the window over at `now`; `begun` is the
     /// document when the window began request 5, `None` if it had not.
     fn takeover_frames(begun: Option<Stamp>, now: Stamp) -> (Value, Value) {
+        takeover_frames_kept(begun, now, &ContainerData::default())
+    }
+
+    /// [`takeover_frames`] where the file keeps `container` beside the
+    /// document at the takeover; the default when the request began.
+    fn takeover_frames_kept(
+        begun: Option<Stamp>,
+        now: Stamp,
+        container: &ContainerData,
+    ) -> (Value, Value) {
         let token = "a".repeat(64);
         let mut bridge = start_with_token(egui::Context::default(), token.clone()).unwrap();
         let mut idle = TcpStream::connect(bridge.address).unwrap();
@@ -1086,10 +1100,12 @@ mod tests {
         let queued = bridge.queue.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(queued.id, 5, "the request waits for the UI thread");
         if let Some(begun) = begun {
-            bridge.started.insert(queued.session, begun);
+            bridge
+                .started
+                .insert(queued.session, (begun, ContainerData::default()));
         }
 
-        bridge.supersede(now);
+        bridge.supersede(now, container);
         drop(bridge);
         let last_frame = |stream: &mut TcpStream| {
             stream
@@ -1144,6 +1160,20 @@ mod tests {
         let (changed, _) = takeover_frames(Some(stamp(2)), stamp(3));
         assert_eq!(changed["result"]["document_changed"], true, "{changed}");
         assert_eq!(changed["stamp"]["revision"], 3, "{changed}");
+        // Review 2026-11-04 MCP-141: settings kept in the file outside Undo,
+        // as an export's title block, change the document too.
+        let mut kept = ContainerData::default();
+        kept.set_extension(
+            ketchup_model::persistence::ExtensionEntry::new(
+                "org.ketchup.drawings",
+                "sheet-v1.json",
+                false,
+                b"{}".to_vec(),
+            )
+            .unwrap(),
+        );
+        let (changed, _) = takeover_frames_kept(Some(stamp(2)), stamp(2), &kept);
+        assert_eq!(changed["result"]["document_changed"], true, "{changed}");
     }
 
     #[test]
