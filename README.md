@@ -244,6 +244,8 @@ No stable public API or long-term native file-format compatibility is promised y
 
 A newer Ketchup opens the files of an older one. A document without underlays and annotations, whose imports stay within the limits of Ketchup 0.2.0 (at most 1 024 objects made by one import, such as profiles of a drawing, a DXF source of at most 8 MiB, other sources of at most 32 MiB), is saved in the format 0.2.0 reads, so 0.2.0 opens it too. Ketchup 0.2.0 and later refuse any other file a newer version saved and change nothing. **Do not open in 0.1.0 files a later version has saved:** 0.1.0 opens none of them reliably; it takes a document with a program, as well as any file in a newer format, for a damaged one and opens, without saying so, the `.recovery` copy beside it, which holds the content before that save, and saving there can overwrite the newer file.
 
+Each kind of background job (exact evaluation, import, export) caps its own worker's memory, but there is no single limit for the whole window yet: several large jobs of different kinds at once can together use more memory than the computer has. A reference to a face that matches its solid only within tolerance is kept by the order of the faces, without checking that it is still the same face, so after a rebuild it can point at a neighbouring one.
+
 ## Architecture
 
 Ketchup has one canonical, revisioned document and one validated mutation gateway. Geometry workers, rendering, picking, drawings, validation, imports, exports, UI, plugins, and AI are projections or clients of that authority rather than parallel model stores.
