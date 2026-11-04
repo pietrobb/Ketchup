@@ -46,7 +46,7 @@ try {
         "Distributable Code") "THIRD_PARTY_NOTICES.txt"
     # Review 2026-11-04 REL-141: each Visual C++ runtime DLL the package ships is named;
     # one the notices do not name refuses the package.
-    $runtime = @(Get-ChildItem (Get-VcRuntimeDirectory) -Filter "*.dll" -Name)
+    $runtime = @(Get-ChildItem (Get-VcRuntimeDirectory ([version]"14.0")) -Filter "*.dll" -Name)
     Assert-RuntimeNotices $payload $runtime
     Assert-Refused { Assert-RuntimeNotices $payload @("vcruntime140.dll", "vcruntime150.dll") } "a runtime DLL the notices do not name"
 

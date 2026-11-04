@@ -246,7 +246,9 @@ foreach ($record in @($occtManifest.shared_libraries)) {
 }
 # Ketchup.exe, both workers and OCCT need the Visual C++ runtime, which a clean Windows
 # lacks (review 2026-11-02 REL-120): it ships beside them, and nothing else may be missing.
-$vcRuntime = @(Copy-MissingPeImports $payloadDir (Get-VcRuntimeDirectory))
+$toolset = Get-PeToolsetVersion $payloadDir
+$vcRuntime = @(Copy-MissingPeImports $payloadDir (Get-VcRuntimeDirectory $toolset))
+Write-Host "Visual C++ toolset that linked the package: $toolset"
 Write-Host "Visual C++ runtime shipped beside the program: $($vcRuntime -join ', ')"
 $unresolvedImports = @(Get-UnresolvedPeImports $payloadDir)
 if ($unresolvedImports.Count -ne 0) {

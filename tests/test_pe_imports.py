@@ -15,8 +15,8 @@ from test_release_version import WINDOWS, powershell
 PE_IMPORTS = (WINDOWS / "PeImports.ps1").as_posix()
 
 
-def pe_image(*imports):
-    """A minimal PE32+ image whose import directory names `imports`."""
+def pe_image(*imports, linker=(14, 44)):
+    """A minimal PE32+ image whose import directory names `imports`, linked by `linker`."""
     rva, raw = 0x1000, 0x200
     table = 20 * (len(imports) + 1)
     names, descriptors = b"", b""
@@ -28,7 +28,7 @@ def pe_image(*imports):
     dos = b"MZ" + b"\0" * 0x3A + struct.pack("<I", 0x40)
     coff = b"PE\0\0" + struct.pack("<HHIIIHH", 0x8664, 1, 0, 0, 0, 240, 0x22)
     optional = bytearray(240)
-    struct.pack_into("<H", optional, 0, 0x20B)
+    struct.pack_into("<HBB", optional, 0, 0x20B, *linker)
     struct.pack_into("<II", optional, 112 + 8, rva if imports else 0, table)
     section = b".idata\0\0" + struct.pack("<IIII", len(data), rva, len(data), raw) + b"\0" * 16
     header = dos + coff + bytes(optional) + section
@@ -96,7 +96,7 @@ def test_every_unsigned_program_and_library_is_to_be_signed_and_the_runtime_is_n
     (tmp_path / "README.txt").write_text("not a program")
 
     to_sign = run(
-        f"Copy-Item (Join-Path (Get-VcRuntimeDirectory) 'vcruntime140.dll') '{tmp_path.as_posix()}'; "
+        f"Copy-Item (Join-Path (Get-VcRuntimeDirectory ([version]'14.0')) 'vcruntime140.dll') '{tmp_path.as_posix()}'; "
         f"Get-PeFilesToSign '{tmp_path.as_posix()}'"
     )
 
@@ -115,7 +115,41 @@ def test_a_signed_installer_signs_the_whole_payload_and_ships_nothing_unsigned()
 
 def test_the_installer_gates_the_whole_payload_before_packaging_it():
     script = (WINDOWS / "build-installer.ps1").read_text(encoding="utf-8")
-    copied = script.index("Copy-MissingPeImports $payloadDir (Get-VcRuntimeDirectory)")
+    copied = script.index("Copy-MissingPeImports $payloadDir (Get-VcRuntimeDirectory $toolset)")
+    assert script.index("$toolset = Get-PeToolsetVersion $payloadDir") < copied
     gated = script.index("Get-UnresolvedPeImports $payloadDir")
     assert copied < gated < script.index("$files = @(") < script.index("& $InnoCompilerPath")
     assert gated < script.index("Compress-Archive -Path (Join-Path $payloadDir")
+
+
+def redist(root, version):
+    crt = root / version / "x64" / "Microsoft.VC143.CRT"
+    crt.mkdir(parents=True)
+    return crt
+
+
+def test_the_runtime_shipped_is_the_one_of_the_toolset_that_linked_the_package(tmp_path):
+    # Review 2026-11-04 P3 platform: the newest installed Visual Studio's runtime was
+    # shipped, whatever toolset had linked the programs, an older one too.
+    payload, redists = tmp_path / "payload", tmp_path / "MSVC"
+    payload.mkdir()
+    (payload / "Ketchup.exe").write_bytes(pe_image("vcruntime140.dll", linker=(14, 44)))
+    (payload / "TKernel.dll").write_bytes(pe_image(linker=(14, 35)))
+    (payload / "README.txt").write_text("not a program")
+    for version in ("14.29.30133", "14.44.35112", "14.44.35208", "14.50.35710"):
+        redist(redists, version)
+    (redists / "14.38.33130").mkdir()  # a version without an x64 runtime
+    found = lambda toolset: run(
+        f"Get-VcRuntimeDirectory ([version]'{toolset}') @(Get-ChildItem '{redists.as_posix()}' -Directory | "
+        "ForEach-Object FullName) | Split-Path -Parent | Split-Path -Parent | Split-Path -Leaf"
+    )
+
+    assert run(f"Get-PeToolsetVersion '{payload.as_posix()}' | ForEach-Object ToString") == ["14.44"]
+    assert found("14.44") == ["14.44.35208"]
+    assert found("14.36") == ["14.44.35208"]
+    assert found("14.45") == ["14.50.35710"]
+    refused = powershell(
+        f"$ErrorActionPreference = 'Stop'; . '{PE_IMPORTS}'; "
+        f"Get-VcRuntimeDirectory ([version]'14.51') @('{(redists / '14.50.35710').as_posix()}')"
+    )
+    assert refused.returncode != 0 and "14.51" in refused.stderr
