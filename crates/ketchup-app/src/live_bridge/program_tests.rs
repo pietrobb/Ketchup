@@ -615,6 +615,83 @@ fn tag_visibility_through_mcp_is_one_undo_step_without_validation() {
     assert_eq!(app.document.current_rule_program().unwrap().source, source);
 }
 
+/// Měchenice MECH-11: a Viewer export through MCP was refused with "No shared saved
+/// scene… tick Viewer", and save_view could not tick it. viewer=true shares the view as a
+/// Viewer scene, viewer=false leaves it out, unset keeps it as it is, and saved_views
+/// says which views are shared; each save is still one Undo step.
+#[test]
+fn save_view_shares_a_view_with_the_viewer_or_leaves_it_out() {
+    let (mut app, mut bridge) = setup();
+    bridge
+        .execute(
+            &mut app,
+            apply("wall = box(\"wall\", (3000, 150, 2500))\n", true),
+            false,
+        )
+        .unwrap();
+    let save = |name: &str, viewer| Request::SaveView {
+        expected: None,
+        name: name.into(),
+        viewer,
+    };
+    let shared =
+        |app: &KetchupApp| app.viewer_export_scenes(&app.stored_viewer_settings().unwrap());
+    let listed = bridge
+        .execute(&mut app, save("Draft", None), false)
+        .unwrap();
+    assert_eq!(
+        listed["saved_views"][0]["viewer"], true,
+        "a new view is a Viewer scene until one is picked: {listed}"
+    );
+    let undo_steps = app.undo_step_count();
+    bridge
+        .execute(&mut app, save("Draft", Some(false)), false)
+        .unwrap();
+    assert!(
+        shared(&app).is_empty(),
+        "a view left out is no Viewer scene"
+    );
+    let listed = bridge
+        .execute(&mut app, save("Situation", Some(true)), false)
+        .unwrap();
+    assert_eq!(app.undo_step_count(), undo_steps + 2);
+    assert_eq!(listed["saved_views"][0]["viewer"], false, "{listed}");
+    assert_eq!(listed["saved_views"][1]["viewer"], true, "{listed}");
+    let situation = app.saved_view_id("Situation").unwrap();
+    assert_eq!(shared(&app), [situation]);
+    let listed = bridge
+        .execute(&mut app, save("Situation", None), false)
+        .unwrap();
+    assert_eq!(listed["saved_views"][1]["viewer"], true, "{listed}");
+    assert_eq!(shared(&app), [situation]);
+    bridge
+        .execute(&mut app, save("Situation", Some(false)), false)
+        .unwrap();
+    assert!(shared(&app).is_empty());
+
+    // Unreadable Viewer settings refuse viewer by name and save nothing; a save without
+    // viewer still works and lists viewer as unknown.
+    let corrupt = b"{\"scenes\": 7".to_vec();
+    app.file.container_data.set_extension(
+        ketchup_model::persistence::ExtensionEntry::new(
+            "org.ketchup.viewer",
+            "sharing-v1.json",
+            false,
+            corrupt,
+        )
+        .unwrap(),
+    );
+    let undo_steps = app.undo_step_count();
+    assert_eq!(
+        bridge.execute(&mut app, save("Late", Some(true)), false),
+        Err("viewer_settings_unreadable")
+    );
+    assert_eq!(app.saved_view_id("Late"), None);
+    assert_eq!(app.undo_step_count(), undo_steps);
+    let listed = bridge.execute(&mut app, save("Late", None), false).unwrap();
+    assert_eq!(listed["saved_views"][2]["viewer"], Value::Null, "{listed}");
+}
+
 #[test]
 fn saved_views_through_mcp_keep_the_program_and_survive_save_and_open() {
     let (mut app, mut bridge) = setup();
@@ -626,6 +703,7 @@ fn saved_views_through_mcp_keep_the_program_and_survive_save_and_open() {
     let save = |name: &str| Request::SaveView {
         expected: None,
         name: name.into(),
+        viewer: None,
     };
     let show = |name: &str| Request::ShowView {
         expected: None,
@@ -719,6 +797,7 @@ fn the_house_switches_concept_and_construction_by_views_after_a_new_length() {
                     Request::SaveView {
                         expected: None,
                         name,
+                        viewer: None,
                     },
                     false,
                 )
@@ -803,6 +882,7 @@ fn a_section_through_mcp_cuts_only_the_viewport_and_is_kept_by_a_saved_view() {
             Request::SaveView {
                 expected: None,
                 name: "Rez".into(),
+                viewer: None,
             },
             false,
         )

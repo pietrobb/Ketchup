@@ -74,7 +74,7 @@ impl ViewerSettings {
     }
 
     /// Whether the saved view goes into the package.
-    fn scene_shared(&self, id: SavedViewId) -> bool {
+    pub(crate) fn scene_shared(&self, id: SavedViewId) -> bool {
         self.scenes
             .as_ref()
             .is_none_or(|scenes| scenes.contains(&id.0))

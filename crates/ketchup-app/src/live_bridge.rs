@@ -717,6 +717,10 @@ pub enum Request {
         #[serde(default)]
         expected: Option<Stamp>,
         name: String,
+        /// Share the view as a Viewer scene (true) or leave it out (false);
+        /// unset keeps what the window decides for a new view.
+        #[serde(default)]
+        viewer: Option<bool>,
     },
     /// Show a saved view by name.
     ShowView {
@@ -946,9 +950,11 @@ fn program_owned(app: &KetchupApp) -> bool {
     app.document.current_rule_program().is_some()
 }
 
-/// Saved views with the names of the tags each one hides and its display switches.
+/// Saved views with the names of the tags each one hides, its display switches and
+/// whether it is a Viewer scene (null while the Viewer settings are unreadable).
 fn saved_views_json(app: &KetchupApp) -> Value {
     let snapshot = app.document.current();
+    let viewer = app.stored_viewer_settings().ok();
     let views = snapshot
         .saved_views()
         .map(|view| {
@@ -959,7 +965,8 @@ fn saved_views_json(app: &KetchupApp) -> Value {
                 .collect::<Vec<_>>();
             json!({"id":view.id().0,"name":view.name(),"hidden_tags":hidden,
                 "style":view.style,"parallel":view.camera.parallel,
-                "section":crate::app::section_json(view.section)})
+                "section":crate::app::section_json(view.section),
+                "viewer":viewer.as_ref().map(|settings| settings.scene_shared(view.id()))})
         })
         .collect::<Vec<_>>();
     json!({"saved_views":views,"program_owned":program_owned(app)})
@@ -2941,12 +2948,21 @@ impl LiveBridge {
                 Self::guard(app, &expected)?;
                 Ok(saved_views_json(app))
             }
-            Request::SaveView { expected, name } => {
+            Request::SaveView {
+                expected,
+                name,
+                viewer,
+            } => {
                 Self::guard(app, &expected)?;
                 Self::available(app, ui_busy)?;
+                // Unreadable Viewer settings are refused before the view is saved.
+                if viewer.is_some() && app.stored_viewer_settings().is_err() {
+                    return Err("viewer_settings_unreadable");
+                }
                 Self::require_request_authority(cancelled)?;
-                if app.save_view(&name).is_none() {
-                    return Err("saved_view_rejected");
+                let id = app.save_view(&name).ok_or("saved_view_rejected")?;
+                if let Some(shared) = viewer {
+                    app.set_viewer_scene_shared(id, shared);
                 }
                 self.query.invalidate();
                 Ok(saved_views_json(app))

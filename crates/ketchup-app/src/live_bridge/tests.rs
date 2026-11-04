@@ -2834,6 +2834,7 @@ fn an_oversized_answer_to_a_change_says_it_was_applied_and_the_change_is_made_on
         Request::SaveView {
             expected: None,
             name: name.clone(),
+            viewer: None,
         },
         Duration::from_secs(4),
     );

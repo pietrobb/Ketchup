@@ -77,6 +77,63 @@ fn a_section_through_the_origin_keeps_its_zero_offset() {
     assert_eq!(received.recv().unwrap(), json!({"method":"section"}));
 }
 
+/// Měchenice MECH-11: save_view reaches the window with viewer, so a client can share
+/// the view as a Viewer scene; the other saved-view actions still drop it.
+#[test]
+fn save_view_passes_viewer_on_and_the_schema_offers_it() {
+    let root = tempfile::tempdir().unwrap();
+    let received = stand_in_window(root.path());
+    let mut tools = Tools::new(None, Some(root.path().to_owned()));
+    call(
+        &mut tools,
+        "view",
+        json!({"action":"save_view","name":"Situation","viewer":true}),
+    );
+    assert_eq!(
+        received.recv().unwrap(),
+        json!({"method":"save_view","name":"Situation","viewer":true})
+    );
+    // false is a real answer, not a schema default; null means unset and is dropped.
+    call(
+        &mut tools,
+        "view",
+        json!({"action":"save_view","name":"Situation","viewer":false}),
+    );
+    assert_eq!(
+        received.recv().unwrap(),
+        json!({"method":"save_view","name":"Situation","viewer":false})
+    );
+    call(
+        &mut tools,
+        "view",
+        json!({"action":"save_view","name":"Situation","viewer":null}),
+    );
+    assert_eq!(
+        received.recv().unwrap(),
+        json!({"method":"save_view","name":"Situation"})
+    );
+    call(
+        &mut tools,
+        "view",
+        json!({"action":"show_view","name":"Situation","viewer":false}),
+    );
+    assert_eq!(
+        received.recv().unwrap(),
+        json!({"method":"show_view","name":"Situation"})
+    );
+    let schemas = crate::schema::tools();
+    let view = schemas
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "view")
+        .unwrap();
+    assert_eq!(
+        view["inputSchema"]["properties"]["viewer"]["type"],
+        "boolean"
+    );
+}
+
 #[test]
 fn run_plugin_is_listed_and_reaches_the_window_unchanged() {
     let root = tempfile::tempdir().unwrap();
