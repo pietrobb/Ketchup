@@ -62,7 +62,7 @@ pub(crate) struct LiveState {
     pub(crate) harnesses: Option<Vec<crate::live_bridge::mcp_setup::HarnessRow>>,
     /// Why Connect could not make this the window a `connect` without an id
     /// goes to (#2687 point 16); the AI then asks which window.
-    pub(crate) chosen_window_error: Option<String>,
+    pub(crate) chosen_window_error: Option<std::io::Error>,
 }
 
 /// Push/Pull input, its exact face-offset evaluation and the last committed
@@ -227,7 +227,6 @@ pub(crate) struct Clipboard {
 pub(crate) struct ReviewWorkflows {
     pub(crate) cam_reviews: CamReviewWorkflow,
     pub(crate) cam_export_dialog: Option<CamExportDialog>,
-    pub(crate) fea_reviews: FeaReviewWorkflow,
     pub(crate) fea_review_dialog: Option<FeaReviewDialog>,
     pub(crate) pdm: LocalPdmWorkflow,
     pub(crate) pdm_review_dialog: Option<PdmReviewDialog>,
@@ -261,6 +260,10 @@ pub(crate) struct ExactState {
     /// A box face the user clicked in the viewport before that body's exact
     /// result was shown; the selection moves to the exact face once it is.
     pub(crate) clicked_box_face: Option<ketchup_interaction::SelectionId>,
+    /// The document's mutation epoch before and after the last publication
+    /// of exact solids: what a client saw at the first is what the second
+    /// draws, the solids of the same document.
+    pub(crate) published_epochs: Option<(u64, u64)>,
 }
 
 /// The material takeoff window and the takeoff it shows.
@@ -287,6 +290,9 @@ pub(crate) struct DrawingsState {
     pub(crate) unreadable: Option<String>,
     /// The document's sheet settings changed since it was opened or saved.
     pub(crate) unsaved: bool,
+    /// The SHA-256 of the last drawing file the window wrote at each path,
+    /// the one an AI client's export may replace without asking.
+    pub(crate) written: BTreeMap<std::path::PathBuf, String>,
 }
 
 /// Viewer sharing preparation kept as project companion data, not CAD.

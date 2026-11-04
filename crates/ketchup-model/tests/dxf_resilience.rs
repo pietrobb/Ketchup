@@ -504,7 +504,8 @@ fn a_byte_order_mark_ctrl_z_and_empty_lines_after_eof_do_not_refuse_an_underlay(
             &underlay.lines,
             &edits,
         )
-        .unwrap_or_else(|error| panic!("{error}"));
+        .unwrap_or_else(|error| panic!("{error}"))
+        .dxf;
         let line = line("A1", [0, 0, 1000, 0]);
         let at = source
             .windows(line.len())

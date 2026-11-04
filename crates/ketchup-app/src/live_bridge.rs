@@ -11,6 +11,7 @@
 //! an optional `expected` stamp only guards against a concurrent human edit.
 //! Images are callback-correlated CAD-only PNG thumbnails; geometry completeness is not claimed.
 
+use crate::delivery::Deliver;
 use crate::{
     ActiveTool, AppCommand, KetchupApp, SaveFailure, SelectionId, WorkRecoveryMutationError,
 };
@@ -415,6 +416,10 @@ pub enum Request {
         /// cs, sk or en, auto for the window's; absent keeps the document's.
         #[serde(default)]
         sheet_language: Option<String>,
+        /// Replaces a PDF or a drawing sheet's file at `path` that is not the
+        /// one the window last wrote there (review 2026-11-04 MCP-140).
+        #[serde(default)]
+        replace: bool,
     },
     /// Imports a STEP, IGES, STL, DXF, GLB or SketchUp scene file as one Undo step;
     /// `as_underlay` keeps a DXF or DWG drawing under the model as an underlay instead.
@@ -1469,8 +1474,10 @@ pub(crate) struct LiveBridge {
     stopped: Arc<AtomicBool>,
     /// Set before the bridge stops because another client attached.
     superseded: Arc<OnceLock<transport::Takeover>>,
-    /// The document as each connection's latest request found it when it began.
-    started: BTreeMap<u64, Stamp>,
+    /// The id of each connection's latest request that began, and the
+    /// document as it found it, with what the file keeps beside it (sheet and
+    /// viewer settings).
+    started: BTreeMap<u64, (u64, Stamp, ketchup_model::persistence::ContainerData)>,
     worker: Option<JoinHandle<()>>,
     #[cfg(test)]
     active_connections: Arc<AtomicUsize>,
@@ -1532,20 +1539,24 @@ impl KetchupApp {
         })
     }
 
+    /// Stops the bridge; the jobs running in it end first, as cancelled.
     pub fn disable_live_bridge(&mut self) {
-        self.live.bridge = None;
+        if let Some(mut bridge) = self.live.bridge.take() {
+            bridge.abandon_jobs(self);
+        }
     }
 
     /// Ends every connection because another client takes the window over;
     /// each one gets a last frame saying so instead of a bare end of stream,
     /// and a client whose request was running is told whether the document
-    /// changed while it ran (MCP 16a).
+    /// changed while it ran (MCP 16a), after its job put back what it kept
+    /// (review 2026-11-04 MCP-141).
     pub(crate) fn supersede_live_bridge(&mut self) {
-        let now = self.live_bridge_stamp();
-        if let Some(bridge) = &mut self.live.bridge {
-            bridge.supersede(now);
-        }
-        self.disable_live_bridge();
+        let Some(mut bridge) = self.live.bridge.take() else {
+            return;
+        };
+        bridge.abandon_jobs(self);
+        bridge.supersede(self.live_bridge_stamp(), &self.file.container_data);
     }
 
     pub fn live_bridge_stamp(&self) -> Stamp {
@@ -1607,13 +1618,17 @@ impl KetchupApp {
                     || bridge.apply_and_verify_job.is_some()
                     || bridge.program_check_job.is_some())
             {
-                let _ = busy::reject_if_busy(&bridge.busy_jobs());
-                let _ = queued.reply.try_send(Response::error(queued.id, "busy"));
+                // Records which job holds the window; the other client is busy either way.
+                let refusal = busy::reject_if_busy(&bridge.busy_jobs())
+                    .err()
+                    .unwrap_or("busy");
+                queued.reply.deliver(Response::error(queued.id, refusal));
                 continue;
             }
             bridge.activate_client(queued.session);
             let stamp = self.live_bridge_stamp();
-            bridge.started.insert(queued.session, stamp.clone());
+            let begun = (queued.id, stamp.clone(), self.file.container_data.clone());
+            bridge.started.insert(queued.session, begun);
             if bridge.observed.as_ref() != Some(&stamp) {
                 bridge.query.invalidate();
                 for state in bridge.client_states.values_mut() {
@@ -1810,7 +1825,7 @@ impl KetchupApp {
                 Err(code) => Response::error(id, code),
             };
             response.stamp = Some(self.live_bridge_stamp());
-            let _ = reply.try_send(response);
+            reply.deliver(response);
             context.request_repaint();
             if disconnect {
                 bridge.remove_client(session);
@@ -1854,6 +1869,21 @@ impl LiveBridge {
         self.batch_job_key = state.batch_job_key;
         self.next_batch_job = state.next_batch_job;
         self.session = session;
+    }
+
+    /// Ends the jobs of a bridge about to be dropped as cancelled ones end,
+    /// without an answer (review 2026-11-04 MCP-141). The jobs stay in the
+    /// bridge: dropping one drops its reply and ends its connection's wait,
+    /// which must come after a takeover is recorded, or the connection ends
+    /// without its last frame.
+    fn abandon_jobs(&mut self, app: &mut KetchupApp) {
+        if let Some(job) = &self.apply_and_verify_job {
+            job.cancelled.store(true, Ordering::Release);
+            job.worker_cancelled.store(true, Ordering::Release);
+        }
+        if let Some(job) = &mut self.program_check_job {
+            job.abandon(app, self.document_epoch);
+        }
     }
 
     fn remove_client(&mut self, session: u64) {
@@ -2301,7 +2331,7 @@ impl LiveBridge {
             Err(code) => Response::error(id, code),
         };
         response.stamp = Some(app.live_bridge_stamp());
-        let _ = reply.try_send(response);
+        reply.deliver(response);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2616,7 +2646,7 @@ impl LiveBridge {
                     #[cfg(test)]
                     fault,
                 );
-                let _ = sender.try_send(result);
+                sender.deliver(result);
                 repaint.request_repaint();
             });
         if spawn.is_err() {
@@ -2752,10 +2782,12 @@ impl LiveBridge {
             });
             match saved {
                 Ok(()) => (true, "saved", None),
-                Err(_) if cancelled.load(Ordering::Acquire) => {
-                    (false, "committed_but_unsaved", Some("request_cancelled"))
-                }
-                Err(_) if started.elapsed() > deadline => {
+                // The save stopped because the request may no longer write: not
+                // cancelled by the client, so its time ran out. A save that failed on
+                // its own is named as such even when the client left meanwhile.
+                Err(SaveFailure::Cancelled)
+                    if !cancelled.load(Ordering::Acquire) && started.elapsed() > deadline =>
+                {
                     (false, "committed_but_unsaved", Some("job_timeout"))
                 }
                 Err(failure) => (
@@ -2961,11 +2993,17 @@ impl LiveBridge {
                 }
                 Self::require_request_authority(cancelled)?;
                 let id = app.save_view(&name).ok_or("saved_view_rejected")?;
-                if let Some(shared) = viewer {
-                    app.set_viewer_scene_shared(id, shared);
-                }
+                // The view is saved either way; a choice the settings could
+                // not keep is said, not passed over (review 2026-11-04 P3 GUI).
+                let stored = viewer.is_none_or(|shared| app.set_viewer_scene_shared(id, shared));
                 self.query.invalidate();
-                Ok(saved_views_json(app))
+                let mut listed = saved_views_json(app);
+                if !stored {
+                    listed["viewer_not_stored"] = json!(
+                        "the view is saved, but the Viewer settings could not keep its viewer choice; its viewer field says whether it is shared"
+                    );
+                }
+                Ok(listed)
             }
             Request::ShowView { expected, name } => {
                 Self::guard(app, &expected)?;

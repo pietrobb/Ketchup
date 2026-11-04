@@ -633,7 +633,7 @@ impl KetchupApp {
     /// `None` when the document holds no blob of them. Its blob is decoded once and kept while an underlay names it, so an
     /// edit applies the edits to the decoded blob instead of decoding it again (review
     /// 2026-10-29 UI-62).
-    fn underlay_lines_or_reason(
+    pub(crate) fn underlay_lines_or_reason(
         &self,
         underlay: &Underlay,
     ) -> Result<Arc<UnderlayLines>, Option<UnderlayLinesError>> {

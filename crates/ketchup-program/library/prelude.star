@@ -154,7 +154,7 @@ def grain_attributes(grain):
         return {}
     if grain not in AXES:
         fail("grain must be \"x\", \"y\" or \"z\", got %r" % grain)
-    return {"grain": grain}
+    return {"grain": grain, MATERIAL_AXIS: grain}
 
 # The fabrication role a part is exported with (BOM, BTLx, woodWOP, job):
 #   TIMBER_MEMBER      a bar cut and machined from timber stock (BTLx, bar list)
@@ -186,6 +186,10 @@ SHOP_DRAWING = "drawing:sheet"
 # length and the shortest as the thickness.
 LENGTH_AXIS = "length_axis"
 THICKNESS_AXIS = "thickness_axis"
+# Its MATERIAL_AXIS is the local axis a direction of its material runs along (the grain):
+# the cut list keeps its blank square to it. It is namespaced, so the workshop sees only
+# the "grain" attribute beside it.
+MATERIAL_AXIS = "material:axis"
 
 def _role(who, role):
     """`role` if it is a fabrication role, else fail naming `who`."""
@@ -3006,9 +3010,11 @@ def _opening_in(name, o, origin, along, up, out, depth, length, top_v):
 #   loads on it by kind (newtons, characteristic, unfactored), where they act (patches
 #   along the member: own weight, area loads, parts it carries) and what it passes to
 #   each support (reactions, with the bearing joint), and braced_by, the parts holding
-#   it sideways (part, edge top or bottom, from_mm, to_mm): a part bearing on it and on
-#   something else too (decking, battens, a ceiling), screwed to it by a joint() (or of
-#   the fixed tags) or also bearing on a grounded part; a loose plank across free beams
+#   it sideways (part, edge top or bottom, from_mm = to_mm, the place it holds): a part
+#   bearing on it and on a grounded part (decking, battens, a ceiling) and fastened to both
+#   by a joint() (or of the fixed tags). It holds the member at the joint's fasteners
+#   points, or at the middle of where they touch when the joint lists none, so name the
+#   fasteners of a lath along a beam. A plank screwed only to free beams, or lying loose,
 #   holds nothing. The top braces against a sagging moment, the bottom against a
 #   hogging one (lateral torsional buckling, check lateral_torsional). A beam shares its load among its
 #   supports by the lever rule, over more supports as simple spans between them; other

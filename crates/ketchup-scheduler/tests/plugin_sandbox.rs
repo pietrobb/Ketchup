@@ -196,7 +196,9 @@ fn host_max_response_honors_timeout_when_plugin_stops_reading() {
             Duration::from_secs(3),
             &AtomicBool::new(false),
         );
-        let _ = sender.send(result);
+        if sender.send(result).is_err() {
+            // The test has stopped waiting and reports the timeout.
+        }
     });
 
     // A host still blocked on the write would only return when the plugin
@@ -218,7 +220,9 @@ fn flooding_plugin_is_backpressured_while_host_response_is_blocked() {
         "ketchup-plugin-backpressure-{}.marker",
         std::process::id()
     ));
-    let _ = std::fs::remove_file(&marker);
+    if let Err(error) = std::fs::remove_file(&marker) {
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+    }
     let script = "import pathlib,sys,time\nprint('HELLO\\tketchup.plugin.v1\\torg.ketchup.queue-backpressure\\t1.0.0\\t7001\\tquery.agent-state.v1\\t8\\t65536\\t1', flush=True)\nsys.stdin.readline()\nprint('QUERY\\tAGENT_STATE', flush=True)\nsys.stdout.write('QUERY\\tAGENT_STATE\\n' * 20000)\nsys.stdout.flush()\npathlib.Path(sys.argv[1]).touch()\ntime.sleep(5)";
 
     let result = run_plugin_process(
@@ -287,7 +291,9 @@ fn host_max_response_honors_cancellation_when_plugin_stops_reading() {
             Duration::from_secs(60),
             &run_cancelled,
         );
-        let _ = sender.send(result);
+        if sender.send(result).is_err() {
+            // The test has stopped waiting and reports the timeout.
+        }
     });
     // Cancel only once the plugin has stopped reading, so the host is blocked
     // on its bounded response write rather than on process startup.

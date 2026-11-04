@@ -692,6 +692,46 @@ fn save_view_shares_a_view_with_the_viewer_or_leaves_it_out() {
     assert_eq!(listed["saved_views"][2]["viewer"], Value::Null, "{listed}");
 }
 
+/// Review 2026-11-04 P3 GUI: save_view passed over Viewer settings that
+/// could not keep the choice and answered as if the view were left out.
+/// Settings it can read but not store (a note with a NUL character) save the
+/// view and say the choice was not kept.
+#[test]
+fn save_view_says_when_the_viewer_settings_cannot_keep_its_choice() {
+    let (mut app, mut bridge) = setup();
+    bridge
+        .execute(
+            &mut app,
+            apply("wall = box(\"wall\", (3000, 150, 2500))\n", true),
+            false,
+        )
+        .unwrap();
+    app.file.container_data.set_extension(
+        ketchup_model::persistence::ExtensionEntry::new(
+            "org.ketchup.viewer",
+            "sharing-v1.json",
+            false,
+            br#"{"definition_notes":{"1":"a\u0000b"}}"#.to_vec(),
+        )
+        .unwrap(),
+    );
+    assert!(app.stored_viewer_settings().is_ok());
+    let listed = bridge
+        .execute(
+            &mut app,
+            Request::SaveView {
+                expected: None,
+                name: "Draft".into(),
+                viewer: Some(false),
+            },
+            false,
+        )
+        .unwrap();
+    assert!(app.saved_view_id("Draft").is_some());
+    assert_eq!(listed["saved_views"][0]["viewer"], true, "{listed}");
+    assert!(listed["viewer_not_stored"].is_string(), "{listed}");
+}
+
 #[test]
 fn saved_views_through_mcp_keep_the_program_and_survive_save_and_open() {
     let (mut app, mut bridge) = setup();
@@ -1503,7 +1543,9 @@ fn a_fillet_on_a_picked_box_edge_is_written_into_the_program() {
     // The undone program is evaluated by the next frame on a background
     // thread; picking its edges does not evaluate it on the UI thread.
     let context = egui::Context::default();
-    let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+    crate::tests::run_frame(&context, egui::RawInput::default(), |context| {
+        app.ui(context)
+    });
     evaluate_exact(&mut app);
     let edges = picks(&mut app, &mut bridge, "block", TopologicalElementKind::Edge);
     assert!(
@@ -1525,12 +1567,16 @@ fn a_fillet_on_a_picked_box_edge_is_written_into_the_program() {
     assert!(!app.apply_value_input());
     assert_eq!(app.status_key, "status-program-planning");
     assert_eq!(app.document.current_rule_program().unwrap().source, BLOCK);
-    let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+    crate::tests::run_frame(&context, egui::RawInput::default(), |context| {
+        app.ui(context)
+    });
     assert_eq!(app.document.current_rule_program().unwrap().source, BLOCK);
 
     held.send(crate::program_evaluation::ProgramEvaluations::evaluate_for_test(&program))
         .unwrap();
-    let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+    crate::tests::run_frame(&context, egui::RawInput::default(), |context| {
+        app.ui(context)
+    });
     let program = app.document.current_rule_program().unwrap().source.clone();
     assert!(
         program[BLOCK.len()..]
@@ -1550,7 +1596,8 @@ fn a_value_waiting_for_the_evaluation_is_dropped_by_esc_and_by_another_pick() {
     let (mut app, mut bridge) = setup();
     bridge.execute(&mut app, apply(BLOCK, true), false).unwrap();
     evaluate_exact(&mut app);
-    let _ = picks(&mut app, &mut bridge, "block", TopologicalElementKind::Edge);
+    // Listing the picks gives the block's edges their topology, picked below.
+    assert!(!picks(&mut app, &mut bridge, "block", TopologicalElementKind::Edge).is_empty());
     let snapshot = app.document.current();
     let occurrence = snapshot.occurrences().next().unwrap();
     let edge = |ordinal| ketchup_interaction::exact_projection::TopologicalPickLocator {
@@ -1580,7 +1627,9 @@ fn a_value_waiting_for_the_evaluation_is_dropped_by_esc_and_by_another_pick() {
     held.send(crate::program_evaluation::ProgramEvaluations::evaluate_for_test(&program))
         .unwrap();
     for _ in 0..2 {
-        let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+        crate::tests::run_frame(&context, egui::RawInput::default(), |context| {
+            app.ui(context)
+        });
     }
     assert_eq!(source(&app), BLOCK, "{}", app.digest);
 
@@ -1593,7 +1642,9 @@ fn a_value_waiting_for_the_evaluation_is_dropped_by_esc_and_by_another_pick() {
     held.send(crate::program_evaluation::ProgramEvaluations::evaluate_for_test(&program))
         .unwrap();
     for _ in 0..2 {
-        let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+        crate::tests::run_frame(&context, egui::RawInput::default(), |context| {
+            app.ui(context)
+        });
     }
     assert_eq!(source(&app), BLOCK, "{}", app.digest);
 }

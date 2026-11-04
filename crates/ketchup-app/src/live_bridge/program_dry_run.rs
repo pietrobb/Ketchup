@@ -6,6 +6,7 @@
 mod tests;
 use super::program_check::{PROGRAM_EXACT_GRACE, ProgramCheckJob};
 use super::*;
+use crate::delivery::Deliver;
 use ketchup_application::program_isolation::CheckDeadline;
 use ketchup_application::{RuleProgramApplyError, RuleProgramChange, SessionError};
 use ketchup_model::document::{ProposalContext, RuleProgramSource};
@@ -274,7 +275,7 @@ impl LiveBridge {
                     worker_cancelled,
                     deadline,
                 );
-                let _ = sender.try_send(result);
+                sender.deliver(result);
                 repaint.request_repaint();
             });
         if let Err(error) = spawn {

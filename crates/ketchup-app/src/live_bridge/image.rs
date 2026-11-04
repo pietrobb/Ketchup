@@ -1,5 +1,6 @@
 //! CAD-only readback. The GUI framebuffer is never an image source.
 use super::*;
+use crate::delivery::Deliver;
 use crate::{CameraViewState, ProjectedEdge, ProjectedFace, RenderBox, ViewFlag};
 use egui::{ColorImage, Rect, Shape};
 use ketchup_interaction::{Vec3, projection::CanonicalInteractionProjection};
@@ -572,7 +573,7 @@ impl LiveBridge {
                 })
             }
             Err(code) => {
-                let _ = queued.reply.try_send(Response::error(queued.id, code));
+                queued.reply.deliver(Response::error(queued.id, code));
             }
         }
         ctx.request_repaint();
@@ -719,7 +720,7 @@ fn finish_image_request(app: &KetchupApp, request: PendingImage, mut response: R
         response = Response::error(request.queued.id, "response_limit");
     }
     if !request.queued.cancelled.load(Ordering::Acquire) {
-        let _ = request.queued.reply.try_send(response);
+        request.queued.reply.deliver(response);
     }
     drop(request.capture);
 }

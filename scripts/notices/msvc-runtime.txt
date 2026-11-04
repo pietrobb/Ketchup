@@ -1,0 +1,21 @@
+Microsoft Visual C++ runtime
+
+Files:     those of msvcp140.dll, msvcp140_1.dll, msvcp140_2.dll,
+           msvcp140_atomic_wait.dll, msvcp140_codecvt_ids.dll, vcruntime140.dll,
+           vcruntime140_1.dll, concrt140.dll and vccorlib140.dll that the programs
+           and the {library} need, in {library_folder}
+Copyright: (c) Microsoft Corporation. All rights reserved.
+License:   Distributable Code under the Microsoft Visual Studio license terms,
+           https://visualstudio.microsoft.com/license-terms/
+           (the files are listed at
+           https://learn.microsoft.com/visualstudio/releases/2022/redistribution)
+
+The Kecup programs and the OCCT libraries are built with Microsoft Visual C++ and
+need its runtime, which a Windows without the Visual C++ Redistributable lacks, so
+these libraries ship beside them, unmodified and in object code form. They are
+Microsoft's, not part of Kecup, and Microsoft and its suppliers keep every right
+in them. They may be used only with Kecup and not distributed apart from it. They
+may not be modified, reverse engineered, decompiled or disassembled, except where
+the applicable law expressly permits it despite this limitation. Microsoft
+provides them as is, without any warranty, and is not liable for any damages
+from their use.

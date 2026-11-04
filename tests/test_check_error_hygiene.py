@@ -270,6 +270,32 @@ def test_the_arms_closures_and_lets_that_drop_an_error_count(tmp_path):
     }
 
 
+def test_the_drops_clippy_cannot_see_count(tmp_path):
+    # Review 2026-11-04 TST-140: a guarded arm, a named underscore binding, a bare
+    # `.ok();` and a `From` that names its source `_` all slipped past the ratchet.
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "match remove(path) { Ok(()) => {}, Err(_) if !path.exists() => {}, Err(e) => return Err(e) }\n"
+        "match open(path) { Err(_ignored) if retry => continue, other => other? }\n"
+        "let _checksum = manifest.take(32)?;\n"
+        "export(&path)\n    .ok();\n"
+        "impl From<io::Error> for Error { fn from(_: io::Error) -> Self { Error::Io } }\n"
+        "// Guards held to the end of the scope drop no error.\n"
+        "let _lock = lock_saves(path)?;\n"
+        "let _guard = span.enter();\n"
+        "let _permit = permit;\n"
+        "let _reset = Reset(FLAG.replace(true));\n"
+        "let kept = export(&path).ok();\n",
+    )
+    assert checker.current_counts(tmp_path) == {
+        "crates/a/src/lib.rs guarded_arm": 2,
+        "crates/a/src/lib.rs named_underscore": 1,
+        "crates/a/src/lib.rs ok_statement": 1,
+        "crates/a/src/lib.rs from_discard": 1,
+    }
+
+
 def test_a_new_form_is_recorded_once_and_then_may_only_shrink(tmp_path):
     # A form the baseline does not list yet is recorded as found when it is
     # added to the check; a form it lists may never grow, even from zero.

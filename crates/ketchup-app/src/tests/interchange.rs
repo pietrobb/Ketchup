@@ -1324,7 +1324,9 @@ endsolid tetrahedron\n";
     assert_eq!(imported_batch.instances.len(), 1);
 
     let context = egui::Context::default();
-    let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+    crate::tests::run_frame(&context, egui::RawInput::default(), |context| {
+        app.ui(context)
+    });
     app.zoom_fit();
     app.selection.select_occurrence(occurrence, false);
     assert!(selection_stroke_segments(&context, &mut app) > 0);
@@ -1366,7 +1368,9 @@ fn selected_imported_mesh_paints_its_outline_without_per_frame_edge_derivation()
     assert!(mesh.triangles.len() > 10_000);
     let occurrence = snapshot.occurrences().next().unwrap().id();
     let context = egui::Context::default();
-    let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+    crate::tests::run_frame(&context, egui::RawInput::default(), |context| {
+        app.ui(context)
+    });
     app.zoom_fit();
     app.selection.select_occurrence(occurrence, false);
     assert!(selection_stroke_segments(&context, &mut app) > 0);
@@ -1381,7 +1385,9 @@ fn selected_imported_mesh_paints_its_outline_without_per_frame_edge_derivation()
             .edges,
     );
     for _ in 0..8 {
-        let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+        crate::tests::run_frame(&context, egui::RawInput::default(), |context| {
+            app.ui(context)
+        });
     }
     assert!(
         Arc::ptr_eq(

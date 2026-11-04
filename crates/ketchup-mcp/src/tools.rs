@@ -659,8 +659,13 @@ impl Tools {
             Ok(launched) => launched,
             Err(error) => {
                 // Only our failed child is stopped; never select or touch another window.
-                let _ = child.kill();
-                let _ = child.wait();
+                // The launch's error is the one reported.
+                if child.kill().is_err() {
+                    // It has exited already; the wait reaps it.
+                }
+                if child.wait().is_err() {
+                    // Nothing is left to reap.
+                }
                 return Err(failed(error));
             }
         };
@@ -829,7 +834,19 @@ impl Tools {
                     "The client cancelled this call; it was not sent to the window.",
                 ));
             }
-            Err(error) => Err(BridgeError::Closed(error)),
+            // This server's own failure, not the window's: the connection
+            // stays (review 2026-11-04 P3).
+            Err(error) => {
+                return Err(ToolError::new(
+                    "call_not_prepared",
+                    "This MCP server could not make the call cancellable (details.cause), so it \
+                     did not send it; the connection to the Kečup window is kept. Call again.",
+                )
+                .with_details(json!({"cause": {
+                    "kind": error.kind().to_string(),
+                    "os_error": error.raw_os_error(),
+                }})));
+            }
         };
         self.cancel.disarm();
         match sent {
@@ -957,9 +974,13 @@ fn launch_connection(
         .name("ketchup-child-readiness".into())
         .spawn(move || {
             let ready = discovery::launched_window(&mut output, document);
-            let _ = send.send(ready);
+            if send.send(ready).is_err() {
+                // The launch stopped waiting and reports its own timeout.
+            }
             // The detached window may outlive this MCP connection. Drain, never retain logs.
-            let _ = io::copy(&mut output, &mut io::sink());
+            if io::copy(&mut output, &mut io::sink()).is_err() {
+                // The window closed its output: nothing is left to drain.
+            }
         })?;
     let (window, address) = receive
         .recv_timeout(wait)

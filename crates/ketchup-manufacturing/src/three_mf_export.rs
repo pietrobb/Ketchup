@@ -614,7 +614,7 @@ fn write_xml_escaped(xml: &mut BoundedString, value: &str) -> Result<(), ExactPr
             _ => return Err(ExactProductError::InvalidMeshExport),
         };
         xml.write_str(escaped)
-            .map_err(|_: std::fmt::Error| ExactProductError::ExportResourceLimit)?;
+            .map_err(|_unwritable: std::fmt::Error| ExactProductError::ExportResourceLimit)?;
     }
     Ok(())
 }
@@ -630,13 +630,16 @@ pub(crate) fn encode_package(
         size: u32,
         offset: u32,
     }
-    u16::try_from(entries.len())
-        .map_err(|_: std::num::TryFromIntError| ExactProductError::ExportResourceLimit)?;
+    u16::try_from(entries.len()).map_err(|_out_of_range: std::num::TryFromIntError| {
+        ExactProductError::ExportResourceLimit
+    })?;
     let archive_size = entries.iter().try_fold(22_usize, |total, (name, bytes)| {
-        u16::try_from(name.len())
-            .map_err(|_: std::num::TryFromIntError| ExactProductError::InvalidMeshExport)?;
-        u32::try_from(bytes.len())
-            .map_err(|_: std::num::TryFromIntError| ExactProductError::ExportResourceLimit)?;
+        u16::try_from(name.len()).map_err(|_out_of_range: std::num::TryFromIntError| {
+            ExactProductError::InvalidMeshExport
+        })?;
+        u32::try_from(bytes.len()).map_err(|_out_of_range: std::num::TryFromIntError| {
+            ExactProductError::ExportResourceLimit
+        })?;
         let entry_size = 76_usize
             .checked_add(name.len().saturating_mul(2))
             .and_then(|size| size.checked_add(bytes.len()))
@@ -647,12 +650,17 @@ pub(crate) fn encode_package(
     let mut central = Vec::with_capacity(entries.len());
     for (name, bytes) in entries {
         let name_bytes = name.as_bytes();
-        let name_len = u16::try_from(name_bytes.len())
-            .map_err(|_: std::num::TryFromIntError| ExactProductError::InvalidMeshExport)?;
-        let size = u32::try_from(bytes.len())
-            .map_err(|_: std::num::TryFromIntError| ExactProductError::InvalidMeshExport)?;
-        let offset = u32::try_from(archive.len())
-            .map_err(|_: std::num::TryFromIntError| ExactProductError::InvalidMeshExport)?;
+        let name_len = u16::try_from(name_bytes.len()).map_err(
+            |_out_of_range: std::num::TryFromIntError| ExactProductError::InvalidMeshExport,
+        )?;
+        let size =
+            u32::try_from(bytes.len()).map_err(|_out_of_range: std::num::TryFromIntError| {
+                ExactProductError::InvalidMeshExport
+            })?;
+        let offset =
+            u32::try_from(archive.len()).map_err(|_out_of_range: std::num::TryFromIntError| {
+                ExactProductError::InvalidMeshExport
+            })?;
         let crc = crc32(bytes);
         archive.extend_from_slice(&0x0403_4b50_u32.to_le_bytes());
         archive.extend_from_slice(&20_u16.to_le_bytes());
@@ -675,11 +683,13 @@ pub(crate) fn encode_package(
         });
     }
     let central_offset = u32::try_from(archive.len())
-        .map_err(|_: std::num::TryFromIntError| ExactProductError::InvalidMeshExport)?;
+        .map_err(|_out_of_range: std::num::TryFromIntError| ExactProductError::InvalidMeshExport)?;
     for entry in &central {
         let name = entry.name.as_bytes();
-        let name_len = u16::try_from(name.len())
-            .map_err(|_: std::num::TryFromIntError| ExactProductError::InvalidMeshExport)?;
+        let name_len =
+            u16::try_from(name.len()).map_err(|_out_of_range: std::num::TryFromIntError| {
+                ExactProductError::InvalidMeshExport
+            })?;
         archive.extend_from_slice(&0x0201_4b50_u32.to_le_bytes());
         archive.extend_from_slice(&20_u16.to_le_bytes());
         archive.extend_from_slice(&20_u16.to_le_bytes());
@@ -700,11 +710,11 @@ pub(crate) fn encode_package(
         archive.extend_from_slice(name);
     }
     let central_size = u32::try_from(archive.len())
-        .map_err(|_: std::num::TryFromIntError| ExactProductError::InvalidMeshExport)?
+        .map_err(|_out_of_range: std::num::TryFromIntError| ExactProductError::InvalidMeshExport)?
         .checked_sub(central_offset)
         .ok_or(ExactProductError::InvalidMeshExport)?;
     let count = u16::try_from(central.len())
-        .map_err(|_: std::num::TryFromIntError| ExactProductError::InvalidMeshExport)?;
+        .map_err(|_out_of_range: std::num::TryFromIntError| ExactProductError::InvalidMeshExport)?;
     archive.extend_from_slice(&0x0605_4b50_u32.to_le_bytes());
     archive.extend_from_slice(&0_u16.to_le_bytes());
     archive.extend_from_slice(&0_u16.to_le_bytes());

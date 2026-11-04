@@ -116,6 +116,7 @@ use ketchup_pdm::local::{
 };
 use ketchup_scheduler::ExactWorkerSupervisor;
 use modal::Modal;
+use number_text::{fixed_decimals, format_decimals, format_height};
 use slot::Slot;
 use tool_preview::ToolPreview;
 pub use view_settings::{ViewFlag, ViewSettings};
@@ -128,6 +129,7 @@ mod body_ui;
 mod bounded_parser;
 mod close_guard;
 mod command_registry;
+mod delivery;
 pub mod dialogs;
 mod drawn_shape;
 mod export_bundle;
@@ -151,6 +153,7 @@ pub mod live_bridge;
 mod mesh_conversion_ui;
 mod modal;
 mod native_document_inspection;
+mod number_text;
 mod occurrence_color_ui;
 mod planar_push_pull;
 mod program_detach;
@@ -2020,24 +2023,6 @@ struct CamExportDialog {
     review: Option<CamReviewSummary>,
 }
 
-struct FeaReviewDialog {
-    definition_id: DefinitionId,
-    feature_id: FeatureId,
-    occurrence_id: OccurrenceId,
-    case_id: String,
-    youngs_modulus_mpa: String,
-    poisson_ratio: String,
-    yield_strength_mpa: String,
-    constrained_face_ordinals: String,
-    loaded_face_ordinal: String,
-    traction_x_n_per_mm2: String,
-    traction_y_n_per_mm2: String,
-    traction_z_n_per_mm2: String,
-    coarse_deflection_mm: String,
-    fine_deflection_mm: String,
-    review: Option<FeaReviewSummary>,
-}
-
 struct PdmReviewDialog {
     source: PdmSourceIdentity,
     repository: String,
@@ -2337,14 +2322,6 @@ fn parse_dimension(input: &str, decimal: length_input::DecimalSeparator) -> Opti
     Dimension::new(input.trim().to_owned(), millimetres).ok()
 }
 
-fn format_height(height: f64) -> String {
-    let formatted = format!("{height:.2}");
-    formatted
-        .trim_end_matches('0')
-        .trim_end_matches('.')
-        .to_owned()
-}
-
 fn box_corners(width: f64, depth: f64, height: f64) -> [Vec3; 8] {
     [
         Vec3::new(0.0, 0.0, 0.0),
@@ -2376,7 +2353,5 @@ mod rotation_input_tests;
 mod scene_snapping_tests;
 #[cfg(test)]
 mod selection_mass_ui_tests;
-#[cfg(test)]
-mod selection_measures_ui_tests;
 #[cfg(test)]
 mod tests;

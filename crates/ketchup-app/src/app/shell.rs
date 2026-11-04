@@ -224,7 +224,6 @@ impl KetchupApp {
             reviews: app_state::ReviewWorkflows {
                 cam_reviews: CamReviewWorkflow::new(None),
                 cam_export_dialog: None,
-                fea_reviews: FeaReviewWorkflow::new(None),
                 fea_review_dialog: None,
                 pdm: LocalPdmWorkflow::new(),
                 pdm_review_dialog: None,
@@ -245,6 +244,7 @@ impl KetchupApp {
                 status_counts: std::cell::Cell::new(None),
                 topology_by_definition: std::cell::RefCell::new(None),
                 clicked_box_face: None,
+                published_epochs: None,
             },
             render: app_state::RenderState {
                 cache: DerivedRenderCache::default(),
@@ -276,6 +276,10 @@ impl KetchupApp {
             app.file.recent = recent_files::RecentFiles::from_store(Box::new(
                 recent_files::RegistryRecentFiles::user_settings(),
             ));
+        }
+        #[cfg(not(windows))]
+        if let Some(settings) = recent_files::user_settings::SettingsFile::of_user() {
+            app.file.recent = recent_files::RecentFiles::from_store(Box::new(settings));
         }
         app.value_box.decimal = crate::length_input::DecimalSeparator::at_startup();
         app.dialogs = Box::new(NativeFileDialogs::with_parent(
@@ -680,10 +684,16 @@ impl KetchupApp {
     /// with the system's decimal separator (#2691). Values stay apart by
     /// `; `, so a decimal comma never reads as a separator.
     fn preview_number(&self, value: f64) -> String {
-        let text = format_height(value);
+        self.user_decimal(format_height(value))
+    }
+
+    /// A number written with a point, as the user writes numbers: with the
+    /// system's decimal separator, so what the window shows reads like
+    /// what they type.
+    pub(crate) fn user_decimal(&self, number: String) -> String {
         match self.value_box.decimal {
-            crate::length_input::DecimalSeparator::Comma => text.replace('.', ","),
-            crate::length_input::DecimalSeparator::Point => text,
+            crate::length_input::DecimalSeparator::Comma => number.replace('.', ","),
+            crate::length_input::DecimalSeparator::Point => number,
         }
     }
 

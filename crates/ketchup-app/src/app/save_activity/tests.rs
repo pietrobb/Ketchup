@@ -113,7 +113,9 @@ fn actual_locked_write_keeps_ui_alive_then_reopens_saved_geometry() {
     let _hang = hang_guard("a save waiting for its locked file", {
         let lock = std::sync::Arc::clone(&lock);
         move || {
-            let _ = lock.unlock();
+            if let Err(error) = lock.unlock() {
+                eprintln!("the save lock was not let go: {error}");
+            }
         }
     });
     let mut harness = shell(ScriptedFileDialogs::new());
@@ -165,7 +167,9 @@ fn an_edit_during_write_stays_dirty_and_is_not_in_the_saved_file() {
     let _hang = hang_guard("a save waiting for its locked file", {
         let lock = std::sync::Arc::clone(&lock);
         move || {
-            let _ = lock.unlock();
+            if let Err(error) = lock.unlock() {
+                eprintln!("the save lock was not let go: {error}");
+            }
         }
     });
     let mut harness = shell(ScriptedFileDialogs::new());
@@ -224,7 +228,9 @@ fn a_destination_conflict_is_reported_even_after_an_edit_during_write() {
     let _hang = hang_guard("a save waiting for its locked file", {
         let lock = std::sync::Arc::clone(&lock);
         move || {
-            let _ = lock.unlock();
+            if let Err(error) = lock.unlock() {
+                eprintln!("the save lock was not let go: {error}");
+            }
         }
     });
     let mut harness = shell(ScriptedFileDialogs::new());

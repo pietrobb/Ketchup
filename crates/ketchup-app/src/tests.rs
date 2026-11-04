@@ -15,6 +15,20 @@ mod selection_path;
 #[path = "hover_republish_tests.rs"]
 mod hover_republish;
 
+#[path = "selection_measures_ui_tests.rs"]
+mod selection_measures_ui;
+
+/// Runs `ui` for one frame of `input`. The test asks the app what the frame did; what
+/// egui would paint for it is not the test's subject (review 2026-11-04 TST-140).
+pub(crate) fn run_frame(
+    context: &egui::Context,
+    input: egui::RawInput,
+    ui: impl FnMut(&egui::Context),
+) {
+    let painted = context.run(input, ui);
+    drop(painted);
+}
+
 fn select_initial_top_face(app: &mut KetchupApp) {
     app.selection.select_exact(
         SelectionId {
@@ -342,7 +356,8 @@ fn count_selection_segments(shape: &egui::Shape, count: &mut usize) {
 fn press_in_a_frame(events: Vec<egui::Event>, typing: bool) -> Option<AppCommand> {
     let context = egui::Context::default();
     let mut pressed = None;
-    let _ = context.run(
+    crate::tests::run_frame(
+        &context,
         egui::RawInput {
             events,
             ..Default::default()

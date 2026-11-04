@@ -31,6 +31,13 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         if whole && value.fract() != 0.0 {
             anyhow::bail!("param {name} = {value} takes whole numbers only; choose a whole number");
         }
+        // A whole number the program can count with: 1e300 is whole but no int,
+        // so range() failed on it naming no parameter (review 2026-11-04, rest of WB-42).
+        if whole && value.abs() >= WHOLE_LIMIT {
+            anyhow::bail!(
+                "param {name} = {value:e} is too large for a whole number; choose one between -{WHOLE_LIMIT} and {WHOLE_LIMIT}"
+            );
+        }
         {
             let mut model = state.model.borrow_mut();
             if model.params.iter().any(|param| param.name == name) {
@@ -48,13 +55,16 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
             });
         }
         let heap = eval.heap();
-        if integer_default && value.fract() == 0.0 && value.abs() < 1.0e9 {
+        if integer_default && value.fract() == 0.0 && value.abs() < WHOLE_LIMIT {
             #[allow(clippy::cast_possible_truncation)]
             return Ok(heap.alloc(value as i32));
         }
         Ok(heap.alloc(value))
     }
 }
+
+/// The bound of a parameter returned as an int.
+const WHOLE_LIMIT: f64 = 1.0e9;
 
 /// Whether `param(name, unit = unit)` is a count, a factor or an angle (`""`)
 /// rather than a length (`"mm"`).

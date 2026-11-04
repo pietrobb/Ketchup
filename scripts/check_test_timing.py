@@ -20,7 +20,9 @@ Counted as a budget:
   .expect(…)`), which fails when the machine is slow; polling it (`if let Ok`, `match`,
   `while`) or asserting it timed out (`.is_err()`) is not;
 - a `match` on a wait whose `Timeout` arm fails the test, shorter than `HANG_FLOOR`: it
-  limits the work it waits for (review 2026-10-24 TST-23);
+  limits the work it waits for (review 2026-10-24 TST-23), and so does a call giving
+  a helper of the file that time, when the helper waits as long as its `Duration`
+  parameter says and fails the test when it runs out (review 2026-11-04 P3);
 - a call to a `perf_*` function from a function not named `perf_*`.
 
 Not counted: a deadline that only stops a wait on a hung condition (`Instant::now() <
@@ -78,6 +80,10 @@ DURATION = re.compile(
     r"^(?:std::time::)?Duration::from_(secs|millis|micros|nanos)\((\d[\d_]*)\)$")
 DURATION_CONST = re.compile(r"\bconst\s+(\w+)\s*:\s*(?:std::time::)?Duration\s*=\s*([^;]+);")
 UNIT_MS = {"secs": 1_000, "millis": 1, "micros": 1e-3, "nanos": 1e-6}
+SIGNATURE = re.compile(r"\bfn\s+(\w+)\s*(?:<[^>{]*>)?\s*\(")
+SELF = re.compile(r"^&?(?:'\w+\s+)?(?:mut\s+)?self\b")
+DURATION_PARAMETER = re.compile(r"^(?:mut\s+)?(\w+)\s*:\s*(?:std::time::)?Duration$")
+FAILS = re.compile(r"\b(?:assert\w*|panic|unreachable)!|\.expect\(|\.unwrap\(")
 
 
 def operand(text: str, backwards: bool) -> str:
@@ -158,13 +164,82 @@ def arms(text: str, after: int) -> str:
     return text[opening:]
 
 
-def short_needed_waits(text: str) -> list[int]:
-    """Lines of a wait under `PATIENCE_FLOOR_MS` whose result the test relies on."""
+def duration_constants(text: str) -> dict[str, float]:
     constants = {}
     for constant in DURATION_CONST.finditer(text):
         value = milliseconds(constant.group(2), {})
         if value is not None:
             constants[constant.group(1)] = value
+    return constants
+
+
+def parenthesized(text: str, opening: int) -> tuple[str, int]:
+    """The text inside the brackets opened at `opening`, and the index of their close."""
+    depth = 0
+    for index in range(opening, len(text)):
+        depth += {"(": 1, ")": -1}.get(text[index], 0)
+        if depth == 0:
+            return text[opening + 1:index], index
+    return text[opening + 1:], len(text)
+
+
+def top_level_items(inner: str) -> list[str]:
+    """`inner` split at the commas outside brackets."""
+    items, depth, start = [], 0, 0
+    for index, character in enumerate(inner):
+        if character in "([{<":
+            depth += 1
+        elif character in ")]}>" and not inner[index - 1:index + 1] in ("->", "=>"):
+            depth -= 1
+        elif character == "," and depth == 0:
+            items.append(inner[start:index].strip())
+            start = index + 1
+    tail = inner[start:].strip()
+    return items + [tail] if tail else items
+
+
+def failing_wait_helpers(text: str) -> dict[str, tuple[int, bool]]:
+    """Functions that wait as long as one of their `Duration` parameters says and fail
+    the test when that time runs out: name to that argument's position and whether
+    the function is a method (called as `.name(` without its `self`)."""
+    helpers = {}
+    for signature in SIGNATURE.finditer(text):
+        inner, close = parenthesized(text, signature.end() - 1)
+        parameters = top_level_items(inner)
+        method = bool(parameters) and bool(SELF.match(parameters[0]))
+        arguments = parameters[1:] if method else parameters
+        body = arms(text, close)
+        for position, parameter in enumerate(arguments):
+            typed = DURATION_PARAMETER.match(parameter)
+            if not typed:
+                continue
+            name = re.escape(typed.group(1))
+            if re.search(rf"\b(?:poll_until|recv_timeout|wait_timeout\w*|wait)\(\s*&?{name}\b", body) \
+                    and FAILS.search(body):
+                helpers[signature.group(1)] = (position, method)
+    return helpers
+
+
+def failing_helper_waits(text: str) -> list[int]:
+    """Lines of a call that gives such a helper less than `HANG_FLOOR_MS`: like a matched
+    wait whose timeout fails the test, it limits the work it waits for (review
+    2026-11-04 P3)."""
+    constants = duration_constants(text)
+    found = []
+    for name, (position, method) in failing_wait_helpers(text).items():
+        call = re.compile(rf"\.{name}\s*\(" if method else rf"(?<![\w.])(?<!fn ){name}\s*\(")
+        for at in call.finditer(text):
+            arguments = top_level_items(parenthesized(text, at.end() - 1)[0])
+            if position < len(arguments):
+                value = milliseconds(arguments[position], constants)
+                if value is not None and value < HANG_FLOOR_MS:
+                    found.append(text.count("\n", 0, at.start()) + 1)
+    return found
+
+
+def short_needed_waits(text: str) -> list[int]:
+    """Lines of a wait under `PATIENCE_FLOOR_MS` whose result the test relies on."""
+    constants = duration_constants(text)
     found = []
     for wait in WAIT.finditer(text):
         value = milliseconds(wait.group(1), constants)
@@ -206,7 +281,7 @@ def budgets(text: str) -> list[int]:
             continue
         if PERF_CALL.search(line) or (clock and compares_a_budget(compared, stored)):
             found.append(number)
-    return sorted({*found, *short_needed_waits(text)})
+    return sorted({*found, *short_needed_waits(text), *failing_helper_waits(text)})
 
 
 def unignored_perf_tests(text: str) -> list[int]:

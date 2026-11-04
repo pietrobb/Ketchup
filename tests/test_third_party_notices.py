@@ -60,7 +60,14 @@ def test_the_notice_carries_each_copyright_and_permission_text():
 def test_the_kecup_notice_names_its_components_before_the_crates():
     licenses = notices.merge([report(("MIT", MIT, [("a", ["Jane"])]))])
     text = notices.render(notices.PACKAGES["ketchup"], licenses)
-    headings = ["1. Open CASCADE", "2. acadrust", "3. starlark", "4. CORE-MATH", "5. Rust crates"]
+    headings = [
+        "1. Open CASCADE",
+        "2. acadrust",
+        "3. starlark",
+        "4. CORE-MATH",
+        "5. Microsoft Visual C++ runtime",
+        "6. Rust crates",
+    ]
     order = [text.index(f"\n{heading}") for heading in headings]
     assert order == sorted(order)
 
@@ -118,6 +125,25 @@ def test_a_component_section_is_there_exactly_when_its_crate_is_compiled_in():
         notices.verify(viewer(), licenses, {("starlark", "1.0.0", False)})
     with pytest.raises(notices.NoticeError, match="must be left out"):
         notices.verify(notices.PACKAGES["ketchup"], licenses, {("starlark", "1.0.0", False)})
+
+
+def test_the_windows_package_names_the_visual_cpp_runtime_it_ships_on_microsofts_terms():
+    """Review 2026-11-04 REL-141: the Windows package ships Microsoft's Visual C++
+    runtime (REL-120), but its notices did not name it, nor the terms Microsoft
+    sets for its distributable code. The section is there exactly for the
+    Windows package that compiles in OCCT, and names each runtime library."""
+    licenses = notices.merge([report(("MIT", MIT, [("a", ["Jane"])]))])
+    windows = notices.render(notices.PACKAGES["ketchup"], licenses)
+    for needle in ("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "Microsoft Corporation",
+                   "Distributable Code", "https://visualstudio.microsoft.com/license-terms/"):
+        assert needle in windows, needle
+    assert "Visual C++ runtime" not in notices.render(notices.PACKAGES["ketchup-macos"], licenses)
+    compiled = {("a", "1.0.0", False), ("ketchup-exact", "0.3.2", True)}
+    without = notices.Package("Kecup", ("ketchup-app",), ("occt", "core-math"))
+    with pytest.raises(notices.NoticeError, match="msvc-runtime section must be there"):
+        notices.verify(without, licenses, compiled)
+    compiled |= {("acadrust", "0.1.0", True), ("starlark", "0.13.0", True)}
+    notices.verify(notices.PACKAGES["ketchup-macos"], licenses, compiled)
 
 
 def test_cargo_about_accepts_what_cargo_deny_allows():

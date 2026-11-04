@@ -168,7 +168,7 @@ fn main() -> eframe::Result {
     let live_requested = bootstrap.is_some();
     let requests = OpenRequests::default();
     #[cfg(target_os = "macos")]
-    let _open_events = {
+    let _open_events_guard = {
         let requests = requests.clone();
         ketchup_macos_open::install(move |path| requests.push(path))
     };

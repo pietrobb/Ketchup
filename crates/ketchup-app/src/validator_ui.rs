@@ -1,6 +1,7 @@
 //! Background orchestration only; all validation rules live in ketchup-application.
 
 use super::*;
+use crate::delivery::Deliver;
 
 #[derive(Clone)]
 pub(super) struct ValidatorSnapshot {
@@ -106,7 +107,7 @@ impl KetchupApp {
                         executable,
                         Duration::from_secs(30),
                     );
-                let _ = sender.send(validator_report(&validation));
+                sender.deliver(validator_report(&validation));
                 repaint.request_repaint();
             });
         self.validator_panel.report = None;

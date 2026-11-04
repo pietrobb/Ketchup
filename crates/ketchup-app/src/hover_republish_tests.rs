@@ -31,12 +31,12 @@ fn hovered_body_survives_exact_results_replacing_box_stand_ins() {
         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 1000.0))),
         ..Default::default()
     };
-    let _ = context.run(input(), |context| app.ui(context));
+    crate::tests::run_frame(&context, input(), |context| app.ui(context));
     // Both top faces lie at z = 20 here, so the ray reaches them at one distance.
     let pointer = app.viewport_position(Vec3::new(60.0, 45.0, 20.0)).unwrap();
     let mut raw = input();
     raw.events.push(egui::Event::PointerMoved(pointer));
-    let _ = context.run(raw, |context| app.ui(context));
+    crate::tests::run_frame(&context, raw, |context| app.ui(context));
     let hovered = |app: &KetchupApp| {
         app.hovered_selection()
             .map(|selection| selection.instance_path.clone())
@@ -55,7 +55,7 @@ fn hovered_body_survives_exact_results_replacing_box_stand_ins() {
     for definition_id in [first, second] {
         let producer = last_feature(&app, definition_id);
         install_graph_result(&mut app, definition_id, producer, None);
-        let _ = context.run(input(), |context| app.ui(context));
+        crate::tests::run_frame(&context, input(), |context| app.ui(context));
         assert_eq!(
             hovered(&app),
             tool,
@@ -85,11 +85,11 @@ fn a_chosen_far_face_survives_exact_results_renaming_it() {
         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 1000.0))),
         ..Default::default()
     };
-    let _ = context.run(input(), |context| app.ui(context));
+    crate::tests::run_frame(&context, input(), |context| app.ui(context));
     let pointer = app.viewport_position(Vec3::new(60.0, 45.0, 20.0)).unwrap();
     let mut raw = input();
     raw.events.push(egui::Event::PointerMoved(pointer));
-    let _ = context.run(raw, |context| app.ui(context));
+    crate::tests::run_frame(&context, raw, |context| app.ui(context));
     let candidates = |app: &KetchupApp| {
         app.hover
             .pick
@@ -116,7 +116,7 @@ fn a_chosen_far_face_survives_exact_results_renaming_it() {
     for definition_id in definitions {
         let producer = last_feature(&app, definition_id);
         install_graph_result(&mut app, definition_id, producer, None);
-        let _ = context.run(input(), |context| app.ui(context));
+        crate::tests::run_frame(&context, input(), |context| app.ui(context));
     }
     assert_ne!(
         candidates(&app),

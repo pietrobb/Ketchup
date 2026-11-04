@@ -74,6 +74,20 @@ pub(crate) fn show_value_refusal(
     refused
 }
 
+/// One [`show_value_refusal`] hint for a group of fields: the first refused text's.
+pub(crate) fn show_first_value_refusal<'a>(
+    ui: &mut egui::Ui,
+    catalog: &LocaleCatalog,
+    texts: impl IntoIterator<Item = &'a String>,
+    decimal: DecimalSeparator,
+) {
+    for text in texts {
+        if show_value_refusal(ui, catalog, text, decimal) {
+            break;
+        }
+    }
+}
+
 /// A one-line value field named by `label_key`, for screen readers too, with
 /// [`show_value_refusal`]'s hint under it.
 pub(crate) fn value_field(

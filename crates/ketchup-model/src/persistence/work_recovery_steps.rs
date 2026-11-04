@@ -86,8 +86,9 @@ fn read_steps(bytes: &[u8]) -> (Vec<Vec<u8>>, Option<PersistenceError>) {
     let mut steps = Vec::new();
     while !reader.is_finished() {
         let mut step = || {
-            let length = usize::try_from(reader.u64()?)
-                .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
+            let length = usize::try_from(reader.u64()?).map_err(
+                |_out_of_range: std::num::TryFromIntError| PersistenceError::LengthOverflow,
+            )?;
             let mut entries = container_entries(reader.take(length)?)?;
             match entries.remove(STEP_ENTRY) {
                 Some((true, content)) if entries.is_empty() => Ok(content),

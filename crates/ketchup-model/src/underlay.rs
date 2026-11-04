@@ -667,7 +667,7 @@ impl UnderlayLines {
             .split_first_chunk::<8>()
             .ok_or(UnderlayLinesError::Truncated)?;
         let length = usize::try_from(u64::from_le_bytes(*length))
-            .map_err(|_: std::num::TryFromIntError| UnderlayLinesError::Truncated)?;
+            .map_err(|_out_of_range: std::num::TryFromIntError| UnderlayLinesError::Truncated)?;
         // Inflated no further than the length declared, so a damaged or hostile blob
         // allocates no more than it says it holds; and a length far past what its
         // bytes could hold is refused before anything is inflated, so a blob of a few
@@ -837,7 +837,7 @@ impl<'a> Reader<'a> {
     fn count(&mut self) -> Result<usize, UnderlayLinesError> {
         let bytes = self.take(1, 4)?;
         usize::try_from(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-            .map_err(|_: std::num::TryFromIntError| UnderlayLinesError::Truncated)
+            .map_err(|_out_of_range: std::num::TryFromIntError| UnderlayLinesError::Truncated)
     }
 
     fn take(&mut self, count: usize, size: usize) -> Result<&'a [u8], UnderlayLinesError> {

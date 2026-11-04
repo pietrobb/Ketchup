@@ -9,6 +9,7 @@ use super::program_check::ProgramCheckJob;
 use super::program_dry_run::QueuedReply;
 use super::program_variants::owned_program;
 use super::*;
+use crate::delivery::Deliver;
 use ketchup_application::program_variants::{
     VariantExport, combined_table, evaluate_variants, takeoff_table,
 };
@@ -134,7 +135,12 @@ fn export(
     write_new(&targets.cut_list, &targets.bytes(&cut_list)).map_err(Failed::Write)?;
     if let Err(error) = write_new(&targets.takeoff, &targets.bytes(&takeoff)) {
         // Both tables or neither: a lone cut list would look like a whole export.
-        let _ = std::fs::remove_file(&targets.cut_list);
+        if let Err(removal) = std::fs::remove_file(&targets.cut_list) {
+            eprintln!(
+                "the cut list {} of a failed export was not removed: {removal}",
+                targets.cut_list.display()
+            );
+        }
         return Err(Failed::Write(error));
     }
     Ok(json!({
@@ -279,7 +285,7 @@ impl LiveBridge {
         let spawn = std::thread::Builder::new()
             .name("ketchup-program-variant-export".into())
             .spawn(move || {
-                let _ = sender.try_send(export(&program, &targets, &worker_cancel));
+                sender.deliver(export(&program, &targets, &worker_cancel));
                 repaint.request_repaint();
             });
         if let Err(error) = spawn {

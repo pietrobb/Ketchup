@@ -707,11 +707,12 @@ impl CncPart {
             layers.len()
         );
         for layer in &layers {
-            let _ = write!(
+            write!(
                 out,
                 "0\nLAYER\n2\n{layer}\n70\n0\n62\n{}\n6\nCONTINUOUS\n",
                 layer_color(layer)
-            );
+            )
+            .expect("a String takes every write");
         }
         out.push_str(
             "0\nENDTAB\n0\nTABLE\n2\nSTYLE\n70\n1\n0\nSTYLE\n2\nSTANDARD\n70\n0\n40\n0\n41\n1\n50\n0\n71\n0\n42\n2.5\n3\ntxt\n4\n\n0\nENDTAB\n0\nENDSEC\n\
@@ -720,49 +721,54 @@ impl CncPart {
         for entity in &self.entities {
             match entity {
                 Entity::Outline { layer, vertices } => {
-                    let _ = write!(
+                    write!(
                         out,
                         "0\nPOLYLINE\n8\n{layer}\n66\n1\n10\n0\n20\n0\n30\n0\n70\n1\n"
-                    );
+                    )
+                    .expect("a String takes every write");
                     for ([x, y], bulge) in vertices {
-                        let _ = write!(
+                        write!(
                             out,
                             "0\nVERTEX\n8\n{layer}\n10\n{}\n20\n{}\n30\n0\n",
                             number(*x),
                             number(*y)
-                        );
+                        )
+                        .expect("a String takes every write");
                         if *bulge != 0.0 {
-                            let _ = write!(out, "42\n{}\n", number(*bulge));
+                            write!(out, "42\n{}\n", number(*bulge))
+                                .expect("a String takes every write");
                         }
                     }
-                    let _ = write!(out, "0\nSEQEND\n8\n{layer}\n");
+                    write!(out, "0\nSEQEND\n8\n{layer}\n").expect("a String takes every write");
                 }
                 Entity::Circle {
                     layer,
                     center_mm: [x, y],
                     radius_mm,
                 } => {
-                    let _ = write!(
+                    write!(
                         out,
                         "0\nCIRCLE\n8\n{layer}\n10\n{}\n20\n{}\n30\n0\n40\n{}\n",
                         number(*x),
                         number(*y),
                         number(*radius_mm)
-                    );
+                    )
+                    .expect("a String takes every write");
                 }
                 Entity::Line {
                     layer,
                     start_mm,
                     end_mm,
                 } => {
-                    let _ = write!(
+                    write!(
                         out,
                         "0\nLINE\n8\n{layer}\n10\n{}\n20\n{}\n30\n0\n11\n{}\n21\n{}\n31\n0\n",
                         number(start_mm[0]),
                         number(start_mm[1]),
                         number(end_mm[0]),
                         number(end_mm[1])
-                    );
+                    )
+                    .expect("a String takes every write");
                 }
             }
         }
@@ -773,14 +779,15 @@ impl CncPart {
             .zip(r12_text::lines(&self.part, f64::INFINITY).iter())
         {
             let y = height - text_height * (1.5 * line + 2.0);
-            let _ = write!(
+            write!(
                 out,
                 "0\nTEXT\n8\nPART_NAME\n10\n{}\n20\n{}\n30\n0\n40\n{}\n1\n{}\n",
                 number(text_height),
                 number(y),
                 number(text_height),
                 r12_text::lossy(text)
-            );
+            )
+            .expect("a String takes every write");
         }
         out.push_str("0\nENDSEC\n0\nEOF\n");
         out.into_bytes()

@@ -2212,6 +2212,7 @@ fn raw_preview_sketch_parameter_editor_dialog_and_anchor_are_busy_and_retained()
                         plane_z: 0.0,
                         axis: None,
                         axis_reference: None,
+                        pinned_way: None,
                         delta_mm: crate::Vec3::new(1.0, 2.0, 3.0),
                         copy: false,
                     },

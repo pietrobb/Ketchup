@@ -173,7 +173,9 @@ fn save_on_close_remains_responsive_while_disk_is_locked_and_protects_new_edits(
         let _hang = hang_guard("a save on close waiting for its locked file", {
             let lock = std::sync::Arc::clone(&lock);
             move || {
-                let _ = lock.unlock();
+                if let Err(error) = lock.unlock() {
+                    eprintln!("the save lock was not let go: {error}");
+                }
             }
         });
         let mut harness = shell(ScriptedFileDialogs::new().queue_save(&path), true);

@@ -16,6 +16,7 @@ use crate::app::dwg_import::{DwgRead, is_dwg_path, read_dwg_file};
 use crate::app::exact_import_activity::{ExactImportRead, read_exact_import};
 use crate::app::import_file::import_format;
 use crate::app::underlay::{UnderlayReadResult, read_underlay_file};
+use crate::delivery::Deliver;
 use ketchup_program::CancelToken;
 
 /// What the job's thread read.
@@ -134,7 +135,7 @@ impl LiveBridge {
                 } else {
                     JobRead::Dwg(read_dwg_file(&path, &worker_cancel))
                 };
-                let _ = sender.try_send(read);
+                sender.deliver(read);
                 repaint.request_repaint();
             });
         if let Err(error) = spawn {

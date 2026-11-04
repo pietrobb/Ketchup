@@ -1126,7 +1126,7 @@ impl KetchupApp {
         {
             self.selection.topological.clear();
         }
-        let _ = self.current_transform_correction();
+        self.end_stale_transform_correction();
         self.push_pull.distance_input.clear();
     }
 

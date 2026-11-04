@@ -53,6 +53,8 @@ class Section:
     name: str
     # The crate whose presence in a program brings the component in.
     crate: str
+    # The only target whose packages ship it, if not every one.
+    target: str | None = None
 
 
 SECTIONS = {
@@ -60,6 +62,9 @@ SECTIONS = {
     "acadrust": Section("acadrust", "acadrust"),
     "starlark": Section("starlark", "starlark"),
     "core-math": Section("core-math", "ketchup-exact"),
+    # The Windows package ships the Visual C++ runtime its programs and OCCT need
+    # (review 2026-11-02 REL-120), on Microsoft's terms (review 2026-11-04 REL-141).
+    "msvc-runtime": Section("msvc-runtime", "ketchup-exact", TARGET),
 }
 
 
@@ -77,7 +82,7 @@ PACKAGES = {
         "Kecup",
         # The installer and the portable archive carry the Viewer too.
         ("ketchup-app", "ketchup-scheduler", "ketchup-viewer"),
-        ("occt", "acadrust", "starlark", "core-math"),
+        ("occt", "acadrust", "starlark", "core-math", "msvc-runtime"),
     ),
     "viewer": Package("Kecup Viewer", ("ketchup-viewer",), ()),
     # Kecup.app carries the app and its workers; the Viewer is a .app of its own.
@@ -196,9 +201,12 @@ def verify(package: Package, licenses: list[dict], compiled: set[tuple[str, str,
             )
     names = {name for name, _, _ in compiled}
     for name, section in SECTIONS.items():
-        present = section.crate in names
+        compiles = section.crate in names
+        present = compiles and section.target in (None, package.target)
         if present != (name in package.sections):
-            state = "compiles in" if present else "does not compile in"
+            state = "compiles in" if compiles else "does not compile in"
+            if compiles and not present:
+                state = f"is not for {section.target}, though it compiles in"
             raise NoticeError(
                 f"{package.title} {state} {section.crate}, so its {name} section "
                 f"must be {'there' if present else 'left out'}"

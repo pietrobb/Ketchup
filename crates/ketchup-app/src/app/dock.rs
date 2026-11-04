@@ -62,9 +62,13 @@ fn shown_size(measures: &SelectionMeasures) -> [f64; 3] {
     measures.own_size_mm.unwrap_or(measures.world_size_mm)
 }
 
-fn millimetres(value: f64) -> String {
-    let text = format!("{value:.1}");
-    text.strip_suffix(".0").map_or(text.clone(), str::to_owned)
+/// The count on the Checks tab, `99+` above 99 so the badge stays one size.
+fn badge_count(issues: usize) -> String {
+    if issues > 99 {
+        "99+".to_owned()
+    } else {
+        issues.to_string()
+    }
 }
 
 impl KetchupApp {
@@ -208,7 +212,7 @@ impl KetchupApp {
                     column,
                     palette,
                     &self.catalog.text(key),
-                    &millimetres(value),
+                    &self.user_decimal(crate::selection_measures_ui::length(value)),
                 );
             }
         });
@@ -303,8 +307,8 @@ impl KetchupApp {
                     painter.text(
                         centre,
                         egui::Align2::CENTER_CENTER,
-                        issues.min(99).to_string(),
-                        egui::FontId::proportional(9.5),
+                        badge_count(issues),
+                        egui::FontId::proportional(if issues > 99 { 7.5 } else { 9.5 }),
                         palette.accent_ink,
                     );
                 }
@@ -367,4 +371,12 @@ fn size_tile(ui: &mut egui::Ui, palette: theme::Palette, axis: &str, value: &str
                 });
             });
         });
+}
+
+/// Review 2026-11-04 P3 GUI: a hundred issues showed as `99`.
+#[test]
+fn the_checks_badge_says_99_plus_above_99() {
+    assert_eq!(badge_count(7), "7");
+    assert_eq!(badge_count(99), "99");
+    assert_eq!(badge_count(100), "99+");
 }

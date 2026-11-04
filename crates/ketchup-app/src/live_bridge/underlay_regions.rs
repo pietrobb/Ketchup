@@ -834,7 +834,9 @@ fn claim(search: Search) -> Ahead {
 
 /// Finds the regions of `search`, claimed, into [`FOUND`].
 fn run_ahead(search: Search) {
-    let _ = found_regions(search.clone());
+    if found_regions(search.clone()).is_err() {
+        // A search too large is kept in FOUND as such and answered when it is asked.
+    }
     SEARCHING
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)

@@ -7,6 +7,7 @@
 //! The launcher must drain stdout; readiness is one nonsecret JSON line. A failed
 //! bootstrap is fatal to the launcher startup, not a reason to fall back silently.
 use super::{KetchupApp, egui, transport};
+use crate::delivery::Deliver;
 use serde::Deserialize;
 use std::{
     ffi::{OsStr, OsString},
@@ -266,7 +267,7 @@ fn with_deadline<T: Send + 'static>(
     std::thread::Builder::new()
         .name("ketchup-live-bootstrap".into())
         .spawn(move || {
-            let _ = sender.send(work());
+            sender.deliver(work());
         })
         .map_err(|error| BootstrapError::Worker(error.kind()))?;
     receiver

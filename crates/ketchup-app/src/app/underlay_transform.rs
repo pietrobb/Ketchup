@@ -169,6 +169,7 @@ impl KetchupApp {
                 plane_z: start.z,
                 axis,
                 axis_reference,
+                pinned_way: None,
                 delta_mm: Vec3::ZERO,
                 copy: objects && copy,
             },

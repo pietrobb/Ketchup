@@ -105,7 +105,9 @@ fn empty_app_with_drawing() -> (KetchupApp, tempfile::TempDir, PathBuf) {
 /// One frame of the window, which lays out the viewport and applies a pending fit.
 fn frame(app: &mut KetchupApp) {
     let context = egui::Context::default();
-    let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+    crate::tests::run_frame(&context, egui::RawInput::default(), |context| {
+        app.ui(context)
+    });
     app.refresh_camera_distance();
 }
 

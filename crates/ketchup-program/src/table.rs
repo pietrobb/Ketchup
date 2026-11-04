@@ -113,27 +113,30 @@ impl Table {
             .collect::<Vec<_>>();
         for (index, row) in std::iter::once(&header).chain(&self.rows).enumerate() {
             let number = index + 1;
-            let _ = write!(sheet, "<row r=\"{number}\">");
+            write!(sheet, "<row r=\"{number}\">").expect("a String takes every write");
             for (column, cell) in row.iter().enumerate() {
                 let reference = format!("{}{number}", column_name(column));
                 match cell {
                     Cell::Text(text) => {
-                        let _ = write!(
+                        write!(
                             sheet,
                             "<c r=\"{reference}\" t=\"inlineStr\"><is><t xml:space=\"preserve\">{}</t></is></c>",
                             xml_text(text)
-                        );
+                        ).expect("a String takes every write");
                     }
                     Cell::Number(value) => {
                         let text = number_text(*value, 3);
-                        let _ = write!(sheet, "<c r=\"{reference}\"><v>{text}</v></c>");
+                        write!(sheet, "<c r=\"{reference}\"><v>{text}</v></c>")
+                            .expect("a String takes every write");
                     }
                     Cell::Decimal(value, decimals) => {
                         let text = number_text(*value, *decimals);
-                        let _ = write!(sheet, "<c r=\"{reference}\"><v>{text}</v></c>");
+                        write!(sheet, "<c r=\"{reference}\"><v>{text}</v></c>")
+                            .expect("a String takes every write");
                     }
                     Cell::Count(count) => {
-                        let _ = write!(sheet, "<c r=\"{reference}\"><v>{count}</v></c>");
+                        write!(sheet, "<c r=\"{reference}\"><v>{count}</v></c>")
+                            .expect("a String takes every write");
                     }
                 }
             }

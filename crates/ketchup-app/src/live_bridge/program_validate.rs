@@ -1,6 +1,7 @@
 //! Explicit program validation reads an immutable snapshot without publishing an edit.
 use super::program_check::{ProgramCheckJob, program_request_deadline};
 use super::*;
+use crate::delivery::Deliver;
 #[cfg(test)]
 #[path = "program_validation_job_tests.rs"]
 mod job_tests;
@@ -277,7 +278,7 @@ impl LiveBridge {
                     stamp,
                     options,
                 );
-                let _ = sender.try_send(result);
+                sender.deliver(result);
                 repaint.request_repaint();
             });
         if let Err(error) = spawn {

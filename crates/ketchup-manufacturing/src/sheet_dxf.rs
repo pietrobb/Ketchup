@@ -31,13 +31,46 @@ fn number(value: f64) -> String {
     if text == "-0" { "0".to_owned() } else { text }
 }
 
-/// The layer of a pen: its width in hundredths of a millimetre, and DASHED
-/// for a dashed one, e.g. `PEN-0_18`; R12 layer names allow no point.
+/// The AutoCAD colour index nearest `color` among those a sheet tells apart:
+/// 7, black on paper (white on a dark screen), the six primaries and greys.
+fn color_index(color: [u8; 3]) -> u8 {
+    const PALETTE: [(u8, [u8; 3]); 11] = [
+        (7, [0, 0, 0]),
+        (1, [255, 0, 0]),
+        (2, [255, 255, 0]),
+        (3, [0, 255, 0]),
+        (4, [0, 255, 255]),
+        (5, [0, 0, 255]),
+        (6, [255, 0, 255]),
+        (251, [91, 91, 91]),
+        (8, [128, 128, 128]),
+        (253, [173, 173, 173]),
+        (9, [192, 192, 192]),
+    ];
+    let distance = |rgb: &[u8; 3]| {
+        rgb.iter()
+            .zip(color)
+            .map(|(a, b)| (i32::from(*a) - i32::from(b)).pow(2))
+            .sum::<i32>()
+    };
+    PALETTE
+        .iter()
+        .min_by_key(|(_, rgb)| distance(rgb))
+        .map_or(7, |(index, _)| *index)
+}
+
+/// The layer of a pen: its width in hundredths of a millimetre, DASHED for a
+/// dashed one, and the colour index of a pen that is not black, e.g.
+/// `PEN-0_18` or `PEN-0_13-C253`; R12 layer names allow no point.
 #[must_use]
 pub fn pen_layer(stroke: &Stroke) -> String {
     let mut name = format!("PEN-{}", number(stroke.width_mm).replace('.', "_"));
     if !stroke.dash_mm.is_empty() {
         name.push_str("-DASHED");
+    }
+    let color = color_index(stroke.color);
+    if color != 7 {
+        name.push_str(&format!("-C{color}"));
     }
     name
 }
@@ -54,10 +87,11 @@ impl Writer {
 
     fn line(&mut self, layer: &str, a: [f64; 2], b: [f64; 2]) {
         let ([ax, ay], [bx, by]) = (self.point(a), self.point(b));
-        let _ = write!(
+        write!(
             self.out,
             "0\nLINE\n8\n{layer}\n10\n{ax}\n20\n{ay}\n30\n0\n11\n{bx}\n21\n{by}\n31\n0\n"
-        );
+        )
+        .expect("a String takes every write");
     }
 
     /// The sides of a polyline as lines; a side of no length draws nothing.
@@ -97,24 +131,29 @@ impl Writer {
                 Anchor::Middle => format!("72\n1\n11\n{x}\n21\n{y}\n31\n0\n"),
                 Anchor::End => format!("72\n2\n11\n{x}\n21\n{y}\n31\n0\n"),
             };
-            let _ = write!(
+            write!(
                 self.out,
                 "0\nTEXT\n8\n{TEXT_LAYER}\n10\n{x}\n20\n{y}\n30\n0\n40\n{}\n1\n{}\n{turn}{justified}",
                 number(height_mm),
                 r12_text::lossy(&piece)
-            );
+            ).expect("a String takes every write");
             down += step;
         }
     }
 }
 
-/// The layers `page` draws on, each once, in name order, with whether it is dashed.
-fn layers(page: &Page) -> BTreeSet<(String, bool)> {
+/// The layers `page` draws on, each once, in name order, with whether it is
+/// dashed and its colour index.
+fn layers(page: &Page) -> BTreeSet<(String, bool, u8)> {
     let mut layers = BTreeSet::new();
     for mark in &page.marks {
         match mark {
             Mark::Line { stroke, .. } => {
-                layers.insert((pen_layer(stroke), !stroke.dash_mm.is_empty()));
+                layers.insert((
+                    pen_layer(stroke),
+                    !stroke.dash_mm.is_empty(),
+                    color_index(stroke.color),
+                ));
             }
             Mark::Fill { outline, .. } => {
                 let layer = if outline.is_some() {
@@ -122,10 +161,10 @@ fn layers(page: &Page) -> BTreeSet<(String, bool)> {
                 } else {
                     FILL_LAYER
                 };
-                layers.insert((layer.to_owned(), false));
+                layers.insert((layer.to_owned(), false, 7));
             }
             Mark::Text { .. } => {
-                layers.insert((TEXT_LAYER.to_owned(), false));
+                layers.insert((TEXT_LAYER.to_owned(), false, 7));
             }
         }
     }
@@ -143,9 +182,13 @@ pub fn page_dxf(page: &Page) -> Vec<u8> {
         number(height),
         layers.len()
     );
-    for (layer, dashed) in &layers {
+    for (layer, dashed, color) in &layers {
         let linetype = if *dashed { "DASHED" } else { "CONTINUOUS" };
-        let _ = write!(out, "0\nLAYER\n2\n{layer}\n70\n0\n62\n7\n6\n{linetype}\n");
+        write!(
+            out,
+            "0\nLAYER\n2\n{layer}\n70\n0\n62\n{color}\n6\n{linetype}\n"
+        )
+        .expect("a String takes every write");
     }
     out.push_str("0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n");
     let mut writer = Writer { height, out };
@@ -214,6 +257,45 @@ mod tests {
             "{dxf}"
         );
         assert!(dxf.ends_with("0\nENDSEC\n0\nEOF\n"));
+    }
+
+    /// Review 2026-11-04 P3: a pen's layer was named by its width alone, all
+    /// drawn in colour 7, so the grey underlay of a plan shared the layer and
+    /// colour of the black thread roots as wide. A pen of another colour is a
+    /// layer of its own, in the AutoCAD colour nearest it.
+    #[test]
+    fn a_grey_pen_is_a_grey_layer_of_its_own() {
+        let mut page = Page {
+            size_mm: [420.0, 297.0],
+            marks: Vec::new(),
+        };
+        let grey = Stroke {
+            color: [160, 160, 160],
+            ..Stroke::solid(0.13)
+        };
+        page.line(vec![[10.0, 10.0], [20.0, 10.0]], Stroke::solid(0.13));
+        page.line(vec![[10.0, 20.0], [20.0, 20.0]], grey.clone());
+        page.line(vec![[10.0, 30.0], [20.0, 30.0]], Stroke::solid(0.18));
+        let near_black = Stroke {
+            color: [34, 34, 34],
+            ..Stroke::solid(0.18)
+        };
+        page.line(vec![[10.0, 40.0], [20.0, 40.0]], near_black);
+        let dxf = String::from_utf8(page_dxf(&page)).unwrap();
+        let grey_layer = pen_layer(&grey);
+        assert_ne!(grey_layer, pen_layer(&Stroke::solid(0.13)));
+        assert!(
+            dxf.contains(&format!("0\nLAYER\n2\n{grey_layer}\n70\n0\n62\n253\n")),
+            "{dxf}"
+        );
+        assert!(
+            dxf.contains("0\nLAYER\n2\nPEN-0_13\n70\n0\n62\n7\n"),
+            "{dxf}"
+        );
+        let lines = |layer: &str| dxf.matches(&format!("0\nLINE\n8\n{layer}\n")).count();
+        assert_eq!(lines(&grey_layer), 1);
+        assert_eq!(lines("PEN-0_13"), 1);
+        assert_eq!(lines("PEN-0_18"), 2, "the edges' near black is black");
     }
 
     /// Review 2026-10-24 MF-28: a sheet wrote "%%d" as it is, so a reader drew

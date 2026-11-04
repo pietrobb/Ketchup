@@ -190,7 +190,7 @@ impl KetchupApp {
             let info = selected.get_info();
             *selected_info
                 .lock()
-                .map_err(|_: std::sync::PoisonError<_>| {
+                .map_err(|_poisoned: std::sync::PoisonError<_>| {
                     "selected-adapter evidence lock is unavailable".to_owned()
                 })? = Some(info);
             Ok(selected.clone())
@@ -422,6 +422,7 @@ impl KetchupApp {
         snapshot: &Snapshot,
         source: &ExactSource,
     ) {
+        let before = self.document.mutation_epoch();
         let published = match result {
             Ok(products) => self.complete_mutation_and_exact_results_with_work_recovery(
                 |document, exact_results, topology_results| {
@@ -438,6 +439,7 @@ impl KetchupApp {
         };
         match published {
             Ok(report) => {
+                self.exact.published_epochs = Some((before, self.document.mutation_epoch()));
                 self.rebuild_render_plan(snapshot);
                 self.hover.projection_cache.get_mut().take();
                 self.carry_box_face_selection_to_exact();

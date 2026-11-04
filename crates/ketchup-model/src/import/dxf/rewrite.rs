@@ -128,6 +128,28 @@ impl fmt::Display for DxfEditRefusal {
 
 impl std::error::Error for DxfEditRefusal {}
 
+/// A drawing written with its changes.
+#[derive(Debug)]
+pub struct EditedDxf {
+    pub dxf: Vec<u8>,
+    /// The entities, none of them edited, that read as other lines than the underlay's:
+    /// changed in the file since it was imported, or read differently by this Kečup. They
+    /// are written as the file has them, and said (review 2026-11-04 CD-140).
+    pub changed_in_file: usize,
+    /// The entities the file has that the underlay has no object of: added to the file
+    /// since it was imported. They are written as the file has them, and said. A count of
+    /// 0 for both does not prove the file unchanged: an entity no line was read from is
+    /// not compared.
+    pub added_in_file: usize,
+}
+
+/// What [`rebinds`] found of a file that reads as other lines than the underlay's.
+#[derive(Clone, Copy, Default)]
+struct Rebound {
+    changed: usize,
+    added: usize,
+}
+
 /// `source`, the drawing `lines` were read from with `options`, written with `edits`. A
 /// drawing that declares no unit may have been read in another unit than `options` gives:
 /// the one its lines match is taken.
@@ -136,15 +158,15 @@ pub fn write_edited_dxf(
     options: DxfImportOptions,
     lines: &UnderlayLines,
     edits: &UnderlayEdits,
-) -> Result<Vec<u8>, EditedDxfError> {
+) -> Result<EditedDxf, EditedDxfError> {
     // The read is let go before the drawing is parsed, so the two are not held at once
     // (review 2026-10-29 CD-63).
     let frame = frame_of(source, options, lines, edits)?;
     let encoding = text_encoding(&mut Cursor::new(source))
         .map_err(EditedDxfError::Read)?
-        .map(|(encoding, ..)| encoding);
+        .code_page;
     let drawing = Drawing::parse(source, encoding)?;
-    let Some(frame) = frame else {
+    let Some((frame, rebound)) = frame else {
         // The file is blamed only when its entities are not those the lines were read
         // from (review 2026-10-29 CD-64).
         return Err(if drawing.has_entities_of(&lines.objects().objects) {
@@ -154,25 +176,43 @@ pub fn write_edited_dxf(
         }
         .into());
     };
-    drawing.write(lines, edits, &frame)
+    Ok(EditedDxf {
+        dxf: drawing.write(lines, edits, &frame)?,
+        changed_in_file: rebound.changed,
+        added_in_file: rebound.added,
+    })
 }
 
 /// How `lines` lie against the units of `source`, when reading it gives them (or, for
 /// `edits`, binds them again: [`rebinds`]): as `options` read it, or for a drawing that
-/// declares no unit, in the unit its lines are scaled by against that read. At most two reads, not one in each unit (review 2026-10-29 CD-63).
+/// declares no unit, in the unit its lines are scaled by against that read; with the
+/// entities bound again that read as other lines, and those added. At most two reads, not
+/// one in each unit (review 2026-10-29 CD-63).
 fn frame_of(
     source: &[u8],
     options: DxfImportOptions,
     lines: &UnderlayLines,
     edits: &UnderlayEdits,
-) -> Result<Option<Frame>, EditedDxfError> {
+) -> Result<Option<(Frame, Rebound)>, EditedDxfError> {
     let read = read_dxf_underlay(source, options).map_err(EditedDxfError::Read)?;
-    let frame = |read: &super::underlay::DxfUnderlay| Frame {
-        mm_per_unit: read.units.millimetres_per_unit(),
-        offset_mm: read.offset_mm,
+    // Bound as read, or again (review 2026-11-04 P3: also in the unit a drawing that
+    // declares none was read in).
+    let bound = |read: &super::underlay::DxfUnderlay| {
+        let changed = if read.lines == *lines {
+            Some(Rebound::default())
+        } else {
+            rebinds(&read.lines, lines, edits)
+        };
+        changed.map(|changed| {
+            let frame = Frame {
+                mm_per_unit: read.units.millimetres_per_unit(),
+                offset_mm: read.offset_mm,
+            };
+            (frame, changed)
+        })
     };
-    if read.lines == *lines || rebinds(&read.lines, lines, edits) {
-        return Ok(Some(frame(&read)));
+    if let Some(bound) = bound(&read) {
+        return Ok(Some(bound));
     }
     if read.units.authority() != ImportUnitAuthority::UserDeclared {
         return Ok(None);
@@ -186,19 +226,20 @@ fn frame_of(
         DxfImportOptions::new(Some(unit)).with_geo_origin(options.geo_origin_mm()),
     )
     .map_err(EditedDxfError::Read)?;
-    Ok((other.lines == *lines).then(|| frame(&other)))
+    Ok(bound(&other))
 }
 
 /// Whether `edits` of `lines`, read from a drawing by an earlier Kečup, are bound again to
 /// that drawing as this Kečup reads it, `read`, though some entities read as other lines
 /// now (review 2026-11-02 CD-120): each top-level object of `lines` is an object of `read`
 /// of its handle and kind (the n-th of them, in a drawing without handles), so the edits
-/// name the same entities; each object moved, stretched or copied lies where it lay, so
-/// an edit does to it what was seen; and at least one object does, so both lie alike
-/// against the drawing's units. The entities are written from the file, not from either
-/// read, so one read differently and not edited, or taken out, is written as the file has
-/// it.
-fn rebinds(read: &UnderlayLines, lines: &UnderlayLines, edits: &UnderlayEdits) -> bool {
+/// name the same entities; each object moved, stretched, copied or taken out lies where it
+/// lay, so an edit does to it what was seen; and at least one object does, so both lie
+/// alike against the drawing's units. The entities are written from the file, not from
+/// either read, so one read differently and not edited is written as the file has it, as
+/// is one the file gained since (review 2026-11-04 CD-140): how many of each, when bound
+/// again.
+fn rebinds(read: &UnderlayLines, lines: &UnderlayLines, edits: &UnderlayEdits) -> Option<Rebound> {
     type Key = (u64, &'static str, usize);
     /// The top-level objects by key, each with its id.
     fn tops(lines: &UnderlayLines) -> BTreeMap<Key, usize> {
@@ -236,31 +277,50 @@ fn rebinds(read: &UnderlayLines, lines: &UnderlayLines, edits: &UnderlayEdits) -
         }
         runs
     }
+    /// The top-level object that placed object `id`, or `id` itself.
+    fn top_of(lines: &UnderlayLines, mut id: usize) -> usize {
+        let objects = &lines.objects().objects;
+        while let Some(parent) = objects
+            .get(id)
+            .and_then(|object| object.parent)
+            .and_then(|parent| usize::try_from(parent).ok())
+            .filter(|&parent| parent < id)
+        {
+            id = parent;
+        }
+        id
+    }
     let (now, then) = (tops(read), tops(lines));
     if then.is_empty() {
-        return false;
+        return None;
     }
+    // An object taken out names an entity as a moved one does, so it too must lie where
+    // it lay, with what it placed; and an object an insert placed is checked with the
+    // insert (review 2026-11-04 CD-140: the entity of its handle, or its place, could be
+    // another one in a file changed since).
     let edited: BTreeSet<usize> = edits
         .moved_objects
         .keys()
         .chain(edits.stretched_objects.keys())
+        .chain(&edits.removed_objects)
         .copied()
         .chain(edits.added.iter().filter_map(AddedObject::copy_of))
         .filter_map(|id| usize::try_from(id).ok())
+        .map(|id| top_of(lines, id))
         .collect();
-    let mut lies_alike = false;
+    let (mut lies_alike, mut changed) = (false, 0);
     for (key, &id) in &then {
-        let Some(&found) = now.get(key) else {
-            return false;
-        };
+        let found = now.get(key)?;
         let at = points(lines, id);
-        let alike = at == points(read, found);
+        let alike = at == points(read, *found);
         if !alike && edited.contains(&id) {
-            return false;
+            return None;
         }
         lies_alike |= alike && at.iter().any(|run| !run.is_empty());
+        changed += usize::from(!alike);
     }
-    lies_alike
+    let added = now.keys().filter(|key| !then.contains_key(*key)).count();
+    lies_alike.then_some(Rebound { changed, added })
 }
 
 /// The unit of [`UNITS`], other than the one `read` was read in, whose scale against it
@@ -385,6 +445,8 @@ struct Drawing<'a> {
     lightweight: bool,
     /// Whether its texts are UTF-8: DXF 2007 or later.
     utf8: bool,
+    /// The code page its texts are read in, if any.
+    code_page: Option<CodePage>,
     /// The owner (group 330) of the entities of model space.
     owner: Option<Vec<u8>>,
     /// Each layer name as read, with the bytes the drawing writes it in.
@@ -472,6 +534,7 @@ impl<'a> Drawing<'a> {
             subclassed: false,
             lightweight: false,
             utf8: false,
+            code_page: encoding,
             owner: None,
             layers: Vec::new(),
             blocks: Vec::new(),
@@ -2190,8 +2253,10 @@ impl<'a> Drawing<'a> {
     }
 
     /// `text` as the drawing writes a text: UTF-8 from DXF 2007 on, else what is not
-    /// ASCII as `\U+XXXX` for each of its UTF-16 units; a `%%` that would be read as a special character is kept as
-    /// written, and what would end the line is a space.
+    /// ASCII in the drawing's code page, or where that has no byte for it (review
+    /// 2026-11-04 P3: it was always) as `\U+XXXX` for each of its UTF-16 units; a `%%`
+    /// that would be read as a special character is kept as written, and what would end
+    /// the line is a space.
     fn text(&self, text: &str) -> Vec<u8> {
         self.encoded(text, text.contains("%%"))
     }
@@ -2203,21 +2268,26 @@ impl<'a> Drawing<'a> {
     }
 
     fn encoded(&self, text: &str, percent: bool) -> Vec<u8> {
-        let mut out = String::with_capacity(text.len());
+        let mut out = Vec::with_capacity(text.len());
         for character in text.chars() {
             match character {
-                '%' if percent => out.push_str("%%%"),
-                character if character.is_control() => out.push(' '),
-                character if character.is_ascii() || self.utf8 => out.push(character),
-                // Beyond U+FFFF its two UTF-16 units, as a UTF-16 CAD writes it.
-                character => {
-                    for unit in character.encode_utf16(&mut [0; 2]) {
-                        out.push_str(&format!("\\U+{unit:04X}"));
-                    }
+                '%' if percent => out.extend_from_slice(b"%%%"),
+                character if character.is_control() => out.push(b' '),
+                character if character.is_ascii() || self.utf8 => {
+                    out.extend_from_slice(character.encode_utf8(&mut [0; 4]).as_bytes());
                 }
+                character => match self.code_page.and_then(|page| page.encode(character)) {
+                    Some(bytes) => out.extend(bytes),
+                    // Beyond U+FFFF its two UTF-16 units, as a UTF-16 CAD writes it.
+                    None => {
+                        for unit in character.encode_utf16(&mut [0; 2]) {
+                            out.extend_from_slice(format!("\\U+{unit:04X}").as_bytes());
+                        }
+                    }
+                },
             }
         }
-        out.into_bytes()
+        out
     }
 }
 
@@ -2476,7 +2546,8 @@ fn pairs(source: &[u8]) -> Result<Vec<Pair>, EditedDxfError> {
         (start, content_end, (end + 1).min(source.len()))
     };
     let place = |at: usize| {
-        u32::try_from(at).map_err(|_: std::num::TryFromIntError| DxfEditRefusal::TooLarge)
+        u32::try_from(at)
+            .map_err(|_out_of_range: std::num::TryFromIntError| DxfEditRefusal::TooLarge)
     };
     let mut pairs = Vec::new();
     let mut start = first;

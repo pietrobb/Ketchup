@@ -1,6 +1,7 @@
 """CI runs only pinned code: actions by commit, Python packages by hash, and
 cargo-deny checks the dependencies for every platform something is built for."""
 import re
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -83,3 +84,17 @@ def test_cargo_deny_runs_a_verified_release_for_all_targets():
     }
     for ignored in deny["advisories"].get("ignore", []):
         assert ignored.get("reason"), ignored
+
+
+
+def test_every_lockfile_of_the_repository_is_checked():
+    """Review 2026-11-04 P3: the fuzz targets and the vendored process-wrap's tests
+    resolve their dependencies from lockfiles of their own, which no check read."""
+    lockfiles = subprocess.run(["git", "ls-files", "*Cargo.lock"], cwd=ROOT, check=True,
+                               capture_output=True, text=True).stdout.split()
+    assert "Cargo.lock" in lockfiles
+    job = re.search(r"\n  dependencies:\n((?:    .*\n|\n)+)", WORKFLOW).group(1)
+    denied = [line for line in job.splitlines() if "cargo deny" in line or "Cargo.toml" in line]
+    missing = [lock for lock in lockfiles if lock != "Cargo.lock"
+               and not any(lock.replace("Cargo.lock", "Cargo.toml") in line for line in denied)]
+    assert not missing, missing

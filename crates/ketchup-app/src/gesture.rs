@@ -191,6 +191,9 @@ pub(crate) struct MoveDrag {
     /// Where along the pinned axis the gesture started, established from the
     /// first pointer sample after the pin so the body never jumps.
     pub(crate) axis_reference: Option<f64>,
+    /// The way along the axis pinned mid-drag that the drag had gone, a
+    /// typed distance's way until the pointer moves along the axis.
+    pub(crate) pinned_way: Option<Vec3>,
     pub(crate) delta_mm: Vec3,
     pub(crate) copy: bool,
 }

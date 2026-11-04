@@ -9,7 +9,8 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use super::mcp_config::{
-    SERVER, codex_command, read_or_empty, replace_file, with_codex_server, with_json_server,
+    SERVER, codex_command, invalid_data, read_or_empty, replace_file, with_codex_server,
+    with_json_server,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -88,6 +89,42 @@ pub enum Registration {
     /// It starts another program: another Kečup, a development build, or one
     /// that no longer exists.
     Elsewhere { command: String, exists: bool },
+    /// Its file could not be read or is not JSON or TOML. Connect would refuse
+    /// to write it, so the row offers no Connect.
+    Unreadable { reason: RowError },
+    /// Supervisor only: the running instances could not be listed.
+    InstancesUnlisted { reason: RowError },
+}
+
+/// Why a row cannot tell what a client starts: the error itself, shared by the
+/// copies of the row. Two are equal when they say the same.
+#[derive(Clone, Debug)]
+pub struct RowError(std::sync::Arc<std::io::Error>);
+
+impl From<std::io::Error> for RowError {
+    fn from(error: std::io::Error) -> Self {
+        Self(std::sync::Arc::new(error))
+    }
+}
+
+impl PartialEq for RowError {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.kind() == other.0.kind() && self.0.to_string() == other.0.to_string()
+    }
+}
+
+impl Eq for RowError {}
+
+impl std::fmt::Display for RowError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for RowError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.source()
+    }
 }
 
 /// One client, what it starts and, after a Connect, how that went.
@@ -113,8 +150,9 @@ pub struct Environment {
     /// `CODEX_HOME`, Codex's folder instead of `~/.codex`.
     pub codex_home: Option<PathBuf>,
     /// Folders of Supervisor instances. Each reads the MCP servers from its
-    /// own `skills\mcp_servers.json`, next to its `skills\mcp_bridge.py`.
-    pub supervisor_folders: Vec<PathBuf>,
+    /// own `skills\mcp_servers.json`, next to its `skills\mcp_bridge.py`. An
+    /// error when the system did not list the running programs.
+    pub supervisor_folders: Result<Vec<PathBuf>, RowError>,
 }
 
 impl Environment {
@@ -127,7 +165,7 @@ impl Environment {
             local_app_data: None,
             claude_config_dir: None,
             codex_home: None,
-            supervisor_folders: Vec::new(),
+            supervisor_folders: Ok(Vec::new()),
         }
     }
 
@@ -140,7 +178,8 @@ impl Environment {
             local_app_data: folder("LOCALAPPDATA"),
             claude_config_dir: folder("CLAUDE_CONFIG_DIR"),
             codex_home: folder("CODEX_HOME"),
-            supervisor_folders: super::running_programs::folders_of_running("supervisor"),
+            supervisor_folders: super::running_programs::folders_of_running("supervisor")
+                .map_err(RowError::from),
             ..Self::in_home(PathBuf::from(home))
         })
     }
@@ -210,7 +249,7 @@ impl Environment {
     pub fn config_files(&self, harness: Harness) -> Vec<PathBuf> {
         let mut files: Vec<PathBuf> = self.config_file(harness).into_iter().collect();
         if harness == Harness::Supervisor {
-            for folder in &self.supervisor_folders {
+            for folder in self.supervisor_folders.iter().flatten() {
                 let skills = folder.join("skills");
                 let file = skills.join("mcp_servers.json");
                 // Without the bridge the instance reads no MCP servers.
@@ -224,20 +263,43 @@ impl Environment {
         files
     }
 
-    /// The program the client starts as `ketchup` for every project, if any.
-    fn registered_command(harness: Harness, file: &Path) -> Option<String> {
-        let text = std::fs::read_to_string(file).ok()?;
+    /// The program the client starts as `ketchup` for every project, if any,
+    /// and those Claude Code starts in a project of its own `ketchup` entry,
+    /// which wins over the user's there (review 2026-11-04 SEC-142). A missing
+    /// or empty file has none; one that cannot be read or is not its format is
+    /// the error that says why (review 2026-11-04 P3: it showed as not set up).
+    fn registered_commands(
+        harness: Harness,
+        file: &Path,
+    ) -> std::io::Result<(Option<String>, Vec<String>)> {
+        let text = match std::fs::read_to_string(file) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            read => read?,
+        };
+        if text.trim().is_empty() {
+            return Ok((None, Vec::new()));
+        }
         match harness {
-            Harness::Codex => codex_command(&text),
+            Harness::Codex => Ok((codex_command(&text).map_err(invalid_data)?, Vec::new())),
             Harness::ClaudeCode | Harness::ClaudeDesktop | Harness::Supervisor => {
-                // A file that is no JSON shows as not set up; Connect names it.
-                let config: serde_json::Value = serde_json::from_str(&text).ok()?;
-                let command = config["mcpServers"][SERVER]["command"].as_str()?;
-                Some(if harness == Harness::Supervisor {
-                    expand_variables(command)
-                } else {
-                    command.to_owned()
-                })
+                let config: serde_json::Value =
+                    serde_json::from_str(&text).map_err(invalid_data)?;
+                let command = |servers: &serde_json::Value| {
+                    let command = servers[SERVER]["command"].as_str()?;
+                    Some(if harness == Harness::Supervisor {
+                        expand_variables(command)
+                    } else {
+                        command.to_owned()
+                    })
+                };
+                let projects = config["projects"]
+                    .as_object()
+                    .filter(|_| harness == Harness::ClaudeCode)
+                    .into_iter()
+                    .flat_map(|projects| projects.values())
+                    .filter_map(|project| command(&project["mcpServers"]))
+                    .collect();
+                Ok((command(&config["mcpServers"]), projects))
             }
         }
     }
@@ -253,16 +315,28 @@ impl Environment {
         file: Option<&Path>,
         executable: &Path,
     ) -> Registration {
-        match file.and_then(|file| Self::registered_command(harness, file)) {
-            Some(command) if same_program(Path::new(&command), executable) => {
-                Registration::ThisKetchup
+        let (user, projects) = match file.map(|file| Self::registered_commands(harness, file)) {
+            None => (None, Vec::new()),
+            Some(Ok(found)) => found,
+            Some(Err(error)) => {
+                return Registration::Unreadable {
+                    reason: error.into(),
+                };
             }
-            Some(command) => Registration::Elsewhere {
-                exists: Path::new(&command).is_file(),
-                command,
+        };
+        // Any entry starting another program is what some project starts.
+        let elsewhere = user
+            .iter()
+            .chain(&projects)
+            .find(|command| !same_program(Path::new(command), executable));
+        match (elsewhere, user.is_some()) {
+            (Some(command), _) => Registration::Elsewhere {
+                exists: Path::new(command).is_file(),
+                command: command.clone(),
             },
-            None if self.installed(harness, file) => Registration::NotSetUp,
-            None => Registration::NotInstalled,
+            (None, true) => Registration::ThisKetchup,
+            (None, false) if self.installed(harness, file) => Registration::NotSetUp,
+            (None, false) => Registration::NotInstalled,
         }
     }
 
@@ -276,20 +350,34 @@ impl Environment {
     }
 
     /// A row per configuration file: a client whose folder is unknown here
-    /// still gets one, as not installed.
+    /// still gets one, as not installed. When the running Supervisors could
+    /// not be listed, a row says why.
     pub fn rows(&self, executable: &Path) -> Vec<HarnessRow> {
         Harness::ALL
             .into_iter()
             .flat_map(|harness| {
                 let files = self.config_files(harness);
-                if files.is_empty() {
+                let mut rows: Vec<HarnessRow> = if files.is_empty() {
                     vec![self.row(harness, None, executable)]
                 } else {
                     files
                         .into_iter()
                         .map(|file| self.row(harness, Some(file), executable))
                         .collect()
+                };
+                if harness == Harness::Supervisor
+                    && let Err(reason) = &self.supervisor_folders
+                {
+                    rows.push(HarnessRow {
+                        harness,
+                        file: None,
+                        registration: Registration::InstancesUnlisted {
+                            reason: reason.clone(),
+                        },
+                        setup_error: None,
+                    });
                 }
+                rows
             })
             .collect()
     }
@@ -302,16 +390,19 @@ impl Environment {
 
     /// `--mcp-setup`: connects every installed client in its default file, so
     /// of Supervisor only the installed one; another running instance changes
-    /// only when the user clicks Connect on its row.
+    /// only when the user clicks Connect on its row. A client already starting
+    /// another program that exists keeps it (review 2026-11-04 SEC-142: the
+    /// installer runs this hidden); only a missing or gone one is replaced.
     pub fn set_up_installed(&self, executable: &Path) -> Vec<HarnessRow> {
         Harness::ALL
             .into_iter()
             .map(|harness| {
                 let found = self.row(harness, self.config_file(harness), executable);
-                if found.registration == Registration::NotInstalled {
-                    found
-                } else {
-                    self.set_up_in(harness, found.file, executable)
+                match found.registration {
+                    Registration::NotSetUp | Registration::Elsewhere { exists: false, .. } => {
+                        self.set_up_in(harness, found.file, executable)
+                    }
+                    _ => found,
                 }
             })
             .collect()
@@ -342,7 +433,7 @@ impl Environment {
         let text = read_or_empty(&file).map_err(failed)?;
         let executable = executable.to_string_lossy();
         let text = match harness {
-            Harness::Codex => with_codex_server(&text, &executable),
+            Harness::Codex => with_codex_server(&text, &executable).map_err(failed)?,
             Harness::ClaudeCode | Harness::ClaudeDesktop | Harness::Supervisor => {
                 with_json_server(&text, &executable, harness == Harness::ClaudeCode)
                     .map_err(failed)?
@@ -429,28 +520,60 @@ fn find_program(folders: &[PathBuf], name: &str) -> Option<PathBuf> {
     })
 }
 
-/// `text` with each `%NAME%` replaced by the variable's value, as Supervisor's
-/// `mcp_bridge.py` reads its commands (`os.path.expandvars`): an unknown name
-/// stays as written and `%%` is one `%`.
+/// `text` with its variables replaced by their values, as Supervisor's
+/// `mcp_bridge.py` reads its commands with `os.path.expandvars` on Windows
+/// (Python's `ntpath`, review 2026-11-04 P3): `%NAME%`, `$NAME` (letters,
+/// digits, `_` and `-`) and `${NAME}`; `%%` and `$$` are one `%` or `$`; text
+/// in single quotes stays as written, and so does an unknown or unclosed name.
 fn expand_variables(text: &str) -> String {
+    let value = |name: &str| {
+        // The system has no variable named so; asking for one may panic.
+        (!name.is_empty() && !name.contains(['=', '\0']))
+            .then(|| std::env::var_os(name))
+            .flatten()
+            .map(|value| value.to_string_lossy().into_owned())
+    };
     let mut expanded = String::new();
     let mut rest = text;
-    while let Some(start) = rest.find('%') {
+    while let Some(start) = rest.find(['\'', '%', '$']) {
         expanded.push_str(&rest[..start]);
+        let marker = &rest[start..=start];
         let after = &rest[start + 1..];
-        let Some(end) = after.find('%') else {
-            rest = &rest[start..];
-            break;
-        };
-        let name = &after[..end];
-        if name.is_empty() {
-            expanded.push('%');
-        } else if let Some(value) = std::env::var_os(name) {
-            expanded.push_str(&value.to_string_lossy());
+        // What the marker and the start of `after` stand for, and how much of
+        // `after` that takes.
+        let (replacement, taken) = if marker == "'" {
+            let taken = after.find('\'').map_or(after.len(), |end| end + 1);
+            (format!("'{}", &after[..taken]), taken)
+        } else if after.starts_with(marker) {
+            (marker.to_owned(), 1)
+        } else if marker == "%" {
+            match after.find('%') {
+                Some(end) => {
+                    let name = &after[..end];
+                    (value(name).unwrap_or_else(|| format!("%{name}%")), end + 1)
+                }
+                None => (format!("%{after}"), after.len()),
+            }
+        } else if let Some(braced) = after.strip_prefix('{') {
+            match braced.find('}') {
+                Some(end) => {
+                    let name = &braced[..end];
+                    (
+                        value(name).unwrap_or_else(|| format!("${{{name}}}")),
+                        end + 2,
+                    )
+                }
+                None => (format!("${after}"), after.len()),
+            }
         } else {
-            expanded.push_str(&rest[start..start + end + 2]);
-        }
-        rest = &after[end + 1..];
+            let end = after
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+                .unwrap_or(after.len());
+            let name = &after[..end];
+            (value(name).unwrap_or_else(|| format!("${name}")), end)
+        };
+        expanded.push_str(&replacement);
+        rest = &after[taken..];
     }
     expanded.push_str(rest);
     expanded
@@ -506,6 +629,10 @@ fn describe(row: &HarnessRow, executable: &Path) -> String {
             command,
             exists: false,
         } => format!("starts a program that does not exist: {command}"),
+        Registration::Unreadable { reason } => format!("could not be read: {reason}"),
+        Registration::InstancesUnlisted { reason } => {
+            format!("the running instances could not be listed: {reason}")
+        }
     };
     let name = match &row.file {
         Some(file) if row.registration != Registration::NotInstalled => {

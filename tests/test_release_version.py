@@ -46,10 +46,56 @@ def test_the_scripts_read_the_version_from_cargo_toml():
     helper = (WINDOWS / "WorkspaceVersion.ps1").as_posix()
     result = powershell(
         f". '{helper}'; Get-WorkspaceVersion '{ROOT.as_posix()}'; "
-        "Get-AndroidVersionCode '0.2.0'; Get-AndroidVersionCode '1.12.3'"
+        "Get-AndroidVersionCode '0.2.0'; Get-AndroidVersionCode '1.12.3'; "
+        "Get-AndroidVersionCode '0.3.2-dev'; Get-AndroidVersionCode '0.3.1'"
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.split() == [workspace_version(), "2000", "1012003"]
+    assert result.stdout.split() == [workspace_version(), "20009", "10120039", "30020", "30019"]
+
+
+def test_a_pre_release_apk_is_below_its_release_and_above_the_one_before():
+    # Review 2026-11-04 P3 platform: 0.3.2-dev had the versionCode of 0.3.2.
+    helper = (WINDOWS / "WorkspaceVersion.ps1").as_posix()
+    result = powershell(
+        f". '{helper}'; "
+        "(Get-AndroidVersionCode '0.3.1') -lt (Get-AndroidVersionCode '0.3.2-dev') -and "
+        "(Get-AndroidVersionCode '0.3.2-dev') -lt (Get-AndroidVersionCode '0.3.2'); "
+        "(Get-AndroidVersionCode '209.999.999') -le 2100000000"
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["True", "True"]
+
+
+def mac_bundle_versions(version):
+    helper = (ROOT / "scripts" / "macos" / "bundle-version.sh").as_posix()
+    return subprocess.run(
+        ["bash", "-c", f'source "{helper}" && bundle_versions "$0"', version],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+@pytest.mark.skipif(os.name == "nt" or shutil.which("bash") is None, reason="needs a POSIX bash")
+def test_a_mac_bundle_version_is_integers_and_a_pre_release_is_below_its_release():
+    # Review 2026-11-04 P3 platform: CFBundleVersion was 0.3.2-dev, which is not
+    # period-separated integers.
+    pre = mac_bundle_versions("0.3.2-dev")
+    assert pre.returncode == 0, pre.stderr
+    assert pre.stdout.split() == ["0.3.2", "30020"]
+    assert mac_bundle_versions("0.3.2").stdout.split() == ["0.3.2", "30029"]
+    assert mac_bundle_versions(workspace_version()).returncode == 0
+    refused = mac_bundle_versions("0.3")
+    assert refused.returncode != 0 and "0.3" in refused.stderr
+
+
+def test_the_mac_apps_take_their_bundle_versions_from_the_helper():
+    for script in ("build-app.sh", "build-viewer-app.sh"):
+        text = (ROOT / "scripts" / "macos" / script).read_text(encoding="utf-8")
+        assert "<key>CFBundleShortVersionString</key><string>$short_version</string>" in text, script
+        assert "<key>CFBundleVersion</key><string>$bundle_version</string>" in text, script
+        assert 'versions="$(bundle_versions "$version")"' in text, script
 
 
 def test_the_android_build_gives_the_apk_the_workspace_version():

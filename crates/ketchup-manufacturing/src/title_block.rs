@@ -94,6 +94,10 @@ pub struct SheetSettings {
     /// The language the sheets are titled in; the window's when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<SheetLanguage>,
+    /// The height of ±0,000 in whole millimetres; the ground floor when
+    /// absent (review 2026-11-04 MF-141).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zero_level_mm: Option<i32>,
 }
 
 /// A language the sheets can be titled in, whatever the window's: a Czech

@@ -208,9 +208,9 @@ fn finish_polygon_mesh(
         return Err(DxfImportError::MalformedPairs);
     }
     let m_count = usize::try_from(m_count)
-        .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
+        .map_err(|_out_of_range: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
     let n_count = usize::try_from(n_count)
-        .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
+        .map_err(|_out_of_range: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
     let vertex_count = m_count
         .checked_mul(n_count)
         .ok_or(DxfImportError::TooManyEntities)?;
@@ -348,8 +348,9 @@ fn parse_polyface_vertex(
                 let one_based = raw_index
                     .checked_abs()
                     .ok_or(DxfImportError::MalformedPairs)?;
-                let one_based = usize::try_from(one_based)
-                    .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
+                let one_based = usize::try_from(one_based).map_err(
+                    |_out_of_range: std::num::TryFromIntError| DxfImportError::MalformedPairs,
+                )?;
                 indices.push(
                     one_based
                         .checked_sub(1)
@@ -380,9 +381,9 @@ fn finish_polyface(
         return Err(DxfImportError::MalformedPairs);
     }
     let declared_vertices = usize::try_from(declared_vertices)
-        .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
+        .map_err(|_out_of_range: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
     let declared_faces = usize::try_from(declared_faces)
-        .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
+        .map_err(|_out_of_range: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
     if native_vertices.len() != declared_vertices || faces.len() != declared_faces {
         return Err(DxfImportError::MalformedPairs);
     }
@@ -546,7 +547,7 @@ pub(super) fn build_polyline_profile(
     let read = points.len();
     let (points, vertices) = without_repeated_vertices(points, vertices, closed);
     let removed = u32::try_from(read - points.len())
-        .map_err(|_: std::num::TryFromIntError| DxfImportError::TooManySegments)?;
+        .map_err(|_out_of_range: std::num::TryFromIntError| DxfImportError::TooManySegments)?;
     if removed > 0 {
         diagnostics.add(
             ImportDiagnosticSeverity::Info,

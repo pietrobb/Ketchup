@@ -285,8 +285,6 @@ fn the_drawings_exported_again_replace_their_files() {
     let id = sheet_of_the_block(&mut app, &mut bridge);
     let directory = tempfile::tempdir().unwrap();
     let file = |name: &str| directory.path().join(name);
-    std::fs::write(file("house.pdf"), b"an older set").unwrap();
-    std::fs::write(file("block.dwg"), b"an older sheet").unwrap();
     for _ in 0..2 {
         for (path, extra) in [
             (file("house.pdf"), json!({})),
@@ -322,6 +320,43 @@ fn the_drawings_exported_again_replace_their_files() {
     );
 }
 
+/// Review 2026-11-04 MCP-140: a PDF or a drawing sheet's file at the path was
+/// replaced whatever it was (a PDF the user added pages to, a surveyor's DWG).
+/// Only the file the window last wrote there is replaced, or one the client
+/// asks to replace with `replace: true`; the answer names the file and says so.
+#[test]
+fn a_pdf_or_sheet_the_window_did_not_write_is_replaced_only_when_asked() {
+    let (mut app, mut bridge) = setup();
+    let id = sheet_of_the_block(&mut app, &mut bridge);
+    let directory = tempfile::tempdir().unwrap();
+    let file = |name: &str| directory.path().join(name);
+    for (name, extra) in [
+        ("house.pdf", json!({})),
+        ("survey.dwg", json!({"sheet_id": id})),
+    ] {
+        let path = file(name);
+        let mut export =
+            |extra: &Value| bridge.execute(&mut app, export_drawings(&path, extra.clone()), false);
+        std::fs::write(&path, b"the user's own").unwrap();
+        assert_eq!(export(&extra), Err("drawings_target_exists"), "{name}");
+        let answer = take_error_details().unwrap_or_default().to_string();
+        for said in [name, "replace: true"] {
+            assert!(answer.contains(said), "{said:?} missing: {answer}");
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), b"the user's own");
+
+        let mut asked = extra.clone();
+        asked["replace"] = json!(true);
+        export(&asked).unwrap_or_else(|code| panic!("{code} {name}: {:?}", take_error_details()));
+        assert_ne!(std::fs::read(&path).unwrap(), b"the user's own");
+        // Its own file is replaced again without asking, until it changes.
+        export(&extra).unwrap_or_else(|code| panic!("{code} {name}: {:?}", take_error_details()));
+        std::fs::write(&path, b"edited since").unwrap();
+        assert_eq!(export(&extra), Err("drawings_target_exists"), "{name}");
+        assert_eq!(std::fs::read(&path).unwrap(), b"edited since");
+    }
+}
+
 /// MECH-2: a PDF another program holds open (a PDF viewer shares it for
 /// reading only) cannot be replaced: the answer names the file and says to
 /// close it, the file keeps its bytes and nothing is left beside it.
@@ -341,7 +376,11 @@ fn a_drawing_held_open_elsewhere_is_named_and_kept() {
         .open(&pdf)
         .unwrap();
     assert_eq!(
-        bridge.execute(&mut app, export_drawings(&pdf, json!({})), false),
+        bridge.execute(
+            &mut app,
+            export_drawings(&pdf, json!({"replace": true})),
+            false
+        ),
         Err("drawings_target_in_use")
     );
     let answer = take_error_details().unwrap_or_default().to_string();

@@ -6,6 +6,7 @@
 use super::plugin_consent::PluginConsent;
 use super::plugin_files::HeldFiles;
 use super::*;
+use crate::delivery::Deliver;
 use ketchup_assistant::extension::{PluginCapability, PluginGrant, PluginLimits};
 use ketchup_scheduler::plugin::{
     PluginCommand, PluginHostError, PluginRunResult, run_plugin_command,
@@ -61,6 +62,13 @@ pub(super) struct PluginJob {
     validators: Vec<String>,
     strict: bool,
     receiver: mpsc::Receiver<Result<PluginRunResult, RunFailure>>,
+}
+
+impl PluginJob {
+    /// Stops the plugin process; nothing it made is published.
+    pub(super) fn stop_worker(&self) {
+        self.worker_cancelled.store(true, Ordering::Release);
+    }
 }
 
 /// Why a plugin run ended without its result.
@@ -123,8 +131,9 @@ pub(super) fn launch(
         .lock()
         .ok()
         .and_then(|mut gate| gate.take_if(|(plugin, _)| request.plugin.as_ref() == Some(plugin)))
+        && gate.recv_timeout(Duration::from_secs(5)).is_err()
     {
-        let _ = gate.recv_timeout(Duration::from_secs(5));
+        // A test that never opens the gate lets the launch go on after 5 s.
     }
     match (&request.plugin, &request.executable) {
         (Some(plugin), None) => {
@@ -279,7 +288,7 @@ impl LiveBridge {
                 take_error_details();
                 let prepared = launch(&worker_request, &cancelled)
                     .map_err(|code| (code, take_error_details()));
-                let _ = sender.try_send(prepared);
+                sender.deliver(prepared);
                 repaint.request_repaint();
             });
         if let Err(error) = spawn {
@@ -373,7 +382,7 @@ impl LiveBridge {
                             .map_err(RunFailure::Host)
                     });
                 drop(held);
-                let _ = sender.try_send(result);
+                sender.deliver(result);
                 repaint.request_repaint();
             });
         if let Err(error) = spawn {

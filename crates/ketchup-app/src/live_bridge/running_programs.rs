@@ -3,8 +3,8 @@
 //! its own folder, so the running ones are how Kečup finds them. The standard
 //! library lists no processes, so this module asks the system
 //! (`CreateToolhelp32Snapshot`, `QueryFullProcessImageNameW`), which needs
-//! `unsafe`.
-#![allow(unsafe_code)]
+//! `unsafe`. Only the three items that call the system allow it (review
+//! 2026-11-04 P3: an allowance for the whole module let new unsafe code in).
 
 use std::path::PathBuf;
 
@@ -13,6 +13,7 @@ use std::path::PathBuf;
 struct Handle(windows_sys::Win32::Foundation::HANDLE);
 
 #[cfg(windows)]
+#[allow(unsafe_code)]
 impl Drop for Handle {
     fn drop(&mut self) {
         // SAFETY: the handle was opened by the system, is valid and is closed
@@ -22,10 +23,13 @@ impl Drop for Handle {
 }
 
 /// The folders of the running programs whose file name contains `word` (in
-/// any case), each once, in the order the system lists them.
+/// any case), each once, in the order the system lists them; the system's
+/// error when it did not list them all (review 2026-11-04 P3: the list was
+/// silently empty).
 #[cfg(windows)]
-pub fn folders_of_running(word: &str) -> Vec<PathBuf> {
-    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+#[allow(unsafe_code)]
+pub fn folders_of_running(word: &str) -> std::io::Result<Vec<PathBuf>> {
+    use windows_sys::Win32::Foundation::{ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
         TH32CS_SNAPPROCESS,
@@ -41,7 +45,7 @@ pub fn folders_of_running(word: &str) -> Vec<PathBuf> {
     // SAFETY: takes no pointers; an invalid handle is checked below.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
-        return folders;
+        return Err(std::io::Error::last_os_error());
     }
     let snapshot = Handle(snapshot);
     let mut entry = PROCESSENTRY32W {
@@ -67,11 +71,19 @@ pub fn folders_of_running(word: &str) -> Vec<PathBuf> {
         // SAFETY: as for Process32FirstW.
         more = unsafe { Process32NextW(snapshot.0, &mut entry) } != 0;
     }
-    folders
+    // Read right after the call that ended the list: the end of the list is
+    // ERROR_NO_MORE_FILES, any other error cut it short.
+    let end = std::io::Error::last_os_error();
+    if end.raw_os_error() == i32::try_from(ERROR_NO_MORE_FILES).ok() {
+        Ok(folders)
+    } else {
+        Err(end)
+    }
 }
 
 /// The folder of the program process `id` runs, if the system tells it.
 #[cfg(windows)]
+#[allow(unsafe_code)]
 fn program_folder(id: u32) -> Option<PathBuf> {
     use std::os::windows::ffi::OsStringExt;
     use windows_sys::Win32::System::Threading::{
@@ -109,8 +121,8 @@ fn program_folder(id: u32) -> Option<PathBuf> {
 
 /// Supervisor runs on Windows only.
 #[cfg(not(windows))]
-pub fn folders_of_running(_word: &str) -> Vec<PathBuf> {
-    Vec::new()
+pub fn folders_of_running(_word: &str) -> std::io::Result<Vec<PathBuf>> {
+    Ok(Vec::new())
 }
 
 #[cfg(all(test, windows))]
@@ -119,7 +131,7 @@ mod tests {
     fn this_test_program_is_found_running_in_its_folder() {
         let this = std::env::current_exe().unwrap();
         let name = this.file_stem().unwrap().to_string_lossy().to_uppercase();
-        let folders = super::folders_of_running(&name);
+        let folders = super::folders_of_running(&name).unwrap();
         assert!(
             folders
                 .iter()

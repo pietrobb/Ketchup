@@ -242,7 +242,7 @@ fn sync_directory(backup: &Path) -> io::Result<()> {
         File::open(directory)?.sync_all()?;
     }
     #[cfg(not(unix))]
-    let _ = backup;
+    let _: &Path = backup;
     Ok(())
 }
 

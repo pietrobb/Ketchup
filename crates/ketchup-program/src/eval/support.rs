@@ -19,7 +19,7 @@ impl ProgramModel {
         let mut pending = self
             .groups
             .iter()
-            .filter(|group| group.grounded)
+            .filter(|group| group.grounded && !group.logical)
             .map(|group| group.name.as_str())
             .collect::<Vec<_>>();
         let mut visited = BTreeSet::new();

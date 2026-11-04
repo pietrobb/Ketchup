@@ -171,7 +171,7 @@ fn parse_mtext(
     let attachment = parse_optional_i64(record, 71)?.unwrap_or(1);
     if (1..=9).contains(&attachment) {
         let index = usize::try_from(attachment - 1)
-            .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
+            .map_err(|_out_of_range: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
         text.vertical = [
             TextVertical::Top,
             TextVertical::Middle,

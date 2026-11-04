@@ -247,7 +247,12 @@ pub fn export_visible_plan_dxf(
             }
         }
         if !flat {
-            let name = definition.name().to_owned();
+            // Named as the model names the part, not its definition.
+            let name = if occurrence.occurrence_name.is_empty() {
+                occurrence.definition_name.clone()
+            } else {
+                occurrence.occurrence_name.clone()
+            };
             if !omitted_parts.contains(&name) {
                 omitted_parts.push(name);
             }

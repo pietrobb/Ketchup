@@ -93,7 +93,7 @@ impl KetchupApp {
         match self.viewer_file_input(&path) {
             Ok(input) => self.queue_viewer_export(path, input, context, PreparedExport::prepare),
             Err(error) => {
-                self.report_export_outcome("viewer", &path, Err(error)).ok();
+                self.show_export_outcome("viewer", &path, Err(&error));
             }
         }
     }
@@ -191,8 +191,7 @@ impl KetchupApp {
                         self.file.activity.viewer_export = Some(task);
                     }
                     Err(error) => {
-                        self.report_export_outcome("viewer", &task.path, Err(error))
-                            .ok();
+                        self.show_export_outcome("viewer", &task.path, Err(&error));
                     }
                 }
             }
@@ -238,8 +237,7 @@ impl KetchupApp {
                         self.file.activity.viewer_export = Some(task);
                     }
                     Err(error) => {
-                        self.report_export_outcome("viewer", &task.path, Err(error))
-                            .ok();
+                        self.show_export_outcome("viewer", &task.path, Err(&error));
                     }
                 }
             }

@@ -9,6 +9,7 @@ use super::plugin::{PluginAnswer, RunPluginRequest, default_plugin_timeout_ms};
 use super::plugin_manifest::{self, Description, InputType};
 use super::window_request::{Polled, WindowRequest};
 use super::*;
+use crate::delivery::Deliver;
 use crate::length_input::DecimalSeparator;
 use std::fs;
 
@@ -169,7 +170,7 @@ impl PluginMenu {
         let spawned = std::thread::Builder::new()
             .name("ketchup-plugin-scan".into())
             .spawn(move || {
-                let _ = sender.try_send(scan(&root));
+                sender.deliver(scan(&root));
                 repaint.request_repaint();
             });
         match spawned {
@@ -424,15 +425,17 @@ impl KetchupApp {
                             ui.end_row();
                         }
                     });
-                    let _ = form
-                        .fields
-                        .iter()
-                        .filter(|field| {
-                            matches!(field.kind, InputType::Integer | InputType::Number)
-                        })
-                        .any(|field| {
-                            crate::refusal::show_value_refusal(ui, catalog, &field.text, decimal)
-                        });
+                    crate::refusal::show_first_value_refusal(
+                        ui,
+                        catalog,
+                        form.fields
+                            .iter()
+                            .filter(|field| {
+                                matches!(field.kind, InputType::Integer | InputType::Number)
+                            })
+                            .map(|field| &field.text),
+                        decimal,
+                    );
                     ui.horizontal(|ui| {
                         run = ui.button(catalog.text("plugins-run")).clicked();
                         close = ui.button(catalog.text("plugins-cancel")).clicked();

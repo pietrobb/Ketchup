@@ -915,7 +915,9 @@ fn iges_xde_roundtrip_reports_actual_assembly_names_colors_and_transforms() {
         "ketchup-iges-xde-roundtrip-{}.iges",
         std::process::id()
     ));
-    let _ = std::fs::remove_file(&output);
+    if let Err(error) = std::fs::remove_file(&output) {
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+    }
     let backend = ExactBackend::new();
     let parts = vec![StepXdeExportPart {
         path: box_part.to_string_lossy().into_owned(),
@@ -1585,7 +1587,7 @@ fn step_and_iges_translations_side_by_side_all_complete() {
                             .unwrap();
                         let document = backend.open_iges_xde(output.to_str().unwrap()).unwrap();
                         assert_eq!(document.manifest().unwrap().parts.len(), 1);
-                        let _ = std::fs::remove_file(&output);
+                        std::fs::remove_file(&output).unwrap();
                     } else {
                         for missing in [
                             backend.open_iges_xde("missing.igs").unwrap(),

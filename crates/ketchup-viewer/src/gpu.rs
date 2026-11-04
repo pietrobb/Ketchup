@@ -125,8 +125,9 @@ impl RenderTarget {
         buffer
             .slice(..)
             .map_async(wgpu::MapMode::Read, move |result| {
-                // The receiver below outlives this callback; a failed send cannot occur.
-                sender.send(result).ok();
+                // A send fails only once the readback below was given up and its
+                // receiver dropped: nobody waits for the map then.
+                sender.send(result).unwrap_or(());
             });
         let completed = device.poll(wgpu::PollType::Wait).is_ok()
             && receiver.recv().is_ok_and(|result| result.is_ok());

@@ -1151,6 +1151,23 @@ fn insert_profile_part(
 }
 
 /// A loft can be hollowed open at its `start`/`end` section; a sweep cannot.
+/// The smallest size of `part` a shell's walls must fit in twice: of its box, and for a
+/// loft of each section, as thin as its smallest one (review 2026-11-04: the whole part's
+/// size let walls through that the exact kernel refused).
+fn thinnest_size(part: &Part) -> f64 {
+    let (min, max) = part.local_bounds();
+    let mut thinnest = (0..3)
+        .map(|axis| max[axis] - min[axis])
+        .fold(f64::INFINITY, f64::min);
+    if let ProgramPartBody::Loft { sections } = &part.body {
+        for section in sections {
+            let (low, high) = profile_bounds(&section.segments);
+            thinnest = thinnest.min(high[0] - low[0]).min(high[1] - low[1]);
+        }
+    }
+    thinnest
+}
+
 fn reject_swept_shell(part: &Part) -> anyhow::Result<()> {
     if matches!(part.body, ProgramPartBody::Sweep { .. }) {
         anyhow::bail!(
@@ -2215,10 +2232,7 @@ fn builtins(builder: &mut GlobalsBuilder) {
                     "shell({part_name:?}): open at least one face, e.g. open=[\"z+\"]; a closed hollow is not supported"
                 );
             }
-            let (min, max) = part.local_bounds();
-            let thinnest = (0..3)
-                .map(|axis| max[axis] - min[axis])
-                .fold(f64::INFINITY, f64::min);
+            let thinnest = thinnest_size(part);
             if thickness_mm <= CONTACT_FIT_MM || 2.0 * thickness_mm >= thinnest {
                 anyhow::bail!(
                     "shell({part_name:?}): thickness must be positive and under half the part's thinnest size {thinnest} mm, got {thickness_mm}"
@@ -2696,6 +2710,22 @@ fn library() -> Result<(Globals, FrozenModule), ProgramError> {
             Ok((globals, prelude))
         })
         .clone()
+}
+
+/// Every name a program sees before its first line: the builtins (`range`, `len`,
+/// `math`, …) and the library's public globals. A program that binds one of them hides it
+/// from itself (review 2026-11-04 UO-51).
+///
+/// # Errors
+/// `prelude_invalid` when the prelude does not evaluate.
+pub fn builtin_names() -> Result<BTreeSet<String>, ProgramError> {
+    let (globals, prelude) = library()?;
+    Ok(globals
+        .names()
+        .chain(prelude.names())
+        .map(|name| name.as_str().to_owned())
+        .filter(|name| !name.starts_with('_'))
+        .collect())
 }
 
 /// `MATERIAL_WEIGHTS` of the prelude in use, material → weight with its source

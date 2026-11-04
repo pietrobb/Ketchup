@@ -268,6 +268,46 @@ fn nested_component_selection_highlights_shared_and_instance_lines() {
     }
 }
 #[test]
+fn a_long_program_lays_out_only_the_lines_in_view_and_jumps_to_any() {
+    let mut source = String::new();
+    for number in 1..=3000 {
+        source.push_str(&format!("# note {number}\n"));
+    }
+    source.push_str("def far():\n    return \"far\"\n");
+    source.push_str("a=box(\"a\", (20,30,40))\ng=group(\"inner\",[a])\nc=component(\"assembly\",[g])\ninstance(\"second\",c,at=(200,0,0))");
+    let label = |number: usize, defining: bool| {
+        program_source_line_label(number, source.lines().nth(number - 1).unwrap(), defining)
+    };
+    let mut app = KetchupApp::new();
+    app.apply_program_source(
+        ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
+            file_name: "long.star".into(),
+            source: source.clone(),
+            overrides: BTreeMap::new(),
+        },
+        true,
+    )
+    .unwrap();
+    let mut harness = harness(app);
+    assert!(harness.query_by_label(&label(1, false)).is_some());
+    // A frame reads only what the dock shows, not three thousand lines.
+    let shown = (1..=source.lines().count())
+        .filter(|number| harness.query_by_label(&label(*number, false)).is_some())
+        .count();
+    assert!(shown < 200, "{shown} lines laid out");
+    assert!(harness.query_by_label(&label(3001, false)).is_none());
+
+    harness
+        .get_by(|node| node.label().is_some_and(|text| text.starts_with("far()")))
+        .click();
+    harness.run_steps(3);
+    let far = harness.get_by_label(&label(3001, false)).rect();
+    assert!(harness.query_by_label(&label(1, false)).is_none());
+    assert!(far.top() < 1000.0, "{far:?}");
+}
+
+#[test]
 fn manual_model_does_not_grow_the_dock_with_a_starlark_section() {
     let mut app = KetchupApp::new();
     app.document = through_cut_document();

@@ -45,7 +45,7 @@ impl<P, R> TaskContext<P, R> {
     pub fn progress(&self, progress: P) -> Result<(), TaskStop> {
         self.sender
             .send(TaskEvent::Progress(progress))
-            .map_err(|_: mpsc::SendError<_>| TaskStop::Cancelled)
+            .map_err(|_receiver_gone: mpsc::SendError<_>| TaskStop::Cancelled)
     }
 }
 
@@ -118,7 +118,9 @@ fn run_until_deadline<T>(
     };
     let value = job();
     drop(done);
-    let _ = watchdog.join();
+    if watchdog.join().is_err() {
+        // A watchdog that panicked leaves lateness to the clock below.
+    }
     let late = timed_out.load(Ordering::Acquire) || started_at.elapsed() >= deadline;
     (value, late)
 }
@@ -177,8 +179,10 @@ impl<P, R> Drop for BackgroundTask<P, R> {
     /// Cancels the job; a job still running finishes detached.
     fn drop(&mut self) {
         self.cancel();
-        if let Some(worker) = self.worker.take().filter(JoinHandle::is_finished) {
-            let _ = worker.join();
+        if let Some(worker) = self.worker.take().filter(JoinHandle::is_finished)
+            && worker.join().is_err()
+        {
+            // Nobody is left to be told that the dropped task's job panicked.
         }
     }
 }

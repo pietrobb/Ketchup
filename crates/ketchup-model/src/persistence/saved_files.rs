@@ -52,7 +52,7 @@ fn keep_in(directory: &Path, file: &[u8]) -> io::Result<()> {
 fn name_part(part: tempfile::NamedTempFile, path: &Path) -> io::Result<()> {
     match part.persist_noclobber(path) {
         Ok(_) => Ok(()),
-        Err(_) if path.exists() => Ok(()),
+        Err(taken) if taken.error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
         Err(error) => Err(error.error),
     }
 }

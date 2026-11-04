@@ -454,7 +454,7 @@ mod tests {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 1000.0))),
             ..Default::default()
         };
-        let _ = context.run(input(), |context| app.ui(context));
+        crate::tests::run_frame(&context, input(), |context| app.ui(context));
         let pointer = app.viewport_position(Vec3::new(50.0, 30.0, 20.0)).unwrap();
         let mut raw = input();
         raw.events.push(egui::Event::PointerMoved(pointer));
@@ -484,7 +484,7 @@ mod tests {
         app.active_tool = ActiveTool::PushPull;
         let mut raw = input();
         raw.events.push(egui::Event::PointerMoved(pointer));
-        let _ = context.run(raw, |context| app.ui(context));
+        crate::tests::run_frame(&context, raw, |context| app.ui(context));
         let before = app.hover.target.clone();
         let revision = app.document_revision();
         let mut raw = input();
@@ -529,33 +529,33 @@ mod tests {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 1000.0))),
             ..Default::default()
         };
-        let _ = context.run(input(), |context| app.ui(context));
+        crate::tests::run_frame(&context, input(), |context| app.ui(context));
         let pointer = app.viewport_position(Vec3::new(50.0, 30.0, 20.0)).unwrap();
         let mut raw = input();
         raw.events.push(egui::Event::PointerMoved(pointer));
-        let _ = context.run(raw, |context| app.ui(context));
+        crate::tests::run_frame(&context, raw, |context| app.ui(context));
         let front = app.hover.target.clone();
         assert!(front.is_some());
 
         let mut raw = input();
         raw.modifiers.alt = true;
-        let _ = context.run(raw, |context| app.ui(context));
+        crate::tests::run_frame(&context, raw, |context| app.ui(context));
         assert_ne!(app.hover.target, front, "Alt chooses the part behind");
         let mut raw = input();
         raw.modifiers.alt = true;
         raw.events
             .push(egui::Event::PointerMoved(pointer + Vec2::new(1.0, 1.0)));
-        let _ = context.run(raw, |context| app.ui(context));
+        crate::tests::run_frame(&context, raw, |context| app.ui(context));
         assert_ne!(app.hover.overlap_index, 0, "moving with Alt held keeps it");
 
-        let _ = context.run(input(), |context| app.ui(context));
+        crate::tests::run_frame(&context, input(), |context| app.ui(context));
         assert_ne!(
             app.hover.overlap_index, 0,
             "released Alt keeps the choice for a click on the spot"
         );
         let mut raw = input();
         raw.events.push(egui::Event::PointerMoved(pointer));
-        let _ = context.run(raw, |context| app.ui(context));
+        crate::tests::run_frame(&context, raw, |context| app.ui(context));
         assert_eq!(app.hover.overlap_index, 0);
         assert_eq!(
             app.hover.target, front,
@@ -572,11 +572,11 @@ mod tests {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 1000.0))),
             ..Default::default()
         };
-        let _ = context.run(input(), |context| app.ui(context));
+        crate::tests::run_frame(&context, input(), |context| app.ui(context));
         let pointer = app.viewport_position(Vec3::new(50.0, 30.0, 20.0)).unwrap();
         let mut raw = input();
         raw.events.push(egui::Event::PointerMoved(pointer));
-        let _ = context.run(raw, |context| app.ui(context));
+        crate::tests::run_frame(&context, raw, |context| app.ui(context));
         for pressed in [true, false] {
             let mut raw = input();
             raw.events.push(egui::Event::PointerButton {
@@ -585,7 +585,7 @@ mod tests {
                 pressed,
                 modifiers: egui::Modifiers::NONE,
             });
-            let _ = context.run(raw, |context| app.ui(context));
+            crate::tests::run_frame(&context, raw, |context| app.ui(context));
         }
         let selected = app.selection.primary.clone().expect("click selects");
         let selection_stroke = Color32::from_rgb(240, 78, 35);
@@ -638,11 +638,11 @@ mod tests {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 1000.0))),
             ..Default::default()
         };
-        let _ = context.run(input(), |context| app.ui(context));
+        crate::tests::run_frame(&context, input(), |context| app.ui(context));
         let pointer = app.viewport_position(Vec3::new(50.0, 30.0, 20.0)).unwrap();
         let mut raw = input();
         raw.events.push(egui::Event::PointerMoved(pointer));
-        let _ = context.run(raw, |context| app.ui(context));
+        crate::tests::run_frame(&context, raw, |context| app.ui(context));
         for pressed in [true, false] {
             let mut raw = input();
             raw.events.push(egui::Event::PointerButton {
@@ -651,7 +651,7 @@ mod tests {
                 pressed,
                 modifiers: egui::Modifiers::NONE,
             });
-            let _ = context.run(raw, |context| app.ui(context));
+            crate::tests::run_frame(&context, raw, |context| app.ui(context));
         }
         assert!(app.exact.task.is_none() && app.exact.source.is_none());
         let clicked = app.selection.primary.clone().expect("click selects");
@@ -667,7 +667,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(60);
         while app.exact.task.is_some() || app.exact.source.is_none() {
             assert!(Instant::now() < deadline, "the exact body never arrived");
-            let _ = context.run(input(), |context| app.ui(context));
+            crate::tests::run_frame(&context, input(), |context| app.ui(context));
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
 
@@ -703,11 +703,11 @@ mod tests {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(1600.0, 1000.0))),
             ..Default::default()
         };
-        let _ = context.run(input(), |context| app.ui(context));
+        crate::tests::run_frame(&context, input(), |context| app.ui(context));
         let pointer = app.viewport_position(Vec3::new(50.0, 30.0, 20.0)).unwrap();
         let mut raw = input();
         raw.events.push(egui::Event::PointerMoved(pointer));
-        let _ = context.run(raw, |context| app.ui(context));
+        crate::tests::run_frame(&context, raw, |context| app.ui(context));
 
         let forward = Vec3::new(
             -f64::from(app.camera.yaw.sin() * app.camera.pitch.sin()),

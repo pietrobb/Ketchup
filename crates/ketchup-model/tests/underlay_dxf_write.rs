@@ -5,11 +5,21 @@
 use ketchup_model::document::TagId;
 use ketchup_model::import::{
     DxfEditRefusal, DxfImportOptions, DxfUnderlay, EditedDxfError, ImportLengthUnit,
-    read_dxf_underlay, write_edited_dxf,
+    read_dxf_underlay, write_edited_dxf as write_reported,
 };
 use ketchup_model::underlay::drawn::{AddedObject, DrawnShape, similarity};
 use ketchup_model::underlay::edits::UnderlayEdits;
 use ketchup_model::underlay::{UnderlayLayer, UnderlayLines};
+
+/// The text of the drawing written.
+fn write_edited_dxf(
+    source: &[u8],
+    options: DxfImportOptions,
+    lines: &UnderlayLines,
+    edits: &UnderlayEdits,
+) -> Result<Vec<u8>, EditedDxfError> {
+    write_reported(source, options, lines, edits).map(|written| written.dxf)
+}
 
 const HEADER: &str = "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n9\n$INSUNITS\n70\n4\n\
                       9\n$HANDSEED\n5\n200\n0\nENDSEC\n";
@@ -1395,15 +1405,16 @@ fn another_drawing_and_one_read_differently_are_refused_apart() {
     let longer = source.replace("11\n4000\n21\n0\n", "11\n4100\n21\n0\n");
     assert_eq!(refusal(&longer, lines), DxfEditRefusal::ReadDifferently);
     // Review 2026-11-02 CD-120: another entity moved is bound again by its handle, and
-    // the longer line is written as the file has it.
-    let text = write_edited_dxf(
+    // the longer line is written as the file has it, and said (review 2026-11-04 CD-140).
+    let written = write_reported(
         longer.as_bytes(),
         DxfImportOptions::new(None),
         lines,
         &moved(id_of(lines, 0xA7)),
     )
     .unwrap_or_else(|error| panic!("{error}"));
-    let text = String::from_utf8(text).unwrap();
+    assert_eq!(written.changed_in_file, 1);
+    let text = String::from_utf8(written.dxf).unwrap();
     assert!(text.contains("11\n4100\n21\n0\n"), "{text}");
     assert!(text.contains("10\n6000\n20\n700\n"), "{text}");
     // The same file, its lines as an older import drew them (here: moved).
@@ -1427,19 +1438,20 @@ fn another_drawing_and_one_read_differently_are_refused_apart() {
         refused.to_string().contains("import the drawing again"),
         "{refused}"
     );
-    // The line read otherwise then is taken out, the circle moved: both are written.
+    // Review 2026-11-04 CD-140: the line read otherwise then and taken out is refused as
+    // a moved one is: what lies there now may be another entity.
     let mut edits = moved(id_of(&as_drawn_then, 0xA7));
     edits.removed_objects.insert(id_of(&as_drawn_then, 0xA0));
-    let text = write_edited_dxf(
+    let refused = match write_edited_dxf(
         source.as_bytes(),
         DxfImportOptions::new(None),
         &as_drawn_then,
         &edits,
-    )
-    .unwrap_or_else(|error| panic!("{error}"));
-    let text = String::from_utf8(text).unwrap();
-    assert!(!text.contains("0\nLINE\n5\nA0\n"), "{text}");
-    assert!(text.contains("10\n6000\n20\n700\n"), "{text}");
+    ) {
+        Err(EditedDxfError::Refused(refusal)) => refusal,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(refused, DxfEditRefusal::ReadDifferently);
     // Nothing lies where it lay: the drawing is not bound again.
     let everything = lines.clone().edited(
         &UnderlayEdits {
@@ -1461,6 +1473,102 @@ fn another_drawing_and_one_read_differently_are_refused_apart() {
         other => panic!("{other:?}"),
     };
     assert_eq!(refused, DxfEditRefusal::ReadDifferently);
+}
+
+/// Review 2026-11-04 CD-140: the entity taken out must lie where it lay, as a moved one
+/// must, or the edit removes another entity of the file: its handle now a 9 m wall
+/// elsewhere, or in a drawing without handles the line saved first in its place.
+#[test]
+fn an_entity_taken_out_that_lies_elsewhere_in_the_file_now_is_refused() {
+    let source = source();
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(id_of(lines, 0xA0));
+    let wall = source.replace(
+        "10\n0\n20\n0\n30\n0\n11\n4000\n21\n0\n31\n0\n",
+        "10\n1000\n20\n5000\n30\n0\n11\n10000\n21\n5000\n31\n0\n",
+    );
+    assert_ne!(wall, source);
+    let refusal =
+        |source: &str, lines: &UnderlayLines, edits: &UnderlayEdits| match write_edited_dxf(
+            source.as_bytes(),
+            DxfImportOptions::new(None),
+            lines,
+            edits,
+        ) {
+            Err(EditedDxfError::Refused(refusal)) => refusal,
+            other => panic!("{other:?}"),
+        };
+    assert_eq!(
+        refusal(&wall, lines, &edits),
+        DxfEditRefusal::ReadDifferently
+    );
+    // A block placed by an insert is checked with it: the insert taken out, its leaf now
+    // drawn longer, is refused too.
+    let mut door = UnderlayEdits::default();
+    door.removed_objects.insert(id_of(lines, 0xA4));
+    let leaf = source.replace(
+        "0\nLINE\n5\n21\n8\n0\n10\n0\n20\n0\n11\n800\n",
+        "0\nLINE\n5\n21\n8\n0\n10\n0\n20\n0\n11\n2800\n",
+    );
+    assert_ne!(leaf, source);
+    assert_eq!(
+        refusal(&leaf, lines, &door),
+        DxfEditRefusal::ReadDifferently
+    );
+    // An object the insert placed, taken out on its own, is checked with the insert.
+    let door_id = id_of(lines, 0xA4);
+    let placed = lines
+        .objects()
+        .objects
+        .iter()
+        .position(|object| object.parent == Some(door_id))
+        .unwrap();
+    let mut part = UnderlayEdits::default();
+    part.removed_objects.insert(u32::try_from(placed).unwrap());
+    assert_eq!(
+        refusal(&leaf, lines, &part),
+        DxfEditRefusal::ReadDifferently
+    );
+
+    let first = "0\nLINE\n8\nwalls\n10\n0\n20\n0\n30\n0\n11\n4000\n21\n0\n31\n0\n";
+    let third = "0\nLINE\n8\nwalls\n10\n0\n20\n1000\n30\n0\n11\n4000\n21\n1000\n31\n0\n";
+    let swapped = R12
+        .replace(first, "FIRST")
+        .replace(third, first)
+        .replace("FIRST", third);
+    assert_ne!(swapped, R12);
+    let r12 = read(R12.as_bytes());
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(0);
+    assert_eq!(
+        refusal(&swapped, &r12.lines, &edits),
+        DxfEditRefusal::ReadDifferently
+    );
+}
+
+/// Review 2026-11-04 CD-140: a newer revision of the file that only gained an entity was
+/// bound again and written with it, and said nothing had changed in it since the import.
+#[test]
+fn an_entity_added_to_the_file_since_the_import_is_said() {
+    let source = source();
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(id_of(lines, 0xA0));
+    let added = "0\nLINE\n5\nB0\n330\n1F\n100\nAcDbEntity\n8\nwalls\n100\nAcDbLine\n\
+                 10\n0\n20\n-3000\n30\n0\n11\n2000\n21\n-3000\n31\n0\n";
+    let newer = source.replace(
+        "0\nENDSEC\n0\nEOF\n",
+        &format!("{added}0\nENDSEC\n0\nEOF\n"),
+    );
+    assert_ne!(newer, source);
+    let written = write_reported(newer.as_bytes(), DxfImportOptions::new(None), lines, &edits)
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!((written.changed_in_file, written.added_in_file), (0, 1));
+    let text = String::from_utf8(written.dxf).unwrap();
+    assert!(text.contains("0\nLINE\n5\nB0\n"), "{text}");
 }
 
 /// Review 2026-10-29 CD-63: a drawing that declares no unit, read in centimetres and
@@ -1499,6 +1607,21 @@ fn a_drawing_without_a_unit_is_written_in_the_unit_it_was_read_in() {
         &drawn(&again.lines, &again.layers),
         &drawn(&edited, &original.layers),
     );
+
+    // Review 2026-11-04 P3: in that unit too, the edits are bound again to a file one
+    // entity not edited changed in since, which is written as the file has it, and said.
+    let wider = source.replace("40\n300\n", "40\n350\n");
+    assert_ne!(wider, source);
+    let written = write_reported(
+        wider.as_bytes(),
+        DxfImportOptions::new(Some(ImportLengthUnit::Millimetre)),
+        lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(written.changed_in_file, 1);
+    let text = String::from_utf8(written.dxf).unwrap();
+    assert!(text.contains("40\n350\n"), "{text}");
 }
 
 /// Review 2026-10-29 CD-67: with a `$HANDSEED` below the drawing's handles, the next
@@ -1885,6 +2008,51 @@ fn a_character_beyond_u_ffff_is_written_before_dxf_2007_and_reads_back() {
             .iter()
             .flat_map(|layer| layer.texts())
             .any(|text| text.text == "M 😀\ndva")
+    );
+}
+
+/// Review 2026-11-04 P3: a text written into a drawing in a code page had each character
+/// beyond ASCII as `\U+XXXX`, „Kúpeľňa“ as „K\U+00FApe\U+013E\U+0148a“, though the page
+/// has them. What the page has is written in it; only what it has not, escaped.
+#[test]
+fn a_text_written_into_a_code_page_drawing_escapes_only_what_the_page_has_not() {
+    let header = HEADER.replace(
+        "9\n$INSUNITS\n",
+        "9\n$DWGCODEPAGE\n3\nANSI_1250\n9\n$INSUNITS\n",
+    );
+    let source = format!("{header}{TABLES}{BLOCKS}{ENTITIES}0\nEOF\n");
+    let original = read(source.as_bytes());
+    let mut edits = UnderlayEdits::default();
+    edits.added.push(AddedObject::Drawn {
+        layer: "notes".to_owned(),
+        shape: DrawnShape::Text {
+            anchor_mm: [0.0, -1000.0],
+            height_mm: 100.0,
+            rotation_deg: 0.0,
+            text: "Kúpeľňa ☺".to_owned(),
+        },
+    });
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        &original.lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let line = b"\nK\xFApe\xBE\xF2a \\U+263A\n";
+    assert!(
+        written.windows(line.len()).any(|window| window == line),
+        "{}",
+        String::from_utf8_lossy(&written)
+    );
+    let again = read(&written);
+    assert!(
+        again
+            .lines
+            .layers()
+            .iter()
+            .flat_map(|layer| layer.texts())
+            .any(|text| text.text == "Kúpeľňa ☺")
     );
 }
 

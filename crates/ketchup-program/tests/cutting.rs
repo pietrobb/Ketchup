@@ -360,7 +360,7 @@ fn a_blank_keeps_the_grain_the_part_names_in_its_profile_plane() {
         bom(&model).cut_list[0].dimensions_mm
     };
     let near = |a: [f64; 3], b: [f64; 3]| a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 0.01);
-    for grain in ["", ", attributes = {'grain': 'z'}"] {
+    for grain in ["", ", attributes = {'material:axis': 'z'}"] {
         assert!(
             near(blank(grain), [1000.0, 300.0, 18.0]),
             "{grain}: {:?}",
@@ -369,9 +369,64 @@ fn a_blank_keeps_the_grain_the_part_names_in_its_profile_plane() {
     }
     for axis in ["x", "y"] {
         let box_ = [1000.0 * c + 300.0 * s, 1000.0 * s + 300.0 * c, 18.0];
-        let named = blank(&format!(", attributes = {{'grain': '{axis}'}}"));
+        let named = blank(&format!(", attributes = {{'material:axis': '{axis}'}}"));
         assert!(near(named, box_), "{axis}: {named:?}");
     }
+}
+
+/// Review 2026-11-04 PG-143: any plain attribute whose value was "x" or "y"
+/// kept the box of a turned profile as its blank. A rafter at 46° tagged
+/// `grid='X'` became a blank of 2975 x 2879 x 60 instead of 4000 x 140 x 60,
+/// and the cutting plan bought a 6 m lath at 2 %. Only the grain, or the
+/// attribute its sheet stock keeps along the sheet, ties the blank.
+#[test]
+fn an_unrelated_attribute_does_not_keep_the_box_of_a_sloping_rafter() {
+    let (c, s) = (46f64.to_radians().cos(), 46f64.to_radians().sin());
+    let corner = |x: f64, y: f64| format!("({}, {})", x * c - y * s, x * s + y * c);
+    let profile = format!(
+        "[{}, {}, {}, {}]",
+        corner(0.0, 0.0),
+        corner(4000.0, 0.0),
+        corner(4000.0, 140.0),
+        corner(0.0, 140.0)
+    );
+    let plan = |attributes: &str, stock: &str| {
+        let source = format!(
+            "extrude('rafter', profile = {profile}, distance = 60, material = 'C24'{attributes})\n{stock}\n"
+        );
+        let model = ketchup_program::evaluate("cutting.star", &source, &BTreeMap::new())
+            .unwrap_or_else(|error| panic!("{error}"))
+            .model;
+        let bom = bom(&model);
+        (bom.cut_list[0].dimensions_mm, bom.cutting)
+    };
+    let near = |a: [f64; 3], b: [f64; 3]| a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 0.01);
+    for attributes in [
+        "",
+        ", attributes = {'grid': 'X'}",
+        ", attributes = {'axis': 'y'}",
+    ] {
+        let (blank, cutting) = plan(attributes, "bar_stock('C24', [6000])");
+        assert!(
+            near(blank, [4000.0, 140.0, 60.0]),
+            "{attributes}: {blank:?}"
+        );
+        // The section of a turned profile carries the rounding of its turn,
+        // which differs between platforms' sin and cos.
+        let section = &cutting[0].section_mm;
+        assert!(
+            section.len() == 2 && near([section[0], section[1], 0.0], [140.0, 60.0, 0.0]),
+            "{attributes}: {cutting:#?}"
+        );
+    }
+    // The attribute a sheet stock keeps along its sheets still ties the blank.
+    let (blank, _) = plan(
+        ", attributes = {'fibre': 'x'}",
+        "stock('C24', sheets = [(5000, 5000)], along = 'fibre')",
+    );
+    // Its box, longest side first.
+    let box_ = [4000.0 * s + 140.0 * c, 4000.0 * c + 140.0 * s, 60.0];
+    assert!(near(blank, box_), "{blank:?}");
 }
 
 #[test]

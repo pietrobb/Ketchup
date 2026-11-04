@@ -25,9 +25,12 @@ impl Dimension {
 
     pub fn from_decimal(source_token: impl Into<String>) -> Result<Self, DimensionError> {
         let source_token = source_token.into();
-        let millimetres = source_token
-            .parse::<f64>()
-            .map_err(|_: std::num::ParseFloatError| DimensionError::InvalidDecimalToken)?;
+        let millimetres =
+            source_token
+                .parse::<f64>()
+                .map_err(|_not_decimal: std::num::ParseFloatError| {
+                    DimensionError::InvalidDecimalToken
+                })?;
         Self::new(source_token, millimetres)
     }
 

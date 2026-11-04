@@ -344,14 +344,25 @@ impl KetchupApp {
             for package in render.render_values(snapshot) {
                 // `get_render` is unique-or-nothing: render results stand in
                 // unless topology has exactly one package for this definition.
-                if topology_counts.get(&package.definition_id()) != Some(&1) {
-                    let _ = registry.insert_current(snapshot, Arc::clone(package));
+                if topology_counts.get(&package.definition_id()) != Some(&1)
+                    && registry
+                        .insert_current(snapshot, Arc::clone(package))
+                        .is_err()
+                {
+                    // Render values are current; a second package for one result
+                    // leaves the first in place.
                 }
             }
         }
         if let Some(topology) = topology {
             for package in topology.render_values(snapshot) {
-                let _ = registry.insert_current(snapshot, Arc::clone(package));
+                if registry
+                    .insert_current(snapshot, Arc::clone(package))
+                    .is_err()
+                {
+                    // A topology package for a result a render package already
+                    // gave leaves that one in place.
+                }
             }
         }
         registry

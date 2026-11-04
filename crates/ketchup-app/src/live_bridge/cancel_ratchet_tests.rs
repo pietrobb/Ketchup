@@ -62,11 +62,6 @@ const NOT_WAITED_ON: &[(&str, &str, &str)] = &[
     // Window dialogs the bridge never reaches; they run in the frame of their button.
     ("app/document.rs", "show_pdm_review_window", "window dialog"),
     ("app/export.rs", "show_cam_export_window", "window dialog"),
-    (
-        "app/fea_review.rs",
-        "show_fea_review_window",
-        "window dialog",
-    ),
 ];
 
 /// The function `lines[index]` is in, and whether it is compiled for tests only.

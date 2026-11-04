@@ -342,8 +342,10 @@ fn push_topological_reference_token(
     if token.len() > MAX_TOPOLOGICAL_REFERENCE_TOKEN_BYTES {
         return Err(TopologicalReferenceError::ResourceLimit);
     }
-    let length = u32::try_from(token.len())
-        .map_err(|_: std::num::TryFromIntError| TopologicalReferenceError::ResourceLimit)?;
+    let length =
+        u32::try_from(token.len()).map_err(|_out_of_range: std::num::TryFromIntError| {
+            TopologicalReferenceError::ResourceLimit
+        })?;
     bytes.extend_from_slice(&length.to_le_bytes());
     bytes.extend_from_slice(token.as_bytes());
     Ok(())
@@ -380,7 +382,7 @@ impl<'a> TopologicalReferenceCursor<'a> {
         let bytes: [u8; 2] =
             self.take(2)?
                 .try_into()
-                .map_err(|_: std::array::TryFromSliceError| {
+                .map_err(|_wrong_length: std::array::TryFromSliceError| {
                     TopologicalReferenceError::InvalidEncoding
                 })?;
         Ok(u16::from_le_bytes(bytes))
@@ -390,7 +392,7 @@ impl<'a> TopologicalReferenceCursor<'a> {
         let bytes: [u8; 4] =
             self.take(4)?
                 .try_into()
-                .map_err(|_: std::array::TryFromSliceError| {
+                .map_err(|_wrong_length: std::array::TryFromSliceError| {
                     TopologicalReferenceError::InvalidEncoding
                 })?;
         Ok(u32::from_le_bytes(bytes))
@@ -400,15 +402,16 @@ impl<'a> TopologicalReferenceCursor<'a> {
         let bytes: [u8; 8] =
             self.take(8)?
                 .try_into()
-                .map_err(|_: std::array::TryFromSliceError| {
+                .map_err(|_wrong_length: std::array::TryFromSliceError| {
                     TopologicalReferenceError::InvalidEncoding
                 })?;
         Ok(u64::from_le_bytes(bytes))
     }
 
     fn read_token(&mut self) -> Result<String, TopologicalReferenceError> {
-        let length = usize::try_from(self.read_u32()?)
-            .map_err(|_: std::num::TryFromIntError| TopologicalReferenceError::ResourceLimit)?;
+        let length = usize::try_from(self.read_u32()?).map_err(
+            |_out_of_range: std::num::TryFromIntError| TopologicalReferenceError::ResourceLimit,
+        )?;
         if length > MAX_TOPOLOGICAL_REFERENCE_TOKEN_BYTES {
             return Err(TopologicalReferenceError::ResourceLimit);
         }

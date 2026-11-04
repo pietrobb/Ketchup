@@ -1230,7 +1230,7 @@ impl KetchupApp {
             .into_iter()
             .collect::<Vec<_>>();
         <[OccurrenceId; 2]>::try_from(selected.as_slice()).map_err(
-            |_: std::array::TryFromSliceError| {
+            |_wrong_length: std::array::TryFromSliceError| {
                 self.catalog.refusal("assembly-error-joint-selection")
             },
         )

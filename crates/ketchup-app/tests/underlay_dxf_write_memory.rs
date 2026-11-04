@@ -135,7 +135,7 @@ fn a_changed_drawing_is_written_in_what_its_import_takes() {
         .moved_objects
         .insert(11, [[1.0, 0.0, 250.0], [0.0, 1.0, 0.0]]);
     let (written, peak, _) = counted(|| write_edited_dxf(&source, options, &lines, &edits));
-    let written = written.unwrap();
+    let written = written.unwrap().dxf;
     assert!(written.len() > source.len() / 2);
     // What the import of a drawing takes, its export does not exceed: a drawing that
     // imports, exports.

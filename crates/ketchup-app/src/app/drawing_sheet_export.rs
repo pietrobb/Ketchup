@@ -95,6 +95,8 @@ pub(crate) struct ExportedDrawingSheet {
     /// The plan annotations its top views drew, and those left out.
     pub(crate) annotations: SheetAnnotations,
     pub(crate) bytes: usize,
+    /// The SHA-256 of the file's bytes.
+    pub(crate) sha256: String,
 }
 
 /// Drawing sheet `id` of `snapshot` as `results` project it, its parts list
@@ -141,6 +143,7 @@ pub(crate) fn drawing_sheet_bytes(
         curves: bundle.dxf_curves().clone(),
         annotations: bundle.annotations().clone(),
         bytes: bytes.len(),
+        sha256: ketchup_model::graph::sha256_hex(&bytes),
     };
     Ok((exported, bytes))
 }
@@ -164,6 +167,20 @@ pub(crate) fn drawing_sheet_target(path: &Path) -> Result<Option<String>, Drawin
 }
 
 impl KetchupApp {
+    /// Notes the drawing files the window wrote, each with its SHA-256.
+    pub(crate) fn wrote_drawings(&mut self, written: impl IntoIterator<Item = (PathBuf, String)>) {
+        self.drawings.written.extend(written);
+    }
+
+    /// Whether the file at `path`, of SHA-256 `sha256`, is the last drawing
+    /// file the window wrote there (review 2026-11-04 MCP-140).
+    pub(crate) fn wrote_drawing(&self, path: &Path, sha256: &str) -> bool {
+        self.drawings
+            .written
+            .get(path)
+            .is_some_and(|written| written == sha256)
+    }
+
     /// The DXF of drawing sheet `id` as the current exact solids project it.
     #[cfg(test)]
     pub(crate) fn drawing_sheet_dxf(

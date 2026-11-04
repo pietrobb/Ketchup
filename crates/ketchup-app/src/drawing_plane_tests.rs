@@ -3,7 +3,8 @@ use egui_kittest::Harness;
 
 fn key(app: &mut KetchupApp, key: egui::Key) {
     let context = egui::Context::default();
-    let _ = context.run(
+    crate::tests::run_frame(
+        &context,
         egui::RawInput {
             events: vec![egui::Event::Key {
                 key,
@@ -476,13 +477,14 @@ fn drawing_plane_axis_keys_do_not_steal_foreign_text_focus() {
     app.dispatch_command(AppCommand::Rotate);
     let context = egui::Context::default();
     let mut text = String::from("Other editor");
-    let _ = context.run(egui::RawInput::default(), |ctx| {
+    crate::tests::run_frame(&context, egui::RawInput::default(), |ctx| {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.add(egui::TextEdit::singleline(&mut text).id(egui::Id::new("foreign-editor")))
                 .request_focus();
         });
     });
-    let _ = context.run(
+    crate::tests::run_frame(
+        &context,
         egui::RawInput {
             events: vec![egui::Event::Key {
                 key: egui::Key::ArrowRight,

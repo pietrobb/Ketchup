@@ -85,23 +85,71 @@ function Copy-MissingPeImports([string]$Directory, [string]$RuntimeDirectory, [s
     return $copied.ToArray()
 }
 
-# The Visual C++ runtime DLLs of the newest installed Visual Studio, which Microsoft
-# allows to ship beside the program (app-local deployment).
-function Get-VcRuntimeDirectory {
-    $roots = @()
-    if (-not [string]::IsNullOrWhiteSpace($env:VCToolsRedistDir)) { $roots += $env:VCToolsRedistDir }
+# The executables and libraries in $Directory that carry no valid signature, by name: what
+# a signed package must sign itself, the OCCT TK*.dll as well as the programs (review
+# 2026-11-04 REL-142); the Visual C++ runtime keeps Microsoft's own.
+function Get-PeFilesToSign([string]$Directory) {
+    Get-ChildItem $Directory -File |
+        Where-Object { $_.Extension -in ".exe", ".dll" -and (Get-AuthenticodeSignature $_.FullName).Status -ne "Valid" } |
+        Sort-Object Name | ForEach-Object { $_.Name }
+}
+
+# The linker version a PE image records (MajorLinkerVersion.MinorLinkerVersion), which
+# names the Visual C++ toolset that linked it: 14.44 for the toolset of runtime 14.44.
+function Get-PeLinkerVersion([string]$Path) {
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        $image = [byte[]]::new([Math]::Min($stream.Length, 4096))
+        [void]$stream.Read($image, 0, $image.Length)
+    } finally {
+        $stream.Dispose()
+    }
+    $pe = [BitConverter]::ToInt32($image, 0x3c)
+    if ($pe + 26 -gt $image.Length -or [BitConverter]::ToUInt32($image, $pe) -ne 0x00004550) { throw "Not a PE image: $Path" }
+    return [version]::new($image[$pe + 26], $image[$pe + 27])
+}
+
+# The newest toolset that linked a program or library in $Directory. The runtime shipped
+# beside them has to be at least that new.
+function Get-PeToolsetVersion([string]$Directory) {
+    $versions = @(Get-ChildItem $Directory -File | Where-Object { $_.Extension -in ".exe", ".dll" } |
+        ForEach-Object { Get-PeLinkerVersion $_.FullName } | Sort-Object -Descending)
+    if ($versions.Count -eq 0) { throw "No program or library in $Directory" }
+    return $versions[0]
+}
+
+# Every installed Visual C++ redistributable, one directory per version
+# (VC\Redist\MSVC\14.44.35112), of every Visual Studio installation.
+function Get-VcRedistDirectories {
+    $redists = @()
+    if (-not [string]::IsNullOrWhiteSpace($env:VCToolsRedistDir)) { $redists += $env:VCToolsRedistDir.TrimEnd('\', '/') }
     $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
     if (Test-Path $vswhere -PathType Leaf) {
-        foreach ($installation in @(& $vswhere -latest -products * -property installationPath)) {
-            $roots += @(Get-ChildItem (Join-Path $installation "VC\Redist\MSVC") -Directory -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -match '^\d+\.\d+\.\d+$' } |
-                Sort-Object { [version]$_.Name } -Descending |
+        foreach ($installation in @(& $vswhere -all -products * -property installationPath)) {
+            $redists += @(Get-ChildItem (Join-Path $installation "VC\Redist\MSVC") -Directory -ErrorAction SilentlyContinue |
                 ForEach-Object { $_.FullName })
         }
     }
-    foreach ($root in $roots) {
-        $crt = @(Get-ChildItem (Join-Path $root "x64") -Directory -Filter "Microsoft.VC*.CRT" -ErrorAction SilentlyContinue | Select-Object -First 1)
-        if ($crt.Count -eq 1) { return $crt[0].FullName }
+    return $redists
+}
+
+# The Visual C++ runtime DLLs for the toolset that linked the program, which Microsoft
+# allows to ship beside it (app-local deployment): the redistributable of that toolset,
+# or failing it the closest newer one, never an older one, which the program may not run
+# on. The newest installed Visual Studio's was taken, whatever linked the program (review
+# 2026-11-04 P3 platform).
+function Get-VcRuntimeDirectory([Parameter(Mandatory)][version]$Toolset, [string[]]$Redists = @(Get-VcRedistDirectories)) {
+    $candidates = @(foreach ($redist in $Redists) {
+        $name = Split-Path $redist -Leaf
+        if ($name -notmatch '^\d+\.\d+\.\d+$') { continue }
+        $version = [version]$name
+        if ($version.Major -ne $Toolset.Major -or $version.Minor -lt $Toolset.Minor) { continue }
+        $crt = @(Get-ChildItem (Join-Path $redist "x64") -Directory -Filter "Microsoft.VC*.CRT" -ErrorAction SilentlyContinue | Select-Object -First 1)
+        if ($crt.Count -eq 1) { [pscustomobject]@{ Version = $version; Crt = $crt[0].FullName } }
+    })
+    if ($candidates.Count -eq 0) {
+        throw "No Visual C++ x64 runtime $Toolset or newer to ship found: install the MSVC build tools that linked the program or set VCToolsRedistDir."
     }
-    throw "No Visual C++ x64 runtime to ship found: install the MSVC build tools or set VCToolsRedistDir."
+    $closest = $candidates | Sort-Object @{ Expression = { $_.Version.Minor } }, @{ Expression = { $_.Version.Build }; Descending = $true } | Select-Object -First 1
+    return $closest.Crt
 }

@@ -186,7 +186,7 @@ pub fn read_integer(input: &str, decimal: DecimalSeparator) -> Result<i64, Refus
     // A whole f64 printed without decimals is exactly its digits.
     format!("{value:.0}")
         .parse()
-        .map_err(|_: std::num::ParseIntError| Refusal::Unreadable)
+        .map_err(|_not_a_number: std::num::ParseIntError| Refusal::Unreadable)
 }
 
 /// [`read_integer`] as a `T`; a number `T` cannot hold is refused.
@@ -195,7 +195,7 @@ where
     T: TryFrom<i64, Error = std::num::TryFromIntError>,
 {
     T::try_from(read_integer(input, decimal)?)
-        .map_err(|_: std::num::TryFromIntError| Refusal::Unreadable)
+        .map_err(|_out_of_range: std::num::TryFromIntError| Refusal::Unreadable)
 }
 
 /// Millimetres for a typed length expression, or `None` when it is not one.

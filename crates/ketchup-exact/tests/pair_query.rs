@@ -293,7 +293,7 @@ fn native_pair_measures_a_gap_inside_a_loose_imported_precision() {
         }
         .unwrap()
         .body;
-        let _ = std::fs::remove_file(path);
+        std::fs::remove_file(path).unwrap();
         imported
     };
     for format in ["step", "iges"] {

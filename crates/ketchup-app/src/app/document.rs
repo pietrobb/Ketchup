@@ -138,6 +138,10 @@ impl KetchupApp {
         let dimensions_visible = self.panels.dimensions_visible;
         let manual_cad_tools_visible = self.panels.manual_cad_tools_visible;
         let about_open = self.panels.about_open;
+        // The window's settings, not the document's (review 2026-11-04 UI-140).
+        let decimal = self.value_box.decimal;
+        let remember_language = self.remember_language;
+        let dock_tab = self.dock.tab;
         let recent_files = std::mem::take(&mut self.file.recent);
         let exact_worker_path = self.exact.worker_path.clone();
         let exact_worker_attempted = self.exact.worker_attempted;
@@ -162,6 +166,9 @@ impl KetchupApp {
         self.panels.dimensions_visible = dimensions_visible;
         self.panels.manual_cad_tools_visible = manual_cad_tools_visible;
         self.panels.about_open = about_open;
+        self.value_box.decimal = decimal;
+        self.remember_language = remember_language;
+        self.dock.tab = dock_tab;
         self.file.recent = recent_files;
         self.digest = self.catalog.text("digest-new-document");
     }
@@ -1034,64 +1041,41 @@ impl KetchupApp {
                 }
             }
             AppCommand::ExportDrawingDxf => {
-                if let Some(path) = self.choose_export_path("dxf") {
-                    self.export_current_profiles_dxf_to(&path).ok();
-                }
+                self.export_from_menu("dxf", Self::export_current_profiles_dxf_to);
             }
             AppCommand::ExportExactStep => {
-                if let Some(path) = self.choose_export_path("step") {
-                    self.export_current_model_step_to(&path).ok();
-                }
+                self.export_from_menu("step", Self::export_current_model_step_to);
             }
             AppCommand::ExportExactIges => {
-                if let Some(path) = self.choose_export_path("iges") {
-                    self.export_current_model_iges_to(&path).ok();
-                }
+                self.export_from_menu("iges", Self::export_current_model_iges_to);
             }
             AppCommand::ExportMeshStl => {
-                if let Some(path) = self.choose_export_path("stl") {
-                    self.export_current_model_stl_to(&path).ok();
-                }
+                self.export_from_menu("stl", Self::export_current_model_stl_to);
             }
             AppCommand::ExportPrintThreeMf => {
-                if let Some(path) = self.choose_export_path("3mf") {
-                    self.export_current_model_three_mf_to(&path).ok();
-                }
+                self.export_from_menu("3mf", Self::export_current_model_three_mf_to);
             }
             AppCommand::ExportBlenderGlb => {
-                if let Some(path) = self.choose_export_path("glb") {
-                    self.export_current_model_glb_to(&path).ok();
-                }
+                self.export_from_menu("glb", Self::export_current_model_glb_to);
             }
             AppCommand::ExportSketchupDae => {
-                if let Some(path) = self.choose_export_path("dae") {
-                    self.export_current_model_dae_to(&path).ok();
-                }
+                self.export_from_menu("dae", Self::export_current_model_dae_to);
             }
             AppCommand::ExportViewer => {
-                if let Some(path) = self.choose_export_path("ketchup-view") {
-                    self.export_current_model_viewer_to(&path).ok();
-                }
+                self.export_from_menu("ketchup-view", Self::export_current_model_viewer_to);
             }
             AppCommand::ExportGeneralFabrication => {
-                if let Some(path) = self.choose_export_path("csv") {
-                    self.export_current_general_fabrication_to(&path).ok();
-                }
+                self.export_from_menu("csv", Self::export_current_general_fabrication_to);
             }
             AppCommand::ExportWeldmentCutList => {
-                if let Some(path) = self.choose_export_path("csv") {
-                    self.export_current_member_cut_list_to(&path).ok();
-                }
+                self.export_from_menu("csv", Self::export_current_member_cut_list_to);
             }
             AppCommand::ExportProjectDrawings => self.open_project_drawings_window(),
             AppCommand::ExportSheetMetalManufacturing => {
                 match self.sole_exportable_sheet_metal_feature_id() {
-                    Ok(feature_id) => {
-                        if let Some(path) = self.choose_export_path("dxf") {
-                            self.export_current_sheet_metal_manufacturing_to(feature_id, &path)
-                                .ok();
-                        }
-                    }
+                    Ok(feature_id) => self.export_from_menu("dxf", |app, path| {
+                        app.export_current_sheet_metal_manufacturing_to(feature_id, path)
+                    }),
                     Err(error) => {
                         self.digest = self.catalog.format(
                             "error-export-general-fabrication",
@@ -1153,6 +1137,7 @@ impl KetchupApp {
                         coarse_deflection_mm: "0.3".to_owned(),
                         fine_deflection_mm: "0.12".to_owned(),
                         review: None,
+                        running: None,
                     })
                 })();
                 match result {
@@ -1199,17 +1184,33 @@ impl KetchupApp {
                                 > 1
                         });
                 let extension = if several_parts { "mpr-zip" } else { "mpr" };
-                if let Some(path) = self.choose_export_path(extension) {
-                    self.export_current_model_homag_mpr_to(&path).ok();
-                }
+                self.export_from_menu(extension, Self::export_current_model_homag_mpr_to);
             }
             AppCommand::ExportHundeggerBtlx => {
-                if let Some(path) = self.choose_export_path("btlx") {
-                    self.export_current_model_btlx_to(&path).ok();
-                }
+                self.export_from_menu("btlx", Self::export_current_model_btlx_to);
             }
             AppCommand::New | AppCommand::Open => {}
             _ => unreachable!("only file commands are routed here"),
+        }
+    }
+
+    /// Runs one export the menu chose a file for. The export has shown its outcome in
+    /// the digest; the menu has no caller to pass a refusal on to, so it is logged with
+    /// its cause too (review 2026-11-04 TST-140).
+    fn export_from_menu(
+        &mut self,
+        extension: &str,
+        export: impl FnOnce(
+            &mut Self,
+            &Path,
+        )
+            -> Result<crate::export_bundle::Written, crate::export_bundle::ExportError>,
+    ) {
+        let Some(path) = self.choose_export_path(extension) else {
+            return;
+        };
+        if let Err(error) = export(self, &path) {
+            eprintln!("{extension} export to {} refused: {error}", path.display());
         }
     }
 

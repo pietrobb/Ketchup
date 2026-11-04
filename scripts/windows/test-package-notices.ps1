@@ -12,6 +12,7 @@ if ([string]::IsNullOrWhiteSpace($OcctRoot)) {
     $OcctRoot = Join-Path $repoRoot "third_party\occt-install-r0-v1"
 }
 . (Join-Path $PSScriptRoot "package-notices.ps1")
+. (Join-Path $PSScriptRoot "PeImports.ps1")
 
 function Assert-Refused([scriptblock]$Check, [string]$Case) {
     $refused = $false
@@ -41,7 +42,13 @@ try {
     Assert-Names $notices @("OCCT", "LGPL", "acadrust", "MPL", "https://github.com/hakanaktt/acadrust",
         "starlark", "Apache License 2.0", "PATCH.md", "CORE-MATH", "LICENSE-CORE-MATH-MIT.txt",
         "81a899d67953a619d703660fd9630f0554673524", "Rust crates", "egui 0.32.3", "Copyright",
-        "Permission is hereby granted, free of charge") "THIRD_PARTY_NOTICES.txt"
+        "Permission is hereby granted, free of charge", "Microsoft Visual C++ runtime",
+        "Distributable Code") "THIRD_PARTY_NOTICES.txt"
+    # Review 2026-11-04 REL-141: each Visual C++ runtime DLL the package ships is named;
+    # one the notices do not name refuses the package.
+    $runtime = @(Get-ChildItem (Get-VcRuntimeDirectory ([version]"14.0")) -Filter "*.dll" -Name)
+    Assert-RuntimeNotices $payload $runtime
+    Assert-Refused { Assert-RuntimeNotices $payload @("vcruntime140.dll", "vcruntime150.dll") } "a runtime DLL the notices do not name"
 
     $viewer = Join-Path $root "viewer"
     [void](New-Item $viewer -ItemType Directory)

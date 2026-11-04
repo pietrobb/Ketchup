@@ -36,7 +36,7 @@ Ketchup is an AI-native desktop modeler for creating, editing, assembling, valid
 2. Download **`Ketchup-0.3.1-Examples.zip`** from the release, unpack it, and double-click any `.ketchup` file to open it in Ketchup. Double-click `kitchen.ketchup-view` to open it in Ketchup Viewer. The examples are described [below](#examples-you-can-open-right-away).
 3. Optional: connect the AI harness you already use, such as Claude Code, Codex, Claude Desktop, or Cursor. It can then model in the open Ketchup window. See [Connect your AI harness](#connect-your-ai-harness-mcp).
 
-Requires Windows 10 or 11 x64; the Visual C++ runtime the programs need comes with them. The installer and the programs are signed by AEON GROUP spol. s r.o. No account, API key, or Python is needed. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
+Requires Windows 10 or 11 x64. Ketchup 0.3.1 also needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) for x64, version 14.29 or later; on a Windows without it, Ketchup does not start. From 0.3.2 on, the runtime comes with the programs. The installer and the programs are signed by AEON GROUP spol. s r.o. No account, API key, or Python is needed. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
 
 ## What you can do today
 
@@ -180,6 +180,8 @@ Then start a new session of the harness (it reads its MCP servers when a session
 
 The tools connect to the open window by themselves (with several windows open the agent picks one); if none is open, the agent can start one. A newly connected client replaces the previous one. While a client is connected, the status line names it (*Connected AI: Claude Code*, from the name the client gives itself) next to a **Disconnect** button.
 
+A document the agent opens or saves under a new name joins **File > Open Recent**, as when you open it yourself, so the list shows the agent's documents as well as yours. **Clear List** at the bottom of that menu empties it.
+
 When an agent also develops Ketchup in this checkout, use `scripts\ketchup-mcp-server.cmd` as the command instead. It runs the server from `target\mcp-server` and the windows it opens from copies of the newest build under `target\mcp-windows`, so `cargo build --release` can replace `target\release` while those windows stay open. A window built in this checkout shows this script in **Connect AI**, and its **Connect** and `--mcp-setup` register it. To do it by hand, run this from the checkout root (PowerShell):
 
 ```powershell
@@ -241,6 +243,8 @@ Both app scripts sign ad hoc, for this Mac; `--sign "Developer ID Application: â
 No stable public API or long-term native file-format compatibility is promised yet. Undo/Redo lives in memory for the session and reaches back 30 edits: Save writes only the current revision, and reopening a file starts a new Undo history. A named checkpoint in the revision catalog is saved with the file only when it names the revision you save, so save right after naming it; a checkpoint on an earlier edit lasts only for the session, and 30 newer edits drop it. While you work, a work-recovery copy beside the file keeps your edits and their Undo steps, so a crash loses neither.
 
 A newer Ketchup opens the files of an older one. A document without underlays and annotations, whose imports stay within the limits of Ketchup 0.2.0 (at most 1 024 objects made by one import, such as profiles of a drawing, a DXF source of at most 8 MiB, other sources of at most 32 MiB), is saved in the format 0.2.0 reads, so 0.2.0 opens it too. Ketchup 0.2.0 and later refuse any other file a newer version saved and change nothing. **Do not open in 0.1.0 files a later version has saved:** 0.1.0 opens none of them reliably; it takes a document with a program, as well as any file in a newer format, for a damaged one and opens, without saying so, the `.recovery` copy beside it, which holds the content before that save, and saving there can overwrite the newer file.
+
+Each kind of background job (exact evaluation, import, export) caps its own worker's memory, but there is no single limit for the whole window yet: several large jobs of different kinds at once can together use more memory than the computer has. A reference to a face that matches its solid only within tolerance is kept by the order of the faces, without checking that it is still the same face, so after a rebuild it can point at a neighbouring one.
 
 ## Architecture
 

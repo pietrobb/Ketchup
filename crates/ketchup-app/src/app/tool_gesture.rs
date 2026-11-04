@@ -693,11 +693,14 @@ impl KetchupApp {
     }
 
     /// The way a typed Move distance goes: the way a drag in flight shows,
-    /// else the way the Move it corrects went. None while a drag shows no
-    /// way yet, and with nothing to correct.
+    /// or went along the axis pinned since, else the way the Move it corrects
+    /// went. None while a drag shows no way yet, and with nothing to correct.
     fn typed_move_way(&self) -> Option<Vec3> {
         if let Some((drag, _)) = self.move_session() {
-            return (length(drag.delta_mm) >= 0.01).then_some(drag.delta_mm);
+            if length(drag.delta_mm) >= 0.01 {
+                return Some(drag.delta_mm);
+            }
+            return drag.pinned_way;
         }
         let session = self
             .transform_tool

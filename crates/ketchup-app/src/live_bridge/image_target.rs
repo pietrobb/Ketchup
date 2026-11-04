@@ -37,7 +37,7 @@ impl Readback {
             .0
             .state
             .lock()
-            .map_err(|_: std::sync::PoisonError<_>| "image_unavailable")?
+            .map_err(|_poisoned: std::sync::PoisonError<_>| "image_unavailable")?
             .device
             .clone();
         // Never wait on the UI thread. map_async completion needs device polling.
@@ -49,7 +49,7 @@ impl Readback {
         self.0
             .state
             .lock()
-            .map_err(|_: std::sync::PoisonError<_>| "image_unavailable")?
+            .map_err(|_poisoned: std::sync::PoisonError<_>| "image_unavailable")?
             .result
             .take()
             .transpose()
@@ -249,7 +249,7 @@ impl IsolatedCapture {
         self.shared
             .state
             .lock()
-            .map_err(|_: std::sync::PoisonError<_>| "image_unavailable")?
+            .map_err(|_poisoned: std::sync::PoisonError<_>| "image_unavailable")?
             .device = Some(device.clone());
         let shared = self.shared.clone();
         let cancelled = self.cancelled.clone();
@@ -267,7 +267,7 @@ impl IsolatedCapture {
                     return;
                 }
                 let result = result
-                    .map_err(|_: wgpu::BufferAsyncError| "image_unavailable")
+                    .map_err(|_unmapped: wgpu::BufferAsyncError| "image_unavailable")
                     .map(|()| {
                         let bytes = mapped.slice(..).get_mapped_range();
                         let mut rgba = Vec::with_capacity(size[0] as usize * size[1] as usize * 4);

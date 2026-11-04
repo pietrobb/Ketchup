@@ -19,6 +19,8 @@ testing = []
 ab_glyph = "0.2.32"
 eframe = { version = "0.32.3", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
 getrandom = "0.3.4"
+# A client's JSON configuration, edited keeping its keys in order (already in the tree).
+indexmap = { version = "2.14.0", features = ["serde"] }
 ketchup-analysis = { path = "../ketchup-analysis" }
 ketchup-application = { path = "../ketchup-application" }
 ketchup-assistant = { path = "../ketchup-assistant" }
@@ -40,6 +42,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }
 sys-locale = "0.3"
 tempfile = "3.23.0"
+# Codex's config.toml, edited keeping every other line as written (already in the tree).
+toml_edit = "0.25.13"
 wgpu = { version = "25.0.2", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
@@ -78,6 +82,9 @@ unsafe_code = "deny"
 
 [lints.clippy]
 all = "deny"
+map_err_ignore = "deny"
+let_underscore_must_use = "deny"
+let_underscore_untyped = "deny"
 
 [[test]]
 name = "integration"

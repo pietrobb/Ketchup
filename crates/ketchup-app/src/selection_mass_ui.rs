@@ -86,6 +86,7 @@ impl KetchupApp {
             self.catalog
                 .format(key, &arguments.iter().cloned().collect::<BTreeMap<_, _>>())
         };
+        let significant = |value| self.user_decimal(significant(value));
         let SelectionMass::Ready(assembly) = mass else {
             return vec![self.catalog.text("selection-mass-pending")];
         };
@@ -96,8 +97,9 @@ impl KetchupApp {
             (Some("complete"), Some(kg)) => {
                 lines.push(format("selection-mass", &[("kg", significant(kg))]));
                 let centre = &assembly["centroid_mm"];
-                let [x, y, z] = [0, 1, 2]
-                    .map(|axis| format!("{:.1}", centre[axis].as_f64().unwrap_or(f64::NAN)));
+                let [x, y, z] = [0, 1, 2].map(|axis| {
+                    self.user_decimal(fixed_decimals(centre[axis].as_f64().unwrap_or(f64::NAN), 1))
+                });
                 lines.push(format(
                     "selection-mass-centre",
                     &[("x", x), ("y", y), ("z", z)],

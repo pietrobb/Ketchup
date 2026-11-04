@@ -1,5 +1,5 @@
 //! The level marks of the sections and elevations (Měchenice MECH-6): a building
-//! authority reads heights against ±0,000, the floor of the lowest storey. Each
+//! authority reads heights against ±0,000, the floor of the ground storey. Each
 //! level is a line right of the view with a triangle standing on it and its
 //! height above ±0,000 in metres beside, as Czech and Slovak drawings write it.
 
@@ -18,11 +18,13 @@ const STROKE_MM: f64 = 0.25;
 
 /// The heights a section or an elevation marks, model millimetres lowest
 /// first: ±0,000 (`datum_mm`) and each floor the view reaches from `low` to
-/// `high`, and its top.
+/// `high`, its top, and its bottom when that is below ±0,000 (the
+/// foundations, review 2026-11-04 MF-141).
 pub(super) fn level_heights(datum_mm: f64, floors: &[f64], low: f64, high: f64) -> Vec<f64> {
     let mut heights = std::iter::once(datum_mm)
         .chain(floors.iter().copied())
         .filter(|height| (low - SAME_LEVEL_MM..=high).contains(height))
+        .chain((low < datum_mm - SAME_LEVEL_MM).then_some(low))
         .chain(std::iter::once(high))
         .collect::<Vec<_>>();
     heights.sort_by(f64::total_cmp);
@@ -87,10 +89,10 @@ mod tests {
 
     #[test]
     fn the_view_marks_zero_its_floors_and_its_top_once_each() {
-        // Floors at 0 and 3000, the top at 7400.
+        // Floors at 0 and 3000, the top at 7400, the foundations down to -450.
         assert_eq!(
             level_heights(0.0, &[0.0, 3000.0], -450.0, 7400.0),
-            [0.0, 3000.0, 7400.0]
+            [-450.0, 0.0, 3000.0, 7400.0]
         );
         // A floor out of the view is not marked; one at the top is the top.
         assert_eq!(

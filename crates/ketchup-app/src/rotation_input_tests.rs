@@ -203,7 +203,7 @@ fn rotation_rendered_preview_matches_committed_geometry_and_copy() {
             app.selection.select_occurrence(id, false);
             app.dispatch_command(AppCommand::Rotate);
             let context = egui::Context::default();
-            let _ = context.run(egui::RawInput::default(), |ctx| app.ui(ctx));
+            crate::tests::run_frame(&context, egui::RawInput::default(), |ctx| app.ui(ctx));
             let pivot = Vec3::new(100.0, 60.0, 20.0);
             let rect = app.camera.viewport_rect.unwrap();
             assert!(app.begin_rotate_drag_at(app.project(pivot, rect), rect, copy));

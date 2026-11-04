@@ -162,12 +162,15 @@ impl KetchupApp {
                     }
                 };
                 if task.source.current(self) {
-                    let _ = self.save_document_prepared_while(
-                        &task.path,
-                        || true,
-                        Some(prepared),
-                        Some(context),
-                    );
+                    // A failure is the user's own choice or on the status line already.
+                    let (Ok(())
+                    | Err(SaveFailure::Cancelled | SaveFailure::Declined | SaveFailure::Failed)) =
+                        self.save_document_prepared_while(
+                            &task.path,
+                            || true,
+                            Some(prepared),
+                            Some(context),
+                        );
                 }
             }
             Stage::Writing { receiver, identity } => {
@@ -193,7 +196,10 @@ impl KetchupApp {
                     self.report_file_persistence_error("error-save-document", &task.path, error);
                 }
                 if task.source.current(self) {
-                    let _ = self.finish_document_save(&task.path, *identity, result);
+                    // A failure is on the status line already.
+                    let (Ok(())
+                    | Err(SaveFailure::Cancelled | SaveFailure::Declined | SaveFailure::Failed)) =
+                        self.finish_document_save(&task.path, *identity, result);
                 } else if task.source.document == self.document.current().document_id()
                     && task.source.original_path == self.file.path
                     && task.source.original_path.as_deref() == Some(task.path.as_path())
