@@ -1011,8 +1011,8 @@ fn the_drawings_window_keeps_the_sheet_language_and_the_default_title_follows_it
     assert!(app.drawings.unsaved);
 }
 
-/// Měchenice MECH-6: the sections the window exports mark the floor and the
-/// top, with a decimal comma on Czech and Slovak sheets (+2,500) and a point
+/// Měchenice MECH-6: the sections the window exports mark the floor, the top
+/// and the underside of the slab (review 2026-11-04 MF-141), with a decimal comma on Czech and Slovak sheets (+2,500) and a point
 /// on English ones, whatever the window's language.
 #[test]
 fn the_level_marks_take_the_decimal_separator_of_the_sheet_language() {
@@ -1031,9 +1031,9 @@ fn the_level_marks_take_the_decimal_separator_of_the_sheet_language() {
         .unwrap();
     crate::drawn_shape::tests::evaluate_exact(&mut app);
     for (language, levels) in [
-        (SheetLanguage::Czech, ["±0,000", "+2,500"]),
-        (SheetLanguage::Slovak, ["±0,000", "+2,500"]),
-        (SheetLanguage::English, ["±0.000", "+2.500"]),
+        (SheetLanguage::Czech, ["-0,200", "±0,000", "+2,500"]),
+        (SheetLanguage::Slovak, ["-0,200", "±0,000", "+2,500"]),
+        (SheetLanguage::English, ["-0.200", "±0.000", "+2.500"]),
     ] {
         let mut settings = app.sheet_settings();
         settings.language = Some(language);
@@ -1044,6 +1044,55 @@ fn the_level_marks_take_the_decimal_separator_of_the_sheet_language() {
             .unwrap();
         assert_eq!(section.levels, levels, "{language:?}");
     }
+}
+
+/// Review 2026-11-04 MF-141: ±0,000 was the floor of the drawn bodies, so
+/// hiding the floor slab moved it without a word. It is the ground floor of
+/// every body, shown or not, or the height the sheet settings give.
+#[test]
+fn hiding_the_floor_slab_does_not_move_zero_and_the_sheet_can_set_it() {
+    let mut app = KetchupApp::new();
+    add_box(&mut app, 901, "wall A", 0.0);
+    // A slab beside the wall, its top 300 mm up: the ground floor.
+    app.document
+        .apply_batch(&crate::app::drawing::create_box_batch(
+            DefinitionId(903),
+            [FeatureId(9030), FeatureId(9031)],
+            OccurrenceId(903),
+            ["slab", "profile", "extrusion", "slab"],
+            Vec3::new(2000.0, 0.0, 0.0),
+            Vec3::new(3000.0, 3000.0, 300.0),
+        ))
+        .unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let levels = |app: &KetchupApp| {
+        let set = app.project_drawings().unwrap();
+        views(&set)
+            .find(|summary| summary.view == ProjectView::LongitudinalSection)
+            .unwrap()
+            .levels
+            .clone()
+    };
+    let mut settings = app.sheet_settings();
+    settings.language = Some(SheetLanguage::Czech);
+    app.store_sheet_settings(settings);
+    let shown = ["-0,300", "±0,000", "+2,200"];
+    assert_eq!(levels(&app), shown);
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceVisibility {
+                id: OccurrenceId(903),
+                visible: false,
+            },
+        ]))
+        .unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    assert_eq!(levels(&app), shown, "the slab hidden");
+
+    let mut settings = app.sheet_settings();
+    settings.zero_level_mm = Some(0);
+    app.store_sheet_settings(settings);
+    assert_eq!(levels(&app), ["±0,000", "+2,500"]);
 }
 
 /// Review 2026-11-04 MF-140: the level marks of a Czech sheet wrote a comma

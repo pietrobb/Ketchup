@@ -1027,6 +1027,25 @@ fn floor_levels(solids: &[DrawingSolid]) -> Vec<f64> {
         .collect()
 }
 
+/// Where ±0,000 is by default, as Czech and Slovak drawings put it: the floor
+/// of the ground storey, the lowest floor at or above z = 0 (one below is a
+/// basement); the highest floor of a model all below z = 0, and z = 0 for a
+/// model with no floor (review 2026-11-04 MF-141).
+#[must_use]
+pub fn ground_floor(solids: &[DrawingSolid]) -> f64 {
+    ground_floor_of(&floor_levels(solids))
+}
+
+/// [`ground_floor`] among `floors`, lowest first.
+fn ground_floor_of(floors: &[f64]) -> f64 {
+    floors
+        .iter()
+        .copied()
+        .find(|floor| *floor >= 0.0)
+        .or_else(|| floors.last().copied())
+        .unwrap_or(0.0)
+}
+
 /// A storey of the plans: its floor level and the height of its plan cut.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct Storey {
@@ -1300,8 +1319,9 @@ mod tests {
             .unwrap()
     }
 
-    /// Měchenice MECH-6: the sections and elevations mark ±0,000 at the floor and
-    /// the top above it; the plans mark no level.
+    /// Měchenice MECH-6: the sections and elevations mark ±0,000 at the floor,
+    /// the top above it and the underside of the floor slab below it (review
+    /// 2026-11-04 MF-141); the plans mark no level.
     #[test]
     fn sections_and_elevations_mark_their_levels_against_the_floor() {
         let options = DrawingSetOptions {
@@ -1310,7 +1330,11 @@ mod tests {
         };
         let set = drawing_set(&room(), &options).unwrap();
         for view in [ProjectView::LongitudinalSection, ProjectView::Front] {
-            assert_eq!(summary(&set, view).levels, ["±0,000", "+2,500"], "{view:?}");
+            assert_eq!(
+                summary(&set, view).levels,
+                ["-0,200", "±0,000", "+2,500"],
+                "{view:?}"
+            );
         }
         assert!(summary(&set, ProjectView::Plan).levels.is_empty());
         for kind in [SheetKind::Sections, SheetKind::Elevations] {
@@ -1318,6 +1342,51 @@ mod tests {
             assert!(texts(&sheet.page).contains(&"+2,500"), "{kind:?}");
             assert!(texts(&sheet.lines).contains(&"±0,000"), "{kind:?} DXF");
         }
+    }
+
+    /// Review 2026-11-04 MF-141: ±0,000 was the lowest floor, so a basement
+    /// was ±0,000 and the ground floor +3,000; the foundations were never
+    /// marked, nor an attic floor without a plan of its own. ±0,000 is the
+    /// ground floor, the lowest at or above z = 0, unless the sheet sets it;
+    /// every floor and the bottom below ±0,000 are marked.
+    #[test]
+    fn zero_is_the_ground_floor_and_every_level_below_and_above_is_marked() {
+        let mut house = room();
+        for mut solid in room() {
+            solid.name.push_str(" basement");
+            for corner in solid.triangles.iter_mut().flatten() {
+                corner[2] -= 3000.0;
+            }
+            house.push(solid);
+        }
+        // An attic floor 200 mm above the walls under a 600 mm knee wall:
+        // too low under the top for a plan of its own.
+        house.push(cuboid(
+            "attic",
+            [0.0, 0.0, 2700.0],
+            [6000.0, 3000.0, 2900.0],
+        ));
+        house.push(cuboid("knee", [0.0, 0.0, 2900.0], [6000.0, 150.0, 3500.0]));
+        let mut options = DrawingSetOptions {
+            decimal_comma: true,
+            ..options(&house, None)
+        };
+        let levels = |options: &DrawingSetOptions| {
+            let set = drawing_set(&house, options).unwrap();
+            summary(&set, ProjectView::LongitudinalSection)
+                .levels
+                .clone()
+        };
+        assert_eq!(
+            levels(&options),
+            ["-3,200", "-3,000", "±0,000", "+2,700", "+3,300"]
+        );
+        // The basement floor set as ±0,000.
+        options.zero_level_mm = Some(-2800.0);
+        assert_eq!(
+            levels(&options),
+            ["-0,200", "±0,000", "+3,000", "+5,700", "+6,300"]
+        );
     }
 
     /// Měchenice MECH-6: a vertical dimension of the program has no length in plan;
