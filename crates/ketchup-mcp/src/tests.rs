@@ -93,6 +93,25 @@ fn save_view_passes_viewer_on_and_the_schema_offers_it() {
         received.recv().unwrap(),
         json!({"method":"save_view","name":"Situation","viewer":true})
     );
+    // false is a real answer, not a schema default; null means unset and is dropped.
+    call(
+        &mut tools,
+        "view",
+        json!({"action":"save_view","name":"Situation","viewer":false}),
+    );
+    assert_eq!(
+        received.recv().unwrap(),
+        json!({"method":"save_view","name":"Situation","viewer":false})
+    );
+    call(
+        &mut tools,
+        "view",
+        json!({"action":"save_view","name":"Situation","viewer":null}),
+    );
+    assert_eq!(
+        received.recv().unwrap(),
+        json!({"method":"save_view","name":"Situation"})
+    );
     call(
         &mut tools,
         "view",
