@@ -2216,9 +2216,17 @@ fn builtins(builder: &mut GlobalsBuilder) {
                 );
             }
             let (min, max) = part.local_bounds();
-            let thinnest = (0..3)
+            let mut thinnest = (0..3)
                 .map(|axis| max[axis] - min[axis])
                 .fold(f64::INFINITY, f64::min);
+            // A loft is as thin as its smallest section (review 2026-11-04: the
+            // whole part's size let walls through that the exact kernel refused).
+            if let ProgramPartBody::Loft { sections } = &part.body {
+                for section in sections {
+                    let (low, high) = profile_bounds(&section.segments);
+                    thinnest = thinnest.min(high[0] - low[0]).min(high[1] - low[1]);
+                }
+            }
             if thickness_mm <= CONTACT_FIT_MM || 2.0 * thickness_mm >= thinnest {
                 anyhow::bail!(
                     "shell({part_name:?}): thickness must be positive and under half the part's thinnest size {thinnest} mm, got {thickness_mm}"
