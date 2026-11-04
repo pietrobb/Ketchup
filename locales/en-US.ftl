@@ -1735,6 +1735,7 @@ digest-underlay-exported-incomplete = The drawing with its changes was written t
         [one] { $count } record the DWG reader could not decode or a DWG cannot hold.
        *[other] { $count } records the DWG reader could not decode or a DWG cannot hold.
     }
+digest-underlay-exported-changed-in-file = { $count } entities you did not edit have changed in the file since it was imported; they are written as the file has them now.
 digest-underlay-exported-dwg-version = It is an AutoCAD 2018 DWG ({ $version }), whatever version the source was; for an older AutoCAD export the drawing to DXF.
 digest-underlay-export-failed = The drawing was not written: { $reason }
 digest-underlay-text-required = Type the text first, then click where it starts

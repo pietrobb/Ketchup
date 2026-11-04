@@ -400,6 +400,9 @@ pub struct UnderlayWritten {
     /// The records of a DWG source its read left out, by type: they are not in the file
     /// written.
     pub skipped: Vec<(String, usize)>,
+    /// The entities, none of them edited, that read as other lines than the underlay's:
+    /// written as the file has them now (review 2026-11-04 CD-140).
+    pub changed_in_file: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
