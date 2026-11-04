@@ -1,13 +1,37 @@
 //! File > Review static FEA: the setup of one exact body's static study and its
-//! convergence across two mesh levels.
+//! convergence across two mesh levels. The review runs on a thread, so the
+//! window keeps painting and Cancel stops the exact worker (review 2026-11-04
+//! MCP-101).
 
 use crate::*;
+use ketchup_application::fea_workflow::FeaReviewError;
+
+pub(crate) struct FeaReviewDialog {
+    pub(crate) definition_id: DefinitionId,
+    pub(crate) feature_id: FeatureId,
+    pub(crate) occurrence_id: OccurrenceId,
+    pub(crate) case_id: String,
+    pub(crate) youngs_modulus_mpa: String,
+    pub(crate) poisson_ratio: String,
+    pub(crate) yield_strength_mpa: String,
+    pub(crate) constrained_face_ordinals: String,
+    pub(crate) loaded_face_ordinal: String,
+    pub(crate) traction_x_n_per_mm2: String,
+    pub(crate) traction_y_n_per_mm2: String,
+    pub(crate) traction_z_n_per_mm2: String,
+    pub(crate) coarse_deflection_mm: String,
+    pub(crate) fine_deflection_mm: String,
+    pub(crate) review: Option<FeaReviewSummary>,
+    /// The review running now, if any.
+    pub(crate) running: Option<FeaRun>,
+}
 
 impl KetchupApp {
     pub(crate) fn show_fea_review_window(&mut self, context: &egui::Context) {
         let Some(mut pending) = self.reviews.fea_review_dialog.take() else {
             return;
         };
+        self.poll_fea_run(&mut pending);
         let mut open = true;
         let mut run = false;
         let mut cancel = false;
@@ -69,9 +93,17 @@ impl KetchupApp {
                     }
                     ui.monospace(format!("SHA-256 {}", review.review_digest));
                 }
+                if pending.running.is_some() {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(self.catalog.text("fea-review-running"));
+                    });
+                }
                 ui.horizontal(|ui| {
+                    let run_button =
+                        egui::Button::new(self.catalog.text("fea-review-run-confirmed"));
                     if ui
-                        .button(self.catalog.text("fea-review-run-confirmed"))
+                        .add_enabled(pending.running.is_none(), run_button)
                         .clicked()
                     {
                         run = true;
@@ -81,76 +113,142 @@ impl KetchupApp {
                     }
                 });
             });
-        if run {
-            let result = (|| {
-                let FeaFields {
-                    youngs_modulus_mpa,
-                    poisson_ratio,
-                    yield_strength_mpa,
-                    constrained_face_ordinals,
-                    loaded_face_ordinal,
-                    traction,
-                    coarse,
-                    fine,
-                } = pending.read_fields(&self.catalog, self.value_box.decimal)?;
-                let worker_path = self.exact_worker_executable()?;
-                self.reviews.fea_reviews.set_worker_path(worker_path);
-                self.reviews
-                    .fea_reviews
-                    .review(
-                        &self.document.current(),
-                        &FeaStudyRequest {
-                            definition_id: pending.definition_id,
-                            feature_id: pending.feature_id,
-                            setup: ExactFeaSetup {
-                                case_id: pending.case_id.clone(),
-                                instance_path: InstancePath::root(pending.occurrence_id),
-                                material: FeaMaterial {
-                                    id: 1,
-                                    youngs_modulus_mpa,
-                                    poisson_ratio,
-                                    yield_strength_mpa: Some(yield_strength_mpa),
-                                },
-                                constrained_face_ordinals,
-                                face_tractions: vec![ExactFeaFaceTraction {
-                                    face_ordinal: loaded_face_ordinal,
-                                    traction_local_n_per_mm2: traction,
-                                }],
-                            },
-                            mesh_levels: vec![
-                                ExactVolumeMeshWireOptions {
-                                    surface_deflection_mm: coarse,
-                                    angular_deflection_rad: coarse,
-                                    max_tetrahedra: 512,
-                                    max_relative_volume_error: 0.05,
-                                    min_tetrahedron_quality: 1.0e-6, // not a tolerance: mesh quality
-                                },
-                                ExactVolumeMeshWireOptions {
-                                    surface_deflection_mm: fine,
-                                    angular_deflection_rad: fine,
-                                    max_tetrahedra: 1_024,
-                                    max_relative_volume_error: 0.02,
-                                    min_tetrahedron_quality: 1.0e-6, // not a tolerance: mesh quality
-                                },
-                            ],
-                            solve_settings: FeaSolveSettings::default(),
-                        },
-                        true,
-                        &AtomicBool::new(false),
-                    )
-                    .map_err(|error| failed("fea.review", error))
-            })();
-            match result {
-                Ok(review) => {
-                    pending.review = Some(review);
-                    self.digest = self.catalog.text("fea-review-ready");
-                }
+        if run && pending.running.is_none() {
+            match self.fea_study(&pending) {
+                Ok(study) => pending.running = Some(FeaRun::start(study, context)),
                 Err(error) => self.digest = error.reason_text().to_owned(),
             }
         }
-        if open && !cancel {
-            self.reviews.fea_review_dialog = Some(pending);
+        if !open || cancel {
+            // Dropping the run stops its exact worker.
+            if pending.running.take().is_some() {
+                self.digest = self.catalog.text("digest-cancelled");
+            }
+            return;
         }
+        self.reviews.fea_review_dialog = Some(pending);
+    }
+
+    /// The study as typed in the dialog, on the current document.
+    fn fea_study(&mut self, pending: &FeaReviewDialog) -> Result<FeaStudy, Rejection> {
+        let FeaFields {
+            youngs_modulus_mpa,
+            poisson_ratio,
+            yield_strength_mpa,
+            constrained_face_ordinals,
+            loaded_face_ordinal,
+            traction,
+            coarse,
+            fine,
+        } = pending.read_fields(&self.catalog, self.value_box.decimal)?;
+        let request = FeaStudyRequest {
+            definition_id: pending.definition_id,
+            feature_id: pending.feature_id,
+            setup: ExactFeaSetup {
+                case_id: pending.case_id.clone(),
+                instance_path: InstancePath::root(pending.occurrence_id),
+                material: FeaMaterial {
+                    id: 1,
+                    youngs_modulus_mpa,
+                    poisson_ratio,
+                    yield_strength_mpa: Some(yield_strength_mpa),
+                },
+                constrained_face_ordinals,
+                face_tractions: vec![ExactFeaFaceTraction {
+                    face_ordinal: loaded_face_ordinal,
+                    traction_local_n_per_mm2: traction,
+                }],
+            },
+            mesh_levels: vec![
+                ExactVolumeMeshWireOptions {
+                    surface_deflection_mm: coarse,
+                    angular_deflection_rad: coarse,
+                    max_tetrahedra: 512,
+                    max_relative_volume_error: 0.05,
+                    min_tetrahedron_quality: 1.0e-6, // not a tolerance: mesh quality
+                },
+                ExactVolumeMeshWireOptions {
+                    surface_deflection_mm: fine,
+                    angular_deflection_rad: fine,
+                    max_tetrahedra: 1_024,
+                    max_relative_volume_error: 0.02,
+                    min_tetrahedron_quality: 1.0e-6, // not a tolerance: mesh quality
+                },
+            ],
+            solve_settings: FeaSolveSettings::default(),
+        };
+        Ok(FeaStudy {
+            workflow: FeaReviewWorkflow::new(Some(self.exact_worker_executable()?)),
+            snapshot: self.document.current(),
+            request,
+        })
+    }
+
+    /// Takes the run's result when it has come; the dialog shows it.
+    fn poll_fea_run(&mut self, pending: &mut FeaReviewDialog) {
+        let Some(run) = &pending.running else {
+            return;
+        };
+        let result = match run.receiver.try_recv() {
+            Ok(result) => result.map_err(|error| failed("fea.review", error)),
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err(failed(
+                "fea.review",
+                std::io::Error::other("the FEA review ended unexpectedly"),
+            )),
+        };
+        pending.running = None;
+        match result {
+            Ok(review) => {
+                pending.review = Some(review);
+                self.digest = self.catalog.text("fea-review-ready");
+            }
+            Err(error) => self.digest = error.reason_text().to_owned(),
+        }
+    }
+}
+
+/// What one FEA review needs, owned so it runs on a thread.
+struct FeaStudy {
+    workflow: FeaReviewWorkflow,
+    snapshot: Snapshot,
+    request: FeaStudyRequest,
+}
+
+/// An FEA review meshing and solving on a thread, so the window keeps
+/// painting; Cancel, closing the dialog or leaving the document drops it,
+/// which stops its exact worker (review 2026-11-04 MCP-101).
+pub(crate) struct FeaRun {
+    cancelled: Arc<AtomicBool>,
+    receiver: Receiver<Result<FeaReviewSummary, FeaReviewError>>,
+}
+
+impl FeaRun {
+    fn start(study: FeaStudy, context: &egui::Context) -> Self {
+        let (sender, receiver) = mpsc::channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (thread_cancelled, repaint) = (Arc::clone(&cancelled), context.clone());
+        std::thread::spawn(move || {
+            let FeaStudy {
+                workflow,
+                snapshot,
+                request,
+            } = study;
+            let review = workflow.review(&snapshot, &request, true, &thread_cancelled);
+            if sender.send(review).is_ok() {
+                repaint.request_repaint();
+            }
+        });
+        Self {
+            cancelled,
+            receiver,
+        }
+    }
+}
+
+impl Drop for FeaRun {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
     }
 }
 
@@ -225,6 +323,7 @@ mod tests {
             coarse_deflection_mm: "0.3".to_owned(),
             fine_deflection_mm: "0.12".to_owned(),
             review: None,
+            running: None,
         }
     }
 

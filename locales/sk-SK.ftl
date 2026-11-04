@@ -929,6 +929,7 @@ fea-review-run-confirmed = Spustiť potvrdenú exaktnú FEA kontrolu
 fea-review-converged = Skonvergované
 fea-review-within-limits = V deklarovaných medziach
 fea-review-ready = Exaktné FEA riešenie a kontrola zjemnenia skončili bez zmeny dokumentu.
+fea-review-running = Sieťovanie a riešenie beží v exaktnom workeri; Zrušiť ho zastaví.
 file-review-local-pdm = Skontrolovať lokálne PDM vydania…
 pdm-review-title = Kontrola lokálnych nemenných PDM vydaní
 pdm-repository = Repozitár

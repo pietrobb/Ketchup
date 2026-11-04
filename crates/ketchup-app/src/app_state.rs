@@ -227,7 +227,6 @@ pub(crate) struct Clipboard {
 pub(crate) struct ReviewWorkflows {
     pub(crate) cam_reviews: CamReviewWorkflow,
     pub(crate) cam_export_dialog: Option<CamExportDialog>,
-    pub(crate) fea_reviews: FeaReviewWorkflow,
     pub(crate) fea_review_dialog: Option<FeaReviewDialog>,
     pub(crate) pdm: LocalPdmWorkflow,
     pub(crate) pdm_review_dialog: Option<PdmReviewDialog>,

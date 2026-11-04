@@ -224,7 +224,6 @@ impl KetchupApp {
             reviews: app_state::ReviewWorkflows {
                 cam_reviews: CamReviewWorkflow::new(None),
                 cam_export_dialog: None,
-                fea_reviews: FeaReviewWorkflow::new(None),
                 fea_review_dialog: None,
                 pdm: LocalPdmWorkflow::new(),
                 pdm_review_dialog: None,

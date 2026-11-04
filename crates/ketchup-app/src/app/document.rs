@@ -1153,6 +1153,7 @@ impl KetchupApp {
                         coarse_deflection_mm: "0.3".to_owned(),
                         fine_deflection_mm: "0.12".to_owned(),
                         review: None,
+                        running: None,
                     })
                 })();
                 match result {

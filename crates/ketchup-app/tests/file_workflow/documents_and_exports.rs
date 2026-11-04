@@ -330,12 +330,37 @@ fn static_fea_review_runs_through_offscreen_accesskit_without_mutation() {
     shell.click_button_label(&cancel);
     assert_eq!(canonical_state(&shell), baseline);
 
+    // Review 2026-11-04 MCP-101: the review meshed and solved on the window's
+    // thread with a flag nobody could set, so the window froze until it ended.
+    // It now runs on a thread and Cancel stops it.
     shell.click_submenu_command(
         "menu-tools",
         "menu-tools-analysis",
         AppCommand::ReviewStaticFea,
     );
     let run = shell.catalog().text("fea-review-run-confirmed");
+    wait_for_visible_label(&mut shell, &run);
+    shell.click_button_label_once(&run);
+    shell.step();
+    let running = shell.catalog().text("fea-review-running");
+    assert!(
+        shell.has_visible_label(&running),
+        "the window paints while the review runs: {}",
+        shell.app().action_digest()
+    );
+    shell.click_button_label(&cancel);
+    assert_eq!(
+        shell.app().action_digest(),
+        shell.catalog().text("digest-cancelled")
+    );
+    assert!(!shell.has_visible_label(&running));
+    assert_eq!(canonical_state(&shell), baseline);
+
+    shell.click_submenu_command(
+        "menu-tools",
+        "menu-tools-analysis",
+        AppCommand::ReviewStaticFea,
+    );
     wait_for_visible_label(&mut shell, &run);
     assert_eq!(canonical_state(&shell), baseline);
     shell.click_button_label(&run);

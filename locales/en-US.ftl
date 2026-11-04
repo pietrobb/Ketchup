@@ -931,6 +931,7 @@ fea-review-run-confirmed = Run confirmed exact FEA review
 fea-review-converged = Converged
 fea-review-within-limits = Within declared limits
 fea-review-ready = Exact FEA solve and refinement review completed without changing the document.
+fea-review-running = Meshing and solving on the exact worker; Cancel stops it.
 file-review-local-pdm = Review local PDM releases…
 pdm-review-title = Local immutable PDM release review
 pdm-repository = Repository

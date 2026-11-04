@@ -2020,24 +2020,6 @@ struct CamExportDialog {
     review: Option<CamReviewSummary>,
 }
 
-struct FeaReviewDialog {
-    definition_id: DefinitionId,
-    feature_id: FeatureId,
-    occurrence_id: OccurrenceId,
-    case_id: String,
-    youngs_modulus_mpa: String,
-    poisson_ratio: String,
-    yield_strength_mpa: String,
-    constrained_face_ordinals: String,
-    loaded_face_ordinal: String,
-    traction_x_n_per_mm2: String,
-    traction_y_n_per_mm2: String,
-    traction_z_n_per_mm2: String,
-    coarse_deflection_mm: String,
-    fine_deflection_mm: String,
-    review: Option<FeaReviewSummary>,
-}
-
 struct PdmReviewDialog {
     source: PdmSourceIdentity,
     repository: String,
