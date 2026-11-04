@@ -316,6 +316,59 @@ fn a_drawings_export_sent_during_the_exact_evaluation_waits_for_it() {
     assert!(std::fs::read(&pdf).unwrap().starts_with(b"%PDF"));
 }
 
+/// Review 2026-11-04 P3: an export waiting for the exact evaluation dropped
+/// the client's stamp, so a document the user changed meanwhile was drawn
+/// and written for a client that never saw it. The evaluation publishing its
+/// solids is not taken for a change; any other is, and the export is
+/// refused as stale.
+#[test]
+fn a_waiting_export_keeps_the_clients_stamp_past_the_evaluation_only() {
+    let directory = tempfile::tempdir().unwrap();
+    let context = egui::Context::default();
+    for edited in [false, true] {
+        let pdf = directory.path().join(format!("screwed-{edited}.pdf"));
+        let (_, mut bridge) = setup();
+        let mut app = screwed_window();
+        let mut request = export(&pdf);
+        if let Request::ExportDrawings { expected, .. } = &mut request {
+            *expected = Some(app.live_bridge_stamp());
+        }
+        evaluating(&mut app);
+        let (reply, answers) = mpsc::sync_channel(1);
+        let queued = QueuedReply {
+            id: 1,
+            reply,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        };
+        bridge.start_project_drawings_export(&mut app, &context, queued, request, false);
+        assert!(exporting(&bridge), "{edited}");
+        if edited {
+            assert!(app.undo(), "the user changes the document");
+        }
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let answer = loop {
+            assert!(Instant::now() < deadline, "the export did not finish");
+            app.refresh_exact_products(&context);
+            bridge.poll_program_check_job(&mut app, &context);
+            if let Ok(answer) = answers.try_recv() {
+                break answer;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        if edited {
+            assert_eq!(
+                answer.error.as_deref(),
+                Some("stale_document"),
+                "{answer:?}"
+            );
+            assert!(!pdf.exists());
+        } else {
+            assert!(answer.ok, "{answer:?}");
+            assert!(std::fs::read(&pdf).unwrap().starts_with(b"%PDF"));
+        }
+    }
+}
+
 /// MECH-4 for one drawing sheet, sent through the socket: it waited for no
 /// evaluation either ("the sheet would draw old solids").
 #[test]

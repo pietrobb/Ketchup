@@ -260,6 +260,10 @@ pub(crate) struct ExactState {
     /// A box face the user clicked in the viewport before that body's exact
     /// result was shown; the selection moves to the exact face once it is.
     pub(crate) clicked_box_face: Option<ketchup_interaction::SelectionId>,
+    /// The document's mutation epoch before and after the last publication
+    /// of exact solids: what a client saw at the first is what the second
+    /// draws, the solids of the same document.
+    pub(crate) published_epochs: Option<(u64, u64)>,
 }
 
 /// The material takeoff window and the takeoff it shows.
