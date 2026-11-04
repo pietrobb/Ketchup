@@ -1582,6 +1582,7 @@ impl KetchupApp {
         self.show_program_detach_notice(context);
         self.show_material_takeoff_window(context);
         self.show_project_drawings_window(context);
+        self.show_sheet_preview_window(context);
         self.finish_live_image_frame(context);
         self.finish_file_activity_frame(context);
         self.show_close_guard(context);

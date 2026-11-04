@@ -1737,6 +1737,82 @@ fn an_orthophoto_alone_makes_a_site_plan_that_prints_it() {
     assert_eq!(images, 1, "the orthophoto is the site plan's underlay");
 }
 
+/// The shapes of `shapes` that paint an image, by their place in the order.
+fn textured(shapes: &[(Rect, egui::Shape)]) -> Vec<(usize, Arc<egui::Mesh>)> {
+    shapes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (_, shape))| match shape {
+            egui::Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() => {
+                Some((index, Arc::clone(mesh)))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Měchenice MECH-10: the sheet preview beside the drawings window paints the site
+/// plan's orthophoto beneath the parcel lines and the model, its corners where the PDF
+/// puts them; the image is decoded on the preview's thread and becomes a texture once,
+/// not every frame.
+#[test]
+fn the_sheet_preview_paints_the_orthophoto_beneath_the_site_plan() {
+    let (mut app, _directory) = house_on_a_parcel_with_an_orthophoto();
+    let site = app.project_drawings().unwrap().sheets[0].page.clone();
+    let corners = site
+        .marks
+        .iter()
+        .find_map(|mark| match mark {
+            Mark::Image { corners, .. } => Some(*corners),
+            _ => None,
+        })
+        .unwrap();
+    let context = egui::Context::default();
+    let _ = context.run(egui::RawInput::default(), |_| {});
+    app.start_sheet_preview(&context);
+    app.finish_sheet_preview(&context);
+    // A point of the screen for each millimetre of the sheet.
+    let rect = Rect::from_min_size(
+        egui::pos2(10.0, 20.0),
+        egui::vec2(site.size_mm[0] as f32, site.size_mm[1] as f32),
+    );
+    let frame = || {
+        let mut shapes = Vec::new();
+        let _ = context.run(egui::RawInput::default(), |context| {
+            shapes = app.sheet_preview_shapes(context, rect);
+        });
+        shapes
+    };
+    let shapes = frame();
+    let images = textured(&shapes);
+    assert_eq!(images.len(), 1, "the orthophoto in the preview");
+    let (index, mesh) = &images[0];
+    let painted = [0, 1, 3].map(|vertex| mesh.vertices[vertex].pos);
+    for (at, corner) in painted.iter().zip(corners) {
+        let wanted = egui::pos2(10.0 + corner[0] as f32, 20.0 + corner[1] as f32);
+        assert!(
+            at.distance(wanted) < 1e-3,
+            "upper left, upper right, lower left {painted:?}, the sheet puts them at {corners:?}"
+        );
+    }
+    let grey = egui::epaint::ColorMode::Solid(Color32::from_rgb(160, 160, 160));
+    let first_grey = shapes
+        .iter()
+        .position(
+            |(_, shape)| matches!(shape, egui::Shape::Path(path) if path.stroke.color == grey),
+        )
+        .unwrap();
+    assert!(
+        *index < first_grey,
+        "beneath the parcel lines and the model"
+    );
+    let again = textured(&frame());
+    assert_eq!(
+        again[0].1.texture_id, mesh.texture_id,
+        "the texture made once"
+    );
+}
+
 /// A house on a 20 m S-JTSK parcel, the cadastre and an orthophoto over the
 /// parcel's northern half as shown underlays; the directory holds their files.
 fn house_on_a_parcel_with_an_orthophoto() -> (KetchupApp, tempfile::TempDir) {

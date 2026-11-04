@@ -240,7 +240,7 @@ impl ProjectDrawingsJob {
     /// the worker making cosmetic thread bodies and the hidden-line removal.
     /// Without `printed_images`, as for DXF and DWG, the orthophotos stay undecoded
     /// and the sheets name them left out.
-    fn set(
+    pub(super) fn set(
         self,
         printed_images: bool,
         cancelled: &AtomicBool,
@@ -1434,6 +1434,7 @@ impl KetchupApp {
         }
         let mut open = true;
         let mut export = None;
+        let mut preview = false;
         let mut export_sheet = None;
         let mut editing = std::mem::take(&mut self.drawings.editing);
         // A field still showing its default follows it when the default
@@ -1558,6 +1559,7 @@ impl KetchupApp {
                             export = Some(format);
                         }
                     }
+                    preview |= ui.button(self.catalog.text("drawings-preview")).clicked();
                 });
                 ui.separator();
                 ui.strong(self.catalog.text("drawings-document-sheets"));
@@ -1597,6 +1599,9 @@ impl KetchupApp {
         self.drawings.editing = editing;
         if !open {
             self.drawings.open = false;
+        }
+        if preview {
+            self.start_sheet_preview(context);
         }
         // Projected and hidden lines removed on a thread behind the file
         // activity indication, which can cancel it (review 2026-10-18 UI-11).

@@ -230,7 +230,7 @@ impl KetchupApp {
                             context,
                             screen(at),
                             text,
-                            height_mm,
+                            height_mm * POINTS_PER_PAPER_MM,
                             anchor,
                             angle_deg,
                         )),
@@ -278,18 +278,18 @@ impl KetchupApp {
     }
 }
 
-/// A line of text with capitals `height_mm` of the page tall, its baseline at
+/// A line of text with capitals `height_points` tall on screen, its baseline at
 /// `at` (screen points) and turned `angle_deg` counter-clockwise about it.
-fn drawn_text(
+pub(crate) fn drawn_text(
     context: &egui::Context,
     at: Pos2,
     text: String,
-    height_mm: f64,
+    height_points: f64,
     anchor: Anchor,
     angle_deg: f64,
 ) -> DrawnText {
     let [size, angle, _] = single_precision([
-        SheetFont::standard().size_for(height_mm) * POINTS_PER_PAPER_MM,
+        SheetFont::standard().size_for(height_points),
         -angle_deg.to_radians(),
         0.0,
     ]);

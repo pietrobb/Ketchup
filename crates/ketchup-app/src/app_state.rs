@@ -287,6 +287,8 @@ pub(crate) struct DrawingsState {
     pub(crate) unreadable: Option<String>,
     /// The document's sheet settings changed since it was opened or saved.
     pub(crate) unsaved: bool,
+    /// The set previewed beside the window.
+    pub(crate) preview: crate::app::sheet_preview::SheetPreviewState,
 }
 
 /// Viewer sharing preparation kept as project companion data, not CAD.

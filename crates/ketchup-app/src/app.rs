@@ -84,6 +84,7 @@ mod scale_grips;
 mod scene_tabs_tests;
 mod section;
 mod selection;
+pub(crate) mod sheet_preview;
 mod shell;
 pub(crate) mod spaces_ui;
 #[cfg(test)]
