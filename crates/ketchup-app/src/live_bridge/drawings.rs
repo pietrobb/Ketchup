@@ -8,7 +8,7 @@ use crate::KetchupApp;
 use crate::app::drawing_sheet_export::{DrawingSheetExportError, SheetFileFormat};
 use crate::app::project_drawings::{
     ExportedSet, ProjectDrawingsError, ProjectDrawingsJob, SetFileFormat, SetTargets, SheetRequest,
-    project_drawings_targets, publish_project_drawings,
+    project_drawings_targets, publish_project_drawings, written_files,
 };
 use crate::export_bundle::ExportTransactionError;
 use ketchup_manufacturing::dxf_annotations::MAX_PLAN_SCALE;
@@ -18,7 +18,7 @@ use ketchup_model::document::DocumentId;
 use ketchup_model::drawing::DrawingSheetId;
 use ketchup_model::drawing_export::{DxfCurves, SheetAnnotations};
 use serde_json::{Value, json};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 fn sheet_format(name: &str) -> Result<Option<SheetFormat>, &'static str> {
@@ -47,6 +47,7 @@ impl LiveBridge {
             plan_only,
             drawing_scale,
             sheet_language,
+            replace,
         } = request
         else {
             // The project set, drawn here: only the in-process caller waits
@@ -69,7 +70,7 @@ impl LiveBridge {
                 json!({"sheet_id": id}),
             ));
         }
-        export_sheet(app, &path, DrawingSheetId(id))
+        export_sheet(app, &path, DrawingSheetId(id), replace)
     }
 }
 
@@ -100,6 +101,27 @@ pub(super) fn refuse_existing(path: &str) -> Result<(), &'static str> {
         ));
     }
     Ok(())
+}
+
+/// Whether the file at `path`, of SHA-256 `existing`, is kept: it is not the
+/// last one the window wrote there and the client did not say `replace`. No one
+/// confirms an overwrite for a client, as the window's Save dialog does for
+/// the user, so a PDF the user added pages to or a DWG of someone else's is
+/// kept (review 2026-11-04 MCP-140).
+fn kept_unless_asked(app: &KetchupApp, path: &Path, existing: Option<&str>, replace: bool) -> bool {
+    existing.is_some_and(|sha256| !replace && !app.wrote_drawing(path, sha256))
+}
+
+/// The answer to an export [`kept_unless_asked`] refused.
+fn not_its_own(path: &Path) -> &'static str {
+    failure(
+        "drawings_target_exists",
+        format!(
+            "{} is not the file this window's last export wrote there (another program's, or changed since), so it is not replaced. Pass replace: true to replace it, or export to another path.",
+            path.display()
+        ),
+        json!({"path": path.display().to_string()}),
+    )
 }
 
 /// The export transaction's own reason within `error`.
@@ -166,7 +188,12 @@ fn write_failed(error: impl std::error::Error + Send + Sync + 'static) -> &'stat
 
 /// Drawing sheet `id` of the document as DXF, or that DXF as an AutoCAD
 /// 2018 DWG: exact views, hidden edges on their own layer.
-fn export_sheet(app: &KetchupApp, path: &str, id: DrawingSheetId) -> Result<Value, &'static str> {
+fn export_sheet(
+    app: &mut KetchupApp,
+    path: &str,
+    id: DrawingSheetId,
+    replace: bool,
+) -> Result<Value, &'static str> {
     let format = SheetFileFormat::of_path(Path::new(path)).filter(|_| local_absolute_path(path));
     let Some(format) = format else {
         return Err(failure(
@@ -175,11 +202,14 @@ fn export_sheet(app: &KetchupApp, path: &str, id: DrawingSheetId) -> Result<Valu
             json!({"path": path}),
         ));
     };
-    // A file at the path is replaced, as the sheet is exported again after an
-    // edit (Měchenice MECH-2); one saved there while the sheet was projected
-    // is kept (review 2026-10-18 MCP-3).
+    // The sheet's own file is replaced, as it is exported again after an edit
+    // (Měchenice MECH-2); one saved there while the sheet was projected is
+    // kept (review 2026-10-18 MCP-3).
     let replacing = crate::app::drawing_sheet_export::drawing_sheet_target(Path::new(path))
         .map_err(write_failed)?;
+    if kept_unless_asked(app, Path::new(path), replacing.as_deref(), replace) {
+        return Err(not_its_own(Path::new(path)));
+    }
     let sheet = app
         .write_drawing_sheet(id, Path::new(path), format, replacing.as_deref())
         .map_err(|error| match error {
@@ -202,6 +232,7 @@ fn export_sheet(app: &KetchupApp, path: &str, id: DrawingSheetId) -> Result<Valu
             DrawingSheetExportError::Dwg(_) => failed_because("dwg_conversion_failed", error),
             DrawingSheetExportError::Write(_) => write_failed(error),
         })?;
+    app.wrote_drawings([(PathBuf::from(path), sheet.sha256.clone())]);
     Ok(json!({
         "exported": true,
         "path": path,
@@ -304,6 +335,7 @@ pub(super) fn start_export(
         plan_only,
         drawing_scale,
         sheet_language,
+        replace,
     } = request
     else {
         return Err("invalid_request");
@@ -358,11 +390,15 @@ pub(super) fn start_export(
         ));
     }
     // The set exported again after an edit replaces its files (Měchenice
-    // MECH-2): the PDF at the path, or the sheets of this project's earlier
-    // set; one saved there while the set is drawn is kept (review 2026-10-18
-    // MCP-3).
+    // MECH-2): the PDF the window last wrote at the path, or the sheets of
+    // this project's earlier set its list names; one saved there while the
+    // set is drawn is kept (review 2026-10-18 MCP-3).
     let document = app.document.current().document_id();
     let targets = project_drawings_targets(target, file_format, document).map_err(export_failed)?;
+    let existing = targets.get(target).map(String::as_str);
+    if file_format == SetFileFormat::Pdf && kept_unless_asked(app, target, existing, replace) {
+        return Err(not_its_own(target));
+    }
     let previous = app.stored_sheet_settings().map_err(|reason| {
         failure(
             "drawings_unavailable",
@@ -411,6 +447,7 @@ pub(super) fn finish_export(
 ) -> Result<Value, ProjectDrawingsError> {
     let path = started.path.clone();
     let file_format = started.file_format;
+    let mut written = Vec::new();
     let exported = made.and_then(|(set, files)| {
         publish_project_drawings(
             Path::new(&path),
@@ -419,8 +456,12 @@ pub(super) fn finish_export(
             &started.targets,
             started.document,
         )
-        .map(|paths| ExportedSet { set, paths })
+        .map(|paths| {
+            written = written_files(&paths, &files);
+            ExportedSet { set, paths }
+        })
     });
+    app.wrote_drawings(written);
     let exported = match exported {
         Ok(exported) => exported,
         Err(error) => {
@@ -554,6 +595,7 @@ mod tests {
                 plan_only: request.plan_only,
                 drawing_scale: request.scale.map(f64::from),
                 sheet_language: None,
+                replace: false,
             },
             false,
         )
@@ -567,15 +609,33 @@ mod tests {
         let mut app = KetchupApp::new();
         let before = app.stored_sheet_settings().unwrap();
         let title = BTreeMap::from([(TitleField::Author, "AI".to_owned())]);
-        // The empty document has no exact solid to draw.
+        // A file the window did not write is not replaced unless asked
+        // (review 2026-11-04 MCP-140).
         assert_eq!(
             export(
                 &mut app,
                 target.to_str().unwrap(),
                 Some("A1"),
-                title,
+                title.clone(),
                 SheetRequest::default()
             ),
+            Err("drawings_target_exists")
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"user file");
+        // Asked, it is still kept: the empty document has no exact solid to draw.
+        let asked = Request::ExportDrawings {
+            expected: None,
+            path: target.display().to_string(),
+            sheet_id: None,
+            format: Some("A1".to_owned()),
+            title_block: title,
+            plan_only: false,
+            drawing_scale: None,
+            sheet_language: None,
+            replace: true,
+        };
+        assert_eq!(
+            LiveBridge::export_drawings(&mut app, asked, false),
             Err("drawings_unavailable")
         );
         assert_eq!(std::fs::read(&target).unwrap(), b"user file");

@@ -415,6 +415,10 @@ pub enum Request {
         /// cs, sk or en, auto for the window's; absent keeps the document's.
         #[serde(default)]
         sheet_language: Option<String>,
+        /// Replaces a PDF or a drawing sheet's file at `path` that is not the
+        /// one the window last wrote there (review 2026-11-04 MCP-140).
+        #[serde(default)]
+        replace: bool,
     },
     /// Imports a STEP, IGES, STL, DXF, GLB or SketchUp scene file as one Undo step;
     /// `as_underlay` keeps a DXF or DWG drawing under the model as an underlay instead.

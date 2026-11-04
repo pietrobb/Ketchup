@@ -11,7 +11,7 @@ use super::drawing_sheet_export::{
 };
 use super::project_drawings::{
     ExportedSet, ProjectDrawingsError, SetFileFormat, SetTargets, project_drawings_targets,
-    publish_project_drawings, set_export_key,
+    publish_project_drawings, set_export_key, written_files,
 };
 use crate::*;
 use ketchup_manufacturing::project_drawings::DrawingSet;
@@ -163,6 +163,7 @@ impl KetchupApp {
             .take()
             .expect("polled export");
         let ended = || std::io::Error::other("the drawing export ended unexpectedly");
+        let mut written = Vec::new();
         match (task.export, made) {
             (DrawingExport::Project(format), made) => {
                 let result = match made {
@@ -172,8 +173,12 @@ impl KetchupApp {
                 .and_then(|(set, files)| {
                     let document = task.document;
                     publish_project_drawings(&task.path, format, &files, &task.replacing, document)
-                        .map(|paths| ExportedSet { set, paths })
+                        .map(|paths| {
+                            written = written_files(&paths, &files);
+                            ExportedSet { set, paths }
+                        })
                 });
+                self.wrote_drawings(written);
                 self.report_project_drawings(&task.path, &result);
             }
             (DrawingExport::Sheet(_, format), made) => {
@@ -190,6 +195,9 @@ impl KetchupApp {
                     let replacing = task.replacing.get(&task.path).map(String::as_str);
                     publish_drawing_sheet(&task.path, &bytes, replacing).map(|()| exported)
                 });
+                if let Ok(exported) = &result {
+                    self.wrote_drawings([(task.path.clone(), exported.sha256.clone())]);
+                }
                 self.report_drawing_sheet(&task.path, format, &result);
             }
         }

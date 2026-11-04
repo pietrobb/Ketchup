@@ -287,6 +287,9 @@ pub(crate) struct DrawingsState {
     pub(crate) unreadable: Option<String>,
     /// The document's sheet settings changed since it was opened or saved.
     pub(crate) unsaved: bool,
+    /// The SHA-256 of the last drawing file the window wrote at each path,
+    /// the one an AI client's export may replace without asking.
+    pub(crate) written: BTreeMap<std::path::PathBuf, String>,
 }
 
 /// Viewer sharing preparation kept as project companion data, not CAD.

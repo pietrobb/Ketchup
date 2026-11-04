@@ -356,6 +356,15 @@ pub(crate) fn publish_project_drawings(
     Ok(paths)
 }
 
+/// The files a set wrote at `paths`, each with the SHA-256 of its bytes.
+pub(crate) fn written_files(paths: &[PathBuf], files: &[Vec<u8>]) -> Vec<(PathBuf, String)> {
+    paths
+        .iter()
+        .zip(files)
+        .map(|(path, bytes)| (path.clone(), ketchup_model::graph::sha256_hex(bytes)))
+        .collect()
+}
+
 /// The files of a set as `format` for `path` an export started now may
 /// replace, with their SHA-256: the PDF at `path`, or the numbered DXF or DWG
 /// sheets an earlier export of `document` wrote beside it, so the set exports
