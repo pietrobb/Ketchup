@@ -6,7 +6,7 @@
 //! solid's when the caller knows it, else the blank's; every row says which.
 //! The area follows the same basis.
 
-use crate::model::{Part, ProgramModel};
+use crate::model::{Part, ProgramModel, ProgramOperation};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -115,13 +115,16 @@ struct Sums {
 }
 
 impl Sums {
-    fn add(&mut self, sides: [f64; 3], exact_volume_mm3: Option<f64>) {
+    /// `wall_mm` is the thickness of a shelled part's walls.
+    fn add(&mut self, sides: [f64; 3], exact_volume_mm3: Option<f64>, wall_mm: Option<f64>) {
         self.count += 1;
         self.length_mm += sides[0];
         // A triangular part has half its blank's face: with the exact
-        // solid known, the face is its volume over the thickness.
+        // solid known, the face is its volume over the thickness, a shelled
+        // membrane's over its wall (review 2026-11-04).
+        let thickness = wall_mm.unwrap_or(sides[2]);
         self.area_mm2 += match exact_volume_mm3 {
-            Some(volume) if sides[2] > 0.0 => volume / sides[2],
+            Some(volume) if thickness > 0.0 => volume / thickness,
             _ => sides[0] * sides[1],
         };
         self.volume_mm3 += exact_volume_mm3.unwrap_or(sides[0] * sides[1] * sides[2]);
@@ -180,12 +183,19 @@ pub fn material_takeoff(model: &ProgramModel, counted: &BTreeMap<String, Option<
                     Sums::default(),
                 )
             });
+        let wall = part
+            .operations
+            .iter()
+            .find_map(|operation| match operation {
+                ProgramOperation::Shell(shell) => Some(shell.thickness_mm),
+                _ => None,
+            });
         row.parts.push(part.name.clone());
-        sums.add(sides, exact_volume);
+        sums.add(sides, exact_volume, wall);
         materials
             .entry(material)
             .or_default()
-            .add(sides, exact_volume);
+            .add(sides, exact_volume, wall);
     }
     let rows: Vec<TakeoffRow> = rows
         .into_values()
@@ -361,6 +371,25 @@ box("Stĺpik2", (100, 100, 100), at = (600, 600, 0), material = "drevo")
             crate::cutting::blank_dimensions(&model, &model.parts[0]),
             [2000.0, 15.0, 18.0]
         );
+    }
+
+    /// Review 2026-11-04 (P3): a shelled membrane's area was its exact volume
+    /// over its blank's 40 mm, not over its 3 mm wall.
+    #[test]
+    fn a_shelled_membrane_counts_its_wall_area() {
+        let model = crate::evaluate(
+            "skin.star",
+            "skin = loft('skin', sections = [([(0, 0), (40, 0), (40, 40), (0, 40)], 0), \
+             ([(8, 8), (32, 8), (32, 32), (8, 32)], 300)], material = 'PVC membrane')\n\
+             shell(skin, thickness = 3, open = ['start', 'end'])\n",
+            &BTreeMap::new(),
+        )
+        .unwrap()
+        .model;
+        let counted = BTreeMap::from([("skin".to_owned(), Some(3.0e6))]);
+        let takeoff = material_takeoff(&model, &counted);
+        assert_eq!(takeoff.rows[0].area_m2, 1.0, "{:?}", takeoff.rows[0]);
+        assert_eq!(takeoff.materials[0].area_m2, 1.0);
     }
 
     /// Review 2026-10-09 (P3): a visible part the program did not make was
