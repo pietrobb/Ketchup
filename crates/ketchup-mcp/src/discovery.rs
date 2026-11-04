@@ -84,7 +84,19 @@ pub fn list_windows(root: &Path) -> Vec<Window> {
             .collect();
         probes
             .into_iter()
-            .filter_map(|probe| probe.join().ok()?.ok())
+            .filter_map(|probe| match probe.join() {
+                // A window that does not answer is a stale entry: skipped.
+                Ok(answer) => answer.ok(),
+                Err(panic) => {
+                    let cause = panic
+                        .downcast_ref::<&str>()
+                        .copied()
+                        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+                        .unwrap_or("unknown panic");
+                    eprintln!("ketchup-mcp: probing a window panicked ({cause}); it is left out of the list");
+                    None
+                }
+            })
             .collect()
     });
     windows.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
@@ -284,7 +296,28 @@ fn registry_entry(path: &Path) -> Option<(String, SocketAddr, String)> {
     if !is_lower_hex(instance_id, 32) {
         return None;
     }
-    let entry: Value = serde_json::from_slice(&crate::local_auth::read_private(path).ok()?).ok()?;
+    let bytes = match crate::local_auth::read_private(path) {
+        Ok(bytes) => bytes,
+        // The window closed and removed its entry after it was listed.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            eprintln!(
+                "ketchup-mcp: skipping window entry {}: {error}",
+                path.display()
+            );
+            return None;
+        }
+    };
+    let entry: Value = match serde_json::from_slice(&bytes) {
+        Ok(entry) => entry,
+        Err(error) => {
+            eprintln!(
+                "ketchup-mcp: skipping window entry {}: {error}",
+                path.display()
+            );
+            return None;
+        }
+    };
     if entry["version"] != 1 || entry["instance_id"] != instance_id {
         return None;
     }
