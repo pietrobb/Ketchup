@@ -923,46 +923,69 @@ fn answer_every_request(bridge: TcpListener) {
     });
 }
 
-/// #2687 point 16: with several windows open, `connect` without an id goes to
-/// the window whose AI tab Connect was clicked in. Without that click, or once
-/// that window closed, it asks for a choice and names every window by the short
-/// name the window's AI tab shows.
-#[test]
-fn connect_without_an_id_goes_to_the_window_connect_was_clicked_in() {
-    const OTHER: &str = "fedcba9876543210fedcba9876543210";
-    let root = tempfile::tempdir().unwrap();
-    let window = |instance| {
+const OTHER_WINDOW: &str = "fedcba9876543210fedcba9876543210";
+
+/// Two open windows that grant attaches under `root`; each receiver reports
+/// what reached that window.
+fn two_windows(root: &Path) -> (mpsc::Receiver<&'static str>, mpsc::Receiver<&'static str>) {
+    let window = |instance: &'static str| {
         let bridge = TcpListener::bind("127.0.0.1:0").unwrap();
         let (events, received) = mpsc::channel();
-        grant_attaches(root.path(), instance, &bridge, events);
+        grant_attaches(root, instance, &bridge, events);
         answer_every_request(bridge);
         received
     };
-    let first = window(INSTANCE);
-    let second = window(OTHER);
+    (window(INSTANCE), window(OTHER_WINDOW))
+}
+
+/// #2687 point 16: when the AI has to ask which window, every window is named
+/// by the short name its AI tab shows, both in the question and in `windows`.
+#[test]
+fn several_windows_are_named_by_the_short_name_their_ai_tab_shows() {
+    let root = tempfile::tempdir().unwrap();
+    let _windows = two_windows(root.path());
     let mut tools = Tools::new(None, Some(root.path().to_owned()));
     let short = crate::discovery::short_name;
+    let expected = [json!(short(INSTANCE)), json!(short(OTHER_WINDOW))];
+    let names = |listed: &Value| -> Vec<Value> {
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|window| window["short_name"].clone())
+            .collect()
+    };
 
     let choose = text(&call(&mut tools, "connect", json!({})));
     assert_eq!(choose["error"], "choose_window", "{choose}");
-    let names: Vec<Value> = choose["details"]["windows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|window| window["short_name"].clone())
-        .collect();
-    assert_eq!(names, [json!(short(INSTANCE)), json!(short(OTHER))]);
+    assert_eq!(names(&choose["details"]["windows"]), expected, "{choose}");
+    let listed = text(&call(&mut tools, "windows", json!({})));
+    assert_eq!(names(&listed["windows"]), expected, "{listed}");
+}
+
+/// #2687 point 16: with several windows open, `connect` without an id goes to
+/// the window whose AI tab Connect was clicked in. Without that click, or once
+/// that window closed, it asks for a choice.
+#[test]
+fn connect_without_an_id_goes_to_the_window_connect_was_clicked_in() {
+    const OTHER: &str = OTHER_WINDOW;
+    let root = tempfile::tempdir().unwrap();
+    let (first, second) = two_windows(root.path());
+    let mut tools = Tools::new(None, Some(root.path().to_owned()));
+
+    let choose = text(&call(&mut tools, "connect", json!({})));
+    assert_eq!(choose["error"], "choose_window", "{choose}");
 
     crate::discovery::mark_chosen(root.path(), OTHER).unwrap();
     let connected = call(&mut tools, "connect", json!({}));
-    assert_eq!(connected["isError"], false, "{connected}");
+    let reached = second.recv_timeout(std::time::Duration::from_secs(5)).ok();
     assert_eq!(
-        second
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap(),
-        "attach"
+        reached,
+        Some("attach"),
+        "connect without an id must attach to the clicked window {OTHER}: {connected}"
     );
     assert!(first.try_recv().is_err(), "the other window is left alone");
+    assert_eq!(connected["isError"], false, "{connected}");
     let listed = text(&call(&mut tools, "windows", json!({})));
     let chosen: Vec<Value> = listed["windows"]
         .as_array()
