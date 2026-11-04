@@ -19,6 +19,7 @@ pub mod line_edit;
 pub mod object_query;
 pub mod objects;
 pub mod placement;
+pub mod raster;
 pub mod regions;
 pub mod snap;
 pub mod style;
@@ -69,6 +70,10 @@ pub struct Underlay {
     /// The plane it stands on in space; a plan in the ground plane until it is set up.
     #[serde(default, skip_serializing_if = "view::UnderlayView::is_ground")]
     pub view: view::UnderlayView,
+    /// The image it shows under its lines, an orthophoto or a scanned map; none for a
+    /// drawing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raster: Option<raster::UnderlayRaster>,
 }
 
 impl Underlay {
@@ -1415,6 +1420,43 @@ pub fn plan_underlay(
     lines_sha256: [u8; 32],
     offset_mm: [f64; 2],
 ) -> Result<(CommandBatch, UnderlayId), UnderlayPlanError> {
+    plan_underlay_showing(
+        snapshot,
+        name,
+        (layer_names, hidden_layers),
+        (lines_sha256, None),
+        offset_mm,
+    )
+}
+
+/// One batch, so one Undo step, that adds the image `raster` as an underlay named `name`
+/// with a tag of its own and no layers, its lines the empty container blob
+/// `lines_sha256` ([`UnderlayLines::encode`] of none), moved by `offset_mm` from its own
+/// coordinates and placed beside the first underlay that was moved too, as
+/// [`plan_underlay`] places a drawing.
+pub fn plan_raster_underlay(
+    snapshot: &Snapshot,
+    name: &str,
+    raster: raster::UnderlayRaster,
+    lines_sha256: [u8; 32],
+    offset_mm: [f64; 2],
+) -> Result<(CommandBatch, UnderlayId), UnderlayPlanError> {
+    plan_underlay_showing(
+        snapshot,
+        name,
+        (&[], &[]),
+        (lines_sha256, Some(raster)),
+        offset_mm,
+    )
+}
+
+fn plan_underlay_showing(
+    snapshot: &Snapshot,
+    name: &str,
+    (layer_names, hidden_layers): (&[String], &[String]),
+    (lines_sha256, raster): ([u8; 32], Option<raster::UnderlayRaster>),
+    offset_mm: [f64; 2],
+) -> Result<(CommandBatch, UnderlayId), UnderlayPlanError> {
     let next = |ids: &mut dyn Iterator<Item = u64>| {
         ids.max()
             .unwrap_or(0)
@@ -1455,6 +1497,7 @@ pub fn plan_underlay(
         placement: placement::geo_placement(snapshot, offset_mm),
         edits: edits::UnderlayEdits::default(),
         view: view::UnderlayView::default(),
+        raster,
     }));
     Ok((CommandBatch::new(commands), id))
 }

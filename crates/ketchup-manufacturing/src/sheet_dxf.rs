@@ -127,6 +127,8 @@ fn layers(page: &Page) -> BTreeSet<(String, bool)> {
             Mark::Text { .. } => {
                 layers.insert((TEXT_LAYER.to_owned(), false));
             }
+            // An R12 DXF holds no pixels: the image stays in the PDF.
+            Mark::Image { .. } => {}
         }
     }
     layers
@@ -174,6 +176,7 @@ pub fn page_dxf(page: &Page) -> Vec<u8> {
                 angle_deg,
                 ..
             } => writer.text(*at, text, *height_mm, *anchor, *angle_deg),
+            Mark::Image { .. } => {}
         }
     }
     let mut out = writer.out;

@@ -10,6 +10,7 @@
 
 use crate::app::drawing_export_activity::DrawingExport;
 use crate::app::drawing_sheet_export::SheetFileFormat;
+use crate::renderer::underlay::raster::RasterImage;
 use crate::*;
 use ketchup_application::threads::{
     CosmeticThreadBodyError, CosmeticThreadGraph, ThreadCylinder, cosmetic_thread_graph,
@@ -17,12 +18,14 @@ use ketchup_application::threads::{
 use ketchup_manufacturing::project_drawings::{
     CuttingPiece, CuttingSheet, CuttingStock, DrawingOpening, DrawingSet, DrawingSetOptions,
     DrawingSolid, DrawingThread, OpeningSchedule, PlanSheet, ProjectDrawingError, ProjectView,
-    SCALES, SheetTitles, ShopDrawings, ShopPosition, ShopSheet, Storey, drawing_set_until, storeys,
+    SCALES, SITUATION_SCALES, SheetTitles, ShopDrawings, ShopPosition, ShopSheet, SituationSheet,
+    Storey, UnderlayImage, drawing_set_until, storeys,
 };
 use ketchup_manufacturing::title_block::{
     DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM, SheetFormat, SheetLanguage, SheetSettings, TitleField,
 };
 use ketchup_model::sheet_pdf::PdfInfo;
+use ketchup_model::underlay::raster::UnderlayRaster;
 use ketchup_program::Evaluated;
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -62,6 +65,9 @@ pub(crate) enum ProjectDrawingsError {
     /// The named part's modelled threads could not be made cosmetic for the
     /// sheet, which would otherwise draw every edge of their helices.
     CosmeticThreads(String, CosmeticThreadBodyError),
+    /// The image of the named shown underlay does not decode: the site plan
+    /// would leave the orthophoto out.
+    UnderlayImage(String, image::ImageError),
     /// A sheet's DXF did not convert to DWG.
     Dwg(ketchup_dwg::DwgError),
     Write(std::io::Error),
@@ -179,19 +185,81 @@ pub(crate) struct ProjectDrawingsJob {
     /// The exact worker that makes the cosmetic bodies of modelled threads.
     executable: Option<PathBuf>,
     options: DrawingSetOptions,
+    /// The orthophotos of the site plan and the plans, still encoded.
+    images: Vec<JobImage>,
     info: PdfInfo,
 }
 
+/// A shown flat image underlay the site plan and the plans print, still encoded: the
+/// export's thread decodes and shrinks it, so a large orthophoto never stalls the window.
+struct JobImage {
+    name: String,
+    bytes: Arc<Vec<u8>>,
+    raster: UnderlayRaster,
+    /// Upper-left, upper-right and lower-left corner in the world.
+    corners: [[f64; 3]; 3],
+    shrink: u32,
+}
+
+impl JobImage {
+    /// # Errors
+    /// [`ProjectDrawingsError::UnderlayImage`] when the image does not decode.
+    fn decoded(self) -> Result<UnderlayImage, ProjectDrawingsError> {
+        let image = match RasterImage::decode(&self.bytes, &self.raster) {
+            Ok(image) => image,
+            Err(error) => return Err(ProjectDrawingsError::UnderlayImage(self.name, error)),
+        };
+        Ok(UnderlayImage {
+            name: self.name,
+            image: Some(Arc::new(image.sheet_image(self.shrink))),
+            corners: self.corners,
+        })
+    }
+
+    /// Where it lies, without its pixels: what a DXF or DWG sheet leaves out.
+    fn undecoded(self) -> UnderlayImage {
+        UnderlayImage {
+            name: self.name,
+            image: None,
+            corners: self.corners,
+        }
+    }
+}
+
 impl ProjectDrawingsJob {
+    /// Replaces the bytes of every orthophoto with some that do not decode, as a
+    /// damaged document would hold.
+    #[cfg(test)]
+    pub(crate) fn spoil_images(&mut self) {
+        for image in &mut self.images {
+            image.bytes = Arc::new(b"not an image".to_vec());
+        }
+    }
+
     /// Projects the solids and removes the hidden lines; `cancelled` stops
     /// the worker making cosmetic thread bodies and the hidden-line removal.
-    fn set(self, cancelled: &AtomicBool) -> Result<(DrawingSet, PdfInfo), ProjectDrawingsError> {
+    /// Without `printed_images`, as for DXF and DWG, the orthophotos stay undecoded
+    /// and the sheets name them left out.
+    fn set(
+        self,
+        printed_images: bool,
+        cancelled: &AtomicBool,
+    ) -> Result<(DrawingSet, PdfInfo), ProjectDrawingsError> {
         let Self {
             solids,
             executable,
-            options,
+            mut options,
+            images,
             info,
         } = self;
+        options.images = if printed_images {
+            images
+                .into_iter()
+                .map(JobImage::decoded)
+                .collect::<Result<_, _>>()?
+        } else {
+            images.into_iter().map(JobImage::undecoded).collect()
+        };
         let solids = solids.drawn(executable.as_deref(), cancelled)?;
         let set = drawing_set_until(&solids, &options, cancelled)
             .map_err(ProjectDrawingsError::Drawing)?;
@@ -205,7 +273,7 @@ impl ProjectDrawingsJob {
         format: SetFileFormat,
         cancelled: &AtomicBool,
     ) -> Result<(DrawingSet, Vec<Vec<u8>>), ProjectDrawingsError> {
-        let (set, info) = self.set(cancelled)?;
+        let (set, info) = self.set(format == SetFileFormat::Pdf, cancelled)?;
         let files = match format {
             SetFileFormat::Pdf => vec![set.pdf(&info)],
             SetFileFormat::Dxf => set.dxf(),
@@ -752,7 +820,9 @@ impl KetchupApp {
     /// The set of the visible exact solids with the document's title block.
     #[cfg(test)]
     pub(crate) fn project_drawings(&self) -> Result<DrawingSet, ProjectDrawingsError> {
-        let (set, _) = self.project_drawings_job()?.set(&AtomicBool::new(false))?;
+        let (set, _) = self
+            .project_drawings_job()?
+            .set(true, &AtomicBool::new(false))?;
         Ok(set)
     }
 
@@ -1004,6 +1074,79 @@ impl KetchupApp {
         lines
     }
 
+    /// Every shown image underlay lying flat, an orthophoto the site plan and the
+    /// plans print beneath the model (Měchenice MECH-10), with its world corners and
+    /// how much to shrink it: no finer than 300 dpi at the finest scale 1:`finest` a
+    /// sheet may print it at. The export's thread decodes it; one that does not
+    /// decode stops the PDF there.
+    fn drawing_images(&self, snapshot: &Snapshot, finest: u32) -> Vec<JobImage> {
+        // 300 dots per inch of paper.
+        const PRINTED_PIXEL_MM: f64 = 25.4 / 300.0;
+        let shown = |tag| snapshot.tag(tag).is_some_and(|tag| tag.visible());
+        let finest = f64::from(finest);
+        snapshot
+            .underlays()
+            .filter(|underlay| underlay.lies_flat() && shown(underlay.tag))
+            .filter_map(|underlay| {
+                let raster = underlay.raster.as_ref()?;
+                // Opening the document checked that it holds the blob of every image.
+                let bytes = self.file.container_data.blobs().get(&raster.image_blob())?;
+                Some((underlay, raster, Arc::clone(bytes)))
+            })
+            .map(|(underlay, raster, bytes)| {
+                let placement = underlay.world_transform();
+                let [upper_left, upper_right, _, lower_left] = raster
+                    .corners_mm()
+                    .map(|[x, y]| placement.transform_point([x, y, 0.0]));
+                let across = (0..3)
+                    .map(|axis| upper_right[axis] - upper_left[axis])
+                    .fold(0.0, |sum: f64, step| step.mul_add(step, sum))
+                    .sqrt();
+                let pixel_on_paper = across / f64::from(raster.width_px) / finest;
+                let mut shrink = 1_u32;
+                while pixel_on_paper * f64::from(shrink * 2) <= PRINTED_PIXEL_MM
+                    && raster.width_px.min(raster.height_px) >= shrink * 4
+                {
+                    shrink *= 2;
+                }
+                JobImage {
+                    name: underlay.name.clone(),
+                    bytes,
+                    raster: raster.clone(),
+                    corners: [upper_left, upper_right, lower_left],
+                    shrink,
+                }
+            })
+            .collect()
+    }
+
+    /// How a point of the ground plane maps to the national grid (S-JTSK) of the
+    /// first shown flat underlay that was moved near the origin from it, as the
+    /// site plan's crosses need it (Měchenice MECH-10 (c)); `None` without one.
+    fn drawing_situation(snapshot: &Snapshot) -> Option<[[f64; 3]; 2]> {
+        let shown = |tag| snapshot.tag(tag).is_some_and(|tag| tag.visible());
+        let underlay = snapshot.underlays().find(|underlay| {
+            underlay.lies_flat() && shown(underlay.tag) && underlay.offset_mm() != [0.0, 0.0]
+        })?;
+        // The underlay's own millimetres to the world, an affine map of the plane.
+        let placement = underlay.world_transform();
+        let world = |x: f64, y: f64| placement.transform_point([x, y, 0.0]);
+        let origin = world(0.0, 0.0);
+        let [ux, vx] = [world(1.0, 0.0), world(0.0, 1.0)]
+            .map(|point| [point[0] - origin[0], point[1] - origin[1]]);
+        let det = ux[0] * vx[1] - vx[0] * ux[1];
+        if det.abs() < f64::EPSILON {
+            return None;
+        }
+        // Its inverse, then the offset added back.
+        let rows = [[vx[1] / det, -vx[0] / det], [-ux[1] / det, ux[0] / det]];
+        let offset = underlay.offset_mm();
+        Some([0, 1].map(|row| {
+            let [a, b] = rows[row];
+            [a, b, offset[row] - a * origin[0] - b * origin[1]]
+        }))
+    }
+
     /// The job of the set `request` asks for: all sheets or the plans alone,
     /// at the scale it fixes or the one the set picks.
     pub(crate) fn project_drawings_job_for(
@@ -1045,7 +1188,7 @@ impl KetchupApp {
             .filter(|view| *view != ProjectView::Plan)
             .map(|view| {
                 let title = match view {
-                    ProjectView::Plan | ProjectView::Shop => String::new(),
+                    ProjectView::Plan | ProjectView::Shop | ProjectView::Situation => String::new(),
                     ProjectView::LongitudinalSection => catalog.text("drawings-view-longitudinal"),
                     ProjectView::CrossSection => catalog.text("drawings-view-cross"),
                     ProjectView::Front => catalog.text("drawings-view-front"),
@@ -1072,6 +1215,16 @@ impl KetchupApp {
             author: field(TitleField::Author),
             subject: field(TitleField::Stage),
         };
+        let situation = Self::drawing_situation(&snapshot)
+            .filter(|_| !request.plan_only)
+            .map(|to_grid_mm| SituationSheet {
+                title: catalog.text("drawings-sheet-situation"),
+                view_title: catalog.text("drawings-view-situation"),
+                to_grid_mm,
+            });
+        // The plans at the scale asked for, else at any the set may pick.
+        let finest = request.scale.unwrap_or(SCALES[0]).min(SITUATION_SCALES[0]);
+        let images = self.drawing_images(&snapshot, finest);
         Ok(ProjectDrawingsJob {
             solids,
             executable: self.drawing_worker(),
@@ -1090,11 +1243,15 @@ impl KetchupApp {
                 scale: request.scale,
                 annotations,
                 underlay: self.drawing_underlay(&snapshot),
+                // Filled where the set is drawn, decoded for a PDF.
+                images: Vec::new(),
                 openings,
                 shop,
                 cutting,
                 decimal_comma: catalog.text("drawings-sheet-decimal-separator") == ",",
+                situation,
             },
+            images,
             info,
         })
     }
@@ -1147,6 +1304,10 @@ impl KetchupApp {
             ProjectDrawingsError::CosmeticThreads(part, cause) => self.catalog.format(
                 "drawings-cosmetic-threads-failed",
                 &BTreeMap::from([("part", part.clone()), ("reason", cause.to_string())]),
+            ),
+            ProjectDrawingsError::UnderlayImage(name, cause) => self.catalog.format(
+                "drawings-underlay-image-unreadable",
+                &BTreeMap::from([("name", name.clone()), ("reason", cause.to_string())]),
             ),
             ProjectDrawingsError::Drawing(error @ ProjectDrawingError::Cancelled) => {
                 error.to_string()
@@ -1216,7 +1377,19 @@ impl KetchupApp {
                     arguments.insert("characters", missing.iter().collect());
                     "digest-exported-project-drawings-question-marks"
                 };
-                self.catalog.format(key, &arguments)
+                let digest = self.catalog.format(key, &arguments);
+                let left_out = set.underlay_images_left_out();
+                if left_out.is_empty() {
+                    digest
+                } else {
+                    self.catalog.format(
+                        "digest-exported-project-drawings-images-left-out",
+                        &BTreeMap::from([
+                            ("digest", digest.trim_end_matches('.').to_owned()),
+                            ("names", left_out.join(", ")),
+                        ]),
+                    )
+                }
             }
             Err(error) => self.catalog.format(
                 "error-export-project-drawings",

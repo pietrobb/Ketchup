@@ -15,10 +15,11 @@
 
 use crate::title_block::{SheetFormat, TITLE_BLOCK_MM, TitleValueDoesNotFit, drawing_area};
 use ketchup_geometry::linalg::{Vec3, cross, cross2, dot, dot2, normalize_within, sub};
-use ketchup_model::sheet_pdf::{Anchor, Mark, Page, Stroke};
+use ketchup_model::sheet_pdf::{Anchor, Mark, Page, SheetImage, Stroke};
 use ketchup_model::tolerance::{HIDDEN_LINE_TOUCH_MM, NEGLIGIBLE, ROUNDING};
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 mod annotations;
 mod cutting;
@@ -26,6 +27,7 @@ mod levels;
 mod openings;
 mod set;
 mod shop;
+mod situation;
 mod table;
 mod threads;
 mod visible;
@@ -40,6 +42,9 @@ pub use set::{
     drawing_set_until,
 };
 pub use shop::{ShopDrawings, ShopPosition, ShopSheet, ShopSummary};
+pub use situation::{
+    SITUATION_SCALES, SituationCross, SituationSheet, SituationSummary, UnderlayImage,
+};
 pub use threads::DrawingThread;
 use threads::ThreadMarks;
 
@@ -72,6 +77,8 @@ pub enum ProjectView {
     Right,
     /// A shop drawing: its parts seen square on, along their own z.
     Shop,
+    /// The site plan: the model from above on its underlay, with grid crosses.
+    Situation,
 }
 
 impl ProjectView {
@@ -457,6 +464,15 @@ enum Item {
     },
 }
 
+/// An image underlay as a view lays it: its name, its pixels (none in a DXF or
+/// DWG set, which leaves it out) and its upper-left, upper-right and lower-left
+/// corners in view millimetres.
+struct LaidImage {
+    name: String,
+    image: Option<Arc<SheetImage>>,
+    corners: [[f64; 2]; 3],
+}
+
 struct DrawnView {
     view: ProjectView,
     /// Far-to-near faces and edges.
@@ -473,11 +489,15 @@ struct DrawnView {
     annotations: Option<PlanAnnotations>,
     /// The underlay lines a plan draws beneath the model, cut at its extent.
     underlay: Vec<[[f64; 2]; 2]>,
+    /// The image underlays a site plan or a plan lays beneath everything.
+    images: Vec<LaidImage>,
     /// Boxed marks where they stand: the windows and doors a plan shows, the
     /// position numbers of a shop drawing.
     marks: Vec<([f64; 2], String)>,
     /// The level marks right of a section or an elevation: view height and text.
     levels: Vec<(f64, String)>,
+    /// The grid crosses of a site plan.
+    grid: Vec<situation::GridCross>,
     cut_at_mm: Option<f64>,
 }
 
@@ -505,6 +525,39 @@ impl DrawnView {
                 clip_to_box(frame.project(*a), frame.project(*b), self.min, self.max)
             })
             .collect();
+    }
+
+    /// Lays the `images` beneath this view, those that reach into what it draws.
+    fn lay_images(&mut self, frame: &ViewFrame, images: &[situation::UnderlayImage]) {
+        if !self.min[0].is_finite() {
+            return;
+        }
+        self.images = images
+            .iter()
+            .map(|image| (image, image.corners.map(|corner| frame.project(corner))))
+            .filter(|(_, [upper_left, upper_right, lower_left])| {
+                let lower_right =
+                    [0, 1].map(|axis| upper_right[axis] + lower_left[axis] - upper_left[axis]);
+                let corners = [*upper_left, *upper_right, *lower_left, lower_right];
+                (0..2).all(|axis| {
+                    corners.iter().any(|corner| corner[axis] >= self.min[axis])
+                        && corners.iter().any(|corner| corner[axis] <= self.max[axis])
+                })
+            })
+            .map(|(image, corners)| LaidImage {
+                name: image.name.clone(),
+                image: image.image.clone(),
+                corners,
+            })
+            .collect();
+    }
+
+    /// The names of the image underlays this view lays, with whether it prints
+    /// their pixels.
+    fn laid_images(&self) -> impl Iterator<Item = (&str, bool)> {
+        self.images
+            .iter()
+            .map(|laid| (laid.name.as_str(), laid.image.is_some()))
     }
 
     /// Marks the windows and doors standing at `points` in this view.
@@ -634,8 +687,10 @@ fn draw_view(
         solids: min[0].is_finite().then_some((min, max)),
         annotations: None,
         underlay: Vec::new(),
+        images: Vec::new(),
         marks: Vec::new(),
         levels: Vec::new(),
+        grid: Vec::new(),
         // `cut` is measured along the depth direction, which is ±1 on the
         // world axis the plane is normal to: divide to get that coordinate.
         cut_at_mm: frame.cut.map(|cut| {
@@ -824,6 +879,15 @@ fn tick(page: &mut Page, [x, y]: [f64; 2]) {
     );
 }
 
+/// Where `point` of `view`, drawn at 1:`scale` with its lower-left corner at
+/// `origin`, lies on the page (y down).
+fn page_point(view: &DrawnView, origin: [f64; 2], scale: f64, point: [f64; 2]) -> [f64; 2] {
+    [
+        origin[0] + (point[0] - view.min[0]) / scale,
+        origin[1] - (point[1] - view.min[1]) / scale,
+    ]
+}
+
 /// Draws one view with its lower-left model corner at `origin` (page mm):
 /// painted far to near, or with `visible` its visible lines alone (no face
 /// fill), as a DXF carries it.
@@ -835,18 +899,29 @@ fn draw_view_on_page(
     scale: f64,
     visible: Option<&[visible::VisibleLine]>,
 ) {
-    let at = |point: [f64; 2]| {
-        [
-            origin[0] + (point[0] - view.min[0]) / scale,
-            origin[1] - (point[1] - view.min[1]) / scale,
-        ]
-    };
+    let at = |point: [f64; 2]| page_point(view, origin, scale, point);
     let edge = Stroke {
         width_mm: EDGE_STROKE_MM,
         color: EDGE_COLOR,
         dash_mm: Vec::new(),
     };
-    // First, so the model is drawn over it.
+    // First, so the model is drawn over it; a DXF holds no pixels.
+    let [corner, opposite] = [view.min, view.max].map(at);
+    for (image, corners) in view
+        .images
+        .iter()
+        .filter(|_| visible.is_none())
+        .filter_map(|laid| Some((laid.image.as_ref()?, &laid.corners)))
+    {
+        page.marks.push(Mark::Image {
+            image: Arc::clone(image),
+            corners: corners.map(at),
+            clip: Some([
+                [corner[0].min(opposite[0]), corner[1].min(opposite[1])],
+                [corner[0].max(opposite[0]), corner[1].max(opposite[1])],
+            ]),
+        });
+    }
     for [a, b] in &view.underlay {
         page.line(
             vec![at(*a), at(*b)],
@@ -908,6 +983,9 @@ fn draw_view_on_page(
     }
     for (point, mark) in &view.marks {
         openings::draw_mark(page, at(*point), mark, visible.is_none());
+    }
+    for cross in &view.grid {
+        situation::draw_cross(page, cross, at(cross.at));
     }
     let levels = view
         .levels

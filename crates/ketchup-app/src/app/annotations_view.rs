@@ -234,6 +234,8 @@ impl KetchupApp {
                             anchor,
                             angle_deg,
                         )),
+                        // An annotation draws no image.
+                        Mark::Image { .. } => {}
                     }
                 }
                 Some(drawn)

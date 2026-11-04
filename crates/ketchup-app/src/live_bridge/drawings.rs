@@ -3,7 +3,7 @@
 //! or a DXF or DWG per sheet, with the title block and format kept in the
 //! document; with `sheet_id`, a drawing sheet of the document as DXF or DWG.
 
-use super::{LiveBridge, Request, failed_because, failure};
+use super::{LiveBridge, Request, failed_because, failure, record_rejection, rejected};
 use crate::KetchupApp;
 use crate::app::drawing_sheet_export::{DrawingSheetExportError, SheetFileFormat};
 use crate::app::project_drawings::{
@@ -444,6 +444,9 @@ pub(super) fn finish_export(
                 "views": sheet.views,
                 "annotations": sheet.annotations,
                 "underlay_lines": sheet.underlay_lines,
+                "underlay_images": sheet.underlay_images,
+                "underlay_images_left_out": sheet.underlay_images_left_out,
+                "situation": sheet.situation,
                 "path": file.map(|file| file.display().to_string()),
             })
         })
@@ -458,6 +461,7 @@ pub(super) fn finish_export(
         "sheets": sheets,
         "annotations": set.annotations(),
         "printed_as_question_mark": set.printed_as_question_mark(),
+        "underlay_images_left_out": set.underlay_images_left_out(),
         "format_setting": settings.format.map_or("auto", SheetFormat::name),
         "sheet_language": settings.language.map_or("auto", SheetLanguage::code),
         "title_block": settings.title_block,
@@ -525,6 +529,21 @@ pub(super) fn export_failed(error: ProjectDrawingsError) -> &'static str {
             ),
             json!({"part": part}),
         ),
+        ProjectDrawingsError::UnderlayImage(name, cause) => {
+            record_rejection(
+                &rejected("drawings_unavailable")
+                    .reason(format!(
+                        "The image of underlay {name} cannot be read, so the site plan would leave the orthophoto out."
+                    ))
+                    .fix_hint(
+                        "Hide that underlay or import its image again, then export again."
+                            .to_owned(),
+                    )
+                    .caused_by(cause),
+                json!({"underlay": name}),
+            );
+            "drawings_unavailable"
+        }
         ProjectDrawingsError::Dwg(error) => failed_because("dwg_conversion_failed", error),
         ProjectDrawingsError::Write(error) => write_failed(error),
     }

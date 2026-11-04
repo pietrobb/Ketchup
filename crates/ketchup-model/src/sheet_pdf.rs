@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 const POINTS_PER_MM: f64 = 72.0 / 25.4;
 
@@ -57,6 +57,32 @@ pub enum Mark {
         angle_deg: f64,
         bold: bool,
     },
+    /// A raster image, an orthophoto beneath a site plan: its upper-left, upper-right
+    /// and lower-left corners at `corners`, painted only inside the rectangle `clip`
+    /// (least and greatest corner) when there is one.
+    Image {
+        image: Arc<SheetImage>,
+        corners: [[f64; 2]; 3],
+        clip: Option<[[f64; 2]; 2]>,
+    },
+}
+
+/// The pixels of an image on a sheet: 8-bit RGB, rows from the top.
+#[derive(Clone, PartialEq)]
+pub struct SheetImage {
+    pub width_px: u32,
+    pub height_px: u32,
+    pub rgb: Vec<u8>,
+}
+
+impl std::fmt::Debug for SheetImage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "SheetImage({} × {} px)",
+            self.width_px, self.height_px
+        )
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -290,9 +316,53 @@ struct ContentWriter<'a> {
     state: State,
     /// Glyphs used, with the character each stands for.
     glyphs: BTreeMap<u16, char>,
+    /// The images the page paints, `/Im0` first.
+    images: Vec<Arc<SheetImage>>,
 }
 
 impl ContentWriter<'_> {
+    /// Paints `image` with its upper-left, upper-right and lower-left corners at
+    /// `corners`, inside `clip`: the unit square of a PDF image maps to that
+    /// parallelogram, its (0, 0) the lower-left corner.
+    fn image(
+        &mut self,
+        image: &Arc<SheetImage>,
+        corners: &[[f64; 2]; 3],
+        clip: Option<&[[f64; 2]; 2]>,
+    ) {
+        let index = match self
+            .images
+            .iter()
+            .position(|known| Arc::ptr_eq(known, image))
+        {
+            Some(index) => index,
+            None => {
+                self.images.push(Arc::clone(image));
+                self.images.len() - 1
+            }
+        };
+        let [upper_left, upper_right, lower_left] = corners.map(|[x, y]| [x, self.height - y]);
+        self.out.push_str("q\n");
+        if let Some([least, greatest]) = clip {
+            self.out.push_str(&format!(
+                "{} {} {} {} re W n\n",
+                number(least[0]),
+                number(self.height - greatest[1]),
+                number(greatest[0] - least[0]),
+                number(greatest[1] - least[1]),
+            ));
+        }
+        self.out.push_str(&format!(
+            "{} {} {} {} {} {} cm /Im{index} Do\nQ\n",
+            number(upper_right[0] - upper_left[0]),
+            number(upper_right[1] - upper_left[1]),
+            number(upper_left[0] - lower_left[0]),
+            number(upper_left[1] - lower_left[1]),
+            number(lower_left[0]),
+            number(lower_left[1]),
+        ));
+    }
+
     fn point(&self, [x, y]: [f64; 2]) -> String {
         format!("{} {}", number(x), number(self.height - y))
     }
@@ -344,6 +414,11 @@ impl ContentWriter<'_> {
                 angle_deg,
                 bold,
             } => self.text(*at, text, *height_mm, *anchor, *angle_deg, *bold),
+            Mark::Image {
+                image,
+                corners,
+                clip,
+            } => self.image(image, corners, clip.as_ref()),
         }
     }
 
@@ -518,6 +593,9 @@ pub fn pages_pdf(pages: &[&Page], info: &PdfInfo) -> Vec<u8> {
     let font = SheetFont::standard();
     let mut glyphs = BTreeMap::new();
     let mut streams = Vec::with_capacity(pages.len());
+    // Each image once, after the pages, though several pages paint it.
+    let mut images: Vec<Arc<SheetImage>> = Vec::new();
+    let mut page_images = Vec::with_capacity(pages.len());
     for page in pages {
         let mut content = ContentWriter {
             font,
@@ -525,16 +603,34 @@ pub fn pages_pdf(pages: &[&Page], info: &PdfInfo) -> Vec<u8> {
             out: format!("{0} 0 0 {0} 0 0 cm\n1 J 1 j\n", number(POINTS_PER_MM)),
             state: State::default(),
             glyphs: std::mem::take(&mut glyphs),
+            images: Vec::new(),
         };
         for mark in &page.marks {
             content.mark(mark);
         }
         glyphs = content.glyphs;
         streams.push(content.out);
+        page_images.push(
+            content
+                .images
+                .iter()
+                .map(|image| {
+                    images
+                        .iter()
+                        .position(|known| Arc::ptr_eq(known, image))
+                        .unwrap_or_else(|| {
+                            images.push(Arc::clone(image));
+                            images.len() - 1
+                        })
+                })
+                .collect::<Vec<_>>(),
+        );
     }
     // Objects 1–8 are the catalog, the page tree, the font, its information
-    // and the document information; then a page and its content per page.
+    // and the document information; then a page and its content per page,
+    // then the images.
     let first_page = 9;
+    let first_image = first_page + 2 * pages.len();
     let kids = (0..pages.len())
         .map(|index| format!("{} 0 R", first_page + 2 * index))
         .collect::<Vec<_>>()
@@ -553,11 +649,24 @@ pub fn pages_pdf(pages: &[&Page], info: &PdfInfo) -> Vec<u8> {
         )
         .into_bytes(),
     );
-    for (index, (page, content)) in pages.iter().zip(&streams).enumerate() {
+    for (index, ((page, content), painted)) in
+        pages.iter().zip(&streams).zip(&page_images).enumerate()
+    {
         let [width, height] = page.size_mm;
+        let x_objects = if painted.is_empty() {
+            String::new()
+        } else {
+            let names = painted
+                .iter()
+                .enumerate()
+                .map(|(name, image)| format!("/Im{name} {} 0 R", first_image + image))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!(" /XObject << {names} >>")
+        };
         objects.push(
             format!(
-                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources << /Font << /F1 3 0 R >> >> /Contents {} 0 R >>",
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources << /Font << /F1 3 0 R >>{x_objects} >> /Contents {} 0 R >>",
                 number(width * POINTS_PER_MM),
                 number(height * POINTS_PER_MM),
                 first_page + 2 * index + 1
@@ -565,6 +674,15 @@ pub fn pages_pdf(pages: &[&Page], info: &PdfInfo) -> Vec<u8> {
             .into_bytes(),
         );
         objects.push(stream("", content.as_bytes()));
+    }
+    for image in &images {
+        objects.push(stream(
+            &format!(
+                "/Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace /DeviceRGB /BitsPerComponent 8",
+                image.width_px, image.height_px
+            ),
+            &image.rgb,
+        ));
     }
     let mut pdf = b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n".to_vec();
     let mut offsets = Vec::with_capacity(objects.len());
@@ -607,6 +725,49 @@ mod tests {
         }
     }
 
+    /// An image maps the unit square of PDF to its parallelogram, the top row of its
+    /// pixels at its upper corners, clipped to its rectangle; two pages painting one
+    /// image embed it once.
+    #[test]
+    fn an_image_lies_on_its_corners_inside_its_clip_and_embeds_once() {
+        let image = Arc::new(SheetImage {
+            width_px: 2,
+            height_px: 1,
+            rgb: vec![255, 0, 0, 0, 0, 255],
+        });
+        let mut page = Page {
+            size_mm: [210.0, 100.0],
+            marks: Vec::new(),
+        };
+        page.marks.push(Mark::Image {
+            image: Arc::clone(&image),
+            corners: [[10.0, 20.0], [50.0, 20.0], [10.0, 40.0]],
+            clip: Some([[15.0, 25.0], [45.0, 35.0]]),
+        });
+        let mut content = ContentWriter {
+            font: SheetFont::standard(),
+            height: page.size_mm[1],
+            out: String::new(),
+            state: State::default(),
+            glyphs: BTreeMap::new(),
+            images: Vec::new(),
+        };
+        content.mark(&page.marks[0]);
+        // y up from the bottom: the upper left (10, 80), the lower left (10, 60).
+        assert_eq!(
+            content.out,
+            "q\n15 65 30 10 re W n\n40 0 0 20 10 60 cm /Im0 Do\nQ\n"
+        );
+        let pdf = pages_pdf(&[&page, &page], &PdfInfo::default());
+        let text = String::from_utf8_lossy(&pdf);
+        assert_eq!(text.matches("/Subtype /Image").count(), 1, "{text}");
+        assert_eq!(
+            text.matches("/XObject << /Im0 13 0 R >>").count(),
+            2,
+            "{text}"
+        );
+    }
+
     /// P3-V: a character the font lacks is drawn with its "?" glyph, and the
     /// copy map gave each glyph the first character that reached it, so after
     /// an emoji every real "?" of the sheet pasted as that emoji.
@@ -627,6 +788,7 @@ mod tests {
                 out: String::new(),
                 state: State::default(),
                 glyphs: BTreeMap::new(),
+                images: Vec::new(),
             };
             for mark in &page.marks {
                 content.mark(mark);

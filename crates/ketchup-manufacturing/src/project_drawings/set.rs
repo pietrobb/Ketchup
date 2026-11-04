@@ -17,12 +17,13 @@ use super::cutting::{CuttingSheet, CuttingSummary, plan_cutting};
 use super::levels::{level_heights, level_text};
 use super::openings::{OpeningSchedule, draw_schedule, opening_points, schedule_format};
 use super::shop::{PlannedShop, ShopDrawings, ShopSummary, plan_shop};
+use super::situation::{self, SituationCross, SituationSheet, SituationSummary, UnderlayImage};
 use super::visible::{VisibleLine, visible_lines};
 use super::{Annotation, AnnotationCounts, PlanAnnotations};
 use super::{
-    DrawingSolid, DrawnView, ProjectDrawingError, ProjectView, SheetViews, Storey, VIEW_PAD_MM,
-    ViewSummary, annotation_bounds, bounds, choose_layout_scale, draw_view, draw_view_on_page,
-    extent, format_at_scale, solid_edges, view_frames,
+    DrawingSolid, DrawnView, ProjectDrawingError, ProjectView, SheetViews, SolidEdges, Storey,
+    VIEW_PAD_MM, ViewSummary, annotation_bounds, bounds, choose_layout_scale, draw_view,
+    draw_view_on_page, extent, format_at_scale, page_point, solid_edges, view_frames,
 };
 use crate::sheet_dxf::page_dxf;
 use crate::title_block::{
@@ -84,6 +85,11 @@ pub struct DrawingSetOptions {
     /// their lower end) thin and grey beneath the model, cut at what the plan
     /// draws, which they never grow.
     pub underlay: Vec<[[f64; 3]; 2]>,
+    /// The shown image underlays lying flat, an orthophoto: the site plan lays
+    /// them all, each plan those of its storey (parted like the underlay lines,
+    /// by their lowest corner), beneath everything where they reach into it.
+    /// The PDF prints them; without pixels a sheet names them left out.
+    pub images: Vec<UnderlayImage>,
     /// The windows and doors: each plan marks those of its storey (parted
     /// like the annotations, by their lowest point), and their schedule is
     /// the last sheet.
@@ -96,12 +102,17 @@ pub struct DrawingSetOptions {
     /// The level marks write a decimal comma ("+2,850"), as Czech and Slovak
     /// drawings do, instead of a point.
     pub decimal_comma: bool,
+    /// The site plan, the first sheet, when the underlay lies in a national grid;
+    /// it draws every underlay line, of whatever storey.
+    pub situation: Option<SituationSheet>,
 }
 
 /// What a sheet of the set shows.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum SheetKind {
+    /// The site plan at its own scale, before the plans.
+    Situation,
     /// The plan of storey `storey` (0 the lowest).
     Plan {
         storey: usize,
@@ -140,12 +151,19 @@ pub struct SetSheet {
     pub annotations: AnnotationCounts,
     /// The underlay lines its plan draws (none on the other sheets).
     pub underlay_lines: usize,
+    /// The names of the image underlays it prints beneath the model.
+    pub underlay_images: Vec<String>,
+    /// The names of those it would print but has no pixels of, as a DXF or DWG
+    /// sheet, which keeps to lines.
+    pub underlay_images_left_out: Vec<String>,
     /// The marks of the windows and doors its plan draws, one per opening.
     pub openings: Vec<String>,
     /// What a shop drawing shows.
     pub shop: Option<ShopSummary>,
     /// What a sheet of a cutting plan shows.
     pub cutting: Option<CuttingSummary>,
+    /// The scale and grid crosses of the site plan.
+    pub situation: Option<SituationSummary>,
 }
 
 /// The sheets, numbered in order, and the scale 1:`scale` of every view.
@@ -200,6 +218,18 @@ impl DrawingSet {
             .into_iter()
             .collect()
     }
+
+    /// The image underlays some sheet would print but has no pixels of, each
+    /// once: what a DXF or DWG set leaves out.
+    #[must_use]
+    pub fn underlay_images_left_out(&self) -> Vec<String> {
+        self.sheets
+            .iter()
+            .flat_map(|sheet| sheet.underlay_images_left_out.iter().cloned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
 }
 
 /// A sheet before it is laid out: its views with their titles.
@@ -234,14 +264,16 @@ fn lowest(annotation: &Annotation) -> f64 {
 }
 
 /// Lays the views of `sheet` out on `page` at 1:`scale`, row under row, each
-/// left to right; with `visible`, as visible lines.
+/// left to right; with `visible`, as visible lines. Returns the page origin of
+/// each view ([`page_point`]).
 fn draw_views(
     page: &mut Page,
     sheet: &Planned,
     format: SheetFormat,
     scale: u32,
     visible: Option<&[Vec<VisibleLine>]>,
-) {
+) -> Vec<[f64; 2]> {
+    let mut origins = vec![[0.0; 2]; sheet.views.views.len()];
     let scale = f64::from(scale);
     let views = &sheet.views.views;
     let [[area_left, mut top], _] = drawing_area(format);
@@ -255,6 +287,7 @@ fn draw_views(
             let view = &views[index];
             let [width, height] = extent(view);
             let origin = [left + VIEW_PAD_MM, top + VIEW_PAD_MM / 2.0 + height / scale];
+            origins[index] = origin;
             draw_view_on_page(
                 page,
                 view,
@@ -267,6 +300,7 @@ fn draw_views(
         }
         top += row_height;
     }
+    origins
 }
 
 /// Draws the project drawings of `solids` as a set of sheets.
@@ -352,13 +386,9 @@ pub fn drawing_set_until(
         if !annotations.is_empty() {
             drawn.annotate(PlanAnnotations::project(&frame, &annotations));
         }
-        let underlay = options
-            .underlay
-            .iter()
-            .filter(|[a, b]| (below..above).contains(&a[2].min(b[2])))
-            .copied()
-            .collect::<Vec<_>>();
+        let (underlay, images) = storey_underlay(options, below..above);
         drawn.lay_underlay(&frame, &underlay);
+        drawn.lay_images(&frame, &images);
         let marks = opening_points
             .iter()
             .filter(|(_, point)| (below..above).contains(&point[2]))
@@ -445,10 +475,16 @@ pub fn drawing_set_until(
                 .unwrap_or(preferred)
         }
     };
-    let formats = planned
+    let mut formats = planned
         .iter()
         .map(|sheet| format_at_scale(&sheet.views, options.format, scale))
         .collect::<Result<Vec<_>, _>>()?;
+    let mut scales = vec![scale; planned.len()];
+    if let Some((site, format, site_scale)) = plan_situation(solids, &edges, options)? {
+        planned.insert(0, site);
+        formats.insert(0, format);
+        scales.insert(0, site_scale);
+    }
 
     // The schedule of windows and doors goes with the whole set, not the plans alone.
     let schedule = options.openings.rows();
@@ -518,7 +554,9 @@ pub fn drawing_set_until(
         values
     };
     let mut sheets = Vec::with_capacity(count);
-    for (index, (sheet, format)) in planned.into_iter().zip(formats).enumerate() {
+    for (index, ((sheet, format), scale)) in
+        planned.into_iter().zip(formats).zip(scales).enumerate()
+    {
         let number = index + 1;
         let values = title_values(&sheet.title, format!("1:{scale}"), format, number);
         let blank = || Page {
@@ -526,7 +564,8 @@ pub fn drawing_set_until(
             marks: Vec::new(),
         };
         let mut page = blank();
-        draw_views(&mut page, &sheet, format, scale, None);
+        let origins = draw_views(&mut page, &sheet, format, scale, None);
+        let situation = situation_summary(&sheet, &origins, scale);
         draw_frame_and_title_block(&mut page, format, &options.title_labels, &values)?;
         let visible = sheet
             .views
@@ -564,6 +603,7 @@ pub fn drawing_set_until(
             .iter()
             .flat_map(|view| view.marks.iter().map(|(_, mark)| mark.clone()))
             .collect();
+        let (underlay_images, underlay_images_left_out) = laid_images(&sheet.views);
         sheets.push(SetSheet {
             kind: sheet.kind,
             number,
@@ -579,9 +619,12 @@ pub fn drawing_set_until(
                 .iter()
                 .map(|view| view.underlay.len())
                 .sum(),
+            underlay_images,
+            underlay_images_left_out,
             openings,
             shop: None,
             cutting: None,
+            situation,
         });
     }
     for (drawing, shop) in shops {
@@ -634,9 +677,12 @@ pub fn drawing_set_until(
             views: Vec::new(),
             annotations: AnnotationCounts::default(),
             underlay_lines: 0,
+            underlay_images: Vec::new(),
+            underlay_images_left_out: Vec::new(),
             openings: Vec::new(),
             shop: None,
             cutting: Some(summary),
+            situation: None,
         });
         page_of_plan += 1;
     }
@@ -664,12 +710,104 @@ pub fn drawing_set_until(
             views: Vec::new(),
             annotations: AnnotationCounts::default(),
             underlay_lines: 0,
+            underlay_images: Vec::new(),
+            underlay_images_left_out: Vec::new(),
             openings: Vec::new(),
             shop: None,
             cutting: None,
+            situation: None,
         });
     }
     Ok(DrawingSet { sheets, scale })
+}
+
+/// The underlay lines and the image underlays of the storey whose plan draws
+/// what lies at `heights`: each by its lowest point, as the annotations.
+fn storey_underlay(
+    options: &DrawingSetOptions,
+    heights: std::ops::Range<f64>,
+) -> (Vec<[[f64; 3]; 2]>, Vec<UnderlayImage>) {
+    let lines = options
+        .underlay
+        .iter()
+        .filter(|[a, b]| heights.contains(&a[2].min(b[2])))
+        .copied()
+        .collect();
+    let images = options
+        .images
+        .iter()
+        .filter(|image| {
+            let lowest = image.corners.iter().map(|corner| corner[2]);
+            heights.contains(&lowest.fold(f64::INFINITY, f64::min))
+        })
+        .cloned()
+        .collect();
+    (lines, images)
+}
+
+/// The names of the image underlays the views lay: those they print, and those
+/// they have no pixels of and leave out.
+fn laid_images(views: &SheetViews) -> (Vec<String>, Vec<String>) {
+    let (printed, left_out): (Vec<_>, Vec<_>) = views
+        .views
+        .iter()
+        .flat_map(DrawnView::laid_images)
+        .partition(|(_, printed)| *printed);
+    let names =
+        |laid: Vec<(&str, bool)>| laid.into_iter().map(|(name, _)| name.to_owned()).collect();
+    (names(printed), names(left_out))
+}
+
+/// The site plan sheet the options ask for, its format and its scale; none with
+/// the plans alone or without a solid to draw.
+fn plan_situation(
+    solids: &[DrawingSolid],
+    edges: &[SolidEdges],
+    options: &DrawingSetOptions,
+) -> Result<Option<(Planned, SheetFormat, u32)>, ProjectDrawingError> {
+    let Some(site) = options.situation.as_ref().filter(|_| !options.plan_only) else {
+        return Ok(None);
+    };
+    Ok(situation::plan(
+        site,
+        solids,
+        edges,
+        (&options.underlay, &options.images),
+        options.format,
+    )?
+    .map(|(views, format, scale)| {
+        let planned = Planned {
+            kind: SheetKind::Situation,
+            title: site.title.clone(),
+            views,
+            titles: vec![site.view_title.clone()],
+        };
+        (planned, format, scale)
+    }))
+}
+
+/// The scale and the crosses of `sheet` when it is the site plan, its views
+/// drawn at `origins` at 1:`scale`.
+fn situation_summary(
+    sheet: &Planned,
+    origins: &[[f64; 2]],
+    scale: u32,
+) -> Option<SituationSummary> {
+    (sheet.kind == SheetKind::Situation).then(|| SituationSummary {
+        scale,
+        crosses: sheet
+            .views
+            .views
+            .iter()
+            .zip(origins)
+            .flat_map(|(view, origin)| {
+                view.grid.iter().map(|cross| SituationCross {
+                    coordinates_m: cross.coordinates_m,
+                    at_mm: page_point(view, *origin, f64::from(scale), cross.at),
+                })
+            })
+            .collect(),
+    })
 }
 
 /// The level marks of the sections and elevations: ±0,000 at the floor of the
@@ -738,8 +876,11 @@ fn shop_sheet(
         lines,
         annotations: AnnotationCounts::default(),
         underlay_lines: 0,
+        underlay_images: Vec::new(),
+        underlay_images_left_out: Vec::new(),
         openings: Vec::new(),
         shop: Some(shop.summary),
         cutting: None,
+        situation: None,
     })
 }

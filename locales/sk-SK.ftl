@@ -753,7 +753,8 @@ error-import-stl = Import STL z { $path } bol odmietnutý: { $reason }
 file-filter-dxf = Ohraničená 2D kresba DXF
 file-filter-dxf-dwg = 2D kresba DXF alebo DWG
 file-import-dxf = Importovať ohraničenú 2D podmnožinu DXF/DWG…
-file-import-underlay = Importovať DXF/DWG ako podklad…
+file-import-underlay = Importovať DXF/DWG alebo obrázok ako podklad
+file-filter-underlay = Kresba DXF alebo DWG, obrázok PNG alebo JPEG (ortofoto)…
 dialog-import-dxf-title = Skontrolovať ohraničený import DXF
 dialog-import-dxf-source = Zdroj: { $path }
 dialog-import-dxf-dwg = Načítané zo súboru DWG (verzia { $version }) cez jeho prevod do DXF.
@@ -776,6 +777,10 @@ dialog-import-dxf-cancel = Zrušiť
 digest-imported-dxf = Canonical 2D podmnožina DXF bola importovaná z { $path }
 error-import-dxf = Import DXF z { $path } bol odmietnutý: { $reason }
 digest-imported-underlay = { $path } bol importovaný ako podklad: vrstvy { $layers }, čiary { $lines }, texty { $texts }
+error-import-image = Import obrázkového podkladu z { $path } bol odmietnutý: { $reason }
+digest-imported-raster-underlay = { $path } bol importovaný ako obrázkový podklad: { $width } × { $height } pixelov po { $pixel } mm, { $placed }
+digest-raster-world-file = umiestnený podľa world file { $world }
+digest-raster-no-world-file = bez world file, preto je jeden pixel jedna jednotka od počiatku; umiestnite ho nástrojom Osadiť podklad na model
 digest-imported-underlay-not-beside = Leží { $km } km od podkladu { $first } v tých istých súradniciach, príliš ďaleko na to, aby model udržal oba tam, kde sú nakreslené, preto je umiestnený okolo vlastného stredu; v prípade potreby ho umiestnite nástrojom Osadiť podklad na model.
 error-underlay-lines = Čiary podkladu { $name } nemožno zobraziť: { $reason }
 dialog-underlay-unit-title = Jednotky podkladu
@@ -2053,6 +2058,7 @@ drawings-sheet-sections = Rezy
 # Desatinný oddeľovač výškových kót na rezoch a pohľadoch (+2,850).
 drawings-sheet-decimal-separator = ,
 drawings-sheet-elevations = Pohľady
+drawings-sheet-situation = Situácia
 drawings-sheet-openings = Okná a dvere
 drawings-openings-mark = Značka
 drawings-openings-designation = Označenie
@@ -2073,6 +2079,7 @@ drawings-view-front = Pohľad spredu
 drawings-view-back = Pohľad zozadu
 drawings-view-left = Pohľad zľava
 drawings-view-right = Pohľad sprava
+drawings-view-situation = Situácia stavby
 drawings-unavailable = Zatiaľ nie sú viditeľné žiadne presné telesá na kreslenie; počkaj, kým sa model vyhodnotí.
 drawings-do-not-fit = V mierke 1:{ $scale } sa pohľady nezmestia na hárok { $format }; zvoľ hrubšiu mierku alebo väčší formát.
 drawings-title-value-does-not-fit = Hodnota poľa „{ $field }“ sa do bunky pečiatky nezmestí ani písmom 1,6 mm: { $lines ->
@@ -2085,6 +2092,7 @@ drawings-title-value-does-not-fit = Hodnota poľa „{ $field }“ sa do bunky p
     } z { $length }. Skráť ju; hodnota sa nikdy neoreže.
 drawings-parts-not-evaluated = Viditeľné diely bez presného telesa ({ $count }) by vo výkrese chýbali: { $parts }. Oprav ich alebo skry, prípadne počkaj, kým sa model vyhodnotí.
 drawings-settings-unreadable = Rohová pečiatka a formát výkresu uložené v dokumente sa nedajú prečítať ({ $reason }); ostávajú, ako sú. Vyplň pečiatku znova v okne Projektové výkresy, tým ich nahradíš.
+drawings-underlay-image-unreadable = Obrázok podkladu { $name } sa nedá prečítať ({ $reason }), situácia by ho vynechala. Skry tento podklad alebo jeho obrázok importuj znova a potom exportuj znova.
 drawings-part-bodies-unresolved = Telesá dielu { $part } sa nedajú určiť každé ako jedno presné teleso ({ $reason }), takže by ho výkres vynechal. Daj každému vytiahnutiu vlastné teleso alebo jedno potlač a exportuj znova.
 drawings-cosmetic-threads-failed = Vymodelované závity dielu { $part } sa nedajú nakresliť podľa ISO 6410 ({ $reason }); výkres by ukázal všetky hrany ich skrutkovíc. Exportuj znova alebo prepni závity na kozmetické.
 drawings-settings-unreadable-edit = Rohová pečiatka uložená v dokumente sa nedá prečítať ({ $reason }). Každá zmena tu ju nahradí.
@@ -2098,6 +2106,7 @@ digest-exported-project-drawings-question-marks = Projektové výkresy ({ $sheet
         [few] { $sheets } listy
        *[other] { $sheets } listov
     } v mierke 1:{ $scale }) boli exportované do { $path }, ale písmo listov nemá znaky { $characters }: na listoch sú vytlačené ako „?“.
+digest-exported-project-drawings-images-left-out = { $digest }. Listy DXF a DWG obsahujú len čiary, preto vynechávajú obrázkové podklady { $names }; na ich vytlačenie exportuj PDF.
 error-export-project-drawings = Export projektových výkresov do { $path } zlyhal: { $reason }
 digest-exported-drawing-sheet-dxf = Výkresový list { $name } bol exportovaný do { $path } ako DXF
 digest-exported-drawing-sheet-dwg = Výkresový list { $name } bol exportovaný do { $path } ako DWG

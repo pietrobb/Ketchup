@@ -753,7 +753,8 @@ error-import-stl = STL import from { $path } was refused: { $reason }
 file-filter-dxf = DXF 2D drawing subset
 file-filter-dxf-dwg = DXF or DWG 2D drawing
 file-import-dxf = Import DXF/DWG 2D subset…
-file-import-underlay = Import DXF/DWG as underlay…
+file-import-underlay = Import DXF/DWG or image as underlay…
+file-filter-underlay = DXF or DWG drawing, PNG or JPEG image (orthophoto)
 dialog-import-dxf-title = Review bounded DXF import
 dialog-import-dxf-source = Source: { $path }
 dialog-import-dxf-dwg = Read from a DWG file (version { $version }) through its DXF conversion.
@@ -775,6 +776,10 @@ dialog-import-dxf-cancel = Cancel
 digest-imported-dxf = Imported canonical DXF 2D subset from { $path }
 error-import-dxf = DXF import from { $path } was refused: { $reason }
 digest-imported-underlay = Imported { $path } as an underlay: { $layers } layers, { $lines } lines, { $texts } texts
+error-import-image = Image underlay import from { $path } was refused: { $reason }
+digest-imported-raster-underlay = Imported { $path } as an image underlay: { $width } × { $height } pixels of { $pixel } mm, { $placed }
+digest-raster-world-file = laid out by its world file { $world }
+digest-raster-no-world-file = without a world file, so one pixel is one unit from the origin; place it with Fit underlay to model
 digest-imported-underlay-not-beside = It lies { $km } km from underlay { $first } in the same coordinates, too far for the model to hold both where they are drawn, so it is placed at its own middle; place it with Fit underlay to model if needed.
 error-underlay-lines = The lines of underlay { $name } cannot be shown: { $reason }
 dialog-underlay-unit-title = Underlay units
@@ -2136,6 +2141,7 @@ drawings-sheet-sections = Sections
 # The decimal separator of the level marks on the sections and elevations (+2.850).
 drawings-sheet-decimal-separator = .
 drawings-sheet-elevations = Elevations
+drawings-sheet-situation = Site plan
 drawings-sheet-openings = Windows and doors
 drawings-openings-mark = Mark
 drawings-openings-designation = Designation
@@ -2156,6 +2162,7 @@ drawings-view-front = Front elevation
 drawings-view-back = Rear elevation
 drawings-view-left = Left elevation
 drawings-view-right = Right elevation
+drawings-view-situation = Site plan
 drawings-unavailable = There are no visible exact solids to draw yet; wait until the model is evaluated.
 drawings-do-not-fit = At 1:{ $scale } the views do not fit an { $format } sheet; choose a coarser scale or a larger format.
 drawings-title-value-does-not-fit = The { $field } value does not fit its title block cell even at 1.6 mm: { $lines ->
@@ -2170,6 +2177,7 @@ drawings-parts-not-evaluated = { $count ->
        *[other] { $count } visible parts have no exact solid, so the sheet would leave them out: { $parts }. Fix or hide them, or wait
     } until the model is evaluated.
 drawings-settings-unreadable = The title block and sheet format stored in the document cannot be read ({ $reason }); they are kept as they are. Fill in the title block again in Project drawings to replace them.
+drawings-underlay-image-unreadable = The image of underlay { $name } cannot be read ({ $reason }), so the site plan would leave it out. Hide that underlay or import its image again, then export again.
 drawings-part-bodies-unresolved = The bodies of { $part } do not resolve to one exact solid each ({ $reason }), so the sheet would leave it out. Give each extrusion its own body, or suppress one, then export again.
 drawings-cosmetic-threads-failed = The modelled threads of { $part } cannot be drawn by ISO 6410 ({ $reason }); the sheet would show every edge of their helices. Export again, or switch the threads to cosmetic.
 drawings-settings-unreadable-edit = The title block stored in the document cannot be read ({ $reason }). Any change made here replaces it.
@@ -2181,6 +2189,7 @@ digest-exported-project-drawings-question-marks = Project drawings ({ $sheets ->
         [one] { $sheets } sheet
        *[other] { $sheets } sheets
     } at 1:{ $scale }) were exported to { $path }, but the sheet typeface lacks the characters { $characters }: the sheets print them as "?".
+digest-exported-project-drawings-images-left-out = { $digest }. DXF and DWG sheets keep to lines, so they leave out the image underlays { $names }; export a PDF to print them.
 error-export-project-drawings = Project drawings export to { $path } failed: { $reason }
 digest-exported-drawing-sheet-dxf = Drawing sheet { $name } was exported to { $path } as DXF
 digest-exported-drawing-sheet-dwg = Drawing sheet { $name } was exported to { $path } as DWG
