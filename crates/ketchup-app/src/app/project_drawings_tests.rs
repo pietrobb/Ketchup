@@ -205,6 +205,53 @@ fn a_part_whose_bodies_do_not_resolve_stops_the_sheet() {
     );
 }
 
+/// Review 2026-11-04 r19 MF-161: the bodies of a definition are resolved
+/// once for all its placements; one hidden placement met first, whose bodies
+/// only help find ±0,000, must not let a drawn one of the same part through
+/// without its bodies.
+#[test]
+fn a_hidden_placement_met_first_does_not_let_unresolved_bodies_through() {
+    let mut app = KetchupApp::new();
+    add_box(&mut app, 903, "wall C", 0.0);
+    let post = crate::app::drawing::create_box_batch(
+        DefinitionId(903),
+        [FeatureId(9301), FeatureId(9302)],
+        OccurrenceId(903),
+        ["wall C", "post profile", "post extrusion", "wall C"],
+        Vec3::new(2000.0, 0.0, 0.0),
+        Vec3::new(300.0, 200.0, 3000.0),
+    );
+    let mut commands = post.commands()[1..3].to_vec();
+    commands.push(CanonicalCommand::CreateOccurrence {
+        id: OccurrenceId(900),
+        definition_id: DefinitionId(903),
+        name: "wall C hidden".to_owned(),
+        transform: Transform::from_translation(0.0, 5000.0, 0.0).unwrap(),
+        parent: None,
+        tags: Default::default(),
+        visible: false,
+    });
+    app.document
+        .apply_batch(&CommandBatch::new(commands))
+        .unwrap();
+    let snapshot = app.document.current();
+    let names = snapshot
+        .scene_query()
+        .iter()
+        .map(|occurrence| occurrence.occurrence_name.clone())
+        .collect::<Vec<_>>();
+    let at = |name: &str| names.iter().position(|named| named == name);
+    assert!(
+        at("wall C hidden") < at("wall C"),
+        "the hidden placement is met first: {names:?}"
+    );
+    let error = app.visible_drawing_solids(&snapshot).unwrap_err();
+    let ProjectDrawingsError::UnresolvedBodies(part, _) = &error else {
+        panic!("the sheet must not leave wall C out: {error:?}");
+    };
+    assert_eq!(part, "wall C");
+}
+
 /// The plan cut height and the scale of the automatic format are document
 /// settings, not constants: changing them moves the cut and the scale.
 #[test]

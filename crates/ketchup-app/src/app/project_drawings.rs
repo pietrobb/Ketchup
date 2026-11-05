@@ -966,8 +966,9 @@ impl KetchupApp {
                             ));
                         }
                         // Not drawn, it only helps find ±0,000: without one
-                        // solid per body it gives that none.
-                        BTreeMap::default()
+                        // solid per body it gives that none. Not kept, so a
+                        // drawn placement of it is refused by name.
+                        continue;
                     }
                 };
                 let bodies = terminal
