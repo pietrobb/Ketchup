@@ -574,6 +574,7 @@ pub(super) fn export_failed(error: ProjectDrawingsError) -> &'static str {
             ),
             json!({"part": part}),
         ),
+        ProjectDrawingsError::ExactResults(cause) => failed_because("drawings_unavailable", cause),
         ProjectDrawingsError::ProgramPlanning => failure(
             "drawings_unavailable",
             "The program is still being evaluated, so the threads of its parts are not known yet. Export again when it is done.",

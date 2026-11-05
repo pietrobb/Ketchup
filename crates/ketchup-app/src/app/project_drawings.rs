@@ -55,6 +55,9 @@ pub(crate) enum ProjectDrawingsError {
     /// The named part's bodies do not resolve to one exact output each (two
     /// extrusions ending in one body); evaluating again does not help.
     UnresolvedBodies(String, ketchup_model::exact_product::ExactProductError),
+    /// The document's exact results do not read; drawing on would draw no
+    /// solid and find ±0,000 at 0 (review 2026-11-04 r19 MF-161).
+    ExactResults(ketchup_model::exact_product::ExactProductError),
     /// The program is still being evaluated: the threads of its parts are
     /// not known yet, and the sheet would leave them out.
     ProgramPlanning,
@@ -170,6 +173,81 @@ pub(crate) struct JobSolids {
     solids: Vec<DrawingSolid>,
     /// By the index of the solid it is drawn as.
     cosmetic: Vec<(usize, CosmeticThreadGraph, Transform)>,
+    /// The bodies hidden one by one that ±0,000 is found among with the
+    /// drawn ones, placed (review 2026-11-04 r19 MF-161).
+    zero_among: Vec<(Arc<ExactBodyPackage>, Transform)>,
+}
+
+/// An occurrence the drawings take bodies of, with the exact solid of each
+/// and whether the sheets draw it (see [`KetchupApp::job_bodies`]).
+type JobOccurrence = (SceneOccurrence, Vec<(Arc<ExactBodyPackage>, bool)>);
+
+/// The solid of `package` placed by `transform`, to find levels in.
+fn level_solid(package: &ExactBodyPackage, transform: &Transform) -> DrawingSolid {
+    let (triangles, faces) = world_mesh(package, transform);
+    DrawingSolid {
+        name: String::new(),
+        color: DEFAULT_SOLID_COLOR,
+        triangles,
+        faces,
+        threads: Vec::new(),
+    }
+}
+
+/// Why no ground floor is shown for ±0,000.
+#[derive(Debug)]
+pub(crate) enum FoundZeroError {
+    /// The bodies to find it among are not there.
+    Bodies(ProjectDrawingsError),
+    /// No worker could be started to find it.
+    Worker(std::io::Error),
+    /// The worker stopped before it found it.
+    WorkerStopped,
+}
+
+/// The ground floor the drawings window shows for ±0,000 (review 2026-11-04
+/// r19 MF-161): being found on a worker, or found, or why it cannot be.
+pub(crate) enum FoundZero {
+    Finding(std::sync::mpsc::Receiver<f64>),
+    Found(Result<f64, Arc<FoundZeroError>>),
+}
+
+impl FoundZero {
+    /// Finds the ground floor among `bodies`, placed, on a worker thread.
+    fn find(bodies: Vec<(Arc<ExactBodyPackage>, Transform)>) -> Self {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("ketchup-ground-floor".to_owned())
+            .spawn(move || {
+                let solids = bodies
+                    .iter()
+                    .map(|(package, transform)| level_solid(package, transform))
+                    .collect::<Vec<_>>();
+                // Sending fails only when the window has gone: nobody to tell.
+                sender.send(ground_floor(&solids)).unwrap_or_default();
+            });
+        match spawned {
+            Ok(_) => Self::Finding(receiver),
+            Err(error) => Self::Found(Err(Arc::new(FoundZeroError::Worker(error)))),
+        }
+    }
+
+    /// The ground floor once found; `None` while the worker is at it.
+    fn poll(&mut self) -> Option<Result<f64, Arc<FoundZeroError>>> {
+        if let Self::Finding(receiver) = self {
+            *self = match receiver.try_recv() {
+                Ok(height) => Self::Found(Ok(height)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Self::Found(Err(Arc::new(FoundZeroError::WorkerStopped)))
+                }
+            };
+        }
+        match self {
+            Self::Found(found) => Some(found.clone()),
+            Self::Finding(_) => None,
+        }
+    }
 }
 
 impl JobSolids {
@@ -182,6 +260,7 @@ impl JobSolids {
         let Self {
             mut solids,
             cosmetic,
+            ..
         } = self;
         for (index, graph, transform) in cosmetic {
             let solid = &mut solids[index];
@@ -209,12 +288,21 @@ impl ProjectDrawingsJob {
     /// the worker making cosmetic thread bodies and the hidden-line removal.
     fn set(self, cancelled: &AtomicBool) -> Result<(DrawingSet, PdfInfo), ProjectDrawingsError> {
         let Self {
-            solids,
+            mut solids,
             executable,
-            options,
+            mut options,
             info,
         } = self;
+        let zero_among = std::mem::take(&mut solids.zero_among);
         let solids = solids.drawn(executable.as_deref(), cancelled)?;
+        if options.zero_level_mm.is_none() {
+            // Found here, on the job's thread (review 2026-11-04 r19 MF-161).
+            let hidden = zero_among
+                .iter()
+                .map(|(package, transform)| level_solid(package, transform))
+                .collect::<Vec<_>>();
+            options.zero_level_mm = Some(ground_floor(solids.iter().chain(&hidden)));
+        }
         let set = drawing_set_until(&solids, &options, cancelled)
             .map_err(ProjectDrawingsError::Drawing)?;
         Ok((set, info))
@@ -830,11 +918,91 @@ impl KetchupApp {
         })
     }
 
+    /// The bodies the sheets draw, every visible body of every visible
+    /// occurrence, with the exact solid of each and whether it is drawn, and
+    /// with them the bodies ±0,000 is found among: hidden one by one but on
+    /// shown tags, so hiding the floor slab to look in does not move ±0,000
+    /// (review 2026-11-04 MF-141), while a terrain, a neighbour or a variant
+    /// on a hidden tag does not decide it (r19 MF-161). A drawn body with no
+    /// current exact solid is an error naming its part, and exact results
+    /// that do not read are an error, never no solid at all (r19 MF-161).
+    fn job_bodies(&self, snapshot: &Snapshot) -> Result<Vec<JobOccurrence>, ProjectDrawingsError> {
+        let exact = self
+            .exact
+            .results
+            .body_values(snapshot)
+            .map_err(ProjectDrawingsError::ExactResults)?
+            .into_iter()
+            .map(|(key, package)| ((key.definition_id, key.body_id), package))
+            .collect::<BTreeMap<_, _>>();
+        // Each definition's bodies and whether each is shown, found once
+        // however many times it is placed (r19 MF-161).
+        let mut bodies_of = BTreeMap::<DefinitionId, Vec<(BodyId, bool)>>::new();
+        let mut missing = Vec::new();
+        let mut scoped = Vec::new();
+        for occurrence in snapshot.scene_query() {
+            let on_shown_tags = snapshot
+                .occurrence(occurrence.occurrence_id)
+                .is_none_or(|placed| snapshot.tags_visible(placed.tags()));
+            let Some(definition) = snapshot
+                .definition(occurrence.definition_id)
+                .filter(|_| occurrence.visible || on_shown_tags)
+            else {
+                continue;
+            };
+            if let std::collections::btree_map::Entry::Vacant(entry) =
+                bodies_of.entry(occurrence.definition_id)
+            {
+                let terminal = match ketchup_model::exact_product::exact_body_terminal_features(
+                    snapshot,
+                    occurrence.definition_id,
+                ) {
+                    Ok(terminal) => terminal,
+                    Err(cause) => {
+                        if occurrence.visible {
+                            return Err(ProjectDrawingsError::UnresolvedBodies(
+                                occurrence.occurrence_name.clone(),
+                                cause,
+                            ));
+                        }
+                        // Not drawn, it only helps find ±0,000: without one
+                        // solid per body it gives that none.
+                        BTreeMap::default()
+                    }
+                };
+                let bodies = terminal
+                    .into_keys()
+                    .map(|body_id| {
+                        let shown = definition.body(body_id).is_some_and(|body| body.visible());
+                        (body_id, shown)
+                    })
+                    .collect();
+                entry.insert(bodies);
+            }
+            let mut packages = Vec::new();
+            for (body_id, shown) in &bodies_of[&occurrence.definition_id] {
+                let drawn = occurrence.visible && *shown;
+                match exact.get(&(occurrence.definition_id, *body_id)) {
+                    Some(package) => packages.push((Arc::clone(package), drawn)),
+                    None if drawn => {
+                        missing.push(occurrence.occurrence_name.clone());
+                        break;
+                    }
+                    None => {}
+                }
+            }
+            scoped.push((occurrence, packages));
+        }
+        if !missing.is_empty() {
+            return Err(ProjectDrawingsError::NotEvaluated(missing));
+        }
+        Ok(scoped)
+    }
+
     /// Every visible body of every visible occurrence as its exact solid, in
     /// world millimetres, the part's threads on its first, and what a body
-    /// with modelled threads is drawn from instead; a visible part with a body
-    /// but no current exact solid is an error naming it, never a sheet that
-    /// silently leaves it out.
+    /// with modelled threads is drawn from instead, with the hidden bodies
+    /// ±0,000 is found among too (see [`Self::job_bodies`]).
     pub(crate) fn visible_job_solids(
         &self,
         snapshot: &Snapshot,
@@ -849,61 +1017,25 @@ impl KetchupApp {
                 .or_default()
                 .push(thread);
         }
-        let exact = self
-            .exact
-            .results
-            .body_values(snapshot)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(key, package)| ((key.definition_id, key.body_id), package))
-            .collect::<BTreeMap<_, _>>();
-        let mut missing = Vec::new();
         let mut drawn = Vec::new();
-        for occurrence in snapshot.scene_query() {
-            let Some(definition) = snapshot
-                .definition(occurrence.definition_id)
-                .filter(|_| occurrence.visible)
-            else {
-                continue;
-            };
-            let terminal_bodies = ketchup_model::exact_product::exact_body_terminal_features(
-                snapshot,
-                occurrence.definition_id,
-            )
-            .map_err(|cause| {
-                ProjectDrawingsError::UnresolvedBodies(occurrence.occurrence_name.clone(), cause)
-            })?;
-            let terminal_bodies = terminal_bodies.into_keys().collect::<Vec<_>>();
-            let mut packages = Vec::new();
-            for body_id in terminal_bodies {
-                if !definition.body(body_id).is_some_and(|body| body.visible()) {
-                    continue;
-                }
-                match exact.get(&(occurrence.definition_id, body_id)) {
-                    Some(package) => packages.push(*package),
-                    None => {
-                        missing.push(occurrence.occurrence_name.clone());
-                        break;
-                    }
-                }
-            }
+        let mut zero_among = Vec::new();
+        for (occurrence, packages) in self.job_bodies(snapshot)? {
             let placed = threads
                 .get(&occurrence.definition_id)
                 .into_iter()
                 .flatten()
                 .filter_map(|thread| placed_thread(&occurrence.transform, thread))
                 .collect::<Vec<_>>();
-            drawn.extend(packages.into_iter().enumerate().map(|(index, package)| {
-                let threads = if index == 0 {
-                    placed.clone()
-                } else {
-                    Vec::new()
-                };
-                (occurrence.clone(), package, threads)
-            }));
-        }
-        if !missing.is_empty() {
-            return Err(ProjectDrawingsError::NotEvaluated(missing));
+            let mut first = true;
+            for (package, is_drawn) in packages {
+                if !is_drawn {
+                    zero_among.push((package, occurrence.transform));
+                    continue;
+                }
+                let threads = if first { placed.clone() } else { Vec::new() };
+                first = false;
+                drawn.push((occurrence.clone(), package, threads));
+            }
         }
         let blobs = self.file.container_data.blobs();
         let mut solids = Vec::with_capacity(drawn.len());
@@ -912,8 +1044,7 @@ impl KetchupApp {
             // Modelled threads are drawn by ISO 6410 like cosmetic ones: from
             // the body with them cosmetic, made only on the job's thread,
             // never the helix.
-            let package: &ExactBodyPackage = package;
-            let cosmetic = match package {
+            let cosmetic = match &*package {
                 ExactBodyPackage::Graph(package) => cosmetic_thread_graph(package, blobs)
                     .map_err(|cause| {
                         ProjectDrawingsError::CosmeticThreads(
@@ -925,7 +1056,7 @@ impl KetchupApp {
                 ExactBodyPackage::Imported(_) => None,
             };
             cosmetic_graphs.extend(cosmetic);
-            let (triangles, faces) = world_mesh(package, &occurrence.transform);
+            let (triangles, faces) = world_mesh(&package, &occurrence.transform);
             solids.push(DrawingSolid {
                 name: occurrence.occurrence_name,
                 color: occurrence.color.unwrap_or(DEFAULT_SOLID_COLOR),
@@ -937,57 +1068,44 @@ impl KetchupApp {
         Ok(JobSolids {
             solids,
             cosmetic: cosmetic_graphs,
+            zero_among,
         })
     }
 
-    /// ±0,000 of the sheets: the height the settings give, else the ground
-    /// floor of every body with its exact solid, shown or hidden, so hiding
-    /// the floor slab does not move it (review 2026-11-04 MF-141).
-    fn zero_level_mm(&self, snapshot: &Snapshot, settings: &SheetSettings) -> f64 {
-        match settings.zero_level_mm {
-            Some(height) => f64::from(height),
-            None => self.found_zero_mm(snapshot),
-        }
-    }
-
-    /// The ground floor [`Self::zero_level_mm`] takes when the settings give
-    /// no height, kept while the document and its solids are unchanged.
-    fn found_zero_mm(&self, snapshot: &Snapshot) -> f64 {
+    /// The ground floor ±0,000 is at when the settings give no height, as
+    /// the drawings window shows it: found by a worker, never on the
+    /// window's thread (review 2026-11-04 r19 MF-161), from the bodies
+    /// [`Self::job_bodies`] finds it among, and kept while the document and
+    /// its solids are unchanged. `None` while it is being found; why it
+    /// cannot be when the bodies are not there to find it from.
+    pub(crate) fn found_zero(
+        &self,
+        snapshot: &Snapshot,
+    ) -> Option<Result<f64, Arc<FoundZeroError>>> {
         let key = (
             snapshot.document_id(),
             snapshot.revision_id(),
             self.exact.results.contents_stamp(),
         );
         let mut found = self.drawings.found_zero.borrow_mut();
-        if let Some((cached, height)) = *found
-            && cached == key
-        {
-            return height;
+        if found.as_ref().is_none_or(|(cached, _)| *cached != key) {
+            let finding = match self.job_bodies(snapshot) {
+                Ok(scoped) => FoundZero::find(
+                    scoped
+                        .into_iter()
+                        .flat_map(|(occurrence, packages)| {
+                            packages
+                                .into_iter()
+                                .map(move |(package, _)| (package, occurrence.transform))
+                        })
+                        .collect(),
+                ),
+                Err(error) => FoundZero::Found(Err(Arc::new(FoundZeroError::Bodies(error)))),
+            };
+            *found = Some((key, finding));
         }
-        let height = self.ground_floor_mm(snapshot);
-        *found = Some((key, height));
-        height
-    }
-
-    fn ground_floor_mm(&self, snapshot: &Snapshot) -> f64 {
-        let exact = self.exact.results.body_values(snapshot).unwrap_or_default();
-        let mut solids = Vec::new();
-        for occurrence in snapshot.scene_query() {
-            for (key, package) in &exact {
-                if key.definition_id != occurrence.definition_id {
-                    continue;
-                }
-                let (triangles, faces) = world_mesh(package, &occurrence.transform);
-                solids.push(DrawingSolid {
-                    name: occurrence.occurrence_name.clone(),
-                    color: DEFAULT_SOLID_COLOR,
-                    triangles,
-                    faces,
-                    threads: Vec::new(),
-                });
-            }
-        }
-        ground_floor(&solids)
+        let (_, finding) = found.as_mut()?;
+        finding.poll()
     }
 
     /// The document name: its file name, else the program's.
@@ -1447,7 +1565,7 @@ impl KetchupApp {
             author: field(TitleField::Author),
             subject: field(TitleField::Stage),
         };
-        let zero_level_mm = self.zero_level_mm(&snapshot, &settings);
+        let zero_level_mm = settings.zero_level_mm.map(f64::from);
         Ok(ProjectDrawingsJob {
             solids,
             executable: self.drawing_worker(),
@@ -1470,10 +1588,27 @@ impl KetchupApp {
                 shop,
                 cutting,
                 decimal_comma: catalog.text("drawings-sheet-decimal-separator") == ",",
-                zero_level_mm: Some(zero_level_mm),
+                zero_level_mm,
             },
             info,
         })
+    }
+
+    pub(crate) fn found_zero_error_text(&self, error: &FoundZeroError) -> String {
+        match error {
+            FoundZeroError::Bodies(error) => self.project_drawings_error_text(error),
+            FoundZeroError::Worker(cause) => self.catalog.format(
+                "drawings-zero-level-not-found",
+                &BTreeMap::from([("reason", cause.to_string())]),
+            ),
+            FoundZeroError::WorkerStopped => self.catalog.format(
+                "drawings-zero-level-not-found",
+                &BTreeMap::from([(
+                    "reason",
+                    self.catalog.text("drawings-zero-level-worker-stopped"),
+                )]),
+            ),
+        }
     }
 
     pub(crate) fn project_drawings_error_text(&self, error: &ProjectDrawingsError) -> String {
@@ -1515,6 +1650,10 @@ impl KetchupApp {
             ProjectDrawingsError::UnresolvedBodies(part, cause) => self.catalog.format(
                 "drawings-part-bodies-unresolved",
                 &BTreeMap::from([("part", part.clone()), ("reason", cause.to_string())]),
+            ),
+            ProjectDrawingsError::ExactResults(cause) => self.catalog.format(
+                "drawings-exact-results-unreadable",
+                &BTreeMap::from([("reason", cause.to_string())]),
             ),
             ProjectDrawingsError::ProgramPlanning => self.catalog.text("status-program-planning"),
             ProjectDrawingsError::SettingsUnreadable(reason) => self.catalog.format(
@@ -1777,14 +1916,28 @@ impl KetchupApp {
                         // user sets from it, any height (review 2026-11-04 MF-141;
                         // r19 MF-160: a model in absolute heights was held to ±200 m).
                         ui.label(self.catalog.text("drawings-zero-level"));
+                        // Found on a worker (r19 MF-161): "…" until then, "–"
+                        // with the reason when it cannot be.
+                        let finding = self.found_zero(&self.document.current());
+                        if finding.is_none() {
+                            ui.ctx()
+                                .request_repaint_after(std::time::Duration::from_millis(100));
+                        }
                         // Whole millimetres; none past the range of i32 (±2 147 km).
-                        let found = format!("{:.0}", self.found_zero_mm(&self.document.current()))
-                            .parse::<i32>()
-                            .ok();
+                        let found = finding
+                            .as_ref()
+                            .and_then(|found| found.as_ref().ok())
+                            .and_then(|height| format!("{height:.0}").parse::<i32>().ok());
                         ui.horizontal(|ui| {
                             let mut ground = editing.zero_level_mm.is_none();
-                            let shown =
-                                found.map_or_else(|| "–".to_owned(), |found| found.to_string());
+                            let shown = match (&finding, found) {
+                                (_, Some(found)) => found.to_string(),
+                                (None, None) => "…".to_owned(),
+                                (Some(_), None) => "–".to_owned(),
+                            };
+                            let why = finding
+                                .and_then(Result::err)
+                                .map(|error| self.found_zero_error_text(&error));
                             if ui
                                 .checkbox(
                                     &mut ground,
@@ -1796,6 +1949,9 @@ impl KetchupApp {
                                 .changed()
                             {
                                 editing.zero_level_mm = (!ground).then(|| found.unwrap_or(0));
+                            }
+                            if let Some(why) = why {
+                                ui.weak(why);
                             }
                             if let Some(height) = editing.zero_level_mm.as_mut() {
                                 ui.add(egui::DragValue::new(height).suffix(" mm"));

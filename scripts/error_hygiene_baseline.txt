@@ -15,7 +15,7 @@ crates/ketchup-app/src/app/hole.rs dropped_error 3
 crates/ketchup-app/src/app/local_outliner.rs let_else_error 1
 crates/ketchup-app/src/app/patterns.rs dropped_error 10
 crates/ketchup-app/src/app/patterns.rs let_else_error 2
-crates/ketchup-app/src/app/project_drawings.rs dropped_error 4
+crates/ketchup-app/src/app/project_drawings.rs dropped_error 3
 crates/ketchup-app/src/app/project_drawings.rs let_else_error 3
 crates/ketchup-app/src/app/received_comments.rs let_else_error 1
 crates/ketchup-app/src/app/scale_grips.rs dropped_error 1

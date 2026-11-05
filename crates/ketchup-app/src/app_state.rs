@@ -302,8 +302,9 @@ pub(crate) struct DrawingsState {
     /// replaces its sheets.
     pub(crate) taking_over: Option<std::path::PathBuf>,
     /// The ground floor found for ±0,000 in the document as it was then,
-    /// shown in the window, which asks every frame.
-    pub(crate) found_zero: std::cell::RefCell<Option<(ExactCacheKey, f64)>>,
+    /// shown in the window, which asks every frame; found on a worker.
+    pub(crate) found_zero:
+        std::cell::RefCell<Option<(ExactCacheKey, crate::app::project_drawings::FoundZero)>>,
 }
 
 /// Viewer sharing preparation kept as project companion data, not CAD.

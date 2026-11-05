@@ -732,7 +732,7 @@ fn view_frames(
 /// tolerance: a ratio of areas).
 const FLOOR_SHARE_OF_LARGEST_LEVEL: f64 = 0.5;
 /// The narrowest a level a person stands on is, a gallery or a landing, as
-/// narrow as a side staircase of a house may be; the top of a wall or a
+/// narrow as a side flight of steps may be; the top of a wall or a
 /// parapet is narrower (not a tolerance: a clear width, review 2026-11-04 r19
 /// P3: a landing 900 mm wide went unmarked).
 const STANDING_WIDTH_MM: f64 = 750.0;
@@ -1025,8 +1025,11 @@ struct LevelPiece {
     outline: Vec<[[f64; 2]; 2]>,
 }
 
-/// The upward-facing horizontal levels of `solids`, lowest first.
-fn upward_levels(solids: &[DrawingSolid]) -> BTreeMap<i64, UpwardLevel> {
+/// The upward-facing horizontal levels of `solids` by their height, lowest
+/// first.
+fn upward_levels<'a>(
+    solids: impl IntoIterator<Item = &'a DrawingSolid>,
+) -> Vec<(f64, UpwardLevel)> {
     let mut pieces = BTreeMap::<i64, Vec<LevelPiece>>::new();
     for solid in solids {
         let outward = if winds_inward(solid) { -1.0 } else { 1.0 };
@@ -1071,7 +1074,9 @@ fn upward_levels(solids: &[DrawingSolid]) -> BTreeMap<i64, UpwardLevel> {
                 area: pieces.iter().map(|piece| piece.area).sum(),
                 widest_mm: widest_touching(&pieces),
             };
-            (level, level_of)
+            #[allow(clippy::cast_precision_loss)]
+            let height = level as f64;
+            (height, level_of)
         })
         .collect()
 }
@@ -1091,7 +1096,7 @@ fn length_2d([p, q]: [[f64; 2]; 2]) -> f64 {
 
 /// The clear width of the widest group of `pieces` that touch along an edge,
 /// measured as one face: the outline they share is inside it, so a gallery
-/// of planks or of board strips is as wide as all of them (review 2026-11-04
+/// of planks or of OSB strips is as wide as all of them (review 2026-11-04
 /// r19 MF-161).
 fn widest_touching(pieces: &[LevelPiece]) -> f64 {
     // Each outline edge by its line (direction and offset across it, on the
@@ -1107,14 +1112,10 @@ fn widest_touching(pieces: &[LevelPiece]) -> f64 {
             if direction[0] < -ROUNDING || (direction[0] <= ROUNDING && direction[1] < 0.0) {
                 direction = [-direction[0], -direction[1]];
             }
-            let across = direction[0] * p[1] - direction[1] * p[0];
-            let [from, to] = [p, q].map(|end| direction[0] * end[0] + direction[1] * end[1]);
-            #[allow(clippy::cast_possible_truncation)]
-            let key = [
-                (direction[0] * 1e6).round() as i64,
-                (direction[1] * 1e6).round() as i64,
-                (across * 100.0).round() as i64,
-            ];
+            let across = cross2(direction, *p);
+            let [from, to] = [p, q].map(|end| dot2(direction, *end));
+            // The direction on a 1e-6 grid, the offset on the 0.01 mm one.
+            let key = grid_key([direction[0] * 1e4, direction[1] * 1e4, across]);
             lines
                 .entry(key)
                 .or_default()
@@ -1160,38 +1161,35 @@ fn clear_width(area: f64, outline: f64) -> f64 {
     (outline - (outline * outline - 16.0 * area).max(0.0).sqrt()) / 4.0
 }
 
-#[allow(clippy::cast_precision_loss)]
-fn levels_where(solids: &[DrawingSolid], is_floor: impl Fn(&UpwardLevel, f64) -> bool) -> Vec<f64> {
-    let levels = upward_levels(solids);
-    let largest = levels.values().map(|level| level.area).fold(0.0, f64::max);
-    levels
-        .into_iter()
-        .filter(|(_, level)| is_floor(level, largest))
-        .map(|(height, _)| height as f64)
-        .collect()
-}
-
 /// The floors of the plans: the upward-facing horizontal levels, lowest
 /// first, that carry at least half of the area of the largest such level, so
 /// small tops below a large deck do not count as a storey.
-fn floor_levels(solids: &[DrawingSolid]) -> Vec<f64> {
-    levels_where(solids, |level, largest| {
-        level.area >= largest * FLOOR_SHARE_OF_LARGEST_LEVEL
-    })
+fn floor_levels<'a>(solids: impl IntoIterator<Item = &'a DrawingSolid>) -> Vec<f64> {
+    let levels = upward_levels(solids);
+    let largest = levels
+        .iter()
+        .map(|(_, level)| level.area)
+        .fold(0.0, f64::max);
+    levels
+        .into_iter()
+        .filter(|(_, level)| level.area >= largest * FLOOR_SHARE_OF_LARGEST_LEVEL)
+        .map(|(height, _)| height)
+        .collect()
 }
 
 /// The floors the sections and elevations mark, lowest first: those of the
 /// plans and every level a person stands on, however small, such as a
 /// gallery or a mezzanine; not the top of a wall, a knee wall or a parapet
-/// (review 2026-11-04 MF-141), nor furniture, a top less than
+/// (review 2026-11-04 MF-141), nor a top to sit or work at, less than
 /// [`RAISED_LEVEL_MM`] over the level marked below it (r19 MF-161).
-#[allow(clippy::cast_precision_loss)]
 fn marked_floor_levels(solids: &[DrawingSolid]) -> Vec<f64> {
     let levels = upward_levels(solids);
-    let largest = levels.values().map(|level| level.area).fold(0.0, f64::max);
+    let largest = levels
+        .iter()
+        .map(|(_, level)| level.area)
+        .fold(0.0, f64::max);
     let mut marked: Vec<f64> = Vec::new();
     for (height, level) in levels {
-        let height = height as f64;
         let floor = level.area >= largest * FLOOR_SHARE_OF_LARGEST_LEVEL;
         let raised = level.widest_mm >= STANDING_WIDTH_MM
             && marked
@@ -1209,7 +1207,7 @@ fn marked_floor_levels(solids: &[DrawingSolid]) -> Vec<f64> {
 /// basement); the highest floor of a model all below z = 0, and z = 0 for a
 /// model with no floor (review 2026-11-04 MF-141).
 #[must_use]
-pub fn ground_floor(solids: &[DrawingSolid]) -> f64 {
+pub fn ground_floor<'a>(solids: impl IntoIterator<Item = &'a DrawingSolid>) -> f64 {
     ground_floor_of(&floor_levels(solids))
 }
 

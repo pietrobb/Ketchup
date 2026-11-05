@@ -1095,6 +1095,111 @@ fn hiding_the_floor_slab_does_not_move_zero_and_the_sheet_can_set_it() {
     assert_eq!(levels(&app), ["±0,000", "+2,500"]);
 }
 
+/// The ground floor the drawings window shows, once its worker has found it.
+fn found_zero(app: &KetchupApp) -> Result<f64, String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(found) = app.found_zero(&app.document.current()) {
+            return found.map_err(|error| app.found_zero_error_text(&error));
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the ground floor found"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Review 2026-11-04 r19 MF-161: every body found ±0,000, hidden ones too,
+/// so a terrain plate on a hidden layer was the largest level, the only
+/// floor, and ±0,000 went to it. The bodies on hidden tags are left out; one
+/// hidden by itself still counts (MF-141).
+#[test]
+fn a_terrain_on_a_hidden_tag_does_not_decide_zero() {
+    let mut app = KetchupApp::new();
+    add_box(&mut app, 901, "wall A", 0.0);
+    // The ground floor slab beside the wall, its top 300 mm up, and a
+    // terrain 40 × 40 m with its top 500 mm down, on a hidden tag.
+    for (id, name, corner, size) in [
+        (
+            903,
+            "slab",
+            Vec3::new(2000.0, 0.0, 0.0),
+            Vec3::new(3000.0, 3000.0, 300.0),
+        ),
+        (
+            904,
+            "terrain",
+            Vec3::new(-20_000.0, -20_000.0, -800.0),
+            Vec3::new(40_000.0, 40_000.0, 300.0),
+        ),
+    ] {
+        app.document
+            .apply_batch(&crate::app::drawing::create_box_batch(
+                DefinitionId(id),
+                [FeatureId(id * 10), FeatureId(id * 10 + 1)],
+                OccurrenceId(id),
+                [name, "profile", "extrusion", name],
+                corner,
+                size,
+            ))
+            .unwrap();
+    }
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateTag {
+                id: TagId(77),
+                name: "Terrain".into(),
+                visible: true,
+            },
+            CanonicalCommand::SetOccurrenceTags {
+                id: OccurrenceId(904),
+                tags: std::collections::BTreeSet::from([TagId(77)]),
+            },
+        ]))
+        .unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    assert_eq!(found_zero(&app), Ok(-500.0), "the terrain shown");
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetTagVisibility {
+                id: TagId(77),
+                visible: false,
+            },
+        ]))
+        .unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    assert_eq!(found_zero(&app), Ok(300.0), "the terrain's tag hidden");
+    let mut settings = app.sheet_settings();
+    settings.language = Some(SheetLanguage::Czech);
+    app.store_sheet_settings(settings);
+    let set = app.project_drawings().unwrap();
+    let section = views(&set)
+        .find(|summary| summary.view == ProjectView::LongitudinalSection)
+        .unwrap();
+    assert_eq!(section.levels, ["-0,300", "±0,000", "+2,200"]);
+}
+
+/// Review 2026-11-04 r19 MF-161: with no exact solid to find it in, the
+/// window offered 0 as the ground floor found, a ±0,000 from nothing. It
+/// finds none and says why.
+#[test]
+fn no_ground_floor_is_found_without_the_exact_solids() {
+    let app = KetchupApp::new();
+    let found = found_zero(&app);
+    let Err(reason) = found else {
+        panic!("{found:?}");
+    };
+    assert_eq!(
+        reason,
+        app.project_drawings_error_text(&ProjectDrawingsError::NotEvaluated(vec![
+            app.document.current().scene_query()[0]
+                .occurrence_name
+                .clone()
+        ]))
+    );
+}
+
 /// Review 2026-11-04 r19 MF-160: in a model in absolute heights (Bpv, every
 /// floor about 245 m up) the ground floor found is the lowest floor, a
 /// basement there, and the height the user set was held to ±200 m. The
@@ -1131,6 +1236,13 @@ fn the_drawings_window_shows_the_found_zero_and_keeps_any_height() {
         .with_size(egui::vec2(1600.0, 1200.0))
         .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
     harness.state_mut().open_project_drawings_window();
+    // Found on a worker (r19 MF-161).
+    step_until(
+        &mut harness,
+        Duration::from_secs(30),
+        "the ground floor found",
+        |app| app.found_zero(&app.document.current()).is_some(),
+    );
     harness.step();
     let found = harness.state().catalog.format(
         "drawings-zero-level-ground",
