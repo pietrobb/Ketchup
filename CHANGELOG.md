@@ -37,6 +37,7 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 - Ketchup and the Viewer keep a log file of the problems they set aside without stopping you, such as a refused import or a connection that hung up: `%LOCALAPPDATA%\Ketchup\ketchup.log` on Windows (`Ketchup Viewer\viewer.log` for the Viewer), `~/Library/Logs/Ketchup` on macOS and `~/.local/state/Ketchup` on Linux. Before, these lines went to a console the window does not have and were lost.
 - Data taken from a drawing into the program is refused, with why, when the names of the program library cannot be read, instead of being written without checking that it takes no library name such as `range` over.
 - The Android Viewer updates from one release candidate to the next (`-rc.1` to `-rc.2`) and from a development build to a release candidate; before, they had one version code and Android refused the update. The Mac apps' bundle version grows the same way.
+- On Linux, a connected AI can no longer have Ketchup read or write files on the Windows drives of WSL (`/mnt/c`, which can be a mapped network share), a virtual machine's host folder (`9p`, `virtiofs`) or a cluster file system (`gpfs`), as for other network file systems. Choose a folder in the Linux file system instead.
 - The signed Windows installer signs every program and library it installs, also one that the build computer already trusted through a Windows catalog, which your computer does not have.
 
 ## 0.3.2 — 2026-11-04
