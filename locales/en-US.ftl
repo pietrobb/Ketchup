@@ -699,6 +699,7 @@ file-recent-missing-name = { $path } (not found)
 digest-recent-missing = { $path } no longer exists; it was removed from Open Recent.
 file-recent-unavailable-name = { $path } (not available)
 digest-recent-unavailable = { $path } cannot be reached now: its folder does not answer, as when a server or disk is offline. It stays in Open Recent.
+digest-recent-checking = Checking whether { $path } can be reached; it opens when its folder answers.
 digest-recent-not-remembered = The list of recent files could not be saved: { $error }
 menu-file-import = Import
 menu-file-export = Export

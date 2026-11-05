@@ -165,10 +165,33 @@ impl KetchupApp {
     /// Open a document of Open Recent as Open would, after the same question
     /// about unsaved changes. One that is gone is said so and dropped; one
     /// whose folder does not answer, as on a server that is offline, is
-    /// said so and kept for when it is back (review 2026-11-04 P3 GUI).
+    /// said so and kept for when it is back (review 2026-11-04 P3 GUI). The
+    /// disk is asked off the window; while it does not answer, the document
+    /// opens when it does (review 2026-11-04 r19 UI-161).
     pub(crate) fn open_recent(&mut self, path: &Path) {
+        let context = self.file.activity.context.clone();
+        match self.file.recent.pick(path, context) {
+            Some(presence) => self.open_recent_found(path, presence),
+            None => {
+                self.digest = self.catalog.format(
+                    "digest-recent-checking",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                );
+            }
+        }
+    }
+
+    /// The answer for a picked recent document that came after the frame it
+    /// was picked in.
+    pub(crate) fn poll_recent_pick(&mut self) {
+        if let Some((path, presence)) = self.file.recent.picked(None) {
+            self.open_recent_found(&path, presence);
+        }
+    }
+
+    fn open_recent_found(&mut self, path: &Path, presence: Presence) {
         let shown = BTreeMap::from([("path", path.display().to_string())]);
-        match self.file.recent.presence_now(path) {
+        match presence {
             Presence::Here => {}
             Presence::Gone => {
                 let result = self.file.recent.remove(path);

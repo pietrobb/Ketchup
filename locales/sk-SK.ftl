@@ -699,6 +699,7 @@ file-recent-missing-name = { $path } (nenájdený)
 digest-recent-missing = Súbor { $path } už neexistuje, z ponuky Otvoriť nedávne bol odstránený.
 file-recent-unavailable-name = { $path } (nedostupný)
 digest-recent-unavailable = Súbor { $path } teraz nie je dostupný: jeho priečinok neodpovedá, ako keď je server alebo disk odpojený. V ponuke Otvoriť nedávne zostáva.
+digest-recent-checking = Overujem, či je súbor { $path } dostupný; otvorí sa, keď jeho priečinok odpovie.
 digest-recent-not-remembered = Zoznam nedávnych súborov sa nepodarilo uložiť: { $error }
 menu-file-import = Importovať
 menu-file-export = Exportovať

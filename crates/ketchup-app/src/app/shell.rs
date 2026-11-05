@@ -1487,6 +1487,7 @@ impl KetchupApp {
         self.poll_validator_panel(context);
         self.poll_mesh_conversion(context);
         self.poll_feature_history_exact(context);
+        self.poll_recent_pick();
         if let Some(program) = self.document.current_rule_program() {
             self.program_evaluations.warm(program, context);
         } else {

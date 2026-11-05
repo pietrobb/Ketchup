@@ -176,6 +176,8 @@ pub(crate) struct RecentFiles {
     /// Whether each file was there when the menu last checked.
     on_disk: HashMap<PathBuf, Presence>,
     checking: Option<mpsc::Receiver<Checked>>,
+    /// The document picked last, while its check runs on a worker.
+    picking: Option<(PathBuf, mpsc::Receiver<Presence>)>,
     /// The pass the menu was last drawn in.
     shown_pass: Option<u64>,
 }
@@ -200,6 +202,7 @@ impl RecentFiles {
             probe,
             on_disk: HashMap::new(),
             checking: None,
+            picking: None,
             shown_pass: None,
         };
         for file in list.store.load() {
@@ -325,9 +328,51 @@ impl RecentFiles {
         self.on_disk.get(path).copied()
     }
 
-    /// Whether `path` is there now; asked when the user picks it.
-    pub(crate) fn presence_now(&self, path: &Path) -> Presence {
-        self.probe.presence(path)
+    /// Whether `path`, just picked, is there. One the menu found out of reach
+    /// is answered at once; otherwise the disk is asked on a worker, waited for
+    /// up to [`CHECK_WAIT`] as the menu waits. `None` while it does not
+    /// answer: [`Self::picked`] gives the answer when it comes, and `context`
+    /// is woken for it. Asking on the window held it until the system gave up
+    /// on a server that does not answer (review 2026-11-04 r19 UI-161).
+    pub(crate) fn pick(&mut self, path: &Path, context: Option<egui::Context>) -> Option<Presence> {
+        if self.on_disk(path) == Some(Presence::Unavailable) {
+            return Some(Presence::Unavailable);
+        }
+        let (send, answer) = mpsc::channel();
+        let (probe, asked) = (Arc::clone(&self.probe), path.to_owned());
+        std::thread::spawn(move || {
+            if send.send(probe.presence(&asked)).is_ok()
+                && let Some(context) = context
+            {
+                context.request_repaint();
+            }
+        });
+        self.picking = Some((path.to_owned(), answer));
+        self.picked(Some(Instant::now() + CHECK_WAIT))
+            .map(|(_, presence)| presence)
+    }
+
+    /// The document picked last and whether it is there, once its check
+    /// answers, waiting until `until` for it; a check that ended without an
+    /// answer counts as out of reach.
+    pub(crate) fn picked(&mut self, until: Option<Instant>) -> Option<(PathBuf, Presence)> {
+        let (_, answer) = self.picking.as_ref()?;
+        let left = until.and_then(|until| until.checked_duration_since(Instant::now()));
+        let presence = match left {
+            Some(left) => match answer.recv_timeout(left) {
+                Ok(presence) => presence,
+                Err(mpsc::RecvTimeoutError::Timeout) => return None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => Presence::Unavailable,
+            },
+            None => match answer.try_recv() {
+                Ok(presence) => presence,
+                Err(mpsc::TryRecvError::Empty) => return None,
+                Err(mpsc::TryRecvError::Disconnected) => Presence::Unavailable,
+            },
+        };
+        let (path, _) = self.picking.take()?;
+        self.on_disk.insert(path.clone(), presence);
+        Some((path, presence))
     }
 }
 
@@ -531,6 +576,46 @@ mod tests {
             *server.resolved.lock().unwrap(),
             [std::path::absolute(&added).unwrap()]
         );
+    }
+
+    /// Review 2026-11-04 r19 UI-161: a click on a recent document asked the
+    /// disk on the window, so one the menu had already shown out of reach held
+    /// the window until the server timed out. That one is answered at once;
+    /// any other is asked on a worker, and the answer comes in a later frame.
+    #[test]
+    fn a_picked_recent_document_is_checked_off_the_window() {
+        let directory = tempfile::tempdir().unwrap();
+        let offline = directory.path().join("offline.ketchup");
+        let stored = || Box::new(MemoryRecentFiles::holding(vec![offline.clone()]));
+
+        let answering = Arc::new(SlowServer::default());
+        let mut recent = RecentFiles::with_probe(stored(), answering.clone());
+        recent
+            .on_disk
+            .insert(offline.clone(), Presence::Unavailable);
+        assert_eq!(recent.pick(&offline, None), Some(Presence::Unavailable));
+        assert!(
+            answering.is_file.lock().unwrap().is_empty(),
+            "the menu's answer is not asked again"
+        );
+
+        let (release, released) = mpsc::channel();
+        let server = Arc::new(SlowServer {
+            release: Mutex::new(Some(released)),
+            ..SlowServer::default()
+        });
+        let mut recent = RecentFiles::with_probe(stored(), server.clone());
+        // The server answers only when released below, so a pick that asked
+        // it here would never return.
+        assert_eq!(recent.pick(&offline, None), None, "no answer yet");
+        assert_eq!(recent.picked(None), None);
+        release.send(()).unwrap();
+        assert_eq!(
+            recent.picked(Some(Instant::now() + Duration::from_secs(5))),
+            Some((offline.clone(), Presence::Here))
+        );
+        assert_eq!(recent.on_disk(&offline), Some(Presence::Here));
+        assert_eq!(recent.picked(None), None, "answered once");
     }
 
     #[cfg(windows)]
