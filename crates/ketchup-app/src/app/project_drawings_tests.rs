@@ -1104,6 +1104,16 @@ fn hiding_the_floor_slab_does_not_move_zero_and_the_sheet_can_set_it() {
 fn the_drawings_window_shows_the_found_zero_and_keeps_any_height() {
     use egui_kittest::kittest::Queryable;
     let mut app = KetchupApp::new();
+    // Only the two floors, no starter box at z = 0.
+    let starter = app
+        .document
+        .current()
+        .occurrences()
+        .map(|item| CanonicalCommand::DeleteOccurrence { id: item.id() })
+        .collect();
+    app.document
+        .apply_batch(&CommandBatch::new(starter))
+        .unwrap();
     for (id, name, top) in [(911, "basement", 242_000.0), (912, "ground", 245_300.0)] {
         app.document
             .apply_batch(&crate::app::drawing::create_box_batch(
@@ -1136,9 +1146,21 @@ fn the_drawings_window_shows_the_found_zero_and_keeps_any_height() {
     harness.state_mut().drawings.editing.zero_level_mm = Some(245_300);
     harness.step();
     harness.step();
-    let app = harness.state();
+    let app = harness.state_mut();
     assert_eq!(app.drawings.editing.zero_level_mm, Some(245_300));
     assert_eq!(app.sheet_settings().zero_level_mm, Some(245_300));
+    let mut settings = app.sheet_settings();
+    settings.language = Some(SheetLanguage::Czech);
+    app.store_sheet_settings(settings);
+    let set = app.project_drawings().unwrap();
+    let section = views(&set)
+        .find(|summary| summary.view == ProjectView::LongitudinalSection)
+        .unwrap();
+    assert_eq!(
+        section.levels,
+        ["-3,600", "-3,300", "±0,000"],
+        "±0,000 on the ground floor, the basement and the model's bottom below it"
+    );
 }
 
 /// Review 2026-11-04 MF-140: the level marks of a Czech sheet wrote a comma
