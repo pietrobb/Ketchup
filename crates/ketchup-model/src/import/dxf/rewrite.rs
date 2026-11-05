@@ -414,6 +414,10 @@ struct Drawing<'a> {
     eol: &'static [u8],
     pairs: Vec<Pair>,
     entities: Vec<Entity>,
+    /// The entity of each handle, `None` where more than one has it; made once, so that
+    /// finding the entities of many objects is not quadratic (review 2026-11-04 r19
+    /// CD-162).
+    by_handle: BTreeMap<u64, Option<usize>>,
     /// The pair `ENDSEC` closing the ENTITIES section.
     entities_end: usize,
     /// The value pair of `$HANDSEED`.
@@ -514,6 +518,7 @@ impl<'a> Drawing<'a> {
             eol,
             pairs: Vec::new(),
             entities: Vec::new(),
+            by_handle: BTreeMap::new(),
             entities_end: 0,
             handseed: None,
             next_handle: None,
@@ -659,8 +664,22 @@ impl<'a> Drawing<'a> {
                 .flatten()
                 .map(|pair| value(pair).to_vec())
         });
+        for (index, entity) in drawing.entities.iter().enumerate() {
+            if let Some(handle) = entity.handle {
+                drawing
+                    .by_handle
+                    .entry(handle)
+                    .and_modify(|found| *found = None)
+                    .or_insert(Some(index));
+            }
+        }
         drawing.pairs = pairs;
         Ok(drawing)
+    }
+
+    /// The one entity of handle `handle`.
+    fn entity_of_handle(&self, handle: u64) -> Option<usize> {
+        self.by_handle.get(&handle).copied().flatten()
     }
 
     /// Reads the entities from pair `index` on, past the section's start, to its end;
@@ -733,14 +752,8 @@ impl<'a> Drawing<'a> {
             return self.entities_by_order(objects).is_some();
         }
         tops.filter(|object| object.handle != 0).all(|object| {
-            let mut found = self
-                .entities
-                .iter()
-                .filter(|entity| entity.handle == Some(object.handle));
-            matches!(
-                (found.next(), found.next()),
-                (Some(entity), None) if entity.records[0].1 == object.kind.name()
-            )
+            self.entity_of_handle(object.handle)
+                .is_some_and(|entity| self.entities[entity].records[0].1 == object.kind.name())
         })
     }
 
@@ -821,19 +834,13 @@ impl<'a> Drawing<'a> {
                 .and_then(|entities| entities.get(index).copied().flatten())
                 .ok_or(DxfEditRefusal::NoHandle { object }.into());
         }
-        let mut found = self
-            .entities
-            .iter()
-            .enumerate()
-            .filter(|(_, entity)| entity.handle == Some(read.handle));
-        match (found.next(), found.next()) {
-            (Some((index, _)), None) => Ok(index),
-            _ => Err(DxfEditRefusal::HandleMissing {
+        self.entity_of_handle(read.handle).ok_or(
+            DxfEditRefusal::HandleMissing {
                 object,
                 handle: read.handle,
             }
-            .into()),
-        }
+            .into(),
+        )
     }
 
     fn write(

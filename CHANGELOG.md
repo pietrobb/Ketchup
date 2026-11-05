@@ -15,6 +15,7 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 - Deciding the code page of a DXF drawing, a word counts once however often it is written: one Czech or Slovak layer name repeated on every entity no longer outvotes the Western texts or turns the drawing on its own; it is warned of.
 - A DXF drawing whose MTEXT font (`\f…|c238;`) or text style font names the East European character set counts that as a vote for Windows-1250, so a short Czech drawing headed Windows-1252 reads `Kuchyně`, not `Kuchynì`.
 - Writing an edited DXF back, a text, fill or entity moved or taken out in Kečup is refused when the file changed it since the import: a text that lies elsewhere or reads otherwise, a fill that covers another area, an entity on another layer. Before, a text moved in both was written where neither put it, and a reworded one was deleted unseen.
+- Refusing to write back a large edited DXF that changed since its import takes no longer than writing it (100 000 lines: 6,5 s before, under 1 s now): the entities are indexed by handle once.
 
 ## 0.3.2 — 2026-11-04
 

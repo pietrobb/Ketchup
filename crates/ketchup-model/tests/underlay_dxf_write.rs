@@ -1608,6 +1608,61 @@ fn an_edited_text_fill_or_entity_changed_in_the_file_since_is_refused() {
     }
 }
 
+/// Review 2026-11-04 r19 CD-162: finding the entities of the objects searched every entity
+/// for each, so a refusal of 100 000 lines took 24 s against 0,8 s to write them. It
+/// takes no longer than writing.
+#[test]
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_a_large_drawing_changed_in_the_file_is_refused_as_fast_as_written() {
+    let count = 100_000;
+    let mut entities = String::from("0\nSECTION\n2\nENTITIES\n");
+    for at in 0..count {
+        entities.push_str(&format!(
+            "0\nLINE\n5\n{:X}\n330\n1F\n100\nAcDbEntity\n8\nwalls\n100\nAcDbLine\n\
+             10\n0\n20\n{at}\n30\n0\n11\n1000\n21\n{at}\n31\n0\n",
+            0x1000 + at
+        ));
+    }
+    entities.push_str("0\nENDSEC\n");
+    let source = format!("{HEADER}{TABLES}{entities}0\nEOF\n");
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let mut edits = UnderlayEdits::default();
+    edits
+        .moved_objects
+        .insert(id_of(lines, 0x1000), [[1.0, 0.0, 0.0], [0.0, 1.0, 500.0]]);
+    let started = std::time::Instant::now();
+    write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let written = started.elapsed();
+    let changed = source.replacen("11\n1000\n21\n0\n", "11\n1200\n21\n0\n", 1);
+    assert_ne!(changed, source);
+    let started = std::time::Instant::now();
+    let refused = write_edited_dxf(
+        changed.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    );
+    let refusing = started.elapsed();
+    assert!(
+        matches!(
+            refused,
+            Err(EditedDxfError::Refused(DxfEditRefusal::ReadDifferently))
+        ),
+        "{refused:?}"
+    );
+    assert!(
+        refusing < written * 2 + std::time::Duration::from_millis(500),
+        "refused in {refusing:?}, written in {written:?}"
+    );
+}
+
 /// Review 2026-11-04 CD-140: a newer revision of the file that only gained an entity was
 /// bound again and written with it, and said nothing had changed in it since the import.
 #[test]
