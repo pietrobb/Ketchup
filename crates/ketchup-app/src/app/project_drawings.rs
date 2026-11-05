@@ -852,16 +852,18 @@ pub(crate) fn missing_parts_list(parts: &[String]) -> String {
     list
 }
 
-/// Today's date where the user is, as d. m. yyyy.
-fn today() -> String {
+/// Today's date where the user is, as the sheets of `catalog` write it.
+fn today(catalog: &LocaleCatalog) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(0));
-    date_at(now, super::local_time::utc_offset_seconds())
+    date_at(catalog, now, super::local_time::utc_offset_seconds())
 }
 
-/// The date, as d. m. yyyy, at `unix_seconds` on a clock `offset_seconds` ahead of UTC.
-pub(crate) fn date_at(unix_seconds: i64, offset_seconds: i64) -> String {
+/// The date at `unix_seconds` on a clock `offset_seconds` ahead of UTC, as
+/// the sheets of `catalog` write it: d. m. yyyy on a Czech or Slovak sheet,
+/// yyyy-mm-dd on an English one (review 2026-11-04 r19 P3).
+pub(crate) fn date_at(catalog: &LocaleCatalog, unix_seconds: i64, offset_seconds: i64) -> String {
     let days = (unix_seconds + offset_seconds).div_euclid(86_400) + 719_468;
     // Civil date from days since 0000-03-01 (H. Hinnant's algorithm).
     let era = days.div_euclid(146_097);
@@ -877,7 +879,16 @@ pub(crate) fn date_at(unix_seconds: i64, offset_seconds: i64) -> String {
         month_index - 9
     };
     let year = year_of_era + era * 400 + i64::from(month <= 2);
-    format!("{day}. {month}. {year}")
+    catalog.format(
+        "drawings-sheet-date",
+        &BTreeMap::from([
+            ("day", day.to_string()),
+            ("month", month.to_string()),
+            ("year", year.to_string()),
+            ("day2", format!("{day:02}")),
+            ("month2", format!("{month:02}")),
+        ]),
+    )
 }
 
 /// `thread` of a definition where `transform` places it in the world; its
@@ -1172,14 +1183,17 @@ impl KetchupApp {
 
     /// What the title block shows where the user wrote nothing: the document
     /// name, the sheet title in the sheets' `language`, today's date.
-    fn title_defaults(&self, language: Option<SheetLanguage>) -> BTreeMap<TitleField, String> {
+    pub(crate) fn title_defaults(
+        &self,
+        language: Option<SheetLanguage>,
+    ) -> BTreeMap<TitleField, String> {
         BTreeMap::from([
             (TitleField::Project, self.drawing_document_name()),
             (
                 TitleField::Drawing,
                 self.sheet_catalog(language).text("drawings-default-sheet"),
             ),
-            (TitleField::Date, today()),
+            (TitleField::Date, today(&self.sheet_catalog(language))),
         ])
     }
 

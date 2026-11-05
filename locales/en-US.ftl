@@ -2150,6 +2150,7 @@ drawings-sheet-plan-storey = Floor plan of storey { $storey }
 drawings-sheet-sections = Sections
 # The decimal separator of the level marks on the sections and elevations (+2.850).
 drawings-sheet-decimal-separator = .
+drawings-sheet-date = { $year }-{ $month2 }-{ $day2 }
 drawings-sheet-elevations = Elevations
 drawings-sheet-openings = Windows and doors
 drawings-openings-mark = Mark

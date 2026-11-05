@@ -2067,6 +2067,7 @@ drawings-sheet-plan-storey = Pôdorys { $storey }. podlažia
 drawings-sheet-sections = Rezy
 # Desatinný oddeľovač výškových kót na rezoch a pohľadoch (+2,850).
 drawings-sheet-decimal-separator = ,
+drawings-sheet-date = { $day }. { $month }. { $year }
 drawings-sheet-elevations = Pohľady
 drawings-sheet-openings = Okná a dvere
 drawings-openings-mark = Značka

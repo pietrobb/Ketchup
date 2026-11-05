@@ -1443,13 +1443,36 @@ fn the_open_drawings_window_takes_up_settings_changed_in_the_document() {
 #[test]
 fn the_drawing_date_is_the_date_on_the_users_clock() {
     use crate::app::project_drawings::date_at;
+    let slovak = ketchup_interaction::LocaleCatalog::slovak();
     // 2026-10-22 23:30:00 UTC.
     let late_evening = 1_792_711_800;
-    assert_eq!(date_at(late_evening, 0), "22. 10. 2026");
-    assert_eq!(date_at(late_evening, 2 * 3_600), "23. 10. 2026");
-    assert_eq!(date_at(late_evening, -4 * 3_600), "22. 10. 2026");
+    assert_eq!(date_at(&slovak, late_evening, 0), "22. 10. 2026");
+    assert_eq!(date_at(&slovak, late_evening, 2 * 3_600), "23. 10. 2026");
+    assert_eq!(date_at(&slovak, late_evening, -4 * 3_600), "22. 10. 2026");
     // A minute after midnight UTC on 1 January is still New Year's Eve west of it.
-    assert_eq!(date_at(1_798_761_660, -3_600), "31. 12. 2026");
+    assert_eq!(date_at(&slovak, 1_798_761_660, -3_600), "31. 12. 2026");
+}
+
+/// Review 2026-11-04 r19 P3: the date of an English sheet was written
+/// "5. 11. 2026", the Czech and Slovak way; it is written as the sheet's
+/// language writes it, ISO 8601 on an English sheet.
+#[test]
+fn the_drawing_date_is_written_as_the_sheet_language_writes_it() {
+    let app = KetchupApp::new();
+    let date = |language| app.title_defaults(Some(language))[&TitleField::Date].clone();
+    let english = date(SheetLanguage::English);
+    let iso = english.split('-').map(str::len).collect::<Vec<_>>();
+    assert_eq!(iso, [4, 2, 2], "{english}");
+    assert!(
+        english.chars().all(|c| c.is_ascii_digit() || c == '-'),
+        "{english}"
+    );
+    for language in [SheetLanguage::Czech, SheetLanguage::Slovak] {
+        let written = date(language);
+        let parts = written.split(". ").collect::<Vec<_>>();
+        assert_eq!(parts.len(), 3, "{written}");
+        assert_eq!(parts[2], &english[..4], "{written} is the day of {english}");
+    }
 }
 
 /// The project the sets of the MF-27 tests are drawn from.
