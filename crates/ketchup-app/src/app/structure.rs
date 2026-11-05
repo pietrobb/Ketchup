@@ -1318,7 +1318,7 @@ impl KetchupApp {
 
     #[must_use]
     pub const fn outliner_visible(&self) -> bool {
-        self.panels.outliner_visible
+        self.window.panes.outliner_visible
     }
 
     /// How many occurrences of the active document are hidden.

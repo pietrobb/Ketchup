@@ -146,16 +146,6 @@ impl KetchupApp {
         let live_client_name = self.live.client_name.take();
         let dialogs = std::mem::replace(&mut self.dialogs, Box::new(NativeFileDialogs::default()));
         let catalog = self.catalog.clone();
-        let outliner_visible = self.panels.outliner_visible;
-        let tags_visible = self.panels.tags_visible;
-        let dimensions_visible = self.panels.dimensions_visible;
-        let manual_cad_tools_visible = self.panels.manual_cad_tools_visible;
-        let about_open = self.panels.about_open;
-        // The window's settings, not the document's (review 2026-11-04 UI-140).
-        let decimal = self.value_box.decimal;
-        let remember_language = self.remember_language;
-        let dock_tab = self.dock.tab;
-        let recent_files = std::mem::take(&mut self.file.recent);
         let exact_worker_path = self.exact.worker_path.clone();
         let exact_worker_attempted = self.exact.worker_attempted;
         // The graphics device outlives the document: losing its target format
@@ -163,7 +153,11 @@ impl KetchupApp {
         let wgpu_target_format = self.render.wgpu_target_format;
         let wgpu_device = self.render.wgpu_device.clone();
         let wgpu_queue = self.render.wgpu_queue.clone();
-        *self = Self::with_catalog_and_initial_box(catalog, false).with_dialogs(dialogs);
+        let mut fresh = Self::with_catalog_and_initial_box(catalog, false).with_dialogs(dialogs);
+        // The window's settings are not the document's: New keeps the whole
+        // struct, so a setting added to it is kept too (review 2026-11-04 r19).
+        std::mem::swap(&mut fresh.window, &mut self.window);
+        *self = fresh;
         self.live.bridge = live_bridge;
         self.live.consent_broker = live_consent_broker;
         self.live.consent_attached = live_consent_attached;
@@ -174,15 +168,6 @@ impl KetchupApp {
         self.render.wgpu_queue = wgpu_queue;
         self.exact.worker_path = exact_worker_path;
         self.exact.worker_attempted = exact_worker_attempted;
-        self.panels.outliner_visible = outliner_visible;
-        self.panels.tags_visible = tags_visible;
-        self.panels.dimensions_visible = dimensions_visible;
-        self.panels.manual_cad_tools_visible = manual_cad_tools_visible;
-        self.panels.about_open = about_open;
-        self.value_box.decimal = decimal;
-        self.remember_language = remember_language;
-        self.dock.tab = dock_tab;
-        self.file.recent = recent_files;
         self.digest = self.catalog.text("digest-new-document");
     }
 

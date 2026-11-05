@@ -122,7 +122,7 @@ fn the_selection_card_writes_numbers_with_the_users_decimal_separator_and_no_min
         true,
     )
     .unwrap();
-    app.value_box.decimal = crate::length_input::DecimalSeparator::Comma;
+    app.window.decimal = crate::length_input::DecimalSeparator::Comma;
     let a = occurrence(&app, "a");
     app.selection.select_occurrence(a, false);
     crate::drawn_shape::tests::evaluate_exact(&mut app);

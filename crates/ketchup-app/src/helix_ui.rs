@@ -356,7 +356,7 @@ impl KetchupApp {
 
     pub(super) fn begin_helix_tool(&mut self) {
         self.helix_tool = HelixUiState {
-            decimal: self.value_box.decimal,
+            decimal: self.window.decimal,
             ..HelixUiState::default()
         };
         self.helix_tool.refresh();

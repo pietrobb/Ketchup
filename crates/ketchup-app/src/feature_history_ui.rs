@@ -1131,7 +1131,7 @@ impl KetchupApp {
             return false;
         };
         let Some(dimension) =
-            parse_dimension(&self.feature_history.value_input, self.value_box.decimal)
+            parse_dimension(&self.feature_history.value_input, self.window.decimal)
         else {
             self.feature_history_error(self.catalog.text("feature-history-error-invalid-value"));
             return false;
@@ -1201,7 +1201,7 @@ impl KetchupApp {
         };
         let values = crate::length_input::parse_length_list(
             &self.feature_history.move_input,
-            self.value_box.decimal,
+            self.window.decimal,
             2..=2,
         );
         let Some(values) = values else {
@@ -2754,7 +2754,7 @@ impl KetchupApp {
                     &self.catalog,
                     "feature-history-move-profile-value",
                     &mut self.feature_history.move_input,
-                    self.value_box.decimal,
+                    self.window.decimal,
                 );
                 if ui
                     .button(self.catalog.text("feature-history-preview-move-profile"))
@@ -2808,7 +2808,7 @@ impl KetchupApp {
                     &self.catalog,
                     "feature-history-exact-value",
                     &mut self.feature_history.value_input,
-                    self.value_box.decimal,
+                    self.window.decimal,
                 );
                 if ui
                     .add_enabled(

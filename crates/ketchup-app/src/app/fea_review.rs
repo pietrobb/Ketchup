@@ -73,7 +73,7 @@ impl KetchupApp {
                         ui.label(self.catalog.text(label));
                         ui.text_edit_singleline(value);
                     });
-                    show_value_refusal(ui, &self.catalog, value, self.value_box.decimal);
+                    show_value_refusal(ui, &self.catalog, value, self.window.decimal);
                 }
                 ui.label(self.catalog.text("fea-review-limits"));
                 if let Some(review) = &pending.review {
@@ -145,7 +145,7 @@ impl KetchupApp {
             traction,
             coarse,
             fine,
-        } = pending.read_fields(&self.catalog, self.value_box.decimal)?;
+        } = pending.read_fields(&self.catalog, self.window.decimal)?;
         let request = FeaStudyRequest {
             definition_id: pending.definition_id,
             feature_id: pending.feature_id,

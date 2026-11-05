@@ -2057,8 +2057,6 @@ pub struct KetchupApp {
     catalog: LocaleCatalog,
     /// The language `catalog` is in; `None` for a test catalog such as pseudo.
     language: Option<language::UiLanguage>,
-    /// Whether a language picked in the menu is remembered for the next start.
-    remember_language: bool,
     /// The program the last edit detached, while the one-time notice about it
     /// is on screen.
     program_detach_notice: Option<program_detach::ProgramDetachNotice>,
@@ -2079,7 +2077,7 @@ pub struct KetchupApp {
     parameter: app_state::ParameterEditor,
     validator_panel: app_state::ValidatorPanel,
     status_key: &'static str,
-    theme: ThemeKind,
+    window: app_state::WindowSettings,
     camera: app_state::CameraState,
     view: ViewSettings,
     /// The typed name and the last shown scene of the saved views.
@@ -2104,7 +2102,6 @@ pub struct KetchupApp {
     joint_fields: app::joints_ui::JointFields,
     hover: app_state::HoverState,
     active_tool: ActiveTool,
-    panels: app_state::Panels,
     dock: app_state::Dock,
     command_search: app_state::CommandSearch,
     takeoff: app_state::TakeoffState,

@@ -1392,11 +1392,11 @@ impl KetchupApp {
 
     #[must_use]
     pub const fn tags_visible(&self) -> bool {
-        self.panels.tags_visible
+        self.window.panes.tags_visible
     }
 
     pub(crate) fn show_classification_dimensions(&mut self, ui: &mut egui::Ui) {
-        if !self.panels.dimensions_visible {
+        if !self.window.panes.dimensions_visible {
             return;
         }
         ui.separator();

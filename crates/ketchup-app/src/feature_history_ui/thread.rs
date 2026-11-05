@@ -31,7 +31,7 @@ impl KetchupApp {
             ui,
             &self.catalog,
             &self.feature_history.thread_input,
-            self.value_box.decimal,
+            self.window.decimal,
         );
         let mut action = None;
         if ui
@@ -68,7 +68,7 @@ impl KetchupApp {
             let Some(thread) = typed_thread(
                 &self.feature_history.thread_input,
                 current,
-                self.value_box.decimal,
+                self.window.decimal,
             ) else {
                 self.digest = self.catalog.text("digest-hole-thread-invalid");
                 return;

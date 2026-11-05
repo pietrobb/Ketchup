@@ -500,12 +500,12 @@ impl KetchupApp {
             AppCommand::CenterSelection => self.center_selection(),
             AppCommand::ZoomIn => self.zoom_by(CAMERA_ZOOM_STEP, "digest-zoom-in"),
             AppCommand::ZoomOut => self.zoom_by(CAMERA_ZOOM_STEP.recip(), "digest-zoom-out"),
-            AppCommand::Shortcuts => self.panels.shortcuts_open = true,
+            AppCommand::Shortcuts => self.window.panes.shortcuts_open = true,
             AppCommand::CommandSearch => {
                 self.command_search.focus = true;
                 self.command_search.highlight = 0;
             }
-            AppCommand::About => self.panels.about_open = true,
+            AppCommand::About => self.window.panes.about_open = true,
             AppCommand::MaterialTakeoff => self.takeoff.open = true,
             AppCommand::DrawIntoUnderlay => self.toggle_underlay_draw(),
             AppCommand::ExportUnderlayDxf => self.export_selected_underlay("dxf"),

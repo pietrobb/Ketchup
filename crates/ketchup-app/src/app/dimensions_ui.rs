@@ -239,8 +239,7 @@ impl KetchupApp {
             _ => None,
         };
         let decimal_places =
-            crate::length_input::read_whole::<u8>(&fields.decimal_places, self.value_box.decimal)
-                .ok();
+            crate::length_input::read_whole::<u8>(&fields.decimal_places, self.window.decimal).ok();
         let apply = ui.add_enabled(
             target.is_some() && decimal_places.is_some(),
             egui::Button::new(self.catalog.text("measured-dimension-apply")),

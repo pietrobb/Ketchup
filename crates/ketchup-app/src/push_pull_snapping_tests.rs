@@ -135,7 +135,7 @@ fn push_pull_snaps_oblique_scaled_face_using_world_normal() {
         let steps = app.undo_step_count();
         assert!(app.update_push_pull_gesture(&drag, Pos2::ZERO));
         assert!(
-            (parse_distance_mm(&app.push_pull.distance_input, app.value_box.decimal).unwrap()
+            (parse_distance_mm(&app.push_pull.distance_input, app.window.decimal).unwrap()
                 - distance)
                 .abs()
                 < 1e-10

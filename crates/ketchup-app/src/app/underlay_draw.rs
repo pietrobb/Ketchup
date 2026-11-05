@@ -96,7 +96,7 @@ impl KetchupApp {
         };
         let height_mm = if typed.is_empty() {
             length(point - anchor)
-        } else if let Some(height_mm) = parse_distance_mm(&typed, self.value_box.decimal) {
+        } else if let Some(height_mm) = parse_distance_mm(&typed, self.window.decimal) {
             height_mm
         } else {
             self.gesture.underlay_text = Some((anchor, text));

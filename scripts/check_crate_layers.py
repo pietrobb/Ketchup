@@ -60,7 +60,7 @@ OVERSIZED = {}
 # Modules AGENTS.md §6 forbids to grow, with their size: new code goes into new
 # modules, and an entry is lowered whenever its module shrinks (review UI-7).
 FROZEN_MODULES = {
-    "crates/ketchup-app/src/lib.rs": 2357,
+    "crates/ketchup-app/src/lib.rs": 2354,
     "crates/ketchup-model/src/document.rs": 514,
 }
 

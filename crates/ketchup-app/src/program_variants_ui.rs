@@ -135,7 +135,7 @@ impl KetchupApp {
         if !idle {
             ui.label(self.catalog.text("variants-pending"));
         }
-        let decimal = self.value_box.decimal;
+        let decimal = self.window.decimal;
         let mut action = None;
         for param in params {
             let named = BTreeMap::from([("name", param.name.clone())]);
