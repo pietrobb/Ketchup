@@ -566,6 +566,7 @@ fn a_plan_of_its_own_is_drawn_as_a_pdf_at_the_scale_the_client_names() {
                 drawing_scale,
                 sheet_language: None,
                 replace: false,
+                take_over: false,
             }
         };
 
@@ -676,6 +677,7 @@ fn a_sheet_names_the_letters_it_prints_as_question_marks() {
                 drawing_scale: Some(250.0),
                 sheet_language: None,
                 replace: false,
+                take_over: false,
             },
             false,
         )

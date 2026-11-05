@@ -421,6 +421,10 @@ pub enum Request {
         /// the user agreed when asked (r19 SEC-161).
         #[serde(default)]
         replace: bool,
+        /// Takes the DXF or DWG set at `path` of another project for this
+        /// one's, as the user agreed when asked (review 2026-11-04 r19 MF-162).
+        #[serde(default)]
+        take_over: bool,
     },
     /// Imports a STEP, IGES, STL, DXF, GLB or SketchUp scene file as one Undo step;
     /// `as_underlay` keeps a DXF or DWG drawing under the model as an underlay instead.

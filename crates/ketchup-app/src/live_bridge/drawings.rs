@@ -47,6 +47,7 @@ impl LiveBridge {
             drawing_scale,
             sheet_language,
             replace,
+            take_over,
         } = request
         else {
             // The project set, drawn here: only the in-process caller waits
@@ -62,10 +63,11 @@ impl LiveBridge {
             || plan_only
             || drawing_scale.is_some()
             || sheet_language.is_some()
+            || take_over
         {
             return Err(failure(
                 "invalid_params",
-                "format, title_block, plan_only, drawing_scale and sheet_language belong to the project sheet; a drawing sheet keeps its own page, views, scale and title block.",
+                "format, title_block, plan_only, drawing_scale, sheet_language and take_over belong to the project sheets; a drawing sheet keeps its own page, views, scale and title block.",
                 json!({"sheet_id": id}),
             ));
         }
@@ -349,6 +351,7 @@ pub(super) fn start_export(
         drawing_scale,
         sheet_language,
         replace,
+        take_over,
     } = request
     else {
         return Err("invalid_request");
@@ -407,7 +410,8 @@ pub(super) fn start_export(
     // this project's earlier set its list names; one saved there while the
     // set is drawn is kept (review 2026-10-18 MCP-3).
     let owner = app.drawing_set_owner();
-    let targets = project_drawings_targets(target, file_format, &owner).map_err(export_failed)?;
+    let targets =
+        project_drawings_targets(target, file_format, &owner, take_over).map_err(export_failed)?;
     let existing = targets.get(target).map(String::as_str);
     if file_format == SetFileFormat::Pdf && kept_unless_asked(app, target, existing, replace) {
         return Err(not_its_own(target));
@@ -470,7 +474,13 @@ pub(super) fn finish_export(
             &started.owner,
         )
         .map(|paths| {
-            written = written_files(&paths, &files);
+            written = written_files(
+                Path::new(&path),
+                file_format,
+                &started.owner,
+                &paths,
+                &files,
+            );
             ExportedSet { set, paths }
         })
     });
@@ -588,6 +598,15 @@ pub(super) fn export_failed(error: ProjectDrawingsError) -> &'static str {
             json!({"underlay": name}),
         ),
         ProjectDrawingsError::Dwg(error) => failed_because("dwg_conversion_failed", error),
+        ProjectDrawingsError::SetOfAnotherProject { list, project } => failure(
+            "drawings_set_of_another_project",
+            format!(
+                "The drawing set listed in {} was exported from {}, not from this document, so none of its sheets is replaced. Ask the user: export to another folder or file name, or, if they agree to take that set over for this project, export again with take_over: true.",
+                list.display(),
+                project.as_deref().unwrap_or("a project not saved")
+            ),
+            json!({"list": list.display().to_string(), "exported_from": project}),
+        ),
         ProjectDrawingsError::Write(error) => write_failed(error),
     }
 }
@@ -617,6 +636,7 @@ mod tests {
                 drawing_scale: request.scale.map(f64::from),
                 sheet_language: None,
                 replace: false,
+                take_over: false,
             },
             false,
         )
@@ -654,6 +674,7 @@ mod tests {
             drawing_scale: None,
             sheet_language: None,
             replace: true,
+            take_over: false,
         };
         assert_eq!(
             LiveBridge::export_drawings(&mut app, asked, false),
@@ -761,6 +782,7 @@ mod tests {
                 &crate::app::project_drawings::SetOwner {
                     document: ketchup_model::document::DocumentId(1),
                     file: None,
+                    written: BTreeMap::new(),
                 },
             )
             .is_err()

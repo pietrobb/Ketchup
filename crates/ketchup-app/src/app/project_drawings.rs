@@ -69,6 +69,13 @@ pub(crate) enum ProjectDrawingsError {
     UnderlayUnreadable(String, Option<ketchup_model::underlay::UnderlayLinesError>),
     /// A sheet's DXF did not convert to DWG.
     Dwg(ketchup_dwg::DwgError),
+    /// The set at the path, listed at `list`, is another project's, or
+    /// another copy's that wrote it since; `project` names the file it was
+    /// exported from (review 2026-11-04 r19 MF-162).
+    SetOfAnotherProject {
+        list: PathBuf,
+        project: Option<String>,
+    },
     Write(std::io::Error),
 }
 
@@ -246,18 +253,34 @@ pub(crate) type SetTargets = BTreeMap<PathBuf, String>;
 /// The first line of the list a DXF or DWG set was written with before the
 /// list named the project's file.
 const SET_LIST_HEADER: &str = "Ketchup drawing set";
-/// The first line of the list a DXF or DWG set is written with, its third
-/// line naming the project's file ([`SetOwner`]).
+/// The first line of the list a DXF or DWG set was written with by Kečup
+/// 0.3.2, its third line naming the project's file by its absolute path.
 const OWNED_SET_LIST_HEADER: &str = "Ketchup drawing set of a project file";
+/// The first line of the list a DXF or DWG set is written with, its third
+/// line naming the project's file by its name alone, so the list carries no
+/// folder with the user's name. Whose the set is the document says: it keeps
+/// the list it wrote (review 2026-11-04 r19 MF-162).
+const DOCUMENT_SET_LIST_HEADER: &str = "Ketchup drawing set of a document";
 
-/// The line of a set's list naming the file of the project it is drawn from,
-/// none for a project not saved.
-fn project_line(owner: &SetOwner) -> String {
+/// The line of a 0.3.2 set's list naming the file of the project it is drawn
+/// from, none for a project not saved.
+fn project_path_line(owner: &SetOwner) -> String {
     let file = owner
         .file
         .as_ref()
         .map_or_else(String::new, |file| file.display().to_string());
     format!("project {file}")
+}
+
+/// The line of a set's list naming the file the project is kept in by its
+/// name, none for a project not saved.
+fn project_name_line(owner: &SetOwner) -> String {
+    let name = owner
+        .file
+        .as_deref()
+        .and_then(Path::file_name)
+        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+    format!("project {name}")
 }
 
 /// The list written beside a DXF or DWG set for `path`, `plan.dxf` as
@@ -272,24 +295,50 @@ pub(crate) fn set_list_path(path: &Path, format: SetFileFormat) -> PathBuf {
     path.with_file_name(format!("{stem}.{}.sheets.txt", format.extension()))
 }
 
-/// Whose a set of drawings is: the project it is drawn from and the file the
-/// project is kept in. Copies of one project (Save As, a copy of the file)
-/// are one project, so the file tells them apart: one exporting to a folder
-/// another exported to does not take that set for its own and replace it
-/// (review 2026-11-04 P3).
+/// Whose a set of drawings is: the project it is drawn from, the file the
+/// project is kept in and the drawing files the document wrote. A set is the
+/// document's while its list is the one the document last wrote there, so a
+/// project renamed, moved or saved as "v2" exports its set again, and of two
+/// copies only the one that wrote the set last replaces it (review 2026-11-04
+/// P3, r19 MF-162).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SetOwner {
     pub(crate) document: DocumentId,
     /// None while the project has not been saved.
     pub(crate) file: Option<PathBuf>,
+    /// The SHA-256 of each drawing file the document wrote, by
+    /// [`written_key`](super::drawing_sheet_export::written_key).
+    pub(crate) written: BTreeMap<String, String>,
+}
+
+impl SetOwner {
+    /// Whether the list at `list_path`, of SHA-256 `sha256`, is the one the
+    /// document last wrote there.
+    fn wrote(&self, list_path: &Path, sha256: &str) -> bool {
+        super::drawing_sheet_export::written_key(list_path)
+            .is_ok_and(|key| self.written.get(&key).is_some_and(|kept| kept == sha256))
+    }
+
+    /// Notes `written` files as the document's, as
+    /// [`KetchupApp::wrote_drawings`] keeps them.
+    #[cfg(test)]
+    pub(crate) fn note(&mut self, written: &[(PathBuf, String)]) -> std::io::Result<()> {
+        for (path, sha256) in written {
+            let key = super::drawing_sheet_export::written_key(path)?;
+            self.written.insert(key, sha256.clone());
+        }
+        Ok(())
+    }
 }
 
 impl KetchupApp {
-    /// The owner of the sets the window exports now.
+    /// The owner of the sets the window exports now. Drawing files kept in a
+    /// list that does not read are none of its, so no set is taken unasked.
     pub(crate) fn drawing_set_owner(&self) -> SetOwner {
         SetOwner {
             document: self.document.current().document_id(),
             file: self.file.path.clone(),
+            written: self.written_drawings().unwrap_or_default(),
         }
     }
 }
@@ -297,11 +346,24 @@ impl KetchupApp {
 /// The list of a set of `owner` naming each of `sheets`, a sheet's file name
 /// with a SHA-256 its file may hold; a name may come more than once.
 fn set_list(owner: &SetOwner, sheets: &[(String, String)]) -> Vec<u8> {
+    list_of(owner, None, sheets)
+}
+
+/// The line of a list in place while a set's sheets are written naming the
+/// SHA-256 of the list it replaces.
+const REPLACING: &str = "replacing ";
+
+/// A set's list, `replacing` the list of that SHA-256 (`none`: no list) while
+/// the sheets are written.
+fn list_of(owner: &SetOwner, replacing: Option<&str>, sheets: &[(String, String)]) -> Vec<u8> {
     let mut list = format!(
-        "{OWNED_SET_LIST_HEADER}\ndocument {}\n{}\n",
+        "{DOCUMENT_SET_LIST_HEADER}\ndocument {}\n{}\n",
         owner.document.0,
-        project_line(owner)
+        project_name_line(owner)
     );
+    if let Some(replacing) = replacing {
+        list.push_str(&format!("{REPLACING}{replacing}\n"));
+    }
     for (name, sha256) in sheets {
         list.push_str(&format!("{name} {sha256}\n"));
     }
@@ -318,7 +380,8 @@ fn sheet_name(sheet: &Path) -> String {
 /// (`targets`, the list itself left out) and as it will be (`sheets`), so an
 /// export stopped between the sheets and the list, the window closed or the
 /// power cut, leaves a set the next export still takes for its own (review
-/// 2026-11-04 P3).
+/// 2026-11-04 P3). It names the list it replaces, the one the document wrote,
+/// as the document never learns of it then (r19 MF-162).
 fn pending_list(
     owner: &SetOwner,
     sheets: &[(String, String)],
@@ -329,28 +392,77 @@ fn pending_list(
         .iter()
         .filter(|(target, _)| target.as_path() != list_path)
         .map(|(target, sha256)| (sheet_name(target), sha256.clone()));
-    set_list(
+    list_of(
         owner,
+        Some(targets.get(list_path).map_or("none", String::as_str)),
         &sheets.iter().cloned().chain(was).collect::<Vec<_>>(),
     )
 }
 
-/// The sheet names and the SHA-256s each may hold that `list` gives when it
-/// is the list of a set of `owner`; none when it is another project's, another
-/// copy's, or no list at all. A list written before it named the project's
-/// file, or before the project was saved, is taken by the project's id alone.
-fn listed_sheets(list: &[u8], owner: &SetOwner) -> Option<BTreeMap<String, BTreeSet<String>>> {
-    let mut lines = std::str::from_utf8(list).ok()?.lines();
-    let header = lines.next()?;
-    let mine = [SET_LIST_HEADER, OWNED_SET_LIST_HEADER].contains(&header)
-        && lines.next()? == format!("document {}", owner.document.0)
-        && (header == SET_LIST_HEADER || {
-            // One drawn before the project was first saved is its.
-            let project = lines.next()?;
-            project == project_line(owner) || project == "project "
-        });
-    if !mine {
-        return None;
+/// What a file at a set's list path is to the project exporting the set.
+enum SetList {
+    /// This document's set, or one it takes over: each sheet name with the
+    /// SHA-256s its file may hold.
+    Its(BTreeMap<String, BTreeSet<String>>),
+    /// The set of another project, or another copy of this one that wrote it
+    /// since: the name of the file it was exported from, none when unsaved or
+    /// not named.
+    Another(Option<String>),
+    /// No list of a drawing set at all.
+    NotAList,
+}
+
+/// What `list`, at `list_path`, is to `owner`: its set when the document
+/// last wrote it there or `take_over` says to take it. A list of Kečup 0.3.2,
+/// which named the project by its absolute path, is the set of the project
+/// still kept in that file; an older one, naming no file, of the project's
+/// id. Any other is another project's, never this one's by its file name.
+fn set_list_of(list: &[u8], list_path: &Path, owner: &SetOwner, take_over: bool) -> SetList {
+    // A file that is not UTF-8 has no header of a list.
+    let text = String::from_utf8_lossy(list);
+    let mut lines = text.lines();
+    let header = lines.next().unwrap_or_default();
+    if ![
+        SET_LIST_HEADER,
+        OWNED_SET_LIST_HEADER,
+        DOCUMENT_SET_LIST_HEADER,
+    ]
+    .contains(&header)
+    {
+        return SetList::NotAList;
+    }
+    let same_document = lines.next() == Some(format!("document {}", owner.document.0).as_str());
+    let project = (header != SET_LIST_HEADER)
+        .then(|| lines.next().unwrap_or_default())
+        .and_then(|line| line.strip_prefix("project "));
+    let mut lines = lines.peekable();
+    // A list in place while the sheets were written is the document's when
+    // the list it replaced was, or there was none and the project is its.
+    let replacing = lines
+        .next_if(|line| line.starts_with(REPLACING))
+        .and_then(|line| line.strip_prefix(REPLACING));
+    let wrote = |sha256: &str| owner.wrote(list_path, sha256);
+    let its = take_over
+        || wrote(&ketchup_model::graph::sha256_hex(list))
+        || replacing.is_some_and(|replaced| wrote(replaced) || replaced == "none" && same_document)
+        || same_document
+            && match header {
+                SET_LIST_HEADER => true,
+                OWNED_SET_LIST_HEADER => project.is_some_and(|project| {
+                    format!("project {project}") == project_path_line(owner) && owner.file.is_some()
+                }),
+                _ => false,
+            };
+    if !its {
+        let name = project
+            .filter(|project| !project.is_empty())
+            .map(|project| {
+                Path::new(project).file_name().map_or_else(
+                    || project.to_owned(),
+                    |name| name.to_string_lossy().into_owned(),
+                )
+            });
+        return SetList::Another(name);
     }
     let mut listed = BTreeMap::<String, BTreeSet<String>>::new();
     for (name, sha256) in lines.filter_map(|line| line.rsplit_once(' ')) {
@@ -359,7 +471,7 @@ fn listed_sheets(list: &[u8], owner: &SetOwner) -> Option<BTreeMap<String, BTree
             .or_default()
             .insert(sha256.to_owned());
     }
-    Some(listed)
+    SetList::Its(listed)
 }
 
 /// Writes the set's `files` for `path`, each through a temporary file and a
@@ -502,13 +614,49 @@ fn roll_back(
     first
 }
 
-/// The files a set wrote at `paths`, each with the SHA-256 of its bytes.
-pub(crate) fn written_files(paths: &[PathBuf], files: &[Vec<u8>]) -> Vec<(PathBuf, String)> {
-    paths
+/// The files a set of `owner` for `path` wrote at `paths`, each with the
+/// SHA-256 of its bytes, a DXF or DWG set's list too.
+pub(crate) fn written_files(
+    path: &Path,
+    format: SetFileFormat,
+    owner: &SetOwner,
+    paths: &[PathBuf],
+    files: &[Vec<u8>],
+) -> Vec<(PathBuf, String)> {
+    let mut written = paths
         .iter()
         .zip(files)
         .map(|(path, bytes)| (path.clone(), ketchup_model::graph::sha256_hex(bytes)))
-        .collect()
+        .collect::<Vec<_>>();
+    if format != SetFileFormat::Pdf {
+        let sheets = written
+            .iter()
+            .map(|(sheet, sha256)| (sheet_name(sheet), sha256.clone()))
+            .collect::<Vec<_>>();
+        let list = set_list(owner, &sheets);
+        written.push((
+            set_list_path(path, format),
+            ketchup_model::graph::sha256_hex(&list),
+        ));
+    }
+    written
+}
+
+/// Writes the set's `files` for `path` as [`publish_project_drawings`] does,
+/// after taking what it may replace, and notes what it wrote as `owner`'s.
+#[cfg(test)]
+pub(crate) fn publish_noted(
+    path: &Path,
+    format: SetFileFormat,
+    files: &[Vec<u8>],
+    owner: &mut SetOwner,
+) -> Result<Vec<PathBuf>, ProjectDrawingsError> {
+    let targets = project_drawings_targets(path, format, owner, false)?;
+    let paths = publish_project_drawings(path, format, files, &targets, owner)?;
+    owner
+        .note(&written_files(path, format, owner, &paths, files))
+        .map_err(ProjectDrawingsError::Write)?;
+    Ok(paths)
 }
 
 /// The files of a set as `format` for `path` an export started now may
@@ -517,11 +665,15 @@ pub(crate) fn written_files(paths: &[PathBuf], files: &[Vec<u8>]) -> Vec<(PathBu
 /// again under the same name (review 2026-10-24 MF-27). A sheet is the set's
 /// only while its list names it with the bytes it holds now; any other file
 /// named like a sheet, such as another project's or another copy's, is not
-/// replaced or removed (run 325).
+/// replaced or removed (run 325). The set of another project, or of another
+/// copy that wrote it since, refuses the export naming the project file it was
+/// exported from, unless `take_over` says the user takes it for this one's
+/// (review 2026-11-04 r19 MF-162).
 pub(crate) fn project_drawings_targets(
     path: &Path,
     format: SetFileFormat,
     owner: &SetOwner,
+    take_over: bool,
 ) -> Result<SetTargets, ProjectDrawingsError> {
     let sha256 = |candidate: &Path| {
         crate::export_bundle::export_target_sha256(candidate)
@@ -540,8 +692,16 @@ pub(crate) fn project_drawings_targets(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(targets),
         Err(error) => return Err(ProjectDrawingsError::Write(error)),
     };
-    let Some(listed) = listed_sheets(&list, owner) else {
-        return Ok(targets);
+    let listed = match set_list_of(&list, &list_path, owner, take_over) {
+        SetList::Its(listed) => listed,
+        SetList::Another(project) => {
+            return Err(ProjectDrawingsError::SetOfAnotherProject {
+                list: list_path,
+                project,
+            });
+        }
+        // Writing the list there is refused as for any file not the set's.
+        SetList::NotAList => return Ok(targets),
     };
     targets.insert(list_path, ketchup_model::graph::sha256_hex(&list));
     for candidate in numbered_sheet_files(path, format) {
@@ -1376,6 +1536,18 @@ impl KetchupApp {
                 error.to_string()
             }
             ProjectDrawingsError::Dwg(error) => error.to_string(),
+            ProjectDrawingsError::SetOfAnotherProject { list, project } => self.catalog.format(
+                "drawings-set-of-another-project",
+                &BTreeMap::from([
+                    ("list", list.display().to_string()),
+                    (
+                        "project",
+                        project.clone().unwrap_or_else(|| {
+                            self.catalog.text("drawings-set-of-an-unsaved-project")
+                        }),
+                    ),
+                ]),
+            ),
             ProjectDrawingsError::Write(error) => error.to_string(),
         }
     }
@@ -1408,7 +1580,7 @@ impl KetchupApp {
     pub fn export_project_drawings_to(&mut self, path: &Path) -> bool {
         let format = SetFileFormat::of_path(path).unwrap_or(SetFileFormat::Pdf);
         let owner = self.drawing_set_owner();
-        let result = project_drawings_targets(path, format, &owner).and_then(|targets| {
+        let result = project_drawings_targets(path, format, &owner, false).and_then(|targets| {
             let cancelled = AtomicBool::new(false);
             self.write_project_drawings(path, format, SheetRequest::default(), &targets, &cancelled)
         });
@@ -1425,6 +1597,18 @@ impl KetchupApp {
             [one] => one.display().to_string(),
             [first, .., last] => format!("{} … {}", first.display(), last.display()),
             [] => path.display().to_string(),
+        };
+        self.drawings.another_projects_set = match result {
+            Err(error @ ProjectDrawingsError::SetOfAnotherProject { .. }) => {
+                SetFileFormat::of_path(path).map(|format| {
+                    (
+                        path.to_path_buf(),
+                        format,
+                        self.project_drawings_error_text(error),
+                    )
+                })
+            }
+            _ => None,
         };
         self.digest = match result {
             Ok(ExportedSet { set, paths }) => {
@@ -1486,6 +1670,7 @@ impl KetchupApp {
         let mut open = true;
         let mut export = None;
         let mut export_sheet = None;
+        let mut take_over = None;
         let mut editing = std::mem::take(&mut self.drawings.editing);
         // A field still showing its default follows it when the default
         // changes: past midnight, after Save As, in another language.
@@ -1639,6 +1824,18 @@ impl KetchupApp {
                         }
                     }
                 });
+                // Another project's set at the path chosen: the user may take
+                // it over, its sheets then this project's (review 2026-11-04
+                // r19 MF-162).
+                if let Some((path, format, said)) = &self.drawings.another_projects_set {
+                    ui.colored_label(ui.visuals().warn_fg_color, said);
+                    if ui
+                        .button(self.catalog.text("drawings-take-over-set"))
+                        .clicked()
+                    {
+                        take_over = Some((path.clone(), *format));
+                    }
+                }
                 ui.separator();
                 ui.strong(self.catalog.text("drawings-document-sheets"));
                 ui.label(self.catalog.text("drawings-document-sheets-hint"));
@@ -1684,6 +1881,12 @@ impl KetchupApp {
             && let Some(path) = self.choose_export_path(format.extension())
         {
             self.start_drawing_export(DrawingExport::Project(format), path, context);
+        }
+        if let Some((path, format)) = take_over {
+            self.drawings.taking_over = Some(path.clone());
+            self.start_drawing_export(DrawingExport::Project(format), path, context);
+            // Only this export takes it over, also one that could not start.
+            self.drawings.taking_over = None;
         }
         if let Some((id, format)) = export_sheet
             && let Some(path) = self.choose_export_path(format.extension())

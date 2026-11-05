@@ -175,7 +175,7 @@ const WRITTEN_PATH: &str = "written-v1.json";
 /// its canonical path, so `c:\X` and `C:\x` name one file and the document
 /// carries no absolute path with the user's name (review 2026-11-04 r19
 /// SEC-161); a file that is not there has none.
-fn written_key(path: &Path) -> std::io::Result<String> {
+pub(super) fn written_key(path: &Path) -> std::io::Result<String> {
     std::fs::canonicalize(path)
         .map(|canonical| ketchup_model::graph::sha256_hex(canonical.as_os_str().as_encoded_bytes()))
 }
@@ -183,7 +183,7 @@ fn written_key(path: &Path) -> std::io::Result<String> {
 impl KetchupApp {
     /// The drawing files the document wrote: the SHA-256 of each, by
     /// [`written_key`].
-    fn written_drawings(&self) -> Result<BTreeMap<String, String>, serde_json::Error> {
+    pub(super) fn written_drawings(&self) -> Result<BTreeMap<String, String>, serde_json::Error> {
         self.file
             .container_data
             .extensions()

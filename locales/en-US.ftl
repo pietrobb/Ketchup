@@ -2184,6 +2184,9 @@ drawings-parts-not-evaluated = { $count ->
        *[other] { $count } visible parts have no exact solid, so the sheet would leave them out: { $parts }. Fix or hide them, or wait
     } until the model is evaluated.
 drawings-settings-unreadable = The title block and sheet format stored in the document cannot be read ({ $reason }); they are kept as they are. Fill in the title block again in Project drawings to replace them.
+drawings-set-of-another-project = The drawing set listed in { $list } was exported from { $project }, not from this document, so none of its sheets is replaced. Export to another folder or file name, or take the set over for this project.
+drawings-set-of-an-unsaved-project = a project not saved
+drawings-take-over-set = Take the set over and export
 drawings-part-bodies-unresolved = The bodies of { $part } do not resolve to one exact solid each ({ $reason }), so the sheet would leave it out. Give each extrusion its own body, or suppress one, then export again.
 drawings-cosmetic-threads-failed = The modelled threads of { $part } cannot be drawn by ISO 6410 ({ $reason }); the sheet would show every edge of their helices. Export again, or switch the threads to cosmetic.
 drawings-settings-unreadable-edit = The title block stored in the document cannot be read ({ $reason }). Any change made here replaces it.

@@ -290,6 +290,17 @@ pub(crate) struct DrawingsState {
     pub(crate) unreadable: Option<String>,
     /// The document's sheet settings changed since it was opened or saved.
     pub(crate) unsaved: bool,
+    /// The set the last export was refused at as another project's, with
+    /// what it was exported from, offered to take over (review 2026-11-04 r19
+    /// MF-162).
+    pub(crate) another_projects_set: Option<(
+        std::path::PathBuf,
+        crate::app::project_drawings::SetFileFormat,
+        String,
+    )>,
+    /// The set at this path the user takes over: the next export to it
+    /// replaces its sheets.
+    pub(crate) taking_over: Option<std::path::PathBuf>,
     /// The ground floor found for ±0,000 in the document as it was then,
     /// shown in the window, which asks every frame.
     pub(crate) found_zero: std::cell::RefCell<Option<(ExactCacheKey, f64)>>,

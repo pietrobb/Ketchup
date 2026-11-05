@@ -1297,6 +1297,7 @@ fn the_drawing_date_is_the_date_on_the_users_clock() {
 const DOCUMENT: crate::app::project_drawings::SetOwner = crate::app::project_drawings::SetOwner {
     document: ketchup_model::document::DocumentId(7),
     file: None,
+    written: BTreeMap::new(),
 };
 
 /// Review 2026-10-24 MF-27: a set's DXF sheets were written only as new
@@ -1304,17 +1305,18 @@ const DOCUMENT: crate::app::project_drawings::SetOwner = crate::app::project_dra
 #[test]
 fn a_set_exported_again_under_its_name_replaces_the_sheets_it_wrote() {
     use crate::app::project_drawings::{
-        SetFileFormat, project_drawings_targets, publish_project_drawings,
+        SetFileFormat, project_drawings_targets, publish_noted, publish_project_drawings,
     };
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("plan.dxf");
     let sheet = |number: u8| directory.path().join(format!("plan-0{number}.dxf"));
     let read = |number| std::fs::read(sheet(number)).unwrap();
-    let publish = |files: [&[u8]; 2]| {
-        let targets = project_drawings_targets(&path, SetFileFormat::Dxf, &DOCUMENT).unwrap();
+    let mut document = DOCUMENT;
+    let mut publish = |files: [&[u8]; 2]| {
+        let targets =
+            project_drawings_targets(&path, SetFileFormat::Dxf, &document, false).unwrap();
         let files = files.map(<[u8]>::to_vec);
-        publish_project_drawings(&path, SetFileFormat::Dxf, &files, &targets, &DOCUMENT)
-            .map(|_| targets)
+        publish_noted(&path, SetFileFormat::Dxf, &files, &mut document).map(|_| targets)
     };
     // Files named like no sheet of this set are not taken for one.
     for other in ["plan-1.dxf", "plan-ab.dxf", "planx-01.dxf", "plan-01.pdf"] {
@@ -1338,7 +1340,7 @@ fn a_set_exported_again_under_its_name_replaces_the_sheets_it_wrote() {
 
     // A sheet saved meanwhile is kept, and the one the export had already
     // replaced gets its bytes back: the set is written whole or not at all.
-    let targets = project_drawings_targets(&path, SetFileFormat::Dxf, &DOCUMENT).unwrap();
+    let targets = project_drawings_targets(&path, SetFileFormat::Dxf, &document, false).unwrap();
     std::fs::write(sheet(2), b"saved meanwhile").unwrap();
     assert!(
         publish_project_drawings(
@@ -1346,7 +1348,7 @@ fn a_set_exported_again_under_its_name_replaces_the_sheets_it_wrote() {
             SetFileFormat::Dxf,
             &[b"third 1".to_vec(), b"third 2".to_vec()],
             &targets,
-            &DOCUMENT,
+            &document,
         )
         .is_err()
     );
@@ -1362,15 +1364,15 @@ fn a_set_exported_again_under_its_name_replaces_the_sheets_it_wrote() {
 #[test]
 fn a_set_exported_again_with_fewer_sheets_removes_the_sheets_beyond_its_last() {
     use crate::app::project_drawings::{
-        SetFileFormat, project_drawings_targets, publish_project_drawings,
+        SetFileFormat, project_drawings_targets, publish_noted, publish_project_drawings,
     };
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("plan.dxf");
     let sheet = |number: u8| directory.path().join(format!("plan-0{number}.dxf"));
-    let publish = |files: &[&[u8]]| {
-        let targets = project_drawings_targets(&path, SetFileFormat::Dxf, &DOCUMENT).unwrap();
+    let mut document = DOCUMENT;
+    let mut publish = |files: &[&[u8]]| {
         let files: Vec<Vec<u8>> = files.iter().map(|file| file.to_vec()).collect();
-        publish_project_drawings(&path, SetFileFormat::Dxf, &files, &targets, &DOCUMENT)
+        publish_noted(&path, SetFileFormat::Dxf, &files, &mut document)
     };
     publish(&[b"a 1", b"a 2", b"a 3", b"a 4"]).unwrap();
 
@@ -1378,14 +1380,14 @@ fn a_set_exported_again_with_fewer_sheets_removes_the_sheets_beyond_its_last() {
     assert_eq!(paths, [sheet(1), sheet(2), sheet(3)]);
     assert!(!sheet(4).exists());
 
-    let targets = project_drawings_targets(&path, SetFileFormat::Dxf, &DOCUMENT).unwrap();
+    let targets = project_drawings_targets(&path, SetFileFormat::Dxf, &document, false).unwrap();
     std::fs::write(sheet(3), b"saved meanwhile").unwrap();
     let error = publish_project_drawings(
         &path,
         SetFileFormat::Dxf,
         &[b"c 1".to_vec(), b"c 2".to_vec()],
         &targets,
-        &DOCUMENT,
+        &document,
     )
     .unwrap_err();
     let crate::app::project_drawings::ProjectDrawingsError::Write(error) = error else {
@@ -1411,8 +1413,7 @@ fn a_set_exported_again_with_fewer_sheets_removes_the_sheets_beyond_its_last() {
 #[test]
 fn sheets_of_another_project_under_the_same_name_are_neither_replaced_nor_removed() {
     use crate::app::project_drawings::{
-        ProjectDrawingsError, SetFileFormat, SetOwner, project_drawings_targets,
-        publish_project_drawings,
+        ProjectDrawingsError, SetFileFormat, SetOwner, publish_noted,
     };
     use ketchup_model::document::DocumentId;
     // Two new projects are two projects, though both are called Untitled.
@@ -1424,17 +1425,17 @@ fn sheets_of_another_project_under_the_same_name_are_neither_replaced_nor_remove
     let path = directory.path().join("Untitled.dxf");
     let sheet = |number: u8| directory.path().join(format!("Untitled-0{number}.dxf"));
     let list = directory.path().join("Untitled.dxf.sheets.txt");
-    let publish = |document: DocumentId, files: &[&[u8]]| {
-        let document = &SetOwner {
-            document,
-            file: None,
-        };
-        let targets = project_drawings_targets(&path, SetFileFormat::Dxf, document).unwrap();
+    let publish = |document: &mut SetOwner, files: &[&[u8]]| {
         let files: Vec<Vec<u8>> = files.iter().map(|file| file.to_vec()).collect();
-        publish_project_drawings(&path, SetFileFormat::Dxf, &files, &targets, document)
+        publish_noted(&path, SetFileFormat::Dxf, &files, document)
     };
-    let other = DocumentId(8);
-    publish(other, &[b"A1", b"A2", b"A3", b"A4", b"A5"]).unwrap();
+    let mut other = SetOwner {
+        document: DocumentId(8),
+        file: None,
+        written: BTreeMap::new(),
+    };
+    let mut this = DOCUMENT;
+    publish(&mut other, &[b"A1", b"A2", b"A3", b"A4", b"A5"]).unwrap();
     let before = |count: u8| {
         (1..=count)
             .map(|number| std::fs::read(sheet(number)).unwrap())
@@ -1443,18 +1444,24 @@ fn sheets_of_another_project_under_the_same_name_are_neither_replaced_nor_remove
     let other_sheets = before(5);
     let other_list = std::fs::read(&list).unwrap();
 
-    let refused = |files: &[&[u8]]| {
-        let Err(ProjectDrawingsError::Write(_)) = publish(DOCUMENT.document, files) else {
-            panic!("another project's sheets were taken for this set's");
-        };
+    // Another project's set is named as its (review 2026-11-04 r19 MF-162).
+    let Err(ProjectDrawingsError::SetOfAnotherProject { list: named, .. }) =
+        publish(&mut this, &[b"B1", b"B2"])
+    else {
+        panic!("another project's sheets were taken for this set's");
     };
-    refused(&[b"B1", b"B2"]);
+    assert_eq!(named, list);
     assert_eq!(before(5), other_sheets);
     assert_eq!(std::fs::read(&list).unwrap(), other_list);
 
+    let refused = |this: &mut SetOwner, files: &[&[u8]]| {
+        let Err(ProjectDrawingsError::Write(_)) = publish(this, files) else {
+            panic!("sheets not this set's were replaced");
+        };
+    };
     // Sheets with no list are no set's: they are kept too.
     std::fs::remove_file(&list).unwrap();
-    refused(&[b"B1", b"B2"]);
+    refused(&mut this, &[b"B1", b"B2"]);
     assert_eq!(before(5), other_sheets);
     assert!(!list.exists());
 
@@ -1462,16 +1469,16 @@ fn sheets_of_another_project_under_the_same_name_are_neither_replaced_nor_remove
     for number in 1..=5 {
         std::fs::remove_file(sheet(number)).unwrap();
     }
-    publish(DOCUMENT.document, &[b"B1", b"B2", b"B3"]).unwrap();
+    publish(&mut this, &[b"B1", b"B2", b"B3"]).unwrap();
     std::fs::write(sheet(3), b"edited").unwrap();
-    refused(&[b"C1", b"C2"]);
+    refused(&mut this, &[b"C1", b"C2"]);
     assert_eq!(
         before(3),
         [b"B1".to_vec(), b"B2".to_vec(), b"edited".to_vec()]
     );
     std::fs::write(sheet(3), b"B3").unwrap();
     assert_eq!(
-        publish(DOCUMENT.document, &[b"C1", b"C2"]).unwrap(),
+        publish(&mut this, &[b"C1", b"C2"]).unwrap(),
         [sheet(1), sheet(2)]
     );
     assert!(!sheet(3).exists());

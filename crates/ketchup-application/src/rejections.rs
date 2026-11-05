@@ -171,6 +171,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Check that ketchup-program-worker is installed beside Kečup and export again; a drawing that keeps stopping it is too large to write back.",
     ),
     entry(
+        "drawings_set_of_another_project",
+        Request,
+        "path",
+        "The DXF or DWG drawing set at the path was exported from another project, or from another copy of this one since; the reason names its list and the project file it came from.",
+        "Ask the user: export to another folder or file name, or, if they agree to take that set over for this project, export again with take_over: true.",
+    ),
+    entry(
         "drawings_target_exists",
         Request,
         "path",
