@@ -423,10 +423,15 @@ impl SetOwner {
 impl KetchupApp {
     /// The owner of the sets the window exports now. Drawing files kept in a
     /// list that does not read are none of its, so no set is taken unasked.
+    /// A work recovery open is of the file it was found for (r19 MF-162).
     pub(crate) fn drawing_set_owner(&self) -> SetOwner {
         SetOwner {
             document: self.document.current().document_id(),
-            file: self.file.path.clone(),
+            file: self
+                .file
+                .path
+                .clone()
+                .or_else(|| self.recovery_requested_path().map(Path::to_path_buf)),
             written: self.written_drawings().unwrap_or_default(),
         }
     }
@@ -504,8 +509,9 @@ enum SetList {
 /// What `list`, at `list_path`, is to `owner`: its set when the document
 /// last wrote it there or `take_over` says to take it. A list of Kečup 0.3.2,
 /// which named the project by its absolute path, is the set of the project
-/// still kept in that file; an older one, naming no file, of the project's
-/// id. Any other is another project's, never this one's by its file name.
+/// still kept in that file, the same file on disk however its path is spelt
+/// (case, `.`, `\\?\`, a mapped drive or its share; r19 MF-162, capability
+/// review run 501); an older one, naming no file, of the project's id. Any other is another project's, never this one's by its file name.
 fn set_list_of(list: &[u8], list_path: &Path, owner: &SetOwner, take_over: bool) -> SetList {
     // A file that is not UTF-8 has no header of a list.
     let text = String::from_utf8_lossy(list);
@@ -538,7 +544,10 @@ fn set_list_of(list: &[u8], list_path: &Path, owner: &SetOwner, take_over: bool)
             && match header {
                 SET_LIST_HEADER => true,
                 OWNED_SET_LIST_HEADER => project.is_some_and(|project| {
-                    format!("project {project}") == project_path_line(owner) && owner.file.is_some()
+                    owner.file.as_deref().is_some_and(|file| {
+                        format!("project {project}") == project_path_line(owner)
+                            || same_file::is_same_file(project, file).unwrap_or(false)
+                    })
                 }),
                 _ => false,
             };

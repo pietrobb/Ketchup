@@ -1517,6 +1517,22 @@ fn the_drawing_date_is_written_as_the_sheet_language_writes_it() {
     }
 }
 
+/// Review 2026-11-04 r19 MF-162 (capability review run 501): a work recovery
+/// open has no file of its own, so a set its project wrote with Kečup 0.3.2,
+/// whose list names the file, was another project's. The sets are of the file
+/// the recovery was found for.
+#[test]
+fn a_recovered_session_exports_the_sets_of_the_file_it_was_found_for() {
+    let mut app = KetchupApp::new();
+    let requested = std::env::temp_dir().join("dom.ketchup");
+    app.file.recovery_open = Some(crate::app_state::RecoveryOpenState {
+        requested_path: requested.clone(),
+        source_path: requested.with_extension("ketchup.recovery"),
+        work_recovery_base: None,
+    });
+    assert_eq!(app.drawing_set_owner().file, Some(requested));
+}
+
 /// The project the sets of the MF-27 tests are drawn from.
 const DOCUMENT: crate::app::project_drawings::SetOwner = crate::app::project_drawings::SetOwner {
     document: ketchup_model::document::DocumentId(7),

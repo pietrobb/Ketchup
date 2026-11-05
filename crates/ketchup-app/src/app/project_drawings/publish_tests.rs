@@ -194,3 +194,64 @@ fn a_set_is_the_documents_that_wrote_it_last_whatever_its_file_is_called() {
     publish(&mut owner(None), &[b"listed by id 1", b"listed by id 2"]).unwrap();
     assert_eq!(std::fs::read(&sheets[1]).unwrap(), b"listed by id 2");
 }
+
+/// Review 2026-11-04 r19 MF-162 (capability review run 501): a list of Kečup
+/// 0.3.2 names the project's file by its absolute path, compared as text, so
+/// the same file opened as `c:\proj\dom.ketchup` after an export from
+/// `C:\Proj\Dom.ketchup`, or by another spelling of its path, took the
+/// project's own set for another project's. The file the list names is the
+/// project's when it is the same file on disk; another file still is not.
+#[test]
+fn a_0_3_2_list_is_the_projects_by_its_file_on_disk_not_by_the_spelling_of_its_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("house.dxf");
+    let format = SetFileFormat::Dxf;
+    let project = directory.path().join("House.ketchup");
+    std::fs::write(&project, b"project").unwrap();
+    let other = directory.path().join("Other.ketchup");
+    std::fs::write(&other, b"another project").unwrap();
+    let sheets = set_file_paths(&path, format, 1);
+    let list_path = set_list_path(&path, format);
+    let mut spellings = vec![
+        directory.path().join(".").join("House.ketchup"),
+        std::fs::canonicalize(&project).unwrap(),
+    ];
+    if cfg!(windows) {
+        spellings.push(directory.path().join("HOUSE.KETCHUP"));
+        let lower = project.display().to_string().to_lowercase();
+        spellings.push(PathBuf::from(lower));
+    }
+    for (index, spelling) in spellings.into_iter().enumerate() {
+        let before = format!("sheet {index}");
+        std::fs::write(&sheets[0], &before).unwrap();
+        std::fs::write(
+            &list_path,
+            format!(
+                "Ketchup drawing set of a project file\ndocument 42\nproject {}\nhouse-01.dxf {}\n",
+                project.display(),
+                sha256_hex(before.as_bytes())
+            ),
+        )
+        .unwrap();
+        let mut another = SetOwner {
+            document: DocumentId(42),
+            file: Some(other.clone()),
+            written: BTreeMap::new(),
+        };
+        assert!(
+            matches!(
+                publish_noted(&path, format, &[b"other".to_vec()], &mut another),
+                Err(ProjectDrawingsError::SetOfAnotherProject { .. })
+            ),
+            "another file is not the project's"
+        );
+        let mut owner = SetOwner {
+            document: DocumentId(42),
+            file: Some(spelling.clone()),
+            written: BTreeMap::new(),
+        };
+        publish_noted(&path, format, &[b"again".to_vec()], &mut owner)
+            .unwrap_or_else(|error| panic!("{} refused: {error:?}", spelling.display()));
+        assert_eq!(std::fs::read(&sheets[0]).unwrap(), b"again");
+    }
+}
