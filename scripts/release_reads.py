@@ -63,11 +63,12 @@ REVIEWED = {
     "v0.3.0": {
         # CD-61: `format_of` writes a document with a stretched line as 107.
         "AddedObject": {"Stretched"},
-        # The program worker's answer to a drawing export, never part of a document.
-        "DxfEditRefusal": {"ReadDifferently", "TooLarge"},
+        # The program worker's answer to a drawing export, never part of a document;
+        # ChangedInFile and DeletedInFile too (review 2026-11-04 r19 CD-163 and P3).
+        "DxfEditRefusal": {"ReadDifferently", "TooLarge", "ChangedInFile", "DeletedInFile"},
     },
-    "v0.3.1": {},
-    "v0.3.2": {},
+    "v0.3.1": {"DxfEditRefusal": {"ChangedInFile", "DeletedInFile"}},
+    "v0.3.2": {"DxfEditRefusal": {"ChangedInFile", "DeletedInFile"}},
 }
 
 ENUM = re.compile(
