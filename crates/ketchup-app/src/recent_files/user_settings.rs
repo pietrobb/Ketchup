@@ -90,7 +90,21 @@ impl SettingsFile {
     /// file that cannot be read is not written over; one with a line that is
     /// not UTF-8 is first kept whole as `settings.txt.bad`, and its other
     /// lines carried over.
+    ///
+    /// Another window saving meanwhile waits on `settings.txt.lock`, so it
+    /// reads this one's change before making its own. The new text is on the
+    /// disk before it replaces the old, through a symlink to the file, keeping
+    /// its permissions; a new file is its owner's only, and no part file is
+    /// left behind (review 2026-11-04 r19 P3).
     pub(crate) fn replace(&self, key: &str, values: &[String]) -> io::Result<()> {
+        let folder = self.path.parent().unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(folder)?;
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.path.with_extension("txt.lock"))?;
+        lock.lock()?;
         let (lines, damaged) = self.read()?;
         if damaged {
             std::fs::copy(&self.path, self.path.with_extension("txt.bad"))?;
@@ -103,15 +117,9 @@ impl SettingsFile {
             })
             .collect();
         lines.extend(values.iter().map(|value| format!("{key}={value}")));
-        let folder = self.path.parent().unwrap_or_else(|| Path::new("."));
-        std::fs::create_dir_all(folder)?;
-        let part = self
-            .path
-            .with_extension(format!("{}.part", std::process::id()));
         let mut text = lines.join("\n");
         text.push('\n');
-        std::fs::write(&part, text)?;
-        std::fs::rename(&part, &self.path)
+        crate::live_bridge::write_keeping_file(&self.path, &text, false)
     }
 
     /// The language tag chosen to be remembered.
@@ -181,7 +189,7 @@ mod tests {
         assert!(third.load().is_empty());
         assert_eq!(third.language().as_deref(), Some("cs"));
         assert_eq!(third.values("future-setting"), ["3"]);
-        assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1);
+        assert_eq!(beside_lock(&folder), [FILE_NAME]);
         std::fs::remove_dir_all(folder).unwrap();
     }
 
@@ -220,9 +228,78 @@ mod tests {
         assert!(settings.save_language("cs").is_err());
         assert!(path.is_dir());
         assert_eq!(
-            std::fs::read_dir(folder.path()).unwrap().count(),
-            1,
+            beside_lock(folder.path()),
+            [FILE_NAME],
             "nothing is left beside it"
+        );
+    }
+
+    /// The names in `folder` other than the lock windows take turns on.
+    fn beside_lock(folder: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(folder)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "settings.txt.lock")
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Review 2026-11-04 r19 P3: two windows saving at once each read the
+    /// file, changed their key and wrote it back, so one window's change was
+    /// lost; the second also renamed the first one's `.part` file away.
+    #[test]
+    fn windows_saving_at_once_keep_each_others_settings() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join(FILE_NAME);
+        let windows: Vec<_> = (0..8)
+            .map(|window| {
+                let settings = SettingsFile::at(path.clone());
+                std::thread::spawn(move || {
+                    for round in 0..25 {
+                        settings
+                            .replace(&format!("window{window}"), &[round.to_string()])
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for window in windows {
+            window.join().unwrap();
+        }
+        let settings = SettingsFile::at(path);
+        for window in 0..8 {
+            assert_eq!(settings.values(&format!("window{window}")), ["24"]);
+        }
+        let left: Vec<_> = std::fs::read_dir(folder.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name.to_string_lossy().ends_with(".part"))
+            .collect();
+        assert!(left.is_empty(), "no part file is left: {left:?}");
+    }
+
+    /// Review 2026-11-04 r19 P3: the settings (recent documents) were left
+    /// readable by everyone, and a symlinked settings file became a plain one.
+    #[cfg(unix)]
+    #[test]
+    fn the_settings_file_is_private_and_a_symlink_keeps_pointing_at_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join(FILE_NAME);
+        SettingsFile::at(path.clone()).save_language("sk").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "only its owner reads it: {mode:o}");
+
+        let dotfiles = folder.path().join("dotfiles.txt");
+        std::fs::rename(&path, &dotfiles).unwrap();
+        std::os::unix::fs::symlink(&dotfiles, &path).unwrap();
+        SettingsFile::at(path.clone()).save_language("cs").unwrap();
+        assert!(path.symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(
+            std::fs::read_to_string(&dotfiles)
+                .unwrap()
+                .contains("language=cs")
         );
     }
 

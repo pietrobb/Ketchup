@@ -131,7 +131,51 @@ pub(crate) trait PathProbe: Send + Sync {
     fn resolved(&self, path: &Path) -> Option<PathBuf>;
 }
 
-struct Disk;
+struct Disk {
+    /// The folder below which a missing folder was deleted, not a volume that
+    /// is not mounted now; `None` where an answering folder says so for its
+    /// whole volume (Windows: a drive or share that is out answers nothing).
+    local: Option<PathBuf>,
+}
+
+impl Disk {
+    fn of_this_computer() -> Self {
+        // Without a home folder no folder above a document's own is trusted:
+        // an absolute folder is never below a relative one.
+        let local = (!cfg!(windows)).then(|| {
+            std::env::home_dir()
+                .filter(|home| home.is_absolute())
+                .unwrap_or_else(|| PathBuf::from("."))
+        });
+        Self { local }
+    }
+
+    /// Whether the folders of a missing `path` answer: its own folder is
+    /// there, or the nearest one above it that is there is on this
+    /// computer's disk (review 2026-11-04 r19 P3: a document whose folder was
+    /// deleted stayed out of reach for ever).
+    fn folder_answers(&self, path: &Path) -> bool {
+        for folder in path.ancestors().skip(1) {
+            match std::fs::metadata(folder) {
+                Ok(metadata) => {
+                    return metadata.is_dir()
+                        && (Some(folder) == path.parent()
+                            || self
+                                .local
+                                .as_deref()
+                                .is_none_or(|local| folder.starts_with(local)));
+                }
+                // Only a folder that is not there lets the search go up.
+                Err(error) => {
+                    if error.kind() != std::io::ErrorKind::NotFound {
+                        return false;
+                    }
+                }
+            }
+        }
+        false
+    }
+}
 
 impl PathProbe for Disk {
     fn presence(&self, path: &Path) -> Presence {
@@ -139,9 +183,7 @@ impl PathProbe for Disk {
             Ok(metadata) if metadata.is_file() => Presence::Here,
             Ok(_) => Presence::Gone,
             Err(error) => {
-                if error.kind() == std::io::ErrorKind::NotFound
-                    && path.parent().is_some_and(Path::is_dir)
-                {
+                if error.kind() == std::io::ErrorKind::NotFound && self.folder_answers(path) {
                     Presence::Gone
                 } else {
                     Presence::Unavailable
@@ -191,7 +233,7 @@ impl Default for RecentFiles {
 impl RecentFiles {
     /// The list `store` holds, each document once and no more than the limit.
     pub(crate) fn from_store(store: Box<dyn RecentFilesStore>) -> Self {
-        Self::with_probe(store, Arc::new(Disk))
+        Self::with_probe(store, Arc::new(Disk::of_this_computer()))
     }
 
     fn with_probe(store: Box<dyn RecentFilesStore>, probe: Arc<dyn PathProbe>) -> Self {
@@ -403,6 +445,30 @@ mod tests {
 
     fn list(store: &MemoryRecentFiles) -> RecentFiles {
         RecentFiles::from_store(Box::new(store.clone()))
+    }
+
+    /// Review 2026-11-04 r19 P3: a document whose folder was deleted on the
+    /// computer's own disk stayed listed as out of reach for ever.
+    #[test]
+    fn a_document_in_a_folder_deleted_locally_is_gone() {
+        let directory = tempfile::tempdir().unwrap();
+        let document = directory
+            .path()
+            .join("Old")
+            .join("Phase 2")
+            .join("a.ketchup");
+        let local = |folder: &Path| Disk {
+            local: Some(folder.to_owned()),
+        };
+        assert_eq!(local(directory.path()).presence(&document), Presence::Gone);
+        assert_eq!(Disk { local: None }.presence(&document), Presence::Gone);
+        // Outside the computer's own folders a missing folder may be a volume
+        // not mounted now, as `/Volumes/NAS`: it may come back.
+        let home = directory.path().join("home");
+        assert_eq!(local(&home).presence(&document), Presence::Unavailable);
+        // Its own folder there still says it is gone anywhere.
+        let beside = directory.path().join("a.ketchup");
+        assert_eq!(local(&home).presence(&beside), Presence::Gone);
     }
 
     #[test]

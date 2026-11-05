@@ -218,6 +218,13 @@ pub(crate) fn with_codex_server(toml: &str, executable: &str) -> io::Result<Stri
 /// P3: it was truncated and written in place). A symlink to a file not there
 /// yet creates its target (r19 P3: it became a plain file).
 pub(crate) fn replace_file(file: &Path, text: &str) -> io::Result<()> {
+    write_keeping_file(file, text, true)
+}
+
+/// [`replace_file`] without the backup when `backup` is false. A new file is
+/// readable by its owner only (review 2026-11-04 r19 P3: the settings file,
+/// with the documents opened, was readable by everyone).
+pub(crate) fn write_keeping_file(file: &Path, text: &str, backup: bool) -> io::Result<()> {
     let target = match std::fs::canonicalize(file) {
         Ok(target) => target,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -228,11 +235,11 @@ pub(crate) fn replace_file(file: &Path, text: &str) -> io::Result<()> {
         }
         Err(error) => return Err(error),
     };
-    let mut backup = target.as_os_str().to_owned();
-    backup.push(".ketchup.bak");
-    let backup = std::path::PathBuf::from(backup);
-    if !backup.exists() {
-        std::fs::copy(&target, &backup)?;
+    let mut copy = target.as_os_str().to_owned();
+    copy.push(".ketchup.bak");
+    let copy = std::path::PathBuf::from(copy);
+    if backup && !copy.exists() {
+        std::fs::copy(&target, &copy)?;
     }
     let metadata = std::fs::metadata(&target)?;
     let directory = target.parent().unwrap_or(Path::new("."));
