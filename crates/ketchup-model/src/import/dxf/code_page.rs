@@ -513,7 +513,12 @@ impl TextSeen {
     /// TrueType font, the second byte of its flags (ACAD group 1071): the East European
     /// one, Windows-1250's, votes for it (review 2026-11-04 r19 P3).
     fn see_style(&mut self, trimmed: &[u8]) {
-        let number = || std::str::from_utf8(trimmed).ok()?.parse::<i64>().ok();
+        // A value that is no number names no group code or flags.
+        let number = || {
+            std::str::from_utf8(trimmed)
+                .ok()
+                .and_then(|text| text.parse::<i64>().ok())
+        };
         if self.lines.is_multiple_of(2) {
             self.code = number();
             return;
