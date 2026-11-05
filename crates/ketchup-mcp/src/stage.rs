@@ -3,6 +3,7 @@
 //!
 //! Opt-in: [`STAGE_DIR_ENV`] names the directory that holds the copies.
 //! Without it the window runs the source executable itself.
+use ketchup_rejection::{Reason, dropped};
 use std::{
     fs,
     io::{self, Read},
@@ -117,10 +118,9 @@ pub fn stage(source: &Path, root: &Path) -> io::Result<PathBuf> {
             fs::copy(file, partial.join(file_name))?;
         }
         if let Err(error) = fs::rename(&partial, &target) {
-            if fs::remove_dir_all(&partial).is_err() {
-                // What the rename did decides below; a partial copy that stays
-                // is cleared by the next stage of this process, above.
-            }
+            // What the rename did decides below; a partial copy that stays
+            // is cleared by the next stage of this process, above.
+            dropped(fs::remove_dir_all(&partial), Reason::RetriedLater);
             // Another server staged the same build concurrently.
             if !is_copy_of(&files, &target)? {
                 return Err(error);
@@ -211,9 +211,8 @@ fn remove_stale(root: &Path, current: &str, name: &std::ffi::OsStr) {
         if window.exists() && fs::remove_file(&window).is_err() {
             continue;
         }
-        if fs::remove_dir_all(dir).is_err() {
-            // A stale copy that stays is tried again by the next stage.
-        }
+        // A stale copy that stays is tried again by the next stage.
+        dropped(fs::remove_dir_all(dir), Reason::RetriedLater);
     }
 }
 

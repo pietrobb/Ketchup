@@ -218,13 +218,13 @@ impl WebViewer {
             (None, None) => format!("empty backend={backend}"),
         };
         if status != self.status {
-            if self
-                .canvas
-                .set_attribute("data-ketchup-viewer", &status)
-                .is_err()
-            {
-                // Only the status mark for tests and the hosting page is missing.
-            }
+            // Only the status mark for tests and the hosting page is missing.
+            ketchup_rejection::dropped(
+                self.canvas
+                    .set_attribute("data-ketchup-viewer", &status)
+                    .map_err(Js),
+                ketchup_rejection::Reason::Cosmetic,
+            );
             self.status = status;
         }
     }
@@ -525,6 +525,16 @@ fn browser_error_name(detail: &JsValue) -> Option<String> {
         .as_string()
 }
 
+/// A browser error said by its text, or its name when it has none.
+struct Js(JsValue);
+
+impl std::fmt::Display for Js {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let text = self.0.as_string().or_else(|| browser_error_name(&self.0));
+        formatter.write_str(text.as_deref().unwrap_or("a browser error"))
+    }
+}
+
 /// Save `bytes` through the browser's download, under `file_name`.
 fn download(file_name: &str, bytes: &[u8]) -> Result<(), Rejection> {
     let failed = |detail| {
@@ -549,16 +559,23 @@ fn download(file_name: &str, bytes: &[u8]) -> Result<(), Rejection> {
     // Release the file after the browser has taken it over. Kept or not, the
     // download has started; a file not released goes with the page.
     let release = Closure::once_into_js(move || {
-        if web_sys::Url::revoke_object_url(&url).is_err() {
-            // Goes with the page.
-        }
-    });
-    if let Some(window) = web_sys::window()
-        && window
-            .set_timeout_with_callback_and_timeout_and_arguments_0(release.unchecked_ref(), 60_000)
-            .is_err()
-    {
         // Goes with the page.
+        ketchup_rejection::dropped(
+            web_sys::Url::revoke_object_url(&url).map_err(Js),
+            ketchup_rejection::Reason::Cosmetic,
+        );
+    });
+    if let Some(window) = web_sys::window() {
+        // Goes with the page.
+        ketchup_rejection::dropped(
+            window
+                .set_timeout_with_callback_and_timeout_and_arguments_0(
+                    release.unchecked_ref(),
+                    60_000,
+                )
+                .map_err(Js),
+            ketchup_rejection::Reason::Cosmetic,
+        );
     }
     Ok(())
 }

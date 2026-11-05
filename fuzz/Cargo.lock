@@ -484,6 +484,7 @@ dependencies = [
  "encoding_rs",
  "epaint_default_fonts",
  "ketchup-geometry",
+ "ketchup-rejection",
  "ketchup-tolerance",
  "miniz_oxide",
  "serde",

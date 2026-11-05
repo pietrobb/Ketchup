@@ -1,5 +1,5 @@
 # Remaining errors that drop their cause or cases the types still allow (<file> <form> <count>, forms in scripts/check_error_hygiene.py); may only shrink.
-# forms: discard string unreachable silent_unreachable string_result str_result stringified_cause debug_formatted stringified_variant formatted_variant unwrap dropped_variant dropped_error formatted_cause stringified_field let_else_error dropped_quietly dropped_arm dropped_closure let_underscore guarded_arm named_underscore ok_statement from_discard
+# forms: discard string unreachable silent_unreachable string_result str_result stringified_cause debug_formatted stringified_variant formatted_variant unwrap dropped_variant dropped_error formatted_cause stringified_field let_else_error dropped_quietly dropped_arm dropped_closure let_underscore guarded_arm named_underscore ok_statement from_discard empty_is_err irrefutable_let eprintln
 crates/ketchup-analysis/src/fea.rs dropped_error 1
 crates/ketchup-analysis/src/validator_hosting.rs formatted_variant 1
 crates/ketchup-app/src/app/dimensions_ui.rs let_else_error 1
@@ -164,10 +164,13 @@ crates/ketchup-interaction/src/mesh_projection.rs dropped_error 2
 crates/ketchup-interaction/src/profile_surface.rs dropped_error 1
 crates/ketchup-manufacturing/src/fabrication/btlx.rs dropped_error 3
 crates/ketchup-manufacturing/src/viewer_export/received.rs dropped_error 2
+crates/ketchup-mcp/src/discovery.rs eprintln 3
 crates/ketchup-mcp/src/discovery.rs let_else_error 1
 crates/ketchup-mcp/src/local_auth.rs dropped_arm 1
+crates/ketchup-mcp/src/server.rs eprintln 1
 crates/ketchup-mcp/src/stage.rs formatted_cause 1
 crates/ketchup-mcp/src/stage.rs let_else_error 1
+crates/ketchup-mcp/src/tools.rs eprintln 1
 crates/ketchup-mcp/src/tools.rs formatted_cause 7
 crates/ketchup-model/src/assembly_recipe.rs dropped_error 1
 crates/ketchup-model/src/cam.rs formatted_cause 2
@@ -212,6 +215,8 @@ crates/ketchup-program/src/eval.rs stringified_field 1
 crates/ketchup-program/src/expect.rs dropped_error 1
 crates/ketchup-program/src/member_check.rs str_result 1
 crates/ketchup-program/src/model.rs unreachable 2
+crates/ketchup-scheduler/src/child_process.rs eprintln 1
+crates/ketchup-scheduler/src/exact_worker.rs eprintln 1
 crates/ketchup-scheduler/src/exact_worker.rs stringified_field 1
 crates/ketchup-scheduler/src/lib.rs dropped_error 2
 crates/ketchup-scheduler/src/lib.rs stringified_variant 28
@@ -226,9 +231,11 @@ crates/ketchup-scheduler/src/underlay_reading.rs stringified_field 5
 crates/ketchup-scheduler/src/validator_runtime.rs stringified_variant 8
 crates/ketchup-scheduler/src/worker_client.rs formatted_variant 5
 crates/ketchup-scheduler/src/worker_client.rs stringified_variant 10
+crates/ketchup-test-gpu/src/lib.rs eprintln 1
 crates/ketchup-viewer/src/app.rs dropped_error 2
 crates/ketchup-viewer/src/app/session.rs dropped_closure 1
 crates/ketchup-viewer/src/app/session.rs dropped_error 2
+crates/ketchup-viewer/src/desktop.rs eprintln 7
 crates/ketchup-viewer/src/desktop.rs let_else_error 2
 crates/ketchup-viewer/src/dimensions.rs dropped_error 2
 crates/ketchup-viewer/src/share.rs dropped_error 2

@@ -39,6 +39,11 @@ normative English documents and ADRs; dated reviews, status files and notes go t
   list is `CONTENT_FREE` in `scripts/check_error_hygiene.py`) may be dropped, and the closure names
   it: `map_err(|_: std::num::TryFromIntError| …)`. The script is a CI ratchet: counts per file may
   only shrink (`--update` locks progress in).
+- An error nobody can act on (a receiver gone, a process already ended) is dropped only through
+  `ketchup_rejection::dropped(result, Reason::…)`, which names why and writes it to the log; not
+  `let _ =`, an empty `if …is_err() {}` or `let (Ok(..) | Err(..)) =`. Log with
+  `ketchup_rejection::log!`, not `eprintln!`: a window has no console (outside a command line's
+  `main.rs` and `src/bin/`).
 - Rules the caller must satisfy (for example derived hole depths) belong in the schema/library
   documentation, not only in the rejection.
 

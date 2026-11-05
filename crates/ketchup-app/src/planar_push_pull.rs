@@ -2,6 +2,7 @@ use super::*;
 use ketchup_geometry::linalg::normalize_within;
 use ketchup_interaction::exact_projection::ExactSurfaceHit;
 use ketchup_model::tolerance::{ACCUMULATED_ROUNDING, ROUNDING, SCREEN_ROUNDING_PX};
+use ketchup_rejection::{Reason, dropped};
 #[cfg(test)]
 #[path = "planar_push_pull_tests.rs"]
 pub(crate) mod tests;
@@ -344,25 +345,24 @@ impl KetchupApp {
             for package in render.render_values(snapshot) {
                 // `get_render` is unique-or-nothing: render results stand in
                 // unless topology has exactly one package for this definition.
-                if topology_counts.get(&package.definition_id()) != Some(&1)
-                    && registry
-                        .insert_current(snapshot, Arc::clone(package))
-                        .is_err()
-                {
+                if topology_counts.get(&package.definition_id()) != Some(&1) {
                     // Render values are current; a second package for one result
                     // leaves the first in place.
+                    dropped(
+                        registry.insert_current(snapshot, Arc::clone(package)),
+                        Reason::AlreadyHeld,
+                    );
                 }
             }
         }
         if let Some(topology) = topology {
             for package in topology.render_values(snapshot) {
-                if registry
-                    .insert_current(snapshot, Arc::clone(package))
-                    .is_err()
-                {
-                    // A topology package for a result a render package already
-                    // gave leaves that one in place.
-                }
+                // A topology package for a result a render package already
+                // gave leaves that one in place.
+                dropped(
+                    registry.insert_current(snapshot, Arc::clone(package)),
+                    Reason::AlreadyHeld,
+                );
             }
         }
         registry

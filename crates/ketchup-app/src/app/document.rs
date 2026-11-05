@@ -14,6 +14,16 @@ pub(crate) enum SaveFailure {
     Failed,
 }
 
+impl std::fmt::Display for SaveFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Cancelled => "the save was cancelled before it wrote",
+            Self::Declined => "the save was declined",
+            Self::Failed => "the save failed; the status line says why",
+        })
+    }
+}
+
 impl KetchupApp {
     #[must_use]
     pub const fn build_version() -> &'static str {
@@ -1214,7 +1224,7 @@ impl KetchupApp {
             return;
         };
         if let Err(error) = export(self, &path) {
-            eprintln!("{extension} export to {} refused: {error}", path.display());
+            ketchup_rejection::log!("{extension} export to {} refused: {error}", path.display());
         }
     }
 

@@ -1124,14 +1124,14 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                                     Ok(products) => products,
                                     // Interrupted, not completed: it stays the active body.
                                     Err(error) if worker_cancelled.load(Ordering::Acquire) => {
-                                        eprintln!(
+                                        ketchup_rejection::log!(
                                             "exact evaluation of definition {} interrupted: {error}",
                                             definition_id.0
                                         );
                                         break;
                                     }
                                     Err(error) => {
-                                        eprintln!(
+                                        ketchup_rejection::log!(
                                             "exact evaluation rejected definition {}: {error}",
                                             definition_id.0
                                         );

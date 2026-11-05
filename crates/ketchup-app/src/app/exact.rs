@@ -449,7 +449,7 @@ impl KetchupApp {
                     .then(|| Instant::now() + Duration::from_secs(1));
             }
             Err(error) => {
-                eprintln!("exact evaluation rejected: {error}");
+                ketchup_rejection::log!("exact evaluation rejected: {error}");
                 self.exact.retry_at = Some(Instant::now() + Duration::from_secs(1));
             }
         }

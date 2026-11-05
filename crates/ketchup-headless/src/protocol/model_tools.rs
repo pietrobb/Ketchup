@@ -2,6 +2,7 @@ use super::*;
 use ketchup_application::model_query::{self, EditContextRequest, EntityKind, PageRequest};
 use ketchup_assistant::sidecar::AssistantInstancePath;
 use ketchup_model::tolerance::limits;
+use ketchup_rejection::{Reason, dropped};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -259,10 +260,9 @@ impl Server {
                             .min(u128::from(u64::MAX))
                             as u64;
                         self.verify_jobs[index].state = VerifyJobState::Cancelled;
-                        if let Some(stop) = self.verify_jobs[index].deadline_stop.take()
-                            && stop.send(()).is_err()
-                        {
+                        if let Some(stop) = self.verify_jobs[index].deadline_stop.take() {
                             // The deadline has passed and its timer is gone already.
+                            dropped(stop.send(()), Reason::NobodyWaiting);
                         }
                     }
                     self.verify_job_value(index)

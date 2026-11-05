@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_rejection::{Held, Reason, dropped};
 use ketchup_tolerance::limits;
 
 mod commands;
@@ -156,14 +157,15 @@ fn keep_exact_caches(
     feature_graph: Arc<FeatureDependencyGraph>,
     view_only: bool,
 ) {
-    if product
-        .exact_graphs
-        .dependencies
-        .set(Ok(feature_graph))
-        .is_err()
-    {
-        // A graph set already was drawn from this same product.
-    }
+    // A graph set already was drawn from this same product.
+    dropped(
+        product
+            .exact_graphs
+            .dependencies
+            .set(Ok(feature_graph))
+            .map_err(Held),
+        Reason::AlreadyHeld,
+    );
     if view_only {
         product.exact_graphs.inherit_graphs(&previous.exact_graphs);
     }

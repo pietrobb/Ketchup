@@ -7,6 +7,7 @@
 use super::{Prepared, ViewerApp};
 use crate::model::Model;
 use crate::review::Review;
+use ketchup_rejection::{Reason, dropped};
 use ketchup_rejection::{Rejection, RejectionPhase};
 use ketchup_view_format::PackageExport as _;
 use std::io::Write as _;
@@ -315,9 +316,10 @@ fn write_durably(
                 .and_then(|()| sync_directory(path.parent().unwrap_or(Path::new("."))))
                 .map_err(|error| session_error(path, error))
         });
-    if written.is_err() && std::fs::remove_file(&temporary).is_err() {
+    if written.is_err() {
         // The write's error is the one reported; the next save writes the
         // temporary file over.
+        dropped(std::fs::remove_file(&temporary), Reason::RetriedLater);
     }
     written
 }

@@ -85,7 +85,7 @@ impl KetchupApp {
         };
         if let Err(error) = self.import_viewer_comments_from(&path) {
             // The import has shown the refusal; logged with its cause (TST-140).
-            eprintln!("viewer comments import refused: {error}");
+            ketchup_rejection::log!("viewer comments import refused: {error}");
         }
     }
 

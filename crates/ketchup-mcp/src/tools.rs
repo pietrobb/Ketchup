@@ -8,6 +8,7 @@ use crate::{
     discovery::{self, Window},
     docs, stage,
 };
+use ketchup_rejection::{Reason, dropped};
 use serde_json::{Map, Value, json};
 use std::{
     io::{self, Read, Write},
@@ -660,12 +661,10 @@ impl Tools {
             Err(error) => {
                 // Only our failed child is stopped; never select or touch another window.
                 // The launch's error is the one reported.
-                if child.kill().is_err() {
-                    // It has exited already; the wait reaps it.
-                }
-                if child.wait().is_err() {
-                    // Nothing is left to reap.
-                }
+                // It has exited already; the wait reaps it.
+                dropped(child.kill(), Reason::AlreadyEnded);
+                // Nothing is left to reap.
+                dropped(child.wait(), Reason::AlreadyEnded);
                 return Err(failed(error));
             }
         };
@@ -975,13 +974,14 @@ fn launch_connection(
         .name("ketchup-child-readiness".into())
         .spawn(move || {
             let ready = discovery::launched_window(&mut output, document);
-            if send.send(ready).is_err() {
-                // The launch stopped waiting and reports its own timeout.
-            }
+            // The launch stopped waiting and reports its own timeout.
+            dropped(send.send(ready), Reason::NobodyWaiting);
             // The detached window may outlive this MCP connection. Drain, never retain logs.
-            if io::copy(&mut output, &mut io::sink()).is_err() {
-                // The window closed its output: nothing is left to drain.
-            }
+            // The window closed its output: nothing is left to drain.
+            dropped(
+                io::copy(&mut output, &mut io::sink()),
+                Reason::NobodyWaiting,
+            );
         })?;
     let (window, address) = wait_ready(&receive, wait, cancel)?;
     Ok((window, Connection::open(address, token)?))

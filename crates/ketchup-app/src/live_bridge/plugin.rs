@@ -131,9 +131,12 @@ pub(super) fn launch(
         .lock()
         .ok()
         .and_then(|mut gate| gate.take_if(|(plugin, _)| request.plugin.as_ref() == Some(plugin)))
-        && gate.recv_timeout(Duration::from_secs(5)).is_err()
     {
         // A test that never opens the gate lets the launch go on after 5 s.
+        ketchup_rejection::dropped(
+            gate.recv_timeout(Duration::from_secs(5)),
+            ketchup_rejection::Reason::NobodyWaiting,
+        );
     }
     match (&request.plugin, &request.executable) {
         (Some(plugin), None) => {
