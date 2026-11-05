@@ -6,7 +6,7 @@
 use super::ViewFrame;
 use ketchup_geometry::linalg::dot;
 use ketchup_model::annotation::{
-    Annotation, AnnotationMark, DimensionLayout, dimension_text, paper,
+    Annotation, AnnotationMark, DecimalMark, DimensionLayout, dimension_text_with, paper,
 };
 use ketchup_model::sheet_pdf::{Anchor, Mark, Page, Stroke};
 use ketchup_model::tolerance::{MIN_DIMENSION_MM, ROUNDING};
@@ -71,16 +71,14 @@ pub(super) struct PlanAnnotations {
     pub(super) counts: AnnotationCounts,
 }
 
-/// A dimension's value with `separator` before its decimal, as the sheet
-/// writes its numbers (review 2026-11-04 MF-140).
-fn dimension_value(value_mm: f64, separator: char) -> String {
-    dimension_text(value_mm).replace('.', &separator.to_string())
-}
-
 impl PlanAnnotations {
     /// The annotations as the plan in `frame` draws them, their dimensions
     /// written with `separator` before the decimal.
-    pub(super) fn project(frame: &ViewFrame, annotations: &[Annotation], separator: char) -> Self {
+    pub(super) fn project(
+        frame: &ViewFrame,
+        annotations: &[Annotation],
+        separator: DecimalMark,
+    ) -> Self {
         let mut counts = AnnotationCounts::default();
         let mut marks = Vec::with_capacity(annotations.len());
         for annotation in annotations {
@@ -111,7 +109,7 @@ impl PlanAnnotations {
         frame: &ViewFrame,
         annotations: &[Annotation],
         centre: [f64; 3],
-        separator: char,
+        separator: DecimalMark,
     ) -> Self {
         let mut marks = Vec::new();
         for annotation in annotations {
@@ -161,7 +159,7 @@ impl PlanAnnotations {
             marks.push(Projected::Dimension {
                 measured,
                 line,
-                value: dimension_value(layout.value_mm, separator),
+                value: dimension_text_with(layout.value_mm, separator),
                 height_mm: *height_mm,
             });
         }
@@ -201,14 +199,14 @@ pub fn annotation_marks(
     project: impl Fn([f64; 3]) -> Option<[f64; 2]>,
 ) -> Option<Vec<Mark>> {
     let mut page = Page::default();
-    projected(annotation, project, '.')?.draw(&mut page, &|point| point);
+    projected(annotation, project, DecimalMark::Point)?.draw(&mut page, &|point| point);
     Some(page.marks)
 }
 
 fn projected(
     annotation: &Annotation,
     project: impl Fn([f64; 3]) -> Option<[f64; 2]>,
-    separator: char,
+    separator: DecimalMark,
 ) -> Option<Projected> {
     Some(match &annotation.mark {
         AnnotationMark::Text {
@@ -234,7 +232,7 @@ fn projected(
             Projected::Dimension {
                 measured: [project(*from_mm)?, project(*to_mm)?],
                 line,
-                value: dimension_value(layout.value_mm, separator),
+                value: dimension_text_with(layout.value_mm, separator),
                 height_mm: *height_mm,
             }
         }
@@ -379,7 +377,8 @@ mod tests {
                 height_mm: 2.5,
             },
         };
-        let drawn = PlanAnnotations::project_upright(&side, &[vertical], [500.0; 3], '.');
+        let drawn =
+            PlanAnnotations::project_upright(&side, &[vertical], [500.0; 3], DecimalMark::Point);
         let Some(Projected::Dimension { measured, line, .. }) = drawn.marks.first() else {
             panic!("the vertical dimension is drawn");
         };
@@ -417,7 +416,7 @@ mod tests {
         };
         let centre = [2000.0, 500.0, 1000.0];
         let count = |frame: &ViewFrame, annotation: Annotation| {
-            PlanAnnotations::project_upright(frame, &[annotation], centre, '.')
+            PlanAnnotations::project_upright(frame, &[annotation], centre, DecimalMark::Point)
                 .counts
                 .dimensions
         };

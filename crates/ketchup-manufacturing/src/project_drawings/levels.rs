@@ -3,6 +3,7 @@
 //! level is a line right of the view with a triangle standing on it and its
 //! height above ±0,000 in metres beside, as Czech and Slovak drawings write it.
 
+use ketchup_model::annotation::DecimalMark;
 use ketchup_model::sheet_pdf::{Anchor, Mark, Page, Stroke};
 
 /// Levels nearer than this to a lower one are marked once (not a tolerance: a
@@ -34,7 +35,7 @@ pub(super) fn level_heights(datum_mm: f64, floors: &[f64], low: f64, high: f64) 
 
 /// A height above ±0,000 as a level mark writes it: metres to the millimetre,
 /// signed, with `separator` before the decimals ("±0,000", "+2,850", "-0,450").
-pub(super) fn level_text(above_datum_mm: f64, separator: char) -> String {
+pub(super) fn level_text(above_datum_mm: f64, separator: DecimalMark) -> String {
     let whole_mm = above_datum_mm.round();
     let sign = if whole_mm > 0.0 {
         "+"
@@ -44,7 +45,7 @@ pub(super) fn level_text(above_datum_mm: f64, separator: char) -> String {
         "±"
     };
     let metres = format!("{:.3}", whole_mm.abs() / 1000.0);
-    format!("{sign}{}", metres.replace('.', &separator.to_string()))
+    format!("{sign}{}", separator.written(&metres))
 }
 
 /// Draws the level marks right of `right` (page mm): each `(y, text)` a line at
@@ -80,11 +81,11 @@ mod tests {
 
     #[test]
     fn a_level_is_written_in_metres_against_zero() {
-        assert_eq!(level_text(0.0, ','), "±0,000");
-        assert_eq!(level_text(0.4, ','), "±0,000");
-        assert_eq!(level_text(2850.0, ','), "+2,850");
-        assert_eq!(level_text(-450.0, ','), "-0,450");
-        assert_eq!(level_text(12_345.6, '.'), "+12.346");
+        assert_eq!(level_text(0.0, DecimalMark::Comma), "±0,000");
+        assert_eq!(level_text(0.4, DecimalMark::Comma), "±0,000");
+        assert_eq!(level_text(2850.0, DecimalMark::Comma), "+2,850");
+        assert_eq!(level_text(-450.0, DecimalMark::Comma), "-0,450");
+        assert_eq!(level_text(12_345.6, DecimalMark::Point), "+12.346");
     }
 
     #[test]

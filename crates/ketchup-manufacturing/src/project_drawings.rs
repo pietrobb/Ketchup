@@ -1500,7 +1500,7 @@ mod tests {
     #[test]
     fn sections_and_elevations_mark_their_levels_against_the_floor() {
         let options = DrawingSetOptions {
-            decimal_comma: true,
+            decimal_separator: ketchup_model::annotation::DecimalMark::Comma,
             ..options(&room(), None)
         };
         let set = drawing_set(&room(), &options).unwrap();
@@ -1555,7 +1555,7 @@ mod tests {
             let mut house = house.clone();
             house.push(cuboid("gallery", [0.0, 0.0, 1400.0], gallery_corner));
             let mut options = DrawingSetOptions {
-                decimal_comma: true,
+                decimal_separator: ketchup_model::annotation::DecimalMark::Comma,
                 ..options(&house, None)
             };
             let levels = |options: &DrawingSetOptions| {
@@ -1589,7 +1589,7 @@ mod tests {
     fn furniture_is_no_level_and_a_gallery_of_planks_and_a_narrow_landing_are() {
         let levels = |solids: &[DrawingSolid]| {
             let options = DrawingSetOptions {
-                decimal_comma: true,
+                decimal_separator: ketchup_model::annotation::DecimalMark::Comma,
                 ..options(solids, None)
             };
             let set = drawing_set(solids, &options).unwrap();

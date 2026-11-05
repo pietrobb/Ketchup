@@ -23,6 +23,7 @@ use ketchup_manufacturing::project_drawings::{
 use ketchup_manufacturing::title_block::{
     DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM, SheetFormat, SheetLanguage, SheetSettings, TitleField,
 };
+use ketchup_model::annotation::{DecimalMark, dimension_text_with};
 use ketchup_model::sheet_pdf::PdfInfo;
 use ketchup_program::Evaluated;
 use std::borrow::Cow;
@@ -852,6 +853,17 @@ pub(crate) fn missing_parts_list(parts: &[String]) -> String {
     list
 }
 
+/// What the sheets of `catalog` write before a decimal, read from its one
+/// key for every number of a sheet, a plan DXF and a cutting list (review
+/// 2026-11-04 r19 P3).
+pub(crate) fn sheet_decimal_mark(catalog: &LocaleCatalog) -> DecimalMark {
+    if catalog.text("drawings-sheet-decimal-separator") == "," {
+        DecimalMark::Comma
+    } else {
+        DecimalMark::Point
+    }
+}
+
 /// Today's date where the user is, as the sheets of `catalog` write it.
 fn today(catalog: &LocaleCatalog) -> String {
     let now = std::time::SystemTime::now()
@@ -1172,7 +1184,7 @@ impl KetchupApp {
 
     /// The texts the sheets are titled with: those of `language`, the
     /// window's when none (Měchenice MECH-5).
-    fn sheet_catalog(&self, language: Option<SheetLanguage>) -> Cow<'_, LocaleCatalog> {
+    pub(crate) fn sheet_catalog(&self, language: Option<SheetLanguage>) -> Cow<'_, LocaleCatalog> {
         match language {
             None => Cow::Borrowed(&self.catalog),
             Some(SheetLanguage::Czech) => Cow::Owned(LocaleCatalog::czech_sheets()),
@@ -1369,13 +1381,13 @@ impl KetchupApp {
             return Vec::new();
         };
         // The numbers take the sheet's decimal separator, as its level marks
-        // and dimensions do (review 2026-11-04 MF-140).
-        let separator = catalog.text("drawings-sheet-decimal-separator");
-        let number = |value: f64| value.to_string().replace('.', &separator);
+        // and dimensions do (review 2026-11-04 MF-140, r19 P3).
+        let mark = sheet_decimal_mark(catalog);
+        let number = |value: f64| mark.written(&value.to_string());
         let mm = |values: &[f64]| {
             values
                 .iter()
-                .map(|value| number((value * 10.0).round() / 10.0))
+                .map(|value| dimension_text_with(*value, mark))
                 .collect::<Vec<_>>()
                 .join(" x ")
         };
@@ -1602,7 +1614,7 @@ impl KetchupApp {
                 openings,
                 shop,
                 cutting,
-                decimal_comma: catalog.text("drawings-sheet-decimal-separator") == ",",
+                decimal_separator: sheet_decimal_mark(&catalog),
                 zero_level_mm,
             },
             info,

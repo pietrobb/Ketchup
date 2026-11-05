@@ -1453,6 +1453,48 @@ fn the_drawing_date_is_the_date_on_the_users_clock() {
     assert_eq!(date_at(&slovak, 1_798_761_660, -3_600), "31. 12. 2026");
 }
 
+/// Review 2026-11-04 r19 P3: the plan DXF wrote a dimension of 1234.5 mm
+/// with a point also for Czech and Slovak sheets, which write a decimal
+/// comma on the PDF; it writes the separator of the sheet language.
+#[test]
+fn the_plan_dxf_writes_the_decimal_separator_of_the_sheet_language() {
+    use ketchup_model::annotation::{Annotation, AnnotationMark};
+    let mut app = KetchupApp::new().with_dialogs(Box::new(
+        crate::dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(84),
+    ));
+    let directory = tempfile::tempdir().unwrap();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::SetAnnotations {
+            annotations: vec![Annotation {
+                name: "span".to_owned(),
+                tags: Default::default(),
+                mark: AnnotationMark::Dimension {
+                    from_mm: [0.0, -2000.0, 0.0],
+                    to_mm: [1234.5, -2000.0, 0.0],
+                    offset_mm: 500.0,
+                    height_mm: 2.5,
+                },
+            }],
+        }]))
+        .unwrap();
+    for (language, value) in [
+        (SheetLanguage::Czech, "1234,5"),
+        (SheetLanguage::Slovak, "1234,5"),
+        (SheetLanguage::English, "1234.5"),
+    ] {
+        let mut settings = app.sheet_settings();
+        settings.language = Some(language);
+        app.store_sheet_settings(settings);
+        let path = directory.path().join(format!("plan-{language:?}.dxf"));
+        app.export_current_plan_dxf_to(&path, 50.0).unwrap();
+        let dxf = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            dxf.lines().any(|line| line.trim() == value),
+            "{language:?} writes {value}"
+        );
+    }
+}
+
 /// Review 2026-11-04 r19 P3: the date of an English sheet was written
 /// "5. 11. 2026", the Czech and Slovak way; it is written as the sheet's
 /// language writes it, ISO 8601 on an English sheet.
