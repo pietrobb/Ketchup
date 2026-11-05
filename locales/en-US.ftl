@@ -1240,6 +1240,7 @@ params-at-most = at most { $max }
 params-set = { $name } set to { $value }.
 params-refused = { $name } unchanged: { $reason }
 params-not-whole = it takes whole numbers only
+params-out-of-range = it takes values in { $range } only
 dock-variants = VARIANTS
 variants-row = { $name }: { $values }
 variants-use = Use { $name }

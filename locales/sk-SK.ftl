@@ -1239,6 +1239,7 @@ params-at-most = najviac { $max }
 params-set = { $name } je teraz { $value }.
 params-refused = { $name } sa nezmenil: { $reason }
 params-not-whole = berie len celé čísla
+params-out-of-range = berie len hodnoty v rozsahu { $range }
 dock-variants = VARIANTY
 variants-row = { $name }: { $values }
 variants-use = Použiť { $name }

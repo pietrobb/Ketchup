@@ -285,6 +285,54 @@ fn a_whole_parameter_field_refuses_a_fraction() {
     assert_eq!(field_value(&harness, "shelves").as_deref(), Some("3"));
 }
 
+/// Review 2026-11-04 r19 (rest of WB-42): a value above `max` was built first and only
+/// then reported; the program now refuses such an override, so the field refuses it
+/// first, naming the range, and keeps the value set before.
+#[test]
+fn a_parameter_field_refuses_a_value_outside_its_range() {
+    let mut harness = harness();
+    let counted = RuleProgramSource {
+        file_name: "shelves.star".into(),
+        source: "N = param(\"shelves\", 2, min = 1, max = 20, unit = \"\", whole = True)\n\
+                 for i in range(N):\n    box(\"s%d\" % i, (600, 400, 18), at = (0, 0, 300 * i))\n"
+            .into(),
+        overrides: BTreeMap::new(),
+        variants: BTreeMap::new(),
+    };
+    harness
+        .state_mut()
+        .apply_program_source(counted, false)
+        .unwrap();
+    settle(&mut harness);
+    let (stamp, undo) = (
+        harness.state().live_bridge_stamp(),
+        harness.state().undo_step_count(),
+    );
+    type_parameter(&mut harness, "shelves", "5000");
+    settle(&mut harness);
+    assert_eq!(harness.state().live_bridge_stamp(), stamp);
+    assert_eq!(harness.state().undo_step_count(), undo);
+    let refused = harness.state().catalog.format(
+        "params-refused",
+        &BTreeMap::from([
+            ("name", "shelves".to_owned()),
+            (
+                "reason",
+                harness.state().catalog.format(
+                    "params-out-of-range",
+                    &BTreeMap::from([("range", "[1, 20]".to_owned())]),
+                ),
+            ),
+        ]),
+    );
+    assert_eq!(harness.state().live.variants.outcome, Some(refused));
+    assert_eq!(field_value(&harness, "shelves").as_deref(), Some("2"));
+    type_parameter(&mut harness, "shelves", "20");
+    settle(&mut harness);
+    assert_eq!(harness.state().undo_step_count(), undo + 1);
+    assert_eq!(field_value(&harness, "shelves").as_deref(), Some("20"));
+}
+
 /// Review 2026-10-24 UI-29: an evaluation or action that began while a value was being
 /// typed turned the field off, and the typed text was lost; a third of a metre read
 /// `333.3333333333333`. The field being typed in stays, its text is set once the window
