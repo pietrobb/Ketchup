@@ -26,20 +26,33 @@ pub fn serve_stdio(app_executable: Option<PathBuf>) -> io::Result<()> {
         app_executable,
         discovery::default_root(),
     )));
-    let gone = Arc::default();
+    let gone = Arc::new(Gone::cancelling(session.cancel.clone()));
     serve(io::stdin().lock(), io::stdout(), &gone, move |message| {
         route(&session, message)
     })
 }
 
-/// Set once the client has gone, that is its input has ended.
+/// The tool calls read and waiting for their turn at most: reading the input
+/// waits while so many wait, so a client sending faster than the window works
+/// does not fill the memory with messages of up to [`MAX_LINE_BYTES`] (review
+/// 2026-11-04 r19 MCP-161).
+const QUEUED_CALLS: usize = 16;
+
+/// Set once the client has gone: its input has ended or a reply could not be
+/// written to it. The tool call running then is cancelled, as no one is left
+/// to be told what it did (review 2026-11-04 r19 MCP-161).
 #[derive(Default)]
-struct Gone(Mutex<bool>, Condvar);
+struct Gone(Mutex<bool>, Condvar, Cancel);
 
 impl Gone {
-    fn set(&self) {
+    fn cancelling(cancel: Cancel) -> Self {
+        Self(Mutex::default(), Condvar::new(), cancel)
+    }
+
+    fn set(&self) -> io::Result<()> {
         *self.0.lock().unwrap_or_else(PoisonError::into_inner) = true;
         self.1.notify_all();
+        self.2.close()
     }
 
     fn is_set(&self) -> bool {
@@ -90,9 +103,10 @@ fn route(session: &Arc<Session<Tools>>, message: Value) -> Routed {
 /// Answers each line of `input` on `output` until `input` ends: at once, or
 /// a tool call in its turn on one worker (MECH-1, MCP-142). A line that is no
 /// JSON, or longer than [`MAX_LINE_BYTES`], gets an error reply and the
-/// server goes on with the next (review 2026-10-31 P3). When `input` ends the
-/// client has gone: the call running then is answered, those waiting for
-/// their turn are not run (review 2026-11-04 MCP-142); `gone` is set then.
+/// server goes on with the next (review 2026-10-31 P3). When `input` ends, or
+/// a reply cannot be written, the client has gone: `gone` is set, cancelling
+/// the call running then, and those waiting for their turn are not run
+/// (review 2026-11-04 MCP-142, r19 MCP-161).
 fn serve(
     mut input: impl BufRead,
     output: impl Write + Send + 'static,
@@ -100,27 +114,28 @@ fn serve(
     route: impl Fn(Value) -> Routed,
 ) -> io::Result<()> {
     let output = Arc::new(Mutex::new(output));
-    let (queue, turns) = mpsc::channel::<Turn>();
+    let (queue, turns) = mpsc::sync_channel::<Turn>(QUEUED_CALLS);
     let worker = {
         let (output, gone) = (Arc::clone(&output), Arc::clone(gone));
         thread::spawn(move || {
-            let mut first_failure = Ok(());
+            let (mut written, mut stopped) = (Ok(()), Ok(()));
+            // Once gone, the calls left are taken off the queue, not run.
             for turn in turns {
                 if gone.is_set() {
                     continue;
                 }
-                if let Some(reply) = turn() {
-                    let written = write_reply(&output, &reply);
-                    if first_failure.is_ok() {
-                        first_failure = written;
-                    }
+                if let Some(reply) = turn()
+                    && let Err(error) = write_reply(&output, &reply)
+                {
+                    written = Err(error);
+                    stopped = gone.set();
                 }
             }
-            first_failure
+            written.and(stopped)
         })
     };
     let read = read_messages(&mut input, &output, &queue, route);
-    gone.set();
+    let stopped = gone.set();
     drop(queue);
     let worked = worker.join().unwrap_or_else(|panic| {
         Err(io::Error::other(format!(
@@ -132,14 +147,14 @@ fn serve(
                 .unwrap_or("no message")
         )))
     });
-    read.and(worked)
+    read.and(worked).and(stopped)
 }
 
 /// Reads `input` to its end, answering at once or queueing each message.
 fn read_messages(
     input: &mut impl BufRead,
     output: &Mutex<impl Write>,
-    queue: &mpsc::Sender<Turn>,
+    queue: &mpsc::SyncSender<Turn>,
     route: impl Fn(Value) -> Routed,
 ) -> io::Result<()> {
     while let Some(line) = read_line(input)? {
@@ -631,6 +646,198 @@ mod tests {
             !second_ran.load(Ordering::Acquire),
             "a call still waiting for its turn ran after the client had gone"
         );
+    }
+
+    /// Review 2026-11-04 r19 MCP-161: when stdin ended, the call running then
+    /// still waited for the window, so an apply_and_verify or run_plugin
+    /// changed the document for a client that had gone. Its wait is cancelled.
+    #[test]
+    fn the_call_running_when_the_client_goes_is_cancelled() {
+        let (send_line, lines) = std::sync::mpsc::channel();
+        let (send_started, started) = std::sync::mpsc::channel();
+        let cancel = Cancel::default();
+        let gone = Arc::new(Gone::cancelling(cancel.clone()));
+        let (send_reply, _replies) = std::sync::mpsc::channel();
+        let served = std::thread::spawn(move || {
+            let input = io::BufReader::new(Lines(lines, Vec::new()));
+            serve(
+                input,
+                Replies(send_reply, Vec::new()),
+                &gone,
+                move |message| {
+                    let (started, cancel) = (send_started.clone(), cancel.clone());
+                    Routed::InTurn(Box::new(move || {
+                        // An apply waiting for the window's reply, as
+                        // Tools::send waits; the window sees the connection end.
+                        let window = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+                        let address = window.local_addr().expect("its address");
+                        let connection = crate::bridge::Connection::open(address, String::new())
+                            .expect("the window accepts");
+                        let (mut accepted, _) = window.accept().expect("connected");
+                        cancel.clear();
+                        assert!(cancel.arm(&connection).expect("armed"));
+                        started.send(()).expect("the test waits");
+                        accepted
+                            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                            .expect("a read timeout");
+                        let mut byte = [0; 1];
+                        let read = io::Read::read(&mut accepted, &mut byte);
+                        assert_eq!(
+                            read.expect(
+                                "the call still waits for the window after the client went"
+                            ),
+                            0,
+                            "the connection ended"
+                        );
+                        answer(&message)
+                    }))
+                },
+            )
+        });
+        send_line
+            .send(format!("{}\n", tool_call(1)).into_bytes())
+            .expect("the server reads");
+        started
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the call starts");
+        drop(send_line);
+        served
+            .join()
+            .expect("the call is cancelled, not left waiting")
+            .expect("served to the end");
+    }
+
+    /// Replies to a client that has gone: every write fails, and is told.
+    struct Broken(std::sync::mpsc::Sender<()>);
+
+    impl Write for Broken {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            self.0.send(()).map_err(io::Error::other)?;
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Review 2026-11-04 r19 MCP-161: after a reply could not be written (the
+    /// client's pipe broken), the worker went on making the edits queued.
+    #[test]
+    fn no_call_runs_after_a_reply_could_not_be_written() {
+        let (send_line, lines) = std::sync::mpsc::channel();
+        let (send_routed, routed) = std::sync::mpsc::channel();
+        let routed = Arc::new(Mutex::new(routed));
+        let later_ran = Arc::new(AtomicBool::new(false));
+        let ran = Arc::clone(&later_ran);
+        let (send_failed, failed) = std::sync::mpsc::channel();
+        let served = std::thread::spawn(move || {
+            let input = io::BufReader::new(Lines(lines, Vec::new()));
+            serve(
+                input,
+                Broken(send_failed),
+                &Arc::default(),
+                move |message| {
+                    send_routed
+                        .send(message["id"].clone())
+                        .expect("the test reads");
+                    let (routed, ran) = (Arc::clone(&routed), Arc::clone(&ran));
+                    Routed::InTurn(Box::new(move || {
+                        if message["id"] == 1 {
+                            // Answered once the next calls are read.
+                            let routed = routed.lock().expect("one call at a time");
+                            for _ in 0..3 {
+                                routed
+                                    .recv_timeout(std::time::Duration::from_secs(5))
+                                    .expect("read");
+                            }
+                        } else {
+                            ran.store(true, Ordering::Release);
+                        }
+                        answer(&message)
+                    }))
+                },
+            )
+        });
+        for id in 1..=3 {
+            let line = format!("{}\n", tool_call(id)).into_bytes();
+            send_line.send(line).expect("the server reads");
+        }
+        // The client goes only after the reply failed, so its input is open.
+        failed
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the first reply is written");
+        drop(send_line);
+        let served = served.join().expect("the server ends");
+        assert_eq!(
+            served.expect_err("the reply was not written").kind(),
+            io::ErrorKind::BrokenPipe
+        );
+        assert!(
+            !later_ran.load(Ordering::Acquire),
+            "an edit ran after its client's pipe broke"
+        );
+    }
+
+    /// Review 2026-11-04 r19 MCP-161: the queue of calls had no bound, each
+    /// message up to 32 MiB. Reading waits while [`QUEUED_CALLS`] wait.
+    #[test]
+    fn reading_waits_while_the_queue_of_calls_is_full() {
+        let (send_line, lines) = std::sync::mpsc::channel();
+        let (send_reply, replies) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let released = Arc::new(Mutex::new(released));
+        let served = std::thread::spawn(move || {
+            let input = io::BufReader::new(Lines(lines, Vec::new()));
+            serve(
+                input,
+                Replies(send_reply, Vec::new()),
+                &Arc::default(),
+                move |message| {
+                    if message["method"] != "tools/call" {
+                        return Routed::Now(answer(&message));
+                    }
+                    let released = Arc::clone(&released);
+                    Routed::InTurn(Box::new(move || {
+                        if message["id"] == 1 {
+                            let released = released.lock().expect("one call at a time");
+                            released
+                                .recv_timeout(std::time::Duration::from_secs(10))
+                                .expect("the test releases the first call");
+                        }
+                        answer(&message)
+                    }))
+                },
+            )
+        });
+        let calls = u64::try_from(QUEUED_CALLS).expect("a few") + 2;
+        for id in 1..=calls {
+            let line = format!("{}\n", tool_call(id)).into_bytes();
+            send_line.send(line).expect("the server reads");
+        }
+        let ping = json!({"jsonrpc": "2.0", "id": "ping", "method": "ping"});
+        send_line
+            .send(format!("{ping}\n").into_bytes())
+            .expect("the server reads");
+        assert!(
+            replies
+                .recv_timeout(std::time::Duration::from_millis(500))
+                .is_err(),
+            "the ping behind a full queue was read"
+        );
+        release.send(()).expect("the first call waits");
+        let replied: Vec<Value> = (0..=calls)
+            .map(|_| {
+                let reply = replies.recv_timeout(std::time::Duration::from_secs(5));
+                reply.expect("every message is answered")["id"].clone()
+            })
+            .collect();
+        assert!(replied.contains(&json!("ping")));
+        drop(send_line);
+        served
+            .join()
+            .expect("the server ends")
+            .expect("served to the end");
     }
 
     /// Review 2026-11-04 MCP-142: a call registered itself only when its thread
