@@ -31,6 +31,7 @@ use std::num::TryFromIntError;
 
 mod btlx;
 mod capabilities;
+mod error;
 mod openings;
 pub mod production;
 mod projection_bytes;
@@ -40,6 +41,7 @@ use projection_bytes::*;
 
 pub use btlx::BtlxDrillRefusal;
 pub use capabilities::{Carriage, ShopElement, ShopFormat, ShopLoss, carriage};
+pub use error::{ExportBlock, GeneralFabricationError};
 
 pub const FABRICATION_PROJECTION_V1: &str = "ketchup.fabrication-projection.v1";
 pub const BEAM_FABRICATION_EVALUATOR_V1: &str = "ketchup.beam-fabrication-evaluator.v1";
@@ -272,273 +274,6 @@ impl Default for BtlxExportOptions {
                 intermediate_saw_cuts: 0,
             },
         }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum GeneralFabricationError {
-    ValidationBindingMismatch,
-    Classification(ClassificationError),
-    TimberMemberRoleMissing,
-    TimberMemberRoleAmbiguous,
-    InvalidBomMetadata,
-    /// A made part with a body has no fabrication role, so no BOM row or
-    /// machine file would make it.
-    PartWithoutFabricationRole {
-        part: String,
-    },
-    /// A made part's fabrication role is a name no fabrication knows.
-    UnknownFabricationRole {
-        part: String,
-        role: String,
-    },
-    UnsupportedOrUnavailableGeometry,
-    /// `part` has no current exact body or supported geometry to fabricate
-    /// from (review 2026-11-01 MF-106).
-    PartGeometryUnavailable {
-        part: String,
-    },
-    BodyValidation(GeneralBodyValidationError),
-    InvalidGeometry,
-    ExactGraph(ExactBRepGraphError),
-    InvalidWeldmentGeometry,
-    NoSupportedGeometry,
-    ExportBlocked,
-    UnresolvedInstance(CanonicalError),
-    PinJoint(PinJointError),
-    /// The chosen BTLx profile strategy cannot cut a contour of this part.
-    BtlxProfileRequestUnsupported {
-        part: String,
-    },
-    ScaledPlacement(ScaledPlacement),
-    /// The machine file cannot describe this part's stock or machining.
-    PartExportBlocked {
-        part: String,
-    },
-    /// A production job cannot lay `part`: it is not one exact body with a
-    /// stock blank the job can lay (review 2026-11-01 MF-106).
-    PartJobBlocked {
-        part: String,
-    },
-    /// A made piece of `part` has no production code, so a production job
-    /// cannot name it.
-    PartWithoutProductionCode {
-        part: String,
-    },
-    /// A HOMAG program of `part` is named by its piece's production code, and
-    /// `code` (or none) is not [`is_homag_program_code`] (review 2026-11-02 MF-120).
-    HomagProgramCodeUnusable {
-        part: String,
-        code: Option<String>,
-    },
-    /// `part` has no drilling or pocket, so a woodWOP program of it would only
-    /// lay its blank (review 2026-11-02 MF-124).
-    NothingToMachine {
-        part: String,
-    },
-    /// The vertical pocket tool asked for is not a woodWOP tool number
-    /// (1 to 999 999, review 2026-11-04 MF-123).
-    PocketToolNumberInvalid {
-        tool: u32,
-    },
-    /// `part` is drilled into both its top and its bottom face, and one
-    /// woodWOP setup machines one face and the edges.
-    DrilledFromBothFaces {
-        part: String,
-    },
-    /// A hole of `part` cannot be written as a BTLx drilling, for `reason`.
-    BtlxDrillingRefused {
-        part: String,
-        reason: BtlxDrillRefusal,
-    },
-    /// `format` cannot carry `element` of `part`, for `reason` (the
-    /// capability table, [`carriage`]).
-    CannotCarry {
-        format: ShopFormat,
-        part: String,
-        element: ShopElement,
-        reason: &'static str,
-    },
-    /// A drilling of `part` does not take the `thread` recorded on its hole
-    /// (the hole or the thread changed after it was tapped), so no machine
-    /// file, job or drawing may name that thread.
-    TappedHoleInvalid {
-        part: String,
-        thread: String,
-        mismatch: TappedHoleMismatch,
-    },
-    /// One woodWOP program machines one part, and `parts` different parts
-    /// are made: the production package writes one program per piece.
-    OneProgramPerPart {
-        parts: usize,
-    },
-    /// The production package could not be packed into one ZIP.
-    Package(ketchup_model::exact_product::ExactProductError),
-}
-
-impl GeneralFabricationError {
-    /// Names `part` in a blocked export, so the user knows what to check.
-    #[must_use]
-    pub fn at_part(self, part: &str) -> Self {
-        match self {
-            Self::ExportBlocked => Self::PartExportBlocked {
-                part: part.to_owned(),
-            },
-            Self::DrilledFromBothFaces { .. } => Self::DrilledFromBothFaces {
-                part: part.to_owned(),
-            },
-            Self::UnsupportedOrUnavailableGeometry => Self::PartGeometryUnavailable {
-                part: part.to_owned(),
-            },
-            other => other,
-        }
-    }
-}
-
-impl fmt::Display for GeneralFabricationError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnresolvedInstance(error) => write!(formatter, "a fabrication instance does not resolve: {error}"),
-            Self::PinJoint(error) => write!(formatter, "a pin joint cannot be exported: {error}"),
-            Self::ExactGraph(error) => write!(formatter, "fabrication body exact graph is unavailable: {error}"),
-            Self::BodyValidation(error) => write!(formatter, "a visible body cannot be validated: {error}"),
-            Self::ValidationBindingMismatch => formatter.write_str(
-                "general fabrication requires current complete general-body validation coverage",
-            ),
-            Self::Classification(error) => {
-                write!(formatter, "fabrication roles or BOM materials cannot be read: {error}")
-            }
-            Self::TimberMemberRoleMissing => {
-                formatter.write_str("the timber-member fabrication role is missing")
-            }
-            Self::TimberMemberRoleAmbiguous => {
-                formatter.write_str("the timber-member fabrication role is ambiguous")
-            }
-            Self::InvalidBomMetadata => {
-                formatter.write_str("a BOM role or material token is invalid")
-            }
-            Self::PartWithoutFabricationRole { part } => write!(
-                formatter,
-                "part \"{part}\" has no fabrication role, so it would be in no BOM row or machine file; make it a member, a manufactured or a purchased item, hide it, or leave it out of the production scope",
-            ),
-            Self::UnknownFabricationRole { part, role } => write!(
-                formatter,
-                "part \"{part}\" has the fabrication role \"{role}\", which no fabrication knows; make it a member, a manufactured or a purchased item",
-            ),
-            Self::UnsupportedOrUnavailableGeometry => formatter.write_str(
-                "a visible geometry-bearing occurrence has unsupported or unavailable evidence",
-            ),
-            Self::PartGeometryUnavailable { part } => write!(
-                formatter,
-                "part \"{part}\" has no current exact body or supported geometry to fabricate from; evaluate the model again",
-            ),
-            Self::InvalidGeometry => {
-                formatter.write_str("accepted fabrication geometry has invalid local bounds")
-            }
-            Self::InvalidWeldmentGeometry => formatter.write_str(
-                "weldment cut lists require supported straight members and unambiguous joints",
-            ),
-            Self::NoSupportedGeometry => {
-                formatter.write_str("the document contains no supported visible body geometry")
-            }
-            Self::ExportBlocked => formatter.write_str(
-                "fabrication export is incomplete, stale, invalid, or lacks manufacturing semantics",
-            ),
-            Self::BtlxProfileRequestUnsupported { part } => write!(
-                formatter,
-                "the requested BTLx profile strategy cannot cut a contour of part \"{part}\": edge saw cuts then milling takes only rectangular line contours with at most 32 intermediate cuts; choose the portable FreeContour strategy for this part",
-            ),
-            Self::ScaledPlacement(error) => write!(formatter, "a part cannot be fabricated: {error}"),
-            Self::PartExportBlocked { part } => write!(
-                formatter,
-                "part \"{part}\" cannot be written to the machine file: its stock is not a rectangular box, a cut is not one the format describes, reaches outside the stock or starts inside the material (a cavity, or a cut that opens only to a side and is not rectangular), or its exact result is stale; let each cut tool reach past the face it enters, or evaluate the model again",
-            ),
-            Self::PartJobBlocked { part } => write!(
-                formatter,
-                "a production job cannot lay part \"{part}\": it lays one exact body of each part with the stock blank it is cut from, and this part has none it can lay; evaluate the model again",
-            ),
-            Self::PartWithoutProductionCode { part } => write!(
-                formatter,
-                "part \"{part}\" has no production code, so a production job cannot name its piece; give every made piece a code and save the document",
-            ),
-            Self::HomagProgramCodeUnusable { part, code } => {
-                match code {
-                    None => write!(formatter, "part \"{part}\" has no production code")?,
-                    Some(code) => write!(
-                        formatter,
-                        "part \"{part}\" has the production code \"{code}\""
-                    )?,
-                }
-                write!(
-                    formatter,
-                    ", and a HOMAG program and its barcode label are named by a code of exactly 12 letters, digits, '-' or '_'; assign production codes (Tools > Assign production codes, or the model operation set_production_code) and save the document",
-                )
-            }
-            Self::NothingToMachine { part } => write!(
-                formatter,
-                "part \"{part}\" has no drilling or pocket, so a woodWOP program would only lay its blank; give it holes or pockets, or cut it from the cut list",
-            ),
-            Self::PocketToolNumberInvalid { tool } => write!(
-                formatter,
-                "vertical pocket tool {tool} is not a woodWOP tool number; give the number of the pocket tool in the machine's tool list, 1 to 999999",
-            ),
-            Self::BtlxDrillingRefused { part, reason } => write!(
-                formatter,
-                "a hole of part \"{part}\" cannot be written as a BTLx drilling: {reason}",
-            ),
-            Self::DrilledFromBothFaces { part } => write!(
-                formatter,
-                "part \"{part}\" is drilled into both its top and its bottom face, and a woodWOP program machines one face and the edges in one setup; export a production job, or drill the part from one face",
-            ),
-            Self::CannotCarry {
-                format,
-                part,
-                element,
-                reason,
-            } => write!(
-                formatter,
-                "part \"{part}\" has {element}, which {format} cannot carry: {reason}",
-            ),
-            Self::TappedHoleInvalid {
-                part,
-                thread,
-                mismatch,
-            } => write!(
-                formatter,
-                "part \"{part}\" has a hole that does not take its thread {thread}: {mismatch}; tap the hole again or change the thread",
-            ),
-            Self::OneProgramPerPart { parts } => write!(
-                formatter,
-                "{parts} different parts are made, and one HOMAG MPR program machines one part; export the HOMAG MPR to a .zip destination for one program and barcode label per piece, named by its production code",
-            ),
-            Self::Package(error) => write!(formatter, "the production package was not packed: {error}"),
-        }
-    }
-}
-
-impl std::error::Error for GeneralFabricationError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::UnresolvedInstance(error) => Some(error),
-            Self::PinJoint(error) => Some(error),
-            Self::ExactGraph(error) => Some(error),
-            Self::BodyValidation(error) => Some(error),
-            Self::Classification(error) => Some(error),
-            Self::Package(error) => Some(error),
-            _ => None,
-        }
-    }
-}
-
-impl From<ClassificationError> for GeneralFabricationError {
-    fn from(error: ClassificationError) -> Self {
-        Self::Classification(error)
-    }
-}
-
-impl From<GeneralBodyValidationError> for GeneralFabricationError {
-    fn from(error: GeneralBodyValidationError) -> Self {
-        Self::BodyValidation(error)
     }
 }
 
@@ -819,21 +554,40 @@ impl WeldmentCutListProjection {
             &self.cut_list_envelope.result_digest,
             self.validation_state,
         );
-        if self.rows.is_empty()
-            || self.validation_state != ValidationState::Passed
+        if !weldment_envelope_is_current(&self.cut_list_envelope, snapshot)
+            || !weldment_envelope_is_current(&self.drawing_envelope, snapshot)
+        {
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::AnotherState,
+            ));
+        }
+        if self.cut_list_envelope.result_digest != sha256_hex(&cut_list_bytes)
+            || self.drawing_envelope.result_digest != sha256_hex(&drawing_bytes)
+            || self
+                .rows
+                .iter()
+                .any(|row| row.quantity == 0 || row.quantity != row.instances.len())
+        {
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::ResultMismatch,
+            ));
+        }
+        if self.validation_state != ValidationState::Passed
             || self.cut_list_envelope.status != ProjectionStatus::Complete
             || self.drawing_envelope.status != ProjectionStatus::Complete
-            || !weldment_envelope_is_current(&self.cut_list_envelope, snapshot)
-            || !weldment_envelope_is_current(&self.drawing_envelope, snapshot)
-            || self.cut_list_envelope.result_digest != sha256_hex(&cut_list_bytes)
-            || self.drawing_envelope.result_digest != sha256_hex(&drawing_bytes)
-            || self.rows.iter().any(|row| {
-                row.validation_state != ValidationState::Passed
-                    || row.quantity == 0
-                    || row.quantity != row.instances.len()
-            })
+            || self
+                .rows
+                .iter()
+                .any(|row| row.validation_state != ValidationState::Passed)
         {
-            return Err(GeneralFabricationError::ExportBlocked);
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::NotValidated,
+            ));
+        }
+        if self.rows.is_empty() {
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::NothingToWrite,
+            ));
         }
         let mut output = format!(
             "{WELDMENT_CUT_LIST_EXPORT_V1}\ndocument_id={}\nsource_revision={}\nsource_digest={}\nresult_digest={}\ndrawing_result_digest={}\n",
@@ -873,16 +627,18 @@ impl WeldmentCutListProjection {
             self.validation_state,
         );
         if self.drawing_envelope.result_digest != sha256_hex(&drawing_bytes) {
-            return Err(GeneralFabricationError::ExportBlocked);
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::ResultMismatch,
+            ));
         }
-        let height = 45usize
-            .checked_add(
-                self.rows
-                    .len()
-                    .checked_mul(45)
-                    .ok_or(GeneralFabricationError::ExportBlocked)?,
-            )
-            .ok_or(GeneralFabricationError::ExportBlocked)?;
+        let height = self
+            .rows
+            .len()
+            .checked_mul(45)
+            .and_then(|rows| rows.checked_add(45))
+            .ok_or(GeneralFabricationError::ExportBlocked(
+                ExportBlock::ValueOutOfRange,
+            ))?;
         let mut output = format!(
             "<!-- {WELDMENT_DRAWING_SVG_V1} cut_list={} drawing={} -->\n<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1200 {height}\">\n",
             self.cut_list_envelope.result_digest, self.drawing_envelope.result_digest,
@@ -912,16 +668,26 @@ impl WeldmentCutListProjection {
 impl GeneralFabricationProjection {
     pub fn bom_export(&self, snapshot: &Snapshot) -> Result<Vec<u8>, GeneralFabricationError> {
         let result_bytes = general_bom_bytes(&self.bom.rows, self.bom.evidence_counts);
+        if !general_envelope_is_current(&self.bom.envelope, snapshot) {
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::AnotherState,
+            ));
+        }
+        if self.bom.envelope.result_digest != sha256_hex(&result_bytes) {
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::ResultMismatch,
+            ));
+        }
         if self.bom.envelope.status != ProjectionStatus::Complete
-            || !general_envelope_is_current(&self.bom.envelope, snapshot)
-            || self.bom.envelope.result_digest != sha256_hex(&result_bytes)
             || self
                 .bom
                 .rows
                 .iter()
                 .any(|row| row.validation_state != ValidationState::Passed)
         {
-            return Err(GeneralFabricationError::ExportBlocked);
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::NotValidated,
+            ));
         }
         let mut output = format!(
             "{GENERAL_BOM_EXPORT_V3}\ndocument_id={}\nsource_revision={}\nsource_digest={}\nresult_digest={}\n",
@@ -978,7 +744,9 @@ impl GeneralFabricationProjection {
                             != drawn_operations(row, &self.manufacturing.operations)
                 })
         {
-            return Err(GeneralFabricationError::ExportBlocked);
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::ResultMismatch,
+            ));
         }
         let result_bytes =
             general_drawing_bytes(&self.drawings.drawings, self.drawings.validation_state);
@@ -994,16 +762,32 @@ impl GeneralFabricationProjection {
                 .iter()
                 .any(|drawing| drawing.machining_operations.contains(operation))
         });
-        if self.drawings.envelope.status != ProjectionStatus::Complete
-            || !general_envelope_is_current(&self.drawings.envelope, snapshot)
-            || self.drawings.envelope.result_digest != sha256_hex(&result_bytes)
+        if !general_envelope_is_current(&self.drawings.envelope, snapshot)
             || !general_envelope_is_current(&self.manufacturing.envelope, snapshot)
+        {
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::AnotherState,
+            ));
+        }
+        if self.drawings.envelope.result_digest != sha256_hex(&result_bytes)
             || self.manufacturing.envelope.result_digest != sha256_hex(&manufacturing_bytes)
             || !every_operation_drawn
-            || self.drawings.validation_state != ValidationState::Passed
-            || self.drawings.drawings.is_empty()
         {
-            return Err(GeneralFabricationError::ExportBlocked);
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::ResultMismatch,
+            ));
+        }
+        if self.drawings.envelope.status != ProjectionStatus::Complete
+            || self.drawings.validation_state != ValidationState::Passed
+        {
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::NotValidated,
+            ));
+        }
+        if self.drawings.drawings.is_empty() {
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::NothingToWrite,
+            ));
         }
         let mut sheet_width = 100.0_f64;
         let mut sheet_height = 40.0;
@@ -1031,8 +815,9 @@ impl GeneralFabricationProjection {
                 .iter()
                 .filter(|operation| has_machining_detail(operation))
             {
-                let (minimum, maximum) = machining_detail_bounds(&operation.machining)
-                    .ok_or(GeneralFabricationError::ExportBlocked)?;
+                let (minimum, maximum) = machining_detail_bounds(&operation.machining).ok_or(
+                    GeneralFabricationError::ExportBlocked(ExportBlock::UnsupportedMachining),
+                )?;
                 sheet_width = sheet_width.max(maximum[0] - minimum[0]);
                 sheet_height += maximum[1] - minimum[1] + 55.0;
             }
@@ -1137,23 +922,45 @@ impl GeneralFabricationProjection {
             &self.manufacturing.undescribed_sources,
             self.manufacturing.validation_state,
         );
+        if !general_envelope_is_current(&self.manufacturing.envelope, snapshot) {
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::AnotherState,
+            ));
+        }
+        if self.manufacturing.envelope.result_digest != sha256_hex(&result_bytes) {
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::ResultMismatch,
+            ));
+        }
+        if self.manufacturing.validation_state != ValidationState::Passed {
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::NotValidated,
+            ));
+        }
+        // Name the first part whose cuts could not be described, so the user
+        // knows which one to check, and why.
+        if let Some(row) = self
+            .bom
+            .rows
+            .iter()
+            .find(|row| self.manufacturing.unresolved_sources.contains(&row.source))
+        {
+            let reason = match row.source {
+                GeneralBodySource::Exact(_) => ExportBlock::UndescribedCuts,
+                _ => ExportBlock::NotExactBody,
+            };
+            let blocked = GeneralFabricationError::ExportBlocked(reason);
+            return Err(match snapshot.definition(row.definition_id) {
+                Some(part) => blocked.at_part(part.name()),
+                None => blocked,
+            });
+        }
         if self.manufacturing.envelope.status != ProjectionStatus::Complete
-            || !general_envelope_is_current(&self.manufacturing.envelope, snapshot)
-            || self.manufacturing.envelope.result_digest != sha256_hex(&result_bytes)
-            || self.manufacturing.validation_state != ValidationState::Passed
             || !self.manufacturing.unresolved_sources.is_empty()
         {
-            // Name the first part whose cuts could not be described, so the
-            // user knows which one to check.
-            let part = self
-                .bom
-                .rows
-                .iter()
-                .find(|row| self.manufacturing.unresolved_sources.contains(&row.source))
-                .and_then(|row| snapshot.definition(row.definition_id));
-            return Err(part.map_or(GeneralFabricationError::ExportBlocked, |part| {
-                GeneralFabricationError::ExportBlocked.at_part(part.name())
-            }));
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::UndescribedCuts,
+            ));
         }
         taps::check_tapped_holes(&self.manufacturing.operations, snapshot)?;
         let mut output = format!(
@@ -1219,21 +1026,21 @@ impl GeneralFabricationProjection {
             .collect::<Vec<_>>();
         let [row] = rows.as_slice() else {
             return Err(match rows.len() {
-                0 => GeneralFabricationError::ExportBlocked,
+                0 => GeneralFabricationError::ExportBlocked(ExportBlock::NothingToWrite),
                 parts => GeneralFabricationError::OneProgramPerPart { parts },
             });
         };
         let part = snapshot
             .definition(row.definition_id)
             .map_or("", |definition| definition.name());
-        // A refusal names the part (review 2026-11-02 MF-124).
-        let blocked = || GeneralFabricationError::ExportBlocked.at_part(part);
+        // A refusal names the part (review 2026-11-02 MF-124) and its cause.
+        let blocked = |reason| GeneralFabricationError::ExportBlocked(reason).at_part(part);
         if row.quantity == 0 || row.quantity != row.instances.len() || !row.item_kind.is_shop_made()
         {
-            return Err(blocked());
+            return Err(blocked(ExportBlock::ResultMismatch));
         }
         let GeneralBodySource::Exact(_) = &row.source else {
-            return Err(blocked());
+            return Err(blocked(ExportBlock::NotExactBody));
         };
         let matching = self
             .manufacturing
@@ -1242,10 +1049,10 @@ impl GeneralFabricationProjection {
             .filter(|operation| is_row_operation(row, operation))
             .collect::<Vec<_>>();
         if matching.len() != self.manufacturing.operations.len() {
-            return Err(blocked());
+            return Err(blocked(ExportBlock::ResultMismatch));
         }
         let [stock, machining @ ..] = matching.as_slice() else {
-            return Err(blocked());
+            return Err(blocked(ExportBlock::ResultMismatch));
         };
         if stock.kind == GeneralManufacturingKind::Stock && machining.is_empty() {
             return Err(GeneralFabricationError::NothingToMachine {
@@ -1260,13 +1067,17 @@ impl GeneralFabricationProjection {
                     GeneralManufacturingKind::CircularDrill | GeneralManufacturingKind::ProfileCut
                 )
             })
-            || options
-                .vertical_pocket_tool_number
-                .is_some_and(|tool| tool == 0 || tool > 999_999)
         {
-            return Err(blocked());
+            return Err(blocked(ExportBlock::UnsupportedMachining));
         }
-        let stock_frame = woodwop_stock_frame(&stock.machining).ok_or_else(blocked)?;
+        if let Some(tool) = options
+            .vertical_pocket_tool_number
+            .filter(|tool| *tool == 0 || *tool > 999_999)
+        {
+            return Err(GeneralFabricationError::PocketToolNumberInvalid { tool });
+        }
+        let stock_frame = woodwop_stock_frame(&stock.machining)
+            .ok_or_else(|| blocked(ExportBlock::UnsupportedMachining))?;
         let (stock_frame, macros) = woodwop_setup(
             stock_frame,
             &machining_normals(machining.iter().copied(), std::iter::empty()),
@@ -1312,8 +1123,9 @@ impl GeneralFabricationProjection {
             .into_iter()
             .map(|(instance_path, mpr)| {
                 let program_name = homag_program_name(snapshot, &instance_path)?;
-                let barcode_svg = homag_code128_svg(&program_name)
-                    .ok_or(GeneralFabricationError::ExportBlocked)?;
+                let barcode_svg = homag_code128_svg(&program_name).ok_or(
+                    GeneralFabricationError::ExportBlocked(ExportBlock::ValueOutOfRange),
+                )?;
                 Ok(HomagProductionProgram {
                     schema: HOMAG_BHX_PRODUCTION_PACKAGE_V1,
                     program_name,
@@ -1334,7 +1146,7 @@ impl GeneralFabricationProjection {
     ) -> Result<Vec<u8>, GeneralFabricationError> {
         let programs = self.woodwop_mpr_4_0_production_package(snapshot, options)?;
         if programs.is_empty() {
-            return Err(GeneralFabricationError::NoSupportedGeometry);
+            return Err(GeneralFabricationError::NoPieceToProgram);
         }
         let names = programs
             .iter()
@@ -1395,7 +1207,9 @@ impl GeneralFabricationProjection {
                 .map_or("", |definition| definition.name());
             let mut write_part = || -> Result<(), GeneralFabricationError> {
                 let GeneralBodySource::Exact(_) = &row.source else {
-                    return Err(GeneralFabricationError::ExportBlocked);
+                    return Err(GeneralFabricationError::ExportBlocked(
+                        ExportBlock::NotExactBody,
+                    ));
                 };
                 let matching = self
                     .manufacturing
@@ -1404,7 +1218,9 @@ impl GeneralFabricationProjection {
                     .filter(|operation| is_row_operation(row, operation))
                     .collect::<Vec<_>>();
                 let [stock, machining @ ..] = matching.as_slice() else {
-                    return Err(GeneralFabricationError::ExportBlocked);
+                    return Err(GeneralFabricationError::ExportBlocked(
+                        ExportBlock::ResultMismatch,
+                    ));
                 };
                 if stock.kind != GeneralManufacturingKind::Stock
                     || !stock.semantic_inputs.is_empty()
@@ -1416,10 +1232,13 @@ impl GeneralFabricationProjection {
                         )
                     })
                 {
-                    return Err(GeneralFabricationError::ExportBlocked);
+                    return Err(GeneralFabricationError::ExportBlocked(
+                        ExportBlock::UnsupportedMachining,
+                    ));
                 }
-                let stock_frame = woodwop_stock_frame(&stock.machining)
-                    .ok_or(GeneralFabricationError::ExportBlocked)?;
+                let stock_frame = woodwop_stock_frame(&stock.machining).ok_or(
+                    GeneralFabricationError::ExportBlocked(ExportBlock::UnsupportedMachining),
+                )?;
                 for instance_path in &row.instances {
                     let resolved = snapshot
                         .resolve_instance_path(instance_path)
@@ -1427,7 +1246,9 @@ impl GeneralFabricationProjection {
                     if resolved.definition_id != row.definition_id
                         || !is_production_transform(resolved.world_transform)
                     {
-                        return Err(GeneralFabricationError::ExportBlocked);
+                        return Err(GeneralFabricationError::ExportBlocked(
+                            ExportBlock::UnusablePlacement,
+                        ));
                     }
                     let instance_holes = holes
                         .iter()
@@ -1468,7 +1289,9 @@ impl GeneralFabricationProjection {
                         },
                     )?;
                     if !program_paths.insert(instance_path.clone()) {
-                        return Err(GeneralFabricationError::ExportBlocked);
+                        return Err(GeneralFabricationError::ExportBlocked(
+                            ExportBlock::DuplicateName,
+                        ));
                     }
                     let mpr =
                         woodwop_mpr_output(stock_frame, &macros, HOMAG_BHX_PRODUCTION_PACKAGE_V1)?;
@@ -1479,7 +1302,7 @@ impl GeneralFabricationProjection {
             write_part().map_err(|error| error.at_part(part))?;
         }
         if programs.is_empty() {
-            return Err(GeneralFabricationError::NoSupportedGeometry);
+            return Err(GeneralFabricationError::NoPieceToProgram);
         }
         Ok(programs)
     }
@@ -1511,7 +1334,9 @@ impl GeneralFabricationProjection {
             .any(|row| ShopFormat::Btlx.writes(row.item_kind))
             || self.manufacturing.operations.is_empty()
         {
-            return Err(GeneralFabricationError::ExportBlocked);
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::NothingToWrite,
+            ));
         }
 
         let mut output = format!(
@@ -1532,7 +1357,9 @@ impl GeneralFabricationProjection {
                 .map_or("", |definition| definition.name());
             let mut write_part = || -> Result<(), GeneralFabricationError> {
                 let GeneralBodySource::Exact(_) = &row.source else {
-                    return Err(GeneralFabricationError::ExportBlocked);
+                    return Err(GeneralFabricationError::ExportBlocked(
+                        ExportBlock::NotExactBody,
+                    ));
                 };
                 let matching = self
                     .manufacturing
@@ -1541,34 +1368,46 @@ impl GeneralFabricationProjection {
                     .filter(|operation| is_row_operation(row, operation))
                     .collect::<Vec<_>>();
                 let Some((stock, machining)) = matching.split_first() else {
-                    return Err(GeneralFabricationError::ExportBlocked);
+                    return Err(GeneralFabricationError::ExportBlocked(
+                        ExportBlock::ResultMismatch,
+                    ));
                 };
-                matched_operation_count = matched_operation_count
-                    .checked_add(matching.len())
-                    .ok_or(GeneralFabricationError::ExportBlocked)?;
+                matched_operation_count =
+                    matched_operation_count.checked_add(matching.len()).ok_or(
+                        GeneralFabricationError::ExportBlocked(ExportBlock::ValueOutOfRange),
+                    )?;
                 if stock.kind != GeneralManufacturingKind::Stock
                     || !stock.semantic_inputs.is_empty()
                     || row.quantity == 0
                     || row.quantity != row.instances.len()
                 {
-                    return Err(GeneralFabricationError::ExportBlocked);
+                    return Err(GeneralFabricationError::ExportBlocked(
+                        ExportBlock::ResultMismatch,
+                    ));
                 }
                 let Some((count, single_member_number)) =
                     btlx_component_identifiers(row.quantity, index)
                 else {
-                    return Err(GeneralFabricationError::ExportBlocked);
+                    return Err(GeneralFabricationError::ExportBlocked(
+                        ExportBlock::ValueOutOfRange,
+                    ));
                 };
                 let Some(blank) = rectangular_stock(&stock.machining) else {
-                    return Err(GeneralFabricationError::ExportBlocked);
+                    return Err(GeneralFabricationError::ExportBlocked(
+                        ExportBlock::UnsupportedMachining,
+                    ));
                 };
                 let [length_mm, width_mm, height_mm] =
                     btlx_part_coordinate(blank, blank.extents_mm);
-                let length = format_btlx_positive_number(length_mm)
-                    .ok_or(GeneralFabricationError::ExportBlocked)?;
-                let width = format_btlx_positive_number(width_mm)
-                    .ok_or(GeneralFabricationError::ExportBlocked)?;
-                let height = format_btlx_positive_number(height_mm)
-                    .ok_or(GeneralFabricationError::ExportBlocked)?;
+                let length = format_btlx_positive_number(length_mm).ok_or(
+                    GeneralFabricationError::ExportBlocked(ExportBlock::ValueOutOfRange),
+                )?;
+                let width = format_btlx_positive_number(width_mm).ok_or(
+                    GeneralFabricationError::ExportBlocked(ExportBlock::ValueOutOfRange),
+                )?;
+                let height = format_btlx_positive_number(height_mm).ok_or(
+                    GeneralFabricationError::ExportBlocked(ExportBlock::ValueOutOfRange),
+                )?;
                 let processings = machining
                     .iter()
                     .map(|operation| btlx_processings(operation, options, blank, part))
@@ -1594,9 +1433,9 @@ impl GeneralFabricationProjection {
                 let first_reference_plane_id = next_reference_plane_id;
                 for processing in &processings {
                     let reference_plane_id = next_reference_plane_id;
-                    next_reference_plane_id = next_reference_plane_id
-                        .checked_add(1)
-                        .ok_or(GeneralFabricationError::ExportBlocked)?;
+                    next_reference_plane_id = next_reference_plane_id.checked_add(1).ok_or(
+                        GeneralFabricationError::ExportBlocked(ExportBlock::ValueOutOfRange),
+                    )?;
                     let (reference_point_mm, x_vector, y_vector) = processing.reference_plane();
                     output.push_str(&format!(
                         "          <UserReferencePlane ID=\"{reference_plane_id}\">\n            <Position>\n              <ReferencePoint X=\"{}\" Y=\"{}\" Z=\"{}\"/>\n              <XVector X=\"{}\" Y=\"{}\" Z=\"{}\"/>\n              <YVector X=\"{}\" Y=\"{}\" Z=\"{}\"/>\n            </Position>\n          </UserReferencePlane>\n",
@@ -1615,13 +1454,17 @@ impl GeneralFabricationProjection {
                 for (processing_index, processing) in processings.iter().enumerate() {
                     let reference_plane_id = first_reference_plane_id
                         .checked_add(u32::try_from(processing_index).map_err(
-                            |_out_of_range: TryFromIntError| GeneralFabricationError::ExportBlocked,
+                            |_out_of_range: TryFromIntError| {
+                                GeneralFabricationError::ExportBlocked(ExportBlock::ValueOutOfRange)
+                            },
                         )?)
-                        .ok_or(GeneralFabricationError::ExportBlocked)?;
+                        .ok_or(GeneralFabricationError::ExportBlocked(
+                            ExportBlock::ValueOutOfRange,
+                        ))?;
                     let process_id = next_process_id;
-                    next_process_id = next_process_id
-                        .checked_add(1)
-                        .ok_or(GeneralFabricationError::ExportBlocked)?;
+                    next_process_id = next_process_id.checked_add(1).ok_or(
+                        GeneralFabricationError::ExportBlocked(ExportBlock::ValueOutOfRange),
+                    )?;
                     output.push_str(&processing.xml(process_id, reference_plane_id));
                 }
                 output.push_str("        </Processings>\n      </Part>\n");
@@ -1646,7 +1489,9 @@ impl GeneralFabricationProjection {
             })
             .count();
         if matched_operation_count + other_operations != self.manufacturing.operations.len() {
-            return Err(GeneralFabricationError::ExportBlocked);
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::ResultMismatch,
+            ));
         }
         output.push_str("    </Parts>\n  </Project>\n</BTLx>\n");
         Ok(output.into_bytes())
@@ -1770,7 +1615,7 @@ fn woodwop_setup<T>(
             part: String::new(),
         }
     } else {
-        GeneralFabricationError::ExportBlocked
+        GeneralFabricationError::ExportBlocked(ExportBlock::UnsupportedMachining)
     })
 }
 
@@ -1857,12 +1702,15 @@ fn woodwop_mpr_output(
     export_contract: &str,
 ) -> Result<Vec<u8>, GeneralFabricationError> {
     let [length_mm, width_mm, thickness_mm] = stock_frame.dimensions_mm;
-    let length =
-        format_btlx_positive_number(length_mm).ok_or(GeneralFabricationError::ExportBlocked)?;
-    let width =
-        format_btlx_positive_number(width_mm).ok_or(GeneralFabricationError::ExportBlocked)?;
-    let thickness =
-        format_btlx_positive_number(thickness_mm).ok_or(GeneralFabricationError::ExportBlocked)?;
+    let length = format_btlx_positive_number(length_mm).ok_or(
+        GeneralFabricationError::ExportBlocked(ExportBlock::ValueOutOfRange),
+    )?;
+    let width = format_btlx_positive_number(width_mm).ok_or(
+        GeneralFabricationError::ExportBlocked(ExportBlock::ValueOutOfRange),
+    )?;
+    let thickness = format_btlx_positive_number(thickness_mm).ok_or(
+        GeneralFabricationError::ExportBlocked(ExportBlock::ValueOutOfRange),
+    )?;
     // A part machined from below is laid its underside (as drawn) up; the
     // operator needs to be told which face goes up.
     let face_up = if stock_frame.turned_over {
@@ -1878,7 +1726,9 @@ fn woodwop_mpr_output(
     }
     output.push_str("!\n");
     if !output.is_ascii() {
-        return Err(GeneralFabricationError::ExportBlocked);
+        return Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::ValueOutOfRange,
+        ));
     }
     Ok(output.into_bytes())
 }
@@ -2892,7 +2742,7 @@ pub fn project_general_fabrication(
         accepted.push((participant, dimensions, metadata.clone()));
     }
     if accepted.is_empty() {
-        return Err(GeneralFabricationError::NoSupportedGeometry);
+        return Err(GeneralFabricationError::NoMadePart);
     }
     accepted.sort_by(|left, right| {
         left.0

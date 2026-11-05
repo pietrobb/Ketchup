@@ -321,7 +321,9 @@ fn copies_are_mirrored(
             .resolve_instance_path(instance_path)
             .map_err(GeneralFabricationError::UnresolvedInstance)?;
         if resolved.definition_id != row.definition_id {
-            return Err(GeneralFabricationError::ExportBlocked);
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::UnusablePlacement,
+            ));
         }
         if !is_production_transform(resolved.world_transform) {
             ScaledPlacement::check(instance_path.root_occurrence(), resolved.world_transform)
