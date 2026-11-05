@@ -357,6 +357,66 @@ fn a_pdf_or_sheet_the_window_did_not_write_is_replaced_only_when_asked() {
     }
 }
 
+/// Review 2026-11-04 r19 SEC-161: which file the window wrote lived only in
+/// memory, keyed by the path as typed, so after a restart, or with the path
+/// spelled otherwise (`c:\X` for `C:\x`), the usual export after an edit was
+/// refused with drawings_target_exists. The document keeps the SHA-256 of each
+/// file it wrote by its canonical path, and the refusal says to ask the user.
+#[test]
+fn the_documents_own_drawing_is_replaced_after_a_restart_and_however_its_path_is_spelled() {
+    let (mut app, mut bridge) = setup();
+    let id = sheet_of_the_block(&mut app, &mut bridge);
+    let directory = tempfile::tempdir().unwrap();
+    let targets = [
+        (directory.path().join("House.pdf"), json!({})),
+        (directory.path().join("Survey.dwg"), json!({"sheet_id": id})),
+    ];
+    let export = |app: &mut KetchupApp, bridge: &mut LiveBridge, path: &Path, extra: &Value| {
+        bridge
+            .execute(app, export_drawings(path, extra.clone()), false)
+            .unwrap_or_else(|code| panic!("{code} {path:?}: {:?}", take_error_details()))
+    };
+    for (path, extra) in &targets {
+        export(&mut app, &mut bridge, path, extra);
+        if cfg!(windows) {
+            // Windows names ignore case: the same file, spelled otherwise.
+            let other = PathBuf::from(path.display().to_string().to_lowercase());
+            export(&mut app, &mut bridge, &other, extra);
+        }
+    }
+    std::fs::write(&targets[0].0, b"the user's own").unwrap();
+    assert_eq!(
+        bridge.execute(&mut app, export_drawings(&targets[0].0, json!({})), false),
+        Err("drawings_target_exists")
+    );
+    let answer = take_error_details().unwrap_or_default().to_string();
+    assert!(answer.contains("Ask the user"), "{answer}");
+    export(
+        &mut app,
+        &mut bridge,
+        &targets[0].0,
+        &json!({"replace": true}),
+    );
+
+    let document = directory.path().join("plan.ketchup");
+    let save = Request::SaveAs {
+        expected: None,
+        path: document.display().to_string(),
+    };
+    bridge.execute(&mut app, save, false).unwrap();
+    drop((app, bridge));
+    let (mut opened, mut bridge) = setup();
+    let open = Request::Open {
+        expected: None,
+        path: document.display().to_string(),
+    };
+    bridge.execute(&mut opened, open, false).unwrap();
+    evaluate_exact(&mut opened);
+    for (path, extra) in &targets {
+        export(&mut opened, &mut bridge, path, extra);
+    }
+}
+
 /// MECH-2: a PDF another program holds open (a PDF viewer shares it for
 /// reading only) cannot be replaced: the answer names the file and says to
 /// close it, the file keeps its bytes and nothing is left beside it.

@@ -32,7 +32,7 @@ crates/ketchup-app/src/app/underlay_draw.rs dropped_error 1
 crates/ketchup-app/src/app/underlay_edit.rs dropped_error 2
 crates/ketchup-app/src/app/underlay_extrude.rs dropped_error 3
 crates/ketchup-app/src/app/underlay_snapping.rs dropped_error 1
-crates/ketchup-app/src/app/viewer_settings.rs let_else_error 7
+crates/ketchup-app/src/app/viewer_settings.rs let_else_error 5
 crates/ketchup-app/src/app/viewport.rs let_else_error 1
 crates/ketchup-app/src/assembly_ui.rs dropped_error 1
 crates/ketchup-app/src/assembly_ui.rs let_else_error 2

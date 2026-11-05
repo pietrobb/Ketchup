@@ -175,7 +175,7 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         Request,
         "path",
         "A file already exists at the drawing path that this request may not replace (a file named like a sheet that this project's earlier export did not write, or the drawing being edited); the reason names it.",
-        "Rename or move that file, or write to another folder or file name.",
+        "Ask the user: rename or move that file, write to another folder or file name, or, for a PDF or a drawing sheet the user agrees to replace, export again with replace: true.",
     ),
     entry(
         "drawings_target_in_use",

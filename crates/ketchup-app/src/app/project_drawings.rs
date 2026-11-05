@@ -42,7 +42,7 @@ const fn sheet_language_name(language: SheetLanguage) -> &'static str {
 const DEFAULT_SOLID_COLOR: [u8; 3] = [190, 190, 190];
 /// The highest plan cut the window offers: above a storey, a plan stops being a floor plan.
 const MAX_PLAN_CUT_ABOVE_FLOOR_MM: u32 = 10_000;
-const SHEET_NAMESPACE: &str = "org.ketchup.drawings";
+pub(super) const SHEET_NAMESPACE: &str = "org.ketchup.drawings";
 const SHEET_SETTINGS_PATH: &str = "sheet-v1.json";
 
 /// Why the project drawings could not be made or written.

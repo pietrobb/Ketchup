@@ -103,10 +103,11 @@ pub(super) fn refuse_existing(path: &str) -> Result<(), &'static str> {
 }
 
 /// Whether the file at `path`, of SHA-256 `existing`, is kept: it is not the
-/// last one the window wrote there and the client did not say `replace`. No one
-/// confirms an overwrite for a client, as the window's Save dialog does for
+/// last one the document wrote there and the client did not say `replace`. No
+/// one confirms an overwrite for a client, as the window's Save dialog does for
 /// the user, so a PDF the user added pages to or a DWG of someone else's is
-/// kept (review 2026-11-04 MCP-140).
+/// kept (review 2026-11-04 MCP-140) and the client is told to ask the user
+/// (r19 SEC-161).
 fn kept_unless_asked(app: &KetchupApp, path: &Path, existing: Option<&str>, replace: bool) -> bool {
     existing.is_some_and(|sha256| !replace && !app.wrote_drawing(path, sha256))
 }
@@ -116,7 +117,7 @@ fn not_its_own(path: &Path) -> &'static str {
     failure(
         "drawings_target_exists",
         format!(
-            "{} is not the file this window's last export wrote there (another program's, or changed since), so it is not replaced. Pass replace: true to replace it, or export to another path.",
+            "{} is not the file this document's last export wrote there (another program's, or changed since), so it is not replaced. Ask the user whether to replace it, and pass replace: true only when they agree; or export to another path.",
             path.display()
         ),
         json!({"path": path.display().to_string()}),

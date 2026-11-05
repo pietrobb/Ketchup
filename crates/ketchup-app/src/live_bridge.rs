@@ -417,7 +417,8 @@ pub enum Request {
         #[serde(default)]
         sheet_language: Option<String>,
         /// Replaces a PDF or a drawing sheet's file at `path` that is not the
-        /// one the window last wrote there (review 2026-11-04 MCP-140).
+        /// one the document last wrote there (review 2026-11-04 MCP-140), as
+        /// the user agreed when asked (r19 SEC-161).
         #[serde(default)]
         replace: bool,
     },
