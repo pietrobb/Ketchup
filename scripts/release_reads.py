@@ -27,7 +27,7 @@ from happening:
    HEAD (`crates/ketchup-model/examples/resaved.rs`) must find the original's document in it.
 
 `--tag vX` checks one release instead of all. Needs the tags (`git fetch --no-tags
---depth=1 origin tag v0.2.0 tag v0.3.0 tag v0.3.1` in a shallow clone). The old crates and their
+--depth=1 origin tag v0.2.0 tag v0.3.0 tag v0.3.1 tag v0.3.2` in a shallow clone). The old crates and their
 build go to `<target>/release-<version>`; `--variants-only` skips the build.
 """
 
@@ -48,7 +48,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # Not v0.1.0: it takes every newer format and a document with a program for damage,
 # so no file Save writes can be kept safe from it; the README warns against it
 # (review 2026-11-01 DOC-100: 46 of 148 saved files opened its `.recovery`).
-RELEASES = ("v0.2.0", "v0.3.0", "v0.3.1")
+RELEASES = ("v0.2.0", "v0.3.0", "v0.3.1", "v0.3.2")
 SAVED_CRATES = ("crates/ketchup-model", "crates/ketchup-geometry", "crates/ketchup-tolerance")
 # `ketchup-test-env` is a dev-dependency of the model: the workspace needs its manifest.
 OLD_CRATES = (*SAVED_CRATES, "crates/ketchup-test-env")
@@ -67,6 +67,7 @@ REVIEWED = {
         "DxfEditRefusal": {"ReadDifferently", "TooLarge"},
     },
     "v0.3.1": {},
+    "v0.3.2": {},
 }
 
 ENUM = re.compile(
