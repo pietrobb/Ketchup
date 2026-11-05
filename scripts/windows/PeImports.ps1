@@ -118,38 +118,61 @@ function Get-PeToolsetVersion([string]$Directory) {
     return $versions[0]
 }
 
+function Get-VsInstallations {
+    if ([string]::IsNullOrWhiteSpace(${env:ProgramFiles(x86)})) { return @() }
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (-not (Test-Path $vswhere -PathType Leaf)) { return @() }
+    return @(& $vswhere -all -products * -property installationPath)
+}
+
 # Every installed Visual C++ redistributable, one directory per version
 # (VC\Redist\MSVC\14.44.35112), of every Visual Studio installation.
-function Get-VcRedistDirectories {
+function Get-VcRedistDirectories([string[]]$Installations = @(Get-VsInstallations)) {
     $redists = @()
     if (-not [string]::IsNullOrWhiteSpace($env:VCToolsRedistDir)) { $redists += $env:VCToolsRedistDir.TrimEnd('\', '/') }
-    $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
-    if (Test-Path $vswhere -PathType Leaf) {
-        foreach ($installation in @(& $vswhere -all -products * -property installationPath)) {
-            $redists += @(Get-ChildItem (Join-Path $installation "VC\Redist\MSVC") -Directory -ErrorAction SilentlyContinue |
-                ForEach-Object { $_.FullName })
-        }
+    foreach ($installation in $Installations) {
+        $redists += @(Get-ChildItem (Join-Path $installation "VC\Redist\MSVC") -Directory -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.FullName })
     }
     return $redists
+}
+
+# The toolset each Visual Studio installation installed its redistributable with. It may
+# be the previous toolset's runtime, when the DLLs did not change: Visual Studio 2022 17.5
+# installs the tools 14.35.32215 with the runtime 14.34.31931.
+function Get-VcRedistToolsets([string[]]$Installations = @(Get-VsInstallations)) {
+    $toolsets = @{}
+    foreach ($installation in $Installations) {
+        $build = Join-Path $installation "VC\Auxiliary\Build"
+        $tools = Join-Path $build "Microsoft.VCToolsVersion.default.txt"
+        $redist = Join-Path $build "Microsoft.VCRedistVersion.default.txt"
+        if (-not ((Test-Path $tools -PathType Leaf) -and (Test-Path $redist -PathType Leaf))) { continue }
+        $directory = Join-Path $installation ("VC\Redist\MSVC\" + (Get-Content $redist -TotalCount 1).Trim())
+        $toolsets[[IO.Path]::GetFullPath($directory)] = [version](Get-Content $tools -TotalCount 1).Trim()
+    }
+    return $toolsets
 }
 
 # The Visual C++ runtime DLLs for the toolset that linked the program, which Microsoft
 # allows to ship beside it (app-local deployment): the redistributable of that toolset,
 # or failing it the closest newer one, never an older one, which the program may not run
-# on. The newest installed Visual Studio's was taken, whatever linked the program (review
-# 2026-11-04 P3 platform).
-function Get-VcRuntimeDirectory([Parameter(Mandatory)][version]$Toolset, [string[]]$Redists = @(Get-VcRedistDirectories)) {
+# on. A redistributable serves the toolset Visual Studio installed it with, when newer
+# than its own version. The newest installed Visual Studio's was taken, whatever linked
+# the program (review 2026-11-04 P3 platform).
+function Get-VcRuntimeDirectory([Parameter(Mandatory)][version]$Toolset, [string[]]$Redists = @(Get-VcRedistDirectories), [hashtable]$RedistToolsets = (Get-VcRedistToolsets)) {
     $candidates = @(foreach ($redist in $Redists) {
         $name = Split-Path $redist -Leaf
         if ($name -notmatch '^\d+\.\d+\.\d+$') { continue }
         $version = [version]$name
-        if ($version.Major -ne $Toolset.Major -or $version.Minor -lt $Toolset.Minor) { continue }
+        $serves = $RedistToolsets[[IO.Path]::GetFullPath($redist)]
+        if ($null -eq $serves -or $serves -lt $version) { $serves = $version }
+        if ($serves.Major -ne $Toolset.Major -or $serves.Minor -lt $Toolset.Minor) { continue }
         $crt = @(Get-ChildItem (Join-Path $redist "x64") -Directory -Filter "Microsoft.VC*.CRT" -ErrorAction SilentlyContinue | Select-Object -First 1)
-        if ($crt.Count -eq 1) { [pscustomobject]@{ Version = $version; Crt = $crt[0].FullName } }
+        if ($crt.Count -eq 1) { [pscustomobject]@{ Serves = $serves; Version = $version; Crt = $crt[0].FullName } }
     })
     if ($candidates.Count -eq 0) {
         throw "No Visual C++ x64 runtime $Toolset or newer to ship found: install the MSVC build tools that linked the program or set VCToolsRedistDir."
     }
-    $closest = $candidates | Sort-Object @{ Expression = { $_.Version.Minor } }, @{ Expression = { $_.Version.Build }; Descending = $true } | Select-Object -First 1
+    $closest = $candidates | Sort-Object @{ Expression = { $_.Serves.Minor } }, @{ Expression = { $_.Version.Build }; Descending = $true } | Select-Object -First 1
     return $closest.Crt
 }

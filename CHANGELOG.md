@@ -3,7 +3,7 @@
 What changed for users in each Ketchup release. The full notes, downloads, and checksums are on the
 [GitHub releases page](https://github.com/pietrobb/Ketchup/releases).
 
-## Unreleased
+## 0.3.2 — 2026-11-04
 
 - **Connect AI** now lists Claude Code, Codex, Claude Desktop and Supervisor, and its **Connect** button writes Ketchup into the client's own settings file. It works even when the client's command is not found by the Ketchup window, where before only *Copy* was offered. Connecting again replaces an old path, such as a Supervisor copy of Ketchup. Each Supervisor instance reads its own `skills\mcp_servers.json`, so every running Supervisor with the MCP bridge (a project's instance, a development checkout), besides the installed one, gets its own row showing that file, and Connect writes only that file.
 - **Connect AI** shows three numbered steps, each ticked once the window sees it done. The status line names the connected AI, for example *Connected AI: Claude Code*, next to **Disconnect**. This replaces the small window that called it an "unverified local application".
@@ -45,6 +45,8 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 - A worktop with the opening for its sink is made with the opening cut through it, and woodWOP refuses that cut by name. A woodWOP pocket with an invalid tool and a package with nothing to program say so.
 - The Windows package's notices name the Visual C++ runtime it carries, the runtime is the one of the toolset that built Ketchup, and a signed package signs the OCCT libraries too.
 - On Linux an AI cannot reach a file on a FUSE network mount such as sshfs, rclone or s3fs through a local-looking path.
+
+Files from 0.3.1 open in 0.3.2. A file with a logical group needs 0.3.2.
 
 ## 0.3.1 — 2026-11-02
 
