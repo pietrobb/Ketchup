@@ -9,6 +9,7 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 - The installer no longer replaces an AI client's working Ketchup entry whose command is not a full path: a name found on PATH (`ketchup`), a path from `~`, or a Windows path without `.exe` is looked up as the client looks it up, and one Ketchup cannot find there is kept. **Connect AI** shows an entry that is turned off (`disabled`, Codex `enabled = false`) or a network server as starting nothing, and **Connect** turns it on as a program. The client's settings file is replaced in one step on Windows too and keeps its permissions; a link to a settings file not there yet creates that file; an error in a nested setting names its keys.
 - Writing an edited drawing back no longer fails as "read differently" when the file gained far-away objects since it was imported without a move.
 - The project drawings window shows the ground floor it found for ±0,000, a height you set starts from that value, and any height can be set, also one in absolute heights hundreds of metres above sea level (before, at most ±200 m).
+- Ketchup 0.3.1 can again read the Viewer sharing choices of a project in which a newer version left a saved view out, and it does not share that view; before, 0.3.1 could not read the choices and refused the Viewer export.
 
 ## 0.3.2 — 2026-11-04
 
