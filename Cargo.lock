@@ -2645,6 +2645,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sys-locale",
+ "tempfile",
  "wgpu",
 ]
 
