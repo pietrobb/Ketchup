@@ -3,6 +3,10 @@
 What changed for users in each Ketchup release. The full notes, downloads, and checksums are on the
 [GitHub releases page](https://github.com/pietrobb/Ketchup/releases).
 
+## Unreleased
+
+- A timber member counts as braced against lateral buckling only by parts fastened to it and to a part declared grounded beside it. Fastener points away from where the two parts touch hold nothing and are reported (`fastener_off_contact`); a lath resting on both arms of one grounded part along the beam, joints of kind `none`, `contact` or `friction`, a `fixed` tag, and a free stud standing on the floor no longer brace it. An area load on a part standing on edge, which takes none of it, is reported (`area_load_edge_on`).
+
 ## 0.3.2 — 2026-11-04
 
 - **Connect AI** now lists Claude Code, Codex, Claude Desktop and Supervisor, and its **Connect** button writes Ketchup into the client's own settings file. It works even when the client's command is not found by the Ketchup window, where before only *Copy* was offered. Connecting again replaces an old path, such as a Supervisor copy of Ketchup. Each Supervisor instance reads its own `skills\mcp_servers.json`, so every running Supervisor with the MCP bridge (a project's instance, a development checkout), besides the installed one, gets its own row showing that file, and Connect writes only that file.
