@@ -139,7 +139,7 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "drawing_edit_not_writable",
         Validation,
         "underlay_id",
-        "A change made to an object of the drawing does not go into its file; caused_by names the object and why (it has no handle, its handle is not in the file, or its kind cannot be moved there). Nothing was written.",
+        "A change made to an object of the drawing does not go into its file; caused_by names the object and why (it has no handle, its handle is not in the file, its kind cannot be moved there, or its entity reads otherwise in the file than when imported: what differs, where it lay and lies now). Nothing was written.",
         "Undo the change of the object caused_by names, or remove that object instead, then export again.",
     ),
     entry(

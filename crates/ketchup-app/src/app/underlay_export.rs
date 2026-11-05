@@ -75,6 +75,21 @@ impl std::fmt::Display for UnderlayExportError {
     }
 }
 
+impl UnderlayExportError {
+    /// The object whose edit was refused, its entity changed in the file since it was
+    /// imported.
+    pub(crate) fn refused_edit(&self) -> Option<u32> {
+        use ketchup_application::program_isolation::{UnderlayReadError, UnderlayRefusal};
+        use ketchup_model::import::DxfEditRefusal;
+        match self {
+            Self::Worker(UnderlayWorkerError::Read(UnderlayReadError::Refused(
+                UnderlayRefusal::NotWritten(DxfEditRefusal::ChangedInFile { object, .. }),
+            ))) => Some(*object),
+            _ => None,
+        }
+    }
+}
+
 impl std::error::Error for UnderlayExportError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
@@ -457,6 +472,27 @@ impl KetchupApp {
                 &BTreeMap::from([("reason", error.to_string())]),
             ),
         };
+        // An edit refused as its object's entity changed in the file since can be
+        // discarded alone, and the command that does it is said (review 2026-11-04 r19
+        // CD-163).
+        self.file.activity.underlay.refused_edit = match &result {
+            Err(error) => error.refused_edit().map(|object| (id, object)),
+            Ok(_) => None,
+        };
+        if self.file.activity.underlay.refused_edit.is_some() {
+            self.digest.push(' ');
+            self.digest.push_str(
+                &self.catalog.format(
+                    "digest-underlay-export-discard-hint",
+                    &BTreeMap::from([(
+                        "command",
+                        self.catalog
+                            .text("tool-discard-refused-underlay-edit")
+                            .to_owned(),
+                    )]),
+                ),
+            );
+        }
         // Entities changed in, or added to, the file since it was imported are written as
         // it has them, and said (review 2026-11-04 CD-140).
         if let Ok(written) = &result {

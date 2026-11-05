@@ -118,6 +118,32 @@ pub(super) fn difference(
     })
 }
 
+/// Where object `id` of `lines` lies, to the millimetre: the anchor of its first text, or
+/// else the first point of its lines, or of its fills; `None` where it draws nothing.
+pub(super) fn place_mm(lines: &UnderlayLines, id: usize) -> Option<[i64; 2]> {
+    let drawn = drawn(lines, id);
+    let first = |pick: fn(&Drawn<'_>) -> Option<[f64; 2]>| drawn.iter().find_map(pick);
+    let point = first(|drawn| drawn.texts.first().map(|text| text.anchor_mm))
+        .or_else(|| first(|drawn| drawn.lines.iter().find_map(|run| run.first().copied())))
+        .or_else(|| {
+            first(|drawn| {
+                drawn
+                    .fills
+                    .iter()
+                    .flatten()
+                    .find_map(|ring| ring.first().copied())
+            })
+        })?;
+    let [x, y] = point.map(millimetre);
+    Some([x?, y?])
+}
+
+/// `value` rounded to the millimetre, through its decimal text: one too large for an
+/// `i64` is none, not saturated as a cast would.
+fn millimetre(value: f64) -> Option<i64> {
+    format!("{value:.0}").parse().ok()
+}
+
 /// Whether object `id` of `lines`, or an object it placed, draws anything.
 pub(super) fn draws(lines: &UnderlayLines, id: usize) -> bool {
     drawn(lines, id).iter().any(|drawn| !drawn.is_empty())

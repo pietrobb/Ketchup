@@ -958,10 +958,9 @@ enum ActiveTool {
 
 /// Every command the designed shell can dispatch.
 ///
-/// The variant is the stable identity of a command; its visible label is a
-/// localization key resolved at paint time. Acceptance tests address widgets by
-/// variant and resolve the expected label through the same catalog, so neither a
-/// translation change nor an icon-only presentation can break them.
+/// The variant is a command's stable identity; its label is a localization key resolved at
+/// paint time. Acceptance tests address widgets by variant and resolve labels through the
+/// same catalog, so no translation change or icon-only presentation can break them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AppCommand {
     New,
@@ -1028,6 +1027,7 @@ pub enum AppCommand {
     TextIntoUnderlay,
     ExportUnderlayDxf,
     ExportUnderlayDwg,
+    DiscardRefusedUnderlayEdit,
     TrimUnderlayLine,
     ExtendUnderlayLine,
     OffsetUnderlayLine,

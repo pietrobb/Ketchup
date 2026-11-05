@@ -44,6 +44,9 @@ impl KetchupApp {
                 | AppCommand::ExportUnderlayDwg => {
                     self.gesture.underlay_draw.is_some() || self.selected_underlay().is_some()
                 }
+                AppCommand::DiscardRefusedUnderlayEdit => {
+                    self.file.activity.underlay.refused_edit.is_some()
+                }
                 AppCommand::Deselect => self.deselect_source_plan().is_some(),
                 AppCommand::SelectAll => self.select_all_source_plan().is_some(),
                 AppCommand::InvertSelection => self.invert_selection_source_plan().is_some(),
@@ -507,6 +510,7 @@ impl KetchupApp {
             AppCommand::DrawIntoUnderlay => self.toggle_underlay_draw(),
             AppCommand::ExportUnderlayDxf => self.export_selected_underlay("dxf"),
             AppCommand::ExportUnderlayDwg => self.export_selected_underlay("dwg"),
+            AppCommand::DiscardRefusedUnderlayEdit => self.discard_refused_underlay_edit(),
             AppCommand::Select
             | AppCommand::Line
             | AppCommand::Rectangle

@@ -629,6 +629,19 @@ fn a_drawing_export_refusal_has_the_code_of_its_cause() {
             })),
             "drawing_edit_not_writable",
         ),
+        // Review 2026-11-04 r19 CD-163: undoing that one edit repairs it.
+        (
+            refused(UnderlayRefusal::NotWritten(DxfEditRefusal::ChangedInFile {
+                object: 4,
+                handle: 0xA3,
+                kind: "TEXT".into(),
+                edit: ketchup_model::import::EditOfObject::Moved,
+                difference: ketchup_model::import::Difference::Text,
+                was_mm: Some([500, 500]),
+                now_mm: Some([5000, 500]),
+            })),
+            "drawing_edit_not_writable",
+        ),
         (
             Error::Worker(UnderlayWorkerError::Unavailable(
                 WorkerUnavailable::NotInstalled,

@@ -433,6 +433,30 @@ pub fn plan_underlay_object_removal(
     Ok(with_edits(underlay, edits))
 }
 
+/// One batch, so one Undo step, that discards what was done in Kečup to the object `object`
+/// the drawing of underlay `id` was read with, and no other edit: it is put back where it
+/// was read, and copies of it are dropped. A drawing written back refuses an edit of an
+/// object whose entity was changed in the file since; this lets that edit alone go
+/// (review 2026-11-04 r19 CD-163).
+pub fn plan_underlay_edit_discard(
+    snapshot: &Snapshot,
+    id: super::UnderlayId,
+    object: u32,
+) -> Result<CommandBatch, UnderlayObjectError> {
+    let underlay = snapshot
+        .underlay(id)
+        .ok_or(UnderlayObjectError::Plan(UnderlayPlanError::NotFound(id)))?;
+    let mut edits = underlay.edits.clone();
+    edits.removed_objects.remove(&object);
+    edits.moved_objects.remove(&object);
+    edits.stretched_objects.remove(&object);
+    edits.added.retain(|added| added.copy_of() != Some(object));
+    if edits == underlay.edits {
+        return Err(UnderlayObjectError::NotFound(object));
+    }
+    Ok(with_edits(underlay, edits))
+}
+
 /// One batch, so one Undo step, that draws `shapes` on the layer named `layer` of the
 /// drawing of underlay `id`, each a new object.
 pub fn plan_underlay_drawing(

@@ -4,8 +4,8 @@
 //! with handles of their own. Read again, it draws what the underlay drew with the edits.
 use ketchup_model::document::TagId;
 use ketchup_model::import::{
-    DxfEditRefusal, DxfImportOptions, DxfUnderlay, EditedDxfError, ImportLengthUnit,
-    read_dxf_underlay, write_edited_dxf as write_reported,
+    Difference, DxfEditRefusal, DxfImportOptions, DxfUnderlay, EditOfObject, EditedDxfError,
+    ImportLengthUnit, read_dxf_underlay, write_edited_dxf as write_reported,
 };
 use ketchup_model::underlay::drawn::{AddedObject, DrawnShape, similarity};
 use ketchup_model::underlay::edits::UnderlayEdits;
@@ -1401,9 +1401,18 @@ fn another_drawing_and_one_read_differently_are_refused_apart() {
     // An entity of another handle: another drawing.
     let renamed = source.replace("0\nLINE\n5\nA0\n", "0\nLINE\n5\nF0\n");
     assert_eq!(refusal(&renamed, lines), DxfEditRefusal::NotTheSource);
-    // The same entities, the line moved longer: it reads differently.
+    // The same entities, the line moved longer: it reads differently, and is named
+    // (review 2026-11-04 r19 CD-163).
     let longer = source.replace("11\n4000\n21\n0\n", "11\n4100\n21\n0\n");
-    assert_eq!(refusal(&longer, lines), DxfEditRefusal::ReadDifferently);
+    assert!(
+        matches!(
+            refusal(&longer, lines),
+            DxfEditRefusal::ChangedInFile { object, handle: 0xA0, edit: EditOfObject::Moved, difference: Difference::Lines, .. }
+                if object == line
+        ),
+        "{:?}",
+        refusal(&longer, lines)
+    );
     // Review 2026-11-02 CD-120: another entity moved is bound again by its handle, and
     // the longer line is written as the file has it, and said (review 2026-11-04 CD-140).
     let written = write_reported(
@@ -1433,7 +1442,18 @@ fn another_drawing_and_one_read_differently_are_refused_apart() {
         .collect::<Vec<_>>();
     let as_drawn_then = lines.clone().edited(&older, &layers);
     let refused = refusal(&source, &as_drawn_then);
-    assert_eq!(refused, DxfEditRefusal::ReadDifferently);
+    assert!(
+        matches!(
+            refused,
+            DxfEditRefusal::ChangedInFile {
+                handle: 0xA0,
+                was_mm: Some([5, 0]),
+                now_mm: Some([0, 0]),
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
     assert!(
         refused.to_string().contains("import the drawing again"),
         "{refused}"
@@ -1451,8 +1471,18 @@ fn another_drawing_and_one_read_differently_are_refused_apart() {
         Err(EditedDxfError::Refused(refusal)) => refusal,
         other => panic!("{other:?}"),
     };
-    assert_eq!(refused, DxfEditRefusal::ReadDifferently);
-    // Nothing lies where it lay: the drawing is not bound again.
+    assert!(
+        matches!(
+            refused,
+            DxfEditRefusal::ChangedInFile {
+                handle: 0xA0,
+                edit: EditOfObject::Removed,
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
+    // Nothing lies where it lay: the drawing is not bound again, and no object is blamed.
     let everything = lines.clone().edited(
         &UnderlayEdits {
             moved_objects: (0..u32::try_from(lines.objects().objects.len()).unwrap())
@@ -1502,7 +1532,15 @@ fn an_entity_taken_out_that_lies_elsewhere_in_the_file_now_is_refused() {
         };
     assert_eq!(
         refusal(&wall, lines, &edits),
-        DxfEditRefusal::ReadDifferently
+        DxfEditRefusal::ChangedInFile {
+            object: id_of(lines, 0xA0),
+            handle: 0xA0,
+            kind: "LINE".to_owned(),
+            edit: EditOfObject::Removed,
+            difference: Difference::Lines,
+            was_mm: Some([0, 0]),
+            now_mm: Some([1000, 5000]),
+        }
     );
     // A block placed by an insert is checked with it: the insert taken out, its leaf now
     // drawn longer, is refused too.
@@ -1513,12 +1551,19 @@ fn an_entity_taken_out_that_lies_elsewhere_in_the_file_now_is_refused() {
         "0\nLINE\n5\n21\n8\n0\n10\n0\n20\n0\n11\n2800\n",
     );
     assert_ne!(leaf, source);
-    assert_eq!(
-        refusal(&leaf, lines, &door),
-        DxfEditRefusal::ReadDifferently
-    );
-    // An object the insert placed, taken out on its own, is checked with the insert.
     let door_id = id_of(lines, 0xA4);
+    let named = |object: u32| DxfEditRefusal::ChangedInFile {
+        object,
+        handle: 0xA4,
+        kind: "INSERT".to_owned(),
+        edit: EditOfObject::Removed,
+        difference: Difference::Lines,
+        was_mm: Some([2100, 100]),
+        now_mm: Some([2100, 100]),
+    };
+    assert_eq!(refusal(&leaf, lines, &door), named(door_id));
+    // An object the insert placed, taken out on its own, is checked with the insert, and
+    // is the one named to undo.
     let placed = lines
         .objects()
         .objects
@@ -1529,7 +1574,7 @@ fn an_entity_taken_out_that_lies_elsewhere_in_the_file_now_is_refused() {
     part.removed_objects.insert(u32::try_from(placed).unwrap());
     assert_eq!(
         refusal(&leaf, lines, &part),
-        DxfEditRefusal::ReadDifferently
+        named(u32::try_from(placed).unwrap())
     );
 
     let first = "0\nLINE\n8\nwalls\n10\n0\n20\n0\n30\n0\n11\n4000\n21\n0\n31\n0\n";
@@ -1542,9 +1587,22 @@ fn an_entity_taken_out_that_lies_elsewhere_in_the_file_now_is_refused() {
     let r12 = read(R12.as_bytes());
     let mut edits = UnderlayEdits::default();
     edits.removed_objects.insert(0);
+    let refused = refusal(&swapped, &r12.lines, &edits);
     assert_eq!(
-        refusal(&swapped, &r12.lines, &edits),
-        DxfEditRefusal::ReadDifferently
+        refused,
+        DxfEditRefusal::ChangedInFile {
+            object: 0,
+            handle: 0,
+            kind: "LINE".to_owned(),
+            edit: EditOfObject::Removed,
+            difference: Difference::Lines,
+            was_mm: Some([0, 0]),
+            now_mm: Some([0, 1000]),
+        }
+    );
+    assert!(
+        refused.to_string().contains("a LINE without a handle"),
+        "{refused}"
     );
 }
 
@@ -1589,14 +1647,64 @@ fn an_edited_text_fill_or_entity_changed_in_the_file_since_is_refused() {
         "0\nLINE\n5\nA0\n330\n1F\n100\nAcDbEntity\n8\nwalls\n",
         "0\nLINE\n5\nA0\n330\n1F\n100\nAcDbEntity\n8\nnotes\n",
     );
-    for (changed, handle, moved) in [
-        (&moved_text, 0xA3, true),
-        (&reworded, 0xA3, false),
-        (&fill, 0xA8, false),
-        (&relayered, 0xA0, false),
+    // Review 2026-11-04 r19 CD-163: the refusal names the object, its handle, its edit,
+    // what differs and where, so that edit alone can be undone.
+    for (changed, handle, moved, difference, was, now) in [
+        (
+            &moved_text,
+            0xA3,
+            true,
+            Difference::Text,
+            [500, 500],
+            [5000, 500],
+        ),
+        (
+            &reworded,
+            0xA3,
+            false,
+            Difference::Text,
+            [500, 500],
+            [500, 500],
+        ),
+        (&fill, 0xA8, false, Difference::Fill, [7000, 0], [7000, 0]),
+        (&relayered, 0xA0, false, Difference::Layer, [0, 0], [0, 0]),
     ] {
+        let object = id_of(lines, handle);
+        let edit = if moved {
+            EditOfObject::Moved
+        } else {
+            EditOfObject::Removed
+        };
         match written(changed, &edited(handle, moved)) {
-            Err(EditedDxfError::Refused(DxfEditRefusal::ReadDifferently)) => {}
+            Err(EditedDxfError::Refused(refusal)) => {
+                assert_eq!(
+                    refusal,
+                    DxfEditRefusal::ChangedInFile {
+                        object,
+                        handle,
+                        kind: if handle == 0xA3 {
+                            "TEXT"
+                        } else if handle == 0xA8 {
+                            "HATCH"
+                        } else {
+                            "LINE"
+                        }
+                        .to_owned(),
+                        edit,
+                        difference,
+                        was_mm: Some(was),
+                        now_mm: Some(now),
+                    }
+                );
+                let said = refusal.to_string();
+                for named in [
+                    format!("object {object}"),
+                    format!("{handle:X}"),
+                    "undo".to_owned(),
+                ] {
+                    assert!(said.contains(&named), "{said}");
+                }
+            }
             other => panic!("{handle:X}: {other:?}"),
         }
     }
@@ -1653,7 +1761,10 @@ fn perf_a_large_drawing_changed_in_the_file_is_refused_as_fast_as_written() {
     assert!(
         matches!(
             refused,
-            Err(EditedDxfError::Refused(DxfEditRefusal::ReadDifferently))
+            Err(EditedDxfError::Refused(DxfEditRefusal::ChangedInFile {
+                handle: 0x1000,
+                ..
+            }))
         ),
         "{refused:?}"
     );

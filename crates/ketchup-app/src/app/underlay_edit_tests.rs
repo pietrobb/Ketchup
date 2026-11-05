@@ -881,6 +881,82 @@ fn a_drawing_read_unmoved_is_written_back_though_the_file_gained_far_points() {
     assert!(written.contains("0\nPOINT\n5\nB1\n"), "{written}");
 }
 
+/// Review 2026-11-04 r19 CD-163: an export refused as the entity of an edited object
+/// changed in the file since said neither which nor what to do but import again, which
+/// loses every edit. The window names the object and its handle, and Tools > Discard the
+/// refused drawing edit lets that edit alone go; the other edits are written.
+#[test]
+fn an_edit_refused_by_the_file_is_discarded_alone_and_the_others_written() {
+    const PLAN: &str = concat!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n",
+        "0\nSECTION\n2\nENTITIES\n",
+        "0\nLINE\n5\nA1\n8\nwalls\n10\n40\n20\n20\n11\n240\n21\n20\n",
+        "0\nLINE\n5\nA2\n8\naxes\n10\n40\n20\n120\n11\n240\n21\n120\n",
+        "0\nLINE\n5\nA3\n8\naxes\n10\n40\n20\n200\n11\n240\n21\n200\n",
+        "0\nLINE\n5\nA4\n8\naxes\n10\n40\n20\n300\n11\n240\n21\n300\n",
+        "0\nENDSEC\n0\nEOF\n",
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("plan.dxf");
+    let output = directory.path().join("edited.dxf");
+    std::fs::write(&source, PLAN).unwrap();
+    let dialogs = dialogs::ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Dxf, &source)
+        .queue_export(&output)
+        .queue_export(&output);
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.dispatch_file_command(AppCommand::ImportDrawingUnderlay);
+    let mut harness = shell_of(app);
+    click(&mut harness, Vec3::new(100.0, 20.0, 0.0));
+    press(&mut harness, egui::Key::Delete);
+    click(&mut harness, Vec3::new(100.0, 120.0, 0.0));
+    press(&mut harness, egui::Key::Delete);
+    let undo = harness.state().undo_step_count();
+    assert!(
+        !harness
+            .state()
+            .command_enabled(AppCommand::DiscardRefusedUnderlayEdit)
+    );
+    // The wall taken out was moved in another program since.
+    let moved = PLAN.replace(
+        "10\n40\n20\n20\n11\n240\n21\n20\n",
+        "10\n40\n20\n60\n11\n240\n21\n60\n",
+    );
+    std::fs::write(&source, &moved).unwrap();
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExportUnderlayDxf);
+    let app = harness.state();
+    assert!(!output.exists(), "{}", app.digest);
+    for named in ["A1", "LINE", "undo", "40, 20", "40, 60"] {
+        assert!(app.digest.contains(named), "{named}: {}", app.digest);
+    }
+    let command = app.catalog.text("tool-discard-refused-underlay-edit");
+    assert!(app.digest.contains(&command), "{}", app.digest);
+    assert!(app.command_enabled(AppCommand::DiscardRefusedUnderlayEdit));
+
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::DiscardRefusedUnderlayEdit);
+    let app = harness.state();
+    assert_eq!(app.undo_step_count(), undo + 1, "{}", app.digest);
+    assert!(!app.command_enabled(AppCommand::DiscardRefusedUnderlayEdit));
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExportUnderlayDxf);
+    let app = harness.state();
+    let written =
+        std::fs::read_to_string(&output).unwrap_or_else(|error| panic!("{error}: {}", app.digest));
+    assert!(
+        written.contains("0\nLINE\n5\nA1\n8\nwalls\n10\n40\n20\n60\n"),
+        "the wall as the file has it: {written}"
+    );
+    assert!(
+        !written.contains("5\nA2\n"),
+        "the axes still taken out: {written}"
+    );
+}
+
 /// Review 2026-10-29 SEC-60: in the window the drawing is written back on a thread while
 /// the file activity indication shows, so the window keeps painting; stopped, it keeps
 /// the file the user chose to replace. Given again, the export replaces it.

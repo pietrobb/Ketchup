@@ -1177,6 +1177,7 @@ impl KetchupApp {
                 self.underlay_view_menu(ui);
                 self.menu_command(ui, AppCommand::ExportUnderlayDxf);
                 self.menu_command(ui, AppCommand::ExportUnderlayDwg);
+                self.menu_command(ui, AppCommand::DiscardRefusedUnderlayEdit);
                 self.menu_command(ui, AppCommand::Orbit);
                 self.menu_command(ui, AppCommand::Pan);
             });

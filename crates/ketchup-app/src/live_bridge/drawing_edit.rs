@@ -488,7 +488,8 @@ pub(super) fn drawing_export_code(error: &UnderlayExportError) -> &'static str {
             UnderlayRefusal::NotWritten(
                 DxfEditRefusal::NoHandle { .. }
                 | DxfEditRefusal::HandleMissing { .. }
-                | DxfEditRefusal::NotMappable { .. },
+                | DxfEditRefusal::NotMappable { .. }
+                | DxfEditRefusal::ChangedInFile { .. },
             ) => "drawing_edit_not_writable",
             UnderlayRefusal::NotWritten(..)
             | UnderlayRefusal::Dwg(..)

@@ -14,6 +14,8 @@ use std::ops::Range;
 
 mod compare;
 
+pub use compare::Difference;
+
 use super::code_page::CodePage;
 use super::text::unicode_escapes;
 use super::underlay::text_encoding;
@@ -68,6 +70,59 @@ pub enum DxfEditRefusal {
     HandleMissing { object: u32, handle: u64 },
     /// A changed object is of a kind, or lies in a plane, that is not mapped yet.
     NotMappable { object: u32, kind: String },
+    /// The entity of an object edited in Kečup reads otherwise in the file now (changed
+    /// there since it was imported, or read differently by this Kečup), while another
+    /// reads as it did: where it lay (`was_mm`) and lies now
+    /// (`now_mm`), in the underlay's millimetres. `object` is the one edited, `handle`
+    /// and `kind` the entity of the file that holds it, `handle` 0 in a drawing without
+    /// handles (review 2026-11-04 r19 CD-163: the
+    /// refusal named neither the object nor what to do but import again, losing every
+    /// edit).
+    ChangedInFile {
+        object: u32,
+        handle: u64,
+        kind: String,
+        edit: EditOfObject,
+        difference: Difference,
+        was_mm: Option<[i64; 2]>,
+        now_mm: Option<[i64; 2]>,
+    },
+}
+
+/// What was done in Kečup to an object of the underlay.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum EditOfObject {
+    Moved,
+    Stretched,
+    Removed,
+    Copied,
+}
+
+impl EditOfObject {
+    fn done(self) -> &'static str {
+        match self {
+            Self::Moved => "moved",
+            Self::Stretched => "stretched",
+            Self::Removed => "taken out",
+            Self::Copied => "copied",
+        }
+    }
+}
+
+impl Difference {
+    fn what(self) -> &'static str {
+        match self {
+            Self::Layer => "layer",
+            Self::Lines => "lines",
+            Self::Text => "text",
+            Self::Fill => "fill",
+        }
+    }
+}
+
+/// `x, y` of a place in millimetres, or that it has none.
+fn at(place: Option<[i64; 2]>) -> String {
+    place.map_or_else(|| "nowhere".to_owned(), |[x, y]| format!("{x}, {y}"))
 }
 
 impl From<DxfEditRefusal> for EditedDxfError {
@@ -124,6 +179,32 @@ impl fmt::Display for DxfEditRefusal {
                 "object {object} is a {kind} that is not moved or copied in a DXF yet; take it \
                  out and draw it again, or leave it where it was read"
             ),
+            Self::ChangedInFile {
+                object,
+                handle,
+                kind,
+                edit,
+                difference,
+                was_mm,
+                now_mm,
+            } => write!(
+                formatter,
+                "object {object}, of {}, was {} in Kečup, but its {} \
+                 reads otherwise in the file now, changed there since it was imported or read \
+                 differently by this Kečup: it lay at {} mm and lies at {} mm now; undo that \
+                 edit of object {object} to write the drawing with the others, or import the \
+                 drawing again",
+                // A DXF handle is never 0: the drawing has none (R12).
+                if *handle == 0 {
+                    format!("a {kind} without a handle")
+                } else {
+                    format!("the {kind} of handle {handle:X}")
+                },
+                edit.done(),
+                difference.what(),
+                at(*was_mm),
+                at(*now_mm)
+            ),
         }
     }
 }
@@ -169,15 +250,19 @@ pub fn write_edited_dxf(
     // The header names the code page the texts are read and written in, so the drawing
     // reads so again, however few of its texts are left (review 2026-11-04 r19 UL-161).
     drawing.code_page_renamed = encoding.code_page_over_header().map(str::to_owned);
-    let Some((frame, rebound)) = frame else {
+    let (frame, rebound) = match frame {
+        Ok(frame) => frame,
+        Err(Some(refusal)) => return Err(refusal.into()),
         // The file is blamed only when its entities are not those the lines were read
         // from (review 2026-10-29 CD-64).
-        return Err(if drawing.has_entities_of(&lines.objects().objects) {
-            DxfEditRefusal::ReadDifferently
-        } else {
-            DxfEditRefusal::NotTheSource
+        Err(None) => {
+            return Err(if drawing.has_entities_of(&lines.objects().objects) {
+                DxfEditRefusal::ReadDifferently
+            } else {
+                DxfEditRefusal::NotTheSource
+            }
+            .into());
         }
-        .into());
     };
     Ok(EditedDxf {
         dxf: drawing.write(lines, edits, &frame)?,
@@ -196,13 +281,13 @@ fn frame_of(
     options: DxfImportOptions,
     lines: &UnderlayLines,
     edits: &UnderlayEdits,
-) -> Result<Option<(Frame, Rebound)>, EditedDxfError> {
+) -> Result<Bound, EditedDxfError> {
     let read = read_dxf_underlay(source, options).map_err(EditedDxfError::Read)?;
     // Bound as read, or again (review 2026-11-04 P3: also in the unit a drawing that
     // declares none was read in).
     let bound = |read: &super::underlay::DxfUnderlay| {
         let changed = if read.lines == *lines {
-            Some(Rebound::default())
+            Ok(Rebound::default())
         } else {
             rebinds(&read.lines, lines, edits)
         };
@@ -214,14 +299,12 @@ fn frame_of(
             (frame, changed)
         })
     };
-    if let Some(bound) = bound(&read) {
-        return Ok(Some(bound));
-    }
-    if read.units.authority() != ImportUnitAuthority::UserDeclared {
-        return Ok(None);
+    let first = bound(&read);
+    if first.is_ok() || read.units.authority() != ImportUnitAuthority::UserDeclared {
+        return Ok(first);
     }
     let Some(unit) = unit_scaled_to(&read, lines) else {
-        return Ok(None);
+        return Ok(first);
     };
     drop(read);
     let other = read_dxf_underlay(
@@ -229,8 +312,15 @@ fn frame_of(
         DxfImportOptions::new(Some(unit)).with_geo_origin(options.geo_origin_mm()),
     )
     .map_err(EditedDxfError::Read)?;
-    Ok(bound(&other))
+    Ok(match bound(&other) {
+        Err(None) => first,
+        other => other,
+    })
 }
+
+/// How the lines lie against the drawing, with what was bound again; or why not: the
+/// edited object changed in the file, or `None` where the drawing does not read alike.
+type Bound = Result<(Frame, Rebound), Option<DxfEditRefusal>>;
 
 /// Whether `edits` of `lines`, read from a drawing by an earlier Kečup, are bound again to
 /// that drawing as this Kečup reads it, `read`, though some entities read as other lines
@@ -241,8 +331,13 @@ fn frame_of(
 /// alike against the drawing's units. The entities are written from the file, not from
 /// either read, so one read differently and not edited is written as the file has it, as
 /// is one the file gained since (review 2026-11-04 CD-140): how many of each, when bound
-/// again.
-fn rebinds(read: &UnderlayLines, lines: &UnderlayLines, edits: &UnderlayEdits) -> Option<Rebound> {
+/// again. An edited object that does not lie where it lay, while another does, is named
+/// (review 2026-11-04 r19 CD-163).
+fn rebinds(
+    read: &UnderlayLines,
+    lines: &UnderlayLines,
+    edits: &UnderlayEdits,
+) -> Result<Rebound, Option<DxfEditRefusal>> {
     type Key = (u64, &'static str, usize);
     /// The top-level objects by key, each with its id.
     fn tops(lines: &UnderlayLines) -> BTreeMap<Key, usize> {
@@ -274,34 +369,72 @@ fn rebinds(read: &UnderlayLines, lines: &UnderlayLines, edits: &UnderlayEdits) -
     }
     let (now, then) = (tops(read), tops(lines));
     if then.is_empty() {
-        return None;
+        return Err(None);
     }
     // An object taken out names an entity as a moved one does, so it too must lie where
     // it lay, with what it placed; and an object an insert placed is checked with the
     // insert (review 2026-11-04 CD-140: the entity of its handle, or its place, could be
     // another one in a file changed since).
-    let edited: BTreeSet<usize> = edits
-        .moved_objects
-        .keys()
-        .chain(edits.stretched_objects.keys())
-        .chain(&edits.removed_objects)
-        .copied()
-        .chain(edits.added.iter().filter_map(AddedObject::copy_of))
-        .filter_map(|id| usize::try_from(id).ok())
-        .map(|id| top_of(lines, id))
-        .collect();
-    let (mut lies_alike, mut changed) = (false, 0);
-    for (key, &id) in &then {
-        let found = now.get(key)?;
-        let alike = compare::difference(lines, id, read, *found).is_none();
-        if !alike && edited.contains(&id) {
-            return None;
+    let mut edited = BTreeMap::new();
+    for (ids, edit) in [
+        (
+            edits.moved_objects.keys().copied().collect::<Vec<_>>(),
+            EditOfObject::Moved,
+        ),
+        (
+            edits.stretched_objects.keys().copied().collect(),
+            EditOfObject::Stretched,
+        ),
+        (
+            edits.removed_objects.iter().copied().collect(),
+            EditOfObject::Removed,
+        ),
+        (
+            edits
+                .added
+                .iter()
+                .filter_map(AddedObject::copy_of)
+                .collect(),
+            EditOfObject::Copied,
+        ),
+    ] {
+        for id in ids {
+            if let Ok(at) = usize::try_from(id) {
+                edited.entry(top_of(lines, at)).or_insert((id, edit));
+            }
         }
+    }
+    let (mut lies_alike, mut changed, mut refused) = (false, 0, None);
+    for (key, &id) in &then {
+        let found = *now.get(key).ok_or(None)?;
+        let difference = compare::difference(lines, id, read, found);
+        if let (Some(difference), Some(&(object, edit)), None) =
+            (difference, edited.get(&id), &refused)
+        {
+            refused = Some(DxfEditRefusal::ChangedInFile {
+                object,
+                handle: key.0,
+                kind: key.1.to_owned(),
+                edit,
+                difference,
+                was_mm: compare::place_mm(lines, id),
+                now_mm: compare::place_mm(read, found),
+            });
+        }
+        let alike = difference.is_none();
         lies_alike |= alike && compare::draws(lines, id);
         changed += usize::from(!alike);
     }
+    // Where nothing lies where it lay, the drawing reads otherwise as a whole, and no
+    // object is blamed.
+    if !lies_alike {
+        return Err(None);
+    }
+    if let Some(refused) = refused {
+        return Err(Some(refused));
+    }
     let added = now.keys().filter(|key| !then.contains_key(*key)).count();
-    lies_alike.then_some(Rebound { changed, added })
+    Ok(Rebound { changed, added })
 }
 
 /// The unit of [`UNITS`], other than the one `read` was read in, whose scale against it
