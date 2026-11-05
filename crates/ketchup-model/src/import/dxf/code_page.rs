@@ -72,6 +72,24 @@ impl CodePage {
         }
     }
 
+    /// Whether this code page reads the UTF-8 bytes of `character`, one of two bytes, as a
+    /// letter followed by a sign: a byte of 0xC2 to 0xDF is a capital letter in the Windows
+    /// code pages, and one of 0x80 to 0xBF after it a sign or an undefined byte („Î”“ for
+    /// „Δ“, „Â°“ for „°“), which no text writes, so the character is UTF-8; but for a
+    /// fraction after Ø, a pipe size („Ø½“, review 2026-11-02 UL-121). Read as two letters
+    /// („ÍŽ“ for U+034E) it may be text in the code page (review 2026-11-04 r19 UL-160).
+    fn reads_as_letter_and_sign(self, character: char) -> bool {
+        let mut buffer = [0; 4];
+        let Some(read) = self.decode(character.encode_utf8(&mut buffer).as_bytes()) else {
+            return false;
+        };
+        match read.chars().collect::<Vec<_>>()[..] {
+            ['Ø' | 'ø', '¼' | '½' | '¾'] => false,
+            [letter, sign] => letter.is_alphabetic() && !sign.is_alphabetic(),
+            _ => false,
+        }
+    }
+
     fn is(self, encoding: &'static encoding_rs::Encoding) -> bool {
         matches!(self, Self::Standard(own) if own == encoding)
     }
@@ -448,10 +466,12 @@ impl TextSeen {
     /// place ([`text_code_page`]), unless it is UTF-8 as some programs write it: a file
     /// that is valid UTF-8 is read so when a character of it is of three or four bytes,
     /// which a code page forms only by chance, or when more of its characters of two are
-    /// ones the code page writes or Latin letters than are not; „Rohr Ø½“ in Windows-1252
+    /// ones the code page writes, Latin letters or ones it reads as a letter and a sign
+    /// ([`CodePage::reads_as_letter_and_sign`]) than are not; „Rohr Ø½“ in Windows-1252
     /// is „Rohr ؽ“ as UTF-8 (review 2026-11-02 UL-121). Where both readings fit some of
-    /// its characters, the code page named is doubted (review 2026-11-04 UL-141: one
-    /// character sent a whole UTF-8 file through the code page, unsaid).
+    /// its characters, or the code page has none for one, the code page named is doubted
+    /// (review 2026-11-04 UL-141: one character sent a whole UTF-8 file through the code
+    /// page, unsaid; r19 UL-160: „Δh“ read „Î”h“, unsaid).
     pub(super) fn decide(self) -> Result<TextEncoding, DxfImportError> {
         if self.lines == 0 {
             return Err(DxfImportError::Empty);
@@ -480,17 +500,23 @@ impl TextSeen {
                 return Ok(utf8(None));
             }
             let mut foreign = 0;
+            let mut unwritten = false;
             for (&character, &count) in &self.beyond_ascii {
                 let latin = matches!(character, '\u{C0}'..='\u{24F}' | '\u{1E00}'..='\u{1EFF}')
                     && character.is_alphabetic();
-                if latin || named.writes(character) {
+                let written = latin || named.writes(character);
+                unwritten |= !written;
+                if written || named.reads_as_letter_and_sign(character) {
                     fitting += count;
                 } else {
                     foreign += count;
                 }
             }
             if fitting > foreign {
-                let doubted = name.as_deref().filter(|_| foreign > 0).map(code_page_name);
+                let doubted = name
+                    .as_deref()
+                    .filter(|_| foreign > 0 || unwritten)
+                    .map(code_page_name);
                 return Ok(utf8(
                     doubted.map(|doubted| ("UTF-8".to_owned(), Some(doubted))),
                 ));

@@ -392,6 +392,41 @@ fn a_utf8_drawing_naming_a_code_page_is_read_as_utf8_by_most_of_its_characters()
     assert_eq!(read_texts(&underlay), ["Küche"]);
 }
 
+/// Review 2026-11-04 r19 UL-160: a character of two bytes its code page has no letter
+/// for counted against UTF-8, so a UTF-8 drawing of a few Greek letters was read in the
+/// code page, unwarned: „Δh“ read „Î”h“, „α = 30°“ „Î± = 30Â°“. Read in a code page, a
+/// character of two bytes is a capital letter followed by a sign („Î”“, „Â°“), which no
+/// text writes but „Ø½“; it is UTF-8, warned of where the code page could not write it.
+#[test]
+fn utf8_letters_a_code_page_reads_as_a_letter_and_a_sign_are_utf8() {
+    let read = |code_page: &str, texts: &[&[u8]]| {
+        read_dxf_underlay(
+            &texts_drawing(b"", code_page, texts),
+            DxfImportOptions::new(None),
+        )
+        .unwrap()
+    };
+    for probe in ["Δh", "α = 30°"] {
+        let underlay = read("ANSI_1252", &[probe.as_bytes()]);
+        assert_eq!(read_texts(&underlay), [probe]);
+        assert_eq!(
+            counted(&underlay, "dxf.text-code-page-doubtful", Some("ANSI_1252")),
+            Some(1),
+            "{probe}: {:?}",
+            underlay.diagnostics
+        );
+    }
+    // UTF-8 of Czech letters under a Central European header: „ř“ is „Ĺ™“ in 1250.
+    let underlay = read("ANSI_1250", &["Kuchyně", "Předsíň"].map(str::as_bytes));
+    assert_eq!(read_texts(&underlay), ["Kuchyně", "Předsíň"]);
+    // A pipe size in Windows-1252 that is valid UTF-8 stays in its code page.
+    let underlay = read("ANSI_1252", &[b"Rohr \xD8\xBD"]);
+    assert_eq!(read_texts(&underlay), ["Rohr Ø½"]);
+    // Capital letters of Windows-1250 that are valid UTF-8 stay in it: „NÍŽE“.
+    let underlay = read("ANSI_1250", &[b"N\xCD\x8EE"]);
+    assert_eq!(read_texts(&underlay), ["NÍŽE"]);
+}
+
 const BLOCKS: &str = concat!(
     // A door: its leaf and its number, on layer 0, so on the layer of its insert.
     "0\nBLOCK\n8\n0\n2\ndoor\n70\n0\n10\n0\n20\n0\n",

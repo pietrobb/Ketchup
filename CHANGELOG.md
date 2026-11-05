@@ -10,6 +10,7 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 - Writing an edited drawing back no longer fails as "read differently" when the file gained far-away objects since it was imported without a move.
 - The project drawings window shows the ground floor it found for ±0,000, a height you set starts from that value, and any height can be set, also one in absolute heights hundreds of metres above sea level (before, at most ±200 m).
 - Ketchup 0.3.1 can again read the Viewer sharing choices of a project in which a newer version left a saved view out, and it does not share that view; before, 0.3.1 could not read the choices and refused the Viewer export.
+- A DXF drawing before 2007 whose texts are UTF-8 with a few Greek letters or degree signs is read as UTF-8 (`Δh`, `α = 30°`, before `Î”h`, `Î± = 30Â°`) and the code page in its header is reported as doubtful.
 
 ## 0.3.2 — 2026-11-04
 
