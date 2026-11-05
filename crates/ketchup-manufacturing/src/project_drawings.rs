@@ -1114,7 +1114,7 @@ fn widest_touching(pieces: &[LevelPiece]) -> f64 {
             }
             let across = cross2(direction, *p);
             let [from, to] = [p, q].map(|end| dot2(direction, *end));
-            // The direction on a 1e-6 grid, the offset on the 0.01 mm one.
+            // The direction to a millionth, the offset on the 0.01 mm grid.
             let key = grid_key([direction[0] * 1e4, direction[1] * 1e4, across]);
             lines
                 .entry(key)
