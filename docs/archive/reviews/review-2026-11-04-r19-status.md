@@ -11,7 +11,7 @@ finding of `review-2026-11-04-r19.md` is listed here as fixed (with its commits)
 | PG-160: fastener points anywhere in space brace the member | Fixed, c97eb439: only points in the contact of the two parts hold (`CONTACT_FIT_MM`), and at the anchor only those in its contact; a point away from it is reported (`fastener_off_contact`) |
 | PG-161: a lath on both arms of one grounded U braces again | Fixed, c97eb439: anchorage is taken from each contact apart, and the lever must reach beyond the member's side |
 | PG-162: any `joint()` fastens | Fixed, c97eb439: kinds `none`, `contact` and `friction` fasten nothing |
-| SEC-160: `--mcp-setup` replaces working entries whose command is no full path | Fixed, 0e7df0da: the command is found as the client finds it (PATH, PATHEXT, `~`); one Ketchup cannot tell about counts as existing and is kept |
+| SEC-160: `--mcp-setup` replaces working entries whose command is no full path | Fixed, 0e7df0da: the command is found as the client finds it (PATH, PATHEXT, `~`); one Ketchup cannot tell about counts as existing and is kept; 7670d870: of several `.claude.json` entries one that may work keeps the whole client, a gone one alone does not decide |
 
 ## P2
 
