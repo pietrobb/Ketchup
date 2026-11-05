@@ -555,6 +555,53 @@ fn mcp_setup_keeps_commands_found_on_path_from_home_or_without_extension() {
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// Review 2026-11-04 r19 SEC-160: of several `ketchup` entries in
+/// `.claude.json` only the first other one decided, so one gone entry made the
+/// installer's hidden `--mcp-setup` rewrite every entry, a working one too.
+/// A client is replaced only when no entry starts a program that may exist.
+#[test]
+fn mcp_setup_keeps_every_entry_when_one_is_gone_and_another_may_work() {
+    let home = temporary_home("mixed-entries");
+    let environment = clean_profile(&home);
+    let this = std::env::current_exe().unwrap();
+    let gone = home.join("Old").join("Ketchup.exe");
+    let file = environment.config_file(Harness::ClaudeCode).unwrap();
+    let server = |command: serde_json::Value| serde_json::json!({"mcpServers": {"ketchup": {"command": command, "args": ["--mcp"]}}});
+    let (gone, this_one, other) = (
+        serde_json::json!(gone),
+        serde_json::json!(this),
+        serde_json::json!("ketchup-other"),
+    );
+    let configs = [
+        serde_json::json!({
+            "mcpServers": server(gone.clone())["mcpServers"],
+            "projects": {"C:/work": server(other.clone())}
+        }),
+        serde_json::json!({
+            "mcpServers": server(this_one)["mcpServers"],
+            "projects": {"C:/a": server(gone), "C:/b": server(other)}
+        }),
+    ];
+    for config in configs {
+        let text = config.to_string();
+        std::fs::write(&file, &text).unwrap();
+        let rows = environment.set_up_installed(&this);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+        let claude = rows
+            .iter()
+            .find(|row| row.harness == Harness::ClaudeCode)
+            .unwrap();
+        assert_eq!(
+            claude.registration,
+            Registration::Elsewhere {
+                command: "ketchup-other".to_owned(),
+                exists: true
+            }
+        );
+    }
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 /// Review 2026-11-04 r19 P3: an entry starting this Kečup but turned off
 /// showed as set up, and so did one that is a network server. Neither starts
 /// a program; the installer keeps them, Connect turns them on.

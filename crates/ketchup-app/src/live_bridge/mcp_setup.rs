@@ -339,11 +339,13 @@ impl Environment {
                 };
             }
         };
-        // Any entry starting another program, or none, is what some project starts.
+        // Any entry starting another program, or none, is what some project
+        // starts. One the client may still start wins over a gone one (r19
+        // SEC-160): the installer replaces a client only when no entry works.
         let elsewhere = user
             .iter()
             .chain(&projects)
-            .find_map(|started| match started {
+            .filter_map(|started| match started {
                 Started::Off(entry) => Some(Registration::Off {
                     entry: entry.clone(),
                 }),
@@ -355,7 +357,8 @@ impl Environment {
                         command: command.clone(),
                     }),
                 },
-            });
+            })
+            .min_by_key(|found| matches!(found, Registration::Elsewhere { exists: false, .. }));
         match (elsewhere, user.is_some()) {
             (Some(registration), _) => registration,
             (None, true) => Registration::ThisKetchup,
