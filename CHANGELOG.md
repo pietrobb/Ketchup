@@ -12,6 +12,7 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 - Ketchup 0.3.1 can again read the Viewer sharing choices of a project in which a newer version left a saved view out, and it does not share that view; before, 0.3.1 could not read the choices and refused the Viewer export.
 - A DXF drawing before 2007 whose texts are UTF-8 with a few Greek letters or degree signs is read as UTF-8 (`Δh`, `α = 30°`, before `Î”h`, `Î± = 30Â°`) and the code page in its header is reported as doubtful.
 - A DXF drawing whose header names Windows-1252 but whose texts read as Windows-1250 (`Kuchyně`, `Předsíň`) is written back naming Windows-1250, so after a text is deleted in Kečup the rest no longer reads as `Kuchynì` in Kečup or AutoCAD.
+- Deciding the code page of a DXF drawing, a word counts once however often it is written: one Czech or Slovak layer name repeated on every entity no longer outvotes the Western texts or turns the drawing on its own; it is warned of.
 
 ## 0.3.2 — 2026-11-04
 

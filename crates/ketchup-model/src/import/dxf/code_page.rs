@@ -2,7 +2,7 @@
 
 use super::DxfImportError;
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A code page a DXF older than 2007 may be written in: a Windows or East Asian one, or a
 /// DOS one `encoding_rs` has no decoder for, read by its table of bytes 128 to 255.
@@ -49,7 +49,8 @@ impl CodePage {
     /// written in another code page than its header names.
     pub(super) fn doubtful(self, high: &HighBytes) -> bool {
         self.reads_c1(high)
-            || (self.is(encoding_rs::WINDOWS_1252) && high.central_words > high.western_words)
+            || (self.is(encoding_rs::WINDOWS_1252)
+                && high.central_words.len() > high.western_words.len())
     }
 
     /// Whether this code page has a byte for `character`.
@@ -110,20 +111,21 @@ impl CodePage {
     }
 }
 
-/// Which of the bytes 128 to 255 a text holds, and how many of its words read rightly
-/// only in Windows-1252 and how many only in Windows-1250.
+/// Which of the bytes 128 to 255 a text holds, and which of its words read rightly only
+/// in Windows-1252 and which only in Windows-1250. A word votes once however often it is
+/// written, as a layer name is on each of its entities (review 2026-11-04 r19 P3).
 pub(super) struct HighBytes {
     seen: [bool; 128],
-    western_words: usize,
-    central_words: usize,
+    western_words: BTreeSet<Vec<u8>>,
+    central_words: BTreeSet<Vec<u8>>,
 }
 
 impl Default for HighBytes {
     fn default() -> Self {
         Self {
             seen: [false; 128],
-            western_words: 0,
-            central_words: 0,
+            western_words: BTreeSet::new(),
+            central_words: BTreeSet::new(),
         }
     }
 }
@@ -152,14 +154,14 @@ impl HighBytes {
                 .iter()
                 .find(|byte| **byte != b' ')
                 .is_some_and(u8::is_ascii_digit);
-            match reading_of(
-                &bytes[start..at],
-                bytes.get(at) == Some(&b'.'),
-                before_number,
-            ) {
-                Some(Reading::Western) => self.western_words += 1,
-                Some(Reading::CentralEuropean) => self.central_words += 1,
-                None => {}
+            let word = &bytes[start..at];
+            let words = match reading_of(word, bytes.get(at) == Some(&b'.'), before_number) {
+                Some(Reading::Western) => &mut self.western_words,
+                Some(Reading::CentralEuropean) => &mut self.central_words,
+                None => continue,
+            };
+            if !words.contains(word) {
+                words.insert(word.to_vec());
             }
         }
     }
@@ -167,11 +169,23 @@ impl HighBytes {
     /// Whether the words read rightly only in Windows-1250 outvote those read rightly only
     /// in 1252 with room to spare: two at least, and more than twice as many (review
     /// 2026-11-04 UL-140: one against none, or one byte 1252 leaves undefined, turned a
-    /// whole Western drawing).
+    /// whole Western drawing). A word of letters 1252 leaves one of undefined, which it
+    /// cannot read at all, votes twice: „žluťoučký“ alone reads in 1250.
     fn central_european(&self) -> bool {
-        self.central_words >= 2 && self.central_words > 2 * self.western_words
+        let unreadable = self
+            .central_words
+            .iter()
+            .filter(|word| {
+                word.len() > 1 && word.iter().any(|byte| UNDEFINED_IN_1252.contains(byte))
+            })
+            .count();
+        let central = self.central_words.len() + unreadable;
+        central >= 2 && central > 2 * self.western_words.len()
     }
 }
+
+/// The bytes Windows-1252 has no character for.
+const UNDEFINED_IN_1252: [u8; 5] = [0x81, 0x8D, 0x8F, 0x90, 0x9D];
 
 /// The code page a word reads rightly in.
 #[derive(Debug, PartialEq)]

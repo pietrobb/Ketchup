@@ -219,19 +219,23 @@ fn dos_code_pages_are_read_and_a_doubtful_code_page_is_warned_of() {
     );
     // Review 2026-11-01 UL-100: Slovak in CP1250 declared ANSI_1252 read „Obývaèka“ and
     // „Kúpe¾“ with no warning, as ý beside è is no Western language's word and ¾ follows
-    // no letter in one; the drawing reads in 1250. Each is the only word of its drawing.
+    // no letter in one. Each word is warned of; one alone, though written on two
+    // entities, does not turn the drawing, as a word votes once (review 2026-11-04 r19
+    // P3); two do.
     for (layer, expected) in [
-        (b"Ob\xFDva\xE8ka".as_slice(), "Obývačka"),
-        (b"K\xFApe\xBE", "Kúpeľ"),
-        (b"Dla\x9Eba \xE8ist\xE1", "Dlažba čistá"),
-        // Review 2026-11-02 UL-100: each of these alone stayed in 1252. No Italian word
+        (b"Ob\xFDva\xE8ka".as_slice(), "Obývaèka"),
+        (b"K\xFApe\xBE", "Kúpe¾"),
+        // „Dlažba“ reads alike in both.
+        (b"Dla\x9Eba \xE8ist\xE1", "Dlažba èistá"),
+        // Review 2026-11-02 UL-100: each of these alone was not warned of. No Italian word
         // has k or y, nor ends in an accented vowel after e; no Danish one has c or z; no
         // Western word begins with è, as the abbreviation „č.“ would.
-        (b"Predsie\xF2", "Predsieň"),
-        (b"Kuchyn\xEC", "Kuchyně"),
-        (b"\xD8EZ A-A", "ŘEZ A-A"),
-        (b"St\xF8echa", "Střecha"),
-        (b"Izba \xE8. 1", "Izba č. 1"),
+        (b"Predsie\xF2", "Predsieò"),
+        (b"Kuchyn\xEC", "Kuchynì"),
+        (b"\xD8EZ A-A", "ØEZ A-A"),
+        (b"St\xF8echa", "Støecha"),
+        (b"Izba \xE8. 1", "Izba è. 1"),
+        (b"Kuchyn\xEC P\xF8eds\xED\xF2", "Kuchyně Předsíň"),
     ] {
         let underlay = read("ANSI_1252", layer, b"A");
         assert_eq!(underlay.layers, [expected]);
@@ -349,6 +353,18 @@ fn one_sign_or_undefined_byte_does_not_turn_a_western_drawing_central_european()
     assert_eq!(
         counted(&underlay, "dxf.text-code-page", Some("ANSI_1250")),
         Some(1)
+    );
+    // Review 2026-11-04 r19 P3: a word votes once however often it is written, so one
+    // Slovak word repeated, as a layer name is on each entity, neither turns the drawing
+    // nor outvotes the Western words.
+    let slovak: &[u8] = b"Ob\xFDva\xE8ka";
+    let underlay = read(&[slovak; 3]);
+    assert_eq!(read_texts(&underlay), ["Obývaèka"; 3]);
+    assert_eq!(doubted(&underlay), Some(1), "{:?}", underlay.diagnostics);
+    let underlay = read(&[slovak, slovak, slovak, b"Pi\xE8ce"]);
+    assert_eq!(
+        read_texts(&underlay),
+        ["Obývaèka", "Obývaèka", "Obývaèka", "Pièce"]
     );
 }
 
