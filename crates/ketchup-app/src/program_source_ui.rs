@@ -32,6 +32,9 @@ struct ProgramSourceView {
 #[derive(Clone)]
 struct CodeView {
     lines: Vec<CodeLine>,
+    /// Each line's width unwrapped, with the screen's points per pixel it
+    /// was measured at.
+    widths: Option<(u32, Vec<f32>)>,
     rows: Option<CodeRows>,
 }
 
@@ -42,13 +45,17 @@ struct CodeLine {
     spans: Vec<(std::ops::Range<usize>, Token)>,
 }
 
-/// The lines laid out at one width.
+/// Where the lines sit at one width.
 #[derive(Clone)]
 struct CodeRows {
     /// The code's width and the screen's points per pixel, bit for bit.
     key: (u32, u32),
     /// Where the code starts right of the marker and number.
     gutter: f32,
+    /// The width code wraps at.
+    wrap: f32,
+    /// The height of one row of code.
+    row_height: f32,
     /// Each line's top below the first, then the bottom of the last.
     tops: Vec<f32>,
 }
@@ -71,24 +78,41 @@ impl CodeView {
                 }
             })
             .collect();
-        Self { lines, rows: None }
+        Self {
+            lines,
+            widths: None,
+            rows: None,
+        }
     }
 }
 
-/// The rows of `lines` at `width`, laid out again only when it or the
-/// screen changed.
+/// The font code is set in.
+fn code_font() -> egui::FontId {
+    egui::FontId::monospace(SHELL_MONO_SIZE)
+}
+
+/// Where the lines of `code` sit at `width`. No line is laid out as text for
+/// it: a line as wide as the code fits is one row, and where a longer one
+/// breaks is counted from its letters' widths, so dragging the dock's edge,
+/// which changes the width every frame, lays out only the lines in view
+/// (review 2026-11-04 r19).
 fn code_rows<'a>(
-    rows: &'a mut Option<CodeRows>,
-    lines: &[CodeLine],
+    code: &'a mut CodeView,
     ui: &egui::Ui,
     source: &str,
     width: f32,
-) -> &'a CodeRows {
-    let key = (width.to_bits(), ui.ctx().pixels_per_point().to_bits());
-    if rows.as_ref().is_some_and(|rows| rows.key != key) {
-        *rows = None;
+) -> (&'a CodeRows, &'a [CodeLine]) {
+    let points = ui.ctx().pixels_per_point().to_bits();
+    let key = (width.to_bits(), points);
+    if code.rows.as_ref().is_some_and(|rows| rows.key != key) {
+        code.rows = None;
     }
-    rows.get_or_insert_with(|| {
+    let CodeView {
+        lines,
+        widths,
+        rows,
+    } = code;
+    let rows = rows.get_or_insert_with(|| {
         let gutter = [false, true]
             .into_iter()
             .map(|defining| {
@@ -97,22 +121,79 @@ fn code_rows<'a>(
             })
             .fold(Vec2::ZERO, Vec2::max);
         let wrap = code_wrap_width(ui, width, gutter.x);
-        let font = egui::FontId::monospace(SHELL_MONO_SIZE);
-        let mut top = 0.0;
-        let mut tops = Vec::with_capacity(lines.len() + 1);
-        tops.push(top);
-        for line in lines {
-            let text = source[line.text.clone()].to_owned();
-            let job = egui::text::LayoutJob::simple(text, font.clone(), Color32::WHITE, wrap);
-            top += gutter.y.max(ui.painter().layout_job(job).size().y);
+        ui.fonts(|fonts| {
+            let mut fonts = fonts.lock();
+            let font = fonts.fonts.font(&code_font());
+            let row_height = font.row_height().max(gutter.y);
+            if widths.as_ref().is_none_or(|(at, _)| *at != points) {
+                let measured = lines
+                    .iter()
+                    .map(|line| {
+                        source[line.text.clone()]
+                            .chars()
+                            .map(|c| font.glyph_width(c))
+                            .sum()
+                    })
+                    .collect();
+                *widths = Some((points, measured));
+            }
+            let measured = widths.as_ref().map_or(&[][..], |(_, widths)| widths);
+            let mut top = 0.0;
+            let mut tops = Vec::with_capacity(lines.len() + 1);
             tops.push(top);
+            for (line, line_width) in lines.iter().zip(measured) {
+                let rows = if *line_width <= wrap {
+                    1
+                } else {
+                    row_starts(&source[line.text.clone()], wrap, |c| font.glyph_width(c)).len() + 1
+                };
+                top += std::iter::repeat_n(row_height, rows).sum::<f32>();
+                tops.push(top);
+            }
+            CodeRows {
+                key,
+                gutter: gutter.x,
+                wrap,
+                row_height,
+                tops,
+            }
+        })
+    });
+    (rows, lines)
+}
+
+/// Where `text` breaks into rows no wider than `wrap`: the byte offset each
+/// row after the first starts at. A row breaks after its last space, and
+/// inside a word only when the word alone is wider than a row; a space at
+/// the end of a row may overhang it.
+fn row_starts(text: &str, wrap: f32, mut advance: impl FnMut(char) -> f32) -> Vec<usize> {
+    let mut starts = Vec::new();
+    let mut row = 0;
+    let mut x = 0.0;
+    // Just after the row's last space, and the row's width up to there.
+    let mut after_space: Option<(usize, f32)> = None;
+    for (at, c) in text.char_indices() {
+        let width = advance(c);
+        if c.is_whitespace() {
+            x += width;
+            after_space = Some((at + c.len_utf8(), x));
+            continue;
         }
-        CodeRows {
-            key,
-            gutter: gutter.x,
-            tops,
+        if x + width > wrap && at > row {
+            if let Some((start, before)) = after_space.take().filter(|(start, _)| *start > row) {
+                starts.push(start);
+                row = start;
+                x -= before;
+            }
+            if x + width > wrap && at > row {
+                starts.push(at);
+                row = at;
+                x = 0.0;
+            }
         }
-    })
+        x += width;
+    }
+    starts
 }
 
 /// A line's marker and number.
@@ -516,7 +597,7 @@ fn show_code(
                 .show_viewport(ui, |ui, viewport| {
                     let width = ui.available_width();
                     let content = ui.max_rect();
-                    let rows = code_rows(&mut code.rows, &code.lines, ui, source, width);
+                    let (rows, code_lines) = code_rows(code, ui, source, width);
                     let count = rows.tops.len() - 1;
                     ui.set_height(rows.tops[count]);
                     let row = |index: usize| {
@@ -551,9 +632,22 @@ fn show_code(
                         .tops
                         .partition_point(|top| *top < viewport.max.y)
                         .min(count);
-                    for index in first..end {
+                    let line_id = |number: usize| ui.id().with(("program-line", number));
+                    let breaks: Vec<Vec<usize>> = ui.fonts(|fonts| {
+                        let mut fonts = fonts.lock();
+                        let font = fonts.fonts.font(&code_font());
+                        code_lines[first..end]
+                            .iter()
+                            .map(|line| {
+                                row_starts(&source[line.text.clone()], rows.wrap, |c| {
+                                    font.glyph_width(c)
+                                })
+                            })
+                            .collect()
+                    });
+                    for (index, starts) in (first..end).zip(breaks) {
                         let number = index + 1;
-                        let line = &code.lines[index];
+                        let line = &code_lines[index];
                         let text = &source[line.text.clone()];
                         let row = row(index);
                         let defining = defines(number);
@@ -565,11 +659,7 @@ fn show_code(
                                 palette.accent,
                             );
                         }
-                        let response = ui.interact(
-                            row,
-                            ui.id().with(("program-line", number)),
-                            Sense::hover(),
-                        );
+                        let response = ui.interact(row, line_id(number), Sense::hover());
                         response.widget_info(|| {
                             egui::WidgetInfo::labeled(
                                 egui::WidgetType::Label,
@@ -585,12 +675,38 @@ fn show_code(
                                 number,
                                 text,
                                 spans: &line.spans,
+                                starts: &starts,
                                 defining,
                             },
                             row.min,
-                            rows.gutter,
-                            code_wrap_width(ui, width, rows.gutter),
+                            rows,
                         );
+                    }
+                    // A screen reader reads the whole program, not only the
+                    // lines in view; the lines out of view are named for it
+                    // alone, and only while one is listening (review
+                    // 2026-11-04 r19).
+                    for index in (0..first).chain(end..count) {
+                        let number = index + 1;
+                        let row = row(index);
+                        let named = ui.ctx().accesskit_node_builder(line_id(number), |node| {
+                            let text = &source[code_lines[index].text.clone()];
+                            node.set_role(egui::accesskit::Role::Label);
+                            node.set_value(program_source_line_label(
+                                number,
+                                text,
+                                defines(number),
+                            ));
+                            node.set_bounds(egui::accesskit::Rect {
+                                x0: row.min.x.into(),
+                                y0: row.min.y.into(),
+                                x1: row.max.x.into(),
+                                y1: row.max.y.into(),
+                            });
+                        });
+                        if named.is_none() {
+                            break;
+                        }
                     }
                 });
         });
@@ -601,49 +717,59 @@ struct CodeRow<'a> {
     number: usize,
     text: &'a str,
     spans: &'a [(std::ops::Range<usize>, Token)],
+    /// Where in `text` each row after the first starts.
+    starts: &'a [usize],
     defining: bool,
 }
 
 /// One line of code at `top_left`: marker and number, then the source
-/// coloured by token and wrapped to the dock under its own first character,
-/// so a narrow dock never cuts a line off.
+/// coloured by token in the rows `code_rows` counted for it, each under the
+/// line's first character, so a narrow dock never cuts a line off.
 fn paint_code_line(
     ui: &egui::Ui,
     palette: Palette,
     colors: CodeColors,
     line: CodeRow<'_>,
     top_left: egui::Pos2,
-    gutter_width: f32,
-    wrap: f32,
+    rows: &CodeRows,
 ) {
-    let font = egui::FontId::monospace(SHELL_MONO_SIZE);
-    let format = |color| egui::TextFormat::simple(font.clone(), color);
+    let format = |color| egui::TextFormat::simple(code_font(), color);
     let number_color = if line.defining {
         palette.text
     } else {
         palette.faint
     };
     let gutter = gutter_job(line.number, line.defining, palette.accent, number_color);
-    let mut code = egui::text::LayoutJob::default();
-    for (range, token) in line.spans {
-        let color = match token {
-            Token::Plain => palette.text,
-            Token::Keyword => colors.keyword,
-            Token::Constant => colors.constant,
-            Token::String => colors.string,
-            Token::Number => colors.number,
-            Token::Comment => colors.comment,
-            Token::Call => colors.call,
-            Token::Definition => colors.definition,
-        };
-        code.append(&line.text[range.clone()], 0.0, format(color));
-    }
-    code.wrap.max_width = wrap;
     let painter = ui.painter();
     painter.galley(top_left, painter.layout_job(gutter), palette.text);
-    painter.galley(
-        top_left + Vec2::new(gutter_width, 0.0),
-        painter.layout_job(code),
-        palette.text,
-    );
+    let ends = line.starts.iter().copied().chain([line.text.len()]);
+    let mut start = 0;
+    let mut below = 0.0;
+    for end in ends {
+        let mut code = egui::text::LayoutJob::default();
+        for (range, token) in line.spans {
+            let piece = range.start.max(start)..range.end.min(end);
+            if piece.is_empty() {
+                continue;
+            }
+            let color = match token {
+                Token::Plain => palette.text,
+                Token::Keyword => colors.keyword,
+                Token::Constant => colors.constant,
+                Token::String => colors.string,
+                Token::Number => colors.number,
+                Token::Comment => colors.comment,
+                Token::Call => colors.call,
+                Token::Definition => colors.definition,
+            };
+            code.append(&line.text[piece], 0.0, format(color));
+        }
+        painter.galley(
+            top_left + Vec2::new(rows.gutter, below),
+            painter.layout_job(code),
+            palette.text,
+        );
+        start = end;
+        below += rows.row_height;
+    }
 }

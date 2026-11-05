@@ -534,7 +534,7 @@ impl Drop for ExportLock {
         if let Err(error) = std::fs::remove_file(&self.path)
             && error.kind() != std::io::ErrorKind::NotFound
         {
-            eprintln!(
+            ketchup_rejection::log!(
                 "export lock {} was not removed: {error}",
                 self.path.display()
             );

@@ -21,8 +21,10 @@ Counted as a budget:
   `while`) or asserting it timed out (`.is_err()`) is not;
 - a `match` on a wait whose `Timeout` arm fails the test, shorter than `HANG_FLOOR`: it
   limits the work it waits for (review 2026-10-24 TST-23), and so does a call giving
-  a helper of the file that time, when the helper waits as long as its `Duration`
-  parameter says and fails the test when it runs out (review 2026-11-04 P3);
+  a helper that time, when the helper waits as long as its `Duration` parameter (or
+  number of seconds or milliseconds) says and fails the test when it runs out, or hands
+  that time on to such a helper; the helper may be in any test file, a harness module
+  included (review 2026-11-04 P3, r19 P3);
 - a call to a `perf_*` function from a function not named `perf_*`.
 
 Not counted: a deadline that only stops a wait on a hung condition (`Instant::now() <
@@ -79,10 +81,16 @@ WAIT = re.compile(r"\.(?:recv_timeout|wait_timeout\w*|wait|next_event)\(\s*([^()
 DURATION = re.compile(
     r"^(?:std::time::)?Duration::from_(secs|millis|micros|nanos)\((\d[\d_]*)\)$")
 DURATION_CONST = re.compile(r"\bconst\s+(\w+)\s*:\s*(?:std::time::)?Duration\s*=\s*([^;]+);")
+BRACE = re.compile(r"[{}]")
 UNIT_MS = {"secs": 1_000, "millis": 1, "micros": 1e-3, "nanos": 1e-6}
 SIGNATURE = re.compile(r"\bfn\s+(\w+)\s*(?:<[^>{]*>)?\s*\(")
 SELF = re.compile(r"^&?(?:'\w+\s+)?(?:mut\s+)?self\b")
 DURATION_PARAMETER = re.compile(r"^(?:mut\s+)?(\w+)\s*:\s*(?:std::time::)?Duration$")
+NUMBER_PARAMETER = re.compile(r"^(?:mut\s+)?(\w+)\s*:\s*(?:u8|u16|u32|u64|u128|usize)$")
+NUMBER = re.compile(r"^(\d[\d_]*?)_?(?:u8|u16|u32|u64|u128|usize)?$")
+# A helper's time parameter: its position, whether the helper is a method, and the
+# milliseconds of one unit when the time is a number (`None` for a `Duration`).
+Helper = tuple[int, bool, "float | None"]
 FAILS = re.compile(r"\b(?:assert\w*|panic|unreachable)!|\.expect\(|\.unwrap\(")
 
 
@@ -157,10 +165,10 @@ def arms(text: str, after: int) -> str:
     if opening < 0:
         return ""
     depth = 0
-    for index in range(opening, len(text)):
-        depth += {"{": 1, "}": -1}.get(text[index], 0)
+    for brace in BRACE.finditer(text, opening):
+        depth += 1 if brace.group() == "{" else -1
         if depth == 0:
-            return text[opening:index + 1]
+            return text[opening:brace.end()]
     return text[opening:]
 
 
@@ -198,42 +206,103 @@ def top_level_items(inner: str) -> list[str]:
     return items + [tail] if tail else items
 
 
-def failing_wait_helpers(text: str) -> dict[str, tuple[int, bool]]:
-    """Functions that wait as long as one of their `Duration` parameters says and fail
-    the test when that time runs out: name to that argument's position and whether
-    the function is a method (called as `.name(` without its `self`)."""
-    helpers = {}
+def signatures(text: str) -> list[tuple[str, list[str], bool, str]]:
+    """Each function of `text`: its name, its parameters without `self`, whether it is a
+    method (called as `.name(`) and its body."""
+    found = []
     for signature in SIGNATURE.finditer(text):
         inner, close = parenthesized(text, signature.end() - 1)
         parameters = top_level_items(inner)
         method = bool(parameters) and bool(SELF.match(parameters[0]))
-        arguments = parameters[1:] if method else parameters
-        body = arms(text, close)
-        for position, parameter in enumerate(arguments):
-            typed = DURATION_PARAMETER.match(parameter)
-            if not typed:
+        found.append((signature.group(1), parameters[1:] if method else parameters, method,
+                      arms(text, close)))
+    return found
+
+
+def calls(text: str, name: str, helper: Helper) -> list[tuple[int, str]]:
+    """Each call of `helper` in `text`: where it starts and the argument holding its time."""
+    position, method, _ = helper
+    call = re.compile(rf"\.{name}\s*\(" if method else rf"(?<![\w.])(?<!fn ){name}\s*\(")
+    found = []
+    for at in call.finditer(text):
+        arguments = top_level_items(parenthesized(text, at.end() - 1)[0])
+        if position < len(arguments):
+            found.append((at.start(), arguments[position]))
+    return found
+
+
+def waits_on(parameter: str, body: str, helpers: dict[str, Helper]) -> float | None | bool:
+    """Whether `body` waits as long as `parameter` says and fails the test when it runs
+    out: `None` for a `Duration`, the milliseconds of one unit for a number of them
+    (`timeout_ms: u64` as `Duration::from_millis(timeout_ms)`), `False` if it does not."""
+    typed = DURATION_PARAMETER.match(parameter)
+    number = NUMBER_PARAMETER.match(parameter)
+    if not typed and not number:
+        return False
+    name = re.escape((typed or number).group(1))
+    if typed:
+        unit, time = None, rf"&?{name}\b"
+    else:
+        converted = re.search(rf"Duration::from_(secs|millis|micros|nanos)\(\s*{name}\b", body)
+        if not converted:
+            return False
+        unit = UNIT_MS[converted.group(1)]
+        time = rf"Duration::from_{converted.group(1)}\(\s*{name}\b"
+    if re.search(rf"\b(?:poll_until|recv_timeout|wait_timeout\w*|wait)\(\s*{time}", body) \
+            and FAILS.search(body):
+        return unit
+    # Its time handed on to a helper that fails when it runs out.
+    for callee, helper in helpers.items():
+        for _, argument in calls(body, callee, helper):
+            if helper[2] is None and re.match(time + r"\)?$", argument):
+                return unit
+            if helper[2] is not None and number and argument == number.group(1):
+                return helper[2]
+    return False
+
+
+def failing_wait_helpers(texts: list[str]) -> dict[str, Helper]:
+    """Functions of `texts` that wait as long as one of their parameters says and fail
+    the test when that time runs out, also by handing it on to such a function: name to
+    that parameter's position, whether the function is a method and the unit of a number
+    parameter (`None` for a `Duration`)."""
+    functions = [function for text in texts for function in signatures(text)]
+    helpers: dict[str, Helper] = {}
+    grown = True
+    while grown:
+        grown = False
+        for name, parameters, method, body in functions:
+            if name in helpers:
                 continue
-            name = re.escape(typed.group(1))
-            if re.search(rf"\b(?:poll_until|recv_timeout|wait_timeout\w*|wait)\(\s*&?{name}\b", body) \
-                    and FAILS.search(body):
-                helpers[signature.group(1)] = (position, method)
+            for position, parameter in enumerate(parameters):
+                unit = waits_on(parameter, body, helpers)
+                if unit is not False:
+                    helpers[name] = (position, method, unit)
+                    grown = True
+                    break
     return helpers
 
 
-def failing_helper_waits(text: str) -> list[int]:
+def failing_helper_waits(text: str, helpers: dict[str, Helper],
+                         constants: dict[str, float]) -> list[int]:
     """Lines of a call that gives such a helper less than `HANG_FLOOR_MS`: like a matched
     wait whose timeout fails the test, it limits the work it waits for (review
-    2026-11-04 P3)."""
-    constants = duration_constants(text)
+    2026-11-04 P3). The helpers and constants come from every test of the repository, so
+    a harness helper counts in the files that call it (review 2026-11-04 r19 P3)."""
+    constants = {**constants, **duration_constants(text)}
     found = []
-    for name, (position, method) in failing_wait_helpers(text).items():
-        call = re.compile(rf"\.{name}\s*\(" if method else rf"(?<![\w.])(?<!fn ){name}\s*\(")
-        for at in call.finditer(text):
-            arguments = top_level_items(parenthesized(text, at.end() - 1)[0])
-            if position < len(arguments):
-                value = milliseconds(arguments[position], constants)
-                if value is not None and value < HANG_FLOOR_MS:
-                    found.append(text.count("\n", 0, at.start()) + 1)
+    for name, helper in helpers.items():
+        for start, argument in calls(text, name, helper):
+            enclosing = [function.group(1) for function in FUNCTION.finditer(text, 0, start)]
+            if enclosing and enclosing[-1].startswith("perf_"):
+                continue  # a perf_* function may hold the work to a budget
+            if helper[2] is None:
+                value = milliseconds(argument, constants)
+            else:
+                count = NUMBER.match(argument)
+                value = int(count.group(1).replace("_", "")) * helper[2] if count else None
+            if value is not None and value < HANG_FLOOR_MS:
+                found.append(text.count("\n", 0, start) + 1)
     return found
 
 
@@ -261,7 +330,7 @@ def short_needed_waits(text: str) -> list[int]:
     return found
 
 
-def budgets(text: str) -> list[int]:
+def budgets(text: str, helpers: dict[str, Helper], constants: dict[str, float]) -> list[int]:
     """Lines of `text` with a budget, or a `perf_*` call, outside functions named `perf_*`."""
     found = []
     function = ""
@@ -281,7 +350,7 @@ def budgets(text: str) -> list[int]:
             continue
         if PERF_CALL.search(line) or (clock and compares_a_budget(compared, stored)):
             found.append(number)
-    return sorted({*found, *short_needed_waits(text), *failing_helper_waits(text)})
+    return sorted({*found, *short_needed_waits(text), *failing_helper_waits(text, helpers, constants)})
 
 
 def unignored_perf_tests(text: str) -> list[int]:
@@ -292,6 +361,7 @@ def unignored_perf_tests(text: str) -> list[int]:
 
 def violations(root: Path = ROOT) -> list[str]:
     found = []
+    tests = []
     for path in package_files(root):
         relative = path.relative_to(root)
         if "target" in relative.parts:
@@ -300,12 +370,18 @@ def violations(root: Path = ROOT) -> list[str]:
         found += [f"{relative.as_posix()}:{line} perf test not ignored"
                   for line in unignored_perf_tests(text)]
         if is_test_file(relative):
-            found += [f"{relative.as_posix()}:{line}" for line in budgets(text)]
+            tests.append((relative, 0, text))
         else:
             # Unit tests inside production files, at their line in the file.
-            for module in TEST_MODULE.finditer(text):
-                offset = text.count("\n", 0, module.start())
-                found += [f"{relative.as_posix()}:{offset + line}" for line in budgets(module.group(0))]
+            tests += [(relative, text.count("\n", 0, module.start()), module.group(0))
+                      for module in TEST_MODULE.finditer(text)]
+    # A helper counts wherever it is called, also from another file than its own.
+    helpers = failing_wait_helpers([text for _, _, text in tests])
+    constants = {name: value for _, _, text in tests
+                 for name, value in duration_constants(text).items()}
+    for relative, offset, text in tests:
+        found += [f"{relative.as_posix()}:{offset + line}"
+                  for line in budgets(text, helpers, constants)]
     return found
 
 

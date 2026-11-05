@@ -555,7 +555,7 @@ impl KetchupApp {
                 .expect("the STL review window has a pending import");
             if let Err(error) = self.import_stl_from(&pending) {
                 // The import has shown the refusal; logged with its cause (TST-140).
-                eprintln!("STL import refused: {error}");
+                ketchup_rejection::log!("STL import refused: {error}");
             }
         }
     }
@@ -722,7 +722,7 @@ impl KetchupApp {
                 .expect("the DXF review window has a pending import");
             if let Err(error) = self.import_dxf_from(&pending) {
                 // The import has shown the refusal; logged with its cause (TST-140).
-                eprintln!("DXF import refused: {error}");
+                ketchup_rejection::log!("DXF import refused: {error}");
             }
         }
     }
@@ -794,7 +794,7 @@ impl KetchupApp {
                 .expect("the STEP review window has a pending import");
             if let Err(error) = self.import_step_from(&pending) {
                 // The import has shown the refusal; logged with its cause (TST-140).
-                eprintln!("STEP import refused: {error}");
+                ketchup_rejection::log!("STEP import refused: {error}");
             }
         }
     }
@@ -870,7 +870,7 @@ impl KetchupApp {
                 .expect("the IGES review window has a pending import");
             if let Err(error) = self.import_iges_from(&pending) {
                 // The import has shown the refusal; logged with its cause (TST-140).
-                eprintln!("IGES import refused: {error}");
+                ketchup_rejection::log!("IGES import refused: {error}");
             }
         }
     }
@@ -957,7 +957,7 @@ impl KetchupApp {
                 .expect("the SketchUp scene review window has a pending import");
             if let Err(error) = self.import_sketchup_scene_from(&pending) {
                 // The import has shown the refusal; logged with its cause (TST-140).
-                eprintln!("SketchUp scene import refused: {error}");
+                ketchup_rejection::log!("SketchUp scene import refused: {error}");
             }
         }
     }

@@ -2,7 +2,7 @@
 
 use super::DxfImportError;
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A code page a DXF older than 2007 may be written in: a Windows or East Asian one, or a
 /// DOS one `encoding_rs` has no decoder for, read by its table of bytes 128 to 255.
@@ -49,7 +49,8 @@ impl CodePage {
     /// written in another code page than its header names.
     pub(super) fn doubtful(self, high: &HighBytes) -> bool {
         self.reads_c1(high)
-            || (self.is(encoding_rs::WINDOWS_1252) && high.central_words > high.western_words)
+            || (self.is(encoding_rs::WINDOWS_1252)
+                && high.central_votes() > high.western_words.len())
     }
 
     /// Whether this code page has a byte for `character`.
@@ -69,6 +70,24 @@ impl CodePage {
                 .zip(high.iter())
                 .find(|(_, own)| **own == character)
                 .map(|(byte, _)| vec![byte]),
+        }
+    }
+
+    /// Whether this code page reads the UTF-8 bytes of `character`, one of two bytes, as a
+    /// letter followed by a sign: a byte of 0xC2 to 0xDF is a capital letter in the Windows
+    /// code pages, and one of 0x80 to 0xBF after it a sign or an undefined byte („Î”“ for
+    /// „Δ“, „Â°“ for „°“), which no text writes, so the character is UTF-8; but for a
+    /// fraction after Ø, a pipe size („Ø½“, review 2026-11-02 UL-121). Read as two letters
+    /// („ÍŽ“ for U+034E) it may be text in the code page (review 2026-11-04 r19 UL-160).
+    fn reads_as_letter_and_sign(self, character: char) -> bool {
+        let mut buffer = [0; 4];
+        let Some(read) = self.decode(character.encode_utf8(&mut buffer).as_bytes()) else {
+            return false;
+        };
+        match read.chars().collect::<Vec<_>>()[..] {
+            ['Ø' | 'ø', '¼' | '½' | '¾'] => false,
+            [letter, sign] => letter.is_alphabetic() && !sign.is_alphabetic(),
+            _ => false,
         }
     }
 
@@ -92,20 +111,25 @@ impl CodePage {
     }
 }
 
-/// Which of the bytes 128 to 255 a text holds, and how many of its words read rightly
-/// only in Windows-1252 and how many only in Windows-1250.
+/// Which of the bytes 128 to 255 a text holds, and which of its words read rightly only
+/// in Windows-1252 and which only in Windows-1250. A word votes once however often it is
+/// written, as a layer name is on each of its entities (review 2026-11-04 r19 P3).
 pub(super) struct HighBytes {
     seen: [bool; 128],
-    western_words: usize,
-    central_words: usize,
+    western_words: BTreeSet<Vec<u8>>,
+    central_words: BTreeSet<Vec<u8>>,
+    /// Whether a text's font names the East European character set, Windows-1250's
+    /// (`\f…|c238;`, review 2026-11-04 r19 P3).
+    east_european_font: bool,
 }
 
 impl Default for HighBytes {
     fn default() -> Self {
         Self {
             seen: [false; 128],
-            western_words: 0,
-            central_words: 0,
+            western_words: BTreeSet::new(),
+            central_words: BTreeSet::new(),
+            east_european_font: false,
         }
     }
 }
@@ -119,6 +143,12 @@ impl HighBytes {
                 self.seen[usize::from(at)] = true;
             }
         }
+        self.east_european_font |= bytes.windows(6).any(|window| {
+            window[0] == b'|'
+                && window[1].eq_ignore_ascii_case(&b'c')
+                && &window[2..5] == b"238"
+                && matches!(window[5], b'|' | b';')
+        });
         let in_word = |byte: u8| byte.is_ascii_alphabetic() || byte >= 128;
         let mut at = 0;
         while at < bytes.len() {
@@ -134,14 +164,14 @@ impl HighBytes {
                 .iter()
                 .find(|byte| **byte != b' ')
                 .is_some_and(u8::is_ascii_digit);
-            match reading_of(
-                &bytes[start..at],
-                bytes.get(at) == Some(&b'.'),
-                before_number,
-            ) {
-                Some(Reading::Western) => self.western_words += 1,
-                Some(Reading::CentralEuropean) => self.central_words += 1,
-                None => {}
+            let word = &bytes[start..at];
+            let words = match reading_of(word, bytes.get(at) == Some(&b'.'), before_number) {
+                Some(Reading::Western) => &mut self.western_words,
+                Some(Reading::CentralEuropean) => &mut self.central_words,
+                None => continue,
+            };
+            if !words.contains(word) {
+                words.insert(word.to_vec());
             }
         }
     }
@@ -151,9 +181,27 @@ impl HighBytes {
     /// 2026-11-04 UL-140: one against none, or one byte 1252 leaves undefined, turned a
     /// whole Western drawing).
     fn central_european(&self) -> bool {
-        self.central_words >= 2 && self.central_words > 2 * self.western_words
+        let central = self.central_votes();
+        central >= 2 && central > 2 * self.western_words.len()
+    }
+
+    /// The votes for Windows-1250: each word read rightly only in it, twice where it is of
+    /// letters 1252 leaves one of undefined and so cannot read at all („žluťoučký“), and
+    /// a font of its character set.
+    fn central_votes(&self) -> usize {
+        let unreadable = self
+            .central_words
+            .iter()
+            .filter(|word| {
+                word.len() > 1 && word.iter().any(|byte| UNDEFINED_IN_1252.contains(byte))
+            })
+            .count();
+        self.central_words.len() + unreadable + usize::from(self.east_european_font)
     }
 }
+
+/// The bytes Windows-1252 has no character for.
+const UNDEFINED_IN_1252: [u8; 5] = [0x81, 0x8D, 0x8F, 0x90, 0x9D];
 
 /// The code page a word reads rightly in.
 #[derive(Debug, PartialEq)]
@@ -386,6 +434,17 @@ pub(super) struct TextEncoding {
     pub(super) read: Option<CodePageRead>,
 }
 
+impl TextEncoding {
+    /// The name of the code page the text is read in where it is another than the header
+    /// names.
+    pub(super) fn code_page_over_header(&self) -> Option<&str> {
+        match (&self.code_page, &self.read) {
+            (Some(_), Some((read, Some(named)))) if read != named => Some(read),
+            _ => None,
+        }
+    }
+}
+
 /// What the lines of a DXF file hold, seen one by one, for [`TextSeen::decide`]: the one
 /// decision of its encoding, for the import, the underlay and the rewrite alike (review
 /// 2026-11-04 UL-142: two of them had come apart, and one saw the byte order mark).
@@ -397,6 +456,10 @@ pub(super) struct TextSeen {
     high: HighBytes,
     acadver: HeaderValue,
     code_page: HeaderValue,
+    /// The group code of the pair whose value is the next line.
+    code: Option<i64>,
+    /// Within a text style of the drawing's style table.
+    in_style: bool,
 }
 
 impl Default for TextSeen {
@@ -408,6 +471,8 @@ impl Default for TextSeen {
             high: HighBytes::default(),
             acadver: HeaderValue::default(),
             code_page: HeaderValue::default(),
+            code: None,
+            in_style: false,
         }
     }
 }
@@ -420,6 +485,7 @@ impl TextSeen {
             0 => line.strip_prefix(super::BYTE_ORDER_MARK).unwrap_or(line),
             _ => line,
         };
+        self.see_style(line.trim_ascii());
         self.lines += 1;
         if self.utf8 {
             for chunk in line.utf8_chunks() {
@@ -443,15 +509,43 @@ impl TextSeen {
         self.code_page.see(trimmed, b"$DWGCODEPAGE");
     }
 
+    /// Sees the line `trimmed` of the file for the character set of a text style's
+    /// TrueType font, the second byte of its flags (ACAD group 1071): the East European
+    /// one, Windows-1250's, votes for it (review 2026-11-04 r19 P3).
+    fn see_style(&mut self, trimmed: &[u8]) {
+        // A value that is no number names no group code or flags.
+        let number = || {
+            std::str::from_utf8(trimmed)
+                .ok()
+                .and_then(|text| text.parse::<i64>().ok())
+        };
+        if self.lines.is_multiple_of(2) {
+            self.code = number();
+            return;
+        }
+        match self.code {
+            Some(0) => self.in_style = trimmed.eq_ignore_ascii_case(b"STYLE"),
+            Some(1071) if self.in_style => {
+                self.high.east_european_font |=
+                    number().is_some_and(|flags| (flags >> 8) & 0xFF == 238);
+            }
+            _ => {}
+        }
+    }
+
     /// The encoding of the file seen. DXF 2007 and later are UTF-8; an older file is
     /// written in the code page its `$DWGCODEPAGE` header names, or in the one read in its
     /// place ([`text_code_page`]), unless it is UTF-8 as some programs write it: a file
     /// that is valid UTF-8 is read so when a character of it is of three or four bytes,
     /// which a code page forms only by chance, or when more of its characters of two are
-    /// ones the code page writes or Latin letters than are not; „Rohr Ø½“ in Windows-1252
-    /// is „Rohr ؽ“ as UTF-8 (review 2026-11-02 UL-121). Where both readings fit some of
-    /// its characters, the code page named is doubted (review 2026-11-04 UL-141: one
-    /// character sent a whole UTF-8 file through the code page, unsaid).
+    /// ones the code page writes, Latin letters or ones it reads as a letter and a sign
+    /// ([`CodePage::reads_as_letter_and_sign`]) than are not; „Rohr Ø½“ in Windows-1252
+    /// is „Rohr ؽ“ as UTF-8 (review 2026-11-02 UL-121). Where a file read as UTF-8 has a
+    /// character the code page has none for, or one of another script, the code page named
+    /// is doubted; a file read in the code page that is valid UTF-8 beyond ASCII is always
+    /// doubted, as both readings are possible (review 2026-11-04 UL-141: one character sent
+    /// a whole UTF-8 file through the code page, unsaid; r19 UL-160: „Δh“ read „Î”h“ and
+    /// „ε“ read „Îµ“, unsaid).
     pub(super) fn decide(self) -> Result<TextEncoding, DxfImportError> {
         if self.lines == 0 {
             return Err(DxfImportError::Empty);
@@ -467,7 +561,6 @@ impl TextSeen {
             read,
         };
         let named = name.as_deref().and_then(code_page_encoding);
-        let mut fitting = 0;
         if self.utf8 {
             let Some(named) = named else {
                 return Ok(utf8(None));
@@ -479,18 +572,25 @@ impl TextSeen {
             {
                 return Ok(utf8(None));
             }
+            let mut fitting = 0;
             let mut foreign = 0;
+            let mut unwritten = false;
             for (&character, &count) in &self.beyond_ascii {
                 let latin = matches!(character, '\u{C0}'..='\u{24F}' | '\u{1E00}'..='\u{1EFF}')
                     && character.is_alphabetic();
-                if latin || named.writes(character) {
+                let written = latin || named.writes(character);
+                unwritten |= !written;
+                if written || named.reads_as_letter_and_sign(character) {
                     fitting += count;
                 } else {
                     foreign += count;
                 }
             }
             if fitting > foreign {
-                let doubted = name.as_deref().filter(|_| foreign > 0).map(code_page_name);
+                let doubted = name
+                    .as_deref()
+                    .filter(|_| foreign > 0 || unwritten)
+                    .map(code_page_name);
                 return Ok(utf8(
                     doubted.map(|doubted| ("UTF-8".to_owned(), Some(doubted))),
                 ));
@@ -499,7 +599,8 @@ impl TextSeen {
         let name = name.ok_or(DxfImportError::NonAscii)?;
         let (code_page, (read, doubted)) =
             text_code_page(&name, &self.high).ok_or(DxfImportError::NonAscii)?;
-        let doubted = doubted.or_else(|| (fitting > 0).then(|| code_page_name(&name)));
+        let both_readings = self.utf8 && !self.beyond_ascii.is_empty();
+        let doubted = doubted.or_else(|| both_readings.then(|| code_page_name(&name)));
         Ok(TextEncoding {
             code_page: Some(code_page),
             read: Some((read, doubted)),

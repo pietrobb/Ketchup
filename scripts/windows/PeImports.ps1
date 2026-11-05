@@ -85,12 +85,20 @@ function Copy-MissingPeImports([string]$Directory, [string]$RuntimeDirectory, [s
     return $copied.ToArray()
 }
 
-# The executables and libraries in $Directory that carry no valid signature, by name: what
-# a signed package must sign itself, the OCCT TK*.dll as well as the programs (review
-# 2026-11-04 REL-142); the Visual C++ runtime keeps Microsoft's own.
+# Whether a signature from Get-AuthenticodeSignature is valid and in the file itself.
+# Get-AuthenticodeSignature also calls a file valid when its hash is in a catalog of this
+# machine, which the user's machine does not have (review 2026-11-04 r19 P3, REL-142).
+function Test-EmbeddedSignature($Signature) {
+    return $Signature.Status -eq [Management.Automation.SignatureStatus]::Valid -and
+        $Signature.SignatureType -eq [Management.Automation.SignatureType]::Authenticode
+}
+
+# The executables and libraries in $Directory that carry no valid signature of their own,
+# by name: what a signed package must sign itself, the OCCT TK*.dll as well as the
+# programs (review 2026-11-04 REL-142); the Visual C++ runtime keeps Microsoft's own.
 function Get-PeFilesToSign([string]$Directory) {
     Get-ChildItem $Directory -File |
-        Where-Object { $_.Extension -in ".exe", ".dll" -and (Get-AuthenticodeSignature $_.FullName).Status -ne "Valid" } |
+        Where-Object { $_.Extension -in ".exe", ".dll" -and -not (Test-EmbeddedSignature (Get-AuthenticodeSignature $_.FullName)) } |
         Sort-Object Name | ForEach-Object { $_.Name }
 }
 

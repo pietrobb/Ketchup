@@ -296,6 +296,35 @@ def test_the_drops_clippy_cannot_see_count(tmp_path):
     }
 
 
+def test_the_idioms_that_act_as_let_underscore_count(tmp_path):
+    # Review 2026-11-04 r19 TST-160: an empty `if ...is_err() {}` with only a
+    # comment, an irrefutable `let (Ok(..) | Err(..)) =` and an `eprintln!` a
+    # window started without a console throws away slipped past the ratchet;
+    # `ketchup_rejection::dropped(result, Reason::...)` is the one way left.
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "if child.kill().is_err() {\n    // It has exited already.\n}\n"
+        "if ready && send.send(x).is_err() { /* Gone. */ }\n"
+        "if remove(&a).is_err() {}\n"
+        "let (Ok(()) | Err(SendError(_))) = sender.send(value);\n"
+        "let (Ok(())\n    | Err(Failure::Cancelled | Failure::Failed)) =\n    save(&path);\n"
+        'eprintln!("import refused: {error}");\n'
+        "// What still answers the error is not counted.\n"
+        "if send(x).is_err() {\n    return Err(Gone);\n}\n"
+        "let (a, b) = pair;\n"
+        "dropped(child.kill(), Reason::AlreadyEnded);\n",
+    )
+    # A command-line entry point writes to its console.
+    write(tmp_path, "crates/a/src/main.rs", 'eprintln!("usage: a <file>");\n')
+    write(tmp_path, "crates/a/src/bin/tool.rs", 'eprintln!("usage: tool <file>");\n')
+    assert checker.current_counts(tmp_path) == {
+        "crates/a/src/lib.rs empty_is_err": 3,
+        "crates/a/src/lib.rs irrefutable_let": 2,
+        "crates/a/src/lib.rs eprintln": 1,
+    }
+
+
 def test_a_new_form_is_recorded_once_and_then_may_only_shrink(tmp_path):
     # A form the baseline does not list yet is recorded as found when it is
     # added to the check; a form it lists may never grow, even from zero.

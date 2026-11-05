@@ -24,7 +24,9 @@ from happening:
 3. Saving again. Snapshots are read without `deny_unknown_fields`, so a release opens a
    file with a struct field it does not know, and its next Save drops the field (review
    2026-11-04 REL-143). The release saves each file it opens editable once more, and
-   HEAD (`crates/ketchup-model/examples/resaved.rs`) must find the original's document in it.
+   once with its Undo history as its work recovery does, and HEAD
+   (`crates/ketchup-model/examples/resaved.rs`) must find the original's document in the
+   one and every revision of it in the other (review 2026-11-04 r19 P3).
 
 `--tag vX` checks one release instead of all. Needs the tags (`git fetch --no-tags
 --depth=1 origin tag v0.2.0 tag v0.3.0 tag v0.3.1 tag v0.3.2` in a shallow clone). The old crates and their
@@ -63,11 +65,12 @@ REVIEWED = {
     "v0.3.0": {
         # CD-61: `format_of` writes a document with a stretched line as 107.
         "AddedObject": {"Stretched"},
-        # The program worker's answer to a drawing export, never part of a document.
-        "DxfEditRefusal": {"ReadDifferently", "TooLarge"},
+        # The program worker's answer to a drawing export, never part of a document;
+        # ChangedInFile and DeletedInFile too (review 2026-11-04 r19 CD-163 and P3).
+        "DxfEditRefusal": {"ReadDifferently", "TooLarge", "ChangedInFile", "DeletedInFile"},
     },
-    "v0.3.1": {},
-    "v0.3.2": {},
+    "v0.3.1": {"DxfEditRefusal": {"ChangedInFile", "DeletedInFile"}},
+    "v0.3.2": {"DxfEditRefusal": {"ChangedInFile", "DeletedInFile"}},
 }
 
 ENUM = re.compile(

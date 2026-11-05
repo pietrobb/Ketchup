@@ -85,7 +85,7 @@ impl KetchupApp {
     /// Hands a hole at the exact face under `pointer` to the bridge as the MCP
     /// `drill_holes` edit: one Undo step or a named refusal.
     pub(crate) fn drill_hole_at_screen(&mut self, pointer: Pos2, rect: Rect) -> bool {
-        let Some(spec) = hole_spec(&self.value_box.input, self.value_box.decimal) else {
+        let Some(spec) = hole_spec(&self.value_box.input, self.window.decimal) else {
             self.digest = self.catalog.text("digest-hole-invalid-size");
             return false;
         };

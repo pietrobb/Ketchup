@@ -9,8 +9,8 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use super::mcp_config::{
-    SERVER, codex_command, invalid_data, read_or_empty, replace_file, with_codex_server,
-    with_json_server,
+    SERVER, codex_command, codex_server_off, invalid_data, json_server_off, read_or_empty,
+    replace_file, with_codex_server, with_json_server,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -89,6 +89,10 @@ pub enum Registration {
     /// It starts another program: another Kečup, a development build, or one
     /// that no longer exists.
     Elsewhere { command: String, exists: bool },
+    /// Its `ketchup` entry starts no program: it is turned off or a network
+    /// server (`entry` is its command or URL). Connect turns it on (review
+    /// 2026-11-04 r19 P3: it showed as set up).
+    Off { entry: String },
     /// Its file could not be read or is not JSON or TOML. Connect would refuse
     /// to write it, so the row offers no Connect.
     Unreadable { reason: RowError },
@@ -271,7 +275,7 @@ impl Environment {
     fn registered_commands(
         harness: Harness,
         file: &Path,
-    ) -> std::io::Result<(Option<String>, Vec<String>)> {
+    ) -> std::io::Result<(Option<Started>, Vec<Started>)> {
         let text = match std::fs::read_to_string(file) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
             read => read?,
@@ -280,17 +284,28 @@ impl Environment {
             return Ok((None, Vec::new()));
         }
         match harness {
-            Harness::Codex => Ok((codex_command(&text).map_err(invalid_data)?, Vec::new())),
+            Harness::Codex => {
+                let off = codex_server_off(&text).map_err(invalid_data)?;
+                let command = codex_command(&text).map_err(invalid_data)?;
+                Ok((
+                    off.map(Started::Off).or(command.map(Started::Program)),
+                    Vec::new(),
+                ))
+            }
             Harness::ClaudeCode | Harness::ClaudeDesktop | Harness::Supervisor => {
                 let config: serde_json::Value =
                     serde_json::from_str(&text).map_err(invalid_data)?;
                 let command = |servers: &serde_json::Value| {
-                    let command = servers[SERVER]["command"].as_str()?;
-                    Some(if harness == Harness::Supervisor {
+                    let server = &servers[SERVER];
+                    if let Some(off) = json_server_off(server) {
+                        return Some(Started::Off(off));
+                    }
+                    let command = server["command"].as_str()?;
+                    Some(Started::Program(if harness == Harness::Supervisor {
                         expand_variables(command)
                     } else {
                         command.to_owned()
-                    })
+                    }))
                 };
                 let projects = config["projects"]
                     .as_object()
@@ -324,20 +339,62 @@ impl Environment {
                 };
             }
         };
-        // Any entry starting another program is what some project starts.
+        // Any entry starting another program, or none, is what some project
+        // starts. One the client may still start wins over a gone one (r19
+        // SEC-160): the installer replaces a client only when no entry works.
         let elsewhere = user
             .iter()
             .chain(&projects)
-            .find(|command| !same_program(Path::new(command), executable));
+            .filter_map(|started| match started {
+                Started::Off(entry) => Some(Registration::Off {
+                    entry: entry.clone(),
+                }),
+                Started::Program(command) => match self.program_of(command) {
+                    Some(Some(program)) if same_program(&program, executable) => None,
+                    program => Some(Registration::Elsewhere {
+                        // One Kečup cannot find as the client does counts as there.
+                        exists: program.is_none_or(|program| program.is_some()),
+                        command: command.clone(),
+                    }),
+                },
+            })
+            .min_by_key(|found| matches!(found, Registration::Elsewhere { exists: false, .. }));
         match (elsewhere, user.is_some()) {
-            (Some(command), _) => Registration::Elsewhere {
-                exists: Path::new(command).is_file(),
-                command: command.clone(),
-            },
+            (Some(registration), _) => registration,
             (None, true) => Registration::ThisKetchup,
             (None, false) if self.installed(harness, file) => Registration::NotSetUp,
             (None, false) => Registration::NotInstalled,
         }
+    }
+
+    /// The program a client starts for `command`, found as the client finds
+    /// it (review 2026-11-04 r19 SEC-160): a name without a folder on PATH, a
+    /// path from `~` in the home folder, on Windows a path without its
+    /// extension by PATHEXT. `Some(None)` when it is certainly not there;
+    /// `None` when Kečup cannot tell: a name not on its own PATH (the client
+    /// may have another) or a path relative to the client's folder.
+    fn program_of(&self, command: &str) -> Option<Option<PathBuf>> {
+        let path = match command.strip_prefix('~') {
+            Some(rest) if rest.is_empty() || rest.starts_with(['/', '\\']) => {
+                self.home.join(rest.trim_start_matches(['/', '\\']))
+            }
+            _ => PathBuf::from(command),
+        };
+        if path.is_absolute() {
+            let found = path.is_file().then(|| path.clone()).or_else(|| {
+                let folder = path.parent()?;
+                let name = path.file_name()?.to_str()?;
+                (cfg!(windows) && path.extension().is_none())
+                    .then(|| find_program(&[folder.to_path_buf()], name))
+                    .flatten()
+            });
+            return Some(found);
+        }
+        if path.components().count() > 1 {
+            return None;
+        }
+        let folders: Vec<PathBuf> = std::env::split_paths(&self.path).collect();
+        find_program(&folders, command).map(Some)
     }
 
     fn row(&self, harness: Harness, file: Option<PathBuf>, executable: &Path) -> HarnessRow {
@@ -505,12 +562,28 @@ impl std::error::Error for SetupFailure {
     }
 }
 
-/// The program `name` in one of `folders`, as a shell would find it.
+/// What a client's `ketchup` entry starts.
+enum Started {
+    Program(String),
+    /// Nothing: turned off or a network server; its command or URL.
+    Off(String),
+}
+
+/// The program `name` in one of `folders`, as a shell would find it: on
+/// Windows a name with its extension as written, one without it by PATHEXT.
 fn find_program(folders: &[PathBuf], name: &str) -> Option<PathBuf> {
-    let extensions: &[&str] = if cfg!(windows) {
-        &[".exe", ".cmd", ".bat"]
+    let extensions: Vec<String> = if !cfg!(windows) || Path::new(name).extension().is_some() {
+        vec![String::new()]
     } else {
-        &[""]
+        std::env::var_os("PATHEXT")
+            .map_or_else(
+                || ".COM;.EXE;.BAT;.CMD".to_owned(),
+                |extensions| extensions.to_string_lossy().into_owned(),
+            )
+            .split(';')
+            .filter(|extension| extension.starts_with('.'))
+            .map(str::to_lowercase)
+            .collect()
     };
     folders.iter().find_map(|folder| {
         extensions
@@ -629,6 +702,9 @@ fn describe(row: &HarnessRow, executable: &Path) -> String {
             command,
             exists: false,
         } => format!("starts a program that does not exist: {command}"),
+        Registration::Off { entry } => {
+            format!("its ketchup entry is turned off or a network server: {entry}")
+        }
         Registration::Unreadable { reason } => format!("could not be read: {reason}"),
         Registration::InstancesUnlisted { reason } => {
             format!("the running instances could not be listed: {reason}")

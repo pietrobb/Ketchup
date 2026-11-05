@@ -98,7 +98,7 @@ impl VisualState {
                     &app.document.current(),
                 )),
             evaluating: app.exact.task.is_some(),
-            theme: format!("{:?}", app.theme),
+            theme: format!("{:?}", app.window.theme),
         })
     }
 }

@@ -3011,11 +3011,15 @@ def _opening_in(name, o, origin, along, up, out, depth, length, top_v):
 #   along the member: own weight, area loads, parts it carries) and what it passes to
 #   each support (reactions, with the bearing joint), and braced_by, the parts holding
 #   it sideways (part, edge top or bottom, from_mm = to_mm, the place it holds): a part
-#   bearing on it and on a grounded part (decking, battens, a ceiling) and fastened to both
-#   by a joint() (or of the fixed tags). It holds the member at the joint's fasteners
-#   points, or at the middle of where they touch when the joint lists none, so name the
-#   fasteners of a lath along a beam. A plank screwed only to free beams, or lying loose,
-#   holds nothing. The top braces against a sagging moment, the bottom against a
+#   bearing on it and on a part declared grounded (which must be stiff sideways: a wall,
+#   not a free stud) beside it, across the member, and fastened to both by a joint();
+#   kinds "none", "contact" and "friction" fasten nothing, and a fixed tag ties nothing.
+#   It holds the member at the joint's fasteners where the two touch (others are
+#   reported, fastener_off_contact), or at the middle of each place they touch when the
+#   joint lists none, so name the fasteners of a lath along a beam. A plank screwed only
+#   to free beams, lying loose, or anchored only in line with the beam holds nothing;
+#   a deck screwed to the beams but to nothing grounded leaves them not_verified (a
+#   declared diaphragm is not yet supported). The top braces against a sagging moment, the bottom against a
 #   hogging one (lateral torsional buckling, check lateral_torsional). A beam shares its load among its
 #   supports by the lever rule, over more supports as simple spans between them; other
 #   parts share theirs by contact area. Missing inputs are listed, never guessed.

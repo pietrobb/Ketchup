@@ -219,8 +219,9 @@ pub(super) fn btlx_processings(
         GeneralManufacturingKind::ThroughCut
         | GeneralManufacturingKind::ProfileCut
         | GeneralManufacturingKind::BooleanCut => {
-            let contour = btlx_free_contour(&operation.machining, blank)
-                .ok_or(GeneralFabricationError::ExportBlocked)?;
+            let contour = btlx_free_contour(&operation.machining, blank).ok_or(
+                GeneralFabricationError::ExportBlocked(ExportBlock::UnsupportedMachining),
+            )?;
             match options.profile_processing_request {
                 BtlxProfileProcessingRequest::PortableFreeContour => {
                     Ok(vec![BtlxProcessing::FreeContour(contour)])
@@ -247,7 +248,9 @@ pub(super) fn btlx_processings(
                 }
             }
         }
-        _ => Err(GeneralFabricationError::ExportBlocked),
+        _ => Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::UnsupportedMachining,
+        )),
     }
 }
 

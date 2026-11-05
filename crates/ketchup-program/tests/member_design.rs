@@ -663,6 +663,213 @@ joint(\"lath b\", \"beam\", kind = \"screw\", fasteners = [{}])
     unbraced(&many);
 }
 
+fn braced_by(report: &Report) -> Vec<(String, f64, f64)> {
+    report
+        .loads
+        .members
+        .iter()
+        .find(|load| load.part == "beam")
+        .expect("loads of the beam")
+        .braced_by
+        .iter()
+        .map(|brace| (brace.part.clone(), brace.from_mm, brace.to_mm))
+        .collect()
+}
+
+fn stray_fastener_parts(report: &Report) -> Vec<Vec<String>> {
+    report
+        .issues
+        .iter()
+        .filter(|issue| issue.kind == "fastener_off_contact")
+        .map(|issue| issue.parts.clone())
+        .collect()
+}
+
+/// The slender beam with one 50 mm batten across it at x = 500 to the grounded
+/// wall, screwed to the wall, and `beam_joint` joining it to the beam.
+fn one_batten(beam_joint: &str, wall_joint: &str) -> String {
+    format!(
+        "{}box(\"wall\", (5900, 100, 2400), at = (0, 1000, 0), material = \"GL24h\", grounded = True)
+box(\"batten\", (50, 1100, 50), at = (500, 0, 2400), material = \"GL24h\")
+joint(\"batten\", \"wall\", kind = \"screw\"{wall_joint})
+joint(\"batten\", \"beam\", kind = \"screw\"{beam_joint})
+",
+        slender_beam(&[])
+    )
+}
+
+/// PG-160 (review 2026-11-04 r19): a joint's fastener points were taken
+/// wherever they were. One batten across the beam at x = 500, its joint to the
+/// beam naming screws every 300 mm 5 m away (or along the beam's top where the
+/// batten is not), held the beam every 300 mm and it passed at 1.185. A
+/// fastener holds only where the parts it joins touch; one elsewhere is reported.
+#[test]
+fn fasteners_away_from_where_the_parts_touch_hold_nothing_and_are_reported() {
+    let far = report(
+        &one_batten(
+            ", fasteners = [(x, -5000, 0) for x in range(300, 5800, 300)]",
+            "",
+        ),
+        &[],
+    );
+    assert!(ltb_not_verified(&far), "{:?}", member(&far, "beam"));
+    assert_eq!(braced_by(&far), Vec::new());
+    assert_eq!(stray_fastener_parts(&far), [["batten", "beam"]]);
+
+    let along_top = report(
+        &one_batten(
+            ", fasteners = [(x, 40, 2400) for x in range(300, 1501, 300)]",
+            "",
+        ),
+        &[],
+    );
+    assert!(
+        ltb_not_verified(&along_top),
+        "{:?}",
+        member(&along_top, "beam")
+    );
+    assert_eq!(braced_by(&along_top), Vec::new());
+    assert_eq!(stray_fastener_parts(&along_top), [["batten", "beam"]]);
+
+    // The anchorage side too: a screw into the wall 5 m away anchors nothing.
+    let far_anchor = report(
+        &one_batten(
+            ", fasteners = [(525, 40, 2400)]",
+            ", fasteners = [(525, -5000, 0)]",
+        ),
+        &[],
+    );
+    assert_eq!(braced_by(&far_anchor), Vec::new());
+    assert_eq!(stray_fastener_parts(&far_anchor), [["batten", "wall"]]);
+
+    // A screw in the batten's contact, given at the contact or at its head on
+    // the batten's top, holds the beam there.
+    for z in [2400, 2450] {
+        let held = report(
+            &one_batten(
+                &format!(", fasteners = [(525, 40, {z})]"),
+                ", fasteners = [(525, 1050, 2400)]",
+            ),
+            &[],
+        );
+        assert_eq!(
+            braced_by(&held),
+            [("batten".to_owned(), 525.0, 525.0)],
+            "{:?}",
+            held.issues
+        );
+        assert_eq!(stray_fastener_parts(&held), Vec::<Vec<String>>::new());
+    }
+}
+
+/// PG-161 (review 2026-11-04 r19): the contacts of a part with one supporter
+/// merged into one cloud whose middle was the anchorage. A 6.7 m lath along
+/// the beam's top resting on both arms of one grounded U past the beam's
+/// ends was anchored at mid-span, right at its screw into the beam, and the
+/// beam passed at 0.908 (really 1.185): the lath sways with the beam. A
+/// masonry shell modelled as one body with a counter-batten on gable and eaves
+/// wall is this case.
+#[test]
+fn a_lath_along_the_beam_on_both_arms_of_one_grounded_u_does_not_brace_it() {
+    let source = format!(
+        "{}box(\"u\", (6700, 80, 2400), at = (-400, 200, 0), material = \"GL24h\", grounded = True)
+box(\"u arm a\", (300, 280, 2400), at = (-400, 0, 0), material = \"GL24h\")
+box(\"u arm b\", (300, 280, 2400), at = (6000, 0, 0), material = \"GL24h\")
+union(\"u\", \"u arm a\")
+union(\"u\", \"u arm b\")
+box(\"lath\", (6700, 40, 40), at = (-400, 20, 2400), material = \"GL24h\")
+joint(\"lath\", \"u\", kind = \"screw\")
+joint(\"lath\", \"beam\", kind = \"screw\", fasteners = [(2950, 40, 2400)])
+",
+        slender_beam(&[])
+    );
+    let lath = report(&source, &[]);
+    let beam = member(&lath, "beam");
+    assert!(ltb_not_verified(&lath), "{beam:?}");
+    assert_eq!(beam.status, "not_verified", "{:?}", beam.checks);
+    assert_eq!(braced_by(&lath), Vec::new());
+}
+
+/// PG-162 (review 2026-11-04 r19): any joint() counted as fastening, whatever
+/// its kind. Battens joined to the beam and the wall by joint(kind="none")
+/// braced it like screws. none, contact and friction fasten nothing.
+#[test]
+fn joints_of_a_kind_that_fastens_nothing_do_not_brace() {
+    let battens = slender_beam(&[300.0, 1200.0, 2100.0, 3600.0, 4500.0, 5400.0]);
+    for kind in ["none", "contact", "friction"] {
+        let loose = report(
+            &battens.replace("kind = \"screw\"", &format!("kind = \"{kind}\"")),
+            &[],
+        );
+        let beam = member(&loose, "beam");
+        assert!(ltb_not_verified(&loose), "{kind}: {beam:?}");
+        assert_eq!(braced_by(&loose), Vec::new(), "{kind}");
+    }
+}
+
+/// Review 2026-11-04 r19 P3: a part of a load path's `fixed` tags counted as
+/// fastened to whatever it touched, so loose battens tagged fixed braced the
+/// beam. A fixed tag passes weight; only a joint() fastens a brace.
+#[test]
+fn battens_of_the_fixed_tags_without_joints_do_not_brace() {
+    let mut source = slender_beam(&[]).replace(
+        "carriers = [\"pad\"])",
+        "carriers = [\"pad\"], fixed = [\"batten\"])",
+    );
+    source.push_str(
+        "box(\"wall\", (5900, 100, 2400), at = (0, 1000, 0), material = \"GL24h\", grounded = True)\n",
+    );
+    for x in [300, 1200, 2100, 3600, 4500, 5400] {
+        source.push_str(&format!(
+            "box(\"batten {x}\", (50, 1100, 50), at = ({x}, 0, 2400), material = \"GL24h\", tags = [\"batten\"])\n"
+        ));
+    }
+    let tagged = report(&source, &[]);
+    assert!(ltb_not_verified(&tagged), "{:?}", member(&tagged, "beam"));
+    assert_eq!(braced_by(&tagged), Vec::new());
+}
+
+/// Review 2026-11-04 r19 P3: an area load on a pad narrower than it is tall
+/// found no face up, so the pad and the beam under it carried nothing and
+/// nothing said so. It is reported.
+#[test]
+fn an_area_load_on_a_part_standing_on_edge_is_reported() {
+    let source = slender_beam(&[]).replace(
+        "box(\"pad\", (300, 80, 50), at = (2800, 0, 2400)",
+        "box(\"pad\", (300, 40, 50), at = (2800, 20, 2400)",
+    );
+    let edge_on = report(&source, &[]);
+    let issue = edge_on
+        .issues
+        .iter()
+        .find(|issue| issue.kind == "area_load_edge_on")
+        .unwrap_or_else(|| panic!("{:?}", edge_on.issues));
+    assert_eq!(issue.parts, ["pad"]);
+    assert!(issue.message.contains("point"), "{}", issue.message);
+}
+
+/// PG-163 (review 2026-11-04 r19): any part standing on the floor counted as
+/// an anchorage. Battens screwed to the beam and to free 40 x 40 studs
+/// standing on the floor braced it, though a hinged stud holds nothing
+/// sideways. Only a part declared grounded anchors a brace.
+#[test]
+fn battens_screwed_to_free_studs_on_the_floor_do_not_brace() {
+    let mut source = slender_beam(&[]);
+    for x in [300, 1200, 2100, 3600, 4500, 5400] {
+        source.push_str(&format!(
+            "box(\"stud {x}\", (40, 40, 2400), at = ({x}, 1000, 0), material = \"GL24h\")
+box(\"batten {x}\", (50, 1040, 50), at = ({x}, 0, 2400), material = \"GL24h\")
+joint(\"batten {x}\", \"beam\", kind = \"screw\")
+joint(\"batten {x}\", \"stud {x}\", kind = \"screw\")
+"
+        ));
+    }
+    let studs = report(&source, &[]);
+    let beam = member(&studs, "beam");
+    assert!(ltb_not_verified(&studs), "{beam:?}");
+    assert_eq!(braced_by(&studs), Vec::new());
+}
+
 /// PG-120 (review 2026-11-02): a ceiling board screwed under two beams held
 /// their tension edge, yet counted as bracing the compressed top: a GL24h
 /// 80 x 400 beam over 5.8 m at 1.185 with kcrit passed.

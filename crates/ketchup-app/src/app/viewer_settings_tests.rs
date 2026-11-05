@@ -350,6 +350,108 @@ fn settings_naming_the_shared_views_keep_the_others_out() {
     );
 }
 
+/// The Viewer settings as Kečup 0.3.1 reads them (v0.3.1
+/// `viewer_settings.rs`): an unknown field makes them unreadable, and every
+/// view is shared unless `scenes` names the shared ones.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct SettingsOf031 {
+    #[serde(default)]
+    definition_notes: BTreeMap<u64, String>,
+    #[serde(default)]
+    occurrence_notes: Vec<(InstancePath, String)>,
+    #[serde(default)]
+    excluded_roots: BTreeSet<u64>,
+    #[serde(default)]
+    scenes: Option<BTreeSet<u64>>,
+    #[serde(default)]
+    start_scene: Option<u64>,
+    #[serde(default)]
+    dimensions: Vec<crate::app::viewer_settings::ViewerDimension>,
+    #[serde(default)]
+    scenes_without_dimensions: BTreeSet<u64>,
+    #[serde(default)]
+    fitted_projection: Option<ketchup_manufacturing::viewer_export::view::FittedProjection>,
+}
+
+/// Review 2026-11-04 r19 UI-160: the views left out were written only as
+/// `excluded_scenes`, a field Kečup 0.3.1 does not know, so 0.3.1 could not
+/// read the settings at all. The settings stay as 0.3.1 reads them, naming
+/// the shared views, and 0.3.1 shares none of the views left out; the views
+/// left out are kept beside them, so a view saved later is still shared.
+#[test]
+fn kecup_031_reads_the_settings_and_shares_no_view_left_out() {
+    let mut app = cabinet();
+    let front = app.save_view("Front").expect("scene");
+    let back = app.save_view("Back").expect("scene");
+    assert!(app.set_viewer_definition_note(DefinitionId(1), "note"));
+    assert!(app.set_viewer_scene_shared(back, false));
+    let written = app
+        .file
+        .container_data
+        .extensions()
+        .find(|entry| {
+            entry.namespace() == "org.ketchup.viewer" && entry.path() == "sharing-v1.json"
+        })
+        .expect("settings")
+        .bytes()
+        .to_vec();
+    let old: SettingsOf031 = serde_json::from_slice(&written).expect("0.3.1 reads the settings");
+    let shared_by_031 = |id: SavedViewId| {
+        old.scenes
+            .as_ref()
+            .is_none_or(|scenes| scenes.contains(&id.0))
+    };
+    assert!(shared_by_031(front));
+    assert!(!shared_by_031(back), "0.3.1 shares no view left out");
+    assert_eq!(old.definition_notes.len(), 1);
+
+    let side = app.save_view("Side").expect("scene");
+    let scenes =
+        |app: &KetchupApp| app.viewer_export_scenes(&app.stored_viewer_settings().unwrap());
+    assert_eq!(scenes(&app), [front, side], "a view saved later is shared");
+
+    // 0.3.1 shares Back again: its choice wins over the views kept left out.
+    app.file.container_data.set_extension(
+        ketchup_model::persistence::ExtensionEntry::new(
+            "org.ketchup.viewer",
+            "sharing-v1.json",
+            false,
+            format!("{{\"scenes\":[{},{}]}}", front.0, back.0).into_bytes(),
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        scenes(&app),
+        [front, back],
+        "Side, unknown to 0.3.1, stays out"
+    );
+}
+
+/// Kečup 0.3.2 wrote the views left out into the settings themselves; they
+/// stay out.
+#[test]
+fn settings_of_032_naming_the_views_left_out_keep_them_out() {
+    let mut app = cabinet();
+    let front = app.save_view("Front").expect("scene");
+    let back = app.save_view("Back").expect("scene");
+    app.file.container_data.set_extension(
+        ketchup_model::persistence::ExtensionEntry::new(
+            "org.ketchup.viewer",
+            "sharing-v1.json",
+            false,
+            format!("{{\"excluded_scenes\":[{}]}}", back.0).into_bytes(),
+        )
+        .unwrap(),
+    );
+    let scenes =
+        |app: &KetchupApp| app.viewer_export_scenes(&app.stored_viewer_settings().unwrap());
+    assert_eq!(scenes(&app), [front]);
+    assert!(app.set_viewer_start_scene(front));
+    assert_eq!(scenes(&app), [front]);
+}
+
 #[test]
 fn sharing_choices_pick_scenes_start_and_drop_unshared_components() {
     let mut app = cabinet();

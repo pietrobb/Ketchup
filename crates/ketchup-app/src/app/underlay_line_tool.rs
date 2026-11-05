@@ -92,7 +92,7 @@ impl KetchupApp {
         let distance_mm = if typed.is_empty() {
             None
         } else {
-            let Some(length) = parse_distance_mm(typed, self.value_box.decimal) else {
+            let Some(length) = parse_distance_mm(typed, self.window.decimal) else {
                 self.digest = self.catalog.text("digest-sketch-invalid-length");
                 return;
             };

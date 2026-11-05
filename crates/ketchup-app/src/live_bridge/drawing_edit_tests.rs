@@ -535,22 +535,45 @@ fn a_client_exports_the_edited_drawing_as_a_dxf_that_imports_as_edited() {
     // nothing is written. One whose entities only read differently is bound again by
     // their handles (review 2026-11-02 CD-120).
     let other = directory.path().join("other.dxf");
-    std::fs::write(&other, DRAWING.replace("5\n2A\n", "5\n2B\n")).unwrap();
     let refused = directory.path().join("refused.dxf");
+    let mut export_from = |source: &str| {
+        std::fs::write(&other, source).unwrap();
+        bridge.execute(
+            &mut app,
+            ask(
+                "drawing_export",
+                json!({"underlay_id": 1, "path": refused.display().to_string(), "source": other.display().to_string()}),
+            ),
+            false,
+        )
+    };
     assert_eq!(
-        bridge
-            .execute(
-                &mut app,
-                ask(
-                    "drawing_export",
-                    json!({"underlay_id": 1, "path": refused.display().to_string(), "source": other.display().to_string()})
-                ),
-                false
-            )
-            .unwrap_err(),
+        export_from(&DRAWING.replace("\n5\n", "\n5\nF")).unwrap_err(),
         "drawing_source_unavailable"
     );
     assert!(!refused.exists());
+    // The moved wall alone of another handle was deleted in the file: that edit is named
+    // and refused. A text not edited that the file no longer has is left out, and said
+    // (review 2026-11-04 r19 P3: it refused the whole drawing).
+    assert_eq!(
+        export_from(&DRAWING.replace("5\n2A\n", "5\n2B\n")).unwrap_err(),
+        "drawing_edit_not_writable"
+    );
+    let details = take_error_details().unwrap_or_default().to_string();
+    assert!(
+        details.contains("handle 2A") && details.contains("no longer in the file"),
+        "{details}"
+    );
+    assert!(!refused.exists());
+    let text = "0\nMTEXT\n5\n4D\n8\nrooms\n10\n200\n20\n200\n40\n100\n1\n1.01 Kitchen 12,5 m2\n";
+    assert!(DRAWING.contains(text));
+    let answer = export_from(&DRAWING.replacen(text, "", 1)).unwrap();
+    assert_eq!(answer["removed_in_file"], 1, "{answer}");
+    assert!(
+        !std::fs::read_to_string(&refused)
+            .unwrap()
+            .contains("1.01 Kitchen")
+    );
 }
 
 /// Each reason a drawing is not written back has a code of its own whose hint repairs
@@ -626,6 +649,19 @@ fn a_drawing_export_refusal_has_the_code_of_its_cause() {
             refused(UnderlayRefusal::NotWritten(DxfEditRefusal::NotMappable {
                 object: 4,
                 kind: "HATCH".into(),
+            })),
+            "drawing_edit_not_writable",
+        ),
+        // Review 2026-11-04 r19 CD-163: undoing that one edit repairs it.
+        (
+            refused(UnderlayRefusal::NotWritten(DxfEditRefusal::ChangedInFile {
+                object: 4,
+                handle: 0xA3,
+                kind: "TEXT".into(),
+                edit: ketchup_model::import::EditOfObject::Moved,
+                difference: ketchup_model::import::Difference::Text,
+                was_mm: Some([500, 500]),
+                now_mm: Some([5000, 500]),
             })),
             "drawing_edit_not_writable",
         ),

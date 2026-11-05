@@ -77,7 +77,7 @@ impl KetchupApp {
     /// and the model has no layers yet, and the layers for everything else.
     #[must_use]
     pub fn dock_tab(&self) -> DockTab {
-        self.dock.tab.unwrap_or_else(|| {
+        self.window.dock_tab.unwrap_or_else(|| {
             let program = self.document.current_rule_program().is_some();
             let layered = self.document.current().tags().next().is_some();
             if program || (self.manual_cad_tools_visible() && !layered) {
@@ -89,7 +89,7 @@ impl KetchupApp {
     }
 
     pub fn set_dock_tab(&mut self, tab: DockTab) {
-        self.dock.tab = Some(tab);
+        self.window.dock_tab = Some(tab);
     }
 
     pub(crate) fn show_right_dock(&mut self, ui: &mut egui::Ui) {
@@ -195,7 +195,7 @@ impl KetchupApp {
                     .on_hover_text(self.catalog.text("selection-source-hint"))
                     .clicked()
                 {
-                    self.dock.tab = Some(DockTab::Program);
+                    self.window.dock_tab = Some(DockTab::Program);
                     self.dock.reveal_program_lines = true;
                 }
             }
@@ -321,7 +321,7 @@ impl KetchupApp {
                     painter.circle_filled(icon.right_top() + Vec2::new(3.0, 2.0), 3.5, dot);
                 }
                 if response.clicked() {
-                    self.dock.tab = Some(tab);
+                    self.window.dock_tab = Some(tab);
                 }
             }
         });

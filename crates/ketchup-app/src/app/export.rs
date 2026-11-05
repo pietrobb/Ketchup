@@ -118,12 +118,16 @@ impl KetchupApp {
     ) -> Result<Written, ExportError> {
         self.side_effect_receipts.clear();
         let snapshot = self.document.current();
+        // As the sheets of the document write it (review 2026-11-04 r19 P3).
+        let separator = crate::app::project_drawings::sheet_decimal_mark(
+            &self.sheet_catalog(self.sheet_settings().language),
+        );
         let extension = path
             .extension()
             .and_then(|extension| extension.to_str())
             .map(str::to_ascii_lowercase);
         let result = match extension.as_deref() {
-            Some(format @ ("dxf" | "dwg")) => export_visible_plan_dxf(&snapshot, scale)
+            Some(format @ ("dxf" | "dwg")) => export_visible_plan_dxf(&snapshot, scale, separator)
                 .map_err(ExportError::failed)
                 .and_then(|bundle| {
                     let written = if format == "dwg" {

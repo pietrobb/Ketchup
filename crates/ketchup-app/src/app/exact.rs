@@ -449,7 +449,7 @@ impl KetchupApp {
                     .then(|| Instant::now() + Duration::from_secs(1));
             }
             Err(error) => {
-                eprintln!("exact evaluation rejected: {error}");
+                ketchup_rejection::log!("exact evaluation rejected: {error}");
                 self.exact.retry_at = Some(Instant::now() + Duration::from_secs(1));
             }
         }
@@ -1069,7 +1069,7 @@ impl KetchupApp {
     /// The length typed for the shape in progress, or `None` with the refusal
     /// named when it is not a length greater than zero.
     fn typed_sketch_length_mm(&mut self) -> Option<f64> {
-        let length_mm = parse_distance_mm(&self.value_box.input, self.value_box.decimal)
+        let length_mm = parse_distance_mm(&self.value_box.input, self.window.decimal)
             .filter(|length_mm| *length_mm > limits::MIN_LENGTH_MM);
         if length_mm.is_none() {
             self.digest = self.catalog.text("digest-sketch-invalid-length");
@@ -1189,7 +1189,7 @@ impl KetchupApp {
             return false;
         };
         // A negative bulge bows the arc to the other side of the pointer.
-        let Some(bulge_mm) = parse_distance_mm(&self.value_box.input, self.value_box.decimal)
+        let Some(bulge_mm) = parse_distance_mm(&self.value_box.input, self.window.decimal)
             .filter(|value| value.abs() > limits::MIN_LENGTH_MM)
         else {
             self.digest = self.catalog.text("digest-sketch-invalid-length");
@@ -1229,7 +1229,7 @@ impl KetchupApp {
             return false;
         };
         let Some([width, depth]) =
-            parse_rectangle_dimensions(&self.value_box.input, self.value_box.decimal)
+            parse_rectangle_dimensions(&self.value_box.input, self.window.decimal)
         else {
             self.digest = self.catalog.text("digest-rectangle-invalid-size");
             return false;

@@ -186,7 +186,7 @@ impl KetchupApp {
             ui,
             &self.catalog,
             fields.position.iter().chain(&fields.size),
-            self.value_box.decimal,
+            self.window.decimal,
         );
         if let SpaceRow::Clearance(_) = row {
             let required = self.catalog.text("spaces-field-required");
@@ -195,7 +195,7 @@ impl KetchupApp {
         let parsed = |values: &[String; 3]| {
             let [x, y, z] = values
                 .each_ref()
-                .map(|value| parse_distance_mm(value, self.value_box.decimal));
+                .map(|value| parse_distance_mm(value, self.window.decimal));
             Some([x?, y?, z?])
         };
         let boxed = parsed(&fields.position)

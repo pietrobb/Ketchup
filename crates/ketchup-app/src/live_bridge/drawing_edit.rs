@@ -448,11 +448,16 @@ impl DrawingExportTarget {
                 "record_type": record_type,
                 "count": count,
             })).collect::<Vec<_>>(),
-            // Entities not edited that changed in the file since it was imported, and
-            // those added to it, are written as it has them now (review 2026-11-04
-            // CD-140). Entities no line is read from are not compared.
+            // Entities not edited that read otherwise than at the import (changed in the
+            // file since, or read differently by this Kečup: the two are not told apart,
+            // review 2026-11-04 r19 P3), and those added to it, are written as it has
+            // them now (review 2026-11-04 CD-140). Entities no line is read from are not
+            // compared.
             "changed_in_file": written.changed_in_file,
             "added_in_file": written.added_in_file,
+            // Entities deleted in the file and not edited are left out as it has them
+            // (review 2026-11-04 r19 P3).
+            "removed_in_file": written.removed_in_file,
         });
         // A DWG is written in one version whatever the source's was (review 2026-10-31 P3).
         if crate::app::dwg_import::is_dwg_path(Path::new(&self.path)) {
@@ -488,7 +493,9 @@ pub(super) fn drawing_export_code(error: &UnderlayExportError) -> &'static str {
             UnderlayRefusal::NotWritten(
                 DxfEditRefusal::NoHandle { .. }
                 | DxfEditRefusal::HandleMissing { .. }
-                | DxfEditRefusal::NotMappable { .. },
+                | DxfEditRefusal::NotMappable { .. }
+                | DxfEditRefusal::ChangedInFile { .. }
+                | DxfEditRefusal::DeletedInFile { .. },
             ) => "drawing_edit_not_writable",
             UnderlayRefusal::NotWritten(..)
             | UnderlayRefusal::Dwg(..)

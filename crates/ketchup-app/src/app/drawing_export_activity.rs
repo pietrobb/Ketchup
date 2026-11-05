@@ -102,9 +102,17 @@ impl KetchupApp {
         work: DrawingWork,
     ) {
         let owner = self.drawing_set_owner();
+        // The user took the set at the path over from another project.
+        let take_over = self
+            .drawings
+            .taking_over
+            .take()
+            .is_some_and(|set| set == path);
         let replacing = match export {
-            DrawingExport::Project(format) => project_drawings_targets(&path, format, &owner)
-                .map_err(|error| self.report_project_drawings(&path, &Err(error))),
+            DrawingExport::Project(format) => {
+                project_drawings_targets(&path, format, &owner, take_over)
+                    .map_err(|error| self.report_project_drawings(&path, &Err(error)))
+            }
             DrawingExport::Sheet(_, format) => drawing_sheet_target(&path)
                 .map(|sha256| {
                     sha256
@@ -179,7 +187,7 @@ impl KetchupApp {
                         &task.owner,
                     )
                     .map(|paths| {
-                        written = written_files(&paths, &files);
+                        written = written_files(&task.path, format, &task.owner, &paths, &files);
                         ExportedSet { set, paths }
                     })
                 });

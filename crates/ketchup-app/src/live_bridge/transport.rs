@@ -3,6 +3,7 @@ use super::admission::{AUTHENTICATED, EVICTED, PENDING, Pending};
 use super::*;
 use crate::delivery::Deliver;
 use ketchup_model::persistence::ContainerData;
+use ketchup_rejection::{Reason, dropped};
 use std::{
     collections::VecDeque,
     io::{Read, Write},
@@ -71,10 +72,9 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
                                     &context,
                                     &authenticated,
                                 );
-                                if served.is_err() {
-                                    // A client that hung up or broke the protocol is
-                                    // disconnected below like one that said goodbye.
-                                }
+                                // A client that hung up or broke the protocol is
+                                // disconnected below like one that said goodbye.
+                                dropped(served, Reason::NobodyWaiting);
                                 if authenticated.load(Ordering::Acquire) == AUTHENTICATED {
                                     let (reply, _receiver) = mpsc::sync_channel(1);
                                     sender.deliver(Queued {
@@ -90,7 +90,7 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
                             });
                         if let Err(error) = spawned {
                             // The connection closes unserved; the client may try again.
-                            eprintln!("a live connection was not served: {error}");
+                            ketchup_rejection::log!("a live connection was not served: {error}");
                         }
                     }
                     Ok(_) => {}
@@ -642,9 +642,11 @@ fn serve(
                     .is_some_and(|&(begun, changed)| begun == id && changed);
                 result.insert("document_changed".to_owned(), changed.into());
             }
-            if write_response(stream, response, false).is_err() {
-                // The last frame is a courtesy: the connection ends either way.
-            }
+            // The last frame is a courtesy: the connection ends either way.
+            dropped(
+                write_response(stream, response, false),
+                Reason::NobodyWaiting,
+            );
         }
     };
     while !stop.load(Ordering::Acquire) {

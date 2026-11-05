@@ -166,19 +166,72 @@ pub(crate) fn drawing_sheet_target(path: &Path) -> Result<Option<String>, Drawin
     export_target_sha256(path).map_err(DrawingSheetExportError::Write)
 }
 
+use super::project_drawings::SHEET_NAMESPACE;
+
+/// Where the document keeps the drawing files it wrote.
+const WRITTEN_PATH: &str = "written-v1.json";
+
+/// What a written drawing file is kept under in the document: the SHA-256 of
+/// its canonical path, so `c:\X` and `C:\x` name one file and the document
+/// carries no absolute path with the user's name (review 2026-11-04 r19
+/// SEC-161); a file that is not there has none.
+pub(super) fn written_key(path: &Path) -> std::io::Result<String> {
+    std::fs::canonicalize(path)
+        .map(|canonical| ketchup_model::graph::sha256_hex(canonical.as_os_str().as_encoded_bytes()))
+}
+
 impl KetchupApp {
-    /// Notes the drawing files the window wrote, each with its SHA-256.
+    /// The drawing files the document wrote: the SHA-256 of each, by
+    /// [`written_key`].
+    pub(super) fn written_drawings(&self) -> Result<BTreeMap<String, String>, serde_json::Error> {
+        self.file
+            .container_data
+            .extensions()
+            .find(|entry| entry.namespace() == SHEET_NAMESPACE && entry.path() == WRITTEN_PATH)
+            .map_or_else(
+                || Ok(BTreeMap::new()),
+                |entry| serde_json::from_slice(entry.bytes()),
+            )
+    }
+
+    /// Notes in the document the drawing files the window wrote, each with
+    /// its SHA-256, so they are its own after a restart too. A list that does
+    /// not read names no file this export could replace unasked, so a new one
+    /// takes its place.
     pub(crate) fn wrote_drawings(&mut self, written: impl IntoIterator<Item = (PathBuf, String)>) {
-        self.drawings.written.extend(written);
+        let before = self.written_drawings();
+        let mut kept = before.as_ref().cloned().unwrap_or_default();
+        for (path, sha256) in written {
+            // Just written, the file is there; one moved away at once is not
+            // this document's to replace.
+            if let Ok(key) = written_key(&path) {
+                kept.insert(key, sha256);
+            }
+        }
+        if before.as_ref().is_ok_and(|before| *before == kept) {
+            return;
+        }
+        let bytes = serde_json::to_vec(&kept).expect("a map of texts is JSON");
+        let entry = ketchup_model::persistence::ExtensionEntry::new(
+            SHEET_NAMESPACE,
+            WRITTEN_PATH,
+            false,
+            bytes,
+        )
+        .expect("the drawings namespace and the list's path are valid");
+        self.file.container_data.set_extension(entry);
+        self.drawings.unsaved = true;
     }
 
     /// Whether the file at `path`, of SHA-256 `sha256`, is the last drawing
-    /// file the window wrote there (review 2026-11-04 MCP-140).
+    /// file the document wrote there (review 2026-11-04 MCP-140), however the
+    /// path is spelled (r19 SEC-161). A path or list that does not read names
+    /// no such file, so the client asks the user.
     pub(crate) fn wrote_drawing(&self, path: &Path, sha256: &str) -> bool {
-        self.drawings
-            .written
-            .get(path)
-            .is_some_and(|written| written == sha256)
+        written_key(path).is_ok_and(|key| {
+            self.written_drawings()
+                .is_ok_and(|written| written.get(&key).is_some_and(|kept| kept == sha256))
+        })
     }
 
     /// The DXF of drawing sheet `id` as the current exact solids project it.

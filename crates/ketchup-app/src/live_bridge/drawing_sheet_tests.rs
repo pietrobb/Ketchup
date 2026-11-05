@@ -357,6 +357,66 @@ fn a_pdf_or_sheet_the_window_did_not_write_is_replaced_only_when_asked() {
     }
 }
 
+/// Review 2026-11-04 r19 SEC-161: which file the window wrote lived only in
+/// memory, keyed by the path as typed, so after a restart, or with the path
+/// spelled otherwise (`c:\X` for `C:\x`), the usual export after an edit was
+/// refused with drawings_target_exists. The document keeps the SHA-256 of each
+/// file it wrote by its canonical path, and the refusal says to ask the user.
+#[test]
+fn the_documents_own_drawing_is_replaced_after_a_restart_and_however_its_path_is_spelled() {
+    let (mut app, mut bridge) = setup();
+    let id = sheet_of_the_block(&mut app, &mut bridge);
+    let directory = tempfile::tempdir().unwrap();
+    let targets = [
+        (directory.path().join("House.pdf"), json!({})),
+        (directory.path().join("Survey.dwg"), json!({"sheet_id": id})),
+    ];
+    let export = |app: &mut KetchupApp, bridge: &mut LiveBridge, path: &Path, extra: &Value| {
+        bridge
+            .execute(app, export_drawings(path, extra.clone()), false)
+            .unwrap_or_else(|code| panic!("{code} {path:?}: {:?}", take_error_details()))
+    };
+    for (path, extra) in &targets {
+        export(&mut app, &mut bridge, path, extra);
+        if cfg!(windows) {
+            // Windows names ignore case: the same file, spelled otherwise.
+            let other = PathBuf::from(path.display().to_string().to_lowercase());
+            export(&mut app, &mut bridge, &other, extra);
+        }
+    }
+    std::fs::write(&targets[0].0, b"the user's own").unwrap();
+    assert_eq!(
+        bridge.execute(&mut app, export_drawings(&targets[0].0, json!({})), false),
+        Err("drawings_target_exists")
+    );
+    let answer = take_error_details().unwrap_or_default().to_string();
+    assert!(answer.contains("Ask the user"), "{answer}");
+    export(
+        &mut app,
+        &mut bridge,
+        &targets[0].0,
+        &json!({"replace": true}),
+    );
+
+    let document = directory.path().join("plan.ketchup");
+    let save = Request::SaveAs {
+        expected: None,
+        path: document.display().to_string(),
+    };
+    bridge.execute(&mut app, save, false).unwrap();
+    drop((app, bridge));
+    let (mut opened, mut bridge) = setup();
+    let open = Request::Open {
+        expected: None,
+        path: document.display().to_string(),
+    };
+    bridge.execute(&mut opened, open, false).unwrap();
+    evaluate_exact(&mut opened);
+    for (path, extra) in &targets {
+        export(&mut opened, &mut bridge, path, extra);
+    }
+}
+
 /// MECH-2: a PDF another program holds open (a PDF viewer shares it for
 /// reading only) cannot be replaced: the answer names the file and says to
 /// close it, the file keeps its bytes and nothing is left beside it.
@@ -426,6 +486,65 @@ fn a_file_of_someone_elses_named_like_a_sheet_is_named_and_kept() {
         );
         std::fs::remove_file(file(foreign)).unwrap();
     }
+}
+
+/// Review 2026-11-04 r19 MF-162: the set's list named the project by its
+/// absolute path, compared as text, so a project renamed or moved (another
+/// folder, drive letter or letter case, Save As "v2") refused its own set as
+/// "changed concurrently after authorization", and the list carried the
+/// user's name in that path. The document keeps which list it wrote; another
+/// project is told whose set it is and may take it over.
+#[test]
+fn a_moved_project_exports_its_set_again_and_another_is_told_whose_it_is() {
+    let directory = tempfile::tempdir().unwrap();
+    let folder = |name: &str| {
+        let folder = directory.path().join(name);
+        std::fs::create_dir_all(&folder).unwrap();
+        folder
+    };
+    let set = folder("drawings").join("house.dxf");
+    let saved = folder("projects").join("house.ketchup");
+    let request = |value: Value| serde_json::from_value::<Request>(value).unwrap();
+    let export = |app: &mut KetchupApp, bridge: &mut LiveBridge, extra: Value| {
+        let answer = bridge.execute(app, export_drawings(&set, extra), false);
+        answer.map_err(|code| (code, take_error_details().unwrap_or_default().to_string()))
+    };
+
+    let (mut app, mut bridge) = setup();
+    evaluate_exact(&mut app);
+    let save_as = |path: &Path| request(json!({"method": "save_as", "path": path}));
+    bridge.execute(&mut app, save_as(&saved), false).unwrap();
+    export(&mut app, &mut bridge, json!({})).unwrap();
+    bridge.execute(&mut app, save_as(&saved), false).unwrap();
+    let list = std::fs::read_to_string(set.with_file_name("house.dxf.sheets.txt")).unwrap();
+    assert!(
+        !list.contains(&directory.path().display().to_string()),
+        "no absolute path: {list}"
+    );
+
+    let moved = folder("moved").join("house v2.ketchup");
+    std::fs::rename(&saved, &moved).unwrap();
+    drop((app, bridge));
+    let (mut app, mut bridge) = setup();
+    let open = request(json!({"method": "open", "path": moved}));
+    bridge.execute(&mut app, open, false).unwrap();
+    evaluate_exact(&mut app);
+    export(&mut app, &mut bridge, json!({}))
+        .unwrap_or_else(|refused| panic!("the moved project's own set: {refused:?}"));
+    let list = std::fs::read_to_string(set.with_file_name("house.dxf.sheets.txt")).unwrap();
+    assert!(list.contains("house v2.ketchup"), "{list}");
+
+    let (mut other, mut other_bridge) = setup();
+    evaluate_exact(&mut other);
+    let (code, answer) = export(&mut other, &mut other_bridge, json!({})).unwrap_err();
+    assert_eq!(code, "drawings_set_of_another_project", "{answer}");
+    for said in ["house v2.ketchup", "take_over", "Ask the user"] {
+        assert!(answer.contains(said), "{said:?} missing: {answer}");
+    }
+    export(&mut other, &mut other_bridge, json!({"take_over": true})).unwrap();
+    // Taken over, the set is no longer the moved project's.
+    let (code, _) = export(&mut app, &mut bridge, json!({})).unwrap_err();
+    assert_eq!(code, "drawings_set_of_another_project");
 }
 
 /// One DXF entity: its type, layer, numeric codes and KETCHUP id.

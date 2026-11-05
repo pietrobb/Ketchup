@@ -214,6 +214,9 @@ pub(crate) struct UnderlayImport {
     /// The file each underlay imported in this window was read from, so its drawing can
     /// be written back with its changes.
     pub(crate) sources: std::collections::HashMap<UnderlayId, PathBuf>,
+    /// The object whose edit the last export of a drawing refused, its entity changed in
+    /// the file since: that edit alone can be discarded (review 2026-11-04 r19 CD-163).
+    pub(crate) refused_edit: Option<(UnderlayId, u32)>,
 }
 
 impl KetchupApp {

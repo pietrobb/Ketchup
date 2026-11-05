@@ -6,7 +6,7 @@
 
 use crate::dxf_export::{R12Layers, number};
 use ketchup_model::annotation::{
-    Annotation, AnnotationMark, DimensionLayout, dimension_text, paper,
+    Annotation, AnnotationMark, DecimalMark, DimensionLayout, dimension_text_with, paper,
 };
 use ketchup_model::document::Snapshot;
 use ketchup_model::r12_text;
@@ -61,11 +61,13 @@ fn annotation_layer_source<'a>(snapshot: &'a Snapshot, annotation: &'a Annotatio
         .unwrap_or(UNTAGGED_LAYER)
 }
 
-/// The visible annotations of `snapshot` drawn at `1:scale`, on layers taken from
-/// `layers` so that none shares a layer with a part.
+/// The visible annotations of `snapshot` drawn at `1:scale`, their values with
+/// `separator` before the decimal, on layers taken from `layers` so that none
+/// shares a layer with a part.
 pub(crate) fn plan_annotations(
     snapshot: &Snapshot,
     scale: f64,
+    separator: DecimalMark,
     layers: &mut R12Layers,
 ) -> PlanAnnotations {
     let mut plan = PlanAnnotations::default();
@@ -104,6 +106,7 @@ pub(crate) fn plan_annotations(
                     &layout,
                     height_mm * scale,
                     scale,
+                    separator,
                 ) {
                     plan.outside_plan += 1;
                     continue;
@@ -165,6 +168,7 @@ impl PlanAnnotations {
         layout: &DimensionLayout,
         height: f64,
         scale: f64,
+        separator: DecimalMark,
     ) -> bool {
         let points = measured.map(plan_point);
         let line = layout.line.map(plan_point);
@@ -175,8 +179,8 @@ impl PlanAnnotations {
             return false;
         };
         let text_at = marks.value_at;
-        let value = dimension_text(layout.value_mm);
-        let shortened = dimension_text(distance(points[0], points[1])) != value;
+        let value = dimension_text_with(layout.value_mm, separator);
+        let shortened = dimension_text_with(distance(points[0], points[1]), separator) != value;
 
         let block = format!("*D{}", self.dimensions + 1);
         write!(
@@ -358,7 +362,14 @@ mod tests {
         let mut plan = PlanAnnotations::default();
         let (from, to) = ([0.0, 0.0, 0.0], [4000.0, 0.0, 0.0]);
         let layout = DimensionLayout::new(from, to, 500.0);
-        assert!(plan.dimension("plan", [from, to], &layout, 250.0, 100.0));
+        assert!(plan.dimension(
+            "plan",
+            [from, to],
+            &layout,
+            250.0,
+            100.0,
+            DecimalMark::Point
+        ));
         let line_y = layout.line[0][1];
         // The value at 1 mm × 100 above the line, not 250 / 2.
         assert!(

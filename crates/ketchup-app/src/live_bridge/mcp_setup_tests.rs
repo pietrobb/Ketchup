@@ -479,6 +479,165 @@ fn a_project_entry_counts_and_mcp_setup_keeps_a_working_registration() {
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// Review 2026-11-04 r19 SEC-160: a command that is not an absolute path
+/// counted as a program that does not exist, so the installer's hidden
+/// `--mcp-setup` replaced it: `ketchup` found on PATH (as `claude mcp add …
+/// -- Ketchup --mcp` writes it), a path from `~`, a Windows path without
+/// `.exe`. The command is found as the client finds it; one Kečup cannot
+/// tell about counts as existing.
+#[test]
+fn mcp_setup_keeps_commands_found_on_path_from_home_or_without_extension() {
+    let home = temporary_home("resolved");
+    let bin = home.join("bin");
+    let program = |folder: &Path, name: &str| {
+        std::fs::create_dir_all(folder).unwrap();
+        let file = folder.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&file, "").unwrap();
+        file
+    };
+    program(&bin, "ketchup-other");
+    program(&home.join("apps"), "Ketchup");
+    let environment = Environment {
+        path: std::env::join_paths([&bin]).unwrap(),
+        ..clean_profile(&home)
+    };
+    let this = std::env::current_exe().unwrap();
+    let claude_code = environment.config_file(Harness::ClaudeCode).unwrap();
+    let codex = environment.config_file(Harness::Codex).unwrap();
+    let desktop = environment.config_file(Harness::ClaudeDesktop).unwrap();
+    for file in [&codex, &desktop] {
+        create_parent(file);
+    }
+    let files = [
+        (
+            &claude_code,
+            r#"{"mcpServers":{"ketchup":{"type":"stdio","command":"ketchup-other","args":["--mcp"]}}}"#
+                .to_owned(),
+        ),
+        // Not on Kečup's PATH: the client may have another.
+        (
+            &codex,
+            "[mcp_servers.ketchup]\ncommand = \"ketchup\"\nargs = [\"--mcp\"]\n".to_owned(),
+        ),
+        (
+            &desktop,
+            r#"{"mcpServers":{"ketchup":{"command":"~/apps/Ketchup","args":["--mcp"]}}}"#
+                .to_owned(),
+        ),
+    ];
+    for (file, text) in &files {
+        std::fs::write(file, text).unwrap();
+    }
+    let rows = environment.set_up_installed(&this);
+    for (file, text) in &files {
+        assert_eq!(&std::fs::read_to_string(file).unwrap(), text, "{file:?}");
+    }
+    for harness in [Harness::ClaudeCode, Harness::Codex, Harness::ClaudeDesktop] {
+        let row = rows.iter().find(|row| row.harness == harness).unwrap();
+        assert!(
+            matches!(
+                &row.registration,
+                Registration::Elsewhere { exists: true, .. }
+            ),
+            "{row:?}"
+        );
+    }
+    if cfg!(windows) {
+        let bare = home.join("apps").join("Ketchup");
+        let config = serde_json::json!({
+            "mcpServers": {"ketchup": {"command": bare, "args": ["--mcp"]}}
+        })
+        .to_string();
+        std::fs::write(&claude_code, &config).unwrap();
+        environment.set_up_installed(&this);
+        assert_eq!(std::fs::read_to_string(&claude_code).unwrap(), config);
+    }
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// Review 2026-11-04 r19 SEC-160: of several `ketchup` entries in
+/// `.claude.json` only the first other one decided, so one gone entry made the
+/// installer's hidden `--mcp-setup` rewrite every entry, a working one too.
+/// A client is replaced only when no entry starts a program that may exist.
+#[test]
+fn mcp_setup_keeps_every_entry_when_one_is_gone_and_another_may_work() {
+    let home = temporary_home("mixed-entries");
+    let environment = clean_profile(&home);
+    let this = std::env::current_exe().unwrap();
+    let gone = home.join("Old").join("Ketchup.exe");
+    let file = environment.config_file(Harness::ClaudeCode).unwrap();
+    let server = |command: serde_json::Value| serde_json::json!({"mcpServers": {"ketchup": {"command": command, "args": ["--mcp"]}}});
+    let (gone, this_one, other) = (
+        serde_json::json!(gone),
+        serde_json::json!(this),
+        serde_json::json!("ketchup-other"),
+    );
+    let configs = [
+        serde_json::json!({
+            "mcpServers": server(gone.clone())["mcpServers"],
+            "projects": {"C:/work": server(other.clone())}
+        }),
+        serde_json::json!({
+            "mcpServers": server(this_one)["mcpServers"],
+            "projects": {"C:/a": server(gone), "C:/b": server(other)}
+        }),
+    ];
+    for config in configs {
+        let text = config.to_string();
+        std::fs::write(&file, &text).unwrap();
+        let rows = environment.set_up_installed(&this);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+        let claude = rows
+            .iter()
+            .find(|row| row.harness == Harness::ClaudeCode)
+            .unwrap();
+        assert_eq!(
+            claude.registration,
+            Registration::Elsewhere {
+                command: "ketchup-other".to_owned(),
+                exists: true
+            }
+        );
+    }
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// Review 2026-11-04 r19 P3: an entry starting this Kečup but turned off
+/// showed as set up, and so did one that is a network server. Neither starts
+/// a program; the installer keeps them, Connect turns them on.
+#[test]
+fn a_ketchup_entry_turned_off_or_on_the_network_starts_nothing() {
+    let home = temporary_home("off");
+    let environment = clean_profile(&home);
+    let this = std::env::current_exe().unwrap();
+    let file = environment.config_file(Harness::ClaudeCode).unwrap();
+    let config = serde_json::json!({
+        "mcpServers": {"ketchup": {"command": this, "args": ["--mcp"], "disabled": true}}
+    })
+    .to_string();
+    std::fs::write(&file, &config).unwrap();
+    let off = Registration::Off {
+        entry: this.display().to_string(),
+    };
+    assert_eq!(environment.registration(Harness::ClaudeCode, &this), off);
+    environment.set_up_installed(&this);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), config);
+    let row = environment.set_up(Harness::ClaudeCode, &this);
+    assert_eq!(row.registration, Registration::ThisKetchup, "{row:?}");
+    std::fs::write(
+        &file,
+        r#"{"mcpServers":{"ketchup":{"type":"sse","url":"http://x/sse"}}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        environment.registration(Harness::ClaudeCode, &this),
+        Registration::Off {
+            entry: "http://x/sse".to_owned()
+        }
+    );
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 #[test]
 fn a_build_inside_a_checkout_is_started_through_its_server_script() {
     let checkout = temporary_home("checkout");

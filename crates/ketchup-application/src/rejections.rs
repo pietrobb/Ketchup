@@ -139,7 +139,7 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "drawing_edit_not_writable",
         Validation,
         "underlay_id",
-        "A change made to an object of the drawing does not go into its file; caused_by names the object and why (it has no handle, its handle is not in the file, or its kind cannot be moved there). Nothing was written.",
+        "A change made to an object of the drawing does not go into its file; caused_by names the object and why (it has no handle, its handle is not in the file, its kind cannot be moved there, or its entity reads otherwise in the file than when imported: what differs, where it lay and lies now). Nothing was written.",
         "Undo the change of the object caused_by names, or remove that object instead, then export again.",
     ),
     entry(
@@ -171,11 +171,18 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Check that ketchup-program-worker is installed beside Kečup and export again; a drawing that keeps stopping it is too large to write back.",
     ),
     entry(
+        "drawings_set_of_another_project",
+        Request,
+        "path",
+        "The DXF or DWG drawing set at the path was exported from another project, or from another copy of this one since; the reason names its list and the project file it came from.",
+        "Ask the user: export to another folder or file name, or, if they agree to take that set over for this project, export again with take_over: true.",
+    ),
+    entry(
         "drawings_target_exists",
         Request,
         "path",
         "A file already exists at the drawing path that this request may not replace (a file named like a sheet that this project's earlier export did not write, or the drawing being edited); the reason names it.",
-        "Rename or move that file, or write to another folder or file name.",
+        "Ask the user: rename or move that file, write to another folder or file name, or, for a PDF or a drawing sheet the user agrees to replace, export again with replace: true.",
     ),
     entry(
         "drawings_target_in_use",

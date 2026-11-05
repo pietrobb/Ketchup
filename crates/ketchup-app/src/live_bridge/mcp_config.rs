@@ -25,28 +25,64 @@ fn object(text: &str) -> io::Result<Object> {
     serde_json::from_str(text).map_err(invalid_data)
 }
 
+/// The object at `path` in the file: an error names the keys, since serde's
+/// line and column would count in the value alone (review 2026-11-04 r19 P3:
+/// `{"projects":{"/a":null}}` said "line 1 column 4").
+fn object_at(raw: &RawValue, path: &[&str]) -> io::Result<Object> {
+    serde_json::from_str(raw.get()).map_err(|error: serde_json::Error| {
+        let message = error.to_string();
+        let position = format!(" at line {} column {}", error.line(), error.column());
+        let message = message.strip_suffix(&position).unwrap_or(&message);
+        invalid_data(format!("{}: {message}", path.join(" → ")))
+    })
+}
+
+/// What a client's `ketchup` entry is, when it starts no program though it
+/// is there: turned off (`disabled`), or a network server (`url`, a `type`
+/// other than stdio). Connect turns it on and makes it a program.
+pub(crate) fn json_server_off(server: &serde_json::Value) -> Option<String> {
+    if let Some(url) = server["url"].as_str() {
+        return Some(url.to_owned());
+    }
+    if let Some(kind) = server["type"].as_str().filter(|kind| *kind != "stdio") {
+        return Some(kind.to_owned());
+    }
+    (server["disabled"] == true).then(|| server["command"].as_str().unwrap_or_default().to_owned())
+}
+
 fn raw(value: &impl serde::Serialize) -> io::Result<Box<RawValue>> {
     let text = serde_json::to_string_pretty(value).map_err(invalid_data)?;
     RawValue::from_string(text).map_err(invalid_data)
 }
 
-/// `servers` (an `mcpServers` object) with its `ketchup` server starting
-/// `executable --mcp`: a new one, or the one there with only `command`, `args`
-/// and `type` changed.
+/// `servers` (an `mcpServers` object at `path`) with its `ketchup` server
+/// starting `executable --mcp`: a new one, or the one there with only
+/// `command`, `args` and `type` changed, turned on and no network server
+/// (review 2026-11-04 r19 P3: Connect said it was set up while the client
+/// started nothing).
 fn with_server(
     servers: Option<&RawValue>,
+    path: &[&str],
     executable: &str,
     named_transport: bool,
 ) -> io::Result<Box<RawValue>> {
-    let mut servers = servers.map_or_else(|| Ok(Object::new()), |raw| object(raw.get()))?;
+    let mut servers = servers.map_or_else(|| Ok(Object::new()), |raw| object_at(raw, path))?;
     let mut server = match servers.get(SERVER) {
-        Some(server) => object(server.get())?,
+        Some(server) => object_at(server, &[path, &[SERVER]].concat())?,
         None => Object::from([("env".to_owned(), raw(&serde_json::json!({}))?)]),
     };
     server.insert("command".to_owned(), raw(&executable)?);
     server.insert("args".to_owned(), raw(&["--mcp"])?);
+    server.shift_remove("url");
     if named_transport {
         server.insert("type".to_owned(), raw(&"stdio")?);
+    } else if server.get("type").is_some_and(|kind| {
+        serde_json::from_str::<String>(kind.get()).ok().as_deref() != Some("stdio")
+    }) {
+        server.shift_remove("type");
+    }
+    if let Some(disabled) = server.get_mut("disabled") {
+        *disabled = raw(&false)?;
     }
     servers.insert(SERVER.to_owned(), raw(&server)?);
     raw(&servers)
@@ -70,18 +106,20 @@ pub(crate) fn with_json_server(
     };
     let servers = with_server(
         config.get("mcpServers").map(AsRef::as_ref),
+        &["mcpServers"],
         executable,
         named_transport,
     )?;
     config.insert("mcpServers".to_owned(), servers);
     if let Some(projects) = config.get("projects") {
-        let mut projects = object(projects.get())?;
-        for project in projects.values_mut() {
-            let mut settings = object(project.get())?;
+        let mut projects = object_at(projects, &["projects"])?;
+        for (folder, project) in &mut projects {
+            let path = ["projects", folder.as_str(), "mcpServers"];
+            let mut settings = object_at(project, &path[..2])?;
             if let Some(servers) = settings.get("mcpServers")
-                && object(servers.get())?.contains_key(SERVER)
+                && object_at(servers, &path)?.contains_key(SERVER)
             {
-                let servers = with_server(Some(servers), executable, named_transport)?;
+                let servers = with_server(Some(servers), &path, executable, named_transport)?;
                 settings.insert("mcpServers".to_owned(), servers);
                 *project = raw(&settings)?;
             }
@@ -103,6 +141,25 @@ pub(crate) fn codex_command(toml: &str) -> Result<Option<String>, toml_edit::Tom
         .and_then(|servers| servers.get(SERVER))
         .and_then(|server| server.get("command"))
         .and_then(toml_edit::Item::as_str)
+        .map(str::to_owned))
+}
+
+/// What Codex's `ketchup` server is when it starts no program: `enabled =
+/// false` (its command), or a network server (its `url`).
+pub(crate) fn codex_server_off(toml: &str) -> Result<Option<String>, toml_edit::TomlError> {
+    let document: toml_edit::DocumentMut = toml.parse()?;
+    let Some(server) = document
+        .get("mcp_servers")
+        .and_then(|servers| servers.get(SERVER))
+    else {
+        return Ok(None);
+    };
+    let text = |key| server.get(key).and_then(toml_edit::Item::as_str);
+    Ok(text("url")
+        .or_else(|| {
+            let off = server.get("enabled").and_then(toml_edit::Item::as_bool) == Some(false);
+            off.then(|| text("command").unwrap_or_default())
+        })
         .map(str::to_owned))
 }
 
@@ -141,6 +198,11 @@ pub(crate) fn with_codex_server(toml: &str, executable: &str) -> io::Result<Stri
         "args",
         toml_edit::value(toml_edit::Array::from_iter(["--mcp"])),
     );
+    // Turned on and a program, not a network server (review 2026-11-04 r19 P3).
+    server.remove("url");
+    if server.contains_key("enabled") {
+        server.insert("enabled", toml_edit::value(true));
+    }
     Ok(document.to_string())
 }
 
@@ -150,58 +212,117 @@ pub(crate) fn with_codex_server(toml: &str, executable: &str) -> io::Result<Stri
 /// A symlink's target is written; the first replacement keeps the original as
 /// `<file>.ketchup.bak`; the text is flushed to disk before it counts. On Unix
 /// it goes through a unique sibling with the file's permissions, renamed over
-/// it, so a client reading meanwhile sees the old or the new configuration. On
-/// Windows the file is written in place, which keeps its ACL: a new file would
-/// take the folder's.
+/// it, so a client reading meanwhile sees the old or the new configuration.
+/// On Windows `ReplaceFileW` swaps it the same way and gives the new file the
+/// old one's ACL, which a renamed file would not keep (review 2026-11-04 r19
+/// P3: it was truncated and written in place). A symlink to a file not there
+/// yet creates its target (r19 P3: it became a plain file).
 pub(crate) fn replace_file(file: &Path, text: &str) -> io::Result<()> {
+    write_keeping_file(file, text, true)
+}
+
+/// [`replace_file`] without the backup when `backup` is false. A new file is
+/// readable by its owner only (review 2026-11-04 r19 P3: the settings file,
+/// with the documents opened, was readable by everyone).
+pub(crate) fn write_keeping_file(file: &Path, text: &str, backup: bool) -> io::Result<()> {
     let target = match std::fs::canonicalize(file) {
         Ok(target) => target,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let file = link_target(file);
             let directory = file.parent().unwrap_or(Path::new("."));
             std::fs::create_dir_all(directory)?;
-            return write_staged(directory, file, text, None);
+            return write_staged(directory, &file, text, None);
         }
         Err(error) => return Err(error),
     };
-    let mut backup = target.as_os_str().to_owned();
-    backup.push(".ketchup.bak");
-    let backup = std::path::PathBuf::from(backup);
-    if !backup.exists() {
-        std::fs::copy(&target, &backup)?;
+    let mut copy = target.as_os_str().to_owned();
+    copy.push(".ketchup.bak");
+    let copy = std::path::PathBuf::from(copy);
+    if backup && !copy.exists() {
+        std::fs::copy(&target, &copy)?;
     }
-    if cfg!(windows) {
-        let mut written = std::fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(&target)?;
-        io::Write::write_all(&mut written, text.as_bytes())?;
-        written.sync_all()
-    } else {
-        let permissions = std::fs::metadata(&target)?.permissions();
-        let directory = target.parent().unwrap_or(Path::new("."));
-        write_staged(directory, &target, text, Some(permissions))
-    }
+    let metadata = std::fs::metadata(&target)?;
+    let directory = target.parent().unwrap_or(Path::new("."));
+    write_staged(directory, &target, text, Some(&metadata))
 }
 
-/// Writes `text` to a unique file in `directory`, flushes it and renames it to `file`.
+/// The file a chain of symlinks at `file` ends in, though it does not exist.
+fn link_target(file: &Path) -> std::path::PathBuf {
+    let mut file = file.to_owned();
+    // A loop of links stops where the system would.
+    let mut hops = 0;
+    while hops < 40
+        && let Ok(target) = std::fs::read_link(&file)
+    {
+        file = file.parent().unwrap_or(Path::new(".")).join(target);
+        hops += 1;
+    }
+    file
+}
+
+/// Writes `text` to a unique file in `directory`, flushes it and puts it in
+/// place of `file`, with the permissions and on Unix the owner of the file it
+/// replaces (`like`; review 2026-11-04 r19 P3: under `sudo` it became root's).
 fn write_staged(
     directory: &Path,
     file: &Path,
     text: &str,
-    permissions: Option<std::fs::Permissions>,
+    like: Option<&std::fs::Metadata>,
 ) -> io::Result<()> {
     let mut staged = tempfile::Builder::new()
         .prefix(".ketchup-config-")
         .tempfile_in(directory)?;
-    if let Some(permissions) = permissions {
-        staged.as_file().set_permissions(permissions)?;
+    if let Some(like) = like {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let own = staged.as_file().metadata()?;
+            if (own.uid(), own.gid()) != (like.uid(), like.gid()) {
+                std::os::unix::fs::fchown(staged.as_file(), Some(like.uid()), Some(like.gid()))?;
+            }
+        }
+        staged.as_file().set_permissions(like.permissions())?;
     }
     io::Write::write_all(&mut staged, text.as_bytes())?;
     staged.as_file().sync_all()?;
+    #[cfg(windows)]
+    if file.is_file() {
+        // Closed for the swap; the staged name is gone after it, and dropping
+        // the path then removes nothing.
+        return replace_keeping_acl(file, &staged.into_temp_path());
+    }
     staged.persist(file).map_err(|error| error.error)?;
     #[cfg(unix)]
     std::fs::File::open(directory)?.sync_all()?;
     Ok(())
+}
+
+/// `ReplaceFileW`: `replacement` takes the place of `file` in one step and
+/// keeps `file`'s ACL, attributes and creation time.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn replace_keeping_acl(file: &Path, replacement: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{REPLACEFILE_WRITE_THROUGH, ReplaceFileW};
+    let wide = |path: &Path| -> Vec<u16> { path.as_os_str().encode_wide().chain([0]).collect() };
+    let (file, replacement) = (wide(file), wide(replacement));
+    // SAFETY: both names are NUL-terminated and outlive the call; no backup
+    // name and no reserved pointers are passed.
+    let done = unsafe {
+        ReplaceFileW(
+            file.as_ptr(),
+            replacement.as_ptr(),
+            std::ptr::null(),
+            REPLACEFILE_WRITE_THROUGH,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    if done == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 /// The text of `file`, empty when it does not exist yet.
@@ -391,6 +512,108 @@ command = "C:\\Program Files\\Ketchup\\Ketchup.exe"
                 assert_eq!(std::fs::read_to_string(&target).unwrap(), "{\"b\": 2}");
             }
         }
+    }
+
+    /// Review 2026-11-04 r19 P3: on Windows the file was truncated and written
+    /// in place, so a client reading meanwhile saw part of it; a symlink to a
+    /// file not there yet became a plain file.
+    #[test]
+    fn a_configuration_is_swapped_whole_and_a_dangling_link_creates_its_target() {
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("config.json");
+        std::fs::write(&file, "old\n").unwrap();
+        let mut reader = std::fs::File::open(&file).unwrap();
+        replace_file(&file, "new\n").unwrap();
+        let mut seen = String::new();
+        io::Read::read_to_string(&mut reader, &mut seen).unwrap();
+        assert_eq!(seen, "old\n", "a reader keeps the whole old file");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "new\n");
+        #[cfg(windows)]
+        {
+            // An ACL of its own (no inherited entries) stays the file's.
+            let icacls = |args: &[&str]| {
+                let output = std::process::Command::new("icacls")
+                    .arg(&file)
+                    .args(args)
+                    .output()
+                    .unwrap();
+                String::from_utf8_lossy(&output.stdout).into_owned()
+            };
+            // Everyone (S-1-1-0), whatever the system's language.
+            icacls(&["/inheritance:r", "/grant:r", "*S-1-1-0:F"]);
+            assert!(!icacls(&[]).contains("(I)"), "{}", icacls(&[]));
+            replace_file(&file, "third\n").unwrap();
+            assert!(!icacls(&[]).contains("(I)"), "{}", icacls(&[]));
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), "third\n");
+        }
+        let target = folder.path().join("sub").join("target.json");
+        let link = folder.path().join("link.json");
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&target, &link).is_ok();
+        // Creating a symlink needs developer mode or elevation.
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(&target, &link).is_ok();
+        if linked {
+            replace_file(&link, "{}\n").unwrap();
+            assert!(
+                std::fs::symlink_metadata(&link)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "{}\n");
+        }
+    }
+
+    /// Review 2026-11-04 r19 P3: Connect said the client was set up while its
+    /// entry was turned off (`disabled`, Codex `enabled = false`) or a network
+    /// server (`url`, `type` http or sse); an error in a nested value gave a
+    /// line and column counted in that value alone.
+    #[test]
+    fn connect_turns_the_entry_on_and_makes_it_a_program() {
+        let json = r#"{"mcpServers":{"ketchup":{"type":"http","url":"http://x/mcp","disabled":true,"env":{"A":"1"}}}}"#;
+        let server = |text: &str| {
+            serde_json::from_str::<serde_json::Value>(text).unwrap()["mcpServers"][SERVER].clone()
+        };
+        assert_eq!(
+            json_server_off(&server(json)).as_deref(),
+            Some("http://x/mcp")
+        );
+        for named_transport in [false, true] {
+            let written = with_json_server(json, r"C:\k\Ketchup.exe", named_transport).unwrap();
+            let entry = server(&written);
+            assert_eq!(json_server_off(&entry), None, "{written}");
+            assert_eq!(entry["disabled"], false);
+            assert_eq!(entry["env"]["A"], "1");
+            assert!(entry.get("url").is_none(), "{written}");
+            assert_eq!(
+                entry.get("type").and_then(serde_json::Value::as_str),
+                named_transport.then_some("stdio")
+            );
+        }
+        let off = r#"{"mcpServers":{"ketchup":{"command":"C:\\k\\Ketchup.exe","disabled":true}}}"#;
+        assert_eq!(
+            json_server_off(&server(off)).as_deref(),
+            Some(r"C:\k\Ketchup.exe")
+        );
+        let toml = "[mcp_servers.ketchup]\nurl = \"http://x/mcp\"\nenabled = false\n";
+        assert_eq!(
+            codex_server_off(toml).unwrap().as_deref(),
+            Some("http://x/mcp")
+        );
+        let written = with_codex_server(toml, r"C:\k\Ketchup.exe").unwrap();
+        assert_eq!(codex_server_off(&written).unwrap(), None, "{written}");
+        assert!(written.contains("enabled = true"), "{written}");
+        let disabled = "[mcp_servers.ketchup]\ncommand = 'C:\\k\\Ketchup.exe'\nenabled = false\n";
+        assert_eq!(
+            codex_server_off(disabled).unwrap().as_deref(),
+            Some(r"C:\k\Ketchup.exe")
+        );
+        let error = with_json_server(r#"{"projects":{"/a":null}}"#, "k.exe", true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("projects → /a: "), "{error}");
+        assert!(!error.contains("column"), "{error}");
     }
 
     /// Review 2026-11-04 SEC-140: the line editor knew only a bare

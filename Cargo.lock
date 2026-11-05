@@ -2461,6 +2461,7 @@ dependencies = [
  "ketchup-model",
  "ketchup-pdm",
  "ketchup-program",
+ "ketchup-rejection",
  "serde",
  "serde_json",
  "tempfile",
@@ -2502,6 +2503,7 @@ version = "0.3.2"
 dependencies = [
  "getrandom 0.3.4",
  "ketchup-program",
+ "ketchup-rejection",
  "libc",
  "serde_json",
  "sha2",
@@ -2519,6 +2521,7 @@ dependencies = [
  "epaint_default_fonts",
  "ketchup-geometry",
  "ketchup-model",
+ "ketchup-rejection",
  "ketchup-test-env",
  "ketchup-tolerance",
  "miniz_oxide",
@@ -2580,6 +2583,7 @@ dependencies = [
  "ketchup-manufacturing",
  "ketchup-model",
  "ketchup-program",
+ "ketchup-rejection",
  "ketchup-test-env",
  "nix 0.31.3",
  "process-wrap",
@@ -2641,6 +2645,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sys-locale",
+ "tempfile",
  "wgpu",
 ]
 

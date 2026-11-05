@@ -205,7 +205,7 @@ impl KetchupApp {
                 .expect("the GLB review window has a pending import");
             if let Err(error) = self.import_glb_from(&pending) {
                 // The import has shown the refusal; logged with its cause (TST-140).
-                eprintln!("GLB import refused: {error}");
+                ketchup_rejection::log!("GLB import refused: {error}");
             }
         }
     }

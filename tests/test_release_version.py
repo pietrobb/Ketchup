@@ -50,7 +50,7 @@ def test_the_scripts_read_the_version_from_cargo_toml():
         "Get-AndroidVersionCode '0.3.2-dev'; Get-AndroidVersionCode '0.3.1'"
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.split() == [workspace_version(), "20009", "10120039", "30020", "30019"]
+    assert result.stdout.split() == [workspace_version(), "200099", "101200399", "300200", "300199"]
 
 
 def test_a_pre_release_apk_is_below_its_release_and_above_the_one_before():
@@ -60,10 +60,28 @@ def test_a_pre_release_apk_is_below_its_release_and_above_the_one_before():
         f". '{helper}'; "
         "(Get-AndroidVersionCode '0.3.1') -lt (Get-AndroidVersionCode '0.3.2-dev') -and "
         "(Get-AndroidVersionCode '0.3.2-dev') -lt (Get-AndroidVersionCode '0.3.2'); "
-        "(Get-AndroidVersionCode '209.999.999') -le 2100000000"
+        "(Get-AndroidVersionCode '20.999.999') -le 2100000000"
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.split() == ["True", "True"]
+
+
+def test_every_pre_release_of_a_release_has_its_own_code_in_semver_order():
+    # Review 2026-11-04 r19 P3 (e4ea558a): -rc.1, -rc.2 and -dev all had the code 30020,
+    # so Android refused to update one release candidate to the next.
+    helper = (WINDOWS / "WorkspaceVersion.ps1").as_posix()
+    order = ["0.3.2", "0.3.3-dev", "0.3.3-dev.1", "0.3.3-rc", "0.3.3-rc.1", "0.3.3-rc.2",
+             "0.3.3-rc.10", "0.3.3", "0.3.4-dev", "20.999.999"]
+    result = powershell(f". '{helper}'; " + "; ".join(f"Get-AndroidVersionCode '{v}'" for v in order))
+    assert result.returncode == 0, result.stderr
+    codes = [int(code) for code in result.stdout.split()]
+    assert codes == sorted(set(codes)), dict(zip(order, codes))
+    assert codes[-1] <= 2_100_000_000
+    # 0.3.2 shipped as 30029 under the rule before; every later release is above it.
+    assert codes[1] > 30029
+    for refused in ("0.3.3-beta", "21.0.0", "0.3.3-rc.48"):
+        result = powershell(f". '{helper}'; Get-AndroidVersionCode '{refused}'")
+        assert result.returncode != 0 and refused in result.stderr, (refused, result.stdout)
 
 
 def mac_bundle_versions(version):
@@ -83,8 +101,12 @@ def test_a_mac_bundle_version_is_integers_and_a_pre_release_is_below_its_release
     # period-separated integers.
     pre = mac_bundle_versions("0.3.2-dev")
     assert pre.returncode == 0, pre.stderr
-    assert pre.stdout.split() == ["0.3.2", "30020"]
-    assert mac_bundle_versions("0.3.2").stdout.split() == ["0.3.2", "30029"]
+    assert pre.stdout.split() == ["0.3.2", "300200"]
+    assert mac_bundle_versions("0.3.2").stdout.split() == ["0.3.2", "300299"]
+    # The Mac apps take the Android rule, each pre-release its own number (r19 P3).
+    assert mac_bundle_versions("0.3.2-rc.1").stdout.split() == ["0.3.2", "300252"]
+    assert mac_bundle_versions("0.3.2-rc.2").stdout.split() == ["0.3.2", "300253"]
+    assert mac_bundle_versions("0.3.2-beta").returncode != 0
     assert mac_bundle_versions(workspace_version()).returncode == 0
     refused = mac_bundle_versions("0.3")
     assert refused.returncode != 0 and "0.3" in refused.stderr

@@ -54,6 +54,14 @@ Two forms are counted in production source (crates/*/src, test modules and
   `_restore`) is exempt.
 - ok_statement: a bare `.ok();` throws the error away as `let _ =` does.
 - from_discard: `fn from(_: E)` turns an error into another without its content.
+- empty_is_err: `if call().is_err() { /* comment */ }` does what `let _ =` does
+  (review 2026-11-04 r19 TST-160).
+- irrefutable_let: `let (Ok(()) | Err(..)) = call();` does it too.
+- eprintln: `eprintln!` outside a command line's entry point (`src/main.rs`,
+  `src/bin/`) writes where a window started without a console throws it away.
+  `ketchup_rejection::dropped(result, Reason::...)` is the one way to drop an
+  error, and `ketchup_rejection::log!` the way to log one; both write to the
+  window's log file.
 
 clippy's map_err_ignore, let_underscore_must_use and let_underscore_untyped
 (workspace [lints]) cover the rest; these four are what clippy cannot see
@@ -173,6 +181,12 @@ def bare_ok_statements(text: str) -> int:
             found += 1
     return found
 FROM_DISCARD = re.compile(r"\bfn\s+from\(\s*_\w*\s*:")
+# `if ... .is_err() {}` with nothing but comments in the block.
+EMPTY_IS_ERR = re.compile(r"\bif\s[^{};]*?\.is_err\(\)\s*\{\s*(?:(?://[^\n]*\n|/\*.*?\*/)\s*)*\}", re.DOTALL)
+# `let (Ok(..) | Err(..)) =`, either way round, `Ok(())` nested once.
+IRREFUTABLE_LET = re.compile(
+    r"\blet\s*\(\s*(?:Ok\([^()]*(?:\([^()]*\))?[^()]*\)\s*\|\s*Err\(|Err\([^()]*\)\s*\|\s*Ok\()")
+EPRINTLN = re.compile(r"\beprintln!\s*\(")
 # A variant of an error type (`...Error::Name(_)`) matched to a bare string.
 DROPPED_VARIANT = re.compile(r"\b\w*Error::\w+\(\s*_\s*\)\s*=>\s*\"")
 # An inline test module at the top level of a Rust file: `#[cfg(test)]` or
@@ -215,7 +229,7 @@ def content_free(type_text: str) -> bool:
     return any(path == entry or path.endswith("::" + entry) for entry in CONTENT_FREE)
 
 
-def file_counts(text: str) -> dict[str, int]:
+def file_counts(text: str, entry_point: bool = False) -> dict[str, int]:
     text = TEST_MODULE.sub("", text)
     discards = sum(1 for match in DISCARD.finditer(text)
                    if match.group(1) is None or not content_free(match.group(1)))
@@ -244,7 +258,10 @@ def file_counts(text: str) -> dict[str, int]:
             "guarded_arm": len(GUARDED_ARM.findall(text)),
             "named_underscore": len(NAMED_UNDERSCORE.findall(text)),
             "ok_statement": bare_ok_statements(text),
-            "from_discard": len(FROM_DISCARD.findall(text))}
+            "from_discard": len(FROM_DISCARD.findall(text)),
+            "empty_is_err": len(EMPTY_IS_ERR.findall(text)),
+            "irrefutable_let": len(IRREFUTABLE_LET.findall(text)),
+            "eprintln": 0 if entry_point else len(EPRINTLN.findall(text))}
 
 
 FORMS = tuple(file_counts(""))
@@ -257,10 +274,22 @@ def current_counts(root: Path = ROOT) -> dict[str, int]:
         relative = path.relative_to(root)
         if EXCLUDED_PARTS & set(relative.parts[:-1]) or path.stem.endswith("tests"):
             continue
-        for form, found in file_counts(path.read_text(encoding="utf-8", errors="replace")).items():
+        entry_point = path.name == "main.rs" or "bin" in relative.parts[:-1]
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for form, found in file_counts(text, entry_point).items():
             if found:
                 counts[f"{relative.as_posix()} {form}"] = found
     return counts
+
+
+DROPPED_USE = re.compile(r"\bdropped\(")
+
+
+def dropped_uses(root: Path = ROOT) -> int:
+    """The calls of `dropped(result, Reason::...)` in production source."""
+    return sum(len(DROPPED_USE.findall(TEST_MODULE.sub("", path.read_text(
+        encoding="utf-8", errors="replace"))))
+        for path in package_files(root, "src/**/*.rs"))
 
 
 def read_baseline(root: Path = ROOT) -> dict[str, int]:
@@ -312,6 +341,7 @@ def check(root: Path = ROOT, update: bool = False) -> int:
               "ketchup_rejection::Rejection (AGENTS.md §2):")
         print(*failures, sep="\n  ")
         return 1
+    print(f"{dropped_uses(root)} errors dropped on purpose through ketchup_rejection::dropped")
     shrunk = sum(old.values()) - sum(counts.values())
     if shrunk > 0:
         print(f"OK; {shrunk} occurrences removed since the baseline. "

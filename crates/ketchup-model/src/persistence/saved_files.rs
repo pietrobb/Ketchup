@@ -18,7 +18,7 @@ pub(super) fn keep(file: &[u8]) {
     };
     let directory = Path::new(&directory);
     if let Err(error) = keep_in(directory, file) {
-        eprintln!(
+        ketchup_rejection::log!(
             "saved-files: a saved file was not kept in {}: {error}",
             directory.display()
         );

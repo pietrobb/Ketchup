@@ -167,7 +167,7 @@ impl KetchupApp {
     /// How a CSV from the window writes numbers: with the separator its value
     /// fields read (the system's), never the interface language's (UI-9).
     fn csv_decimal(&self) -> DecimalSeparator {
-        match self.value_box.decimal {
+        match self.window.decimal {
             crate::length_input::DecimalSeparator::Point => DecimalSeparator::Point,
             crate::length_input::DecimalSeparator::Comma => DecimalSeparator::Comma,
         }

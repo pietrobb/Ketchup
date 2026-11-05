@@ -8,6 +8,7 @@ use crate::protocol::{
     UnderlayWriteInput, UnderlayWriteOutcome, WorkerFailure, WorkerImportPart, WorkerReply,
     WorkerRequest, encode_frame, protocol_identity, read_frame,
 };
+use ketchup_rejection::{Reason, dropped};
 
 pub(crate) struct WorkerWriteRequest {
     pub(crate) frame: Vec<u8>,
@@ -1045,9 +1046,11 @@ impl ExactWorkerClient {
 
     pub(crate) fn terminate_worker(&mut self) {
         self.terminated = true; // Never reuse a job whose termination has started.
-        if child_process::terminate(&mut *self.child).is_err() {
-            // It has exited already, or ends with its parent (exit_with_parent).
-        }
+        // It has exited already, or ends with its parent (exit_with_parent).
+        dropped(
+            child_process::terminate(&mut *self.child),
+            Reason::AlreadyEnded,
+        );
     }
 }
 
@@ -1072,9 +1075,8 @@ fn stderr_tail(stderr: Option<std::process::ChildStderr>) -> Receiver<Vec<u8>> {
                 let excess = tail.len().saturating_sub(STDERR_TAIL_BYTES);
                 tail.drain(..excess);
             }
-            if sender.send(tail).is_err() {
-                // The client is gone and no longer reports the worker's end.
-            }
+            // The client is gone and no longer reports the worker's end.
+            dropped(sender.send(tail), Reason::NobodyWaiting);
         });
     }
     receiver
@@ -1190,9 +1192,8 @@ fn spawn_worker_writer(mut stdin: ChildStdin, receiver: Receiver<WorkerWriteRequ
         while let Ok(request) = receiver.recv() {
             let result = stdin.write_all(&request.frame).and_then(|()| stdin.flush());
             let failed = result.is_err();
-            if request.acknowledgment.send(result).is_err() {
-                // The request was given up; a failed write still ends the loop.
-            }
+            // The request was given up; a failed write still ends the loop.
+            dropped(request.acknowledgment.send(result), Reason::NobodyWaiting);
             if failed {
                 break;
             }
@@ -1222,8 +1223,10 @@ fn spawn_worker_reader(stdout: ChildStdout, sender: mpsc::SyncSender<WorkerRespo
 impl Drop for ExactWorkerClient {
     fn drop(&mut self) {
         // Do not block cancellation on Windows kernel teardown.
-        if child_process::terminate(&mut *self.child).is_err() {
-            // It has exited already, or ends with its parent (exit_with_parent).
-        }
+        // It has exited already, or ends with its parent (exit_with_parent).
+        dropped(
+            child_process::terminate(&mut *self.child),
+            Reason::AlreadyEnded,
+        );
     }
 }
