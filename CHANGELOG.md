@@ -36,6 +36,8 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 - Dragging the edge of the dock no longer makes a long program on the **Program** page stutter: each frame lays out only the lines in view. A screen reader can read every line of the program, not only those on screen.
 - Ketchup and the Viewer keep a log file of the problems they set aside without stopping you, such as a refused import or a connection that hung up: `%LOCALAPPDATA%\Ketchup\ketchup.log` on Windows (`Ketchup Viewer\viewer.log` for the Viewer), `~/Library/Logs/Ketchup` on macOS and `~/.local/state/Ketchup` on Linux. Before, these lines went to a console the window does not have and were lost.
 - Data taken from a drawing into the program is refused, with why, when the names of the program library cannot be read, instead of being written without checking that it takes no library name such as `range` over.
+- The Android Viewer updates from one release candidate to the next (`-rc.1` to `-rc.2`) and from a development build to a release candidate; before, they had one version code and Android refused the update. The Mac apps' bundle version grows the same way.
+- The signed Windows installer signs every program and library it installs, also one that the build computer already trusted through a Windows catalog, which your computer does not have.
 
 ## 0.3.2 — 2026-11-04
 
