@@ -50,7 +50,7 @@ impl CodePage {
     pub(super) fn doubtful(self, high: &HighBytes) -> bool {
         self.reads_c1(high)
             || (self.is(encoding_rs::WINDOWS_1252)
-                && high.central_words.len() > high.western_words.len())
+                && high.central_votes() > high.western_words.len())
     }
 
     /// Whether this code page has a byte for `character`.
@@ -118,6 +118,9 @@ pub(super) struct HighBytes {
     seen: [bool; 128],
     western_words: BTreeSet<Vec<u8>>,
     central_words: BTreeSet<Vec<u8>>,
+    /// Whether a text's font names the East European character set, Windows-1250's
+    /// (`\f…|c238;`, review 2026-11-04 r19 P3).
+    east_european_font: bool,
 }
 
 impl Default for HighBytes {
@@ -126,6 +129,7 @@ impl Default for HighBytes {
             seen: [false; 128],
             western_words: BTreeSet::new(),
             central_words: BTreeSet::new(),
+            east_european_font: false,
         }
     }
 }
@@ -139,6 +143,12 @@ impl HighBytes {
                 self.seen[usize::from(at)] = true;
             }
         }
+        self.east_european_font |= bytes.windows(6).any(|window| {
+            window[0] == b'|'
+                && window[1].eq_ignore_ascii_case(&b'c')
+                && &window[2..5] == b"238"
+                && matches!(window[5], b'|' | b';')
+        });
         let in_word = |byte: u8| byte.is_ascii_alphabetic() || byte >= 128;
         let mut at = 0;
         while at < bytes.len() {
@@ -169,9 +179,16 @@ impl HighBytes {
     /// Whether the words read rightly only in Windows-1250 outvote those read rightly only
     /// in 1252 with room to spare: two at least, and more than twice as many (review
     /// 2026-11-04 UL-140: one against none, or one byte 1252 leaves undefined, turned a
-    /// whole Western drawing). A word of letters 1252 leaves one of undefined, which it
-    /// cannot read at all, votes twice: „žluťoučký“ alone reads in 1250.
+    /// whole Western drawing).
     fn central_european(&self) -> bool {
+        let central = self.central_votes();
+        central >= 2 && central > 2 * self.western_words.len()
+    }
+
+    /// The votes for Windows-1250: each word read rightly only in it, twice where it is of
+    /// letters 1252 leaves one of undefined and so cannot read at all („žluťoučký“), and
+    /// a font of its character set.
+    fn central_votes(&self) -> usize {
         let unreadable = self
             .central_words
             .iter()
@@ -179,8 +196,7 @@ impl HighBytes {
                 word.len() > 1 && word.iter().any(|byte| UNDEFINED_IN_1252.contains(byte))
             })
             .count();
-        let central = self.central_words.len() + unreadable;
-        central >= 2 && central > 2 * self.western_words.len()
+        self.central_words.len() + unreadable + usize::from(self.east_european_font)
     }
 }
 
@@ -440,6 +456,10 @@ pub(super) struct TextSeen {
     high: HighBytes,
     acadver: HeaderValue,
     code_page: HeaderValue,
+    /// The group code of the pair whose value is the next line.
+    code: Option<i64>,
+    /// Within a text style of the drawing's style table.
+    in_style: bool,
 }
 
 impl Default for TextSeen {
@@ -451,6 +471,8 @@ impl Default for TextSeen {
             high: HighBytes::default(),
             acadver: HeaderValue::default(),
             code_page: HeaderValue::default(),
+            code: None,
+            in_style: false,
         }
     }
 }
@@ -463,6 +485,7 @@ impl TextSeen {
             0 => line.strip_prefix(super::BYTE_ORDER_MARK).unwrap_or(line),
             _ => line,
         };
+        self.see_style(line.trim_ascii());
         self.lines += 1;
         if self.utf8 {
             for chunk in line.utf8_chunks() {
@@ -484,6 +507,25 @@ impl TextSeen {
         let trimmed = line.trim_ascii();
         self.acadver.see(trimmed, b"$ACADVER");
         self.code_page.see(trimmed, b"$DWGCODEPAGE");
+    }
+
+    /// Sees the line `trimmed` of the file for the character set of a text style's
+    /// TrueType font, the second byte of its flags (ACAD group 1071): the East European
+    /// one, Windows-1250's, votes for it (review 2026-11-04 r19 P3).
+    fn see_style(&mut self, trimmed: &[u8]) {
+        let number = || std::str::from_utf8(trimmed).ok()?.parse::<i64>().ok();
+        if self.lines.is_multiple_of(2) {
+            self.code = number();
+            return;
+        }
+        match self.code {
+            Some(0) => self.in_style = trimmed.eq_ignore_ascii_case(b"STYLE"),
+            Some(1071) if self.in_style => {
+                self.high.east_european_font |=
+                    number().is_some_and(|flags| (flags >> 8) & 0xFF == 238);
+            }
+            _ => {}
+        }
     }
 
     /// The encoding of the file seen. DXF 2007 and later are UTF-8; an older file is

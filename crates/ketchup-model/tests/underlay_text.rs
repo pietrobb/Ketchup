@@ -368,6 +368,61 @@ fn one_sign_or_undefined_byte_does_not_turn_a_western_drawing_central_european()
     );
 }
 
+/// Review 2026-11-04 r19 P3: the character set a text's font names (`\f…|c238;`, the
+/// East European one, Windows-1250) was passed over. It votes as a Central European
+/// word does, so with one word it turns the drawing.
+#[test]
+fn a_font_of_the_east_european_character_set_votes_for_windows_1250() {
+    let read = |texts: &[&[u8]]| {
+        let source = texts_drawing(b"", "ANSI_1252", texts);
+        let text = b"0\nTEXT\n";
+        let mut mtexts = Vec::new();
+        let mut rest = source.as_slice();
+        while let Some(at) = rest.windows(text.len()).position(|window| window == text) {
+            mtexts.extend_from_slice(&rest[..at]);
+            mtexts.extend_from_slice(b"0\nMTEXT\n");
+            rest = &rest[at + text.len()..];
+        }
+        mtexts.extend_from_slice(rest);
+        read_dxf_underlay(&mtexts, DxfImportOptions::new(None)).unwrap()
+    };
+    let doubted = |underlay: &DxfUnderlay| {
+        counted(underlay, "dxf.text-code-page-doubtful", Some("ANSI_1252"))
+    };
+    let underlay = read(&[b"{\\fArial|b0|i0|c238|p34;Kuchyn\xEC}"]);
+    assert_eq!(read_texts(&underlay), ["Kuchyně"]);
+    assert_eq!(doubted(&underlay), Some(1), "{:?}", underlay.diagnostics);
+    // Another character set does not.
+    let underlay = read(&[b"{\\fArial|b0|i0|c0|p34;Kuchyn\xEC}"]);
+    assert_eq!(read_texts(&underlay), ["Kuchynì"]);
+    // Nor does it turn a Western drawing on its own.
+    let underlay = read(&[b"{\\fArial|b0|i0|c238|p34;Pi\xE8ce tr\xE8s}"]);
+    assert_eq!(read_texts(&underlay), ["Pièce très"]);
+    // A text style's font names its character set in the second byte of its flags.
+    let styled = |charset: u32| {
+        let source = texts_drawing(b"", "ANSI_1252", &[b"Kuchyn\xEC"]);
+        let entities = b"0\nENDSEC\n0\nSECTION\n2\nENTITIES\n";
+        let at = source
+            .windows(entities.len())
+            .position(|window| window == entities)
+            .unwrap();
+        let mut styled = source[..at].to_vec();
+        styled.extend_from_slice(
+            format!(
+                "0\nENDSEC\n0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nSTYLE\n70\n1\n0\nSTYLE\n2\n\
+                 Standard\n70\n0\n40\n0\n41\n1\n50\n0\n71\n0\n42\n2.5\n3\narial.ttf\n1001\n\
+                 ACAD\n1000\nArial\n1071\n{}\n0\nENDTAB\n",
+                (charset << 8) | 34
+            )
+            .as_bytes(),
+        );
+        styled.extend_from_slice(&source[at..]);
+        read_dxf_underlay(&styled, DxfImportOptions::new(None)).unwrap()
+    };
+    assert_eq!(read_texts(&styled(238)), ["Kuchyně"]);
+    assert_eq!(read_texts(&styled(0)), ["Kuchynì"]);
+}
+
 /// Review 2026-11-04 UL-141: one character its code page cannot write sent a whole UTF-8
 /// drawing through the code page, unwarned: „Größe ⌀ 100“ read „GrÃ¶ÃŸe âŒ€ 100“. A
 /// character of three or four bytes is UTF-8; of two, the most decide, and a drawing both
