@@ -25,6 +25,7 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 - The level marks of sections and elevations mark a gallery of planks or OSB strips and a 900 mm landing, and no longer a bed, a table or a kitchen island. ±0,000 is found among the parts the sheets draw and those hidden one by one, no longer from a terrain, a neighbour or a variant on a hidden tag; when the exact solids cannot be read the export says so instead of putting ±0,000 at 0, and the drawings window finds the ground floor without stalling, showing "…" until then and why when it cannot.
 - The date in the title block of an English sheet is written 2026-11-05, no longer the Czech and Slovak way 5. 11. 2026.
 - **File > Export plan DXF** writes the dimensions of a Czech or Slovak document with a decimal comma (1234,5), as its PDF sheets do, no longer 1234.5.
+- The round hole of a worktop, for example for its tap, is a drilling where the hole is, no longer a cut of two arcs across the whole worktop. The production job carries it, and woodWOP refuses it as a hole as deep as the part, saying to export BTLx or the production job, rather than as a through cut. The cut of a sink opening spans the opening, not the whole worktop.
 - Data taken from a drawing into the program is refused, with why, when the names of the program library cannot be read, instead of being written without checking that it takes no library name such as `range` over.
 
 ## 0.3.2 — 2026-11-04

@@ -31,6 +31,7 @@ use std::num::TryFromIntError;
 
 mod btlx;
 mod capabilities;
+mod openings;
 pub mod production;
 mod projection_bytes;
 mod taps;
@@ -3164,7 +3165,7 @@ fn is_free_form_outline(geometry: &ExactBRepPlanarGeometry) -> bool {
             .any(|segment| matches!(segment, ExactBRepPlanarSegment::CubicBezier { .. })),
         ExactBRepPlanarGeometry::Region { outer, holes } => std::iter::once(outer)
             .chain(holes)
-            .flat_map(loop_segments)
+            .flat_map(openings::loop_segments)
             .any(|segment| matches!(segment, ExactBRepPlanarSegment::CubicBezier { .. })),
         ExactBRepPlanarGeometry::Spline { .. } => true,
         ExactBRepPlanarGeometry::Circle { .. } => false,
@@ -3244,11 +3245,15 @@ fn machined_nodes(
         source: source.clone(),
         thread: None,
     }];
-    for (index, machining) in opening_cuts(stock_profile, stock_interval)?
+    for (index, (machining, bounds)) in openings::opening_cuts(stock_profile, stock_interval)?
         .into_iter()
         .enumerate()
     {
-        let kind = GeneralManufacturingKind::ThroughCut;
+        let kind = if matches!(machining, GeneralMachiningGeometry::CircularDrill { .. }) {
+            GeneralManufacturingKind::CircularDrill
+        } else {
+            GeneralManufacturingKind::ThroughCut
+        };
         operations.push(GeneralManufacturingOperation {
             stable_operation_id: format!(
                 "definition-{}/feature-{}/opening-{index}/{}",
@@ -3261,7 +3266,7 @@ fn machined_nodes(
             kind,
             semantic_inputs: vec![FeatureId(stock_profile.source_feature_id)],
             frame: "definition-local",
-            bounds: row.dimensions,
+            bounds,
             machining,
             source: source.clone(),
             thread: None,
@@ -3491,10 +3496,10 @@ fn prismatic_stock_geometry(
         ExactBRepPlanarGeometry::Circle {
             center_bits,
             radius_bits,
-        } => half_arcs(*center_bits, *radius_bits),
+        } => openings::half_arcs(*center_bits, *radius_bits),
         // A worktop with the opening for its sink: the blank is its outline,
         // the openings are cut through it (review 2026-11-04 MF-121).
-        ExactBRepPlanarGeometry::Region { outer, .. } => loop_segments(outer),
+        ExactBRepPlanarGeometry::Region { outer, .. } => openings::loop_segments(outer),
         _ => return None,
     };
     // Lines and circular arcs (a rounded table top, review 2026-11-01
@@ -3556,57 +3561,6 @@ fn profile_cut_geometry(
         start_mm: interval.start_mm(),
         end_mm: interval.end_mm(),
     })
-}
-
-/// The cuts through a blank of the openings its outline has: each hole of a
-/// region extruded as the stock, cut along the whole extrusion.
-fn opening_cuts(
-    profile: &ExactBRepProfile,
-    interval: ExactBRepLinearInterval,
-) -> Option<Vec<GeneralMachiningGeometry>> {
-    let ExactBRepPlanarGeometry::Region { holes, .. } = &profile.geometry else {
-        return Some(Vec::new());
-    };
-    let frame = machining_frame(profile, interval.direction())?;
-    holes
-        .iter()
-        .map(|hole| {
-            Some(GeneralMachiningGeometry::ProfileCut {
-                frame,
-                segments: machining_segments(&loop_segments(hole))?,
-                start_mm: interval.start_mm(),
-                end_mm: interval.end_mm(),
-            })
-        })
-        .collect()
-}
-
-fn loop_segments(planar_loop: &ExactBRepPlanarLoop) -> Vec<ExactBRepPlanarSegment> {
-    match planar_loop {
-        ExactBRepPlanarLoop::Boundary { segments } => segments.clone(),
-        ExactBRepPlanarLoop::Circle {
-            center_bits,
-            radius_bits,
-        } => half_arcs(*center_bits, *radius_bits),
-    }
-}
-
-/// A circle as its two half arcs, east to west and back.
-fn half_arcs(center_bits: [u64; 2], radius_bits: u64) -> Vec<ExactBRepPlanarSegment> {
-    let [x, y] = center_bits.map(f64::from_bits);
-    let radius = f64::from_bits(radius_bits);
-    let [east, west] = [[x + radius, y], [x - radius, y]].map(|point| point.map(f64::to_bits));
-    [(east, west), (west, east)]
-        .into_iter()
-        .map(
-            |(start_bits, end_bits)| ExactBRepPlanarSegment::CircularArc {
-                start_bits,
-                end_bits,
-                center_bits,
-                clockwise: false,
-            },
-        )
-        .collect()
 }
 
 /// Lines and circular arcs; none for an outline with a Bezier edge.
