@@ -45,15 +45,40 @@ impl SettingsFile {
         Self { path }
     }
 
-    fn lines(&self) -> Vec<String> {
-        std::fs::read_to_string(&self.path)
-            .map(|text| text.lines().map(str::to_owned).collect())
-            .unwrap_or_default()
+    /// The lines of the file, none when there is no file. A line that is not
+    /// UTF-8 is left out, and `true` says the file had one. Any other failure
+    /// to read is an error, not an empty file: writing over it would lose the
+    /// language, the list and a newer Kečup's lines (review 2026-11-04 r19 UI-162).
+    fn read(&self) -> io::Result<(Vec<String>, bool)> {
+        let bytes = match std::fs::read(&self.path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok((Vec::new(), false));
+            }
+            Err(error) => return Err(error),
+        };
+        let mut damaged = false;
+        let mut lines: Vec<String> = bytes
+            .split(|byte| *byte == b'\n')
+            .filter_map(|line| {
+                let line = line.strip_suffix(b"\r").unwrap_or(line);
+                let text = std::str::from_utf8(line).ok();
+                damaged |= text.is_none();
+                text.map(str::to_owned)
+            })
+            .collect();
+        if bytes.ends_with(b"\n") {
+            lines.pop();
+        }
+        Ok((lines, damaged))
     }
 
-    /// Every value of `key`, in the order written.
+    /// Every value of `key`, in the order written; none when the file cannot
+    /// be read.
     pub(crate) fn values(&self, key: &str) -> Vec<String> {
-        self.lines()
+        self.read()
+            .map(|(lines, _)| lines)
+            .unwrap_or_default()
             .iter()
             .filter_map(|line| line.split_once('='))
             .filter(|(name, _)| name.trim() == key)
@@ -61,10 +86,16 @@ impl SettingsFile {
             .collect()
     }
 
-    /// Replace every value of `key` with `values`, the other lines kept.
+    /// Replace every value of `key` with `values`, the other lines kept. A
+    /// file that cannot be read is not written over; one with a line that is
+    /// not UTF-8 is first kept whole as `settings.txt.bad`, and its other
+    /// lines carried over.
     pub(crate) fn replace(&self, key: &str, values: &[String]) -> io::Result<()> {
-        let mut lines: Vec<String> = self
-            .lines()
+        let (lines, damaged) = self.read()?;
+        if damaged {
+            std::fs::copy(&self.path, self.path.with_extension("txt.bad"))?;
+        }
+        let mut lines: Vec<String> = lines
             .into_iter()
             .filter(|line| {
                 line.split_once('=')
@@ -152,6 +183,47 @@ mod tests {
         assert_eq!(third.values("future-setting"), ["3"]);
         assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1);
         std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    /// Review 2026-11-04 r19 UI-162: one byte that is not UTF-8 made the file
+    /// read as empty, so the next save wrote only its own key and the
+    /// language, the list and a newer Kečup's lines were lost.
+    #[test]
+    fn a_damaged_settings_file_is_kept_aside_and_its_other_lines_carried_over() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join(FILE_NAME);
+        let damaged = b"language=sk\r\nfuture-setting=3\nrecent=/Domy/M\xe9chenice.ketchup\nrecent=/b.ketchup\n";
+        std::fs::write(&path, damaged).unwrap();
+        let settings = SettingsFile::at(path.clone());
+        assert_eq!(settings.language().as_deref(), Some("sk"));
+        assert_eq!(settings.load(), [PathBuf::from("/b.ketchup")]);
+
+        settings.save(&[PathBuf::from("/c.ketchup")]).unwrap();
+        assert_eq!(settings.language().as_deref(), Some("sk"));
+        assert_eq!(settings.values("future-setting"), ["3"]);
+        assert_eq!(settings.load(), [PathBuf::from("/c.ketchup")]);
+        assert_eq!(
+            std::fs::read(path.with_extension("txt.bad")).unwrap(),
+            damaged,
+            "the damaged file is kept whole"
+        );
+    }
+
+    /// A settings file that cannot be read is not written over.
+    #[test]
+    fn a_settings_file_that_cannot_be_read_is_not_written_over() {
+        let folder = tempfile::tempdir().unwrap();
+        // A folder where the file should be cannot be read as one.
+        let path = folder.path().join(FILE_NAME);
+        std::fs::create_dir(&path).unwrap();
+        let settings = SettingsFile::at(path.clone());
+        assert!(settings.save_language("cs").is_err());
+        assert!(path.is_dir());
+        assert_eq!(
+            std::fs::read_dir(folder.path()).unwrap().count(),
+            1,
+            "nothing is left beside it"
+        );
     }
 
     #[test]
