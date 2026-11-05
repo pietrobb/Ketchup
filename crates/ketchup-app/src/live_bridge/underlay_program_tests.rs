@@ -1246,6 +1246,35 @@ fn data_does_not_take_over_a_name_the_program_sees_or_sets() {
     assert_eq!(source(&app).matches("# underlay data A:").count(), 1);
 }
 
+/// Review 2026-11-04 r19 P3 UO-51: when the names of the program library cannot be read,
+/// the check fell back to none and wrote data that could take `range` over unchecked. The
+/// data is refused instead, with why.
+#[test]
+fn data_is_refused_when_the_names_of_the_library_cannot_be_read() {
+    use crate::live_bridge::underlay_program::refusal_of_taken_name_among;
+    let written = "range = [[0.0, 0.0], [1.0, 0.0]]\n";
+    let unreadable = Err(ketchup_program::eval::ProgramError {
+        code: "library_broken",
+        message: "the library is broken".to_owned(),
+        location: None,
+    });
+    assert_eq!(
+        refusal_of_taken_name_among("", "range", written, unreadable),
+        Some("program_rejected")
+    );
+    let details = take_error_details().unwrap_or_default().to_string();
+    assert!(details.contains("the library is broken"), "{details}");
+    let names = |names: &[&str]| Ok(names.iter().map(|name| (*name).to_owned()).collect());
+    assert_eq!(
+        refusal_of_taken_name_among("", "range", written, names(&["range"])),
+        Some("invalid_params")
+    );
+    assert_eq!(
+        refusal_of_taken_name_among("", "range", written, names(&["len"])),
+        None
+    );
+}
+
 /// Review 2026-10-26 UO-46: a plan of more lines than one search takes refused every room
 /// with a bare `invalid_params`. The refusal names `within_mm`; a room taken within a box
 /// is found, and keeps that box when the drawing changes.
