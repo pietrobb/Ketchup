@@ -320,6 +320,79 @@ mod tests {
         assert_eq!(fs::read_to_string(&staged).unwrap(), "app v1");
     }
 
+    /// A partial copy this process left behind that cannot be cleared stops the
+    /// stage: what stays in it would be renamed into the build and started
+    /// unchecked (review 2026-11-04 r19 P3, TST-140).
+    #[test]
+    fn a_partial_copy_that_cannot_be_cleared_stops_the_stage() {
+        let temp = tempfile::tempdir().unwrap();
+        let release = temp.path().join("release");
+        fs::create_dir(&release).unwrap();
+        let root = temp.path().join("stage");
+        let source = build(&release, "app v1", "worker v1");
+        let target = stage(&source, &root)
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        fs::remove_dir_all(&target).unwrap();
+        let key = target.file_name().unwrap().to_string_lossy().into_owned();
+        let leftover = root
+            .join(format!("{key}.partial-{}", std::process::id()))
+            .join("left");
+        fs::create_dir_all(&leftover).unwrap();
+        let planted = leftover.join(format!("version.{LIBRARY_EXTENSION}"));
+        fs::write(&planted, "planted").unwrap();
+        // Keep the leftover from being removed while the stage runs.
+        // Windows: everyone is denied deleting the file and emptying its folder.
+        #[cfg(windows)]
+        let deny = |path: &Path, right: &str, grant: &str| {
+            let status = std::process::Command::new("icacls")
+                .arg(path)
+                .args([grant, &format!("*S-1-1-0{right}")])
+                .stdout(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        #[cfg(windows)]
+        {
+            deny(&planted, ":(D)", "/deny");
+            deny(&leftover, ":(DC)", "/deny");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&leftover, fs::Permissions::from_mode(0o555)).unwrap();
+            if fs::write(leftover.join("probe"), "").is_ok() {
+                return; // Run as root: nothing can be kept from removal.
+            }
+        }
+
+        let result = stage(&source, &root);
+        let renamed = target.join("left");
+
+        #[cfg(windows)]
+        for folder in [leftover, renamed.clone()] {
+            let file = folder.join(format!("version.{LIBRARY_EXTENSION}"));
+            if file.exists() {
+                deny(&file, "", "/remove:d");
+                deny(&folder, "", "/remove:d");
+            }
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for leftover in [leftover, renamed.clone()] {
+                if leftover.exists() {
+                    fs::set_permissions(&leftover, fs::Permissions::from_mode(0o755)).unwrap();
+                }
+            }
+        }
+        assert!(!renamed.exists(), "the leftover was renamed into the build");
+        assert!(result.is_err(), "staged over a leftover: {result:?}");
+    }
+
     /// `scripts\ketchup-mcp-server.cmd` in a scratch checkout whose "builds"
     /// are `where.exe` with a marker appended: the script really starts it,
     /// it rejects `--mcp` and exits, and what the script staged stays. Plain

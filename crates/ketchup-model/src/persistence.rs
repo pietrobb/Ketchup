@@ -4223,6 +4223,35 @@ mod tests {
         assert_eq!(fs::read(recovery_path(&path)).unwrap(), initial);
     }
 
+    /// A file still there that cannot be read is not a change made outside:
+    /// the save says why it failed and offers no conflict to overwrite
+    /// (review 2026-11-04 r19 P3, TST-140).
+    #[test]
+    fn conditional_save_over_a_file_that_cannot_be_read_says_why_instead_of_a_conflict() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("unreadable.ketchup");
+        let initial = save(&DocumentStore::new().current());
+        let expected = FileIdentity::from_bytes(&initial);
+        // A folder at the document's path cannot be read as a file.
+        fs::create_dir(&path).unwrap();
+
+        let result = publish_bytes(
+            &path,
+            &initial,
+            Publish::IfUnchanged(expected),
+            || {},
+            sync_parent_directory,
+        );
+
+        match result {
+            Err(FilePersistenceError::Io(error)) => {
+                assert_ne!(error.kind(), io::ErrorKind::NotFound, "{error}");
+            }
+            other => panic!("expected the read error, got {other:?}"),
+        }
+        assert!(path.is_dir(), "what is at the path stays");
+    }
+
     #[test]
     fn concurrent_work_recovery_and_save_share_identity_lock() {
         use std::sync::mpsc;
