@@ -360,7 +360,9 @@ CASTS_AND_ALLOWS = {
     # #2687: each Supervisor instance reads the MCP servers in its own folder). Its one
     # module-wide allowance became one on each of the three items that call the system
     # (review 2026-11-04 P3: the module-wide one let new unsafe code in), so 12 -> 14.
-    "ketchup-app allows": 14,
+    # ReplaceFileW of live_bridge::mcp_config (review 2026-11-04 r19 P3: an AI client's
+    # configuration is swapped in one step and keeps its ACL), so 14 -> 15.
+    "ketchup-app allows": 15,
     "ketchup-app casts": 216,
     "ketchup-application allows": 9,
     "ketchup-application casts": 29,

@@ -113,7 +113,9 @@ impl KetchupApp {
                     | Registration::Unreadable { .. }
                     | Registration::InstancesUnlisted { .. } => None,
                     Registration::NotSetUp => Some("connect-ai-set-up"),
-                    Registration::Elsewhere { .. } => Some("connect-ai-replace"),
+                    Registration::Elsewhere { .. } | Registration::Off { .. } => {
+                        Some("connect-ai-replace")
+                    }
                 };
                 if let Some(action) = action
                     && ui.button(self.catalog.text(action)).clicked()
@@ -218,6 +220,10 @@ impl KetchupApp {
                 self.catalog
                     .format(key, &BTreeMap::from([("path", command.clone())]))
             }
+            Registration::Off { entry } => self.catalog.format(
+                "connect-ai-off",
+                &BTreeMap::from([("entry", entry.clone())]),
+            ),
             Registration::Unreadable { reason } => {
                 self.catalog.text_because("connect-ai-unreadable", reason)
             }

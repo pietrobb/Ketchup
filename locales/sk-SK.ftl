@@ -22,6 +22,7 @@ connect-ai-not-set-up = nainštalovaný, Kečup zatiaľ nenastavený
 connect-ai-set-up-here = spúšťa tento Kečup
 connect-ai-starts-another = spúšťa iný program: { $path }
 connect-ai-starts-missing = spúšťa program, ktorý už neexistuje, preto jeho nástroje padajú s „connection closed“: { $path }
+connect-ai-off = jeho záznam ketchup nespúšťa program, lebo je vypnutý alebo je to sieťový server: { $entry }
 connect-ai-unreadable = nedá sa zistiť, čo spúšťa, lebo jeho súbor sa nedá prečítať
 connect-ai-instances-unlisted = bežiace inštancie sa nepodarilo zistiť
 connect-ai-set-up = Pripojiť

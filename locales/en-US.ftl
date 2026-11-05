@@ -22,6 +22,7 @@ connect-ai-not-set-up = installed, Kečup not set up yet
 connect-ai-set-up-here = starts this Kečup
 connect-ai-starts-another = starts another program: { $path }
 connect-ai-starts-missing = starts a program that no longer exists, so its tools fail with “connection closed”: { $path }
+connect-ai-off = its ketchup entry starts no program: it is turned off or a network server: { $entry }
 connect-ai-unreadable = what it starts cannot be told, because its file cannot be read
 connect-ai-instances-unlisted = the running instances could not be listed
 connect-ai-set-up = Connect

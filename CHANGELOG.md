@@ -6,6 +6,7 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 ## Unreleased
 
 - A timber member counts as braced against lateral buckling only by parts fastened to it and to a part declared grounded beside it. Fastener points away from where the two parts touch hold nothing and are reported (`fastener_off_contact`); a lath resting on both arms of one grounded part along the beam, joints of kind `none`, `contact` or `friction`, a `fixed` tag, and a free stud standing on the floor no longer brace it. An area load on a part standing on edge, which takes none of it, is reported (`area_load_edge_on`).
+- The installer no longer replaces an AI client's working Ketchup entry whose command is not a full path: a name found on PATH (`ketchup`), a path from `~`, or a Windows path without `.exe` is looked up as the client looks it up, and one Ketchup cannot find there is kept. **Connect AI** shows an entry that is turned off (`disabled`, Codex `enabled = false`) or a network server as starting nothing, and **Connect** turns it on as a program. The client's settings file is replaced in one step on Windows too and keeps its permissions; a link to a settings file not there yet creates that file; an error in a nested setting names its keys.
 
 ## 0.3.2 — 2026-11-04
 
