@@ -496,6 +496,26 @@ fn utf8_letters_a_code_page_reads_as_a_letter_and_a_sign_are_utf8() {
     // Capital letters of Windows-1250 that are valid UTF-8 stay in it: „NÍŽE“.
     let underlay = read("ANSI_1250", &[b"N\xCD\x8EE"]);
     assert_eq!(read_texts(&underlay), ["NÍŽE"]);
+    // Review 2026-11-04 r19 capability finding: UTF-8 letters the code page reads as two
+    // letters, „ε“ as „Îµ“ and „Ке“ as „ÐšÐµ“, fit neither way; both readings are
+    // possible, so the code page is doubted.
+    for (probe, as_1252) in [("ε = 0,5", "Îµ = 0,5"), ("Ке", "ÐšÐµ")] {
+        let underlay = read("ANSI_1252", &[probe.as_bytes()]);
+        assert!(
+            [probe, as_1252].contains(&read_texts(&underlay)[0]),
+            "{probe}"
+        );
+        assert_eq!(
+            counted(&underlay, "dxf.text-code-page-doubtful", Some("ANSI_1252")),
+            Some(1),
+            "{probe}: {:?}",
+            underlay.diagnostics
+        );
+    }
+    assert_eq!(
+        counted(&underlay, "dxf.text-code-page-doubtful", Some("ANSI_1250")),
+        Some(1)
+    );
 }
 
 const BLOCKS: &str = concat!(

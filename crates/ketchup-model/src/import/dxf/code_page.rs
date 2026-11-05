@@ -540,10 +540,12 @@ impl TextSeen {
     /// which a code page forms only by chance, or when more of its characters of two are
     /// ones the code page writes, Latin letters or ones it reads as a letter and a sign
     /// ([`CodePage::reads_as_letter_and_sign`]) than are not; „Rohr Ø½“ in Windows-1252
-    /// is „Rohr ؽ“ as UTF-8 (review 2026-11-02 UL-121). Where both readings fit some of
-    /// its characters, or the code page has none for one, the code page named is doubted
-    /// (review 2026-11-04 UL-141: one character sent a whole UTF-8 file through the code
-    /// page, unsaid; r19 UL-160: „Δh“ read „Î”h“, unsaid).
+    /// is „Rohr ؽ“ as UTF-8 (review 2026-11-02 UL-121). Where a file read as UTF-8 has a
+    /// character the code page has none for, or one of another script, the code page named
+    /// is doubted; a file read in the code page that is valid UTF-8 beyond ASCII is always
+    /// doubted, as both readings are possible (review 2026-11-04 UL-141: one character sent
+    /// a whole UTF-8 file through the code page, unsaid; r19 UL-160: „Δh“ read „Î”h“ and
+    /// „ε“ read „Îµ“, unsaid).
     pub(super) fn decide(self) -> Result<TextEncoding, DxfImportError> {
         if self.lines == 0 {
             return Err(DxfImportError::Empty);
@@ -559,7 +561,6 @@ impl TextSeen {
             read,
         };
         let named = name.as_deref().and_then(code_page_encoding);
-        let mut fitting = 0;
         if self.utf8 {
             let Some(named) = named else {
                 return Ok(utf8(None));
@@ -571,6 +572,7 @@ impl TextSeen {
             {
                 return Ok(utf8(None));
             }
+            let mut fitting = 0;
             let mut foreign = 0;
             let mut unwritten = false;
             for (&character, &count) in &self.beyond_ascii {
@@ -597,7 +599,8 @@ impl TextSeen {
         let name = name.ok_or(DxfImportError::NonAscii)?;
         let (code_page, (read, doubted)) =
             text_code_page(&name, &self.high).ok_or(DxfImportError::NonAscii)?;
-        let doubted = doubted.or_else(|| (fitting > 0).then(|| code_page_name(&name)));
+        let both_readings = self.utf8 && !self.beyond_ascii.is_empty();
+        let doubted = doubted.or_else(|| both_readings.then(|| code_page_name(&name)));
         Ok(TextEncoding {
             code_page: Some(code_page),
             read: Some((read, doubted)),
