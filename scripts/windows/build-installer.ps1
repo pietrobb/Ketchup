@@ -123,7 +123,7 @@ function Invoke-AzureSigning([string]$Path) {
     if ($LASTEXITCODE -ne 0) { throw "Authenticode verification failed: $Path" }
 
     $signature = Get-AuthenticodeSignature $Path
-    if ($signature.Status -ne [Management.Automation.SignatureStatus]::Valid -or
+    if (-not (Test-EmbeddedSignature $signature) -or
         $null -eq $signature.SignerCertificate -or
         $signature.SignerCertificate.Subject -notlike 'CN=AEON GROUP spol. s r.o.*' -or
         $null -eq $signature.TimeStamperCertificate) {
@@ -595,7 +595,7 @@ try {
     Assert-Leaf $uninstaller "uninstaller"
     if ($Sign) {
         $uninstallerSignature = Get-AuthenticodeSignature $uninstaller
-        if ($uninstallerSignature.Status -ne [Management.Automation.SignatureStatus]::Valid -or
+        if (-not (Test-EmbeddedSignature $uninstallerSignature) -or
             $uninstallerSignature.SignerCertificate.Subject -notlike 'CN=AEON GROUP spol. s r.o.*') {
             throw "The installed uninstaller is not signed by AEON GROUP."
         }

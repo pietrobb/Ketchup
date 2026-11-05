@@ -103,6 +103,30 @@ def test_every_unsigned_program_and_library_is_to_be_signed_and_the_runtime_is_n
     assert to_sign == ["Ketchup.exe", "TKernel.dll"]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="reads Authenticode signatures")
+def test_a_library_signed_only_through_a_catalog_of_this_machine_is_to_be_signed(tmp_path):
+    # Review 2026-11-04 r19 P3 (REL-142): Get-AuthenticodeSignature calls a file valid
+    # when its hash is in a catalog of the build machine, which the user's machine does
+    # not have, so such a file went out without a signature of its own.
+    to_sign = run(
+        "$catalog = Get-ChildItem \"$env:SystemRoot\\System32\" -Filter *.dll | "
+        "Where-Object { $_.Length -lt 300kb } | Where-Object { "
+        "$s = Get-AuthenticodeSignature $_.FullName; $s.Status -eq 'Valid' -and $s.SignatureType -eq 'Catalog' } | "
+        "Select-Object -First 1; "
+        f"Copy-Item $catalog.FullName (Join-Path '{tmp_path.as_posix()}' 'TKMath.dll'); "
+        f"(Get-AuthenticodeSignature (Join-Path '{tmp_path.as_posix()}' 'TKMath.dll')).Status; "
+        f"Get-PeFilesToSign '{tmp_path.as_posix()}'"
+    )
+
+    assert to_sign == ["Valid", "TKMath.dll"]
+
+
+def test_the_signing_checks_ask_for_a_signature_in_the_file_itself():
+    # Review 2026-11-04 r19 P3 (REL-142): a catalog signature passed the signing checks too.
+    script = (WINDOWS / "build-installer.ps1").read_text(encoding="utf-8")
+    assert script.count("Get-AuthenticodeSignature") == script.count("Test-EmbeddedSignature")
+
+
 def test_a_signed_installer_signs_the_whole_payload_and_ships_nothing_unsigned():
     script = (WINDOWS / "build-installer.ps1").read_text(encoding="utf-8")
     signed = script.index("foreach ($name in @(Get-PeFilesToSign $payloadDir))")
