@@ -49,7 +49,7 @@ impl fmt::Display for ExportBlock {
             }
             Self::NothingToWrite => "there is no part or machining this file writes",
             Self::UndescribedCuts => {
-                "a cut of it could not be described as machining (an unevenly scaled part, or a tool that is not a drilling, a pocket or a profile cut)"
+                "a cut of it could not be described as machining (an unevenly scaled part, a tool that is not a drilling, a pocket or a profile cut, or a cut that starts inside the material: a cavity, or a cut that opens only to a side and is not rectangular); let each cut tool reach past the face it enters"
             }
             Self::NotExactBody => {
                 "it is not one exact body (a mesh, or a result not verified); model it as a solid and evaluate it again"
