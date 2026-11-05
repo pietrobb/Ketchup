@@ -2056,6 +2056,70 @@ fn a_text_written_into_a_code_page_drawing_escapes_only_what_the_page_has_not() 
     );
 }
 
+/// Review 2026-11-04 r19 UL-161: a drawing whose header names ANSI_1252 and whose texts
+/// read in Windows-1250 was written back under the same header, texts drawn in it in 1250,
+/// so with a text taken out it read „Kuchynì“, in Kečup and in AutoCAD. The header names
+/// the code page the texts were read and written in.
+#[test]
+fn a_drawing_read_in_another_code_page_than_its_header_names_is_written_naming_it() {
+    let header = HEADER.replace(
+        "9\n$INSUNITS\n",
+        "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
+    );
+    let mut source = format!("{header}{TABLES}0\nSECTION\n2\nENTITIES\n").into_bytes();
+    for (handle, text) in [
+        ("B0", b"Kuchyn\xEC".as_slice()),
+        ("B1", b"P\xF8eds\xED\xF2"),
+    ] {
+        source.extend_from_slice(
+            format!(
+                "0\nTEXT\n5\n{handle}\n330\n1F\n100\nAcDbEntity\n8\nnotes\n100\nAcDbText\n\
+                 10\n0\n20\n0\n30\n0\n40\n250\n1\n"
+            )
+            .as_bytes(),
+        );
+        source.extend_from_slice(text);
+        source.extend_from_slice(b"\n100\nAcDbText\n");
+    }
+    source.extend_from_slice(b"0\nENDSEC\n0\nEOF\n");
+    let original = read(&source);
+    let texts = |underlay: &DxfUnderlay| {
+        underlay
+            .lines
+            .layers()
+            .iter()
+            .flat_map(|layer| layer.texts())
+            .map(|text| text.text.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(texts(&original), ["Kuchyně", "Předsíň"]);
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(id_of(&original.lines, 0xB1));
+    edits.added.push(AddedObject::Drawn {
+        layer: "notes".to_owned(),
+        shape: DrawnShape::Text {
+            anchor_mm: [0.0, -1000.0],
+            height_mm: 100.0,
+            rotation_deg: 0.0,
+            text: "Chodba č. 2".to_owned(),
+        },
+    });
+    let written = write_edited_dxf(
+        &source,
+        DxfImportOptions::new(None),
+        &original.lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let named = b"\n$DWGCODEPAGE\n3\nANSI_1250\n";
+    assert!(
+        written.windows(named.len()).any(|window| window == named),
+        "{}",
+        String::from_utf8_lossy(&written)
+    );
+    assert_eq!(texts(&read(&written)), ["Kuchyně", "Chodba č. 2"]);
+}
+
 /// Review 2026-10-31 P3: a polyline drawn into an R13 drawing was written as LWPOLYLINE,
 /// which came only with R14. It is a POLYLINE there, with its VERTEX and SEQEND marked as
 /// R13 marks them and owned by it.

@@ -162,10 +162,11 @@ pub fn write_edited_dxf(
     // The read is let go before the drawing is parsed, so the two are not held at once
     // (review 2026-10-29 CD-63).
     let frame = frame_of(source, options, lines, edits)?;
-    let encoding = text_encoding(&mut Cursor::new(source))
-        .map_err(EditedDxfError::Read)?
-        .code_page;
-    let drawing = Drawing::parse(source, encoding)?;
+    let encoding = text_encoding(&mut Cursor::new(source)).map_err(EditedDxfError::Read)?;
+    let mut drawing = Drawing::parse(source, encoding.code_page)?;
+    // The header names the code page the texts are read and written in, so the drawing
+    // reads so again, however few of its texts are left (review 2026-11-04 r19 UL-161).
+    drawing.code_page_renamed = encoding.code_page_over_header().map(str::to_owned);
     let Some((frame, rebound)) = frame else {
         // The file is blamed only when its entities are not those the lines were read
         // from (review 2026-10-29 CD-64).
@@ -447,6 +448,11 @@ struct Drawing<'a> {
     utf8: bool,
     /// The code page its texts are read in, if any.
     code_page: Option<CodePage>,
+    /// The pair of the value of `$DWGCODEPAGE`.
+    code_page_value: Option<usize>,
+    /// The name `$DWGCODEPAGE` is written with, where the texts are read in another code
+    /// page than it names.
+    code_page_renamed: Option<String>,
     /// The owner (group 330) of the entities of model space.
     owner: Option<Vec<u8>>,
     /// Each layer name as read, with the bytes the drawing writes it in.
@@ -535,6 +541,8 @@ impl<'a> Drawing<'a> {
             lightweight: false,
             utf8: false,
             code_page: encoding,
+            code_page_value: None,
+            code_page_renamed: None,
             owner: None,
             layers: Vec::new(),
             blocks: Vec::new(),
@@ -608,6 +616,7 @@ impl<'a> Drawing<'a> {
                     let next = pairs.get(index + 1).ok_or(DxfEditRefusal::Malformed)?;
                     match name(pair).as_str() {
                         "$HANDSEED" => drawing.handseed = Some(index + 1),
+                        "$DWGCODEPAGE" => drawing.code_page_value = Some(index + 1),
                         "$ACADVER" => version = value(next).to_ascii_uppercase(),
                         _ => {}
                     }
@@ -1020,6 +1029,12 @@ impl<'a> Drawing<'a> {
             && handles != self.next_handle
         {
             let mut value = format!("{next:X}").into_bytes();
+            value.extend_from_slice(self.eol);
+            let pair = &self.pairs[index];
+            edits_at.push((pair.value().start..pair.end(), value));
+        }
+        if let (Some(index), Some(name)) = (self.code_page_value, &self.code_page_renamed) {
+            let mut value = name.clone().into_bytes();
             value.extend_from_slice(self.eol);
             let pair = &self.pairs[index];
             edits_at.push((pair.value().start..pair.end(), value));

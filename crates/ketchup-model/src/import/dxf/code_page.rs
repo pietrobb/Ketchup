@@ -404,6 +404,17 @@ pub(super) struct TextEncoding {
     pub(super) read: Option<CodePageRead>,
 }
 
+impl TextEncoding {
+    /// The name of the code page the text is read in where it is another than the header
+    /// names.
+    pub(super) fn code_page_over_header(&self) -> Option<&str> {
+        match (&self.code_page, &self.read) {
+            (Some(_), Some((read, Some(named)))) if read != named => Some(read),
+            _ => None,
+        }
+    }
+}
+
 /// What the lines of a DXF file hold, seen one by one, for [`TextSeen::decide`]: the one
 /// decision of its encoding, for the import, the underlay and the rewrite alike (review
 /// 2026-11-04 UL-142: two of them had come apart, and one saw the byte order mark).
