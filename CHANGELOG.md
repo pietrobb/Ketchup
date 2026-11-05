@@ -26,6 +26,7 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 - The date in the title block of an English sheet is written 2026-11-05, no longer the Czech and Slovak way 5. 11. 2026.
 - **File > Export plan DXF** writes the dimensions of a Czech or Slovak document with a decimal comma (1234,5), as its PDF sheets do, no longer 1234.5.
 - The round hole of a worktop, for example for its tap, is a drilling where the hole is, no longer a cut of two arcs across the whole worktop. The production job carries it, and woodWOP refuses it as a hole as deep as the part, saying to export BTLx or the production job, rather than as a through cut. The cut of a sink opening spans the opening, not the whole worktop.
+- A connected AI can set the height of ±0,000 when it exports the drawings (`zero_level_mm`, in whole millimetres, or `auto` to find it from the model), as the drawings window can. The document keeps it for the next export.
 - Data taken from a drawing into the program is refused, with why, when the names of the program library cannot be read, instead of being written without checking that it takes no library name such as `range` over.
 
 ## 0.3.2 — 2026-11-04

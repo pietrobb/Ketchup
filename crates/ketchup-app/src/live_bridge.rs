@@ -425,6 +425,11 @@ pub enum Request {
         /// one's, as the user agreed when asked (review 2026-11-04 r19 MF-162).
         #[serde(default)]
         take_over: bool,
+        /// The height of ±0,000 in whole millimetres, kept in the document:
+        /// `"auto"` finds it from the model; absent keeps the document's
+        /// (review 2026-11-04 r19 P3).
+        #[serde(default)]
+        zero_level_mm: Option<Value>,
     },
     /// Imports a STEP, IGES, STL, DXF, GLB or SketchUp scene file as one Undo step;
     /// `as_underlay` keeps a DXF or DWG drawing under the model as an underlay instead.

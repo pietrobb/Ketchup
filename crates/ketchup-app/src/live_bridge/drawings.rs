@@ -48,6 +48,7 @@ impl LiveBridge {
             sheet_language,
             replace,
             take_over,
+            zero_level_mm,
         } = request
         else {
             // The project set, drawn here: only the in-process caller waits
@@ -64,10 +65,11 @@ impl LiveBridge {
             || drawing_scale.is_some()
             || sheet_language.is_some()
             || take_over
+            || zero_level_mm.is_some()
         {
             return Err(failure(
                 "invalid_params",
-                "format, title_block, plan_only, drawing_scale, sheet_language and take_over belong to the project sheets; a drawing sheet keeps its own page, views, scale and title block.",
+                "format, title_block, plan_only, drawing_scale, sheet_language, zero_level_mm and take_over belong to the project sheets; a drawing sheet keeps its own page, views, scale and title block.",
                 json!({"sheet_id": id}),
             ));
         }
@@ -333,6 +335,18 @@ impl StartedDrawings {
     }
 }
 
+/// The height of ±0,000 a client names: whole millimetres, or `"auto"`
+/// (none kept) for the one found from the model; none for any other value.
+fn zero_level(value: &Value) -> Option<Option<i32>> {
+    if value == "auto" {
+        return Some(None);
+    }
+    value
+        .as_i64()
+        .and_then(|height| i32::try_from(height).ok())
+        .map(Some)
+}
+
 /// Takes the project set export `request`: keeps its settings in the document
 /// and takes what the set is drawn from; [`finish_export`] writes what was
 /// drawn from it.
@@ -352,6 +366,7 @@ pub(super) fn start_export(
         sheet_language,
         replace,
         take_over,
+        zero_level_mm,
     } = request
     else {
         return Err("invalid_request");
@@ -385,6 +400,18 @@ pub(super) fn start_export(
             )
         })?)),
     };
+    let zero_level = zero_level_mm
+        .as_ref()
+        .map(|value| {
+            zero_level(value).ok_or_else(|| {
+                failure(
+                    "invalid_params",
+                    "zero_level_mm is the height of ±0,000 in whole millimetres of the model, or auto to find it from the model.",
+                    json!({"zero_level_mm": value}),
+                )
+            })
+        })
+        .transpose()?;
     if app.exact.task.is_some() {
         return Err(failure(
             "drawings_unavailable",
@@ -440,6 +467,9 @@ pub(super) fn start_export(
     }
     if let Some(language) = language {
         settings.language = language;
+    }
+    if let Some(zero_level) = zero_level {
+        settings.zero_level_mm = zero_level;
     }
     settings.title_block.extend(title_block);
     app.store_sheet_settings(settings);
@@ -524,6 +554,7 @@ pub(super) fn finish_export(
         "printed_as_question_mark": set.printed_as_question_mark(),
         "format_setting": settings.format.map_or("auto", SheetFormat::name),
         "sheet_language": settings.language.map_or("auto", SheetLanguage::code),
+        "zero_level_mm": settings.zero_level_mm.map_or(json!("auto"), |height| json!(height)),
         "title_block": settings.title_block,
         "basis": "visible_layers_exact_solids",
         "dirty": app.is_dirty(),
@@ -638,6 +669,7 @@ mod tests {
                 sheet_language: None,
                 replace: false,
                 take_over: false,
+                zero_level_mm: None,
             },
             false,
         )
@@ -676,6 +708,7 @@ mod tests {
             sheet_language: None,
             replace: true,
             take_over: false,
+            zero_level_mm: None,
         };
         assert_eq!(
             LiveBridge::export_drawings(&mut app, asked, false),
