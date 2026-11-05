@@ -290,21 +290,67 @@ fn a_long_program_lays_out_only_the_lines_in_view_and_jumps_to_any() {
     )
     .unwrap();
     let mut harness = harness(app);
-    assert!(harness.query_by_label(&label(1, false)).is_some());
-    // A frame reads only what the dock shows, not three thousand lines.
-    let shown = (1..=source.lines().count())
-        .filter(|number| harness.query_by_label(&label(*number, false)).is_some())
-        .count();
-    assert!(shown < 200, "{shown} lines laid out");
-    assert!(harness.query_by_label(&label(3001, false)).is_none());
+    let far = harness.get_by_label(&label(3001, false)).rect();
+    assert!(far.top() > 1000.0, "{far:?}");
 
     harness
         .get_by(|node| node.label().is_some_and(|text| text.starts_with("far()")))
         .click();
     harness.run_steps(3);
     let far = harness.get_by_label(&label(3001, false)).rect();
-    assert!(harness.query_by_label(&label(1, false)).is_none());
+    let first = harness.get_by_label(&label(1, false)).rect();
+    assert!(first.bottom() < 0.0, "{first:?}");
     assert!(far.top() < 1000.0, "{far:?}");
+}
+
+/// Review 2026-11-04 r19 (P3): dragging the dock's edge changes its width every
+/// frame, and each new width laid out every line of the program again; a
+/// screen reader could read only the lines in view. A frame now lays out only
+/// the lines in view at any width, and every line is there to be read.
+#[test]
+fn dragging_the_dock_lays_out_only_the_lines_in_view_and_every_line_can_be_read() {
+    let mut source = String::new();
+    for number in 1..=3000 {
+        source.push_str(&format!(
+            "part_{number} = box(\"part {number}\", (600, 18, 720), at = ({number}, 0, 0))\n"
+        ));
+    }
+    let mut app = KetchupApp::new();
+    app.apply_program_source(
+        ketchup_model::document::RuleProgramSource {
+            variants: Default::default(),
+            file_name: "long.star".into(),
+            source: source.clone(),
+            overrides: BTreeMap::new(),
+        },
+        true,
+    )
+    .unwrap();
+    let mut harness = harness(app);
+    for number in [1, 1500, 3000] {
+        let line = source.lines().nth(number - 1).unwrap();
+        let label = program_source_line_label(number, line, false);
+        assert!(harness.query_by_label(&label).is_some(), "line {number}");
+    }
+
+    let mut most = 0;
+    for step in 0..12 {
+        let width = 620.0 - 20.0 * step as f32;
+        harness.ctx.data_mut(|data| {
+            data.insert_persisted(
+                egui::Id::new("right-dock"),
+                egui::containers::panel::PanelState {
+                    rect: Rect::from_min_size(
+                        egui::pos2(1600.0 - width, 0.0),
+                        Vec2::new(width, 1000.0),
+                    ),
+                },
+            );
+        });
+        harness.run_steps(1);
+        most = most.max(harness.ctx.fonts(|fonts| fonts.num_galleys_in_cache()));
+    }
+    assert!(most < 1000, "{most} texts laid out in one frame of a drag");
 }
 
 #[test]
@@ -321,4 +367,14 @@ fn manual_model_does_not_grow_the_dock_with_a_starlark_section() {
     harness.run_steps(3);
     let title = harness.state().catalog.text("program-source-title");
     assert!(harness.query_by_label(&title).is_none());
+}
+
+#[test]
+fn a_row_breaks_after_its_last_space_and_inside_a_word_only_wider_than_a_row() {
+    let starts = |text: &str| super::row_starts(text, 10.0, |_| 1.0);
+    assert_eq!(starts("short"), Vec::<usize>::new());
+    assert_eq!(starts("aaaa bbbb cccc"), [10]);
+    assert_eq!(starts("abcdefghijklmnop"), [10]);
+    assert_eq!(starts("ab cdefghijklmnopq"), [3, 13]);
+    assert_eq!(starts("aaaaaaaaa    b"), [13]);
 }
