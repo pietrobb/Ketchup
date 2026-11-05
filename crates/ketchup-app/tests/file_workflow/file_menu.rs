@@ -112,7 +112,20 @@ fn a_vanished_recent_document_is_reported_and_dropped_without_a_crash() {
 #[test]
 fn a_recent_document_whose_folder_does_not_answer_stays_listed_when_clicked() {
     let directory = tempfile::tempdir().unwrap();
-    let offline = directory.path().join("server-share").join("house.ketchup");
+    // No folder above it answers: on Windows a drive nothing is mapped to,
+    // as a share whose server is off; elsewhere a folder outside the home
+    // folder, as an unmounted `/Volumes/NAS`. A folder deleted on this
+    // computer's own disk is gone instead (review 2026-11-04 r19 P3).
+    let volume = if cfg!(windows) {
+        ('D'..='Z')
+            .rev()
+            .map(|letter| PathBuf::from(format!("{letter}:\\")))
+            .find(|root| !root.exists())
+            .expect("a free drive letter")
+    } else {
+        directory.path().to_owned()
+    };
+    let offline = volume.join("server-share").join("house.ketchup");
     let store = MemoryRecentFiles::holding(vec![offline.clone()]);
     let mut shell = shell_remembering(&store, ScriptedFileDialogs::new().always_discard());
     let revision = shell.app().document_revision();
