@@ -14,6 +14,7 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 - A DXF drawing whose header names Windows-1252 but whose texts read as Windows-1250 (`Kuchyně`, `Předsíň`) is written back naming Windows-1250, so after a text is deleted in Kečup the rest no longer reads as `Kuchynì` in Kečup or AutoCAD.
 - Deciding the code page of a DXF drawing, a word counts once however often it is written: one Czech or Slovak layer name repeated on every entity no longer outvotes the Western texts or turns the drawing on its own; it is warned of.
 - A DXF drawing whose MTEXT font (`\f…|c238;`) or text style font names the East European character set counts that as a vote for Windows-1250, so a short Czech drawing headed Windows-1252 reads `Kuchyně`, not `Kuchynì`.
+- Writing an edited DXF back, a text, fill or entity moved or taken out in Kečup is refused when the file changed it since the import: a text that lies elsewhere or reads otherwise, a fill that covers another area, an entity on another layer. Before, a text moved in both was written where neither put it, and a reworded one was deleted unseen.
 
 ## 0.3.2 — 2026-11-04
 

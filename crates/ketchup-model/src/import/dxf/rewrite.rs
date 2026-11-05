@@ -12,6 +12,8 @@ use std::fmt;
 use std::io::Cursor;
 use std::ops::Range;
 
+mod compare;
+
 use super::code_page::CodePage;
 use super::text::unicode_escapes;
 use super::underlay::text_encoding;
@@ -257,27 +259,6 @@ fn rebinds(read: &UnderlayLines, lines: &UnderlayLines, edits: &UnderlayEdits) -
         }
         tops
     }
-    /// The points of object `id` and of every object it placed, which follow it.
-    fn points(lines: &UnderlayLines, id: usize) -> Vec<&[[f64; 2]]> {
-        let objects = &lines.objects().objects;
-        let mut placed = BTreeSet::from([id]);
-        let mut runs = Vec::new();
-        for (at, object) in objects.iter().enumerate().skip(id) {
-            let parent = object
-                .parent
-                .and_then(|parent| usize::try_from(parent).ok());
-            if at != id && !parent.is_some_and(|parent| placed.contains(&parent)) {
-                break;
-            }
-            placed.insert(at);
-            runs.extend(object.parts.iter().filter_map(|part| {
-                let layer = lines.layers().get(place(part.layer))?;
-                let range = place(part.points.start)..place(part.points.end);
-                layer.points_mm().get(range)
-            }));
-        }
-        runs
-    }
     /// The top-level object that placed object `id`, or `id` itself.
     fn top_of(lines: &UnderlayLines, mut id: usize) -> usize {
         let objects = &lines.objects().objects;
@@ -312,12 +293,11 @@ fn rebinds(read: &UnderlayLines, lines: &UnderlayLines, edits: &UnderlayEdits) -
     let (mut lies_alike, mut changed) = (false, 0);
     for (key, &id) in &then {
         let found = now.get(key)?;
-        let at = points(lines, id);
-        let alike = at == points(read, *found);
+        let alike = compare::difference(lines, id, read, *found).is_none();
         if !alike && edited.contains(&id) {
             return None;
         }
-        lies_alike |= alike && at.iter().any(|run| !run.is_empty());
+        lies_alike |= alike && compare::draws(lines, id);
         changed += usize::from(!alike);
     }
     let added = now.keys().filter(|key| !then.contains_key(*key)).count();

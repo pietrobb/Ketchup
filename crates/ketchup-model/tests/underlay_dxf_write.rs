@@ -1548,6 +1548,66 @@ fn an_entity_taken_out_that_lies_elsewhere_in_the_file_now_is_refused() {
     );
 }
 
+/// Review 2026-11-04 r19 CD-161: only the points of lines were compared, so a text moved
+/// in the file since the import and moved again in Kečup was written where neither put
+/// it, and one whose words changed in the file was taken out unseen. Its anchor and text,
+/// a fill and the layer are compared too.
+#[test]
+fn an_edited_text_fill_or_entity_changed_in_the_file_since_is_refused() {
+    let source = source();
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let edited = |handle: u64, moved: bool| {
+        let mut edits = UnderlayEdits::default();
+        let id = id_of(lines, handle);
+        if moved {
+            edits
+                .moved_objects
+                .insert(id, [[1.0, 0.0, 1000.0], [0.0, 1.0, 0.0]]);
+        } else {
+            edits.removed_objects.insert(id);
+        }
+        edits
+    };
+    let written = |changed: &str, edits: &UnderlayEdits| {
+        assert_ne!(changed, source);
+        write_reported(
+            changed.as_bytes(),
+            DxfImportOptions::new(None),
+            lines,
+            edits,
+        )
+    };
+    let text_at = "10\n500\n20\n500\n30\n0\n40\n250\n1\nWC 1.02\n";
+    let moved_text = source.replace(text_at, "10\n5000\n20\n500\n30\n0\n40\n250\n1\nWC 1.02\n");
+    let reworded = source.replace(text_at, "10\n500\n20\n500\n30\n0\n40\n250\n1\nEXIT\n");
+    let fill = source.replace(
+        "10\n7000\n20\n0\n10\n8000\n20\n0\n",
+        "10\n7000\n20\n0\n10\n8500\n20\n0\n",
+    );
+    let relayered = source.replace(
+        "0\nLINE\n5\nA0\n330\n1F\n100\nAcDbEntity\n8\nwalls\n",
+        "0\nLINE\n5\nA0\n330\n1F\n100\nAcDbEntity\n8\nnotes\n",
+    );
+    for (changed, handle, moved) in [
+        (&moved_text, 0xA3, true),
+        (&reworded, 0xA3, false),
+        (&fill, 0xA8, false),
+        (&relayered, 0xA0, false),
+    ] {
+        match written(changed, &edited(handle, moved)) {
+            Err(EditedDxfError::Refused(DxfEditRefusal::ReadDifferently)) => {}
+            other => panic!("{handle:X}: {other:?}"),
+        }
+    }
+    // Not edited, each is written as the file has it, and said.
+    for changed in [&moved_text, &reworded, &fill, &relayered] {
+        let written =
+            written(changed, &edited(0xA7, true)).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(written.changed_in_file, 1);
+    }
+}
+
 /// Review 2026-11-04 CD-140: a newer revision of the file that only gained an entity was
 /// bound again and written with it, and said nothing had changed in it since the import.
 #[test]
