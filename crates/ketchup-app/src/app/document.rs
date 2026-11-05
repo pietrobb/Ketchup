@@ -62,6 +62,9 @@ impl KetchupApp {
         self.cancel_mesh_conversion();
         self.tool_preview = None;
         self.drawings = crate::app_state::DrawingsState::default();
+        // Its ids are of the document that goes; dropping its run stops it
+        // (review 2026-11-04 r19 MCP-160).
+        self.reviews.fea_review_dialog = None;
         self.viewer_prep = crate::app_state::ViewerPrepState::default();
         self.push_pull.smart_proposal = None;
         self.push_pull.smart_planning = None;
@@ -1122,6 +1125,7 @@ impl KetchupApp {
                         return Err(self.catalog.refusal("fea-review-one-body"));
                     };
                     Ok(FeaReviewDialog {
+                        document_id: snapshot.document_id(),
                         definition_id: occurrence.definition_id(),
                         feature_id: *feature_id,
                         occurrence_id,
