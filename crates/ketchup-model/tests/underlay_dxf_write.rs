@@ -1398,9 +1398,20 @@ fn another_drawing_and_one_read_differently_are_refused_apart() {
         Err(EditedDxfError::Refused(refusal)) => refusal,
         other => panic!("{other:?}"),
     };
-    // An entity of another handle: another drawing.
-    let renamed = source.replace("0\nLINE\n5\nA0\n", "0\nLINE\n5\nF0\n");
+    // Entities all of other handles: another drawing.
+    let renamed = source.replace("\n5\nA", "\n5\nF");
     assert_eq!(refusal(&renamed, lines), DxfEditRefusal::NotTheSource);
+    // The edited entity alone of another handle: it was deleted in the file, and is named
+    // (review 2026-11-04 r19 P3).
+    let renamed = source.replace("0\nLINE\n5\nA0\n", "0\nLINE\n5\nF0\n");
+    assert!(
+        matches!(
+            refusal(&renamed, lines),
+            DxfEditRefusal::DeletedInFile { handle: 0xA0, .. }
+        ),
+        "{:?}",
+        refusal(&renamed, lines)
+    );
     // The same entities, the line moved longer: it reads differently, and is named
     // (review 2026-11-04 r19 CD-163).
     let longer = source.replace("11\n4000\n21\n0\n", "11\n4100\n21\n0\n");
@@ -1795,6 +1806,71 @@ fn an_entity_added_to_the_file_since_the_import_is_said() {
     assert_eq!((written.changed_in_file, written.added_in_file), (0, 1));
     let text = String::from_utf8(written.dxf).unwrap();
     assert!(text.contains("0\nLINE\n5\nB0\n"), "{text}");
+}
+
+/// Review 2026-11-04 r19 P3: an entity deleted in AutoCAD since the import, and not edited
+/// in Kečup, refused the whole drawing. It is left out, as the file has it, and said; one
+/// that was edited is refused by its object and handle.
+#[test]
+fn an_entity_deleted_in_the_file_is_left_out_unless_it_was_edited() {
+    let source = source();
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let arc = "0\nARC\n5\nA1\n330\n1F\n100\nAcDbEntity\n8\nwalls\n100\nAcDbCircle\n\
+               10\n4000\n20\n2000\n30\n0\n40\n1000\n100\nAcDbArc\n50\n0\n51\n90\n";
+    let deleted = source.replacen(arc, "", 1);
+    assert_ne!(deleted, source);
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(id_of(lines, 0xA0));
+    let written = write_reported(
+        deleted.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        (
+            written.changed_in_file,
+            written.added_in_file,
+            written.removed_in_file
+        ),
+        (0, 0, 1)
+    );
+    let text = String::from_utf8(written.dxf).unwrap();
+    assert!(
+        !text.contains("5\nA0\n") && !text.contains("5\nA1\n"),
+        "{text}"
+    );
+    assert!(text.contains("5\nA2\n"), "{text}");
+
+    let arc_id = id_of(lines, 0xA1);
+    let mut moved = UnderlayEdits::default();
+    moved
+        .moved_objects
+        .insert(arc_id, [[1.0, 0.0, 500.0], [0.0, 1.0, 0.0]]);
+    let refused = write_reported(
+        deleted.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &moved,
+    );
+    assert!(
+        matches!(
+            &refused,
+            Err(EditedDxfError::Refused(DxfEditRefusal::DeletedInFile {
+                object,
+                handle: 0xA1,
+                ..
+            })) if *object == arc_id
+        ),
+        "{refused:?}"
+    );
+    let message = refused.unwrap_err().to_string();
+    assert!(
+        message.contains("handle A1") && message.contains("no longer in the file"),
+        "{message}"
+    );
 }
 
 /// Review 2026-10-29 CD-63: a drawing that declares no unit, read in centimetres and

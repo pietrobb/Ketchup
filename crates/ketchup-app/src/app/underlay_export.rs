@@ -83,7 +83,10 @@ impl UnderlayExportError {
         use ketchup_model::import::DxfEditRefusal;
         match self {
             Self::Worker(UnderlayWorkerError::Read(UnderlayReadError::Refused(
-                UnderlayRefusal::NotWritten(DxfEditRefusal::ChangedInFile { object, .. }),
+                UnderlayRefusal::NotWritten(
+                    DxfEditRefusal::ChangedInFile { object, .. }
+                    | DxfEditRefusal::DeletedInFile { object, .. },
+                ),
             ))) => Some(*object),
             _ => None,
         }
@@ -128,6 +131,8 @@ struct WrittenDrawing {
     changed_in_file: usize,
     /// The entities the file gained since it was imported.
     added_in_file: usize,
+    /// The objects not edited whose entity the file no longer has.
+    removed_in_file: usize,
 }
 
 /// Whether a drawing written on a thread may still take the place of the file named:
@@ -167,6 +172,7 @@ impl WrittenDrawing {
             skipped: self.skipped,
             changed_in_file: self.changed_in_file,
             added_in_file: self.added_in_file,
+            removed_in_file: self.removed_in_file,
         })
     }
 }
@@ -227,6 +233,7 @@ impl UnderlayExportJob {
             skipped: worker.skipped,
             changed_in_file: worker.changed_in_file,
             added_in_file: worker.added_in_file,
+            removed_in_file: worker.removed_in_file,
         })
     }
 }
@@ -504,6 +511,10 @@ impl KetchupApp {
                 (
                     "digest-underlay-exported-added-in-file",
                     written.added_in_file,
+                ),
+                (
+                    "digest-underlay-exported-removed-in-file",
+                    written.removed_in_file,
                 ),
             ] {
                 if count > 0 {

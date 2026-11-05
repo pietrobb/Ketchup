@@ -117,7 +117,11 @@ fn write(input: &UnderlayWriteInput) -> Result<UnderlayWriteOutcome, UnderlayRef
         },
         EditedDxfError::Refused(refusal) => UnderlayRefusal::NotWritten(refusal),
     })?;
-    let (changed_in_file, added_in_file) = (written.changed_in_file, written.added_in_file);
+    let (changed_in_file, added_in_file, removed_in_file) = (
+        written.changed_in_file,
+        written.added_in_file,
+        written.removed_in_file,
+    );
     let written = written.dxf;
     let to_dwg = input
         .output
@@ -143,6 +147,7 @@ fn write(input: &UnderlayWriteInput) -> Result<UnderlayWriteOutcome, UnderlayRef
         skipped,
         changed_in_file,
         added_in_file,
+        removed_in_file,
     }))
 }
 

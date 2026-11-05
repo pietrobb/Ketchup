@@ -87,6 +87,16 @@ pub enum DxfEditRefusal {
         was_mm: Option<[i64; 2]>,
         now_mm: Option<[i64; 2]>,
     },
+    /// The entity of an object edited in Kečup is no longer in the file: deleted there
+    /// since the import, where it lay at `was_mm`. One not edited is left out as the file
+    /// has it (review 2026-11-04 r19 P3).
+    DeletedInFile {
+        object: u32,
+        handle: u64,
+        kind: String,
+        edit: EditOfObject,
+        was_mm: Option<[i64; 2]>,
+    },
 }
 
 /// What was done in Kečup to an object of the underlay.
@@ -117,6 +127,16 @@ impl Difference {
             Self::Text => "text",
             Self::Fill => "fill",
         }
+    }
+}
+
+/// The entity of kind `kind` and handle `handle`, said.
+fn entity(kind: &str, handle: u64) -> String {
+    // A DXF handle is never 0: the drawing has none (R12).
+    if handle == 0 {
+        format!("a {kind} without a handle")
+    } else {
+        format!("the {kind} of handle {handle:X}")
     }
 }
 
@@ -194,16 +214,27 @@ impl fmt::Display for DxfEditRefusal {
                  differently by this Kečup: it lay at {} mm and lies at {} mm now; undo that \
                  edit of object {object} to write the drawing with the others, or import the \
                  drawing again",
-                // A DXF handle is never 0: the drawing has none (R12).
-                if *handle == 0 {
-                    format!("a {kind} without a handle")
-                } else {
-                    format!("the {kind} of handle {handle:X}")
-                },
+                entity(kind, *handle),
                 edit.done(),
                 difference.what(),
                 at(*was_mm),
                 at(*now_mm)
+            ),
+            Self::DeletedInFile {
+                object,
+                handle,
+                kind,
+                edit,
+                was_mm,
+            } => write!(
+                formatter,
+                "object {object}, of {}, was {} in Kečup, but that entity is no longer in the \
+                 file, deleted there since it was imported; it lay at {} mm; undo that edit of \
+                 object {object} to write the drawing with the others, or import the drawing \
+                 again",
+                entity(kind, *handle),
+                edit.done(),
+                at(*was_mm)
             ),
         }
     }
@@ -221,9 +252,13 @@ pub struct EditedDxf {
     pub changed_in_file: usize,
     /// The entities the file has that the underlay has no object of: added to the file
     /// since it was imported. They are written as the file has them, and said. A count of
-    /// 0 for both does not prove the file unchanged: an entity no line was read from is
+    /// 0 for each does not prove the file unchanged: an entity no line was read from is
     /// not compared.
     pub added_in_file: usize,
+    /// The objects of the underlay, none of them edited, whose entity the file no longer
+    /// has: deleted there since it was imported. They are left out, as the file has it,
+    /// and said (review 2026-11-04 r19 P3: they refused the whole drawing).
+    pub removed_in_file: usize,
 }
 
 /// What [`rebinds`] found of a file that reads as other lines than the underlay's.
@@ -231,6 +266,7 @@ pub struct EditedDxf {
 struct Rebound {
     changed: usize,
     added: usize,
+    removed: usize,
 }
 
 /// `source`, the drawing `lines` were read from with `options`, written with `edits`. A
@@ -268,6 +304,7 @@ pub fn write_edited_dxf(
         dxf: drawing.write(lines, edits, &frame)?,
         changed_in_file: rebound.changed,
         added_in_file: rebound.added,
+        removed_in_file: rebound.removed,
     })
 }
 
@@ -404,9 +441,21 @@ fn rebinds(
             }
         }
     }
-    let (mut lies_alike, mut changed, mut refused) = (false, 0, None);
+    let (mut lies_alike, mut changed, mut removed, mut refused) = (false, 0, 0, None);
     for (key, &id) in &then {
-        let found = *now.get(key).ok_or(None)?;
+        let Some(&found) = now.get(key) else {
+            if let (Some(&(object, edit)), None) = (edited.get(&id), &refused) {
+                refused = Some(DxfEditRefusal::DeletedInFile {
+                    object,
+                    handle: key.0,
+                    kind: key.1.to_owned(),
+                    edit,
+                    was_mm: compare::place_mm(lines, id),
+                });
+            }
+            removed += 1;
+            continue;
+        };
         let difference = compare::difference(lines, id, read, found);
         if let (Some(difference), Some(&(object, edit)), None) =
             (difference, edited.get(&id), &refused)
@@ -434,7 +483,11 @@ fn rebinds(
         return Err(Some(refused));
     }
     let added = now.keys().filter(|key| !then.contains_key(*key)).count();
-    Ok(Rebound { changed, added })
+    Ok(Rebound {
+        changed,
+        added,
+        removed,
+    })
 }
 
 /// The unit of [`UNITS`], other than the one `read` was read in, whose scale against it
