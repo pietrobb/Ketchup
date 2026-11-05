@@ -43,3 +43,8 @@ workspace = true
 [[test]]
 name = "integration"
 path = "tests/integration.rs"
+
+# Its comparison is tested with the crate's tests (review 2026-11-04 r19 P3, REL-143).
+[[example]]
+name = "resaved"
+test = true
