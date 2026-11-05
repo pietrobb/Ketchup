@@ -842,6 +842,45 @@ fn tools_export_drawing_writes_the_edited_drawing_as_dxf() {
     );
 }
 
+/// Review 2026-11-04 r19 CD-160: a drawing read without a move passed no offset to the
+/// export, so far points the file gained since moved its lines by their new median and
+/// the export was refused as read differently.
+#[test]
+fn a_drawing_read_unmoved_is_written_back_though_the_file_gained_far_points() {
+    const PLAN: &str = concat!(
+        "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n",
+        "0\nSECTION\n2\nENTITIES\n",
+        "0\nLINE\n5\nA1\n8\nwalls\n10\n40\n20\n20\n11\n240\n21\n20\n",
+        "0\nLINE\n5\nA2\n8\naxes\n10\n40\n20\n120\n11\n240\n21\n120\n",
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("plan.dxf");
+    let output = directory.path().join("edited.dxf");
+    std::fs::write(&source, format!("{PLAN}0\nENDSEC\n0\nEOF\n")).unwrap();
+    let dialogs = dialogs::ScriptedFileDialogs::new()
+        .queue_import(ImportFormat::Dxf, &source)
+        .queue_export(&output);
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.dispatch_file_command(AppCommand::ImportDrawingUnderlay);
+    let mut harness = shell_of(app);
+    click(&mut harness, Vec3::new(100.0, 20.0, 0.0));
+    press(&mut harness, egui::Key::Delete);
+    // Five kilometres away, added in another program: half the points, so the median.
+    let far: String = (1..=4)
+        .map(|handle| format!("0\nPOINT\n5\nB{handle}\n8\nsurvey\n10\n5000000\n20\n0\n"))
+        .collect();
+    std::fs::write(&source, format!("{PLAN}{far}0\nENDSEC\n0\nEOF\n")).unwrap();
+    harness
+        .state_mut()
+        .dispatch_command(AppCommand::ExportUnderlayDxf);
+    let app = harness.state();
+    let written =
+        std::fs::read_to_string(&output).unwrap_or_else(|error| panic!("{error}: {}", app.digest));
+    assert!(!written.contains("5\nA1\n"), "{written}");
+    assert!(written.contains("0\nLINE\n5\nA2\n"), "{written}");
+    assert!(written.contains("0\nPOINT\n5\nB1\n"), "{written}");
+}
+
 /// Review 2026-10-29 SEC-60: in the window the drawing is written back on a thread while
 /// the file activity indication shows, so the window keeps painting; stopped, it keeps
 /// the file the user chose to replace. Given again, the export replaces it.

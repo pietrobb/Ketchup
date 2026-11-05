@@ -193,8 +193,9 @@ impl UnderlayExportJob {
                 source: self.source,
                 // A drawing that declares no unit is matched against its lines in each.
                 unit_if_unitless: Some(ImportLengthUnit::Millimetre),
-                // Read again it moves as it moved then, also by the document's geo origin.
-                geo_origin_mm: (self.offset_mm != [0.0; 2]).then_some(self.offset_mm),
+                // Read again it moves as it moved then, also not at all (review 2026-11-04
+                // r19 CD-160: points the file gained since moved it by their median).
+                geo_origin_mm: Some(self.offset_mm),
                 lines,
                 layers: self.layers,
                 edits: self.edits,
