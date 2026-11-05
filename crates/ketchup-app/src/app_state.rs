@@ -293,6 +293,9 @@ pub(crate) struct DrawingsState {
     /// The SHA-256 of the last drawing file the window wrote at each path,
     /// the one an AI client's export may replace without asking.
     pub(crate) written: BTreeMap<std::path::PathBuf, String>,
+    /// The ground floor found for ±0,000 in the document as it was then,
+    /// shown in the window, which asks every frame.
+    pub(crate) found_zero: std::cell::RefCell<Option<(ExactCacheKey, f64)>>,
 }
 
 /// Viewer sharing preparation kept as project companion data, not CAD.

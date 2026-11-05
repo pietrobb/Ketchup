@@ -42,8 +42,6 @@ const fn sheet_language_name(language: SheetLanguage) -> &'static str {
 const DEFAULT_SOLID_COLOR: [u8; 3] = [190, 190, 190];
 /// The highest plan cut the window offers: above a storey, a plan stops being a floor plan.
 const MAX_PLAN_CUT_ABOVE_FLOOR_MM: u32 = 10_000;
-/// The farthest from z = 0 the window lets ±0,000 be set: a tall building.
-const MAX_ZERO_LEVEL_MM: i32 = 200_000;
 const SHEET_NAMESPACE: &str = "org.ketchup.drawings";
 const SHEET_SETTINGS_PATH: &str = "sheet-v1.json";
 
@@ -786,9 +784,32 @@ impl KetchupApp {
     /// floor of every body with its exact solid, shown or hidden, so hiding
     /// the floor slab does not move it (review 2026-11-04 MF-141).
     fn zero_level_mm(&self, snapshot: &Snapshot, settings: &SheetSettings) -> f64 {
-        if let Some(height) = settings.zero_level_mm {
-            return f64::from(height);
+        match settings.zero_level_mm {
+            Some(height) => f64::from(height),
+            None => self.found_zero_mm(snapshot),
         }
+    }
+
+    /// The ground floor [`Self::zero_level_mm`] takes when the settings give
+    /// no height, kept while the document and its solids are unchanged.
+    fn found_zero_mm(&self, snapshot: &Snapshot) -> f64 {
+        let key = (
+            snapshot.document_id(),
+            snapshot.revision_id(),
+            self.exact.results.contents_stamp(),
+        );
+        let mut found = self.drawings.found_zero.borrow_mut();
+        if let Some((cached, height)) = *found
+            && cached == key
+        {
+            return height;
+        }
+        let height = self.ground_floor_mm(snapshot);
+        *found = Some((key, height));
+        height
+    }
+
+    fn ground_floor_mm(&self, snapshot: &Snapshot) -> f64 {
         let exact = self.exact.results.body_values(snapshot).unwrap_or_default();
         let mut solids = Vec::new();
         for occurrence in snapshot.scene_query() {
@@ -1567,26 +1588,32 @@ impl KetchupApp {
                             editing.plan_cut_above_floor_mm = Some(height);
                         }
                         ui.end_row();
-                        // ±0,000: the ground floor, or a height the user sets
-                        // (review 2026-11-04 MF-141).
+                        // ±0,000: the ground floor found, shown, or a height the
+                        // user sets from it, any height (review 2026-11-04 MF-141;
+                        // r19 MF-160: a model in absolute heights was held to ±200 m).
                         ui.label(self.catalog.text("drawings-zero-level"));
+                        // Whole millimetres; none past the range of i32 (±2 147 km).
+                        let found = format!("{:.0}", self.found_zero_mm(&self.document.current()))
+                            .parse::<i32>()
+                            .ok();
                         ui.horizontal(|ui| {
                             let mut ground = editing.zero_level_mm.is_none();
+                            let shown =
+                                found.map_or_else(|| "–".to_owned(), |found| found.to_string());
                             if ui
                                 .checkbox(
                                     &mut ground,
-                                    self.catalog.text("drawings-zero-level-ground"),
+                                    self.catalog.format(
+                                        "drawings-zero-level-ground",
+                                        &BTreeMap::from([("height", shown)]),
+                                    ),
                                 )
                                 .changed()
                             {
-                                editing.zero_level_mm = (!ground).then_some(0);
+                                editing.zero_level_mm = (!ground).then(|| found.unwrap_or(0));
                             }
                             if let Some(height) = editing.zero_level_mm.as_mut() {
-                                ui.add(
-                                    egui::DragValue::new(height)
-                                        .range(-MAX_ZERO_LEVEL_MM..=MAX_ZERO_LEVEL_MM)
-                                        .suffix(" mm"),
-                                );
+                                ui.add(egui::DragValue::new(height).suffix(" mm"));
                             }
                         });
                         ui.end_row();

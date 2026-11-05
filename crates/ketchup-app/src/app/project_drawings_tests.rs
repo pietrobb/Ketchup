@@ -1095,6 +1095,52 @@ fn hiding_the_floor_slab_does_not_move_zero_and_the_sheet_can_set_it() {
     assert_eq!(levels(&app), ["±0,000", "+2,500"]);
 }
 
+/// Review 2026-11-04 r19 MF-160: in a model in absolute heights (Bpv, every
+/// floor about 245 m up) the ground floor found is the lowest floor, a
+/// basement there, and the height the user set was held to ±200 m. The
+/// window shows the floor it found, a set height starts from it, and any
+/// height is kept.
+#[test]
+fn the_drawings_window_shows_the_found_zero_and_keeps_any_height() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = KetchupApp::new();
+    for (id, name, top) in [(911, "basement", 242_000.0), (912, "ground", 245_300.0)] {
+        app.document
+            .apply_batch(&crate::app::drawing::create_box_batch(
+                DefinitionId(id),
+                [FeatureId(id * 10), FeatureId(id * 10 + 1)],
+                OccurrenceId(id),
+                [name, "profile", "extrusion", name],
+                Vec3::new(0.0, 0.0, top - 300.0),
+                Vec3::new(8000.0, 8000.0, 300.0),
+            ))
+            .unwrap();
+    }
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1600.0, 1200.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.state_mut().open_project_drawings_window();
+    harness.step();
+    let found = harness.state().catalog.format(
+        "drawings-zero-level-ground",
+        &BTreeMap::from([("height", "242000".to_owned())]),
+    );
+    harness.get_by_label(&found).click_accesskit();
+    harness.run();
+    assert_eq!(
+        harness.state().drawings.editing.zero_level_mm,
+        Some(242_000),
+        "a set height starts from the floor found"
+    );
+    harness.state_mut().drawings.editing.zero_level_mm = Some(245_300);
+    harness.step();
+    harness.step();
+    let app = harness.state();
+    assert_eq!(app.drawings.editing.zero_level_mm, Some(245_300));
+    assert_eq!(app.sheet_settings().zero_level_mm, Some(245_300));
+}
+
 /// Review 2026-11-04 MF-140: the level marks of a Czech sheet wrote a comma
 /// but its dimensions and cutting captions a point ("1234.5", "využito
 /// 87.5 %"), both on one sheet, in the PDF and the DXF. Every number a Czech or
