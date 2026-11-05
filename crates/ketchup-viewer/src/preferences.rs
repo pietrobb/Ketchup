@@ -246,8 +246,11 @@ mod tests {
     fn a_save_keeps_the_lines_it_does_not_know() {
         let folder = tempfile::tempdir().unwrap();
         let path = folder.path().join("viewer-settings.txt");
-        std::fs::write(&path, "language = sk\nfuture-setting = 3\nprojection = perspective\n")
-            .unwrap();
+        std::fs::write(
+            &path,
+            "language = sk\nfuture-setting = 3\nprojection = perspective\n",
+        )
+        .unwrap();
         let mut preferences = Preferences::load(&path);
         preferences.projection = Some(FittedProjection::Orthographic);
         preferences.save(&path).unwrap();
@@ -255,7 +258,11 @@ mod tests {
         assert_eq!(Preferences::parse(&saved), preferences);
         assert!(saved.contains("future-setting = 3"), "{saved}");
         assert!(!saved.contains("perspective"), "{saved}");
-        assert_eq!(saved.matches("# Kečup Viewer settings").count(), 1, "{saved}");
+        assert_eq!(
+            saved.matches("# Kečup Viewer settings").count(),
+            1,
+            "{saved}"
+        );
     }
 
     /// A settings file that cannot be read is not written over.
