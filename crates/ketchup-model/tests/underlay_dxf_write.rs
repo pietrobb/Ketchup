@@ -1908,6 +1908,19 @@ fn an_entity_deleted_in_the_file_is_left_out_unless_it_was_edited() {
         !text.contains("5\nA1\n") && text.contains("5\nA0\n"),
         "{text}"
     );
+
+    // Review 2026-11-06 r23 CD-200: moved first, then taken out, it was still refused as
+    // moved. Taken out is what was done to it.
+    let mut moved_then_removed = moved.clone();
+    moved_then_removed.removed_objects.insert(arc_id);
+    let written = write_reported(
+        deleted.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &moved_then_removed,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(written.removed_in_file, 1);
 }
 
 /// Review 2026-10-29 CD-63: a drawing that declares no unit, read in centimetres and
@@ -2654,6 +2667,75 @@ fn every_edit_refused_by_the_file_is_named_at_once() {
             && message.contains("the CIRCLE of handle A7"),
         "{message}"
     );
+
+    // Review 2026-11-06 r23 CD-201: 9 999 refused edits were said in 3.5 MB, into the
+    // status line and an MCP reply. The first five are named, the rest counted.
+    let many = DxfEditRefusal::Several(
+        (0..9_999)
+            .map(|object| DxfEditRefusal::NoHandle { object })
+            .collect(),
+    );
+    let message = many.to_string();
+    assert!(
+        message.starts_with("9999 edits are refused: 1) object 0")
+            && message.contains("; 5) object 4")
+            && !message.contains("6) object 5")
+            && message.ends_with("; and 9994 more"),
+        "{message}"
+    );
+    assert!(message.len() < 2_000, "{}", message.len());
+}
+
+/// Review 2026-11-06 r23 CD-202: a drawing in metres at geodetic coordinates (S-JTSK, UTM:
+/// some 5e9 mm, where a step of `f64` is 1e-6 mm) written back with 15 significant digits
+/// was read as other lines at a tolerance of 1e-7 mm, and the edit refused. Its own
+/// rounding changes nothing; a real change still refuses.
+#[test]
+fn a_geodetic_drawing_written_back_with_its_own_rounding_is_edited() {
+    let line = |handle: &str, x: &str, y: &str| {
+        format!(
+            "0\nLINE\n5\n{handle}\n330\n1F\n100\nAcDbEntity\n8\nwalls\n100\nAcDbLine\n\
+             10\n{x}\n20\n{y}\n30\n0\n11\n512346.123456789\n21\n5432110.123456789\n31\n0\n"
+        )
+    };
+    let drawing = |first: &str| {
+        format!(
+            "{}{TABLES}0\nSECTION\n2\nENTITIES\n{first}{}0\nENDSEC\n0\nEOF\n",
+            HEADER.replace("$INSUNITS\n70\n4", "$INSUNITS\n70\n6"),
+            line("B1", "512340.5", "5432100.25"),
+        )
+    };
+    let source = drawing(&line("B0", "512345.123456789", "5432109.123456789"));
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let mut edits = UnderlayEdits::default();
+    edits
+        .moved_objects
+        .insert(id_of(lines, 0xB0), [[1.0, 0.0, 1000.0], [0.0, 1.0, 0.0]]);
+    let options = DxfImportOptions::new(None);
+    for rounded in ["512345.123456789", "512345.12345679", "512345.1234567891"] {
+        let written = write_reported(
+            drawing(&line("B0", rounded, "5432109.12345679")).as_bytes(),
+            options,
+            lines,
+            &edits,
+        )
+        .unwrap_or_else(|error| panic!("{rounded}: {error}"));
+        assert_eq!(written.changed_in_file, 0, "{rounded}");
+    }
+    // Moved by a millimetre in the file, it is refused as changed there, and said to lie
+    // where the file has it, not where it lies against the underlay's origin.
+    let refused = write_reported(
+        drawing(&line("B0", "512345.124456789", "5432109.123456789")).as_bytes(),
+        options,
+        lines,
+        &edits,
+    );
+    let Err(EditedDxfError::Refused(refusal)) = refused else {
+        panic!("{refused:?}")
+    };
+    let message = refusal.to_string();
+    assert!(message.contains("512345123, 5432109123 mm"), "{message}");
 }
 
 /// Review 2026-11-06 P3: in a drawing without handles an entity is told by its place
