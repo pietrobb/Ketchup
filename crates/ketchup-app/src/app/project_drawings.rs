@@ -347,8 +347,9 @@ const SET_LIST_HEADER: &str = "Ketchup drawing set";
 const OWNED_SET_LIST_HEADER: &str = "Ketchup drawing set of a project file";
 /// The first line of the list a DXF or DWG set is written with, its third
 /// line naming the project's file by its name alone, so the list carries no
-/// folder with the user's name. Whose the set is the document says: it keeps
-/// the list it wrote (review 2026-11-04 r19 MF-162).
+/// folder with the user's name. Whose the set is says the list each document
+/// wrote, kept with the user's settings (review 2026-11-04 r19 MF-162,
+/// 2026-11-06 SEC-182).
 const DOCUMENT_SET_LIST_HEADER: &str = "Ketchup drawing set of a document";
 
 /// The line of a 0.3.2 set's list naming the file of the project it is drawn
@@ -432,13 +433,7 @@ impl KetchupApp {
                 .path
                 .clone()
                 .or_else(|| self.recovery_requested_path().map(Path::to_path_buf)),
-            written: self.written_drawings().unwrap_or_else(|error| {
-                // Said in the log, not dropped (review 2026-11-06 P3).
-                ketchup_rejection::log!(
-                    "the drawing files the document wrote do not read, so none is taken as its: {error}"
-                );
-                BTreeMap::new()
-            }),
+            written: self.written_drawings(),
         }
     }
 }

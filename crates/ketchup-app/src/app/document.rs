@@ -887,7 +887,8 @@ impl KetchupApp {
                 // Save As and the first save of a new model; a plain Save
                 // leaves Open Recent as it is.
                 let new_name = self.file.path.as_deref() != Some(path);
-                self.file.path = Some(path.to_owned());
+                let before = self.file.path.replace(path.to_owned());
+                self.drawings_saved(before.as_deref());
                 self.file.recovery_open = None;
                 self.file.identity = Some(saved_identity);
                 self.file.work_recovery_lock = None;

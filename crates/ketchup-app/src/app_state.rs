@@ -187,6 +187,9 @@ pub(crate) struct WindowSettings {
     pub(crate) dock_tab: Option<crate::DockTab>,
     /// File > Open Recent.
     pub(crate) recent: crate::recent_files::RecentFiles,
+    /// Where the drawing files each saved document wrote are kept between
+    /// windows; `None` keeps them in memory (review 2026-11-06 SEC-182).
+    pub(crate) written_drawings: Option<crate::recent_files::user_settings::SettingsFile>,
 }
 
 /// Which side panes and windows are open.
@@ -303,6 +306,10 @@ pub(crate) struct DrawingsState {
     pub(crate) unreadable: Option<String>,
     /// The document's sheet settings changed since it was opened or saved.
     pub(crate) unsaved: bool,
+    /// The drawing files the window wrote for the document while they are
+    /// not kept with the user's settings, by canonical path, with the SHA-256
+    /// of each (review 2026-11-06 SEC-182).
+    pub(crate) written: BTreeMap<PathBuf, String>,
     /// The set the last export was refused at as another project's, with
     /// what it was exported from, offered to take over (review 2026-11-04 r19
     /// MF-162).

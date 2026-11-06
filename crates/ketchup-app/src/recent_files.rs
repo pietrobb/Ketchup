@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-#[cfg(any(not(windows), test))]
 pub(crate) mod user_settings;
 
 /// How many documents File > Open Recent offers.

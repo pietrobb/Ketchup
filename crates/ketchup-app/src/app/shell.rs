@@ -154,6 +154,7 @@ impl KetchupApp {
                 },
                 dock_tab: None,
                 recent: recent_files::RecentFiles::default(),
+                written_drawings: None,
             },
             camera: app_state::CameraState {
                 projection_mode: ProjectionMode::Parallel,
@@ -285,6 +286,7 @@ impl KetchupApp {
         if let Some(settings) = recent_files::user_settings::SettingsFile::of_user() {
             app.window.recent = recent_files::RecentFiles::from_store(Box::new(settings));
         }
+        app.window.written_drawings = crate::app::written_drawings::of_user();
         app.window.decimal = crate::length_input::DecimalSeparator::at_startup();
         app.dialogs = Box::new(NativeFileDialogs::with_parent(
             DialogParentWindow::from_creation_context(context),
@@ -318,6 +320,16 @@ impl KetchupApp {
     #[must_use]
     pub fn with_recent_files(mut self, store: Box<dyn recent_files::RecentFilesStore>) -> Self {
         self.window.recent = recent_files::RecentFiles::from_store(store);
+        self
+    }
+
+    /// Keep the drawing files each saved document wrote in the file at `path`.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_written_drawings(mut self, path: &Path) -> Self {
+        self.window.written_drawings = Some(recent_files::user_settings::SettingsFile::at(
+            path.to_path_buf(),
+        ));
         self
     }
 

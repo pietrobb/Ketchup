@@ -158,6 +158,9 @@ pub struct SetSheet {
 pub struct DrawingSet {
     pub sheets: Vec<SetSheet>,
     pub scale: u32,
+    /// The height of ±0,000 the level marks were read against: the one the
+    /// options set, else the ground floor found (review 2026-11-06 P3).
+    pub zero_level_mm: f64,
 }
 
 impl DrawingSet {
@@ -683,7 +686,18 @@ pub fn drawing_set_until(
             cutting: None,
         });
     }
-    Ok(DrawingSet { sheets, scale })
+    Ok(DrawingSet {
+        sheets,
+        scale,
+        zero_level_mm: zero_level(solids, options),
+    })
+}
+
+/// The height of ±0,000: where the options set it, else the ground floor.
+fn zero_level(solids: &[DrawingSolid], options: &DrawingSetOptions) -> f64 {
+    options
+        .zero_level_mm
+        .unwrap_or_else(|| ground_floor_of(&floor_levels(solids)))
 }
 
 /// The level marks of the sections and elevations (Měchenice MECH-6): ±0,000
@@ -694,9 +708,7 @@ fn section_levels(solids: &[DrawingSolid], options: &DrawingSetOptions) -> Vec<(
     let Some((low, high)) = bounds(solids) else {
         return Vec::new();
     };
-    let datum = options
-        .zero_level_mm
-        .unwrap_or_else(|| ground_floor_of(&floor_levels(solids)));
+    let datum = zero_level(solids, options);
     let separator = options.decimal_separator;
     level_heights(datum, &marked_floor_levels(solids), low[2], high[2])
         .into_iter()

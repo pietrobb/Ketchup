@@ -2,7 +2,9 @@
 //! language choice and File > Open Recent, in
 //! `~/Library/Application Support/Ketchup/settings.txt` on macOS and in
 //! `$XDG_CONFIG_HOME/Ketchup/settings.txt` or `~/.config/Ketchup/settings.txt`
-//! elsewhere, the folder the Viewer keeps its settings in.
+//! elsewhere, the folder the Viewer keeps its settings in. Files of that form
+//! beside it keep other things of the user's, the drawing files each document
+//! wrote (`drawings.txt`), on Windows in `%LOCALAPPDATA%\Ketchup`.
 //!
 //! One `key=value` per line, the value as written up to the line's end. A
 //! key may repeat (one line per recent document); a line this window does
@@ -16,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const FILE_NAME: &str = "settings.txt";
+#[cfg_attr(windows, allow(dead_code))]
 const LANGUAGE: &str = "language";
 const RECENT_FILE: &str = "recent";
 
@@ -30,8 +33,17 @@ impl SettingsFile {
     /// platform names a folder for it.
     #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn of_user() -> Option<Self> {
+        Self::of_user_named(FILE_NAME)
+    }
+
+    /// The file `name` of the user who started this window in the folder of
+    /// these settings; on Windows, which keeps them in the registry,
+    /// `%LOCALAPPDATA%\Ketchup`.
+    pub(crate) fn of_user_named(name: &str) -> Option<Self> {
         let var = |name| std::env::var_os(name).map(PathBuf::from);
-        let base = if cfg!(target_os = "macos") {
+        let base = if cfg!(windows) {
+            var("LOCALAPPDATA")
+        } else if cfg!(target_os = "macos") {
             var("HOME").map(|home| home.join("Library").join("Application Support"))
         } else {
             var("XDG_CONFIG_HOME")
@@ -39,7 +51,7 @@ impl SettingsFile {
                 .or_else(|| var("HOME").map(|home| home.join(".config")))
         };
         base.filter(|base| base.is_absolute())
-            .map(|base| Self::at(base.join("Ketchup").join(FILE_NAME)))
+            .map(|base| Self::at(base.join("Ketchup").join(name)))
     }
 
     pub(crate) const fn at(path: PathBuf) -> Self {
@@ -99,6 +111,17 @@ impl SettingsFile {
     /// its permissions; a new file is its owner's only, and no part file is
     /// left behind (review 2026-11-04 r19 P3).
     pub(crate) fn replace(&self, key: &str, values: &[String]) -> io::Result<()> {
+        self.update(key, |_| values.to_vec())
+    }
+
+    /// As [`Self::replace`], the values of `key` made by `values` from those
+    /// in the file while it waits for no other window, so a value another
+    /// window saved meanwhile is not lost.
+    pub(crate) fn update(
+        &self,
+        key: &str,
+        values: impl FnOnce(Vec<String>) -> Vec<String>,
+    ) -> io::Result<()> {
         let folder = self.path.parent().unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(folder)?;
         let lock = std::fs::OpenOptions::new()
@@ -111,24 +134,29 @@ impl SettingsFile {
         if damaged {
             std::fs::copy(&self.path, self.path.with_extension("txt.bad"))?;
         }
-        let mut lines: Vec<String> = lines
+        let (mut lines, of_key): (Vec<String>, Vec<String>) = lines.into_iter().partition(|line| {
+            line.split_once('=')
+                .is_none_or(|(name, _)| name.trim() != key)
+        });
+        let before = of_key
             .into_iter()
-            .filter(|line| {
-                line.split_once('=')
-                    .is_none_or(|(name, _)| name.trim() != key)
-            })
+            .filter_map(|line| line.split_once('=').map(|(_, value)| value.to_owned()))
             .collect();
-        lines.extend(values.iter().map(|value| format!("{key}={value}")));
+        lines.extend(values(before).iter().map(|value| format!("{key}={value}")));
         let mut text = lines.join("\n");
-        text.push('\n');
+        if !lines.is_empty() {
+            text.push('\n');
+        }
         crate::live_bridge::write_keeping_file(&self.path, &text, false)
     }
 
     /// The language tag chosen to be remembered.
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn language(&self) -> Option<String> {
         self.values(LANGUAGE).pop()
     }
 
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn save_language(&self, tag: &str) -> io::Result<()> {
         self.replace(LANGUAGE, &[tag.to_owned()])
     }
