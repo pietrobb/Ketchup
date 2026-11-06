@@ -153,12 +153,16 @@ impl Disk {
     /// Whether the folders of a missing `path` answer: its own folder is
     /// there, or the nearest one above it that is there is on this
     /// computer's disk (review 2026-11-04 r19 P3: a document whose folder was
-    /// deleted stayed out of reach for ever).
+    /// deleted stayed out of reach for ever). An empty folder does not answer:
+    /// it may be where a share is mounted, as sshfs under the home folder, while
+    /// it is not (review 2026-11-06 P3).
     fn folder_answers(&self, path: &Path) -> bool {
         for folder in path.ancestors().skip(1) {
             match std::fs::metadata(folder) {
                 Ok(metadata) => {
                     return metadata.is_dir()
+                        && std::fs::read_dir(folder)
+                            .is_ok_and(|mut entries| entries.next().is_some())
                         && (Some(folder) == path.parent()
                             || self
                                 .local
@@ -481,6 +485,7 @@ mod tests {
         let local = |folder: &Path| Disk {
             local: Some(folder.to_owned()),
         };
+        std::fs::write(directory.path().join("notes.txt"), "kept").unwrap();
         assert_eq!(local(directory.path()).presence(&document), Presence::Gone);
         assert_eq!(Disk { local: None }.presence(&document), Presence::Gone);
         // Outside the computer's own folders a missing folder may be a volume
@@ -490,6 +495,28 @@ mod tests {
         // Its own folder there still says it is gone anywhere.
         let beside = directory.path().join("a.ketchup");
         assert_eq!(local(&home).presence(&beside), Presence::Gone);
+    }
+
+    /// Review 2026-11-06 P3: an sshfs share under the home folder that is not
+    /// mounted now is an empty folder, which answered, so its documents were
+    /// dropped from Open Recent once clicked.
+    #[test]
+    fn a_document_under_an_empty_folder_may_be_on_a_share_not_mounted() {
+        let home = tempfile::tempdir().unwrap();
+        let mount = home.path().join("nas");
+        std::fs::create_dir(&mount).unwrap();
+        let disk = Disk {
+            local: Some(home.path().to_owned()),
+        };
+        let deep = mount.join("Domy").join("a.ketchup");
+        assert_eq!(disk.presence(&deep), Presence::Unavailable);
+        assert_eq!(
+            disk.presence(&mount.join("a.ketchup")),
+            Presence::Unavailable
+        );
+        std::fs::write(mount.join("b.ketchup"), "mounted").unwrap();
+        assert_eq!(disk.presence(&deep), Presence::Gone);
+        assert_eq!(disk.presence(&mount.join("a.ketchup")), Presence::Gone);
     }
 
     #[test]

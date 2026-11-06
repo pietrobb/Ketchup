@@ -13,6 +13,7 @@
 use super::RecentFilesStore;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 const FILE_NAME: &str = "settings.txt";
 const LANGUAGE: &str = "language";
@@ -92,7 +93,8 @@ impl SettingsFile {
     /// lines carried over.
     ///
     /// Another window saving meanwhile waits on `settings.txt.lock`, so it
-    /// reads this one's change before making its own. The new text is on the
+    /// reads this one's change before making its own; it waits two seconds at
+    /// most, and a file system without locks saves without it. The new text is on the
     /// disk before it replaces the old, through a symlink to the file, keeping
     /// its permissions; a new file is its owner's only, and no part file is
     /// left behind (review 2026-11-04 r19 P3).
@@ -104,7 +106,7 @@ impl SettingsFile {
             .truncate(false)
             .write(true)
             .open(self.path.with_extension("txt.lock"))?;
-        lock.lock()?;
+        let _lock = take_turn(move || lock.lock().map(|()| lock), TURN_WAIT)?;
         let (lines, damaged) = self.read()?;
         if damaged {
             std::fs::copy(&self.path, self.path.with_extension("txt.bad"))?;
@@ -130,6 +132,51 @@ impl SettingsFile {
     pub(crate) fn save_language(&self, tag: &str) -> io::Result<()> {
         self.replace(LANGUAGE, &[tag.to_owned()])
     }
+}
+
+/// How long a save waits for another window saving the settings.
+const TURN_WAIT: Duration = Duration::from_secs(2);
+
+/// Takes the settings lock through `lock`, which waits its turn, on a thread of
+/// its own: the window saving waits at most `wait` for the window that holds
+/// it, not without end behind one that hangs (review 2026-11-06 P3: `lock()`
+/// on the window's thread). The lock held, or `None` on a file system that
+/// cannot lock (NFS without lockd), which saves without it rather than never.
+/// A lock taken after the save gave up is let go at once.
+fn take_turn<T: Send + 'static>(
+    lock: impl FnOnce() -> io::Result<T> + Send + 'static,
+    wait: Duration,
+) -> io::Result<Option<T>> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("settings lock".to_owned())
+        .spawn(move || {
+            ketchup_rejection::dropped(
+                sender.send(lock()),
+                ketchup_rejection::Reason::NobodyWaiting,
+            );
+        })?;
+    match receiver.recv_timeout(wait) {
+        Ok(Ok(held)) => Ok(Some(held)),
+        Ok(Err(error)) if cannot_lock(&error) => Ok(None),
+        Ok(Err(error)) => Err(error),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "another Kečup window has been saving the settings too long",
+        )),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(io::Error::other(
+            "the thread taking the settings lock ended without it",
+        )),
+    }
+}
+
+/// The file system has no locks: `ENOLCK` from NFS without lockd, or none at all.
+fn cannot_lock(error: &io::Error) -> bool {
+    #[cfg(unix)]
+    if error.raw_os_error() == Some(libc::ENOLCK) {
+        return true;
+    }
+    error.kind() == io::ErrorKind::Unsupported
 }
 
 impl RecentFilesStore for SettingsFile {
@@ -301,6 +348,40 @@ mod tests {
                 .unwrap()
                 .contains("language=cs")
         );
+    }
+
+    /// Review 2026-11-06 P3: `lock()` held the window without end behind a
+    /// window that hung while saving, and a file system without locks (NFS
+    /// without lockd) never let it save.
+    #[test]
+    fn a_save_waits_for_another_window_a_while_and_saves_without_locks() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join(FILE_NAME);
+        let held = std::fs::File::create(path.with_extension("txt.lock")).unwrap();
+        held.lock().unwrap();
+        let error = SettingsFile::at(path.clone())
+            .save_language("sk")
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(!path.exists(), "nothing is written without the turn");
+        held.unlock().unwrap();
+        // The lock the given-up save took once it was let go is let go too.
+        SettingsFile::at(path.clone()).save_language("sk").unwrap();
+
+        let refused = |kind| move || Err::<(), _>(io::Error::from(kind));
+        assert!(matches!(
+            take_turn(refused(io::ErrorKind::Unsupported), TURN_WAIT),
+            Ok(None)
+        ));
+        #[cfg(unix)]
+        assert!(matches!(
+            take_turn(
+                || Err::<(), _>(io::Error::from_raw_os_error(libc::ENOLCK)),
+                TURN_WAIT
+            ),
+            Ok(None)
+        ));
+        assert!(take_turn(refused(io::ErrorKind::PermissionDenied), TURN_WAIT).is_err());
     }
 
     #[test]

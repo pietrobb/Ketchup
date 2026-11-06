@@ -277,9 +277,11 @@ fn write_staged(
         {
             use std::os::unix::fs::MetadataExt;
             let own = staged.as_file().metadata()?;
-            if (own.uid(), own.gid()) != (like.uid(), like.gid()) {
-                std::os::unix::fs::fchown(staged.as_file(), Some(like.uid()), Some(like.gid()))?;
-            }
+            keep_owner(
+                (own.uid(), own.gid()),
+                (like.uid(), like.gid()),
+                |uid, gid| std::os::unix::fs::fchown(staged.as_file(), uid, gid),
+            )?;
         }
         staged.as_file().set_permissions(like.permissions())?;
     }
@@ -295,6 +297,29 @@ fn write_staged(
     #[cfg(unix)]
     std::fs::File::open(directory)?.sync_all()?;
     Ok(())
+}
+
+/// Gives the staged file (owned `own`, user and group) the owner `like` of the
+/// file it replaces through `chown`. Only root gives a file to another user,
+/// and a user gives it only to a group they are in: the user's own file in a
+/// group they left keeps its user and takes theirs, rather than not being
+/// written (review 2026-11-06 P3: `fchown` refused it with EPERM).
+#[cfg(any(unix, test))]
+fn keep_owner(
+    own: (u32, u32),
+    like: (u32, u32),
+    chown: impl Fn(Option<u32>, Option<u32>) -> io::Result<()>,
+) -> io::Result<()> {
+    if own == like {
+        return Ok(());
+    }
+    match chown(Some(like.0), Some(like.1)) {
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied && own.0 == like.0 => {
+            ketchup_rejection::log!("the file keeps its user but not group {}: {error}", like.1);
+            Ok(())
+        }
+        kept => kept,
+    }
 }
 
 /// `ReplaceFileW`: `replacement` takes the place of `file` in one step and
@@ -336,6 +361,28 @@ pub(crate) fn read_or_empty(file: &Path) -> io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review 2026-11-06 P3: the user's own settings file in a group they are
+    /// not in was not saved, `fchown` refusing it with EPERM.
+    #[test]
+    fn a_file_in_a_group_its_user_left_is_written_keeping_its_user() {
+        #[cfg(unix)]
+        let refused =
+            |_: Option<u32>, _: Option<u32>| Err(io::Error::from_raw_os_error(libc::EPERM));
+        #[cfg(not(unix))]
+        let refused = |_: Option<u32>, _: Option<u32>| Err(io::ErrorKind::PermissionDenied.into());
+        assert!(keep_owner((1000, 1000), (1000, 50), refused).is_ok());
+        // Another user's file stays theirs or is not written.
+        assert!(keep_owner((1000, 1000), (0, 0), refused).is_err());
+        let given = std::cell::Cell::new(None);
+        keep_owner((0, 0), (1000, 50), |uid, gid| {
+            given.set(Some((uid, gid)));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(given.get(), Some((Some(1000), Some(50))));
+        keep_owner((1000, 50), (1000, 50), |_, _| panic!("nothing to give")).unwrap();
+    }
 
     #[test]
     fn the_json_server_is_replaced_and_every_other_setting_kept() {
