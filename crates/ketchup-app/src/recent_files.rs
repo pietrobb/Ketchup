@@ -642,11 +642,21 @@ mod tests {
             assert!(source.create_box());
             assert!(source.save_document_to(path));
         }
-        type Then = fn(&mut crate::KetchupApp, &Path);
-        let meanwhile: [(&str, Then); 3] = [
-            ("nothing", |_, _| {}),
-            ("New", |app, _| app.new_document()),
-            ("Open", |app, other| assert!(app.open_document_from(other))),
+        // Review 2026-11-06 r23 P3: one opened for a migration review did
+        // not count, so the late answer opened over the review.
+        let legacy = directory.path().join("legacy.ketchup");
+        std::fs::write(&legacy, crate::tests::lossy_legacy_document()).unwrap();
+        type Then = fn(&mut crate::KetchupApp, &Path, &Path);
+        let meanwhile: [(&str, Then); 4] = [
+            ("nothing", |_, _, _| {}),
+            ("New", |app, _, _| app.new_document()),
+            ("Open", |app, other, _| {
+                assert!(app.open_document_from(other))
+            }),
+            ("Open for review", |app, _, legacy| {
+                assert!(!app.open_document_from(legacy));
+                assert!(app.has_review_candidate());
+            }),
         ];
         for (what, then) in meanwhile {
             let (release, released) = mpsc::channel();
@@ -661,7 +671,7 @@ mod tests {
             );
             app.open_recent(&picked);
             assert_eq!(app.document_path(), None, "{what}: not answered yet");
-            then(&mut app, &other);
+            then(&mut app, &other, &legacy);
             let before = app.document_path().map(Path::to_owned);
             release.send(()).unwrap();
             let until = Instant::now() + Duration::from_secs(5);
@@ -674,6 +684,9 @@ mod tests {
                 before
             };
             assert_eq!(app.document_path().map(Path::to_owned), expected, "{what}");
+            if what == "Open for review" {
+                assert!(app.has_review_candidate(), "the review is kept");
+            }
         }
     }
 

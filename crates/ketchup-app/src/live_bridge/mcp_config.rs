@@ -12,16 +12,20 @@ use std::path::Path;
 pub(crate) const SERVER: &str = "ketchup";
 
 /// The keys of a JSON client's network server: its address, headers (a
-/// bearer token among them) and sign-in.
-const JSON_NETWORK_KEYS: [&str; 3] = ["url", "headers", "oauth"];
+/// bearer token among them, or Claude Code's command printing them) and
+/// sign-in (review 2026-11-06 r23 P3: `headersHelper` stayed).
+const JSON_NETWORK_KEYS: [&str; 4] = ["url", "headers", "headersHelper", "oauth"];
 
-/// The keys of a Codex network server: its address, token and headers.
-const CODEX_NETWORK_KEYS: [&str; 5] = [
+/// The keys of a Codex network server: its address, token, headers and
+/// sign-in (review 2026-11-06 r23 P3: `scopes` and `oauth_resource` stayed).
+const CODEX_NETWORK_KEYS: [&str; 7] = [
     "url",
     "bearer_token",
     "bearer_token_env_var",
     "http_headers",
     "env_http_headers",
+    "scopes",
+    "oauth_resource",
 ];
 
 /// A JSON object in the order it was written, its values as written.
@@ -980,22 +984,30 @@ command = "C:\\Program Files\\Ketchup\\Ketchup.exe"
         // Review 2026-11-06 SEC-181: the network server's token and headers
         // stayed on the program beside its new command.
         let networked = r#"{"mcpServers":{"ketchup":{"type":"http","url":"http://x/mcp",
-            "headers":{"Authorization":"Bearer s3cret"},"oauth":{"clientId":"c"},"env":{"A":"1"}}}}"#;
+            "headers":{"Authorization":"Bearer s3cret"},"oauth":{"clientId":"c"},"env":{"A":"1"},
+            "headersHelper":"/bin/print-s3cret"}}}"#;
         let written =
             with_json_server(networked, r"C:\k\Ketchup.exe", true, &Rewrite::every()).unwrap();
         assert!(!written.contains("s3cret"), "{written}");
         let entry = server(&written);
-        for key in ["headers", "oauth", "url"] {
+        for key in ["headers", "headersHelper", "oauth", "url"] {
             assert!(entry.get(key).is_none(), "{key}: {written}");
         }
         assert_eq!(entry["env"]["A"], "1");
         let networked = "[mcp_servers.ketchup]\nurl = \"http://x/mcp\"\n\
             bearer_token_env_var = \"KETCHUP_TOKEN\"\nbearer_token = \"s3cret\"\n\
             http_headers = { \"X-Key\" = \"s3cret\" }\nenv_http_headers = { \"X-Env\" = \"KEY\" }\n\
+            scopes = [\"read\", \"write\"]\noauth_resource = \"http://x/\"\n\
             startup_timeout_sec = 20\n";
         let written = with_codex_server(networked, r"C:\k\Ketchup.exe").unwrap();
         assert!(!written.contains("s3cret"), "{written}");
-        for key in ["bearer_token_env_var", "env_http_headers", "url"] {
+        for key in [
+            "bearer_token_env_var",
+            "env_http_headers",
+            "url",
+            "scopes",
+            "oauth_resource",
+        ] {
             assert!(!written.contains(key), "{key}: {written}");
         }
         assert!(written.contains("startup_timeout_sec = 20"), "{written}");

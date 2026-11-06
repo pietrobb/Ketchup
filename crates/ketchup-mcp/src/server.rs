@@ -7,10 +7,10 @@ use crate::{
 use serde_json::{Map, Value, json};
 use std::{
     borrow::{Borrow, BorrowMut},
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     io::{self, BufRead, Write},
     path::PathBuf,
-    sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, mpsc},
+    sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
     thread,
 };
 
@@ -93,13 +93,95 @@ type Turn = Box<dyn FnOnce() -> Option<Value> + Send>;
 /// The reply to a tool call refused when [`QUEUED_CALLS`] wait already.
 type Refusal = Box<dyn FnOnce() -> Value + Send>;
 
+/// Whether a queued tool call still waits for its turn: false once it was
+/// cancelled, or has started.
+type Waits = Box<dyn Fn() -> bool + Send>;
+
 /// What [`serve`] does with a message.
 enum Routed {
     /// Answered at once on the thread that reads the input.
     Now(Option<Value>),
     /// Run by the one worker, after the calls that came before it, or
     /// refused when too many wait.
-    InTurn(Turn, Refusal),
+    InTurn(Turn, Refusal, Waits),
+}
+
+/// The tool calls waiting for their turn, in the order they came. One that
+/// no longer waits leaves when the next call comes, so a call cancelled while
+/// waiting neither takes a place nor keeps its message (review 2026-11-06 r23
+/// P3: a client sending again after its timeout was refused as busy until the
+/// long call ahead of them ended).
+#[derive(Default)]
+struct Queue {
+    state: Mutex<QueueState>,
+    ready: Condvar,
+}
+
+#[derive(Default)]
+struct QueueState {
+    waiting: VecDeque<(Turn, Waits)>,
+    /// No more calls come: the input has ended.
+    closed: bool,
+    /// The worker has ended.
+    stopped: bool,
+}
+
+/// What became of a call given to the [`Queue`].
+enum Queued {
+    Waits,
+    Full,
+    WorkerStopped,
+}
+
+impl Queue {
+    fn state(&self) -> MutexGuard<'_, QueueState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn push(&self, turn: Turn, waits: Waits) -> Queued {
+        let mut state = self.state();
+        if state.stopped {
+            return Queued::WorkerStopped;
+        }
+        state.waiting.retain(|(_, waits)| waits());
+        if state.waiting.len() >= QUEUED_CALLS {
+            return Queued::Full;
+        }
+        state.waiting.push_back((turn, waits));
+        self.ready.notify_one();
+        Queued::Waits
+    }
+
+    /// The next call in turn; `None` once the input has ended and none is left.
+    fn next(&self) -> Option<Turn> {
+        let mut state = self.state();
+        loop {
+            if let Some((turn, _)) = state.waiting.pop_front() {
+                return Some(turn);
+            }
+            if state.closed {
+                return None;
+            }
+            state = self
+                .ready
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    fn close(&self) {
+        self.state().closed = true;
+        self.ready.notify_all();
+    }
+}
+
+/// Tells the [`Queue`] its worker has ended, panicked or not.
+struct WorkerEnds(Arc<Queue>);
+
+impl Drop for WorkerEnds {
+    fn drop(&mut self) {
+        self.0.state().stopped = true;
+    }
 }
 
 /// Tool calls take their turns in the order they came, on one worker, so an
@@ -116,7 +198,8 @@ fn route(session: &Arc<Session<Tools>>, message: Value) -> Routed {
     };
     // Known before its turn, so a cancellation meanwhile keeps it from running.
     session.queued(id);
-    let (refused, id) = (Arc::clone(session), id.clone());
+    let (refused, waits, id) = (Arc::clone(session), Arc::clone(session), id.clone());
+    let key = id.to_string();
     let session = Arc::clone(session);
     Routed::InTurn(
         Box::new(move || handle(&session, message)),
@@ -124,6 +207,7 @@ fn route(session: &Arc<Session<Tools>>, message: Value) -> Routed {
             refused.forget(&id);
             refusal(id)
         }),
+        Box::new(move || waits.waits(&key)),
     )
 }
 
@@ -141,13 +225,14 @@ fn serve(
     route: impl Fn(Value) -> Routed,
 ) -> io::Result<()> {
     let output = Arc::new(Mutex::new(output));
-    let (queue, turns) = mpsc::sync_channel::<Turn>(QUEUED_CALLS);
+    let queue = Arc::new(Queue::default());
     let worker = {
         let (output, gone) = (Arc::clone(&output), Arc::clone(gone));
+        let ends = WorkerEnds(Arc::clone(&queue));
         thread::spawn(move || {
             let (mut written, mut stopped) = (Ok(()), Ok(()));
             // Once gone, the calls left are taken off the queue, not run.
-            for turn in turns {
+            while let Some(turn) = ends.0.next() {
                 if gone.is_set() {
                     continue;
                 }
@@ -163,7 +248,7 @@ fn serve(
     };
     let read = read_messages(&mut input, &output, &queue, route);
     let stopped = gone.set();
-    drop(queue);
+    queue.close();
     let worked = worker.join().unwrap_or_else(|panic| {
         Err(io::Error::other(format!(
             "a tool call failed unexpectedly: {}",
@@ -181,7 +266,7 @@ fn serve(
 fn read_messages(
     input: &mut impl BufRead,
     output: &Mutex<impl Write>,
-    queue: &mpsc::SyncSender<Turn>,
+    queue: &Queue,
     route: impl Fn(Value) -> Routed,
 ) -> io::Result<()> {
     while let Some(line) = read_line(input)? {
@@ -198,10 +283,10 @@ fn read_messages(
         match message.map(&route) {
             Ok(Routed::Now(Some(reply))) | Err(reply) => write_reply(output, &reply)?,
             Ok(Routed::Now(None)) => {}
-            Ok(Routed::InTurn(turn, refused)) => match queue.try_send(turn) {
-                Ok(()) => {}
-                Err(mpsc::TrySendError::Full(_)) => write_reply(output, &refused())?,
-                Err(mpsc::TrySendError::Disconnected(_)) => {
+            Ok(Routed::InTurn(turn, refused, waits)) => match queue.push(turn, waits) {
+                Queued::Waits => {}
+                Queued::Full => write_reply(output, &refused())?,
+                Queued::WorkerStopped => {
                     return Err(io::Error::other("the worker that runs tool calls stopped"));
                 }
             },
@@ -294,6 +379,23 @@ impl<T: BorrowMut<Tools>> Session<T> {
     /// Forgets a tool call refused before its turn.
     fn forget(&self, id: &Value) {
         self.calls().cancelled.remove(&id.to_string());
+    }
+
+    /// Whether the queued call `key` still waits for its turn. One cancelled
+    /// meanwhile is forgotten: only the [`Queue`] asks, and drops it then.
+    fn waits(&self, key: &str) -> bool {
+        let mut calls = self.calls();
+        if calls.running.as_deref() == Some(key) {
+            return false;
+        }
+        match calls.cancelled.get(key) {
+            Some(false) => true,
+            Some(true) => {
+                calls.cancelled.remove(key);
+                false
+            }
+            None => false,
+        }
     }
 
     /// Runs one tool call when its turn comes; `None` when the client
@@ -560,6 +662,7 @@ mod tests {
                             answer(&message)
                         }),
                         refused,
+                        always_waits(),
                     )
                 },
             )
@@ -603,6 +706,7 @@ mod tests {
                             answer(&message)
                         }),
                         refused,
+                        always_waits(),
                     )
                 },
             )
@@ -669,6 +773,7 @@ mod tests {
                             answer(&message)
                         }),
                         refused,
+                        always_waits(),
                     )
                 },
             )
@@ -744,6 +849,7 @@ mod tests {
                             answer(&message)
                         }),
                         refused,
+                        always_waits(),
                     )
                 },
             )
@@ -813,6 +919,7 @@ mod tests {
                             answer(&message)
                         }),
                         refused,
+                        always_waits(),
                     )
                 },
             )
@@ -888,6 +995,7 @@ mod tests {
                             answer(&message)
                         }),
                         refused,
+                        always_waits(),
                     )
                 },
             )
@@ -915,6 +1023,63 @@ mod tests {
     fn busy(message: &Value) -> Refusal {
         let id = message["id"].clone();
         Box::new(move || refusal(id))
+    }
+
+    fn always_waits() -> Waits {
+        Box::new(|| true)
+    }
+
+    /// Review 2026-11-06 r23 P3: calls cancelled while waiting still took
+    /// their places, so a client sending them again after its timeout was
+    /// refused as busy until the long call ahead ended. They leave the queue,
+    /// with their messages, once the next call comes.
+    #[test]
+    fn calls_cancelled_while_waiting_leave_their_places() {
+        let queue = Queue::default();
+        let dropped = Arc::new(());
+        let flags: Vec<Arc<AtomicBool>> = (0..QUEUED_CALLS)
+            .map(|_| Arc::new(AtomicBool::new(true)))
+            .collect();
+        for flag in &flags {
+            let (flag, message) = (Arc::clone(flag), Arc::clone(&dropped));
+            let pushed = queue.push(
+                Box::new(move || Some(json!(Arc::strong_count(&message)))),
+                Box::new(move || flag.load(Ordering::Acquire)),
+            );
+            assert!(matches!(pushed, Queued::Waits));
+        }
+        assert!(matches!(
+            queue.push(Box::new(|| None), always_waits()),
+            Queued::Full
+        ));
+        for flag in &flags {
+            flag.store(false, Ordering::Release);
+        }
+        assert!(matches!(
+            queue.push(Box::new(|| Some(json!("again"))), always_waits()),
+            Queued::Waits
+        ));
+        assert_eq!(Arc::strong_count(&dropped), 1, "their messages are dropped");
+        queue.close();
+        assert_eq!(queue.next().and_then(|turn| turn()), Some(json!("again")));
+        assert!(queue.next().is_none());
+    }
+
+    /// A queued call waits until it is cancelled; the cancelled one is then
+    /// forgotten as the queue drops it.
+    #[test]
+    fn a_queued_call_waits_until_it_is_cancelled() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let session = Arc::new(Session::new(Tools::new(None, Some(root.path().to_owned()))));
+        let Routed::InTurn(_, _, waits) = route(&session, tool_call(9)) else {
+            panic!("a tool call waits for its turn");
+        };
+        assert!(waits());
+        let cancel = json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+            "params": {"requestId": 9}});
+        assert!(matches!(route(&session, cancel), Routed::Now(None)));
+        assert!(!waits());
+        assert!(session.calls().cancelled.is_empty());
     }
 
     /// Review 2026-11-06 MCP-180: with [`QUEUED_CALLS`] waiting the reader
@@ -992,7 +1157,7 @@ mod tests {
     fn a_call_cancelled_while_waiting_for_its_turn_never_runs() {
         let root = tempfile::tempdir().expect("a temporary folder");
         let session = Arc::new(Session::new(Tools::new(None, Some(root.path().to_owned()))));
-        let Routed::InTurn(turn, _) = route(&session, tool_call(5)) else {
+        let Routed::InTurn(turn, _, _) = route(&session, tool_call(5)) else {
             panic!("a tool call waits for its turn");
         };
         let cancel = json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
@@ -1011,7 +1176,7 @@ mod tests {
     fn a_call_refused_as_busy_is_forgotten() {
         let root = tempfile::tempdir().expect("a temporary folder");
         let session = Arc::new(Session::new(Tools::new(None, Some(root.path().to_owned()))));
-        let Routed::InTurn(_, refused) = route(&session, tool_call(7)) else {
+        let Routed::InTurn(_, refused, _) = route(&session, tool_call(7)) else {
             panic!("a tool call waits for its turn");
         };
         let reply = refused();
