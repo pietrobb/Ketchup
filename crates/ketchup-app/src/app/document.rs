@@ -771,6 +771,9 @@ impl KetchupApp {
             self.report_file_persistence_error("error-save-document", path, &error);
             return Err(SaveFailure::Failed);
         }
+        if prepared.is_none() {
+            self.token_for_save(path);
+        }
         let prepared = match prepared.unwrap_or_else(|| {
             super::save_activity::prepare_save(&self.document, &self.file.container_data)
         }) {

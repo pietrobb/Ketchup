@@ -7,19 +7,29 @@
 //! note was lost with a save the user declined, and Save As or a copy of the
 //! file carried it to another document. A saved document's files are kept by
 //! the canonical path of its file, one `drawing=` line each: the document's
-//! path, its id, the drawing's path and its SHA-256, a tab between. A
-//! document moved or renamed, so that no file is left where it was, keeps
-//! them by its id (r19 MF-162); a copy, Save As or a template's, leaves the
-//! original where it was and starts with none. A document not saved keeps
-//! its own in memory, and the file it is first saved as takes them over. A
-//! drawing the system says is gone is forgotten at the next export.
+//! path, its file's token, the drawing's path and its SHA-256, a tab between.
+//! A document moved or renamed, so that no file is left where it was, keeps
+//! them by the token (r19 MF-162). The token is kept in the file and made
+//! anew whenever the document is saved as another file, so a copy, Save As
+//! or a template's, starts with none, whether or not the original is still
+//! where it was (capability review run 529); the document id would not do,
+//! as a copy shares it. A document not saved keeps its own in memory, and
+//! the file it is first saved as takes them over. A drawing the system says
+//! is gone is forgotten at the next export.
 
 use super::drawing_sheet_export::written_key;
+use super::project_drawings::SHEET_NAMESPACE;
 use crate::recent_files::user_settings::SettingsFile;
 use crate::*;
 
 /// The key of a written drawing's line.
 const DRAWING: &str = "drawing";
+
+/// Where the document keeps the token of the file it was saved as.
+const TOKEN_PATH: &str = "owner-v1.txt";
+
+/// A line's token when its document had none: no moved file is it.
+const NO_TOKEN: &str = "-";
 
 /// The settings file of the user that keeps the written drawings.
 const FILE_NAME: &str = "drawings.txt";
@@ -45,26 +55,37 @@ fn field(path: &Path) -> Option<&str> {
         .filter(|text| !text.is_empty() && !text.contains(['\t', '\n', '\r']))
 }
 
-/// The saved document whose drawings are kept: its file's canonical path and its id.
+/// Whether `a` and `b` name one file, however spelled.
+fn same_file(a: &Path, b: &Path) -> bool {
+    a == b
+        || std::fs::canonicalize(a)
+            .ok()
+            .zip(std::fs::canonicalize(b).ok())
+            .is_some_and(|(a, b)| a == b)
+}
+
+/// The saved document whose drawings are kept: its file's canonical path and
+/// the token kept in the file.
 struct Owner {
     file: PathBuf,
     /// The file as the field of a line.
     field: String,
-    id: String,
+    token: Option<String>,
 }
 
 impl Owner {
-    /// Whether a line of `document`, of id `id`, is this document's: kept by
-    /// its file, or by its id when no file is left where it was.
-    fn holds(&self, document: &Path, id: &str) -> bool {
-        document == self.file || id == self.id && gone(document)
+    /// Whether a line of `document`, of token `token`, is this document's:
+    /// kept by its file, or by its token when no file is left where it was.
+    fn holds(&self, document: &Path, token: &str) -> bool {
+        document == self.file
+            || self.token.as_deref().is_some_and(|own| own == token) && gone(document)
     }
 }
 
 /// A `drawing=` line read.
 struct Line<'a> {
     document: PathBuf,
-    id: &'a str,
+    token: &'a str,
     drawing: PathBuf,
     sha256: &'a str,
 }
@@ -74,7 +95,7 @@ fn parsed(line: &str) -> Option<Line<'_>> {
     let mut next = || fields.next().filter(|text| !text.is_empty());
     let parsed = Line {
         document: PathBuf::from(next()?),
-        id: next()?,
+        token: next()?,
         drawing: PathBuf::from(next()?),
         sha256: next()?,
     };
@@ -82,6 +103,55 @@ fn parsed(line: &str) -> Option<Line<'_>> {
 }
 
 impl KetchupApp {
+    /// The token of the file the document was saved as, kept in the file: it
+    /// goes along when the file is moved, and not to a copy saved as another.
+    fn file_token(&self) -> Option<&str> {
+        self.file
+            .container_data
+            .extensions()
+            .find(|entry| entry.namespace() == SHEET_NAMESPACE && entry.path() == TOKEN_PATH)
+            .and_then(|entry| std::str::from_utf8(entry.bytes()).ok())
+            .filter(|token| {
+                !token.is_empty() && *token != NO_TOKEN && !token.contains(['\t', '\n', '\r'])
+            })
+    }
+
+    /// Before the document is saved as `path`: saved as a file other than
+    /// its own, or one with no token yet, it takes a new token, so a copy is
+    /// never taken for the original moved (review 2026-11-06 SEC-182,
+    /// capability review run 529).
+    pub(super) fn token_for_save(&mut self, path: &Path) {
+        let own = self.file.path.as_deref().or_else(|| {
+            self.file
+                .recovery_open
+                .as_ref()
+                .map(|recovery| recovery.requested_path.as_path())
+        });
+        if own.is_some_and(|own| same_file(own, path)) && self.file_token().is_some() {
+            return;
+        }
+        let mut random = [0; 32];
+        let token = match getrandom::fill(&mut random) {
+            Ok(()) => ketchup_model::graph::sha256_hex(&random),
+            Err(error) => {
+                // No token: the file's drawings are its own where it is only.
+                ketchup_rejection::log!(
+                    "{} gets no token for its drawings: {error}",
+                    path.display()
+                );
+                NO_TOKEN.to_owned()
+            }
+        };
+        let entry = ketchup_model::persistence::ExtensionEntry::new(
+            SHEET_NAMESPACE,
+            TOKEN_PATH,
+            false,
+            token.into_bytes(),
+        )
+        .expect("the drawings namespace and the token's path are valid");
+        self.file.container_data.set_extension(entry);
+    }
+
     /// The saved document whose written drawings are kept with the user's
     /// settings; none while it is not saved or they are kept in memory only.
     fn written_owner(&self) -> Option<Owner> {
@@ -101,7 +171,7 @@ impl KetchupApp {
         Some(Owner {
             field: field(&file)?.to_owned(),
             file,
-            id: self.document.current().document_id().0.to_string(),
+            token: self.file_token().map(str::to_owned),
         })
     }
 
@@ -119,7 +189,7 @@ impl KetchupApp {
         if let (Some(store), Some(owner)) = (&self.window.written_drawings, self.written_owner()) {
             for line in store.values(DRAWING) {
                 if let Some(line) = parsed(&line)
-                    && owner.holds(&line.document, line.id)
+                    && owner.holds(&line.document, line.token)
                 {
                     written.insert(key(&line.drawing), line.sha256.to_owned());
                 }
@@ -154,14 +224,14 @@ impl KetchupApp {
                 .filter(|line| {
                     parsed(line).is_some_and(|line| {
                         !gone(&line.drawing)
-                            && !(owner.holds(&line.document, line.id)
+                            && !(owner.holds(&line.document, line.token)
                                 && written.iter().any(|(path, _)| *path == line.drawing))
                     })
                 })
                 .collect();
+            let token = owner.token.as_deref().unwrap_or(NO_TOKEN);
             kept.extend(written.iter().filter_map(|(path, sha256)| {
-                field(path)
-                    .map(|drawing| format!("{}\t{}\t{drawing}\t{sha256}", owner.field, owner.id))
+                field(path).map(|drawing| format!("{}\t{token}\t{drawing}\t{sha256}", owner.field))
             }));
             kept
         });
@@ -180,16 +250,9 @@ impl KetchupApp {
     /// SEC-182).
     pub(super) fn drawings_saved(&mut self, before: Option<&Path>) {
         let now = self.file.path.as_deref();
-        let same = |a: &Path, b: &Path| {
-            a == b
-                || std::fs::canonicalize(a)
-                    .ok()
-                    .zip(std::fs::canonicalize(b).ok())
-                    .is_some_and(|(a, b)| a == b)
-        };
         if before
             .zip(now)
-            .is_some_and(|(before, now)| same(before, now))
+            .is_some_and(|(before, now)| same_file(before, now))
         {
             return;
         }

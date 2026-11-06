@@ -498,6 +498,57 @@ fn a_document_saved_as_another_asks_before_replacing_the_first_ones_drawing() {
     assert!(answer.contains("Ask the user"), "{answer}");
 }
 
+/// Review 2026-11-06 SEC-182 (capability review run 529): a moved document
+/// kept its drawings by its id, which Save As carries to the copy, so once
+/// the first was renamed the copy replaced its drawing unasked. The copy
+/// still asks; the first, renamed, still replaces its own.
+#[test]
+fn a_copy_saved_as_asks_once_the_first_document_is_renamed() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = directory.path().join("user").join("drawings.txt");
+    let with_store = || {
+        let (app, bridge) = setup();
+        (app.with_written_drawings(&store), bridge)
+    };
+    let (mut app, mut bridge) = with_store();
+    let id = sheet_of_the_block(&mut app, &mut bridge);
+    let save_as = |app: &mut KetchupApp, bridge: &mut LiveBridge, path: &Path| {
+        let save = Request::SaveAs {
+            expected: None,
+            path: path.display().to_string(),
+        };
+        bridge.execute(app, save, false).unwrap();
+    };
+    let sheet = directory.path().join("A.dxf");
+    let export = |app: &mut KetchupApp, bridge: &mut LiveBridge| {
+        bridge.execute(app, export_drawings(&sheet, json!({"sheet_id": id})), false)
+    };
+    let first = directory.path().join("a.ketchup");
+    save_as(&mut app, &mut bridge, &first);
+    export(&mut app, &mut bridge).unwrap();
+    save_as(&mut app, &mut bridge, &directory.path().join("b.ketchup"));
+    let renamed = directory.path().join("a2.ketchup");
+    std::fs::rename(&first, &renamed).unwrap();
+    assert_eq!(export(&mut app, &mut bridge), Err("drawings_target_exists"));
+    let answer = take_error_details().unwrap_or_default().to_string();
+    assert!(answer.contains("Ask the user"), "{answer}");
+    drop((app, bridge));
+
+    let (mut opened, mut bridge) = with_store();
+    let open = Request::Open {
+        expected: None,
+        path: renamed.display().to_string(),
+    };
+    bridge.execute(&mut opened, open, false).unwrap();
+    evaluate_exact(&mut opened);
+    export(&mut opened, &mut bridge).unwrap_or_else(|code| {
+        panic!(
+            "the renamed first's own: {code}: {:?}",
+            take_error_details()
+        )
+    });
+}
+
 /// Review 2026-11-06 SEC-182: the list of the files written only grew. A file
 /// that is gone leaves it at the next export, and a file written again is
 /// listed once.
