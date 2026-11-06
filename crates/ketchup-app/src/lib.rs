@@ -116,6 +116,7 @@ use ketchup_pdm::local::{
 };
 use ketchup_scheduler::ExactWorkerSupervisor;
 use modal::Modal;
+use number_text::{fixed_decimals, format_decimals, format_height};
 use slot::Slot;
 use tool_preview::ToolPreview;
 pub use view_settings::{ViewFlag, ViewSettings};
@@ -128,6 +129,7 @@ mod body_ui;
 mod bounded_parser;
 mod close_guard;
 mod command_registry;
+mod delivery;
 pub mod dialogs;
 mod drawn_shape;
 mod export_bundle;
@@ -151,6 +153,7 @@ pub mod live_bridge;
 mod mesh_conversion_ui;
 mod modal;
 mod native_document_inspection;
+mod number_text;
 mod occurrence_color_ui;
 mod planar_push_pull;
 mod program_detach;
@@ -955,10 +958,9 @@ enum ActiveTool {
 
 /// Every command the designed shell can dispatch.
 ///
-/// The variant is the stable identity of a command; its visible label is a
-/// localization key resolved at paint time. Acceptance tests address widgets by
-/// variant and resolve the expected label through the same catalog, so neither a
-/// translation change nor an icon-only presentation can break them.
+/// The variant is a command's stable identity; its label is a localization key resolved at
+/// paint time. Acceptance tests address widgets by variant and resolve labels through the
+/// same catalog, so no translation change or icon-only presentation can break them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AppCommand {
     New,
@@ -1025,6 +1027,7 @@ pub enum AppCommand {
     TextIntoUnderlay,
     ExportUnderlayDxf,
     ExportUnderlayDwg,
+    DiscardRefusedUnderlayEdit,
     TrimUnderlayLine,
     ExtendUnderlayLine,
     OffsetUnderlayLine,
@@ -2020,24 +2023,6 @@ struct CamExportDialog {
     review: Option<CamReviewSummary>,
 }
 
-struct FeaReviewDialog {
-    definition_id: DefinitionId,
-    feature_id: FeatureId,
-    occurrence_id: OccurrenceId,
-    case_id: String,
-    youngs_modulus_mpa: String,
-    poisson_ratio: String,
-    yield_strength_mpa: String,
-    constrained_face_ordinals: String,
-    loaded_face_ordinal: String,
-    traction_x_n_per_mm2: String,
-    traction_y_n_per_mm2: String,
-    traction_z_n_per_mm2: String,
-    coarse_deflection_mm: String,
-    fine_deflection_mm: String,
-    review: Option<FeaReviewSummary>,
-}
-
 struct PdmReviewDialog {
     source: PdmSourceIdentity,
     repository: String,
@@ -2072,8 +2057,6 @@ pub struct KetchupApp {
     catalog: LocaleCatalog,
     /// The language `catalog` is in; `None` for a test catalog such as pseudo.
     language: Option<language::UiLanguage>,
-    /// Whether a language picked in the menu is remembered for the next start.
-    remember_language: bool,
     /// The program the last edit detached, while the one-time notice about it
     /// is on screen.
     program_detach_notice: Option<program_detach::ProgramDetachNotice>,
@@ -2094,7 +2077,7 @@ pub struct KetchupApp {
     parameter: app_state::ParameterEditor,
     validator_panel: app_state::ValidatorPanel,
     status_key: &'static str,
-    theme: ThemeKind,
+    window: app_state::WindowSettings,
     camera: app_state::CameraState,
     view: ViewSettings,
     /// The typed name and the last shown scene of the saved views.
@@ -2119,7 +2102,6 @@ pub struct KetchupApp {
     joint_fields: app::joints_ui::JointFields,
     hover: app_state::HoverState,
     active_tool: ActiveTool,
-    panels: app_state::Panels,
     dock: app_state::Dock,
     command_search: app_state::CommandSearch,
     takeoff: app_state::TakeoffState,
@@ -2337,14 +2319,6 @@ fn parse_dimension(input: &str, decimal: length_input::DecimalSeparator) -> Opti
     Dimension::new(input.trim().to_owned(), millimetres).ok()
 }
 
-fn format_height(height: f64) -> String {
-    let formatted = format!("{height:.2}");
-    formatted
-        .trim_end_matches('0')
-        .trim_end_matches('.')
-        .to_owned()
-}
-
 fn box_corners(width: f64, depth: f64, height: f64) -> [Vec3; 8] {
     [
         Vec3::new(0.0, 0.0, 0.0),
@@ -2376,7 +2350,5 @@ mod rotation_input_tests;
 mod scene_snapping_tests;
 #[cfg(test)]
 mod selection_mass_ui_tests;
-#[cfg(test)]
-mod selection_measures_ui_tests;
 #[cfg(test)]
 mod tests;

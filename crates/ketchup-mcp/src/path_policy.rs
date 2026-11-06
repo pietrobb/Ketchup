@@ -1,11 +1,13 @@
 //! The one path policy for files the window or this server touches on behalf of
-//! a client: absolute, bounded and on a local drive. It reads nothing from the
-//! file system (on Windows only the drive table, to see a drive letter mapped to
-//! a share; on macOS only the mount table, to see a share mounted under
-//! `/Volumes`), so a network path is refused before any request reaches its
-//! server (and before Windows sends it the user's NTLM hash).
+//! a client: absolute, bounded and on a local drive. It reads nothing from a share
+//! (on Windows only the drive table, to see a drive letter mapped to a share; on
+//! macOS and Linux the mount table, and the symbolic links of the path's directories
+//! that are on local mounts), so a network path is refused before any request
+//! reaches its server (and before Windows sends it the user's NTLM hash).
 
-use std::path::{Component, Path, Prefix};
+use std::collections::VecDeque;
+use std::io::ErrorKind;
+use std::path::{Component, Path, PathBuf, Prefix};
 
 /// Longest accepted path, in bytes.
 const PATH_BYTES: usize = 4096;
@@ -28,7 +30,7 @@ pub fn local_absolute_path(path: &str) -> bool {
         && Path::new(path).is_absolute()
         && (!cfg!(windows) || local_windows_path(path, remote_drive))
         && (!cfg!(any(target_os = "macos", target_os = "linux"))
-            || mounts().is_ok_and(|m| local_mounted_path(path, &m, AUTOMOUNTED)))
+            || mounts().is_ok_and(|m| physically_local_path(path, &m, AUTOMOUNTED, read_link)))
 }
 
 /// Top-level directories macOS's automounter serves from the network; on Linux
@@ -40,8 +42,12 @@ const AUTOMOUNTED: &[&str] = if cfg!(target_os = "macos") {
 };
 
 /// Linux file systems that reach another computer, or that the automounter mounts
-/// from one when a path under them is touched (review 2026-11-02 SEC-101).
-const NETWORK_FILE_SYSTEMS: [&str; 16] = [
+/// from one when a path under them is touched (review 2026-11-02 SEC-101). Besides
+/// these, every FUSE file system without a block device (see [`linux_local_type`]).
+/// Under WSL the Windows drives are `9p` or `drvfs`, which may be a mapped share; a
+/// virtual machine reaches its host by `9p` or `virtiofs`; `gpfs` is a cluster's
+/// (review 2026-11-04 r19).
+const NETWORK_FILE_SYSTEMS: [&str; 17] = [
     "autofs",
     "nfs",
     "nfs4",
@@ -55,10 +61,19 @@ const NETWORK_FILE_SYSTEMS: [&str; 16] = [
     "ncpfs",
     "coda",
     "davfs",
-    "fuse.sshfs",
-    "fuse.davfs2",
-    "fuse.glusterfs",
+    "9p",
+    "drvfs",
+    "virtiofs",
+    "gpfs",
 ];
+
+/// Whether a Linux file system type is local. A FUSE file system without a block
+/// device (`fuse`, `fuse.<program>`) is whatever its program serves, and those
+/// programs mostly reach the network (`sshfs`, `rclone`, `s3fs`, `gvfsd-fuse`), so
+/// none is taken as local (review 2026-11-04 SEC-101); `fuseblk` reads a disk.
+fn linux_local_type(kind: &str) -> bool {
+    !(NETWORK_FILE_SYSTEMS.contains(&kind) || kind == "fuse" || kind.starts_with("fuse."))
+}
 
 /// The data volume's firmlinks make `/System/Volumes/Data/Volumes` the same
 /// directory as `/Volumes`, and so for every top-level directory.
@@ -103,6 +118,82 @@ fn local_mounted_path(path: &str, mounts: &[Mount], automounted: &[&str]) -> boo
                     .max_by_key(|mount| mount.on.len())
                     .is_none_or(|mount| mount.local)
         })
+}
+
+/// Most symbolic links followed in one path, as Linux's `MAXSYMLINKS`.
+const LINK_HOPS: usize = 40;
+
+/// Whether `path` stays on local mounts once its symbolic links are followed (review
+/// 2026-11-04 SEC-101). Each directory is checked against the mount table before its
+/// link is read, so nothing on a share is ever read; a link that cannot be read, or
+/// too many of them, is not local.
+fn physically_local_path(
+    path: &str,
+    mounts: &[Mount],
+    automounted: &[&str],
+    read_link: impl Fn(&Path) -> std::io::Result<Option<PathBuf>>,
+) -> bool {
+    let mut pending: VecDeque<String> = walk_components(path).collect();
+    let mut resolved: Vec<String> = Vec::new();
+    let mut hops = 0;
+    while let Some(component) = pending.pop_front() {
+        if component == ".." {
+            resolved.pop();
+            continue;
+        }
+        resolved.push(component);
+        let at = format!("/{}", resolved.join("/"));
+        if !local_mounted_path(&at, mounts, automounted) {
+            return false;
+        }
+        match read_link(Path::new(&at)) {
+            Ok(None) => {}
+            Ok(Some(target)) => {
+                hops += 1;
+                if hops > LINK_HOPS {
+                    return false;
+                }
+                let target = target.to_string_lossy();
+                resolved.pop();
+                if target.starts_with('/') {
+                    resolved.clear();
+                }
+                let rest = std::mem::take(&mut pending);
+                pending.extend(walk_components(&target));
+                pending.extend(rest);
+            }
+            Err(error) => {
+                // A link that cannot be read might lead anywhere, onto a share too.
+                debug_assert_ne!(
+                    error.kind(),
+                    ErrorKind::NotFound,
+                    "a missing name is no link"
+                );
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// A Unix path's names and `..`, without the root and `.`.
+fn walk_components(path: &str) -> impl Iterator<Item = String> + '_ {
+    path.split('/')
+        .filter(|name| !name.is_empty() && *name != ".")
+        .map(str::to_owned)
+}
+
+/// A link as this computer's file system has it; a name that is not a link, or not
+/// there yet, is not one.
+fn read_link(path: &Path) -> std::io::Result<Option<PathBuf>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => std::fs::read_link(path).map(Some),
+        Ok(_) => Ok(None),
+        Err(error) if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// The path's directories, lowercase, with `.` dropped and `..` applied.
@@ -151,7 +242,7 @@ fn linux_mounts(table: &str) -> Vec<Mount> {
             let (_device, on, kind) = (fields.next()?, fields.next()?, fields.next()?);
             Some(Mount::new(
                 &unescape_mount_point(on),
-                !NETWORK_FILE_SYSTEMS.contains(&kind),
+                linux_local_type(kind),
             ))
         })
         .collect()
@@ -270,7 +361,7 @@ mod tests {
 
 #[cfg(test)]
 mod mount_tests {
-    use super::{linux_mounts, local_mounted_path};
+    use super::{linux_mounts, local_mounted_path, physically_local_path};
 
     // Review 2026-11-02 SEC-101: on Linux a share and an automounted directory passed.
     #[test]
@@ -284,11 +375,21 @@ mod mount_tests {
              auto.misc /misc autofs rw 0 0\n\
              user@host:/ /home/me/remote fuse.sshfs rw 0 0\n\
              //nas/shared\\040files /mnt/shared\\040files smb3 rw 0 0\n\
-             /dev/sdb1 /mnt/usb\\040stick vfat rw 0 0\n",
+             /dev/sdb1 /mnt/usb\\040stick vfat rw 0 0\n\
+             gvfsd-fuse /run/user/1000/gvfs fuse.gvfsd-fuse rw 0 0\n\
+             drive: /home/me/drive fuse.rclone rw 0 0\n\
+             s3fs /mnt/bucket fuse.s3fs rw 0 0\n\
+             cloud /mnt/cloud fuse rw 0 0\n\
+             /dev/sdc1 /mnt/ntfs fuseblk rw 0 0\n\
+             C:\\134 /mnt/c 9p rw,aname=drvfs 0 0\n\
+             D: /mnt/d drvfs rw 0 0\n\
+             share /mnt/host virtiofs rw 0 0\n\
+             scale /gpfs/projects gpfs rw 0 0\n",
         );
         for local in [
             "/home/me/desk.pdf",
             "/mnt/usb stick/x.pdf",
+            "/mnt/ntfs/x.pdf",
             "/mnt/backup2/x.pdf",
             "/tmp/x.pdf",
         ] {
@@ -303,8 +404,77 @@ mod mount_tests {
             "/home/me/remote/x.pdf",
             "/mnt/shared files/x.pdf",
             "/mnt/usb stick/../backup/x.pdf",
+            // Review 2026-11-04 SEC-101: FUSE file systems the list did not name.
+            "/run/user/1000/gvfs/smb-share:server=nas,share=x/x.pdf",
+            "/home/me/drive/x.pdf",
+            "/mnt/bucket/x.pdf",
+            "/mnt/cloud/x.pdf",
+            // Review 2026-11-04 r19: the Windows drives of WSL (9p, drvfs), a virtual
+            // machine's host folder (virtiofs) and a cluster file system (gpfs).
+            "/mnt/c/Users/x.pdf",
+            "/mnt/d/x.pdf",
+            "/mnt/host/x.pdf",
+            "/gpfs/projects/x.pdf",
         ] {
             assert!(!local_mounted_path(remote, &mounts, &[]), "{remote:?}");
+        }
+    }
+
+    // Review 2026-11-04 SEC-101: the check was lexical, so a link on a local disk
+    // that leads onto a share passed.
+    #[test]
+    fn a_symbolic_link_that_leads_onto_a_share_is_not_local() {
+        use std::collections::HashMap;
+        use std::io::{Error, ErrorKind};
+        use std::path::{Path, PathBuf};
+
+        let mounts = linux_mounts(
+            "/dev/sda1 / ext4 rw 0 0\n\
+             nas:/export /mnt/nfs nfs4 rw 0 0\n",
+        );
+        let links = HashMap::from([
+            ("/home/me/nas", "/mnt/nfs"),
+            ("/home/me/projects", "../../mnt/nfs/projects"),
+            ("/home/me/desk.pdf", "/mnt/nfs/desk.pdf"),
+            ("/home/me/chain", "/home/me/nas"),
+            ("/home/me/local", "/srv/work"),
+            ("/home/me/up", "/srv/work/sub"),
+            ("/home/me/loop", "/home/me/loop"),
+            ("/home/me/unreadable", ""),
+        ]);
+        let read_link = |path: &Path| match links.get(path.to_str().expect("a test path")) {
+            Some(&"") => Err(Error::from(ErrorKind::PermissionDenied)),
+            Some(target) => Ok(Some(PathBuf::from(target))),
+            None if path.starts_with("/mnt/nfs") => panic!("read a link on the share: {path:?}"),
+            None => Ok(None),
+        };
+        for local in [
+            "/home/me/new.pdf",
+            "/home/me/local/x.pdf",
+            "/home/me/up/../x.pdf",
+            // `..` after a link leaves the link's target: this is /srv/nas.
+            "/home/me/local/../nas/x.pdf",
+            "/srv/work/nas/x.pdf",
+        ] {
+            assert!(
+                physically_local_path(local, &mounts, &[], read_link),
+                "{local:?}"
+            );
+        }
+        for remote in [
+            "/home/me/nas/x.pdf",
+            "/home/me/nas",
+            "/home/me/projects/x.pdf",
+            "/home/me/desk.pdf",
+            "/home/me/chain/x.pdf",
+            "/home/me/local/../../home/me/nas/x.pdf",
+            "/home/me/loop/x.pdf",
+            "/home/me/unreadable/x.pdf",
+        ] {
+            assert!(
+                !physically_local_path(remote, &mounts, &[], read_link),
+                "{remote:?}"
+            );
         }
     }
 

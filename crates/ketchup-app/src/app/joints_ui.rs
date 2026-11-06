@@ -151,15 +151,16 @@ impl KetchupApp {
             let size = self.catalog.format("spaces-field-size", &arguments);
             field(ui, size, &mut fields.size[index]);
         }
-        let _ = fields
-            .position
-            .iter()
-            .chain(&fields.size)
-            .any(|value| show_value_refusal(ui, &self.catalog, value, self.value_box.decimal));
+        crate::refusal::show_first_value_refusal(
+            ui,
+            &self.catalog,
+            fields.position.iter().chain(&fields.size),
+            self.window.decimal,
+        );
         let parsed = |values: &[String; 3]| {
             let [x, y, z] = values
                 .each_ref()
-                .map(|value| parse_distance_mm(value, self.value_box.decimal));
+                .map(|value| parse_distance_mm(value, self.window.decimal));
             Some([x?, y?, z?])
         };
         let boxed = parsed(&fields.position)

@@ -70,6 +70,6 @@ fuzz_target!(|input: &[u8]| {
     }
     let written = ketchup_model::import::write_edited_dxf(source, options, &underlay.lines, &edits);
     if let Ok(written) = written {
-        let _ = read_dxf_underlay(&written, options);
+        let _ = read_dxf_underlay(&written.dxf, options);
     }
 });

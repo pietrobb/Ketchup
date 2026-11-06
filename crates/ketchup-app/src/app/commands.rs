@@ -44,6 +44,9 @@ impl KetchupApp {
                 | AppCommand::ExportUnderlayDwg => {
                     self.gesture.underlay_draw.is_some() || self.selected_underlay().is_some()
                 }
+                AppCommand::DiscardRefusedUnderlayEdit => {
+                    self.file.activity.underlay.refused_edit.is_some()
+                }
                 AppCommand::Deselect => self.deselect_source_plan().is_some(),
                 AppCommand::SelectAll => self.select_all_source_plan().is_some(),
                 AppCommand::InvertSelection => self.invert_selection_source_plan().is_some(),
@@ -497,16 +500,17 @@ impl KetchupApp {
             AppCommand::CenterSelection => self.center_selection(),
             AppCommand::ZoomIn => self.zoom_by(CAMERA_ZOOM_STEP, "digest-zoom-in"),
             AppCommand::ZoomOut => self.zoom_by(CAMERA_ZOOM_STEP.recip(), "digest-zoom-out"),
-            AppCommand::Shortcuts => self.panels.shortcuts_open = true,
+            AppCommand::Shortcuts => self.window.panes.shortcuts_open = true,
             AppCommand::CommandSearch => {
                 self.command_search.focus = true;
                 self.command_search.highlight = 0;
             }
-            AppCommand::About => self.panels.about_open = true,
+            AppCommand::About => self.window.panes.about_open = true,
             AppCommand::MaterialTakeoff => self.takeoff.open = true,
             AppCommand::DrawIntoUnderlay => self.toggle_underlay_draw(),
             AppCommand::ExportUnderlayDxf => self.export_selected_underlay("dxf"),
             AppCommand::ExportUnderlayDwg => self.export_selected_underlay("dwg"),
+            AppCommand::DiscardRefusedUnderlayEdit => self.discard_refused_underlay_edit(),
             AppCommand::Select
             | AppCommand::Line
             | AppCommand::Rectangle

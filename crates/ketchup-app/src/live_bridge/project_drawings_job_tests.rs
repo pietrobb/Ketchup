@@ -41,6 +41,9 @@ fn export(path: &Path) -> Request {
         plan_only: false,
         drawing_scale: None,
         sheet_language: None,
+        replace: false,
+        take_over: false,
+        zero_level_mm: None,
     }
 }
 
@@ -142,6 +145,41 @@ fn a_cancelled_drawings_export_writes_nothing_and_keeps_no_settings() {
     assert_eq!(app.stored_sheet_settings().unwrap(), settings);
     assert!(!app.drawings.unsaved);
     assert!(!pdf.exists(), "the window writes only what it publishes");
+}
+
+/// Review 2026-11-04 MCP-141: another client taking the window over, or the
+/// user's Disconnect, dropped the bridge with the export job in it, so the
+/// title block the export kept stayed in the document, and the client was
+/// told its request stopped and the document did not change. The job ends as
+/// a cancelled one does: its worker stops and the settings are put back; it
+/// sends no answer, so the connection says why it ended.
+#[test]
+fn a_takeover_or_disconnect_puts_back_what_a_running_export_kept() {
+    let directory = tempfile::tempdir().unwrap();
+    let pdf = directory.path().join("screwed.pdf");
+    let mut app = screwed_window();
+    let settings = app.stored_sheet_settings().unwrap();
+    for takeover in [true, false] {
+        let (_, mut bridge) = setup();
+        let (answers, cancelled) = started_export(&mut bridge, &mut app, &pdf);
+        assert!(exporting(&bridge));
+        assert_ne!(app.stored_sheet_settings().unwrap(), settings);
+        app.live.bridge = Some(bridge);
+        if takeover {
+            app.supersede_live_bridge();
+        } else {
+            app.revoke_live_consent();
+        }
+        assert!(app.live.bridge.is_none());
+        assert!(cancelled.load(Ordering::Acquire), "its worker stops");
+        assert_eq!(app.stored_sheet_settings().unwrap(), settings, "{takeover}");
+        assert!(!app.drawings.unsaved, "{takeover}");
+        assert!(
+            matches!(answers.try_recv(), Err(mpsc::TryRecvError::Disconnected)),
+            "no answer: the connection says why it ended"
+        );
+    }
+    assert!(!pdf.exists());
 }
 
 fn started_export(
@@ -278,6 +316,59 @@ fn a_drawings_export_sent_during_the_exact_evaluation_waits_for_it() {
     assert!(answer.ok, "{answer:?}");
     assert_eq!(answer.result.unwrap()["exported"], true);
     assert!(std::fs::read(&pdf).unwrap().starts_with(b"%PDF"));
+}
+
+/// Review 2026-11-04 P3: an export waiting for the exact evaluation dropped
+/// the client's stamp, so a document the user changed meanwhile was drawn
+/// and written for a client that never saw it. The evaluation publishing its
+/// solids is not taken for a change; any other is, and the export is
+/// refused as stale.
+#[test]
+fn a_waiting_export_keeps_the_clients_stamp_past_the_evaluation_only() {
+    let directory = tempfile::tempdir().unwrap();
+    let context = egui::Context::default();
+    for edited in [false, true] {
+        let pdf = directory.path().join(format!("screwed-{edited}.pdf"));
+        let (_, mut bridge) = setup();
+        let mut app = screwed_window();
+        let mut request = export(&pdf);
+        if let Request::ExportDrawings { expected, .. } = &mut request {
+            *expected = Some(app.live_bridge_stamp());
+        }
+        evaluating(&mut app);
+        let (reply, answers) = mpsc::sync_channel(1);
+        let queued = QueuedReply {
+            id: 1,
+            reply,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        };
+        bridge.start_project_drawings_export(&mut app, &context, queued, request, false);
+        assert!(exporting(&bridge), "{edited}");
+        if edited {
+            assert!(app.undo(), "the user changes the document");
+        }
+        let deadline = Instant::now() + Duration::from_secs(120);
+        let answer = loop {
+            assert!(Instant::now() < deadline, "the export did not finish");
+            app.refresh_exact_products(&context);
+            bridge.poll_program_check_job(&mut app, &context);
+            if let Ok(answer) = answers.try_recv() {
+                break answer;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        if edited {
+            assert_eq!(
+                answer.error.as_deref(),
+                Some("stale_document"),
+                "{answer:?}"
+            );
+            assert!(!pdf.exists());
+        } else {
+            assert!(answer.ok, "{answer:?}");
+            assert!(std::fs::read(&pdf).unwrap().starts_with(b"%PDF"));
+        }
+    }
 }
 
 /// MECH-4 for one drawing sheet, sent through the socket: it waited for no

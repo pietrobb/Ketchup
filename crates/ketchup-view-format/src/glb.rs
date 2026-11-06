@@ -35,13 +35,17 @@ struct Asset {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Scene {
-    name: Option<String>,
+    /// Accepted and not used.
+    #[serde(rename = "name")]
+    _name: Option<String>,
     nodes: Vec<usize>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Node {
-    name: Option<String>,
+    /// Accepted and not used.
+    #[serde(rename = "name")]
+    _name: Option<String>,
     matrix: [f64; 16],
     pub mesh: Option<usize>,
     #[serde(default)]
@@ -52,7 +56,9 @@ pub(crate) struct Node {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Mesh {
-    name: Option<String>,
+    /// Accepted and not used.
+    #[serde(rename = "name")]
+    _name: Option<String>,
     primitives: Vec<Primitive>,
 }
 #[derive(Deserialize)]
@@ -99,9 +105,12 @@ struct Accessor {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Material {
-    name: Option<String>,
+    /// Accepted and not used, as `double_sided`.
+    #[serde(rename = "name")]
+    _name: Option<String>,
     pbr_metallic_roughness: Pbr,
-    double_sided: Option<bool>,
+    #[serde(rename = "doubleSided")]
+    _double_sided: Option<bool>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -223,7 +232,6 @@ fn validate_document(doc: &Document, binary: &[u8]) -> Result<(), Rejection> {
             "Unsupported GLB units, scene, buffer or resource counts.",
         ));
     }
-    let _scene_name = &doc.scenes[0].name;
     for view in &doc.buffer_views {
         if view.buffer != 0
             || view.byte_offset % 4 != 0
@@ -261,7 +269,6 @@ fn validate_document(doc: &Document, binary: &[u8]) -> Result<(), Rejection> {
     let mut primitive_count = 0_usize;
     let mut processed_indices = 0_usize;
     for mesh in &doc.meshes {
-        let _mesh_name = &mesh.name;
         primitive_count += mesh.primitives.len();
         if mesh.primitives.is_empty() || primitive_count > MAX_ENTRIES {
             return Err(reject("glb.meshes", "Empty mesh or too many primitives."));
@@ -271,8 +278,6 @@ fn validate_document(doc: &Document, binary: &[u8]) -> Result<(), Rejection> {
         }
     }
     for material in &doc.materials {
-        let _name = &material.name;
-        let _double_sided = material.double_sided;
         let pbr = &material.pbr_metallic_roughness;
         if pbr
             .base_color_factor
@@ -418,7 +423,6 @@ fn validate_tree(doc: &Document) -> Result<(), Rejection> {
                 "Unsupported or invalid geometry source metadata.",
             ));
         }
-        let _name = &node.name;
         if node.matrix.iter().any(|v| !v.is_finite())
             || node.matrix[3] != 0.0
             || node.matrix[7] != 0.0
@@ -486,7 +490,7 @@ fn word(bytes: &[u8]) -> u32 {
     u32::from_le_bytes(bytes.try_into().expect("four byte GLB field"))
 }
 fn usize_word(bytes: &[u8]) -> Result<usize, Rejection> {
-    usize::try_from(word(bytes)).map_err(|_: std::num::TryFromIntError| {
+    usize::try_from(word(bytes)).map_err(|_out_of_range: std::num::TryFromIntError| {
         reject("glb.length", "GLB value exceeds address space.")
     })
 }

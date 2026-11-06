@@ -4,6 +4,7 @@ use ketchup_model::persistence::{
     self, ContainerData, FileIdentity, FilePersistenceError, PersistenceError, PreparedDocument,
     Publish, WorkRecoveryLock,
 };
+use ketchup_rejection::{Reason, dropped};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 pub(super) type PreparedSave = Result<PreparedDocument, PersistenceError>;
@@ -162,11 +163,15 @@ impl KetchupApp {
                     }
                 };
                 if task.source.current(self) {
-                    let _ = self.save_document_prepared_while(
-                        &task.path,
-                        || true,
-                        Some(prepared),
-                        Some(context),
+                    // A failure is the user's own choice or on the status line already.
+                    dropped(
+                        self.save_document_prepared_while(
+                            &task.path,
+                            || true,
+                            Some(prepared),
+                            Some(context),
+                        ),
+                        Reason::ReportedElsewhere,
                     );
                 }
             }
@@ -193,7 +198,11 @@ impl KetchupApp {
                     self.report_file_persistence_error("error-save-document", &task.path, error);
                 }
                 if task.source.current(self) {
-                    let _ = self.finish_document_save(&task.path, *identity, result);
+                    // A failure is on the status line already.
+                    dropped(
+                        self.finish_document_save(&task.path, *identity, result),
+                        Reason::ReportedElsewhere,
+                    );
                 } else if task.source.document == self.document.current().document_id()
                     && task.source.original_path == self.file.path
                     && task.source.original_path.as_deref() == Some(task.path.as_path())

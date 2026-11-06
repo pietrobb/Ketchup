@@ -353,7 +353,7 @@ impl KetchupApp {
         }
         bounds.extend(self.shown_underlay_bounds(&snapshot));
         if let Some(cache) = self.hover.projection_cache.borrow().as_ref() {
-            let _ = cache.frame_bounds.set(bounds.clone());
+            cache.frame_bounds.get_or_init(|| bounds.clone());
         }
         bounds
     }

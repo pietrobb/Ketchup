@@ -5,7 +5,7 @@
 - Decision owner: Project owner
 - Accountable approver: Project owner
 - Resolves: V4-O08
-- Evidence: `scripts/windows/build-release-candidate.ps1`, `scripts/windows/test-release-candidate.ps1`; the release dialog evidence scripts (run-release-dialog-evidence.ps1, test-release-dialog-evidence.ps1) were retired with gate governance in commit `0794b8c` (ADR 0008).
+- Evidence: `scripts/windows/build-installer.ps1`, which packages the app with both workers, the pinned OCCT runtime, the Visual C++ runtime and the licence notices and verifies the installed program. The original packager `build-release-candidate.ps1` and its `test-release-candidate.ps1` shipped neither the program worker, the runtime nor the notices and were retired by review 2026-11-04; the release dialog evidence scripts (run-release-dialog-evidence.ps1, test-release-dialog-evidence.ps1) were retired with gate governance in commit `0794b8c` (ADR 0008).
 
 ## Context
 

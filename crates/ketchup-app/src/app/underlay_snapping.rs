@@ -2,6 +2,7 @@
 //! intersections, midpoints and nearest points join the snap points of the model, so drawing, Measure
 //! and the bridge's `underlay_snap` all find the same points.
 
+use crate::delivery::Deliver;
 use crate::*;
 use ketchup_model::underlay::object_query::ObjectIndex;
 use ketchup_model::underlay::snap::{
@@ -90,7 +91,7 @@ impl KetchupApp {
     pub(crate) fn build_underlay_snap_index(&self, key: [u8; 32], lines: Arc<UnderlayLines>) {
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = sender.send(UnderlaySnapIndex::new(&lines));
+            sender.deliver(UnderlaySnapIndex::new(&lines));
         });
         self.render
             .underlay_snaps

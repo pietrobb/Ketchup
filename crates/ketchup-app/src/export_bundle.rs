@@ -63,7 +63,7 @@ impl ExportTransactionError {
         }
     }
 
-    fn unrecovered(failure: Self, recovery: Self) -> Self {
+    pub(crate) fn unrecovered(failure: Self, recovery: Self) -> Self {
         Self::Unrecovered {
             failure: Box::new(failure),
             recovery: Box::new(recovery),
@@ -300,7 +300,19 @@ impl KetchupApp {
         path: &Path,
         result: Result<Written, ExportError>,
     ) -> Result<Written, ExportError> {
-        match &result {
+        self.show_export_outcome(catalog_key, path, result.as_ref());
+        result
+    }
+
+    /// Shows one finished export as [`Self::report_export_outcome`] does, for a caller
+    /// with nobody to pass the result on to (review 2026-11-04 TST-140).
+    pub(crate) fn show_export_outcome(
+        &mut self,
+        catalog_key: &str,
+        path: &Path,
+        result: Result<&Written, &ExportError>,
+    ) {
+        match result {
             Ok(_) => {
                 self.digest = self.catalog.format(
                     &format!("digest-exported-{catalog_key}"),
@@ -317,7 +329,6 @@ impl KetchupApp {
                 );
             }
         }
-        result
     }
 }
 
@@ -498,7 +509,7 @@ fn sync_export_parent(parent: &Path) -> Result<(), ExportTransactionError> {
     }
     #[cfg(not(unix))]
     {
-        let _ = parent;
+        let _: &Path = parent;
         Ok(())
     }
 }
@@ -520,7 +531,14 @@ struct ExportLock {
 impl Drop for ExportLock {
     fn drop(&mut self) {
         // Whoever waits on this file finds it removed and locks a new one.
-        let _ = std::fs::remove_file(&self.path);
+        if let Err(error) = std::fs::remove_file(&self.path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            ketchup_rejection::log!(
+                "export lock {} was not removed: {error}",
+                self.path.display()
+            );
+        }
     }
 }
 

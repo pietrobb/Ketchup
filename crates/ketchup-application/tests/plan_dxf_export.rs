@@ -95,6 +95,25 @@ fn a_part_whose_profile_is_not_parallel_to_xy_is_left_out_of_the_plan_and_named(
         );
     }
 
+    // The part is named as the model names it, not as its definition (review
+    // 2026-11-04 P3 drawings): renamed, the pipe is reported as the riser it is.
+    let snapshot = session.snapshot();
+    let pipe = snapshot
+        .occurrences()
+        .find(|occurrence| occurrence.name() == "pipe")
+        .unwrap()
+        .id();
+    let renamed = snapshot
+        .preview_batch(&CommandBatch::new(vec![CanonicalCommand::RenameEntity {
+            id: pipe,
+            name: "riser north".into(),
+        }]))
+        .unwrap();
+    assert_eq!(
+        export_visible_profiles_dxf(&renamed).unwrap().omitted_parts,
+        ["riser north"]
+    );
+
     // With nothing else to draw the plan is still refused, naming the part.
     let (pipe_only, _) = applied(
         "pipe = extrude('pipe', profile=[(-50, -50), (50, -50), (50, 50), (-50, 50)], distance=700)\n\
@@ -166,7 +185,12 @@ fn an_anchor_plan_exports_one_text_per_point_and_a_measured_dimension_between_ne
     );
     assert_eq!(report["bom"]["cut_list"], serde_json::json!([]), "{report}");
 
-    let exported = export_visible_plan_dxf(&snapshot, 50.0).unwrap();
+    let exported = export_visible_plan_dxf(
+        &snapshot,
+        50.0,
+        ketchup_model::annotation::DecimalMark::Point,
+    )
+    .unwrap();
     let entities = section(&exported.dxf, "ENTITIES");
     let of = |kind: &str| {
         entities
@@ -245,11 +269,15 @@ fn an_anchor_plan_exports_one_text_per_point_and_a_measured_dimension_between_ne
         ]))
         .unwrap();
     assert_eq!(
-        export_visible_plan_dxf(&hidden, 50.0),
+        export_visible_plan_dxf(&hidden, 50.0, ketchup_model::annotation::DecimalMark::Point),
         Err(DxfProfileExportError::Empty)
     );
     assert_eq!(
-        export_visible_plan_dxf(&snapshot, 0.5),
+        export_visible_plan_dxf(
+            &snapshot,
+            0.5,
+            ketchup_model::annotation::DecimalMark::Point
+        ),
         Err(DxfProfileExportError::InvalidScale)
     );
 }
@@ -257,7 +285,12 @@ fn an_anchor_plan_exports_one_text_per_point_and_a_measured_dimension_between_ne
 #[test]
 fn an_anchor_plan_written_as_dwg_keeps_its_dimensions_texts_and_tag_layer() {
     let (session, _) = applied(ANCHOR_PLAN);
-    let exported = export_visible_plan_dxf(&session.snapshot(), 50.0).unwrap();
+    let exported = export_visible_plan_dxf(
+        &session.snapshot(),
+        50.0,
+        ketchup_model::annotation::DecimalMark::Point,
+    )
+    .unwrap();
     let dwg = ketchup_dwg::dxf_to_dwg(&exported.dxf).unwrap();
     let back = ketchup_dwg::dwg_to_dxf(&dwg, 64 << 20).unwrap();
     let entities = section(&back.dxf, "ENTITIES");

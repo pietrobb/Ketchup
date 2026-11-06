@@ -83,7 +83,10 @@ impl KetchupApp {
         else {
             return;
         };
-        self.import_viewer_comments_from(&path).ok();
+        if let Err(error) = self.import_viewer_comments_from(&path) {
+            // The import has shown the refusal; logged with its cause (TST-140).
+            ketchup_rejection::log!("viewer comments import refused: {error}");
+        }
     }
 
     /// Read the customer's comments at `path` into the list. Comments on

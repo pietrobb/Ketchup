@@ -1,7 +1,8 @@
 use ketchup_manufacturing::fabrication::{
-    FABRICATION_ROLE_DIMENSION_V1, GeneralFabricationError, GeneralFabricationProjection,
-    MANUFACTURED_ITEM_ROLE_V1, MATERIAL_DIMENSION_V1, WELDMENT_CUT_LIST_EXPORT_V1,
-    WELDMENT_DRAWING_SVG_V1, WeldmentCutTreatment, project_general_fabrication,
+    ExportBlock, FABRICATION_ROLE_DIMENSION_V1, GeneralFabricationError,
+    GeneralFabricationProjection, MANUFACTURED_ITEM_ROLE_V1, MATERIAL_DIMENSION_V1,
+    WELDMENT_CUT_LIST_EXPORT_V1, WELDMENT_DRAWING_SVG_V1, WeldmentCutTreatment,
+    project_general_fabrication,
 };
 use ketchup_model::document::{
     CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId, CommandBatch,
@@ -429,11 +430,15 @@ fn weldment_cut_list_is_exact_associative_stable_and_fail_closed() {
     tampered.rows[0].centerline_length_mm = 99.0;
     assert_eq!(
         tampered.cut_list_export(&original),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::ResultMismatch
+        ))
     );
     assert_eq!(
         tampered.drawing_svg(&original),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::ResultMismatch
+        ))
     );
 
     document
@@ -455,7 +460,9 @@ fn weldment_cut_list_is_exact_associative_stable_and_fail_closed() {
     let butt_snapshot = document.current();
     assert_eq!(
         weldment.cut_list_export(&butt_snapshot),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::AnotherState
+        ))
     );
     let butt = evaluated_fabrication(&butt_snapshot, &mut worker, FeatureId(6))
         .unwrap()
@@ -529,7 +536,9 @@ fn weldment_cut_list_is_exact_associative_stable_and_fail_closed() {
     let edited = document.current();
     assert_eq!(
         weldment.cut_list_export(&edited),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::AnotherState
+        ))
     );
     let regenerated = evaluated_fabrication(&edited, &mut worker, FeatureId(6))
         .unwrap()

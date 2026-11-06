@@ -59,6 +59,8 @@ pub fn main(requests: OpenRequests) -> ExitCode {
     if let Some(path) = first {
         requests.push(PathBuf::from(path));
     }
+    // Started without a console, the window logs to a file (review 2026-11-04 r19 TST-160).
+    ketchup_rejection::dropped::log_window_to("Ketchup Viewer", "viewer.log");
     let settings = desktop_settings_path();
     let preferences = settings
         .as_deref()
@@ -121,7 +123,7 @@ impl eframe::App for DesktopViewer {
         if !paths.is_empty() && self.app.may_discard_comments() {
             for path in paths {
                 if let Err(error) = self.app.open_path(&path) {
-                    eprintln!("{error}");
+                    ketchup_rejection::log!("{error}");
                     self.app.report(error);
                 }
             }
@@ -131,7 +133,7 @@ impl eframe::App for DesktopViewer {
             (self.app.take_changed_preferences(), &self.settings)
             && let Err(error) = preferences.save(path)
         {
-            eprintln!("{error}");
+            ketchup_rejection::log!("{error}");
             self.app.report(error);
         }
     }

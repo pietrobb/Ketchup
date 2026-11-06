@@ -18,7 +18,7 @@ pub(super) fn keep(file: &[u8]) {
     };
     let directory = Path::new(&directory);
     if let Err(error) = keep_in(directory, file) {
-        eprintln!(
+        ketchup_rejection::log!(
             "saved-files: a saved file was not kept in {}: {error}",
             directory.display()
         );
@@ -52,7 +52,7 @@ fn keep_in(directory: &Path, file: &[u8]) -> io::Result<()> {
 fn name_part(part: tempfile::NamedTempFile, path: &Path) -> io::Result<()> {
     match part.persist_noclobber(path) {
         Ok(_) => Ok(()),
-        Err(_) if path.exists() => Ok(()),
+        Err(taken) if taken.error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
         Err(error) => Err(error.error),
     }
 }

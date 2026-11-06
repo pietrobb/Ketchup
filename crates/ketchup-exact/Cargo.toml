@@ -19,6 +19,9 @@ cxx-build = "=1.0.198"
 
 [lints.clippy]
 all = "deny"
+map_err_ignore = "deny"
+let_underscore_must_use = "deny"
+let_underscore_untyped = "deny"
 
 [[test]]
 name = "integration"

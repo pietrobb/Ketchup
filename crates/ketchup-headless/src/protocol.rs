@@ -13,6 +13,7 @@ use ketchup_application::pdm_workflow::{
     LocalPdmWorkflow, PdmCreateReleaseRequest, PdmDocumentState, PdmWorkflowError,
 };
 use ketchup_model::tolerance::limits;
+use ketchup_rejection::{Reason, dropped};
 mod model_tools;
 mod production;
 use ketchup_analysis::fea::{FeaMaterial, FeaSolveSettings};
@@ -833,7 +834,8 @@ impl Server {
         if self.verify_jobs[index].terminal()
             && let Some(stop) = self.verify_jobs[index].deadline_stop.take()
         {
-            let _ = stop.send(());
+            // The deadline has passed and its timer is gone already.
+            dropped(stop.send(()), Reason::NobodyWaiting);
         }
         if matches!(
             &self.verify_jobs[index].state,

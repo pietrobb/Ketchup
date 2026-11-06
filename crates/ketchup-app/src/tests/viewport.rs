@@ -72,7 +72,9 @@ fn hovering_and_selecting_a_canonical_mesh_body_paints_its_outline() {
         "the imported sphere is stored as a canonical mesh body"
     );
     let context = egui::Context::default();
-    let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+    crate::tests::run_frame(&context, egui::RawInput::default(), |context| {
+        app.ui(context)
+    });
     app.zoom_fit();
 
     let unselected = selection_stroke_segments(&context, &mut app);
@@ -101,7 +103,9 @@ fn orbit_passes_both_poles_without_a_pitch_limit() {
 fn zoom_selection_preserves_camera_basis_projection_and_document() {
     let mut app = KetchupApp::new();
     let context = egui::Context::default();
-    let _ = context.run(egui::RawInput::default(), |context| app.ui(context));
+    crate::tests::run_frame(&context, egui::RawInput::default(), |context| {
+        app.ui(context)
+    });
     assert!(!app.command_enabled(AppCommand::ZoomSelection));
     app.selection.select_occurrence(OccurrenceId(1), false);
     assert!(app.command_enabled(AppCommand::ZoomSelection));

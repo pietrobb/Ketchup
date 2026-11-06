@@ -70,7 +70,12 @@ impl LiveBridge {
         let name = name.clone();
         let binding = super::underlay_binding::Binding::new(app, &snapshot, underlay, request)?;
         let written = binding.written(app, &snapshot)?;
-        let (source, overrides, file_name) = match app.document.current_rule_program() {
+        let current = app.document.current_rule_program();
+        let source = current.map_or("", |program| program.source.as_str());
+        if let Some(refused) = refusal_of_taken_name(source, &name, &written) {
+            return Err(refused);
+        }
+        let (source, overrides, file_name) = match current {
             Some(program) => (
                 with_data(&program.source, &name, &written),
                 Some(program.overrides.clone()),
@@ -445,6 +450,67 @@ pub(super) fn is_identifier(name: &str) -> bool {
         .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
         && characters.all(|next| next.is_ascii_alphanumeric() || next == '_')
         && name.len() <= ketchup_model::tolerance::limits::NAME_BYTES
+}
+
+/// What to do when [`taken_name`] finds a name taken.
+const TAKEN_NAME_HINT: &str = "Choose a name the program does not use yet, e.g. ROOM_1_01.";
+
+/// The code of the refusal of `written`, the data of section `name`, where [`taken_name`]
+/// finds it would take a name of `source` over; none where it may go in.
+pub(super) fn refusal_of_taken_name(
+    source: &str,
+    name: &str,
+    written: &str,
+) -> Option<&'static str> {
+    refusal_of_taken_name_among(
+        source,
+        name,
+        written,
+        ketchup_program::eval::builtin_names(),
+    )
+}
+
+/// [`refusal_of_taken_name`] against `builtins`, the names of the program language and
+/// library. When they cannot be read, the data is refused with why, not written unchecked
+/// (review 2026-11-04 r19 P3 UO-51: the check was left out silently).
+pub(super) fn refusal_of_taken_name_among(
+    source: &str,
+    name: &str,
+    written: &str,
+    builtins: Result<BTreeSet<String>, ketchup_program::eval::ProgramError>,
+) -> Option<&'static str> {
+    match builtins {
+        Ok(builtins) => taken_name(source, name, written, &builtins)
+            .map(|taken| invalid("name", taken, TAKEN_NAME_HINT)),
+        Err(error) => Some(super::failed_because("program_rejected", error)),
+    }
+}
+
+/// Why `written`, the data of section `name`, may not go into `source`: it binds a name the
+/// program sees before its first line (`range`, `len`, a library function: `builtins`) or
+/// binds outside that section, as another section's `A_POINTS` is the points of the data
+/// `A` writes (review 2026-11-04 UO-51), and would take the name over. A program that does
+/// not parse is left for its apply to say.
+fn taken_name(
+    source: &str,
+    name: &str,
+    written: &str,
+    builtins: &BTreeSet<String>,
+) -> Option<String> {
+    use ketchup_program::source_edit::top_level_names;
+    let writes = top_level_names(FILE_NAME, written)?;
+    let elsewhere = top_level_names(FILE_NAME, &with_data(source, name, "")).unwrap_or_default();
+    let taken = writes
+        .iter()
+        .find(|written| builtins.contains(*written) || elsewhere.contains(*written))?;
+    let what = if builtins.contains(taken) {
+        "a name of the program language or library"
+    } else {
+        "a name the program already sets outside this data"
+    };
+    Some(format!(
+        "The data {name:?} would set {taken}, {what}, and take it over."
+    ))
 }
 
 /// `source` with the data named `name` replaced by `written`, or with `written` first.

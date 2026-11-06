@@ -37,6 +37,7 @@ use ketchup_model::validation::{
     ValidationDiagnostic, ValidationInvocation, ValidationReport, ValidationState,
 };
 use ketchup_program::ExactPair;
+use ketchup_rejection::{Reason, dropped};
 use ketchup_scheduler::pair_query::{MAX_EXACT_PAIR_CANDIDATES, MAX_EXACT_PAIR_GRAPHS};
 use ketchup_scheduler::{
     ExactPairAnswer, ExactPairCandidate, ExactPairQueryResult, ExactPairRelation, WorkerError,
@@ -736,8 +737,12 @@ fn send_exact_pair_batches(
                             }
                         }
                         Err(unavailable) => {
-                            let _ = range_tx
-                                .send(Err(ExactPairFailure::WorkerUnavailable(unavailable)));
+                            // The query that asked has stopped waiting.
+                            dropped(
+                                range_tx
+                                    .send(Err(ExactPairFailure::WorkerUnavailable(unavailable))),
+                                Reason::NobodyWaiting,
+                            );
                         }
                     }
                 } else if let Some(unused) = idle {

@@ -132,8 +132,7 @@ impl KetchupApp {
     /// found off the UI thread the click waits for them instead of finding them again on
     /// it, a second and more on a large plan (review 2026-10-26 UO-40).
     pub(crate) fn click_underlay_extrude(&mut self, pointer: Pos2, rect: Rect) {
-        let Some(height_mm) =
-            parse_distance_mm(self.value_box.input.trim(), self.value_box.decimal)
+        let Some(height_mm) = parse_distance_mm(self.value_box.input.trim(), self.window.decimal)
         else {
             self.digest = self.catalog.text("digest-underlay-extrude-height");
             return;

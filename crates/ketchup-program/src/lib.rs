@@ -235,6 +235,8 @@ impl Report {
                     [
                         CHECKS_UNVERIFIED,
                         loads::LOAD_UNASSIGNED,
+                        loads::FASTENER_OFF_CONTACT,
+                        loads::AREA_LOAD_EDGE_ON,
                         cutting::CUTTING_UNPLACED,
                     ]
                     .contains(&issue.kind)

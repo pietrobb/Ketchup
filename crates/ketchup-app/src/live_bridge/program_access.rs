@@ -1,6 +1,7 @@
 //! Small program reads, revision-bound source patches and complete report pages.
 use super::program_check::ProgramCheckJob;
 use super::*;
+use crate::delivery::Deliver;
 use ketchup_model::document::RuleProgramSource;
 #[cfg(test)]
 #[path = "program_report_job_tests.rs"]
@@ -510,7 +511,7 @@ impl LiveBridge {
         let spawn = std::thread::Builder::new()
             .name("ketchup-program-report".into())
             .spawn(move || {
-                let _ = sender.try_send(run_report(&source, &cancel));
+                sender.deliver(run_report(&source, &cancel));
                 repaint.request_repaint();
             });
         if let Err(error) = spawn {

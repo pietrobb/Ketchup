@@ -203,7 +203,10 @@ impl KetchupApp {
                 .modal
                 .remove::<PendingGlbImport>()
                 .expect("the GLB review window has a pending import");
-            self.import_glb_from(&pending).ok();
+            if let Err(error) = self.import_glb_from(&pending) {
+                // The import has shown the refusal; logged with its cause (TST-140).
+                ketchup_rejection::log!("GLB import refused: {error}");
+            }
         }
     }
 }

@@ -452,7 +452,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-dwg"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "acadrust",
 ]
@@ -469,7 +469,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-geometry"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "ketchup-tolerance",
  "serde",
@@ -477,13 +477,14 @@ dependencies = [
 
 [[package]]
 name = "ketchup-model"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "ciborium",
  "ed25519-dalek",
  "encoding_rs",
  "epaint_default_fonts",
  "ketchup-geometry",
+ "ketchup-rejection",
  "ketchup-tolerance",
  "miniz_oxide",
  "serde",
@@ -495,21 +496,21 @@ dependencies = [
 
 [[package]]
 name = "ketchup-rejection"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "ketchup-tolerance"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "ketchup-view-format"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "ketchup-rejection",
  "ketchup-tolerance",

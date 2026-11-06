@@ -9,6 +9,17 @@ use serde::{Deserialize, Serialize};
 /// Where the settings live among the `.ketchup` companion data.
 const VIEWER_NAMESPACE: &str = "org.ketchup.viewer";
 const VIEWER_SETTINGS_PATH: &str = "sharing-v1.json";
+/// The views left out, beside the settings Kečup 0.3.1 reads.
+const SHARING_EXCLUDED_PATH: &str = "sharing-excluded-v1.json";
+
+/// The views left out and the `scenes` written with them: when another
+/// version has since written other `scenes`, its choice wins.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExcludedScenes {
+    excluded_scenes: BTreeSet<u64>,
+    scenes: Option<BTreeSet<u64>>,
+}
 /// The package limit of one note; longer text would make the export fail.
 pub(crate) const MAX_VIEWER_NOTE_BYTES: usize = 65_536;
 
@@ -25,9 +36,19 @@ pub(crate) struct ViewerSettings {
     /// Root components left out of the package entirely, geometry included.
     #[serde(default)]
     pub(crate) excluded_roots: BTreeSet<u64>,
-    /// Shared saved views; `None` shares every saved view.
-    #[serde(default)]
-    pub(crate) scenes: Option<BTreeSet<u64>>,
+    /// Saved views left out of the package; every other one is shared, a
+    /// view saved later too. Written beside the settings, in
+    /// [`SHARING_EXCLUDED_PATH`], as Kečup 0.3.1 refuses a field it does not
+    /// know (review 2026-11-04 r19 UI-160); read here from files of 0.3.2.
+    #[serde(default, skip_serializing)]
+    pub(crate) excluded_scenes: BTreeSet<u64>,
+    /// The shared saved views, as Kečup 0.3.1 and older read them: written
+    /// so they share no view left out, `None` when none is. Read, they are
+    /// turned into `excluded_scenes` against the document's views unless the
+    /// views left out written with them still match (review 2026-11-04 P3
+    /// GUI: kept alone, they left a view saved later out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    scenes: Option<BTreeSet<u64>>,
     /// The scene the Viewer opens first.
     #[serde(default)]
     pub(crate) start_scene: Option<u64>,
@@ -75,9 +96,7 @@ impl ViewerSettings {
 
     /// Whether the saved view goes into the package.
     pub(crate) fn scene_shared(&self, id: SavedViewId) -> bool {
-        self.scenes
-            .as_ref()
-            .is_none_or(|scenes| scenes.contains(&id.0))
+        !self.excluded_scenes.contains(&id.0)
     }
 }
 
@@ -85,16 +104,34 @@ impl KetchupApp {
     /// Stored settings, the defaults when none are; unreadable stored settings
     /// are an error, never quietly the defaults.
     pub(crate) fn stored_viewer_settings(&self) -> Result<ViewerSettings, serde_json::Error> {
-        self.file
-            .container_data
-            .extensions()
-            .find(|entry| {
-                entry.namespace() == VIEWER_NAMESPACE && entry.path() == VIEWER_SETTINGS_PATH
-            })
-            .map_or_else(
-                || Ok(ViewerSettings::default()),
-                |entry| serde_json::from_slice(entry.bytes()),
-            )
+        let stored = |path: &str| {
+            self.file
+                .container_data
+                .extensions()
+                .find(|entry| entry.namespace() == VIEWER_NAMESPACE && entry.path() == path)
+        };
+        let mut settings: ViewerSettings = stored(VIEWER_SETTINGS_PATH).map_or_else(
+            || Ok(ViewerSettings::default()),
+            |entry| serde_json::from_slice(entry.bytes()),
+        )?;
+        let kept = stored(SHARING_EXCLUDED_PATH)
+            .map(|entry| serde_json::from_slice::<ExcludedScenes>(entry.bytes()))
+            .transpose()?;
+        let shared = settings.scenes.take();
+        match (kept, shared) {
+            (Some(kept), shared) if kept.scenes == shared => {
+                settings.excluded_scenes.extend(kept.excluded_scenes);
+            }
+            (_, Some(shared)) => settings.excluded_scenes.extend(
+                self.document
+                    .current()
+                    .saved_views()
+                    .map(|view| view.id().0)
+                    .filter(|id| !shared.contains(id)),
+            ),
+            (_, None) => {}
+        }
+        Ok(settings)
     }
 
     /// Store the settings without empty notes; `false` when nothing changed.
@@ -116,18 +153,41 @@ impl KetchupApp {
         if self.stored_viewer_settings().ok().as_ref() == Some(&settings) {
             return true;
         }
-        let Ok(bytes) = serde_json::to_vec(&settings) else {
-            return false;
+        // As Kečup 0.3.1 reads them: the views shared now, none left out.
+        let views = self
+            .document
+            .current()
+            .saved_views()
+            .map(|view| view.id().0)
+            .collect::<Vec<_>>();
+        let excluded = std::mem::take(&mut settings.excluded_scenes);
+        settings.scenes = views.iter().any(|id| excluded.contains(id)).then(|| {
+            views
+                .iter()
+                .copied()
+                .filter(|id| !excluded.contains(id))
+                .collect()
+        });
+        let kept = ExcludedScenes {
+            excluded_scenes: excluded,
+            scenes: settings.scenes.clone(),
         };
-        let Ok(entry) = ketchup_model::persistence::ExtensionEntry::new(
-            VIEWER_NAMESPACE,
-            VIEWER_SETTINGS_PATH,
-            false,
-            bytes,
+        let entry = |path, bytes| {
+            ketchup_model::persistence::ExtensionEntry::new(VIEWER_NAMESPACE, path, false, bytes)
+                .ok()
+        };
+        let (Some(settings), Some(kept)) = (
+            serde_json::to_vec(&settings)
+                .ok()
+                .and_then(|bytes| entry(VIEWER_SETTINGS_PATH, bytes)),
+            serde_json::to_vec(&kept)
+                .ok()
+                .and_then(|bytes| entry(SHARING_EXCLUDED_PATH, bytes)),
         ) else {
             return false;
         };
-        self.file.container_data.set_extension(entry);
+        self.file.container_data.set_extension(settings);
+        self.file.container_data.set_extension(kept);
         self.viewer_prep.unsaved = true;
         true
     }
@@ -175,21 +235,33 @@ impl KetchupApp {
 
     /// Include or leave out a saved view.
     pub fn set_viewer_scene_shared(&mut self, id: SavedViewId, shared: bool) -> bool {
-        let all = self
-            .document
-            .current()
-            .saved_views()
-            .map(|view| view.id().0)
-            .collect::<BTreeSet<_>>();
         self.edit_viewer_settings(|settings| {
-            let scenes = settings.scenes.get_or_insert_with(|| all.clone());
             if shared {
-                scenes.insert(id.0);
+                settings.excluded_scenes.remove(&id.0);
             } else {
-                scenes.remove(&id.0);
+                settings.excluded_scenes.insert(id.0);
             }
-            if *scenes == all {
-                settings.scenes = None;
+        })
+    }
+
+    /// A view saved under the id of a deleted one starts with none of its
+    /// choices: shared, with the author's dimensions. `false` when they
+    /// could not be stored.
+    pub(crate) fn forget_viewer_scene_choices(&mut self, id: SavedViewId) -> bool {
+        // Unreadable settings are kept untouched; the export refuses them.
+        let chosen = self.stored_viewer_settings().is_ok_and(|settings| {
+            settings.excluded_scenes.contains(&id.0)
+                || settings.scenes_without_dimensions.contains(&id.0)
+                || settings.start_scene == Some(id.0)
+        });
+        if !chosen {
+            return true;
+        }
+        self.edit_viewer_settings(|settings| {
+            settings.excluded_scenes.remove(&id.0);
+            settings.scenes_without_dimensions.remove(&id.0);
+            if settings.start_scene == Some(id.0) {
+                settings.start_scene = None;
             }
         })
     }
@@ -335,8 +407,8 @@ impl KetchupApp {
                 self.catalog.format("viewer-scene-share-named", &arguments),
             )
         });
-        if toggle.changed() {
-            self.set_viewer_scene_shared(id, shared);
+        if toggle.changed() && !self.set_viewer_scene_shared(id, shared) {
+            self.digest = self.catalog.text("digest-viewer-settings-not-stored");
         }
         let start = self.viewer_export_scenes(&settings).first() == Some(&id);
         let opening = ui.add_enabled(

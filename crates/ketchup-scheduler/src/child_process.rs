@@ -66,7 +66,11 @@ pub(crate) fn keep_memory_limit() {
 #[cfg(unix)]
 fn end_now() -> ! {
     use nix::sys::signal::{Signal, raise};
-    let _ = raise(Signal::SIGKILL);
+    // The abort below ends it all the same.
+    ketchup_rejection::dropped(
+        raise(Signal::SIGKILL),
+        ketchup_rejection::Reason::AlreadyEnded,
+    );
     std::process::abort()
 }
 
@@ -157,7 +161,9 @@ mod unix_tests {
     #[ignore = "child process of the test below"]
     fn worker_watching_only_after_its_parent_died() {
         // Its stdin, the test's pipe, closes once the test has reaped the parent.
-        let _ = std::io::read_to_string(std::io::stdin());
+        if std::io::read_to_string(std::io::stdin()).is_err() {
+            // Closed or broken alike, the pipe has ended.
+        }
         super::exit_with_parent();
         loop {
             std::thread::park();
@@ -203,7 +209,7 @@ mod unix_tests {
             .unwrap();
         assert!(parent.wait().unwrap().success());
         drop(worker_stdin);
-        let _ = Command::new("timeout")
+        Command::new("timeout")
             .args([
                 "5",
                 "tail",
@@ -211,12 +217,14 @@ mod unix_tests {
                 "-f",
                 "/dev/null",
             ])
-            .output();
+            .output()
+            .expect("timeout starts");
         let survived = process_is_running(worker_pid);
         if survived {
-            let _ = Command::new("kill")
+            Command::new("kill")
                 .args(["-9", &worker_pid.to_string()])
-                .output();
+                .output()
+                .expect("kill starts");
         }
         assert!(!survived, "worker {worker_pid} outlived its parent by 5 s");
     }

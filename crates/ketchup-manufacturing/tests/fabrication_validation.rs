@@ -6,12 +6,12 @@ use ketchup_geometry::prismatic::Aabb;
 use ketchup_geometry::tapping::TappedHoleMismatch;
 use ketchup_manufacturing::fabrication::{
     BTLX_2_3_1_SCHEMA_SHA256, BTLX_2_3_1_SCHEMA_URL, BTLX_2_3_1_VERSION, BtlxExportOptions,
-    BtlxProfileProcessingRequest, Carriage, FABRICATION_ROLE_DIMENSION_V1, GENERAL_BOM_EXPORT_V3,
-    GeneralBomItemKind, GeneralFabricationError, GeneralFabricationProjection,
-    GeneralMachiningFrame, GeneralMachiningGeometry, GeneralManufacturingKind,
-    MANUFACTURED_ITEM_ROLE_V1, MATERIAL_DIMENSION_V1, PURCHASED_ITEM_ROLE_V1, ProjectionStatus,
-    SITE_BUILT_ITEM_ROLE_V1, ShopElement, ShopFormat, TIMBER_MATERIAL_V1, TIMBER_MEMBER_ROLE_V1,
-    carriage, project_general_fabrication, shown_parts,
+    BtlxProfileProcessingRequest, Carriage, ExportBlock, FABRICATION_ROLE_DIMENSION_V1,
+    GENERAL_BOM_EXPORT_V3, GeneralBomItemKind, GeneralFabricationError,
+    GeneralFabricationProjection, GeneralMachiningFrame, GeneralMachiningGeometry,
+    GeneralManufacturingKind, MANUFACTURED_ITEM_ROLE_V1, MATERIAL_DIMENSION_V1,
+    PURCHASED_ITEM_ROLE_V1, ProjectionStatus, SITE_BUILT_ITEM_ROLE_V1, ShopElement, ShopFormat,
+    TIMBER_MATERIAL_V1, TIMBER_MEMBER_ROLE_V1, carriage, project_general_fabrication, shown_parts,
 };
 use ketchup_model::document::{
     BooleanOperation, CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId,
@@ -513,13 +513,17 @@ fn general_fabrication_regenerates_deterministically_and_exports_fail_closed() {
     tampered.bom.rows[0].quantity = 3;
     assert_eq!(
         tampered.bom_export(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::ResultMismatch
+        ))
     );
     let mut wrong_evaluator = projection.clone();
     wrong_evaluator.drawings.envelope.evaluator_id = "ketchup.tampered-evaluator.v1";
     assert_eq!(
         wrong_evaluator.drawing_svg(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::AnotherState
+        ))
     );
 
     document
@@ -533,15 +537,21 @@ fn general_fabrication_regenerates_deterministically_and_exports_fail_closed() {
     let current = document.current();
     assert_eq!(
         projection.bom_export(&current),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::AnotherState
+        ))
     );
     assert_eq!(
         projection.drawing_svg(&current),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::AnotherState
+        ))
     );
     assert_eq!(
         projection.manufacturing_export(&current),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::AnotherState
+        ))
     );
 
     let mut scaled = exact_only_document();
@@ -916,7 +926,9 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
     tampered.bom.rows[0].quantity = 3;
     assert_eq!(
         tampered.btlx_2_3_1_export(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::ResultMismatch
+        ))
     );
 
     let mut tampered_drill = machined;
@@ -928,7 +940,9 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
     *diameter_mm = 12.0;
     assert_eq!(
         tampered_drill.btlx_2_3_1_export(&machined_snapshot),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::ResultMismatch
+        ))
     );
 
     // Review 2026-10-31 MF-82: a profile cut through all is machined from end
@@ -1167,7 +1181,9 @@ fn mixed_mechanical_bom_keeps_make_buy_materials_positions_and_timber_export_bou
     tampered.bom.rows[0].item_kind = GeneralBomItemKind::Purchased;
     assert_eq!(
         tampered.bom_export(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::ResultMismatch
+        ))
     );
 }
 
@@ -1401,13 +1417,17 @@ fn nested_repeated_assemblies_roll_up_leaf_quantities_and_inherit_root_bom_metad
     tampered_drawing.drawings.drawings[0].quantity += 1;
     assert_eq!(
         tampered_drawing.drawing_svg(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::ResultMismatch
+        ))
     );
     let mut mismatched_bom = projection.clone();
     mismatched_bom.bom.rows.swap(0, 1);
     assert_eq!(
         mismatched_bom.drawing_svg(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::ResultMismatch
+        ))
     );
 
     document
@@ -1422,11 +1442,15 @@ fn nested_repeated_assemblies_roll_up_leaf_quantities_and_inherit_root_bom_metad
     let changed = document.current();
     assert_eq!(
         projection.bom_export(&changed),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::AnotherState
+        ))
     );
     assert_eq!(
         projection.drawing_svg(&changed),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::AnotherState
+        ))
     );
     let undone = document.undo().unwrap();
     assert_eq!(projection.bom_export(&undone).unwrap(), bom_export);
@@ -1434,7 +1458,9 @@ fn nested_repeated_assemblies_roll_up_leaf_quantities_and_inherit_root_bom_metad
     let redone = document.redo().unwrap();
     assert_eq!(
         projection.drawing_svg(&redone),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::AnotherState
+        ))
     );
     let restored = document.undo().unwrap();
     let reopened = persistence::load(&persistence::save(&restored)).unwrap();
@@ -1448,7 +1474,9 @@ fn nested_repeated_assemblies_roll_up_leaf_quantities_and_inherit_root_bom_metad
     );
     assert_eq!(
         projection.btlx_2_3_1_export(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::NothingToWrite
+        ))
     );
 }
 
@@ -1777,7 +1805,9 @@ fn each_row_of_one_drilled_part_in_two_materials_draws_the_drilling() {
         .truncate(1);
     assert_eq!(
         stripped.drawing_svg(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::ResultMismatch
+        ))
     );
 }
 #[test]
@@ -1899,7 +1929,10 @@ fn an_unevenly_scaled_part_with_a_hole_claims_no_drilling_and_blocks_the_export(
     assert_eq!(projection.manufacturing.unresolved_sources.len(), 1);
     assert_eq!(
         projection.manufacturing_export(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked.at_part("Timber with circular drilling"))
+        Err(
+            GeneralFabricationError::ExportBlocked(ExportBlock::UndescribedCuts)
+                .at_part("Timber with circular drilling")
+        )
     );
 }
 
@@ -2525,7 +2558,9 @@ fn exact_profile_cut_projects_btl_ready_timber_stock_and_circular_drilling() {
     *diameter_mm = 12.0;
     assert_eq!(
         tampered_drawing.drawing_svg(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::ResultMismatch
+        ))
     );
 
     let mut tampered = projection.clone();
@@ -2537,11 +2572,15 @@ fn exact_profile_cut_projects_btl_ready_timber_stock_and_circular_drilling() {
     *diameter_mm = 12.0;
     assert_eq!(
         tampered.manufacturing_export(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::ResultMismatch
+        ))
     );
     assert_eq!(
         tampered.drawing_svg(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::ResultMismatch
+        ))
     );
 
     let mut sub_text_precision_tamper = projection.clone();
@@ -2553,7 +2592,9 @@ fn exact_profile_cut_projects_btl_ready_timber_stock_and_circular_drilling() {
     *diameter_mm += 1.0e-10;
     assert_eq!(
         sub_text_precision_tamper.manufacturing_export(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked)
+        Err(GeneralFabricationError::ExportBlocked(
+            ExportBlock::ResultMismatch
+        ))
     );
 }
 
@@ -2916,7 +2957,9 @@ fn circular_through_all_survives_reopen_but_never_exports_boolean_padding_as_mac
         *through = false;
         assert_eq!(
             tampered.btlx_2_3_1_export(&snapshot),
-            Err(GeneralFabricationError::ExportBlocked)
+            Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::ResultMismatch
+            ))
         );
     }
 }
@@ -3048,15 +3091,24 @@ fn circular_boolean_tools_are_not_promoted_to_manufacturing_drilling() {
     assert_eq!(projection.manufacturing.unresolved_sources.len(), 1);
     assert_eq!(
         projection.manufacturing_export(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked.at_part("Timber with circular drilling"))
+        Err(
+            GeneralFabricationError::ExportBlocked(ExportBlock::UndescribedCuts)
+                .at_part("Timber with circular drilling")
+        )
     );
     assert_eq!(
         projection.btlx_2_3_1_export(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked.at_part("Timber with circular drilling"))
+        Err(
+            GeneralFabricationError::ExportBlocked(ExportBlock::UndescribedCuts)
+                .at_part("Timber with circular drilling")
+        )
     );
     assert_eq!(
         projection.woodwop_mpr_4_0_drill_export(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked.at_part("Timber with circular drilling"))
+        Err(
+            GeneralFabricationError::ExportBlocked(ExportBlock::UndescribedCuts)
+                .at_part("Timber with circular drilling")
+        )
     );
 }
 
@@ -3081,7 +3133,10 @@ fn unsupported_or_unverified_exact_graph_manufacturing_fails_closed_atomically()
         assert_eq!(projection.manufacturing.unresolved_sources.len(), 1);
         assert_eq!(
             projection.manufacturing_export(&snapshot),
-            Err(GeneralFabricationError::ExportBlocked.at_part("Graph fabrication"))
+            Err(
+                GeneralFabricationError::ExportBlocked(ExportBlock::UndescribedCuts)
+                    .at_part("Graph fabrication")
+            )
         );
     }
 
@@ -3095,7 +3150,10 @@ fn unsupported_or_unverified_exact_graph_manufacturing_fails_closed_atomically()
     assert_eq!(projection.manufacturing.unresolved_sources.len(), 1);
     assert_eq!(
         projection.manufacturing_export(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked.at_part("Graph fabrication"))
+        Err(
+            GeneralFabricationError::ExportBlocked(ExportBlock::NotExactBody)
+                .at_part("Graph fabrication")
+        )
     );
 
     let (snapshot, projection) = graph_fabrication_projection(
@@ -3111,7 +3169,10 @@ fn unsupported_or_unverified_exact_graph_manufacturing_fails_closed_atomically()
     assert_eq!(projection.manufacturing.unresolved_sources.len(), 1);
     assert_eq!(
         projection.manufacturing_export(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked.at_part("Graph fabrication"))
+        Err(
+            GeneralFabricationError::ExportBlocked(ExportBlock::UndescribedCuts)
+                .at_part("Graph fabrication")
+        )
     );
 }
 
@@ -3244,7 +3305,81 @@ fn canonical_mesh_keeps_bom_and_drawings_but_blocks_manufacturing_export() {
     assert_eq!(projection.manufacturing.unresolved_sources.len(), 1);
     assert_eq!(
         projection.manufacturing_export(&snapshot),
-        Err(GeneralFabricationError::ExportBlocked.at_part("Canonical mesh"))
+        Err(
+            GeneralFabricationError::ExportBlocked(ExportBlock::NotExactBody)
+                .at_part("Canonical mesh")
+        )
+    );
+}
+
+/// Review 2026-11-04 r19 P3: a blocked export says why it is blocked, instead
+/// of one text for every cause ("incomplete, stale, invalid, or lacks
+/// manufacturing semantics"), and a scope or package with nothing in it is not
+/// told that the document "contains no supported visible body geometry".
+#[test]
+fn a_blocked_export_says_why_it_is_blocked() {
+    let refusal =
+        |result: Result<Vec<u8>, GeneralFabricationError>| result.unwrap_err().to_string();
+    let document = straight_timber_document();
+    let snapshot = document.current();
+    let straight = exact_document_fabrication_projection(&document).unwrap();
+    let (machined_snapshot, machined) = circular_drill_fabrication_projection();
+
+    // Made from another state of the document.
+    let message = refusal(straight.bom_export(&machined_snapshot));
+    assert!(
+        message.contains("was made from another state of the document")
+            && message.contains("evaluate the model again"),
+        "{message}"
+    );
+    // A result that no longer matches what the projection records.
+    let mut tampered = machined.clone();
+    tampered.bom.rows[0].quantity = 3;
+    let message = refusal(tampered.btlx_2_3_1_export(&machined_snapshot));
+    assert!(
+        message.contains("no longer matches the model it was made from"),
+        "{message}"
+    );
+
+    // A part whose drilling could not be described names the part and that cause.
+    let (scaled_snapshot, scaled) = scaled_drill_projection([1.0, 1.5, 1.0]);
+    let message = refusal(scaled.manufacturing_export(&scaled_snapshot));
+    assert!(
+        message.contains("part \"Timber with circular drilling\"")
+            && message.contains("could not be described as machining")
+            && !message.contains("stock is not a rectangular box"),
+        "{message}"
+    );
+
+    // Nothing in the production scope to make.
+    let registry =
+        ExactResultRegistry::accept(&snapshot, [Arc::new(exact_package(&snapshot))]).unwrap();
+    let tolerance = TolerancePolicy::default();
+    let report = general_report(&snapshot, &[], tolerance);
+    let message = project_general_fabrication(
+        &snapshot,
+        &registry,
+        &[],
+        &report,
+        tolerance,
+        &Default::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        message.contains("no part to make") && !message.contains("supported visible body geometry"),
+        "{message}"
+    );
+
+    // A package of parts none of which is drilled or pocketed has no program.
+    let message = straight
+        .woodwop_mpr_4_0_production_package(&snapshot, Default::default())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        message.contains("no piece to program")
+            && !message.contains("supported visible body geometry"),
+        "{message}"
     );
 }
 

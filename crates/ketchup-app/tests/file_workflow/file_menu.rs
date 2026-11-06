@@ -106,6 +106,52 @@ fn a_vanished_recent_document_is_reported_and_dropped_without_a_crash() {
     assert_eq!(store.stored(), vec![kept]);
 }
 
+/// Review 2026-11-04 P3 GUI: a document whose folder did not answer, as on a
+/// server that is offline, was dropped from Open Recent for good when
+/// clicked. It is said to be unavailable and stays for when it is back.
+#[test]
+fn a_recent_document_whose_folder_does_not_answer_stays_listed_when_clicked() {
+    let directory = tempfile::tempdir().unwrap();
+    // No folder above it answers: on Windows a drive nothing is mapped to,
+    // as a share whose server is off; elsewhere a folder outside the home
+    // folder, as an unmounted `/Volumes/NAS`. A folder deleted on this
+    // computer's own disk is gone instead (review 2026-11-04 r19 P3).
+    let volume = if cfg!(windows) {
+        ('D'..='Z')
+            .rev()
+            .map(|letter| PathBuf::from(format!("{letter}:\\")))
+            .find(|root| !root.exists())
+            .expect("a free drive letter")
+    } else {
+        directory.path().to_owned()
+    };
+    let offline = volume.join("server-share").join("house.ketchup");
+    let store = MemoryRecentFiles::holding(vec![offline.clone()]);
+    let mut shell = shell_remembering(&store, ScriptedFileDialogs::new().always_discard());
+    let revision = shell.app().document_revision();
+
+    open_recent(&mut shell);
+    let unavailable = shell.catalog().format(
+        "file-recent-unavailable-name",
+        &BTreeMap::from([("path", entry_label(&offline))]),
+    );
+    let labels = shell.visible_button_labels();
+    assert!(labels.contains(&unavailable), "{labels:?}");
+    shell.click_button_label(&unavailable);
+
+    assert_eq!(shell.app().document_path(), None);
+    assert_eq!(shell.app().document_revision(), revision);
+    assert_eq!(
+        shell.app().action_digest(),
+        shell.catalog().format(
+            "digest-recent-unavailable",
+            &BTreeMap::from([("path", entry_label(&offline))]),
+        )
+    );
+    assert_eq!(shell.app().recent_files(), std::slice::from_ref(&offline));
+    assert_eq!(store.stored(), vec![offline]);
+}
+
 #[test]
 fn opening_a_recent_document_over_unsaved_changes_asks_first() {
     let directory = tempfile::tempdir().unwrap();

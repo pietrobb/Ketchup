@@ -50,14 +50,16 @@ pub fn read_dxf_underlay_from(
     mut source: impl BufRead + Seek,
     options: DxfImportOptions,
 ) -> Result<DxfUnderlay, DxfImportError> {
-    let _any_coordinate = AnyFiniteCoordinate::new();
-    let code_page = text_encoding(&mut source)?;
-    let encoding = code_page.as_ref().map(|(encoding, _)| *encoding);
+    let _any_coordinate_guard = AnyFiniteCoordinate::new();
+    let encoding = text_encoding(&mut source)?;
     let mut diagnostics = DiagnosticCounts::new(UNDERLAY_READING);
-    if let Some((_, read)) = code_page {
+    if let Some(read) = encoding.read {
         diagnostics.code_page_read(read)?;
     }
-    let sections = read_sections(PairReader::new(&mut source, encoding)?, &mut diagnostics)?;
+    let sections = read_sections(
+        PairReader::new(&mut source, encoding.code_page)?,
+        &mut diagnostics,
+    )?;
     let header = sections.header.pairs();
     let (units, _) = parse_header(&header, options, &mut diagnostics)?;
     let styles =
@@ -74,7 +76,7 @@ pub fn read_dxf_underlay_from(
     if !sections.entities {
         return Err(DxfImportError::MissingEntitiesSection);
     }
-    let mut reader = PairReader::new(&mut source, encoding)?;
+    let mut reader = PairReader::new(&mut source, encoding.code_page)?;
     let mut builder = UnderlayLinesBuilder::default();
     let mut layers = BTreeSet::new();
     let mut entity = PairBuffer::default();
@@ -380,75 +382,18 @@ fn read_sections(
     Ok(sections)
 }
 
-/// The encoding of `source`'s text, as the profile import decides it for the whole file:
-/// UTF-8 (`None`) when all of it is and it names no code page it does not
-/// [fit](utf8_fits), otherwise the code page its `$DWGCODEPAGE` names when it is older
-/// than DXF 2007, or the one read in its place ([`text_code_page`]).
+/// The encoding of `source`'s text, as the profile import decides it for the whole file
+/// ([`TextSeen::decide`]).
 pub(super) fn text_encoding(
     source: &mut (impl BufRead + Seek),
-) -> Result<Option<(CodePage, CodePageRead)>, DxfImportError> {
+) -> Result<TextEncoding, DxfImportError> {
     source.seek(SeekFrom::Start(0)).map_err(read_error)?;
     let mut line = Vec::new();
-    let (mut utf8, mut empty) = (true, true);
-    let mut beyond_ascii = std::collections::BTreeSet::new();
-    let mut high = HighBytes::default();
-    // A header variable's value is the second line after its name.
-    let mut acadver = HeaderValue::default();
-    let mut code_page = HeaderValue::default();
+    let mut seen = TextSeen::default();
     while read_line(source, &mut line)? {
-        empty = false;
-        match std::str::from_utf8(&line) {
-            Ok(text) if utf8 => {
-                beyond_ascii.extend(text.chars().filter(|character| !character.is_ascii()));
-            }
-            _ => utf8 = false,
-        }
-        high.see(&line);
-        let trimmed = line.trim_ascii();
-        acadver.see(trimmed, b"$ACADVER");
-        code_page.see(trimmed, b"$DWGCODEPAGE");
+        seen.see(&line);
     }
-    if empty {
-        return Err(DxfImportError::Empty);
-    }
-    let name = acadver
-        .value
-        .is_none_or(|version| version.as_slice() < b"AC1021".as_slice())
-        .then_some(code_page.value)
-        .flatten();
-    if utf8
-        && name
-            .as_deref()
-            .and_then(code_page_encoding)
-            .is_none_or(|named| utf8_fits(beyond_ascii, named))
-    {
-        return Ok(None);
-    }
-    name.and_then(|name| text_code_page(&name, &high))
-        .map(Some)
-        .ok_or(DxfImportError::NonAscii)
-}
-
-/// The value of the first header variable of a name, seen line by line.
-#[derive(Default)]
-struct HeaderValue {
-    /// Lines until the value, once the name was seen.
-    until: Option<u8>,
-    value: Option<Vec<u8>>,
-}
-
-impl HeaderValue {
-    fn see(&mut self, line: &[u8], name: &[u8]) {
-        match self.until {
-            None if self.value.is_none() && line == name => self.until = Some(2),
-            Some(1) => {
-                self.value = Some(line.to_vec());
-                self.until = Some(0);
-            }
-            Some(left) if left > 1 => self.until = Some(left - 1),
-            _ => {}
-        }
-    }
+    seen.decide()
 }
 
 /// Reads group-code/value pairs line by line in the drawing's text encoding.

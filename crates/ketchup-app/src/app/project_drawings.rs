@@ -17,14 +17,17 @@ use ketchup_application::threads::{
 use ketchup_manufacturing::project_drawings::{
     CuttingPiece, CuttingSheet, CuttingStock, DrawingOpening, DrawingSet, DrawingSetOptions,
     DrawingSolid, DrawingThread, OpeningSchedule, PlanSheet, ProjectDrawingError, ProjectView,
-    SCALES, SheetTitles, ShopDrawings, ShopPosition, ShopSheet, Storey, drawing_set_until, storeys,
+    SCALES, SheetTitles, ShopDrawings, ShopPosition, ShopSheet, Storey, drawing_set_until,
+    ground_floor, storeys,
 };
 use ketchup_manufacturing::title_block::{
     DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM, SheetFormat, SheetLanguage, SheetSettings, TitleField,
 };
+use ketchup_model::annotation::{DecimalMark, dimension_text_with};
 use ketchup_model::sheet_pdf::PdfInfo;
 use ketchup_program::Evaluated;
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 /// A sheet language as its speakers name it, whatever the window's language.
@@ -40,7 +43,7 @@ const fn sheet_language_name(language: SheetLanguage) -> &'static str {
 const DEFAULT_SOLID_COLOR: [u8; 3] = [190, 190, 190];
 /// The highest plan cut the window offers: above a storey, a plan stops being a floor plan.
 const MAX_PLAN_CUT_ABOVE_FLOOR_MM: u32 = 10_000;
-const SHEET_NAMESPACE: &str = "org.ketchup.drawings";
+pub(super) const SHEET_NAMESPACE: &str = "org.ketchup.drawings";
 const SHEET_SETTINGS_PATH: &str = "sheet-v1.json";
 
 /// Why the project drawings could not be made or written.
@@ -53,6 +56,9 @@ pub(crate) enum ProjectDrawingsError {
     /// The named part's bodies do not resolve to one exact output each (two
     /// extrusions ending in one body); evaluating again does not help.
     UnresolvedBodies(String, ketchup_model::exact_product::ExactProductError),
+    /// The document's exact results do not read; drawing on would draw no
+    /// solid and find ±0,000 at 0 (review 2026-11-04 r19 MF-161).
+    ExactResults(ketchup_model::exact_product::ExactProductError),
     /// The program is still being evaluated: the threads of its parts are
     /// not known yet, and the sheet would leave them out.
     ProgramPlanning,
@@ -62,9 +68,29 @@ pub(crate) enum ProjectDrawingsError {
     /// The named part's modelled threads could not be made cosmetic for the
     /// sheet, which would otherwise draw every edge of their helices.
     CosmeticThreads(String, CosmeticThreadBodyError),
+    /// The named shown underlay's lines do not read, the plans would leave it
+    /// out: `None` when the document holds no blob of them.
+    UnderlayUnreadable(String, Option<ketchup_model::underlay::UnderlayLinesError>),
     /// A sheet's DXF did not convert to DWG.
     Dwg(ketchup_dwg::DwgError),
+    /// The set at the path, listed at `list`, is another project's, or
+    /// another copy's that wrote it since; `project` names the file it was
+    /// exported from (review 2026-11-04 r19 MF-162).
+    SetOfAnotherProject {
+        list: PathBuf,
+        project: Option<String>,
+    },
     Write(std::io::Error),
+}
+
+/// Why a shown underlay's lines do not read, in words.
+pub(crate) fn underlay_unreadable_reason(
+    cause: Option<&ketchup_model::underlay::UnderlayLinesError>,
+) -> String {
+    cause.map_or_else(
+        || "the document holds none of its lines".to_owned(),
+        ToString::to_string,
+    )
 }
 
 /// What a client asks of the set beyond the settings the document keeps: the
@@ -148,6 +174,81 @@ pub(crate) struct JobSolids {
     solids: Vec<DrawingSolid>,
     /// By the index of the solid it is drawn as.
     cosmetic: Vec<(usize, CosmeticThreadGraph, Transform)>,
+    /// The bodies hidden one by one that ±0,000 is found among with the
+    /// drawn ones, placed (review 2026-11-04 r19 MF-161).
+    zero_among: Vec<(Arc<ExactBodyPackage>, Transform)>,
+}
+
+/// An occurrence the drawings take bodies of, with the exact solid of each
+/// and whether the sheets draw it (see [`KetchupApp::job_bodies`]).
+type JobOccurrence = (SceneOccurrence, Vec<(Arc<ExactBodyPackage>, bool)>);
+
+/// The solid of `package` placed by `transform`, to find levels in.
+fn level_solid(package: &ExactBodyPackage, transform: &Transform) -> DrawingSolid {
+    let (triangles, faces) = world_mesh(package, transform);
+    DrawingSolid {
+        name: String::new(),
+        color: DEFAULT_SOLID_COLOR,
+        triangles,
+        faces,
+        threads: Vec::new(),
+    }
+}
+
+/// Why no ground floor is shown for ±0,000.
+#[derive(Debug)]
+pub(crate) enum FoundZeroError {
+    /// The bodies to find it among are not there.
+    Bodies(ProjectDrawingsError),
+    /// No worker could be started to find it.
+    Worker(std::io::Error),
+    /// The worker stopped before it found it.
+    WorkerStopped,
+}
+
+/// The ground floor the drawings window shows for ±0,000 (review 2026-11-04
+/// r19 MF-161): being found on a worker, or found, or why it cannot be.
+pub(crate) enum FoundZero {
+    Finding(std::sync::mpsc::Receiver<f64>),
+    Found(Result<f64, Arc<FoundZeroError>>),
+}
+
+impl FoundZero {
+    /// Finds the ground floor among `bodies`, placed, on a worker thread.
+    fn find(bodies: Vec<(Arc<ExactBodyPackage>, Transform)>) -> Self {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("ketchup-ground-floor".to_owned())
+            .spawn(move || {
+                let solids = bodies
+                    .iter()
+                    .map(|(package, transform)| level_solid(package, transform))
+                    .collect::<Vec<_>>();
+                // Sending fails only when the window has gone: nobody to tell.
+                sender.send(ground_floor(&solids)).unwrap_or_default();
+            });
+        match spawned {
+            Ok(_) => Self::Finding(receiver),
+            Err(error) => Self::Found(Err(Arc::new(FoundZeroError::Worker(error)))),
+        }
+    }
+
+    /// The ground floor once found; `None` while the worker is at it.
+    fn poll(&mut self) -> Option<Result<f64, Arc<FoundZeroError>>> {
+        if let Self::Finding(receiver) = self {
+            *self = match receiver.try_recv() {
+                Ok(height) => Self::Found(Ok(height)),
+                Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Self::Found(Err(Arc::new(FoundZeroError::WorkerStopped)))
+                }
+            };
+        }
+        match self {
+            Self::Found(found) => Some(found.clone()),
+            Self::Finding(_) => None,
+        }
+    }
 }
 
 impl JobSolids {
@@ -160,6 +261,7 @@ impl JobSolids {
         let Self {
             mut solids,
             cosmetic,
+            ..
         } = self;
         for (index, graph, transform) in cosmetic {
             let solid = &mut solids[index];
@@ -187,12 +289,21 @@ impl ProjectDrawingsJob {
     /// the worker making cosmetic thread bodies and the hidden-line removal.
     fn set(self, cancelled: &AtomicBool) -> Result<(DrawingSet, PdfInfo), ProjectDrawingsError> {
         let Self {
-            solids,
+            mut solids,
             executable,
-            options,
+            mut options,
             info,
         } = self;
+        let zero_among = std::mem::take(&mut solids.zero_among);
         let solids = solids.drawn(executable.as_deref(), cancelled)?;
+        if options.zero_level_mm.is_none() {
+            // Found here, on the job's thread (review 2026-11-04 r19 MF-161).
+            let hidden = zero_among
+                .iter()
+                .map(|(package, transform)| level_solid(package, transform))
+                .collect::<Vec<_>>();
+            options.zero_level_mm = Some(ground_floor(solids.iter().chain(&hidden)));
+        }
         let set = drawing_set_until(&solids, &options, cancelled)
             .map_err(ProjectDrawingsError::Drawing)?;
         Ok((set, info))
@@ -228,8 +339,38 @@ pub(crate) struct ExportedSet {
 /// The SHA-256 of each file of a set an export may replace, by its path.
 pub(crate) type SetTargets = BTreeMap<PathBuf, String>;
 
-/// The first line of the list a DXF or DWG set is written with.
+/// The first line of the list a DXF or DWG set was written with before the
+/// list named the project's file.
 const SET_LIST_HEADER: &str = "Ketchup drawing set";
+/// The first line of the list a DXF or DWG set was written with by Kečup
+/// 0.3.2, its third line naming the project's file by its absolute path.
+const OWNED_SET_LIST_HEADER: &str = "Ketchup drawing set of a project file";
+/// The first line of the list a DXF or DWG set is written with, its third
+/// line naming the project's file by its name alone, so the list carries no
+/// folder with the user's name. Whose the set is the document says: it keeps
+/// the list it wrote (review 2026-11-04 r19 MF-162).
+const DOCUMENT_SET_LIST_HEADER: &str = "Ketchup drawing set of a document";
+
+/// The line of a 0.3.2 set's list naming the file of the project it is drawn
+/// from, none for a project not saved.
+fn project_path_line(owner: &SetOwner) -> String {
+    let file = owner
+        .file
+        .as_ref()
+        .map_or_else(String::new, |file| file.display().to_string());
+    format!("project {file}")
+}
+
+/// The line of a set's list naming the file the project is kept in by its
+/// name, none for a project not saved.
+fn project_name_line(owner: &SetOwner) -> String {
+    let name = owner
+        .file
+        .as_deref()
+        .and_then(Path::file_name)
+        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+    format!("project {name}")
+}
 
 /// The list written beside a DXF or DWG set for `path`, `plan.dxf` as
 /// `plan.dxf.sheets.txt`: the project the set was drawn from and the name and
@@ -243,32 +384,192 @@ pub(crate) fn set_list_path(path: &Path, format: SetFileFormat) -> PathBuf {
     path.with_file_name(format!("{stem}.{}.sheets.txt", format.extension()))
 }
 
-fn set_list(document: DocumentId, sheets: &[PathBuf], files: &[Vec<u8>]) -> Vec<u8> {
-    let mut list = format!("{SET_LIST_HEADER}\ndocument {}\n", document.0);
-    for (sheet, bytes) in sheets.iter().zip(files) {
-        let name = sheet
-            .file_name()
-            .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
-        let sha256 = ketchup_model::graph::sha256_hex(bytes);
+/// Whose a set of drawings is: the project it is drawn from, the file the
+/// project is kept in and the drawing files the document wrote. A set is the
+/// document's while its list is the one the document last wrote there, so a
+/// project renamed, moved or saved as "v2" exports its set again, and of two
+/// copies only the one that wrote the set last replaces it (review 2026-11-04
+/// P3, r19 MF-162).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SetOwner {
+    pub(crate) document: DocumentId,
+    /// None while the project has not been saved.
+    pub(crate) file: Option<PathBuf>,
+    /// The SHA-256 of each drawing file the document wrote, by
+    /// [`written_key`](super::drawing_sheet_export::written_key).
+    pub(crate) written: BTreeMap<String, String>,
+}
+
+impl SetOwner {
+    /// Whether the list at `list_path`, of SHA-256 `sha256`, is the one the
+    /// document last wrote there.
+    fn wrote(&self, list_path: &Path, sha256: &str) -> bool {
+        super::drawing_sheet_export::written_key(list_path)
+            .is_ok_and(|key| self.written.get(&key).is_some_and(|kept| kept == sha256))
+    }
+
+    /// Notes `written` files as the document's, as
+    /// [`KetchupApp::wrote_drawings`] keeps them.
+    #[cfg(test)]
+    pub(crate) fn note(&mut self, written: &[(PathBuf, String)]) -> std::io::Result<()> {
+        for (path, sha256) in written {
+            let key = super::drawing_sheet_export::written_key(path)?;
+            self.written.insert(key, sha256.clone());
+        }
+        Ok(())
+    }
+}
+
+impl KetchupApp {
+    /// The owner of the sets the window exports now. Drawing files kept in a
+    /// list that does not read are none of its, so no set is taken unasked.
+    /// A work recovery open is of the file it was found for (r19 MF-162).
+    pub(crate) fn drawing_set_owner(&self) -> SetOwner {
+        SetOwner {
+            document: self.document.current().document_id(),
+            file: self
+                .file
+                .path
+                .clone()
+                .or_else(|| self.recovery_requested_path().map(Path::to_path_buf)),
+            written: self.written_drawings().unwrap_or_default(),
+        }
+    }
+}
+
+/// The list of a set of `owner` naming each of `sheets`, a sheet's file name
+/// with a SHA-256 its file may hold; a name may come more than once.
+fn set_list(owner: &SetOwner, sheets: &[(String, String)]) -> Vec<u8> {
+    list_of(owner, None, sheets)
+}
+
+/// The line of a list in place while a set's sheets are written naming the
+/// SHA-256 of the list it replaces.
+const REPLACING: &str = "replacing ";
+
+/// A set's list, `replacing` the list of that SHA-256 (`none`: no list) while
+/// the sheets are written.
+fn list_of(owner: &SetOwner, replacing: Option<&str>, sheets: &[(String, String)]) -> Vec<u8> {
+    let mut list = format!(
+        "{DOCUMENT_SET_LIST_HEADER}\ndocument {}\n{}\n",
+        owner.document.0,
+        project_name_line(owner)
+    );
+    if let Some(replacing) = replacing {
+        list.push_str(&format!("{REPLACING}{replacing}\n"));
+    }
+    for (name, sha256) in sheets {
         list.push_str(&format!("{name} {sha256}\n"));
     }
     list.into_bytes()
 }
 
-/// The sheet names and SHA-256s `list` holds when it is the list of a set of
-/// `document`; none when it is another project's or no list at all.
-fn listed_sheets(list: &[u8], document: DocumentId) -> Option<BTreeMap<String, String>> {
-    let mut lines = std::str::from_utf8(list).ok()?.lines();
-    (lines.next() == Some(SET_LIST_HEADER)
-        && lines.next() == Some(format!("document {}", document.0).as_str()))
-    .then(|| {
-        lines
-            .filter_map(|line| {
-                let (name, sha256) = line.rsplit_once(' ')?;
-                Some((name.to_owned(), sha256.to_owned()))
-            })
-            .collect()
-    })
+fn sheet_name(sheet: &Path) -> String {
+    sheet
+        .file_name()
+        .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+}
+
+/// The list in place while a set's sheets are written: each sheet as it was
+/// (`targets`, the list itself left out) and as it will be (`sheets`), so an
+/// export stopped between the sheets and the list, the window closed or the
+/// power cut, leaves a set the next export still takes for its own (review
+/// 2026-11-04 P3). It names the list it replaces, the one the document wrote,
+/// as the document never learns of it then (r19 MF-162).
+fn pending_list(
+    owner: &SetOwner,
+    sheets: &[(String, String)],
+    targets: &SetTargets,
+    list_path: &Path,
+) -> Vec<u8> {
+    let was = targets
+        .iter()
+        .filter(|(target, _)| target.as_path() != list_path)
+        .map(|(target, sha256)| (sheet_name(target), sha256.clone()));
+    list_of(
+        owner,
+        Some(targets.get(list_path).map_or("none", String::as_str)),
+        &sheets.iter().cloned().chain(was).collect::<Vec<_>>(),
+    )
+}
+
+/// What a file at a set's list path is to the project exporting the set.
+enum SetList {
+    /// This document's set, or one it takes over: each sheet name with the
+    /// SHA-256s its file may hold.
+    Its(BTreeMap<String, BTreeSet<String>>),
+    /// The set of another project, or another copy of this one that wrote it
+    /// since: the name of the file it was exported from, none when unsaved or
+    /// not named.
+    Another(Option<String>),
+    /// No list of a drawing set at all.
+    NotAList,
+}
+
+/// What `list`, at `list_path`, is to `owner`: its set when the document
+/// last wrote it there or `take_over` says to take it. A list of Kečup 0.3.2,
+/// which named the project by its absolute path, is the set of the project
+/// still kept in that file, the same file on disk however its path is spelt
+/// (case, `.`, `\\?\`, a mapped drive or its share; r19 MF-162, capability
+/// review run 501); an older one, naming no file, of the project's id. Any other is another project's, never this one's by its file name.
+fn set_list_of(list: &[u8], list_path: &Path, owner: &SetOwner, take_over: bool) -> SetList {
+    // A file that is not UTF-8 has no header of a list.
+    let text = String::from_utf8_lossy(list);
+    let mut lines = text.lines();
+    let header = lines.next().unwrap_or_default();
+    if ![
+        SET_LIST_HEADER,
+        OWNED_SET_LIST_HEADER,
+        DOCUMENT_SET_LIST_HEADER,
+    ]
+    .contains(&header)
+    {
+        return SetList::NotAList;
+    }
+    let same_document = lines.next() == Some(format!("document {}", owner.document.0).as_str());
+    let project = (header != SET_LIST_HEADER)
+        .then(|| lines.next().unwrap_or_default())
+        .and_then(|line| line.strip_prefix("project "));
+    let mut lines = lines.peekable();
+    // A list in place while the sheets were written is the document's when
+    // the list it replaced was, or there was none and the project is its.
+    let replacing = lines
+        .next_if(|line| line.starts_with(REPLACING))
+        .and_then(|line| line.strip_prefix(REPLACING));
+    let wrote = |sha256: &str| owner.wrote(list_path, sha256);
+    let its = take_over
+        || wrote(&ketchup_model::graph::sha256_hex(list))
+        || replacing.is_some_and(|replaced| wrote(replaced) || replaced == "none" && same_document)
+        || same_document
+            && match header {
+                SET_LIST_HEADER => true,
+                OWNED_SET_LIST_HEADER => project.is_some_and(|project| {
+                    owner.file.as_deref().is_some_and(|file| {
+                        format!("project {project}") == project_path_line(owner)
+                            || same_file::is_same_file(project, file).unwrap_or(false)
+                    })
+                }),
+                _ => false,
+            };
+    if !its {
+        let name = project
+            .filter(|project| !project.is_empty())
+            .map(|project| {
+                Path::new(project).file_name().map_or_else(
+                    || project.to_owned(),
+                    |name| name.to_string_lossy().into_owned(),
+                )
+            });
+        return SetList::Another(name);
+    }
+    let mut listed = BTreeMap::<String, BTreeSet<String>>::new();
+    for (name, sha256) in lines.filter_map(|line| line.rsplit_once(' ')) {
+        listed
+            .entry(name.to_owned())
+            .or_default()
+            .insert(sha256.to_owned());
+    }
+    SetList::Its(listed)
 }
 
 /// Writes the set's `files` for `path`, each through a temporary file and a
@@ -282,43 +583,52 @@ fn listed_sheets(list: &[u8], document: DocumentId) -> Option<BTreeMap<String, S
 /// while it still holds the SHA-256 `targets` has for it, so no stale sheet is
 /// left beside the set as one of it; any other file named like a sheet beyond
 /// the last refuses the export. A DXF or DWG set is written with its list
-/// ([`set_list_path`]) naming `document` and each sheet.
+/// ([`set_list_path`]) naming `owner` and each sheet.
 pub(crate) fn publish_project_drawings(
     path: &Path,
     format: SetFileFormat,
     files: &[Vec<u8>],
     targets: &SetTargets,
-    document: DocumentId,
+    owner: &SetOwner,
 ) -> Result<Vec<PathBuf>, ProjectDrawingsError> {
-    use crate::export_bundle::{ExportTransactionError, write_export_artifact_if_unchanged};
+    use crate::export_bundle::ExportTransactionError;
     let paths = set_file_paths(path, format, files.len());
-    let list = (format != SetFileFormat::Pdf).then(|| {
+    // A DXF or DWG set's list: the one in place while the sheets are written,
+    // then the one naming them as written.
+    let lists = (format != SetFileFormat::Pdf).then(|| {
         let list_path = set_list_path(path, format);
-        let bytes = set_list(document, &paths, files);
-        (list_path, bytes)
+        let sheets = paths
+            .iter()
+            .zip(files)
+            .map(|(sheet, bytes)| (sheet_name(sheet), ketchup_model::graph::sha256_hex(bytes)))
+            .collect::<Vec<_>>();
+        let pending = pending_list(owner, &sheets, targets, &list_path);
+        (list_path, pending, set_list(owner, &sheets))
     });
-    let list_path = list.as_ref().map(|(list_path, _)| list_path);
-    let mut written = Vec::<(&Path, &[u8], Option<Vec<u8>>)>::with_capacity(paths.len() + 1);
+    let list_path = lists.as_ref().map(|(list_path, ..)| list_path);
+    let mut written = Vec::<Written<'_>>::with_capacity(paths.len() + 2);
     let mut removed = Vec::<(&Path, Vec<u8>)>::new();
     let mut publish = || -> Result<(), ExportTransactionError> {
         // A file named like a sheet beyond the set's last that is not one the
         // set wrote would be left beside it as one of its sheets.
-        if let Some(stray) = list.as_ref().and_then(|_| {
+        if let Some(stray) = lists.as_ref().and_then(|_| {
             numbered_sheet_files(path, format)
                 .into_iter()
                 .find(|sheet| !paths.contains(sheet) && !targets.contains_key(sheet))
         }) {
             return Err(ExportTransactionError::changed(&stray));
         }
-        let list = list.iter().map(|(list_path, bytes)| (list_path, bytes));
-        for (target, bytes) in paths.iter().zip(files).chain(list) {
-            let replacing = targets.get(target).map(String::as_str);
-            let previous = replacing
-                .map(|_| std::fs::read(target))
-                .transpose()
-                .map_err(ExportTransactionError::io(target))?;
-            write_export_artifact_if_unchanged(target, bytes, replacing)?;
-            written.push((target, bytes, previous));
+        if let Some((list_path, pending, _)) = &lists {
+            let replacing = targets.get(list_path).map(String::as_str);
+            write_one(&mut written, list_path, pending, replacing)?;
+        }
+        for (target, bytes) in paths.iter().zip(files) {
+            write_one(
+                &mut written,
+                target,
+                bytes,
+                targets.get(target).map(String::as_str),
+            )?;
         }
         let stale = targets
             .iter()
@@ -331,42 +641,137 @@ pub(crate) fn publish_project_drawings(
             std::fs::remove_file(stale).map_err(ExportTransactionError::io(stale))?;
             removed.push((stale, previous));
         }
+        if let Some((list_path, pending, list)) = &lists {
+            let pending = ketchup_model::graph::sha256_hex(pending);
+            write_one(&mut written, list_path, list, Some(&pending))?;
+        }
         Ok(())
     };
     if let Err(error) = publish() {
-        for (stale, previous) in removed {
-            let _ = write_export_artifact_if_unchanged(stale, &previous, None);
-        }
-        for (done, bytes, previous) in written {
-            match previous {
-                Some(previous) => {
-                    let _ = write_export_artifact_if_unchanged(
-                        done,
-                        &previous,
-                        Some(&ketchup_model::graph::sha256_hex(bytes)),
-                    );
-                }
-                None => {
-                    let _ = std::fs::remove_file(done);
-                }
-            }
-        }
+        let error = match roll_back(removed, written) {
+            Ok(()) => error,
+            Err(recovery) => ExportTransactionError::unrecovered(error, recovery),
+        };
         return Err(ProjectDrawingsError::Write(std::io::Error::other(error)));
     }
     Ok(paths)
 }
 
+/// A file a set export wrote: where, its bytes and what it held before (none:
+/// it was new).
+type Written<'a> = (&'a Path, &'a [u8], Option<Vec<u8>>);
+
+/// Writes `bytes` to `target` if it still holds `replacing` (none: no file
+/// there), noting in `written` what it held.
+fn write_one<'a>(
+    written: &mut Vec<Written<'a>>,
+    target: &'a Path,
+    bytes: &'a [u8],
+    replacing: Option<&str>,
+) -> Result<(), crate::export_bundle::ExportTransactionError> {
+    use crate::export_bundle::{ExportTransactionError, write_export_artifact_if_unchanged};
+    let previous = replacing
+        .map(|_| std::fs::read(target))
+        .transpose()
+        .map_err(ExportTransactionError::io(target))?;
+    write_export_artifact_if_unchanged(target, bytes, replacing)?;
+    written.push((target, bytes, previous));
+    Ok(())
+}
+
+/// Puts back what a failed set export did: the stale sheets it `removed` and
+/// the files it `written` (each with what it replaced, none for a new file),
+/// the last first, as the list is written twice. Every step is tried; the
+/// first that fails is the answer, so a set left
+/// half written is said to be, not reported as untouched (review 2026-11-04
+/// P3).
+fn roll_back(
+    removed: Vec<(&Path, Vec<u8>)>,
+    written: Vec<Written<'_>>,
+) -> Result<(), crate::export_bundle::ExportTransactionError> {
+    use crate::export_bundle::{ExportTransactionError, write_export_artifact_if_unchanged};
+    let mut first = Ok(());
+    let mut keep = |result: Result<(), ExportTransactionError>| {
+        if first.is_ok() {
+            first = result;
+        }
+    };
+    for (stale, previous) in removed {
+        keep(write_export_artifact_if_unchanged(stale, &previous, None));
+    }
+    for (done, bytes, previous) in written.into_iter().rev() {
+        keep(match previous {
+            Some(previous) => write_export_artifact_if_unchanged(
+                done,
+                &previous,
+                Some(&ketchup_model::graph::sha256_hex(bytes)),
+            ),
+            None => std::fs::remove_file(done).map_err(ExportTransactionError::io(done)),
+        });
+    }
+    first
+}
+
+/// The files a set of `owner` for `path` wrote at `paths`, each with the
+/// SHA-256 of its bytes, a DXF or DWG set's list too.
+pub(crate) fn written_files(
+    path: &Path,
+    format: SetFileFormat,
+    owner: &SetOwner,
+    paths: &[PathBuf],
+    files: &[Vec<u8>],
+) -> Vec<(PathBuf, String)> {
+    let mut written = paths
+        .iter()
+        .zip(files)
+        .map(|(path, bytes)| (path.clone(), ketchup_model::graph::sha256_hex(bytes)))
+        .collect::<Vec<_>>();
+    if format != SetFileFormat::Pdf {
+        let sheets = written
+            .iter()
+            .map(|(sheet, sha256)| (sheet_name(sheet), sha256.clone()))
+            .collect::<Vec<_>>();
+        let list = set_list(owner, &sheets);
+        written.push((
+            set_list_path(path, format),
+            ketchup_model::graph::sha256_hex(&list),
+        ));
+    }
+    written
+}
+
+/// Writes the set's `files` for `path` as [`publish_project_drawings`] does,
+/// after taking what it may replace, and notes what it wrote as `owner`'s.
+#[cfg(test)]
+pub(crate) fn publish_noted(
+    path: &Path,
+    format: SetFileFormat,
+    files: &[Vec<u8>],
+    owner: &mut SetOwner,
+) -> Result<Vec<PathBuf>, ProjectDrawingsError> {
+    let targets = project_drawings_targets(path, format, owner, false)?;
+    let paths = publish_project_drawings(path, format, files, &targets, owner)?;
+    owner
+        .note(&written_files(path, format, owner, &paths, files))
+        .map_err(ProjectDrawingsError::Write)?;
+    Ok(paths)
+}
+
 /// The files of a set as `format` for `path` an export started now may
 /// replace, with their SHA-256: the PDF at `path`, or the numbered DXF or DWG
-/// sheets an earlier export of `document` wrote beside it, so the set exports
+/// sheets an earlier export of `owner` wrote beside it, so the set exports
 /// again under the same name (review 2026-10-24 MF-27). A sheet is the set's
 /// only while its list names it with the bytes it holds now; any other file
-/// named like a sheet, such as another project's, is not replaced or removed
-/// (run 325).
+/// named like a sheet, such as another project's or another copy's, is not
+/// replaced or removed (run 325). The set of another project, or of another
+/// copy that wrote it since, refuses the export naming the project file it was
+/// exported from, unless `take_over` says the user takes it for this one's
+/// (review 2026-11-04 r19 MF-162).
 pub(crate) fn project_drawings_targets(
     path: &Path,
     format: SetFileFormat,
-    document: DocumentId,
+    owner: &SetOwner,
+    take_over: bool,
 ) -> Result<SetTargets, ProjectDrawingsError> {
     let sha256 = |candidate: &Path| {
         crate::export_bundle::export_target_sha256(candidate)
@@ -385,14 +790,24 @@ pub(crate) fn project_drawings_targets(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(targets),
         Err(error) => return Err(ProjectDrawingsError::Write(error)),
     };
-    let Some(listed) = listed_sheets(&list, document) else {
-        return Ok(targets);
+    let listed = match set_list_of(&list, &list_path, owner, take_over) {
+        SetList::Its(listed) => listed,
+        SetList::Another(project) => {
+            return Err(ProjectDrawingsError::SetOfAnotherProject {
+                list: list_path,
+                project,
+            });
+        }
+        // Writing the list there is refused as for any file not the set's.
+        SetList::NotAList => return Ok(targets),
     };
     targets.insert(list_path, ketchup_model::graph::sha256_hex(&list));
     for candidate in numbered_sheet_files(path, format) {
         let name = candidate.file_name().and_then(|name| name.to_str());
         let listed = name.and_then(|name| listed.get(name));
-        if let Some(sha256) = sha256(&candidate)?.filter(|sha256| Some(sha256) == listed) {
+        if let Some(sha256) =
+            sha256(&candidate)?.filter(|sha256| listed.is_some_and(|held| held.contains(sha256)))
+        {
             targets.insert(candidate, sha256);
         }
     }
@@ -447,16 +862,29 @@ pub(crate) fn missing_parts_list(parts: &[String]) -> String {
     list
 }
 
-/// Today's date where the user is, as d. m. yyyy.
-fn today() -> String {
+/// What the sheets of `catalog` write before a decimal, read from its one
+/// key for every number of a sheet, a plan DXF and a cutting list (review
+/// 2026-11-04 r19 P3).
+pub(crate) fn sheet_decimal_mark(catalog: &LocaleCatalog) -> DecimalMark {
+    if catalog.text("drawings-sheet-decimal-separator") == "," {
+        DecimalMark::Comma
+    } else {
+        DecimalMark::Point
+    }
+}
+
+/// Today's date where the user is, as the sheets of `catalog` write it.
+fn today(catalog: &LocaleCatalog) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(0));
-    date_at(now, super::local_time::utc_offset_seconds())
+    date_at(catalog, now, super::local_time::utc_offset_seconds())
 }
 
-/// The date, as d. m. yyyy, at `unix_seconds` on a clock `offset_seconds` ahead of UTC.
-pub(crate) fn date_at(unix_seconds: i64, offset_seconds: i64) -> String {
+/// The date at `unix_seconds` on a clock `offset_seconds` ahead of UTC, as
+/// the sheets of `catalog` write it: d. m. yyyy on a Czech or Slovak sheet,
+/// yyyy-mm-dd on an English one (review 2026-11-04 r19 P3).
+pub(crate) fn date_at(catalog: &LocaleCatalog, unix_seconds: i64, offset_seconds: i64) -> String {
     let days = (unix_seconds + offset_seconds).div_euclid(86_400) + 719_468;
     // Civil date from days since 0000-03-01 (H. Hinnant's algorithm).
     let era = days.div_euclid(146_097);
@@ -472,7 +900,16 @@ pub(crate) fn date_at(unix_seconds: i64, offset_seconds: i64) -> String {
         month_index - 9
     };
     let year = year_of_era + era * 400 + i64::from(month <= 2);
-    format!("{day}. {month}. {year}")
+    catalog.format(
+        "drawings-sheet-date",
+        &BTreeMap::from([
+            ("day", day.to_string()),
+            ("month", month.to_string()),
+            ("year", year.to_string()),
+            ("day2", format!("{day:02}")),
+            ("month2", format!("{month:02}")),
+        ]),
+    )
 }
 
 /// `thread` of a definition where `transform` places it in the world; its
@@ -513,11 +950,92 @@ impl KetchupApp {
         })
     }
 
+    /// The bodies the sheets draw, every visible body of every visible
+    /// occurrence, with the exact solid of each and whether it is drawn, and
+    /// with them the bodies ±0,000 is found among: hidden one by one but on
+    /// shown tags, so hiding the floor slab to look in does not move ±0,000
+    /// (review 2026-11-04 MF-141), while a terrain, a neighbour or a variant
+    /// on a hidden tag does not decide it (r19 MF-161). A drawn body with no
+    /// current exact solid is an error naming its part, and exact results
+    /// that do not read are an error, never no solid at all (r19 MF-161).
+    fn job_bodies(&self, snapshot: &Snapshot) -> Result<Vec<JobOccurrence>, ProjectDrawingsError> {
+        let exact = self
+            .exact
+            .results
+            .body_values(snapshot)
+            .map_err(ProjectDrawingsError::ExactResults)?
+            .into_iter()
+            .map(|(key, package)| ((key.definition_id, key.body_id), package))
+            .collect::<BTreeMap<_, _>>();
+        // Each definition's bodies and whether each is shown, found once
+        // however many times it is placed (r19 MF-161).
+        let mut bodies_of = BTreeMap::<DefinitionId, Vec<(BodyId, bool)>>::new();
+        let mut missing = Vec::new();
+        let mut scoped = Vec::new();
+        for occurrence in snapshot.scene_query() {
+            let on_shown_tags = snapshot
+                .occurrence(occurrence.occurrence_id)
+                .is_none_or(|placed| snapshot.tags_visible(placed.tags()));
+            let Some(definition) = snapshot
+                .definition(occurrence.definition_id)
+                .filter(|_| occurrence.visible || on_shown_tags)
+            else {
+                continue;
+            };
+            if let std::collections::btree_map::Entry::Vacant(entry) =
+                bodies_of.entry(occurrence.definition_id)
+            {
+                let terminal = match ketchup_model::exact_product::exact_body_terminal_features(
+                    snapshot,
+                    occurrence.definition_id,
+                ) {
+                    Ok(terminal) => terminal,
+                    Err(cause) => {
+                        if occurrence.visible {
+                            return Err(ProjectDrawingsError::UnresolvedBodies(
+                                occurrence.occurrence_name.clone(),
+                                cause,
+                            ));
+                        }
+                        // Not drawn, it only helps find ±0,000: without one
+                        // solid per body it gives that none. Not kept, so a
+                        // drawn placement of it is refused by name.
+                        continue;
+                    }
+                };
+                let bodies = terminal
+                    .into_keys()
+                    .map(|body_id| {
+                        let shown = definition.body(body_id).is_some_and(|body| body.visible());
+                        (body_id, shown)
+                    })
+                    .collect();
+                entry.insert(bodies);
+            }
+            let mut packages = Vec::new();
+            for (body_id, shown) in &bodies_of[&occurrence.definition_id] {
+                let drawn = occurrence.visible && *shown;
+                match exact.get(&(occurrence.definition_id, *body_id)) {
+                    Some(package) => packages.push((Arc::clone(package), drawn)),
+                    None if drawn => {
+                        missing.push(occurrence.occurrence_name.clone());
+                        break;
+                    }
+                    None => {}
+                }
+            }
+            scoped.push((occurrence, packages));
+        }
+        if !missing.is_empty() {
+            return Err(ProjectDrawingsError::NotEvaluated(missing));
+        }
+        Ok(scoped)
+    }
+
     /// Every visible body of every visible occurrence as its exact solid, in
     /// world millimetres, the part's threads on its first, and what a body
-    /// with modelled threads is drawn from instead; a visible part with a body
-    /// but no current exact solid is an error naming it, never a sheet that
-    /// silently leaves it out.
+    /// with modelled threads is drawn from instead, with the hidden bodies
+    /// ±0,000 is found among too (see [`Self::job_bodies`]).
     pub(crate) fn visible_job_solids(
         &self,
         snapshot: &Snapshot,
@@ -532,61 +1050,25 @@ impl KetchupApp {
                 .or_default()
                 .push(thread);
         }
-        let exact = self
-            .exact
-            .results
-            .body_values(snapshot)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(key, package)| ((key.definition_id, key.body_id), package))
-            .collect::<BTreeMap<_, _>>();
-        let mut missing = Vec::new();
         let mut drawn = Vec::new();
-        for occurrence in snapshot.scene_query() {
-            let Some(definition) = snapshot
-                .definition(occurrence.definition_id)
-                .filter(|_| occurrence.visible)
-            else {
-                continue;
-            };
-            let terminal_bodies = ketchup_model::exact_product::exact_body_terminal_features(
-                snapshot,
-                occurrence.definition_id,
-            )
-            .map_err(|cause| {
-                ProjectDrawingsError::UnresolvedBodies(occurrence.occurrence_name.clone(), cause)
-            })?;
-            let terminal_bodies = terminal_bodies.into_keys().collect::<Vec<_>>();
-            let mut packages = Vec::new();
-            for body_id in terminal_bodies {
-                if !definition.body(body_id).is_some_and(|body| body.visible()) {
-                    continue;
-                }
-                match exact.get(&(occurrence.definition_id, body_id)) {
-                    Some(package) => packages.push(*package),
-                    None => {
-                        missing.push(occurrence.occurrence_name.clone());
-                        break;
-                    }
-                }
-            }
+        let mut zero_among = Vec::new();
+        for (occurrence, packages) in self.job_bodies(snapshot)? {
             let placed = threads
                 .get(&occurrence.definition_id)
                 .into_iter()
                 .flatten()
                 .filter_map(|thread| placed_thread(&occurrence.transform, thread))
                 .collect::<Vec<_>>();
-            drawn.extend(packages.into_iter().enumerate().map(|(index, package)| {
-                let threads = if index == 0 {
-                    placed.clone()
-                } else {
-                    Vec::new()
-                };
-                (occurrence.clone(), package, threads)
-            }));
-        }
-        if !missing.is_empty() {
-            return Err(ProjectDrawingsError::NotEvaluated(missing));
+            let mut first = true;
+            for (package, is_drawn) in packages {
+                if !is_drawn {
+                    zero_among.push((package, occurrence.transform));
+                    continue;
+                }
+                let threads = if first { placed.clone() } else { Vec::new() };
+                first = false;
+                drawn.push((occurrence.clone(), package, threads));
+            }
         }
         let blobs = self.file.container_data.blobs();
         let mut solids = Vec::with_capacity(drawn.len());
@@ -595,8 +1077,7 @@ impl KetchupApp {
             // Modelled threads are drawn by ISO 6410 like cosmetic ones: from
             // the body with them cosmetic, made only on the job's thread,
             // never the helix.
-            let package: &ExactBodyPackage = package;
-            let cosmetic = match package {
+            let cosmetic = match &*package {
                 ExactBodyPackage::Graph(package) => cosmetic_thread_graph(package, blobs)
                     .map_err(|cause| {
                         ProjectDrawingsError::CosmeticThreads(
@@ -608,7 +1089,7 @@ impl KetchupApp {
                 ExactBodyPackage::Imported(_) => None,
             };
             cosmetic_graphs.extend(cosmetic);
-            let (triangles, faces) = world_mesh(package, &occurrence.transform);
+            let (triangles, faces) = world_mesh(&package, &occurrence.transform);
             solids.push(DrawingSolid {
                 name: occurrence.occurrence_name,
                 color: occurrence.color.unwrap_or(DEFAULT_SOLID_COLOR),
@@ -620,7 +1101,44 @@ impl KetchupApp {
         Ok(JobSolids {
             solids,
             cosmetic: cosmetic_graphs,
+            zero_among,
         })
+    }
+
+    /// The ground floor ±0,000 is at when the settings give no height, as
+    /// the drawings window shows it: found by a worker, never on the
+    /// window's thread (review 2026-11-04 r19 MF-161), from the bodies
+    /// [`Self::job_bodies`] finds it among, and kept while the document and
+    /// its solids are unchanged. `None` while it is being found; why it
+    /// cannot be when the bodies are not there to find it from.
+    pub(crate) fn found_zero(
+        &self,
+        snapshot: &Snapshot,
+    ) -> Option<Result<f64, Arc<FoundZeroError>>> {
+        let key = (
+            snapshot.document_id(),
+            snapshot.revision_id(),
+            self.exact.results.contents_stamp(),
+        );
+        let mut found = self.drawings.found_zero.borrow_mut();
+        if found.as_ref().is_none_or(|(cached, _)| *cached != key) {
+            let finding = match self.job_bodies(snapshot) {
+                Ok(scoped) => FoundZero::find(
+                    scoped
+                        .into_iter()
+                        .flat_map(|(occurrence, packages)| {
+                            packages
+                                .into_iter()
+                                .map(move |(package, _)| (package, occurrence.transform))
+                        })
+                        .collect(),
+                ),
+                Err(error) => FoundZero::Found(Err(Arc::new(FoundZeroError::Bodies(error)))),
+            };
+            *found = Some((key, finding));
+        }
+        let (_, finding) = found.as_mut()?;
+        finding.poll()
     }
 
     /// The document name: its file name, else the program's.
@@ -675,7 +1193,7 @@ impl KetchupApp {
 
     /// The texts the sheets are titled with: those of `language`, the
     /// window's when none (Měchenice MECH-5).
-    fn sheet_catalog(&self, language: Option<SheetLanguage>) -> Cow<'_, LocaleCatalog> {
+    pub(crate) fn sheet_catalog(&self, language: Option<SheetLanguage>) -> Cow<'_, LocaleCatalog> {
         match language {
             None => Cow::Borrowed(&self.catalog),
             Some(SheetLanguage::Czech) => Cow::Owned(LocaleCatalog::czech_sheets()),
@@ -686,14 +1204,17 @@ impl KetchupApp {
 
     /// What the title block shows where the user wrote nothing: the document
     /// name, the sheet title in the sheets' `language`, today's date.
-    fn title_defaults(&self, language: Option<SheetLanguage>) -> BTreeMap<TitleField, String> {
+    pub(crate) fn title_defaults(
+        &self,
+        language: Option<SheetLanguage>,
+    ) -> BTreeMap<TitleField, String> {
         BTreeMap::from([
             (TitleField::Project, self.drawing_document_name()),
             (
                 TitleField::Drawing,
                 self.sheet_catalog(language).text("drawings-default-sheet"),
             ),
-            (TitleField::Date, today()),
+            (TitleField::Date, today(&self.sheet_catalog(language))),
         ])
     }
 
@@ -868,10 +1389,14 @@ impl KetchupApp {
         let Some(evaluated) = evaluated else {
             return Vec::new();
         };
+        // The numbers take the sheet's decimal separator, as its level marks
+        // and dimensions do (review 2026-11-04 MF-140, r19 P3).
+        let mark = sheet_decimal_mark(catalog);
+        let number = |value: f64| mark.written(&value.to_string());
         let mm = |values: &[f64]| {
             values
                 .iter()
-                .map(|value| format!("{}", (value * 10.0).round() / 10.0))
+                .map(|value| dimension_text_with(*value, mark))
                 .collect::<Vec<_>>()
                 .join(" x ")
         };
@@ -891,7 +1416,7 @@ impl KetchupApp {
                             &BTreeMap::from([
                                 ("number", (index + 1).to_string()),
                                 ("size", mm(&layout.stock_mm)),
-                                ("used", layout.used_percent.to_string()),
+                                ("used", number(layout.used_percent)),
                             ]),
                         ),
                         size_mm: if bars {
@@ -981,18 +1506,22 @@ impl KetchupApp {
     }
 
     /// The lines of every shown layer of every shown underlay lying flat, in
-    /// the world, which the plans draw beneath the model (Měchenice MECH-10);
-    /// an underlay whose lines do not read draws nothing, as in the window.
-    fn drawing_underlay(&self, snapshot: &Snapshot) -> Vec<[[f64; 3]; 2]> {
+    /// the world, which the plans draw beneath the model (Měchenice MECH-10).
+    /// A shown underlay whose lines do not read refuses the set: the plans
+    /// would leave it out unsaid (review 2026-11-04 P3).
+    fn drawing_underlay(
+        &self,
+        snapshot: &Snapshot,
+    ) -> Result<Vec<[[f64; 3]; 2]>, ProjectDrawingsError> {
         let shown = |tag| snapshot.tag(tag).is_some_and(|tag| tag.visible());
         let mut lines = Vec::new();
         for underlay in snapshot
             .underlays()
             .filter(|underlay| underlay.lies_flat() && shown(underlay.tag))
         {
-            let Some(drawn) = self.cached_underlay_lines(underlay) else {
-                continue;
-            };
+            let drawn = self.underlay_lines_or_reason(underlay).map_err(|cause| {
+                ProjectDrawingsError::UnderlayUnreadable(underlay.name.clone(), cause)
+            })?;
             let placement = underlay.world_transform();
             let world = |[x, y]: [f64; 2]| placement.transform_point([x, y, 0.0]);
             for (layer, layer_lines) in underlay.layers.iter().zip(drawn.layers()) {
@@ -1001,7 +1530,7 @@ impl KetchupApp {
                 }
             }
         }
-        lines
+        Ok(lines)
     }
 
     /// The job of the set `request` asks for: all sheets or the plans alone,
@@ -1072,6 +1601,7 @@ impl KetchupApp {
             author: field(TitleField::Author),
             subject: field(TitleField::Stage),
         };
+        let zero_level_mm = settings.zero_level_mm.map(f64::from);
         Ok(ProjectDrawingsJob {
             solids,
             executable: self.drawing_worker(),
@@ -1089,14 +1619,32 @@ impl KetchupApp {
                 plan_only: request.plan_only,
                 scale: request.scale,
                 annotations,
-                underlay: self.drawing_underlay(&snapshot),
+                underlay: self.drawing_underlay(&snapshot)?,
                 openings,
                 shop,
                 cutting,
-                decimal_comma: catalog.text("drawings-sheet-decimal-separator") == ",",
+                decimal_separator: sheet_decimal_mark(&catalog),
+                zero_level_mm,
             },
             info,
         })
+    }
+
+    pub(crate) fn found_zero_error_text(&self, error: &FoundZeroError) -> String {
+        match error {
+            FoundZeroError::Bodies(error) => self.project_drawings_error_text(error),
+            FoundZeroError::Worker(cause) => self.catalog.format(
+                "drawings-zero-level-not-found",
+                &BTreeMap::from([("reason", cause.to_string())]),
+            ),
+            FoundZeroError::WorkerStopped => self.catalog.format(
+                "drawings-zero-level-not-found",
+                &BTreeMap::from([(
+                    "reason",
+                    self.catalog.text("drawings-zero-level-worker-stopped"),
+                )]),
+            ),
+        }
     }
 
     pub(crate) fn project_drawings_error_text(&self, error: &ProjectDrawingsError) -> String {
@@ -1139,6 +1687,10 @@ impl KetchupApp {
                 "drawings-part-bodies-unresolved",
                 &BTreeMap::from([("part", part.clone()), ("reason", cause.to_string())]),
             ),
+            ProjectDrawingsError::ExactResults(cause) => self.catalog.format(
+                "drawings-exact-results-unreadable",
+                &BTreeMap::from([("reason", cause.to_string())]),
+            ),
             ProjectDrawingsError::ProgramPlanning => self.catalog.text("status-program-planning"),
             ProjectDrawingsError::SettingsUnreadable(reason) => self.catalog.format(
                 "drawings-settings-unreadable",
@@ -1148,10 +1700,29 @@ impl KetchupApp {
                 "drawings-cosmetic-threads-failed",
                 &BTreeMap::from([("part", part.clone()), ("reason", cause.to_string())]),
             ),
+            ProjectDrawingsError::UnderlayUnreadable(name, cause) => self.catalog.format(
+                "drawings-underlay-unreadable",
+                &BTreeMap::from([
+                    ("name", name.clone()),
+                    ("reason", underlay_unreadable_reason(cause.as_ref())),
+                ]),
+            ),
             ProjectDrawingsError::Drawing(error @ ProjectDrawingError::Cancelled) => {
                 error.to_string()
             }
             ProjectDrawingsError::Dwg(error) => error.to_string(),
+            ProjectDrawingsError::SetOfAnotherProject { list, project } => self.catalog.format(
+                "drawings-set-of-another-project",
+                &BTreeMap::from([
+                    ("list", list.display().to_string()),
+                    (
+                        "project",
+                        project.clone().unwrap_or_else(|| {
+                            self.catalog.text("drawings-set-of-an-unsaved-project")
+                        }),
+                    ),
+                ]),
+            ),
             ProjectDrawingsError::Write(error) => error.to_string(),
         }
     }
@@ -1172,8 +1743,8 @@ impl KetchupApp {
         let (set, files) = self
             .project_drawings_job_for(request)?
             .render(format, cancelled)?;
-        let document = self.document.current().document_id();
-        let paths = publish_project_drawings(path, format, &files, targets, document)?;
+        let owner = self.drawing_set_owner();
+        let paths = publish_project_drawings(path, format, &files, targets, &owner)?;
         Ok(ExportedSet { set, paths })
     }
 
@@ -1183,8 +1754,8 @@ impl KetchupApp {
     #[cfg(test)]
     pub fn export_project_drawings_to(&mut self, path: &Path) -> bool {
         let format = SetFileFormat::of_path(path).unwrap_or(SetFileFormat::Pdf);
-        let document = self.document.current().document_id();
-        let result = project_drawings_targets(path, format, document).and_then(|targets| {
+        let owner = self.drawing_set_owner();
+        let result = project_drawings_targets(path, format, &owner, false).and_then(|targets| {
             let cancelled = AtomicBool::new(false);
             self.write_project_drawings(path, format, SheetRequest::default(), &targets, &cancelled)
         });
@@ -1201,6 +1772,18 @@ impl KetchupApp {
             [one] => one.display().to_string(),
             [first, .., last] => format!("{} … {}", first.display(), last.display()),
             [] => path.display().to_string(),
+        };
+        self.drawings.another_projects_set = match result {
+            Err(error @ ProjectDrawingsError::SetOfAnotherProject { .. }) => {
+                SetFileFormat::of_path(path).map(|format| {
+                    (
+                        path.to_path_buf(),
+                        format,
+                        self.project_drawings_error_text(error),
+                    )
+                })
+            }
+            _ => None,
         };
         self.digest = match result {
             Ok(ExportedSet { set, paths }) => {
@@ -1262,6 +1845,7 @@ impl KetchupApp {
         let mut open = true;
         let mut export = None;
         let mut export_sheet = None;
+        let mut take_over = None;
         let mut editing = std::mem::take(&mut self.drawings.editing);
         // A field still showing its default follows it when the default
         // changes: past midnight, after Save As, in another language.
@@ -1364,6 +1948,52 @@ impl KetchupApp {
                             editing.plan_cut_above_floor_mm = Some(height);
                         }
                         ui.end_row();
+                        // ±0,000: the ground floor found, shown, or a height the
+                        // user sets from it, any height (review 2026-11-04 MF-141;
+                        // r19 MF-160: a model in absolute heights was held to ±200 m).
+                        ui.label(self.catalog.text("drawings-zero-level"));
+                        // Found on a worker (r19 MF-161): "…" until then, "–"
+                        // with the reason when it cannot be.
+                        let finding = self.found_zero(&self.document.current());
+                        if finding.is_none() {
+                            ui.ctx()
+                                .request_repaint_after(std::time::Duration::from_millis(100));
+                        }
+                        // Whole millimetres; none past the range of i32 (±2 147 km).
+                        let found = finding
+                            .as_ref()
+                            .and_then(|found| found.as_ref().ok())
+                            .and_then(|height| format!("{height:.0}").parse::<i32>().ok());
+                        ui.horizontal(|ui| {
+                            let mut ground = editing.zero_level_mm.is_none();
+                            let shown = match (&finding, found) {
+                                (_, Some(found)) => found.to_string(),
+                                (None, None) => "…".to_owned(),
+                                (Some(_), None) => "–".to_owned(),
+                            };
+                            let why = finding
+                                .and_then(Result::err)
+                                .map(|error| self.found_zero_error_text(&error));
+                            if ui
+                                .checkbox(
+                                    &mut ground,
+                                    self.catalog.format(
+                                        "drawings-zero-level-ground",
+                                        &BTreeMap::from([("height", shown)]),
+                                    ),
+                                )
+                                .changed()
+                            {
+                                editing.zero_level_mm = (!ground).then(|| found.unwrap_or(0));
+                            }
+                            if let Some(why) = why {
+                                ui.weak(why);
+                            }
+                            if let Some(height) = editing.zero_level_mm.as_mut() {
+                                ui.add(egui::DragValue::new(height).suffix(" mm"));
+                            }
+                        });
+                        ui.end_row();
                         for field in TitleField::EDITABLE {
                             ui.label(self.catalog.text(&format!("title-field-{}", field.key())));
                             ui.add(
@@ -1386,6 +2016,18 @@ impl KetchupApp {
                         }
                     }
                 });
+                // Another project's set at the path chosen: the user may take
+                // it over, its sheets then this project's (review 2026-11-04
+                // r19 MF-162).
+                if let Some((path, format, said)) = &self.drawings.another_projects_set {
+                    ui.colored_label(ui.visuals().warn_fg_color, said);
+                    if ui
+                        .button(self.catalog.text("drawings-take-over-set"))
+                        .clicked()
+                    {
+                        take_over = Some((path.clone(), *format));
+                    }
+                }
                 ui.separator();
                 ui.strong(self.catalog.text("drawings-document-sheets"));
                 ui.label(self.catalog.text("drawings-document-sheets-hint"));
@@ -1432,6 +2074,12 @@ impl KetchupApp {
         {
             self.start_drawing_export(DrawingExport::Project(format), path, context);
         }
+        if let Some((path, format)) = take_over {
+            self.drawings.taking_over = Some(path.clone());
+            self.start_drawing_export(DrawingExport::Project(format), path, context);
+            // Only this export takes it over, also one that could not start.
+            self.drawings.taking_over = None;
+        }
         if let Some((id, format)) = export_sheet
             && let Some(path) = self.choose_export_path(format.extension())
         {
@@ -1439,3 +2087,6 @@ impl KetchupApp {
         }
     }
 }
+
+#[cfg(test)]
+mod publish_tests;

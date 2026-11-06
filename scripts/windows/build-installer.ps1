@@ -123,7 +123,7 @@ function Invoke-AzureSigning([string]$Path) {
     if ($LASTEXITCODE -ne 0) { throw "Authenticode verification failed: $Path" }
 
     $signature = Get-AuthenticodeSignature $Path
-    if ($signature.Status -ne [Management.Automation.SignatureStatus]::Valid -or
+    if (-not (Test-EmbeddedSignature $signature) -or
         $null -eq $signature.SignerCertificate -or
         $signature.SignerCertificate.Subject -notlike 'CN=AEON GROUP spol. s r.o.*' -or
         $null -eq $signature.TimeStamperCertificate) {
@@ -246,7 +246,9 @@ foreach ($record in @($occtManifest.shared_libraries)) {
 }
 # Ketchup.exe, both workers and OCCT need the Visual C++ runtime, which a clean Windows
 # lacks (review 2026-11-02 REL-120): it ships beside them, and nothing else may be missing.
-$vcRuntime = @(Copy-MissingPeImports $payloadDir (Get-VcRuntimeDirectory))
+$toolset = Get-PeToolsetVersion $payloadDir
+$vcRuntime = @(Copy-MissingPeImports $payloadDir (Get-VcRuntimeDirectory $toolset))
+Write-Host "Visual C++ toolset that linked the package: $toolset"
 Write-Host "Visual C++ runtime shipped beside the program: $($vcRuntime -join ', ')"
 $unresolvedImports = @(Get-UnresolvedPeImports $payloadDir)
 if ($unresolvedImports.Count -ne 0) {
@@ -254,11 +256,15 @@ if ($unresolvedImports.Count -ne 0) {
 }
 . (Join-Path $PSScriptRoot "package-notices.ps1")
 Copy-PackageNotices $repoRoot $OcctRoot $payloadDir "ketchup"
+Assert-RuntimeNotices $payloadDir $vcRuntime
 if ($Sign) {
-    Invoke-AzureSigning (Join-Path $payloadDir "Ketchup.exe")
-    Invoke-AzureSigning (Join-Path $payloadDir "ketchup-exact-worker.exe")
-    Invoke-AzureSigning (Join-Path $payloadDir "ketchup-program-worker.exe")
-    Invoke-AzureSigning (Join-Path $payloadDir "KetchupViewer.exe")
+    # Smart App Control in Windows 11 blocks an unsigned DLL, so the OCCT TK*.dll are
+    # signed with the programs (review 2026-11-04 REL-142), and nothing is left unsigned.
+    foreach ($name in @(Get-PeFilesToSign $payloadDir)) {
+        Invoke-AzureSigning (Join-Path $payloadDir $name)
+    }
+    $unsigned = @(Get-PeFilesToSign $payloadDir)
+    if ($unsigned.Count -ne 0) { throw "The package would ship unsigned: $($unsigned -join ', ')" }
 }
 $publisher = if ($Sign) { "AEON GROUP spol. s r.o." } else { "Ketchup" }
 $distributionNotice = if ($Sign) {
@@ -589,7 +595,7 @@ try {
     Assert-Leaf $uninstaller "uninstaller"
     if ($Sign) {
         $uninstallerSignature = Get-AuthenticodeSignature $uninstaller
-        if ($uninstallerSignature.Status -ne [Management.Automation.SignatureStatus]::Valid -or
+        if (-not (Test-EmbeddedSignature $uninstallerSignature) -or
             $uninstallerSignature.SignerCertificate.Subject -notlike 'CN=AEON GROUP spol. s r.o.*') {
             throw "The installed uninstaller is not signed by AEON GROUP."
         }

@@ -8,6 +8,7 @@ use crate::protocol::{
     UnderlayWriteInput, UnderlayWriteOutcome, WorkerFailure, WorkerImportPart, WorkerReply,
     WorkerRequest, encode_frame, protocol_identity, read_frame,
 };
+use ketchup_rejection::{Reason, dropped};
 
 pub(crate) struct WorkerWriteRequest {
     pub(crate) frame: Vec<u8>,
@@ -1045,7 +1046,11 @@ impl ExactWorkerClient {
 
     pub(crate) fn terminate_worker(&mut self) {
         self.terminated = true; // Never reuse a job whose termination has started.
-        let _ = child_process::terminate(&mut *self.child);
+        // It has exited already, or ends with its parent (exit_with_parent).
+        dropped(
+            child_process::terminate(&mut *self.child),
+            Reason::AlreadyEnded,
+        );
     }
 }
 
@@ -1059,7 +1064,7 @@ const STDERR_TAIL_BYTES: usize = 4096;
 fn stderr_tail(stderr: Option<std::process::ChildStderr>) -> Receiver<Vec<u8>> {
     let (sender, receiver) = mpsc::sync_channel(1);
     if let Some(mut stderr) = stderr {
-        let _ = std::thread::spawn(move || {
+        std::thread::spawn(move || {
             let mut tail = Vec::new();
             let mut buffer = [0_u8; 1024];
             while let Ok(read) = std::io::Read::read(&mut stderr, &mut buffer) {
@@ -1070,7 +1075,8 @@ fn stderr_tail(stderr: Option<std::process::ChildStderr>) -> Receiver<Vec<u8>> {
                 let excess = tail.len().saturating_sub(STDERR_TAIL_BYTES);
                 tail.drain(..excess);
             }
-            let _ = sender.send(tail);
+            // The client is gone and no longer reports the worker's end.
+            dropped(sender.send(tail), Reason::NobodyWaiting);
         });
     }
     receiver
@@ -1182,11 +1188,12 @@ fn rejected_parts(
 }
 
 fn spawn_worker_writer(mut stdin: ChildStdin, receiver: Receiver<WorkerWriteRequest>) {
-    let _ = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         while let Ok(request) = receiver.recv() {
             let result = stdin.write_all(&request.frame).and_then(|()| stdin.flush());
             let failed = result.is_err();
-            let _ = request.acknowledgment.send(result);
+            // The request was given up; a failed write still ends the loop.
+            dropped(request.acknowledgment.send(result), Reason::NobodyWaiting);
             if failed {
                 break;
             }
@@ -1195,7 +1202,7 @@ fn spawn_worker_writer(mut stdin: ChildStdin, receiver: Receiver<WorkerWriteRequ
 }
 
 fn spawn_worker_reader(stdout: ChildStdout, sender: mpsc::SyncSender<WorkerResponse>) {
-    let _ = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         loop {
             let response = match read_frame::<WorkerReply>(&mut reader, MAX_REPLY_FRAME_BYTES) {
@@ -1216,6 +1223,10 @@ fn spawn_worker_reader(stdout: ChildStdout, sender: mpsc::SyncSender<WorkerRespo
 impl Drop for ExactWorkerClient {
     fn drop(&mut self) {
         // Do not block cancellation on Windows kernel teardown.
-        let _ = child_process::terminate(&mut *self.child);
+        // It has exited already, or ends with its parent (exit_with_parent).
+        dropped(
+            child_process::terminate(&mut *self.child),
+            Reason::AlreadyEnded,
+        );
     }
 }

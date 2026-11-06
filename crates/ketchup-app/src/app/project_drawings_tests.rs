@@ -205,6 +205,53 @@ fn a_part_whose_bodies_do_not_resolve_stops_the_sheet() {
     );
 }
 
+/// Review 2026-11-04 r19 MF-161: the bodies of a definition are resolved
+/// once for all its placements; one hidden placement met first, whose bodies
+/// only help find ±0,000, must not let a drawn one of the same part through
+/// without its bodies.
+#[test]
+fn a_hidden_placement_met_first_does_not_let_unresolved_bodies_through() {
+    let mut app = KetchupApp::new();
+    add_box(&mut app, 903, "wall C", 0.0);
+    let post = crate::app::drawing::create_box_batch(
+        DefinitionId(903),
+        [FeatureId(9301), FeatureId(9302)],
+        OccurrenceId(903),
+        ["wall C", "post profile", "post extrusion", "wall C"],
+        Vec3::new(2000.0, 0.0, 0.0),
+        Vec3::new(300.0, 200.0, 3000.0),
+    );
+    let mut commands = post.commands()[1..3].to_vec();
+    commands.push(CanonicalCommand::CreateOccurrence {
+        id: OccurrenceId(900),
+        definition_id: DefinitionId(903),
+        name: "wall C hidden".to_owned(),
+        transform: Transform::from_translation(0.0, 5000.0, 0.0).unwrap(),
+        parent: None,
+        tags: Default::default(),
+        visible: false,
+    });
+    app.document
+        .apply_batch(&CommandBatch::new(commands))
+        .unwrap();
+    let snapshot = app.document.current();
+    let names = snapshot
+        .scene_query()
+        .iter()
+        .map(|occurrence| occurrence.occurrence_name.clone())
+        .collect::<Vec<_>>();
+    let at = |name: &str| names.iter().position(|named| named == name);
+    assert!(
+        at("wall C hidden") < at("wall C"),
+        "the hidden placement is met first: {names:?}"
+    );
+    let error = app.visible_drawing_solids(&snapshot).unwrap_err();
+    let ProjectDrawingsError::UnresolvedBodies(part, _) = &error else {
+        panic!("the sheet must not leave wall C out: {error:?}");
+    };
+    assert_eq!(part, "wall C");
+}
+
 /// The plan cut height and the scale of the automatic format are document
 /// settings, not constants: changing them moves the cut and the scale.
 #[test]
@@ -1011,8 +1058,8 @@ fn the_drawings_window_keeps_the_sheet_language_and_the_default_title_follows_it
     assert!(app.drawings.unsaved);
 }
 
-/// Měchenice MECH-6: the sections the window exports mark the floor and the
-/// top, with a decimal comma on Czech and Slovak sheets (+2,500) and a point
+/// Měchenice MECH-6: the sections the window exports mark the floor, the top
+/// and the underside of the slab (review 2026-11-04 MF-141), with a decimal comma on Czech and Slovak sheets (+2,500) and a point
 /// on English ones, whatever the window's language.
 #[test]
 fn the_level_marks_take_the_decimal_separator_of_the_sheet_language() {
@@ -1031,9 +1078,9 @@ fn the_level_marks_take_the_decimal_separator_of_the_sheet_language() {
         .unwrap();
     crate::drawn_shape::tests::evaluate_exact(&mut app);
     for (language, levels) in [
-        (SheetLanguage::Czech, ["±0,000", "+2,500"]),
-        (SheetLanguage::Slovak, ["±0,000", "+2,500"]),
-        (SheetLanguage::English, ["±0.000", "+2.500"]),
+        (SheetLanguage::Czech, ["-0,200", "±0,000", "+2,500"]),
+        (SheetLanguage::Slovak, ["-0,200", "±0,000", "+2,500"]),
+        (SheetLanguage::English, ["-0.200", "±0.000", "+2.500"]),
     ] {
         let mut settings = app.sheet_settings();
         settings.language = Some(language);
@@ -1043,6 +1090,283 @@ fn the_level_marks_take_the_decimal_separator_of_the_sheet_language() {
             .find(|summary| summary.view == ProjectView::LongitudinalSection)
             .unwrap();
         assert_eq!(section.levels, levels, "{language:?}");
+    }
+}
+
+/// Review 2026-11-04 MF-141: ±0,000 was the floor of the drawn bodies, so
+/// hiding the floor slab moved it without a word. It is the ground floor of
+/// every body, shown or not, or the height the sheet settings give.
+#[test]
+fn hiding_the_floor_slab_does_not_move_zero_and_the_sheet_can_set_it() {
+    let mut app = KetchupApp::new();
+    add_box(&mut app, 901, "wall A", 0.0);
+    // A slab beside the wall, its top 300 mm up: the ground floor.
+    app.document
+        .apply_batch(&crate::app::drawing::create_box_batch(
+            DefinitionId(903),
+            [FeatureId(9030), FeatureId(9031)],
+            OccurrenceId(903),
+            ["slab", "profile", "extrusion", "slab"],
+            Vec3::new(2000.0, 0.0, 0.0),
+            Vec3::new(3000.0, 3000.0, 300.0),
+        ))
+        .unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let levels = |app: &KetchupApp| {
+        let set = app.project_drawings().unwrap();
+        views(&set)
+            .find(|summary| summary.view == ProjectView::LongitudinalSection)
+            .unwrap()
+            .levels
+            .clone()
+    };
+    let mut settings = app.sheet_settings();
+    settings.language = Some(SheetLanguage::Czech);
+    app.store_sheet_settings(settings);
+    let shown = ["-0,300", "±0,000", "+2,200"];
+    assert_eq!(levels(&app), shown);
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetOccurrenceVisibility {
+                id: OccurrenceId(903),
+                visible: false,
+            },
+        ]))
+        .unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    assert_eq!(levels(&app), shown, "the slab hidden");
+
+    let mut settings = app.sheet_settings();
+    settings.zero_level_mm = Some(0);
+    app.store_sheet_settings(settings);
+    assert_eq!(levels(&app), ["±0,000", "+2,500"]);
+}
+
+/// The ground floor the drawings window shows, once its worker has found it.
+fn found_zero(app: &KetchupApp) -> Result<f64, String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(found) = app.found_zero(&app.document.current()) {
+            return found.map_err(|error| app.found_zero_error_text(&error));
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the ground floor found"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Review 2026-11-04 r19 MF-161: every body found ±0,000, hidden ones too,
+/// so a terrain plate on a hidden layer was the largest level, the only
+/// floor, and ±0,000 went to it. The bodies on hidden tags are left out; one
+/// hidden by itself still counts (MF-141).
+#[test]
+fn a_terrain_on_a_hidden_tag_does_not_decide_zero() {
+    let mut app = KetchupApp::new();
+    add_box(&mut app, 901, "wall A", 0.0);
+    // The ground floor slab beside the wall, its top 300 mm up, and a
+    // terrain 40 × 40 m with its top 500 mm down, on a hidden tag.
+    for (id, name, corner, size) in [
+        (
+            903,
+            "slab",
+            Vec3::new(2000.0, 0.0, 0.0),
+            Vec3::new(3000.0, 3000.0, 300.0),
+        ),
+        (
+            904,
+            "terrain",
+            Vec3::new(-20_000.0, -20_000.0, -800.0),
+            Vec3::new(40_000.0, 40_000.0, 300.0),
+        ),
+    ] {
+        app.document
+            .apply_batch(&crate::app::drawing::create_box_batch(
+                DefinitionId(id),
+                [FeatureId(id * 10), FeatureId(id * 10 + 1)],
+                OccurrenceId(id),
+                [name, "profile", "extrusion", name],
+                corner,
+                size,
+            ))
+            .unwrap();
+    }
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateTag {
+                id: TagId(77),
+                name: "Terrain".into(),
+                visible: true,
+            },
+            CanonicalCommand::SetOccurrenceTags {
+                id: OccurrenceId(904),
+                tags: std::collections::BTreeSet::from([TagId(77)]),
+            },
+        ]))
+        .unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    assert_eq!(found_zero(&app), Ok(-500.0), "the terrain shown");
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetTagVisibility {
+                id: TagId(77),
+                visible: false,
+            },
+        ]))
+        .unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    assert_eq!(found_zero(&app), Ok(300.0), "the terrain's tag hidden");
+    let mut settings = app.sheet_settings();
+    settings.language = Some(SheetLanguage::Czech);
+    app.store_sheet_settings(settings);
+    let set = app.project_drawings().unwrap();
+    let section = views(&set)
+        .find(|summary| summary.view == ProjectView::LongitudinalSection)
+        .unwrap();
+    assert_eq!(section.levels, ["-0,300", "±0,000", "+2,200"]);
+}
+
+/// Review 2026-11-04 r19 MF-161: with no exact solid to find it in, the
+/// window offered 0 as the ground floor found, a ±0,000 from nothing. It
+/// finds none and says why.
+#[test]
+fn no_ground_floor_is_found_without_the_exact_solids() {
+    let app = KetchupApp::new();
+    let found = found_zero(&app);
+    let Err(reason) = found else {
+        panic!("{found:?}");
+    };
+    assert_eq!(
+        reason,
+        app.project_drawings_error_text(&ProjectDrawingsError::NotEvaluated(vec![
+            app.document.current().scene_query()[0]
+                .occurrence_name
+                .clone()
+        ]))
+    );
+}
+
+/// Review 2026-11-04 r19 MF-160: in a model in absolute heights (Bpv, every
+/// floor about 245 m up) the ground floor found is the lowest floor, a
+/// basement there, and the height the user set was held to ±200 m. The
+/// window shows the floor it found, a set height starts from it, and any
+/// height is kept.
+#[test]
+fn the_drawings_window_shows_the_found_zero_and_keeps_any_height() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = KetchupApp::new();
+    // Only the two floors, no starter box at z = 0.
+    let starter = app
+        .document
+        .current()
+        .occurrences()
+        .map(|item| CanonicalCommand::DeleteOccurrence { id: item.id() })
+        .collect();
+    app.document
+        .apply_batch(&CommandBatch::new(starter))
+        .unwrap();
+    for (id, name, top) in [(911, "basement", 242_000.0), (912, "ground", 245_300.0)] {
+        app.document
+            .apply_batch(&crate::app::drawing::create_box_batch(
+                DefinitionId(id),
+                [FeatureId(id * 10), FeatureId(id * 10 + 1)],
+                OccurrenceId(id),
+                [name, "profile", "extrusion", name],
+                Vec3::new(0.0, 0.0, top - 300.0),
+                Vec3::new(8000.0, 8000.0, 300.0),
+            ))
+            .unwrap();
+    }
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1600.0, 1200.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.state_mut().open_project_drawings_window();
+    // Found on a worker (r19 MF-161).
+    step_until(
+        &mut harness,
+        Duration::from_secs(30),
+        "the ground floor found",
+        |app| app.found_zero(&app.document.current()).is_some(),
+    );
+    harness.step();
+    let found = harness.state().catalog.format(
+        "drawings-zero-level-ground",
+        &BTreeMap::from([("height", "242000".to_owned())]),
+    );
+    harness.get_by_label(&found).click_accesskit();
+    harness.run();
+    assert_eq!(
+        harness.state().drawings.editing.zero_level_mm,
+        Some(242_000),
+        "a set height starts from the floor found"
+    );
+    harness.state_mut().drawings.editing.zero_level_mm = Some(245_300);
+    harness.step();
+    harness.step();
+    let app = harness.state_mut();
+    assert_eq!(app.drawings.editing.zero_level_mm, Some(245_300));
+    assert_eq!(app.sheet_settings().zero_level_mm, Some(245_300));
+    let mut settings = app.sheet_settings();
+    settings.language = Some(SheetLanguage::Czech);
+    app.store_sheet_settings(settings);
+    let set = app.project_drawings().unwrap();
+    let section = views(&set)
+        .find(|summary| summary.view == ProjectView::LongitudinalSection)
+        .unwrap();
+    assert_eq!(
+        section.levels,
+        ["-3,600", "-3,300", "±0,000"],
+        "±0,000 on the ground floor, the basement and the model's bottom below it"
+    );
+}
+
+/// Review 2026-11-04 MF-140: the level marks of a Czech sheet wrote a comma
+/// but its dimensions and cutting captions a point ("1234.5", "využito
+/// 87.5 %"), both on one sheet, in the PDF and the DXF. Every number a Czech or
+/// Slovak sheet writes takes the comma.
+#[test]
+fn a_czech_or_slovak_sheet_writes_no_decimal_point() {
+    let decimal_point = |text: &str| {
+        let chars = text.chars().collect::<Vec<_>>();
+        chars
+            .windows(3)
+            .any(|three| three[0].is_ascii_digit() && three[1] == '.' && three[2].is_ascii_digit())
+    };
+    let mut app = KetchupApp::new();
+    let source = format!(
+        "{PANEL}bar_stock('C24', [3000, 5000])\n\
+         dim('length', (0, -500, 0), (1234.5, -500, 0), offset_mm=-300, tags='plan')\n\
+         dim('up', (3000, -500, 0), (3000, -500, 2150.5), offset_mm=300, tags='plan')\n"
+    );
+    let program = ketchup_model::document::RuleProgramSource {
+        variants: Default::default(),
+        file_name: "panel.star".into(),
+        source,
+        overrides: BTreeMap::new(),
+    };
+    app.apply_program_source(program, true).unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    for language in [SheetLanguage::Czech, SheetLanguage::Slovak] {
+        let mut settings = app.sheet_settings();
+        settings.language = Some(language);
+        app.store_sheet_settings(settings);
+        let set = app.project_drawings().unwrap();
+        let written = set
+            .sheets
+            .iter()
+            .flat_map(|sheet| sheet.page.texts().chain(sheet.lines.texts()))
+            .collect::<Vec<_>>();
+        assert!(
+            written.iter().any(|text| text.contains("1234,5")),
+            "{language:?}: {written:?}"
+        );
+        let points = written
+            .iter()
+            .filter(|text| decimal_point(text))
+            .collect::<Vec<_>>();
+        assert!(points.is_empty(), "{language:?}: {points:?}");
     }
 }
 
@@ -1119,34 +1443,120 @@ fn the_open_drawings_window_takes_up_settings_changed_in_the_document() {
 #[test]
 fn the_drawing_date_is_the_date_on_the_users_clock() {
     use crate::app::project_drawings::date_at;
+    let slovak = ketchup_interaction::LocaleCatalog::slovak();
     // 2026-10-22 23:30:00 UTC.
     let late_evening = 1_792_711_800;
-    assert_eq!(date_at(late_evening, 0), "22. 10. 2026");
-    assert_eq!(date_at(late_evening, 2 * 3_600), "23. 10. 2026");
-    assert_eq!(date_at(late_evening, -4 * 3_600), "22. 10. 2026");
+    assert_eq!(date_at(&slovak, late_evening, 0), "22. 10. 2026");
+    assert_eq!(date_at(&slovak, late_evening, 2 * 3_600), "23. 10. 2026");
+    assert_eq!(date_at(&slovak, late_evening, -4 * 3_600), "22. 10. 2026");
     // A minute after midnight UTC on 1 January is still New Year's Eve west of it.
-    assert_eq!(date_at(1_798_761_660, -3_600), "31. 12. 2026");
+    assert_eq!(date_at(&slovak, 1_798_761_660, -3_600), "31. 12. 2026");
+}
+
+/// Review 2026-11-04 r19 P3: the plan DXF wrote a dimension of 1234.5 mm
+/// with a point also for Czech and Slovak sheets, which write a decimal
+/// comma on the PDF; it writes the separator of the sheet language.
+#[test]
+fn the_plan_dxf_writes_the_decimal_separator_of_the_sheet_language() {
+    use ketchup_model::annotation::{Annotation, AnnotationMark};
+    let mut app = KetchupApp::new().with_dialogs(Box::new(
+        crate::dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(84),
+    ));
+    let directory = tempfile::tempdir().unwrap();
+    app.document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::SetAnnotations {
+            annotations: vec![Annotation {
+                name: "span".to_owned(),
+                tags: Default::default(),
+                mark: AnnotationMark::Dimension {
+                    from_mm: [0.0, -2000.0, 0.0],
+                    to_mm: [1234.5, -2000.0, 0.0],
+                    offset_mm: 500.0,
+                    height_mm: 2.5,
+                },
+            }],
+        }]))
+        .unwrap();
+    for (language, value) in [
+        (SheetLanguage::Czech, "1234,5"),
+        (SheetLanguage::Slovak, "1234,5"),
+        (SheetLanguage::English, "1234.5"),
+    ] {
+        let mut settings = app.sheet_settings();
+        settings.language = Some(language);
+        app.store_sheet_settings(settings);
+        let path = directory.path().join(format!("plan-{language:?}.dxf"));
+        app.export_current_plan_dxf_to(&path, 50.0).unwrap();
+        let dxf = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            dxf.lines().any(|line| line.trim() == value),
+            "{language:?} writes {value}"
+        );
+    }
+}
+
+/// Review 2026-11-04 r19 P3: the date of an English sheet was written
+/// "5. 11. 2026", the Czech and Slovak way; it is written as the sheet's
+/// language writes it, ISO 8601 on an English sheet.
+#[test]
+fn the_drawing_date_is_written_as_the_sheet_language_writes_it() {
+    let app = KetchupApp::new();
+    let date = |language| app.title_defaults(Some(language))[&TitleField::Date].clone();
+    let english = date(SheetLanguage::English);
+    let iso = english.split('-').map(str::len).collect::<Vec<_>>();
+    assert_eq!(iso, [4, 2, 2], "{english}");
+    assert!(
+        english.chars().all(|c| c.is_ascii_digit() || c == '-'),
+        "{english}"
+    );
+    for language in [SheetLanguage::Czech, SheetLanguage::Slovak] {
+        let written = date(language);
+        let parts = written.split(". ").collect::<Vec<_>>();
+        assert_eq!(parts.len(), 3, "{written}");
+        assert_eq!(parts[2], &english[..4], "{written} is the day of {english}");
+    }
+}
+
+/// Review 2026-11-04 r19 MF-162 (capability review run 501): a work recovery
+/// open has no file of its own, so a set its project wrote with Kečup 0.3.2,
+/// whose list names the file, was another project's. The sets are of the file
+/// the recovery was found for.
+#[test]
+fn a_recovered_session_exports_the_sets_of_the_file_it_was_found_for() {
+    let mut app = KetchupApp::new();
+    let requested = std::env::temp_dir().join("dom.ketchup");
+    app.file.recovery_open = Some(crate::app_state::RecoveryOpenState {
+        requested_path: requested.clone(),
+        source_path: requested.with_extension("ketchup.recovery"),
+        work_recovery_base: None,
+    });
+    assert_eq!(app.drawing_set_owner().file, Some(requested));
 }
 
 /// The project the sets of the MF-27 tests are drawn from.
-const DOCUMENT: ketchup_model::document::DocumentId = ketchup_model::document::DocumentId(7);
+const DOCUMENT: crate::app::project_drawings::SetOwner = crate::app::project_drawings::SetOwner {
+    document: ketchup_model::document::DocumentId(7),
+    file: None,
+    written: BTreeMap::new(),
+};
 
 /// Review 2026-10-24 MF-27: a set's DXF sheets were written only as new
 /// files, so exporting the set again under the same name always failed.
 #[test]
 fn a_set_exported_again_under_its_name_replaces_the_sheets_it_wrote() {
     use crate::app::project_drawings::{
-        SetFileFormat, project_drawings_targets, publish_project_drawings,
+        SetFileFormat, project_drawings_targets, publish_noted, publish_project_drawings,
     };
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("plan.dxf");
     let sheet = |number: u8| directory.path().join(format!("plan-0{number}.dxf"));
     let read = |number| std::fs::read(sheet(number)).unwrap();
-    let publish = |files: [&[u8]; 2]| {
-        let targets = project_drawings_targets(&path, SetFileFormat::Dxf, DOCUMENT).unwrap();
+    let mut document = DOCUMENT;
+    let mut publish = |files: [&[u8]; 2]| {
+        let targets =
+            project_drawings_targets(&path, SetFileFormat::Dxf, &document, false).unwrap();
         let files = files.map(<[u8]>::to_vec);
-        publish_project_drawings(&path, SetFileFormat::Dxf, &files, &targets, DOCUMENT)
-            .map(|_| targets)
+        publish_noted(&path, SetFileFormat::Dxf, &files, &mut document).map(|_| targets)
     };
     // Files named like no sheet of this set are not taken for one.
     for other in ["plan-1.dxf", "plan-ab.dxf", "planx-01.dxf", "plan-01.pdf"] {
@@ -1170,7 +1580,7 @@ fn a_set_exported_again_under_its_name_replaces_the_sheets_it_wrote() {
 
     // A sheet saved meanwhile is kept, and the one the export had already
     // replaced gets its bytes back: the set is written whole or not at all.
-    let targets = project_drawings_targets(&path, SetFileFormat::Dxf, DOCUMENT).unwrap();
+    let targets = project_drawings_targets(&path, SetFileFormat::Dxf, &document, false).unwrap();
     std::fs::write(sheet(2), b"saved meanwhile").unwrap();
     assert!(
         publish_project_drawings(
@@ -1178,7 +1588,7 @@ fn a_set_exported_again_under_its_name_replaces_the_sheets_it_wrote() {
             SetFileFormat::Dxf,
             &[b"third 1".to_vec(), b"third 2".to_vec()],
             &targets,
-            DOCUMENT,
+            &document,
         )
         .is_err()
     );
@@ -1194,15 +1604,15 @@ fn a_set_exported_again_under_its_name_replaces_the_sheets_it_wrote() {
 #[test]
 fn a_set_exported_again_with_fewer_sheets_removes_the_sheets_beyond_its_last() {
     use crate::app::project_drawings::{
-        SetFileFormat, project_drawings_targets, publish_project_drawings,
+        SetFileFormat, project_drawings_targets, publish_noted, publish_project_drawings,
     };
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("plan.dxf");
     let sheet = |number: u8| directory.path().join(format!("plan-0{number}.dxf"));
-    let publish = |files: &[&[u8]]| {
-        let targets = project_drawings_targets(&path, SetFileFormat::Dxf, DOCUMENT).unwrap();
+    let mut document = DOCUMENT;
+    let mut publish = |files: &[&[u8]]| {
         let files: Vec<Vec<u8>> = files.iter().map(|file| file.to_vec()).collect();
-        publish_project_drawings(&path, SetFileFormat::Dxf, &files, &targets, DOCUMENT)
+        publish_noted(&path, SetFileFormat::Dxf, &files, &mut document)
     };
     publish(&[b"a 1", b"a 2", b"a 3", b"a 4"]).unwrap();
 
@@ -1210,14 +1620,14 @@ fn a_set_exported_again_with_fewer_sheets_removes_the_sheets_beyond_its_last() {
     assert_eq!(paths, [sheet(1), sheet(2), sheet(3)]);
     assert!(!sheet(4).exists());
 
-    let targets = project_drawings_targets(&path, SetFileFormat::Dxf, DOCUMENT).unwrap();
+    let targets = project_drawings_targets(&path, SetFileFormat::Dxf, &document, false).unwrap();
     std::fs::write(sheet(3), b"saved meanwhile").unwrap();
     let error = publish_project_drawings(
         &path,
         SetFileFormat::Dxf,
         &[b"c 1".to_vec(), b"c 2".to_vec()],
         &targets,
-        DOCUMENT,
+        &document,
     )
     .unwrap_err();
     let crate::app::project_drawings::ProjectDrawingsError::Write(error) = error else {
@@ -1243,7 +1653,7 @@ fn a_set_exported_again_with_fewer_sheets_removes_the_sheets_beyond_its_last() {
 #[test]
 fn sheets_of_another_project_under_the_same_name_are_neither_replaced_nor_removed() {
     use crate::app::project_drawings::{
-        ProjectDrawingsError, SetFileFormat, project_drawings_targets, publish_project_drawings,
+        ProjectDrawingsError, SetFileFormat, SetOwner, publish_noted,
     };
     use ketchup_model::document::DocumentId;
     // Two new projects are two projects, though both are called Untitled.
@@ -1255,13 +1665,17 @@ fn sheets_of_another_project_under_the_same_name_are_neither_replaced_nor_remove
     let path = directory.path().join("Untitled.dxf");
     let sheet = |number: u8| directory.path().join(format!("Untitled-0{number}.dxf"));
     let list = directory.path().join("Untitled.dxf.sheets.txt");
-    let publish = |document: DocumentId, files: &[&[u8]]| {
-        let targets = project_drawings_targets(&path, SetFileFormat::Dxf, document).unwrap();
+    let publish = |document: &mut SetOwner, files: &[&[u8]]| {
         let files: Vec<Vec<u8>> = files.iter().map(|file| file.to_vec()).collect();
-        publish_project_drawings(&path, SetFileFormat::Dxf, &files, &targets, document)
+        publish_noted(&path, SetFileFormat::Dxf, &files, document)
     };
-    let other = DocumentId(8);
-    publish(other, &[b"A1", b"A2", b"A3", b"A4", b"A5"]).unwrap();
+    let mut other = SetOwner {
+        document: DocumentId(8),
+        file: None,
+        written: BTreeMap::new(),
+    };
+    let mut this = DOCUMENT;
+    publish(&mut other, &[b"A1", b"A2", b"A3", b"A4", b"A5"]).unwrap();
     let before = |count: u8| {
         (1..=count)
             .map(|number| std::fs::read(sheet(number)).unwrap())
@@ -1270,18 +1684,24 @@ fn sheets_of_another_project_under_the_same_name_are_neither_replaced_nor_remove
     let other_sheets = before(5);
     let other_list = std::fs::read(&list).unwrap();
 
-    let refused = |files: &[&[u8]]| {
-        let Err(ProjectDrawingsError::Write(_)) = publish(DOCUMENT, files) else {
-            panic!("another project's sheets were taken for this set's");
-        };
+    // Another project's set is named as its (review 2026-11-04 r19 MF-162).
+    let Err(ProjectDrawingsError::SetOfAnotherProject { list: named, .. }) =
+        publish(&mut this, &[b"B1", b"B2"])
+    else {
+        panic!("another project's sheets were taken for this set's");
     };
-    refused(&[b"B1", b"B2"]);
+    assert_eq!(named, list);
     assert_eq!(before(5), other_sheets);
     assert_eq!(std::fs::read(&list).unwrap(), other_list);
 
+    let refused = |this: &mut SetOwner, files: &[&[u8]]| {
+        let Err(ProjectDrawingsError::Write(_)) = publish(this, files) else {
+            panic!("sheets not this set's were replaced");
+        };
+    };
     // Sheets with no list are no set's: they are kept too.
     std::fs::remove_file(&list).unwrap();
-    refused(&[b"B1", b"B2"]);
+    refused(&mut this, &[b"B1", b"B2"]);
     assert_eq!(before(5), other_sheets);
     assert!(!list.exists());
 
@@ -1289,16 +1709,16 @@ fn sheets_of_another_project_under_the_same_name_are_neither_replaced_nor_remove
     for number in 1..=5 {
         std::fs::remove_file(sheet(number)).unwrap();
     }
-    publish(DOCUMENT, &[b"B1", b"B2", b"B3"]).unwrap();
+    publish(&mut this, &[b"B1", b"B2", b"B3"]).unwrap();
     std::fs::write(sheet(3), b"edited").unwrap();
-    refused(&[b"C1", b"C2"]);
+    refused(&mut this, &[b"C1", b"C2"]);
     assert_eq!(
         before(3),
         [b"B1".to_vec(), b"B2".to_vec(), b"edited".to_vec()]
     );
     std::fs::write(sheet(3), b"B3").unwrap();
     assert_eq!(
-        publish(DOCUMENT, &[b"C1", b"C2"]).unwrap(),
+        publish(&mut this, &[b"C1", b"C2"]).unwrap(),
         [sheet(1), sheet(2)]
     );
     assert!(!sheet(3).exists());
@@ -1404,4 +1824,40 @@ fn a_plan_draws_the_visible_underlay_beneath_the_model_within_its_extent() {
     assert!(app.set_tag_visibility(underlay.tag, false));
     let hidden = app.project_drawings().unwrap();
     assert!(underlay_lines(&hidden.sheets[0].page).is_empty());
+}
+
+/// Review 2026-11-04 P3: a shown underlay whose lines did not read was left
+/// off the plans unsaid (`.ok()`). The set is refused and names it; hidden,
+/// the plans are drawn without it.
+#[test]
+fn a_shown_underlay_that_does_not_read_refuses_the_set_and_is_named() {
+    use crate::app::project_drawings::ProjectDrawingsError;
+    let mut app = KetchupApp::new();
+    add_box(&mut app, 901, "wall A", 0.0);
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("site.dxf");
+    std::fs::write(
+        &path,
+        concat!(
+            "0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n",
+            "0\nSECTION\n2\nENTITIES\n",
+            "0\nLINE\n8\nparcel\n10\n-500\n20\n100\n30\n0\n11\n1500\n21\n100\n31\n0\n",
+            "0\nENDSEC\n0\nEOF\n",
+        ),
+    )
+    .unwrap();
+    app.start_underlay_read(path, None);
+    let underlay = app.document.current().underlays().next().cloned().unwrap();
+    // The document lost the blob of its lines.
+    app.file.container_data = ketchup_model::persistence::ContainerData::default();
+    app.render.underlay_lines.borrow_mut().clear();
+    app.render.underlay_decoded.borrow_mut().clear();
+
+    let Err(ProjectDrawingsError::UnderlayUnreadable(name, None)) = app.project_drawings() else {
+        panic!("the plans were drawn without the underlay, unsaid");
+    };
+    assert_eq!(name, underlay.name);
+    assert!(app.set_tag_visibility(underlay.tag, false));
+    assert!(app.project_drawings().is_ok());
 }

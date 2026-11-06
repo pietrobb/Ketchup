@@ -14,6 +14,7 @@ use super::program_check::ProgramCheckJob;
 use super::program_dry_run::QueuedReply;
 use super::*;
 use crate::app::project_drawings::ProjectDrawingsError;
+use crate::delivery::Deliver;
 use ketchup_manufacturing::project_drawings::DrawingSet;
 
 type Made = Result<(DrawingSet, Vec<Vec<u8>>), ProjectDrawingsError>;
@@ -48,6 +49,17 @@ impl ProjectDrawingsExportJob {
     pub(super) const fn awaits_exact(&self) -> bool {
         matches!(self.stage, Stage::AwaitingExact { .. })
     }
+
+    /// Puts back the settings it kept, as a cancelled export does, while the
+    /// document it was started for is open (`document_epoch`); its worker
+    /// sees the cancelled flag and stops.
+    pub(super) fn abandon(&self, app: &mut KetchupApp, document_epoch: u64) {
+        if let Stage::Drawing { started, .. } = &self.stage
+            && self.epoch == document_epoch
+        {
+            started.undo(app);
+        }
+    }
 }
 
 /// Whether `request` exports the project set, which runs as a job.
@@ -61,13 +73,29 @@ pub(super) fn waits_for_exact(app: &KetchupApp, request: &Request) -> bool {
     app.exact.task.is_some() && matches!(request, Request::ExportDrawings { .. })
 }
 
+/// Moves the stamp of a waiting `request` past the exact solids published
+/// for the document it names, which change nothing the client saw; any other
+/// change since leaves it stale (review 2026-11-04 P3). Called each frame the
+/// export waits, so a change and a publication in one frame stay stale.
+fn carry_past_publication(app: &KetchupApp, request: &mut Request) {
+    if let Request::ExportDrawings {
+        expected: Some(stamp),
+        ..
+    } = request
+        && let Some((before, after)) = app.exact.published_epochs
+        && stamp.mutation_epoch == before
+    {
+        stamp.mutation_epoch = after;
+    }
+}
+
 impl LiveBridge {
     pub(super) fn start_project_drawings_export(
         &mut self,
         app: &mut KetchupApp,
         context: &egui::Context,
         queued: QueuedReply,
-        mut request: Request,
+        request: Request,
         ui_busy: bool,
     ) {
         let QueuedReply {
@@ -90,15 +118,13 @@ impl LiveBridge {
             return;
         }
         if waits_for_exact(app, &request) {
-            if let Request::ExportDrawings { expected, .. } = &mut request {
-                if let Err(code) = Self::guard(app, expected) {
-                    Self::reply(app, id, &reply, Err(code));
-                    return;
-                }
-                // The client saw the document the evaluation runs for;
-                // publishing its solids is the next mutation, so the stamp is
-                // checked now.
-                *expected = None;
+            // The stamp is checked again when the export starts, past the
+            // publication of the solids (`carry_past_publication`).
+            if let Request::ExportDrawings { expected, .. } = &request
+                && let Err(code) = Self::guard(app, expected)
+            {
+                Self::reply(app, id, &reply, Err(code));
+                return;
             }
             self.program_check_job =
                 Some(ProgramCheckJob::ProjectDrawings(ProjectDrawingsExportJob {
@@ -135,7 +161,7 @@ impl LiveBridge {
         let spawn = std::thread::Builder::new()
             .name("ketchup-drawings-export".into())
             .spawn(move || {
-                let _ = sender.try_send(job.render(format, &flag));
+                sender.deliver(job.render(format, &flag));
                 repaint.request_repaint();
             });
         if let Err(error) = spawn {
@@ -176,10 +202,11 @@ impl LiveBridge {
         } = job;
         let (started, receiver) = match stage {
             Stage::AwaitingExact {
-                request,
+                mut request,
                 ui_busy,
                 until,
             } => {
+                carry_past_publication(app, &mut request);
                 if cancelled.load(Ordering::Acquire) {
                     Self::reply(app, id, &reply, Err("request_cancelled"));
                     return;

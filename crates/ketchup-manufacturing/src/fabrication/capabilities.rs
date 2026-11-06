@@ -64,9 +64,9 @@ pub enum ShopElement {
     /// and cuts are unknown to every format (review 2026-10-31 MF-80).
     UndescribedMachining,
     /// A blank whose outline has an edge that is neither a line nor a
-    /// circular arc (a cubic Bezier curve, a spline) or holes of its own: no
-    /// format describes the blank, so the part's machining has no frame
-    /// (review 2026-11-01 MF-103, 2026-11-02 MF-121).
+    /// circular arc (a cubic Bezier curve, a spline): no format describes the
+    /// blank, so the part's machining has no frame (review 2026-11-01 MF-103,
+    /// 2026-11-02 MF-121). Holes of the outline are openings cut through it.
     FreeFormBlank,
     /// A blank of lines and circular arcs that is not a rectangle (a rounded
     /// corner, an L-shaped outline): the production job and the drawing carry
@@ -125,10 +125,10 @@ pub(super) const DRAWING_UNDESCRIBED: &str = "the drawing shows the part's outli
 const UNDESCRIBED: &str = "the part's cuts could not be described as drillings, profile or \
      through cuts, so it would be made without them; model its machining as holes, pockets and \
      cuts, or make it from the model";
-const FREE_FORM_BLANK: &str = "the outline of the part's blank has a free-form edge (a Bezier \
-     curve or a spline) or holes of its own, and a blank is one outline of lines and circular \
-     arcs, so its holes and cuts have no frame; make the outline of lines and arcs and cut its \
-     openings as holes or cuts, or make the part from the model";
+const FREE_FORM_BLANK: &str = "the outline of the part's blank or of an opening in it has a \
+     free-form edge (a Bezier curve or a spline), and a blank is an outline of lines and circular \
+     arcs, so its holes and cuts have no frame; make the outlines of lines and arcs, or make the \
+     part from the model";
 const WOODWOP_SHAPED_BLANK: &str = "a woodWOP program here is set up on a rectangular blank, and \
      this part's outline has arcs or edges off its rectangle, which the program would not cut; \
      export the production job, which carries the outline, or make the part's blank a rectangle";
@@ -321,7 +321,9 @@ fn copies_are_mirrored(
             .resolve_instance_path(instance_path)
             .map_err(GeneralFabricationError::UnresolvedInstance)?;
         if resolved.definition_id != row.definition_id {
-            return Err(GeneralFabricationError::ExportBlocked);
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::UnusablePlacement,
+            ));
         }
         if !is_production_transform(resolved.world_transform) {
             ScaledPlacement::check(instance_path.root_occurrence(), resolved.world_transform)

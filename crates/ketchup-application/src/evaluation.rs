@@ -873,7 +873,9 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                 if !requests.is_empty() {
                     match crate::worker_pool::checkout(executable.as_deref(), &worker_cancelled) {
                         // A cancelled spawn evaluated nothing: progress keeps the pending body.
-                        Err(_) if worker_cancelled.load(Ordering::Acquire) => {}
+                        Err(crate::worker_pool::ExactWorkerUnavailable::Checkout {
+                            cause: WorkerError::Cancelled,
+                        }) => {}
                         Err(unavailable) => {
                             let reason = unavailable.to_string();
                             for (key, _) in &requests {
@@ -1121,9 +1123,15 @@ pub fn start_exact_evaluation_scoped_with_cancellation(
                                 let (package, topology_package) = match evaluated {
                                     Ok(products) => products,
                                     // Interrupted, not completed: it stays the active body.
-                                    Err(_) if worker_cancelled.load(Ordering::Acquire) => break,
+                                    Err(error) if worker_cancelled.load(Ordering::Acquire) => {
+                                        ketchup_rejection::log!(
+                                            "exact evaluation of definition {} interrupted: {error}",
+                                            definition_id.0
+                                        );
+                                        break;
+                                    }
                                     Err(error) => {
-                                        eprintln!(
+                                        ketchup_rejection::log!(
                                             "exact evaluation rejected definition {}: {error}",
                                             definition_id.0
                                         );
@@ -1484,5 +1492,84 @@ mod imported_source_tests {
             requests.as_slice(),
             [(_, ExactEvaluationRequest::Imported(_, bytes))] if bytes.as_ptr() == blob.as_ptr()
         ));
+    }
+}
+
+#[cfg(test)]
+mod cancelled_start_tests {
+    use super::*;
+    use ketchup_model::document::{
+        CanonicalCommand, CommandBatch, Dimension, OccurrenceId, Transform,
+    };
+
+    /// Only a cancelled start keeps the pending body as the interrupted one: a
+    /// cancel that meets a worker that cannot start for another reason ends the
+    /// evaluation as that failure (review 2026-11-04 r19 P3, TST-140).
+    #[test]
+    fn a_cancelled_evaluation_whose_worker_cannot_start_ends_as_that_failure() {
+        let mut document = DocumentStore::new();
+        document
+            .apply_batch(&CommandBatch::new(vec![
+                CanonicalCommand::CreateDefinition {
+                    id: DefinitionId(1),
+                    name: "Part".into(),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(1),
+                    definition_id: DefinitionId(1),
+                    name: "Profile".into(),
+                    kind: FeatureKind::polygon(&[
+                        [0.0, 0.0],
+                        [10.0, 0.0],
+                        [10.0, 10.0],
+                        [0.0, 10.0],
+                    ]),
+                },
+                CanonicalCommand::CreateFeature {
+                    id: FeatureId(2),
+                    definition_id: DefinitionId(1),
+                    name: "Solid".into(),
+                    kind: FeatureKind::extrusion(FeatureId(1), Dimension::new("10", 10.0).unwrap()),
+                },
+                CanonicalCommand::CreateOccurrence {
+                    id: OccurrenceId(1),
+                    definition_id: DefinitionId(1),
+                    name: "Part".into(),
+                    transform: Transform::identity(),
+                    parent: None,
+                    tags: Default::default(),
+                    visible: true,
+                },
+            ]))
+            .unwrap();
+        let finish = |executable: Option<PathBuf>| {
+            let none = ExactResultRegistry::default();
+            let task = start_exact_evaluation_scoped_with_cancellation(
+                document.current(),
+                &ContainerData::default(),
+                &none,
+                &none,
+                executable,
+                None,
+                Arc::new(AtomicBool::new(true)),
+                || {},
+            );
+            // A cancelled evaluation sends nothing: its end drops the sender.
+            assert!(task.receiver.recv().is_err());
+            task.progress()
+        };
+
+        // No worker at all: the evaluation failed, it was not interrupted.
+        let failed = finish(None);
+        assert_eq!((failed.total_producers, failed.completed_producers), (1, 1));
+        assert_eq!(failed.active_producer, None);
+
+        // The start itself was cancelled: the body stays pending.
+        let cancelled = finish(Some(PathBuf::from("no-such-exact-worker")));
+        assert_eq!(
+            (cancelled.total_producers, cancelled.completed_producers),
+            (1, 0)
+        );
+        assert!(cancelled.active_producer.is_some());
     }
 }

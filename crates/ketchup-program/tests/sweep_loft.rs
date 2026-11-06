@@ -156,6 +156,13 @@ fn a_loft_shells_open_at_its_start_and_end_sections() {
         "{SKIN}shell(skin, thickness = 3, open = [\"side\"])"
     ));
     assert!(side.contains("start") && side.contains("end"), "{side}");
+    // Review 2026-11-04 (P3): the thickness was checked against the whole
+    // part's 40 mm, not its smallest section's 24 mm, so 15 mm walls were
+    // accepted and failed only in the exact kernel.
+    let thick = error(&format!(
+        "{SKIN}shell(skin, thickness = 15, open = [\"start\", \"end\"])"
+    ));
+    assert!(thick.contains("thinnest size 24 mm"), "{thick}");
     let swept = error(&format!(
         "{RAIL}shell(\"rail\", thickness = 2, open = [\"start\"])"
     ));

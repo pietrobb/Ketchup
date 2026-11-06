@@ -100,7 +100,9 @@ fn a_long_dwg_read_shows_its_estimated_progress_and_cancel_stops_it() {
         .state_mut()
         .queue_dwg_read(path, &context, move |_, cancel| {
             token.send(cancel.clone()).unwrap();
-            let _ = released.recv();
+            if released.recv().is_err() {
+                // The test has ended without letting go; the read is cancelled either way.
+            }
             Err(ImportError::failed(ImportFormat::Dxf, "cancelled"))
         });
     let reader_token = reader_token.recv_timeout(Duration::from_secs(10)).unwrap();

@@ -1036,7 +1036,9 @@ fn opening_comments_or_a_model_over_unsaved_work_warns_first() {
 fn comments_that_do_not_fit_their_package_leave_the_open_model_and_comments() {
     let directory =
         std::env::temp_dir().join(format!("ketchup-viewer-misfit-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&directory);
+    if let Err(error) = std::fs::remove_dir_all(&directory) {
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+    }
     std::fs::create_dir_all(&directory).unwrap();
     let mut bytes = Vec::new();
     scene_package().write(&mut bytes).expect("fixture");
@@ -1087,7 +1089,9 @@ fn comments_that_do_not_fit_their_package_leave_the_open_model_and_comments() {
             app.shown,
         )
     );
-    let _ = std::fs::remove_dir_all(&directory);
+    if let Err(error) = std::fs::remove_dir_all(&directory) {
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+    }
 }
 
 /// A customer's Viewer with one committed comment `text`.
@@ -1208,7 +1212,9 @@ fn add_comment(app: &mut ViewerApp, text: &str) {
 #[test]
 fn a_viewer_ended_in_the_background_reopens_its_model_and_unsaved_comments() {
     let dir = std::env::temp_dir().join(format!("ketchup-viewer-session-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(error) = std::fs::remove_dir_all(&dir) {
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+    }
     let mut bytes = Vec::new();
     scene_package().write(&mut bytes).expect("fixture");
     let mut app = customer_with_comment(&bytes, "Darker oak");
@@ -1263,7 +1269,9 @@ fn a_viewer_ended_in_the_background_reopens_its_model_and_unsaved_comments() {
 #[test]
 fn a_comment_edit_keeps_only_the_comments_not_the_whole_package() {
     let dir = std::env::temp_dir().join(format!("ketchup-viewer-edit-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(error) = std::fs::remove_dir_all(&dir) {
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+    }
     let mut bytes = Vec::new();
     scene_package().write(&mut bytes).expect("fixture");
     let mut app = customer_with_comment(&bytes, "Darker oak");
@@ -1320,7 +1328,9 @@ fn a_comment_edit_keeps_only_the_comments_not_the_whole_package() {
 #[test]
 fn comments_made_while_the_package_is_written_survive_the_end_of_the_process() {
     let dir = std::env::temp_dir().join(format!("ketchup-viewer-ended-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(error) = std::fs::remove_dir_all(&dir) {
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+    }
     let mut bytes = Vec::new();
     scene_package().write(&mut bytes).expect("fixture");
     let mut app = customer_with_comment(&bytes, "Darker oak");
@@ -1374,7 +1384,9 @@ fn a_startup_reader_that_panics_reports_its_message() {
         "ketchup-viewer-startup-panic-{}",
         std::process::id()
     ));
-    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(error) = std::fs::remove_dir_all(&dir) {
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+    }
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join(PANIC_STARTUP_READER), b"").unwrap();
     let mut app = ViewerApp::new(None);
@@ -1401,7 +1413,9 @@ fn a_start_whose_model_does_not_open_says_so_in_the_viewer() {
         "ketchup-viewer-startup-shown-{}",
         std::process::id()
     ));
-    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(error) = std::fs::remove_dir_all(&dir) {
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+    }
     std::fs::create_dir_all(&dir).unwrap();
     let start = |session: Option<&std::path::Path>, package: Option<std::path::PathBuf>| {
         let mut app = ViewerApp::new(None).with_host_files();
@@ -1508,7 +1522,9 @@ fn the_error_banner_names_the_cause() {
 #[test]
 fn a_phone_reads_its_start_model_apart_from_the_frame() {
     let dir = std::env::temp_dir().join(format!("ketchup-viewer-startup-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(error) = std::fs::remove_dir_all(&dir) {
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+    }
     let mut bytes = Vec::new();
     scene_package().write(&mut bytes).expect("fixture");
     let mut app = customer_with_comment(&bytes, "Darker oak");
@@ -1555,7 +1571,9 @@ fn a_phone_reads_its_start_model_apart_from_the_frame() {
 #[test]
 fn unsaved_comments_of_a_session_that_does_not_open_are_kept_until_the_customer_decides() {
     let dir = std::env::temp_dir().join(format!("ketchup-viewer-unopened-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(error) = std::fs::remove_dir_all(&dir) {
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+    }
     let (first, second) = two_packages();
     let mut app = customer_with_comment(&first, "Darker oak");
     keep_all(&mut SessionKeeper::new(dir.clone(), None), &mut app).unwrap();
@@ -1672,7 +1690,9 @@ fn session_with_a_package_writer_to_kill() {
 fn comments_beside_a_package_whose_writer_was_killed_open_with_it_again() {
     use std::io::BufRead as _;
     let dir = std::env::temp_dir().join(format!("ketchup-viewer-killed-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(error) = std::fs::remove_dir_all(&dir) {
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+    }
     let mut child = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -1730,7 +1750,9 @@ fn comments_beside_a_package_whose_writer_was_killed_open_with_it_again() {
 #[test]
 fn a_session_that_failed_to_keep_a_package_writes_it_with_the_next_change() {
     let dir = std::env::temp_dir().join(format!("ketchup-viewer-full-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(error) = std::fs::remove_dir_all(&dir) {
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+    }
     let mut bytes = Vec::new();
     scene_package().write(&mut bytes).expect("fixture");
     let mut first = customer_with_comment(&bytes, "Darker oak");
@@ -1774,7 +1796,9 @@ fn a_session_that_failed_to_keep_a_package_writes_it_with_the_next_change() {
 #[test]
 fn a_failed_comments_write_does_not_write_the_package_again() {
     let dir = std::env::temp_dir().join(format!("ketchup-viewer-comments-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(error) = std::fs::remove_dir_all(&dir) {
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound, "{error}");
+    }
     let mut bytes = Vec::new();
     scene_package().write(&mut bytes).expect("fixture");
     let mut app = customer_with_comment(&bytes, "Darker oak");

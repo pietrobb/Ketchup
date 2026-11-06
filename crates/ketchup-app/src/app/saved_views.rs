@@ -98,22 +98,28 @@ impl KetchupApp {
         if name.is_empty() {
             return None;
         }
-        let id = match self.saved_view_id(name) {
-            Some(id) => id,
-            None => self
-                .document
-                .current()
-                .saved_views()
-                .map(|view| view.id().0)
-                .max()
-                .unwrap_or(0)
-                .checked_add(1)
-                .map(SavedViewId)?,
+        let (id, new) = match self.saved_view_id(name) {
+            Some(id) => (id, false),
+            None => (
+                self.document
+                    .current()
+                    .saved_views()
+                    .map(|view| view.id().0)
+                    .max()
+                    .unwrap_or(0)
+                    .checked_add(1)
+                    .map(SavedViewId)?,
+                true,
+            ),
         };
         let view = self.capture_view(id, name);
         let saved = self.commit_saved_view(view, "digest-saved-view-saved");
         if saved {
             self.saved_views_ui.active = Some(id);
+            if new && !self.forget_viewer_scene_choices(id) {
+                let notice = self.catalog.text("digest-viewer-settings-not-stored");
+                self.digest = format!("{} {notice}", self.digest);
+            }
         }
         saved.then_some(id)
     }

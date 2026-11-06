@@ -207,6 +207,81 @@ def test_a_matched_wait_that_fails_on_timeout_is_a_budget_under_the_hang_floor(t
     assert checker.violations(tmp_path) == ["crates/a/tests/fuzz.rs:4"]
 
 
+def test_a_helper_that_fails_when_its_time_runs_out_is_a_budget_under_the_hang_floor(tmp_path):
+    # Review 2026-11-04 P3: `connect_ai_e2e.rs` held a connect to 10 s through
+    # `answer_within(…, CONNECT_WITHIN)`, which asserts that its poll finished in time.
+    write(tmp_path, "crates/a/tests/e2e.rs", (
+        "const CONNECT_WITHIN: Duration = Duration::from_secs(10);\n"
+        "const HUNG: Duration = Duration::from_secs(300);\n"
+        "impl Client {\n"
+        "    fn answer_within(\n"
+        "        &mut self,\n"
+        "        id: u64,\n"
+        "        within: Duration,\n"
+        "    ) -> Value {\n"
+        "        let answered = poll_until(within, || self.done(id));\n"
+        "        assert!(answered, \"no answer within {within:?}\");\n"
+        "    }\n"
+        "}\n"
+        "fn waits_for(done: &Receiver<()>, within: std::time::Duration) -> bool {\n"
+        "    done.recv_timeout(within).is_ok()\n"
+        "}\n"
+        "fn connect() {\n"
+        "    let taken = second.answer_within(connect, CONNECT_WITHIN);\n"
+        "    let late = second.answer_within(\n"
+        "        connect,\n"
+        "        Duration::from_secs(2),\n"
+        "    );\n"
+        "    let fine = second.answer_within(connect, HUNG);\n"
+        "    let polled = waits_for(&done, CONNECT_WITHIN);\n"
+        "}\n"
+    ))
+    assert checker.violations(tmp_path) == [
+        "crates/a/tests/e2e.rs:17",
+        "crates/a/tests/e2e.rs:18",
+    ]
+
+
+def test_a_failing_helper_of_another_file_or_with_a_number_of_milliseconds_is_found_too(tmp_path):
+    # Review 2026-11-04 r19 P3: 7b1788e3 found only helpers of the same file whose
+    # parameter is a `Duration`; a harness helper used from another test file, a time
+    # given as a number of milliseconds, and a helper passing its time on to such a
+    # helper held the work to a budget unseen.
+    write(tmp_path, "crates/a/tests/harness/mod.rs", (
+        "pub const QUICK: Duration = Duration::from_secs(3);\n"
+        "impl Window {\n"
+        "    pub fn shows_within(&mut self, within: Duration) {\n"
+        "        let shown = poll_until(within, || self.shown());\n"
+        "        assert!(shown);\n"
+        "    }\n"
+        "    pub fn reply_within_ms(&mut self, id: u64, timeout_ms: u64) -> Reply {\n"
+        "        self.replies.recv_timeout(Duration::from_millis(timeout_ms)).expect(\"reply\")\n"
+        "    }\n"
+        "    pub fn opens_within(&mut self, path: &Path, within: Duration) {\n"
+        "        self.open(path);\n"
+        "        self.shows_within(within);\n"
+        "    }\n"
+        "}\n"
+    ))
+    write(tmp_path, "crates/a/tests/open.rs", (
+        "fn opens() {\n"
+        "    window.shows_within(QUICK);\n"
+        "    window.reply_within_ms(7, 2_000);\n"
+        "    window.opens_within(&path, Duration::from_secs(5));\n"
+        "    window.shows_within(Duration::from_secs(300));\n"
+        "    window.reply_within_ms(7, 120_000);\n"
+        "}\n"
+        "fn perf_opens_quickly() {\n"
+        "    window.shows_within(QUICK);\n"
+        "}\n"
+    ))
+    assert checker.violations(tmp_path) == [
+        "crates/a/tests/open.rs:2",
+        "crates/a/tests/open.rs:3",
+        "crates/a/tests/open.rs:4",
+    ]
+
+
 def test_the_viewer_crates_are_checked_too(tmp_path):
     # Review 2026-10-21 P3: only crates/ was scanned.
     write(tmp_path, "viewer/web/tests/smoke.rs", (

@@ -108,7 +108,7 @@ fn saved_choice() -> Option<String> {
 
 #[cfg(not(windows))]
 fn saved_choice() -> Option<String> {
-    None
+    crate::recent_files::user_settings::SettingsFile::of_user()?.language()
 }
 
 /// Remember `language` for the next start.
@@ -122,8 +122,15 @@ pub fn save_choice(language: UiLanguage) -> std::io::Result<()> {
 }
 
 #[cfg(not(windows))]
-pub fn save_choice(_language: UiLanguage) -> std::io::Result<()> {
-    Ok(())
+pub fn save_choice(language: UiLanguage) -> std::io::Result<()> {
+    crate::recent_files::user_settings::SettingsFile::of_user()
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no folder for the user settings (HOME)",
+            )
+        })?
+        .save_language(language.tag())
 }
 
 #[cfg(test)]

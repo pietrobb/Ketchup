@@ -22,7 +22,8 @@ use super::{Annotation, AnnotationCounts, PlanAnnotations};
 use super::{
     DrawingSolid, DrawnView, ProjectDrawingError, ProjectView, SheetViews, Storey, VIEW_PAD_MM,
     ViewSummary, annotation_bounds, bounds, choose_layout_scale, draw_view, draw_view_on_page,
-    extent, format_at_scale, solid_edges, view_frames,
+    extent, floor_levels, format_at_scale, ground_floor_of, lerp, marked_floor_levels, solid_edges,
+    view_frames,
 };
 use crate::sheet_dxf::page_dxf;
 use crate::title_block::{
@@ -93,9 +94,13 @@ pub struct DrawingSetOptions {
     /// The cutting plans, after the shop drawings: each on as many sheets as
     /// its bars or sheets of stock need, at its own scale.
     pub cutting: Vec<CuttingSheet>,
-    /// The level marks write a decimal comma ("+2,850"), as Czech and Slovak
-    /// drawings do, instead of a point.
-    pub decimal_comma: bool,
+    /// What the numbers of the sheets, level marks and dimensions alike,
+    /// write before a decimal: a comma ("+2,850", "1234,5"), as Czech and
+    /// Slovak drawings do, or a point (review 2026-11-04 MF-140, r19 P3).
+    pub decimal_separator: ketchup_model::annotation::DecimalMark,
+    /// The height of ±0,000 the level marks are read against; the ground
+    /// floor of the drawn solids when absent (see [`super::ground_floor`]).
+    pub zero_level_mm: Option<f64>,
 }
 
 /// What a sheet of the set shows.
@@ -350,7 +355,11 @@ pub fn drawing_set_until(
             .cloned()
             .collect::<Vec<_>>();
         if !annotations.is_empty() {
-            drawn.annotate(PlanAnnotations::project(&frame, &annotations));
+            drawn.annotate(PlanAnnotations::project(
+                &frame,
+                &annotations,
+                options.decimal_separator,
+            ));
         }
         let underlay = options
             .underlay
@@ -385,7 +394,12 @@ pub fn drawing_set_until(
                 .map(|(view, frame)| {
                     let mut drawn = draw_view(*view, *frame, solids, &edges);
                     drawn.levels.clone_from(&levels);
-                    let upright = PlanAnnotations::project_upright(frame, &options.annotations);
+                    let upright = PlanAnnotations::project_upright(
+                        frame,
+                        &options.annotations,
+                        lerp(min, max, 0.5),
+                        options.decimal_separator,
+                    );
                     if upright.counts.dimensions > 0 {
                         drawn.annotate(upright);
                     }
@@ -672,21 +686,19 @@ pub fn drawing_set_until(
     Ok(DrawingSet { sheets, scale })
 }
 
-/// The level marks of the sections and elevations: ±0,000 at the floor of the
-/// lowest storey (z = 0 without one), each storey's floor and the model's top
-/// (Měchenice MECH-6).
+/// The level marks of the sections and elevations (Měchenice MECH-6): ±0,000
+/// where the options set it, else at the ground floor; every floor, with a
+/// plan of its own or not, the model's top and its bottom below ±0,000 (review
+/// 2026-11-04 MF-141).
 fn section_levels(solids: &[DrawingSolid], options: &DrawingSetOptions) -> Vec<(f64, String)> {
     let Some((low, high)) = bounds(solids) else {
         return Vec::new();
     };
-    let floors = options
-        .plans
-        .iter()
-        .filter_map(|plan| plan.storey.floor_mm)
-        .collect::<Vec<_>>();
-    let datum = floors.first().copied().unwrap_or(0.0);
-    let separator = if options.decimal_comma { ',' } else { '.' };
-    level_heights(datum, &floors, low[2], high[2])
+    let datum = options
+        .zero_level_mm
+        .unwrap_or_else(|| ground_floor_of(&floor_levels(solids)));
+    let separator = options.decimal_separator;
+    level_heights(datum, &marked_floor_levels(solids), low[2], high[2])
         .into_iter()
         .map(|height| (height, level_text(height - datum, separator)))
         .collect()

@@ -11,6 +11,7 @@ use ketchup_model::document::{
 };
 use ketchup_model::exact_product::ExactResultRegistry;
 use ketchup_model::persistence::{self, ContainerData};
+use ketchup_rejection::{Reason, dropped};
 use std::{
     collections::BTreeSet,
     path::{Path, PathBuf},
@@ -320,7 +321,12 @@ impl DocumentSession {
         Ok(())
     }
     pub fn write_work_recovery_checkpoint(&mut self) -> Result<bool, SessionError> {
-        let _ = self.retry_pending_work_recovery_cleanup();
+        // The cleanup stays pending and the next save reports it; the
+        // checkpoint of the work in hand is written regardless.
+        dropped(
+            self.retry_pending_work_recovery_cleanup(),
+            Reason::RetriedLater,
+        );
         self.mutate_with_work_recovery(|_| Ok(()))?;
         Ok(self.work_recovery_identity.is_some())
     }

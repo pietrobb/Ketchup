@@ -7,7 +7,7 @@
 //! their fields and buttons wait, never the frame.
 
 use super::*;
-use crate::length_input::{DecimalSeparator, Refusal, read_length, read_number};
+use crate::length_input::{DecimalSeparator, read_length, read_number};
 use crate::live_bridge::variant_window::VariantAction;
 use crate::program_evaluation::Lookup;
 use ketchup_application::program_variants::active_variant;
@@ -65,10 +65,11 @@ impl KetchupApp {
             let row = BTreeMap::from([("name", name.clone()), ("values", values_text(values))]);
             let named = BTreeMap::from([("name", name.clone())]);
             ui.horizontal_wrapped(|ui| {
-                let _ = ui.selectable_label(
+                // Shows which variant is active; choosing one is the button beside it.
+                ui.add(egui::Button::selectable(
                     active == Some(name.as_str()),
                     self.catalog.format("variants-row", &row),
-                );
+                ));
                 let use_button = egui::Button::new(self.catalog.format("variants-use", &named));
                 if ui
                     .add_enabled(idle && active != Some(name.as_str()), use_button)
@@ -134,7 +135,7 @@ impl KetchupApp {
         if !idle {
             ui.label(self.catalog.text("variants-pending"));
         }
-        let decimal = self.value_box.decimal;
+        let decimal = self.window.decimal;
         let mut action = None;
         for param in params {
             let named = BTreeMap::from([("name", param.name.clone())]);
@@ -185,10 +186,25 @@ impl KetchupApp {
                     } else {
                         read_length(&text, decimal)
                     };
-                    // A whole parameter takes no fraction (review 2026-11-02 WB-42).
-                    let read = read.map_err(Refusal::message_key).and_then(|value| {
+                    // A whole parameter takes no fraction (review 2026-11-02 WB-42), and
+                    // none takes a value outside its range, which the program refuses
+                    // (review 2026-11-04 r19 WB-42).
+                    let outside = |value: f64| {
+                        param.min.is_some_and(|min| value < min)
+                            || param.max.is_some_and(|max| value > max)
+                    };
+                    let read = read.map_err(|refusal| self.catalog.text(refusal.message_key()));
+                    let read = read.and_then(|value| {
                         if param.whole && value.fract() != 0.0 {
-                            Err("params-not-whole")
+                            Err(self.catalog.text("params-not-whole"))
+                        } else if outside(value) {
+                            Err(self.catalog.format(
+                                "params-out-of-range",
+                                &BTreeMap::from([(
+                                    "range",
+                                    ketchup_program::eval::range_text(param.min, param.max),
+                                )]),
+                            ))
                         } else {
                             Ok(value)
                         }
@@ -198,10 +214,8 @@ impl KetchupApp {
                             action = Some(VariantAction::SetParam(param.name.clone(), value))
                         }
                         Err(reason) => {
-                            let arguments = BTreeMap::from([
-                                ("name", param.name.clone()),
-                                ("reason", self.catalog.text(reason)),
-                            ]);
+                            let arguments =
+                                BTreeMap::from([("name", param.name.clone()), ("reason", reason)]);
                             self.live.variants.outcome =
                                 Some(self.catalog.format("params-refused", &arguments));
                         }

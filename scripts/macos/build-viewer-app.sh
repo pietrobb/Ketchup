@@ -11,6 +11,9 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' "$repo/Cargo.toml")"
+source "$repo/scripts/macos/bundle-version.sh"
+versions="$(bundle_versions "$version")"
+read -r short_version bundle_version <<<"$versions"
 output="$repo/artifacts/macos-viewer/$version"
 identity="-"
 while [ $# -gt 0 ]; do
@@ -64,8 +67,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <key>CFBundleExecutable</key><string>ketchup-viewer</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>$version</string>
-    <key>CFBundleVersion</key><string>$version</string>
+    <key>CFBundleShortVersionString</key><string>$short_version</string>
+    <key>CFBundleVersion</key><string>$bundle_version</string>
     <key>LSMinimumSystemVersion</key><string>11.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.graphics-design</string>
     <key>NSHighResolutionCapable</key><true/>

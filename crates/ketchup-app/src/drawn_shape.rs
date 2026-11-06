@@ -993,7 +993,7 @@ impl KetchupApp {
         let preview = self.tool_preview.remove::<DrawnShapePreview>()?;
         let current = self.canonical_digest() == preview.canonical_digest
             && self.selection.primary.as_ref() == Some(&preview.selection)
-            && parse_distance_mm(&self.push_pull.distance_input, self.value_box.decimal)
+            && parse_distance_mm(&self.push_pull.distance_input, self.window.decimal)
                 .map(f64::to_bits)
                 == Some(preview.distance_mm_bits);
         let fresh = self

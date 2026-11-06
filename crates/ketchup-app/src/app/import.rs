@@ -553,7 +553,10 @@ impl KetchupApp {
                 .modal
                 .remove::<PendingStlImport>()
                 .expect("the STL review window has a pending import");
-            self.import_stl_from(&pending).ok();
+            if let Err(error) = self.import_stl_from(&pending) {
+                // The import has shown the refusal; logged with its cause (TST-140).
+                ketchup_rejection::log!("STL import refused: {error}");
+            }
         }
     }
 
@@ -717,7 +720,10 @@ impl KetchupApp {
                 .modal
                 .remove::<PendingDxfImport>()
                 .expect("the DXF review window has a pending import");
-            self.import_dxf_from(&pending).ok();
+            if let Err(error) = self.import_dxf_from(&pending) {
+                // The import has shown the refusal; logged with its cause (TST-140).
+                ketchup_rejection::log!("DXF import refused: {error}");
+            }
         }
     }
 
@@ -786,7 +792,10 @@ impl KetchupApp {
                 .modal
                 .remove::<PendingStepImport>()
                 .expect("the STEP review window has a pending import");
-            self.import_step_from(&pending).ok();
+            if let Err(error) = self.import_step_from(&pending) {
+                // The import has shown the refusal; logged with its cause (TST-140).
+                ketchup_rejection::log!("STEP import refused: {error}");
+            }
         }
     }
 
@@ -859,7 +868,10 @@ impl KetchupApp {
                 .modal
                 .remove::<PendingIgesImport>()
                 .expect("the IGES review window has a pending import");
-            self.import_iges_from(&pending).ok();
+            if let Err(error) = self.import_iges_from(&pending) {
+                // The import has shown the refusal; logged with its cause (TST-140).
+                ketchup_rejection::log!("IGES import refused: {error}");
+            }
         }
     }
 
@@ -943,7 +955,10 @@ impl KetchupApp {
                 .modal
                 .remove::<PendingSketchupSceneImport>()
                 .expect("the SketchUp scene review window has a pending import");
-            self.import_sketchup_scene_from(&pending).ok();
+            if let Err(error) = self.import_sketchup_scene_from(&pending) {
+                // The import has shown the refusal; logged with its cause (TST-140).
+                ketchup_rejection::log!("SketchUp scene import refused: {error}");
+            }
         }
     }
 }

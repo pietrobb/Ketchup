@@ -24,16 +24,15 @@ pub(super) fn feature_edges(
         let triangle = source
             .triangle_indices(index)
             .ok_or(ExactProductError::InvalidMeshExport)?;
-        let [a, b, c] =
-            triangle.map(|vertex| {
-                source
-                    .vertex_position_mm(usize::try_from(vertex).map_err(
-                        |_: std::num::TryFromIntError| ExactProductError::InvalidMeshExport,
-                    )?)
-                    .map(Vec3::from)
-                    .filter(|point| point.is_finite())
-                    .ok_or(ExactProductError::InvalidMeshExport)
-            });
+        let [a, b, c] = triangle.map(|vertex| {
+            source
+                .vertex_position_mm(usize::try_from(vertex).map_err(
+                    |_out_of_range: std::num::TryFromIntError| ExactProductError::InvalidMeshExport,
+                )?)
+                .map(Vec3::from)
+                .filter(|point| point.is_finite())
+                .ok_or(ExactProductError::InvalidMeshExport)
+        });
         let [a, b, c] = [a?, b?, c?];
         let normal = (b - a).cross(c - a);
         let normal = normal.normalized().unwrap_or(Vec3::ZERO);

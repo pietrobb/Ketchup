@@ -11,6 +11,7 @@ use ketchup_model::underlay::regions::{
     DEFAULT_JOIN_MM, MAX_JOIN_MM, Region, find_figures, find_regions, parallel_pairs,
 };
 use ketchup_model::underlay::{Underlay, UnderlayId, UnderlayLines};
+use ketchup_rejection::{Reason, dropped};
 
 const DEFAULT_LIMIT: usize = 50;
 const MAX_LIMIT: usize = 100;
@@ -834,7 +835,8 @@ fn claim(search: Search) -> Ahead {
 
 /// Finds the regions of `search`, claimed, into [`FOUND`].
 fn run_ahead(search: Search) {
-    let _ = found_regions(search.clone());
+    // A search too large is kept in FOUND as such and answered when it is asked.
+    dropped(found_regions(search.clone()), Reason::ReportedElsewhere);
     SEARCHING
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)

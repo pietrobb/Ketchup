@@ -1,4 +1,4 @@
-use super::{ActiveTool, KetchupApp, parse_distance_mm, show_value_refusal};
+use super::{ActiveTool, KetchupApp, parse_distance_mm};
 use crate::length_input::DecimalSeparator;
 use eframe::egui;
 use ketchup_assistant::request_invalid::AssistantRequestInvalid;
@@ -356,7 +356,7 @@ impl KetchupApp {
 
     pub(super) fn begin_helix_tool(&mut self) {
         self.helix_tool = HelixUiState {
-            decimal: self.value_box.decimal,
+            decimal: self.window.decimal,
             ..HelixUiState::default()
         };
         self.helix_tool.refresh();
@@ -567,9 +567,7 @@ impl KetchupApp {
             &state.circle_radius,
         ]);
         // One hint for the Helix tool, however many of its fields hold a comma.
-        let _ = typed
-            .into_iter()
-            .any(|text| show_value_refusal(ui, &self.catalog, text, state.decimal));
+        crate::refusal::show_first_value_refusal(ui, &self.catalog, typed, state.decimal);
         if changed {
             self.helix_tool.refresh();
             self.digest = self.catalog.text(if self.helix_tool.valid {

@@ -731,6 +731,16 @@ fn view_frames(
 /// Share of the largest horizontal level a level needs to be the floor (not a
 /// tolerance: a ratio of areas).
 const FLOOR_SHARE_OF_LARGEST_LEVEL: f64 = 0.5;
+/// The narrowest a level a person stands on is, a gallery or a landing, as
+/// narrow as a side flight of steps may be; the top of a wall or a
+/// parapet is narrower (not a tolerance: a clear width, review 2026-11-04 r19
+/// P3: a landing 900 mm wide went unmarked).
+const STANDING_WIDTH_MM: f64 = 750.0;
+/// How high a raised level is at least over the level below to be one a
+/// person stands on, a landing halfway up a storey or a gallery; a bed, a
+/// table, a kitchen island or a bar counter is lower (not a tolerance: a
+/// height, review 2026-11-04 r19 MF-161).
+const RAISED_LEVEL_MM: f64 = 1200.0;
 /// Room around a view for its dimensions and title, in page millimetres.
 const VIEW_PAD_MM: f64 = 22.0;
 pub const SCALES: [u32; 10] = [10, 20, 25, 50, 75, 100, 200, 250, 500, 1000];
@@ -997,13 +1007,35 @@ fn bounds(solids: &[DrawingSolid]) -> Option<(Point, Point)> {
         .then_some((min, max))
 }
 
-/// The floors: the upward-facing horizontal levels, lowest first, that carry
-/// at least half of the area of the largest such level, so small tops below a
-/// large deck do not count as a floor.
-fn floor_levels(solids: &[DrawingSolid]) -> Vec<f64> {
-    let mut levels = BTreeMap::<i64, f64>::new();
+/// An upward-facing horizontal level of the model.
+#[derive(Default)]
+struct UpwardLevel {
+    /// Of all the solids' faces at the level.
+    area: f64,
+    /// Of the widest group of faces there that touch along an edge: the
+    /// short side of the rectangle with their area and the length of their
+    /// outline, their clear width.
+    widest_mm: f64,
+}
+
+/// One solid's upward faces at one level: their area and the edges of their
+/// outline in plan.
+struct LevelPiece {
+    area: f64,
+    outline: Vec<[[f64; 2]; 2]>,
+}
+
+/// The upward-facing horizontal levels of `solids` by their height, lowest
+/// first.
+fn upward_levels<'a>(
+    solids: impl IntoIterator<Item = &'a DrawingSolid>,
+) -> Vec<(f64, UpwardLevel)> {
+    let mut pieces = BTreeMap::<i64, Vec<LevelPiece>>::new();
     for solid in solids {
         let outward = if winds_inward(solid) { -1.0 } else { 1.0 };
+        // Per level: the area and each mesh edge with how many facets share it.
+        let mut faces =
+            BTreeMap::<i64, (f64, BTreeMap<[[i64; 3]; 2], (usize, [[f64; 2]; 2])>)>::new();
         for triangle in &solid.triangles {
             let [a, b, c] = triangle;
             let Some(normal) = unit_normal(triangle) else {
@@ -1012,19 +1044,181 @@ fn floor_levels(solids: &[DrawingSolid]) -> Vec<f64> {
             if normal[2] * outward < 1.0 - ROUNDING {
                 continue;
             }
-            let area = cross(sub(*b, *a), sub(*c, *a))[2].abs() / 2.0;
             #[allow(clippy::cast_possible_truncation)]
             let level = ((a[2] + b[2] + c[2]) / 3.0).round() as i64;
-            *levels.entry(level).or_default() += area;
+            let (area, edges) = faces.entry(level).or_default();
+            *area += cross(sub(*b, *a), sub(*c, *a))[2].abs() / 2.0;
+            for [p, q] in [[a, b], [b, c], [c, a]] {
+                let mut key = [grid_key(*p), grid_key(*q)];
+                key.sort_unstable();
+                let ends = [[p[0], p[1]], [q[0], q[1]]];
+                edges.entry(key).or_insert((0, ends)).0 += 1;
+            }
+        }
+        for (level, (area, edges)) in faces {
+            let outline = edges
+                .into_values()
+                .filter(|(facets, _)| *facets == 1)
+                .map(|(_, ends)| ends)
+                .collect();
+            pieces
+                .entry(level)
+                .or_default()
+                .push(LevelPiece { area, outline });
         }
     }
-    let largest = levels.values().copied().fold(0.0, f64::max);
-    #[allow(clippy::cast_precision_loss)]
+    pieces
+        .into_iter()
+        .map(|(level, pieces)| {
+            let level_of = UpwardLevel {
+                area: pieces.iter().map(|piece| piece.area).sum(),
+                widest_mm: widest_touching(&pieces),
+            };
+            #[allow(clippy::cast_precision_loss)]
+            let height = level as f64;
+            (height, level_of)
+        })
+        .collect()
+}
+
+/// The group of `index` in a union-find forest, its paths halved on the way.
+fn root(group: &mut [usize], mut index: usize) -> usize {
+    while group[index] != index {
+        group[index] = group[group[index]];
+        index = group[index];
+    }
+    index
+}
+
+fn length_2d([p, q]: [[f64; 2]; 2]) -> f64 {
+    (q[0] - p[0]).hypot(q[1] - p[1])
+}
+
+/// The clear width of the widest group of `pieces` that touch along an edge,
+/// measured as one face: the outline they share is inside it, so a gallery
+/// of planks or of OSB strips is as wide as all of them (review 2026-11-04
+/// r19 MF-161).
+fn widest_touching(pieces: &[LevelPiece]) -> f64 {
+    // Each outline edge by its line (direction and offset across it, on the
+    // grid of `grid_key`) with its piece and its extent along the line.
+    let mut lines = BTreeMap::<[i64; 3], Vec<(usize, f64, f64)>>::new();
+    for (index, piece) in pieces.iter().enumerate() {
+        for [p, q] in &piece.outline {
+            let length = length_2d([*p, *q]);
+            if length <= NEGLIGIBLE {
+                continue;
+            }
+            let mut direction = [(q[0] - p[0]) / length, (q[1] - p[1]) / length];
+            if direction[0] < -ROUNDING || (direction[0] <= ROUNDING && direction[1] < 0.0) {
+                direction = [-direction[0], -direction[1]];
+            }
+            let across = cross2(direction, *p);
+            let [from, to] = [p, q].map(|end| dot2(direction, *end));
+            // The direction to a millionth, the offset on the 0.01 mm grid.
+            let key = grid_key([direction[0] * 1e4, direction[1] * 1e4, across]);
+            lines
+                .entry(key)
+                .or_default()
+                .push((index, from.min(to), from.max(to)));
+        }
+    }
+    let mut group: Vec<usize> = (0..pieces.len()).collect();
+    let mut shared = Vec::new();
+    for edges in lines.values() {
+        for (position, (first, from, to)) in edges.iter().enumerate() {
+            for (second, other_from, other_to) in &edges[position + 1..] {
+                let overlap = to.min(*other_to) - from.max(*other_from);
+                if first != second && overlap > ROUNDING {
+                    let (a, b) = (root(&mut group, *first), root(&mut group, *second));
+                    group[a] = b;
+                    shared.push((*first, overlap));
+                }
+            }
+        }
+    }
+    // Per group: the area, and the outline less twice what its pieces share.
+    let mut measures = BTreeMap::<usize, (f64, f64)>::new();
+    for (index, piece) in pieces.iter().enumerate() {
+        let measure = measures.entry(root(&mut group, index)).or_default();
+        measure.0 += piece.area;
+        measure.1 += piece.outline.iter().copied().map(length_2d).sum::<f64>();
+    }
+    for (index, overlap) in shared {
+        measures.entry(root(&mut group, index)).or_default().1 -= 2.0 * overlap;
+    }
+    measures
+        .into_values()
+        .filter(|(_, outline)| *outline > 0.0)
+        .map(|(area, outline)| clear_width(area, outline))
+        .fold(0.0, f64::max)
+}
+
+/// The short side of the rectangle with `area` and perimeter `outline`: a
+/// w × l rectangle has outline² − 16·area = 4(l − w)², so w is exact for a
+/// rectangle; a rounder shape, with no such rectangle, counts as the square
+/// of its outline.
+fn clear_width(area: f64, outline: f64) -> f64 {
+    (outline - (outline * outline - 16.0 * area).max(0.0).sqrt()) / 4.0
+}
+
+/// The floors of the plans: the upward-facing horizontal levels, lowest
+/// first, that carry at least half of the area of the largest such level, so
+/// small tops below a large deck do not count as a storey.
+fn floor_levels<'a>(solids: impl IntoIterator<Item = &'a DrawingSolid>) -> Vec<f64> {
+    let levels = upward_levels(solids);
+    let largest = levels
+        .iter()
+        .map(|(_, level)| level.area)
+        .fold(0.0, f64::max);
     levels
         .into_iter()
-        .filter(|(_, area)| *area >= largest * FLOOR_SHARE_OF_LARGEST_LEVEL)
-        .map(|(level, _)| level as f64)
+        .filter(|(_, level)| level.area >= largest * FLOOR_SHARE_OF_LARGEST_LEVEL)
+        .map(|(height, _)| height)
         .collect()
+}
+
+/// The floors the sections and elevations mark, lowest first: those of the
+/// plans and every level a person stands on, however small, such as a
+/// gallery or a mezzanine; not the top of a wall, a knee wall or a parapet
+/// (review 2026-11-04 MF-141), nor a top to sit or work at, less than
+/// [`RAISED_LEVEL_MM`] over the level marked below it (r19 MF-161).
+fn marked_floor_levels(solids: &[DrawingSolid]) -> Vec<f64> {
+    let levels = upward_levels(solids);
+    let largest = levels
+        .iter()
+        .map(|(_, level)| level.area)
+        .fold(0.0, f64::max);
+    let mut marked: Vec<f64> = Vec::new();
+    for (height, level) in levels {
+        let floor = level.area >= largest * FLOOR_SHARE_OF_LARGEST_LEVEL;
+        let raised = level.widest_mm >= STANDING_WIDTH_MM
+            && marked
+                .last()
+                .is_none_or(|below| height - below >= RAISED_LEVEL_MM);
+        if floor || raised {
+            marked.push(height);
+        }
+    }
+    marked
+}
+
+/// Where ±0,000 is by default, as Czech and Slovak drawings put it: the floor
+/// of the ground storey, the lowest floor at or above z = 0 (one below is a
+/// basement); the highest floor of a model all below z = 0, and z = 0 for a
+/// model with no floor (review 2026-11-04 MF-141).
+#[must_use]
+pub fn ground_floor<'a>(solids: impl IntoIterator<Item = &'a DrawingSolid>) -> f64 {
+    ground_floor_of(&floor_levels(solids))
+}
+
+/// [`ground_floor`] among `floors`, lowest first.
+fn ground_floor_of(floors: &[f64]) -> f64 {
+    floors
+        .iter()
+        .copied()
+        .find(|floor| *floor >= 0.0)
+        .or_else(|| floors.last().copied())
+        .unwrap_or(0.0)
 }
 
 /// A storey of the plans: its floor level and the height of its plan cut.
@@ -1300,17 +1494,22 @@ mod tests {
             .unwrap()
     }
 
-    /// Měchenice MECH-6: the sections and elevations mark ±0,000 at the floor and
-    /// the top above it; the plans mark no level.
+    /// Měchenice MECH-6: the sections and elevations mark ±0,000 at the floor,
+    /// the top above it and the underside of the floor slab below it (review
+    /// 2026-11-04 MF-141); the plans mark no level.
     #[test]
     fn sections_and_elevations_mark_their_levels_against_the_floor() {
         let options = DrawingSetOptions {
-            decimal_comma: true,
+            decimal_separator: ketchup_model::annotation::DecimalMark::Comma,
             ..options(&room(), None)
         };
         let set = drawing_set(&room(), &options).unwrap();
         for view in [ProjectView::LongitudinalSection, ProjectView::Front] {
-            assert_eq!(summary(&set, view).levels, ["±0,000", "+2,500"], "{view:?}");
+            assert_eq!(
+                summary(&set, view).levels,
+                ["-0,200", "±0,000", "+2,500"],
+                "{view:?}"
+            );
         }
         assert!(summary(&set, ProjectView::Plan).levels.is_empty());
         for kind in [SheetKind::Sections, SheetKind::Elevations] {
@@ -1318,6 +1517,143 @@ mod tests {
             assert!(texts(&sheet.page).contains(&"+2,500"), "{kind:?}");
             assert!(texts(&sheet.lines).contains(&"±0,000"), "{kind:?} DXF");
         }
+    }
+
+    /// Review 2026-11-04 MF-141: ±0,000 was the lowest floor, so a basement
+    /// was ±0,000 and the ground floor +3,000; the foundations were never
+    /// marked, nor an attic floor or a gallery without a plan of its own, a
+    /// gallery not even after the first fix, under half the floor's area
+    /// (review finding run 480). ±0,000 is the
+    /// ground floor, the lowest at or above z = 0, unless the sheet sets it;
+    /// every floor and the bottom below ±0,000 are marked.
+    #[test]
+    fn zero_is_the_ground_floor_and_every_level_below_and_above_is_marked() {
+        let mut house = room();
+        for mut solid in room() {
+            solid.name.push_str(" basement");
+            for corner in solid.triangles.iter_mut().flatten() {
+                corner[2] -= 3000.0;
+            }
+            house.push(solid);
+        }
+        // An attic floor 200 mm above the walls under a 600 mm knee wall:
+        // too low under the top for a plan of its own.
+        house.push(cuboid(
+            "attic",
+            [0.0, 0.0, 2700.0],
+            [6000.0, 3000.0, 2900.0],
+        ));
+        house.push(cuboid("knee", [0.0, 0.0, 2900.0], [6000.0, 150.0, 3500.0]));
+        // Galleries and a landing well under half the floor's area, floors all
+        // the same: 2 × 3 m, 1.2 m wide along 4 m, and a square of 1.8 m
+        // (capability finding 482).
+        for gallery_corner in [
+            [2000.0, 3000.0, 1600.0],
+            [4000.0, 1200.0, 1600.0],
+            [1800.0, 1800.0, 1600.0],
+        ] {
+            let mut house = house.clone();
+            house.push(cuboid("gallery", [0.0, 0.0, 1400.0], gallery_corner));
+            let mut options = DrawingSetOptions {
+                decimal_separator: ketchup_model::annotation::DecimalMark::Comma,
+                ..options(&house, None)
+            };
+            let levels = |options: &DrawingSetOptions| {
+                let set = drawing_set(&house, options).unwrap();
+                summary(&set, ProjectView::LongitudinalSection)
+                    .levels
+                    .clone()
+            };
+            assert_eq!(
+                levels(&options),
+                ["-3,200", "-3,000", "±0,000", "+1,400", "+2,700", "+3,300"],
+                "gallery to {gallery_corner:?}"
+            );
+            // The basement floor set as ±0,000.
+            options.zero_level_mm = Some(-2800.0);
+            assert_eq!(
+                levels(&options),
+                ["-0,200", "±0,000", "+3,000", "+4,400", "+5,700", "+6,300"],
+                "gallery to {gallery_corner:?}"
+            );
+        }
+    }
+
+    /// Review 2026-11-04 r19 MF-161 and P3: every top 1 m wide was a level,
+    /// so a bed, a dining table and a kitchen island were marked; a gallery
+    /// of 140 mm planks or of OSB strips never was, each piece measured on
+    /// its own, nor a landing 900 mm wide. A raised level is one a person
+    /// stands on: as wide as a flight of stairs, the pieces that touch
+    /// measured as one, and high enough over the level below to stand under.
+    #[test]
+    fn furniture_is_no_level_and_a_gallery_of_planks_and_a_narrow_landing_are() {
+        let levels = |solids: &[DrawingSolid]| {
+            let options = DrawingSetOptions {
+                decimal_separator: ketchup_model::annotation::DecimalMark::Comma,
+                ..options(solids, None)
+            };
+            let set = drawing_set(solids, &options).unwrap();
+            summary(&set, ProjectView::LongitudinalSection)
+                .levels
+                .clone()
+        };
+        let bare = ["-0,200", "±0,000", "+2,500"];
+        assert_eq!(levels(&room()), bare);
+        // On the floor (its top at 200): a bed 2000 × 1400 at +450, a table
+        // top 2000 × 1000 at +750 and an island 2400 × 1200 at +900.
+        let mut furnished = room();
+        furnished.extend([
+            cuboid("bed", [300.0, 300.0, 200.0], [2300.0, 1700.0, 650.0]),
+            cuboid("table", [2600.0, 300.0, 900.0], [4600.0, 1300.0, 950.0]),
+            cuboid("island", [3000.0, 1500.0, 200.0], [5400.0, 2700.0, 1100.0]),
+        ]);
+        assert_eq!(levels(&furnished), bare, "furniture");
+        let raised = ["-0,200", "±0,000", "+1,400", "+2,500"];
+        // A gallery of 14 planks 140 mm wide, every other one shorter, their
+        // tops at +1,400; a desk on it is furniture again.
+        let mut planks = room();
+        for index in 0..14_u32 {
+            let y = 150.0 + f64::from(index) * 140.0;
+            let end = if index % 2 == 0 { 2150.0 } else { 1950.0 };
+            planks.push(cuboid(
+                "plank",
+                [150.0, y, 1500.0],
+                [end, y + 140.0, 1600.0],
+            ));
+        }
+        planks.push(cuboid(
+            "desk",
+            [300.0, 300.0, 2300.0],
+            [1900.0, 1200.0, 2350.0],
+        ));
+        assert_eq!(levels(&planks), raised, "planks");
+        // Three OSB strips 625 mm wide.
+        let mut strips = room();
+        for index in 0..3_u32 {
+            let y = 150.0 + f64::from(index) * 625.0;
+            strips.push(cuboid(
+                "osb",
+                [150.0, y, 1578.0],
+                [2650.0, y + 625.0, 1600.0],
+            ));
+        }
+        assert_eq!(levels(&strips), raised, "OSB strips");
+        // A landing 900 mm wide.
+        let mut landing = room();
+        landing.push(cuboid(
+            "landing",
+            [4950.0, 150.0, 1400.0],
+            [5850.0, 1350.0, 1600.0],
+        ));
+        assert_eq!(levels(&landing), raised, "landing");
+        // One strip alone, 625 mm, is no more a level than the top of a wall.
+        let mut strip = room();
+        strip.push(cuboid(
+            "osb",
+            [150.0, 150.0, 1578.0],
+            [2650.0, 775.0, 1600.0],
+        ));
+        assert_eq!(levels(&strip), bare, "one strip");
     }
 
     /// Měchenice MECH-6: a vertical dimension of the program has no length in plan;
@@ -1349,7 +1685,9 @@ mod tests {
         let plan = counts(SheetKind::Plan { storey: 0 });
         assert_eq!((plan.dimensions, plan.outside_plan), (1, 2));
         assert_eq!(counts(SheetKind::Sections).dimensions, 2);
-        assert_eq!(counts(SheetKind::Elevations).dimensions, 8);
+        // Each on the elevation of its own half, front or back and left or
+        // right, not on the opposite one too (review 2026-11-04).
+        assert_eq!(counts(SheetKind::Elevations).dimensions, 4);
         let elevations = sheet_of(&set, SheetKind::Elevations);
         assert!(texts(&elevations.page).contains(&"2150"));
         assert!(texts(&elevations.lines).contains(&"2150"), "DXF");

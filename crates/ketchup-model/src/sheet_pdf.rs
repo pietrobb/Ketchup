@@ -256,18 +256,18 @@ struct State {
 impl State {
     fn fill(&mut self, out: &mut String, color: [u8; 3]) {
         if self.fill != Some(color) {
-            let _ = writeln!(out, "{} rg", rgb(color));
+            writeln!(out, "{} rg", rgb(color)).expect("a String takes every write");
             self.fill = Some(color);
         }
     }
 
     fn stroke(&mut self, out: &mut String, stroke: &Stroke) {
         if self.stroke != Some(stroke.color) {
-            let _ = writeln!(out, "{} RG", rgb(stroke.color));
+            writeln!(out, "{} RG", rgb(stroke.color)).expect("a String takes every write");
             self.stroke = Some(stroke.color);
         }
         if self.width != Some(stroke.width_mm) {
-            let _ = writeln!(out, "{} w", number(stroke.width_mm));
+            writeln!(out, "{} w", number(stroke.width_mm)).expect("a String takes every write");
             self.width = Some(stroke.width_mm);
         }
         if self.dash.as_ref() != Some(&stroke.dash_mm) {
@@ -277,7 +277,7 @@ impl State {
                 .map(|value| number(*value))
                 .collect::<Vec<_>>()
                 .join(" ");
-            let _ = writeln!(out, "[{dashes}] 0 d");
+            writeln!(out, "[{dashes}] 0 d").expect("a String takes every write");
             self.dash = Some(stroke.dash_mm.clone());
         }
     }
@@ -300,7 +300,8 @@ impl ContentWriter<'_> {
     fn path(&mut self, points: &[[f64; 2]], closed: bool) {
         for (index, point) in points.iter().enumerate() {
             let point = self.point(*point);
-            let _ = writeln!(self.out, "{point} {}", if index == 0 { "m" } else { "l" });
+            writeln!(self.out, "{point} {}", if index == 0 { "m" } else { "l" })
+                .expect("a String takes every write");
         }
         if closed {
             self.out.push_str("h\n");
@@ -371,7 +372,7 @@ impl ContentWriter<'_> {
         for character in text.chars() {
             let (glyph, shown) = self.font.shown(character);
             self.glyphs.entry(glyph).or_insert(shown);
-            let _ = write!(hex, "{glyph:04X}");
+            write!(hex, "{glyph:04X}").expect("a String takes every write");
         }
         self.state.fill(&mut self.out, [0, 0, 0]);
         let size = self.font.size_for(height_mm);
@@ -382,7 +383,7 @@ impl ContentWriter<'_> {
         } else {
             "0 Tr"
         };
-        let _ = writeln!(
+        writeln!(
             self.out,
             "BT /F1 {} Tf {mode} {} {} {} {} {} {} Tm <{hex}> Tj ET",
             number(size),
@@ -392,14 +393,15 @@ impl ContentWriter<'_> {
             number(cos),
             number(x),
             number(y),
-        );
+        )
+        .expect("a String takes every write");
     }
 }
 
 fn pdf_text(value: &str) -> String {
     let mut hex = String::from("<FEFF");
     for unit in value.encode_utf16() {
-        let _ = write!(hex, "{unit:04X}");
+        write!(hex, "{unit:04X}").expect("a String takes every write");
     }
     hex.push('>');
     hex
@@ -423,7 +425,7 @@ fn to_unicode(glyphs: &BTreeMap<u16, char>) -> String {
     );
     let entries = glyphs.iter().collect::<Vec<_>>();
     for chunk in entries.chunks(100) {
-        let _ = writeln!(cmap, "{} beginbfchar", chunk.len());
+        writeln!(cmap, "{} beginbfchar", chunk.len()).expect("a String takes every write");
         for (glyph, character) in chunk {
             let mut units = [0_u16; 2];
             let target = character
@@ -431,7 +433,7 @@ fn to_unicode(glyphs: &BTreeMap<u16, char>) -> String {
                 .iter()
                 .map(|unit| format!("{unit:04X}"))
                 .collect::<String>();
-            let _ = writeln!(cmap, "<{glyph:04X}> <{target}>");
+            writeln!(cmap, "<{glyph:04X}> <{target}>").expect("a String takes every write");
         }
         cmap.push_str("endbfchar\n");
     }
@@ -498,7 +500,7 @@ impl EmbeddedText {
         for character in text.chars() {
             let glyph = font.drawn(character).ok_or(character)?;
             self.glyphs.entry(glyph).or_insert(character);
-            let _ = write!(hex, "{glyph:04X}");
+            write!(hex, "{glyph:04X}").expect("a String takes every write");
         }
         Ok(hex)
     }
@@ -577,13 +579,14 @@ pub fn pages_pdf(pages: &[&Page], info: &PdfInfo) -> Vec<u8> {
     let xref = pdf.len();
     let mut table = format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1);
     for offset in offsets {
-        let _ = writeln!(table, "{offset:010} 00000 n ");
+        writeln!(table, "{offset:010} 00000 n ").expect("a String takes every write");
     }
-    let _ = write!(
+    write!(
         table,
         "trailer\n<< /Size {} /Root 1 0 R /Info 8 0 R >>\nstartxref\n{xref}\n%%EOF\n",
         objects.len() + 1
-    );
+    )
+    .expect("a String takes every write");
     pdf.extend_from_slice(table.as_bytes());
     pdf
 }

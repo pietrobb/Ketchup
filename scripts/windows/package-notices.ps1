@@ -37,6 +37,16 @@ function Copy-PackageNotices([string]$RepoRoot, [string]$OcctRoot, [string]$Payl
     }
 }
 
+# Every runtime DLL shipped in $PayloadDir ($Dlls, the Visual C++ runtime) must be named by
+# the package's notices, on the terms of its maker (review 2026-11-04 REL-141).
+function Assert-RuntimeNotices([string]$PayloadDir, [string[]]$Dlls) {
+    $notices = Get-Content (Join-Path $PayloadDir "THIRD_PARTY_NOTICES.txt") -Raw
+    $unnamed = @($Dlls | Where-Object { $notices.IndexOf($_, [StringComparison]::OrdinalIgnoreCase) -lt 0 })
+    if ($unnamed.Count -ne 0) {
+        throw "The package ships $($unnamed -join ', '), which THIRD_PARTY_NOTICES.txt does not name; add it to scripts/notices/msvc-runtime.txt."
+    }
+}
+
 # $Location is a package folder or a .zip archive; every notice must be there and non-empty.
 function Assert-PackageNotices([string]$Location, [string]$Label, [string]$Package) {
     $names = Get-PackageNoticeNames $Package

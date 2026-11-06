@@ -9,8 +9,8 @@ pub(crate) use crate::live_bridge::underlay_binding::FollowedChange;
 use crate::*;
 use ketchup_model::underlay::drawn::DrawnShape;
 use ketchup_model::underlay::edits::{
-    UnderlayObjectError, plan_underlay_drawing, plan_underlay_object_removal,
-    plan_underlay_object_transform,
+    UnderlayObjectError, plan_underlay_drawing, plan_underlay_edit_discard,
+    plan_underlay_object_removal, plan_underlay_object_transform,
 };
 use ketchup_model::underlay::line_edit::{LineEdit, plan_underlay_line_edit};
 use ketchup_model::underlay::object_query::ObjectIndex;
@@ -381,6 +381,39 @@ impl KetchupApp {
                     &BTreeMap::from([("reason", error.to_string())]),
                 );
                 false
+            }
+        }
+    }
+
+    /// Discards the edit of the object the last export of a drawing refused, its entity
+    /// changed in the file since, as one Undo step; the other edits stay (review
+    /// 2026-11-04 r19 CD-163).
+    pub(crate) fn discard_refused_underlay_edit(&mut self) {
+        let Some((underlay, object)) = self.file.activity.underlay.refused_edit else {
+            return;
+        };
+        let discarded =
+            self.edit_underlay_drawing(underlay, FindRegions::OffUiThread, |snapshot, _| {
+                plan_underlay_edit_discard(snapshot, underlay, object)
+            });
+        match discarded {
+            Err(UnderlayEditError::FindingRegions(batch)) => {
+                self.await_followed_regions(batch, |app| app.discard_refused_underlay_edit());
+            }
+            Ok(changes) => {
+                self.file.activity.underlay.refused_edit = None;
+                self.select_underlay(underlay);
+                self.digest = self.catalog.format(
+                    "digest-underlay-edit-discarded",
+                    &BTreeMap::from([("object", object.to_string())]),
+                ) + &self.followed_note(&changes);
+            }
+            Err(error) => {
+                self.file.activity.underlay.refused_edit = None;
+                self.digest = self.catalog.format(
+                    "digest-underlay-edit-not-discarded",
+                    &BTreeMap::from([("reason", error.to_string())]),
+                );
             }
         }
     }

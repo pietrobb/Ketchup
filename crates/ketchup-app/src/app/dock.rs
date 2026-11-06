@@ -62,9 +62,13 @@ fn shown_size(measures: &SelectionMeasures) -> [f64; 3] {
     measures.own_size_mm.unwrap_or(measures.world_size_mm)
 }
 
-fn millimetres(value: f64) -> String {
-    let text = format!("{value:.1}");
-    text.strip_suffix(".0").map_or(text.clone(), str::to_owned)
+/// The count on the Checks tab, `99+` above 99 so the badge stays one size.
+fn badge_count(issues: usize) -> String {
+    if issues > 99 {
+        "99+".to_owned()
+    } else {
+        issues.to_string()
+    }
 }
 
 impl KetchupApp {
@@ -73,7 +77,7 @@ impl KetchupApp {
     /// and the model has no layers yet, and the layers for everything else.
     #[must_use]
     pub fn dock_tab(&self) -> DockTab {
-        self.dock.tab.unwrap_or_else(|| {
+        self.window.dock_tab.unwrap_or_else(|| {
             let program = self.document.current_rule_program().is_some();
             let layered = self.document.current().tags().next().is_some();
             if program || (self.manual_cad_tools_visible() && !layered) {
@@ -85,7 +89,7 @@ impl KetchupApp {
     }
 
     pub fn set_dock_tab(&mut self, tab: DockTab) {
-        self.dock.tab = Some(tab);
+        self.window.dock_tab = Some(tab);
     }
 
     pub(crate) fn show_right_dock(&mut self, ui: &mut egui::Ui) {
@@ -191,7 +195,7 @@ impl KetchupApp {
                     .on_hover_text(self.catalog.text("selection-source-hint"))
                     .clicked()
                 {
-                    self.dock.tab = Some(DockTab::Program);
+                    self.window.dock_tab = Some(DockTab::Program);
                     self.dock.reveal_program_lines = true;
                 }
             }
@@ -208,7 +212,7 @@ impl KetchupApp {
                     column,
                     palette,
                     &self.catalog.text(key),
-                    &millimetres(value),
+                    &self.user_decimal(crate::selection_measures_ui::length(value)),
                 );
             }
         });
@@ -303,8 +307,8 @@ impl KetchupApp {
                     painter.text(
                         centre,
                         egui::Align2::CENTER_CENTER,
-                        issues.min(99).to_string(),
-                        egui::FontId::proportional(9.5),
+                        badge_count(issues),
+                        egui::FontId::proportional(if issues > 99 { 7.5 } else { 9.5 }),
                         palette.accent_ink,
                     );
                 }
@@ -317,7 +321,7 @@ impl KetchupApp {
                     painter.circle_filled(icon.right_top() + Vec2::new(3.0, 2.0), 3.5, dot);
                 }
                 if response.clicked() {
-                    self.dock.tab = Some(tab);
+                    self.window.dock_tab = Some(tab);
                 }
             }
         });
@@ -367,4 +371,12 @@ fn size_tile(ui: &mut egui::Ui, palette: theme::Palette, axis: &str, value: &str
                 });
             });
         });
+}
+
+/// Review 2026-11-04 P3 GUI: a hundred issues showed as `99`.
+#[test]
+fn the_checks_badge_says_99_plus_above_99() {
+    assert_eq!(badge_count(7), "7");
+    assert_eq!(badge_count(99), "99");
+    assert_eq!(badge_count(100), "99+");
 }

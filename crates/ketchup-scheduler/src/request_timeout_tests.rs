@@ -180,7 +180,9 @@ fn hold_busy_child(mut child: Box<dyn ChildWrapper>) {
     );
     println!("WORKER_PID {}", child.id());
     // Held until the test kills this process or closes its stdin.
-    let _ = std::io::stdin().read_line(&mut String::new());
+    if std::io::stdin().read_line(&mut String::new()).is_err() {
+        // Closed or broken alike, the hold has ended.
+    }
 }
 
 /// Exact workers and plugins are console programs: started from the windowed
@@ -228,20 +230,22 @@ fn process_is_running(pid: u32) -> bool {
 /// Returns when the process exits (at once if it is already gone) or after 5 s.
 #[cfg(windows)]
 fn wait_for_exit(pid: u32) {
-    let _ = Command::new("powershell")
+    Command::new("powershell")
         .args([
             "-NoProfile",
             "-Command",
             &format!("Wait-Process -Id {pid} -Timeout 5 -ErrorAction SilentlyContinue"),
         ])
-        .output();
+        .output()
+        .expect("powershell starts");
 }
 
 #[cfg(windows)]
 fn kill_process(pid: u32) {
-    let _ = Command::new("taskkill")
+    Command::new("taskkill")
         .args(["/F", "/PID", &pid.to_string()])
-        .output();
+        .output()
+        .expect("taskkill starts");
 }
 
 // A zombie has ended; only its new parent's wait is missing.
@@ -257,14 +261,18 @@ fn process_is_running(pid: u32) -> bool {
 /// Returns when the process exits (at once if it is already gone) or after 5 s.
 #[cfg(target_os = "linux")]
 fn wait_for_exit(pid: u32) {
-    let _ = Command::new("timeout")
+    Command::new("timeout")
         .args(["5", "tail", &format!("--pid={pid}"), "-f", "/dev/null"])
-        .output();
+        .output()
+        .expect("timeout starts");
 }
 
 #[cfg(target_os = "linux")]
 fn kill_process(pid: u32) {
-    let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+    Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .output()
+        .expect("kill starts");
 }
 
 #[cfg(any(windows, target_os = "linux"))]
@@ -524,9 +532,16 @@ fn write_and_response_share_one_timeout_budget() {
     let responder = std::thread::spawn(move || {
         let request = writes.recv().unwrap();
         std::thread::sleep(Duration::from_millis(300));
-        let _ = request.acknowledgment.send(Ok(()));
+        if request.acknowledgment.send(Ok(())).is_err() {
+            // The request has timed out, as the test expects.
+        }
         std::thread::sleep(Duration::from_millis(300));
-        let _ = responses.send(WorkerResponse::Reply(Box::new(WorkerReply::Done)));
+        if responses
+            .send(WorkerResponse::Reply(Box::new(WorkerReply::Done)))
+            .is_err()
+        {
+            // The request has timed out, as the test expects.
+        }
     });
     assert!(matches!(
         worker.request_with_timeout(&WorkerRequest::Hello, &NEVER_CANCELLED, timeout),
@@ -610,7 +625,12 @@ fn answer(
     std::thread::spawn(move || {
         let request = writes.recv().unwrap();
         request.acknowledgment.send(Ok(())).unwrap();
-        let _ = responses.send(WorkerResponse::Reply(Box::new(reply)));
+        if responses
+            .send(WorkerResponse::Reply(Box::new(reply)))
+            .is_err()
+        {
+            // The test's worker is gone already.
+        }
     });
 }
 

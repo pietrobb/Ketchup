@@ -10,10 +10,14 @@
 //! when it requires an extension, as in every version); any other must be refused, as
 //! newer or as larger than the release opens. A file the release takes for damaged opens
 //! its `.recovery` in its place, and its next Save would overwrite the newer file with
-//! it: that fails the run.
+//! it: that fails the run. Given a fifth argument, a directory, it saves each file it
+//! opens editable again there, for HEAD to find the same document in it (review
+//! 2026-11-04 REL-143), and once more with its Undo history in `history/` there, as its
+//! work recovery keeps it (review 2026-11-04 r19 P3).
 use ketchup_model::document::DocumentStore;
 use ketchup_model::persistence::{
-    self, ContainerData, FilePersistenceError, LoadNotice, PersistenceError,
+    self, ContainerData, FileIdentity, FilePersistenceError, LoadNotice, LoadOutcome,
+    PersistenceError,
 };
 use std::path::Path;
 use std::process::ExitCode;
@@ -27,7 +31,9 @@ struct Reads {
 
 fn main() -> ExitCode {
     let mut arguments = std::env::args().skip(1);
-    let directory = arguments.next().expect("the directory of the files to open");
+    let directory = arguments
+        .next()
+        .expect("the directory of the files to open");
     let reads = Reads {
         newest_format: arguments
             .next()
@@ -44,6 +50,7 @@ fn main() -> ExitCode {
             .and_then(|bytes| bytes.parse().ok())
             .filter(|bytes| *bytes > 0),
     };
+    let resaved = arguments.next();
     let backup = persistence::save_document_store(&DocumentStore::new(), &ContainerData::default())
         .expect("an empty document saves");
     let mut files = std::fs::read_dir(&directory)
@@ -62,7 +69,10 @@ fn main() -> ExitCode {
         std::fs::write(&recovery, &backup).expect("write the .recovery");
         let name = path.file_name().unwrap().to_string_lossy();
         let opens = format_of(&name) <= reads.newest_format && fits(path, &reads);
-        match verdict(path, opens, &reads) {
+        match verdict(path, opens, &reads).and_then(|verdict| match &resaved {
+            Some(directory) if verdict == OPENED => save_again(path, directory).map(|()| verdict),
+            _ => Ok(verdict),
+        }) {
             Ok(verdict) => println!("ok      {name}: {verdict}"),
             Err(error) => {
                 failed += 1;
@@ -102,6 +112,85 @@ fn fits(path: &Path, reads: &Reads) -> bool {
     schema.is_some_and(|schema| reads.container_schemas.contains(&schema)) && !larger(path, reads)
 }
 
+const OPENED: &str = "opened";
+
+/// Opens `path` and saves it under its name in `directory`, as a user who opens a file
+/// and saves it does: what the release does not know is gone from that file, which HEAD
+/// then compares with the original (review 2026-11-04 REL-143, `crates/ketchup-model/examples/resaved.rs`).
+/// It saves it with its Undo history too, under its name in `directory/history`, as the
+/// release's work recovery does: there an earlier revision can lose a field the current
+/// one does not have (review 2026-11-04 r19 P3).
+fn save_again(path: &Path, directory: &str) -> Result<(), String> {
+    let LoadOutcome::Editable {
+        document,
+        container_data,
+        ..
+    } = persistence::load_file(path).map_err(|error| error.to_string())?
+    else {
+        return Err("opened for review only when saving it again".to_owned());
+    };
+    let file = persistence::save_document_store_current_snapshot(&document, &container_data)
+        .map_err(|error| format!("could not save it again: {error}"))?;
+    let name = path.file_name().unwrap();
+    std::fs::write(Path::new(directory).join(name), file)
+        .map_err(|error| format!("could not write it saved again: {error}"))?;
+    save_again_with_history(path, &Path::new(directory).join("history"))
+}
+
+/// `checkpoint` as a work-recovery checkpoint of a file holding `base`, in schema 1,
+/// which every release reads (`crates/ketchup-model/examples/resaved.rs` writes the same).
+fn work_recovery(base: &[u8], checkpoint: &[u8]) -> Vec<u8> {
+    let identity = FileIdentity::from_bytes(base);
+    let mut bytes = b"KETCHUPWRK".to_vec();
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&identity.byte_len().to_le_bytes());
+    bytes.extend_from_slice(&identity.sha256());
+    bytes.extend_from_slice(&(checkpoint.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(checkpoint);
+    bytes
+}
+
+/// Opens `path` with its Undo history and saves it with that history under its name in
+/// `directory`, as the release's work recovery does: there an earlier revision can lose
+/// a field the current one does not have (review 2026-11-04 r19 P3). A file opens
+/// without its history; a work-recovery checkpoint beside it restores one, so the file
+/// is opened as one beside a copy of itself. A release that does not restore the
+/// history refuses it, and nothing is written.
+fn save_again_with_history(path: &Path, directory: &Path) -> Result<(), String> {
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    let file = directory.join(path.file_name().unwrap());
+    let checkpoint = persistence::work_recovery_path(&file);
+    std::fs::create_dir_all(directory)
+        .and_then(|()| std::fs::write(&file, &bytes))
+        .and_then(|()| std::fs::write(&checkpoint, work_recovery(&bytes, &bytes)))
+        .map_err(|error| format!("could not write it to open with its history: {error}"))?;
+    let opened = persistence::load_file(&file);
+    std::fs::remove_file(&checkpoint).map_err(|error| error.to_string())?;
+    let restored = opened.as_ref().is_ok_and(|outcome| {
+        let notices = &outcome.audit().notices;
+        notices
+            .iter()
+            .any(|notice| matches!(notice, LoadNotice::OpenedWorkRecovery { .. }))
+            && !notices
+                .iter()
+                .any(|notice| matches!(notice, LoadNotice::HistoryDiscarded { .. }))
+    });
+    match opened {
+        Ok(LoadOutcome::Editable {
+            document,
+            container_data,
+            ..
+        }) if restored => {
+            let saved = persistence::save_document_store(&document, &container_data)
+                .map_err(|error| format!("could not save it again with its history: {error}"))?;
+            std::fs::write(&file, saved).map_err(|error| {
+                format!("could not write it saved again with its history: {error}")
+            })
+        }
+        _ => std::fs::remove_file(&file).map_err(|error| error.to_string()),
+    }
+}
+
 fn verdict(path: &Path, opens: bool, reads: &Reads) -> Result<&'static str, String> {
     match persistence::load_file(path) {
         Ok(outcome) => {
@@ -135,7 +224,7 @@ fn verdict(path: &Path, opens: bool, reads: &Reads) -> Result<&'static str, Stri
                     audit.migration_losses, audit.override_health
                 ))
             } else {
-                Ok("opened")
+                Ok(OPENED)
             }
         }
         Err(FilePersistenceError::Format(

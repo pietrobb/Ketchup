@@ -10,8 +10,8 @@ use super::drawing_sheet_export::{
     drawing_sheet_target, publish_drawing_sheet,
 };
 use super::project_drawings::{
-    ExportedSet, ProjectDrawingsError, SetFileFormat, SetTargets, project_drawings_targets,
-    publish_project_drawings, set_export_key,
+    ExportedSet, ProjectDrawingsError, SetFileFormat, SetOwner, SetTargets,
+    project_drawings_targets, publish_project_drawings, set_export_key, written_files,
 };
 use crate::*;
 use ketchup_manufacturing::project_drawings::DrawingSet;
@@ -41,7 +41,7 @@ pub(crate) struct DrawingExportTask {
     /// started; a file saved there meanwhile is not overwritten.
     replacing: SetTargets,
     /// The project the drawing is made from.
-    document: DocumentId,
+    owner: SetOwner,
     /// Set on Cancel: stops the exact worker making cosmetic thread bodies.
     cancelled: Arc<AtomicBool>,
     receiver: Receiver<MadeDrawing>,
@@ -101,10 +101,18 @@ impl KetchupApp {
         context: &egui::Context,
         work: DrawingWork,
     ) {
-        let document = self.document.current().document_id();
+        let owner = self.drawing_set_owner();
+        // The user took the set at the path over from another project.
+        let take_over = self
+            .drawings
+            .taking_over
+            .take()
+            .is_some_and(|set| set == path);
         let replacing = match export {
-            DrawingExport::Project(format) => project_drawings_targets(&path, format, document)
-                .map_err(|error| self.report_project_drawings(&path, &Err(error))),
+            DrawingExport::Project(format) => {
+                project_drawings_targets(&path, format, &owner, take_over)
+                    .map_err(|error| self.report_project_drawings(&path, &Err(error)))
+            }
             DrawingExport::Sheet(_, format) => drawing_sheet_target(&path)
                 .map(|sha256| {
                     sha256
@@ -130,7 +138,7 @@ impl KetchupApp {
             export,
             path,
             replacing,
-            document,
+            owner,
             cancelled,
             receiver,
         });
@@ -163,6 +171,7 @@ impl KetchupApp {
             .take()
             .expect("polled export");
         let ended = || std::io::Error::other("the drawing export ended unexpectedly");
+        let mut written = Vec::new();
         match (task.export, made) {
             (DrawingExport::Project(format), made) => {
                 let result = match made {
@@ -170,10 +179,19 @@ impl KetchupApp {
                     _ => Err(ProjectDrawingsError::Write(ended())),
                 }
                 .and_then(|(set, files)| {
-                    let document = task.document;
-                    publish_project_drawings(&task.path, format, &files, &task.replacing, document)
-                        .map(|paths| ExportedSet { set, paths })
+                    publish_project_drawings(
+                        &task.path,
+                        format,
+                        &files,
+                        &task.replacing,
+                        &task.owner,
+                    )
+                    .map(|paths| {
+                        written = written_files(&task.path, format, &task.owner, &paths, &files);
+                        ExportedSet { set, paths }
+                    })
                 });
+                self.wrote_drawings(written);
                 self.report_project_drawings(&task.path, &result);
             }
             (DrawingExport::Sheet(_, format), made) => {
@@ -190,6 +208,9 @@ impl KetchupApp {
                     let replacing = task.replacing.get(&task.path).map(String::as_str);
                     publish_drawing_sheet(&task.path, &bytes, replacing).map(|()| exported)
                 });
+                if let Ok(exported) = &result {
+                    self.wrote_drawings([(task.path.clone(), exported.sha256.clone())]);
+                }
                 self.report_drawing_sheet(&task.path, format, &result);
             }
         }

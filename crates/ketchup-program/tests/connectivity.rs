@@ -47,6 +47,19 @@ fn a_logical_group_is_not_checked_for_contact_but_an_assembly_in_it_is() {
     );
 }
 
+/// PG-144 (review 2026-11-04): `grounded=True` on a logical group anchored
+/// every part in it for the statics, so a loose plank on the "door" braced
+/// beams. A group that is only for finding parts holds nothing up.
+#[test]
+fn a_logical_group_cannot_be_grounded() {
+    let source = "a=box('a',(1,1,1))\nb=box('b',(1,1,1),at=(5,0,0))\ngroup('site',[a,b],kind='logical',grounded=True)";
+    let refused = run("contacts.star", source, &BTreeMap::new()).unwrap_err();
+    assert!(
+        format!("{refused:#}").contains("cannot be grounded"),
+        "{refused:#}"
+    );
+}
+
 #[test]
 fn contact_through_an_external_body_does_not_connect_group_members() {
     let source = "a=box('a',(10,10,10))\nb=box('b',(10,10,10),at=(30,0,0))\nbox('bridge',(20,10,10),at=(10,0,0))\ngroup('g',[a,b])";

@@ -2,6 +2,7 @@
 //! submenus whose items carry short names, as the submenu already says what
 //! they do. Screen readers and the command search keep the full names.
 
+use crate::recent_files::Presence;
 use crate::*;
 
 const IMPORTS: [(AppCommand, &str); 7] = [
@@ -112,9 +113,13 @@ impl KetchupApp {
 
     /// The documents of Open Recent, newest first: the name to read, the
     /// whole path on hover and for screen readers. A document no longer on
-    /// disk stays listed, greyed, until it is clicked.
+    /// disk stays listed, greyed, until it is clicked; the disk is asked once
+    /// when the menu opens, off the UI thread (review 2026-11-04 UI-141).
     fn open_recent_menu(&mut self, ui: &mut egui::Ui) {
-        if self.file.recent.files().is_empty() {
+        self.window
+            .recent
+            .shown(ui.ctx().cumulative_pass_nr(), ui.ctx());
+        if self.window.recent.files().is_empty() {
             ui.add_enabled(
                 false,
                 egui::Button::new(self.catalog.text("file-recent-empty")),
@@ -122,21 +127,22 @@ impl KetchupApp {
             return;
         }
         let mut chosen = None;
-        for path in self.file.recent.files() {
+        for path in self.window.recent.files() {
             let full = path.display().to_string();
             let name = path
                 .file_name()
                 .map_or_else(|| full.clone(), |name| name.to_string_lossy().into_owned());
-            let (text, accessible) = if path.is_file() {
-                (egui::RichText::new(name), full)
-            } else {
-                (
+            let missing = match self.window.recent.on_disk(path) {
+                None | Some(Presence::Here) => None,
+                Some(Presence::Gone) => Some("file-recent-missing-name"),
+                Some(Presence::Unavailable) => Some("file-recent-unavailable-name"),
+            };
+            let (text, accessible) = match missing {
+                None => (egui::RichText::new(name), full),
+                Some(key) => (
                     egui::RichText::new(name).color(ui.visuals().weak_text_color()),
-                    self.catalog.format(
-                        "file-recent-missing-name",
-                        &BTreeMap::from([("path", full)]),
-                    ),
-                )
+                    self.catalog.format(key, &BTreeMap::from([("path", full)])),
+                ),
             };
             let response = ui.button(text).on_hover_text(&accessible);
             name_widget(&response, true, &accessible);
@@ -146,7 +152,7 @@ impl KetchupApp {
         }
         ui.separator();
         if ui.button(self.catalog.text("file-recent-clear")).clicked() {
-            let result = self.file.recent.clear();
+            let result = self.window.recent.clear();
             self.report_recent_files(result);
             ui.close();
         }
@@ -157,16 +163,46 @@ impl KetchupApp {
     }
 
     /// Open a document of Open Recent as Open would, after the same question
-    /// about unsaved changes; one that is gone is said so and dropped.
+    /// about unsaved changes. One that is gone is said so and dropped; one
+    /// whose folder does not answer, as on a server that is offline, is
+    /// said so and kept for when it is back (review 2026-11-04 P3 GUI). The
+    /// disk is asked off the window; while it does not answer, the document
+    /// opens when it does (review 2026-11-04 r19 UI-161).
     pub(crate) fn open_recent(&mut self, path: &Path) {
-        if !path.is_file() {
-            let result = self.file.recent.remove(path);
-            self.digest = self.catalog.format(
-                "digest-recent-missing",
-                &BTreeMap::from([("path", path.display().to_string())]),
-            );
-            self.report_recent_files(result);
-            return;
+        let context = self.file.activity.context.clone();
+        match self.window.recent.pick(path, context) {
+            Some(presence) => self.open_recent_found(path, presence),
+            None => {
+                self.digest = self.catalog.format(
+                    "digest-recent-checking",
+                    &BTreeMap::from([("path", path.display().to_string())]),
+                );
+            }
+        }
+    }
+
+    /// The answer for a picked recent document that came after the frame it
+    /// was picked in.
+    pub(crate) fn poll_recent_pick(&mut self) {
+        if let Some((path, presence)) = self.window.recent.picked(None) {
+            self.open_recent_found(&path, presence);
+        }
+    }
+
+    fn open_recent_found(&mut self, path: &Path, presence: Presence) {
+        let shown = BTreeMap::from([("path", path.display().to_string())]);
+        match presence {
+            Presence::Here => {}
+            Presence::Gone => {
+                let result = self.window.recent.remove(path);
+                self.digest = self.catalog.format("digest-recent-missing", &shown);
+                self.report_recent_files(result);
+                return;
+            }
+            Presence::Unavailable => {
+                self.digest = self.catalog.format("digest-recent-unavailable", &shown);
+                return;
+            }
         }
         if !self.defer_open_of(path) && self.confirm_discard_if_dirty() {
             self.open_document_with_discard(path, true);
@@ -176,7 +212,7 @@ impl KetchupApp {
     /// Put `path` first in Open Recent: it was just opened, or saved under a
     /// new name.
     pub(crate) fn remember_recent_file(&mut self, path: &Path) {
-        let result = self.file.recent.add(path);
+        let result = self.window.recent.add(path);
         self.report_recent_files(result);
     }
 

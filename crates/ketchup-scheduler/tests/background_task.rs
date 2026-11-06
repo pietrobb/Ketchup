@@ -11,7 +11,9 @@ fn until_cancelled(seen: mpsc::Sender<()>) -> impl FnOnce(&TaskContext<u8, ()>) 
         while !context.is_cancelled() {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        let _ = seen.send(());
+        if seen.send(()).is_err() {
+            // The test has stopped listening.
+        }
     }
 }
 
@@ -125,7 +127,8 @@ fn a_timed_out_wait_and_drop_do_not_block_on_an_unresponsive_job() {
         "unresponsive",
         PATIENCE,
         move |_: &TaskContext<u8, ()>| {
-            let _ = released.recv();
+            // Released by dropping the sender, which sends nothing.
+            released.recv().unwrap_err();
         },
         || {},
     )
@@ -144,7 +147,8 @@ fn a_slow_finished_callback_does_not_delay_the_result() {
         PATIENCE,
         |_: &TaskContext<u8, u32>| 1,
         move || {
-            let _ = released.recv();
+            // Released by dropping the sender, which sends nothing.
+            released.recv().unwrap_err();
         },
     )
     .unwrap();

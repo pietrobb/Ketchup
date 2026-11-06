@@ -17,6 +17,7 @@ use ketchup_model::import::{DxfImportError, DxfImportOptions, inspect_dxf, read_
 use crate::dxf_annotations::{
     DEFAULT_PLAN_SCALE, MAX_PLAN_SCALE, PlanAnnotations, plan_annotations,
 };
+use ketchup_model::annotation::DecimalMark;
 
 pub const DXF_PROFILE_EXPORT_SCHEMA_V1: &str = "ketchup.dxf-profile-export.v1";
 const MAX_EXPORT_PROFILES: usize = 170;
@@ -119,18 +120,21 @@ struct ExportProfile {
 /// so two profiles on the same layer cannot be joined by a receiving importer.
 /// The app writes the same drawing as DWG through `ketchup-dwg`, which the
 /// report calls out. The visible annotations are drawn
-/// at 1:100, see [`export_visible_plan_dxf`].
+/// at 1:100 with a decimal point, see [`export_visible_plan_dxf`].
 pub fn export_visible_profiles_dxf(
     snapshot: &Snapshot,
 ) -> Result<DxfProfileExport, DxfProfileExportError> {
-    export_visible_plan_dxf(snapshot, DEFAULT_PLAN_SCALE)
+    export_visible_plan_dxf(snapshot, DEFAULT_PLAN_SCALE, DecimalMark::Point)
 }
 
 /// [`export_visible_profiles_dxf`] with the visible annotations drawn at `1:scale`:
-/// their texts as TEXT, their dimensions as DIMENSION, each on the layer of its tag.
+/// their texts as TEXT, their dimensions as DIMENSION, each on the layer of its tag,
+/// their values with `separator` before the decimal, as the sheets of the
+/// document write it (review 2026-11-04 r19 P3).
 pub fn export_visible_plan_dxf(
     snapshot: &Snapshot,
     scale: f64,
+    separator: DecimalMark,
 ) -> Result<DxfProfileExport, DxfProfileExportError> {
     if !(1.0..=MAX_PLAN_SCALE).contains(&scale) {
         return Err(DxfProfileExportError::InvalidScale);
@@ -247,7 +251,12 @@ pub fn export_visible_plan_dxf(
             }
         }
         if !flat {
-            let name = definition.name().to_owned();
+            // Named as the model names the part, not its definition.
+            let name = if occurrence.occurrence_name.is_empty() {
+                occurrence.definition_name.clone()
+            } else {
+                occurrence.occurrence_name.clone()
+            };
             if !omitted_parts.contains(&name) {
                 omitted_parts.push(name);
             }
@@ -258,7 +267,7 @@ pub fn export_visible_plan_dxf(
         renamed_layers.extend(part_renamed);
         profiles.append(&mut part_profiles);
     }
-    let annotations = plan_annotations(snapshot, scale, &mut r12_layers);
+    let annotations = plan_annotations(snapshot, scale, separator, &mut r12_layers);
     if profiles.is_empty() && annotations.is_empty() {
         return Err(match omitted_parts.into_iter().next() {
             Some(part) => DxfProfileExportError::UnsupportedTransform { part },

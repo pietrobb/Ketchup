@@ -1,6 +1,9 @@
 //! Transport owns sockets and bounded messages only, never the GUI/store.
 use super::admission::{AUTHENTICATED, EVICTED, PENDING, Pending};
 use super::*;
+use crate::delivery::Deliver;
+use ketchup_model::persistence::ContainerData;
+use ketchup_rejection::{Reason, dropped};
 use std::{
     collections::VecDeque,
     io::{Read, Write},
@@ -53,11 +56,11 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
                         let stop = Arc::clone(&stop);
                         let taken_over = Arc::clone(&taken_over);
                         let context = context.clone();
-                        let _ = std::thread::Builder::new()
+                        let spawned = std::thread::Builder::new()
                             .name(format!("ketchup-live-client-{session}"))
                             .spawn(move || {
                                 let _permit = permit;
-                                let _ = serve(
+                                let served = serve(
                                     stream,
                                     session,
                                     &secret,
@@ -69,9 +72,12 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
                                     &context,
                                     &authenticated,
                                 );
+                                // A client that hung up or broke the protocol is
+                                // disconnected below like one that said goodbye.
+                                dropped(served, Reason::NobodyWaiting);
                                 if authenticated.load(Ordering::Acquire) == AUTHENTICATED {
                                     let (reply, _receiver) = mpsc::sync_channel(1);
-                                    let _ = sender.try_send(Queued {
+                                    sender.deliver(Queued {
                                         session,
                                         id: 0,
                                         request: Request::Disconnect {},
@@ -82,6 +88,10 @@ pub(super) fn start_with_token(context: egui::Context, token: String) -> io::Res
                                     context.request_repaint();
                                 }
                             });
+                        if let Err(error) = spawned {
+                            // The connection closes unserved; the client may try again.
+                            ketchup_rejection::log!("a live connection was not served: {error}");
+                        }
                     }
                     Ok(_) => {}
                     Err(error) => std::thread::sleep(accept_failure_pause(error.kind())),
@@ -560,15 +570,19 @@ fn await_response(
 pub(super) struct Takeover {
     /// The document at the takeover.
     stamp: Stamp,
-    /// Per connection whose request had begun: whether the document changed
-    /// since it began. A request still queued never ran.
-    changed: BTreeMap<u64, bool>,
+    /// Per connection whose request had begun: that request's id, and
+    /// whether the document changed since it began. A request still queued
+    /// never ran, and neither did one of another id (review 2026-11-04 P3).
+    changed: BTreeMap<u64, (u64, bool)>,
 }
 
 impl LiveBridge {
     /// Records the takeover for the connections' last frames; the caller then
-    /// drops the bridge, which ends them.
-    pub(super) fn supersede(&mut self, now: Stamp) {
+    /// drops the bridge, which ends them. A request changed the document when
+    /// its stamp or what the file keeps beside it (`container`: the sheet
+    /// settings an export keeps outside Undo) differs from when it began
+    /// (review 2026-11-04 MCP-141).
+    pub(super) fn supersede(&mut self, now: Stamp, container: &ContainerData) {
         let mut started = std::mem::take(&mut self.started);
         // Dropping a queued request ends its connection's wait at once, so
         // the requests are dropped only after the takeover is recorded:
@@ -579,7 +593,7 @@ impl LiveBridge {
         }
         let changed = started
             .into_iter()
-            .map(|(session, before)| (session, before != now))
+            .map(|(session, (id, stamp, kept))| (session, (id, stamp != now || kept != *container)))
             .collect();
         let first = self
             .superseded
@@ -620,10 +634,19 @@ fn serve(
             if id != 0
                 && let Some(Value::Object(result)) = response.result.as_mut()
             {
-                let changed = takeover.changed.get(&session).copied().unwrap_or(false);
+                // An earlier request of this connection that began says
+                // nothing about this one, which had not.
+                let changed = takeover
+                    .changed
+                    .get(&session)
+                    .is_some_and(|&(begun, changed)| begun == id && changed);
                 result.insert("document_changed".to_owned(), changed.into());
             }
-            let _ = write_response(stream, response, false);
+            // The last frame is a courtesy: the connection ends either way.
+            dropped(
+                write_response(stream, response, false),
+                Reason::NobodyWaiting,
+            );
         }
     };
     while !stop.load(Ordering::Acquire) {
@@ -959,7 +982,9 @@ mod tests {
             stream
                 .write_all(&(body.len() as u32).to_be_bytes())
                 .unwrap();
-            let _ = stream.write_all(&body);
+            if stream.write_all(&body).is_err() {
+                // The window may close a stranger's connection mid-frame.
+            }
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
@@ -1069,6 +1094,21 @@ mod tests {
     /// when another client takes the window over at `now`; `begun` is the
     /// document when the window began request 5, `None` if it had not.
     fn takeover_frames(begun: Option<Stamp>, now: Stamp) -> (Value, Value) {
+        takeover_frames_kept(
+            begun.map(|stamp| (5, stamp)),
+            now,
+            &ContainerData::default(),
+        )
+    }
+
+    /// [`takeover_frames`] where the file keeps `container` beside the
+    /// document at the takeover; the default when the request began. `begun`
+    /// names the request of that connection the window began last.
+    fn takeover_frames_kept(
+        begun: Option<(u64, Stamp)>,
+        now: Stamp,
+        container: &ContainerData,
+    ) -> (Value, Value) {
         let token = "a".repeat(64);
         let mut bridge = start_with_token(egui::Context::default(), token.clone()).unwrap();
         let mut idle = TcpStream::connect(bridge.address).unwrap();
@@ -1085,11 +1125,13 @@ mod tests {
         waiting.write_all(&body).unwrap();
         let queued = bridge.queue.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(queued.id, 5, "the request waits for the UI thread");
-        if let Some(begun) = begun {
-            bridge.started.insert(queued.session, begun);
+        if let Some((id, begun)) = begun {
+            bridge
+                .started
+                .insert(queued.session, (id, begun, ContainerData::default()));
         }
 
-        bridge.supersede(now);
+        bridge.supersede(now, container);
         drop(bridge);
         let last_frame = |stream: &mut TcpStream| {
             stream
@@ -1144,6 +1186,32 @@ mod tests {
         let (changed, _) = takeover_frames(Some(stamp(2)), stamp(3));
         assert_eq!(changed["result"]["document_changed"], true, "{changed}");
         assert_eq!(changed["stamp"]["revision"], 3, "{changed}");
+        // Review 2026-11-04 MCP-141: settings kept in the file outside Undo,
+        // as an export's title block, change the document too.
+        let mut kept = ContainerData::default();
+        kept.set_extension(
+            ketchup_model::persistence::ExtensionEntry::new(
+                "org.ketchup.drawings",
+                "sheet-v1.json",
+                false,
+                b"{}".to_vec(),
+            )
+            .unwrap(),
+        );
+        let (changed, _) = takeover_frames_kept(Some((5, stamp(2))), stamp(2), &kept);
+        assert_eq!(changed["result"]["document_changed"], true, "{changed}");
+    }
+
+    /// Review 2026-11-04 P3: the window kept the document as the connection's
+    /// earlier request 4 found it, so a takeover while request 5 had not begun
+    /// told request 5 the document changed and its agent read "probably
+    /// applied" for a request that never ran.
+    #[test]
+    fn a_takeover_tells_a_request_not_begun_that_it_changed_nothing_after_an_earlier_one() {
+        let (answer, _) =
+            takeover_frames_kept(Some((4, stamp(2))), stamp(3), &ContainerData::default());
+        assert_eq!(answer["id"], 5, "{answer}");
+        assert_eq!(answer["result"]["document_changed"], false, "{answer}");
     }
 
     #[test]

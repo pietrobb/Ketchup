@@ -34,9 +34,9 @@ fn turned(transform: Transform) -> bool {
     })
 }
 
-fn length(value_mm: f64) -> String {
-    let text = format!("{value_mm:.1}");
-    text.strip_suffix(".0").map_or(text.clone(), str::to_owned)
+/// A length of the card to a tenth of a millimetre, written with a point.
+pub(crate) fn length(value_mm: f64) -> String {
+    format_decimals(value_mm, 1)
 }
 
 fn size_text(size: [f64; 3]) -> String {
@@ -164,6 +164,8 @@ impl KetchupApp {
                 .format(key, &arguments.iter().cloned().collect::<BTreeMap<_, _>>());
             (key, line)
         };
+        let size_text = |size| self.user_decimal(size_text(size));
+        let length = |value| self.user_decimal(length(value));
         let mut rows = Vec::new();
         if measures.parts > 1 {
             rows.push(format(
@@ -199,8 +201,14 @@ impl KetchupApp {
             (Some(volume), None) => format(
                 "selection-measures-volume",
                 &[
-                    ("litres", format!("{:.3}", volume / 1.0e6)),
-                    ("cubic", format!("{:.4}", volume / 1.0e9)),
+                    (
+                        "litres",
+                        self.user_decimal(fixed_decimals(volume / 1.0e6, 3)),
+                    ),
+                    (
+                        "cubic",
+                        self.user_decimal(fixed_decimals(volume / 1.0e9, 4)),
+                    ),
                 ],
             ),
             (None, None) => format("selection-measures-volume-pending", &[]),

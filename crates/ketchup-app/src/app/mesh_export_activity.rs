@@ -226,8 +226,7 @@ impl KetchupApp {
         let scene = match self.current_visible_mesh_scene(&snapshot) {
             Ok(scene) => scene,
             Err(error) => {
-                self.report_export_outcome(format.key(), &path, Err(error))
-                    .ok();
+                self.show_export_outcome(format.key(), &path, Err(&error));
                 return;
             }
         };
@@ -269,8 +268,7 @@ impl KetchupApp {
             .take()
             .expect("polled export");
         let result = made.and_then(|made| self.publish_mesh_export(task.format, &task.path, &made));
-        self.report_export_outcome(task.format.key(), &task.path, result)
-            .ok();
+        self.show_export_outcome(task.format.key(), &task.path, result.as_ref());
         context.request_repaint();
     }
 

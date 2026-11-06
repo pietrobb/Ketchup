@@ -122,6 +122,15 @@ jobs:
           echo "$RUNNER_TEMP/$name" >> "$GITHUB_PATH"
       - name: check
         run: cargo deny --locked check
+      # The fuzz targets and the vendored process-wrap's tests resolve their
+      # dependencies from lockfiles of their own (review 2026-11-04 P3); neither is
+      # shipped, so their licenses are not checked.
+      - name: check of the other lockfiles
+        if: ${{ !cancelled() }}
+        run: |
+          for manifest in fuzz/Cargo.toml third_party/process-wrap/Cargo.toml; do
+            cargo deny --locked --manifest-path "$manifest" --config deny.toml check advisories bans sources
+          done
       # Review 2026-11-01 REL-100: the notices of each package name every crate
       # its programs compile in, with its copyright and license text.
       - name: cargo-about
@@ -168,6 +177,11 @@ jobs:
       - name: clippy
         if: ${{ !cancelled() }}
         run: cargo clippy --locked $CRATES --all-targets --features ketchup-model/saved-files,ketchup-viewer-android/benchmark -- -D warnings
+      # ... and without it, as AGENTS.md runs it and as a release builds, since code
+      # behind `cfg(not(feature))` is linted only so (review 2026-11-04 P3).
+      - name: clippy without features
+        if: ${{ !cancelled() }}
+        run: cargo clippy --locked $CRATES --all-targets -- -D warnings
       # Every file the tests save also goes to KETCHUP_SAVED_FILES_DIR for the next step.
       - name: tests
         if: ${{ !cancelled() }}
@@ -182,7 +196,7 @@ jobs:
       - name: released versions read the files written for them
         if: ${{ !cancelled() && (runner.os == 'Linux') }}
         run: |
-          git fetch --no-tags --depth=1 origin tag v0.2.0 tag v0.3.0 tag v0.3.1
+          git fetch --no-tags --depth=1 origin tag v0.2.0 tag v0.3.0 tag v0.3.1 tag v0.3.2
           python3 scripts/release_reads.py --files "$RUNNER_TEMP/saved-files"
       # Time budgets live only in ignored perf_* tests, checked in release
       # (review 2026-10-17 TST-3).
@@ -303,7 +317,7 @@ jobs:
       - name: released versions read the files the application tests wrote
         if: ${{ !cancelled() }}
         run: |
-          git fetch --no-tags --depth=1 origin tag v0.2.0 tag v0.3.0 tag v0.3.1
+          git fetch --no-tags --depth=1 origin tag v0.2.0 tag v0.3.0 tag v0.3.1 tag v0.3.2
           python scripts/release_reads.py --files "$env:RUNNER_TEMP\saved-files"
       # The Viewer's comment save has its own Windows code, which the Linux
       # Viewer job never compiles (review 2026-10-19).
@@ -487,7 +501,7 @@ jobs:
       - name: released versions read the files the tests wrote
         if: ${{ !cancelled() }}
         run: |
-          git fetch --no-tags --depth=1 origin tag v0.2.0 tag v0.3.0 tag v0.3.1
+          git fetch --no-tags --depth=1 origin tag v0.2.0 tag v0.3.0 tag v0.3.1 tag v0.3.2
           python3 scripts/release_reads.py --files "$RUNNER_TEMP/saved-files"
 
   viewer-targets:

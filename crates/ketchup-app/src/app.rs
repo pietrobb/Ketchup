@@ -141,6 +141,7 @@ mod viewport_paint;
 pub(crate) use commands::*;
 pub(crate) use document::SaveFailure;
 pub(crate) use drawing::*;
+pub(crate) use fea_review::FeaReviewDialog;
 pub(crate) use scale_grips::{ScaleInput, axis_drives};
 #[cfg(test)]
 pub(crate) use section::SECTION_COLOR;

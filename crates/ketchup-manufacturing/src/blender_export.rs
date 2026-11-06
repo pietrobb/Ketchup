@@ -724,9 +724,9 @@ fn encode_glb(document: &Value, binary: &[u8]) -> Result<Vec<u8>, ExactProductEr
         .and_then(|length| u32::try_from(length).ok())
         .ok_or(ExactProductError::InvalidMeshExport)?;
     let json_length = u32::try_from(json_bytes.len())
-        .map_err(|_: TryFromIntError| ExactProductError::InvalidMeshExport)?;
+        .map_err(|_out_of_range: TryFromIntError| ExactProductError::InvalidMeshExport)?;
     let binary_length = u32::try_from(binary.len())
-        .map_err(|_: TryFromIntError| ExactProductError::InvalidMeshExport)?;
+        .map_err(|_out_of_range: TryFromIntError| ExactProductError::InvalidMeshExport)?;
     let mut glb = Vec::with_capacity(total_length as usize);
     glb.extend_from_slice(&GLB_MAGIC.to_le_bytes());
     glb.extend_from_slice(&2_u32.to_le_bytes());

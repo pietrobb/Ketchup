@@ -689,7 +689,7 @@ pub(super) fn ellipse_points(
 /// span by span, or without control points the line through its fit points.
 fn spline_edge(edge: &[DxfPair<'_>], scale: f64) -> Result<Vec<[f64; 2]>, DxfImportError> {
     let degree = usize::try_from(parse_required_i64(edge, 94)?)
-        .map_err(|_: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
+        .map_err(|_out_of_range: std::num::TryFromIntError| DxfImportError::MalformedPairs)?;
     let scaled = |points: Vec<[f64; 2]>| {
         points
             .into_iter()

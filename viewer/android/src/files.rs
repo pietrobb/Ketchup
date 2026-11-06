@@ -91,10 +91,13 @@ impl Files {
         let save = match request {
             FileRequest::OpenPackage | FileRequest::OpenComments => None,
             // The share sheet never says whether anything was sent, so the
-            // comments stay unsaved.
+            // comments stay unsaved: what was written is never confirmed. With
+            // nothing open there is nothing to share.
             FileRequest::ShareComments => {
                 let mut bytes = Vec::new();
-                let _unconfirmed = app.save_comments(&mut bytes)?;
+                if app.save_comments(&mut bytes)?.is_none() {
+                    return Ok(());
+                }
                 let name = ketchup_viewer::share::download_name(name, ".ketchup-comments");
                 return self.share(&name, &bytes);
             }

@@ -7,7 +7,7 @@
 fn main() -> std::process::ExitCode {
     let requests = ketchup_viewer::desktop::OpenRequests::default();
     #[cfg(target_os = "macos")]
-    let _handler = {
+    let _handler_guard = {
         let requests = requests.clone();
         ketchup_macos_open::install(move |path| requests.push(path))
     };

@@ -536,6 +536,63 @@ fn the_sheets_are_titled_in_the_language_the_client_names_and_the_document_keeps
     assert!(!shows(&window_texts, "Půdorys"), "{window_texts:?}");
 }
 
+/// Review 2026-11-04 r19 P3: the height of ±0,000 could be set in the drawings
+/// window only. A client names it in whole millimetres, the document keeps it
+/// for the next export, `auto` finds it from the model again, and a value that
+/// is no height is refused and changes nothing.
+#[test]
+fn a_client_sets_the_height_of_zero_and_the_document_keeps_it() {
+    let (mut app, mut bridge, directory) = window();
+    let program = Request::ApplyProgram {
+        expected: None,
+        source: "text('S-01', 'S-01', at=(0, 0), height_mm=3.5, tags='plan')\n".into(),
+        overrides: None,
+        file_name: Some("plan.star".into()),
+        replace_document: true,
+    };
+    bridge
+        .execute(&mut app, program, false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let drawings = |name: &str, zero: Option<Value>| {
+        let mut request = json!({
+            "method": "export_drawings",
+            "path": directory.path().join(name).display().to_string(),
+            "plan_only": true,
+            "drawing_scale": 250,
+        });
+        if let Some(zero) = zero {
+            request["zero_level_mm"] = zero;
+        }
+        serde_json::from_value::<Request>(request).unwrap()
+    };
+    let stored = |app: &KetchupApp| app.stored_sheet_settings().unwrap().zero_level_mm;
+
+    let written = bridge
+        .execute(&mut app, drawings("set.pdf", Some(json!(2800))), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["zero_level_mm"], 2800, "{written}");
+    assert_eq!(stored(&app), Some(2800));
+    let written = bridge
+        .execute(&mut app, drawings("again.pdf", None), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["zero_level_mm"], 2800, "{written}");
+
+    for refused in [json!(12.5), json!("high"), json!(3_000_000_000_i64)] {
+        assert_eq!(
+            bridge.execute(&mut app, drawings("refused.pdf", Some(refused)), false),
+            Err("invalid_params")
+        );
+        assert!(!directory.path().join("refused.pdf").exists());
+        assert_eq!(stored(&app), Some(2800));
+    }
+
+    let written = bridge
+        .execute(&mut app, drawings("auto.pdf", Some(json!("auto"))), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["zero_level_mm"], "auto", "{written}");
+    assert_eq!(stored(&app), None);
+}
+
 /// A client writes the plan alone as a PDF at the scale it names: the sheet holds
 /// one view, the texts and the measured value of the dimension, and says what it drew.
 #[test]
@@ -565,6 +622,9 @@ fn a_plan_of_its_own_is_drawn_as_a_pdf_at_the_scale_the_client_names() {
                 plan_only,
                 drawing_scale,
                 sheet_language: None,
+                replace: false,
+                take_over: false,
+                zero_level_mm: None,
             }
         };
 
@@ -674,6 +734,9 @@ fn a_sheet_names_the_letters_it_prints_as_question_marks() {
                 plan_only: true,
                 drawing_scale: Some(250.0),
                 sheet_language: None,
+                replace: false,
+                take_over: false,
+                zero_level_mm: None,
             },
             false,
         )

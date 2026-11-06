@@ -123,7 +123,7 @@ fn mcp_setup_connects_the_installed_supervisor_and_leaves_other_instances() {
     let home = temporary_home("installed-only");
     let dev = home.join("DevSupervisor");
     let environment = Environment {
-        supervisor_folders: vec![dev.clone()],
+        supervisor_folders: Ok(vec![dev.clone()]),
         ..clean_profile(&home)
     };
     let installed = environment.config_file(Harness::Supervisor).unwrap();
@@ -149,6 +149,72 @@ fn mcp_setup_connects_the_installed_supervisor_and_leaves_other_instances() {
         supervisor,
         [(Some(installed), Registration::ThisKetchup)],
         "only the installed Supervisor is reported and connected"
+    );
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// Review 2026-11-04 P3: a configuration that is no JSON or TOML showed as
+/// "not set up", and `--mcp-setup` then tried to write it. It says why it
+/// cannot be read and stays as it is; an empty file is a new one.
+#[test]
+fn a_configuration_that_cannot_be_read_says_why_and_is_left_as_it_is() {
+    let home = temporary_home("unreadable");
+    let environment = clean_profile(&home);
+    let claude = environment.config_file(Harness::ClaudeCode).unwrap();
+    let codex = environment.config_file(Harness::Codex).unwrap();
+    create_parent(&codex);
+    let broken_json = "{\"mcpServers\": {\n";
+    let broken_toml = "[mcp_servers.ketchup\ncommand = 'x'\n";
+    std::fs::write(&claude, broken_json).unwrap();
+    std::fs::write(&codex, broken_toml).unwrap();
+    let this = std::env::current_exe().unwrap();
+    let rows = environment.set_up_installed(&this);
+    for harness in [Harness::ClaudeCode, Harness::Codex] {
+        let row = rows.iter().find(|row| row.harness == harness).unwrap();
+        let Registration::Unreadable { reason } = &row.registration else {
+            panic!("{row:?}");
+        };
+        assert!(reason.to_string().contains("line"), "{reason}");
+        assert_eq!(row.setup_error, None, "nothing was written");
+        assert!(describe(row, &this).contains(&reason.to_string()));
+    }
+    assert_eq!(std::fs::read_to_string(&claude).unwrap(), broken_json);
+    assert_eq!(std::fs::read_to_string(&codex).unwrap(), broken_toml);
+    for file in [&claude, &codex] {
+        std::fs::write(file, "").unwrap();
+    }
+    for harness in [Harness::ClaudeCode, Harness::Codex] {
+        assert_eq!(
+            environment.registration(harness, &this),
+            Registration::NotSetUp
+        );
+    }
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// Review 2026-11-04 P3: when the system did not list the running programs
+/// the Supervisor instances were silently none. A row says they could not be
+/// listed and why.
+#[test]
+fn running_supervisors_that_could_not_be_listed_get_a_row_saying_why() {
+    let home = temporary_home("unlisted");
+    let environment = Environment {
+        supervisor_folders: Err(std::io::Error::other("snapshot refused").into()),
+        ..clean_profile(&home)
+    };
+    let this = std::env::current_exe().unwrap();
+    let rows = environment.rows(&this);
+    let unlisted: Vec<_> = rows
+        .iter()
+        .filter(|row| matches!(row.registration, Registration::InstancesUnlisted { .. }))
+        .collect();
+    assert_eq!(unlisted.len(), 1, "{rows:?}");
+    assert_eq!(unlisted[0].harness, Harness::Supervisor);
+    assert_eq!(
+        unlisted[0].registration,
+        Registration::InstancesUnlisted {
+            reason: std::io::Error::other("snapshot refused").into()
+        }
     );
     std::fs::remove_dir_all(home).unwrap();
 }
@@ -193,6 +259,36 @@ fn variables_are_expanded_as_supervisor_does_and_an_unknown_one_stays() {
     assert_eq!(expand_variables("100%% and 5%"), "100% and 5%");
 }
 
+/// Review 2026-11-04 P3: Supervisor's `os.path.expandvars` on Windows also
+/// reads `$NAME` and `${NAME}` and leaves single quoted text alone. Each
+/// expected value is what Python 3.11's `ntpath.expandvars` gives.
+#[test]
+fn dollar_variables_and_quotes_are_read_as_supervisor_reads_them() {
+    for (text, expanded) in [
+        (r"a\$CARGO_PKG_NAME\b", r"a\ketchup-app\b"),
+        (r"a\${CARGO_PKG_NAME}\b", r"a\ketchup-app\b"),
+        (r"$KETCHUP_NO_SUCH\x", r"$KETCHUP_NO_SUCH\x"),
+        ("${KETCHUP_NO_SUCH}", "${KETCHUP_NO_SUCH}"),
+        (
+            "'$CARGO_PKG_NAME' %CARGO_PKG_NAME%",
+            "'$CARGO_PKG_NAME' ketchup-app",
+        ),
+        ("it's '$CARGO_PKG_NAME' here", "it's 'ketchup-app' here"),
+        ("don't $CARGO_PKG_NAME", "don't $CARGO_PKG_NAME"),
+        ("$$CARGO_PKG_NAME", "$CARGO_PKG_NAME"),
+        ("${CARGO_PKG_NAME", "${CARGO_PKG_NAME"),
+        ("$ alone", "$ alone"),
+        ("%CARGO_PKG_NAME", "%CARGO_PKG_NAME"),
+        (
+            "$CARGO_PKG_NAME-$CARGO_PKG_NAME.exe",
+            "$CARGO_PKG_NAME-ketchup-app.exe",
+        ),
+        ("%=x% $", "%=x% $"),
+    ] {
+        assert_eq!(expand_variables(text), expanded, "{text}");
+    }
+}
+
 /// Capability review run 432: a Supervisor reads `skills\mcp_servers.json` of
 /// its own instance folder (its `load_skills(cwd)`, and `mcp_bridge.py` takes
 /// the file next to itself), so the dev checkout and every project's instance
@@ -220,13 +316,13 @@ fn every_supervisor_instance_is_a_row_and_connect_writes_only_its_file() {
     // The installed copy, also found running, is listed once.
     let installed_folder = installed.parent().unwrap().parent().unwrap().to_owned();
     std::fs::write(installed.with_file_name("mcp_bridge.py"), "").unwrap();
-    environment.supervisor_folders = vec![
+    environment.supervisor_folders = Ok(vec![
         dev.clone(),
         installed_folder,
         reviewer.clone(),
         without_bridge,
         dev.clone(),
-    ];
+    ]);
     let this = std::env::current_exe().unwrap();
 
     let rows: Vec<HarnessRow> = environment
@@ -328,6 +424,216 @@ fn a_claude_code_entry_naming_a_deleted_build_is_reported_with_its_path() {
     assert_eq!(
         environment.registration(Harness::ClaudeCode, &this),
         Registration::ThisKetchup
+    );
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// Review 2026-11-04 SEC-142: a project's own `ketchup` entry wins over the
+/// user's in that project, but the row read only the user's; and the hidden
+/// `--mcp-setup` of the installer replaced a registration that starts another
+/// program that works.
+#[test]
+fn a_project_entry_counts_and_mcp_setup_keeps_a_working_registration() {
+    let home = temporary_home("project-scope");
+    let environment = Environment::in_home(home.clone());
+    let this = std::env::current_exe().unwrap();
+    let gone = home.join("target").join("debug").join("ketchup-app.exe");
+    let file = home.join(".claude.json");
+    let config = serde_json::json!({
+        "mcpServers": {"ketchup": {"command": this, "args": ["--mcp"]}},
+        "projects": {"C:/work": {"mcpServers": {"ketchup": {"command": gone, "args": ["--mcp"]}}}}
+    });
+    std::fs::write(&file, config.to_string()).unwrap();
+    assert_eq!(
+        environment.registration(Harness::ClaudeCode, &this),
+        Registration::Elsewhere {
+            command: gone.to_string_lossy().into_owned(),
+            exists: false
+        }
+    );
+    let row = environment.set_up(Harness::ClaudeCode, &this);
+    assert_eq!(row.registration, Registration::ThisKetchup);
+
+    // Another program that exists stays as the user set it up.
+    let other = home.join("Other").join("Ketchup.exe");
+    create_parent(&other);
+    std::fs::write(&other, "").unwrap();
+    let working = serde_json::json!({
+        "mcpServers": {"ketchup": {"command": other, "args": ["--mcp"]}}
+    })
+    .to_string();
+    std::fs::write(&file, &working).unwrap();
+    let rows = environment.set_up_installed(&this);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), working);
+    let claude = rows
+        .iter()
+        .find(|row| row.harness == Harness::ClaudeCode)
+        .unwrap();
+    assert!(
+        matches!(
+            &claude.registration,
+            Registration::Elsewhere { exists: true, .. }
+        ),
+        "{claude:?}"
+    );
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// Review 2026-11-04 r19 SEC-160: a command that is not an absolute path
+/// counted as a program that does not exist, so the installer's hidden
+/// `--mcp-setup` replaced it: `ketchup` found on PATH (as `claude mcp add …
+/// -- Ketchup --mcp` writes it), a path from `~`, a Windows path without
+/// `.exe`. The command is found as the client finds it; one Kečup cannot
+/// tell about counts as existing.
+#[test]
+fn mcp_setup_keeps_commands_found_on_path_from_home_or_without_extension() {
+    let home = temporary_home("resolved");
+    let bin = home.join("bin");
+    let program = |folder: &Path, name: &str| {
+        std::fs::create_dir_all(folder).unwrap();
+        let file = folder.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&file, "").unwrap();
+        file
+    };
+    program(&bin, "ketchup-other");
+    program(&home.join("apps"), "Ketchup");
+    let environment = Environment {
+        path: std::env::join_paths([&bin]).unwrap(),
+        ..clean_profile(&home)
+    };
+    let this = std::env::current_exe().unwrap();
+    let claude_code = environment.config_file(Harness::ClaudeCode).unwrap();
+    let codex = environment.config_file(Harness::Codex).unwrap();
+    let desktop = environment.config_file(Harness::ClaudeDesktop).unwrap();
+    for file in [&codex, &desktop] {
+        create_parent(file);
+    }
+    let files = [
+        (
+            &claude_code,
+            r#"{"mcpServers":{"ketchup":{"type":"stdio","command":"ketchup-other","args":["--mcp"]}}}"#
+                .to_owned(),
+        ),
+        // Not on Kečup's PATH: the client may have another.
+        (
+            &codex,
+            "[mcp_servers.ketchup]\ncommand = \"ketchup\"\nargs = [\"--mcp\"]\n".to_owned(),
+        ),
+        (
+            &desktop,
+            r#"{"mcpServers":{"ketchup":{"command":"~/apps/Ketchup","args":["--mcp"]}}}"#
+                .to_owned(),
+        ),
+    ];
+    for (file, text) in &files {
+        std::fs::write(file, text).unwrap();
+    }
+    let rows = environment.set_up_installed(&this);
+    for (file, text) in &files {
+        assert_eq!(&std::fs::read_to_string(file).unwrap(), text, "{file:?}");
+    }
+    for harness in [Harness::ClaudeCode, Harness::Codex, Harness::ClaudeDesktop] {
+        let row = rows.iter().find(|row| row.harness == harness).unwrap();
+        assert!(
+            matches!(
+                &row.registration,
+                Registration::Elsewhere { exists: true, .. }
+            ),
+            "{row:?}"
+        );
+    }
+    if cfg!(windows) {
+        let bare = home.join("apps").join("Ketchup");
+        let config = serde_json::json!({
+            "mcpServers": {"ketchup": {"command": bare, "args": ["--mcp"]}}
+        })
+        .to_string();
+        std::fs::write(&claude_code, &config).unwrap();
+        environment.set_up_installed(&this);
+        assert_eq!(std::fs::read_to_string(&claude_code).unwrap(), config);
+    }
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// Review 2026-11-04 r19 SEC-160: of several `ketchup` entries in
+/// `.claude.json` only the first other one decided, so one gone entry made the
+/// installer's hidden `--mcp-setup` rewrite every entry, a working one too.
+/// A client is replaced only when no entry starts a program that may exist.
+#[test]
+fn mcp_setup_keeps_every_entry_when_one_is_gone_and_another_may_work() {
+    let home = temporary_home("mixed-entries");
+    let environment = clean_profile(&home);
+    let this = std::env::current_exe().unwrap();
+    let gone = home.join("Old").join("Ketchup.exe");
+    let file = environment.config_file(Harness::ClaudeCode).unwrap();
+    let server = |command: serde_json::Value| serde_json::json!({"mcpServers": {"ketchup": {"command": command, "args": ["--mcp"]}}});
+    let (gone, this_one, other) = (
+        serde_json::json!(gone),
+        serde_json::json!(this),
+        serde_json::json!("ketchup-other"),
+    );
+    let configs = [
+        serde_json::json!({
+            "mcpServers": server(gone.clone())["mcpServers"],
+            "projects": {"C:/work": server(other.clone())}
+        }),
+        serde_json::json!({
+            "mcpServers": server(this_one)["mcpServers"],
+            "projects": {"C:/a": server(gone), "C:/b": server(other)}
+        }),
+    ];
+    for config in configs {
+        let text = config.to_string();
+        std::fs::write(&file, &text).unwrap();
+        let rows = environment.set_up_installed(&this);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+        let claude = rows
+            .iter()
+            .find(|row| row.harness == Harness::ClaudeCode)
+            .unwrap();
+        assert_eq!(
+            claude.registration,
+            Registration::Elsewhere {
+                command: "ketchup-other".to_owned(),
+                exists: true
+            }
+        );
+    }
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// Review 2026-11-04 r19 P3: an entry starting this Kečup but turned off
+/// showed as set up, and so did one that is a network server. Neither starts
+/// a program; the installer keeps them, Connect turns them on.
+#[test]
+fn a_ketchup_entry_turned_off_or_on_the_network_starts_nothing() {
+    let home = temporary_home("off");
+    let environment = clean_profile(&home);
+    let this = std::env::current_exe().unwrap();
+    let file = environment.config_file(Harness::ClaudeCode).unwrap();
+    let config = serde_json::json!({
+        "mcpServers": {"ketchup": {"command": this, "args": ["--mcp"], "disabled": true}}
+    })
+    .to_string();
+    std::fs::write(&file, &config).unwrap();
+    let off = Registration::Off {
+        entry: this.display().to_string(),
+    };
+    assert_eq!(environment.registration(Harness::ClaudeCode, &this), off);
+    environment.set_up_installed(&this);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), config);
+    let row = environment.set_up(Harness::ClaudeCode, &this);
+    assert_eq!(row.registration, Registration::ThisKetchup, "{row:?}");
+    std::fs::write(
+        &file,
+        r#"{"mcpServers":{"ketchup":{"type":"sse","url":"http://x/sse"}}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        environment.registration(Harness::ClaudeCode, &this),
+        Registration::Off {
+            entry: "http://x/sse".to_owned()
+        }
     );
     std::fs::remove_dir_all(home).unwrap();
 }

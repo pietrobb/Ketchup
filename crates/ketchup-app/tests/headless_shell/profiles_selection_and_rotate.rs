@@ -1493,7 +1493,7 @@ fn imported_exact_finishes_and_face_push_pull_recompute_through_headless_ui() {
     assert!(shell.app_mut().start_preview());
     assert_eq!(shell.app().document_revision(), before_revision);
     assert_eq!(shell.app().canonical_digest(), before_digest);
-    let _ = shell.app_mut().confirm_preview();
+    let confirmed = shell.app_mut().confirm_preview();
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     while std::time::Instant::now() < deadline {
         shell.step();
@@ -1505,7 +1505,7 @@ fn imported_exact_finishes_and_face_push_pull_recompute_through_headless_ui() {
 
     assert!(
         shell.app().document_revision() > before_revision,
-        "{}",
+        "confirmed: {confirmed}; {}",
         shell.app().action_digest()
     );
     assert_eq!(shell.app().undo_step_count(), before_undo_steps + 1);

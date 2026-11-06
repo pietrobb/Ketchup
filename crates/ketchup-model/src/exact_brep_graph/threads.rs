@@ -46,12 +46,9 @@ impl ExactBRepGraph {
             for dependency in node.operation.dependencies_mut() {
                 *dependency = renumbered[dependency.index()];
             }
-            node.id = ExactBRepNodeId(
-                nodes
-                    .len()
-                    .try_into()
-                    .map_err(|_: std::num::TryFromIntError| ExactBRepGraphError::ResourceLimit)?,
-            );
+            node.id = ExactBRepNodeId(nodes.len().try_into().map_err(
+                |_out_of_range: std::num::TryFromIntError| ExactBRepGraphError::ResourceLimit,
+            )?);
             renumbered.push(node.id);
             nodes.push(node);
         }
@@ -96,12 +93,9 @@ impl GraphCompiler<'_> {
                 self.snapshot.tolerance().linear_mm(),
             )
             .ok_or(ExactBRepGraphError::InvalidParameter)?;
-        let id = ExactBRepNodeId(
-            self.nodes
-                .len()
-                .try_into()
-                .map_err(|_: std::num::TryFromIntError| ExactBRepGraphError::ResourceLimit)?,
-        );
+        let id = ExactBRepNodeId(self.nodes.len().try_into().map_err(
+            |_out_of_range: std::num::TryFromIntError| ExactBRepGraphError::ResourceLimit,
+        )?);
         if self.nodes.len() >= MAX_EXACT_BREP_GRAPH_NODES {
             return Err(ExactBRepGraphError::ResourceLimit);
         }

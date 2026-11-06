@@ -20,6 +20,87 @@ fn new_document_starts_empty_without_an_inactive_tool_preview() {
     assert_eq!(app.active_tool, ActiveTool::Select);
 }
 
+/// Review 2026-11-04 UI-140: New rebuilt the window and copied back a list of
+/// its settings that missed the decimal separator, whether to remember the
+/// language and the dock page. On Slovak or Czech Windows `12,5` was refused
+/// after New. New starts a document; the window keeps its settings.
+#[test]
+fn new_keeps_the_windows_decimal_separator_language_choice_and_dock_page() {
+    let mut app = KetchupApp::new();
+    app.window.decimal = DecimalSeparator::Comma;
+    app.window.remember_language = true;
+    app.window.dock_tab = Some(crate::DockTab::Views);
+
+    app.new_document();
+
+    assert_eq!(app.window.decimal, DecimalSeparator::Comma);
+    assert_eq!(
+        parse_distance_mm("12,5", app.window.decimal),
+        Some(12.5),
+        "a comma is still the decimal separator"
+    );
+    assert!(
+        app.window.remember_language,
+        "the language choice is still saved"
+    );
+    assert_eq!(app.window.dock_tab, Some(crate::DockTab::Views));
+}
+
+/// Review 2026-11-04 r19 (P3): New still copied back a hand-written list of the
+/// window's settings, and the theme was not on it, so New went back to Graphite.
+/// Every setting is changed from its default here; the destructuring names each
+/// field, so a setting added to the window does not build until it is checked.
+#[test]
+fn new_keeps_every_setting_of_the_window() {
+    let mut app = KetchupApp::new();
+    app.set_theme(ThemeKind::Paper);
+    app.window.decimal = DecimalSeparator::Comma;
+    app.window.remember_language = true;
+    app.window.panes = crate::app_state::Panes {
+        outliner_visible: false,
+        tags_visible: false,
+        dimensions_visible: false,
+        manual_cad_tools_visible: true,
+        shortcuts_open: true,
+        about_open: true,
+    };
+    app.window.dock_tab = Some(crate::DockTab::Views);
+    app.window.recent.add(Path::new("dom.ketchup")).unwrap();
+    let recent_files = app.window.recent.files().to_vec();
+
+    app.new_document();
+
+    let crate::app_state::WindowSettings {
+        theme,
+        decimal,
+        remember_language,
+        panes,
+        dock_tab,
+        recent,
+    } = &app.window;
+    assert_eq!(*theme, ThemeKind::Paper);
+    assert_eq!(*decimal, DecimalSeparator::Comma);
+    assert!(*remember_language);
+    let crate::app_state::Panes {
+        outliner_visible,
+        tags_visible,
+        dimensions_visible,
+        manual_cad_tools_visible,
+        shortcuts_open,
+        about_open,
+    } = *panes;
+    assert_eq!(
+        [outliner_visible, tags_visible, dimensions_visible],
+        [false; 3]
+    );
+    assert_eq!(
+        [manual_cad_tools_visible, shortcuts_open, about_open],
+        [true; 3]
+    );
+    assert_eq!(*dock_tab, Some(crate::DockTab::Views));
+    assert_eq!(recent.files(), recent_files);
+}
+
 /// After New the window keeps no evaluation of the program it showed before.
 #[test]
 fn a_new_document_lets_go_of_the_old_program_evaluation() {
@@ -849,7 +930,7 @@ fn shared_definition_push_pull_previews_each_occurrence_and_explains_impact() {
 /// with the digest it left.
 fn typed_rectangle(decimal: DecimalSeparator, input: &str) -> (Option<Vec3>, String) {
     let mut app = KetchupApp::new();
-    app.value_box.decimal = decimal;
+    app.window.decimal = decimal;
     app.dispatch_command(AppCommand::Rectangle);
     app.gesture.sketch.start = Some(Vec3::new(0.0, 0.0, 0.0));
     app.gesture.sketch.cursor = Some(Vec3::new(10.0, 10.0, 0.0));

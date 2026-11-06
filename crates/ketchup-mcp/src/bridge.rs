@@ -71,8 +71,13 @@ pub struct Cancel(Arc<Mutex<Armed>>);
 #[derive(Default)]
 struct Armed {
     cancelled: bool,
+    /// The client has gone: every call from now on is cancelled.
+    closed: bool,
     /// The connection of the request being waited for.
     stream: Option<TcpStream>,
+    /// The next [`Cancel::arm`] fails as if the system refused to duplicate the socket.
+    #[cfg(test)]
+    refuse_clone: bool,
 }
 
 impl Cancel {
@@ -86,9 +91,23 @@ impl Cancel {
         }
     }
 
-    /// A new tool call starts, not cancelled.
+    /// Cancels the request being waited for and every one after it, as the
+    /// client that asked has gone (review 2026-11-04 r19 MCP-161).
+    pub fn close(&self) -> io::Result<()> {
+        self.armed().closed = true;
+        self.cancel()
+    }
+
+    /// Whether the call running now is cancelled.
+    pub fn is_cancelled(&self) -> bool {
+        self.armed().cancelled
+    }
+
+    /// A new tool call starts, not cancelled unless the client has gone.
     pub fn clear(&self) {
-        *self.armed() = Armed::default();
+        let mut armed = self.armed();
+        armed.cancelled = armed.closed;
+        armed.stream = None;
     }
 
     /// Lets [`Self::cancel`] end `connection` until [`Self::disarm`]; false
@@ -98,8 +117,19 @@ impl Cancel {
         if armed.cancelled {
             return Ok(false);
         }
+        #[cfg(test)]
+        if std::mem::take(&mut armed.refuse_clone) {
+            return Err(io::Error::other(
+                "the system refused to duplicate the socket",
+            ));
+        }
         armed.stream = Some(connection.stream.try_clone()?);
         Ok(true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn refuse_next_clone(&self) {
+        self.armed().refuse_clone = true;
     }
 
     pub fn disarm(&self) {

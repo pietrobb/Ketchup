@@ -1217,6 +1217,64 @@ fn block_linework_becomes_shared_native_instances_and_a_wrong_question_changes_n
     assert_eq!(app.undo_step_count(), steps);
 }
 
+/// Review 2026-11-04 UO-51: data could be named as a name the program sees or sets, and
+/// take it over: `range` or `len`, lost to the program from then on, or `A_POINTS`, which
+/// the data `A` writes too. Each is refused and the program kept; `A` again still replaces
+/// its own data.
+#[test]
+fn data_does_not_take_over_a_name_the_program_sees_or_sets() {
+    let (mut app, mut bridge, offset) = imported(&two_rooms());
+    let room = |name: &str| json!({"name": name, "point_mm": [2000.0 - offset[0], 2000.0 - offset[1]], "layers": ["walls"]});
+    from_underlay(&mut app, &mut bridge, room("A"));
+    let (digest, steps) = (app.canonical_digest(), app.undo_step_count());
+    for name in ["range", "len", "math", "box", "A_POINTS", "A_HOLES"] {
+        let mut request = room(name);
+        request["expected"] = serde_json::to_value(app.live_bridge_stamp()).unwrap();
+        let code = bridge
+            .execute(&mut app, ask("program_from_underlay", request), false)
+            .unwrap_err();
+        assert_eq!(code, "invalid_params", "{name}");
+        let details = take_error_details().unwrap_or_default().to_string();
+        assert!(
+            details.contains("\"name\"") && details.contains("take it over"),
+            "{name}: {details}"
+        );
+    }
+    assert_eq!(app.canonical_digest(), digest);
+    assert_eq!(app.undo_step_count(), steps);
+    from_underlay(&mut app, &mut bridge, room("A"));
+    assert_eq!(source(&app).matches("# underlay data A:").count(), 1);
+}
+
+/// Review 2026-11-04 r19 P3 UO-51: when the names of the program library cannot be read,
+/// the check fell back to none and wrote data that could take `range` over unchecked. The
+/// data is refused instead, with why.
+#[test]
+fn data_is_refused_when_the_names_of_the_library_cannot_be_read() {
+    use crate::live_bridge::underlay_program::refusal_of_taken_name_among;
+    let written = "range = [[0.0, 0.0], [1.0, 0.0]]\n";
+    let unreadable = Err(ketchup_program::eval::ProgramError {
+        code: "library_broken",
+        message: "the library is broken".to_owned(),
+        location: None,
+    });
+    assert_eq!(
+        refusal_of_taken_name_among("", "range", written, unreadable),
+        Some("program_rejected")
+    );
+    let details = take_error_details().unwrap_or_default().to_string();
+    assert!(details.contains("the library is broken"), "{details}");
+    let names = |names: &[&str]| Ok(names.iter().map(|name| (*name).to_owned()).collect());
+    assert_eq!(
+        refusal_of_taken_name_among("", "range", written, names(&["range"])),
+        Some("invalid_params")
+    );
+    assert_eq!(
+        refusal_of_taken_name_among("", "range", written, names(&["len"])),
+        None
+    );
+}
+
 /// Review 2026-10-26 UO-46: a plan of more lines than one search takes refused every room
 /// with a bare `invalid_params`. The refusal names `within_mm`; a room taken within a box
 /// is found, and keeps that box when the drawing changes.

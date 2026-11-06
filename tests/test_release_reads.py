@@ -155,6 +155,29 @@ def test_a_failing_test_does_not_stop_the_reads_of_the_files_others_saved(tmp_pa
     assert any("run" in command for command in calls), "the release read no file"
 
 
+def test_a_file_a_release_opens_but_loses_a_field_of_when_saving_fails(tmp_path, monkeypatch):
+    # Review 2026-11-04 REL-143: snapshots are read without deny_unknown_fields, so 0.3.1
+    # opened a file with a struct field it did not know and its Save dropped it; only
+    # opening was checked. The release saves each file again, and HEAD compares.
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append([str(part) for part in command])
+        lost = "--example" in command and "resaved" in command
+        return type("Done", (), {"returncode": 1 if lost else 0})()
+
+    monkeypatch.setattr(checker.subprocess, "run", run)
+    monkeypatch.setattr(checker, "serde_enums", lambda tag: {})
+    monkeypatch.setattr(checker, "what_it_reads", lambda tag: ["108", "1", "0"])
+    monkeypatch.setattr(checker, "old_workspace", lambda tag, target: tmp_path)
+    monkeypatch.setattr(checker.tempfile, "TemporaryDirectory", lambda **kwargs: _Here(tmp_path))
+    assert checker.main(["--tag", "v0.3.1", "--files", str(tmp_path / "files")]) == 1
+    opened, compared = calls
+    resaved = str(tmp_path / "resaved-0.3.1")
+    assert opened[-1] == resaved
+    assert compared[-3:-1] == [str((tmp_path / "files").resolve()), resaved]
+
+
 class _Here:
     def __init__(self, path):
         self.path = path

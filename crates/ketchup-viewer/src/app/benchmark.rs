@@ -12,7 +12,6 @@ use crate::{
 use ketchup_rejection::{Rejection, RejectionPhase};
 use num_traits::ToPrimitive;
 use std::{
-    fmt::Write as _,
     path::Path,
     time::{Duration, Instant},
 };
@@ -61,7 +60,7 @@ impl Benchmark {
         let ms = |d: Duration| d.as_secs_f64() * 1000.0;
         let mut text = String::new();
         let mut line = |args: std::fmt::Arguments<'_>| {
-            text.write_fmt(args).ok();
+            text.push_str(&std::fmt::format(args));
             text.push('\n');
         };
         line(format_args!(

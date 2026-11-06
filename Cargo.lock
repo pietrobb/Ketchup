@@ -2206,6 +2206,8 @@ checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
 dependencies = [
  "equivalent",
  "hashbrown 0.17.1",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -2333,7 +2335,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-analysis"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "ed25519-dalek",
  "ketchup-geometry",
@@ -2345,12 +2347,13 @@ dependencies = [
 
 [[package]]
 name = "ketchup-app"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "ab_glyph",
  "eframe",
  "egui_kittest",
  "getrandom 0.3.4",
+ "indexmap",
  "ketchup-analysis",
  "ketchup-app",
  "ketchup-application",
@@ -2380,6 +2383,7 @@ dependencies = [
  "serde_json",
  "sys-locale",
  "tempfile",
+ "toml_edit",
  "wgpu",
  "windows-sys 0.61.2",
  "winit",
@@ -2388,7 +2392,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-application"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "ketchup-analysis",
  "ketchup-assistant",
@@ -2409,7 +2413,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-assistant"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "ketchup-geometry",
  "ketchup-model",
@@ -2423,14 +2427,14 @@ dependencies = [
 
 [[package]]
 name = "ketchup-dwg"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "acadrust",
 ]
 
 [[package]]
 name = "ketchup-exact"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "cxx",
  "cxx-build",
@@ -2440,7 +2444,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-geometry"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "ketchup-tolerance",
  "serde",
@@ -2448,7 +2452,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-headless"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "ketchup-analysis",
  "ketchup-application",
@@ -2457,6 +2461,7 @@ dependencies = [
  "ketchup-model",
  "ketchup-pdm",
  "ketchup-program",
+ "ketchup-rejection",
  "serde",
  "serde_json",
  "tempfile",
@@ -2464,7 +2469,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-interaction"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "ketchup-geometry",
  "ketchup-model",
@@ -2473,7 +2478,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-macos-open"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "objc2 0.6.4",
  "objc2-foundation 0.3.2",
@@ -2481,7 +2486,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-manufacturing"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "ketchup-geometry",
  "ketchup-model",
@@ -2494,10 +2499,11 @@ dependencies = [
 
 [[package]]
 name = "ketchup-mcp"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "getrandom 0.3.4",
  "ketchup-program",
+ "ketchup-rejection",
  "libc",
  "serde_json",
  "sha2",
@@ -2507,7 +2513,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-model"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "ciborium",
  "ed25519-dalek",
@@ -2515,6 +2521,7 @@ dependencies = [
  "epaint_default_fonts",
  "ketchup-geometry",
  "ketchup-model",
+ "ketchup-rejection",
  "ketchup-test-env",
  "ketchup-tolerance",
  "miniz_oxide",
@@ -2528,7 +2535,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-pdm"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "ketchup-model",
  "serde",
@@ -2538,7 +2545,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-program"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "allocative",
  "anyhow",
@@ -2555,7 +2562,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-rejection"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -2563,7 +2570,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-scheduler"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "ciborium",
  "ed25519-dalek",
@@ -2576,6 +2583,7 @@ dependencies = [
  "ketchup-manufacturing",
  "ketchup-model",
  "ketchup-program",
+ "ketchup-rejection",
  "ketchup-test-env",
  "nix 0.31.3",
  "process-wrap",
@@ -2588,11 +2596,11 @@ dependencies = [
 
 [[package]]
 name = "ketchup-test-env"
-version = "0.3.2-dev"
+version = "0.3.2"
 
 [[package]]
 name = "ketchup-test-gpu"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "eframe",
  "egui_kittest",
@@ -2602,14 +2610,14 @@ dependencies = [
 
 [[package]]
 name = "ketchup-tolerance"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "ketchup-view-format"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "ketchup-manufacturing",
  "ketchup-model",
@@ -2622,7 +2630,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-viewer"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "eframe",
  "egui_kittest",
@@ -2637,12 +2645,13 @@ dependencies = [
  "serde",
  "serde_json",
  "sys-locale",
+ "tempfile",
  "wgpu",
 ]
 
 [[package]]
 name = "ketchup-viewer-android"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "android-activity",
  "android_logger",
@@ -2656,7 +2665,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-viewer-macos"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "ketchup-macos-open",
  "ketchup-viewer",
@@ -2664,7 +2673,7 @@ dependencies = [
 
 [[package]]
 name = "ketchup-viewer-web"
-version = "0.3.2-dev"
+version = "0.3.2"
 dependencies = [
  "eframe",
  "js-sys",
@@ -4860,6 +4869,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 
@@ -4871,6 +4881,12 @@ checksum = "1d38ac1cf9b95face32296c0a3ede1fdc270627c9d9c02a7274dd6d960dc4d56"
 dependencies = [
  "winnow",
 ]
+
+[[package]]
+name = "toml_writer"
+version = "1.2.0+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "009dbb7700f11c55ef83aebbe4c0e9cf1f1ac0844bd8d6f00dc38f302026e13a"
 
 [[package]]
 name = "tracing"

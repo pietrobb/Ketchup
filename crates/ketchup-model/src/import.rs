@@ -1803,7 +1803,7 @@ fn parse_ascii_vector(line: &str, prefix: &str) -> Result<[f64; 3], StlImportErr
         .map(|token| {
             token
                 .parse::<f64>()
-                .map_err(|_: std::num::ParseFloatError| StlImportError::InvalidNumber)
+                .map_err(|_not_a_number: std::num::ParseFloatError| StlImportError::InvalidNumber)
         });
     let coordinates = [
         values.next().ok_or(StlImportError::InvalidAscii)??,

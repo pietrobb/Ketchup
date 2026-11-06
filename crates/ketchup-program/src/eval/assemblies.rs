@@ -345,6 +345,13 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
                 "group {name:?}: kind {other:?} is \"assembly\" (its members must touch; the default) or \"logical\" (grouped only to be found, shown and hidden together, never checked for contact)"
             ),
         };
+        // Grouped only to be found, a logical group holds nothing up (review
+        // 2026-11-04 PG-144): grounding it would anchor every part in it.
+        if logical && grounded {
+            anyhow::bail!(
+                "group {name:?}: a kind=\"logical\" group cannot be grounded; it groups parts only to find, show and hide them. Ground the parts that stand on something instead"
+            );
+        }
         let heap = eval.heap();
         let members = members(items, heap)?;
         let state = state(eval)?;

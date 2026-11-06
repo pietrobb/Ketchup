@@ -22,8 +22,6 @@ pub(crate) struct FileState {
         Option<(PathBuf, ketchup_model::persistence::FileIdentity)>,
     pub(crate) work_recovery_digest: Option<String>,
     pub(crate) saved_digest: String,
-    /// File > Open Recent; outlives the document, so File > New carries it over.
-    pub(crate) recent: crate::recent_files::RecentFiles,
 }
 
 /// A file opened from a recovery copy in place of the one the user asked for.
@@ -62,7 +60,7 @@ pub(crate) struct LiveState {
     pub(crate) harnesses: Option<Vec<crate::live_bridge::mcp_setup::HarnessRow>>,
     /// Why Connect could not make this the window a `connect` without an id
     /// goes to (#2687 point 16); the AI then asks which window.
-    pub(crate) chosen_window_error: Option<String>,
+    pub(crate) chosen_window_error: Option<std::io::Error>,
 }
 
 /// Push/Pull input, its exact face-offset evaluation and the last committed
@@ -108,9 +106,6 @@ pub(crate) struct TransformToolState {
 pub(crate) struct ValueBox {
     pub(crate) input: String,
     pub(crate) focus: bool,
-    /// How every field of the window reads a decimal number: the system's
-    /// separator, read once at startup.
-    pub(crate) decimal: crate::length_input::DecimalSeparator,
 }
 
 /// The parameter editor and the provenance of the last recompute.
@@ -174,8 +169,25 @@ pub(crate) struct HoverState {
     pub(crate) press_points: [Option<Pos2>; 2],
 }
 
-/// Which side panels and windows are open.
-pub(crate) struct Panels {
+/// The window's settings: they outlive the document, so File > New keeps the
+/// whole struct rather than a list of fields copied back (review 2026-11-04 r19,
+/// where that list missed the theme).
+pub(crate) struct WindowSettings {
+    pub(crate) theme: ThemeKind,
+    /// How every field of the window reads a decimal number: the system's
+    /// separator, read once at startup.
+    pub(crate) decimal: crate::length_input::DecimalSeparator,
+    /// Whether a language picked in the menu is remembered for the next start.
+    pub(crate) remember_language: bool,
+    pub(crate) panes: Panes,
+    /// The dock page the user picked; `None` lets the dock choose.
+    pub(crate) dock_tab: Option<crate::DockTab>,
+    /// File > Open Recent.
+    pub(crate) recent: crate::recent_files::RecentFiles,
+}
+
+/// Which side panes and windows are open.
+pub(crate) struct Panes {
     pub(crate) outliner_visible: bool,
     pub(crate) tags_visible: bool,
     pub(crate) dimensions_visible: bool,
@@ -187,8 +199,6 @@ pub(crate) struct Panels {
 /// The right dock's pages.
 #[derive(Default)]
 pub(crate) struct Dock {
-    /// The page the user picked; `None` lets the dock choose.
-    pub(crate) tab: Option<crate::DockTab>,
     /// The program page brings the selected part's lines into view again.
     pub(crate) reveal_program_lines: bool,
 }
@@ -227,7 +237,6 @@ pub(crate) struct Clipboard {
 pub(crate) struct ReviewWorkflows {
     pub(crate) cam_reviews: CamReviewWorkflow,
     pub(crate) cam_export_dialog: Option<CamExportDialog>,
-    pub(crate) fea_reviews: FeaReviewWorkflow,
     pub(crate) fea_review_dialog: Option<FeaReviewDialog>,
     pub(crate) pdm: LocalPdmWorkflow,
     pub(crate) pdm_review_dialog: Option<PdmReviewDialog>,
@@ -261,6 +270,10 @@ pub(crate) struct ExactState {
     /// A box face the user clicked in the viewport before that body's exact
     /// result was shown; the selection moves to the exact face once it is.
     pub(crate) clicked_box_face: Option<ketchup_interaction::SelectionId>,
+    /// The document's mutation epoch before and after the last publication
+    /// of exact solids: what a client saw at the first is what the second
+    /// draws, the solids of the same document.
+    pub(crate) published_epochs: Option<(u64, u64)>,
 }
 
 /// The material takeoff window and the takeoff it shows.
@@ -287,6 +300,21 @@ pub(crate) struct DrawingsState {
     pub(crate) unreadable: Option<String>,
     /// The document's sheet settings changed since it was opened or saved.
     pub(crate) unsaved: bool,
+    /// The set the last export was refused at as another project's, with
+    /// what it was exported from, offered to take over (review 2026-11-04 r19
+    /// MF-162).
+    pub(crate) another_projects_set: Option<(
+        std::path::PathBuf,
+        crate::app::project_drawings::SetFileFormat,
+        String,
+    )>,
+    /// The set at this path the user takes over: the next export to it
+    /// replaces its sheets.
+    pub(crate) taking_over: Option<std::path::PathBuf>,
+    /// The ground floor found for ±0,000 in the document as it was then,
+    /// shown in the window, which asks every frame; found on a worker.
+    pub(crate) found_zero:
+        std::cell::RefCell<Option<(ExactCacheKey, crate::app::project_drawings::FoundZero)>>,
 }
 
 /// Viewer sharing preparation kept as project companion data, not CAD.

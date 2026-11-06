@@ -700,16 +700,59 @@ fn parts_that_touch_nothing_supported_are_warnings() {
 #[test]
 fn params_take_overrides_report_unknown_ones_and_check_ranges() {
     let source = "n = param(\"count\", 2, min = 1, max = 4)\nfor i in range(n):\n    box(\"p%d\" % i, (10, 10, 10), at = (20 * i, 0, 0))\n";
-    let overrides = BTreeMap::from([("count".to_owned(), 5.0), ("typo".to_owned(), 1.0)]);
+    let overrides = BTreeMap::from([("count".to_owned(), 3.0), ("typo".to_owned(), 1.0)]);
     let (evaluated, report) = run("t.star", source, &overrides).unwrap();
-    assert_eq!(evaluated.model.parts.len(), 5);
+    assert_eq!(evaluated.model.parts.len(), 3);
     assert_eq!(report.unused_overrides, vec!["typo".to_owned()]);
+    // A default outside its own range is the program's, so it runs and is reported.
+    let (_, report) = run(
+        "t.star",
+        "n = param(\"count\", 5, min = 1, max = 4)\n",
+        &BTreeMap::new(),
+    )
+    .unwrap();
     assert!(
         report
             .issues
             .iter()
             .any(|issue| issue.kind == "param_out_of_range")
     );
+}
+
+/// Review 2026-11-04 r19 (rest of WB-42): an override above `max` was reported only as
+/// an issue of the finished model, so `--set shelves=5000` built 5000 shelves for over
+/// two minutes first. It is refused where the program declares the parameter, naming it
+/// and its range, before anything uses it; the loop below would build 10^6 boxes.
+#[test]
+fn an_override_outside_its_range_is_refused_before_the_program_uses_it() {
+    let source = "n = param(\"shelves\", 4, min = 1, max = 20, whole = True, unit = \"\")\n\
+                  d = param(\"depth\", 300, min = 100)\n\
+                  for i in range(n):\n    box(\"s%d\" % i, (600, d, 18), at = (0, 0, 20 * i))\n";
+    for (name, value, range) in [
+        ("shelves", 1_000_000.0, "[1, 20]"),
+        ("shelves", 0.0, "[1, 20]"),
+        ("depth", 50.0, "[100, inf]"),
+    ] {
+        let overrides = BTreeMap::from([(name.to_owned(), value)]);
+        let error = format!("{:#}", run("t.star", source, &overrides).unwrap_err());
+        assert!(
+            error.contains(&format!("param {name} = {value} is outside {range}")),
+            "{error}"
+        );
+    }
+}
+
+/// Review 2026-11-04 r19 (rest of WB-42): `whole = True` with a default written `3.0`
+/// gave the program a float, so `range()` failed on it naming no parameter.
+#[test]
+fn a_whole_param_is_an_int_whatever_its_default_is_written_as() {
+    let source = "n = param(\"count\", 3.0, whole = True, unit = \"\")\n\
+                  for i in range(n):\n    box(\"p%d\" % i, (10, 10, 10), at = (20 * i, 0, 0))\n";
+    let (evaluated, _) = run("t.star", source, &BTreeMap::new()).unwrap();
+    assert_eq!(evaluated.model.parts.len(), 3);
+    let overrides = BTreeMap::from([("count".to_owned(), 2.0)]);
+    let (evaluated, _) = run("t.star", source, &overrides).unwrap();
+    assert_eq!(evaluated.model.parts.len(), 2);
 }
 
 /// Review 2026-10-26 WB-42: a switch param(…, min = 0, max = 1) took the override 0.001
@@ -730,6 +773,16 @@ fn a_whole_param_refuses_a_fraction() {
             format!("{error:#}")
                 .contains(&format!("param {name} = {value} takes whole numbers only")),
             "{error:#}"
+        );
+    }
+    // Review 2026-11-04 (rest of WB-42): 1e300 is whole but no int, so range()
+    // failed on it with a general type error.
+    for value in [1e300, -1e300, 3.0e9] {
+        let overrides = BTreeMap::from([("count".to_owned(), value)]);
+        let error = format!("{:#}", run("t.star", source, &overrides).unwrap_err());
+        assert!(
+            error.contains(&format!("param count = {value:e} is too large")),
+            "{error}"
         );
     }
     let overrides = BTreeMap::from([("count".to_owned(), 3.0), ("width".to_owned(), 0.5)]);
@@ -1975,6 +2028,7 @@ fn every_body_takes_material_color_and_attributes() {
     assert_eq!(part("e").material.as_deref(), Some("cast"));
     assert_eq!(part("f").material.as_deref(), Some("board"));
     assert_eq!(part("f").attributes["grain"], "x");
+    assert_eq!(part("f").attributes["material:axis"], "x");
     let error = run(
         "bad.star",
         "board(\"g\", [10, 10, 10], grain=\"w\")",

@@ -595,7 +595,7 @@ fn typed_move(
     input: &str,
 ) -> (Option<String>, bool, Vec3) {
     let mut app = KetchupApp::new();
-    app.value_box.decimal = decimal;
+    app.window.decimal = decimal;
     app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
     let initial_origin = app.occurrence_box_geometry(1).unwrap().0;
     app.dispatch_command(AppCommand::Move);
@@ -716,7 +716,7 @@ fn the_move_preview_shows_what_the_move_does() {
 fn a_separator_that_may_mean_something_else_on_a_comma_system_is_previewed() {
     let preview_in = |tool: ActiveTool, input: &str| {
         let mut app = KetchupApp::new();
-        app.value_box.decimal = DecimalSeparator::Comma;
+        app.window.decimal = DecimalSeparator::Comma;
         app.active_tool = tool;
         app.value_box.input = input.to_owned();
         app.value_box_length_preview()
@@ -754,7 +754,7 @@ fn every_value_preview_writes_numbers_with_the_systems_decimal_separator() {
     use DecimalSeparator::{Comma, Point};
     let preview_in = |decimal: DecimalSeparator, tool: ActiveTool, input: &str| {
         let mut app = KetchupApp::new();
-        app.value_box.decimal = decimal;
+        app.window.decimal = decimal;
         app.active_tool = tool;
         app.value_box.input = input.to_owned();
         app.value_box_length_preview()
@@ -1270,6 +1270,7 @@ fn move_ctrl_is_a_persistent_copy_toggle_during_an_active_gesture() {
             plane_z: 0.0,
             axis: None,
             axis_reference: None,
+            pinned_way: None,
             delta_mm: Vec3::new(25.0, 0.0, 0.0),
             copy: false,
         },
@@ -1346,6 +1347,7 @@ fn transform_copy_toggle_ends_with_the_committed_gesture() {
         plane_z: 0.0,
         axis: None,
         axis_reference: None,
+        pinned_way: None,
         delta_mm: Vec3::new(25.0, 0.0, 0.0),
         copy: true,
     }));
@@ -1414,6 +1416,7 @@ fn escape_and_tool_change_clear_transform_constraints_without_mutation() {
             plane_z: 0.0,
             axis: Some(Axis::X),
             axis_reference: Some(0.0),
+            pinned_way: None,
             delta_mm: Vec3::new(25.0, 0.0, 0.0),
             copy: false,
         },
@@ -1467,6 +1470,7 @@ fn stale_numeric_transform_confirmation_ends_the_copy_toggle_without_mutation() 
             plane_z: 0.0,
             axis: None,
             axis_reference: None,
+            pinned_way: None,
             delta_mm: Vec3::new(25.0, 0.0, 0.0),
             copy: true,
         },
@@ -1541,6 +1545,7 @@ fn transform_gestures_fail_closed_after_selection_drift() {
         plane_z: 0.0,
         axis: None,
         axis_reference: None,
+        pinned_way: None,
         delta_mm: Vec3::new(25.0, 0.0, 0.0),
         copy: false,
     };
@@ -1675,7 +1680,7 @@ fn a_pattern_spacing_reads_with_the_window_rule() {
         (DecimalSeparator::Point, "62,5", None),
     ] {
         let mut app = KetchupApp::new();
-        app.value_box.decimal = decimal;
+        app.window.decimal = decimal;
         app.select_from_outliner(InstancePath::root(OccurrenceId(1)), false);
         app.begin_linear_pattern();
         app.modal.get_mut::<PendingLinearPattern>().unwrap().spacing = spacing.to_owned();

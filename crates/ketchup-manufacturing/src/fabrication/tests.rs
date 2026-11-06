@@ -1239,11 +1239,13 @@ fn blank_point(blank: StockBlank, local: [f64; 3]) -> [f64; 3] {
     std::array::from_fn(|axis| local[axis] + blank.corner_mm[axis])
 }
 
-/// Review 2026-11-02 MF-121: a closed spline or an outline with holes was refused as
-/// "cuts could not be described"; it is a blank no format describes, refused for its
-/// outline. A circle is two arcs, described like any outline of lines and arcs.
+/// Review 2026-11-02 MF-121: a closed spline was refused as "cuts could not be
+/// described"; it is a blank no format describes, refused for its outline. A
+/// circle is two arcs, described like any outline of lines and arcs, and an
+/// outline with holes is its outer outline with openings cut through it
+/// (review 2026-11-04 MF-121) unless one of its loops has a Bezier edge.
 #[test]
-fn a_spline_or_holed_outline_is_a_free_form_blank_and_a_circle_is_not() {
+fn a_spline_is_a_free_form_blank_and_a_circle_or_holed_outline_is_not() {
     let point = |x: f64, y: f64| [x.to_bits(), y.to_bits()];
     let lines = ExactBRepPlanarGeometry::Boundary {
         closed: true,
@@ -1260,15 +1262,26 @@ fn a_spline_or_holed_outline_is_a_free_form_blank_and_a_circle_is_not() {
     assert!(is_free_form_outline(&ExactBRepPlanarGeometry::Spline {
         control_point_bits: vec![point(0.0, 0.0), point(1.0, 0.0), point(0.0, 1.0)],
     }));
-    assert!(is_free_form_outline(&ExactBRepPlanarGeometry::Region {
+    let holed = |hole| ExactBRepPlanarGeometry::Region {
         outer: ketchup_model::exact_brep_graph::ExactBRepPlanarLoop::Boundary {
             segments: Vec::new(),
         },
-        holes: vec![
-            ketchup_model::exact_brep_graph::ExactBRepPlanarLoop::Circle {
-                center_bits: point(0.0, 0.0),
-                radius_bits: 10.0_f64.to_bits(),
-            }
-        ],
-    }));
+        holes: vec![hole],
+    };
+    assert!(!is_free_form_outline(&holed(
+        ketchup_model::exact_brep_graph::ExactBRepPlanarLoop::Circle {
+            center_bits: point(0.0, 0.0),
+            radius_bits: 10.0_f64.to_bits(),
+        }
+    )));
+    assert!(is_free_form_outline(&holed(
+        ketchup_model::exact_brep_graph::ExactBRepPlanarLoop::Boundary {
+            segments: vec![ExactBRepPlanarSegment::CubicBezier {
+                start_bits: point(0.0, 0.0),
+                control_1_bits: point(1.0, 0.0),
+                control_2_bits: point(1.0, 1.0),
+                end_bits: point(0.0, 1.0),
+            }],
+        }
+    )));
 }

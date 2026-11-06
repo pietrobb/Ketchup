@@ -70,10 +70,14 @@ fn hang_guard_within(
         if hung {
             use std::io::Write as _;
             // Straight to stderr: whatever the frame does next, the cause is named.
-            let _ = writeln!(
+            if writeln!(
                 std::io::stderr(),
                 "hung: {what} was still held after {patience:?}; a frame waited for it, so it is let go"
-            );
+            )
+            .is_err()
+            {
+                // With no stderr the failing assertion is left to name the cause.
+            }
             release();
         }
         hung

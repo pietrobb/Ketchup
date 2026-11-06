@@ -43,6 +43,12 @@ impl KetchupApp {
     }
 
     pub(crate) fn current_transform_correction(&mut self) -> Option<&CorrectionSession> {
+        self.end_stale_transform_correction();
+        self.transform_tool.correction.as_ref()
+    }
+
+    /// Ends the transform correction once the model it was begun on has changed.
+    pub(crate) fn end_stale_transform_correction(&mut self) {
         let stale = self
             .transform_tool
             .correction
@@ -51,7 +57,6 @@ impl KetchupApp {
         if stale {
             self.end_transform_correction();
         }
-        self.transform_tool.correction.as_ref()
     }
 
     pub(crate) fn current_move_correction(
@@ -1422,7 +1427,7 @@ impl KetchupApp {
         principal: ProposalPrincipal,
     ) -> bool {
         let distance_expression = self.push_pull.distance_input.clone();
-        if parse_distance_mm(&distance_expression, self.value_box.decimal).map(f64::to_bits)
+        if parse_distance_mm(&distance_expression, self.window.decimal).map(f64::to_bits)
             != Some(distance_mm.to_bits())
         {
             return false;
@@ -1771,7 +1776,7 @@ impl KetchupApp {
         } else if matches!(
             self.status_key,
             "status-program-planning" | "status-exact-pending"
-        ) && parse_distance_mm(&self.push_pull.distance_input, self.value_box.decimal)
+        ) && parse_distance_mm(&self.push_pull.distance_input, self.window.decimal)
             .is_some_and(|distance| distance.abs() >= 0.01)
         {
             // The drag adds a step, as its preview did; it does not correct the last one.
@@ -2347,6 +2352,7 @@ impl KetchupApp {
                 plane_z: pointer_start_world.z,
                 axis: self.gesture.transform.move_axis_lock,
                 axis_reference,
+                pinned_way: None,
                 delta_mm: Vec3::ZERO,
                 copy: group_id.is_none() && copy,
             },
@@ -2508,6 +2514,14 @@ impl KetchupApp {
         self.end_transform_correction();
         self.gesture.transform.move_axis_lock = axis;
         if let Some(drag) = self.move_session_mut() {
+            drag.pinned_way = axis.map(|axis| {
+                let unit = axis_direction(axis);
+                if dot(drag.delta_mm, unit) < 0.0 {
+                    unit * -1.0
+                } else {
+                    unit
+                }
+            });
             drag.axis = axis;
             drag.axis_reference = None;
             drag.delta_mm = Vec3::ZERO;

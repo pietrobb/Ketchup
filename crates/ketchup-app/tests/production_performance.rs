@@ -176,22 +176,23 @@ exit 0"#,
         .collect()
 }
 
+/// `None` once the process has exited: a reaped process has no status, and
+/// an exited one not yet reaped has no `VmHWM` line.
 #[cfg(target_os = "linux")]
-fn linux_process_memory_high_water_bytes(pid: u32) -> u64 {
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status"))
-        .unwrap_or_else(|error| panic!("read /proc/{pid}/status: {error}"));
+fn linux_process_memory_high_water_bytes(pid: u32) -> Option<u64> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
     let kib = status
         .lines()
         .find_map(|line| line.strip_prefix("VmHWM:"))
         .and_then(|value| value.split_whitespace().next())
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or_else(|| panic!("VmHWM must be present for process {pid}"));
-    kib * 1024
+        .and_then(|value| value.parse::<u64>().ok())?;
+    Some(kib * 1024)
 }
 
 #[cfg(target_os = "linux")]
 fn process_memory_high_water_bytes() -> u64 {
     linux_process_memory_high_water_bytes(std::process::id())
+        .expect("/proc must report VmHWM for this process")
 }
 
 #[cfg(target_os = "linux")]
@@ -230,10 +231,40 @@ fn process_tree_memory_high_waters() -> Vec<(u32, u64)> {
             break;
         }
     }
+    // A descendant that exited after the listing no longer holds memory.
     descendants
         .into_iter()
-        .map(|pid| (pid, linux_process_memory_high_water_bytes(pid)))
+        .filter_map(|pid| linux_process_memory_high_water_bytes(pid).map(|bytes| (pid, bytes)))
         .collect()
+}
+
+/// A descendant of a concurrent test can exit between the `/proc` listing
+/// and the status read (CI run 41945189481: "VmHWM must be present").
+#[cfg(target_os = "linux")]
+#[test]
+fn process_tree_memory_skips_an_exited_descendant() {
+    let mut child = Command::new("true")
+        .spawn()
+        .expect("spawn a child that exits");
+    let pid = child.id();
+    // Not reaped yet: the exited child stays in /proc as a zombie without VmHWM.
+    let exited = crate::harness::poll_until(crate::harness::WAIT_DEADLINE, || {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| {
+                stat.rsplit_once(") ")
+                    .map(|(_, fields)| fields.starts_with('Z'))
+            })
+            == Some(true)
+    });
+    assert!(exited, "child {pid} did not exit");
+    let tree = process_tree_memory_high_waters();
+    assert!(
+        tree.iter().all(|&(entry, _)| entry != pid),
+        "exited child {pid} was measured"
+    );
+    assert!(tree.iter().any(|&(entry, _)| entry == std::process::id()));
+    child.wait().expect("reap the exited child");
 }
 
 /// Lifetime peak physical footprint, the figure Activity Monitor reports as

@@ -763,12 +763,14 @@ impl ChunkTable {
 
 /// `value` as the `u32` a count or length is written as.
 fn u32_count(value: usize) -> Result<u32, PersistenceError> {
-    u32::try_from(value).map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)
+    u32::try_from(value)
+        .map_err(|_out_of_range: std::num::TryFromIntError| PersistenceError::LengthOverflow)
 }
 
 /// `value` as the `u64` a byte length is written as.
 fn u64_len(value: usize) -> Result<u64, PersistenceError> {
-    u64::try_from(value).map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)
+    u64::try_from(value)
+        .map_err(|_out_of_range: std::num::TryFromIntError| PersistenceError::LengthOverflow)
 }
 
 /// A history revision whose snapshot is the container's `document.bin`.
@@ -794,7 +796,7 @@ fn encode_history<R: HistoryRevision>(
     #[cfg(feature = "testing")]
     HISTORY_ENCODES.set(HISTORY_ENCODES.get() + 1);
     let count = u32::try_from(revisions.len())
-        .map_err(|_: std::num::TryFromIntError| PersistenceError::ResourceLimit)?;
+        .map_err(|_out_of_range: std::num::TryFromIntError| PersistenceError::ResourceLimit)?;
     if count == 0 || count > FILE_HISTORY_REVISIONS || cursor >= revisions.len() {
         return Err(PersistenceError::ResourceLimit);
     }
@@ -1296,7 +1298,17 @@ fn publish_bytes(
         Err(error @ FilePersistenceError::Format(PersistenceError::ResourceLimit)) => {
             return Err(error);
         }
-        Err(_) if expected.is_some() => return Err(FilePersistenceError::ExternalConflict),
+        // Gone, or no longer a document (another program wrote it): changed outside.
+        Err(FilePersistenceError::Io(error))
+            if expected.is_some() && error.kind() == io::ErrorKind::NotFound =>
+        {
+            return Err(FilePersistenceError::ExternalConflict);
+        }
+        Err(FilePersistenceError::Format(_)) if expected.is_some() => {
+            return Err(FilePersistenceError::ExternalConflict);
+        }
+        // A file that is there but cannot be read now says why (review 2026-11-04 TST-140).
+        Err(error) if expected.is_some() => return Err(error),
         _ => {}
     }
     write_atomic_after_prepare(
@@ -1365,7 +1377,8 @@ fn sync_parent_directory(parent: &Path) -> io::Result<()> {
     }
     #[cfg(not(unix))]
     {
-        let _ = parent;
+        // A directory's entries are durable with the file's own sync here.
+        let _: &Path = parent;
         Ok(())
     }
 }
@@ -1771,7 +1784,7 @@ fn container_directory(bytes: &[u8]) -> Result<Vec<ContainerEntry<'_>>, Persiste
         validate_container_path(&path)?;
         let required = reader.boolean()?;
         let length = usize::try_from(reader.u64()?)
-            .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
+            .map_err(|_out_of_range: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
         // Every stored length fits in the rest of the file, its checksum first.
         if length > (bytes.len() - reader.cursor).saturating_sub(32) {
             return Err(PersistenceError::Truncated);
@@ -1779,7 +1792,7 @@ fn container_directory(bytes: &[u8]) -> Result<Vec<ContainerEntry<'_>>, Persiste
         let checksum: [u8; 32] = reader
             .take(32)?
             .try_into()
-            .map_err(|_: std::array::TryFromSliceError| PersistenceError::Truncated)?;
+            .map_err(|_wrong_length: std::array::TryFromSliceError| PersistenceError::Truncated)?;
         entries.push(ContainerEntry {
             path,
             required,
@@ -2693,11 +2706,11 @@ fn read_history_snapshot<'a>(
         }
     }
     let length = usize::try_from(reader.u64()?)
-        .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
+        .map_err(|_out_of_range: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
     let checksum: [u8; 32] = reader
         .take(32)?
         .try_into()
-        .map_err(|_: std::array::TryFromSliceError| PersistenceError::Truncated)?;
+        .map_err(|_wrong_length: std::array::TryFromSliceError| PersistenceError::Truncated)?;
     if schema >= 4 {
         return Ok(HistorySnapshot::Chunks {
             length,
@@ -2717,21 +2730,21 @@ fn read_chunk_list<'a>(
     max_length: usize,
 ) -> Result<(usize, [u8; 32], &'a [u8]), PersistenceError> {
     let length = usize::try_from(reader.u64()?)
-        .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
+        .map_err(|_out_of_range: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
     if length > max_length {
         return Err(PersistenceError::ResourceLimit);
     }
     let checksum: [u8; 32] = reader
         .take(32)?
         .try_into()
-        .map_err(|_: std::array::TryFromSliceError| PersistenceError::Truncated)?;
+        .map_err(|_wrong_length: std::array::TryFromSliceError| PersistenceError::Truncated)?;
     Ok((length, checksum, chunk_numbers(reader)?))
 }
 
 /// The chunk numbers (`u32` each) of a chunk list.
 fn chunk_numbers<'a>(reader: &mut Reader<'a>) -> Result<&'a [u8], PersistenceError> {
     let count = usize::try_from(reader.count_with_limit(MAX_COLLECTION_ITEMS)?)
-        .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
+        .map_err(|_out_of_range: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
     reader.take(count * 4)
 }
 
@@ -3335,17 +3348,17 @@ impl<'a> Reader<'a> {
     }
     fn u16(&mut self) -> Result<u16, PersistenceError> {
         Ok(u16::from_le_bytes(self.take(2)?.try_into().map_err(
-            |_: std::array::TryFromSliceError| PersistenceError::Truncated,
+            |_wrong_length: std::array::TryFromSliceError| PersistenceError::Truncated,
         )?))
     }
     fn u32(&mut self) -> Result<u32, PersistenceError> {
         Ok(u32::from_le_bytes(self.take(4)?.try_into().map_err(
-            |_: std::array::TryFromSliceError| PersistenceError::Truncated,
+            |_wrong_length: std::array::TryFromSliceError| PersistenceError::Truncated,
         )?))
     }
     fn u64(&mut self) -> Result<u64, PersistenceError> {
         Ok(u64::from_le_bytes(self.take(8)?.try_into().map_err(
-            |_: std::array::TryFromSliceError| PersistenceError::Truncated,
+            |_wrong_length: std::array::TryFromSliceError| PersistenceError::Truncated,
         )?))
     }
     fn count_with_limit(&mut self, limit: u32) -> Result<u32, PersistenceError> {
@@ -3363,7 +3376,7 @@ impl<'a> Reader<'a> {
     fn string(&mut self) -> Result<String, PersistenceError> {
         // The running string budget below bounds each length.
         let length = usize::try_from(self.count_with_limit(u32::MAX)?)
-            .map_err(|_: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
+            .map_err(|_out_of_range: std::num::TryFromIntError| PersistenceError::LengthOverflow)?;
         self.string_bytes = self
             .string_bytes
             .checked_add(length)
@@ -4208,6 +4221,35 @@ mod tests {
         ));
         assert_eq!(fs::read(&path).unwrap(), external);
         assert_eq!(fs::read(recovery_path(&path)).unwrap(), initial);
+    }
+
+    /// A file still there that cannot be read is not a change made outside:
+    /// the save says why it failed and offers no conflict to overwrite
+    /// (review 2026-11-04 r19 P3, TST-140).
+    #[test]
+    fn conditional_save_over_a_file_that_cannot_be_read_says_why_instead_of_a_conflict() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("unreadable.ketchup");
+        let initial = save(&DocumentStore::new().current());
+        let expected = FileIdentity::from_bytes(&initial);
+        // A folder at the document's path cannot be read as a file.
+        fs::create_dir(&path).unwrap();
+
+        let result = publish_bytes(
+            &path,
+            &initial,
+            Publish::IfUnchanged(expected),
+            || {},
+            sync_parent_directory,
+        );
+
+        match result {
+            Err(FilePersistenceError::Io(error)) => {
+                assert_ne!(error.kind(), io::ErrorKind::NotFound, "{error}");
+            }
+            other => panic!("expected the read error, got {other:?}"),
+        }
+        assert!(path.is_dir(), "what is at the path stays");
     }
 
     #[test]

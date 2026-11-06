@@ -909,7 +909,7 @@ fn ensure_repository_directory(
 ) -> Result<(), LocalPdmError> {
     let relative = directory
         .strip_prefix(repository)
-        .map_err(|_: std::path::StripPrefixError| LocalPdmError::InvalidRepositoryPath)?;
+        .map_err(|_outside: std::path::StripPrefixError| LocalPdmError::InvalidRepositoryPath)?;
     if create {
         fs::create_dir_all(repository)?;
     }

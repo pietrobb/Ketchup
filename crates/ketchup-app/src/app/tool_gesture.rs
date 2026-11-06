@@ -475,7 +475,7 @@ impl KetchupApp {
     }
 
     fn apply_typed_scale(&mut self) -> bool {
-        let Some(input) = ScaleInput::parse(&self.value_box.input, self.value_box.decimal) else {
+        let Some(input) = ScaleInput::parse(&self.value_box.input, self.window.decimal) else {
             self.digest = self.catalog.text("digest-scale-invalid-factor");
             return false;
         };
@@ -501,7 +501,7 @@ impl KetchupApp {
 
     fn apply_typed_rotate(&mut self) -> bool {
         let Some(angle_degrees) =
-            super::commands::parse_angle_degrees(&self.value_box.input, self.value_box.decimal)
+            super::commands::parse_angle_degrees(&self.value_box.input, self.window.decimal)
                 .filter(|angle| angle.abs() <= 360.0)
         else {
             self.digest = self.catalog.text("digest-rotate-invalid-angle");
@@ -548,7 +548,7 @@ impl KetchupApp {
                 .as_ref()
                 .is_none_or(|primary| *primary == last.selection)
         });
-        if parse_distance_mm(&self.value_box.input, self.value_box.decimal)
+        if parse_distance_mm(&self.value_box.input, self.window.decimal)
             .is_none_or(|distance| !corrects_last && distance.abs() <= limits::MIN_LENGTH_MM)
         {
             self.digest = self.catalog.text("digest-push-pull-invalid-distance");
@@ -592,7 +592,7 @@ impl KetchupApp {
                 "digest-exact-value-applied",
                 &BTreeMap::from([(
                     "value",
-                    parse_distance_mm(&self.value_box.input, self.value_box.decimal)
+                    parse_distance_mm(&self.value_box.input, self.window.decimal)
                         .map_or_else(String::new, format_signed_mm),
                 )]),
             );
@@ -611,7 +611,7 @@ impl KetchupApp {
         let value = self.value_box.input.trim();
         if is_move_copy_array(value) {
             let limit = MAX_CAD_GENERATED_OCCURRENCES.to_string();
-            let Some((mode, count)) = parse_move_copy_array(value, self.value_box.decimal) else {
+            let Some((mode, count)) = parse_move_copy_array(value, self.window.decimal) else {
                 self.digest = self.catalog.format(
                     "digest-copy-array-invalid",
                     &BTreeMap::from([("limit", limit)]),
@@ -665,7 +665,7 @@ impl KetchupApp {
         // the way the pointer points along the axis, the axis itself when
         // no drag shows one, and nowhere while a drag shows none yet.
         let axis_travel = self.gesture.transform.move_axis_lock.and_then(|axis| {
-            let distance_mm = parse_distance_mm(input, self.value_box.decimal)?;
+            let distance_mm = parse_distance_mm(input, self.window.decimal)?;
             let unit = axis_direction(axis);
             let toward = match way.map(|way| dot(way, unit)) {
                 Some(along) if along.abs() >= ketchup_model::tolerance::ROUNDING => {
@@ -682,9 +682,9 @@ impl KetchupApp {
             })
         });
         axis_travel
-            .or_else(|| parse_move_vector(input, self.value_box.decimal).map(TypedMove::Vector))
+            .or_else(|| parse_move_vector(input, self.window.decimal).map(TypedMove::Vector))
             .or_else(|| {
-                let distance_mm = parse_distance_mm(input, self.value_box.decimal)?;
+                let distance_mm = parse_distance_mm(input, self.window.decimal)?;
                 Some(TypedMove::Distance {
                     delta_mm: way.map(|way| way * (distance_mm / length(way))),
                     distance_mm,
@@ -693,11 +693,14 @@ impl KetchupApp {
     }
 
     /// The way a typed Move distance goes: the way a drag in flight shows,
-    /// else the way the Move it corrects went. None while a drag shows no
-    /// way yet, and with nothing to correct.
+    /// or went along the axis pinned since, else the way the Move it corrects
+    /// went. None while a drag shows no way yet, and with nothing to correct.
     fn typed_move_way(&self) -> Option<Vec3> {
         if let Some((drag, _)) = self.move_session() {
-            return (length(drag.delta_mm) >= 0.01).then_some(drag.delta_mm);
+            if length(drag.delta_mm) >= 0.01 {
+                return Some(drag.delta_mm);
+            }
+            return drag.pinned_way;
         }
         let session = self
             .transform_tool

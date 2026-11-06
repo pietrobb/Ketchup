@@ -6,6 +6,7 @@ use crate::{
     Anchor, Camera, DisplayStyle, InstancePath, Package, PackageExport, Section, Source, reject,
 };
 use ketchup_rejection::Rejection;
+use ketchup_rejection::{Held, Reason, dropped};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::hash::BuildHasher;
@@ -323,7 +324,12 @@ static ID_STREAM: OnceLock<AtomicU64> = OnceLock::new();
 /// has no randomness of its own (the browser) calls it once, before any
 /// comment is written; elsewhere the operating system seeds it.
 pub fn seed_comment_ids(seed: u64) {
-    let _ = ID_STREAM.set(AtomicU64::new(seed));
+    // Seeded already or IDs drawn: the stream they come from continues,
+    // so no ID repeats.
+    dropped(
+        ID_STREAM.set(AtomicU64::new(seed)).map_err(Held),
+        Reason::AlreadyHeld,
+    );
 }
 
 /// A random ID below 2^53, exact in every JSON reader (SplitMix64).

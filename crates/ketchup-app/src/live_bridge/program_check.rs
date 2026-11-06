@@ -7,6 +7,7 @@ mod failure_tests;
 #[path = "program_plan_tests.rs"]
 mod tests;
 use super::*;
+use crate::delivery::Deliver;
 use crate::program_edit::ProgramEdit;
 use ketchup_application::program_isolation::{CheckDeadline, complete_pending_checks};
 use ketchup_application::{ExactBaseline, RuleProgramApplyError, RuleProgramPlan};
@@ -117,6 +118,24 @@ impl ProgramCheckJob {
             Self::Reporting(job) => &job.answer.cancelled,
         }
     }
+
+    /// Ends the job of a bridge being dropped (another client takes the
+    /// window over, or the user disconnects) as its client cancelling it
+    /// would: its worker stops and what it kept in the window is put back.
+    /// It sends no answer, so the connection says why it ended (review
+    /// 2026-11-04 MCP-141).
+    pub(super) fn abandon(&mut self, app: &mut KetchupApp, document_epoch: u64) {
+        self.request_cancelled().store(true, Ordering::Release);
+        match self {
+            Self::Checking(job) => {
+                job.worker_cancelled.store(true, Ordering::Release);
+                job.stop_completion();
+            }
+            Self::Plugin(job) => job.stop_worker(),
+            Self::ProjectDrawings(job) => job.abandon(app, document_epoch),
+            _ => {}
+        }
+    }
 }
 
 pub(super) struct ProgramPlanJob {
@@ -172,7 +191,7 @@ impl ExactCheckJob {
             .name("ketchup-live-program-report".into())
             .spawn(move || {
                 complete_pending_checks(&mut report, &model, deadline, &cancel);
-                let _ = sender.try_send(report);
+                sender.deliver(report);
                 repaint.request_repaint();
             });
         match spawn {
@@ -424,7 +443,7 @@ impl LiveBridge {
             .name("ketchup-live-program-plan".into())
             .spawn(move || {
                 let result = plan_with_report(&document, &worker_source, deadline, true, &cancel);
-                let _ = sender.try_send(result);
+                sender.deliver(result);
                 repaint.request_repaint();
             });
         if let Err(error) = spawn {
@@ -544,7 +563,7 @@ impl LiveBridge {
                     deadline,
                     thread_cancelled,
                 );
-                let _ = sender.try_send((report, exact, next));
+                sender.deliver((report, exact, next));
                 repaint.request_repaint();
             });
         if let Err(error) = spawn {

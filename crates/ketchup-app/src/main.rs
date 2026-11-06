@@ -166,9 +166,11 @@ fn main() -> eframe::Result {
         (None, first_argument.into_iter().chain(arguments).collect())
     };
     let live_requested = bootstrap.is_some();
+    // Started without a console, the window logs to a file (review 2026-11-04 r19 TST-160).
+    ketchup_rejection::dropped::log_window_to("Ketchup", "ketchup.log");
     let requests = OpenRequests::default();
     #[cfg(target_os = "macos")]
-    let _open_events = {
+    let _open_events_guard = {
         let requests = requests.clone();
         ketchup_macos_open::install(move |path| requests.push(path))
     };
