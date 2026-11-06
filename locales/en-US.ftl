@@ -1329,6 +1329,7 @@ error-export-cnc-dxf = CNC DXF export to { $path } failed: { $reason }
 about-description = Open-source AI-native 2D/3D modeler
 about-version = Version { $version }
 about-license = License: { $license }
+about-log = Log: { $path }
 about-close = Close
 shortcuts-title = Keyboard shortcuts
 shortcuts-row = { $command }    { $shortcut }

@@ -1298,6 +1298,13 @@ impl KetchupApp {
                     "about-license",
                     &BTreeMap::from([("license", env!("CARGO_PKG_LICENSE").to_owned())]),
                 ));
+                // Review 2026-11-06 P3: a window logs to a file it never named.
+                if let Some(log) = ketchup_rejection::dropped::log_file() {
+                    ui.label(self.catalog.format(
+                        "about-log",
+                        &BTreeMap::from([("path", log.display().to_string())]),
+                    ));
+                }
                 ui.separator();
                 if ui.button(self.catalog.text("about-close")).clicked() {
                     self.window.panes.about_open = false;

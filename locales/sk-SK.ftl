@@ -1331,6 +1331,7 @@ error-export-cnc-dxf = Export CNC DXF do { $path } zlyhal: { $reason }
 about-description = Open-source AI-native 2D/3D modelár
 about-version = Verzia { $version }
 about-license = Licencia: { $license }
+about-log = Záznam: { $path }
 about-close = Zavrieť
 shortcuts-title = Klávesové skratky
 shortcuts-row = { $command }    { $shortcut }
