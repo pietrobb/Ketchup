@@ -106,7 +106,13 @@ checker.serde_enums = lambda tag: {{}}
 checker.version = lambda tag: "0.3.0"
 checker.what_it_reads = lambda tag: []
 checker.old_workspace = lambda tag, target: pathlib.Path(".")
-checker.subprocess.run = lambda *args, **kwargs: types.SimpleNamespace(returncode=0)
+def run(command, **kwargs):
+    if "release-reader" in command:
+        history = pathlib.Path(command[-1]) / "history"
+        history.mkdir()
+        (history / "saved-108-a.ketchup").write_bytes(b"x")
+    return types.SimpleNamespace(returncode=0)
+checker.subprocess.run = run
 sys.exit(checker.main(["--tag", "v0.3.0", "--files", {str(tmp_path)!r}]))
 """
     result = subprocess.run(
@@ -176,6 +182,28 @@ def test_a_file_a_release_opens_but_loses_a_field_of_when_saving_fails(tmp_path,
     resaved = str(tmp_path / "resaved-0.3.1")
     assert opened[-1] == resaved
     assert compared[-3:-1] == [str((tmp_path / "files").resolve()), resaved]
+
+
+@pytest.mark.parametrize("restores", [False, True])
+def test_no_release_restoring_the_history_fails(tmp_path, monkeypatch, capsys, restores):
+    # Review 2026-11-06 P3: a release that does not restore a file's history saves none
+    # in history/, and the comparison of the history was skipped without a word. At
+    # least one release read must restore it.
+    def run(command, **kwargs):
+        if "release-reader" in command and restores:
+            history = Path(command[-1]) / "history"
+            history.mkdir(parents=True)
+            (history / "saved-108-a.ketchup").write_bytes(b"x")
+        return type("Done", (), {"returncode": 0})()
+
+    monkeypatch.setattr(checker.subprocess, "run", run)
+    monkeypatch.setattr(checker, "serde_enums", lambda tag: {})
+    monkeypatch.setattr(checker, "what_it_reads", lambda tag: ["108", "1", "0"])
+    monkeypatch.setattr(checker, "old_workspace", lambda tag, target: tmp_path)
+    monkeypatch.setattr(checker.tempfile, "TemporaryDirectory", lambda **kwargs: _Here(tmp_path))
+    result = checker.main(["--tag", "v0.3.1", "--files", str(tmp_path / "files")])
+    assert result == (0 if restores else 1)
+    assert ("restored the Undo history of no file" in capsys.readouterr().out) != restores
 
 
 class _Here:
