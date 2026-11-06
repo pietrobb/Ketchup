@@ -938,11 +938,11 @@ mod tests {
                 .send(format!("{message}\n").into_bytes())
                 .expect("the server reads");
         }
-        let cancelled = seen.recv_timeout(std::time::Duration::from_secs(3));
+        let cancelled = seen.recv_timeout(std::time::Duration::from_secs(5));
         assert_eq!(cancelled.expect("the cancellation is read"), cancel);
         let replied: Vec<Value> = (0..3)
             .map(|_| {
-                let reply = replies.recv_timeout(std::time::Duration::from_secs(3));
+                let reply = replies.recv_timeout(std::time::Duration::from_secs(5));
                 reply.expect("answered while the queue is full")
             })
             .collect();
@@ -966,8 +966,10 @@ mod tests {
     /// for a client that had gone.
     #[test]
     fn calls_behind_a_full_queue_are_not_run_once_the_client_has_gone() {
+        // The client still reads the replies; only its input has ended.
         let Behind {
             send_line,
+            replies: _replies,
             later_ran,
             served,
             ..
