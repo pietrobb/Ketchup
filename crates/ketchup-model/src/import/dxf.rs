@@ -4202,6 +4202,19 @@ fn parse_optional_text<'a>(
     Ok(value)
 }
 
+/// The string at `code` as the drawing means it, each `\U+XXXX` and `\M+nXXXX` read as
+/// its character ([`text::unicode_escapes`]): a block's name, an attribute's tag and
+/// value, a hatch's pattern, a dimension's text. A drawing older than 2007 escapes so what
+/// its code page lacks, and Kečup writes so all it rewrites under a code page header;
+/// kept raw, a name read back after a save was not the name read before it (capability
+/// review of r23 UL-200).
+fn parse_optional_string(
+    record: &[DxfPair<'_>],
+    code: i16,
+) -> Result<Option<String>, DxfImportError> {
+    Ok(parse_optional_text(record, code)?.map(|value| text::unicode_escapes(value).into_owned()))
+}
+
 /// The key of a block name: in capitals, each `\U+XXXX` read as its character (a DXF
 /// older than 2007 writes so a character outside its code page, `Profondit\U+00E0`, and
 /// one beyond U+FFFF as the pair of its UTF-16 units: review 2026-11-06 r23 P3), as

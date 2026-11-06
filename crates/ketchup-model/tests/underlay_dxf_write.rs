@@ -2556,6 +2556,72 @@ fn a_utf8_drawing_under_a_code_page_header_reads_alike_after_texts_are_taken_out
     }
 }
 
+/// Capability review of r23 UL-200: with what is not ASCII written as `\U+XXXX` all
+/// through the file, a block's name, an attribute's tag and value and a hatch's pattern
+/// were read back as written, „\U+0394-zna\U+010Dka“: the drawing no longer read as the
+/// one edited, and a second save found the insert and the hatch changed in the file.
+#[test]
+fn a_utf8_drawing_under_a_code_page_header_keeps_its_names_through_two_saves() {
+    let header = HEADER.replace(
+        "9\n$INSUNITS\n",
+        "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
+    );
+    let named = |part: &str| {
+        part.replace("2\nleaf\n", "2\nΔ-značka\n")
+            .replace("1\nD-01\n", "1\nКухня 𝔸\n")
+            .replace("2\nNAME\n", "2\nМІСТО\n")
+            .replace("2\nUSER\n", "2\nØ-vzor\n")
+    };
+    let notes = "0\nTEXT\n5\nB0\n330\n1F\n100\nAcDbEntity\n8\nnotes\n100\nAcDbText\n\
+                 10\n0\n20\n9000\n30\n0\n40\n250\n1\n€ 120\n100\nAcDbText\n\
+                 0\nTEXT\n5\nB1\n330\n1F\n100\nAcDbEntity\n8\nnotes\n100\nAcDbText\n\
+                 10\n0\n20\n9500\n30\n0\n40\n250\n1\nΔh = 5\n100\nAcDbText\n0\nENDSEC\n";
+    let entities = named(ENTITIES).replace("0\nENDSEC\n", notes);
+    let source = format!("{header}{TABLES}{}{entities}0\nEOF\n", named(BLOCKS));
+    let original = read(source.as_bytes());
+    let details = |underlay: &DxfUnderlay| {
+        underlay
+            .lines
+            .objects()
+            .objects
+            .iter()
+            .filter(|object| matches!(object.kind.name(), "INSERT" | "HATCH"))
+            .map(|object| format!("{:?}", object.detail))
+            .collect::<Vec<_>>()
+    };
+    let before = details(&original);
+    assert!(before.iter().any(|detail| detail.contains("Δ-značka")
+        && detail.contains("Кухня 𝔸")
+        && detail.contains("МІСТО")));
+    assert!(before.iter().any(|detail| detail.contains("Ø-vzor")));
+
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(id_of(&original.lines, 0xB0));
+    let once = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        &original.lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert!(once.is_ascii(), "{}", String::from_utf8_lossy(&once));
+    assert_eq!(details(&read(&once)), before);
+
+    // Saved again over the file just written, with one more text taken out.
+    edits.removed_objects.insert(id_of(&original.lines, 0xB1));
+    let twice = write_reported(&once, DxfImportOptions::new(None), &original.lines, &edits)
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        (
+            twice.changed_in_file,
+            twice.added_in_file,
+            twice.removed_in_file
+        ),
+        (0, 0, 1)
+    );
+    assert_eq!(details(&read(&twice.dxf)), before);
+}
+
 /// Review 2026-10-31 P3: a polyline drawn into an R13 drawing was written as LWPOLYLINE,
 /// which came only with R14. It is a POLYLINE there, with its VERTEX and SEQEND marked as
 /// R13 marks them and owned by it.
