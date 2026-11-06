@@ -277,8 +277,19 @@ pub(crate) fn write_keeping_file(file: &Path, text: &str, backup: bool) -> io::R
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             let file = link_target(file);
             let directory = file.parent().unwrap_or(Path::new("."));
+            let nearest = nearest_folder(directory);
             std::fs::create_dir_all(directory)?;
-            return write_staged(directory, &file, text, None);
+            #[cfg(unix)]
+            if let Some((folder, like)) = &nearest {
+                give_folders(folder, directory, like)?;
+            }
+            return write_staged(
+                directory,
+                &file,
+                text,
+                None,
+                nearest.as_ref().map(|(_, like)| like),
+            );
         }
         Err(error) => return Err(error),
     };
@@ -290,7 +301,34 @@ pub(crate) fn write_keeping_file(file: &Path, text: &str, backup: bool) -> io::R
     }
     let metadata = std::fs::metadata(&target)?;
     let directory = target.parent().unwrap_or(Path::new("."));
-    write_staged(directory, &target, text, Some(&metadata))
+    write_staged(directory, &target, text, Some(&metadata), Some(&metadata))
+}
+
+/// The nearest folder at or above `directory` that is there, with what it is:
+/// a new file and the folders made for it are its owner's, not root's under
+/// `sudo` (review 2026-11-06 P3).
+fn nearest_folder(directory: &Path) -> Option<(std::path::PathBuf, std::fs::Metadata)> {
+    directory.ancestors().find_map(|folder| {
+        std::fs::metadata(folder)
+            .ok()
+            .map(|like| (folder.to_owned(), like))
+    })
+}
+
+/// Gives the folders made below `folder` down to `directory` the owner of
+/// `folder` (`like`).
+#[cfg(unix)]
+fn give_folders(folder: &Path, directory: &Path, like: &std::fs::Metadata) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    for made in directory.ancestors().take_while(|made| *made != folder) {
+        let own = std::fs::metadata(made)?;
+        keep_owner(
+            (own.uid(), own.gid()),
+            (like.uid(), like.gid()),
+            |uid, gid| std::os::unix::fs::chown(made, uid, gid),
+        )?;
+    }
+    Ok(())
 }
 
 /// The file a chain of symlinks at `file` ends in, though it does not exist.
@@ -308,28 +346,30 @@ fn link_target(file: &Path) -> std::path::PathBuf {
 }
 
 /// Writes `text` to a unique file in `directory`, flushes it and puts it in
-/// place of `file`, with the permissions and on Unix the owner of the file it
-/// replaces (`like`; review 2026-11-04 r19 P3: under `sudo` it became root's).
+/// place of `file`, with the permissions of the file it replaces (`like`)
+/// and on Unix the owner of `owner`, that file or the folder a new one is
+/// made in (review 2026-11-04 r19 P3: under `sudo` it became root's).
 fn write_staged(
     directory: &Path,
     file: &Path,
     text: &str,
     like: Option<&std::fs::Metadata>,
+    #[cfg_attr(not(unix), allow(unused_variables))] owner: Option<&std::fs::Metadata>,
 ) -> io::Result<()> {
     let mut staged = tempfile::Builder::new()
         .prefix(".ketchup-config-")
         .tempfile_in(directory)?;
+    #[cfg(unix)]
+    if let Some(owner) = owner {
+        use std::os::unix::fs::MetadataExt;
+        let own = staged.as_file().metadata()?;
+        keep_owner(
+            (own.uid(), own.gid()),
+            (owner.uid(), owner.gid()),
+            |uid, gid| std::os::unix::fs::fchown(staged.as_file(), uid, gid),
+        )?;
+    }
     if let Some(like) = like {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            let own = staged.as_file().metadata()?;
-            keep_owner(
-                (own.uid(), own.gid()),
-                (like.uid(), like.gid()),
-                |uid, gid| std::os::unix::fs::fchown(staged.as_file(), uid, gid),
-            )?;
-        }
         staged.as_file().set_permissions(like.permissions())?;
     }
     io::Write::write_all(&mut staged, text.as_bytes())?;
@@ -338,7 +378,7 @@ fn write_staged(
     if file.is_file() {
         // Closed for the swap; the staged name is gone after it, and dropping
         // the path then removes nothing.
-        return replace_keeping_acl(file, &staged.into_temp_path());
+        return swap_in(file, staged.into_temp_path(), replace_keeping_acl);
     }
     staged.persist(file).map_err(|error| error.error)?;
     #[cfg(unix)]
@@ -366,6 +406,68 @@ fn keep_owner(
             Ok(())
         }
         kept => kept,
+    }
+}
+
+/// Puts `staged` in the place of `file` through `replace`. With no backup
+/// name, `ReplaceFileW`'s `ERROR_UNABLE_TO_MOVE_REPLACEMENT` (1176) says the
+/// file it replaces is gone and the staged one still under its own name: that
+/// one is renamed into place, or where it cannot be, kept and named, never
+/// removed (review 2026-11-06 P3).
+#[cfg(any(windows, test))]
+fn swap_in(
+    file: &Path,
+    staged: tempfile::TempPath,
+    replace: impl FnOnce(&Path, &Path) -> io::Result<()>,
+) -> io::Result<()> {
+    const ERROR_UNABLE_TO_MOVE_REPLACEMENT: i32 = 1176;
+    match replace(file, &staged) {
+        Err(error) if error.raw_os_error() == Some(ERROR_UNABLE_TO_MOVE_REPLACEMENT) => {
+            staged.persist(file).map_err(|failed| {
+                io::Error::new(
+                    failed.error.kind(),
+                    NotPutInPlace {
+                        file: file.to_owned(),
+                        kept: failed.path.keep().map_err(|lost| lost.error),
+                        cause: failed.error,
+                    },
+                )
+            })
+        }
+        // Done, the staged name is gone; dropping it removes nothing.
+        done => done,
+    }
+}
+
+/// The file a swap removed, its new text not renamed into its place: where
+/// that text is kept, and why it was not put there.
+#[cfg(any(windows, test))]
+#[derive(Debug)]
+struct NotPutInPlace {
+    file: std::path::PathBuf,
+    kept: io::Result<std::path::PathBuf>,
+    cause: io::Error,
+}
+
+#[cfg(any(windows, test))]
+impl std::fmt::Display for NotPutInPlace {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} was removed and its new text not put in its place; ",
+            self.file.display()
+        )?;
+        match &self.kept {
+            Ok(kept) => write!(formatter, "the new text is kept as {}", kept.display()),
+            Err(lost) => write!(formatter, "the new text could not be kept either: {lost}"),
+        }
+    }
+}
+
+#[cfg(any(windows, test))]
+impl std::error::Error for NotPutInPlace {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
     }
 }
 
@@ -408,6 +510,68 @@ pub(crate) fn read_or_empty(file: &Path) -> io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review 2026-11-06 P3: a new file, written under `sudo`, was root's. It
+    /// and the folders made for it take the owner of the nearest folder there.
+    #[test]
+    fn a_new_file_takes_the_owner_of_the_nearest_folder() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join(".claude").join("sub").join("x.json");
+        let (nearest, like) = nearest_folder(file.parent().unwrap()).unwrap();
+        assert_eq!(nearest, directory.path());
+        write_keeping_file(&file, "{}", false).unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "{}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            for made in [file.as_path(), file.parent().unwrap()] {
+                let own = std::fs::metadata(made).unwrap();
+                assert_eq!((own.uid(), own.gid()), (like.uid(), like.gid()), "{made:?}");
+            }
+        }
+        #[cfg(not(unix))]
+        assert!(like.is_dir());
+    }
+
+    /// Review 2026-11-06 P3: `ReplaceFileW` failing with 1176, with no backup
+    /// name, has removed the file it replaces and left the new text under its
+    /// staged name, which was then removed too: the settings file was lost.
+    #[test]
+    fn a_swap_that_removed_the_old_file_puts_the_new_one_in_its_place() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("settings.json");
+        let stage = || {
+            let mut staged = tempfile::NamedTempFile::new_in(directory.path()).unwrap();
+            io::Write::write_all(&mut staged, b"new").unwrap();
+            staged.into_temp_path()
+        };
+        let removed_the_old = |file: &Path, _: &Path| {
+            std::fs::remove_file(file)?;
+            Err(io::Error::from_raw_os_error(1176))
+        };
+        std::fs::write(&file, b"old").unwrap();
+        swap_in(&file, stage(), removed_the_old).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"new");
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+
+        // Where it cannot be renamed either, the new text is kept and named.
+        std::fs::write(&file, b"old").unwrap();
+        let staged = stage();
+        let staged_path = staged.to_path_buf();
+        let error = swap_in(
+            &directory.path().join("gone").join("x.json"),
+            staged,
+            |_, _| Err(io::Error::from_raw_os_error(1176)),
+        )
+        .unwrap_err();
+        assert!(staged_path.exists());
+        assert!(
+            error
+                .to_string()
+                .contains(&staged_path.display().to_string()),
+            "{error}"
+        );
+    }
 
     /// Review 2026-11-06 P3: the user's own settings file in a group they are
     /// not in was not saved, `fchown` refusing it with EPERM.
