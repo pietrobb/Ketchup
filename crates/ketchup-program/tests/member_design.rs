@@ -762,6 +762,131 @@ fn fasteners_away_from_where_the_parts_touch_hold_nothing_and_are_reported() {
     }
 }
 
+/// PG-180 (review 2026-11-06): a bearing joint's own fastener points became
+/// the contact they were checked against. The batten at x = 500 joined to the
+/// beam and the wall by bearing joints naming screws every 300 mm along both
+/// braced the beam 19 times and it passed; only where the parts touch holds.
+#[test]
+fn bearing_joints_hold_only_where_their_parts_touch() {
+    let along = report(
+        &one_batten(
+            ", bearing = True, fasteners = [(x, 40, 2400) for x in range(300, 5800, 300)]",
+            ", bearing = True, fasteners = [(x, 1050, 2400) for x in range(300, 5800, 300)]",
+        ),
+        &[],
+    );
+    assert!(ltb_not_verified(&along), "{:?}", member(&along, "beam"));
+    assert_eq!(braced_by(&along), Vec::new());
+    assert_eq!(
+        stray_fastener_parts(&along),
+        [["batten", "wall"], ["batten", "beam"]]
+    );
+
+    // A batten 300 mm over the beam and the wall touches neither: its bearing
+    // joints naming no fasteners hold the beam nowhere.
+    let above = report(
+        &one_batten(", bearing = True", ", bearing = True")
+            .replace("at = (500, 0, 2400)", "at = (500, 0, 2700)"),
+        &[],
+    );
+    assert!(ltb_not_verified(&above), "{:?}", member(&above, "beam"));
+    assert_eq!(braced_by(&above), Vec::new());
+}
+
+/// PG-181 (review 2026-11-06): the beam bears on both end blocks of one
+/// grounded ring beam modelled as one body; each of its screws, both in a
+/// bearing, was reported as away from the contact because it was checked
+/// against the other bearing alone.
+#[test]
+fn fasteners_in_any_contact_of_the_pair_are_not_reported() {
+    let source = slender_beam(&[])
+        .replace(
+            "box(\"post a\", (100, 80, 2000), material = \"GL24h\", grounded = True)",
+            "box(\"sill\", (5900, 80, 1900), at = (0, 80, 0), material = \"GL24h\", grounded = True)
+box(\"post a\", (100, 80, 2000), material = \"GL24h\")",
+        )
+        .replace(
+            "box(\"post b\", (100, 80, 2000), at = (5800, 0, 0), material = \"GL24h\", grounded = True)",
+            "box(\"post b\", (100, 80, 2000), at = (5800, 0, 0), material = \"GL24h\")
+union(\"sill\", \"post a\")
+union(\"sill\", \"post b\")",
+        );
+    let ring = report(
+        &format!(
+            "{source}joint(\"beam\", \"sill\", kind = \"screw\", fasteners = [(50, 40, 2000), (5850, 40, 2000)])\n"
+        ),
+        &[],
+    );
+    assert_eq!(
+        stray_fastener_parts(&ring),
+        Vec::<Vec<String>>::new(),
+        "{:?}",
+        ring.issues
+    );
+}
+
+/// Review 2026-11-06 P3: a fastener was checked in the contact's plan only, so
+/// a screw given at the foot of the wall, 2.4 m under the batten, anchored it.
+/// It holds only within the thinner part's thickness of the contact.
+#[test]
+fn a_fastener_far_under_the_contact_holds_nothing() {
+    let deep = report(
+        &one_batten(
+            ", fasteners = [(525, 40, 2400)]",
+            ", fasteners = [(525, 1050, 0)]",
+        ),
+        &[],
+    );
+    assert_eq!(braced_by(&deep), Vec::new());
+    assert_eq!(stray_fastener_parts(&deep), [["batten", "wall"]]);
+    let message = deep
+        .issues
+        .iter()
+        .find(|issue| issue.kind == "fastener_off_contact")
+        .map(|issue| issue.message.as_str());
+    assert_eq!(
+        message,
+        Some(
+            "A fastener joining batten and wall lies away from where they touch (at 525, 1050, 0 mm); it holds nothing, so the joint braces nothing there."
+        )
+    );
+}
+
+/// Review 2026-11-06 P3: when every fastener into the anchorage lay away from
+/// the contact, those into the member were never looked at and went unreported.
+#[test]
+fn stray_fasteners_into_the_member_are_reported_without_an_anchorage() {
+    let both = report(
+        &one_batten(
+            ", fasteners = [(525, -5000, 0)]",
+            ", fasteners = [(525, -5000, 0)]",
+        ),
+        &[],
+    );
+    assert_eq!(braced_by(&both), Vec::new());
+    assert_eq!(
+        stray_fastener_parts(&both),
+        [["batten", "wall"], ["batten", "beam"]]
+    );
+}
+
+/// Review 2026-11-06 P3: joint(kind="") fastened like a screw. A joint must
+/// say how its parts join.
+#[test]
+fn a_joint_of_an_empty_kind_is_refused() {
+    let Err(error) = ketchup_program::run(
+        "design.star",
+        &one_batten("", "").replace(
+            "joint(\"batten\", \"beam\", kind = \"screw\"",
+            "joint(\"batten\", \"beam\", kind = \" \"",
+        ),
+        &BTreeMap::new(),
+    ) else {
+        panic!("an empty joint kind is refused");
+    };
+    assert!(error.to_string().contains("kind"), "{error}");
+}
+
 /// PG-161 (review 2026-11-04 r19): the contacts of a part with one supporter
 /// merged into one cloud whose middle was the anchorage. A 6.7 m lath along
 /// the beam's top resting on both arms of one grounded U past the beam's
