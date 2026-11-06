@@ -125,7 +125,7 @@ fn all_alike<T>(a: &[T], b: &[T], alike: impl Fn(&T, &T) -> bool) -> bool {
 }
 
 /// Two lengths in millimetres within the model's linear tolerance: a CAD writing a
-/// coordinate back with its own rounding (1e-10 mm off) changes nothing (review
+/// coordinate back with its own rounding (far below a micrometre off) changes nothing (review
 /// 2026-11-06 P3: it was refused as a line changed in the file).
 fn close_mm(a: f64, b: f64) -> bool {
     (a - b).abs() <= DEFAULT_LINEAR_TOLERANCE_MM
