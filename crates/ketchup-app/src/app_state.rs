@@ -22,6 +22,9 @@ pub(crate) struct FileState {
         Option<(PathBuf, ketchup_model::persistence::FileIdentity)>,
     pub(crate) work_recovery_digest: Option<String>,
     pub(crate) saved_digest: String,
+    /// Counts the documents the window has held: New and each open take the next,
+    /// so what was begun for one is not applied to another (review 2026-11-06).
+    pub(crate) generation: u64,
 }
 
 /// A file opened from a recovery copy in place of the one the user asked for.

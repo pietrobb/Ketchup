@@ -118,6 +118,8 @@ pub(super) struct HighBytes {
     seen: [bool; 128],
     western_words: BTreeSet<Vec<u8>>,
     central_words: BTreeSet<Vec<u8>>,
+    /// The words of `central_words` that name a layer of the layer table.
+    layer_words: BTreeSet<Vec<u8>>,
     /// Whether a text's font names the East European character set, Windows-1250's
     /// (`\f…|c238;`, review 2026-11-04 r19 P3).
     east_european_font: bool,
@@ -129,6 +131,7 @@ impl Default for HighBytes {
             seen: [false; 128],
             western_words: BTreeSet::new(),
             central_words: BTreeSet::new(),
+            layer_words: BTreeSet::new(),
             east_european_font: false,
         }
     }
@@ -149,31 +152,27 @@ impl HighBytes {
                 && &window[2..5] == b"238"
                 && matches!(window[5], b'|' | b';')
         });
-        let in_word = |byte: u8| byte.is_ascii_alphabetic() || byte >= 128;
-        let mut at = 0;
-        while at < bytes.len() {
-            if !in_word(bytes[at]) {
-                at += 1;
-                continue;
-            }
-            let start = at;
-            while bytes.get(at).is_some_and(|byte| in_word(*byte)) {
-                at += 1;
-            }
-            let before_number = bytes[at..]
-                .iter()
-                .find(|byte| **byte != b' ')
-                .is_some_and(u8::is_ascii_digit);
-            let word = &bytes[start..at];
-            let words = match reading_of(word, bytes.get(at) == Some(&b'.'), before_number) {
-                Some(Reading::Western) => &mut self.western_words,
-                Some(Reading::CentralEuropean) => &mut self.central_words,
-                None => continue,
+        each_reading(bytes, |word, reading| {
+            let words = match reading {
+                Reading::Western => &mut self.western_words,
+                Reading::CentralEuropean => &mut self.central_words,
             };
             if !words.contains(word) {
                 words.insert(word.to_vec());
             }
-        }
+        });
+    }
+
+    /// Sees `name`, the name of a layer of the layer table, whose words read rightly only
+    /// in Windows-1250 vote twice: a name its author gave the layer, it holds no sign,
+    /// and a drawing holds few of them (review 2026-11-06 P3: a Czech drawing whose
+    /// only such words were one or two layer names stayed in 1252).
+    fn see_layer_name(&mut self, name: &[u8]) {
+        each_reading(name, |word, reading| {
+            if reading == Reading::CentralEuropean && !self.layer_words.contains(word) {
+                self.layer_words.insert(word.to_vec());
+            }
+        });
     }
 
     /// Whether the words read rightly only in Windows-1250 outvote those read rightly only
@@ -196,7 +195,35 @@ impl HighBytes {
                 word.len() > 1 && word.iter().any(|byte| UNDEFINED_IN_1252.contains(byte))
             })
             .count();
-        self.central_words.len() + unreadable + usize::from(self.east_european_font)
+        self.central_words.len()
+            + unreadable
+            + self.layer_words.len()
+            + usize::from(self.east_european_font)
+    }
+}
+
+/// Calls `see` with each word of `bytes` that one of Windows-1252 and Windows-1250 alone
+/// reads rightly ([`reading_of`]), and which.
+fn each_reading(bytes: &[u8], mut see: impl FnMut(&[u8], Reading)) {
+    let in_word = |byte: u8| byte.is_ascii_alphabetic() || byte >= 128;
+    let mut at = 0;
+    while at < bytes.len() {
+        if !in_word(bytes[at]) {
+            at += 1;
+            continue;
+        }
+        let start = at;
+        while bytes.get(at).is_some_and(|byte| in_word(*byte)) {
+            at += 1;
+        }
+        let before_number = bytes[at..]
+            .iter()
+            .find(|byte| **byte != b' ')
+            .is_some_and(u8::is_ascii_digit);
+        let word = &bytes[start..at];
+        if let Some(reading) = reading_of(word, bytes.get(at) == Some(&b'.'), before_number) {
+            see(word, reading);
+        }
     }
 }
 
@@ -443,6 +470,12 @@ impl TextEncoding {
             _ => None,
         }
     }
+
+    /// Whether the text is read in UTF-8 against a header that names a code page: a
+    /// drawing before DXF 2007 cannot name UTF-8 there (review 2026-11-06 UL-180).
+    pub(super) fn utf8_over_header(&self) -> bool {
+        matches!((&self.code_page, &self.read), (None, Some((_, Some(_)))))
+    }
 }
 
 /// What the lines of a DXF file hold, seen one by one, for [`TextSeen::decide`]: the one
@@ -460,6 +493,8 @@ pub(super) struct TextSeen {
     code: Option<i64>,
     /// Within a text style of the drawing's style table.
     in_style: bool,
+    /// Within a layer of the drawing's layer table.
+    in_layer: bool,
 }
 
 impl Default for TextSeen {
@@ -473,6 +508,7 @@ impl Default for TextSeen {
             code_page: HeaderValue::default(),
             code: None,
             in_style: false,
+            in_layer: false,
         }
     }
 }
@@ -485,7 +521,7 @@ impl TextSeen {
             0 => line.strip_prefix(super::BYTE_ORDER_MARK).unwrap_or(line),
             _ => line,
         };
-        self.see_style(line.trim_ascii());
+        self.see_tables(line.trim_ascii());
         self.lines += 1;
         if self.utf8 {
             for chunk in line.utf8_chunks() {
@@ -511,8 +547,9 @@ impl TextSeen {
 
     /// Sees the line `trimmed` of the file for the character set of a text style's
     /// TrueType font, the second byte of its flags (ACAD group 1071): the East European
-    /// one, Windows-1250's, votes for it (review 2026-11-04 r19 P3).
-    fn see_style(&mut self, trimmed: &[u8]) {
+    /// one, Windows-1250's, votes for it (review 2026-11-04 r19 P3); and for the name of
+    /// a layer of the layer table ([`HighBytes::see_layer_name`]).
+    fn see_tables(&mut self, trimmed: &[u8]) {
         // A value that is no number names no group code or flags.
         let number = || {
             std::str::from_utf8(trimmed)
@@ -524,7 +561,11 @@ impl TextSeen {
             return;
         }
         match self.code {
-            Some(0) => self.in_style = trimmed.eq_ignore_ascii_case(b"STYLE"),
+            Some(0) => {
+                self.in_style = trimmed.eq_ignore_ascii_case(b"STYLE");
+                self.in_layer = trimmed.eq_ignore_ascii_case(b"LAYER");
+            }
+            Some(2) if self.in_layer => self.high.see_layer_name(trimmed),
             Some(1071) if self.in_style => {
                 self.high.east_european_font |=
                     number().is_some_and(|flags| (flags >> 8) & 0xFF == 238);

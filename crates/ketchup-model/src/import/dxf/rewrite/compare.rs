@@ -6,6 +6,7 @@
 use std::collections::BTreeSet;
 
 use super::place;
+use crate::tolerance::{DEFAULT_ANGULAR_TOLERANCE_RAD, DEFAULT_LINEAR_TOLERANCE_MM, ROUNDING};
 use crate::underlay::UnderlayLines;
 use crate::underlay::fill::UnderlayFill;
 use crate::underlay::text::UnderlayText;
@@ -106,16 +107,49 @@ pub(super) fn difference(
     then.iter().zip(&now).find_map(|(then, now)| {
         if then.layer != now.layer {
             Some(Difference::Layer)
-        } else if then.lines != now.lines {
+        } else if !runs_alike(&then.lines, &now.lines) {
             Some(Difference::Lines)
-        } else if then.texts != now.texts {
+        } else if !all_alike(&then.texts, &now.texts, texts_alike) {
             Some(Difference::Text)
-        } else if then.fills != now.fills {
+        } else if !all_alike(&then.fills, &now.fills, |a, b| runs_alike(a, b)) {
             Some(Difference::Fill)
         } else {
             None
         }
     })
+}
+
+/// Whether `a` and `b` pair up one by one, each pair `alike`.
+fn all_alike<T>(a: &[T], b: &[T], alike: impl Fn(&T, &T) -> bool) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(a, b)| alike(a, b))
+}
+
+/// Two lengths in millimetres within the model's linear tolerance: a CAD writing a
+/// coordinate back with its own rounding (1e-10 mm off) changes nothing (review
+/// 2026-11-06 P3: it was refused as a line changed in the file).
+fn close_mm(a: f64, b: f64) -> bool {
+    (a - b).abs() <= DEFAULT_LINEAR_TOLERANCE_MM
+}
+
+fn runs_alike(a: &[&[[f64; 2]]], b: &[&[[f64; 2]]]) -> bool {
+    all_alike(a, b, |a, b| {
+        all_alike(a, b, |p, q| close_mm(p[0], q[0]) && close_mm(p[1], q[1]))
+    })
+}
+
+fn texts_alike(a: &UnderlayText, b: &UnderlayText) -> bool {
+    a.text == b.text
+        && a.horizontal == b.horizontal
+        && a.vertical == b.vertical
+        && a.fit == b.fit
+        && close_mm(a.anchor_mm[0], b.anchor_mm[0])
+        && close_mm(a.anchor_mm[1], b.anchor_mm[1])
+        && close_mm(a.height_mm, b.height_mm)
+        && close_mm(a.wrap_width_mm, b.wrap_width_mm)
+        && close_mm(a.line_pitch_mm, b.line_pitch_mm)
+        && (a.rotation_rad - b.rotation_rad).abs() <= DEFAULT_ANGULAR_TOLERANCE_RAD
+        && (a.width_factor - b.width_factor).abs()
+            <= ROUNDING * a.width_factor.abs().max(b.width_factor.abs()).max(1.0)
 }
 
 /// Where object `id` of `lines` lies, to the millimetre: the anchor of its first text, or

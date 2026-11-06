@@ -1724,7 +1724,10 @@ digest-underlay-exported-removed-in-file = Neupravené entity ({ $count }) sa v 
 digest-underlay-exported-dwg-version = Je to DWG AutoCAD 2018 ({ $version }) bez ohľadu na verziu zdroja; pre starší AutoCAD exportujte výkres do DXF.
 digest-underlay-export-failed = Výkres sa nezapísal: { $reason }
 digest-underlay-export-discard-hint = { $command } zahodí len túto úpravu; ostatné ostanú.
-digest-underlay-edit-discarded = Úprava objektu { $object } sa zahodila; exportujte výkres znova.
+digest-underlay-edit-discarded = { $count ->
+        [one] Úprava objektu { $object } sa zahodila
+       *[other] Úpravy objektov { $object } sa zahodili
+    }; exportujte výkres znova.
 digest-underlay-edit-not-discarded = Úprava sa nezahodila: { $reason }
 digest-underlay-text-required = Najprv napíš text, potom klikni, kde začína
 digest-underlay-draw-off = Kresliace nástroje opäť kreslia do modelu

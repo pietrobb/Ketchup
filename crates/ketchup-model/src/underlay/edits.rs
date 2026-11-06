@@ -433,26 +433,32 @@ pub fn plan_underlay_object_removal(
     Ok(with_edits(underlay, edits))
 }
 
-/// One batch, so one Undo step, that discards what was done in Kečup to the object `object`
-/// the drawing of underlay `id` was read with, and no other edit: it is put back where it
-/// was read, and copies of it are dropped. A drawing written back refuses an edit of an
-/// object whose entity was changed in the file since; this lets that edit alone go
-/// (review 2026-11-04 r19 CD-163).
+/// One batch, so one Undo step, that discards what was done in Kečup to the objects
+/// `objects` the drawing of underlay `id` was read with, and no other edit: each is put
+/// back where it was read, and copies of it are dropped. A drawing written back refuses an
+/// edit of an object whose entity was changed in the file since; this lets those edits
+/// alone go (review 2026-11-04 r19 CD-163), all at once (review 2026-11-06 P3).
 pub fn plan_underlay_edit_discard(
     snapshot: &Snapshot,
     id: super::UnderlayId,
-    object: u32,
+    objects: &[u32],
 ) -> Result<CommandBatch, UnderlayObjectError> {
     let underlay = snapshot
         .underlay(id)
         .ok_or(UnderlayObjectError::Plan(UnderlayPlanError::NotFound(id)))?;
+    if objects.is_empty() {
+        return Err(UnderlayObjectError::Empty);
+    }
     let mut edits = underlay.edits.clone();
-    edits.removed_objects.remove(&object);
-    edits.moved_objects.remove(&object);
-    edits.stretched_objects.remove(&object);
-    edits.added.retain(|added| added.copy_of() != Some(object));
-    if edits == underlay.edits {
-        return Err(UnderlayObjectError::NotFound(object));
+    for object in objects {
+        let before = edits.clone();
+        edits.removed_objects.remove(object);
+        edits.moved_objects.remove(object);
+        edits.stretched_objects.remove(object);
+        edits.added.retain(|added| added.copy_of() != Some(*object));
+        if edits == before {
+            return Err(UnderlayObjectError::NotFound(*object));
+        }
     }
     Ok(with_edits(underlay, edits))
 }

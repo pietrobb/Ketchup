@@ -1749,7 +1749,10 @@ digest-underlay-exported-removed-in-file = { $count } entities you did not edit 
 digest-underlay-exported-dwg-version = It is an AutoCAD 2018 DWG ({ $version }), whatever version the source was; for an older AutoCAD export the drawing to DXF.
 digest-underlay-export-failed = The drawing was not written: { $reason }
 digest-underlay-export-discard-hint = { $command } discards that edit alone; the others stay.
-digest-underlay-edit-discarded = The edit of object { $object } was discarded; export the drawing again.
+digest-underlay-edit-discarded = { $count ->
+        [one] The edit of object { $object } was discarded
+       *[other] The edits of objects { $object } were discarded
+    }; export the drawing again.
 digest-underlay-edit-not-discarded = The edit was not discarded: { $reason }
 digest-underlay-text-required = Type the text first, then click where it starts
 digest-underlay-draw-off = The drawing tools draw into the model again

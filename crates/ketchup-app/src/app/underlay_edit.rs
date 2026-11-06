@@ -389,13 +389,18 @@ impl KetchupApp {
     /// changed in the file since, as one Undo step; the other edits stay (review
     /// 2026-11-04 r19 CD-163).
     pub(crate) fn discard_refused_underlay_edit(&mut self) {
-        let Some((underlay, object)) = self.file.activity.underlay.refused_edit else {
+        let Some((underlay, objects)) = self.file.activity.underlay.refused_edit.clone() else {
             return;
         };
         let discarded =
             self.edit_underlay_drawing(underlay, FindRegions::OffUiThread, |snapshot, _| {
-                plan_underlay_edit_discard(snapshot, underlay, object)
+                plan_underlay_edit_discard(snapshot, underlay, &objects)
             });
+        let object = objects
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
         match discarded {
             Err(UnderlayEditError::FindingRegions(batch)) => {
                 self.await_followed_regions(batch, |app| app.discard_refused_underlay_edit());
@@ -405,7 +410,7 @@ impl KetchupApp {
                 self.select_underlay(underlay);
                 self.digest = self.catalog.format(
                     "digest-underlay-edit-discarded",
-                    &BTreeMap::from([("object", object.to_string())]),
+                    &BTreeMap::from([("object", object), ("count", objects.len().to_string())]),
                 ) + &self.followed_note(&changes);
             }
             Err(error) => {

@@ -89,6 +89,7 @@ impl KetchupApp {
                 pending_work_recovery_cleanup: None,
                 work_recovery_digest: None,
                 saved_digest,
+                generation: 0,
             },
             confirmation_surface,
             side_effect_receipts: Vec::new(),

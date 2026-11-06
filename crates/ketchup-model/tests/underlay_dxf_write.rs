@@ -1424,6 +1424,25 @@ fn another_drawing_and_one_read_differently_are_refused_apart() {
         "{:?}",
         refusal(&longer, lines)
     );
+    // Review 2026-11-06 P3: its start lies where it lay, which is said apart from its
+    // lines, in words that agree.
+    let message = refusal(&longer, lines).to_string();
+    assert!(
+        message.contains("its lines lie elsewhere or run otherwise in the file now")
+            && message.contains("it still lies at 0, 0 mm"),
+        "{message}"
+    );
+    // Review 2026-11-06 P3: an end rewritten 1e-10 mm off (a CAD writing its own
+    // rounding) is the same line, not a change in the file.
+    let nudged = source.replace("11\n4000\n21\n0\n", "11\n4000.0000000001\n21\n0\n");
+    assert_ne!(nudged, source);
+    write_reported(
+        nudged.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &moved(line),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
     // Review 2026-11-02 CD-120: another entity moved is bound again by its handle, and
     // the longer line is written as the file has it, and said (review 2026-11-04 CD-140).
     let written = write_reported(
@@ -1870,6 +1889,24 @@ fn an_entity_deleted_in_the_file_is_left_out_unless_it_was_edited() {
     assert!(
         message.contains("handle A1") && message.contains("no longer in the file"),
         "{message}"
+    );
+
+    // Review 2026-11-06 CD-180: the arc taken out in Kečup too was refused, told to undo
+    // that edit, though both sides agree. It is left out.
+    let mut both = UnderlayEdits::default();
+    both.removed_objects.insert(arc_id);
+    let written = write_reported(
+        deleted.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &both,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(written.removed_in_file, 1);
+    let text = String::from_utf8(written.dxf).unwrap();
+    assert!(
+        !text.contains("5\nA1\n") && text.contains("5\nA0\n"),
+        "{text}"
     );
 }
 
@@ -2422,6 +2459,66 @@ fn a_drawing_read_in_another_code_page_than_its_header_names_is_written_naming_i
     assert_eq!(texts(&read(&written)), ["Kuchyně", "Chodba č. 2"]);
 }
 
+/// Review 2026-11-06 UL-180: a drawing before DXF 2007 whose header names ANSI_1252 and
+/// whose texts are UTF-8 was read in UTF-8, but its header cannot name UTF-8; with texts
+/// taken out the few left were read in 1252 again, „Δh = 5“ as „Î”h = 5“. What is not
+/// ASCII is written as `\U+XXXX`, which reads alike whatever the header names.
+#[test]
+fn a_utf8_drawing_under_a_code_page_header_reads_alike_after_texts_are_taken_out() {
+    let header = HEADER.replace(
+        "9\n$INSUNITS\n",
+        "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
+    );
+    for (all, removed, left) in [
+        (
+            &["Δh = 3", "Δh = 4", "Δh = 5", "εr", "κ"][..],
+            &[0xB0, 0xB1][..],
+            &["Δh = 5", "εr", "κ"][..],
+        ),
+        (
+            &["Кухня", "Спальня", "Ванная", "к"][..],
+            &[0xB0, 0xB1, 0xB2][..],
+            &["к"][..],
+        ),
+    ] {
+        let mut source = format!("{header}{TABLES}0\nSECTION\n2\nENTITIES\n");
+        for (index, text) in all.iter().enumerate() {
+            source.push_str(&format!(
+                "0\nTEXT\n5\nB{index}\n330\n1F\n100\nAcDbEntity\n8\nnotes\n100\nAcDbText\n\
+                 10\n0\n20\n{y}\n30\n0\n40\n250\n1\n{text}\n100\nAcDbText\n",
+                y = index * 500
+            ));
+        }
+        source.push_str("0\nENDSEC\n0\nEOF\n");
+        let original = read(source.as_bytes());
+        let texts = |underlay: &DxfUnderlay| {
+            underlay
+                .lines
+                .layers()
+                .iter()
+                .flat_map(|layer| layer.texts())
+                .map(|text| text.text.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(texts(&original), all);
+        let mut edits = UnderlayEdits::default();
+        for handle in removed {
+            edits
+                .removed_objects
+                .insert(id_of(&original.lines, *handle));
+        }
+        let written = write_edited_dxf(
+            source.as_bytes(),
+            DxfImportOptions::new(None),
+            &original.lines,
+            &edits,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(texts(&read(&written)), left);
+        assert!(written.is_ascii(), "{}", String::from_utf8_lossy(&written));
+    }
+}
+
 /// Review 2026-10-31 P3: a polyline drawn into an R13 drawing was written as LWPOLYLINE,
 /// which came only with R14. It is a POLYLINE there, with its VERTEX and SEQEND marked as
 /// R13 marks them and owned by it.
@@ -2492,5 +2589,74 @@ fn a_polyline_drawn_into_an_r13_drawing_is_one_r13_knows() {
     assert_same(
         &drawn(&again.lines, &again.layers),
         &drawn(&lines.clone().edited(&edits, &layers), &original.layers),
+    );
+}
+
+/// Review 2026-11-06 P3: of the edits refused as their entities changed in the file, only
+/// the first was named, so N of them took N exports. All are named at once.
+#[test]
+fn every_edit_refused_by_the_file_is_named_at_once() {
+    let source = source();
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let (line, circle) = (id_of(lines, 0xA0), id_of(lines, 0xA7));
+    let mut edits = UnderlayEdits::default();
+    for id in [line, circle] {
+        edits
+            .moved_objects
+            .insert(id, [[1.0, 0.0, 0.0], [0.0, 1.0, 700.0]]);
+    }
+    let changed = source
+        .replace("11\n4000\n21\n0\n", "11\n4100\n21\n0\n")
+        .replace(
+            "10\n6000\n20\n0\n30\n0\n40\n300\n",
+            "10\n6000\n20\n0\n30\n0\n40\n350\n",
+        );
+    let refusal = match write_edited_dxf(
+        changed.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    ) {
+        Err(EditedDxfError::Refused(refusal)) => refusal,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(refusal.refused_edits(), [line, circle], "{refusal:?}");
+    let message = refusal.to_string();
+    assert!(
+        message.starts_with("2 edits are refused: 1) object ")
+            && message.contains("the LINE of handle A0")
+            && message.contains("; 2) object ")
+            && message.contains("the CIRCLE of handle A7"),
+        "{message}"
+    );
+}
+
+/// Review 2026-11-06 P3: in a drawing without handles an entity is told by its place
+/// alone. With the first line deleted in the file, the edited second line was refused as
+/// lying where the third does now. No place is named: its entity cannot be told.
+#[test]
+fn in_a_drawing_without_handles_that_lost_an_entity_no_other_place_is_named() {
+    let original = read(R12.as_bytes());
+    let lines = &original.lines;
+    let mut edits = UnderlayEdits::default();
+    // The line at y = 1000, the second top-level object.
+    edits
+        .moved_objects
+        .insert(1, [[1.0, 0.0, 0.0], [0.0, 1.0, 500.0]]);
+    let lost = R12.replacen(
+        "0\nLINE\n8\nwalls\n10\n0\n20\n0\n30\n0\n11\n4000\n21\n0\n31\n0\n",
+        "",
+        1,
+    );
+    assert_ne!(lost, R12);
+    let error =
+        write_edited_dxf(lost.as_bytes(), DxfImportOptions::new(None), lines, &edits).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            EditedDxfError::Refused(DxfEditRefusal::NoHandle { object: 1 })
+        ),
+        "{error}"
     );
 }
