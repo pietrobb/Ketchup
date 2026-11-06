@@ -672,7 +672,10 @@ fn presence(path: &Path) -> Option<bool> {
         {
             Some(false)
         }
-        Err(_) => None,
+        Err(error) => {
+            ketchup_rejection::log!("cannot tell whether {} is there: {error}", path.display());
+            None
+        }
     }
 }
 
