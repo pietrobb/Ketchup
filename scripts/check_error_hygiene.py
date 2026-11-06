@@ -58,7 +58,8 @@ Two forms are counted in production source (crates/*/src, test modules and
   (review 2026-11-04 r19 TST-160).
 - irrefutable_let: `let (Ok(()) | Err(..)) = call();` does it too.
 - eprintln: `eprintln!` outside a command line's entry point (`src/main.rs`,
-  `src/bin/`) writes where a window started without a console throws it away.
+  `src/bin/`), or in one after its window logs to a file (`log_window_to`),
+  writes where a window started without a console throws it away.
   `ketchup_rejection::dropped(result, Reason::...)` is the one way to drop an
   error, and `ketchup_rejection::log!` the way to log one; both write to the
   window's log file.
@@ -261,7 +262,24 @@ def file_counts(text: str, entry_point: bool = False) -> dict[str, int]:
             "from_discard": len(FROM_DISCARD.findall(text)),
             "empty_is_err": len(EMPTY_IS_ERR.findall(text)),
             "irrefutable_let": len(IRREFUTABLE_LET.findall(text)),
-            "eprintln": 0 if entry_point else len(EPRINTLN.findall(text))}
+            "eprintln": window_eprintlns(text) if entry_point else len(EPRINTLN.findall(text))}
+
+
+WINDOW_LOG = re.compile(r"\blog_window_to\s*\(")
+
+
+def window_eprintlns(text: str) -> int:
+    """`eprintln!` an entry point runs once its window logs to a file: from
+    `log_window_to(` to the end of the function calling it (review 2026-11-06
+    UI-181). Its command line's branches before that write to the console."""
+    count = 0
+    for call in WINDOW_LOG.finditer(text):
+        depth, at = 0, call.end()
+        while at < len(text) and depth >= 0:
+            depth += {"{": 1, "}": -1}.get(text[at], 0)
+            at += 1
+        count += len(EPRINTLN.findall(text, call.end(), at))
+    return count
 
 
 FORMS = tuple(file_counts(""))

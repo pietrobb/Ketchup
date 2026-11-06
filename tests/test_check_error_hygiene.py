@@ -318,10 +318,25 @@ def test_the_idioms_that_act_as_let_underscore_count(tmp_path):
     # A command-line entry point writes to its console.
     write(tmp_path, "crates/a/src/main.rs", 'eprintln!("usage: a <file>");\n')
     write(tmp_path, "crates/a/src/bin/tool.rs", 'eprintln!("usage: tool <file>");\n')
+    # Review 2026-11-06 UI-181: once its window logs to a file, an entry
+    # point has no console either; its command line's branches still do.
+    write(
+        tmp_path,
+        "crates/b/src/main.rs",
+        "fn main() {\n"
+        '    if verify { eprintln!("usage: b --verify <file>"); return; }\n'
+        '    log_window_to("B", "b.log");\n'
+        '    if let Err(error) = run(|| { eprintln!("{error}"); }) {\n'
+        '        eprintln!("window failed: {error}");\n'
+        "    }\n"
+        "}\n"
+        'fn usage() { eprintln!("usage: b <file>"); }\n',
+    )
     assert checker.current_counts(tmp_path) == {
         "crates/a/src/lib.rs empty_is_err": 3,
         "crates/a/src/lib.rs irrefutable_let": 2,
         "crates/a/src/lib.rs eprintln": 1,
+        "crates/b/src/main.rs eprintln": 2,
     }
 
 

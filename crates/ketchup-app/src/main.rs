@@ -54,11 +54,12 @@ impl eframe::App for Desktop {
 }
 
 /// Reports why the launcher-requested live bridge could not start; never prints input.
-/// The launcher reads the reason from the readiness line on stdout.
+/// The launcher reads the reason from the readiness line on stdout; the log
+/// (the window's file once it is set, review 2026-11-06 UI-181) keeps it too.
 fn bootstrap_failed(reason: impl std::fmt::Display) -> ! {
     let reason = reason.to_string();
     println!("{}", serde_json::json!({"version": 1, "error": reason}));
-    eprintln!("{reason}");
+    ketchup_rejection::log!("{reason}");
     std::process::exit(2);
 }
 
@@ -191,7 +192,7 @@ fn main() -> eframe::Result {
                     .unwrap_or_else(|error| bootstrap_failed(error));
             } else {
                 if let Err(error) = app.enable_live_consent_broker(&creation_context.egui_ctx) {
-                    eprintln!(
+                    ketchup_rejection::log!(
                         "optional live consent broker unavailable; manual CAD remains available: {error}"
                     );
                 }
@@ -200,10 +201,15 @@ fn main() -> eframe::Result {
             Ok(Box::new(Desktop { app, requests }))
         }),
     );
-    if live_requested && let Err(error) = &result {
-        bootstrap_failed(format_args!(
-            "live bridge bootstrap failed: window failed: {error}"
-        ));
+    if let Err(error) = &result {
+        if live_requested {
+            bootstrap_failed(format_args!(
+                "live bridge bootstrap failed: window failed: {error}"
+            ));
+        }
+        // Started without a console, a window that cannot open (no graphics
+        // adapter) says why in the log (review 2026-11-06 UI-181).
+        ketchup_rejection::log!("the window could not open: {error}");
     }
     result
 }

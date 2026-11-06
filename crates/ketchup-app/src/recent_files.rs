@@ -204,6 +204,14 @@ struct Checked {
     key: Option<String>,
 }
 
+/// A picked document whose check runs on a worker.
+struct Picking {
+    path: PathBuf,
+    answer: mpsc::Receiver<Presence>,
+    /// The window's document it was picked in (review 2026-11-06 UI-180).
+    generation: u64,
+}
+
 /// The list File > Open Recent shows, and the store that keeps it. Neither
 /// drawing the menu nor adding a document reads the disk for the documents
 /// already listed: on a network path that does not answer, each read held the
@@ -219,7 +227,7 @@ pub(crate) struct RecentFiles {
     on_disk: HashMap<PathBuf, Presence>,
     checking: Option<mpsc::Receiver<Checked>>,
     /// The document picked last, while its check runs on a worker.
-    picking: Option<(PathBuf, mpsc::Receiver<Presence>)>,
+    picking: Option<Picking>,
     /// The pass the menu was last drawn in.
     shown_pass: Option<u64>,
 }
@@ -376,7 +384,14 @@ impl RecentFiles {
     /// answer: [`Self::picked`] gives the answer when it comes, and `context`
     /// is woken for it. Asking on the window held it until the system gave up
     /// on a server that does not answer (review 2026-11-04 r19 UI-161).
-    pub(crate) fn pick(&mut self, path: &Path, context: Option<egui::Context>) -> Option<Presence> {
+    /// `generation` is the window's document it is picked in
+    /// ([`crate::app_state::FileState::generation`]), given back with the answer.
+    pub(crate) fn pick(
+        &mut self,
+        path: &Path,
+        context: Option<egui::Context>,
+        generation: u64,
+    ) -> Option<Presence> {
         if self.on_disk(path) == Some(Presence::Unavailable) {
             return Some(Presence::Unavailable);
         }
@@ -389,16 +404,20 @@ impl RecentFiles {
                 context.request_repaint();
             }
         });
-        self.picking = Some((path.to_owned(), answer));
+        self.picking = Some(Picking {
+            path: path.to_owned(),
+            answer,
+            generation,
+        });
         self.picked(Some(Instant::now() + CHECK_WAIT))
-            .map(|(_, presence)| presence)
+            .map(|(_, presence, _)| presence)
     }
 
-    /// The document picked last and whether it is there, once its check
-    /// answers, waiting until `until` for it; a check that ended without an
-    /// answer counts as out of reach.
-    pub(crate) fn picked(&mut self, until: Option<Instant>) -> Option<(PathBuf, Presence)> {
-        let (_, answer) = self.picking.as_ref()?;
+    /// The document picked last, whether it is there and the generation it was
+    /// picked in, once its check answers, waiting until `until` for it; a check
+    /// that ended without an answer counts as out of reach.
+    pub(crate) fn picked(&mut self, until: Option<Instant>) -> Option<(PathBuf, Presence, u64)> {
+        let answer = &self.picking.as_ref()?.answer;
         let left = until.and_then(|until| until.checked_duration_since(Instant::now()));
         let presence = match left {
             Some(left) => match answer.recv_timeout(left) {
@@ -412,9 +431,11 @@ impl RecentFiles {
                 Err(mpsc::TryRecvError::Disconnected) => Presence::Unavailable,
             },
         };
-        let (path, _) = self.picking.take()?;
+        let Picking {
+            path, generation, ..
+        } = self.picking.take()?;
         self.on_disk.insert(path.clone(), presence);
-        Some((path, presence))
+        Some((path, presence, generation))
     }
 }
 
@@ -659,7 +680,7 @@ mod tests {
         recent
             .on_disk
             .insert(offline.clone(), Presence::Unavailable);
-        assert_eq!(recent.pick(&offline, None), Some(Presence::Unavailable));
+        assert_eq!(recent.pick(&offline, None, 0), Some(Presence::Unavailable));
         assert!(
             answering.is_file.lock().unwrap().is_empty(),
             "the menu's answer is not asked again"
@@ -673,15 +694,64 @@ mod tests {
         let mut recent = RecentFiles::with_probe(stored(), server.clone());
         // The server answers only when released below, so a pick that asked
         // it here would never return.
-        assert_eq!(recent.pick(&offline, None), None, "no answer yet");
+        assert_eq!(recent.pick(&offline, None, 7), None, "no answer yet");
         assert_eq!(recent.picked(None), None);
         release.send(()).unwrap();
         assert_eq!(
             recent.picked(Some(Instant::now() + Duration::from_secs(5))),
-            Some((offline.clone(), Presence::Here))
+            Some((offline.clone(), Presence::Here, 7))
         );
         assert_eq!(recent.on_disk(&offline), Some(Presence::Here));
         assert_eq!(recent.picked(None), None, "answered once");
+    }
+
+    /// Review 2026-11-06 UI-180: a recent document on a server that answered
+    /// late was opened when it did, after the user had made a new model or
+    /// opened another one, replacing that one. It opens only if no other
+    /// document came to the window since it was picked.
+    #[test]
+    fn a_late_answer_opens_nothing_once_another_document_came() {
+        let directory = tempfile::tempdir().unwrap();
+        let picked = directory.path().join("picked.ketchup");
+        let other = directory.path().join("other.ketchup");
+        for path in [&picked, &other] {
+            let mut source = crate::KetchupApp::new();
+            assert!(source.create_box());
+            assert!(source.save_document_to(path));
+        }
+        type Then = fn(&mut crate::KetchupApp, &Path);
+        let meanwhile: [(&str, Then); 3] = [
+            ("nothing", |_, _| {}),
+            ("New", |app, _| app.new_document()),
+            ("Open", |app, other| assert!(app.open_document_from(other))),
+        ];
+        for (what, then) in meanwhile {
+            let (release, released) = mpsc::channel();
+            let server = Arc::new(SlowServer {
+                release: Mutex::new(Some(released)),
+                ..SlowServer::default()
+            });
+            let mut app = crate::KetchupApp::new();
+            app.window.recent = RecentFiles::with_probe(
+                Box::new(MemoryRecentFiles::holding(vec![picked.clone()])),
+                server,
+            );
+            app.open_recent(&picked);
+            assert_eq!(app.document_path(), None, "{what}: not answered yet");
+            then(&mut app, &other);
+            let before = app.document_path().map(Path::to_owned);
+            release.send(()).unwrap();
+            let until = Instant::now() + Duration::from_secs(5);
+            while app.window.recent.picking.is_some() && Instant::now() < until {
+                app.poll_recent_pick();
+            }
+            let expected = if what == "nothing" {
+                Some(picked.clone())
+            } else {
+                before
+            };
+            assert_eq!(app.document_path().map(Path::to_owned), expected, "{what}");
+        }
     }
 
     #[cfg(windows)]

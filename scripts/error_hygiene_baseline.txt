@@ -235,7 +235,7 @@ crates/ketchup-test-gpu/src/lib.rs eprintln 1
 crates/ketchup-viewer/src/app.rs dropped_error 2
 crates/ketchup-viewer/src/app/session.rs dropped_closure 1
 crates/ketchup-viewer/src/app/session.rs dropped_error 2
-crates/ketchup-viewer/src/desktop.rs eprintln 7
+crates/ketchup-viewer/src/desktop.rs eprintln 6
 crates/ketchup-viewer/src/desktop.rs let_else_error 2
 crates/ketchup-viewer/src/dimensions.rs dropped_error 2
 crates/ketchup-viewer/src/share.rs dropped_error 2
