@@ -332,7 +332,9 @@ pub fn write_edited_dxf(
     // The header names the code page the texts are read and written in, so the drawing
     // reads so again, however few of its texts are left (review 2026-11-04 r19 UL-161).
     drawing.code_page_renamed = encoding.code_page_over_header().map(str::to_owned);
-    let utf8_over_header = encoding.utf8_over_header();
+    let escapes = encoding
+        .escapes_beyond_ascii()
+        .then_some(encoding.code_page);
     let (frame, rebound) = match frame {
         Ok(frame) => frame,
         Err(Some(refusal)) => return Err(refusal.into()),
@@ -348,8 +350,8 @@ pub fn write_edited_dxf(
         }
     };
     let mut dxf = drawing.write(lines, edits, &frame)?;
-    if utf8_over_header {
-        dxf = escaped_beyond_ascii(&dxf);
+    if let Some(code_page) = escapes {
+        dxf = escaped_beyond_ascii(&dxf, code_page);
     }
     Ok(EditedDxf {
         dxf,
@@ -359,11 +361,18 @@ pub fn write_edited_dxf(
     })
 }
 
-/// `dxf`, UTF-8 under a header naming a code page, with each character beyond ASCII
-/// written as `\U+XXXX` (each UTF-16 unit), which reads alike in any code page however
-/// few texts are left to tell the encoding by (review 2026-11-06 UL-180). A byte order
-/// mark stays as it is; so does what is not UTF-8.
-fn escaped_beyond_ascii(dxf: &[u8]) -> Vec<u8> {
+/// `dxf`, written in `code_page` or else in UTF-8 under a header naming a code page, with
+/// each character beyond ASCII written as `\U+XXXX` (each UTF-16 unit), which reads alike
+/// in any code page however few texts are left to tell the encoding by (review 2026-11-06
+/// UL-180, r23 UL-200). A byte order mark stays as it is; so does what is not UTF-8, or
+/// a drawing the code page does not read.
+fn escaped_beyond_ascii(dxf: &[u8], code_page: Option<CodePage>) -> Vec<u8> {
+    if let Some(code_page) = code_page {
+        return match code_page.decode(dxf) {
+            Some(text) => escaped_beyond_ascii(text.as_bytes(), None),
+            None => dxf.to_vec(),
+        };
+    }
     let (mark, rest) = match dxf.strip_prefix(super::BYTE_ORDER_MARK) {
         Some(rest) => (super::BYTE_ORDER_MARK, rest),
         None => (&[][..], dxf),

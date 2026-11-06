@@ -2462,27 +2462,51 @@ fn a_drawing_read_in_another_code_page_than_its_header_names_is_written_naming_i
 /// Review 2026-11-06 UL-180: a drawing before DXF 2007 whose header names ANSI_1252 and
 /// whose texts are UTF-8 was read in UTF-8, but its header cannot name UTF-8; with texts
 /// taken out the few left were read in 1252 again, „Δh = 5“ as „Î”h = 5“. What is not
-/// ASCII is written as `\U+XXXX`, which reads alike whatever the header names.
+/// ASCII is written as `\U+XXXX`, which reads alike whatever the header names. Review
+/// 2026-11-06 r23 UL-200: so too where a text holds a character of three bytes, „€“ or
+/// „–“, which turned the escaping off. And r23 P3: a drawing read in 1252 that is valid
+/// UTF-8 too reads in 1252 still once the texts that told it are taken out.
 #[test]
 fn a_utf8_drawing_under_a_code_page_header_reads_alike_after_texts_are_taken_out() {
     let header = HEADER.replace(
         "9\n$INSUNITS\n",
         "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
     );
-    for (all, removed, left) in [
+    for (written_texts, all, removed, left) in [
         (
+            &["Δh = 3", "Δh = 4", "Δh = 5", "εr", "κ"][..],
             &["Δh = 3", "Δh = 4", "Δh = 5", "εr", "κ"][..],
             &[0xB0, 0xB1][..],
             &["Δh = 5", "εr", "κ"][..],
         ),
         (
             &["Кухня", "Спальня", "Ванная", "к"][..],
+            &["Кухня", "Спальня", "Ванная", "к"][..],
             &[0xB0, 0xB1, 0xB2][..],
             &["к"][..],
         ),
+        (
+            &["€ 120", "Δh = 5", "εr"][..],
+            &["€ 120", "Δh = 5", "εr"][..],
+            &[0xB0][..],
+            &["Δh = 5", "εr"][..],
+        ),
+        (
+            &["Ø 20 – 30", "Кухня", "к"][..],
+            &["Ø 20 – 30", "Кухня", "к"][..],
+            &[0xB0][..],
+            &["Кухня", "к"][..],
+        ),
+        // The bytes of „ÍŽ“ in 1252 are U+034E in UTF-8, those of „Â°“ a degree sign.
+        (
+            &["\u{34E}", "\u{34E} x", "°C"][..],
+            &["ÍŽ", "ÍŽ x", "Â°C"][..],
+            &[0xB0, 0xB1][..],
+            &["Â°C"][..],
+        ),
     ] {
         let mut source = format!("{header}{TABLES}0\nSECTION\n2\nENTITIES\n");
-        for (index, text) in all.iter().enumerate() {
+        for (index, text) in written_texts.iter().enumerate() {
             source.push_str(&format!(
                 "0\nTEXT\n5\nB{index}\n330\n1F\n100\nAcDbEntity\n8\nnotes\n100\nAcDbText\n\
                  10\n0\n20\n{y}\n30\n0\n40\n250\n1\n{text}\n100\nAcDbText\n",
