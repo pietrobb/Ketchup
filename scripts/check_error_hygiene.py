@@ -52,11 +52,15 @@ Two forms are counted in production source (crates/*/src, test modules and
 - named_underscore: `let _name = call();` keeps what the call answers unread; a
   guard held to the end of the scope (`_lock`, `_guard`, `_permit`, `_reset`,
   `_restore`) is exempt.
-- ok_statement: a bare `.ok();` throws the error away as `let _ =` does.
+- ok_statement: a bare `.ok();` (or `.ok().is_some();`) throws the error away as
+  `let _ =` does.
 - from_discard: `fn from(_: E)` turns an error into another without its content.
 - empty_is_err: `if call().is_err() { /* comment */ }` does what `let _ =` does
   (review 2026-11-04 r19 TST-160).
 - irrefutable_let: `let (Ok(()) | Err(..)) = call();` does it too.
+- dropped_call: `drop(call())` does it too (review 2026-11-06 P3).
+- or_default: `.unwrap_or_default()` answers an error with a default value; a text
+  check cannot tell an Option's, so each one counts.
 - eprintln: `eprintln!` outside a command line's entry point (`src/main.rs`,
   `src/bin/`), or in one after its window logs to a file (`log_window_to`),
   writes where a window started without a console throws it away.
@@ -156,7 +160,7 @@ GUARDED_ARM = re.compile(r"\bErr\(\s*_\w*\s*\)\s*if\b")
 NAMED_UNDERSCORE = re.compile(
     r"^\s*let\s+_(?!\w*(?:lock|guard|permit|reset|restore)\b)[a-z]\w*\s*(?::[^=]+)?=[^=]",
     re.MULTILINE)
-OK_STATEMENT = re.compile(r"\.ok\(\)\s*;")
+OK_STATEMENT = re.compile(r"\.ok\(\)(?:\s*\.\s*is_(?:some|none)\(\))?\s*;")
 # What a statement keeps its value with: a binding, an assignment or a return.
 KEPT = re.compile(r"^\s*(?:let|return|break)\b|[^=!<>+\-*/%&|^]=[^=>]")
 
@@ -182,11 +186,28 @@ def bare_ok_statements(text: str) -> int:
             found += 1
     return found
 FROM_DISCARD = re.compile(r"\bfn\s+from\(\s*_\w*\s*:")
-# `if ... .is_err() {}` with nothing but comments in the block.
-EMPTY_IS_ERR = re.compile(r"\bif\s[^{};]*?\.is_err\(\)\s*\{\s*(?:(?://[^\n]*\n|/\*.*?\*/)\s*)*\}", re.DOTALL)
-# `let (Ok(..) | Err(..)) =`, either way round, `Ok(())` nested once.
+# `.is_err() {}` with nothing but comments in the block, whatever the condition holds
+# (a struct literal too, review 2026-11-06 P3).
+EMPTY_IS_ERR = re.compile(r"\.is_err\(\)\s*\{\s*(?:(?://[^\n]*\n|/\*.*?\*/)\s*)*\}", re.DOTALL)
+
+
+def nested_parens(levels: int) -> str:
+    """Text with parentheses balanced up to `levels` deep."""
+    inner = r"[^()]*"
+    for _ in range(levels):
+        inner = r"[^()]*(?:\(" + inner + r"\)[^()]*)*"
+    return inner
+
+
+# `let (Ok(..) | Err(..)) =`, either way round, `Ok(Some(()))` nested too.
 IRREFUTABLE_LET = re.compile(
-    r"\blet\s*\(\s*(?:Ok\([^()]*(?:\([^()]*\))?[^()]*\)\s*\|\s*Err\(|Err\([^()]*\)\s*\|\s*Ok\()")
+    r"\blet\s*\(\s*(?:Ok\(" + nested_parens(3) + r"\)\s*\|\s*Err\(|Err\([^()]*\)\s*\|\s*Ok\()")
+# `drop(call())` throws away what the call answers as `let _ =` does; `drop(guard)` ends
+# a value's life.
+DROPPED_CALL = re.compile(r"\bdrop\(\s*[^()]*\(")
+# `.unwrap_or_default()` answers an error with a default; a text check cannot tell an
+# Option's, so every one is counted (review 2026-11-06 P3: 167 unseen).
+OR_DEFAULT = re.compile(r"\.unwrap_or_default\(\)")
 EPRINTLN = re.compile(r"\beprintln!\s*\(")
 # A variant of an error type (`...Error::Name(_)`) matched to a bare string.
 DROPPED_VARIANT = re.compile(r"\b\w*Error::\w+\(\s*_\s*\)\s*=>\s*\"")
@@ -262,6 +283,8 @@ def file_counts(text: str, entry_point: bool = False) -> dict[str, int]:
             "from_discard": len(FROM_DISCARD.findall(text)),
             "empty_is_err": len(EMPTY_IS_ERR.findall(text)),
             "irrefutable_let": len(IRREFUTABLE_LET.findall(text)),
+            "dropped_call": len(DROPPED_CALL.findall(text)),
+            "or_default": len(OR_DEFAULT.findall(text)),
             "eprintln": window_eprintlns(text) if entry_point else len(EPRINTLN.findall(text))}
 
 

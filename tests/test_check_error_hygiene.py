@@ -340,6 +340,33 @@ def test_the_idioms_that_act_as_let_underscore_count(tmp_path):
     }
 
 
+def test_the_drops_review_1106_found_past_the_ratchet_count(tmp_path):
+    # Review 2026-11-06 P3: a struct literal in an empty `is_err` condition,
+    # `drop(call())`, `.ok().is_some();`, `Ok(Some(()))` in an irrefutable let and
+    # `unwrap_or_default()` all slipped past.
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "if tx.send(Msg { a: 1 }).is_err() {}\n"
+        "drop(call());\n"
+        "drop(sender.send(Msg { a: 1 }));\n"
+        "save(&path).ok().is_some();\n"
+        "let (Ok(Some(())) | Err(_)) = receiver.recv();\n"
+        "let text = read(&path).unwrap_or_default();\n"
+        "// What keeps or answers it is not counted.\n"
+        "drop(guard);\n"
+        "let sent = save(&path).ok().is_some();\n"
+        "if tx.send(Msg { a: 1 }).is_err() { return Err(Gone); }\n",
+    )
+    assert checker.current_counts(tmp_path) == {
+        "crates/a/src/lib.rs empty_is_err": 1,
+        "crates/a/src/lib.rs dropped_call": 2,
+        "crates/a/src/lib.rs ok_statement": 1,
+        "crates/a/src/lib.rs irrefutable_let": 1,
+        "crates/a/src/lib.rs or_default": 1,
+    }
+
+
 def test_a_new_form_is_recorded_once_and_then_may_only_shrink(tmp_path):
     # A form the baseline does not list yet is recorded as found when it is
     # added to the check; a form it lists may never grow, even from zero.
