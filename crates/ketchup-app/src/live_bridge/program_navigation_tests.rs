@@ -81,6 +81,57 @@ fn pieces_return_numbered_lines_a_search_or_the_outline() {
     }
 }
 
+/// Review 2026-11-06 P3: the program builds with its default where an
+/// override is outside the range, so `set_params` refuses such a value
+/// itself, naming the parameter and its range, before it is stored.
+#[test]
+fn set_params_refuses_a_value_outside_the_declared_range() {
+    let (mut app, mut bridge) = setup();
+    bridge
+        .execute(
+            &mut app,
+            Request::ApplyProgram {
+                expected: None,
+                source:
+                    "W = param(\"width\", 300, min = 100, max = 600)\nbox(\"seat\", (W, W, 20))\n"
+                        .into(),
+                overrides: None,
+                file_name: Some("seat.star".into()),
+                replace_document: true,
+            },
+            false,
+        )
+        .unwrap();
+    let undo = app.undo_step_count();
+    let set = |width: f64, stamp: Stamp| Request::SetProgramParams {
+        expected: stamp,
+        params: BTreeMap::from([("width".to_owned(), width)]),
+    };
+    let stamp = app.live_bridge_stamp();
+    assert!(
+        bridge
+            .execute(&mut app, set(900., stamp.clone()), false)
+            .is_err()
+    );
+    let details = crate::live_bridge::take_error_details().unwrap();
+    assert!(
+        details
+            .to_string()
+            .contains("width = 900 is outside [100, 600]"),
+        "{details}"
+    );
+    assert_eq!(app.undo_step_count(), undo);
+    assert!(
+        app.document
+            .current_rule_program()
+            .unwrap()
+            .overrides
+            .is_empty()
+    );
+    bridge.execute(&mut app, set(500., stamp), false).unwrap();
+    assert_eq!(app.undo_step_count(), undo + 1);
+}
+
 #[test]
 fn part_piece_and_set_params_work_on_the_open_program() {
     let (mut app, mut bridge) = setup();

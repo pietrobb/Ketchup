@@ -258,6 +258,19 @@ impl LiveBridge {
                 &format!("Declared parameters: {names}."),
             ));
         }
+        // The program would build with its default instead (review 2026-11-06 P3).
+        if let Some((param, value)) = params.iter().find_map(|(name, value)| {
+            let param = known.iter().find(|param| &param.name == name)?;
+            (param.min.is_some_and(|min| *value < min) || param.max.is_some_and(|max| *value > max))
+                .then_some((param, value))
+        }) {
+            let range = ketchup_program::eval::range_text(param.min, param.max);
+            return Err(invalid(
+                "params",
+                format!("param {} = {value} is outside {range}", param.name),
+                &format!("Choose a value of {} inside {range}.", param.name),
+            ));
+        }
         let mut overrides = program.overrides.clone();
         overrides.extend(params);
         Ok(Request::ApplyProgram {

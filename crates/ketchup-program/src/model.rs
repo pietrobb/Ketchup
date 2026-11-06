@@ -44,6 +44,10 @@ pub struct Param {
     /// (review 2026-10-26 WB-42).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub whole: bool,
+    /// The override given outside the range, which the program did not use:
+    /// `value` is the default (review 2026-11-06 P3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused_override: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
