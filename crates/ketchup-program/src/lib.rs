@@ -237,6 +237,8 @@ impl Report {
                         loads::LOAD_UNASSIGNED,
                         loads::FASTENER_OFF_CONTACT,
                         loads::AREA_LOAD_EDGE_ON,
+                        loads::ANCHORAGE_SMALL,
+                        loads::JOINT_KIND_DOUBTFUL,
                         cutting::CUTTING_UNPLACED,
                     ]
                     .contains(&issue.kind)

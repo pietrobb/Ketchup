@@ -1953,6 +1953,44 @@ impl Joint {
     pub fn fastens(&self) -> bool {
         !UNFASTENED_JOINT_KINDS.contains(&self.kind.trim().to_lowercase().as_str())
     }
+
+    /// The kind of [`UNFASTENED_JOINT_KINDS`] this joint's kind is likely a
+    /// misspelling of ("nnoe", "contacts"), though it fastens (review 2026-11-06 P3).
+    #[must_use]
+    pub fn misspelt_unfastened_kind(&self) -> Option<&'static str> {
+        let kind: Vec<char> = self.kind.trim().to_lowercase().chars().collect();
+        UNFASTENED_JOINT_KINDS.into_iter().find(|unfastened| {
+            let base: Vec<char> = unfastened.chars().collect();
+            kind != base && one_slip(&kind, &base)
+        })
+    }
+}
+
+/// Whether `typed` is `meant` with one letter changed or two neighbours
+/// swapped; for a word of six letters or more, also one letter left out or
+/// added (so "one" is not taken for "none").
+fn one_slip(typed: &[char], meant: &[char]) -> bool {
+    let (shorter, longer) = if typed.len() <= meant.len() {
+        (typed, meant)
+    } else {
+        (meant, typed)
+    };
+    let start = shorter
+        .iter()
+        .zip(longer)
+        .take_while(|(a, b)| a == b)
+        .count();
+    if typed.len() == meant.len() {
+        let differ: Vec<usize> = (0..typed.len())
+            .filter(|i| typed[*i] != meant[*i])
+            .collect();
+        return match differ[..] {
+            [_] => true,
+            [i, j] => j == i + 1 && typed[i] == meant[j] && typed[j] == meant[i],
+            _ => false,
+        };
+    }
+    longer.len() == shorter.len() + 1 && meant.len() >= 6 && shorter[start..] == longer[start + 1..]
 }
 
 /// A published load rating of one connection, with where it comes from.

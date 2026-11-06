@@ -887,6 +887,68 @@ fn a_joint_of_an_empty_kind_is_refused() {
     assert!(error.to_string().contains("kind"), "{error}");
 }
 
+fn issue_parts(report: &Report, kind: &str) -> Vec<Vec<String>> {
+    report
+        .issues
+        .iter()
+        .filter(|issue| issue.kind == kind)
+        .map(|issue| issue.parts.clone())
+        .collect()
+}
+
+/// Review 2026-11-06 P3: a grounded block of 50 x 10 x 10 mm beside the beam
+/// braced it as firmly as a wall. It still does, but is reported.
+#[test]
+fn a_beam_braced_from_an_anchorage_smaller_than_it_is_deep_is_reported() {
+    let wall = report(&one_batten("", ""), &[]);
+    assert_eq!(braced_by(&wall), [("batten".to_owned(), 525.0, 525.0)]);
+    assert_eq!(
+        issue_parts(&wall, "anchorage_small"),
+        Vec::<Vec<String>>::new()
+    );
+
+    let block = report(
+        &one_batten("", "").replace(
+            "box(\"wall\", (5900, 100, 2400), at = (0, 1000, 0)",
+            "box(\"wall\", (50, 10, 10), at = (500, 1000, 2390)",
+        ),
+        &[],
+    );
+    assert_eq!(braced_by(&block), [("batten".to_owned(), 525.0, 525.0)]);
+    assert_eq!(issue_parts(&block, "anchorage_small"), [["beam", "wall"]]);
+}
+
+/// Review 2026-11-06 P3: a kind misspelt from one that fastens nothing
+/// ("nnoe", "contacts") fastened silently. It still fastens, and is reported.
+#[test]
+fn a_joint_kind_like_one_that_fastens_nothing_is_reported() {
+    let kind = |kind: &str| {
+        report(
+            &one_batten("", "").replace(
+                "joint(\"batten\", \"wall\", kind = \"screw\"",
+                &format!("joint(\"batten\", \"wall\", kind = \"{kind}\""),
+            ),
+            &[],
+        )
+    };
+    for misspelt in ["nnoe", "Contacts", "fricton"] {
+        let doubtful = kind(misspelt);
+        assert_eq!(
+            issue_parts(&doubtful, "joint_kind_doubtful"),
+            [["batten", "wall"]],
+            "{misspelt}"
+        );
+        assert_eq!(braced_by(&doubtful), [("batten".to_owned(), 525.0, 525.0)]);
+    }
+    for named in ["vrut", "one", "glue", "none"] {
+        assert_eq!(
+            issue_parts(&kind(named), "joint_kind_doubtful"),
+            Vec::<Vec<String>>::new(),
+            "{named}"
+        );
+    }
+}
+
 /// PG-161 (review 2026-11-04 r19): the contacts of a part with one supporter
 /// merged into one cloud whose middle was the anchorage. A 6.7 m lath along
 /// the beam's top resting on both arms of one grounded U past the beam's
