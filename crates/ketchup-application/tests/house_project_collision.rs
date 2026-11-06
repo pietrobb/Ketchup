@@ -196,6 +196,7 @@ fn assert_every_member_exports_to_btlx(snapshot: &ketchup_model::document::Snaps
             snapshot,
             BtlxExportOptions {
                 profile_processing_request: BtlxProfileProcessingRequest::PortableFreeContour,
+                ..Default::default()
             },
         )
         .unwrap();

@@ -3,13 +3,18 @@
 //! or a DXF or DWG per sheet, with the title block and format kept in the
 //! document; with `sheet_id`, a drawing sheet of the document as DXF or DWG.
 
+use super::project_drawings_job::exports_project_drawings;
 use super::{LiveBridge, Request, failed_because, failure};
 use crate::KetchupApp;
-use crate::app::drawing_sheet_export::{DrawingSheetExportError, SheetFileFormat};
+use crate::app::drawing_sheet_export::{
+    DrawingSheetExportError, ExportedDrawingSheet, SheetFileFormat, drawing_sheet_bytes,
+    drawing_sheet_target, publish_drawing_sheet,
+};
 use crate::app::project_drawings::{
     ExportedSet, ProjectDrawingsError, ProjectDrawingsJob, SetFileFormat, SetOwner, SetTargets,
     SheetRequest, project_drawings_targets, publish_project_drawings, written_files,
 };
+use crate::app::underlay_export::PublishGate;
 use crate::export_bundle::ExportTransactionError;
 use ketchup_manufacturing::dxf_annotations::MAX_PLAN_SCALE;
 use ketchup_manufacturing::project_drawings::DrawingSet;
@@ -37,6 +42,26 @@ impl LiveBridge {
         request: Request,
         ui_busy: bool,
     ) -> Result<Value, &'static str> {
+        if exports_project_drawings(&request) {
+            // The project set, drawn here: only the in-process caller waits
+            // for it, as a client's export is a job (review 2026-11-01 UI-100).
+            let (started, job) = start_export(app, request, ui_busy)?;
+            let made = job.render(started.file_format, &AtomicBool::new(false));
+            return finish_export(app, started, made).map_err(export_failed);
+        }
+        let export = Self::sheet_export_of(app, request, ui_busy)?;
+        let target = export.target.clone();
+        let made = export.run(&PublishGate::default());
+        finish_sheet(app, &target, made).map_err(|refusal| sheet_refused(&target, refusal))
+    }
+
+    /// The export of the drawing sheet `request` names, checked; a client's
+    /// runs it as a job (review 2026-11-06 P3).
+    pub(super) fn sheet_export_of(
+        app: &KetchupApp,
+        request: Request,
+        ui_busy: bool,
+    ) -> Result<SheetExport, &'static str> {
         let Request::ExportDrawings {
             expected,
             path,
@@ -51,11 +76,11 @@ impl LiveBridge {
             zero_level_mm,
         } = request
         else {
-            // The project set, drawn here: only the in-process caller waits
-            // for it, as a client's export is a job (review 2026-11-01 UI-100).
-            let (started, job) = start_export(app, request, ui_busy)?;
-            let made = job.render(started.file_format, &AtomicBool::new(false));
-            return finish_export(app, started, made).map_err(export_failed);
+            return Err(failure(
+                "invalid_params",
+                "export_drawings of a drawing sheet needs its sheet_id.",
+                json!({}),
+            ));
         };
         Self::guard(app, &expected)?;
         Self::available(app, ui_busy)?;
@@ -73,7 +98,31 @@ impl LiveBridge {
                 json!({"sheet_id": id}),
             ));
         }
-        export_sheet(app, &path, DrawingSheetId(id), replace)
+        let format =
+            SheetFileFormat::of_path(Path::new(&path)).filter(|_| local_absolute_path(&path));
+        let Some(format) = format else {
+            return Err(failure(
+                "invalid_path",
+                "A drawing sheet is written to a local absolute path ending in .dxf or .dwg (no network share, device or stream).",
+                json!({"path": path}),
+            ));
+        };
+        let target = SheetTarget {
+            path: PathBuf::from(path),
+            id: DrawingSheetId(id),
+            format,
+        };
+        if app.exact.task.is_some() {
+            return Err(sheet_failed(&target, DrawingSheetExportError::Evaluating));
+        }
+        Ok(SheetExport {
+            target,
+            replace,
+            snapshot: app.document.current(),
+            results: app.exact.results.clone(),
+            words: app.parts_list_words(),
+            written: app.written_drawings(),
+        })
     }
 }
 
@@ -203,53 +252,115 @@ fn write_failed(error: impl std::error::Error + Send + Sync + 'static) -> &'stat
     )
 }
 
-/// Drawing sheet `id` of the document as DXF, or that DXF as an AutoCAD
-/// 2018 DWG: exact views, hidden edges on their own layer.
-fn export_sheet(
-    app: &mut KetchupApp,
-    path: &str,
+/// Which sheet is written where, as a format.
+#[derive(Clone)]
+pub(super) struct SheetTarget {
+    path: PathBuf,
     id: DrawingSheetId,
+    format: SheetFileFormat,
+}
+
+/// A drawing sheet's export as it runs off the window (review 2026-11-06 P3:
+/// the SHA-256 of the file at the path was taken on the window's thread):
+/// what the sheet is drawn from and which files are the document's own.
+pub(super) struct SheetExport {
+    pub(super) target: SheetTarget,
     replace: bool,
-) -> Result<Value, &'static str> {
-    let format = SheetFileFormat::of_path(Path::new(path)).filter(|_| local_absolute_path(path));
-    let Some(format) = format else {
-        return Err(failure(
-            "invalid_path",
-            "A drawing sheet is written to a local absolute path ending in .dxf or .dwg (no network share, device or stream).",
-            json!({"path": path}),
-        ));
-    };
-    // The sheet's own file is replaced, as it is exported again after an edit
-    // (Měchenice MECH-2); one saved there while the sheet was projected is
-    // kept (review 2026-10-18 MCP-3).
-    let replacing = crate::app::drawing_sheet_export::drawing_sheet_target(Path::new(path))
-        .map_err(write_failed)?;
-    if kept_unless_asked(app, Path::new(path), replacing.as_deref(), replace) {
-        return Err(not_its_own(Path::new(path)));
+    snapshot: ketchup_model::document::Snapshot,
+    results: ketchup_model::exact_product::ExactResultRegistry,
+    words: ketchup_model::drawing::PartsListWords,
+    /// The drawing files the document wrote, by their key.
+    written: std::collections::BTreeMap<String, String>,
+}
+
+impl SheetTarget {
+    pub(super) fn path(&self) -> &Path {
+        &self.path
     }
-    let sheet = app
-        .write_drawing_sheet(id, Path::new(path), format, replacing.as_deref())
-        .map_err(|error| match error {
-            DrawingSheetExportError::NotFound(_) => failure(
-                "drawing_sheet_not_found",
-                format!(
-                    "The document has no drawing sheet {}; inspect action=summary lists its drawing_sheets.",
-                    id.0
-                ),
-                json!({"sheet_id": id.0}),
+}
+
+/// Why a sheet was not written.
+pub(super) enum SheetRefusal {
+    /// The file at the path is not the one the document last wrote there.
+    NotItsOwn,
+    /// Cancelled before the sheet took the place of the file.
+    Cancelled,
+    Failed(DrawingSheetExportError),
+}
+
+pub(super) type SheetMade = Result<ExportedDrawingSheet, SheetRefusal>;
+
+impl SheetExport {
+    /// Draws drawing sheet as DXF, or that DXF as an AutoCAD 2018 DWG (exact
+    /// views, hidden edges on their own layer), and writes it, unless `gate`
+    /// was cancelled first.
+    pub(super) fn run(self, gate: &PublishGate) -> SheetMade {
+        let SheetTarget { path, id, format } = self.target;
+        // The sheet's own file is replaced, as it is exported again after an
+        // edit (Měchenice MECH-2); one saved there while the sheet was
+        // projected is kept (review 2026-10-18 MCP-3).
+        let replacing = drawing_sheet_target(&path).map_err(SheetRefusal::Failed)?;
+        if replacing.as_deref().is_some_and(|sha256| {
+            !self.replace && !crate::app::written_drawings::listed(&self.written, &path, sha256)
+        }) {
+            return Err(SheetRefusal::NotItsOwn);
+        }
+        let (exported, bytes) =
+            drawing_sheet_bytes(&self.snapshot, &self.results, &self.words, id, format)
+                .map_err(SheetRefusal::Failed)?;
+        if !gate.begin_publish() {
+            return Err(SheetRefusal::Cancelled);
+        }
+        publish_drawing_sheet(&path, &bytes, replacing.as_deref()).map_err(SheetRefusal::Failed)?;
+        Ok(exported)
+    }
+}
+
+/// The answer to a sheet that could not be written because of `error`.
+fn sheet_failed(target: &SheetTarget, error: DrawingSheetExportError) -> &'static str {
+    let id = target.id;
+    match error {
+        DrawingSheetExportError::NotFound(_) => failure(
+            "drawing_sheet_not_found",
+            format!(
+                "The document has no drawing sheet {}; inspect action=summary lists its drawing_sheets.",
+                id.0
             ),
-            DrawingSheetExportError::Evaluating => failure(
-                "drawings_unavailable",
-                "The exact evaluation is still running; the sheet would draw old solids.",
-                json!({"sheet_id": id.0}),
-            ),
-            DrawingSheetExportError::Projection(_) | DrawingSheetExportError::Export(_) => {
-                failed_because("drawings_unavailable", error)
-            }
-            DrawingSheetExportError::Dwg(_) => failed_because("dwg_conversion_failed", error),
-            DrawingSheetExportError::Write(_) => write_failed(error),
-        })?;
-    app.wrote_drawings([(PathBuf::from(path), sheet.sha256.clone())]);
+            json!({"sheet_id": id.0}),
+        ),
+        DrawingSheetExportError::Evaluating => failure(
+            "drawings_unavailable",
+            "The exact evaluation is still running; the sheet would draw old solids.",
+            json!({"sheet_id": id.0}),
+        ),
+        DrawingSheetExportError::Projection(_) | DrawingSheetExportError::Export(_) => {
+            failed_because("drawings_unavailable", error)
+        }
+        DrawingSheetExportError::Dwg(_) => failed_because("dwg_conversion_failed", error),
+        DrawingSheetExportError::Write(_) => write_failed(error),
+    }
+}
+
+/// The answer to a sheet for `target` that was not written.
+pub(super) fn sheet_refused(target: &SheetTarget, refusal: SheetRefusal) -> &'static str {
+    match refusal {
+        SheetRefusal::NotItsOwn => not_its_own(&target.path),
+        SheetRefusal::Cancelled => "request_cancelled",
+        SheetRefusal::Failed(error) => sheet_failed(target, error),
+    }
+}
+
+/// The answer to the sheet `made` for `target`; a sheet written is noted as
+/// the document's.
+pub(super) fn finish_sheet(
+    app: &mut KetchupApp,
+    target: &SheetTarget,
+    made: SheetMade,
+) -> Result<Value, SheetRefusal> {
+    let SheetTarget { path, id, format } = target;
+    let sheet = made?;
+    app.wrote_drawings([(path.clone(), sheet.sha256.clone())]);
+    let (id, format, path) = (*id, *format, path.display().to_string());
     Ok(json!({
         "exported": true,
         "path": path,
@@ -555,6 +666,8 @@ pub(super) fn finish_export(
         "format_setting": settings.format.map_or("auto", SheetFormat::name),
         "sheet_language": settings.language.map_or("auto", SheetLanguage::code),
         "zero_level_mm": settings.zero_level_mm.map_or(json!("auto"), |height| json!(height)),
+        // The height `auto` found, or the one set (review 2026-11-06 P3).
+        "zero_level_used_mm": set.zero_level_mm,
         "title_block": settings.title_block,
         "basis": "visible_layers_exact_solids",
         "dirty": app.is_dirty(),
@@ -630,14 +743,18 @@ pub(super) fn export_failed(error: ProjectDrawingsError) -> &'static str {
             json!({"underlay": name}),
         ),
         ProjectDrawingsError::Dwg(error) => failed_because("dwg_conversion_failed", error),
-        ProjectDrawingsError::SetOfAnotherProject { list, project } => failure(
+        ProjectDrawingsError::SetOfAnotherProject {
+            list,
+            project,
+            sheets,
+        } => failure(
             "drawings_set_of_another_project",
             format!(
-                "The drawing set listed in {} was exported from {}, not from this document, so none of its sheets is replaced. Ask the user: export to another folder or file name, or, if they agree to take that set over for this project, export again with take_over: true.",
+                "The drawing set listed in {} was exported from {}, not from this document, so none of its sheets is replaced. It has {sheets} sheets: taking it over replaces them and deletes those beyond the last sheet of this project's set. Ask the user: export to another folder or file name, or, if they agree to take that set over for this project, export again with take_over: true.",
                 list.display(),
                 project.as_deref().unwrap_or("a project not saved")
             ),
-            json!({"list": list.display().to_string(), "exported_from": project}),
+            json!({"list": list.display().to_string(), "exported_from": project, "sheets": sheets}),
         ),
         ProjectDrawingsError::Write(error) => write_failed(error),
     }

@@ -170,7 +170,7 @@ impl KetchupApp {
     /// opens when it does (review 2026-11-04 r19 UI-161).
     pub(crate) fn open_recent(&mut self, path: &Path) {
         let context = self.file.activity.context.clone();
-        match self.window.recent.pick(path, context) {
+        match self.window.recent.pick(path, context, self.file.generation) {
             Some(presence) => self.open_recent_found(path, presence),
             None => {
                 self.digest = self.catalog.format(
@@ -182,9 +182,12 @@ impl KetchupApp {
     }
 
     /// The answer for a picked recent document that came after the frame it
-    /// was picked in.
+    /// was picked in. Once New, Open or a client brought another document to
+    /// the window, the answer opens nothing (review 2026-11-06 UI-180).
     pub(crate) fn poll_recent_pick(&mut self) {
-        if let Some((path, presence)) = self.window.recent.picked(None) {
+        if let Some((path, presence, generation)) = self.window.recent.picked(None)
+            && generation == self.file.generation
+        {
             self.open_recent_found(&path, presence);
         }
     }

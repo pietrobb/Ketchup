@@ -368,6 +368,49 @@ fn one_sign_or_undefined_byte_does_not_turn_a_western_drawing_central_european()
     );
 }
 
+/// Review 2026-11-06 P3: a Czech drawing whose only words beyond ASCII are the names of
+/// one or two layers stayed in Windows-1252.
+#[test]
+fn layer_names_vote_for_the_code_page() {
+    let drawing = |layers: &[&[u8]]| {
+        let mut source = b"0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n".to_vec();
+        for layer in layers {
+            source.extend_from_slice(b"0\nLAYER\n2\n");
+            source.extend_from_slice(layer);
+            source.extend_from_slice(b"\n70\n0\n62\n7\n");
+        }
+        source.extend_from_slice(b"0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n");
+        for (index, layer) in layers.iter().enumerate() {
+            for line in 0..3 {
+                source.extend_from_slice(b"0\nLINE\n8\n");
+                source.extend_from_slice(layer);
+                source.extend_from_slice(
+                    format!("\n10\n{index}\n20\n{line}\n11\n{index}\n21\n9\n").as_bytes(),
+                );
+            }
+        }
+        source.extend_from_slice(b"0\nENDSEC\n0\nEOF\n");
+        read_dxf_underlay(&source, DxfImportOptions::new(None)).unwrap()
+    };
+    let underlay = drawing(&[b"St\xECny", b"P\xF8\xED\xE8ky"]);
+    assert_eq!(
+        underlay.layers,
+        ["Stěny", "Příčky"],
+        "{:?}",
+        underlay.diagnostics
+    );
+    let underlay = drawing(&[b"St\xECny"]);
+    assert_eq!(underlay.layers, ["Stěny"], "{:?}", underlay.diagnostics);
+    // A Western layer name still holds a drawing of one Czech one in Windows-1252.
+    let underlay = drawing(&[b"St\xECny", b"Fl\xE4che m\xB2"]);
+    assert_eq!(
+        underlay.layers,
+        ["Stìny", "Fläche m²"],
+        "{:?}",
+        underlay.diagnostics
+    );
+}
+
 /// Review 2026-11-04 r19 P3: the character set a text's font names (`\f…|c238;`, the
 /// East European one, Windows-1250) was passed over. It votes as a Central European
 /// word does, so with one word it turns the drawing.

@@ -741,6 +741,13 @@ const STANDING_WIDTH_MM: f64 = 750.0;
 /// table, a kitchen island or a bar counter is lower (not a tolerance: a
 /// height, review 2026-11-04 r19 MF-161).
 const RAISED_LEVEL_MM: f64 = 1200.0;
+/// How far below z = 0 a ground floor modelled under it lies at most; the
+/// floor of a basement is a storey below (not a tolerance: a depth, review
+/// 2026-11-06 P3).
+const SUNKEN_GROUND_FLOOR_MM: f64 = 1000.0;
+/// The widest joint between the strips of one floor, a deck of
+/// planks laid apart (not a tolerance: a gap, review 2026-11-06 P3).
+const FACE_JOINT_MM: f64 = 20.0;
 /// Room around a view for its dimensions and title, in page millimetres.
 const VIEW_PAD_MM: f64 = 22.0;
 pub const SCALES: [u32; 10] = [10, 20, 25, 50, 75, 100, 200, 250, 500, 1000];
@@ -1016,6 +1023,22 @@ struct UpwardLevel {
     /// short side of the rectangle with their area and the length of their
     /// outline, their clear width.
     widest_mm: f64,
+    /// Where in plan: the box around each solid's faces there, least and
+    /// greatest corner.
+    boxes: Vec<[[f64; 2]; 2]>,
+}
+
+impl UpwardLevel {
+    /// Whether some of the level lies over some of `other` in plan.
+    fn overlaps(&self, other: &Self) -> bool {
+        self.boxes.iter().any(|[min, max]| {
+            other.boxes.iter().any(|[other_min, other_max]| {
+                (0..2).all(|axis| {
+                    max[axis].min(other_max[axis]) - min[axis].max(other_min[axis]) > ROUNDING
+                })
+            })
+        })
+    }
 }
 
 /// One solid's upward faces at one level: their area and the edges of their
@@ -1070,9 +1093,25 @@ fn upward_levels<'a>(
     pieces
         .into_iter()
         .map(|(level, pieces)| {
+            let boxes = pieces
+                .iter()
+                .map(|piece| {
+                    let corners = piece.outline.iter().flatten();
+                    corners.fold(
+                        [[f64::INFINITY; 2], [f64::NEG_INFINITY; 2]],
+                        |[min, max], corner| {
+                            [
+                                [min[0].min(corner[0]), min[1].min(corner[1])],
+                                [max[0].max(corner[0]), max[1].max(corner[1])],
+                            ]
+                        },
+                    )
+                })
+                .collect();
             let level_of = UpwardLevel {
                 area: pieces.iter().map(|piece| piece.area).sum(),
                 widest_mm: widest_touching(&pieces),
+                boxes,
             };
             #[allow(clippy::cast_precision_loss)]
             let height = level as f64;
@@ -1095,13 +1134,14 @@ fn length_2d([p, q]: [[f64; 2]; 2]) -> f64 {
 }
 
 /// The clear width of the widest group of `pieces` that touch along an edge,
-/// measured as one face: the outline they share is inside it, so a gallery
-/// of planks or of OSB strips is as wide as all of them (review 2026-11-04
-/// r19 MF-161).
+/// or lie at most [`FACE_JOINT_MM`] apart along it, measured as one face:
+/// the outline they share is inside it, so a gallery of planks, laid apart
+/// or not, or of OSB strips is as wide as all of them (review 2026-11-04 r19
+/// MF-161, 2026-11-06 P3).
 fn widest_touching(pieces: &[LevelPiece]) -> f64 {
-    // Each outline edge by its line (direction and offset across it, on the
-    // grid of `grid_key`) with its piece and its extent along the line.
-    let mut lines = BTreeMap::<[i64; 3], Vec<(usize, f64, f64)>>::new();
+    // Each outline edge by its direction (on the grid of `grid_key`) with its
+    // offset across it, its piece and its extent along it.
+    let mut lines = BTreeMap::<[i64; 3], Vec<(f64, usize, f64, f64)>>::new();
     for (index, piece) in pieces.iter().enumerate() {
         for [p, q] in &piece.outline {
             let length = length_2d([*p, *q]);
@@ -1114,19 +1154,23 @@ fn widest_touching(pieces: &[LevelPiece]) -> f64 {
             }
             let across = cross2(direction, *p);
             let [from, to] = [p, q].map(|end| dot2(direction, *end));
-            // The direction to a millionth, the offset on the 0.01 mm grid.
-            let key = grid_key([direction[0] * 1e4, direction[1] * 1e4, across]);
+            // The direction to a millionth.
+            let key = grid_key([direction[0] * 1e4, direction[1] * 1e4, 0.0]);
             lines
                 .entry(key)
                 .or_default()
-                .push((index, from.min(to), from.max(to)));
+                .push((across, index, from.min(to), from.max(to)));
         }
     }
     let mut group: Vec<usize> = (0..pieces.len()).collect();
     let mut shared = Vec::new();
-    for edges in lines.values() {
-        for (position, (first, from, to)) in edges.iter().enumerate() {
-            for (second, other_from, other_to) in &edges[position + 1..] {
+    for edges in lines.values_mut() {
+        edges.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (position, (across, first, from, to)) in edges.iter().enumerate() {
+            let near = edges[position + 1..]
+                .iter()
+                .take_while(|other| other.0 - across <= FACE_JOINT_MM + ROUNDING);
+            for (_, second, other_from, other_to) in near {
                 let overlap = to.min(*other_to) - from.max(*other_from);
                 if first != second && overlap > ROUNDING {
                     let (a, b) = (root(&mut group, *first), root(&mut group, *second));
@@ -1181,42 +1225,50 @@ fn floor_levels<'a>(solids: impl IntoIterator<Item = &'a DrawingSolid>) -> Vec<f
 /// plans and every level a person stands on, however small, such as a
 /// gallery or a mezzanine; not the top of a wall, a knee wall or a parapet
 /// (review 2026-11-04 MF-141), nor a top to sit or work at, less than
-/// [`RAISED_LEVEL_MM`] over the level marked below it (r19 MF-161).
+/// [`RAISED_LEVEL_MM`] over the highest level marked under it in plan (r19
+/// MF-161; review 2026-11-06 MF-180: a landing on the way up, the last level
+/// marked, unmarked a gallery across the hall).
 fn marked_floor_levels(solids: &[DrawingSolid]) -> Vec<f64> {
     let levels = upward_levels(solids);
     let largest = levels
         .iter()
         .map(|(_, level)| level.area)
         .fold(0.0, f64::max);
-    let mut marked: Vec<f64> = Vec::new();
+    let mut marked: Vec<(f64, UpwardLevel)> = Vec::new();
     for (height, level) in levels {
         let floor = level.area >= largest * FLOOR_SHARE_OF_LARGEST_LEVEL;
         let raised = level.widest_mm >= STANDING_WIDTH_MM
             && marked
-                .last()
-                .is_none_or(|below| height - below >= RAISED_LEVEL_MM);
+                .iter()
+                .rev()
+                .find(|(_, below)| level.overlaps(below))
+                .is_none_or(|(below, _)| height - below >= RAISED_LEVEL_MM);
         if floor || raised {
-            marked.push(height);
+            marked.push((height, level));
         }
     }
-    marked
+    marked.into_iter().map(|(height, _)| height).collect()
 }
 
 /// Where ±0,000 is by default, as Czech and Slovak drawings put it: the floor
-/// of the ground storey, the lowest floor at or above z = 0 (one below is a
-/// basement); the highest floor of a model all below z = 0, and z = 0 for a
+/// of the ground storey, the floor nearest z = 0 (one a storey below is a
+/// basement); the highest floor of a model all below that, and z = 0 for a
 /// model with no floor (review 2026-11-04 MF-141).
 #[must_use]
 pub fn ground_floor<'a>(solids: impl IntoIterator<Item = &'a DrawingSolid>) -> f64 {
     ground_floor_of(&floor_levels(solids))
 }
 
-/// [`ground_floor`] among `floors`, lowest first.
+/// [`ground_floor`] among `floors`, lowest first: the one nearest z = 0 of
+/// those less than [`SUNKEN_GROUND_FLOOR_MM`] below it, so a ground floor
+/// modelled 1 mm or 150 mm under z = 0 is still ±0,000, not the floor above
+/// (review 2026-11-06 P3).
 fn ground_floor_of(floors: &[f64]) -> f64 {
     floors
         .iter()
         .copied()
-        .find(|floor| *floor >= 0.0)
+        .filter(|floor| *floor > -SUNKEN_GROUND_FLOOR_MM)
+        .min_by(|a, b| a.abs().total_cmp(&b.abs()).then(b.total_cmp(a)))
         .or_else(|| floors.last().copied())
         .unwrap_or(0.0)
 }
@@ -1654,6 +1706,78 @@ mod tests {
             [2650.0, 775.0, 1600.0],
         ));
         assert_eq!(levels(&strip), bare, "one strip");
+        // Review 2026-11-06 P3: planks laid with 5 mm joints did not touch,
+        // so each was measured alone and the gallery went unmarked.
+        let mut jointed = room();
+        for index in 0..14_u32 {
+            let y = 150.0 + f64::from(index) * 145.0;
+            jointed.push(cuboid(
+                "plank",
+                [150.0, y, 1500.0],
+                [2150.0, y + 140.0, 1600.0],
+            ));
+        }
+        assert_eq!(levels(&jointed), raised, "planks with joints");
+    }
+
+    /// Review 2026-11-06 MF-180: a raised level was measured against the last
+    /// level marked anywhere in the model, so a landing at +1,800 on the way up
+    /// unmarked the gallery at +2,700 across the hall, 2,700 over the floor
+    /// under it. It is measured against the highest marked level under it in
+    /// plan; a landing 900 over the floor is still none.
+    #[test]
+    fn a_gallery_is_measured_against_the_level_under_it_not_a_landing_elsewhere() {
+        let hall = vec![
+            cuboid("floor", [0.0, 0.0, -200.0], [8000.0, 6000.0, 0.0]),
+            cuboid("roof", [0.0, 0.0, 5000.0], [8000.0, 6000.0, 5200.0]),
+            cuboid("landing 1", [6000.0, 0.0, 800.0], [7200.0, 1200.0, 900.0]),
+            cuboid(
+                "landing 2",
+                [6000.0, 1500.0, 1700.0],
+                [7200.0, 2700.0, 1800.0],
+            ),
+            cuboid("gallery", [0.0, 0.0, 2500.0], [3000.0, 6000.0, 2700.0]),
+        ];
+        let options = DrawingSetOptions {
+            decimal_separator: ketchup_model::annotation::DecimalMark::Comma,
+            ..options(&hall, None)
+        };
+        let set = drawing_set(&hall, &options).unwrap();
+        assert_eq!(
+            summary(&set, ProjectView::LongitudinalSection).levels,
+            ["-0,200", "±0,000", "+1,800", "+2,700", "+5,200"]
+        );
+    }
+
+    /// Review 2026-11-06 P3: ±0,000 was the lowest floor at or above z = 0, so
+    /// a ground floor modelled 1 mm or 150 mm below it made the floor above
+    /// ±0,000. A floor less than a storey below z = 0 is the ground floor; a
+    /// basement is still below it.
+    #[test]
+    fn a_ground_floor_just_below_zero_is_still_zero() {
+        for below in [1.0, 150.0] {
+            let mut house = room();
+            for corner in house
+                .iter_mut()
+                .flat_map(|solid| solid.triangles.iter_mut().flatten())
+            {
+                corner[2] -= 200.0 + below;
+            }
+            house.push(cuboid(
+                "upper floor",
+                [0.0, 0.0, 2500.0 - 200.0 - below],
+                [6000.0, 3000.0, 2700.0 - 200.0 - below],
+            ));
+            assert_eq!(ground_floor(&house), -below, "{below} mm below");
+        }
+        let mut house = room();
+        for mut solid in room() {
+            for corner in solid.triangles.iter_mut().flatten() {
+                corner[2] -= 3000.0;
+            }
+            house.push(solid);
+        }
+        assert_eq!(ground_floor(&house), 200.0, "the basement");
     }
 
     /// Měchenice MECH-6: a vertical dimension of the program has no length in plan;

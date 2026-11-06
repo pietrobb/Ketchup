@@ -713,6 +713,67 @@ fn homag_pin_macro_and_code128_label_share_the_machine_program_identity() {
     assert!(homag_code128_svg("12345678901!").is_none());
 }
 
+/// Review 2026-11-06 P3: a value out of what the file writes was refused naming
+/// neither the value nor what the file writes.
+#[test]
+fn a_value_out_of_range_is_refused_with_the_value_and_the_limit() {
+    let refused = GeneralFabricationError::positive_length("the length of a part", 1e-12)
+        .unwrap_err()
+        .to_string();
+    for named in [
+        "the length of a part",
+        "0.000000000001 mm",
+        "more than 0 mm",
+    ] {
+        assert!(refused.contains(named), "{named}: {refused}");
+    }
+    let stock = woodwop_stock_frame(&test_stock_geometry(PieceDimensions {
+        length_mm: 600.0,
+        width_mm: 400.0,
+        height_mm: 19.0,
+    }))
+    .unwrap();
+    let refused = woodwop_mpr_output(stock, &["\\Kúpeľ\\\n".to_owned()], "contract")
+        .unwrap_err()
+        .to_string();
+    for named in ["\"ú\"", "plain ASCII"] {
+        assert!(refused.contains(named), "{named}: {refused}");
+    }
+}
+
+/// Review 2026-11-06 MF-181: a round cut is drilled only by a drill as large as
+/// it, the Ø35 hole of a tap by a Ø40 drill, not the Ø450 opening of a sink;
+/// a drilling larger than the largest drill is milled as its two half arcs.
+#[test]
+fn a_round_cut_is_drilled_only_by_a_drill_as_large() {
+    let round_cut = |diameter_mm: f64| GeneralMachiningGeometry::ProfileCut {
+        frame: identity_machining_frame(),
+        segments: machining_segments(&openings::half_arcs(
+            [300.0_f64.to_bits(), 300.0_f64.to_bits()],
+            (diameter_mm / 2.0).to_bits(),
+        ))
+        .unwrap(),
+        start_mm: 0.0,
+        end_mm: 38.0,
+    };
+    let drilled = |machining: &GeneralMachiningGeometry, largest_drill_mm| match openings::as_tooled(
+        machining,
+        largest_drill_mm,
+    ) {
+        Some(GeneralMachiningGeometry::CircularDrill { diameter_mm, .. }) => Some(diameter_mm),
+        _ => None,
+    };
+    assert_eq!(drilled(&round_cut(35.0), Some(40.0)), Some(35.0));
+    assert_eq!(drilled(&round_cut(450.0), Some(40.0)), None);
+    assert_eq!(drilled(&round_cut(35.0), None), None);
+    let tap = openings::as_tooled(&round_cut(35.0), Some(40.0)).unwrap();
+    assert!(matches!(
+        openings::as_tooled(&tap, Some(20.0)),
+        Some(GeneralMachiningGeometry::ProfileCut { ref segments, .. }) if segments.len() == 2
+    ));
+    assert_eq!(openings::as_tooled(&tap, Some(40.0)), None);
+}
+
 #[test]
 fn btlx_drilling_maps_definition_axes_and_rejects_invalid_geometry() {
     let valid = GeneralMachiningGeometry::CircularDrill {

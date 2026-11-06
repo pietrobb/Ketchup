@@ -83,7 +83,6 @@ mod program_navigation;
 pub use program_access::{ReportSection, SourceEdit};
 pub use program_variant_export::CsvDecimal;
 mod mcp_config;
-#[cfg(any(not(windows), test))]
 pub(crate) use mcp_config::write_keeping_file;
 pub mod mcp_setup;
 mod measurement;

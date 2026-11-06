@@ -390,6 +390,12 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         #[starlark(require = named)] hardware: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> anyhow::Result<NoneType> {
+        // An empty kind fastened like a screw (review 2026-11-06 P3).
+        if kind.trim().is_empty() {
+            anyhow::bail!(
+                "joint kind is empty; say how the parts join, e.g. kind=\"screw\", or kind=\"none\" for a joint that fastens nothing"
+            );
+        }
         let heap = eval.heap();
         let rating = parse_rating(rating, heap)?;
         let hardware = parse_hardware(given(hardware), "hardware")?;

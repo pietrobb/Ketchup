@@ -25,7 +25,7 @@ crates/ketchup-geometry/src/tapping.rs 1
 crates/ketchup-headless/src/protocol.rs limit 3
 crates/ketchup-headless/src/protocol/model_tools.rs limit 1
 crates/ketchup-headless/src/protocol/production.rs limit 2
-crates/ketchup-manufacturing/src/fabrication.rs limit 2
+crates/ketchup-manufacturing/src/fabrication.rs limit 1
 crates/ketchup-model/src/cam.rs limit 1
 crates/ketchup-model/src/document/assembly_validation.rs limit 2
 crates/ketchup-model/src/document/command.rs limit 1

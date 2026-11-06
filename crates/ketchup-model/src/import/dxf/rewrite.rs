@@ -97,6 +97,33 @@ pub enum DxfEditRefusal {
         edit: EditOfObject,
         was_mm: Option<[i64; 2]>,
     },
+    /// More edits than one refused, each of the others' kinds, all named at once
+    /// (review 2026-11-06 P3: only the first was, so N of them took N rounds).
+    Several(Vec<DxfEditRefusal>),
+}
+
+impl DxfEditRefusal {
+    /// `refusals` as one: None for none, itself for one, else [`Self::Several`].
+    fn all(mut refusals: Vec<Self>) -> Option<Self> {
+        match refusals.len() {
+            0 => None,
+            1 => refusals.pop(),
+            _ => Some(Self::Several(refusals)),
+        }
+    }
+
+    /// The objects whose edits it refuses as their entities changed in the file since,
+    /// so each edit alone can be discarded.
+    #[must_use]
+    pub fn refused_edits(&self) -> Vec<u32> {
+        match self {
+            Self::ChangedInFile { object, .. } | Self::DeletedInFile { object, .. } => {
+                vec![*object]
+            }
+            Self::Several(refusals) => refusals.iter().flat_map(Self::refused_edits).collect(),
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// What was done in Kečup to an object of the underlay.
@@ -122,10 +149,10 @@ impl EditOfObject {
 impl Difference {
     fn what(self) -> &'static str {
         match self {
-            Self::Layer => "layer",
-            Self::Lines => "lines",
-            Self::Text => "text",
-            Self::Fill => "fill",
+            Self::Layer => "layer is another",
+            Self::Lines => "lines lie elsewhere or run otherwise",
+            Self::Text => "text lies elsewhere, reads otherwise or is set otherwise",
+            Self::Fill => "fill covers another area",
         }
     }
 }
@@ -207,19 +234,28 @@ impl fmt::Display for DxfEditRefusal {
                 difference,
                 was_mm,
                 now_mm,
-            } => write!(
-                formatter,
-                "object {object}, of {}, was {} in Kečup, but its {} \
-                 reads otherwise in the file now, changed there since it was imported or read \
-                 differently by this Kečup: it lay at {} mm and lies at {} mm now; undo that \
-                 edit of object {object} to write the drawing with the others, or import the \
-                 drawing again",
-                entity(kind, *handle),
-                edit.done(),
-                difference.what(),
-                at(*was_mm),
-                at(*now_mm)
-            ),
+            } => {
+                // Where it lies is said apart from what differs (review 2026-11-06 P3).
+                let place = if was_mm == now_mm {
+                    format!("it still lies at {} mm", at(*was_mm))
+                } else {
+                    format!(
+                        "it lay at {} mm and lies at {} mm now",
+                        at(*was_mm),
+                        at(*now_mm)
+                    )
+                };
+                write!(
+                    formatter,
+                    "object {object}, of {}, was {} in Kečup, but its {} in the file now, \
+                     changed there since it was imported or read differently by this Kečup; \
+                     {place}; undo that edit of object {object} to write the drawing with the \
+                     others, or import the drawing again",
+                    entity(kind, *handle),
+                    edit.done(),
+                    difference.what(),
+                )
+            }
             Self::DeletedInFile {
                 object,
                 handle,
@@ -236,6 +272,16 @@ impl fmt::Display for DxfEditRefusal {
                 edit.done(),
                 at(*was_mm)
             ),
+            Self::Several(refusals) => {
+                write!(formatter, "{} edits are refused: ", refusals.len())?;
+                for (index, refusal) in refusals.iter().enumerate() {
+                    if index > 0 {
+                        formatter.write_str("; ")?;
+                    }
+                    write!(formatter, "{}) {refusal}", index + 1)?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -286,6 +332,7 @@ pub fn write_edited_dxf(
     // The header names the code page the texts are read and written in, so the drawing
     // reads so again, however few of its texts are left (review 2026-11-04 r19 UL-161).
     drawing.code_page_renamed = encoding.code_page_over_header().map(str::to_owned);
+    let utf8_over_header = encoding.utf8_over_header();
     let (frame, rebound) = match frame {
         Ok(frame) => frame,
         Err(Some(refusal)) => return Err(refusal.into()),
@@ -300,12 +347,42 @@ pub fn write_edited_dxf(
             .into());
         }
     };
+    let mut dxf = drawing.write(lines, edits, &frame)?;
+    if utf8_over_header {
+        dxf = escaped_beyond_ascii(&dxf);
+    }
     Ok(EditedDxf {
-        dxf: drawing.write(lines, edits, &frame)?,
+        dxf,
         changed_in_file: rebound.changed,
         added_in_file: rebound.added,
         removed_in_file: rebound.removed,
     })
+}
+
+/// `dxf`, UTF-8 under a header naming a code page, with each character beyond ASCII
+/// written as `\U+XXXX` (each UTF-16 unit), which reads alike in any code page however
+/// few texts are left to tell the encoding by (review 2026-11-06 UL-180). A byte order
+/// mark stays as it is; so does what is not UTF-8.
+fn escaped_beyond_ascii(dxf: &[u8]) -> Vec<u8> {
+    let (mark, rest) = match dxf.strip_prefix(super::BYTE_ORDER_MARK) {
+        Some(rest) => (super::BYTE_ORDER_MARK, rest),
+        None => (&[][..], dxf),
+    };
+    let mut out = Vec::with_capacity(dxf.len());
+    out.extend_from_slice(mark);
+    for chunk in rest.utf8_chunks() {
+        for character in chunk.valid().chars() {
+            if character.is_ascii() {
+                out.extend_from_slice(character.encode_utf8(&mut [0; 4]).as_bytes());
+            } else {
+                for unit in character.encode_utf16(&mut [0; 2]) {
+                    out.extend_from_slice(format!("\\U+{unit:04X}").as_bytes());
+                }
+            }
+        }
+        out.extend_from_slice(chunk.invalid());
+    }
+    out
 }
 
 /// How `lines` lie against the units of `source`, when reading it gives them (or, for
@@ -441,11 +518,37 @@ fn rebinds(
             }
         }
     }
-    let (mut lies_alike, mut changed, mut removed, mut refused) = (false, 0, 0, None);
+    // Without handles an entity is told by its place among the others alone: where the
+    // file has gained, lost or reordered some, the one in an object's place is another's,
+    // so no place is named (review 2026-11-06 P3).
+    let unhandled = |lines: &UnderlayLines| -> Vec<&'static str> {
+        let objects = &lines.objects().objects;
+        objects
+            .iter()
+            .filter(|object| object.parent.is_none() && object.handle == 0)
+            .map(|object| object.kind.name())
+            .collect()
+    };
+    if unhandled(lines) != unhandled(read) {
+        let objects = &lines.objects().objects;
+        let refusals = edited
+            .iter()
+            .filter(|(top, _)| objects[**top].handle == 0)
+            .map(|(_, &(object, _))| DxfEditRefusal::NoHandle { object })
+            .collect();
+        if let Some(refusal) = DxfEditRefusal::all(refusals) {
+            return Err(Some(refusal));
+        }
+    }
+    let (mut lies_alike, mut changed, mut removed, mut refused) = (false, 0, 0, Vec::new());
     for (key, &id) in &then {
         let Some(&found) = now.get(key) else {
-            if let (Some(&(object, edit)), None) = (edited.get(&id), &refused) {
-                refused = Some(DxfEditRefusal::DeletedInFile {
+            // Taken out in Kečup and in the file alike: both agree (review 2026-11-06
+            // CD-180).
+            if let Some(&(object, edit)) = edited.get(&id)
+                && edit != EditOfObject::Removed
+            {
+                refused.push(DxfEditRefusal::DeletedInFile {
                     object,
                     handle: key.0,
                     kind: key.1.to_owned(),
@@ -457,10 +560,8 @@ fn rebinds(
             continue;
         };
         let difference = compare::difference(lines, id, read, found);
-        if let (Some(difference), Some(&(object, edit)), None) =
-            (difference, edited.get(&id), &refused)
-        {
-            refused = Some(DxfEditRefusal::ChangedInFile {
+        if let (Some(difference), Some(&(object, edit))) = (difference, edited.get(&id)) {
+            refused.push(DxfEditRefusal::ChangedInFile {
                 object,
                 handle: key.0,
                 kind: key.1.to_owned(),
@@ -479,7 +580,9 @@ fn rebinds(
     if !lies_alike {
         return Err(None);
     }
-    if let Some(refused) = refused {
+    // Every edit refused is named at once, so N of them are not N rounds (review
+    // 2026-11-06 P3).
+    if let Some(refused) = DxfEditRefusal::all(refused) {
         return Err(Some(refused));
     }
     let added = now.keys().filter(|key| !then.contains_key(*key)).count();
@@ -1045,7 +1148,12 @@ impl<'a> Drawing<'a> {
         // Per entity of the drawing: left out, mapped, or kept.
         let mut replaced = vec![None::<Option<Vec<u8>>>; self.entities.len()];
         for &object in edits.removed_objects.iter().filter(|id| **id < read_count) {
-            replaced[entity_of(object)?] = Some(None);
+            // One the file has deleted too is out already (review 2026-11-06 CD-180).
+            match entity_of(object) {
+                Ok(entity) => replaced[entity] = Some(None),
+                Err(EditedDxfError::Refused(DxfEditRefusal::HandleMissing { .. })) => {}
+                Err(error) => return Err(error),
+            }
         }
         let removed: BTreeSet<u64> = self
             .entities

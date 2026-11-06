@@ -723,23 +723,85 @@ fn params_take_overrides_report_unknown_ones_and_check_ranges() {
 /// an issue of the finished model, so `--set shelves=5000` built 5000 shelves for over
 /// two minutes first. It is refused where the program declares the parameter, naming it
 /// and its range, before anything uses it; the loop below would build 10^6 boxes.
+///
+/// Review 2026-11-06 P3: refusing it stopped the whole program, so a document
+/// saved with a value its program has since narrowed the range of no longer
+/// opened. The program uses the default instead, and the override is an error
+/// of the model naming it, its range and the default.
 #[test]
-fn an_override_outside_its_range_is_refused_before_the_program_uses_it() {
+fn an_override_outside_its_range_is_never_used_and_the_default_is_reported() {
     let source = "n = param(\"shelves\", 4, min = 1, max = 20, whole = True, unit = \"\")\n\
                   d = param(\"depth\", 300, min = 100)\n\
                   for i in range(n):\n    box(\"s%d\" % i, (600, d, 18), at = (0, 0, 20 * i))\n";
-    for (name, value, range) in [
-        ("shelves", 1_000_000.0, "[1, 20]"),
-        ("shelves", 0.0, "[1, 20]"),
-        ("depth", 50.0, "[100, inf]"),
+    for (name, value, range, default) in [
+        ("shelves", 1_000_000.0, "[1, 20]", 4.0),
+        ("shelves", 0.0, "[1, 20]", 4.0),
+        ("depth", 50.0, "[100, inf]", 300.0),
     ] {
         let overrides = BTreeMap::from([(name.to_owned(), value)]);
-        let error = format!("{:#}", run("t.star", source, &overrides).unwrap_err());
+        let (evaluated, report) = run("t.star", source, &overrides).unwrap();
+        assert_eq!(evaluated.model.parts.len(), 4);
+        let param = (evaluated.model.params.iter())
+            .find(|param| param.name == name)
+            .unwrap();
+        assert_eq!(param.value, default);
+        let issue = (report.issues.iter())
+            .find(|issue| issue.kind == "param_out_of_range")
+            .unwrap_or_else(|| panic!("{:#?}", report.issues));
+        assert_eq!(issue.severity, Severity::Error);
         assert!(
-            error.contains(&format!("param {name} = {value} is outside {range}")),
-            "{error}"
+            issue.message.contains(&format!(
+                "param {name} = {value} is outside {range}; the default {default} is used"
+            )),
+            "{}",
+            issue.message
         );
+        assert!(!report.ok);
     }
+}
+
+/// Review 2026-11-06 PG-182: NaN passed `param()`, as every comparison with it
+/// is false; the list showed `f: null` and `box()` failed naming no parameter.
+#[test]
+fn a_param_that_is_not_finite_is_refused_by_its_name() {
+    let source = "f = param(\"f\", 100.0, min = 10, max = 200)\nbox(\"b\", (f, 10, 10))\n";
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let overrides = BTreeMap::from([("f".to_owned(), value)]);
+        let error = format!("{:#}", run("t.star", source, &overrides).unwrap_err());
+        assert!(error.contains("param f = "), "{error}");
+        assert!(error.contains("finite"), "{error}");
+    }
+    for declared in [
+        "param(\"f\", float(\"inf\"))",
+        "param(\"f\", 1, min = float(\"nan\"))",
+        "param(\"f\", 1, max = float(\"-inf\"))",
+    ] {
+        let error = format!(
+            "{:#}",
+            run("t.star", &format!("{declared}\n"), &BTreeMap::new()).unwrap_err()
+        );
+        assert!(error.contains("param(\"f\")"), "{declared}: {error}");
+        assert!(error.contains("finite"), "{declared}: {error}");
+    }
+}
+
+/// Review 2026-11-06 P3: `min = 5, max = 1` was taken, and the hint to choose
+/// a value inside it could not be followed.
+#[test]
+fn a_param_whose_min_is_above_its_max_is_refused_where_it_is_declared() {
+    let error = format!(
+        "{:#}",
+        run(
+            "t.star",
+            "param(\"f\", 3, min = 5, max = 1)\n",
+            &BTreeMap::new()
+        )
+        .unwrap_err()
+    );
+    assert!(
+        error.contains("param(\"f\"): min 5 is above max 1"),
+        "{error}"
+    );
 }
 
 /// Review 2026-11-04 r19 (rest of WB-42): `whole = True` with a default written `3.0`
@@ -776,10 +838,12 @@ fn a_whole_param_refuses_a_fraction() {
         );
     }
     // Review 2026-11-04 (rest of WB-42): 1e300 is whole but no int, so range()
-    // failed on it with a general type error.
+    // failed on it with a general type error. (Outside a range, the default is
+    // used instead, review 2026-11-06 P3.)
+    let unbounded = "n = param(\"count\", 2, whole = True, unit = \"\")\nrange(n)\n";
     for value in [1e300, -1e300, 3.0e9] {
         let overrides = BTreeMap::from([("count".to_owned(), value)]);
-        let error = format!("{:#}", run("t.star", source, &overrides).unwrap_err());
+        let error = format!("{:#}", run("t.star", unbounded, &overrides).unwrap_err());
         assert!(
             error.contains(&format!("param count = {value:e} is too large")),
             "{error}"

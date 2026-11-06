@@ -860,6 +860,7 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
                     BtlxProfileProcessingRequest::EdgeSawCutsThenMillContour {
                         intermediate_saw_cuts: 2,
                     },
+                ..Default::default()
             },
         )
         .unwrap();
@@ -883,6 +884,7 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
                     BtlxProfileProcessingRequest::EdgeSawCutsThenMillContour {
                         intermediate_saw_cuts: 33,
                     },
+                ..Default::default()
             },
         ),
         Err(GeneralFabricationError::BtlxProfileRequestUnsupported {

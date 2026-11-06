@@ -137,6 +137,7 @@ mod viewer_settings_tests;
 mod viewer_workflow_tests;
 mod viewport;
 mod viewport_paint;
+pub(crate) mod written_drawings;
 
 pub(crate) use commands::*;
 pub(crate) use document::SaveFailure;

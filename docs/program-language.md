@@ -173,9 +173,15 @@ beyond its side) and are fastened to both by `joint()`;
 `loads.members[].braced_by` lists them. A grounded part must be stiff sideways
 (a wall, not a hinged stud). Every `joint()` fastens its parts except of the kinds
 `none`, `contact` and `friction`; a load path's `fixed` tag passes weight but
-braces nothing. A brace holds the beam at its joint's `fasteners` that lie where
-the two parts touch (others are reported as `fastener_off_contact` and hold
-nothing), or at the middle of each place they touch when the joint names none.
+braces nothing. A joint's `kind` may not be empty; one that reads like a slip of
+a kind fastening nothing (`nnoe`, `contacts`) fastens and is reported as
+`joint_kind_doubtful`. A brace anchored to a grounded part smaller every way than
+the member is deep is reported as `anchorage_small`. A brace holds the beam at its
+joint's `fasteners` that lie where the two parts touch, in any of their contacts
+and no deeper from it than the thinner part is thick (others are reported as
+`fastener_off_contact` and hold nothing), or at the middle of each place they
+touch when the joint names none; a `bearing=True` joint holds nothing sideways
+where its parts do not touch.
 Sheathing or a deck fastened only to the beams braces nothing, so a usual floor
 of joists under a screwed deck is `not_verified` for lateral torsional buckling
 until a diaphragm can be declared. It is a computed check, not an authorized structural design.

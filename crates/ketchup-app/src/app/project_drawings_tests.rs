@@ -1322,6 +1322,52 @@ fn the_drawings_window_shows_the_found_zero_and_keeps_any_height() {
     );
 }
 
+/// Review 2026-11-06 P3: ±0,000 unticked before its worker found the ground
+/// floor started the height the user sets from 0. It cannot be unticked
+/// until the floor is found, then starts from it.
+#[test]
+fn zero_is_set_from_the_floor_found_not_from_nothing() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = KetchupApp::new();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let snapshot = app.document.current();
+    let key = (
+        snapshot.document_id(),
+        snapshot.revision_id(),
+        app.exact.results.contents_stamp(),
+    );
+    let (floor, finding) = std::sync::mpsc::channel();
+    *app.drawings.found_zero.borrow_mut() = Some((
+        key,
+        crate::app::project_drawings::FoundZero::Finding(finding),
+    ));
+    let ground = |height: &str| {
+        app.catalog.format(
+            "drawings-zero-level-ground",
+            &BTreeMap::from([("height", height.to_owned())]),
+        )
+    };
+    let (being_found, found) = (ground("…"), ground("650"));
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1600.0, 1200.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.state_mut().open_project_drawings_window();
+    harness.step();
+    harness.step();
+    harness.get_by_label(&being_found).click_accesskit();
+    harness.step();
+    harness.step();
+    assert_eq!(harness.state().drawings.editing.zero_level_mm, None);
+
+    floor.send(Ok(650.0)).unwrap();
+    harness.step();
+    harness.step();
+    harness.get_by_label(&found).click_accesskit();
+    harness.step();
+    harness.step();
+    assert_eq!(harness.state().drawings.editing.zero_level_mm, Some(650));
+}
+
 /// Review 2026-11-04 MF-140: the level marks of a Czech sheet wrote a comma
 /// but its dimensions and cutting captions a point ("1234.5", "využito
 /// 87.5 %"), both on one sheet, in the PDF and the DXF. Every number a Czech or
