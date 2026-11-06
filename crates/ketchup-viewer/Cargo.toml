@@ -23,6 +23,10 @@ wgpu = { version = "25.0.2", default-features = false, features = ["wgsl"] }
 [target.'cfg(windows)'.dependencies]
 wgpu = { version = "25.0.2", default-features = false, features = ["dx12"] }
 
+[target.'cfg(unix)'.dependencies]
+# `ENOLCK`: a file system without locks (already in the tree).
+libc = "0.2"
+
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 wgpu = { version = "25.0.2", default-features = false, features = ["metal"] }
 

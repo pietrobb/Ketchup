@@ -79,7 +79,8 @@ def test_every_pre_release_of_a_release_has_its_own_code_in_semver_order():
     assert codes[-1] <= 2_100_000_000
     # 0.3.2 shipped as 30029 under the rule before; every later release is above it.
     assert codes[1] > 30029
-    for refused in ("0.3.3-beta", "21.0.0", "0.3.3-rc.48"):
+    # Review 2026-11-06 P3: -match ignores case, so -RC.1 had a code bash refuses.
+    for refused in ("0.3.3-beta", "21.0.0", "0.3.3-rc.48", "0.3.3-RC.1", "0.3.3-Dev"):
         result = powershell(f". '{helper}'; Get-AndroidVersionCode '{refused}'")
         assert result.returncode != 0 and refused in result.stderr, (refused, result.stdout)
 

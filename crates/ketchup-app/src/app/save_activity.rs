@@ -64,6 +64,7 @@ impl KetchupApp {
         context: &egui::Context,
         prepare: impl FnOnce(&DocumentStore, &ContainerData) -> PreparedSave + Send + 'static,
     ) {
+        self.token_for_save(&path);
         let source = Source::capture(self);
         let document = self.document.fork_for_planning();
         let container = source.container.clone();

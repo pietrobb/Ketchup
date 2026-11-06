@@ -76,19 +76,15 @@ impl std::fmt::Display for UnderlayExportError {
 }
 
 impl UnderlayExportError {
-    /// The object whose edit was refused, its entity changed in the file since it was
-    /// imported.
-    pub(crate) fn refused_edit(&self) -> Option<u32> {
+    /// The objects whose edits were refused, their entities changed in the file since it
+    /// was imported.
+    pub(crate) fn refused_edits(&self) -> Vec<u32> {
         use ketchup_application::program_isolation::{UnderlayReadError, UnderlayRefusal};
-        use ketchup_model::import::DxfEditRefusal;
         match self {
             Self::Worker(UnderlayWorkerError::Read(UnderlayReadError::Refused(
-                UnderlayRefusal::NotWritten(
-                    DxfEditRefusal::ChangedInFile { object, .. }
-                    | DxfEditRefusal::DeletedInFile { object, .. },
-                ),
-            ))) => Some(*object),
-            _ => None,
+                UnderlayRefusal::NotWritten(refusal),
+            ))) => refusal.refused_edits(),
+            _ => Vec::new(),
         }
     }
 }
@@ -241,6 +237,8 @@ impl UnderlayExportJob {
 /// The window's drawing export, running on a thread.
 pub(crate) struct UnderlayExportTask {
     id: UnderlayId,
+    /// The window's document it was started for ([`crate::app_state::FileState::generation`]).
+    generation: u64,
     output: PathBuf,
     /// The source file the user named, kept for the next export once this one is written.
     named_source: Option<PathBuf>,
@@ -390,18 +388,19 @@ impl KetchupApp {
             });
         let job = match job {
             Ok(job) => job,
-            Err(error) => return self.finish_underlay_export(id, &output, None, Err(error)),
+            Err(error) => return self.finish_underlay_export(Some(id), &output, None, Err(error)),
         };
         let Some(context) = self.file.activity.context.clone() else {
             let result = job.run(&CancelToken::default());
-            return self.finish_underlay_export(id, &output, named_source, result);
+            return self.finish_underlay_export(Some(id), &output, named_source, result);
         };
         let (cancel, gate, receiver) = match start_underlay_export_thread(job, context) {
             Ok(started) => started,
-            Err(error) => return self.finish_underlay_export(id, &output, None, Err(error)),
+            Err(error) => return self.finish_underlay_export(Some(id), &output, None, Err(error)),
         };
         self.file.activity.underlay.exporting = Some(UnderlayExportTask {
             id,
+            generation: self.file.generation,
             dwg: crate::app::dwg_import::is_dwg_path(&output),
             output,
             named_source,
@@ -429,7 +428,10 @@ impl KetchupApp {
             .exporting
             .take()
             .expect("polled task");
-        self.finish_underlay_export(task.id, &task.output, task.named_source, result);
+        // Written for a document that has gone, only its outcome is said: its
+        // underlay id is of that one (review 2026-11-06 P3).
+        let id = (task.generation == self.file.generation).then_some(task.id);
+        self.finish_underlay_export(id, &task.output, task.named_source, result);
         context.request_repaint();
     }
 
@@ -446,9 +448,11 @@ impl KetchupApp {
         }
     }
 
+    /// Says how writing the drawing went; `id` is the underlay's when it is of the
+    /// document still open, None when the one it was written for has gone.
     fn finish_underlay_export(
         &mut self,
-        id: UnderlayId,
+        id: Option<UnderlayId>,
         output: &Path,
         named_source: Option<PathBuf>,
         result: UnderlayExportResult,
@@ -482,9 +486,12 @@ impl KetchupApp {
         // An edit refused as its object's entity changed in the file since can be
         // discarded alone, and the command that does it is said (review 2026-11-04 r19
         // CD-163).
-        self.file.activity.underlay.refused_edit = match &result {
-            Err(error) => error.refused_edit().map(|object| (id, object)),
-            Ok(_) => None,
+        self.file.activity.underlay.refused_edit = match (&result, id) {
+            (Err(error), Some(id)) => {
+                let objects = error.refused_edits();
+                (!objects.is_empty()).then_some((id, objects))
+            }
+            _ => None,
         };
         if self.file.activity.underlay.refused_edit.is_some() {
             self.digest.push(' ');
@@ -536,7 +543,7 @@ impl KetchupApp {
             ));
         }
         // The file named is the drawing's source: the next export does not ask again.
-        if let (Ok(_), Some(source)) = (result, named_source) {
+        if let (Ok(_), Some(source), Some(id)) = (result, named_source, id) {
             self.file.activity.underlay.sources.insert(id, source);
         }
     }

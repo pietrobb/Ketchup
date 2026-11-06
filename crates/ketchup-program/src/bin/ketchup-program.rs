@@ -53,6 +53,10 @@ enum CliError {
         value: String,
         source: std::num::ParseFloatError,
     },
+    SetNotFinite {
+        name: String,
+        value: String,
+    },
     Read {
         path: String,
         source: std::io::Error,
@@ -74,6 +78,9 @@ impl std::fmt::Display for CliError {
                 value,
                 source,
             } => write!(f, "--set {name}: {value:?} is not a number ({source})"),
+            Self::SetNotFinite { name, value } => {
+                write!(f, "--set {name}: {value:?} is not a finite number")
+            }
             Self::Read { path, source } => write!(f, "cannot read {path}: {source}"),
             Self::NotJson { path, source } => write!(f, "{path} is not JSON: {source}"),
         }
@@ -122,6 +129,12 @@ fn parse(args: &[String]) -> Result<Options, CliError> {
                         value: number.to_owned(),
                         source,
                     })?;
+                if !parsed.is_finite() {
+                    return Err(CliError::SetNotFinite {
+                        name: name.to_owned(),
+                        value: number.to_owned(),
+                    });
+                }
                 options.overrides.insert(name.to_owned(), parsed);
             }
             _ => return Err(CliError::Usage),
@@ -317,6 +330,19 @@ mod tests {
             "{}",
             error.message
         );
+    }
+
+    /// Review 2026-11-06 PG-182: `--set f=nan` passed every range check, as
+    /// comparisons with NaN are false, and the program failed later naming no
+    /// parameter.
+    #[test]
+    fn set_refuses_a_number_that_is_not_finite_by_its_name() {
+        for value in ["nan", "inf", "-inf", "1e999"] {
+            let args = ["check", "a.star", "--set", &format!("f={value}")].map(str::to_owned);
+            let error = parse(&args).err().expect(value).to_string();
+            assert!(error.starts_with("--set f:"), "{error}");
+            assert!(error.contains("finite"), "{error}");
+        }
     }
 
     #[test]

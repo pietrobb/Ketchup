@@ -37,8 +37,9 @@ pub(crate) struct PlanAnnotations {
     /// Every TEXT written, those inside dimension blocks included.
     pub(crate) drawn_texts: usize,
     pub(crate) hidden: usize,
-    /// Dimensions between points at different heights: the plan shortens them,
-    /// so they carry the measured value as their text.
+    /// Dimensions between points at different heights, which the plan
+    /// shortens, and those with a decimal comma: they carry the measured
+    /// value as their text.
     pub(crate) value_overrides: usize,
     /// Dimensions measured straight up or down, which have no length in plan.
     pub(crate) outside_plan: usize,
@@ -180,7 +181,11 @@ impl PlanAnnotations {
         };
         let text_at = marks.value_at;
         let value = dimension_text_with(layout.value_mm, separator);
-        let shortened = dimension_text_with(distance(points[0], points[1]), separator) != value;
+        // A value the plan shortens, or one with a decimal comma, which a CAD
+        // program measuring the dimension again writes with a point (R12 has
+        // no DIMDSEP), is the dimension's text (review 2026-11-06 P3).
+        let shortened = dimension_text_with(distance(points[0], points[1]), separator) != value
+            || dimension_text_with(layout.value_mm, DecimalMark::Point) != value;
 
         let block = format!("*D{}", self.dimensions + 1);
         write!(
@@ -378,5 +383,29 @@ mod tests {
             "{}",
             plan.entities
         );
+    }
+
+    /// Review 2026-11-06 P3: a value with a decimal comma was only drawn in
+    /// the dimension's block, so a CAD program measuring the dimension again
+    /// wrote it with a point. It is the dimension's text; a whole value, the
+    /// same either way, is left to be measured.
+    #[test]
+    fn a_value_with_a_decimal_comma_is_the_dimensions_text() {
+        let dimension = |to: [f64; 3], separator: DecimalMark| {
+            let mut plan = PlanAnnotations::default();
+            let from = [0.0, 0.0, 0.0];
+            let layout = DimensionLayout::new(from, to, 500.0);
+            assert!(plan.dimension("plan", [from, to], &layout, 250.0, 100.0, separator));
+            plan
+        };
+        let comma = dimension([1250.5, 0.0, 0.0], DecimalMark::Comma);
+        assert!(comma.entities.contains("1\n1250,5\n"), "{}", comma.entities);
+        assert_eq!(comma.value_overrides, 1);
+        for plan in [
+            dimension([1250.5, 0.0, 0.0], DecimalMark::Point),
+            dimension([1250.0, 0.0, 0.0], DecimalMark::Comma),
+        ] {
+            assert_eq!(plan.value_overrides, 0, "{}", plan.entities);
+        }
     }
 }

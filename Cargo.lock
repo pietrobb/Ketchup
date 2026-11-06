@@ -2639,6 +2639,7 @@ dependencies = [
  "ketchup-test-gpu",
  "ketchup-tolerance",
  "ketchup-view-format",
+ "libc",
  "num-traits",
  "pollster",
  "rfd",

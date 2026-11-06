@@ -45,9 +45,10 @@ const AUTOMOUNTED: &[&str] = if cfg!(target_os = "macos") {
 /// from one when a path under them is touched (review 2026-11-02 SEC-101). Besides
 /// these, every FUSE file system without a block device (see [`linux_local_type`]).
 /// Under WSL the Windows drives are `9p` or `drvfs`, which may be a mapped share; a
-/// virtual machine reaches its host by `9p` or `virtiofs`; `gpfs` is a cluster's
-/// (review 2026-11-04 r19).
-const NETWORK_FILE_SYSTEMS: [&str; 17] = [
+/// virtual machine reaches its host by `9p` or `virtiofs`, under VirtualBox by
+/// `vboxsf` and Parallels by `prl_fs`; `gpfs` is a cluster's (review 2026-11-04
+/// r19, 2026-11-06 P3).
+const NETWORK_FILE_SYSTEMS: [&str; 19] = [
     "autofs",
     "nfs",
     "nfs4",
@@ -64,6 +65,8 @@ const NETWORK_FILE_SYSTEMS: [&str; 17] = [
     "9p",
     "drvfs",
     "virtiofs",
+    "vboxsf",
+    "prl_fs",
     "gpfs",
 ];
 
@@ -384,7 +387,9 @@ mod mount_tests {
              C:\\134 /mnt/c 9p rw,aname=drvfs 0 0\n\
              D: /mnt/d drvfs rw 0 0\n\
              share /mnt/host virtiofs rw 0 0\n\
-             scale /gpfs/projects gpfs rw 0 0\n",
+             scale /gpfs/projects gpfs rw 0 0\n\
+             host /media/sf_host vboxsf rw 0 0\n\
+             none /media/psf/Home prl_fs rw 0 0\n",
         );
         for local in [
             "/home/me/desk.pdf",
@@ -415,6 +420,9 @@ mod mount_tests {
             "/mnt/d/x.pdf",
             "/mnt/host/x.pdf",
             "/gpfs/projects/x.pdf",
+            // Review 2026-11-06 P3: the host folders of VirtualBox and Parallels.
+            "/media/sf_host/x.pdf",
+            "/media/psf/Home/x.pdf",
         ] {
             assert!(!local_mounted_path(remote, &mounts, &[]), "{remote:?}");
         }

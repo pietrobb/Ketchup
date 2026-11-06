@@ -179,6 +179,25 @@ pub enum GeneralFabricationError {
     },
     /// The production package could not be packed into one ZIP.
     Package(ketchup_model::exact_product::ExactProductError),
+    /// `what`, of the value `value`, is out of what the file can write, `limit`
+    /// (review 2026-11-06 P3: the refusal named neither).
+    ValueOutOfRange {
+        what: &'static str,
+        value: String,
+        limit: &'static str,
+    },
+}
+
+impl GeneralFabricationError {
+    /// `value_mm`, `what` of a part, written as a file writes a length: a
+    /// number that rounds to more than 0 mm.
+    pub(super) fn positive_length(what: &'static str, value_mm: f64) -> Result<String, Self> {
+        format_btlx_positive_number(value_mm).ok_or_else(|| Self::ValueOutOfRange {
+            what,
+            value: format!("{value_mm} mm"),
+            limit: "a finite length more than 0 mm",
+        })
+    }
 }
 
 impl GeneralFabricationError {
@@ -321,6 +340,10 @@ impl fmt::Display for GeneralFabricationError {
                 "{parts} different parts are made, and one HOMAG MPR program machines one part; export the HOMAG MPR to a .zip destination for one program and barcode label per piece, named by its production code",
             ),
             Self::Package(error) => write!(formatter, "the production package was not packed: {error}"),
+            Self::ValueOutOfRange { what, value, limit } => write!(
+                formatter,
+                "the fabrication export is refused: {what} is {value}, and the file writes {limit}",
+            ),
         }
     }
 }

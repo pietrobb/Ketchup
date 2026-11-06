@@ -67,6 +67,7 @@ fn new_keeps_every_setting_of_the_window() {
     app.window.dock_tab = Some(crate::DockTab::Views);
     app.window.recent.add(Path::new("dom.ketchup")).unwrap();
     let recent_files = app.window.recent.files().to_vec();
+    let mut app = app.with_written_drawings(Path::new("drawings.txt"));
 
     app.new_document();
 
@@ -77,7 +78,9 @@ fn new_keeps_every_setting_of_the_window() {
         panes,
         dock_tab,
         recent,
+        written_drawings,
     } = &app.window;
+    assert!(written_drawings.is_some());
     assert_eq!(*theme, ThemeKind::Paper);
     assert_eq!(*decimal, DecimalSeparator::Comma);
     assert!(*remember_language);

@@ -318,10 +318,52 @@ def test_the_idioms_that_act_as_let_underscore_count(tmp_path):
     # A command-line entry point writes to its console.
     write(tmp_path, "crates/a/src/main.rs", 'eprintln!("usage: a <file>");\n')
     write(tmp_path, "crates/a/src/bin/tool.rs", 'eprintln!("usage: tool <file>");\n')
+    # Review 2026-11-06 UI-181: once its window logs to a file, an entry
+    # point has no console either; its command line's branches still do.
+    write(
+        tmp_path,
+        "crates/b/src/main.rs",
+        "fn main() {\n"
+        '    if verify { eprintln!("usage: b --verify <file>"); return; }\n'
+        '    log_window_to("B", "b.log");\n'
+        '    if let Err(error) = run(|| { eprintln!("{error}"); }) {\n'
+        '        eprintln!("window failed: {error}");\n'
+        "    }\n"
+        "}\n"
+        'fn usage() { eprintln!("usage: b <file>"); }\n',
+    )
     assert checker.current_counts(tmp_path) == {
         "crates/a/src/lib.rs empty_is_err": 3,
         "crates/a/src/lib.rs irrefutable_let": 2,
         "crates/a/src/lib.rs eprintln": 1,
+        "crates/b/src/main.rs eprintln": 2,
+    }
+
+
+def test_the_drops_review_1106_found_past_the_ratchet_count(tmp_path):
+    # Review 2026-11-06 P3: a struct literal in an empty `is_err` condition,
+    # `drop(call())`, `.ok().is_some();`, `Ok(Some(()))` in an irrefutable let and
+    # `unwrap_or_default()` all slipped past.
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "if tx.send(Msg { a: 1 }).is_err() {}\n"
+        "drop(call());\n"
+        "drop(sender.send(Msg { a: 1 }));\n"
+        "save(&path).ok().is_some();\n"
+        "let (Ok(Some(())) | Err(_)) = receiver.recv();\n"
+        "let text = read(&path).unwrap_or_default();\n"
+        "// What keeps or answers it is not counted.\n"
+        "drop(guard);\n"
+        "let sent = save(&path).ok().is_some();\n"
+        "if tx.send(Msg { a: 1 }).is_err() { return Err(Gone); }\n",
+    )
+    assert checker.current_counts(tmp_path) == {
+        "crates/a/src/lib.rs empty_is_err": 1,
+        "crates/a/src/lib.rs dropped_call": 2,
+        "crates/a/src/lib.rs ok_statement": 1,
+        "crates/a/src/lib.rs irrefutable_let": 1,
+        "crates/a/src/lib.rs or_default": 1,
     }
 
 

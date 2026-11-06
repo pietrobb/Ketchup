@@ -204,8 +204,16 @@ pub(super) fn btlx_processings(
     blank: StockBlank,
     part: &str,
 ) -> Result<Vec<BtlxProcessing>, GeneralFabricationError> {
-    match operation.kind {
-        GeneralManufacturingKind::CircularDrill => btlx_drilling(&operation.machining, blank)
+    let tooled = super::openings::as_tooled(&operation.machining, options.largest_drill_mm);
+    let (kind, machining) = match &tooled {
+        Some(drill @ GeneralMachiningGeometry::CircularDrill { .. }) => {
+            (GeneralManufacturingKind::CircularDrill, drill)
+        }
+        Some(cut) => (GeneralManufacturingKind::ProfileCut, cut),
+        None => (operation.kind, &operation.machining),
+    };
+    match kind {
+        GeneralManufacturingKind::CircularDrill => btlx_drilling(machining, blank)
             .map(|drilling| {
                 vec![BtlxProcessing::Drilling(BtlxDrilling {
                     thread: operation.thread.clone(),
@@ -219,7 +227,7 @@ pub(super) fn btlx_processings(
         GeneralManufacturingKind::ThroughCut
         | GeneralManufacturingKind::ProfileCut
         | GeneralManufacturingKind::BooleanCut => {
-            let contour = btlx_free_contour(&operation.machining, blank).ok_or(
+            let contour = btlx_free_contour(machining, blank).ok_or(
                 GeneralFabricationError::ExportBlocked(ExportBlock::UnsupportedMachining),
             )?;
             match options.profile_processing_request {
@@ -228,17 +236,21 @@ pub(super) fn btlx_processings(
                 }
                 BtlxProfileProcessingRequest::EdgeSawCutsThenMillContour {
                     intermediate_saw_cuts,
+                } if intermediate_saw_cuts <= 32 && !has_straight_edge(machining) => {
+                    // A round opening has no edge a saw cuts; it is milled
+                    // along its arcs (review 2026-11-06 MF-181).
+                    Ok(vec![BtlxProcessing::MillContour(contour)])
+                }
+                BtlxProfileProcessingRequest::EdgeSawCutsThenMillContour {
+                    intermediate_saw_cuts,
                 } => {
-                    let saw_contours = btlx_edge_saw_contours(
-                        &operation.machining,
-                        &contour,
-                        intermediate_saw_cuts,
-                    )
-                    .ok_or_else(|| {
-                        GeneralFabricationError::BtlxProfileRequestUnsupported {
-                            part: part.to_owned(),
-                        }
-                    })?;
+                    let saw_contours =
+                        btlx_edge_saw_contours(machining, &contour, intermediate_saw_cuts)
+                            .ok_or_else(|| {
+                                GeneralFabricationError::BtlxProfileRequestUnsupported {
+                                    part: part.to_owned(),
+                                }
+                            })?;
                     let mut processings = saw_contours
                         .into_iter()
                         .map(BtlxProcessing::SawContour)
@@ -251,6 +263,15 @@ pub(super) fn btlx_processings(
         _ => Err(GeneralFabricationError::ExportBlocked(
             ExportBlock::UnsupportedMachining,
         )),
+    }
+}
+
+fn has_straight_edge(geometry: &GeneralMachiningGeometry) -> bool {
+    match geometry {
+        GeneralMachiningGeometry::ProfileCut { segments, .. } => segments
+            .iter()
+            .any(|segment| matches!(segment, GeneralMachiningSegment::Line { .. })),
+        _ => true,
     }
 }
 

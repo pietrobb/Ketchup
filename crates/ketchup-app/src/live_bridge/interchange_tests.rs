@@ -538,14 +538,17 @@ fn the_sheets_are_titled_in_the_language_the_client_names_and_the_document_keeps
 
 /// Review 2026-11-04 r19 P3: the height of ±0,000 could be set in the drawings
 /// window only. A client names it in whole millimetres, the document keeps it
-/// for the next export, `auto` finds it from the model again, and a value that
-/// is no height is refused and changes nothing.
+/// for the next export, `auto` finds it from the model again and says which
+/// height it found (review 2026-11-06 P3), and a value that is no height is
+/// refused and changes nothing.
 #[test]
 fn a_client_sets_the_height_of_zero_and_the_document_keeps_it() {
     let (mut app, mut bridge, directory) = window();
     let program = Request::ApplyProgram {
         expected: None,
-        source: "text('S-01', 'S-01', at=(0, 0), height_mm=3.5, tags='plan')\n".into(),
+        source: "text('S-01', 'S-01', at=(0, 0), height_mm=3.5, tags='plan')\n\
+                 box('slab', (6000, 3000, 200), at=(0, 0, 450))\n"
+            .into(),
         overrides: None,
         file_name: Some("plan.star".into()),
         replace_document: true,
@@ -553,6 +556,7 @@ fn a_client_sets_the_height_of_zero_and_the_document_keeps_it() {
     bridge
         .execute(&mut app, program, false)
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
     let drawings = |name: &str, zero: Option<Value>| {
         let mut request = json!({
             "method": "export_drawings",
@@ -571,6 +575,7 @@ fn a_client_sets_the_height_of_zero_and_the_document_keeps_it() {
         .execute(&mut app, drawings("set.pdf", Some(json!(2800))), false)
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
     assert_eq!(written["zero_level_mm"], 2800, "{written}");
+    assert_eq!(written["zero_level_used_mm"], 2800.0, "{written}");
     assert_eq!(stored(&app), Some(2800));
     let written = bridge
         .execute(&mut app, drawings("again.pdf", None), false)
@@ -590,6 +595,8 @@ fn a_client_sets_the_height_of_zero_and_the_document_keeps_it() {
         .execute(&mut app, drawings("auto.pdf", Some(json!("auto"))), false)
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
     assert_eq!(written["zero_level_mm"], "auto", "{written}");
+    // The top of the slab, the ground floor.
+    assert_eq!(written["zero_level_used_mm"], 650.0, "{written}");
     assert_eq!(stored(&app), None);
 }
 

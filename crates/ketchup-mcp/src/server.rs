@@ -32,11 +32,27 @@ pub fn serve_stdio(app_executable: Option<PathBuf>) -> io::Result<()> {
     })
 }
 
-/// The tool calls read and waiting for their turn at most: reading the input
-/// waits while so many wait, so a client sending faster than the window works
-/// does not fill the memory with messages of up to [`MAX_LINE_BYTES`] (review
-/// 2026-11-04 r19 MCP-161).
+/// The tool calls read and waiting for their turn at most, so a client sending
+/// faster than the window works does not fill the memory with messages of up
+/// to [`MAX_LINE_BYTES`] (review 2026-11-04 r19 MCP-161). One more is refused
+/// as [`BUSY`] at once; reading never waits, so a cancellation, a ping or the
+/// end of the input is always seen (review 2026-11-06 MCP-180).
 const QUEUED_CALLS: usize = 16;
+
+/// JSON-RPC error code (implementation-defined server error) of a tool call
+/// refused because [`QUEUED_CALLS`] wait already.
+const BUSY: i64 = -32000;
+
+/// The reply refusing the tool call `id` as [`BUSY`].
+fn refusal(id: Value) -> Value {
+    failure(
+        id,
+        BUSY,
+        &format!(
+            "Kečup is busy: {QUEUED_CALLS} tool calls already wait for their turn; send this one again once one of them is answered"
+        ),
+    )
+}
 
 /// Set once the client has gone: its input has ended or a reply could not be
 /// written to it. The tool call running then is cancelled, as no one is left
@@ -74,12 +90,16 @@ impl Gone {
 /// A tool call waiting for its turn; its reply, or none when it was cancelled.
 type Turn = Box<dyn FnOnce() -> Option<Value> + Send>;
 
+/// The reply to a tool call refused when [`QUEUED_CALLS`] wait already.
+type Refusal = Box<dyn FnOnce() -> Value + Send>;
+
 /// What [`serve`] does with a message.
 enum Routed {
     /// Answered at once on the thread that reads the input.
     Now(Option<Value>),
-    /// Run by the one worker, after the calls that came before it.
-    InTurn(Turn),
+    /// Run by the one worker, after the calls that came before it, or
+    /// refused when too many wait.
+    InTurn(Turn, Refusal),
 }
 
 /// Tool calls take their turns in the order they came, on one worker, so an
@@ -96,8 +116,15 @@ fn route(session: &Arc<Session<Tools>>, message: Value) -> Routed {
     };
     // Known before its turn, so a cancellation meanwhile keeps it from running.
     session.queued(id);
+    let (refused, id) = (Arc::clone(session), id.clone());
     let session = Arc::clone(session);
-    Routed::InTurn(Box::new(move || handle(&session, message)))
+    Routed::InTurn(
+        Box::new(move || handle(&session, message)),
+        Box::new(move || {
+            refused.forget(&id);
+            refusal(id)
+        }),
+    )
 }
 
 /// Answers each line of `input` on `output` until `input` ends: at once, or
@@ -171,11 +198,13 @@ fn read_messages(
         match message.map(&route) {
             Ok(Routed::Now(Some(reply))) | Err(reply) => write_reply(output, &reply)?,
             Ok(Routed::Now(None)) => {}
-            Ok(Routed::InTurn(turn)) => {
-                if queue.send(turn).is_err() {
+            Ok(Routed::InTurn(turn, refused)) => match queue.try_send(turn) {
+                Ok(()) => {}
+                Err(mpsc::TrySendError::Full(_)) => write_reply(output, &refused())?,
+                Err(mpsc::TrySendError::Disconnected(_)) => {
                     return Err(io::Error::other("the worker that runs tool calls stopped"));
                 }
-            }
+            },
         }
     }
     Ok(())
@@ -260,6 +289,11 @@ impl<T: BorrowMut<Tools>> Session<T> {
     /// Notes a tool call waiting for its turn, so a cancellation finds it.
     fn queued(&self, id: &Value) {
         self.calls().cancelled.insert(id.to_string(), false);
+    }
+
+    /// Forgets a tool call refused before its turn.
+    fn forget(&self, id: &Value) {
+        self.calls().cancelled.remove(&id.to_string());
     }
 
     /// Runs one tool call when its turn comes; `None` when the client
@@ -516,13 +550,17 @@ mod tests {
                         return Routed::Now(answer(&message));
                     }
                     let window_answers = Arc::clone(&window_answers);
-                    Routed::InTurn(Box::new(move || {
-                        // A window that does not answer this request until the test ends.
-                        let window = window_answers.lock().expect("one call at a time");
-                        let answered = window.recv_timeout(std::time::Duration::from_secs(60));
-                        assert!(answered.is_err(), "the test never answers the call");
-                        answer(&message)
-                    }))
+                    let refused = busy(&message);
+                    Routed::InTurn(
+                        Box::new(move || {
+                            // A window that does not answer this request until the test ends.
+                            let window = window_answers.lock().expect("one call at a time");
+                            let answered = window.recv_timeout(std::time::Duration::from_secs(60));
+                            assert!(answered.is_err(), "the test never answers the call");
+                            answer(&message)
+                        }),
+                        refused,
+                    )
                 },
             )
         });
@@ -555,21 +593,27 @@ mod tests {
                 &Arc::default(),
                 move |message| {
                     let order = Arc::clone(&order);
-                    Routed::InTurn(Box::new(move || {
-                        order
-                            .lock()
-                            .expect("one call at a time")
-                            .push(message["id"].clone());
-                        answer(&message)
-                    }))
+                    let refused = busy(&message);
+                    Routed::InTurn(
+                        Box::new(move || {
+                            order
+                                .lock()
+                                .expect("one call at a time")
+                                .push(message["id"].clone());
+                            answer(&message)
+                        }),
+                        refused,
+                    )
                 },
             )
         });
-        for id in 1..=40 {
+        // As many as may wait, so none is refused as busy.
+        let calls = u64::try_from(QUEUED_CALLS).expect("a few");
+        for id in 1..=calls {
             let line = format!("{}\n", tool_call(id)).into_bytes();
             send_line.send(line).expect("the server reads");
         }
-        let replied: Vec<Value> = (1..=40)
+        let replied: Vec<Value> = (1..=calls)
             .map(|_| {
                 let reply = replies.recv_timeout(std::time::Duration::from_secs(5));
                 reply.expect("every call is answered")["id"].clone()
@@ -580,7 +624,7 @@ mod tests {
             .join()
             .expect("the server ends")
             .expect("served to the end");
-        let expected: Vec<Value> = (1..=40).map(Value::from).collect();
+        let expected: Vec<Value> = (1..=calls).map(Value::from).collect();
         assert_eq!(*ran.lock().expect("served"), expected);
         assert_eq!(replied, expected);
     }
@@ -609,19 +653,23 @@ mod tests {
                         Arc::clone(&seen_gone),
                         Arc::clone(&ran),
                     );
-                    Routed::InTurn(Box::new(move || {
-                        if message["id"] != 1 {
-                            ran.store(true, Ordering::Release);
-                            return answer(&message);
-                        }
-                        // A long export: it is still running when the client goes.
-                        started.send(()).expect("the test waits");
-                        assert!(
-                            gone.wait(std::time::Duration::from_secs(5)),
-                            "the client never went"
-                        );
-                        answer(&message)
-                    }))
+                    let refused = busy(&message);
+                    Routed::InTurn(
+                        Box::new(move || {
+                            if message["id"] != 1 {
+                                ran.store(true, Ordering::Release);
+                                return answer(&message);
+                            }
+                            // A long export: it is still running when the client goes.
+                            started.send(()).expect("the test waits");
+                            assert!(
+                                gone.wait(std::time::Duration::from_secs(5)),
+                                "the client never went"
+                            );
+                            answer(&message)
+                        }),
+                        refused,
+                    )
                 },
             )
         });
@@ -666,31 +714,37 @@ mod tests {
                 &gone,
                 move |message| {
                     let (started, cancel) = (send_started.clone(), cancel.clone());
-                    Routed::InTurn(Box::new(move || {
-                        // An apply waiting for the window's reply, as
-                        // Tools::send waits; the window sees the connection end.
-                        let window = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
-                        let address = window.local_addr().expect("its address");
-                        let connection = crate::bridge::Connection::open(address, String::new())
-                            .expect("the window accepts");
-                        let (mut accepted, _) = window.accept().expect("connected");
-                        cancel.clear();
-                        assert!(cancel.arm(&connection).expect("armed"));
-                        started.send(()).expect("the test waits");
-                        accepted
-                            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                            .expect("a read timeout");
-                        let mut byte = [0; 1];
-                        let read = io::Read::read(&mut accepted, &mut byte);
-                        assert_eq!(
-                            read.expect(
-                                "the call still waits for the window after the client went"
-                            ),
-                            0,
-                            "the connection ended"
-                        );
-                        answer(&message)
-                    }))
+                    let refused = busy(&message);
+                    Routed::InTurn(
+                        Box::new(move || {
+                            // An apply waiting for the window's reply, as
+                            // Tools::send waits; the window sees the connection end.
+                            let window =
+                                std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+                            let address = window.local_addr().expect("its address");
+                            let connection =
+                                crate::bridge::Connection::open(address, String::new())
+                                    .expect("the window accepts");
+                            let (mut accepted, _) = window.accept().expect("connected");
+                            cancel.clear();
+                            assert!(cancel.arm(&connection).expect("armed"));
+                            started.send(()).expect("the test waits");
+                            accepted
+                                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                                .expect("a read timeout");
+                            let mut byte = [0; 1];
+                            let read = io::Read::read(&mut accepted, &mut byte);
+                            assert_eq!(
+                                read.expect(
+                                    "the call still waits for the window after the client went"
+                                ),
+                                0,
+                                "the connection ended"
+                            );
+                            answer(&message)
+                        }),
+                        refused,
+                    )
                 },
             )
         });
@@ -742,20 +796,24 @@ mod tests {
                         .send(message["id"].clone())
                         .expect("the test reads");
                     let (routed, ran) = (Arc::clone(&routed), Arc::clone(&ran));
-                    Routed::InTurn(Box::new(move || {
-                        if message["id"] == 1 {
-                            // Answered once the next calls are read.
-                            let routed = routed.lock().expect("one call at a time");
-                            for _ in 0..3 {
-                                routed
-                                    .recv_timeout(std::time::Duration::from_secs(5))
-                                    .expect("read");
+                    let refused = busy(&message);
+                    Routed::InTurn(
+                        Box::new(move || {
+                            if message["id"] == 1 {
+                                // Answered once the next calls are read.
+                                let routed = routed.lock().expect("one call at a time");
+                                for _ in 0..3 {
+                                    routed
+                                        .recv_timeout(std::time::Duration::from_secs(5))
+                                        .expect("read");
+                                }
+                            } else {
+                                ran.store(true, Ordering::Release);
                             }
-                        } else {
-                            ran.store(true, Ordering::Release);
-                        }
-                        answer(&message)
-                    }))
+                            answer(&message)
+                        }),
+                        refused,
+                    )
                 },
             )
         });
@@ -779,65 +837,152 @@ mod tests {
         );
     }
 
-    /// Review 2026-11-04 r19 MCP-161: the queue of calls had no bound, each
-    /// message up to 32 MiB. Reading waits while [`QUEUED_CALLS`] wait.
-    #[test]
-    fn reading_waits_while_the_queue_of_calls_is_full() {
+    /// A server running call 1 until its client goes, with `over` more calls
+    /// than [`QUEUED_CALLS`] sent behind it.
+    struct Behind {
+        send_line: std::sync::mpsc::Sender<Vec<u8>>,
+        replies: std::sync::mpsc::Receiver<Value>,
+        /// The messages other than tool calls, as read.
+        seen: std::sync::mpsc::Receiver<Value>,
+        /// Whether a call other than 1 ran.
+        later_ran: Arc<AtomicBool>,
+        served: thread::JoinHandle<io::Result<()>>,
+    }
+
+    fn calls_behind_a_long_one(over: u64) -> Behind {
         let (send_line, lines) = std::sync::mpsc::channel();
         let (send_reply, replies) = std::sync::mpsc::channel();
-        let (release, released) = std::sync::mpsc::channel::<()>();
-        let released = Arc::new(Mutex::new(released));
-        let served = std::thread::spawn(move || {
+        let (send_started, started) = std::sync::mpsc::channel();
+        let (send_seen, seen) = std::sync::mpsc::channel();
+        let gone: Arc<Gone> = Arc::default();
+        let later_ran = Arc::new(AtomicBool::new(false));
+        let (seen_gone, ran) = (Arc::clone(&gone), Arc::clone(&later_ran));
+        let served = thread::spawn(move || {
             let input = io::BufReader::new(Lines(lines, Vec::new()));
             serve(
                 input,
                 Replies(send_reply, Vec::new()),
-                &Arc::default(),
+                &gone,
                 move |message| {
                     if message["method"] != "tools/call" {
+                        send_seen.send(message.clone()).expect("the test reads");
                         return Routed::Now(answer(&message));
                     }
-                    let released = Arc::clone(&released);
-                    Routed::InTurn(Box::new(move || {
-                        if message["id"] == 1 {
-                            let released = released.lock().expect("one call at a time");
-                            released
-                                .recv_timeout(std::time::Duration::from_secs(10))
-                                .expect("the test releases the first call");
-                        }
-                        answer(&message)
-                    }))
+                    let (started, gone, ran) = (
+                        send_started.clone(),
+                        Arc::clone(&seen_gone),
+                        Arc::clone(&ran),
+                    );
+                    let refused = busy(&message);
+                    Routed::InTurn(
+                        Box::new(move || {
+                            if message["id"] != 1 {
+                                ran.store(true, Ordering::Release);
+                                return answer(&message);
+                            }
+                            started.send(()).expect("the test waits");
+                            assert!(
+                                gone.wait(std::time::Duration::from_secs(10)),
+                                "the client never went"
+                            );
+                            answer(&message)
+                        }),
+                        refused,
+                    )
                 },
             )
         });
-        let calls = u64::try_from(QUEUED_CALLS).expect("a few") + 2;
-        for id in 1..=calls {
+        send_line
+            .send(format!("{}\n", tool_call(1)).into_bytes())
+            .expect("the server reads");
+        started
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the first call starts");
+        let last = u64::try_from(QUEUED_CALLS).expect("a few") + 1 + over;
+        for id in 2..=last {
             let line = format!("{}\n", tool_call(id)).into_bytes();
             send_line.send(line).expect("the server reads");
         }
+        Behind {
+            send_line,
+            replies,
+            seen,
+            later_ran,
+            served,
+        }
+    }
+
+    fn busy(message: &Value) -> Refusal {
+        let id = message["id"].clone();
+        Box::new(move || refusal(id))
+    }
+
+    /// Review 2026-11-06 MCP-180: with [`QUEUED_CALLS`] waiting the reader
+    /// stopped in the queue, so a cancellation of the running call or a ping
+    /// was not read until a call ended. Reading goes on: a call beyond the
+    /// queue is refused at once as busy, and every other message is answered.
+    #[test]
+    fn a_full_queue_refuses_more_calls_and_reads_on() {
+        let Behind {
+            send_line,
+            replies,
+            seen,
+            served,
+            ..
+        } = calls_behind_a_long_one(2);
+        let cancel = json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+            "params": {"requestId": 1}});
         let ping = json!({"jsonrpc": "2.0", "id": "ping", "method": "ping"});
-        send_line
-            .send(format!("{ping}\n").into_bytes())
-            .expect("the server reads");
-        assert!(
-            replies
-                .recv_timeout(std::time::Duration::from_millis(500))
-                .is_err(),
-            "the ping behind a full queue was read"
-        );
-        release.send(()).expect("the first call waits");
-        let replied: Vec<Value> = (0..=calls)
+        for message in [&cancel, &ping] {
+            send_line
+                .send(format!("{message}\n").into_bytes())
+                .expect("the server reads");
+        }
+        let cancelled = seen.recv_timeout(std::time::Duration::from_secs(5));
+        assert_eq!(cancelled.expect("the cancellation is read"), cancel);
+        let replied: Vec<Value> = (0..3)
             .map(|_| {
                 let reply = replies.recv_timeout(std::time::Duration::from_secs(5));
-                reply.expect("every message is answered")["id"].clone()
+                reply.expect("answered while the queue is full")
             })
             .collect();
-        assert!(replied.contains(&json!("ping")));
+        let busy_ids: Vec<&Value> = replied
+            .iter()
+            .filter(|reply| reply["error"]["code"] == BUSY)
+            .map(|reply| &reply["id"])
+            .collect();
+        let last = u64::try_from(QUEUED_CALLS).expect("a few") + 3;
+        assert_eq!(busy_ids, [&json!(last - 1), &json!(last)], "{replied:?}");
+        assert!(replied.iter().any(|reply| reply["id"] == "ping"));
         drop(send_line);
         served
             .join()
             .expect("the server ends")
             .expect("served to the end");
+    }
+
+    /// Review 2026-11-06 MCP-180: when the input ended behind a full queue the
+    /// reader did not see it until the calls had made room, and 16 of them ran
+    /// for a client that had gone.
+    #[test]
+    fn calls_behind_a_full_queue_are_not_run_once_the_client_has_gone() {
+        // The client still reads the replies; only its input has ended.
+        let Behind {
+            send_line,
+            replies: _replies,
+            later_ran,
+            served,
+            ..
+        } = calls_behind_a_long_one(3);
+        drop(send_line);
+        served
+            .join()
+            .expect("the server ends")
+            .expect("served to the end");
+        assert!(
+            !later_ran.load(Ordering::Acquire),
+            "a call waiting behind a full queue ran after the client had gone"
+        );
     }
 
     /// Review 2026-11-04 MCP-142: a call registered itself only when its thread
@@ -847,7 +992,7 @@ mod tests {
     fn a_call_cancelled_while_waiting_for_its_turn_never_runs() {
         let root = tempfile::tempdir().expect("a temporary folder");
         let session = Arc::new(Session::new(Tools::new(None, Some(root.path().to_owned()))));
-        let Routed::InTurn(turn) = route(&session, tool_call(5)) else {
+        let Routed::InTurn(turn, _) = route(&session, tool_call(5)) else {
             panic!("a tool call waits for its turn");
         };
         let cancel = json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
@@ -858,5 +1003,22 @@ mod tests {
             session.calls().cancelled.is_empty(),
             "nothing is left registered"
         );
+    }
+
+    /// A call refused as busy (MCP-180) is answered with its id and leaves
+    /// nothing registered for a cancellation to find.
+    #[test]
+    fn a_call_refused_as_busy_is_forgotten() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let session = Arc::new(Session::new(Tools::new(None, Some(root.path().to_owned()))));
+        let Routed::InTurn(_, refused) = route(&session, tool_call(7)) else {
+            panic!("a tool call waits for its turn");
+        };
+        let reply = refused();
+        assert_eq!(
+            (reply["id"].clone(), reply["error"]["code"].clone()),
+            (json!(7), json!(BUSY))
+        );
+        assert!(session.calls().cancelled.is_empty());
     }
 }

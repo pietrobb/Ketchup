@@ -254,4 +254,30 @@ fn a_0_3_2_list_is_the_projects_by_its_file_on_disk_not_by_the_spelling_of_its_p
             .unwrap_or_else(|error| panic!("{} refused: {error:?}", spelling.display()));
         assert_eq!(std::fs::read(&sheets[0]).unwrap(), b"again");
     }
+
+    // Review 2026-11-06 MF-182 and P3: the file the list names is gone, the
+    // project moved with its drawings, or on a share that is offline; the
+    // file was opened to compare, on the window's thread. The same document's
+    // file of that name is the project's, no file looked at.
+    std::fs::write(&sheets[0], b"moved").unwrap();
+    std::fs::write(
+        &list_path,
+        format!(
+            "Ketchup drawing set of a project file\ndocument 42\nproject {}\nhouse-01.dxf {}\n",
+            directory
+                .path()
+                .join("Jobs")
+                .join("House.ketchup")
+                .display(),
+            sha256_hex(b"moved")
+        ),
+    )
+    .unwrap();
+    let mut moved = SetOwner {
+        document: DocumentId(42),
+        file: Some(project),
+        written: BTreeMap::new(),
+    };
+    publish_noted(&path, format, &[b"moved again".to_vec()], &mut moved).unwrap();
+    assert_eq!(std::fs::read(&sheets[0]).unwrap(), b"moved again");
 }

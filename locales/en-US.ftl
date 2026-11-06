@@ -1329,6 +1329,7 @@ error-export-cnc-dxf = CNC DXF export to { $path } failed: { $reason }
 about-description = Open-source AI-native 2D/3D modeler
 about-version = Version { $version }
 about-license = License: { $license }
+about-log = Log: { $path }
 about-close = Close
 shortcuts-title = Keyboard shortcuts
 shortcuts-row = { $command }    { $shortcut }
@@ -1749,7 +1750,10 @@ digest-underlay-exported-removed-in-file = { $count } entities you did not edit 
 digest-underlay-exported-dwg-version = It is an AutoCAD 2018 DWG ({ $version }), whatever version the source was; for an older AutoCAD export the drawing to DXF.
 digest-underlay-export-failed = The drawing was not written: { $reason }
 digest-underlay-export-discard-hint = { $command } discards that edit alone; the others stay.
-digest-underlay-edit-discarded = The edit of object { $object } was discarded; export the drawing again.
+digest-underlay-edit-discarded = { $count ->
+        [one] The edit of object { $object } was discarded
+       *[other] The edits of objects { $object } were discarded
+    }; export the drawing again.
 digest-underlay-edit-not-discarded = The edit was not discarded: { $reason }
 digest-underlay-text-required = Type the text first, then click where it starts
 digest-underlay-draw-off = The drawing tools draw into the model again
@@ -2188,7 +2192,7 @@ drawings-parts-not-evaluated = { $count ->
        *[other] { $count } visible parts have no exact solid, so the sheet would leave them out: { $parts }. Fix or hide them, or wait
     } until the model is evaluated.
 drawings-settings-unreadable = The title block and sheet format stored in the document cannot be read ({ $reason }); they are kept as they are. Fill in the title block again in Project drawings to replace them.
-drawings-set-of-another-project = The drawing set listed in { $list } was exported from { $project }, not from this document, so none of its sheets is replaced. Export to another folder or file name, or take the set over for this project.
+drawings-set-of-another-project = The drawing set listed in { $list } was exported from { $project }, not from this document, so none of its sheets is replaced. It has { $sheets } sheets: taking it over replaces them and deletes those beyond the last sheet of this project's set. Export to another folder or file name, or take the set over for this project.
 drawings-set-of-an-unsaved-project = a project not saved
 drawings-take-over-set = Take the set over and export
 drawings-part-bodies-unresolved = The bodies of { $part } do not resolve to one exact solid each ({ $reason }), so the sheet would leave it out. Give each extrusion its own body, or suppress one, then export again.
