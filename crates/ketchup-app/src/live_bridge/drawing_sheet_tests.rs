@@ -735,13 +735,62 @@ fn a_moved_project_exports_its_set_again_and_another_is_told_whose_it_is() {
     evaluate_exact(&mut other);
     let (code, answer) = export(&mut other, &mut other_bridge, json!({})).unwrap_err();
     assert_eq!(code, "drawings_set_of_another_project", "{answer}");
-    for said in ["house v2.ketchup", "take_over", "Ask the user"] {
+    // Taking it over deletes sheets of the other set, which the user is told
+    // before (review 2026-11-06 P3).
+    for said in [
+        "house v2.ketchup",
+        "take_over",
+        "Ask the user",
+        "deletes those beyond the last sheet",
+        "\"sheets\":",
+    ] {
         assert!(answer.contains(said), "{said:?} missing: {answer}");
     }
     export(&mut other, &mut other_bridge, json!({"take_over": true})).unwrap();
     // Taken over, the set is no longer the moved project's.
     let (code, _) = export(&mut app, &mut bridge, json!({})).unwrap_err();
     assert_eq!(code, "drawings_set_of_another_project");
+}
+
+/// Review 2026-11-06 MF-182: a project moved together with its drawings
+/// folder, `C:\Jobs\Dom\` to `D:\Archiv\Dom\` or a folder synced to a
+/// colleague, refused its own set as exported "from dom.ketchup, not this
+/// document": the list it wrote was kept by its old path. A list of the same
+/// document naming the project's file is its own.
+#[test]
+fn a_project_moved_with_its_drawings_folder_exports_its_set_again() {
+    let directory = tempfile::tempdir().unwrap();
+    let request = |value: Value| serde_json::from_value::<Request>(value).unwrap();
+    let job = directory.path().join("Jobs").join("Dom");
+    std::fs::create_dir_all(job.join("dwg")).unwrap();
+    let store = directory.path().join("drawings.txt");
+    let (app, mut bridge) = setup();
+    let mut app = app.with_written_drawings(&store);
+    evaluate_exact(&mut app);
+    let save = request(json!({"method": "save_as", "path": job.join("dom.ketchup")}));
+    bridge.execute(&mut app, save, false).unwrap();
+    let set = job.join("dwg").join("dom.dxf");
+    bridge
+        .execute(&mut app, export_drawings(&set, json!({})), false)
+        .unwrap();
+    drop((app, bridge));
+
+    let archive = directory.path().join("Archiv");
+    std::fs::create_dir_all(&archive).unwrap();
+    let moved = archive.join("Dom");
+    std::fs::rename(&job, &moved).unwrap();
+    // On this computer, and on a colleague's, which never wrote the set.
+    for store in [store, directory.path().join("colleague.txt")] {
+        let (app, mut bridge) = setup();
+        let mut app = app.with_written_drawings(&store);
+        let open = request(json!({"method": "open", "path": moved.join("dom.ketchup")}));
+        bridge.execute(&mut app, open, false).unwrap();
+        evaluate_exact(&mut app);
+        let set = moved.join("dwg").join("dom.dxf");
+        bridge
+            .execute(&mut app, export_drawings(&set, json!({})), false)
+            .unwrap_or_else(|code| panic!("{store:?} {code}: {:?}", take_error_details()));
+    }
 }
 
 /// One DXF entity: its type, layer, numeric codes and KETCHUP id.
