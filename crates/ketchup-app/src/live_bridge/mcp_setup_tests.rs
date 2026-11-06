@@ -687,6 +687,40 @@ fn a_program_kecup_cannot_look_at_is_not_gone() {
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// Review 2026-11-06 r23 SEC-201: a program on a drive or share that is out,
+/// or on a volume not mounted, was gone (the system says no file), and the
+/// installer replaced its entry.
+#[test]
+fn a_program_on_a_drive_that_is_out_is_not_gone() {
+    let home = temporary_home("drive-out");
+    let environment = clean_profile(&home);
+    let this = std::env::current_exe().unwrap();
+    #[cfg(windows)]
+    let volume = crate::recent_files::presence::drive_not_in_use();
+    // A volume is mounted outside the home folder, as `/media/usb`.
+    #[cfg(not(windows))]
+    let volume = home
+        .parent()
+        .unwrap()
+        .join(format!("ketchup-volume-{}", std::process::id()));
+    let program = volume.join("tools").join("ketchup.exe");
+    let file = environment.config_file(Harness::ClaudeCode).unwrap();
+    let config =
+        serde_json::json!({"mcpServers": {"ketchup": {"command": program, "args": ["--mcp"]}}})
+            .to_string();
+    std::fs::write(&file, &config).unwrap();
+    environment.set_up_installed(&this);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), config);
+    assert_eq!(
+        environment.registration(Harness::ClaudeCode, &this),
+        Registration::Elsewhere {
+            command: program.display().to_string(),
+            exists: true
+        }
+    );
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 /// Review 2026-11-04 r19 P3: an entry starting this Kečup but turned off
 /// showed as set up, and so did one that is a network server. Neither starts
 /// a program; the installer keeps them, Connect turns them on.

@@ -565,25 +565,60 @@ fn the_list_of_written_drawings_forgets_files_that_are_gone() {
         path: document.display().to_string(),
     };
     bridge.execute(&mut app, save, false).unwrap();
-    let mut export = |name: &str| {
+    let mut export = |app: &mut KetchupApp, name: &str| {
         let path = directory.path().join(name);
         bridge
-            .execute(
-                &mut app,
-                export_drawings(&path, json!({"sheet_id": id})),
-                false,
-            )
+            .execute(app, export_drawings(&path, json!({"sheet_id": id})), false)
             .unwrap_or_else(|code| panic!("{code}: {:?}", take_error_details()));
     };
-    export("first.dxf");
+    export(&mut app, "first.dxf");
     let listed = || std::fs::read_to_string(&store).unwrap();
     assert!(listed().contains("first.dxf"), "{}", listed());
+    // Review 2026-11-06 r23 SEC-202: every line of every document was asked
+    // for at each export, on the window's thread: another document's gone
+    // drawing, one on a drive that is out, and a line of a newer Kečup are
+    // kept; this document's gone drawing is forgotten on a worker.
+    let other = directory.path().join("other.ketchup");
+    let theirs = directory.path().join("theirs.dxf");
+    #[cfg(windows)]
+    let out = crate::recent_files::presence::drive_not_in_use()
+        .join("plans")
+        .join("out.dxf");
+    // A share mounted outside the home folder, as `/media/nas`, not mounted.
+    #[cfg(not(windows))]
+    let out = directory.path().join("nas").join("out.dxf");
+    let ours = std::fs::canonicalize(&document).unwrap();
+    let token = listed().split('\t').nth(1).unwrap().to_owned();
+    let newer = format!(
+        "{}\t{token}\t{}\tabc\tnewer field",
+        ours.display(),
+        out.display()
+    );
+    let mut text = listed();
+    for line in [
+        format!("drawing={}\tx\t{}\tabc", other.display(), theirs.display()),
+        format!(
+            "drawing={}\t{token}\t{}\tabc",
+            ours.display(),
+            out.display()
+        ),
+        format!("drawing={newer}"),
+    ] {
+        text.push_str(&line);
+        text.push('\n');
+    }
+    std::fs::write(&store, text).unwrap();
     std::fs::remove_file(directory.path().join("first.dxf")).unwrap();
-    export("second.dxf");
+    export(&mut app, "second.dxf");
+    app.drawings.forgetting.take().unwrap().join().unwrap();
     assert!(!listed().contains("first.dxf"), "{}", listed());
     assert!(listed().contains("second.dxf"), "{}", listed());
-    export("second.dxf");
-    assert_eq!(listed().lines().count(), 1, "{:?}", listed());
+    for kept in ["theirs.dxf", "newer field"] {
+        assert!(listed().contains(kept), "{kept}: {}", listed());
+    }
+    assert_eq!(listed().matches("out.dxf").count(), 2, "{}", listed());
+    export(&mut app, "second.dxf");
+    assert_eq!(listed().matches("second.dxf").count(), 1, "{:?}", listed());
 }
 
 /// Review 2026-11-06 P3: a client's export of a drawing sheet took the SHA-256

@@ -14,11 +14,12 @@
 //! or a template's, starts with none, whether or not the original is still
 //! where it was (capability review run 529); the document id would not do,
 //! as a copy shares it. A document not saved keeps its own in memory, and
-//! the file it is first saved as takes them over. A drawing the system says
-//! is gone is forgotten at the next export.
+//! the file it is first saved as takes them over. A drawing of the document
+//! the system says is gone is forgotten on a worker after its next export.
 
 use super::drawing_sheet_export::written_key;
 use super::project_drawings::SHEET_NAMESPACE;
+use crate::recent_files::presence::{Presence, presence};
 use crate::recent_files::user_settings::SettingsFile;
 use crate::*;
 
@@ -79,6 +80,12 @@ impl Owner {
     fn holds(&self, document: &Path, token: &str) -> bool {
         document == self.file
             || self.token.as_deref().is_some_and(|own| own == token) && gone(document)
+    }
+
+    /// Whether a line of `document`, of token `token`, may be this document's,
+    /// the disk not asked: kept by its file or by its token.
+    fn kept_by(&self, document: &Path, token: &str) -> bool {
+        document == self.file || self.token.as_deref().is_some_and(|own| own == token)
     }
 }
 
@@ -218,14 +225,17 @@ impl KetchupApp {
             self.drawings.written.extend(written);
             return;
         };
+        // Only this document's lines of the files written again are replaced:
+        // the disk is not asked here, on the window's thread, and a line this
+        // Kečup does not read, as a newer one's, is kept (review 2026-11-06 r23
+        // SEC-202).
         let saved = store.update(DRAWING, |lines| {
             let mut kept: Vec<String> = lines
                 .into_iter()
                 .filter(|line| {
-                    parsed(line).is_some_and(|line| {
-                        !gone(&line.drawing)
-                            && !(owner.holds(&line.document, line.token)
-                                && written.iter().any(|(path, _)| *path == line.drawing))
+                    parsed(line).is_none_or(|line| {
+                        !(owner.kept_by(&line.document, line.token)
+                            && written.iter().any(|(path, _)| *path == line.drawing))
                     })
                 })
                 .collect();
@@ -241,6 +251,17 @@ impl KetchupApp {
                 "the drawing files the document wrote are not kept between windows: {error}"
             );
             self.drawings.written.extend(written);
+            return;
+        }
+        if self
+            .drawings
+            .forgetting
+            .as_ref()
+            .is_none_or(std::thread::JoinHandle::is_finished)
+        {
+            let store = store.clone();
+            self.drawings.forgetting =
+                Some(std::thread::spawn(move || forget_gone(&store, &owner)));
         }
     }
 
@@ -267,6 +288,40 @@ impl KetchupApp {
     /// that does not read names no such file, so the client asks the user.
     pub(crate) fn wrote_drawing(&self, path: &Path, sha256: &str) -> bool {
         listed(&self.written_drawings(), path, sha256)
+    }
+}
+
+/// Forgets the drawing files of `owner`'s document that the system says are
+/// gone; one on a drive or share that does not answer is kept, as is every
+/// other document's (review 2026-11-06 r23 SEC-202: each line of every
+/// document was asked for on the window's thread, under the lock of the file,
+/// and one offline was forgotten). Run on a worker: the disk is asked before
+/// the lock is taken.
+fn forget_gone(store: &SettingsFile, owner: &Owner) {
+    let local = crate::recent_files::presence::local_folder();
+    let gone: Vec<PathBuf> = store
+        .values(DRAWING)
+        .iter()
+        .filter_map(|line| parsed(line))
+        .filter(|line| owner.holds(&line.document, line.token))
+        .map(|line| line.drawing)
+        .filter(|drawing| presence(drawing, local.as_deref()) == Presence::Gone)
+        .collect();
+    if gone.is_empty() {
+        return;
+    }
+    let forgotten = store.update(DRAWING, |lines| {
+        lines
+            .into_iter()
+            .filter(|line| {
+                parsed(line).is_none_or(|line| {
+                    !(gone.contains(&line.drawing) && owner.holds(&line.document, line.token))
+                })
+            })
+            .collect()
+    });
+    if let Err(error) = forgotten {
+        ketchup_rejection::log!("the drawing files that are gone stay listed: {error}");
     }
 }
 

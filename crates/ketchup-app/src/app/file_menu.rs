@@ -135,7 +135,7 @@ impl KetchupApp {
             let missing = match self.window.recent.on_disk(path) {
                 None | Some(Presence::Here) => None,
                 Some(Presence::Gone) => Some("file-recent-missing-name"),
-                Some(Presence::Unavailable) => Some("file-recent-unavailable-name"),
+                Some(Presence::Unknown) => Some("file-recent-unavailable-name"),
             };
             let (text, accessible) = match missing {
                 None => (egui::RichText::new(name), full),
@@ -202,7 +202,7 @@ impl KetchupApp {
                 self.report_recent_files(result);
                 return;
             }
-            Presence::Unavailable => {
+            Presence::Unknown => {
                 self.digest = self.catalog.format("digest-recent-unavailable", &shown);
                 return;
             }

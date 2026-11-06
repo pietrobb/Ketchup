@@ -5,12 +5,15 @@
 //! keeps it with the other user settings (the language choice); a window
 //! made by a test keeps it in memory unless the test hands it a store.
 
+pub(crate) use crate::recent_files::presence::Presence;
+use crate::recent_files::presence::{local_folder, presence};
 use eframe::egui;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
+pub(crate) mod presence;
 pub(crate) mod user_settings;
 
 /// How many documents File > Open Recent offers.
@@ -112,17 +115,6 @@ impl RecentFilesStore for RegistryRecentFiles {
 /// document on a server that does not answer is shown as listed meanwhile.
 const CHECK_WAIT: Duration = Duration::from_millis(100);
 
-/// Whether a listed document is there.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Presence {
-    Here,
-    /// Its folder answers and holds no such document: gone for good.
-    Gone,
-    /// Its folder does not answer, as on a server or disk that is offline:
-    /// it may be back later, so it stays listed.
-    Unavailable,
-}
-
 /// What the list asks the disk; a test stands in for a slow server.
 pub(crate) trait PathProbe: Send + Sync {
     fn presence(&self, path: &Path) -> Presence;
@@ -130,69 +122,23 @@ pub(crate) trait PathProbe: Send + Sync {
     fn resolved(&self, path: &Path) -> Option<PathBuf>;
 }
 
+/// The disk of this computer, a missing folder trusted to be deleted below
+/// [`local_folder`] only.
 struct Disk {
-    /// The folder below which a missing folder was deleted, not a volume that
-    /// is not mounted now; `None` where an answering folder says so for its
-    /// whole volume (Windows: a drive or share that is out answers nothing).
     local: Option<PathBuf>,
 }
 
 impl Disk {
     fn of_this_computer() -> Self {
-        // Without a home folder no folder above a document's own is trusted:
-        // an absolute folder is never below a relative one.
-        let local = (!cfg!(windows)).then(|| {
-            std::env::home_dir()
-                .filter(|home| home.is_absolute())
-                .unwrap_or_else(|| PathBuf::from("."))
-        });
-        Self { local }
-    }
-
-    /// Whether the folders of a missing `path` answer: its own folder is
-    /// there, or the nearest one above it that is there is on this
-    /// computer's disk (review 2026-11-04 r19 P3: a document whose folder was
-    /// deleted stayed out of reach for ever). An empty folder does not answer:
-    /// it may be where a share is mounted, as sshfs under the home folder, while
-    /// it is not (review 2026-11-06 P3).
-    fn folder_answers(&self, path: &Path) -> bool {
-        for folder in path.ancestors().skip(1) {
-            match std::fs::metadata(folder) {
-                Ok(metadata) => {
-                    return metadata.is_dir()
-                        && std::fs::read_dir(folder)
-                            .is_ok_and(|mut entries| entries.next().is_some())
-                        && (Some(folder) == path.parent()
-                            || self
-                                .local
-                                .as_deref()
-                                .is_none_or(|local| folder.starts_with(local)));
-                }
-                // Only a folder that is not there lets the search go up.
-                Err(error) => {
-                    if error.kind() != std::io::ErrorKind::NotFound {
-                        return false;
-                    }
-                }
-            }
+        Self {
+            local: local_folder(),
         }
-        false
     }
 }
 
 impl PathProbe for Disk {
     fn presence(&self, path: &Path) -> Presence {
-        match std::fs::metadata(path) {
-            Ok(metadata) if metadata.is_file() => Presence::Here,
-            Ok(_) => Presence::Gone,
-            Err(error) => {
-                if error.kind() == std::io::ErrorKind::NotFound && self.folder_answers(path) {
-                    Presence::Gone
-                } else {
-                    Presence::Unavailable
-                }
-            }
-        }
+        presence(path, self.local.as_deref())
     }
 
     fn resolved(&self, path: &Path) -> Option<PathBuf> {
@@ -395,8 +341,8 @@ impl RecentFiles {
         context: Option<egui::Context>,
         generation: u64,
     ) -> Option<Presence> {
-        if self.on_disk(path) == Some(Presence::Unavailable) {
-            return Some(Presence::Unavailable);
+        if self.on_disk(path) == Some(Presence::Unknown) {
+            return Some(Presence::Unknown);
         }
         let (send, answer) = mpsc::channel();
         let (probe, asked) = (Arc::clone(&self.probe), path.to_owned());
@@ -426,12 +372,12 @@ impl RecentFiles {
             Some(left) => match answer.recv_timeout(left) {
                 Ok(presence) => presence,
                 Err(mpsc::RecvTimeoutError::Timeout) => return None,
-                Err(mpsc::RecvTimeoutError::Disconnected) => Presence::Unavailable,
+                Err(mpsc::RecvTimeoutError::Disconnected) => Presence::Unknown,
             },
             None => match answer.try_recv() {
                 Ok(presence) => presence,
                 Err(mpsc::TryRecvError::Empty) => return None,
-                Err(mpsc::TryRecvError::Disconnected) => Presence::Unavailable,
+                Err(mpsc::TryRecvError::Disconnected) => Presence::Unknown,
             },
         };
         let Picking {
@@ -469,53 +415,6 @@ mod tests {
 
     fn list(store: &MemoryRecentFiles) -> RecentFiles {
         RecentFiles::from_store(Box::new(store.clone()))
-    }
-
-    /// Review 2026-11-04 r19 P3: a document whose folder was deleted on the
-    /// computer's own disk stayed listed as out of reach for ever.
-    #[test]
-    fn a_document_in_a_folder_deleted_locally_is_gone() {
-        let directory = tempfile::tempdir().unwrap();
-        let document = directory
-            .path()
-            .join("Old")
-            .join("Phase 2")
-            .join("a.ketchup");
-        let local = |folder: &Path| Disk {
-            local: Some(folder.to_owned()),
-        };
-        std::fs::write(directory.path().join("notes.txt"), "kept").unwrap();
-        assert_eq!(local(directory.path()).presence(&document), Presence::Gone);
-        assert_eq!(Disk { local: None }.presence(&document), Presence::Gone);
-        // Outside the computer's own folders a missing folder may be a volume
-        // not mounted now, as `/Volumes/NAS`: it may come back.
-        let home = directory.path().join("home");
-        assert_eq!(local(&home).presence(&document), Presence::Unavailable);
-        // Its own folder there still says it is gone anywhere.
-        let beside = directory.path().join("a.ketchup");
-        assert_eq!(local(&home).presence(&beside), Presence::Gone);
-    }
-
-    /// Review 2026-11-06 P3: an sshfs share under the home folder that is not
-    /// mounted now is an empty folder, which answered, so its documents were
-    /// dropped from Open Recent once clicked.
-    #[test]
-    fn a_document_under_an_empty_folder_may_be_on_a_share_not_mounted() {
-        let home = tempfile::tempdir().unwrap();
-        let mount = home.path().join("nas");
-        std::fs::create_dir(&mount).unwrap();
-        let disk = Disk {
-            local: Some(home.path().to_owned()),
-        };
-        let deep = mount.join("Domy").join("a.ketchup");
-        assert_eq!(disk.presence(&deep), Presence::Unavailable);
-        assert_eq!(
-            disk.presence(&mount.join("a.ketchup")),
-            Presence::Unavailable
-        );
-        std::fs::write(mount.join("b.ketchup"), "mounted").unwrap();
-        assert_eq!(disk.presence(&deep), Presence::Gone);
-        assert_eq!(disk.presence(&mount.join("a.ketchup")), Presence::Gone);
     }
 
     #[test]
@@ -703,10 +602,8 @@ mod tests {
 
         let answering = Arc::new(SlowServer::default());
         let mut recent = RecentFiles::with_probe(stored(), answering.clone());
-        recent
-            .on_disk
-            .insert(offline.clone(), Presence::Unavailable);
-        assert_eq!(recent.pick(&offline, None, 0), Some(Presence::Unavailable));
+        recent.on_disk.insert(offline.clone(), Presence::Unknown);
+        assert_eq!(recent.pick(&offline, None, 0), Some(Presence::Unknown));
         assert!(
             answering.is_file.lock().unwrap().is_empty(),
             "the menu's answer is not asked again"

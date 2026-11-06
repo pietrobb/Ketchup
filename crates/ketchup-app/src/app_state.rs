@@ -310,6 +310,9 @@ pub(crate) struct DrawingsState {
     /// not kept with the user's settings, by canonical path, with the SHA-256
     /// of each (review 2026-11-06 SEC-182).
     pub(crate) written: BTreeMap<PathBuf, String>,
+    /// The worker forgetting the document's written drawings that are gone
+    /// (review 2026-11-06 r23 SEC-202).
+    pub(crate) forgetting: Option<std::thread::JoinHandle<()>>,
     /// The set the last export was refused at as another project's, with
     /// what it was exported from, offered to take over (review 2026-11-04 r19
     /// MF-162).
