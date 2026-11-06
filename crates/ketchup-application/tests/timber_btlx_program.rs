@@ -833,8 +833,12 @@ fn a_worktop_drawn_with_its_sink_opening_is_its_outline_cut_through() {
 fn a_round_opening_of_a_worktop_is_cut_not_drilled() {
     use ketchup_manufacturing::fabrication::production::{HomagWoodwopAdapter, ProductionAdapter};
     use ketchup_manufacturing::fabrication::{
-        GeneralFabricationError, GeneralMachiningGeometry, GeneralManufacturingKind,
-        PieceDimensions, ShopElement,
+        BtlxExportOptions, FABRICATION_ROLE_DIMENSION_V1, GeneralFabricationError,
+        GeneralMachiningGeometry, GeneralManufacturingKind, MANUFACTURED_ITEM_ROLE_V1,
+        PieceDimensions, ShopElement, TIMBER_MEMBER_ROLE_V1,
+    };
+    use ketchup_model::document::{
+        CanonicalCommand, ClassificationCategoryId, ClassificationDimensionId, CommandBatch,
     };
     let _turn = crate::integration_support::file_turn();
     let mut worker = worker();
@@ -900,6 +904,39 @@ fn a_round_opening_of_a_worktop_is_cut_not_drilled() {
         .production_job(&snapshot, &[])
         .unwrap_or_else(|error| panic!("{error}"));
     assert!(!job.to_string().contains("circular-drill"), "{job}");
+    // BTLx writes the same board marked as timber. With the app's own
+    // strategy, saw cuts then milling, an opening with no straight edge to
+    // saw is milled along its two half arcs.
+    let timber = snapshot
+        .preview_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertClassificationDimension {
+                id: ClassificationDimensionId(900),
+                name: FABRICATION_ROLE_DIMENSION_V1.into(),
+                categories: vec![
+                    (
+                        ClassificationCategoryId(901),
+                        MANUFACTURED_ITEM_ROLE_V1.into(),
+                    ),
+                    (ClassificationCategoryId(902), TIMBER_MEMBER_ROLE_V1.into()),
+                ],
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: snapshot.scene_query()[0].instance_path.root_occurrence(),
+                dimension_id: ClassificationDimensionId(900),
+                category_id: Some(ClassificationCategoryId(902)),
+            },
+        ]))
+        .unwrap();
+    let timber_projection =
+        fabrication(&mut worker, &timber).unwrap_or_else(|error| panic!("{error}"));
+    let btlx = timber_projection
+        .btlx_2_3_1_export_with_options(&timber, BtlxExportOptions::default())
+        .unwrap_or_else(|error| panic!("{error}"));
+    let btlx = String::from_utf8(btlx).unwrap();
+    assert!(!btlx.contains("<Drilling"), "{btlx}");
+    assert!(!btlx.contains("<SawContour"), "{btlx}");
+    assert_eq!(btlx.matches("<MillContour ").count(), 2, "{btlx}");
+    assert_eq!(btlx.matches("<Arc>").count(), 4, "{btlx}");
     // woodWOP refuses the openings as the through cuts they are.
     let woodwop = HomagWoodwopAdapter {
         options: Default::default(),
