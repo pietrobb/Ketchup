@@ -651,10 +651,12 @@ fn a_round_table_top_is_described_as_two_arcs() {
 }
 
 /// A worktop of 1200 x 600 x 38 mm drawn on XY with `openings`, made as a
-/// manufactured item with a production code, and its fabrication.
+/// manufactured item with a production code, and its fabrication; the
+/// openings make `hole_count` holes of its region.
 fn manufactured_worktop(
     worker: &mut ExactWorkerSupervisor,
     openings: Vec<ketchup_assistant::sidecar::AssistantSketchEntity>,
+    hole_count: usize,
 ) -> (
     Snapshot,
     ketchup_manufacturing::fabrication::GeneralFabricationProjection,
@@ -695,7 +697,7 @@ fn manufactured_worktop(
         matches!(
             &profiles[0].geometry,
             ketchup_model::exact_brep_graph::ExactBRepPlanarGeometry::Region { holes, .. }
-                if holes.len() == 1
+                if holes.len() == hole_count
         ),
         "{profiles:#?}"
     );
@@ -766,6 +768,7 @@ fn a_worktop_drawn_with_its_sink_opening_is_its_outline_cut_through() {
     let (snapshot, projection) = manufactured_worktop(
         &mut worker,
         worktop_rectangle(5, [400.0, 150.0], [800.0, 450.0]).collect(),
+        1,
     );
     let operations = &projection.manufacturing.operations;
     assert_eq!(
@@ -821,12 +824,13 @@ fn a_worktop_drawn_with_its_sink_opening_is_its_outline_cut_through() {
     ));
 }
 
-/// Review 2026-11-04 r19 P3: the round opening of a worktop, the hole for its
-/// tap, was a through cut of two half arcs spanning the whole worktop, which
-/// woodWOP refuses as a cut; it is a drilling to the worktop's depth where the
-/// hole is, which the production job carries and woodWOP names as a hole.
+/// Review 2026-11-06 MF-181: every round opening of a worktop was a drilling
+/// of its whole diameter, the Ø450 one of a sink as the Ø35 one of its tap,
+/// which no drill makes. A round opening is its two half arcs cut to the
+/// worktop's depth where it is (review 2026-11-04 r19 P3), which the
+/// production job carries as a cut, not a drilling.
 #[test]
-fn a_round_opening_of_a_worktop_is_drilled_where_it_is() {
+fn a_round_opening_of_a_worktop_is_cut_not_drilled() {
     use ketchup_manufacturing::fabrication::production::{HomagWoodwopAdapter, ProductionAdapter};
     use ketchup_manufacturing::fabrication::{
         GeneralFabricationError, GeneralMachiningGeometry, GeneralManufacturingKind,
@@ -834,13 +838,20 @@ fn a_round_opening_of_a_worktop_is_drilled_where_it_is() {
     };
     let _turn = crate::integration_support::file_turn();
     let mut worker = worker();
+    let circle = |id: u64, center_mm: [f64; 2], radius_mm: f64| {
+        ketchup_assistant::sidecar::AssistantSketchEntity::Circle {
+            id,
+            center_mm,
+            radius_mm,
+        }
+    };
     let (snapshot, projection) = manufactured_worktop(
         &mut worker,
-        vec![ketchup_assistant::sidecar::AssistantSketchEntity::Circle {
-            id: 5,
-            center_mm: [900.0, 450.0],
-            radius_mm: 17.5,
-        }],
+        vec![
+            circle(5, [1000.0, 450.0], 17.5),
+            circle(6, [450.0, 300.0], 225.0),
+        ],
+        2,
     );
     let operations = &projection.manufacturing.operations;
     assert_eq!(
@@ -850,65 +861,59 @@ fn a_round_opening_of_a_worktop_is_drilled_where_it_is() {
             .collect::<Vec<_>>(),
         [
             GeneralManufacturingKind::Stock,
-            GeneralManufacturingKind::CircularDrill
+            GeneralManufacturingKind::ThroughCut,
+            GeneralManufacturingKind::ThroughCut
         ]
     );
-    let GeneralMachiningGeometry::CircularDrill {
-        center_mm,
-        diameter_mm,
-        through,
-        start_mm,
-        end_mm,
-        ..
-    } = operations[1].machining
-    else {
-        panic!("{:#?}", operations[1]);
-    };
-    // Drilled to the worktop's thickness, a machine depth, not a cutter
-    // running past the part as a through-all hole is.
-    assert_eq!(
-        (center_mm, diameter_mm, through),
-        ([900.0, 450.0], 35.0, false)
-    );
-    assert!(
-        (end_mm - start_mm - 38.0).abs() < 1e-6,
-        "{start_mm} {end_mm}"
-    );
-    assert_eq!(
-        operations[1].bounds,
-        PieceDimensions {
-            length_mm: 35.0,
-            width_mm: 35.0,
-            height_mm: 38.0,
-        }
-    );
-    let woodwop = HomagWoodwopAdapter {
-        options: Default::default(),
-    };
+    let mut diameters = Vec::new();
+    for operation in &operations[1..] {
+        let GeneralMachiningGeometry::ProfileCut {
+            segments,
+            start_mm,
+            end_mm,
+            ..
+        } = &operation.machining
+        else {
+            panic!("{operation:#?}");
+        };
+        assert_eq!(segments.len(), 2, "{segments:#?}");
+        // Cut to the worktop's thickness, a machine depth, not a cutter
+        // running past the part as a through-all hole is.
+        assert!(
+            (end_mm - start_mm - 38.0).abs() < 1e-6,
+            "{start_mm} {end_mm}"
+        );
+        let diameter = operation.bounds.length_mm;
+        assert_eq!(
+            operation.bounds,
+            PieceDimensions {
+                length_mm: diameter,
+                width_mm: diameter,
+                height_mm: 38.0,
+            }
+        );
+        diameters.push(diameter);
+    }
+    diameters.sort_by(f64::total_cmp);
+    assert_eq!(diameters, [35.0, 450.0]);
     let job = projection
         .production_job(&snapshot, &[])
         .unwrap_or_else(|error| panic!("{error}"));
-    assert_eq!(
-        job["parts"][0]["operations"][1]["kind"], "circular-drill",
-        "{job}"
-    );
-    // woodWOP drills only holes that stop inside the part; the hole is
-    // refused as the drilling it is, with where it can be made, no longer as
-    // a through cut.
+    assert!(!job.to_string().contains("circular-drill"), "{job}");
+    // woodWOP refuses the openings as the through cuts they are.
+    let woodwop = HomagWoodwopAdapter {
+        options: Default::default(),
+    };
     let adapters: [&dyn ProductionAdapter; 1] = [&woodwop];
     let refused = projection.production_job(&snapshot, &adapters).unwrap_err();
     assert!(
         matches!(
             refused,
             GeneralFabricationError::CannotCarry {
-                element: ShopElement::HoleToFarFace,
+                element: ShopElement::Operation(GeneralManufacturingKind::ThroughCut),
                 ..
             }
         ),
-        "{refused}"
-    );
-    assert!(
-        refused.to_string().contains("BTLx or the production job"),
         "{refused}"
     );
 }

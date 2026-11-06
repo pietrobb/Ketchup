@@ -237,6 +237,7 @@ impl KetchupApp {
         };
         BtlxExportOptions {
             profile_processing_request,
+            largest_drill_mm: None,
         }
     }
 

@@ -225,7 +225,7 @@ impl FoundZero {
                     .map(|(package, transform)| level_solid(package, transform))
                     .collect::<Vec<_>>();
                 // Sending fails only when the window has gone: nobody to tell.
-                sender.send(ground_floor(&solids)).unwrap_or_default();
+                crate::delivery::Deliver::deliver(&sender, ground_floor(&solids));
             });
         match spawned {
             Ok(_) => Self::Finding(receiver),
@@ -432,7 +432,13 @@ impl KetchupApp {
                 .path
                 .clone()
                 .or_else(|| self.recovery_requested_path().map(Path::to_path_buf)),
-            written: self.written_drawings().unwrap_or_default(),
+            written: self.written_drawings().unwrap_or_else(|error| {
+                // Said in the log, not dropped (review 2026-11-06 P3).
+                ketchup_rejection::log!(
+                    "the drawing files the document wrote do not read, so none is taken as its: {error}"
+                );
+                BTreeMap::new()
+            }),
         }
     }
 }
