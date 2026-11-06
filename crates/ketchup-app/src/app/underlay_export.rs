@@ -75,6 +75,24 @@ impl std::fmt::Display for UnderlayExportError {
     }
 }
 
+impl UnderlayExportError {
+    /// The object whose edit was refused, its entity changed in the file since it was
+    /// imported.
+    pub(crate) fn refused_edit(&self) -> Option<u32> {
+        use ketchup_application::program_isolation::{UnderlayReadError, UnderlayRefusal};
+        use ketchup_model::import::DxfEditRefusal;
+        match self {
+            Self::Worker(UnderlayWorkerError::Read(UnderlayReadError::Refused(
+                UnderlayRefusal::NotWritten(
+                    DxfEditRefusal::ChangedInFile { object, .. }
+                    | DxfEditRefusal::DeletedInFile { object, .. },
+                ),
+            ))) => Some(*object),
+            _ => None,
+        }
+    }
+}
+
 impl std::error::Error for UnderlayExportError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
@@ -113,6 +131,8 @@ struct WrittenDrawing {
     changed_in_file: usize,
     /// The entities the file gained since it was imported.
     added_in_file: usize,
+    /// The objects not edited whose entity the file no longer has.
+    removed_in_file: usize,
 }
 
 /// Whether a drawing written on a thread may still take the place of the file named:
@@ -152,6 +172,7 @@ impl WrittenDrawing {
             skipped: self.skipped,
             changed_in_file: self.changed_in_file,
             added_in_file: self.added_in_file,
+            removed_in_file: self.removed_in_file,
         })
     }
 }
@@ -193,8 +214,9 @@ impl UnderlayExportJob {
                 source: self.source,
                 // A drawing that declares no unit is matched against its lines in each.
                 unit_if_unitless: Some(ImportLengthUnit::Millimetre),
-                // Read again it moves as it moved then, also by the document's geo origin.
-                geo_origin_mm: (self.offset_mm != [0.0; 2]).then_some(self.offset_mm),
+                // Read again it moves as it moved then, also not at all (review 2026-11-04
+                // r19 CD-160: points the file gained since moved it by their median).
+                geo_origin_mm: Some(self.offset_mm),
                 lines,
                 layers: self.layers,
                 edits: self.edits,
@@ -211,6 +233,7 @@ impl UnderlayExportJob {
             skipped: worker.skipped,
             changed_in_file: worker.changed_in_file,
             added_in_file: worker.added_in_file,
+            removed_in_file: worker.removed_in_file,
         })
     }
 }
@@ -456,6 +479,27 @@ impl KetchupApp {
                 &BTreeMap::from([("reason", error.to_string())]),
             ),
         };
+        // An edit refused as its object's entity changed in the file since can be
+        // discarded alone, and the command that does it is said (review 2026-11-04 r19
+        // CD-163).
+        self.file.activity.underlay.refused_edit = match &result {
+            Err(error) => error.refused_edit().map(|object| (id, object)),
+            Ok(_) => None,
+        };
+        if self.file.activity.underlay.refused_edit.is_some() {
+            self.digest.push(' ');
+            self.digest.push_str(
+                &self.catalog.format(
+                    "digest-underlay-export-discard-hint",
+                    &BTreeMap::from([(
+                        "command",
+                        self.catalog
+                            .text("tool-discard-refused-underlay-edit")
+                            .to_owned(),
+                    )]),
+                ),
+            );
+        }
         // Entities changed in, or added to, the file since it was imported are written as
         // it has them, and said (review 2026-11-04 CD-140).
         if let Ok(written) = &result {
@@ -467,6 +511,10 @@ impl KetchupApp {
                 (
                     "digest-underlay-exported-added-in-file",
                     written.added_in_file,
+                ),
+                (
+                    "digest-underlay-exported-removed-in-file",
+                    written.removed_in_file,
                 ),
             ] {
                 if count > 0 {

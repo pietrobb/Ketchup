@@ -98,7 +98,7 @@ impl KetchupApp {
                         let request = Request::ExportProgramVariants {
                             expected,
                             path,
-                            decimal: app.value_box.decimal.into(),
+                            decimal: app.window.decimal.into(),
                         };
                         runner.start_queued_variant_export(app, context, queued, request);
                     }
@@ -144,7 +144,7 @@ impl KetchupApp {
                         ],
                     ),
                     VariantAction::SetParam(name, value) => {
-                        let decimal = self.value_box.decimal;
+                        let decimal = self.window.decimal;
                         let value = crate::program_variants_ui::number_text(value, decimal);
                         ("params-set", vec![("name", name), ("value", value)])
                     }

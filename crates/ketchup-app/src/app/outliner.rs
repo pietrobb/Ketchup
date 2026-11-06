@@ -4,7 +4,7 @@ use crate::*;
 
 impl KetchupApp {
     pub(crate) fn show_outliner(&mut self, ui: &mut egui::Ui) {
-        if self.panels.outliner_visible {
+        if self.window.panes.outliner_visible {
             let groups = self.outliner_groups();
             let entries = self.outliner_query();
             section_header(ui, self.palette(), &self.catalog.text("dock-outliner"));
@@ -135,7 +135,7 @@ impl KetchupApp {
 
     /// The layers, with what each holds and its visibility.
     pub(crate) fn show_layers_section(&mut self, ui: &mut egui::Ui) {
-        if self.panels.tags_visible {
+        if self.window.panes.tags_visible {
             section_header(ui, self.palette(), &self.catalog.text("dock-tags"));
             ui.horizontal_wrapped(|ui| {
                 let create_enabled = self.can_begin_tag_creation(None);

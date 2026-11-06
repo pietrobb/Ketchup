@@ -136,7 +136,7 @@ fn export(
     if let Err(error) = write_new(&targets.takeoff, &targets.bytes(&takeoff)) {
         // Both tables or neither: a lone cut list would look like a whole export.
         if let Err(removal) = std::fs::remove_file(&targets.cut_list) {
-            eprintln!(
+            ketchup_rejection::log!(
                 "the cut list {} of a failed export was not removed: {removal}",
                 targets.cut_list.display()
             );

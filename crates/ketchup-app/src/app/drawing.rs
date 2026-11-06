@@ -174,7 +174,7 @@ impl KetchupApp {
             return false;
         };
         let Some(angle_degrees) =
-            super::commands::parse_angle_degrees(&self.value_box.input, self.value_box.decimal)
+            super::commands::parse_angle_degrees(&self.value_box.input, self.window.decimal)
                 .filter(|angle| *angle > 0.0 && *angle <= 360.0)
         else {
             self.digest = self.catalog.text("digest-revolve-invalid-angle");
@@ -210,7 +210,7 @@ impl KetchupApp {
         tool.source == preview.plan.source
             && tool.axis_start_mm == Some(preview.plan.axis_start_mm)
             && tool.axis_end_mm == Some(preview.plan.axis_end_mm)
-            && super::commands::parse_angle_degrees(&self.value_box.input, self.value_box.decimal)
+            && super::commands::parse_angle_degrees(&self.value_box.input, self.window.decimal)
                 .map(f64::to_bits)
                 == Some(preview.plan.angle_degrees_bits)
             && self
@@ -375,7 +375,7 @@ impl KetchupApp {
         } else {
             self.value_box.input.clone()
         };
-        let distance_mm = parse_distance_mm(&expression, self.value_box.decimal)?;
+        let distance_mm = parse_distance_mm(&expression, self.window.decimal)?;
         Some((expression, distance_mm))
     }
 
@@ -918,8 +918,8 @@ impl KetchupApp {
         {
             return None;
         }
-        let amount_mm = parse_distance_mm(amount_input, self.value_box.decimal)
-            .filter(|amount| *amount > 0.0)?;
+        let amount_mm =
+            parse_distance_mm(amount_input, self.window.decimal).filter(|amount| *amount > 0.0)?;
         let dimension = Dimension::new(amount_input.to_owned(), amount_mm).ok()?;
         let snapshot = self.document.current();
         let generated_feature_id = snapshot
@@ -1260,7 +1260,7 @@ impl KetchupApp {
     /// Whether the keyboard shortcut reference is on screen.
     #[must_use]
     pub const fn shortcuts_visible(&self) -> bool {
-        self.panels.shortcuts_open
+        self.window.panes.shortcuts_open
     }
 
     pub fn create_closed_polyline(&mut self, points_mm: Vec<[f64; 2]>) -> bool {
@@ -1931,7 +1931,7 @@ impl KetchupApp {
             return false;
         }
         let Some(distance_mm) =
-            parse_distance_mm(&self.push_pull.distance_input, self.value_box.decimal)
+            parse_distance_mm(&self.push_pull.distance_input, self.window.decimal)
         else {
             return false;
         };
@@ -1984,7 +1984,7 @@ impl KetchupApp {
             return false;
         };
         if self.push_pull.distance_input != preview.plan.distance_expression
-            || parse_distance_mm(&self.push_pull.distance_input, self.value_box.decimal)
+            || parse_distance_mm(&self.push_pull.distance_input, self.window.decimal)
                 .map(f64::to_bits)
                 != Some(preview.plan.distance_mm_bits)
             || self.selection.primary.as_ref() != Some(&preview.plan.source.target)
@@ -2169,7 +2169,7 @@ impl KetchupApp {
                 &BTreeMap::from([
                     (
                         "distance",
-                        parse_distance_mm(&self.push_pull.distance_input, self.value_box.decimal)
+                        parse_distance_mm(&self.push_pull.distance_input, self.window.decimal)
                             .map_or_else(String::new, format_signed_mm),
                     ),
                     (
@@ -2226,7 +2226,7 @@ impl KetchupApp {
                 definition.name(),
                 format_signed_mm(parse_distance_mm(
                     &self.push_pull.distance_input,
-                    self.value_box.decimal
+                    self.window.decimal
                 )?)
             ));
         }
@@ -2916,7 +2916,7 @@ impl KetchupApp {
     /// Reads the corner count typed before the polygon centre is placed.
     pub(crate) fn set_polygon_sides_from_value_box(&mut self) -> bool {
         let Some(sides) =
-            crate::length_input::read_whole::<usize>(&self.value_box.input, self.value_box.decimal)
+            crate::length_input::read_whole::<usize>(&self.value_box.input, self.window.decimal)
                 .ok()
                 .filter(|sides| (3..=limits::PATH_SEGMENTS).contains(sides))
         else {
@@ -3525,14 +3525,14 @@ impl KetchupApp {
             ui,
             &self.catalog,
             &self.solid_tools.pocket_depth_input,
-            self.value_box.decimal,
+            self.window.decimal,
         );
         let apply = ui
             .button(self.catalog.text("pocket-properties-apply"))
             .clicked();
         if apply {
             if let Some(depth_mm) =
-                parse_distance_mm(&self.solid_tools.pocket_depth_input, self.value_box.decimal)
+                parse_distance_mm(&self.solid_tools.pocket_depth_input, self.window.decimal)
             {
                 if self.set_selected_pocket_depth(depth_mm) {
                     self.solid_tools.pocket_depth_input = format_height(depth_mm);
@@ -3546,7 +3546,7 @@ impl KetchupApp {
     }
 
     pub(crate) fn show_shortcuts_window(&mut self, context: &egui::Context) {
-        if !self.panels.shortcuts_open {
+        if !self.window.panes.shortcuts_open {
             return;
         }
         let mut open = true;
@@ -3569,11 +3569,11 @@ impl KetchupApp {
                 }
                 ui.separator();
                 if ui.button(self.catalog.text("shortcuts-close")).clicked() {
-                    self.panels.shortcuts_open = false;
+                    self.window.panes.shortcuts_open = false;
                 }
             });
         if !open {
-            self.panels.shortcuts_open = false;
+            self.window.panes.shortcuts_open = false;
         }
     }
 }

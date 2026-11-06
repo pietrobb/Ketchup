@@ -401,10 +401,15 @@ pub struct UnderlayWritten {
     /// written.
     pub skipped: Vec<(String, usize)>,
     /// The entities, none of them edited, that read as other lines than the underlay's:
-    /// written as the file has them now (review 2026-11-04 CD-140).
+    /// changed in the file since it was imported or read differently by this Kečup, not
+    /// told apart; written as the file has them now (review 2026-11-04 CD-140).
     pub changed_in_file: usize,
     /// The entities the file gained since it was imported, written as it has them.
     pub added_in_file: usize,
+    /// The objects not edited whose entity was deleted in the file since it was imported,
+    /// left out as it has them (review 2026-11-04 r19 P3).
+    #[serde(default)]
+    pub removed_in_file: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

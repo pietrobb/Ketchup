@@ -5,6 +5,9 @@
 // An error is carried, never dropped (review 2026-11-02 TST-121).
 #![deny(clippy::let_underscore_must_use, clippy::map_err_ignore)]
 
+pub mod dropped;
+pub use dropped::{Held, Panic, Reason, dropped};
+
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::error::Error;

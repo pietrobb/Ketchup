@@ -8,6 +8,7 @@ use crate::{
     discovery::{self, Window},
     docs, stage,
 };
+use ketchup_rejection::{Reason, dropped};
 use serde_json::{Map, Value, json};
 use std::{
     io::{self, Read, Write},
@@ -654,18 +655,16 @@ impl Tools {
         let token = discovery::nonce().map_err(failed)?;
         let staged = stage::window_executable(&executable).map_err(failed)?;
         let mut child = spawn_window(&staged, document).map_err(failed)?;
-        let launched = launch_connection(&mut child, token, document);
+        let launched = launch_connection(&mut child, token, document, &self.cancel);
         let (window, connection) = match launched {
             Ok(launched) => launched,
             Err(error) => {
                 // Only our failed child is stopped; never select or touch another window.
                 // The launch's error is the one reported.
-                if child.kill().is_err() {
-                    // It has exited already; the wait reaps it.
-                }
-                if child.wait().is_err() {
-                    // Nothing is left to reap.
-                }
+                // It has exited already; the wait reaps it.
+                dropped(child.kill(), Reason::AlreadyEnded);
+                // Nothing is left to reap.
+                dropped(child.wait(), Reason::AlreadyEnded);
                 return Err(failed(error));
             }
         };
@@ -956,6 +955,7 @@ fn launch_connection(
     child: &mut std::process::Child,
     token: String,
     document: Option<&str>,
+    cancel: &Cancel,
 ) -> io::Result<(Window, Connection)> {
     let mut input = child
         .stdin
@@ -974,18 +974,45 @@ fn launch_connection(
         .name("ketchup-child-readiness".into())
         .spawn(move || {
             let ready = discovery::launched_window(&mut output, document);
-            if send.send(ready).is_err() {
-                // The launch stopped waiting and reports its own timeout.
-            }
+            // The launch stopped waiting and reports its own timeout.
+            dropped(send.send(ready), Reason::NobodyWaiting);
             // The detached window may outlive this MCP connection. Drain, never retain logs.
-            if io::copy(&mut output, &mut io::sink()).is_err() {
-                // The window closed its output: nothing is left to drain.
-            }
+            // The window closed its output: nothing is left to drain.
+            dropped(
+                io::copy(&mut output, &mut io::sink()),
+                Reason::NobodyWaiting,
+            );
         })?;
-    let (window, address) = receive
-        .recv_timeout(wait)
-        .map_err(|error| io::Error::new(io::ErrorKind::TimedOut, error))??;
+    let (window, address) = wait_ready(&receive, wait, cancel)?;
     Ok((window, Connection::open(address, token)?))
+}
+
+/// How often a launch waiting for its window looks whether it was cancelled.
+const READY_POLL: Duration = Duration::from_millis(100);
+
+/// What `receive` brings within `wait`, waiting in short slices so a call the
+/// client cancelled, or whose client has gone, stops waiting for the window
+/// it started (review 2026-11-04 r19 MCP-161).
+fn wait_ready<T>(
+    receive: &std::sync::mpsc::Receiver<io::Result<T>>,
+    wait: Duration,
+    cancel: &Cancel,
+) -> io::Result<T> {
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        if cancel.is_cancelled() {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "the call was cancelled while the window started",
+            ));
+        }
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match receive.recv_timeout(left.min(READY_POLL)) {
+            Ok(ready) => return ready,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !left.is_zero() => {}
+            Err(error) => return Err(io::Error::new(io::ErrorKind::TimedOut, error)),
+        }
+    }
 }
 
 /// Starts a new window detached from this server, so it outlives the AI client.
@@ -1157,6 +1184,33 @@ fn no_more(args: &Map<String, Value>) -> Result<(), ToolError> {
 #[cfg(test)]
 mod wait_tests {
     use super::*;
+
+    /// Review 2026-11-04 r19 MCP-161: open_window waited 30 s or more for the
+    /// window it started, and neither a cancellation nor the client going
+    /// stopped that wait. It stops within a moment now.
+    #[test]
+    fn a_launch_waiting_for_its_window_stops_when_cancelled() {
+        let (_never_ready, receive) = std::sync::mpsc::sync_channel::<io::Result<()>>(1);
+        let cancel = Cancel::default();
+        cancel.close().unwrap();
+        // Without the cancellation it would wait the 30 s and time out.
+        let error = wait_ready(&receive, Duration::from_secs(30), &cancel).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted, "{error}");
+
+        // A client gone stays gone for the calls after it.
+        cancel.clear();
+        assert!(cancel.is_cancelled());
+        let (ready, receive) = std::sync::mpsc::sync_channel(1);
+        ready.send(Ok(7)).unwrap();
+        assert_eq!(
+            wait_ready(&receive, Duration::from_secs(1), &Cancel::default()).unwrap(),
+            7
+        );
+        let (_never_ready, receive) = std::sync::mpsc::sync_channel::<io::Result<()>>(1);
+        let error =
+            wait_ready(&receive, Duration::from_millis(150), &Cancel::default()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut, "{error}");
+    }
 
     /// The window answers every request by its own deadline, so the client must
     /// still be listening then; otherwise a slow but answered edit looks lost.

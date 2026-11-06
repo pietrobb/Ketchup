@@ -1,6 +1,7 @@
 //! Handing a worker's result to whoever waits for it (review 2026-11-04 TST-140).
 
-use std::sync::mpsc::{SendError, Sender, SyncSender, TrySendError};
+use ketchup_rejection::{Reason, dropped};
+use std::sync::mpsc::{Sender, SyncSender, TrySendError};
 
 /// Sends a result whose receiver may have gone away: the request was cancelled, the
 /// client disconnected or the window closed, and nobody wants the result any more.
@@ -11,19 +12,19 @@ pub(crate) trait Deliver<T> {
 impl<T> Deliver<T> for Sender<T> {
     fn deliver(&self, value: T) {
         // An unbounded send fails only when the receiver is gone.
-        let (Ok(()) | Err(SendError(_))) = self.send(value);
+        dropped(self.send(value), Reason::NobodyWaiting);
     }
 }
 
 impl<T> Deliver<T> for SyncSender<T> {
     fn deliver(&self, value: T) {
         match self.try_send(value) {
-            Ok(()) | Err(TrySendError::Disconnected(_)) => {}
             // A full channel already holds an answer the receiver has not read; this
             // later one is not what it waits for.
             Err(TrySendError::Full(_)) => {
-                eprintln!("a result was not delivered: its channel already held one");
+                ketchup_rejection::log!("a result was not delivered: its channel already held one");
             }
+            sent => dropped(sent, Reason::NobodyWaiting),
         }
     }
 }

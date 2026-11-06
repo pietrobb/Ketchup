@@ -25,7 +25,7 @@ fn width_across(slope: f64) -> f64 {
 /// horizontal square to it to the left.
 fn across_left(plan: f64, slope: f64) -> f64 {
     let source = "\
-P = param(\"plan\", 0, min = -180, max = 180)
+P = param(\"plan\", 0, min = -360, max = 360)
 S = param(\"slope\", 0, min = 0, max = 89)
 p = P * math.pi / 180
 s = S * math.pi / 180

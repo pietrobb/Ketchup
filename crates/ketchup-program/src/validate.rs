@@ -707,15 +707,10 @@ fn params(model: &ProgramModel, issues: &mut Vec<Issue>) {
                 kind: "param_out_of_range",
                 parts: Vec::new(),
                 message: format!(
-                    "param {} = {} is outside [{}, {}]",
+                    "param {} = {} is outside {}",
                     param.name,
                     param.value,
-                    param
-                        .min
-                        .map_or("-inf".to_owned(), |value| value.to_string()),
-                    param
-                        .max
-                        .map_or("inf".to_owned(), |value| value.to_string()),
+                    crate::eval::range_text(param.min, param.max),
                 ),
                 where_mm: None,
                 hint: "Choose a value inside the declared range.".to_owned(),

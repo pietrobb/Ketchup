@@ -42,6 +42,8 @@ fn export(path: &Path) -> Request {
         drawing_scale: None,
         sheet_language: None,
         replace: false,
+        take_over: false,
+        zero_level_mm: None,
     }
 }
 

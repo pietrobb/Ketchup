@@ -111,10 +111,11 @@ pub struct MemberLoad {
 }
 
 /// A part holding a member sideways at one edge (review 2026-11-02 PG-120,
-/// 2026-11-04 PG-140 to PG-142): it bears on the member and on a grounded
-/// part, and is fastened to both by a joint (or is of the load path's `fixed`
-/// tags). It holds the member at its fasteners, or at the middle of where it
-/// touches when the joint names none; `from_mm` equals `to_mm` then.
+/// 2026-11-04 PG-140 to PG-142, r19 PG-160 to PG-163): it bears on the member
+/// and on a part declared grounded across the member, and is fastened to both
+/// by a joint() of a kind that fastens. It holds the member at its fasteners
+/// where the two touch, or at the middle of each place they touch when the
+/// joint names none; `from_mm` equals `to_mm` then.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Brace {
     pub part: String,
@@ -174,11 +175,21 @@ pub struct LoadReport {
     /// What each unassigned part only touches, without a joint.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub touched: BTreeMap<String, Vec<String>>,
+    /// Fasteners joints name away from where their parts touch, which brace nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stray_fasteners: Vec<StrayFastener>,
+    /// The area loads each part takes none of, standing on edge with no broad face up.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub edge_on: BTreeMap<String, Vec<String>>,
 }
 
 /// Issue kind of a loaded part whose load reaches no member: the checks of
 /// what it touches, and of what that rests on, are not complete.
 pub const LOAD_UNASSIGNED: &str = "load_unassigned";
+/// Issue kind of a joint fastener away from where its parts touch: it holds nothing.
+pub const FASTENER_OFF_CONTACT: &str = "fastener_off_contact";
+/// Issue kind of an area load on a part standing on edge, which takes none of it.
+pub const AREA_LOAD_EDGE_ON: &str = "area_load_edge_on";
 
 impl LoadReport {
     #[must_use]
@@ -186,9 +197,26 @@ impl LoadReport {
         self.members.is_empty()
     }
 
-    /// A warning for every unassigned part, naming it and what it touches.
+    /// A warning for every unassigned part, naming it and what it touches,
+    /// and for every joint's fasteners away from where its parts touch.
     #[must_use]
     pub fn issues(&self) -> Vec<Issue> {
+        let stray = self.stray_fasteners.iter().map(|stray| {
+            let [a, b] = &stray.parts;
+            let [x, y, z] = stray.at_mm[0].map(round);
+            Issue {
+                severity: Severity::Warning,
+                kind: FASTENER_OFF_CONTACT,
+                parts: stray.parts.to_vec(),
+                message: format!(
+                    "{} of the fasteners joining {a} and {b} lie away from where they touch (the first at {x}, {y}, {z} mm); they hold nothing, so {a} braces nothing there.",
+                    stray.at_mm.len()
+                ),
+                where_mm: None,
+                hint: format!("Give fasteners=[...] at points where {a} and {b} meet."),
+                source_lines: Vec::new(),
+            }
+        });
         self.unassigned
             .iter()
             .map(|(part, reason)| {
@@ -205,6 +233,20 @@ impl LoadReport {
                     source_lines: Vec::new(),
                 }
             })
+            .chain(stray)
+            .chain(self.edge_on.iter().map(|(part, loads)| Issue {
+                severity: Severity::Warning,
+                kind: AREA_LOAD_EDGE_ON,
+                parts: vec![part.clone()],
+                message: format!(
+                    "{part} stands on edge with no broad face up, so it takes none of the area load {}.",
+                    loads.join(", ")
+                ),
+                where_mm: None,
+                hint: "Lay it flat if it carries the load, or put the load on the part it carries."
+                    .to_owned(),
+                source_lines: Vec::new(),
+            }))
             .collect()
     }
 }
@@ -401,6 +443,9 @@ fn plan_overlap(a: [f64; 4], b: [f64; 4]) -> Option<[f64; 4]> {
 struct Support {
     supporter: usize,
     points: Vec<[f64; 3]>,
+    /// Each contact polygon `points` merges, apart (review 2026-11-04 r19
+    /// PG-161): the middle of two far contacts is no place they touch.
+    pieces: Vec<Vec<[f64; 3]>>,
     area: f64,
     joint: Option<String>,
 }
@@ -423,6 +468,7 @@ fn grouped(supports: Vec<Support>, member: Option<&Frame>) -> Vec<Support> {
         {
             Some(group) => {
                 group.points.extend(support.points);
+                group.pieces.extend(support.pieces);
                 group.area += support.area;
                 group.joint = group.joint.take().or(support.joint);
             }
@@ -524,6 +570,7 @@ fn bearing_runs(support: Support, frame: &Frame) -> Vec<Support> {
             Support {
                 supporter: support.supporter,
                 area: polygon_area(&points),
+                pieces: vec![points.clone()],
                 points,
                 joint: None,
             }
@@ -883,11 +930,13 @@ fn rounded(loads: &Loads) -> Loads {
 }
 
 /// Own loads: the weight of the parts in scope and the area loads on them,
-/// part by part, with what is missing to know them.
-fn own_loads(model: &ProgramModel, frames: &[Frame]) -> (Vec<Vec<Patch>>, Vec<BTreeSet<String>>) {
+/// part by part, with what is missing to know them, and the area loads each
+/// part standing on edge takes none of (review 2026-11-04 r19 P3).
+fn own_loads(model: &ProgramModel, frames: &[Frame]) -> OwnLoads {
     let parts = &model.parts;
     let mut patches: Vec<Vec<Patch>> = parts.iter().map(|_| Vec::new()).collect();
     let mut missing: Vec<BTreeSet<String>> = parts.iter().map(|_| BTreeSet::new()).collect();
+    let mut edge_on: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (item, part) in parts.iter().enumerate() {
         let whole = |loads_n: Loads, source: &str| Patch {
             from_mm: 0.0,
@@ -919,6 +968,10 @@ fn own_loads(model: &ProgramModel, frames: &[Frame]) -> (Vec<Vec<Patch>>, Vec<BT
             }
             let area = upward_area_m2(part, load.projected);
             if area <= 0.0 {
+                edge_on
+                    .entry(part.name.clone())
+                    .or_default()
+                    .push(load.name.clone());
                 continue;
             }
             match load.kn_m2 {
@@ -932,7 +985,17 @@ fn own_loads(model: &ProgramModel, frames: &[Frame]) -> (Vec<Vec<Patch>>, Vec<BT
             }
         }
     }
-    (patches, missing)
+    OwnLoads {
+        patches,
+        missing,
+        edge_on,
+    }
+}
+
+struct OwnLoads {
+    patches: Vec<Vec<Patch>>,
+    missing: Vec<BTreeSet<String>>,
+    edge_on: BTreeMap<String, Vec<String>>,
 }
 
 /// Why a member over `list` tips: over the supports it lifts off (`lifted`),
@@ -1086,51 +1149,82 @@ struct Bracing {
 /// both buckle together, and a loose lath lying along a beam's top moves with
 /// it however firmly the lath's end leans on a wall. It holds the member at
 /// its fasteners only, so the stretch between two is free (PG-142); a joint
-/// naming none holds it at the middle of where they touch. One resting on a
-/// single member (a pad, a post) moves with it; one touching it from the side
-/// holds no edge.
+/// naming none holds it at the middle of each place they touch. A fastener
+/// holds only where the two parts it joins touch (review 2026-11-04 r19
+/// PG-160); one elsewhere holds nothing and is listed in `stray`. Only a part
+/// declared grounded anchors (PG-163: a free stud standing on the floor holds
+/// nothing sideways), only a joint that fastens counts (PG-162), and the
+/// anchorage must lie across the member beyond its side (PG-161). One resting
+/// on a single member (a pad, a post) moves with it; one touching it from the
+/// side holds no edge.
 fn braced_stretches(
     supports: &[Vec<Support>],
     member: &[bool],
-    sink: &[bool],
+    anchorage: &[bool],
+    parts: &[Part],
     frames: &[Frame],
     fastening: impl Fn(usize, usize) -> Option<Vec<[f64; 3]>>,
+    stray: &mut Vec<StrayFastener>,
 ) -> Vec<Vec<Bracing>> {
     let mut braced: Vec<Vec<Bracing>> = frames.iter().map(|_| Vec::new()).collect();
+    // Where `item` is held to `other` across `support`: at the fasteners in
+    // their contact, else at the middle of each contact; None unfastened.
+    let mut held_at = |item: usize, other: usize, support: &Support| {
+        let fasteners = fastening(item, other)?;
+        if fasteners.is_empty() {
+            return Some(support.pieces.iter().filter_map(|p| middle(p)).collect());
+        }
+        let (inside, outside): (Vec<[f64; 3]>, Vec<[f64; 3]>) =
+            fasteners.into_iter().partition(|point| {
+                [item, other]
+                    .iter()
+                    .any(|part| parts[*part].obb().contains(*point, CONTACT_FIT_MM))
+                    && support
+                        .pieces
+                        .iter()
+                        .any(|piece| over_contact(*point, piece))
+            });
+        if !outside.is_empty() {
+            stray.push(StrayFastener {
+                parts: [parts[item].name.clone(), parts[other].name.clone()],
+                at_mm: outside,
+            });
+        }
+        Some(inside)
+    };
     for (item, list) in supports.iter().enumerate() {
         let anchors: Vec<[f64; 3]> = list
             .iter()
-            .filter(|support| {
-                sink[support.supporter] && fastening(item, support.supporter).is_some()
-            })
-            .filter_map(|support| middle(&support.points))
+            .filter(|support| anchorage[support.supporter])
+            .filter_map(|support| held_at(item, support.supporter, support))
+            .flatten()
             .collect();
         if anchors.is_empty() {
             continue;
         }
         for support in list.iter().filter(|support| member[support.supporter]) {
             let frame = &frames[support.supporter];
-            let Some(fasteners) = fastening(item, support.supporter) else {
-                continue;
-            };
             let Some(top) = frame.edge(&support.points) else {
                 continue;
             };
-            let points: Vec<[f64; 3]> = if fasteners.is_empty() {
-                middle(&support.points).into_iter().collect()
-            } else {
-                fasteners
+            let Some(points) = held_at(item, support.supporter, support) else {
+                continue;
             };
-            // Held sideways only from an anchorage across the member: from one
-            // in line with it, the part sways with the member (capability
-            // review 466 of PG-141).
+            // Held sideways only from an anchorage across the member and
+            // beyond its side: from one in line with it, the part sways with
+            // the member (capability review 466 of PG-141).
             let Some(sideways) = linalg::normalize(cross(frame.axis, [0.0, 0.0, 1.0])) else {
                 continue;
             };
+            let obb = parts[support.supporter].obb();
+            let side: f64 = (0..3)
+                .map(|axis| dot(obb.axes[axis], sideways).abs() * obb.half[axis])
+                .sum();
             let held = |point: [f64; 3]| {
                 anchors.iter().any(|anchor| {
                     let path = sub(*anchor, point);
-                    dot(path, sideways).abs() >= dot(path, frame.axis).abs()
+                    let lever = dot(path, sideways).abs();
+                    lever >= dot(path, frame.axis).abs() && lever > side + CONTACT_FIT_MM
                 })
             };
             braced[support.supporter].extend(
@@ -1148,6 +1242,62 @@ fn braced_stretches(
         }
     }
     braced
+}
+
+/// Whether `point`, seen along the contact's normal, falls on the contact
+/// polygon (even-odd, so the doubled connectors between its rings cancel) or
+/// within the fit of its rim.
+fn over_contact(point: [f64; 3], polygon: &[[f64; 3]]) -> bool {
+    let near_rim = |to_plane: &dyn Fn([f64; 3]) -> [f64; 3]| {
+        (0..polygon.len()).any(|index| {
+            let (a, b) = (
+                to_plane(polygon[index]),
+                to_plane(polygon[(index + 1) % polygon.len()]),
+            );
+            let p = to_plane(point);
+            let ab = sub(b, a);
+            let t = (dot(sub(p, a), ab) / dot(ab, ab).max(f64::MIN_POSITIVE)).clamp(0.0, 1.0);
+            length(sub(p, linalg::add(a, linalg::scale(ab, t)))) <= CONTACT_FIT_MM
+        })
+    };
+    let normal = polygon
+        .iter()
+        .enumerate()
+        .fold([0.0; 3], |sum, (index, p)| {
+            linalg::add(sum, cross(*p, polygon[(index + 1) % polygon.len()]))
+        });
+    let Some(normal) = linalg::normalize(normal) else {
+        // A contact along a line or at a point.
+        return near_rim(&|p| p);
+    };
+    let flat = |p: [f64; 3]| sub(p, linalg::scale(normal, dot(p, normal)));
+    let (u, v) = {
+        let seed = if normal[0].abs() < 0.9 {
+            [1.0, 0.0, 0.0]
+        } else {
+            [0.0, 1.0, 0.0]
+        };
+        let u = linalg::normalize(cross(normal, seed)).unwrap_or(seed);
+        (u, cross(normal, u))
+    };
+    let (x, y) = (dot(point, u), dot(point, v));
+    let mut inside = false;
+    for (index, a) in polygon.iter().enumerate() {
+        let b = polygon[(index + 1) % polygon.len()];
+        let (ax, ay, bx, by) = (dot(*a, u), dot(*a, v), dot(b, u), dot(b, v));
+        if (ay > y) != (by > y) && x < ax + (y - ay) * (bx - ax) / (by - ay) {
+            inside = !inside;
+        }
+    }
+    inside || near_rim(&flat)
+}
+
+/// Fasteners a joint between `parts` names away from where they touch
+/// (review 2026-11-04 r19 PG-160): they hold nothing.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct StrayFastener {
+    pub parts: [String; 2],
+    pub at_mm: Vec<[f64; 3]>,
 }
 
 /// The middle of the box of `points`, None for none.
@@ -1182,6 +1332,40 @@ pub fn loads(model: &ProgramModel) -> LoadReport {
     loads_with(model, &mut ContactFaces::default())
 }
 
+/// [`braced_stretches`] of the model: a brace is anchored by a declared
+/// grounded part only, fastened by a joint() that fastens (`joined`); a
+/// `fixed` tag passes weight, it ties nothing.
+fn braces(
+    model: &ProgramModel,
+    supports: &[Vec<Support>],
+    member: &[bool],
+    frames: &[Frame],
+    joined: &BTreeSet<(&str, &str)>,
+) -> (Vec<Vec<Bracing>>, Vec<StrayFastener>) {
+    let parts = &model.parts;
+    let grounded = model.grounded_parts();
+    let anchorage: Vec<bool> = parts
+        .iter()
+        .map(|part| grounded.contains(&part.name))
+        .collect();
+    let mut stray = Vec::new();
+    let braced = braced_stretches(
+        supports,
+        member,
+        &anchorage,
+        parts,
+        frames,
+        |item, held| {
+            let (a, b) = (parts[item].name.as_str(), parts[held].name.as_str());
+            joined
+                .contains(&(a, b))
+                .then(|| fasteners_between(model, a, b))
+        },
+        &mut stray,
+    );
+    (braced, stray)
+}
+
 /// The fasteners of every joint between the parts named `a` and `b`, in millimetres.
 fn fasteners_between(model: &ProgramModel, a: &str, b: &str) -> Vec<[f64; 3]> {
     model
@@ -1189,7 +1373,7 @@ fn fasteners_between(model: &ProgramModel, a: &str, b: &str) -> Vec<[f64; 3]> {
         .iter()
         .filter(|joint| {
             let [x, y] = [joint.parts[0].as_str(), joint.parts[1].as_str()];
-            (x, y) == (a, b) || (x, y) == (b, a)
+            joint.fastens() && ((x, y) == (a, b) || (x, y) == (b, a))
         })
         .flat_map(|joint| joint.fasteners_mm.iter().copied())
         .collect()
@@ -1238,6 +1422,7 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
     let joined_pairs: BTreeSet<(&str, &str)> = model
         .joints
         .iter()
+        .filter(|joint| joint.fastens())
         .flat_map(|joint| {
             let [a, b] = [joint.parts[0].as_str(), joint.parts[1].as_str()];
             [(a, b), (b, a)]
@@ -1290,6 +1475,7 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
                 let support = |supporter| Support {
                     supporter,
                     points: contact.points_mm.clone(),
+                    pieces: vec![contact.points_mm.clone()],
                     area: polygon_area(&contact.points_mm),
                     joint: None,
                 };
@@ -1326,6 +1512,7 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
         let points = joint_points(joint, faces, &parts[a], &parts[b]);
         rests[a].push(Support {
             supporter: b,
+            pieces: vec![points.clone()],
             points,
             area: 0.0,
             joint: Some(joint.name.clone()),
@@ -1356,11 +1543,9 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
         })
         .collect();
 
-    let (mut patches, mut missing) = own_loads(model, &frames);
-    let braced = braced_stretches(&supports, &member, &sink, &frames, |item, held| {
-        let (a, b) = (parts[item].name.as_str(), parts[held].name.as_str());
-        (fixed_by_tag[item] || joined(a, b)).then(|| fasteners_between(model, a, b))
-    });
+    let own = own_loads(model, &frames);
+    let (mut patches, mut missing) = (own.patches, own.missing);
+    let (braced, stray) = braces(model, &supports, &member, &frames, &joined_pairs);
 
     // Pass the loads down, each part after everything it carries.
     let mut pending = vec![0usize; parts.len()];
@@ -1590,6 +1775,8 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
             reasons,
         ));
     }
+    report.stray_fasteners = stray;
+    report.edge_on = own.edge_on;
     report
 }
 

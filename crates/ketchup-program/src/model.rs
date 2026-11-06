@@ -1942,6 +1942,19 @@ pub struct Joint {
     pub hardware: BTreeMap<String, usize>,
 }
 
+/// Joint kinds that only record how two parts meet and fasten nothing
+/// (review 2026-11-04 r19 PG-162): they neither hold a part down nor brace.
+pub const UNFASTENED_JOINT_KINDS: [&str; 3] = ["none", "contact", "friction"];
+
+impl Joint {
+    /// Whether the joint fastens its parts to each other; every kind does
+    /// but those of [`UNFASTENED_JOINT_KINDS`].
+    #[must_use]
+    pub fn fastens(&self) -> bool {
+        !UNFASTENED_JOINT_KINDS.contains(&self.kind.trim().to_lowercase().as_str())
+    }
+}
+
 /// A published load rating of one connection, with where it comes from.
 /// Never derived from geometry or names; absent means not verified.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]

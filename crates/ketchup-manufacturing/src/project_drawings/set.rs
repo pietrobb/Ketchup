@@ -94,21 +94,13 @@ pub struct DrawingSetOptions {
     /// The cutting plans, after the shop drawings: each on as many sheets as
     /// its bars or sheets of stock need, at its own scale.
     pub cutting: Vec<CuttingSheet>,
-    /// The numbers of the sheets, level marks and dimensions alike, write a
-    /// decimal comma ("+2,850", "1234,5"), as Czech and Slovak drawings do,
-    /// instead of a point (review 2026-11-04 MF-140).
-    pub decimal_comma: bool,
+    /// What the numbers of the sheets, level marks and dimensions alike,
+    /// write before a decimal: a comma ("+2,850", "1234,5"), as Czech and
+    /// Slovak drawings do, or a point (review 2026-11-04 MF-140, r19 P3).
+    pub decimal_separator: ketchup_model::annotation::DecimalMark,
     /// The height of ±0,000 the level marks are read against; the ground
     /// floor of the drawn solids when absent (see [`super::ground_floor`]).
     pub zero_level_mm: Option<f64>,
-}
-
-impl DrawingSetOptions {
-    /// What the sheets write before a decimal.
-    #[must_use]
-    pub const fn decimal_separator(&self) -> char {
-        if self.decimal_comma { ',' } else { '.' }
-    }
 }
 
 /// What a sheet of the set shows.
@@ -366,7 +358,7 @@ pub fn drawing_set_until(
             drawn.annotate(PlanAnnotations::project(
                 &frame,
                 &annotations,
-                options.decimal_separator(),
+                options.decimal_separator,
             ));
         }
         let underlay = options
@@ -406,7 +398,7 @@ pub fn drawing_set_until(
                         frame,
                         &options.annotations,
                         lerp(min, max, 0.5),
-                        options.decimal_separator(),
+                        options.decimal_separator,
                     );
                     if upright.counts.dimensions > 0 {
                         drawn.annotate(upright);
@@ -705,7 +697,7 @@ fn section_levels(solids: &[DrawingSolid], options: &DrawingSetOptions) -> Vec<(
     let datum = options
         .zero_level_mm
         .unwrap_or_else(|| ground_floor_of(&floor_levels(solids)));
-    let separator = options.decimal_separator();
+    let separator = options.decimal_separator;
     level_heights(datum, &marked_floor_levels(solids), low[2], high[2])
         .into_iter()
         .map(|height| (height, level_text(height - datum, separator)))

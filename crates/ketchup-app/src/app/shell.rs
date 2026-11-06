@@ -89,7 +89,6 @@ impl KetchupApp {
                 pending_work_recovery_cleanup: None,
                 work_recovery_digest: None,
                 saved_digest,
-                recent: recent_files::RecentFiles::default(),
             },
             confirmation_surface,
             side_effect_receipts: Vec::new(),
@@ -98,7 +97,6 @@ impl KetchupApp {
             language: language::UiLanguage::ALL
                 .into_iter()
                 .find(|language| language.catalog() == catalog),
-            remember_language: false,
             program_detach_notice: None,
             program_detach_warned: false,
             catalog,
@@ -141,7 +139,21 @@ impl KetchupApp {
                 state: validator_ui::ValidatorPanelState::default(),
             },
             status_key: "status-ready",
-            theme: ThemeKind::default(),
+            window: app_state::WindowSettings {
+                theme: ThemeKind::default(),
+                decimal: crate::length_input::DecimalSeparator::Point,
+                remember_language: false,
+                panes: app_state::Panes {
+                    outliner_visible: true,
+                    tags_visible: true,
+                    dimensions_visible: true,
+                    manual_cad_tools_visible: false,
+                    shortcuts_open: false,
+                    about_open: false,
+                },
+                dock_tab: None,
+                recent: recent_files::RecentFiles::default(),
+            },
             camera: app_state::CameraState {
                 projection_mode: ProjectionMode::Parallel,
                 distance_mm: 420.0 / 2.8,
@@ -180,14 +192,6 @@ impl KetchupApp {
                 press_points: [None, None],
             },
             active_tool: ActiveTool::Select,
-            panels: app_state::Panels {
-                outliner_visible: true,
-                tags_visible: true,
-                dimensions_visible: true,
-                manual_cad_tools_visible: false,
-                shortcuts_open: false,
-                about_open: false,
-            },
             dock: app_state::Dock::default(),
             command_search: app_state::CommandSearch::default(),
             takeoff: app_state::TakeoffState::default(),
@@ -209,7 +213,6 @@ impl KetchupApp {
             value_box: app_state::ValueBox {
                 input: String::new(),
                 focus: false,
-                decimal: crate::length_input::DecimalSeparator::Point,
             },
             clipboard: app_state::Clipboard {
                 occurrences: Vec::new(),
@@ -270,18 +273,18 @@ impl KetchupApp {
     pub fn from_creation_context(context: &eframe::CreationContext<'_>) -> Self {
         let mut app =
             Self::with_catalog_and_initial_box(language::UiLanguage::at_startup().catalog(), false);
-        app.remember_language = true;
+        app.window.remember_language = true;
         #[cfg(windows)]
         {
-            app.file.recent = recent_files::RecentFiles::from_store(Box::new(
+            app.window.recent = recent_files::RecentFiles::from_store(Box::new(
                 recent_files::RegistryRecentFiles::user_settings(),
             ));
         }
         #[cfg(not(windows))]
         if let Some(settings) = recent_files::user_settings::SettingsFile::of_user() {
-            app.file.recent = recent_files::RecentFiles::from_store(Box::new(settings));
+            app.window.recent = recent_files::RecentFiles::from_store(Box::new(settings));
         }
-        app.value_box.decimal = crate::length_input::DecimalSeparator::at_startup();
+        app.window.decimal = crate::length_input::DecimalSeparator::at_startup();
         app.dialogs = Box::new(NativeFileDialogs::with_parent(
             DialogParentWindow::from_creation_context(context),
         ));
@@ -313,14 +316,14 @@ impl KetchupApp {
     /// Keep File > Open Recent in `store` instead of in memory.
     #[must_use]
     pub fn with_recent_files(mut self, store: Box<dyn recent_files::RecentFilesStore>) -> Self {
-        self.file.recent = recent_files::RecentFiles::from_store(store);
+        self.window.recent = recent_files::RecentFiles::from_store(store);
         self
     }
 
     /// The documents File > Open Recent offers, newest first.
     #[must_use]
     pub fn recent_files(&self) -> &[PathBuf] {
-        self.file.recent.files()
+        self.window.recent.files()
     }
 
     pub(crate) fn choose_open_path(&mut self) -> Option<PathBuf> {
@@ -566,16 +569,16 @@ impl KetchupApp {
     /// Whether the About window is on screen.
     #[must_use]
     pub const fn about_visible(&self) -> bool {
-        self.panels.about_open
+        self.window.panes.about_open
     }
 
     #[must_use]
     pub const fn manual_cad_tools_visible(&self) -> bool {
-        self.panels.manual_cad_tools_visible
+        self.window.panes.manual_cad_tools_visible
     }
 
     pub fn set_manual_cad_tools_visible(&mut self, visible: bool) {
-        self.panels.manual_cad_tools_visible = visible;
+        self.window.panes.manual_cad_tools_visible = visible;
     }
 
     #[must_use]
@@ -589,7 +592,7 @@ impl KetchupApp {
         self.catalog = language.catalog();
         self.language = Some(language);
         self.digest = self.catalog.text("digest-language-changed");
-        if self.remember_language
+        if self.window.remember_language
             && let Err(error) = language::save_choice(language)
         {
             self.digest = self.catalog.format(
@@ -668,10 +671,7 @@ impl KetchupApp {
         let value = self
             .value_box_takes_one_length()
             .then(|| {
-                crate::length_input::length_preview_mm(
-                    &self.value_box.input,
-                    self.value_box.decimal,
-                )
+                crate::length_input::length_preview_mm(&self.value_box.input, self.window.decimal)
             })
             .flatten()?;
         Some(self.catalog.format(
@@ -691,7 +691,7 @@ impl KetchupApp {
     /// system's decimal separator, so what the window shows reads like
     /// what they type.
     pub(crate) fn user_decimal(&self, number: String) -> String {
-        match self.value_box.decimal {
+        match self.window.decimal {
             crate::length_input::DecimalSeparator::Comma => number.replace('.', ","),
             crate::length_input::DecimalSeparator::Point => number,
         }
@@ -719,14 +719,14 @@ impl KetchupApp {
         let input = &self.value_box.input;
         self.value_box_takes_one_length()
             && input.contains(['x', 'X', '×'])
-            && crate::length_input::read_values(input, self.value_box.decimal)
+            && crate::length_input::read_values(input, self.window.decimal)
                 .is_ok_and(|values| values.len() > 1)
     }
 
     /// A comma typed where the decimal separator is a point: every field
     /// refuses it and says to separate values with `;` (`80;60`).
     pub(crate) fn value_box_refuses_comma(&self) -> bool {
-        crate::length_input::read_values(&self.value_box.input, self.value_box.decimal)
+        crate::length_input::read_values(&self.value_box.input, self.window.decimal)
             == Err(crate::length_input::Refusal::Comma)
     }
 
@@ -768,7 +768,7 @@ impl KetchupApp {
                 .join("; "),
             TypedMove::AlongAxis { distance_mm, .. } | TypedMove::Distance { distance_mm, .. } => {
                 // A comma once separated Move values: `80,60` is 80.6 mm now.
-                if crate::length_input::is_plain_mm(input, self.value_box.decimal)
+                if crate::length_input::is_plain_mm(input, self.window.decimal)
                     && !input.contains(',')
                 {
                     return None;
@@ -787,7 +787,7 @@ impl KetchupApp {
     /// more than a plain number of millimetres.
     fn rectangle_preview(&self) -> Option<String> {
         let input = &self.value_box.input;
-        let decimal = self.value_box.decimal;
+        let decimal = self.window.decimal;
         if input
             .split(crate::length_input::VALUE_SEPARATORS)
             .all(|side| crate::length_input::is_plain_mm(side, decimal))
@@ -805,18 +805,18 @@ impl KetchupApp {
     /// Colours every surface of the shell paints with.
     #[must_use]
     pub const fn palette(&self) -> Palette {
-        Palette::of(self.theme)
+        Palette::of(self.window.theme)
     }
 
     /// Which of the four appearances is showing.
     #[must_use]
     pub const fn theme(&self) -> ThemeKind {
-        self.theme
+        self.window.theme
     }
 
     /// Switch appearance. Purely presentational â€” the document never changes.
     pub fn set_theme(&mut self, theme: ThemeKind) {
-        self.theme = theme;
+        self.window.theme = theme;
         self.digest = self.catalog.text(theme.label_key());
     }
 
@@ -994,7 +994,7 @@ impl KetchupApp {
     /// Drawn by hand rather than as a `Button`, because the swatch has to sit
     /// inside the chip's own padding and still belong to the same hit target.
     pub(crate) fn theme_chip(&mut self, ui: &mut egui::Ui, palette: Palette, kind: ThemeKind) {
-        let selected = self.theme == kind;
+        let selected = self.window.theme == kind;
         let label = self.catalog.text(kind.label_key());
         let font = egui::FontId::proportional(11.5);
         let galley = ui.painter().layout_no_wrap(
@@ -1177,6 +1177,7 @@ impl KetchupApp {
                 self.underlay_view_menu(ui);
                 self.menu_command(ui, AppCommand::ExportUnderlayDxf);
                 self.menu_command(ui, AppCommand::ExportUnderlayDwg);
+                self.menu_command(ui, AppCommand::DiscardRefusedUnderlayEdit);
                 self.menu_command(ui, AppCommand::Orbit);
                 self.menu_command(ui, AppCommand::Pan);
             });
@@ -1223,19 +1224,19 @@ impl KetchupApp {
             });
             ui.menu_button(self.catalog.text("menu-window"), |ui| {
                 ui.checkbox(
-                    &mut self.panels.outliner_visible,
+                    &mut self.window.panes.outliner_visible,
                     self.catalog.text("dock-outliner"),
                 );
                 ui.checkbox(
-                    &mut self.panels.tags_visible,
+                    &mut self.window.panes.tags_visible,
                     self.catalog.text("dock-tags"),
                 );
                 ui.checkbox(
-                    &mut self.panels.dimensions_visible,
+                    &mut self.window.panes.dimensions_visible,
                     self.catalog.text("dock-dimensions"),
                 );
                 ui.checkbox(
-                    &mut self.panels.manual_cad_tools_visible,
+                    &mut self.window.panes.manual_cad_tools_visible,
                     self.catalog.text("dock-manual-cad"),
                 );
                 ui.separator();
@@ -1268,7 +1269,7 @@ impl KetchupApp {
     /// Feature history, bodies and assembly joints serve manual CAD editing only;
     /// they stay hidden unless Window > Manual CAD panels turns them on.
     pub(crate) fn show_manual_cad_tools(&mut self, ui: &mut egui::Ui) {
-        if !self.panels.manual_cad_tools_visible {
+        if !self.window.panes.manual_cad_tools_visible {
             return;
         }
         self.show_feature_history(ui);
@@ -1277,7 +1278,7 @@ impl KetchupApp {
     }
 
     pub(crate) fn show_about_window(&mut self, context: &egui::Context) {
-        if !self.panels.about_open {
+        if !self.window.panes.about_open {
             return;
         }
         let mut open = true;
@@ -1298,11 +1299,11 @@ impl KetchupApp {
                 ));
                 ui.separator();
                 if ui.button(self.catalog.text("about-close")).clicked() {
-                    self.panels.about_open = false;
+                    self.window.panes.about_open = false;
                 }
             });
         if !open {
-            self.panels.about_open = false;
+            self.window.panes.about_open = false;
         }
     }
 
@@ -1486,6 +1487,7 @@ impl KetchupApp {
         self.poll_validator_panel(context);
         self.poll_mesh_conversion(context);
         self.poll_feature_history_exact(context);
+        self.poll_recent_pick();
         if let Some(program) = self.document.current_rule_program() {
             self.program_evaluations.warm(program, context);
         } else {

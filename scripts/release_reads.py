@@ -24,10 +24,12 @@ from happening:
 3. Saving again. Snapshots are read without `deny_unknown_fields`, so a release opens a
    file with a struct field it does not know, and its next Save drops the field (review
    2026-11-04 REL-143). The release saves each file it opens editable once more, and
-   HEAD (`crates/ketchup-model/examples/resaved.rs`) must find the original's document in it.
+   once with its Undo history as its work recovery does, and HEAD
+   (`crates/ketchup-model/examples/resaved.rs`) must find the original's document in the
+   one and every revision of it in the other (review 2026-11-04 r19 P3).
 
 `--tag vX` checks one release instead of all. Needs the tags (`git fetch --no-tags
---depth=1 origin tag v0.2.0 tag v0.3.0 tag v0.3.1` in a shallow clone). The old crates and their
+--depth=1 origin tag v0.2.0 tag v0.3.0 tag v0.3.1 tag v0.3.2` in a shallow clone). The old crates and their
 build go to `<target>/release-<version>`; `--variants-only` skips the build.
 """
 
@@ -48,7 +50,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # Not v0.1.0: it takes every newer format and a document with a program for damage,
 # so no file Save writes can be kept safe from it; the README warns against it
 # (review 2026-11-01 DOC-100: 46 of 148 saved files opened its `.recovery`).
-RELEASES = ("v0.2.0", "v0.3.0", "v0.3.1")
+RELEASES = ("v0.2.0", "v0.3.0", "v0.3.1", "v0.3.2")
 SAVED_CRATES = ("crates/ketchup-model", "crates/ketchup-geometry", "crates/ketchup-tolerance")
 # `ketchup-test-env` is a dev-dependency of the model: the workspace needs its manifest.
 OLD_CRATES = (*SAVED_CRATES, "crates/ketchup-test-env")
@@ -63,10 +65,12 @@ REVIEWED = {
     "v0.3.0": {
         # CD-61: `format_of` writes a document with a stretched line as 107.
         "AddedObject": {"Stretched"},
-        # The program worker's answer to a drawing export, never part of a document.
-        "DxfEditRefusal": {"ReadDifferently", "TooLarge"},
+        # The program worker's answer to a drawing export, never part of a document;
+        # ChangedInFile and DeletedInFile too (review 2026-11-04 r19 CD-163 and P3).
+        "DxfEditRefusal": {"ReadDifferently", "TooLarge", "ChangedInFile", "DeletedInFile"},
     },
-    "v0.3.1": {},
+    "v0.3.1": {"DxfEditRefusal": {"ChangedInFile", "DeletedInFile"}},
+    "v0.3.2": {"DxfEditRefusal": {"ChangedInFile", "DeletedInFile"}},
 }
 
 ENUM = re.compile(

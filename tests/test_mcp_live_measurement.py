@@ -638,9 +638,11 @@ def test_house_project_drawings_pdf_with_title_block_through_public_mcp(mcp, tmp
     saved = tmp_path / "house.ketchup"
     mcp("file", action="save_as", path=str(saved))
     mcp("file", action="open", path=str(saved))
-    # The reopened document exports with the title block it kept.
+    # The reopened document exports with the title block it kept. The document
+    # notes the new file it wrote, so it may replace it after a restart
+    # (review 2026-11-04 r19 SEC-161), and is changed until saved.
     again = export(tmp_path / "domcek-2.pdf")
-    assert again["title_block"]["location"] == "Žilina, parc. č. 1234/5" and again["dirty"] is False, again
+    assert again["title_block"]["location"] == "Žilina, parc. č. 1234/5" and again["dirty"] is True, again
 
 
 def test_step_export_and_import_round_trip_through_public_mcp(mcp, tmp_path):

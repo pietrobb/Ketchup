@@ -22,8 +22,6 @@ pub(crate) struct FileState {
         Option<(PathBuf, ketchup_model::persistence::FileIdentity)>,
     pub(crate) work_recovery_digest: Option<String>,
     pub(crate) saved_digest: String,
-    /// File > Open Recent; outlives the document, so File > New carries it over.
-    pub(crate) recent: crate::recent_files::RecentFiles,
 }
 
 /// A file opened from a recovery copy in place of the one the user asked for.
@@ -108,9 +106,6 @@ pub(crate) struct TransformToolState {
 pub(crate) struct ValueBox {
     pub(crate) input: String,
     pub(crate) focus: bool,
-    /// How every field of the window reads a decimal number: the system's
-    /// separator, read once at startup.
-    pub(crate) decimal: crate::length_input::DecimalSeparator,
 }
 
 /// The parameter editor and the provenance of the last recompute.
@@ -174,8 +169,25 @@ pub(crate) struct HoverState {
     pub(crate) press_points: [Option<Pos2>; 2],
 }
 
-/// Which side panels and windows are open.
-pub(crate) struct Panels {
+/// The window's settings: they outlive the document, so File > New keeps the
+/// whole struct rather than a list of fields copied back (review 2026-11-04 r19,
+/// where that list missed the theme).
+pub(crate) struct WindowSettings {
+    pub(crate) theme: ThemeKind,
+    /// How every field of the window reads a decimal number: the system's
+    /// separator, read once at startup.
+    pub(crate) decimal: crate::length_input::DecimalSeparator,
+    /// Whether a language picked in the menu is remembered for the next start.
+    pub(crate) remember_language: bool,
+    pub(crate) panes: Panes,
+    /// The dock page the user picked; `None` lets the dock choose.
+    pub(crate) dock_tab: Option<crate::DockTab>,
+    /// File > Open Recent.
+    pub(crate) recent: crate::recent_files::RecentFiles,
+}
+
+/// Which side panes and windows are open.
+pub(crate) struct Panes {
     pub(crate) outliner_visible: bool,
     pub(crate) tags_visible: bool,
     pub(crate) dimensions_visible: bool,
@@ -187,8 +199,6 @@ pub(crate) struct Panels {
 /// The right dock's pages.
 #[derive(Default)]
 pub(crate) struct Dock {
-    /// The page the user picked; `None` lets the dock choose.
-    pub(crate) tab: Option<crate::DockTab>,
     /// The program page brings the selected part's lines into view again.
     pub(crate) reveal_program_lines: bool,
 }
@@ -290,9 +300,21 @@ pub(crate) struct DrawingsState {
     pub(crate) unreadable: Option<String>,
     /// The document's sheet settings changed since it was opened or saved.
     pub(crate) unsaved: bool,
-    /// The SHA-256 of the last drawing file the window wrote at each path,
-    /// the one an AI client's export may replace without asking.
-    pub(crate) written: BTreeMap<std::path::PathBuf, String>,
+    /// The set the last export was refused at as another project's, with
+    /// what it was exported from, offered to take over (review 2026-11-04 r19
+    /// MF-162).
+    pub(crate) another_projects_set: Option<(
+        std::path::PathBuf,
+        crate::app::project_drawings::SetFileFormat,
+        String,
+    )>,
+    /// The set at this path the user takes over: the next export to it
+    /// replaces its sheets.
+    pub(crate) taking_over: Option<std::path::PathBuf>,
+    /// The ground floor found for ±0,000 in the document as it was then,
+    /// shown in the window, which asks every frame; found on a worker.
+    pub(crate) found_zero:
+        std::cell::RefCell<Option<(ExactCacheKey, crate::app::project_drawings::FoundZero)>>,
 }
 
 /// Viewer sharing preparation kept as project companion data, not CAD.

@@ -339,7 +339,7 @@ fn takeoff_csv_export_writes_the_visible_parts() {
     .unwrap();
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("vykaz.csv");
-    app.value_box.decimal = crate::length_input::DecimalSeparator::Comma;
+    app.window.decimal = crate::length_input::DecimalSeparator::Comma;
     std::fs::write(&path, "an older takeoff").unwrap();
     assert!(app.export_material_takeoff_to(&path));
     let csv = std::fs::read_to_string(&path).unwrap();
@@ -386,7 +386,7 @@ fn a_csv_export_follows_the_systems_decimal_separator_not_the_language() {
         ),
     ] {
         app.set_ui_language(language);
-        app.value_box.decimal = decimal;
+        app.window.decimal = decimal;
         assert!(app.export_material_takeoff_to(&path), "{}", app.digest);
         let csv = std::fs::read_to_string(&path).unwrap();
         assert!(csv.contains(row), "{language:?} {decimal:?}\n{csv}");
@@ -413,7 +413,7 @@ fn hardware_and_bar_schedule_export_the_report_rows() {
         true,
     )
     .unwrap();
-    app.value_box.decimal = crate::length_input::DecimalSeparator::Comma;
+    app.window.decimal = crate::length_input::DecimalSeparator::Comma;
     let directory = tempfile::tempdir().unwrap();
     let (_, report) = ketchup_program::run("bars.star", source, &BTreeMap::new()).unwrap();
 
@@ -472,7 +472,7 @@ fn the_cutting_plan_exports_every_piece_on_its_sheet() {
         true,
     )
     .unwrap();
-    app.value_box.decimal = crate::length_input::DecimalSeparator::Comma;
+    app.window.decimal = crate::length_input::DecimalSeparator::Comma;
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("rozkroj.csv");
     assert!(
@@ -582,7 +582,7 @@ fn the_quote_exports_priced_lines_and_a_program_without_prices_is_refused() {
     assert!(!path.exists());
     let priced = format!("{boards}price(\"Board\", 25.5, \"m2\", currency = \"EUR\")\n");
     app.apply_program_source(program(&priced), true).unwrap();
-    app.value_box.decimal = crate::length_input::DecimalSeparator::Comma;
+    app.window.decimal = crate::length_input::DecimalSeparator::Comma;
     assert!(app.export_list_to(PartList::Quote, &path), "{}", app.digest);
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
@@ -619,7 +619,7 @@ fn cut_list_export_is_a_table_of_the_visible_parts_in_csv_or_xlsx() {
     assert!(app.set_tag_visibility(concept, false));
     let directory = tempfile::tempdir().unwrap();
 
-    app.value_box.decimal = crate::length_input::DecimalSeparator::Comma;
+    app.window.decimal = crate::length_input::DecimalSeparator::Comma;
     let path = directory.path().join("kusovnik.csv");
     assert!(
         app.export_list_to(PartList::CutList, &path),
@@ -634,7 +634,7 @@ fn cut_list_export_is_a_table_of_the_visible_parts_in_csv_or_xlsx() {
     );
     assert!(app.digest.contains("kusovnik.csv"), "{}", app.digest);
 
-    app.value_box.decimal = crate::length_input::DecimalSeparator::Point;
+    app.window.decimal = crate::length_input::DecimalSeparator::Point;
     assert!(app.export_list_to(PartList::CutList, &path));
     let csv = std::fs::read_to_string(&path).unwrap();
     assert!(csv.starts_with("\u{feff}position,parts,material,"), "{csv}");

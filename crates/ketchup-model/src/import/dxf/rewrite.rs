@@ -12,6 +12,10 @@ use std::fmt;
 use std::io::Cursor;
 use std::ops::Range;
 
+mod compare;
+
+pub use compare::Difference;
+
 use super::code_page::CodePage;
 use super::text::unicode_escapes;
 use super::underlay::text_encoding;
@@ -66,6 +70,79 @@ pub enum DxfEditRefusal {
     HandleMissing { object: u32, handle: u64 },
     /// A changed object is of a kind, or lies in a plane, that is not mapped yet.
     NotMappable { object: u32, kind: String },
+    /// The entity of an object edited in Kečup reads otherwise in the file now (changed
+    /// there since it was imported, or read differently by this Kečup), while another
+    /// reads as it did: where it lay (`was_mm`) and lies now
+    /// (`now_mm`), in the underlay's millimetres. `object` is the one edited, `handle`
+    /// and `kind` the entity of the file that holds it, `handle` 0 in a drawing without
+    /// handles (review 2026-11-04 r19 CD-163: the
+    /// refusal named neither the object nor what to do but import again, losing every
+    /// edit).
+    ChangedInFile {
+        object: u32,
+        handle: u64,
+        kind: String,
+        edit: EditOfObject,
+        difference: Difference,
+        was_mm: Option<[i64; 2]>,
+        now_mm: Option<[i64; 2]>,
+    },
+    /// The entity of an object edited in Kečup is no longer in the file: deleted there
+    /// since the import, where it lay at `was_mm`. One not edited is left out as the file
+    /// has it (review 2026-11-04 r19 P3).
+    DeletedInFile {
+        object: u32,
+        handle: u64,
+        kind: String,
+        edit: EditOfObject,
+        was_mm: Option<[i64; 2]>,
+    },
+}
+
+/// What was done in Kečup to an object of the underlay.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum EditOfObject {
+    Moved,
+    Stretched,
+    Removed,
+    Copied,
+}
+
+impl EditOfObject {
+    fn done(self) -> &'static str {
+        match self {
+            Self::Moved => "moved",
+            Self::Stretched => "stretched",
+            Self::Removed => "taken out",
+            Self::Copied => "copied",
+        }
+    }
+}
+
+impl Difference {
+    fn what(self) -> &'static str {
+        match self {
+            Self::Layer => "layer",
+            Self::Lines => "lines",
+            Self::Text => "text",
+            Self::Fill => "fill",
+        }
+    }
+}
+
+/// The entity of kind `kind` and handle `handle`, said.
+fn entity(kind: &str, handle: u64) -> String {
+    // A DXF handle is never 0: the drawing has none (R12).
+    if handle == 0 {
+        format!("a {kind} without a handle")
+    } else {
+        format!("the {kind} of handle {handle:X}")
+    }
+}
+
+/// `x, y` of a place in millimetres, or that it has none.
+fn at(place: Option<[i64; 2]>) -> String {
+    place.map_or_else(|| "nowhere".to_owned(), |[x, y]| format!("{x}, {y}"))
 }
 
 impl From<DxfEditRefusal> for EditedDxfError {
@@ -122,6 +199,43 @@ impl fmt::Display for DxfEditRefusal {
                 "object {object} is a {kind} that is not moved or copied in a DXF yet; take it \
                  out and draw it again, or leave it where it was read"
             ),
+            Self::ChangedInFile {
+                object,
+                handle,
+                kind,
+                edit,
+                difference,
+                was_mm,
+                now_mm,
+            } => write!(
+                formatter,
+                "object {object}, of {}, was {} in Kečup, but its {} \
+                 reads otherwise in the file now, changed there since it was imported or read \
+                 differently by this Kečup: it lay at {} mm and lies at {} mm now; undo that \
+                 edit of object {object} to write the drawing with the others, or import the \
+                 drawing again",
+                entity(kind, *handle),
+                edit.done(),
+                difference.what(),
+                at(*was_mm),
+                at(*now_mm)
+            ),
+            Self::DeletedInFile {
+                object,
+                handle,
+                kind,
+                edit,
+                was_mm,
+            } => write!(
+                formatter,
+                "object {object}, of {}, was {} in Kečup, but that entity is no longer in the \
+                 file, deleted there since it was imported; it lay at {} mm; undo that edit of \
+                 object {object} to write the drawing with the others, or import the drawing \
+                 again",
+                entity(kind, *handle),
+                edit.done(),
+                at(*was_mm)
+            ),
         }
     }
 }
@@ -138,9 +252,13 @@ pub struct EditedDxf {
     pub changed_in_file: usize,
     /// The entities the file has that the underlay has no object of: added to the file
     /// since it was imported. They are written as the file has them, and said. A count of
-    /// 0 for both does not prove the file unchanged: an entity no line was read from is
+    /// 0 for each does not prove the file unchanged: an entity no line was read from is
     /// not compared.
     pub added_in_file: usize,
+    /// The objects of the underlay, none of them edited, whose entity the file no longer
+    /// has: deleted there since it was imported. They are left out, as the file has it,
+    /// and said (review 2026-11-04 r19 P3: they refused the whole drawing).
+    pub removed_in_file: usize,
 }
 
 /// What [`rebinds`] found of a file that reads as other lines than the underlay's.
@@ -148,6 +266,7 @@ pub struct EditedDxf {
 struct Rebound {
     changed: usize,
     added: usize,
+    removed: usize,
 }
 
 /// `source`, the drawing `lines` were read from with `options`, written with `edits`. A
@@ -162,24 +281,30 @@ pub fn write_edited_dxf(
     // The read is let go before the drawing is parsed, so the two are not held at once
     // (review 2026-10-29 CD-63).
     let frame = frame_of(source, options, lines, edits)?;
-    let encoding = text_encoding(&mut Cursor::new(source))
-        .map_err(EditedDxfError::Read)?
-        .code_page;
-    let drawing = Drawing::parse(source, encoding)?;
-    let Some((frame, rebound)) = frame else {
+    let encoding = text_encoding(&mut Cursor::new(source)).map_err(EditedDxfError::Read)?;
+    let mut drawing = Drawing::parse(source, encoding.code_page)?;
+    // The header names the code page the texts are read and written in, so the drawing
+    // reads so again, however few of its texts are left (review 2026-11-04 r19 UL-161).
+    drawing.code_page_renamed = encoding.code_page_over_header().map(str::to_owned);
+    let (frame, rebound) = match frame {
+        Ok(frame) => frame,
+        Err(Some(refusal)) => return Err(refusal.into()),
         // The file is blamed only when its entities are not those the lines were read
         // from (review 2026-10-29 CD-64).
-        return Err(if drawing.has_entities_of(&lines.objects().objects) {
-            DxfEditRefusal::ReadDifferently
-        } else {
-            DxfEditRefusal::NotTheSource
+        Err(None) => {
+            return Err(if drawing.has_entities_of(&lines.objects().objects) {
+                DxfEditRefusal::ReadDifferently
+            } else {
+                DxfEditRefusal::NotTheSource
+            }
+            .into());
         }
-        .into());
     };
     Ok(EditedDxf {
         dxf: drawing.write(lines, edits, &frame)?,
         changed_in_file: rebound.changed,
         added_in_file: rebound.added,
+        removed_in_file: rebound.removed,
     })
 }
 
@@ -193,13 +318,13 @@ fn frame_of(
     options: DxfImportOptions,
     lines: &UnderlayLines,
     edits: &UnderlayEdits,
-) -> Result<Option<(Frame, Rebound)>, EditedDxfError> {
+) -> Result<Bound, EditedDxfError> {
     let read = read_dxf_underlay(source, options).map_err(EditedDxfError::Read)?;
     // Bound as read, or again (review 2026-11-04 P3: also in the unit a drawing that
     // declares none was read in).
     let bound = |read: &super::underlay::DxfUnderlay| {
         let changed = if read.lines == *lines {
-            Some(Rebound::default())
+            Ok(Rebound::default())
         } else {
             rebinds(&read.lines, lines, edits)
         };
@@ -211,14 +336,12 @@ fn frame_of(
             (frame, changed)
         })
     };
-    if let Some(bound) = bound(&read) {
-        return Ok(Some(bound));
-    }
-    if read.units.authority() != ImportUnitAuthority::UserDeclared {
-        return Ok(None);
+    let first = bound(&read);
+    if first.is_ok() || read.units.authority() != ImportUnitAuthority::UserDeclared {
+        return Ok(first);
     }
     let Some(unit) = unit_scaled_to(&read, lines) else {
-        return Ok(None);
+        return Ok(first);
     };
     drop(read);
     let other = read_dxf_underlay(
@@ -226,8 +349,15 @@ fn frame_of(
         DxfImportOptions::new(Some(unit)).with_geo_origin(options.geo_origin_mm()),
     )
     .map_err(EditedDxfError::Read)?;
-    Ok(bound(&other))
+    Ok(match bound(&other) {
+        Err(None) => first,
+        other => other,
+    })
 }
+
+/// How the lines lie against the drawing, with what was bound again; or why not: the
+/// edited object changed in the file, or `None` where the drawing does not read alike.
+type Bound = Result<(Frame, Rebound), Option<DxfEditRefusal>>;
 
 /// Whether `edits` of `lines`, read from a drawing by an earlier Kečup, are bound again to
 /// that drawing as this Kečup reads it, `read`, though some entities read as other lines
@@ -238,8 +368,13 @@ fn frame_of(
 /// alike against the drawing's units. The entities are written from the file, not from
 /// either read, so one read differently and not edited is written as the file has it, as
 /// is one the file gained since (review 2026-11-04 CD-140): how many of each, when bound
-/// again.
-fn rebinds(read: &UnderlayLines, lines: &UnderlayLines, edits: &UnderlayEdits) -> Option<Rebound> {
+/// again. An edited object that does not lie where it lay, while another does, is named
+/// (review 2026-11-04 r19 CD-163).
+fn rebinds(
+    read: &UnderlayLines,
+    lines: &UnderlayLines,
+    edits: &UnderlayEdits,
+) -> Result<Rebound, Option<DxfEditRefusal>> {
     type Key = (u64, &'static str, usize);
     /// The top-level objects by key, each with its id.
     fn tops(lines: &UnderlayLines) -> BTreeMap<Key, usize> {
@@ -256,27 +391,6 @@ fn rebinds(read: &UnderlayLines, lines: &UnderlayLines, edits: &UnderlayEdits) -
         }
         tops
     }
-    /// The points of object `id` and of every object it placed, which follow it.
-    fn points(lines: &UnderlayLines, id: usize) -> Vec<&[[f64; 2]]> {
-        let objects = &lines.objects().objects;
-        let mut placed = BTreeSet::from([id]);
-        let mut runs = Vec::new();
-        for (at, object) in objects.iter().enumerate().skip(id) {
-            let parent = object
-                .parent
-                .and_then(|parent| usize::try_from(parent).ok());
-            if at != id && !parent.is_some_and(|parent| placed.contains(&parent)) {
-                break;
-            }
-            placed.insert(at);
-            runs.extend(object.parts.iter().filter_map(|part| {
-                let layer = lines.layers().get(place(part.layer))?;
-                let range = place(part.points.start)..place(part.points.end);
-                layer.points_mm().get(range)
-            }));
-        }
-        runs
-    }
     /// The top-level object that placed object `id`, or `id` itself.
     fn top_of(lines: &UnderlayLines, mut id: usize) -> usize {
         let objects = &lines.objects().objects;
@@ -292,35 +406,88 @@ fn rebinds(read: &UnderlayLines, lines: &UnderlayLines, edits: &UnderlayEdits) -
     }
     let (now, then) = (tops(read), tops(lines));
     if then.is_empty() {
-        return None;
+        return Err(None);
     }
     // An object taken out names an entity as a moved one does, so it too must lie where
     // it lay, with what it placed; and an object an insert placed is checked with the
     // insert (review 2026-11-04 CD-140: the entity of its handle, or its place, could be
     // another one in a file changed since).
-    let edited: BTreeSet<usize> = edits
-        .moved_objects
-        .keys()
-        .chain(edits.stretched_objects.keys())
-        .chain(&edits.removed_objects)
-        .copied()
-        .chain(edits.added.iter().filter_map(AddedObject::copy_of))
-        .filter_map(|id| usize::try_from(id).ok())
-        .map(|id| top_of(lines, id))
-        .collect();
-    let (mut lies_alike, mut changed) = (false, 0);
-    for (key, &id) in &then {
-        let found = now.get(key)?;
-        let at = points(lines, id);
-        let alike = at == points(read, *found);
-        if !alike && edited.contains(&id) {
-            return None;
+    let mut edited = BTreeMap::new();
+    for (ids, edit) in [
+        (
+            edits.moved_objects.keys().copied().collect::<Vec<_>>(),
+            EditOfObject::Moved,
+        ),
+        (
+            edits.stretched_objects.keys().copied().collect(),
+            EditOfObject::Stretched,
+        ),
+        (
+            edits.removed_objects.iter().copied().collect(),
+            EditOfObject::Removed,
+        ),
+        (
+            edits
+                .added
+                .iter()
+                .filter_map(AddedObject::copy_of)
+                .collect(),
+            EditOfObject::Copied,
+        ),
+    ] {
+        for id in ids {
+            if let Ok(at) = usize::try_from(id) {
+                edited.entry(top_of(lines, at)).or_insert((id, edit));
+            }
         }
-        lies_alike |= alike && at.iter().any(|run| !run.is_empty());
+    }
+    let (mut lies_alike, mut changed, mut removed, mut refused) = (false, 0, 0, None);
+    for (key, &id) in &then {
+        let Some(&found) = now.get(key) else {
+            if let (Some(&(object, edit)), None) = (edited.get(&id), &refused) {
+                refused = Some(DxfEditRefusal::DeletedInFile {
+                    object,
+                    handle: key.0,
+                    kind: key.1.to_owned(),
+                    edit,
+                    was_mm: compare::place_mm(lines, id),
+                });
+            }
+            removed += 1;
+            continue;
+        };
+        let difference = compare::difference(lines, id, read, found);
+        if let (Some(difference), Some(&(object, edit)), None) =
+            (difference, edited.get(&id), &refused)
+        {
+            refused = Some(DxfEditRefusal::ChangedInFile {
+                object,
+                handle: key.0,
+                kind: key.1.to_owned(),
+                edit,
+                difference,
+                was_mm: compare::place_mm(lines, id),
+                now_mm: compare::place_mm(read, found),
+            });
+        }
+        let alike = difference.is_none();
+        lies_alike |= alike && compare::draws(lines, id);
         changed += usize::from(!alike);
     }
+    // Where nothing lies where it lay, the drawing reads otherwise as a whole, and no
+    // object is blamed.
+    if !lies_alike {
+        return Err(None);
+    }
+    if let Some(refused) = refused {
+        return Err(Some(refused));
+    }
     let added = now.keys().filter(|key| !then.contains_key(*key)).count();
-    lies_alike.then_some(Rebound { changed, added })
+    Ok(Rebound {
+        changed,
+        added,
+        removed,
+    })
 }
 
 /// The unit of [`UNITS`], other than the one `read` was read in, whose scale against it
@@ -433,6 +600,10 @@ struct Drawing<'a> {
     eol: &'static [u8],
     pairs: Vec<Pair>,
     entities: Vec<Entity>,
+    /// The entity of each handle, `None` where more than one has it; made once, so that
+    /// finding the entities of many objects is not quadratic (review 2026-11-04 r19
+    /// CD-162).
+    by_handle: BTreeMap<u64, Option<usize>>,
     /// The pair `ENDSEC` closing the ENTITIES section.
     entities_end: usize,
     /// The value pair of `$HANDSEED`.
@@ -447,6 +618,11 @@ struct Drawing<'a> {
     utf8: bool,
     /// The code page its texts are read in, if any.
     code_page: Option<CodePage>,
+    /// The pair of the value of `$DWGCODEPAGE`.
+    code_page_value: Option<usize>,
+    /// The name `$DWGCODEPAGE` is written with, where the texts are read in another code
+    /// page than it names.
+    code_page_renamed: Option<String>,
     /// The owner (group 330) of the entities of model space.
     owner: Option<Vec<u8>>,
     /// Each layer name as read, with the bytes the drawing writes it in.
@@ -528,6 +704,7 @@ impl<'a> Drawing<'a> {
             eol,
             pairs: Vec::new(),
             entities: Vec::new(),
+            by_handle: BTreeMap::new(),
             entities_end: 0,
             handseed: None,
             next_handle: None,
@@ -535,6 +712,8 @@ impl<'a> Drawing<'a> {
             lightweight: false,
             utf8: false,
             code_page: encoding,
+            code_page_value: None,
+            code_page_renamed: None,
             owner: None,
             layers: Vec::new(),
             blocks: Vec::new(),
@@ -608,6 +787,7 @@ impl<'a> Drawing<'a> {
                     let next = pairs.get(index + 1).ok_or(DxfEditRefusal::Malformed)?;
                     match name(pair).as_str() {
                         "$HANDSEED" => drawing.handseed = Some(index + 1),
+                        "$DWGCODEPAGE" => drawing.code_page_value = Some(index + 1),
                         "$ACADVER" => version = value(next).to_ascii_uppercase(),
                         _ => {}
                     }
@@ -670,8 +850,22 @@ impl<'a> Drawing<'a> {
                 .flatten()
                 .map(|pair| value(pair).to_vec())
         });
+        for (index, entity) in drawing.entities.iter().enumerate() {
+            if let Some(handle) = entity.handle {
+                drawing
+                    .by_handle
+                    .entry(handle)
+                    .and_modify(|found| *found = None)
+                    .or_insert(Some(index));
+            }
+        }
         drawing.pairs = pairs;
         Ok(drawing)
+    }
+
+    /// The one entity of handle `handle`.
+    fn entity_of_handle(&self, handle: u64) -> Option<usize> {
+        self.by_handle.get(&handle).copied().flatten()
     }
 
     /// Reads the entities from pair `index` on, past the section's start, to its end;
@@ -744,14 +938,8 @@ impl<'a> Drawing<'a> {
             return self.entities_by_order(objects).is_some();
         }
         tops.filter(|object| object.handle != 0).all(|object| {
-            let mut found = self
-                .entities
-                .iter()
-                .filter(|entity| entity.handle == Some(object.handle));
-            matches!(
-                (found.next(), found.next()),
-                (Some(entity), None) if entity.records[0].1 == object.kind.name()
-            )
+            self.entity_of_handle(object.handle)
+                .is_some_and(|entity| self.entities[entity].records[0].1 == object.kind.name())
         })
     }
 
@@ -832,19 +1020,13 @@ impl<'a> Drawing<'a> {
                 .and_then(|entities| entities.get(index).copied().flatten())
                 .ok_or(DxfEditRefusal::NoHandle { object }.into());
         }
-        let mut found = self
-            .entities
-            .iter()
-            .enumerate()
-            .filter(|(_, entity)| entity.handle == Some(read.handle));
-        match (found.next(), found.next()) {
-            (Some((index, _)), None) => Ok(index),
-            _ => Err(DxfEditRefusal::HandleMissing {
+        self.entity_of_handle(read.handle).ok_or(
+            DxfEditRefusal::HandleMissing {
                 object,
                 handle: read.handle,
             }
-            .into()),
-        }
+            .into(),
+        )
     }
 
     fn write(
@@ -1020,6 +1202,12 @@ impl<'a> Drawing<'a> {
             && handles != self.next_handle
         {
             let mut value = format!("{next:X}").into_bytes();
+            value.extend_from_slice(self.eol);
+            let pair = &self.pairs[index];
+            edits_at.push((pair.value().start..pair.end(), value));
+        }
+        if let (Some(index), Some(name)) = (self.code_page_value, &self.code_page_renamed) {
+            let mut value = name.clone().into_bytes();
             value.extend_from_slice(self.eol);
             let pair = &self.pairs[index];
             edits_at.push((pair.value().start..pair.end(), value));

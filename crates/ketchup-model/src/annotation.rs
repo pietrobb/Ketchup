@@ -191,11 +191,46 @@ fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
 /// without a trailing zero or a unit.
 #[must_use]
 pub fn dimension_text(length_mm: f64) -> String {
+    dimension_text_with(length_mm, DecimalMark::Point)
+}
+
+/// What a drawing writes before a decimal: a point, or a comma as Czech and
+/// Slovak drawings do. The one choice every number of a sheet, a plan DXF and
+/// a cutting list follows (review 2026-11-04 MF-140, r19 P3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DecimalMark {
+    #[default]
+    Point,
+    Comma,
+}
+
+impl DecimalMark {
+    /// The character written before a decimal.
+    #[must_use]
+    pub const fn char(self) -> char {
+        match self {
+            Self::Point => '.',
+            Self::Comma => ',',
+        }
+    }
+
+    /// `number` as Rust writes it, a point before its decimal, with this mark
+    /// there instead.
+    #[must_use]
+    pub fn written(self, number: &str) -> String {
+        number.replace('.', self.char().encode_utf8(&mut [0; 4]))
+    }
+}
+
+/// [`dimension_text`] with `mark` before its decimal: the one writer of a
+/// dimension value of every drawing (review 2026-11-04 r19 P3).
+#[must_use]
+pub fn dimension_text_with(length_mm: f64, mark: DecimalMark) -> String {
     let tenths = (length_mm * 10.0).round();
     if tenths % 10.0 == 0.0 {
         format!("{:.0}", tenths / 10.0)
     } else {
-        format!("{:.1}", tenths / 10.0)
+        mark.written(&format!("{:.1}", tenths / 10.0))
     }
 }
 

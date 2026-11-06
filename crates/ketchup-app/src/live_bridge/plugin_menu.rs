@@ -330,7 +330,7 @@ impl KetchupApp {
     }
 
     fn start_window_plugin(&mut self, context: &egui::Context, form: InputForm) {
-        let decimal = self.value_box.decimal;
+        let decimal = self.window.decimal;
         let request = RunPluginRequest {
             plugin: Some(form.folder.to_string_lossy().into_owned()),
             inputs: Some(
@@ -395,7 +395,7 @@ impl KetchupApp {
             (None, None, None) => return,
         };
         let catalog = &self.catalog;
-        let decimal = self.value_box.decimal;
+        let decimal = self.window.decimal;
         let (mut run, mut close) = (false, false);
         egui::Window::new(title)
             .id(egui::Id::new("plugin-window"))

@@ -1,3 +1,4 @@
+use ketchup_rejection::{Reason, dropped};
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 
@@ -101,9 +102,8 @@ impl Drop for WorkRecoveryLock {
     fn drop(&mut self) {
         // Drop has no caller to report to and this crate has no log. If unlocking
         // fails, the lock ends as before: when the last copy of the file closes.
-        if self.file.unlock().is_err() {
-            // As said above: the lock ends with the last copy of the file.
-        }
+        // As said above: the lock ends with the last copy of the file.
+        dropped(self.file.unlock(), Reason::AlreadyEnded);
     }
 }
 
@@ -298,13 +298,11 @@ fn append_step(
     if let Err(error) = appended {
         // A step cut short would hide every later one: the checkpoint stays as
         // this writer observed it, so the edit can be retried.
-        if file
-            .set_len(observed_len)
-            .and_then(|()| file.sync_all())
-            .is_err()
-        {
-            // The append's error is the one reported, cut short or not.
-        }
+        // The append's error is the one reported, cut short or not.
+        dropped(
+            file.set_len(observed_len).and_then(|()| file.sync_all()),
+            Reason::ReportedElsewhere,
+        );
         return Err(FilePersistenceError::Io(error));
     }
     let mut hasher = observed.hasher;

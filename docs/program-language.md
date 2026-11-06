@@ -106,7 +106,7 @@ point and outward normal in the part's frame and in the world. An edge gives
 
 | Builtin | Purpose |
 |---|---|
-| `param(name, default, min=, max=, doc=, unit=, whole=)` | a number the caller can override; `whole=True` for a count or a switch, whose fraction stops the program at `param()`, naming the parameter, and is refused by the window's field |
+| `param(name, default, min=, max=, doc=, unit=, whole=)` | a number the caller can override; `whole=True` for a count or a switch, an int in the program even with a default written `3.0`, whose fraction stops the program at `param()`, naming the parameter, and is refused by the window's field. An override outside `min`/`max` stops the program at `param()` the same way, before anything is built with it, and the window's field refuses it; a default outside them is reported as `param_out_of_range` |
 | `box(name, size, at=, material=, color=, attributes=)` | an axis-aligned part; `at` is its minimum corner. Every body (`box`, `extrude`, `revolve`, `sweep`, `loft`) takes `material=`, `color=` and `attributes=` (a dict of strings kept on the part; the library's `board(grain=)` stores `"grain"` there, and `"material:axis"`, the axis the cut list keeps its blank square to; an extrusion turned in its profile's plane needs that one to keep it) |
 | `part_info(part)` | current `name`, `size`, `at`, `max` of a part |
 | `face(part, name)`, `faces(part)`, `face_at(part, point)` | a flat or round face of any part in world: `kind`, `origin`, `normal`, `u`, `v`, `min`, `max`, `radius`, `center` |
@@ -132,7 +132,7 @@ point and outward normal in the part's frame and in the world. An edge gives
 | `material_weight(material, source=, kg_m3=, kg_m2=)`, `weight_scope(tags)`, `area_load(name, kind=, kn_m2=, on=[tags], projected=True, source=)` | self weight and area loads in kN/m² on the load-path members |
 | `text(name, value, at=, height_mm=2.5, tags=)`, `dim(name, a, b, offset_mm=0, height_mm=2.5, tags=)`, `leader(name, value, point=, at=, height_mm=2.5, tags=)`, `polyline(name, points, closed=False, tags=)` | drawing annotations, no parts (never in the cut list, collisions, mass or takeoff): a text at a point, a dimension whose value Kečup measures between two points, an arrow from a point to a text, drawn lines; text height in mm on paper, the dimension offset in model mm; the library's `chain_dim(name, points, offset_mm=)` dimensions neighbouring points |
 | `timber_strength(material, strength_class=, service_class=, glulam=, fm_k=, fv_k=, fc0_k=, fc90_k=, e0_mean=, e0_05=, source=, rho_k=, product=)` | the EC5 characteristic values in N/mm² of one material, behind the library's `timber_design`; `product` (solid, glulam, lvl, plywood, osb2, osb3, osb4, particleboard_p5/p6/p7) picks its kmod, kdef and gamma_M; without it (and not `glulam`) the material's members are not verified |
-| `stock(material, lengths=None, sheets=None, kerf=0, trim=0, along=None)` | the stock lengths (bars) or sheets the made parts of a material are cut from, behind the library's `bar_stock` and `sheet_stock` and report section `cutting` |
+| `stock(material, lengths=None, sheets=None, kerf=0, trim=0, along=None)` | the stock lengths (bars) or sheets the made parts of a material are cut from, behind the library's `bar_stock` and `sheet_stock` and report section `cutting`. `along` declares which part attribute names the local axis (`"x"`, `"y"`) that runs along a sheet's length, e.g. the library's `"grain"`; for parts of that material only that attribute keeps the blank square to the axis, so name a direction attribute, never one such as `grid` |
 | `price(item, value, per, currency=None, source=None)` | the unit price of a material (per `m3`, `m2`, `m`, `piece`), a bought item (`piece`), a bar grade (`kg`, `m`, `piece`) or a machining operation (`operation`), behind the library's `price_list` and report section `quote` |
 
 A box's faces are `x-`, `x+`, `y-`, `y+`, `z-` and `z+` in the part's own
@@ -168,8 +168,17 @@ GL28h (EN 14080:2013). Report section `design.members` gives each member's check
 bearing and buckling of columns) with their utilization and `pass`, `fail` or
 `not_verified` when an input is missing. Lateral torsional buckling counts only
 parts that hold the compressed edge (the top under sagging, the bottom under
-hogging) and are screwed to the beam by `joint()` or also bear on a grounded part;
-`loads.members[].braced_by` lists them. It is a computed check, not an authorized structural design.
+hogging), bear on a part declared `grounded=True` beside the beam (across it,
+beyond its side) and are fastened to both by `joint()`;
+`loads.members[].braced_by` lists them. A grounded part must be stiff sideways
+(a wall, not a hinged stud). Every `joint()` fastens its parts except of the kinds
+`none`, `contact` and `friction`; a load path's `fixed` tag passes weight but
+braces nothing. A brace holds the beam at its joint's `fasteners` that lie where
+the two parts touch (others are reported as `fastener_off_contact` and hold
+nothing), or at the middle of each place they touch when the joint names none.
+Sheathing or a deck fastened only to the beams braces nothing, so a usual floor
+of joists under a screwed deck is `not_verified` for lateral torsional buckling
+until a diaphragm can be declared. It is a computed check, not an authorized structural design.
 
 `connector(a, b, fastener, ratings=None, fasteners=None, name=None)` joins two
 parts with a bought connector rated from the catalogue `CONNECTOR_RATINGS`
@@ -350,7 +359,7 @@ outside it.
 | `through_hole_too_shallow` | error | the requested through depth does not span the part; numeric geometry is retained, never silently deepened |
 | `hole_wall_too_thin` | warning | a blind hole leaves less than 3 mm of the part behind it |
 | `joint_without_contact` | error | a joint connects parts that are further apart than its `max_gap` |
-| `param_out_of_range` | error | a parameter is outside its `min`/`max` |
+| `param_out_of_range` | error | a parameter's default is outside its `min`/`max` (an override outside them stops the program at `param()`) |
 | `program_condition_failed` | error | `check(condition, message, parts=[...], hint=...)` found a library design problem; evaluation continues and the condition is returned |
 | `floating_part` | warning | a part touches nothing that rests on z = 0 |
 | `production_tag_unused` | error / warning | no part carries a tag of `production(tags=…)`; an error when therefore nothing is made, a warning when another tag still makes parts |

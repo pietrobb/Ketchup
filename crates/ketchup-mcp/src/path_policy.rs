@@ -44,7 +44,10 @@ const AUTOMOUNTED: &[&str] = if cfg!(target_os = "macos") {
 /// Linux file systems that reach another computer, or that the automounter mounts
 /// from one when a path under them is touched (review 2026-11-02 SEC-101). Besides
 /// these, every FUSE file system without a block device (see [`linux_local_type`]).
-const NETWORK_FILE_SYSTEMS: [&str; 13] = [
+/// Under WSL the Windows drives are `9p` or `drvfs`, which may be a mapped share; a
+/// virtual machine reaches its host by `9p` or `virtiofs`; `gpfs` is a cluster's
+/// (review 2026-11-04 r19).
+const NETWORK_FILE_SYSTEMS: [&str; 17] = [
     "autofs",
     "nfs",
     "nfs4",
@@ -58,6 +61,10 @@ const NETWORK_FILE_SYSTEMS: [&str; 13] = [
     "ncpfs",
     "coda",
     "davfs",
+    "9p",
+    "drvfs",
+    "virtiofs",
+    "gpfs",
 ];
 
 /// Whether a Linux file system type is local. A FUSE file system without a block
@@ -373,7 +380,11 @@ mod mount_tests {
              drive: /home/me/drive fuse.rclone rw 0 0\n\
              s3fs /mnt/bucket fuse.s3fs rw 0 0\n\
              cloud /mnt/cloud fuse rw 0 0\n\
-             /dev/sdc1 /mnt/ntfs fuseblk rw 0 0\n",
+             /dev/sdc1 /mnt/ntfs fuseblk rw 0 0\n\
+             C:\\134 /mnt/c 9p rw,aname=drvfs 0 0\n\
+             D: /mnt/d drvfs rw 0 0\n\
+             share /mnt/host virtiofs rw 0 0\n\
+             scale /gpfs/projects gpfs rw 0 0\n",
         );
         for local in [
             "/home/me/desk.pdf",
@@ -398,6 +409,12 @@ mod mount_tests {
             "/home/me/drive/x.pdf",
             "/mnt/bucket/x.pdf",
             "/mnt/cloud/x.pdf",
+            // Review 2026-11-04 r19: the Windows drives of WSL (9p, drvfs), a virtual
+            // machine's host folder (virtiofs) and a cluster file system (gpfs).
+            "/mnt/c/Users/x.pdf",
+            "/mnt/d/x.pdf",
+            "/mnt/host/x.pdf",
+            "/gpfs/projects/x.pdf",
         ] {
             assert!(!local_mounted_path(remote, &mounts, &[]), "{remote:?}");
         }

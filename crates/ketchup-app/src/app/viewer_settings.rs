@@ -9,6 +9,17 @@ use serde::{Deserialize, Serialize};
 /// Where the settings live among the `.ketchup` companion data.
 const VIEWER_NAMESPACE: &str = "org.ketchup.viewer";
 const VIEWER_SETTINGS_PATH: &str = "sharing-v1.json";
+/// The views left out, beside the settings Kečup 0.3.1 reads.
+const SHARING_EXCLUDED_PATH: &str = "sharing-excluded-v1.json";
+
+/// The views left out and the `scenes` written with them: when another
+/// version has since written other `scenes`, its choice wins.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExcludedScenes {
+    excluded_scenes: BTreeSet<u64>,
+    scenes: Option<BTreeSet<u64>>,
+}
 /// The package limit of one note; longer text would make the export fail.
 pub(crate) const MAX_VIEWER_NOTE_BYTES: usize = 65_536;
 
@@ -26,15 +37,17 @@ pub(crate) struct ViewerSettings {
     #[serde(default)]
     pub(crate) excluded_roots: BTreeSet<u64>,
     /// Saved views left out of the package; every other one is shared, a
-    /// view saved later too. Left out when empty, so older Kečup versions
-    /// still read the settings.
-    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
-    pub(crate) excluded_scenes: BTreeSet<u64>,
-    /// The shared saved views as Kečup 0.3.1 and older kept them, which left
-    /// a view saved later out once any view had been; only read, and turned
-    /// into `excluded_scenes` against the document's views (review
-    /// 2026-11-04 P3 GUI).
+    /// view saved later too. Written beside the settings, in
+    /// [`SHARING_EXCLUDED_PATH`], as Kečup 0.3.1 refuses a field it does not
+    /// know (review 2026-11-04 r19 UI-160); read here from files of 0.3.2.
     #[serde(default, skip_serializing)]
+    pub(crate) excluded_scenes: BTreeSet<u64>,
+    /// The shared saved views, as Kečup 0.3.1 and older read them: written
+    /// so they share no view left out, `None` when none is. Read, they are
+    /// turned into `excluded_scenes` against the document's views unless the
+    /// views left out written with them still match (review 2026-11-04 P3
+    /// GUI: kept alone, they left a view saved later out).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     scenes: Option<BTreeSet<u64>>,
     /// The scene the Viewer opens first.
     #[serde(default)]
@@ -91,28 +104,34 @@ impl KetchupApp {
     /// Stored settings, the defaults when none are; unreadable stored settings
     /// are an error, never quietly the defaults.
     pub(crate) fn stored_viewer_settings(&self) -> Result<ViewerSettings, serde_json::Error> {
-        self.file
-            .container_data
-            .extensions()
-            .find(|entry| {
-                entry.namespace() == VIEWER_NAMESPACE && entry.path() == VIEWER_SETTINGS_PATH
-            })
-            .map_or_else(
-                || Ok(ViewerSettings::default()),
-                |entry| serde_json::from_slice(entry.bytes()),
-            )
-            .map(|mut settings: ViewerSettings| {
-                if let Some(shared) = settings.scenes.take() {
-                    settings.excluded_scenes.extend(
-                        self.document
-                            .current()
-                            .saved_views()
-                            .map(|view| view.id().0)
-                            .filter(|id| !shared.contains(id)),
-                    );
-                }
-                settings
-            })
+        let stored = |path: &str| {
+            self.file
+                .container_data
+                .extensions()
+                .find(|entry| entry.namespace() == VIEWER_NAMESPACE && entry.path() == path)
+        };
+        let mut settings: ViewerSettings = stored(VIEWER_SETTINGS_PATH).map_or_else(
+            || Ok(ViewerSettings::default()),
+            |entry| serde_json::from_slice(entry.bytes()),
+        )?;
+        let kept = stored(SHARING_EXCLUDED_PATH)
+            .map(|entry| serde_json::from_slice::<ExcludedScenes>(entry.bytes()))
+            .transpose()?;
+        let shared = settings.scenes.take();
+        match (kept, shared) {
+            (Some(kept), shared) if kept.scenes == shared => {
+                settings.excluded_scenes.extend(kept.excluded_scenes);
+            }
+            (_, Some(shared)) => settings.excluded_scenes.extend(
+                self.document
+                    .current()
+                    .saved_views()
+                    .map(|view| view.id().0)
+                    .filter(|id| !shared.contains(id)),
+            ),
+            (_, None) => {}
+        }
+        Ok(settings)
     }
 
     /// Store the settings without empty notes; `false` when nothing changed.
@@ -134,18 +153,41 @@ impl KetchupApp {
         if self.stored_viewer_settings().ok().as_ref() == Some(&settings) {
             return true;
         }
-        let Ok(bytes) = serde_json::to_vec(&settings) else {
-            return false;
+        // As Kečup 0.3.1 reads them: the views shared now, none left out.
+        let views = self
+            .document
+            .current()
+            .saved_views()
+            .map(|view| view.id().0)
+            .collect::<Vec<_>>();
+        let excluded = std::mem::take(&mut settings.excluded_scenes);
+        settings.scenes = views.iter().any(|id| excluded.contains(id)).then(|| {
+            views
+                .iter()
+                .copied()
+                .filter(|id| !excluded.contains(id))
+                .collect()
+        });
+        let kept = ExcludedScenes {
+            excluded_scenes: excluded,
+            scenes: settings.scenes.clone(),
         };
-        let Ok(entry) = ketchup_model::persistence::ExtensionEntry::new(
-            VIEWER_NAMESPACE,
-            VIEWER_SETTINGS_PATH,
-            false,
-            bytes,
+        let entry = |path, bytes| {
+            ketchup_model::persistence::ExtensionEntry::new(VIEWER_NAMESPACE, path, false, bytes)
+                .ok()
+        };
+        let (Some(settings), Some(kept)) = (
+            serde_json::to_vec(&settings)
+                .ok()
+                .and_then(|bytes| entry(VIEWER_SETTINGS_PATH, bytes)),
+            serde_json::to_vec(&kept)
+                .ok()
+                .and_then(|bytes| entry(SHARING_EXCLUDED_PATH, bytes)),
         ) else {
             return false;
         };
-        self.file.container_data.set_extension(entry);
+        self.file.container_data.set_extension(settings);
+        self.file.container_data.set_extension(kept);
         self.viewer_prep.unsaved = true;
         true
     }

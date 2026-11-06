@@ -540,8 +540,8 @@ fn verified_geometry_is_render_ready_in_same_gui_across_history_and_preserves_vi
     app.camera.target_z = 15.0;
     app.view.set(ViewFlag::GridAxes, false);
     app.view.set(ViewFlag::Profiles, false);
-    app.panels.dimensions_visible = false;
-    app.panels.tags_visible = true;
+    app.window.panes.dimensions_visible = false;
+    app.window.panes.tags_visible = true;
     let camera = app.camera_view_state();
     let camera_target = app.camera_target();
     let selection = (
@@ -613,8 +613,8 @@ fn verified_geometry_is_render_ready_in_same_gui_across_history_and_preserves_vi
             (&app.selection.occurrences, &app.selection.primary),
             (&selection.0, &selection.1)
         );
-        assert!(!app.panels.dimensions_visible);
-        assert!(app.panels.tags_visible);
+        assert!(!app.window.panes.dimensions_visible);
+        assert!(app.window.panes.tags_visible);
         let snapshot = app.document.current();
         assert_eq!(snapshot.tag(TagId(1)).unwrap().name(), "Furniture");
         assert!(snapshot.tag(TagId(1)).unwrap().visible());

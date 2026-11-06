@@ -83,6 +83,8 @@ mod program_navigation;
 pub use program_access::{ReportSection, SourceEdit};
 pub use program_variant_export::CsvDecimal;
 mod mcp_config;
+#[cfg(any(not(windows), test))]
+pub(crate) use mcp_config::write_keeping_file;
 pub mod mcp_setup;
 mod measurement;
 mod plugin;
@@ -417,9 +419,19 @@ pub enum Request {
         #[serde(default)]
         sheet_language: Option<String>,
         /// Replaces a PDF or a drawing sheet's file at `path` that is not the
-        /// one the window last wrote there (review 2026-11-04 MCP-140).
+        /// one the document last wrote there (review 2026-11-04 MCP-140), as
+        /// the user agreed when asked (r19 SEC-161).
         #[serde(default)]
         replace: bool,
+        /// Takes the DXF or DWG set at `path` of another project for this
+        /// one's, as the user agreed when asked (review 2026-11-04 r19 MF-162).
+        #[serde(default)]
+        take_over: bool,
+        /// The height of ±0,000 in whole millimetres, kept in the document:
+        /// `"auto"` finds it from the model; absent keeps the document's
+        /// (review 2026-11-04 r19 P3).
+        #[serde(default)]
+        zero_level_mm: Option<Value>,
     },
     /// Imports a STEP, IGES, STL, DXF, GLB or SketchUp scene file as one Undo step;
     /// `as_underlay` keeps a DXF or DWG drawing under the model as an underlay instead.

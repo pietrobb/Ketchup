@@ -5,6 +5,7 @@ use crate::program_evaluation::Lookup;
 use ketchup_application::{PartChange, RuleProgramApplyError, RuleProgramChange, SessionError};
 use ketchup_model::document::RuleProgramSource;
 use ketchup_program::model::ProgramEdgeFinishKind;
+use ketchup_rejection::{Reason, dropped};
 
 /// How a program edit changed the window's document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -364,10 +365,12 @@ impl KetchupApp {
     /// Waits for the document's program evaluation. Only for answers owed in
     /// the same call: a live-bridge request or the built-in assistant.
     pub(crate) fn wait_for_program_evaluation(&self) {
-        if let Some(program) = self.document.current_rule_program()
-            && self.program_evaluations.get_blocking(program).is_err()
-        {
+        if let Some(program) = self.document.current_rule_program() {
             // The failed evaluation is kept and reported by whoever asks next.
+            dropped(
+                self.program_evaluations.get_blocking(program),
+                Reason::ReportedElsewhere,
+            );
         }
     }
 

@@ -45,15 +45,40 @@ impl SettingsFile {
         Self { path }
     }
 
-    fn lines(&self) -> Vec<String> {
-        std::fs::read_to_string(&self.path)
-            .map(|text| text.lines().map(str::to_owned).collect())
-            .unwrap_or_default()
+    /// The lines of the file, none when there is no file. A line that is not
+    /// UTF-8 is left out, and `true` says the file had one. Any other failure
+    /// to read is an error, not an empty file: writing over it would lose the
+    /// language, the list and a newer Kečup's lines (review 2026-11-04 r19 UI-162).
+    fn read(&self) -> io::Result<(Vec<String>, bool)> {
+        let bytes = match std::fs::read(&self.path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok((Vec::new(), false));
+            }
+            Err(error) => return Err(error),
+        };
+        let mut damaged = false;
+        let mut lines: Vec<String> = bytes
+            .split(|byte| *byte == b'\n')
+            .filter_map(|line| {
+                let line = line.strip_suffix(b"\r").unwrap_or(line);
+                let text = std::str::from_utf8(line).ok();
+                damaged |= text.is_none();
+                text.map(str::to_owned)
+            })
+            .collect();
+        if bytes.ends_with(b"\n") {
+            lines.pop();
+        }
+        Ok((lines, damaged))
     }
 
-    /// Every value of `key`, in the order written.
+    /// Every value of `key`, in the order written; none when the file cannot
+    /// be read.
     pub(crate) fn values(&self, key: &str) -> Vec<String> {
-        self.lines()
+        self.read()
+            .map(|(lines, _)| lines)
+            .unwrap_or_default()
             .iter()
             .filter_map(|line| line.split_once('='))
             .filter(|(name, _)| name.trim() == key)
@@ -61,10 +86,30 @@ impl SettingsFile {
             .collect()
     }
 
-    /// Replace every value of `key` with `values`, the other lines kept.
+    /// Replace every value of `key` with `values`, the other lines kept. A
+    /// file that cannot be read is not written over; one with a line that is
+    /// not UTF-8 is first kept whole as `settings.txt.bad`, and its other
+    /// lines carried over.
+    ///
+    /// Another window saving meanwhile waits on `settings.txt.lock`, so it
+    /// reads this one's change before making its own. The new text is on the
+    /// disk before it replaces the old, through a symlink to the file, keeping
+    /// its permissions; a new file is its owner's only, and no part file is
+    /// left behind (review 2026-11-04 r19 P3).
     pub(crate) fn replace(&self, key: &str, values: &[String]) -> io::Result<()> {
-        let mut lines: Vec<String> = self
-            .lines()
+        let folder = self.path.parent().unwrap_or_else(|| Path::new("."));
+        std::fs::create_dir_all(folder)?;
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.path.with_extension("txt.lock"))?;
+        lock.lock()?;
+        let (lines, damaged) = self.read()?;
+        if damaged {
+            std::fs::copy(&self.path, self.path.with_extension("txt.bad"))?;
+        }
+        let mut lines: Vec<String> = lines
             .into_iter()
             .filter(|line| {
                 line.split_once('=')
@@ -72,15 +117,9 @@ impl SettingsFile {
             })
             .collect();
         lines.extend(values.iter().map(|value| format!("{key}={value}")));
-        let folder = self.path.parent().unwrap_or_else(|| Path::new("."));
-        std::fs::create_dir_all(folder)?;
-        let part = self
-            .path
-            .with_extension(format!("{}.part", std::process::id()));
         let mut text = lines.join("\n");
         text.push('\n');
-        std::fs::write(&part, text)?;
-        std::fs::rename(&part, &self.path)
+        crate::live_bridge::write_keeping_file(&self.path, &text, false)
     }
 
     /// The language tag chosen to be remembered.
@@ -150,8 +189,118 @@ mod tests {
         assert!(third.load().is_empty());
         assert_eq!(third.language().as_deref(), Some("cs"));
         assert_eq!(third.values("future-setting"), ["3"]);
-        assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1);
+        assert_eq!(beside_lock(&folder), [FILE_NAME]);
         std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    /// Review 2026-11-04 r19 UI-162: one byte that is not UTF-8 made the file
+    /// read as empty, so the next save wrote only its own key and the
+    /// language, the list and a newer Kečup's lines were lost.
+    #[test]
+    fn a_damaged_settings_file_is_kept_aside_and_its_other_lines_carried_over() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join(FILE_NAME);
+        let damaged = b"language=sk\r\nfuture-setting=3\nrecent=/Domy/M\xe9chenice.ketchup\nrecent=/b.ketchup\n";
+        std::fs::write(&path, damaged).unwrap();
+        let settings = SettingsFile::at(path.clone());
+        assert_eq!(settings.language().as_deref(), Some("sk"));
+        assert_eq!(settings.load(), [PathBuf::from("/b.ketchup")]);
+
+        settings.save(&[PathBuf::from("/c.ketchup")]).unwrap();
+        assert_eq!(settings.language().as_deref(), Some("sk"));
+        assert_eq!(settings.values("future-setting"), ["3"]);
+        assert_eq!(settings.load(), [PathBuf::from("/c.ketchup")]);
+        assert_eq!(
+            std::fs::read(path.with_extension("txt.bad")).unwrap(),
+            damaged,
+            "the damaged file is kept whole"
+        );
+    }
+
+    /// A settings file that cannot be read is not written over.
+    #[test]
+    fn a_settings_file_that_cannot_be_read_is_not_written_over() {
+        let folder = tempfile::tempdir().unwrap();
+        // A folder where the file should be cannot be read as one.
+        let path = folder.path().join(FILE_NAME);
+        std::fs::create_dir(&path).unwrap();
+        let settings = SettingsFile::at(path.clone());
+        assert!(settings.save_language("cs").is_err());
+        assert!(path.is_dir());
+        assert_eq!(
+            beside_lock(folder.path()),
+            [FILE_NAME],
+            "nothing is left beside it"
+        );
+    }
+
+    /// The names in `folder` other than the lock windows take turns on.
+    fn beside_lock(folder: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(folder)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "settings.txt.lock")
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Review 2026-11-04 r19 P3: two windows saving at once each read the
+    /// file, changed their key and wrote it back, so one window's change was
+    /// lost; the second also renamed the first one's `.part` file away.
+    #[test]
+    fn windows_saving_at_once_keep_each_others_settings() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join(FILE_NAME);
+        let windows: Vec<_> = (0..8)
+            .map(|window| {
+                let settings = SettingsFile::at(path.clone());
+                std::thread::spawn(move || {
+                    for round in 0..25 {
+                        settings
+                            .replace(&format!("window{window}"), &[round.to_string()])
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for window in windows {
+            window.join().unwrap();
+        }
+        let settings = SettingsFile::at(path);
+        for window in 0..8 {
+            assert_eq!(settings.values(&format!("window{window}")), ["24"]);
+        }
+        let left: Vec<_> = std::fs::read_dir(folder.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name.to_string_lossy().ends_with(".part"))
+            .collect();
+        assert!(left.is_empty(), "no part file is left: {left:?}");
+    }
+
+    /// Review 2026-11-04 r19 P3: the settings (recent documents) were left
+    /// readable by everyone, and a symlinked settings file became a plain one.
+    #[cfg(unix)]
+    #[test]
+    fn the_settings_file_is_private_and_a_symlink_keeps_pointing_at_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join(FILE_NAME);
+        SettingsFile::at(path.clone()).save_language("sk").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "only its owner reads it: {mode:o}");
+
+        let dotfiles = folder.path().join("dotfiles.txt");
+        std::fs::rename(&path, &dotfiles).unwrap();
+        std::os::unix::fs::symlink(&dotfiles, &path).unwrap();
+        SettingsFile::at(path.clone()).save_language("cs").unwrap();
+        assert!(path.symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(
+            std::fs::read_to_string(&dotfiles)
+                .unwrap()
+                .contains("language=cs")
+        );
     }
 
     #[test]

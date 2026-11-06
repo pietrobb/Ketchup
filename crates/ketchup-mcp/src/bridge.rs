@@ -71,6 +71,8 @@ pub struct Cancel(Arc<Mutex<Armed>>);
 #[derive(Default)]
 struct Armed {
     cancelled: bool,
+    /// The client has gone: every call from now on is cancelled.
+    closed: bool,
     /// The connection of the request being waited for.
     stream: Option<TcpStream>,
     /// The next [`Cancel::arm`] fails as if the system refused to duplicate the socket.
@@ -89,10 +91,22 @@ impl Cancel {
         }
     }
 
-    /// A new tool call starts, not cancelled.
+    /// Cancels the request being waited for and every one after it, as the
+    /// client that asked has gone (review 2026-11-04 r19 MCP-161).
+    pub fn close(&self) -> io::Result<()> {
+        self.armed().closed = true;
+        self.cancel()
+    }
+
+    /// Whether the call running now is cancelled.
+    pub fn is_cancelled(&self) -> bool {
+        self.armed().cancelled
+    }
+
+    /// A new tool call starts, not cancelled unless the client has gone.
     pub fn clear(&self) {
         let mut armed = self.armed();
-        armed.cancelled = false;
+        armed.cancelled = armed.closed;
         armed.stream = None;
     }
 

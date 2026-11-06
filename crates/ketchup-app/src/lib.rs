@@ -958,10 +958,9 @@ enum ActiveTool {
 
 /// Every command the designed shell can dispatch.
 ///
-/// The variant is the stable identity of a command; its visible label is a
-/// localization key resolved at paint time. Acceptance tests address widgets by
-/// variant and resolve the expected label through the same catalog, so neither a
-/// translation change nor an icon-only presentation can break them.
+/// The variant is a command's stable identity; its label is a localization key resolved at
+/// paint time. Acceptance tests address widgets by variant and resolve labels through the
+/// same catalog, so no translation change or icon-only presentation can break them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AppCommand {
     New,
@@ -1028,6 +1027,7 @@ pub enum AppCommand {
     TextIntoUnderlay,
     ExportUnderlayDxf,
     ExportUnderlayDwg,
+    DiscardRefusedUnderlayEdit,
     TrimUnderlayLine,
     ExtendUnderlayLine,
     OffsetUnderlayLine,
@@ -2057,8 +2057,6 @@ pub struct KetchupApp {
     catalog: LocaleCatalog,
     /// The language `catalog` is in; `None` for a test catalog such as pseudo.
     language: Option<language::UiLanguage>,
-    /// Whether a language picked in the menu is remembered for the next start.
-    remember_language: bool,
     /// The program the last edit detached, while the one-time notice about it
     /// is on screen.
     program_detach_notice: Option<program_detach::ProgramDetachNotice>,
@@ -2079,7 +2077,7 @@ pub struct KetchupApp {
     parameter: app_state::ParameterEditor,
     validator_panel: app_state::ValidatorPanel,
     status_key: &'static str,
-    theme: ThemeKind,
+    window: app_state::WindowSettings,
     camera: app_state::CameraState,
     view: ViewSettings,
     /// The typed name and the last shown scene of the saved views.
@@ -2104,7 +2102,6 @@ pub struct KetchupApp {
     joint_fields: app::joints_ui::JointFields,
     hover: app_state::HoverState,
     active_tool: ActiveTool,
-    panels: app_state::Panels,
     dock: app_state::Dock,
     command_search: app_state::CommandSearch,
     takeoff: app_state::TakeoffState,

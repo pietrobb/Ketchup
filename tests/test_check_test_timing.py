@@ -242,6 +242,46 @@ def test_a_helper_that_fails_when_its_time_runs_out_is_a_budget_under_the_hang_f
     ]
 
 
+def test_a_failing_helper_of_another_file_or_with_a_number_of_milliseconds_is_found_too(tmp_path):
+    # Review 2026-11-04 r19 P3: 7b1788e3 found only helpers of the same file whose
+    # parameter is a `Duration`; a harness helper used from another test file, a time
+    # given as a number of milliseconds, and a helper passing its time on to such a
+    # helper held the work to a budget unseen.
+    write(tmp_path, "crates/a/tests/harness/mod.rs", (
+        "pub const QUICK: Duration = Duration::from_secs(3);\n"
+        "impl Window {\n"
+        "    pub fn shows_within(&mut self, within: Duration) {\n"
+        "        let shown = poll_until(within, || self.shown());\n"
+        "        assert!(shown);\n"
+        "    }\n"
+        "    pub fn reply_within_ms(&mut self, id: u64, timeout_ms: u64) -> Reply {\n"
+        "        self.replies.recv_timeout(Duration::from_millis(timeout_ms)).expect(\"reply\")\n"
+        "    }\n"
+        "    pub fn opens_within(&mut self, path: &Path, within: Duration) {\n"
+        "        self.open(path);\n"
+        "        self.shows_within(within);\n"
+        "    }\n"
+        "}\n"
+    ))
+    write(tmp_path, "crates/a/tests/open.rs", (
+        "fn opens() {\n"
+        "    window.shows_within(QUICK);\n"
+        "    window.reply_within_ms(7, 2_000);\n"
+        "    window.opens_within(&path, Duration::from_secs(5));\n"
+        "    window.shows_within(Duration::from_secs(300));\n"
+        "    window.reply_within_ms(7, 120_000);\n"
+        "}\n"
+        "fn perf_opens_quickly() {\n"
+        "    window.shows_within(QUICK);\n"
+        "}\n"
+    ))
+    assert checker.violations(tmp_path) == [
+        "crates/a/tests/open.rs:2",
+        "crates/a/tests/open.rs:3",
+        "crates/a/tests/open.rs:4",
+    ]
+
+
 def test_the_viewer_crates_are_checked_too(tmp_path):
     # Review 2026-10-21 P3: only crates/ was scanned.
     write(tmp_path, "viewer/web/tests/smoke.rs", (

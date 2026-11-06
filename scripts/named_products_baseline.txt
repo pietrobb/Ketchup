@@ -37,8 +37,10 @@ crates/ketchup-application/src/validation_rules.rs:beam 3
 crates/ketchup-application/src/validation_rules.rs:panel 1
 crates/ketchup-assistant/src/sidecar.rs:weldment 13
 crates/ketchup-manufacturing/src/fabrication.rs:beam 3
-crates/ketchup-manufacturing/src/fabrication.rs:timber 20
-crates/ketchup-manufacturing/src/fabrication.rs:weldment 80
+crates/ketchup-manufacturing/src/fabrication.rs:timber 14
+crates/ketchup-manufacturing/src/fabrication.rs:weldment 79
+crates/ketchup-manufacturing/src/fabrication/error.rs:timber 6
+crates/ketchup-manufacturing/src/fabrication/error.rs:weldment 1
 crates/ketchup-manufacturing/src/project_drawings.rs:roof 1
 crates/ketchup-model/src/document/entities.rs:weldment 16
 crates/ketchup-model/src/document/error.rs:weldment 4

@@ -66,9 +66,11 @@ pub(crate) fn keep_memory_limit() {
 #[cfg(unix)]
 fn end_now() -> ! {
     use nix::sys::signal::{Signal, raise};
-    if raise(Signal::SIGKILL).is_err() {
-        // The abort below ends it all the same.
-    }
+    // The abort below ends it all the same.
+    ketchup_rejection::dropped(
+        raise(Signal::SIGKILL),
+        ketchup_rejection::Reason::AlreadyEnded,
+    );
     std::process::abort()
 }
 

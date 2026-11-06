@@ -31,9 +31,15 @@ impl ProductionAdapter for HomagWoodwopAdapter {
         programs
             .into_iter()
             .map(|(path, mpr)| {
-                let code = snapshot
-                    .production_code(&path)
-                    .ok_or(GeneralFabricationError::ExportBlocked)?;
+                let code = snapshot.production_code(&path).ok_or_else(|| {
+                    GeneralFabricationError::PartWithoutProductionCode {
+                        part: snapshot
+                            .resolve_instance_path(&path)
+                            .ok()
+                            .and_then(|resolved| snapshot.definition(resolved.definition_id))
+                            .map_or_else(String::new, |definition| definition.name().to_owned()),
+                    }
+                })?;
                 Ok(json!({
                     "filename": format!("{code}.mpr"),
                     "part_code": code, "setup_id": "A", "code": code,
@@ -146,7 +152,9 @@ impl GeneralFabricationProjection {
         {
             let part = snapshot
                 .definition(row.definition_id)
-                .ok_or(GeneralFabricationError::ExportBlocked)?
+                .ok_or(GeneralFabricationError::ExportBlocked(
+                    ExportBlock::ResultMismatch,
+                ))?
                 .name();
             let (matching, frame) = row_stock(row, part, &self.manufacturing.operations)?;
             let JobStockFrame {
@@ -169,7 +177,9 @@ impl GeneralFabricationProjection {
                     }
                 })?;
                 if !paths.insert(path.clone()) || !codes.insert(code.to_owned()) {
-                    return Err(GeneralFabricationError::ExportBlocked);
+                    return Err(GeneralFabricationError::ExportBlocked(
+                        ExportBlock::DuplicateName,
+                    ));
                 }
                 let resolved = snapshot
                     .resolve_instance_path(path)
@@ -177,7 +187,9 @@ impl GeneralFabricationProjection {
                 if resolved.definition_id != row.definition_id
                     || !is_production_transform(resolved.world_transform)
                 {
-                    return Err(GeneralFabricationError::ExportBlocked);
+                    return Err(GeneralFabricationError::ExportBlocked(
+                        ExportBlock::UnusablePlacement,
+                    ));
                 }
                 let operations = matching
                     .iter()
@@ -242,16 +254,27 @@ impl GeneralFabricationProjection {
                 }));
             }
         }
-        if parts.is_empty()
-            || !pins.is_empty()
-            || matched_operations.len() != self.manufacturing.operations.len()
-        {
-            return Err(GeneralFabricationError::ExportBlocked);
+        if parts.is_empty() {
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::NothingToWrite,
+            ));
+        }
+        if !pins.is_empty() {
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::UnmadePinHole,
+            ));
+        }
+        if matched_operations.len() != self.manufacturing.operations.len() {
+            return Err(GeneralFabricationError::ExportBlocked(
+                ExportBlock::ResultMismatch,
+            ));
         }
         let mut outputs = serde_json::Map::new();
         for adapter in adapters {
             if adapter.id().is_empty() || outputs.contains_key(adapter.id()) {
-                return Err(GeneralFabricationError::ExportBlocked);
+                return Err(GeneralFabricationError::ExportBlocked(
+                    ExportBlock::DuplicateName,
+                ));
             }
             outputs.insert(adapter.id().to_owned(), adapter.render(self, snapshot)?);
         }

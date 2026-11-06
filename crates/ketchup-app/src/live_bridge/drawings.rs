@@ -47,6 +47,8 @@ impl LiveBridge {
             drawing_scale,
             sheet_language,
             replace,
+            take_over,
+            zero_level_mm,
         } = request
         else {
             // The project set, drawn here: only the in-process caller waits
@@ -62,10 +64,12 @@ impl LiveBridge {
             || plan_only
             || drawing_scale.is_some()
             || sheet_language.is_some()
+            || take_over
+            || zero_level_mm.is_some()
         {
             return Err(failure(
                 "invalid_params",
-                "format, title_block, plan_only, drawing_scale and sheet_language belong to the project sheet; a drawing sheet keeps its own page, views, scale and title block.",
+                "format, title_block, plan_only, drawing_scale, sheet_language, zero_level_mm and take_over belong to the project sheets; a drawing sheet keeps its own page, views, scale and title block.",
                 json!({"sheet_id": id}),
             ));
         }
@@ -103,10 +107,11 @@ pub(super) fn refuse_existing(path: &str) -> Result<(), &'static str> {
 }
 
 /// Whether the file at `path`, of SHA-256 `existing`, is kept: it is not the
-/// last one the window wrote there and the client did not say `replace`. No one
-/// confirms an overwrite for a client, as the window's Save dialog does for
+/// last one the document wrote there and the client did not say `replace`. No
+/// one confirms an overwrite for a client, as the window's Save dialog does for
 /// the user, so a PDF the user added pages to or a DWG of someone else's is
-/// kept (review 2026-11-04 MCP-140).
+/// kept (review 2026-11-04 MCP-140) and the client is told to ask the user
+/// (r19 SEC-161).
 fn kept_unless_asked(app: &KetchupApp, path: &Path, existing: Option<&str>, replace: bool) -> bool {
     existing.is_some_and(|sha256| !replace && !app.wrote_drawing(path, sha256))
 }
@@ -116,7 +121,7 @@ fn not_its_own(path: &Path) -> &'static str {
     failure(
         "drawings_target_exists",
         format!(
-            "{} is not the file this window's last export wrote there (another program's, or changed since), so it is not replaced. Pass replace: true to replace it, or export to another path.",
+            "{} is not the file this document's last export wrote there (another program's, or changed since), so it is not replaced. Ask the user whether to replace it, and pass replace: true only when they agree; or export to another path.",
             path.display()
         ),
         json!({"path": path.display().to_string()}),
@@ -330,6 +335,18 @@ impl StartedDrawings {
     }
 }
 
+/// The height of ±0,000 a client names: whole millimetres, or `"auto"`
+/// (none kept) for the one found from the model; none for any other value.
+fn zero_level(value: &Value) -> Option<Option<i32>> {
+    if value == "auto" {
+        return Some(None);
+    }
+    value
+        .as_i64()
+        .and_then(|height| i32::try_from(height).ok())
+        .map(Some)
+}
+
 /// Takes the project set export `request`: keeps its settings in the document
 /// and takes what the set is drawn from; [`finish_export`] writes what was
 /// drawn from it.
@@ -348,6 +365,8 @@ pub(super) fn start_export(
         drawing_scale,
         sheet_language,
         replace,
+        take_over,
+        zero_level_mm,
     } = request
     else {
         return Err("invalid_request");
@@ -381,6 +400,18 @@ pub(super) fn start_export(
             )
         })?)),
     };
+    let zero_level = zero_level_mm
+        .as_ref()
+        .map(|value| {
+            zero_level(value).ok_or_else(|| {
+                failure(
+                    "invalid_params",
+                    "zero_level_mm is the height of ±0,000 in whole millimetres of the model, or auto to find it from the model.",
+                    json!({"zero_level_mm": value}),
+                )
+            })
+        })
+        .transpose()?;
     if app.exact.task.is_some() {
         return Err(failure(
             "drawings_unavailable",
@@ -406,7 +437,8 @@ pub(super) fn start_export(
     // this project's earlier set its list names; one saved there while the
     // set is drawn is kept (review 2026-10-18 MCP-3).
     let owner = app.drawing_set_owner();
-    let targets = project_drawings_targets(target, file_format, &owner).map_err(export_failed)?;
+    let targets =
+        project_drawings_targets(target, file_format, &owner, take_over).map_err(export_failed)?;
     let existing = targets.get(target).map(String::as_str);
     if file_format == SetFileFormat::Pdf && kept_unless_asked(app, target, existing, replace) {
         return Err(not_its_own(target));
@@ -435,6 +467,9 @@ pub(super) fn start_export(
     }
     if let Some(language) = language {
         settings.language = language;
+    }
+    if let Some(zero_level) = zero_level {
+        settings.zero_level_mm = zero_level;
     }
     settings.title_block.extend(title_block);
     app.store_sheet_settings(settings);
@@ -469,7 +504,13 @@ pub(super) fn finish_export(
             &started.owner,
         )
         .map(|paths| {
-            written = written_files(&paths, &files);
+            written = written_files(
+                Path::new(&path),
+                file_format,
+                &started.owner,
+                &paths,
+                &files,
+            );
             ExportedSet { set, paths }
         })
     });
@@ -513,6 +554,7 @@ pub(super) fn finish_export(
         "printed_as_question_mark": set.printed_as_question_mark(),
         "format_setting": settings.format.map_or("auto", SheetFormat::name),
         "sheet_language": settings.language.map_or("auto", SheetLanguage::code),
+        "zero_level_mm": settings.zero_level_mm.map_or(json!("auto"), |height| json!(height)),
         "title_block": settings.title_block,
         "basis": "visible_layers_exact_solids",
         "dirty": app.is_dirty(),
@@ -563,6 +605,7 @@ pub(super) fn export_failed(error: ProjectDrawingsError) -> &'static str {
             ),
             json!({"part": part}),
         ),
+        ProjectDrawingsError::ExactResults(cause) => failed_because("drawings_unavailable", cause),
         ProjectDrawingsError::ProgramPlanning => failure(
             "drawings_unavailable",
             "The program is still being evaluated, so the threads of its parts are not known yet. Export again when it is done.",
@@ -587,6 +630,15 @@ pub(super) fn export_failed(error: ProjectDrawingsError) -> &'static str {
             json!({"underlay": name}),
         ),
         ProjectDrawingsError::Dwg(error) => failed_because("dwg_conversion_failed", error),
+        ProjectDrawingsError::SetOfAnotherProject { list, project } => failure(
+            "drawings_set_of_another_project",
+            format!(
+                "The drawing set listed in {} was exported from {}, not from this document, so none of its sheets is replaced. Ask the user: export to another folder or file name, or, if they agree to take that set over for this project, export again with take_over: true.",
+                list.display(),
+                project.as_deref().unwrap_or("a project not saved")
+            ),
+            json!({"list": list.display().to_string(), "exported_from": project}),
+        ),
         ProjectDrawingsError::Write(error) => write_failed(error),
     }
 }
@@ -616,6 +668,8 @@ mod tests {
                 drawing_scale: request.scale.map(f64::from),
                 sheet_language: None,
                 replace: false,
+                take_over: false,
+                zero_level_mm: None,
             },
             false,
         )
@@ -653,6 +707,8 @@ mod tests {
             drawing_scale: None,
             sheet_language: None,
             replace: true,
+            take_over: false,
+            zero_level_mm: None,
         };
         assert_eq!(
             LiveBridge::export_drawings(&mut app, asked, false),
@@ -760,6 +816,7 @@ mod tests {
                 &crate::app::project_drawings::SetOwner {
                     document: ketchup_model::document::DocumentId(1),
                     file: None,
+                    written: BTreeMap::new(),
                 },
             )
             .is_err()

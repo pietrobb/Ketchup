@@ -6,6 +6,7 @@
 use super::admission::{AUTHENTICATED, EVICTED, PENDING, Pending};
 use super::{KetchupApp, egui, transport};
 use crate::delivery::Deliver;
+use ketchup_rejection::{Panic, Reason, dropped};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -51,15 +52,15 @@ impl Drop for ConsentBroker {
         // see the stop. Without one it would never return, so do not wait.
         if let Some(worker) = self.worker.take()
             && TcpStream::connect(self.address).is_ok()
-            && worker.join().is_err()
         {
             // The worker's panic was already reported; the broker is going anyway.
+            dropped(worker.join().map_err(Panic), Reason::PanicReported);
         }
         // Ok(false): another window has written the entry since, and it stays.
         if let Err(error) =
             remove_registry_entry_if_unchanged(&self.registry_path, self.registry_identity)
         {
-            eprintln!(
+            ketchup_rejection::log!(
                 "the live connection entry {} was not removed: {error}",
                 self.registry_path.display()
             );
@@ -488,9 +489,11 @@ fn start(
                     break;
                 }
                 while let Some(index) = handlers.iter().position(JoinHandle::is_finished) {
-                    if handlers.swap_remove(index).join().is_err() {
-                        // The connection's panic was already reported; it is closed.
-                    }
+                    // The connection's panic was already reported; it is closed.
+                    dropped(
+                        handlers.swap_remove(index).join().map_err(Panic),
+                        Reason::PanicReported,
+                    );
                 }
                 match accepted {
                     Ok((stream, peer)) if peer.ip().is_loopback() => {
@@ -536,9 +539,8 @@ fn start(
                 }
             }
             for handler in handlers {
-                if handler.join().is_err() {
-                    // A connection's panic was already reported; the rest still close.
-                }
+                // A connection's panic was already reported; the rest still close.
+                dropped(handler.join().map_err(Panic), Reason::PanicReported);
             }
         }) {
         Ok(worker) => worker,
@@ -546,7 +548,7 @@ fn start(
             if let Err(removal) =
                 remove_registry_entry_if_unchanged(&registry_path, registry_identity)
             {
-                eprintln!(
+                ketchup_rejection::log!(
                     "the live connection entry {} was not removed: {removal}",
                     registry_path.display()
                 );
@@ -695,10 +697,9 @@ fn serve(
         }
         result
     })();
-    if answered.is_err() {
-        // A requester that hung up, stalled or sent no request is not answered; a
-        // grant it can no longer receive was released above.
-    }
+    // A requester that hung up, stalled or sent no request is not answered; a
+    // grant it can no longer receive was released above.
+    dropped(answered, Reason::NobodyWaiting);
 }
 
 fn wait_for_decision(
