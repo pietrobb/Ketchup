@@ -144,11 +144,13 @@ pub fn log_to_file(file: &Path) -> io::Result<()> {
 /// 2026-11-06 P3: it was made readable to everyone).
 #[cfg(unix)]
 fn create_private_folder(folder: &Path) -> io::Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
-        .create(folder)
+        .create(folder)?;
+    // A folder an earlier version made readable to everyone is closed too.
+    std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o700))
 }
 
 #[cfg(not(unix))]
