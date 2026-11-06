@@ -367,6 +367,47 @@ def test_the_drops_review_1106_found_past_the_ratchet_count(tmp_path):
     }
 
 
+def test_the_drops_review_1106_r23_found_past_the_ratchet_count(tmp_path):
+    # Review 2026-11-06 r23 P3: `.unwrap_or(())` (live in ketchup-viewer/src/gpu.rs),
+    # `.err();`, `std::mem::forget(call())`, `unwrap_or_else(Default::default)` and
+    # `map_or((), ...)` slipped past; an `eprintln!` in a helper `main.rs` calls after
+    # its window logs to a file did too (`bootstrap_failed`).
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "sender.send(result).unwrap_or(());\n"
+        "remove(&path).err();\n"
+        "std::mem::forget(child.kill());\n"
+        "mem::forget(call());\n"
+        "let text = read(&path).unwrap_or_else(Default::default);\n"
+        "sent.map_or((), |_| ());\n"
+        "// What keeps or answers it is not counted.\n"
+        "self.failure = report.err();\n"
+        "let error = save(&path).err();\n"
+        "let size = len.unwrap_or(0);\n"
+        "found.remove(oldest);\n",
+    )
+    write(
+        tmp_path,
+        "crates/b/src/main.rs",
+        "fn main() {\n"
+        '    if verify { usage(); return; }\n'
+        '    log_window_to("B", "b.log");\n'
+        "    if let Err(error) = start() { bootstrap_failed(&error); }\n"
+        "}\n"
+        'fn usage() { eprintln!("usage: b <file>"); }\n'
+        'fn bootstrap_failed(error: &Error) { eprintln!("{error}"); report(error); }\n'
+        'fn report(error: &Error) { eprintln!("again: {error}"); bootstrap_failed(error); }\n',
+    )
+    assert checker.current_counts(tmp_path) == {
+        "crates/a/src/lib.rs or_unit": 2,
+        "crates/a/src/lib.rs ok_statement": 1,
+        "crates/a/src/lib.rs dropped_call": 2,
+        "crates/a/src/lib.rs or_default": 1,
+        "crates/b/src/main.rs eprintln": 2,
+    }
+
+
 def test_a_new_form_is_recorded_once_and_then_may_only_shrink(tmp_path):
     # A form the baseline does not list yet is recorded as found when it is
     # added to the check; a form it lists may never grow, even from zero.

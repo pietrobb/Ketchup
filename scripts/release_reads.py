@@ -27,8 +27,8 @@ from happening:
    once with its Undo history as its work recovery does, and HEAD
    (`crates/ketchup-model/examples/resaved.rs`) must find the original's document in the
    one and every revision of it in the other (review 2026-11-04 r19 P3). A release that
-   does not restore the history saves none; at least one release read must (review
-   2026-11-06 P3).
+   does not restore the history saves none; every release read must restore it for one
+   file at least (review 2026-11-06 P3 and r23 P3).
 
 `--tag vX` checks one release instead of all. Needs the tags (`git fetch --no-tags
 --depth=1 origin tag v0.2.0 tag v0.3.0 tag v0.3.1 tag v0.3.2` in a shallow clone). The old crates and their
@@ -273,10 +273,12 @@ def main(arguments: list[str]) -> int:
         ]
         results.append(written_by_tests)
         # A release that does not restore a file's history saves none in history/, and its
-        # comparison is skipped; one of them must restore it (review 2026-11-06 P3).
-        if not any(any((directory / "history").glob("*.ketchup")) for directory in resaved):
-            print("the releases read restored the Undo history of no file, so none was compared")
-            results.append(1)
+        # comparison is skipped; each release read must restore one (review 2026-11-06 P3,
+        # and r23 P3: one restoring it let another that stopped pass).
+        for tag, directory in zip(tags, resaved):
+            if not any((directory / "history").glob("*.ketchup")):
+                print(f"Kečup {version(tag)} restored the Undo history of no file, so none was compared")
+                results.append(1)
     return 1 if any(results) else 0
 
 

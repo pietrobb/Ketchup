@@ -660,17 +660,17 @@ fn found_regions(search: Search) -> Result<Vec<Region>, &'static str> {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let owner = search.owner;
     let kept = FOUND_KEPT + kept_for(&FLAT_DRAWINGS, owner) + kept_for(&FOLLOWED_SEARCHES, owner);
-    while found
+    // The owner's oldest searches go, so this one is the kept-th.
+    let mine = found
         .iter()
         .filter(|(earlier, _)| earlier.owner == owner)
-        .count()
-        >= kept
-    {
-        let Some(oldest) = found.iter().position(|(earlier, _)| earlier.owner == owner) else {
-            break;
-        };
-        drop(found.remove(oldest));
-    }
+        .count();
+    let mut excess = (mine + 1).saturating_sub(kept);
+    found.retain(|(earlier, _)| {
+        let oldest = excess > 0 && earlier.owner == owner;
+        excess -= usize::from(oldest);
+        !oldest
+    });
     found.push((search, regions.clone()));
     drop(found);
     regions.map_err(search_too_large)
