@@ -969,9 +969,13 @@ fn a_moved_project_exports_its_set_again_and_another_is_told_whose_it_is() {
         "Ask the user",
         "deletes those beyond the last sheet",
         "\"sheets\":",
+        // And names them, in the singular for one (r23 P3: "1 sheets").
+        "house-01.dxf",
+        "\"sheet_files\":",
     ] {
         assert!(answer.contains(said), "{said:?} missing: {answer}");
     }
+    assert!(!answer.contains("1 sheets"), "{answer}");
     export(&mut other, &mut other_bridge, json!({"take_over": true})).unwrap();
     // Taken over, the set is no longer the moved project's.
     let (code, _) = export(&mut app, &mut bridge, json!({})).unwrap_err();

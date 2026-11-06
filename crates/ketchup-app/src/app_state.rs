@@ -352,6 +352,25 @@ pub(crate) struct TakeoffCache {
     pub(crate) takeoff: Result<Arc<ketchup_program::takeoff::Takeoff>, TakeoffError>,
 }
 
+/// How the File menu writes BTLX for the machine.
+pub(crate) struct BtlxSettings {
+    pub(crate) profile_strategy: BtlxProfileStrategy,
+    pub(crate) intermediate_saw_cuts: u8,
+    /// The machine's largest drill, mm; 0 mills every round hole (review
+    /// 2026-11-06 r23 MF-202: it was never set, so every one was milled).
+    pub(crate) largest_drill_mm: f64,
+}
+
+impl Default for BtlxSettings {
+    fn default() -> Self {
+        Self {
+            profile_strategy: BtlxProfileStrategy::EdgeSawCutsThenMillContour,
+            intermediate_saw_cuts: 0,
+            largest_drill_mm: ketchup_manufacturing::fabrication::DEFAULT_LARGEST_DRILL_MM,
+        }
+    }
+}
+
 /// Why there is no material takeoff, or why it could not be written.
 #[derive(Clone, Debug)]
 pub(crate) enum TakeoffError {

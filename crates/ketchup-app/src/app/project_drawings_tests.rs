@@ -116,6 +116,38 @@ fn every_visible_body_is_drawn_and_a_part_without_its_exact_solid_stops_the_shee
     assert_eq!(drawn(&app, "wall B"), 1);
 }
 
+/// Review 2026-11-06 r23 P3: the question before taking another project's set
+/// over said only how many sheets it deletes, and "1 sheets". It names the
+/// first five, in the plural of the window's language.
+#[test]
+fn the_question_to_take_a_set_over_names_its_sheets() {
+    let refused = |sheets: &[&str]| ProjectDrawingsError::SetOfAnotherProject {
+        list: PathBuf::from("house.dxf.sheets.txt"),
+        project: Some("barn.ketchup".to_owned()),
+        sheets: sheets.iter().map(|&sheet| sheet.to_owned()).collect(),
+    };
+    let english = KetchupApp::with_catalog(LocaleCatalog::english());
+    let text = english.project_drawings_error_text(&refused(&["house-01.dxf"]));
+    assert!(
+        text.contains("It has 1 sheet, house-01.dxf: taking it over replaces it and"),
+        "{text}"
+    );
+    let slovak = KetchupApp::with_catalog(LocaleCatalog::slovak());
+    let seven: Vec<String> = (1..=7)
+        .map(|sheet| format!("house-{sheet:02}.dxf"))
+        .collect();
+    let seven: Vec<&str> = seven.iter().map(String::as_str).collect();
+    let text = slovak.project_drawings_error_text(&refused(&seven));
+    assert!(
+        text.contains(
+            "Má 7 listov, house-01.dxf, house-02.dxf, house-03.dxf, house-04.dxf, house-05.dxf, …;"
+        ),
+        "{text}"
+    );
+    let text = slovak.project_drawings_error_text(&refused(&seven[..3]));
+    assert!(text.contains("Má 3 listy, house-01.dxf"), "{text}");
+}
+
 /// Review 2026-10-19 P3: a drawing number too long for its corner cell ran
 /// out of the title block. It stops the export, naming the field and what
 /// fits in the window's language, and is never cut short.

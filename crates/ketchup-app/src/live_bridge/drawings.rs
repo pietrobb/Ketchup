@@ -750,11 +750,20 @@ pub(super) fn export_failed(error: ProjectDrawingsError) -> &'static str {
         } => failure(
             "drawings_set_of_another_project",
             format!(
-                "The drawing set listed in {} was exported from {}, not from this document, so none of its sheets is replaced. It has {sheets} sheets: taking it over replaces them and deletes those beyond the last sheet of this project's set. Ask the user: export to another folder or file name, or, if they agree to take that set over for this project, export again with take_over: true.",
+                "The drawing set listed in {} was exported from {}, not from this document, so none of its sheets is replaced. It has {} {}, {}: taking it over replaces {} and deletes those beyond the last sheet of this project's set. Ask the user: export to another folder or file name, or, if they agree to take that set over for this project, export again with take_over: true.",
                 list.display(),
-                project.as_deref().unwrap_or("a project not saved")
+                project.as_deref().unwrap_or("a project not saved"),
+                sheets.len(),
+                if sheets.len() == 1 { "sheet" } else { "sheets" },
+                crate::app::project_drawings::sheet_names(&sheets),
+                if sheets.len() == 1 { "it" } else { "them" },
             ),
-            json!({"list": list.display().to_string(), "exported_from": project, "sheets": sheets}),
+            json!({
+                "list": list.display().to_string(),
+                "exported_from": project,
+                "sheets": sheets.len(),
+                "sheet_files": &sheets[..sheets.len().min(ketchup_rejection::LISTED)],
+            }),
         ),
         ProjectDrawingsError::Write(error) => write_failed(error),
     }

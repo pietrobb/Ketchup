@@ -76,15 +76,25 @@ pub(crate) enum ProjectDrawingsError {
     Dwg(ketchup_dwg::DwgError),
     /// The set at the path, listed at `list`, is another project's, or
     /// another copy's that wrote it since; `project` names the file it was
-    /// exported from (review 2026-11-04 r19 MF-162), and `sheets` how many
-    /// sheets it has, which taking it over replaces or deletes (review
-    /// 2026-11-06 P3).
+    /// exported from (review 2026-11-04 r19 MF-162), and `sheets` the files
+    /// of its sheets, which taking it over replaces or deletes (review
+    /// 2026-11-06 P3; r23 P3: the question named only how many).
     SetOfAnotherProject {
         list: PathBuf,
         project: Option<String>,
-        sheets: usize,
+        sheets: Vec<String>,
     },
     Write(std::io::Error),
+}
+
+/// The first [`ketchup_rejection::LISTED`] of `sheets`, then "…" for the rest,
+/// as a question names the sheets of a set it would replace.
+pub(crate) fn sheet_names(sheets: &[String]) -> String {
+    let mut names = sheets[..sheets.len().min(ketchup_rejection::LISTED)].join(", ");
+    if sheets.len() > ketchup_rejection::LISTED {
+        names.push_str(", …");
+    }
+    names
 }
 
 /// Why a shown underlay's lines do not read, in words.
@@ -520,10 +530,10 @@ enum SetList {
     Its(BTreeMap<String, BTreeSet<String>>),
     /// The set of another project, or another copy of this one that wrote it
     /// since: the name of the file it was exported from, none when unsaved or
-    /// not named, and how many sheets it lists.
+    /// not named, and the files of the sheets it lists.
     Another {
         project: Option<String>,
-        sheets: usize,
+        sheets: Vec<String>,
     },
     /// No list of a drawing set at all.
     NotAList,
@@ -614,7 +624,7 @@ fn set_list_of(list: &[u8], list_path: &Path, owner: &SetOwner, take_over: bool)
             });
         return SetList::Another {
             project,
-            sheets: listed.len(),
+            sheets: listed.into_keys().collect(),
         };
     }
     SetList::Its(listed)
@@ -1757,7 +1767,8 @@ impl KetchupApp {
                 "drawings-set-of-another-project",
                 &BTreeMap::from([
                     ("list", list.display().to_string()),
-                    ("sheets", sheets.to_string()),
+                    ("sheets", sheets.len().to_string()),
+                    ("names", sheet_names(sheets)),
                     (
                         "project",
                         project.clone().unwrap_or_else(|| {

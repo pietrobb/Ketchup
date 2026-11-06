@@ -139,6 +139,9 @@ const WOODWOP_PROFILE_WITHOUT_TOOL: &str =
     "a profile cut is milled as a vertical pocket; choose the vertical pocket tool number";
 const WOODWOP_OTHER_CUT: &str =
     "woodWOP takes drillings and vertical pockets only; export BTLx or the production job";
+const WOODWOP_THROUGH_CUT: &str = "this part has an opening cut through it, round or not, which \
+     a woodWOP program here does not mill; make a round one a drilling of the part, or export \
+     BTLx or the production job, which carry the opening";
 
 /// The capability table: what `format` does with `element`.
 #[must_use]
@@ -182,6 +185,9 @@ pub fn carriage(format: ShopFormat, element: &ShopElement) -> Carriage {
         (ShopFormat::Woodwop { .. }, ShopElement::Thread(_)) => Carriage::Refuses(WOODWOP_THREAD),
         (ShopFormat::Woodwop { .. }, ShopElement::Operation(Kind::ProfileCut)) => {
             Carriage::Refuses(WOODWOP_PROFILE_WITHOUT_TOOL)
+        }
+        (ShopFormat::Woodwop { .. }, ShopElement::Operation(Kind::ThroughCut)) => {
+            Carriage::Refuses(WOODWOP_THROUGH_CUT)
         }
         (ShopFormat::Woodwop { .. }, ShopElement::Operation(_)) => {
             Carriage::Refuses(WOODWOP_OTHER_CUT)
@@ -384,6 +390,29 @@ mod tests {
                 Carriage::Carries
             );
         }
+    }
+
+    /// Review 2026-11-06 r23 P3: a round opening through a part was refused
+    /// with "woodWOP takes drillings and vertical pockets only", which a
+    /// round hole looks like. The refusal names the opening and the way out.
+    #[test]
+    fn woodwop_names_an_opening_cut_through_a_part() {
+        let Carriage::Refuses(reason) = carriage(
+            ShopFormat::Woodwop {
+                vertical_pocket_tool: true,
+            },
+            &ShopElement::Operation(GeneralManufacturingKind::ThroughCut),
+        ) else {
+            panic!("woodWOP carried a through cut");
+        };
+        assert!(
+            reason.contains("opening cut through it, round or not"),
+            "{reason}"
+        );
+        assert!(
+            reason.contains("drilling") && reason.contains("BTLx"),
+            "{reason}"
+        );
     }
 
     #[test]

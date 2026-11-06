@@ -954,8 +954,8 @@ fn hundegger_btlx_file_menu_configures_profile_strategy_and_intermediate_cuts() 
         BtlxProfileProcessingRequest::PortableFreeContour
     );
 
-    harness.state_mut().btlx_profile_strategy = BtlxProfileStrategy::EdgeSawCutsThenMillContour;
-    harness.state_mut().btlx_intermediate_saw_cuts = 32;
+    harness.state_mut().btlx.profile_strategy = BtlxProfileStrategy::EdgeSawCutsThenMillContour;
+    harness.state_mut().btlx.intermediate_saw_cuts = 32;
     assert_eq!(
         harness
             .state()
@@ -965,6 +965,15 @@ fn hundegger_btlx_file_menu_configures_profile_strategy_and_intermediate_cuts() 
             intermediate_saw_cuts: 32,
         }
     );
+    // Review 2026-11-06 r23 MF-202: the largest drill was never set, so a
+    // cable gland or a dowel hole of an outline was milled. The machine has
+    // one by default; 0 mills every round hole again.
+    assert_eq!(
+        harness.state().btlx_export_options().largest_drill_mm,
+        Some(ketchup_manufacturing::fabrication::DEFAULT_LARGEST_DRILL_MM)
+    );
+    harness.state_mut().btlx.largest_drill_mm = 0.0;
+    assert_eq!(harness.state().btlx_export_options().largest_drill_mm, None);
 }
 
 #[test]

@@ -262,6 +262,11 @@ pub enum BtlxProfileProcessingRequest {
     EdgeSawCutsThenMillContour { intermediate_saw_cuts: u8 },
 }
 
+/// The largest drill a machine is taken to have when none is set, mm: a round
+/// hole up to it, Ø5 to Ø35, is drilled, not milled (review 2026-11-06 r23
+/// MF-202).
+pub const DEFAULT_LARGEST_DRILL_MM: f64 = 35.0;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BtlxExportOptions {
     pub profile_processing_request: BtlxProfileProcessingRequest,
@@ -1118,6 +1123,7 @@ impl GeneralFabricationProjection {
             WOODWOP_MPR_4_0_DRILL_EXPORT_V1
         };
         woodwop_mpr_output(stock_frame, &macros, export_contract)
+            .map_err(|error| error.at_part(part))
     }
 
     pub fn woodwop_mpr_4_0_production_package(
@@ -1396,6 +1402,7 @@ impl GeneralFabricationProjection {
                         what: "the count of a part",
                         value: row.quantity.to_string(),
                         limit: "a count from 1 to 2147483647",
+                        part: None,
                     });
                 };
                 let Some(blank) = rectangular_stock(&stock.machining) else {
@@ -1729,6 +1736,7 @@ fn woodwop_mpr_output(
             what: "a character of the program",
             value: format!("\"{character}\""),
             limit: "plain ASCII",
+            part: None,
         });
     }
     Ok(output.into_bytes())
