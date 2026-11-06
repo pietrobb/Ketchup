@@ -20,7 +20,7 @@ owner's decision and is not taken up here.
 | MCP-180: a full queue stops reading | Fixed, a72ada62 and 0ae54f4a: a call beyond the queue is answered `busy` at once and the reader goes on, so cancellation and the end of input are still seen |
 | SEC-180: the installer replaces an entry it could not check | Fixed, a87ff4c0 and 84f2830f: a program is gone only where the system says there is no such file; an entry turned off ranks with a gone one; each gone entry is replaced on its own, and Connect replaces a project's entry only when it is gone |
 | SEC-181: Connect keeps the network fields of an `http`/`sse` entry | Fixed, a87ff4c0: address, token, headers and sign-in are dropped |
-| SEC-182: the SHA-256 register of drawings | Fixed, a25f2e40 and d2dbada4: the register is kept with the user's settings, so an export leaves a saved document saved and a declined save loses nothing; a file that is gone leaves the list; a moved document keeps its drawings by a token kept in its file and made anew on Save As and on a template's first save, so a copy asks before replacing the original's drawing even once the original is renamed (capability review run 529). **Not changed:** `replace: true` is still a flag the client sets; the refusal tells the AI to ask the user first. A consent given in the window rather than by the client is a change of the AI consent model, not a repair |
+| SEC-182: the SHA-256 register of drawings | Fixed, a25f2e40, d2dbada4 and 1cf2d340 (the live test expects an export to leave the document unchanged): the register is kept with the user's settings, so an export leaves a saved document saved and a declined save loses nothing; a file that is gone leaves the list; a moved document keeps its drawings by a token kept in its file and made anew on Save As and on a template's first save, so a copy asks before replacing the original's drawing even once the original is renamed (capability review run 529). **Not changed:** `replace: true` is still a flag the client sets; the refusal tells the AI to ask the user first. A consent given in the window rather than by the client is a change of the AI consent model, not a repair |
 | UL-180: a deletion still switches the encoding for UTF-8 | Fixed, a0c473ff and b2b14c6c: where UTF-8 decided over the header, text beyond ASCII is written as `\U+XXXX` |
 | CD-180: an object deleted in Kečup and in the file is refused | Fixed, a0c473ff |
 | MF-180: a gallery loses its level mark once a landing is marked | Fixed, 216e8675: a raised level is measured against the highest marked level under it in plan |
@@ -66,7 +66,7 @@ owner's decision and is not taken up here.
 | | `ValueOutOfRange` names neither value nor limit; the barcode is not tied to the part | Fixed, 9014f868 |
 | | taking a set over deletes sheets without warning | Fixed, 216e8675: the question says which sheets go |
 | | unticking ±0 before the value is found starts from 0 | Fixed, 216e8675 |
-| GUI, release and CI | the log: 0644, rotated only on open, the window does not say where | Fixed, 2bdc42b1 |
+| GUI, release and CI | the log: 0644, rotated only on open, the window does not say where | Fixed, 2bdc42b1 and 29e99d2a (a log folder that already exists is closed to its user too; CI on macOS and Linux) |
 | | `check_error_hygiene.py` misses idioms | Fixed, 92724bfa |
 | | settings `lock()` without timeout, NFS without lockd, `fchown` EPERM, the Viewer's fixed `.part` | Fixed, 0297532a |
 | | `save_again_with_history` skips the comparison | Fixed, 5afe72b2 |
