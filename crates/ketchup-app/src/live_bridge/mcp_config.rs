@@ -11,6 +11,19 @@ use std::path::Path;
 /// The server name Kečup registers under.
 pub(crate) const SERVER: &str = "ketchup";
 
+/// The keys of a JSON client's network server: its address, headers (a
+/// bearer token among them) and sign-in.
+const JSON_NETWORK_KEYS: [&str; 3] = ["url", "headers", "oauth"];
+
+/// The keys of a Codex network server: its address, token and headers.
+const CODEX_NETWORK_KEYS: [&str; 5] = [
+    "url",
+    "bearer_token",
+    "bearer_token_env_var",
+    "http_headers",
+    "env_http_headers",
+];
+
 /// A JSON object in the order it was written, its values as written.
 type Object = indexmap::IndexMap<String, Box<RawValue>>;
 
@@ -60,6 +73,9 @@ fn raw(value: &impl serde::Serialize) -> io::Result<Box<RawValue>> {
 /// `command`, `args` and `type` changed, turned on and no network server
 /// (review 2026-11-04 r19 P3: Connect said it was set up while the client
 /// started nothing).
+///
+/// What only a network server has goes, its token and headers with it, so no
+/// secret stays on the program (review 2026-11-06 SEC-181).
 fn with_server(
     servers: Option<&RawValue>,
     path: &[&str],
@@ -73,7 +89,9 @@ fn with_server(
     };
     server.insert("command".to_owned(), raw(&executable)?);
     server.insert("args".to_owned(), raw(&["--mcp"])?);
-    server.shift_remove("url");
+    for key in JSON_NETWORK_KEYS {
+        server.shift_remove(key);
+    }
     if named_transport {
         server.insert("type".to_owned(), raw(&"stdio")?);
     } else if server.get("type").is_some_and(|kind| {
@@ -88,36 +106,63 @@ fn with_server(
     raw(&servers)
 }
 
+/// Which `ketchup` entries of a JSON client's file a write changes.
+pub(crate) struct Rewrite<'a> {
+    /// The user's own, made when there is none.
+    pub user: bool,
+    /// Whether a project's own entry, as written, changes.
+    pub project: &'a dyn Fn(&serde_json::Value) -> bool,
+}
+
+impl Rewrite<'static> {
+    /// The user's entry and every project's.
+    #[cfg(test)]
+    pub(crate) fn every() -> Self {
+        Self {
+            user: true,
+            project: &|_| true,
+        }
+    }
+}
+
 /// `text` (empty for a new file) with `mcpServers.ketchup` starting
 /// `executable --mcp`. Claude Code also wants the transport named, and a
 /// project's own `ketchup` entry (`projects.<folder>.mcpServers`) wins over the
 /// user's there, so it changes too. Every other key keeps its place and its
 /// value as written (review 2026-11-04 SEC-142: serde_json sorted the whole
 /// file and the entry lost its `env`, `timeout` and `disabled`).
+///
+/// `rewrite` says which entries change: the user's, and of the projects with
+/// their own entry those it gives `true` (review 2026-11-06 SEC-180: Connect
+/// rewrote a project's entry that started another program that works).
 pub(crate) fn with_json_server(
     text: &str,
     executable: &str,
     named_transport: bool,
+    rewrite: &Rewrite<'_>,
 ) -> io::Result<String> {
     let mut config = if text.trim().is_empty() {
         Object::new()
     } else {
         object(text)?
     };
-    let servers = with_server(
-        config.get("mcpServers").map(AsRef::as_ref),
-        &["mcpServers"],
-        executable,
-        named_transport,
-    )?;
-    config.insert("mcpServers".to_owned(), servers);
+    if rewrite.user {
+        let servers = with_server(
+            config.get("mcpServers").map(AsRef::as_ref),
+            &["mcpServers"],
+            executable,
+            named_transport,
+        )?;
+        config.insert("mcpServers".to_owned(), servers);
+    }
     if let Some(projects) = config.get("projects") {
         let mut projects = object_at(projects, &["projects"])?;
         for (folder, project) in &mut projects {
             let path = ["projects", folder.as_str(), "mcpServers"];
             let mut settings = object_at(project, &path[..2])?;
             if let Some(servers) = settings.get("mcpServers")
-                && object_at(servers, &path)?.contains_key(SERVER)
+                && let Some(server) = object_at(servers, &path)?.get(SERVER)
+                && (rewrite.project)(&serde_json::from_str(server.get()).map_err(invalid_data)?)
             {
                 let servers = with_server(Some(servers), &path, executable, named_transport)?;
                 settings.insert("mcpServers".to_owned(), servers);
@@ -199,7 +244,9 @@ pub(crate) fn with_codex_server(toml: &str, executable: &str) -> io::Result<Stri
         toml_edit::value(toml_edit::Array::from_iter(["--mcp"])),
     );
     // Turned on and a program, not a network server (review 2026-11-04 r19 P3).
-    server.remove("url");
+    for key in CODEX_NETWORK_KEYS {
+        server.remove(key);
+    }
     if server.contains_key("enabled") {
         server.insert("enabled", toml_edit::value(true));
     }
@@ -388,7 +435,13 @@ mod tests {
     fn the_json_server_is_replaced_and_every_other_setting_kept() {
         let text = r#"{"theme": "dark", "mcpServers": {"other": {"command": "x.exe"},
             "ketchup": {"command": "C:\\Supervisor\\Kecup\\ketchup-app.exe", "args": []}}}"#;
-        let written = with_json_server(text, r"C:\Programs\Ketchup\Ketchup.exe", false).unwrap();
+        let written = with_json_server(
+            text,
+            r"C:\Programs\Ketchup\Ketchup.exe",
+            false,
+            &Rewrite::every(),
+        )
+        .unwrap();
         let config: serde_json::Value = serde_json::from_str(&written).unwrap();
         assert_eq!(config["theme"], "dark");
         assert_eq!(config["mcpServers"]["other"]["command"], "x.exe");
@@ -398,11 +451,11 @@ mod tests {
         );
         assert_eq!(config["mcpServers"]["ketchup"]["args"][0], "--mcp");
         assert!(config["mcpServers"]["ketchup"].get("type").is_none());
-        let fresh = with_json_server("", "k.exe", true).unwrap();
+        let fresh = with_json_server("", "k.exe", true, &Rewrite::every()).unwrap();
         let config: serde_json::Value = serde_json::from_str(&fresh).unwrap();
         assert_eq!(config["mcpServers"]["ketchup"]["type"], "stdio");
-        assert!(with_json_server("[1, 2]", "k.exe", false).is_err());
-        assert!(with_json_server("{not json", "k.exe", false).is_err());
+        assert!(with_json_server("[1, 2]", "k.exe", false, &Rewrite::every()).is_err());
+        assert!(with_json_server("{not json", "k.exe", false, &Rewrite::every()).is_err());
     }
 
     /// Review 2026-11-04 SEC-142: serde_json sorted every key of `.claude.json`
@@ -423,7 +476,8 @@ mod tests {
     "C:/other": {"allowedTools": []}
   },
   "alpha": 1 }"#;
-        let written = with_json_server(text, r"C:\new\Ketchup.exe", true).unwrap();
+        let written =
+            with_json_server(text, r"C:\new\Ketchup.exe", true, &Rewrite::every()).unwrap();
         let at = |key: &str| {
             written
                 .find(key)
@@ -627,7 +681,13 @@ command = "C:\\Program Files\\Ketchup\\Ketchup.exe"
             Some("http://x/mcp")
         );
         for named_transport in [false, true] {
-            let written = with_json_server(json, r"C:\k\Ketchup.exe", named_transport).unwrap();
+            let written = with_json_server(
+                json,
+                r"C:\k\Ketchup.exe",
+                named_transport,
+                &Rewrite::every(),
+            )
+            .unwrap();
             let entry = server(&written);
             assert_eq!(json_server_off(&entry), None, "{written}");
             assert_eq!(entry["disabled"], false);
@@ -656,9 +716,36 @@ command = "C:\\Program Files\\Ketchup\\Ketchup.exe"
             codex_server_off(disabled).unwrap().as_deref(),
             Some(r"C:\k\Ketchup.exe")
         );
-        let error = with_json_server(r#"{"projects":{"/a":null}}"#, "k.exe", true)
-            .unwrap_err()
-            .to_string();
+        // Review 2026-11-06 SEC-181: the network server's token and headers
+        // stayed on the program beside its new command.
+        let networked = r#"{"mcpServers":{"ketchup":{"type":"http","url":"http://x/mcp",
+            "headers":{"Authorization":"Bearer s3cret"},"oauth":{"clientId":"c"},"env":{"A":"1"}}}}"#;
+        let written =
+            with_json_server(networked, r"C:\k\Ketchup.exe", true, &Rewrite::every()).unwrap();
+        assert!(!written.contains("s3cret"), "{written}");
+        let entry = server(&written);
+        for key in ["headers", "oauth", "url"] {
+            assert!(entry.get(key).is_none(), "{key}: {written}");
+        }
+        assert_eq!(entry["env"]["A"], "1");
+        let networked = "[mcp_servers.ketchup]\nurl = \"http://x/mcp\"\n\
+            bearer_token_env_var = \"KETCHUP_TOKEN\"\nbearer_token = \"s3cret\"\n\
+            http_headers = { \"X-Key\" = \"s3cret\" }\nenv_http_headers = { \"X-Env\" = \"KEY\" }\n\
+            startup_timeout_sec = 20\n";
+        let written = with_codex_server(networked, r"C:\k\Ketchup.exe").unwrap();
+        assert!(!written.contains("s3cret"), "{written}");
+        for key in ["bearer_token_env_var", "env_http_headers", "url"] {
+            assert!(!written.contains(key), "{key}: {written}");
+        }
+        assert!(written.contains("startup_timeout_sec = 20"), "{written}");
+        let error = with_json_server(
+            r#"{"projects":{"/a":null}}"#,
+            "k.exe",
+            true,
+            &Rewrite::every(),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.starts_with("projects → /a: "), "{error}");
         assert!(!error.contains("column"), "{error}");
     }
