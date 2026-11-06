@@ -206,7 +206,7 @@ fn a_cancelled_check_stops_its_program_worker() {
     };
     let result = super::check(
         DocumentStore::new(),
-        &source,
+        (&source, &[]),
         &ContainerData::default(),
         None,
         Arc::new(AtomicBool::new(true)),

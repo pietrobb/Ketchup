@@ -916,10 +916,69 @@ fn a_beam_braced_from_an_anchorage_smaller_than_it_is_deep_is_reported() {
     );
     assert_eq!(braced_by(&block), [("batten".to_owned(), 525.0, 525.0)]);
     assert_eq!(issue_parts(&block, "anchorage_small"), [["beam", "wall"]]);
+
+    // Review 2026-11-06 r23 P3: the first anchorage declared was taken, so a
+    // block declared before the wall holding the same batten was reported.
+    let both = report(
+        &format!(
+            "{}joint(\"batten\", \"block\", kind = \"screw\")\n",
+            one_batten("", "").replace(
+                "box(\"wall\"",
+                "box(\"block\", (50, 10, 10), at = (500, 950, 2390), material = \"GL24h\", grounded = True)
+box(\"wall\"",
+            )
+        ),
+        &[],
+    );
+    assert_eq!(braced_by(&both), [("batten".to_owned(), 525.0, 525.0)]);
+    assert_eq!(
+        issue_parts(&both, "anchorage_small"),
+        Vec::<Vec<String>>::new()
+    );
+
+    // And a rod 5 900 x 10 x 10 along the beam was measured along its length.
+    let rod = report(
+        &one_batten("", "").replace(
+            "box(\"wall\", (5900, 100, 2400), at = (0, 1000, 0)",
+            "box(\"wall\", (5900, 10, 10), at = (0, 1000, 2390)",
+        ),
+        &[],
+    );
+    assert_eq!(braced_by(&rod), [("batten".to_owned(), 525.0, 525.0)]);
+    assert_eq!(issue_parts(&rod, "anchorage_small"), [["beam", "wall"]]);
+}
+
+/// Review 2026-11-06 r23 P3: the fasteners of a joint were looked at only
+/// where one part bears on the other, so a screw 1 950 mm up the wall from a
+/// batten butting it end on, which bears on the beam alone, went unreported.
+#[test]
+fn the_fasteners_of_parts_that_bear_on_nothing_are_still_looked_at() {
+    let butting = |fasteners: &str| {
+        report(
+            &one_batten("", &format!(", fasteners = [{fasteners}]"))
+                .replace(
+                    "box(\"wall\", (5900, 100, 2400)",
+                    "box(\"wall\", (5900, 100, 2600)",
+                )
+                .replace(
+                    "box(\"batten\", (50, 1100, 50)",
+                    "box(\"batten\", (50, 1000, 50)",
+                ),
+            &[],
+        )
+    };
+    assert_eq!(
+        stray_fastener_parts(&butting("(525, 1050, 1950)")),
+        [["batten", "wall"]]
+    );
+    assert_eq!(
+        stray_fastener_parts(&butting("(525, 1000, 2425)")),
+        Vec::<Vec<String>>::new()
+    );
 }
 
 /// Review 2026-11-06 P3: a kind misspelt from one that fastens nothing
-/// ("nnoe", "contacts") fastened silently. It still fastens, and is reported.
+/// ("contcat", "contacts") fastened silently. It still fastens, and is reported.
 #[test]
 fn a_joint_kind_like_one_that_fastens_nothing_is_reported() {
     let kind = |kind: &str| {
@@ -931,7 +990,7 @@ fn a_joint_kind_like_one_that_fastens_nothing_is_reported() {
             &[],
         )
     };
-    for misspelt in ["nnoe", "Contacts", "fricton"] {
+    for misspelt in ["contcat", "Contacts", "fricton", "unfastend"] {
         let doubtful = kind(misspelt);
         assert_eq!(
             issue_parts(&doubtful, "joint_kind_doubtful"),
@@ -940,11 +999,26 @@ fn a_joint_kind_like_one_that_fastens_nothing_is_reported() {
         );
         assert_eq!(braced_by(&doubtful), [("batten".to_owned(), 525.0, 525.0)]);
     }
-    for named in ["vrut", "one", "glue", "none"] {
+    // Review 2026-11-06 r23 P3: "cone", "node", "nose" and "bone" were taken
+    // for slips of "none"; a word under five letters is not looked at.
+    for named in [
+        "vrut", "one", "glue", "none", "cone", "node", "nose", "bone",
+    ] {
         assert_eq!(
             issue_parts(&kind(named), "joint_kind_doubtful"),
             Vec::<Vec<String>>::new(),
             "{named}"
+        );
+    }
+    // And "unfastened", "loose", "free" and "rests" fastened, unsaid: they
+    // fasten nothing, as "none" does.
+    for unfastened in ["unfastened", "Loose", "free", "rests"] {
+        let loose = kind(unfastened);
+        assert_eq!(braced_by(&loose), Vec::new(), "{unfastened}");
+        assert_eq!(
+            issue_parts(&loose, "joint_kind_doubtful"),
+            Vec::<Vec<String>>::new(),
+            "{unfastened}"
         );
     }
 }

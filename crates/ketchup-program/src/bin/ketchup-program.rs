@@ -27,9 +27,11 @@ const NAMED_PARTS: usize = 5;
 /// Characters of the example message per issue group in the summary.
 const EXAMPLE_CHARS: usize = 240;
 
-fn usage() -> ExitCode {
-    eprintln!("{USAGE}");
-    ExitCode::from(2)
+/// What a refused command line prints: the usage only when the command itself
+/// is wrong, not under a bad `--set` (review 2026-11-06 r23 P3: the whole usage
+/// buried the one line that said what was wrong).
+fn complaint(error: &CliError) -> String {
+    error.to_string()
 }
 
 struct Options {
@@ -154,10 +156,9 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let options = match parse(&args) {
         Ok(options) => options,
-        Err(CliError::Usage) => return usage(),
         Err(error) => {
-            eprintln!("{error}");
-            return usage();
+            eprintln!("{}", complaint(&error));
+            return ExitCode::from(2);
         }
     };
     let loaded = (|| {
@@ -343,6 +344,21 @@ mod tests {
             assert!(error.starts_with("--set f:"), "{error}");
             assert!(error.contains("finite"), "{error}");
         }
+    }
+
+    /// Review 2026-11-06 r23 P3: a bad `--set` printed the whole usage after
+    /// its one line.
+    #[test]
+    fn a_bad_set_says_what_is_wrong_without_the_usage() {
+        for pair in ["n", "n=two", "n=nan"] {
+            let args = ["check", "a.star", "--set", pair].map(str::to_owned);
+            let said = complaint(&parse(&args).err().expect(pair));
+            assert!(said.starts_with("--set "), "{said}");
+            assert!(!said.contains("usage:"), "{said}");
+            assert_eq!(said.lines().count(), 1, "{said}");
+        }
+        let said = complaint(&parse(&["run".to_owned()]).err().expect("no command"));
+        assert!(said.starts_with("usage:"), "{said}");
     }
 
     #[test]

@@ -1947,8 +1947,22 @@ pub struct Joint {
 }
 
 /// Joint kinds that only record how two parts meet and fasten nothing
-/// (review 2026-11-04 r19 PG-162): they neither hold a part down nor brace.
-pub const UNFASTENED_JOINT_KINDS: [&str; 3] = ["none", "contact", "friction"];
+/// (review 2026-11-04 r19 PG-162): they neither hold a part down nor brace;
+/// "unfastened", "loose", "free" and "rests" say so too (review 2026-11-06
+/// r23 P3: they fastened, unsaid).
+pub const UNFASTENED_JOINT_KINDS: [&str; 7] = [
+    "none",
+    "contact",
+    "friction",
+    "unfastened",
+    "loose",
+    "free",
+    "rests",
+];
+
+/// The fewest letters a kind has before a slip of one is reported: "cone",
+/// "node" and "bone" are words, not slips of "none" (review 2026-11-06 r23 P3).
+const SLIP_CHECKED_LETTERS: usize = 5;
 
 impl Joint {
     /// Whether the joint fastens its parts to each other; every kind does
@@ -1959,10 +1973,14 @@ impl Joint {
     }
 
     /// The kind of [`UNFASTENED_JOINT_KINDS`] this joint's kind is likely a
-    /// misspelling of ("nnoe", "contacts"), though it fastens (review 2026-11-06 P3).
+    /// misspelling of ("contcat", "contacts"), though it fastens (review
+    /// 2026-11-06 P3); none of fewer than [`SLIP_CHECKED_LETTERS`].
     #[must_use]
     pub fn misspelt_unfastened_kind(&self) -> Option<&'static str> {
         let kind: Vec<char> = self.kind.trim().to_lowercase().chars().collect();
+        if kind.len() < SLIP_CHECKED_LETTERS {
+            return None;
+        }
         UNFASTENED_JOINT_KINDS.into_iter().find(|unfastened| {
             let base: Vec<char> = unfastened.chars().collect();
             kind != base && one_slip(&kind, &base)
