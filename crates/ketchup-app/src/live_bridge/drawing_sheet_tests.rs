@@ -549,6 +549,146 @@ fn a_copy_saved_as_asks_once_the_first_document_is_renamed() {
     });
 }
 
+/// Review 2026-11-06 r23 SEC-203: a copy of the document made in a file
+/// manager has the token of its file, so once the first was renamed the copy
+/// replaced its drawing unasked. A drawing is kept by the identity of the
+/// file too, which a rename keeps and a copy does not: the copy asks, and its
+/// first save gives it a token of its own; the first, renamed, still
+/// replaces its own.
+#[test]
+fn a_copy_made_in_a_file_manager_asks_once_the_first_document_is_renamed() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = directory.path().join("user").join("drawings.txt");
+    let with_store = || {
+        let (app, bridge) = setup();
+        (app.with_written_drawings(&store), bridge)
+    };
+    let (mut app, mut bridge) = with_store();
+    let id = sheet_of_the_block(&mut app, &mut bridge);
+    let sheet = directory.path().join("A.dxf");
+    let export = |app: &mut KetchupApp, bridge: &mut LiveBridge| {
+        bridge.execute(app, export_drawings(&sheet, json!({"sheet_id": id})), false)
+    };
+    let first = directory.path().join("a.ketchup");
+    let save = Request::SaveAs {
+        expected: None,
+        path: first.display().to_string(),
+    };
+    bridge.execute(&mut app, save, false).unwrap();
+    export(&mut app, &mut bridge).unwrap();
+    drop((app, bridge));
+    let copy = directory.path().join("b.ketchup");
+    std::fs::copy(&first, &copy).unwrap();
+    let renamed = directory.path().join("a2.ketchup");
+    std::fs::rename(&first, &renamed).unwrap();
+    let open = |path: &Path| {
+        let (mut app, mut bridge) = with_store();
+        let open = Request::Open {
+            expected: None,
+            path: path.display().to_string(),
+        };
+        bridge.execute(&mut app, open, false).unwrap();
+        evaluate_exact(&mut app);
+        (app, bridge)
+    };
+
+    let (mut copied, mut bridge) = open(&copy);
+    assert_eq!(
+        export(&mut copied, &mut bridge),
+        Err("drawings_target_exists")
+    );
+    let token = copied.file_token().map(str::to_owned);
+    bridge
+        .execute(&mut copied, Request::Save { expected: None }, false)
+        .unwrap();
+    assert_ne!(
+        copied.file_token().map(str::to_owned),
+        token,
+        "the copy's own token"
+    );
+    drop((copied, bridge));
+
+    let (mut opened, mut bridge) = open(&renamed);
+    export(&mut opened, &mut bridge).unwrap_or_else(|code| {
+        panic!(
+            "the renamed first's own: {code}: {:?}",
+            take_error_details()
+        )
+    });
+    // Saved again, the file has another identity: its drawing is still its
+    // own, here and moved once more.
+    bridge
+        .execute(&mut opened, Request::Save { expected: None }, false)
+        .unwrap();
+    export(&mut opened, &mut bridge).expect("its own after a save");
+    drop((opened, bridge));
+    let moved = directory.path().join("a3.ketchup");
+    std::fs::rename(&renamed, &moved).unwrap();
+    let (mut opened, mut bridge) = open(&moved);
+    export(&mut opened, &mut bridge).unwrap_or_else(|code| {
+        panic!(
+            "moved again after a save: {code}: {:?}",
+            take_error_details()
+        )
+    });
+}
+
+/// Review 2026-11-06 r23 P3: a line was taken by the path of its document
+/// whatever its token, so a new document saved where another had been took
+/// its drawings; and Save As set the token before the file was written, so a
+/// Save As that failed left the document with a token its file did not have.
+#[test]
+fn a_new_document_saved_where_another_was_asks_and_a_failed_save_as_keeps_the_drawings() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = directory.path().join("user").join("drawings.txt");
+    let with_store = || {
+        let (app, bridge) = setup();
+        (app.with_written_drawings(&store), bridge)
+    };
+    let (mut app, mut bridge) = with_store();
+    let id = sheet_of_the_block(&mut app, &mut bridge);
+    let sheet = directory.path().join("A.dxf");
+    let export = |app: &mut KetchupApp, bridge: &mut LiveBridge| {
+        bridge.execute(app, export_drawings(&sheet, json!({"sheet_id": id})), false)
+    };
+    let save_as = |app: &mut KetchupApp, bridge: &mut LiveBridge, path: &Path| {
+        let save = Request::SaveAs {
+            expected: None,
+            path: path.display().to_string(),
+        };
+        bridge.execute(app, save, false)
+    };
+    let document = directory.path().join("a.ketchup");
+    save_as(&mut app, &mut bridge, &document).unwrap();
+    export(&mut app, &mut bridge).unwrap();
+    // A Save As cancelled as the file is about to be written.
+    let elsewhere = directory.path().join("c.ketchup");
+    let token = app.file_token().map(str::to_owned);
+    let asked = std::cell::Cell::new(0);
+    let authorized = || {
+        asked.set(asked.get() + 1);
+        asked.get() == 1
+    };
+    assert!(app.save_document_to_while(&elsewhere, authorized).is_err());
+    assert_eq!(app.file_token().map(str::to_owned), token);
+    assert!(!elsewhere.exists());
+    export(&mut app, &mut bridge).expect("its own after a Save As that failed");
+    drop((app, bridge));
+
+    std::fs::remove_file(&document).unwrap();
+    let (mut app, mut bridge) = with_store();
+    let id = sheet_of_the_block(&mut app, &mut bridge);
+    save_as(&mut app, &mut bridge, &document).unwrap();
+    assert_eq!(
+        bridge.execute(
+            &mut app,
+            export_drawings(&sheet, json!({"sheet_id": id})),
+            false
+        ),
+        Err("drawings_target_exists")
+    );
+}
+
 /// Review 2026-11-06 SEC-182: the list of the files written only grew. A file
 /// that is gone leaves it at the next export, and a file written again is
 /// listed once.
@@ -590,7 +730,7 @@ fn the_list_of_written_drawings_forgets_files_that_are_gone() {
     let ours = std::fs::canonicalize(&document).unwrap();
     let token = listed().split('\t').nth(1).unwrap().to_owned();
     let newer = format!(
-        "{}\t{token}\t{}\tabc\tnewer field",
+        "{}\t{token}\t{}\tabc\tid\tnewer field",
         ours.display(),
         out.display()
     );

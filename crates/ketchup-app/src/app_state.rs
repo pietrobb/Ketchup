@@ -313,6 +313,12 @@ pub(crate) struct DrawingsState {
     /// The worker forgetting the document's written drawings that are gone
     /// (review 2026-11-06 r23 SEC-202).
     pub(crate) forgetting: Option<std::thread::JoinHandle<()>>,
+    /// The worker keeping the drawings of a file moved before it was saved by
+    /// the file saved (review 2026-11-06 r23 SEC-203).
+    pub(crate) settling: Option<std::thread::JoinHandle<()>>,
+    /// The token and identity of the document's file as on disk while a save
+    /// of it has not succeeded (review 2026-11-06 r23 P3).
+    pub(crate) on_disk: Option<crate::app::written_drawings::OnDisk>,
     /// The set the last export was refused at as another project's, with
     /// what it was exported from, offered to take over (review 2026-11-04 r19
     /// MF-162).

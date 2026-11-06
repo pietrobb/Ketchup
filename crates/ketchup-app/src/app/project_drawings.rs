@@ -367,6 +367,15 @@ const OWNED_SET_LIST_HEADER: &str = "Ketchup drawing set of a project file";
 /// 2026-11-06 SEC-182).
 const DOCUMENT_SET_LIST_HEADER: &str = "Ketchup drawing set of a document";
 
+/// The second line of a set's list: the token of the project's file, or the
+/// document's id while it has none.
+fn document_line(owner: &SetOwner) -> String {
+    match &owner.token {
+        Some(token) => format!("file {token}"),
+        None => format!("document {}", owner.document.0),
+    }
+}
+
 /// The line of a set's list naming the file the project is kept in by its
 /// name, none for a project not saved.
 fn project_name_line(owner: &SetOwner) -> String {
@@ -401,6 +410,10 @@ pub(crate) struct SetOwner {
     pub(crate) document: DocumentId,
     /// None while the project has not been saved.
     pub(crate) file: Option<PathBuf>,
+    /// The token of the project's file, new in a copy saved as another file:
+    /// what a set's list names, not the document id a copy shares (review
+    /// 2026-11-06 r23 MF-201). None while it has none.
+    pub(crate) token: Option<String>,
     /// The SHA-256 of each drawing file the document wrote, by
     /// [`written_key`](super::drawing_sheet_export::written_key).
     pub(crate) written: BTreeMap<String, String>,
@@ -438,6 +451,7 @@ impl KetchupApp {
                 .path
                 .clone()
                 .or_else(|| self.recovery_requested_path().map(Path::to_path_buf)),
+            token: self.file_token().map(str::to_owned),
             written: self.written_drawings(),
         }
     }
@@ -457,8 +471,8 @@ const REPLACING: &str = "replacing ";
 /// the sheets are written.
 fn list_of(owner: &SetOwner, replacing: Option<&str>, sheets: &[(String, String)]) -> Vec<u8> {
     let mut list = format!(
-        "{DOCUMENT_SET_LIST_HEADER}\ndocument {}\n{}\n",
-        owner.document.0,
+        "{DOCUMENT_SET_LIST_HEADER}\n{}\n{}\n",
+        document_line(owner),
         project_name_line(owner)
     );
     if let Some(replacing) = replacing {
@@ -557,7 +571,14 @@ fn set_list_of(list: &[u8], list_path: &Path, owner: &SetOwner, take_over: bool)
     {
         return SetList::NotAList;
     }
-    let same_document = lines.next() == Some(format!("document {}", owner.document.0).as_str());
+    // A list of this Kečup names the project's file by its token; an older
+    // one, by the document id a copy shares too.
+    let whose = if header == DOCUMENT_SET_LIST_HEADER {
+        document_line(owner)
+    } else {
+        format!("document {}", owner.document.0)
+    };
+    let same_document = lines.next() == Some(whose.as_str());
     let project = (header != SET_LIST_HEADER)
         .then(|| lines.next().unwrap_or_default())
         .and_then(|line| line.strip_prefix("project "));

@@ -44,6 +44,40 @@ fn a_file_the_roll_back_cannot_put_back_is_named_and_the_others_are_still_put_ba
     assert!(!new.exists(), "the sheet after it is still removed");
 }
 
+/// Review 2026-11-06 r23 MF-201: a copy saved as another file of the same
+/// name, `variant-b/house.ketchup`, took the set of its original, as the list
+/// named the document id a copy shares and the file's name. It names the
+/// file's token, which a copy saved as another file has anew.
+#[test]
+fn a_copy_saved_as_a_file_of_the_same_name_does_not_take_the_originals_set() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("house.dxf");
+    let format = SetFileFormat::Dxf;
+    let owner = |folder: &str, token: &str| SetOwner {
+        document: DocumentId(42),
+        file: Some(directory.path().join(folder).join("house.ketchup")),
+        token: Some(token.to_owned()),
+        written: BTreeMap::new(),
+    };
+    let files = |text: &[u8]| vec![text.to_vec()];
+    let mut original = owner("variant-a", "original");
+    publish_noted(&path, format, &files(b"original"), &mut original).unwrap();
+    let sheets = set_file_paths(&path, format, 1);
+    let mut copy = owner("variant-b", "copy");
+    assert!(
+        matches!(
+            publish_noted(&path, format, &files(b"copy"), &mut copy),
+            Err(ProjectDrawingsError::SetOfAnotherProject { .. })
+        ),
+        "the copy's export was not refused"
+    );
+    assert_eq!(std::fs::read(&sheets[0]).unwrap(), b"original");
+    // The original, moved with its token, still has it.
+    let mut moved = owner("archive", "original");
+    publish_noted(&path, format, &files(b"moved"), &mut moved).unwrap();
+    assert_eq!(std::fs::read(&sheets[0]).unwrap(), b"moved");
+}
+
 /// An export stopped between its sheets and its list (the window closed, the
 /// power cut) left sheets the list did not name, so every later export of the
 /// set was refused as if they were another program's. While the sheets are
@@ -56,6 +90,7 @@ fn an_export_stopped_between_the_sheets_and_the_list_does_not_block_the_next() {
     let mut owner = SetOwner {
         document: DocumentId(42),
         file: None,
+        token: None,
         written: BTreeMap::new(),
     };
     let targets =
@@ -110,6 +145,7 @@ fn a_set_is_the_documents_that_wrote_it_last_whatever_its_file_is_called() {
     let owner = |file: Option<&str>| SetOwner {
         document: DocumentId(42),
         file: file.map(|file| directory.path().join(file)),
+        token: None,
         written: BTreeMap::new(),
     };
     let publish = |owner: &mut SetOwner, files: &[&[u8]]| {
@@ -236,6 +272,7 @@ fn a_0_3_2_list_is_the_projects_by_its_file_on_disk_not_by_the_spelling_of_its_p
         let mut another = SetOwner {
             document: DocumentId(42),
             file: Some(other.clone()),
+            token: None,
             written: BTreeMap::new(),
         };
         assert!(
@@ -248,6 +285,7 @@ fn a_0_3_2_list_is_the_projects_by_its_file_on_disk_not_by_the_spelling_of_its_p
         let mut owner = SetOwner {
             document: DocumentId(42),
             file: Some(spelling.clone()),
+            token: None,
             written: BTreeMap::new(),
         };
         publish_noted(&path, format, &[b"again".to_vec()], &mut owner)
@@ -276,6 +314,7 @@ fn a_0_3_2_list_is_the_projects_by_its_file_on_disk_not_by_the_spelling_of_its_p
     let mut moved = SetOwner {
         document: DocumentId(42),
         file: Some(project),
+        token: None,
         written: BTreeMap::new(),
     };
     publish_noted(&path, format, &[b"moved again".to_vec()], &mut moved).unwrap();

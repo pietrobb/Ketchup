@@ -933,6 +933,7 @@ mod tests {
                 &crate::app::project_drawings::SetOwner {
                     document: ketchup_model::document::DocumentId(1),
                     file: None,
+                    token: None,
                     written: BTreeMap::new(),
                 },
             )

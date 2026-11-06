@@ -65,36 +65,103 @@ fn same_file(a: &Path, b: &Path) -> bool {
             .is_some_and(|(a, b)| a == b)
 }
 
-/// The saved document whose drawings are kept: its file's canonical path and
-/// the token kept in the file.
+/// The identity of the file at `path` on its volume, which a rename keeps and
+/// a copy does not: its device and inode, or on Windows its volume's serial
+/// number and its file index. None when the system does not tell: a drawing
+/// is then the document's where its file is only.
+fn file_id(path: &Path) -> Option<String> {
+    match identity_of(path) {
+        Ok(id) => Some(id),
+        Err(error) => {
+            ketchup_rejection::log!(
+                "{} has no identity its written drawings are kept by: {error}",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+fn identity_of(path: &Path) -> std::io::Result<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::metadata(path)?;
+        Ok(format!("{:x}:{:x}", metadata.dev(), metadata.ino()))
+    }
+    #[cfg(windows)]
+    {
+        let information = winapi_util::file::information(std::fs::File::open(path)?)?;
+        Ok(format!(
+            "{:x}:{:x}",
+            information.volume_serial_number(),
+            information.file_index()
+        ))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            format!("{} names no file identity on this system", path.display()),
+        ))
+    }
+}
+
+/// The saved document whose drawings are kept: its file's canonical path,
+/// the token kept in the file and the file's identity.
 struct Owner {
     file: PathBuf,
     /// The file as the field of a line.
     field: String,
     token: Option<String>,
+    /// [`file_id`] of the file.
+    id: Option<String>,
 }
 
 impl Owner {
-    /// Whether a line of `document`, of token `token`, is this document's:
-    /// kept by its file, or by its token when no file is left where it was.
-    fn holds(&self, document: &Path, token: &str) -> bool {
-        document == self.file
-            || self.token.as_deref().is_some_and(|own| own == token) && gone(document)
+    /// Whether a line of token `token` is of this document's file: a file of
+    /// none is so only where it is.
+    fn same_token(&self, token: &str) -> bool {
+        token == self.token.as_deref().unwrap_or(NO_TOKEN)
     }
 
-    /// Whether a line of `document`, of token `token`, may be this document's,
-    /// the disk not asked: kept by its file or by its token.
-    fn kept_by(&self, document: &Path, token: &str) -> bool {
-        document == self.file || self.token.as_deref().is_some_and(|own| own == token)
+    /// Whether `line` is this document's: of its token, and kept by its file
+    /// or, when no file is left where it was, by the identity of the file
+    /// moved. A new document saved where another was, or a copy of the file
+    /// made in a file manager, which has its token, is not it (review
+    /// 2026-11-06 r23 SEC-203, P3 `Owner::holds`).
+    fn holds(&self, line: &Line<'_>) -> bool {
+        self.kept_by(line) && (line.document == self.file || gone(&line.document))
+    }
+
+    /// Whether `line` may be this document's, the disk not asked.
+    fn kept_by(&self, line: &Line<'_>) -> bool {
+        self.same_token(line.token)
+            && (line.document == self.file
+                || line.token != NO_TOKEN && line.id.is_some() && line.id == self.id.as_deref())
+    }
+
+    /// `line` as this document's: its drawing and SHA-256 kept by its file.
+    fn line(&self, drawing: &str, sha256: &str) -> String {
+        let token = self.token.as_deref().unwrap_or(NO_TOKEN);
+        let mut line = format!("{}\t{token}\t{drawing}\t{sha256}", self.field);
+        if let Some(id) = &self.id {
+            line.push('\t');
+            line.push_str(id);
+        }
+        line
     }
 }
 
-/// A `drawing=` line read.
+/// A `drawing=` line read: the document's path, its file's token, the
+/// drawing's path, its SHA-256 and the identity of the document's file, none
+/// in a line of a Kečup that did not keep it.
 struct Line<'a> {
     document: PathBuf,
     token: &'a str,
     drawing: PathBuf,
     sha256: &'a str,
+    id: Option<&'a str>,
 }
 
 fn parsed(line: &str) -> Option<Line<'_>> {
@@ -105,14 +172,32 @@ fn parsed(line: &str) -> Option<Line<'_>> {
         token: next()?,
         drawing: PathBuf::from(next()?),
         sha256: next()?,
+        id: next(),
     };
     next().is_none().then_some(parsed)
+}
+
+/// The token and identity of a document's file as on disk while a save of it
+/// has not succeeded: what its written drawings are kept by until then, as a
+/// failed Save As leaves the file as it was (review 2026-11-06 r23 P3).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct OnDisk {
+    token: Option<String>,
+    id: Option<String>,
 }
 
 impl KetchupApp {
     /// The token of the file the document was saved as, kept in the file: it
     /// goes along when the file is moved, and not to a copy saved as another.
-    fn file_token(&self) -> Option<&str> {
+    /// While a save has not succeeded, the token of the file as on disk.
+    pub(crate) fn file_token(&self) -> Option<&str> {
+        match &self.drawings.on_disk {
+            Some(on_disk) => on_disk.token.as_deref(),
+            None => self.container_token(),
+        }
+    }
+
+    fn container_token(&self) -> Option<&str> {
         self.file
             .container_data
             .extensions()
@@ -123,10 +208,24 @@ impl KetchupApp {
             })
     }
 
+    fn set_token(&mut self, token: String) {
+        let entry = ketchup_model::persistence::ExtensionEntry::new(
+            SHEET_NAMESPACE,
+            TOKEN_PATH,
+            false,
+            token.into_bytes(),
+        )
+        .expect("the drawings namespace and the token's path are valid");
+        self.file.container_data.set_extension(entry);
+    }
+
     /// Before the document is saved as `path`: saved as a file other than
     /// its own, or one with no token yet, it takes a new token, so a copy is
     /// never taken for the original moved (review 2026-11-06 SEC-182,
-    /// capability review run 529).
+    /// capability review run 529). So does a file whose token another file
+    /// has kept drawings by, a copy made in a file manager (r23 SEC-203). The
+    /// drawings are kept by the token on disk until the save succeeds (r23
+    /// P3).
     pub(super) fn token_for_save(&mut self, path: &Path) {
         let own = self.file.path.as_deref().or_else(|| {
             self.file
@@ -134,9 +233,22 @@ impl KetchupApp {
                 .as_ref()
                 .map(|recovery| recovery.requested_path.as_path())
         });
-        if own.is_some_and(|own| same_file(own, path)) && self.file_token().is_some() {
+        let on_disk = self.drawings.on_disk.clone().unwrap_or_else(|| OnDisk {
+            token: self.container_token().map(str::to_owned),
+            id: self.file.path.as_deref().and_then(file_id),
+        });
+        let kept = own.is_some_and(|own| same_file(own, path))
+            && on_disk
+                .token
+                .as_deref()
+                .is_some_and(|token| !self.token_of_another_file(token, on_disk.id.as_deref()));
+        if kept && let Some(token) = on_disk.token.clone() {
+            // A Save As that failed left the token the file has on disk.
+            self.set_token(token);
+            self.drawings.on_disk = Some(on_disk);
             return;
         }
+        self.drawings.on_disk = Some(on_disk);
         let mut random = [0; 32];
         let token = match getrandom::fill(&mut random) {
             Ok(()) => ketchup_model::graph::sha256_hex(&random),
@@ -149,14 +261,24 @@ impl KetchupApp {
                 NO_TOKEN.to_owned()
             }
         };
-        let entry = ketchup_model::persistence::ExtensionEntry::new(
-            SHEET_NAMESPACE,
-            TOKEN_PATH,
-            false,
-            token.into_bytes(),
-        )
-        .expect("the drawings namespace and the token's path are valid");
-        self.file.container_data.set_extension(entry);
+        self.set_token(token);
+    }
+
+    /// Whether another file than the document's, of an identity other than
+    /// `id`, kept drawings by `token`: the document's file is its copy. The
+    /// disk is not asked.
+    fn token_of_another_file(&self, token: &str, id: Option<&str>) -> bool {
+        let (Some(store), Some(owner)) = (&self.window.written_drawings, self.written_owner())
+        else {
+            return false;
+        };
+        store.values(DRAWING).iter().any(|line| {
+            parsed(line).is_some_and(|line| {
+                line.token == token
+                    && line.document != owner.file
+                    && line.id.is_some_and(|other| Some(other) != id)
+            })
+        })
     }
 
     /// The saved document whose written drawings are kept with the user's
@@ -175,10 +297,15 @@ impl KetchupApp {
                 return None;
             }
         };
+        let id = match &self.drawings.on_disk {
+            Some(on_disk) => on_disk.id.clone(),
+            None => file_id(&file),
+        };
         Some(Owner {
             field: field(&file)?.to_owned(),
             file,
             token: self.file_token().map(str::to_owned),
+            id,
         })
     }
 
@@ -196,7 +323,7 @@ impl KetchupApp {
         if let (Some(store), Some(owner)) = (&self.window.written_drawings, self.written_owner()) {
             for line in store.values(DRAWING) {
                 if let Some(line) = parsed(&line)
-                    && owner.holds(&line.document, line.token)
+                    && owner.holds(&line)
                 {
                     written.insert(key(&line.drawing), line.sha256.to_owned());
                 }
@@ -234,14 +361,13 @@ impl KetchupApp {
                 .into_iter()
                 .filter(|line| {
                     parsed(line).is_none_or(|line| {
-                        !(owner.kept_by(&line.document, line.token)
+                        !(owner.kept_by(&line)
                             && written.iter().any(|(path, _)| *path == line.drawing))
                     })
                 })
                 .collect();
-            let token = owner.token.as_deref().unwrap_or(NO_TOKEN);
             kept.extend(written.iter().filter_map(|(path, sha256)| {
-                field(path).map(|drawing| format!("{}\t{token}\t{drawing}\t{sha256}", owner.field))
+                field(path).map(|drawing| owner.line(drawing, sha256))
             }));
             kept
         });
@@ -270,11 +396,15 @@ impl KetchupApp {
     /// document saved as another file starts with none (review 2026-11-06
     /// SEC-182).
     pub(super) fn drawings_saved(&mut self, before: Option<&Path>) {
+        let on_disk = self.drawings.on_disk.take();
         let now = self.file.path.as_deref();
         if before
             .zip(now)
             .is_some_and(|(before, now)| same_file(before, now))
         {
+            if let Some(on_disk) = on_disk {
+                self.drawings_kept_by_saved_file(on_disk);
+            }
             return;
         }
         let unsaved = std::mem::take(&mut self.drawings.written);
@@ -283,12 +413,92 @@ impl KetchupApp {
         }
     }
 
+    /// The document was saved over its own file, which had the token and
+    /// identity `on_disk`: its drawings are kept by the token and identity
+    /// the file has now, those kept by the file where it was before it was
+    /// moved here as well, so it is still taken for itself moved again and a
+    /// copy of it is not (review 2026-11-06 r23 SEC-203).
+    fn drawings_kept_by_saved_file(&mut self, on_disk: OnDisk) {
+        let (Some(store), Some(now)) = (self.window.written_drawings.clone(), self.written_owner())
+        else {
+            return;
+        };
+        let before = Owner {
+            file: now.file.clone(),
+            field: now.field.clone(),
+            token: on_disk.token,
+            id: on_disk.id,
+        };
+        if before.token == now.token && before.id == now.id {
+            return;
+        }
+        // Those kept by its file here: the disk is not asked.
+        if let Err(error) =
+            store.update(DRAWING, |lines| kept_again(lines, &before, &now, |_| false))
+        {
+            ketchup_rejection::log!(
+                "the drawing files the document wrote are not kept by the file saved: {error}"
+            );
+            return;
+        }
+        // Those kept by the file where it was: asked on a worker, before the
+        // lock is taken.
+        let moved: Vec<PathBuf> = store
+            .values(DRAWING)
+            .iter()
+            .filter_map(|line| parsed(line))
+            .filter(|line| line.document != before.file && before.kept_by(line))
+            .map(|line| line.document)
+            .collect();
+        if moved.is_empty() {
+            return;
+        }
+        self.drawings.settling = Some(std::thread::spawn(move || {
+            let gone: Vec<PathBuf> = moved.into_iter().filter(|path| gone(path)).collect();
+            if gone.is_empty() {
+                return;
+            }
+            if let Err(error) = store.update(DRAWING, |lines| {
+                kept_again(lines, &before, &now, |document| {
+                    gone.iter().any(|path| path == document)
+                })
+            }) {
+                ketchup_rejection::log!(
+                    "the drawing files of the file moved are not kept by the file saved: {error}"
+                );
+            }
+        }));
+    }
+
     /// Whether the file at `path`, of SHA-256 `sha256`, is the last drawing
     /// file the document wrote there, however the path is spelled. A path
     /// that does not read names no such file, so the client asks the user.
     pub(crate) fn wrote_drawing(&self, path: &Path, sha256: &str) -> bool {
         listed(&self.written_drawings(), path, sha256)
     }
+}
+
+/// `lines` with those of `before`'s document kept by its file, or by the file
+/// it was where that is `moved`, kept by `now` instead.
+fn kept_again(
+    lines: Vec<String>,
+    before: &Owner,
+    now: &Owner,
+    moved: impl Fn(&Path) -> bool,
+) -> Vec<String> {
+    lines
+        .into_iter()
+        .map(|text| {
+            let again = parsed(&text)
+                .filter(|line| {
+                    before.kept_by(line) && (line.document == before.file || moved(&line.document))
+                })
+                .and_then(|line| {
+                    field(&line.drawing).map(|drawing| now.line(drawing, line.sha256))
+                });
+            again.unwrap_or(text)
+        })
+        .collect()
 }
 
 /// Forgets the drawing files of `owner`'s document that the system says are
@@ -303,7 +513,7 @@ fn forget_gone(store: &SettingsFile, owner: &Owner) {
         .values(DRAWING)
         .iter()
         .filter_map(|line| parsed(line))
-        .filter(|line| owner.holds(&line.document, line.token))
+        .filter(|line| owner.holds(line))
         .map(|line| line.drawing)
         .filter(|drawing| presence(drawing, local.as_deref()) == Presence::Gone)
         .collect();
@@ -314,9 +524,8 @@ fn forget_gone(store: &SettingsFile, owner: &Owner) {
         lines
             .into_iter()
             .filter(|line| {
-                parsed(line).is_none_or(|line| {
-                    !(gone.contains(&line.drawing) && owner.holds(&line.document, line.token))
-                })
+                parsed(line)
+                    .is_none_or(|line| !(gone.contains(&line.drawing) && owner.kept_by(&line)))
             })
             .collect()
     });

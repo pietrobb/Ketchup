@@ -1583,6 +1583,7 @@ fn a_recovered_session_exports_the_sets_of_the_file_it_was_found_for() {
 const DOCUMENT: crate::app::project_drawings::SetOwner = crate::app::project_drawings::SetOwner {
     document: ketchup_model::document::DocumentId(7),
     file: None,
+    token: None,
     written: BTreeMap::new(),
 };
 
@@ -1718,6 +1719,7 @@ fn sheets_of_another_project_under_the_same_name_are_neither_replaced_nor_remove
     let mut other = SetOwner {
         document: DocumentId(8),
         file: None,
+        token: None,
         written: BTreeMap::new(),
     };
     let mut this = DOCUMENT;
