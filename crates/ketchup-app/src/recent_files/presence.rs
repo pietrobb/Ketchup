@@ -40,16 +40,35 @@ pub(crate) fn presence(path: &Path, local: Option<&Path>) -> Presence {
 /// Whether the file at `path` is there, a missing folder above it trusted to
 /// be deleted below one of `trusted` only (`None`: anywhere).
 pub(crate) fn presence_below(path: &Path, trusted: Option<&[&Path]>) -> Presence {
+    presence_within(path, trusted, LINK_HOPS)
+}
+
+/// How many links one after another a file's path is followed through, as
+/// many as Linux follows.
+const LINK_HOPS: usize = 40;
+
+fn presence_within(path: &Path, trusted: Option<&[&Path]>, hops: usize) -> Presence {
     match std::fs::metadata(path) {
         Ok(metadata) if metadata.is_file() => Presence::Here,
         Ok(_) => Presence::Gone,
         Err(error) => {
-            if matches!(
+            if !matches!(
                 error.kind(),
                 std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-            ) && !is_dangling_link(path)
-                && folder_answers(path, trusted)
-            {
+            ) {
+                return Presence::Unknown;
+            }
+            // A link to a file is gone where the file it names is (review
+            // 2026-11-07 r26 P3: one deleted in the home folder was unknown
+            // for ever), followed so far only.
+            if let Ok(target) = std::fs::read_link(path) {
+                let target = path.parent().unwrap_or(Path::new("")).join(target);
+                return match hops.checked_sub(1) {
+                    Some(hops) => presence_within(&target, trusted, hops),
+                    None => Presence::Unknown,
+                };
+            }
+            if !is_dangling_link(path) && folder_answers(path, trusted) {
                 Presence::Gone
             } else {
                 Presence::Unknown
@@ -68,8 +87,17 @@ pub(crate) fn presence_below(path: &Path, trusted: Option<&[&Path]>) -> Presence
 /// that is out has no folder there at all (Windows says so of `E:\` and
 /// `\\server\share` alike, macOS of `/Volumes/NAS`), and an empty folder does
 /// not answer: it may be where a share is mounted, as sshfs under the home
-/// folder, while it is not (review 2026-11-06 P3).
+/// folder, while it is not (review 2026-11-06 P3). The folder and `trusted`
+/// are compared as the system resolves them, so `~/NAS` linked to gvfs is not
+/// below the home folder (review 2026-11-07 r26 P3), nor is a folder on a
+/// server or mounted on demand, as `/opt` from autofs ([`on_remote_mount`]).
 fn folder_answers(path: &Path, trusted: Option<&[&Path]>) -> bool {
+    // A folder the system does not resolve is compared as it is written.
+    let real = |folder: &Path| {
+        std::fs::canonicalize(folder)
+            .ok()
+            .unwrap_or_else(|| folder.into())
+    };
     for folder in path.ancestors().skip(1) {
         match std::fs::metadata(folder) {
             Ok(metadata) => {
@@ -77,7 +105,9 @@ fn folder_answers(path: &Path, trusted: Option<&[&Path]>) -> bool {
                     && std::fs::read_dir(folder).is_ok_and(|mut entries| entries.next().is_some())
                     && (Some(folder) == path.parent()
                         || trusted.is_none_or(|trusted| {
-                            trusted.iter().any(|root| folder.starts_with(root))
+                            let folder = real(folder);
+                            trusted.iter().any(|root| folder.starts_with(real(root)))
+                                && !mounted_remotely(&folder)
                         }));
             }
             // Only a folder that is not there lets the search go up.
@@ -96,6 +126,87 @@ fn folder_answers(path: &Path, trusted: Option<&[&Path]>) -> bool {
 /// back, not a folder deleted (review 2026-11-07 UI-220).
 fn is_dangling_link(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
+}
+
+/// Whether `folder`, resolved, is on a file system the system mounts on
+/// demand or from a server, which says a folder is not there while the server
+/// does not answer (review 2026-11-07 r26 P3: `/opt` or `/usr` so on a cluster
+/// was gone, and `--mcp-setup` replaced the client's entry). Only Linux says.
+#[cfg(target_os = "linux")]
+fn mounted_remotely(folder: &Path) -> bool {
+    std::fs::read_to_string("/proc/self/mountinfo")
+        .is_ok_and(|mountinfo| on_remote_mount(&mountinfo, folder))
+}
+
+#[cfg(not(target_os = "linux"))]
+const fn mounted_remotely(_: &Path) -> bool {
+    false
+}
+
+/// Whether the mount of `folder` in `mountinfo` (as `/proc/self/mountinfo`),
+/// the last of those mounted deepest above it, is of a server or automounted.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn on_remote_mount(mountinfo: &str, folder: &Path) -> bool {
+    mountinfo
+        .lines()
+        .filter_map(|line| {
+            let (fields, rest) = line.split_once(" - ")?;
+            let point = mount_point(fields.split(' ').nth(4)?);
+            Some((point, rest.split(' ').next()?))
+        })
+        .filter(|(point, _)| folder.starts_with(point))
+        .max_by_key(|(point, _)| point.components().count())
+        .is_some_and(|(_, kind)| {
+            kind.starts_with("fuse.")
+                || matches!(
+                    kind,
+                    "autofs"
+                        | "nfs"
+                        | "nfs4"
+                        | "cifs"
+                        | "smb3"
+                        | "smbfs"
+                        | "ncpfs"
+                        | "afs"
+                        | "ceph"
+                        | "glusterfs"
+                        | "lustre"
+                        | "gpfs"
+                        | "beegfs"
+                        | "9p"
+                        | "davfs"
+                )
+        })
+}
+
+/// A mount point as `mountinfo` writes it, a space, tab, line feed or
+/// backslash as three octal digits after a backslash.
+fn mount_point(field: &str) -> PathBuf {
+    let bytes = field.as_bytes();
+    let mut point = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        let octal = bytes.get(at + 1..at + 4).filter(|digits| {
+            bytes[at] == b'\\'
+                && digits[0] <= b'3'
+                && digits.iter().all(|digit| (b'0'..=b'7').contains(digit))
+        });
+        match octal {
+            Some(digits) => {
+                point.push(
+                    digits
+                        .iter()
+                        .fold(0u8, |byte, digit| byte * 8 + (digit - b'0')),
+                );
+                at += 4;
+            }
+            None => {
+                point.push(bytes[at]);
+                at += 1;
+            }
+        }
+    }
+    PathBuf::from(String::from_utf8_lossy(&point).into_owned())
 }
 
 /// The root of a drive letter no drive has, as of a USB disk or a share
@@ -223,14 +334,89 @@ mod tests {
         assert_eq!(presence(&deleted, Some(home.path())), Presence::Gone);
     }
 
-    #[cfg(unix)]
+    /// A symbolic link to a file at `link`, false where the system lets none
+    /// be made (Windows without the privilege).
+    fn link_file(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(target, link);
+        made.is_ok()
+    }
+
+    /// Review 2026-11-07 r26 P3: a link to a file deleted in the home folder
+    /// was unknown for ever. Its target is asked: gone when deleted there,
+    /// unknown on a volume not mounted now.
     #[test]
-    fn a_dangling_link_to_a_file_is_unknown() {
+    fn a_dangling_link_to_a_file_is_as_its_target() {
         let home = tempfile::tempdir().unwrap();
         std::fs::write(home.path().join("notes.txt"), "kept").unwrap();
+        let media = tempfile::tempdir().unwrap();
+        std::fs::write(media.path().join("other"), "").unwrap();
         let document = home.path().join("a.ketchup");
-        std::os::unix::fs::symlink(home.path().join("NAS").join("a.ketchup"), &document).unwrap();
+        if !link_file(&media.path().join("NAS").join("a.ketchup"), &document) {
+            return;
+        }
         assert_eq!(presence(&document, Some(home.path())), Presence::Unknown);
+        let deleted = home.path().join("b.ketchup");
+        assert!(link_file(
+            &Path::new("Projects").join("b.ketchup"),
+            &deleted
+        ));
+        assert_eq!(presence(&deleted, Some(home.path())), Presence::Gone);
+        let to_link = home.path().join("c.ketchup");
+        assert!(link_file(&deleted, &to_link));
+        assert_eq!(presence(&to_link, Some(home.path())), Presence::Gone);
+    }
+
+    /// Review 2026-11-07 r26 P3: `~/NAS` linked to a share below gvfs that is
+    /// not mounted now was below the home folder by its text, so a file on it
+    /// was gone. And a trusted folder by a link to it, as `/tmp` on macOS, did
+    /// not hold what is in it.
+    #[test]
+    fn folders_are_compared_as_the_system_resolves_them() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("notes.txt"), "kept").unwrap();
+        let gvfs = tempfile::tempdir().unwrap();
+        std::fs::write(gvfs.path().join("other-share"), "").unwrap();
+        let nas = home.path().join("NAS");
+        link_folder(gvfs.path(), &nas);
+        let document = nas.join("smb-share").join("Domy").join("a.ketchup");
+        assert_eq!(presence(&document, Some(home.path())), Presence::Unknown);
+
+        let elsewhere = tempfile::tempdir().unwrap();
+        let by_link = elsewhere.path().join("home");
+        link_folder(home.path(), &by_link);
+        let deleted = home.path().join("Old").join("a.ketchup");
+        assert_eq!(presence(&deleted, Some(&by_link)), Presence::Gone);
+    }
+
+    /// Review 2026-11-07 r26 P3: `/opt` from autofs or a share of a cluster
+    /// says a folder is not there while its server does not answer.
+    #[test]
+    fn a_folder_on_a_server_or_mounted_on_demand_is_remote() {
+        let mountinfo = "\
+22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw
+30 22 0:40 / /opt rw,relatime shared:9 - autofs systemd-1 rw,fd=50
+31 22 0:41 / /home rw,relatime shared:10 - autofs systemd-1 rw,fd=51
+32 31 8:2 / /home rw,relatime shared:11 - ext4 /dev/sda2 rw
+33 22 0:42 / /mnt/lab\\040share rw,relatime - nfs4 server:/lab rw
+34 32 0:43 / /home/u/NAS rw,nosuid - fuse.sshfs u@nas: rw
+";
+        for (folder, remote) in [
+            ("/opt/tools", true),
+            ("/usr/lib", false),
+            ("/home/u/Old", false),
+            ("/mnt/lab share/Domy", true),
+            ("/mnt/lab", false),
+            ("/home/u/NAS/Domy", true),
+        ] {
+            assert_eq!(
+                on_remote_mount(mountinfo, Path::new(folder)),
+                remote,
+                "{folder}"
+            );
+        }
     }
 
     /// Review 2026-11-06 r23 SEC-201: a program on a drive that is out, or a

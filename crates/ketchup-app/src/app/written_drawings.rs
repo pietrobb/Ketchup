@@ -557,20 +557,35 @@ fn forget_gone(store: &SettingsFile, owner: &Owner) {
         .filter(|line| is_gone(&line.drawing))
         .map(|line| (line.document, line.drawing))
         .collect();
+    forget(store, owner, &gone);
+}
+
+/// Forgets the lines of `gone`, each a document and its drawing found gone
+/// before the lock was taken, whose drawing is still not there under it: one
+/// another window wrote again meanwhile keeps its line (review 2026-11-07 r26
+/// P3). Only those drawings are asked for, and as they were gone, their
+/// folders answer.
+fn forget(store: &SettingsFile, owner: &Owner, gone: &[(PathBuf, PathBuf)]) {
     if gone.is_empty() {
         return;
     }
     // A line of a document deleted goes with its drawing too: no document
     // forgot them otherwise (review 2026-11-07 P3 `drawings.txt`).
     let forgotten = store.update(DRAWING, |lines| {
+        let back: Vec<&Path> = gone
+            .iter()
+            .map(|(_, drawing)| drawing.as_path())
+            .filter(|drawing| std::fs::symlink_metadata(drawing).is_ok())
+            .collect();
         lines
             .into_iter()
             .filter(|line| {
                 parsed(line).is_none_or(|line| {
-                    !gone.iter().any(|(document, drawing)| {
-                        *drawing == line.drawing
-                            && (owner.kept_by(&line) || *document == line.document)
-                    })
+                    back.contains(&line.drawing.as_path())
+                        || !gone.iter().any(|(document, drawing)| {
+                            *drawing == line.drawing
+                                && (owner.kept_by(&line) || *document == line.document)
+                        })
                 })
             })
             .collect()
@@ -584,4 +599,36 @@ fn forget_gone(store: &SettingsFile, owner: &Owner) {
 /// has the file at `path` with SHA-256 `sha256`, however the path is spelled.
 pub(crate) fn listed(written: &BTreeMap<String, String>, path: &Path, sha256: &str) -> bool {
     written_key(path).is_ok_and(|key| written.get(&key).is_some_and(|kept| kept == sha256))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review 2026-11-07 r26 P3: the drawings gone were found before the lock
+    /// was taken, so one another window wrote again meanwhile lost its line.
+    #[test]
+    fn a_drawing_written_again_before_the_lock_keeps_its_line() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SettingsFile::at(directory.path().join(FILE_NAME));
+        let document = directory.path().join("plan.ketchup");
+        let owner = Owner {
+            field: document.display().to_string(),
+            file: document.clone(),
+            token: Some("t".to_owned()),
+            id: None,
+        };
+        let drawing = directory.path().join("plan.dxf");
+        let line = owner.line(&drawing.display().to_string(), "abc");
+        store.replace(DRAWING, std::slice::from_ref(&line)).unwrap();
+        let gone = [(document, drawing.clone())];
+
+        std::fs::write(&drawing, b"written again").unwrap();
+        forget(&store, &owner, &gone);
+        assert_eq!(store.values(DRAWING), [line]);
+
+        std::fs::remove_file(&drawing).unwrap();
+        forget(&store, &owner, &gone);
+        assert!(store.values(DRAWING).is_empty());
+    }
 }

@@ -133,12 +133,15 @@ impl SettingsFile {
         let turns = turns_of(&self.path);
         // Told to the windows waiting: on FAT, HFS+ or SMB a save of the same
         // length within the second or two of the time kept changes nothing
-        // they see of the settings (review 2026-11-07 P3).
+        // they see of the settings (review 2026-11-07 P3). It only tells them
+        // to wait: one not written does not hold the save (r26 P3).
         let turn = std::fs::read_to_string(&turns)
             .ok()
             .and_then(|text| text.trim().parse::<u64>().ok())
             .unwrap_or(0);
-        std::fs::write(&turns, turn.wrapping_add(1).to_string())?;
+        if let Err(error) = std::fs::write(&turns, turn.wrapping_add(1).to_string()) {
+            ketchup_rejection::log!("the settings are saved without their turn counted: {error}");
+        }
         let (lines, damaged) = self.read()?;
         if damaged {
             std::fs::copy(&self.path, self.path.with_extension("txt.bad"))?;
@@ -556,6 +559,18 @@ mod tests {
             TURN_CAP,
         )
         .unwrap();
+    }
+
+    /// Review 2026-11-07 r26 P3: the turn counted only tells other windows to
+    /// wait, yet one not written failed the whole save.
+    #[test]
+    fn a_turn_not_counted_does_not_hold_the_save() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join(FILE_NAME);
+        std::fs::create_dir(turns_of(&path)).unwrap();
+        let settings = SettingsFile::at(path);
+        settings.save_language("sk").unwrap();
+        assert_eq!(settings.language().as_deref(), Some("sk"));
     }
 
     #[test]
