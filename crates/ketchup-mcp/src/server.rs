@@ -876,7 +876,7 @@ mod tests {
                                     .expect("the window accepts");
                             let (mut accepted, _) = window.accept().expect("connected");
                             cancel.clear();
-                            assert!(cancel.arm(&connection).expect("armed"));
+                            assert!(cancel.arm(&connection));
                             started.send(()).expect("the test waits");
                             accepted
                                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))

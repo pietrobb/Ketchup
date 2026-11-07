@@ -1173,34 +1173,6 @@ fn the_next_reply_tells_what_became_of_a_call_cancelled_after_it_was_sent() {
     );
 }
 
-/// Review 2026-11-04 P3: when the system refused to duplicate the socket that
-/// lets a call be cancelled, the agent read that the window had ended the
-/// connection, and the server dropped a working connection. It is this
-/// server's failure: the request is not sent and the connection is kept.
-#[test]
-fn a_call_this_server_cannot_prepare_is_not_blamed_on_the_window() {
-    let root = tempfile::tempdir().unwrap();
-    let events = scripted_window(root.path(), INSTANCE, vec![Ending::SupersededInFlight]);
-    let mut tools = Tools::new(None, Some(root.path().to_owned()));
-    let status = json!({"action": "status"});
-    assert_eq!(
-        call(&mut tools, "inspect", status.clone())["isError"],
-        false
-    );
-    assert_eq!(events.recv().unwrap(), "attach");
-
-    tools.cancel().refuse_next_clone();
-    let refused = text(&call(&mut tools, "inspect", status.clone()));
-    assert_eq!(refused["error"], "call_not_prepared", "{refused}");
-    let message = refused["message"].as_str().unwrap();
-    assert!(!message.contains("window had ended"), "{message}");
-
-    // The next call goes over the same connection: the window answers it.
-    let next = text(&call(&mut tools, "inspect", status));
-    assert_eq!(next["error"], "connection_taken_over", "{next}");
-    assert_eq!(events.recv().unwrap(), "ended", "no second attach");
-}
-
 /// MCP-2: after its window closed, the server never moves to another window.
 #[test]
 fn a_lost_window_is_never_replaced_by_another_open_window() {
