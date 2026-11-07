@@ -449,18 +449,18 @@ fn within_line_limit(dxf: Vec<u8>, code_page: Option<CodePage>) -> Result<Vec<u8
     let too_long = |text: &[u8]| {
         text.len() > super::MAX_DXF_LINE_CHARS && characters(text) > super::MAX_DXF_LINE_CHARS
     };
-    let lines = dxf
-        .split_inclusive(|byte| *byte == b'\n')
-        .collect::<Vec<_>>();
-    if !lines.iter().any(|line| too_long(&line[..value(line)])) {
+    // Every drawing written passes here, so its lines are walked, not held: a drawing
+    // within the limit takes nothing more (review 2026-10-29 CD-63).
+    if !(dxf.split_inclusive(|byte| *byte == b'\n')).any(|line| too_long(&line[..value(line)])) {
         return Ok(dxf);
     }
     let mut out = Vec::with_capacity(dxf.len() + dxf.len() / MTEXT_PIECE_CHARS * 8);
     let mut kind: &[u8] = b"";
     let mut handle = 0;
-    for pair in lines.chunks(2) {
-        let &[code_line, value_line] = pair else {
-            out.extend(pair.concat());
+    let mut lines = dxf.split_inclusive(|byte| *byte == b'\n');
+    while let Some(code_line) = lines.next() {
+        let Some(value_line) = lines.next() else {
+            out.extend_from_slice(code_line);
             break;
         };
         let code = std::str::from_utf8(code_line).ok().and_then(|code| {
