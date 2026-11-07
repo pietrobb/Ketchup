@@ -41,7 +41,8 @@ pub(crate) fn presence(path: &Path, local: Option<&Path>) -> Presence {
             if matches!(
                 error.kind(),
                 std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-            ) && folder_answers(path, local)
+            ) && !is_dangling_link(path)
+                && folder_answers(path, local)
             {
                 Presence::Gone
             } else {
@@ -69,13 +70,20 @@ fn folder_answers(path: &Path, local: Option<&Path>) -> bool {
             }
             // Only a folder that is not there lets the search go up.
             Err(error) => {
-                if error.kind() != std::io::ErrorKind::NotFound {
+                if error.kind() != std::io::ErrorKind::NotFound || is_dangling_link(folder) {
                     return false;
                 }
             }
         }
     }
     false
+}
+
+/// Whether `path` is a link (a symbolic link or a junction) whose target is not
+/// there, as `~/NAS` to a volume not mounted now: the way to a place that may be
+/// back, not a folder deleted (review 2026-11-07 UI-220).
+fn is_dangling_link(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
 }
 
 /// The root of a drive letter no drive has, as of a USB disk or a share
@@ -135,6 +143,56 @@ mod tests {
             presence(&mount.join("a.ketchup"), Some(home.path())),
             Presence::Gone
         );
+    }
+
+    /// A link to `target`: a symbolic link, on Windows a junction, which needs
+    /// no privilege.
+    fn link_folder(target: &Path, link: &Path) {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, link).unwrap();
+        #[cfg(windows)]
+        assert!(
+            std::process::Command::new("cmd")
+                .arg("/c")
+                .arg("mklink")
+                .arg("/J")
+                .arg(link)
+                .arg(target)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
+
+    /// Review 2026-11-07 UI-220: `~/NAS` linked to a volume not mounted now
+    /// made a file below it gone, so Open Recent dropped it.
+    #[test]
+    fn a_file_below_a_dangling_link_is_unknown() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("notes.txt"), "kept").unwrap();
+        let volume = home.path().join("volume");
+        std::fs::create_dir(&volume).unwrap();
+        let nas = home.path().join("NAS");
+        link_folder(&volume, &nas);
+        std::fs::remove_dir(&volume).unwrap();
+        for document in [nas.join("a.ketchup"), nas.join("Domy").join("a.ketchup")] {
+            assert_eq!(presence(&document, Some(home.path())), Presence::Unknown);
+            assert_eq!(presence(&document, None), Presence::Unknown);
+        }
+        // A folder deleted beside the link is still gone.
+        let deleted = home.path().join("Old").join("a.ketchup");
+        assert_eq!(presence(&deleted, Some(home.path())), Presence::Gone);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_link_to_a_file_is_unknown() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("notes.txt"), "kept").unwrap();
+        let document = home.path().join("a.ketchup");
+        std::os::unix::fs::symlink(home.path().join("NAS").join("a.ketchup"), &document).unwrap();
+        assert_eq!(presence(&document, Some(home.path())), Presence::Unknown);
     }
 
     /// Review 2026-11-06 r23 SEC-201: a program on a drive that is out, or a
