@@ -69,13 +69,19 @@ REVIEWED = {
         "AddedObject": {"Stretched"},
         # The program worker's answer to a drawing export, never part of a document;
         # ChangedInFile and DeletedInFile too (review 2026-11-04 r19 CD-163 and P3), and
-        # Several, every refusal of one export at once (review 2026-11-06 DXF P3).
+        # Several, every refusal of one export at once (review 2026-11-06 DXF P3), and
+        # TextTooLong, a value over the DXF line limit (review 2026-11-07 UL-220).
         "DxfEditRefusal": {
             "ReadDifferently", "TooLarge", "ChangedInFile", "DeletedInFile", "Several",
+            "TextTooLong",
         },
     },
-    "v0.3.1": {"DxfEditRefusal": {"ChangedInFile", "DeletedInFile", "Several"}},
-    "v0.3.2": {"DxfEditRefusal": {"ChangedInFile", "DeletedInFile", "Several"}},
+    "v0.3.1": {
+        "DxfEditRefusal": {"ChangedInFile", "DeletedInFile", "Several", "TextTooLong"},
+    },
+    "v0.3.2": {
+        "DxfEditRefusal": {"ChangedInFile", "DeletedInFile", "Several", "TextTooLong"},
+    },
 }
 
 ENUM = re.compile(

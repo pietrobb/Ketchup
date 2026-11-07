@@ -14,8 +14,9 @@
 //! or a template's, starts with none, whether or not the original is still
 //! where it was (capability review run 529); the document id would not do,
 //! as a copy shares it. A document not saved keeps its own in memory, and
-//! the file it is first saved as takes them over. A drawing of the document
-//! the system says is gone is forgotten on a worker after its next export.
+//! the file it is first saved as takes them over. A drawing of the document,
+//! or of a document deleted, the system says is gone is forgotten on a
+//! worker after the document's next export.
 
 use super::drawing_sheet_export::written_key;
 use super::project_drawings::SHEET_NAMESPACE;
@@ -186,6 +187,40 @@ pub(crate) struct OnDisk {
     id: Option<String>,
 }
 
+/// The document's file as the disk named it when it was resolved for `path`
+/// as of `identity`: its canonical path, none when it did not resolve, and
+/// its [`file_id`].
+#[derive(Debug)]
+pub(crate) struct Resolved {
+    path: PathBuf,
+    identity: Option<ketchup_model::persistence::FileIdentity>,
+    file: Option<PathBuf>,
+    id: Option<String>,
+}
+
+impl Resolved {
+    fn of(path: &Path, identity: Option<ketchup_model::persistence::FileIdentity>) -> Self {
+        let file = match std::fs::canonicalize(path) {
+            Ok(file) => Some(file),
+            Err(error) => {
+                // Moved away while open: its drawings are kept in memory.
+                ketchup_rejection::log!(
+                    "{} does not resolve, so its written drawings are kept for this window only: {error}",
+                    path.display()
+                );
+                None
+            }
+        };
+        let id = file.as_deref().and_then(file_id);
+        Self {
+            path: path.to_owned(),
+            identity,
+            file,
+            id,
+        }
+    }
+}
+
 impl KetchupApp {
     /// The token of the file the document was saved as, kept in the file: it
     /// goes along when the file is moved, and not to a copy saved as another.
@@ -283,23 +318,24 @@ impl KetchupApp {
 
     /// The saved document whose written drawings are kept with the user's
     /// settings; none while it is not saved or they are kept in memory only.
+    /// Its file is resolved once per file opened or saved: the disk is not
+    /// asked, nor the same failure logged, at each export (review 2026-11-07
+    /// P3 `written_owner`).
     fn written_owner(&self) -> Option<Owner> {
         self.window.written_drawings.as_ref()?;
         let path = self.file.path.as_deref()?;
-        let file = match std::fs::canonicalize(path) {
-            Ok(file) => file,
-            Err(error) => {
-                // Moved away while open: its drawings are kept in memory.
-                ketchup_rejection::log!(
-                    "{} does not resolve, so its written drawings are kept for this window only: {error}",
-                    path.display()
-                );
-                return None;
-            }
-        };
+        let mut resolved = self.drawings.resolved.borrow_mut();
+        if resolved
+            .as_ref()
+            .is_none_or(|resolved| resolved.path != path || resolved.identity != self.file.identity)
+        {
+            *resolved = Some(Resolved::of(path, self.file.identity));
+        }
+        let resolved = resolved.as_ref()?;
+        let file = resolved.file.clone()?;
         let id = match &self.drawings.on_disk {
             Some(on_disk) => on_disk.id.clone(),
-            None => file_id(&file),
+            None => resolved.id.clone(),
         };
         Some(Owner {
             field: field(&file)?.to_owned(),
@@ -396,6 +432,8 @@ impl KetchupApp {
     /// document saved as another file starts with none (review 2026-11-06
     /// SEC-182).
     pub(super) fn drawings_saved(&mut self, before: Option<&Path>) {
+        // The file saved is another, of an identity of its own.
+        self.drawings.resolved.take();
         let on_disk = self.drawings.on_disk.take();
         let now = self.file.path.as_deref();
         if before
@@ -501,31 +539,39 @@ fn kept_again(
         .collect()
 }
 
-/// Forgets the drawing files of `owner`'s document that the system says are
-/// gone; one on a drive or share that does not answer is kept, as is every
-/// other document's (review 2026-11-06 r23 SEC-202: each line of every
+/// Forgets the drawing files of `owner`'s document, and of documents the
+/// system says are gone, that the system says are gone; one on a drive or
+/// share that does not answer is kept, as is every other document's (review
+/// 2026-11-06 r23 SEC-202: each line of every
 /// document was asked for on the window's thread, under the lock of the file,
 /// and one offline was forgotten). Run on a worker: the disk is asked before
 /// the lock is taken.
 fn forget_gone(store: &SettingsFile, owner: &Owner) {
     let local = crate::recent_files::presence::local_folder();
-    let gone: Vec<PathBuf> = store
-        .values(DRAWING)
+    let is_gone = |path: &Path| presence(path, local.as_deref()) == Presence::Gone;
+    let lines = store.values(DRAWING);
+    let gone: Vec<(PathBuf, PathBuf)> = lines
         .iter()
         .filter_map(|line| parsed(line))
-        .filter(|line| owner.holds(line))
-        .map(|line| line.drawing)
-        .filter(|drawing| presence(drawing, local.as_deref()) == Presence::Gone)
+        .filter(|line| owner.holds(line) || is_gone(&line.document))
+        .filter(|line| is_gone(&line.drawing))
+        .map(|line| (line.document, line.drawing))
         .collect();
     if gone.is_empty() {
         return;
     }
+    // A line of a document deleted goes with its drawing too: no document
+    // forgot them otherwise (review 2026-11-07 P3 `drawings.txt`).
     let forgotten = store.update(DRAWING, |lines| {
         lines
             .into_iter()
             .filter(|line| {
-                parsed(line)
-                    .is_none_or(|line| !(gone.contains(&line.drawing) && owner.kept_by(&line)))
+                parsed(line).is_none_or(|line| {
+                    !gone.iter().any(|(document, drawing)| {
+                        *drawing == line.drawing
+                            && (owner.kept_by(&line) || *document == line.document)
+                    })
+                })
             })
             .collect()
     });

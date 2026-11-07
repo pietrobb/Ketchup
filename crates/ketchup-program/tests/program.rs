@@ -859,6 +859,28 @@ fn a_whole_param_refuses_a_fraction() {
         let evaluated = refused(source, name, value, &value.to_string());
         assert_eq!(evaluated.model.parts.len(), 2);
     }
+    // Review 2026-11-07 P3: one outside the range too was told of whole numbers
+    // only, and to drop whole = True, which takes it no more.
+    for (value, written) in [(-0.5, "-0.5"), (1e9, "1000000000")] {
+        let overrides = BTreeMap::from([("count".to_owned(), value)]);
+        let (_, report) = run("t.star", source, &overrides).unwrap();
+        let issue = report
+            .issues
+            .iter()
+            .find(|issue| issue.kind == "param_out_of_range")
+            .unwrap();
+        assert!(
+            issue.message.contains(&format!(
+                "param count = {written} is outside [1, 4] and takes whole numbers under 1e9 only"
+            )),
+            "{}",
+            issue.message
+        );
+        assert_eq!(
+            issue.hint,
+            "Set a whole number inside the declared range, or widen the range."
+        );
+    }
     // Review 2026-11-04 (rest of WB-42): 1e300 is whole but no int, so range()
     // failed on it with a general type error. (Outside a range, the default is
     // used instead, review 2026-11-06 P3.)

@@ -782,6 +782,15 @@ fn a_round_cut_is_drilled_only_by_a_drill_as_large() {
         Some(GeneralMachiningGeometry::ProfileCut { ref segments, .. }) if segments.len() == 2
     ));
     assert_eq!(openings::as_tooled(&tap, Some(40.0)), None);
+    // Review 2026-11-07 P3: a hole as large as the drill but for rounding was
+    // milled.
+    assert!(
+        drilled(&round_cut(35.0 + 1e-9), Some(35.0))
+            .is_some_and(|diameter_mm| (diameter_mm - 35.0).abs() < 1e-8)
+    );
+    let rounded_tap = openings::as_tooled(&round_cut(35.0 + 1e-9), Some(40.0)).unwrap();
+    assert_eq!(openings::as_tooled(&rounded_tap, Some(35.0)), None);
+    assert!(drilled(&round_cut(35.1), Some(35.0)).is_none());
 }
 
 #[test]

@@ -927,6 +927,9 @@ fn hundegger_btlx_file_menu_configures_profile_strategy_and_intermediate_cuts() 
             KetchupApp::new(),
         );
     harness.run();
+    let kept = tempfile::tempdir().unwrap();
+    let file = crate::recent_files::user_settings::SettingsFile::at(kept.path().join("btlx.txt"));
+    harness.state_mut().window.btlx_settings = Some(file.clone());
 
     let options = format!(
         "{} ⏵",
@@ -953,9 +956,16 @@ fn hundegger_btlx_file_menu_configures_profile_strategy_and_intermediate_cuts() 
             .profile_processing_request,
         BtlxProfileProcessingRequest::PortableFreeContour
     );
+    // Review 2026-11-07 P3: the options were not kept, so the next start was
+    // back at the defaults.
+    assert_eq!(
+        crate::app::btlx_settings::read(&file).profile_strategy,
+        BtlxProfileStrategy::PortableFreeContour
+    );
 
-    harness.state_mut().btlx.profile_strategy = BtlxProfileStrategy::EdgeSawCutsThenMillContour;
-    harness.state_mut().btlx.intermediate_saw_cuts = 32;
+    harness.state_mut().window.btlx.profile_strategy =
+        BtlxProfileStrategy::EdgeSawCutsThenMillContour;
+    harness.state_mut().window.btlx.intermediate_saw_cuts = 32;
     assert_eq!(
         harness
             .state()
@@ -972,7 +982,7 @@ fn hundegger_btlx_file_menu_configures_profile_strategy_and_intermediate_cuts() 
         harness.state().btlx_export_options().largest_drill_mm,
         Some(ketchup_manufacturing::fabrication::DEFAULT_LARGEST_DRILL_MM)
     );
-    harness.state_mut().btlx.largest_drill_mm = 0.0;
+    harness.state_mut().window.btlx.largest_drill_mm = 0.0;
     assert_eq!(harness.state().btlx_export_options().largest_drill_mm, None);
 }
 

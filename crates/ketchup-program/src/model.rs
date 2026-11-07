@@ -1960,9 +1960,11 @@ pub const UNFASTENED_JOINT_KINDS: [&str; 7] = [
     "rests",
 ];
 
-/// The fewest letters a kind has before a slip of one is reported: "cone",
-/// "node" and "bone" are words, not slips of "none" (review 2026-11-06 r23 P3).
-const SLIP_CHECKED_LETTERS: usize = 5;
+/// The fewest letters a kind has before it is taken for a slip of "none":
+/// "cone", "node", "bone" and "one" are words (review 2026-11-06 r23 P3), but
+/// "lose", "rest" and "frei" are slips of "loose", "rests" and "free", which
+/// fastened unsaid (review 2026-11-07 P3).
+const NONE_SLIP_LETTERS: usize = 5;
 
 impl Joint {
     /// Whether the joint fastens its parts to each other; every kind does
@@ -1974,23 +1976,21 @@ impl Joint {
 
     /// The kind of [`UNFASTENED_JOINT_KINDS`] this joint's kind is likely a
     /// misspelling of ("contcat", "contacts"), though it fastens (review
-    /// 2026-11-06 P3); none of fewer than [`SLIP_CHECKED_LETTERS`].
+    /// 2026-11-06 P3); "none" not of fewer than [`NONE_SLIP_LETTERS`].
     #[must_use]
     pub fn misspelt_unfastened_kind(&self) -> Option<&'static str> {
         let kind: Vec<char> = self.kind.trim().to_lowercase().chars().collect();
-        if kind.len() < SLIP_CHECKED_LETTERS {
-            return None;
-        }
         UNFASTENED_JOINT_KINDS.into_iter().find(|unfastened| {
             let base: Vec<char> = unfastened.chars().collect();
-            kind != base && one_slip(&kind, &base)
+            (*unfastened != "none" || kind.len() >= NONE_SLIP_LETTERS)
+                && kind != base
+                && one_slip(&kind, &base)
         })
     }
 }
 
 /// Whether `typed` is `meant` with one letter changed or two neighbours
-/// swapped; for a word of six letters or more, also one letter left out or
-/// added (so "one" is not taken for "none").
+/// swapped, or one letter left out or added.
 fn one_slip(typed: &[char], meant: &[char]) -> bool {
     let (shorter, longer) = if typed.len() <= meant.len() {
         (typed, meant)
@@ -2012,7 +2012,7 @@ fn one_slip(typed: &[char], meant: &[char]) -> bool {
             _ => false,
         };
     }
-    longer.len() == shorter.len() + 1 && meant.len() >= 6 && shorter[start..] == longer[start + 1..]
+    longer.len() == shorter.len() + 1 && shorter[start..] == longer[start + 1..]
 }
 
 /// A published load rating of one connection, with where it comes from.

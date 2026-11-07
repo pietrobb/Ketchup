@@ -2052,7 +2052,6 @@ pub struct KetchupApp {
     file: app_state::FileState,
     confirmation_surface: TrustedConfirmationSurface,
     side_effect_receipts: Vec<SideEffectAuthorizationReceipt>,
-    btlx: app_state::BtlxSettings,
     catalog: LocaleCatalog,
     /// The language `catalog` is in; `None` for a test catalog such as pseudo.
     language: Option<language::UiLanguage>,

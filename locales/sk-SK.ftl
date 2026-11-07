@@ -959,7 +959,7 @@ file-export-hundegger-btlx = Exportovať výrobu (Hundegger BTLx)…
 file-export-btlx-portable-contour = Iba prenositeľná kontúra
 file-export-btlx-saw-then-mill = Predrezať okraje, potom vyfrézovať vnútro
 file-export-btlx-intermediate-saw-cuts = Medzirezy pílou
-file-export-btlx-largest-drill = Najväčší vrták, mm (0: každý otvor frézovať)
+file-export-btlx-largest-drill = Najväčší vrták, mm (0: každý okrúhly obrys frézovať; deklarované vŕtania sa vŕtajú)
 dialog-export-dxf-title = Potvrdiť stratový export profilov DXF/DWG
 dialog-export-dxf-risk = exportovať rovinnú geometriu profilov, vrstvy a anotácie programu ako DXF, alebo do cesty .dwg ako DWG AutoCAD 2018, bez väzieb, topológie telies, materiálov, farieb a histórie Undo
 dialog-export-lossy-title = Potvrdiť stratový export STL
@@ -1788,6 +1788,7 @@ program-detached-undo = Vrátiť úpravu a nechať program
 program-detached-keep = Ponechať úpravu
 digest-language-changed = Rozhranie je teraz po slovensky
 digest-language-not-remembered = Rozhranie je teraz po slovensky, ale voľbu sa nepodarilo uložiť pre ďalšie spustenie: { $error }
+digest-btlx-options-not-remembered = Voľby BTLx platia pre toto okno, ale nepodarilo sa ich uložiť pre ďalšie spustenie: { $error }
 digest-wireframe-shown = Drôtové zobrazenie bolo zapnuté
 digest-wireframe-hidden = Drôtové zobrazenie bolo vypnuté
 digest-monochrome-shown = Jednofarebné zobrazenie bolo zapnuté
@@ -2108,11 +2109,12 @@ drawings-title-value-does-not-fit = Hodnota poľa „{ $field }“ sa do bunky p
     } z { $length }. Skráť ju; hodnota sa nikdy neoreže.
 drawings-parts-not-evaluated = Viditeľné diely bez presného telesa ({ $count }) by vo výkrese chýbali: { $parts }. Oprav ich alebo skry, prípadne počkaj, kým sa model vyhodnotí.
 drawings-settings-unreadable = Rohová pečiatka a formát výkresu uložené v dokumente sa nedajú prečítať ({ $reason }); ostávajú, ako sú. Vyplň pečiatku znova v okne Projektové výkresy, tým ich nahradíš.
-drawings-set-of-another-project = Sada výkresov so zoznamom { $list } bola exportovaná z { $project }, nie z tohto dokumentu, takže sa žiaden jej list nenahradí. Má { $sheets ->
-        [one] { $sheets } list, { $names }; prevzatím sa nahradí
-        [few] { $sheets } listy, { $names }; prevzatím sa nahradia
-       *[other] { $sheets } listov, { $names }; prevzatím sa nahradia
-    } a tie nad posledným listom sady tohto projektu sa zmažú. Exportuj do iného priečinka alebo pod iným menom, alebo sadu prevezmi pre tento projekt.
+drawings-set-of-another-project = Sada výkresov so zoznamom { $list } bola exportovaná z { $project }, nie z tohto dokumentu, takže sa žiaden jej list nenahradí. { $sheets ->
+        [0] Nemá žiadny list, takže sa prevzatím len zapíše sada tohto projektu
+        [one] Má { $sheets } list, { $names }; prevzatím sa nahradí a tie nad posledným listom sady tohto projektu sa zmažú
+        [few] Má { $sheets } listy, { $names }; prevzatím sa nahradia a tie nad posledným listom sady tohto projektu sa zmažú
+       *[other] Má { $sheets } listov, { $names }; prevzatím sa nahradia a tie nad posledným listom sady tohto projektu sa zmažú
+    }. Exportuj do iného priečinka alebo pod iným menom, alebo sadu prevezmi pre tento projekt.
 drawings-set-of-an-unsaved-project = neuloženého projektu
 drawings-take-over-set = Prevziať sadu a exportovať
 drawings-part-bodies-unresolved = Telesá dielu { $part } sa nedajú určiť každé ako jedno presné teleso ({ $reason }), takže by ho výkres vynechal. Daj každému vytiahnutiu vlastné teleso alebo jedno potlač a exportuj znova.

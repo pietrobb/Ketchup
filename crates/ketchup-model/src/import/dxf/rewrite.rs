@@ -100,6 +100,15 @@ pub enum DxfEditRefusal {
     /// More edits than one refused, each of the others' kinds, all named at once
     /// (review 2026-11-06 P3: only the first was, so N of them took N rounds).
     Several(Vec<DxfEditRefusal>),
+    /// A text of entity `kind` (`handle` 0 without one), group `code`, would be
+    /// `characters` long written with what is not ASCII as `\U+XXXX`, longer than a DXF
+    /// line holds. Only an MTEXT's text is split into pieces (review 2026-11-07 UL-220).
+    TextTooLong {
+        kind: String,
+        handle: u64,
+        code: i32,
+        characters: usize,
+    },
 }
 
 impl DxfEditRefusal {
@@ -285,6 +294,20 @@ impl fmt::Display for DxfEditRefusal {
                     "; ",
                 )
             }
+            Self::TextTooLong {
+                kind,
+                handle,
+                code,
+                characters,
+            } => write!(
+                formatter,
+                "the text in group {code} of {} would be {characters} characters long written \
+                 under the code page its header names, longer than the {} a DXF line holds; \
+                 shorten that text or take it out, or save the drawing as DXF 2007 or later \
+                 and import that",
+                entity(kind, *handle),
+                super::MAX_DXF_LINE_CHARS
+            ),
         }
     }
 }
@@ -353,9 +376,15 @@ pub fn write_edited_dxf(
         }
     };
     let mut dxf = drawing.write(lines, edits, &frame)?;
+    // A text drawn into a drawing read in its code page escapes what the page has not as
+    // well, so every drawing written is held to the line limit, counted as it is read
+    // (review 2026-11-07 UL-220, capability review).
+    let mut read_in = drawing.code_page.filter(|_| !drawing.utf8);
     if let Some(code_page) = escapes {
         dxf = escaped_beyond_ascii(&dxf, code_page);
+        read_in = None;
     }
+    let dxf = within_line_limit(dxf, read_in)?;
     Ok(EditedDxf {
         dxf,
         changed_in_file: rebound.changed,
@@ -395,6 +424,122 @@ fn escaped_beyond_ascii(dxf: &[u8], code_page: Option<CodePage>) -> Vec<u8> {
         out.extend_from_slice(chunk.invalid());
     }
     out
+}
+
+/// The characters of a piece of an MTEXT's text, as AutoCAD writes a long one.
+const MTEXT_PIECE_CHARS: usize = 250;
+
+/// `dxf` with each value line longer than a DXF line holds, as [`escaped_beyond_ascii`]
+/// can make one (seven characters for each not ASCII): an MTEXT's text in pieces of group 3
+/// before its last, group 1, as AutoCAD writes it and the reader joins it; any other
+/// text refused, naming its entity (review 2026-11-07 UL-220: Kečup wrote a drawing it
+/// could not read back). A line holds characters as read: in `code_page`, else UTF-8; an
+/// MTEXT in a code page is cut only where it is ASCII, so no character is cut in two.
+fn within_line_limit(dxf: Vec<u8>, code_page: Option<CodePage>) -> Result<Vec<u8>, DxfEditRefusal> {
+    let value = |line: &[u8]| {
+        let line = line.strip_suffix(b"\n").unwrap_or(line);
+        line.strip_suffix(b"\r").unwrap_or(line).len()
+    };
+    let characters = |text: &[u8]| match code_page {
+        Some(page) => page
+            .decode(text)
+            .map_or(text.len(), |text| text.chars().count()),
+        None => std::str::from_utf8(text).map_or(text.len(), |text| text.chars().count()),
+    };
+    let too_long = |text: &[u8]| {
+        text.len() > super::MAX_DXF_LINE_CHARS && characters(text) > super::MAX_DXF_LINE_CHARS
+    };
+    // Every drawing written passes here, so its lines are walked, not held: a drawing
+    // within the limit takes nothing more (review 2026-10-29 CD-63).
+    if !(dxf.split_inclusive(|byte| *byte == b'\n')).any(|line| too_long(&line[..value(line)])) {
+        return Ok(dxf);
+    }
+    let mut out = Vec::with_capacity(dxf.len() + dxf.len() / MTEXT_PIECE_CHARS * 8);
+    let mut kind: &[u8] = b"";
+    let mut handle = 0;
+    let mut lines = dxf.split_inclusive(|byte| *byte == b'\n');
+    while let Some(code_line) = lines.next() {
+        let Some(value_line) = lines.next() else {
+            out.extend_from_slice(code_line);
+            break;
+        };
+        let code = std::str::from_utf8(code_line).ok().and_then(|code| {
+            code.trim()
+                .trim_start_matches('\u{FEFF}')
+                .parse::<i32>()
+                .ok()
+        });
+        let text = &value_line[..value(value_line)];
+        match code {
+            Some(0) => (kind, handle) = (text, 0),
+            Some(5) => {
+                handle = std::str::from_utf8(text)
+                    .ok()
+                    .and_then(|hex| u64::from_str_radix(hex.trim(), 16).ok())
+                    .unwrap_or(0);
+            }
+            _ => {}
+        }
+        if !too_long(text) {
+            out.extend_from_slice(code_line);
+            out.extend_from_slice(value_line);
+            continue;
+        }
+        let code = code.ok_or(DxfEditRefusal::Malformed)?;
+        let cuttable = code_page.is_none() || text.is_ascii();
+        if !(matches!(code, 1 | 3) && kind == b"MTEXT" && cuttable) {
+            return Err(DxfEditRefusal::TextTooLong {
+                kind: String::from_utf8_lossy(kind).into_owned(),
+                handle,
+                code,
+                characters: characters(text),
+            });
+        }
+        let end = &value_line[text.len()..];
+        let pieces = mtext_pieces(text);
+        for (index, piece) in pieces.iter().enumerate() {
+            let last = code == 1 && index + 1 == pieces.len();
+            out.extend(with_code(code_line, if last { b"1" } else { b"3" }));
+            out.extend_from_slice(piece);
+            out.extend_from_slice(end);
+        }
+    }
+    Ok(out)
+}
+
+/// `text` in pieces of [`MTEXT_PIECE_CHARS`], each cut before a backslash that starts
+/// a `\U+XXXX` or a format code across the cut, so a reader that does not join the pieces
+/// first still sees whole escapes, and never inside a character of UTF-8.
+fn mtext_pieces(mut text: &[u8]) -> Vec<&[u8]> {
+    let mut pieces = Vec::with_capacity(text.len() / MTEXT_PIECE_CHARS + 1);
+    while text.len() > MTEXT_PIECE_CHARS {
+        let window = MTEXT_PIECE_CHARS - "\\U+XXXX".len()..MTEXT_PIECE_CHARS;
+        let mut cut = text[window.clone()]
+            .iter()
+            .rposition(|byte| *byte == b'\\')
+            .map_or(MTEXT_PIECE_CHARS, |at| window.start + at);
+        // A character of UTF-8 has at most three bytes after its first.
+        let first = cut - 3;
+        while cut > first && text[cut] & 0xC0 == 0x80 {
+            cut -= 1;
+        }
+        let (piece, rest) = text.split_at(cut);
+        pieces.push(piece);
+        text = rest;
+    }
+    pieces.push(text);
+    pieces
+}
+
+/// `line`, a group code line, with its code replaced by `code`, its spaces and line end
+/// kept.
+fn with_code(line: &[u8], code: &[u8]) -> Vec<u8> {
+    let start = line.iter().position(u8::is_ascii_digit).unwrap_or(0);
+    let digits = line[start..]
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    [&line[..start], code, &line[start + digits..]].concat()
 }
 
 /// How `lines` lie against the units of `source`, when reading it gives them (or, for

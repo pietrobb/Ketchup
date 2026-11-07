@@ -719,7 +719,13 @@ fn the_list_of_written_drawings_forgets_files_that_are_gone() {
     // drawing, one on a drive that is out, and a line of a newer Kečup are
     // kept; this document's gone drawing is forgotten on a worker.
     let other = directory.path().join("other.ketchup");
+    std::fs::write(&other, b"another document").unwrap();
     let theirs = directory.path().join("theirs.dxf");
+    // Review 2026-11-07 P3: the lines of a document deleted stayed for
+    // good; its drawing that is gone goes, one still there stays.
+    let deleted = directory.path().join("deleted.ketchup");
+    let left = directory.path().join("left.dxf");
+    std::fs::write(&left, b"still there").unwrap();
     #[cfg(windows)]
     let out = crate::recent_files::presence::drive_not_in_use()
         .join("plans")
@@ -743,6 +749,12 @@ fn the_list_of_written_drawings_forgets_files_that_are_gone() {
             out.display()
         ),
         format!("drawing={newer}"),
+        format!(
+            "drawing={}\ty\t{}\tabc",
+            deleted.display(),
+            directory.path().join("removed.dxf").display()
+        ),
+        format!("drawing={}\ty\t{}\tabc", deleted.display(), left.display()),
     ] {
         text.push_str(&line);
         text.push('\n');
@@ -751,14 +763,48 @@ fn the_list_of_written_drawings_forgets_files_that_are_gone() {
     std::fs::remove_file(directory.path().join("first.dxf")).unwrap();
     export(&mut app, "second.dxf");
     app.drawings.forgetting.take().unwrap().join().unwrap();
-    assert!(!listed().contains("first.dxf"), "{}", listed());
+    for forgotten in ["first.dxf", "removed.dxf"] {
+        assert!(!listed().contains(forgotten), "{forgotten}: {}", listed());
+    }
     assert!(listed().contains("second.dxf"), "{}", listed());
-    for kept in ["theirs.dxf", "newer field"] {
+    for kept in ["theirs.dxf", "newer field", "left.dxf"] {
         assert!(listed().contains(kept), "{kept}: {}", listed());
     }
     assert_eq!(listed().matches("out.dxf").count(), 2, "{}", listed());
     export(&mut app, "second.dxf");
     assert_eq!(listed().matches("second.dxf").count(), 1, "{:?}", listed());
+}
+
+/// Review 2026-11-07 P3 `written_owner`: the document's file was resolved,
+/// and on Windows opened, on the window's thread at each export and check,
+/// and a failure logged again each time. It is resolved once per file opened
+/// or saved: the file moved away while open asks the disk no more, and its
+/// drawing is still its own.
+#[test]
+fn the_documents_file_is_resolved_once_for_its_written_drawings() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = directory.path().join("user").join("drawings.txt");
+    let (app, mut bridge) = setup();
+    let mut app = app.with_written_drawings(&store);
+    let id = sheet_of_the_block(&mut app, &mut bridge);
+    let document = directory.path().join("plan.ketchup");
+    let save = Request::SaveAs {
+        expected: None,
+        path: document.display().to_string(),
+    };
+    bridge.execute(&mut app, save, false).unwrap();
+    let sheet = directory.path().join("A.dxf");
+    let mut export = |app: &mut KetchupApp| {
+        bridge.execute(app, export_drawings(&sheet, json!({"sheet_id": id})), false)
+    };
+    export(&mut app).unwrap_or_else(|code| panic!("{code}: {:?}", take_error_details()));
+    std::fs::rename(&document, directory.path().join("moved.ketchup")).unwrap();
+    export(&mut app).unwrap_or_else(|code| {
+        panic!(
+            "its own with its file moved away: {code}: {:?}",
+            take_error_details()
+        )
+    });
 }
 
 /// Review 2026-11-06 P3: a client's export of a drawing sheet took the SHA-256
