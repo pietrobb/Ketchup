@@ -697,11 +697,13 @@ fn a_program_on_a_drive_that_is_out_is_not_gone() {
     let this = std::env::current_exe().unwrap();
     #[cfg(windows)]
     let volume = crate::recent_files::presence::drive_not_in_use();
-    // A volume is mounted outside the home folder, as `/media/usb`.
+    // A volume is mounted in a folder volumes are mounted in, as `/media/usb`.
     #[cfg(not(windows))]
-    let volume = home
-        .parent()
-        .unwrap()
+    let volume = crate::recent_files::presence::MOUNT_ROOTS
+        .iter()
+        .map(Path::new)
+        .find(|root| root.is_dir())
+        .expect("a folder volumes are mounted in")
         .join(format!("ketchup-volume-{}", std::process::id()));
     let program = volume.join("tools").join("ketchup.exe");
     let file = environment.config_file(Harness::ClaudeCode).unwrap();
@@ -717,6 +719,35 @@ fn a_program_on_a_drive_that_is_out_is_not_gone() {
             command: program.display().to_string(),
             exists: true
         }
+    );
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// Review 2026-11-07 P3: a program of a folder deleted outside the home
+/// folder, as `/opt/ketchup-1.0/bin` or `/Applications/Kečup 1.2.app`, was
+/// neither there nor gone, so the installer never replaced its entry.
+#[cfg(unix)]
+#[test]
+fn a_program_of_a_folder_deleted_outside_the_home_folder_is_replaced() {
+    let home = temporary_home("deleted-outside");
+    let environment = clean_profile(&home);
+    let this = std::env::current_exe().unwrap();
+    let program = home
+        .parent()
+        .unwrap()
+        .join(format!("ketchup-1.0-{}", std::process::id()))
+        .join("bin")
+        .join("ketchup");
+    let file = environment.config_file(Harness::ClaudeCode).unwrap();
+    let config =
+        serde_json::json!({"mcpServers": {"ketchup": {"command": program, "args": ["--mcp"]}}});
+    std::fs::write(&file, config.to_string()).unwrap();
+    environment.set_up_installed(&this);
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(
+        written["mcpServers"]["ketchup"]["command"],
+        serde_json::json!(this)
     );
     std::fs::remove_dir_all(home).unwrap();
 }

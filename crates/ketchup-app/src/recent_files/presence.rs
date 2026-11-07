@@ -19,8 +19,8 @@ pub(crate) enum Presence {
 }
 
 /// The folder below which a missing folder was deleted, not a volume that is
-/// not mounted now: the home folder, on Windows none, where a drive or share
-/// that is out answers nothing at all.
+/// not mounted now, even in a folder volumes are mounted in: the home folder,
+/// on Windows none, where a drive or share that is out answers nothing at all.
 pub(crate) fn local_folder() -> Option<PathBuf> {
     // Without a home folder no folder above a file's own is trusted: an
     // absolute folder is never below a relative one.
@@ -32,7 +32,8 @@ pub(crate) fn local_folder() -> Option<PathBuf> {
 }
 
 /// Whether the file at `path` is there, a missing folder above it trusted to
-/// be deleted below `local` only (`None`: anywhere; see [`local_folder`]).
+/// be deleted below `local` (`None`: anywhere; see [`local_folder`]) and
+/// outside the folders volumes are mounted in.
 pub(crate) fn presence(path: &Path, local: Option<&Path>) -> Presence {
     match std::fs::metadata(path) {
         Ok(metadata) if metadata.is_file() => Presence::Here,
@@ -52,21 +53,45 @@ pub(crate) fn presence(path: &Path, local: Option<&Path>) -> Presence {
     }
 }
 
+/// The folders volumes are mounted in, and taken away from when they are not:
+/// a folder missing below one may be back.
+pub(crate) const MOUNT_ROOTS: [&str; 8] = [
+    "/Volumes",
+    "/Network",
+    "/media",
+    "/run/media",
+    "/mnt",
+    "/net",
+    "/misc",
+    "/afs",
+];
+
 /// Whether the folders of a missing `path` answer: its own folder is there,
-/// or the nearest one above it that is there is below `local` (review
-/// 2026-11-04 r19 P3: a document whose folder was deleted stayed out of reach
-/// for ever). A drive, share or volume that is out has no folder there at all
-/// (Windows says so of `E:\` and `\\server\share` alike), and an empty folder
-/// does not answer: it may be where a share is mounted, as sshfs under the
-/// home folder, while it is not (review 2026-11-06 P3).
+/// or the nearest one above it that is there is below `local` or not in a
+/// folder volumes are mounted in (review 2026-11-04 r19 P3: a document whose
+/// folder was deleted stayed out of reach for ever; 2026-11-07 P3: so did a
+/// program of a folder deleted outside the home folder, as
+/// `/opt/ketchup-1.0/bin` or `/Applications/Kečup 1.2.app`, which the
+/// installer then never replaced). A drive, share or volume that is out has
+/// no folder there at all (Windows says so of `E:\` and `\\server\share`
+/// alike, macOS of `/Volumes/NAS`), and an empty folder does not answer: it
+/// may be where a share is mounted, as sshfs under the home folder, while it
+/// is not (review 2026-11-06 P3).
 fn folder_answers(path: &Path, local: Option<&Path>) -> bool {
+    folder_answers_beside(path, local, &MOUNT_ROOTS.map(Path::new))
+}
+
+fn folder_answers_beside(path: &Path, local: Option<&Path>, mount_roots: &[&Path]) -> bool {
     for folder in path.ancestors().skip(1) {
         match std::fs::metadata(folder) {
             Ok(metadata) => {
                 return metadata.is_dir()
                     && std::fs::read_dir(folder).is_ok_and(|mut entries| entries.next().is_some())
                     && (Some(folder) == path.parent()
-                        || local.is_none_or(|local| folder.starts_with(local)));
+                        || local.is_none_or(|local| {
+                            folder.starts_with(local)
+                                || !mount_roots.iter().any(|root| folder.starts_with(root))
+                        }));
             }
             // Only a folder that is not there lets the search go up.
             Err(error) => {
@@ -113,10 +138,19 @@ mod tests {
         std::fs::write(directory.path().join("notes.txt"), "kept").unwrap();
         assert_eq!(presence(&document, Some(directory.path())), Presence::Gone);
         assert_eq!(presence(&document, None), Presence::Gone);
-        // Outside the computer's own folders a missing folder may be a volume
-        // not mounted now, as `/Volumes/NAS`: it may come back.
+        // Review 2026-11-07 P3: outside the home folder too, as a program of
+        // `/opt/ketchup-1.0/bin` deleted, the installer replacing its entry.
         let home = directory.path().join("home");
-        assert_eq!(presence(&document, Some(&home)), Presence::Unknown);
+        assert_eq!(presence(&document, Some(&home)), Presence::Gone);
+        // In a folder volumes are mounted in a missing folder may be a volume
+        // not mounted now, as `/Volumes/NAS`: it may come back.
+        let roots = [directory.path()];
+        assert!(!folder_answers_beside(&document, Some(&home), &roots));
+        assert!(folder_answers_beside(
+            &document,
+            Some(directory.path()),
+            &roots
+        ));
         // Its own folder there still says it is gone anywhere.
         let beside = directory.path().join("a.ketchup");
         assert_eq!(presence(&beside, Some(&home)), Presence::Gone);

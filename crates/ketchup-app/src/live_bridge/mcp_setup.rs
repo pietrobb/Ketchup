@@ -391,7 +391,8 @@ impl Environment {
             // A folder may not be read, a volume not be mounted, a drive or share
             // be out (review 2026-11-06 SEC-180, r23 SEC-201: each counted as no
             // file, and the installer replaced the entry); a missing folder is
-            // trusted to be deleted in the client's home folder only.
+            // trusted to be deleted in the client's home folder, and outside it
+            // but in no folder volumes are mounted in (review 2026-11-07 P3).
             let local = (!cfg!(windows)).then_some(self.home.as_path());
             let mut unknown = false;
             for candidate in candidates {
