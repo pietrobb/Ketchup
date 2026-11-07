@@ -1,4 +1,4 @@
-# Review 2026-11-07 r26: status of the findings
+﻿# Review 2026-11-07 r26: status of the findings
 
 Branch `r27-review1107b` (`origin/main` `8d781633`). Every finding of `review-2026-11-07-r26.md`
 (on `claude/adoring-carson-6poeki`) is listed here as fixed (with its commits) or deferred (with
@@ -23,10 +23,10 @@ None were reported.
 | Drawings | `polygon_area` from absolute coordinates | Fixed with MF-240, d1184abd |
 | Statics and program | a grounded rod turned over about 3.8° counts as a full anchorage again | Fixed, ab647343: a side of the anchorage's box within acos 0.9 of the member's axis is its length and is left out of its depth. Test: the rod 5 900 × 10 × 10 turned 4.2° and 20° is reported `anchorage_small` (failed before); the 45° slab, and the tiny house in release with the ignored tests, are unchanged |
 | | "or widen the range" does not help an override that is no whole number | Fixed, 1a9dc52a: the hint names the range and the whole number in it nearest the value ("Set a whole number inside [1, 4], as 4.") |
-| DXF | the `drawing_text_too_long` advice ignores the cause | Open (R5) |
-| | names outside the BMP and unreadable blocks make a drawing unwritable | Open (R5) |
-| | the `mtext_pieces` comment promises more than it does | Open (R5) |
-| | several texts too long need several exports | Open (R5) |
+| DXF | the `drawing_text_too_long` advice ignores the cause | Fixed, 2a425876: the refusal says how the drawing writes the text (as read, in its code page, or escaped against a header naming another) and suggests DXF 2007 only where escaping is the cause; the catalog entry points to `caused_by` for the cause (test: the same Cyrillic texts write as read with no code page, refuse as escaped under ANSI_1252, and the as-read wording has no DXF 2007 or code page) |
+| | names outside the BMP and unreadable blocks make a drawing unwritable | Fixed, 2a425876: a line other than a text that escaping would push past 2 049 characters keeps its bytes as read (test: a layer of 150 „𝔸“ and a block of 300 Cyrillic characters under ANSI_1252 read the same through two saves; it fails without the fix) |
+| | the `mtext_pieces` comment promises more than it does | Fixed, 2a425876: it says only a `\U+XXXX` is never cut, and a longer format code may be, as readers join the pieces first |
+| | several texts too long need several exports | Fixed, 2a425876: every text too long is refused at once in one `Several`, coded `drawing_text_too_long` (test: two too-long TEXTs give both; it fails when only the first is returned). ed98d53f: `release_reads.py` lists `DrawnTextTooLong`, which UL-240 added without |
 | File presence and settings | the "below home" check compares path text | Open (R6) |
 | | `/opt` and `/usr` from autofs or a network share (S) | Open (R6) |
 | | a link to a file deleted in home stays Unknown | Open (R6) |
