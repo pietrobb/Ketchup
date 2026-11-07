@@ -64,7 +64,7 @@ FROZEN_MODULES = {
     "crates/ketchup-model/src/document.rs": 514,
     # They kept growing past 3 000 lines (review 2026-11-07 P3).
     "crates/ketchup-manufacturing/src/fabrication.rs": 4787,
-    "crates/ketchup-model/src/import/dxf.rs": 4599,
+    "crates/ketchup-model/src/import/dxf.rs": 4598,
 }
 
 MAX_FUNCTION_LINES = 400
