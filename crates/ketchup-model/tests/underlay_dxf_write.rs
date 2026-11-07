@@ -2718,6 +2718,71 @@ fn a_long_text_beyond_ascii_under_a_code_page_header_is_written_so_it_reads_back
     );
 }
 
+/// Review 2026-11-07 UL-220 (capability review): a text drawn into a drawing read in its
+/// code page escapes what the page has not as well, and that writer checked no length, so
+/// 300 Cyrillic characters made a line of 2 100 Kečup could not read back. It is refused,
+/// named; a long text in a DXF 2007, whose line holds characters not bytes, is not.
+#[test]
+fn a_text_drawn_too_long_for_a_dxf_line_is_refused_in_every_encoding() {
+    let drawn = |text: String| {
+        let mut edits = UnderlayEdits::default();
+        edits.added.push(AddedObject::Drawn {
+            layer: "notes".to_owned(),
+            shape: DrawnShape::Text {
+                anchor_mm: [0.0, -1000.0],
+                height_mm: 100.0,
+                rotation_deg: 0.0,
+                text,
+            },
+        });
+        edits
+    };
+    let header = HEADER.replace(
+        "9\n$INSUNITS\n",
+        "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
+    );
+    let source = format!("{header}{TABLES}{BLOCKS}{ENTITIES}0\nEOF\n");
+    let original = read(source.as_bytes());
+    let refused = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        &original.lines,
+        &drawn("Ж".repeat(300)),
+    );
+    assert!(
+        matches!(
+            refused,
+            Err(EditedDxfError::Refused(DxfEditRefusal::TextTooLong {
+                ref kind,
+                code: 1,
+                characters: 2100,
+                ..
+            })) if kind == "TEXT"
+        ),
+        "{:?}",
+        refused.map(|written| written.split(|byte| *byte == b'\n').map(<[u8]>::len).max())
+    );
+
+    let source = source.replace("AC1015", "AC1021");
+    let original = read(source.as_bytes());
+    let long = "Ж".repeat(1500);
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        &original.lines,
+        &drawn(long.clone()),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let texts = read(&written)
+        .lines
+        .layers()
+        .iter()
+        .flat_map(|layer| layer.texts())
+        .map(|text| text.text.clone())
+        .collect::<Vec<_>>();
+    assert!(texts.contains(&long), "{}", texts.len());
+}
+
 /// Review 2026-10-31 P3: a polyline drawn into an R13 drawing was written as LWPOLYLINE,
 /// which came only with R14. It is a POLYLINE there, with its VERTEX and SEQEND marked as
 /// R13 marks them and owned by it.
