@@ -325,12 +325,18 @@ fn segment_slabs(frame: &ViewFrame, [a, b]: [Point; 2]) -> Vec<[Point; 2]> {
 }
 
 /// Whether the solid's triangles wind clockwise seen from outside (as after a
-/// mirroring placement), so their normals point inward.
+/// mirroring placement), so their normals point inward. The volume is summed
+/// from a corner of the solid, not the world origin: a model in national
+/// coordinates (1e9 mm away) would sum terms of 1e27 and lose its sign
+/// (review 2026-11-07 r26 MF-240).
 fn winds_inward(solid: &DrawingSolid) -> bool {
+    let Some(&[origin, _, _]) = solid.triangles.first() else {
+        return false;
+    };
     let volume: f64 = solid
         .triangles
         .iter()
-        .map(|[a, b, c]| dot(*a, cross(*b, *c)))
+        .map(|[a, b, c]| dot(sub(*a, origin), cross(sub(*b, origin), sub(*c, origin))))
         .sum();
     volume < 0.0
 }
@@ -675,10 +681,19 @@ fn clip_to_box(a: [f64; 2], b: [f64; 2], min: [f64; 2], max: [f64; 2]) -> Option
     (enter < leave).then(|| [point(enter), point(leave)])
 }
 
+/// The signed area, measured from the polygon's first corner so that it keeps
+/// its precision far from the origin (review 2026-11-07 r26 MF-240).
 fn polygon_area(points: &[[f64; 2]]) -> f64 {
+    let Some(&origin) = points.first() else {
+        return 0.0;
+    };
+    let local = |point: [f64; 2]| [point[0] - origin[0], point[1] - origin[1]];
     (0..points.len())
         .map(|index| {
-            let (a, b) = (points[index], points[(index + 1) % points.len()]);
+            let (a, b) = (
+                local(points[index]),
+                local(points[(index + 1) % points.len()]),
+            );
             a[0] * b[1] - b[0] * a[1]
         })
         .sum::<f64>()
@@ -1923,6 +1938,65 @@ mod tests {
         assert!(marked_floor_levels(&tiles, &AtomicBool::new(false)).is_some());
         let took = started.elapsed();
         assert!(took < std::time::Duration::from_secs(1), "{took:?}");
+    }
+
+    /// `solids` moved `by` in plan, as a model placed in national coordinates.
+    fn moved(mut solids: Vec<DrawingSolid>, by: [f64; 2]) -> Vec<DrawingSolid> {
+        for corner in solids
+            .iter_mut()
+            .flat_map(|solid| solid.triangles.iter_mut().flatten())
+        {
+            corner[0] += by[0];
+            corner[1] += by[1];
+        }
+        solids
+    }
+
+    /// Review 2026-11-07 r26 MF-240: a solid's winding was summed from the
+    /// world coordinates of its corners, terms of 1e27 at 1e9 mm, so in
+    /// S-JTSK about half the tiles came out inside out and their undersides
+    /// became false levels. A model far from the origin is drawn as at it.
+    #[test]
+    fn a_model_in_national_coordinates_is_drawn_as_at_the_origin() {
+        let near = room();
+        let tiles = || {
+            (0..400_u32).map(|index| {
+                let [x, y] = [f64::from(index % 20) * 50.0, f64::from(index / 20) * 50.0];
+                cuboid("tile", [x, y, 190.0], [x + 50.0, y + 50.0, 200.0])
+            })
+        };
+        let near_set = drawing_set(&near, &options(&near, None)).unwrap();
+        for by in [[-1.2e9, -5.0e8], [5.0e9, 5.0e9]] {
+            let far = moved(near.clone(), by);
+            let far_tiles = moved(tiles().collect(), by);
+            assert!(
+                far.iter()
+                    .chain(&far_tiles)
+                    .all(|solid| !winds_inward(solid)),
+                "{by:?}"
+            );
+            assert_eq!(
+                marked_floor_levels(&far_tiles, &AtomicBool::new(false)),
+                marked_floor_levels(&tiles().collect::<Vec<_>>(), &AtomicBool::new(false)),
+                "{by:?}"
+            );
+            let far_set = drawing_set(&far, &options(&far, None)).unwrap();
+            for view in ProjectView::ALL {
+                let (far_view, near_view) = (summary(&far_set, view), summary(&near_set, view));
+                assert_eq!(far_view.levels, near_view.levels, "{by:?} {view:?}");
+                assert_eq!(far_view.cut_solids, near_view.cut_solids, "{by:?} {view:?}");
+                for axis in 0..2 {
+                    assert!(
+                        (far_view.extent_mm[axis] - near_view.extent_mm[axis]).abs() < 1e-3,
+                        "{by:?} {view:?} {:?} {:?}",
+                        far_view.extent_mm,
+                        near_view.extent_mm
+                    );
+                }
+            }
+            let triangle = [[by[0], by[1]], [by[0] + 3.0, by[1]], [by[0], by[1] + 2.0]];
+            assert!((polygon_area(&triangle) - 3.0).abs() < 1e-9, "{by:?}");
+        }
     }
 
     /// Review 2026-11-06 r23 MF-203: with the model's origin on the ground,
