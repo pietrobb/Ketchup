@@ -1,4 +1,4 @@
-﻿# Review 2026-11-07 r26: status of the findings
+# Review 2026-11-07 r26: status of the findings
 
 Branch `r27-review1107b` (`origin/main` `8d781633`). Every finding of `review-2026-11-07-r26.md`
 (on `claude/adoring-carson-6poeki`) is listed here as fixed (with its commits) or deferred (with
