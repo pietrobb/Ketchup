@@ -5,7 +5,7 @@
 use ketchup_model::document::TagId;
 use ketchup_model::import::{
     Difference, DxfEditRefusal, DxfImportOptions, DxfUnderlay, EditOfObject, EditedDxfError,
-    ImportLengthUnit, read_dxf_underlay, write_edited_dxf as write_reported,
+    ImportLengthUnit, TextWritten, read_dxf_underlay, write_edited_dxf as write_reported,
 };
 use ketchup_model::underlay::drawn::{AddedObject, DrawnShape, similarity};
 use ketchup_model::underlay::edits::UnderlayEdits;
@@ -2642,6 +2642,63 @@ fn names_survive_two_saves(block: &str, value: &str, tag: &str) {
     assert_eq!(details(&read(&twice.dxf)), before);
 }
 
+/// Review 2026-11-07 r26 P3: a drawing Kečup read could not be written at all when a name
+/// escaped grew past what a DXF line holds: a layer of 150 „𝔸“ (2 100 escaped), a block
+/// of 300 Cyrillic characters the reader passes over. Such a name keeps its line as read.
+#[test]
+fn a_name_too_long_to_escape_keeps_its_line_through_two_saves() {
+    let header = HEADER.replace(
+        "9\n$INSUNITS\n",
+        "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
+    );
+    let layer = "𝔸".repeat(150);
+    let block = "Ж".repeat(300);
+    let named = |part: &str| {
+        part.replace("2\nwalls\n", &format!("2\n{layer}\n"))
+            .replace("8\nwalls\n", &format!("8\n{layer}\n"))
+            .replace("2\nleaf\n", &format!("2\n{block}\n"))
+    };
+    let source = format!(
+        "{header}{}{}{}0\nEOF\n",
+        named(TABLES),
+        named(BLOCKS),
+        named(ENTITIES)
+    );
+    let original = read(source.as_bytes());
+    let layers = |underlay: &DxfUnderlay| {
+        let objects = underlay.lines.objects();
+        objects
+            .objects
+            .iter()
+            .map(|object| objects.layer_name(object).to_owned())
+            .collect::<Vec<_>>()
+    };
+    let before = layers(&original);
+    assert!(before.contains(&layer), "{before:?}");
+
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(id_of(&original.lines, 0xA3));
+    let once = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        &original.lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let mut kept = before.clone();
+    kept.remove(id_of(&original.lines, 0xA3) as usize);
+    assert_eq!(layers(&read(&once)), kept);
+
+    let twice = write_edited_dxf(
+        &once,
+        DxfImportOptions::new(None),
+        &read(&once).lines,
+        &UnderlayEdits::default(),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(layers(&read(&twice)), kept);
+}
+
 /// Review 2026-11-07 UL-220: escaped, a character beyond ASCII takes seven (one beyond
 /// U+FFFF fourteen), so a long Cyrillic note made a line longer than a DXF line holds,
 /// and Kečup could not read the drawing it had written. An MTEXT is written in pieces of
@@ -2712,9 +2769,91 @@ fn a_long_text_beyond_ascii_under_a_code_page_header_is_written_so_it_reads_back
                 handle: 0xB1,
                 code: 1,
                 characters: 2800,
+                written: TextWritten::Escaped,
             })) if kind == "TEXT"
         ),
         "{refused:?}"
+    );
+}
+
+/// Review 2026-11-07 r26 P3: a text too long was said to be written "under the code page
+/// its header names" whatever the drawing named, and only the first such text was named,
+/// so N of them took N saves. A drawing naming no code page writes its texts as read; one
+/// whose header names a code page its texts are not in is told of `\U+XXXX` and DXF 2007,
+/// each text at once; a text as read is not told to save as DXF 2007.
+#[test]
+fn texts_too_long_are_refused_together_by_their_cause() {
+    let text = |handle: &str| {
+        format!(
+            "0\nTEXT\n5\n{handle}\n330\n1F\n100\nAcDbEntity\n8\nnotes\n100\nAcDbText\n\
+             10\n0\n20\n0\n30\n0\n40\n250\n1\n{}\n100\nAcDbText\n",
+            "Ж".repeat(400)
+        )
+    };
+    let written = |header: &str| {
+        let source = format!(
+            "{header}{TABLES}0\nSECTION\n2\nENTITIES\n{}{}{}0\nENDSEC\n0\nEOF\n",
+            text("B0"),
+            text("B1"),
+            text("B2")
+        );
+        let original = read(source.as_bytes());
+        let mut edits = UnderlayEdits::default();
+        edits.removed_objects.insert(id_of(&original.lines, 0xB0));
+        write_edited_dxf(
+            source.as_bytes(),
+            DxfImportOptions::new(None),
+            &original.lines,
+            &edits,
+        )
+    };
+    let as_read = written(HEADER).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        read(&as_read)
+            .lines
+            .layers()
+            .iter()
+            .map(|layer| layer.texts().len())
+            .sum::<usize>(),
+        2
+    );
+
+    let header = HEADER.replace(
+        "9\n$INSUNITS\n",
+        "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
+    );
+    let refusal = match written(&header) {
+        Err(EditedDxfError::Refused(refusal)) => refusal,
+        other => panic!("{other:?}"),
+    };
+    let too_long = |handle, written| DxfEditRefusal::TextTooLong {
+        kind: "TEXT".to_owned(),
+        handle,
+        code: 1,
+        characters: 2800,
+        written,
+    };
+    assert_eq!(
+        refusal,
+        DxfEditRefusal::Several(vec![
+            too_long(0xB1, TextWritten::Escaped),
+            too_long(0xB2, TextWritten::Escaped)
+        ])
+    );
+    let message = refusal.to_string();
+    assert!(
+        message.contains("written as \\U+XXXX")
+            && !message.contains("code page its header names")
+            && message.contains("save the drawing as DXF 2007"),
+        "{message}"
+    );
+
+    let as_read = too_long(0xB1, TextWritten::AsRead).to_string();
+    assert!(
+        !as_read.contains("code page")
+            && !as_read.contains("DXF 2007")
+            && !as_read.contains("\\U+"),
+        "{as_read}"
     );
 }
 

@@ -167,8 +167,8 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "drawing_text_too_long",
         Validation,
         "source",
-        "A text of the drawing would be longer than a DXF line holds once written under the code page its header names, where each character beyond ASCII takes seven (\\U+XXXX); caused_by names its entity and length. Nothing was written.",
-        "Shorten that text or take it out of the drawing, or save the source as DXF 2007 or later (UTF-8) from the program that made it and import that, then export again.",
+        "A text of the drawing, or several, would be longer than a DXF line holds as the drawing is written; caused_by names each entity, its length and why: before DXF 2007 a character its code page has not is written as \\U+XXXX, seven characters. Nothing was written.",
+        "Shorten those texts or take them out of the drawing; where caused_by names \\U+XXXX, saving the source as DXF 2007 or later (UTF-8) from the program that made it and importing that helps too. Then export again.",
     ),
     entry(
         "drawing_worker_failed",

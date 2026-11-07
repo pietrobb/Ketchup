@@ -490,6 +490,14 @@ pub(super) fn drawing_export_code(error: &UnderlayExportError) -> &'static str {
             | UnderlayRefusal::Dwg(
                 DwgRefusal::DxfTooLarge { .. } | DwgRefusal::TooManyPairs { .. },
             ) => "drawing_source_unwritable",
+            // Every text too long is named at once (review 2026-11-07 r26 P3).
+            UnderlayRefusal::NotWritten(DxfEditRefusal::Several(refusals))
+                if refusals
+                    .iter()
+                    .all(|refusal| matches!(refusal, DxfEditRefusal::TextTooLong { .. })) =>
+            {
+                "drawing_text_too_long"
+            }
             UnderlayRefusal::NotWritten(
                 DxfEditRefusal::NoHandle { .. }
                 | DxfEditRefusal::HandleMissing { .. }

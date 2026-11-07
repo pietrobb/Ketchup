@@ -137,7 +137,8 @@ use extrusion::{ensure_planar, ensure_planar_ocs, ensure_planar_wcs, extrusion_s
 use hatch::OrderedFill;
 use polyline::{PolylineVertex, build_polyline_profile, parse_lwpolyline, parse_polyline};
 pub use rewrite::{
-    Difference, DxfEditRefusal, EditOfObject, EditedDxf, EditedDxfError, write_edited_dxf,
+    Difference, DxfEditRefusal, EditOfObject, EditedDxf, EditedDxfError, TextWritten,
+    write_edited_dxf,
 };
 use style::EntityStyle;
 use text::OrderedText;

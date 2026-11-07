@@ -665,6 +665,21 @@ fn a_drawing_export_refusal_has_the_code_of_its_cause() {
             })),
             "drawing_edit_not_writable",
         ),
+        // Review 2026-11-07 r26 P3: every text too long is named at once.
+        (
+            refused(UnderlayRefusal::NotWritten(DxfEditRefusal::Several(
+                [0xB1, 0xB2]
+                    .map(|handle| DxfEditRefusal::TextTooLong {
+                        kind: "TEXT".into(),
+                        handle,
+                        code: 1,
+                        characters: 2800,
+                        written: ketchup_model::import::TextWritten::Escaped,
+                    })
+                    .into(),
+            ))),
+            "drawing_text_too_long",
+        ),
         (
             Error::Worker(UnderlayWorkerError::Unavailable(
                 WorkerUnavailable::NotInstalled,
