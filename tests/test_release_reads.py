@@ -206,6 +206,28 @@ def test_no_release_restoring_the_history_fails(tmp_path, monkeypatch, capsys, r
     assert ("restored the Undo history of no file" in capsys.readouterr().out) != restores
 
 
+def test_a_release_restoring_no_history_fails_while_another_restores_it(tmp_path, monkeypatch, capsys):
+    # Review 2026-11-06 r23 P3: one release restoring a file's history passed the run, so
+    # a release that stopped restoring it went unseen.
+    def run(command, **kwargs):
+        if "release-reader" in command and Path(command[-1]).name == "resaved-0.3.1":
+            history = Path(command[-1]) / "history"
+            history.mkdir(parents=True)
+            (history / "saved-108-a.ketchup").write_bytes(b"x")
+        return type("Done", (), {"returncode": 0})()
+
+    monkeypatch.setattr(checker.subprocess, "run", run)
+    monkeypatch.setattr(checker, "serde_enums", lambda tag: {})
+    monkeypatch.setattr(checker, "what_it_reads", lambda tag: ["108", "1", "0"])
+    monkeypatch.setattr(checker, "old_workspace", lambda tag, target: tmp_path)
+    monkeypatch.setattr(checker.tempfile, "TemporaryDirectory", lambda **kwargs: _Here(tmp_path))
+    assert checker.main(["--files", str(tmp_path / "files")]) == 1
+    out = capsys.readouterr().out
+    for tag in checker.RELEASES:
+        named = f"Kečup {checker.version(tag)} restored the Undo history of no file" in out
+        assert named == (tag != "v0.3.1"), out
+
+
 class _Here:
     def __init__(self, path):
         self.path = path

@@ -76,15 +76,25 @@ pub(crate) enum ProjectDrawingsError {
     Dwg(ketchup_dwg::DwgError),
     /// The set at the path, listed at `list`, is another project's, or
     /// another copy's that wrote it since; `project` names the file it was
-    /// exported from (review 2026-11-04 r19 MF-162), and `sheets` how many
-    /// sheets it has, which taking it over replaces or deletes (review
-    /// 2026-11-06 P3).
+    /// exported from (review 2026-11-04 r19 MF-162), and `sheets` the files
+    /// of its sheets, which taking it over replaces or deletes (review
+    /// 2026-11-06 P3; r23 P3: the question named only how many).
     SetOfAnotherProject {
         list: PathBuf,
         project: Option<String>,
-        sheets: usize,
+        sheets: Vec<String>,
     },
     Write(std::io::Error),
+}
+
+/// The first [`ketchup_rejection::LISTED`] of `sheets`, then "…" for the rest,
+/// as a question names the sheets of a set it would replace.
+pub(crate) fn sheet_names(sheets: &[String]) -> String {
+    let mut names = sheets[..sheets.len().min(ketchup_rejection::LISTED)].join(", ");
+    if sheets.len() > ketchup_rejection::LISTED {
+        names.push_str(", …");
+    }
+    names
 }
 
 /// Why a shown underlay's lines do not read, in words.
@@ -367,6 +377,15 @@ const OWNED_SET_LIST_HEADER: &str = "Ketchup drawing set of a project file";
 /// 2026-11-06 SEC-182).
 const DOCUMENT_SET_LIST_HEADER: &str = "Ketchup drawing set of a document";
 
+/// The second line of a set's list: the token of the project's file, or the
+/// document's id while it has none.
+fn document_line(owner: &SetOwner) -> String {
+    match &owner.token {
+        Some(token) => format!("file {token}"),
+        None => format!("document {}", owner.document.0),
+    }
+}
+
 /// The line of a set's list naming the file the project is kept in by its
 /// name, none for a project not saved.
 fn project_name_line(owner: &SetOwner) -> String {
@@ -401,6 +420,10 @@ pub(crate) struct SetOwner {
     pub(crate) document: DocumentId,
     /// None while the project has not been saved.
     pub(crate) file: Option<PathBuf>,
+    /// The token of the project's file, new in a copy saved as another file:
+    /// what a set's list names, not the document id a copy shares (review
+    /// 2026-11-06 r23 MF-201). None while it has none.
+    pub(crate) token: Option<String>,
     /// The SHA-256 of each drawing file the document wrote, by
     /// [`written_key`](super::drawing_sheet_export::written_key).
     pub(crate) written: BTreeMap<String, String>,
@@ -438,6 +461,7 @@ impl KetchupApp {
                 .path
                 .clone()
                 .or_else(|| self.recovery_requested_path().map(Path::to_path_buf)),
+            token: self.file_token().map(str::to_owned),
             written: self.written_drawings(),
         }
     }
@@ -457,8 +481,8 @@ const REPLACING: &str = "replacing ";
 /// the sheets are written.
 fn list_of(owner: &SetOwner, replacing: Option<&str>, sheets: &[(String, String)]) -> Vec<u8> {
     let mut list = format!(
-        "{DOCUMENT_SET_LIST_HEADER}\ndocument {}\n{}\n",
-        owner.document.0,
+        "{DOCUMENT_SET_LIST_HEADER}\n{}\n{}\n",
+        document_line(owner),
         project_name_line(owner)
     );
     if let Some(replacing) = replacing {
@@ -506,10 +530,10 @@ enum SetList {
     Its(BTreeMap<String, BTreeSet<String>>),
     /// The set of another project, or another copy of this one that wrote it
     /// since: the name of the file it was exported from, none when unsaved or
-    /// not named, and how many sheets it lists.
+    /// not named, and the files of the sheets it lists.
     Another {
         project: Option<String>,
-        sheets: usize,
+        sheets: Vec<String>,
     },
     /// No list of a drawing set at all.
     NotAList,
@@ -557,7 +581,14 @@ fn set_list_of(list: &[u8], list_path: &Path, owner: &SetOwner, take_over: bool)
     {
         return SetList::NotAList;
     }
-    let same_document = lines.next() == Some(format!("document {}", owner.document.0).as_str());
+    // A list of this Kečup names the project's file by its token; an older
+    // one, by the document id a copy shares too.
+    let whose = if header == DOCUMENT_SET_LIST_HEADER {
+        document_line(owner)
+    } else {
+        format!("document {}", owner.document.0)
+    };
+    let same_document = lines.next() == Some(whose.as_str());
     let project = (header != SET_LIST_HEADER)
         .then(|| lines.next().unwrap_or_default())
         .and_then(|line| line.strip_prefix("project "));
@@ -593,7 +624,7 @@ fn set_list_of(list: &[u8], list_path: &Path, owner: &SetOwner, take_over: bool)
             });
         return SetList::Another {
             project,
-            sheets: listed.len(),
+            sheets: listed.into_keys().collect(),
         };
     }
     SetList::Its(listed)
@@ -1736,7 +1767,8 @@ impl KetchupApp {
                 "drawings-set-of-another-project",
                 &BTreeMap::from([
                     ("list", list.display().to_string()),
-                    ("sheets", sheets.to_string()),
+                    ("sheets", sheets.len().to_string()),
+                    ("names", sheet_names(sheets)),
                     (
                         "project",
                         project.clone().unwrap_or_else(|| {

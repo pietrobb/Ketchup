@@ -93,8 +93,7 @@ impl KetchupApp {
             },
             confirmation_surface,
             side_effect_receipts: Vec::new(),
-            btlx_profile_strategy: BtlxProfileStrategy::EdgeSawCutsThenMillContour,
-            btlx_intermediate_saw_cuts: 0,
+            btlx: app_state::BtlxSettings::default(),
             language: language::UiLanguage::ALL
                 .into_iter()
                 .find(|language| language.catalog() == catalog),

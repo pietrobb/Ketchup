@@ -411,6 +411,28 @@ fn layer_names_vote_for_the_code_page() {
     );
 }
 
+/// Review 2026-11-06 r23 UL-201: one layer name in Windows-1250 voted twice and turned a
+/// French text both code pages read as words: „crème brûlée très chère“ read „crčme
+/// brűlée trčs chčre“. A layer name votes twice only where no text reads in both.
+#[test]
+fn a_layer_name_does_not_outvote_texts_that_read_in_both_code_pages() {
+    let drawing = |text: &[u8]| {
+        let mut source = b"0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n0\nLAYER\n2\nKuchyn\xEC\n70\n0\n62\n7\n0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nTEXT\n8\nKuchyn\xEC\n10\n0\n20\n0\n40\n2\n1\n".to_vec();
+        source.extend_from_slice(text);
+        source.extend_from_slice(b"\n0\nENDSEC\n0\nEOF\n");
+        read_dxf_underlay(&source, DxfImportOptions::new(None)).unwrap()
+    };
+    let underlay = drawing(b"cr\xE8me br\xFBl\xE9e tr\xE8s ch\xE8re");
+    assert_eq!(underlay.layers, ["Kuchynì"], "{:?}", underlay.diagnostics);
+    assert_eq!(
+        texts(&underlay, "Kuchynì")[0].text,
+        "crème brûlée très chère"
+    );
+    // With no such text it still votes twice.
+    let underlay = drawing(b"Plan 1");
+    assert_eq!(underlay.layers, ["Kuchyně"], "{:?}", underlay.diagnostics);
+}
+
 /// Review 2026-11-04 r19 P3: the character set a text's font names (`\f…|c238;`, the
 /// East European one, Windows-1250) was passed over. It votes as a Central European
 /// word does, so with one word it turns the drawing.

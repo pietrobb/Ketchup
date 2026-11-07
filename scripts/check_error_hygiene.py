@@ -52,15 +52,17 @@ Two forms are counted in production source (crates/*/src, test modules and
 - named_underscore: `let _name = call();` keeps what the call answers unread; a
   guard held to the end of the scope (`_lock`, `_guard`, `_permit`, `_reset`,
   `_restore`) is exempt.
-- ok_statement: a bare `.ok();` (or `.ok().is_some();`) throws the error away as
-  `let _ =` does.
+- ok_statement: a bare `.ok();` or `.err();` (or `.ok().is_some();`) throws the error
+  away as `let _ =` does.
 - from_discard: `fn from(_: E)` turns an error into another without its content.
 - empty_is_err: `if call().is_err() { /* comment */ }` does what `let _ =` does
   (review 2026-11-04 r19 TST-160).
 - irrefutable_let: `let (Ok(()) | Err(..)) = call();` does it too.
-- dropped_call: `drop(call())` does it too (review 2026-11-06 P3).
-- or_default: `.unwrap_or_default()` answers an error with a default value; a text
-  check cannot tell an Option's, so each one counts.
+- dropped_call: `drop(call())` and `std::mem::forget(call())` do it too (review
+  2026-11-06 P3 and r23 P3).
+- or_default: `.unwrap_or_default()` and `.unwrap_or_else(Default::default)` answer an
+  error with a default value; a text check cannot tell an Option's, so each one counts.
+- or_unit: `.unwrap_or(())` and `.map_or((), ...)` answer an error with nothing.
 - eprintln: `eprintln!` outside a command line's entry point (`src/main.rs`,
   `src/bin/`), or in one after its window logs to a file (`log_window_to`),
   writes where a window started without a console throws it away.
@@ -160,7 +162,7 @@ GUARDED_ARM = re.compile(r"\bErr\(\s*_\w*\s*\)\s*if\b")
 NAMED_UNDERSCORE = re.compile(
     r"^\s*let\s+_(?!\w*(?:lock|guard|permit|reset|restore)\b)[a-z]\w*\s*(?::[^=]+)?=[^=]",
     re.MULTILINE)
-OK_STATEMENT = re.compile(r"\.ok\(\)(?:\s*\.\s*is_(?:some|none)\(\))?\s*;")
+OK_STATEMENT = re.compile(r"\.(?:ok|err)\(\)(?:\s*\.\s*is_(?:some|none)\(\))?\s*;")
 # What a statement keeps its value with: a binding, an assignment or a return.
 KEPT = re.compile(r"^\s*(?:let|return|break)\b|[^=!<>+\-*/%&|^]=[^=>]")
 
@@ -204,10 +206,16 @@ IRREFUTABLE_LET = re.compile(
     r"\blet\s*\(\s*(?:Ok\(" + nested_parens(3) + r"\)\s*\|\s*Err\(|Err\([^()]*\)\s*\|\s*Ok\()")
 # `drop(call())` throws away what the call answers as `let _ =` does; `drop(guard)` ends
 # a value's life.
-DROPPED_CALL = re.compile(r"\bdrop\(\s*[^()]*\(")
+# `mem::forget(call())` does it too (review 2026-11-06 r23 P3). A text check cannot tell
+# a call answering a plain value, so `drop(found.remove(i))` counts as well.
+DROPPED_CALL = re.compile(r"(?<![.\w])(?:drop|(?:std::)?mem::forget)\(\s*[^()]*\(")
 # `.unwrap_or_default()` answers an error with a default; a text check cannot tell an
-# Option's, so every one is counted (review 2026-11-06 P3: 167 unseen).
-OR_DEFAULT = re.compile(r"\.unwrap_or_default\(\)")
+# Option's, so every one is counted (review 2026-11-06 P3: 167 unseen), and
+# `.unwrap_or_else(Default::default)` with them (r23 P3).
+OR_DEFAULT = re.compile(r"\.unwrap_or_default\(\)|\.unwrap_or_else\(\s*Default::default\s*\)")
+# `.unwrap_or(())` and `.map_or((), ...)` answer an error with nothing (review 2026-11-06
+# r23 P3: `ketchup-viewer/src/gpu.rs` threw a send's away so).
+OR_UNIT = re.compile(r"\.(?:unwrap_or|map_or)\(\s*\(\)\s*[,)]")
 EPRINTLN = re.compile(r"\beprintln!\s*\(")
 # A variant of an error type (`...Error::Name(_)`) matched to a bare string.
 DROPPED_VARIANT = re.compile(r"\b\w*Error::\w+\(\s*_\s*\)\s*=>\s*\"")
@@ -285,24 +293,46 @@ def file_counts(text: str, entry_point: bool = False) -> dict[str, int]:
             "irrefutable_let": len(IRREFUTABLE_LET.findall(text)),
             "dropped_call": len(DROPPED_CALL.findall(text)),
             "or_default": len(OR_DEFAULT.findall(text)),
+            "or_unit": len(OR_UNIT.findall(text)),
             "eprintln": window_eprintlns(text) if entry_point else len(EPRINTLN.findall(text))}
 
 
 WINDOW_LOG = re.compile(r"\blog_window_to\s*\(")
 
 
+FN_BODY = re.compile(r"\bfn\s+(\w+)\b[^{;]*\{")
+CALLED = re.compile(r"(?<![.\w])([a-z_]\w*)\s*(?:::<[^>]*>)?\(")
+
+
+def block_end(text: str, at: int) -> int:
+    """Where the block `at` is inside of ends."""
+    depth = 0
+    while at < len(text) and depth >= 0:
+        depth += {"{": 1, "}": -1}.get(text[at], 0)
+        at += 1
+    return at
+
+
 def window_eprintlns(text: str) -> int:
     """`eprintln!` an entry point runs once its window logs to a file: from
     `log_window_to(` to the end of the function calling it (review 2026-11-06
-    UI-181). Its command line's branches before that write to the console."""
-    count = 0
-    for call in WINDOW_LOG.finditer(text):
-        depth, at = 0, call.end()
-        while at < len(text) and depth >= 0:
-            depth += {"{": 1, "}": -1}.get(text[at], 0)
-            at += 1
-        count += len(EPRINTLN.findall(text, call.end(), at))
-    return count
+    UI-181), and in the file's functions called from there, theirs too (r23 P3:
+    `bootstrap_failed` was one). Its command line's branches before that write to
+    the console."""
+    bodies = {match.group(1): (match.end(), block_end(text, match.end()))
+              for match in FN_BODY.finditer(text)}
+    spans = [(call.end(), block_end(text, call.end())) for call in WINDOW_LOG.finditer(text)]
+    followed: set[str] = set()
+    found: set[int] = set()
+    while spans:
+        start, end = spans.pop()
+        found.update(match.start() for match in EPRINTLN.finditer(text, start, end))
+        for call in CALLED.finditer(text, start, end):
+            name = call.group(1)
+            if name in bodies and name not in followed:
+                followed.add(name)
+                spans.append(bodies[name])
+    return len(found)
 
 
 FORMS = tuple(file_counts(""))

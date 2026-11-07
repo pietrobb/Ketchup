@@ -132,6 +132,77 @@ fn set_params_refuses_a_value_outside_the_declared_range() {
     assert_eq!(app.undo_step_count(), undo + 1);
 }
 
+/// Review 2026-11-06 r23 P3: program apply and check took `overrides` outside
+/// a parameter's range, or no whole number of a count, and apply stored it,
+/// while the model was built with the default. Both refuse it now, as
+/// set_params does; a value the document already stored still applies.
+#[test]
+fn apply_and_check_refuse_an_override_the_program_refuses() {
+    const NARROW: &str = "W = param(\"width\", 300, min = 100, max = 600)\nN = param(\"count\", 2, whole = True)\nbox(\"seat\", (W, W, 20 * N))\n";
+    let (mut app, mut bridge) = setup();
+    let apply = |source: &str, overrides: Option<BTreeMap<String, f64>>| Request::ApplyProgram {
+        expected: None,
+        source: source.into(),
+        overrides,
+        file_name: Some("seat.star".into()),
+        replace_document: true,
+    };
+    let check = |source: &str, overrides: BTreeMap<String, f64>| Request::CheckProgram {
+        expected: None,
+        source: Some(source.into()),
+        edits: None,
+        overrides: Some(overrides),
+        file_name: Some("seat.star".into()),
+    };
+    let wide = NARROW.replace("max = 600", "max = 1000");
+    bridge
+        .execute(
+            &mut app,
+            apply(&wide, Some(BTreeMap::from([("width".into(), 900.)]))),
+            false,
+        )
+        .unwrap();
+    let undo = app.undo_step_count();
+    for (name, value, said) in [
+        ("width", 1200., "width = 1200 is outside [100, 1000]"),
+        (
+            "count",
+            2.5,
+            "count = 2.5 takes whole numbers under 1e9 only",
+        ),
+    ] {
+        let given = BTreeMap::from([(name.to_owned(), value)]);
+        for request in [
+            apply(&wide, Some(given.clone())),
+            check(&wide, given.clone()),
+        ] {
+            assert!(bridge.execute(&mut app, request, false).is_err(), "{name}");
+            let details = crate::live_bridge::take_error_details().unwrap();
+            assert!(details.to_string().contains(said), "{details}");
+            assert!(
+                details.to_string().contains("param_override_refused"),
+                "{details}"
+            );
+        }
+        assert_eq!(app.undo_step_count(), undo);
+        assert_eq!(
+            app.document.current_rule_program().unwrap().overrides,
+            BTreeMap::from([("width".to_owned(), 900.)])
+        );
+    }
+    // The program narrowed below the stored 900: kept or sent again, it is
+    // only reported, and the model is built with the default.
+    for overrides in [None, Some(BTreeMap::from([("width".into(), 900.)]))] {
+        let applied = bridge
+            .execute(&mut app, apply(NARROW, overrides), false)
+            .unwrap();
+        assert!(
+            applied.to_string().contains("param_out_of_range"),
+            "{applied}"
+        );
+    }
+}
+
 #[test]
 fn part_piece_and_set_params_work_on_the_open_program() {
     let (mut app, mut bridge) = setup();

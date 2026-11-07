@@ -12,16 +12,20 @@ use std::path::Path;
 pub(crate) const SERVER: &str = "ketchup";
 
 /// The keys of a JSON client's network server: its address, headers (a
-/// bearer token among them) and sign-in.
-const JSON_NETWORK_KEYS: [&str; 3] = ["url", "headers", "oauth"];
+/// bearer token among them, or Claude Code's command printing them) and
+/// sign-in (review 2026-11-06 r23 P3: `headersHelper` stayed).
+const JSON_NETWORK_KEYS: [&str; 4] = ["url", "headers", "headersHelper", "oauth"];
 
-/// The keys of a Codex network server: its address, token and headers.
-const CODEX_NETWORK_KEYS: [&str; 5] = [
+/// The keys of a Codex network server: its address, token, headers and
+/// sign-in (review 2026-11-06 r23 P3: `scopes` and `oauth_resource` stayed).
+const CODEX_NETWORK_KEYS: [&str; 7] = [
     "url",
     "bearer_token",
     "bearer_token_env_var",
     "http_headers",
     "env_http_headers",
+    "scopes",
+    "oauth_resource",
 ];
 
 /// A JSON object in the order it was written, its values as written.
@@ -279,17 +283,15 @@ pub(crate) fn write_keeping_file(file: &Path, text: &str, backup: bool) -> io::R
             let directory = file.parent().unwrap_or(Path::new("."));
             let nearest = nearest_folder(directory);
             std::fs::create_dir_all(directory)?;
-            #[cfg(unix)]
-            if let Some((folder, like)) = &nearest {
-                give_folders(folder, directory, like)?;
+            let written = write_new(directory, &file, text, nearest.as_ref());
+            // The folders made for a file not written are not left behind (review
+            // 2026-11-06 r23 SEC-200).
+            if written.is_err()
+                && let Some((folder, _)) = &nearest
+            {
+                remove_made_folders(folder, directory);
             }
-            return write_staged(
-                directory,
-                &file,
-                text,
-                None,
-                nearest.as_ref().map(|(_, like)| like),
-            );
+            return written;
         }
         Err(error) => return Err(error),
     };
@@ -301,7 +303,45 @@ pub(crate) fn write_keeping_file(file: &Path, text: &str, backup: bool) -> io::R
     }
     let metadata = std::fs::metadata(&target)?;
     let directory = target.parent().unwrap_or(Path::new("."));
-    write_staged(directory, &target, text, Some(&metadata), Some(&metadata))
+    write_staged(
+        directory,
+        &target,
+        text,
+        Some(&metadata),
+        Some((&metadata, true)),
+    )
+}
+
+/// Writes `text` as the new `file` in `directory`, made below `nearest`, the
+/// nearest folder that was there, with what it is.
+fn write_new(
+    directory: &Path,
+    file: &Path,
+    text: &str,
+    nearest: Option<&(std::path::PathBuf, std::fs::Metadata)>,
+) -> io::Result<()> {
+    #[cfg(unix)]
+    if let Some((folder, like)) = nearest {
+        give_folders(folder, directory, like)?;
+    }
+    write_staged(
+        directory,
+        file,
+        text,
+        None,
+        nearest.map(|(_, like)| (like, false)),
+    )
+}
+
+/// Removes the folders below `folder` down to `directory` that are empty, the
+/// deepest first.
+fn remove_made_folders(folder: &Path, directory: &Path) {
+    for made in directory.ancestors().take_while(|made| *made != folder) {
+        if let Err(error) = std::fs::remove_dir(made) {
+            ketchup_rejection::log!("the folder {} made for it stays: {error}", made.display());
+            return;
+        }
+    }
 }
 
 /// The nearest folder at or above `directory` that is there, with what it is:
@@ -316,16 +356,18 @@ fn nearest_folder(directory: &Path) -> Option<(std::path::PathBuf, std::fs::Meta
 }
 
 /// Gives the folders made below `folder` down to `directory` the owner of
-/// `folder` (`like`).
+/// `folder` (`like`), not following a symlink put in place of one (review
+/// 2026-11-06 r23 P3).
 #[cfg(unix)]
 fn give_folders(folder: &Path, directory: &Path, like: &std::fs::Metadata) -> io::Result<()> {
     use std::os::unix::fs::MetadataExt;
     for made in directory.ancestors().take_while(|made| *made != folder) {
-        let own = std::fs::metadata(made)?;
+        let own = std::fs::symlink_metadata(made)?;
         keep_owner(
             (own.uid(), own.gid()),
             (like.uid(), like.gid()),
-            |uid, gid| std::os::unix::fs::chown(made, uid, gid),
+            false,
+            |uid, gid| std::os::unix::fs::lchown(made, uid, gid),
         )?;
     }
     Ok(())
@@ -347,25 +389,27 @@ fn link_target(file: &Path) -> std::path::PathBuf {
 
 /// Writes `text` to a unique file in `directory`, flushes it and puts it in
 /// place of `file`, with the permissions of the file it replaces (`like`)
-/// and on Unix the owner of `owner`, that file or the folder a new one is
-/// made in (review 2026-11-04 r19 P3: under `sudo` it became root's).
+/// and on Unix the owner of `owner`, that file (`true`: replacing it) or the
+/// folder a new one is made in (review 2026-11-04 r19 P3: under `sudo` it
+/// became root's).
 fn write_staged(
     directory: &Path,
     file: &Path,
     text: &str,
     like: Option<&std::fs::Metadata>,
-    #[cfg_attr(not(unix), allow(unused_variables))] owner: Option<&std::fs::Metadata>,
+    #[cfg_attr(not(unix), allow(unused_variables))] owner: Option<(&std::fs::Metadata, bool)>,
 ) -> io::Result<()> {
     let mut staged = tempfile::Builder::new()
         .prefix(".ketchup-config-")
         .tempfile_in(directory)?;
     #[cfg(unix)]
-    if let Some(owner) = owner {
+    if let Some((owner, replacing)) = owner {
         use std::os::unix::fs::MetadataExt;
         let own = staged.as_file().metadata()?;
         keep_owner(
             (own.uid(), own.gid()),
             (owner.uid(), owner.gid()),
+            replacing,
             |uid, gid| std::os::unix::fs::fchown(staged.as_file(), uid, gid),
         )?;
     }
@@ -386,18 +430,24 @@ fn write_staged(
     Ok(())
 }
 
-/// Gives the staged file (owned `own`, user and group) the owner `like` of the
-/// file it replaces through `chown`. Only root gives a file to another user,
-/// and a user gives it only to a group they are in: the user's own file in a
-/// group they left keeps its user and takes theirs, rather than not being
-/// written (review 2026-11-06 P3: `fchown` refused it with EPERM).
+/// Gives what was just made (owned `own`, user and group, its user the one
+/// writing) the owner `like` of the file it replaces (`replacing`) or of the
+/// folder it is made in, through `chown`. Only root gives a file to another
+/// user, so only root is given one: under `sudo` a new file is the folder
+/// owner's, while a user writing into a shared folder or `/tmp` keeps theirs
+/// (review 2026-11-06 r23 SEC-200: they were refused with EPERM). A user gives
+/// it only to a group they are in: the user's own file in a group they left
+/// keeps its user and takes theirs, rather than not being written (review
+/// 2026-11-06 P3); another user's file stays theirs or is not written.
 #[cfg(any(unix, test))]
 fn keep_owner(
     own: (u32, u32),
     like: (u32, u32),
+    replacing: bool,
     chown: impl Fn(Option<u32>, Option<u32>) -> io::Result<()>,
 ) -> io::Result<()> {
-    if own == like {
+    let root = own.0 == 0;
+    if own == like || (!root && !replacing) {
         return Ok(());
     }
     match chown(Some(like.0), Some(like.1)) {
@@ -582,17 +632,68 @@ mod tests {
             |_: Option<u32>, _: Option<u32>| Err(io::Error::from_raw_os_error(libc::EPERM));
         #[cfg(not(unix))]
         let refused = |_: Option<u32>, _: Option<u32>| Err(io::ErrorKind::PermissionDenied.into());
-        assert!(keep_owner((1000, 1000), (1000, 50), refused).is_ok());
+        assert!(keep_owner((1000, 1000), (1000, 50), true, refused).is_ok());
         // Another user's file stays theirs or is not written.
-        assert!(keep_owner((1000, 1000), (0, 0), refused).is_err());
+        assert!(keep_owner((1000, 1000), (0, 0), true, refused).is_err());
         let given = std::cell::Cell::new(None);
-        keep_owner((0, 0), (1000, 50), |uid, gid| {
+        keep_owner((0, 0), (1000, 50), false, |uid, gid| {
             given.set(Some((uid, gid)));
             Ok(())
         })
         .unwrap();
         assert_eq!(given.get(), Some((Some(1000), Some(50))));
-        keep_owner((1000, 50), (1000, 50), |_, _| panic!("nothing to give")).unwrap();
+        keep_owner((1000, 50), (1000, 50), true, |_, _| {
+            panic!("nothing to give")
+        })
+        .unwrap();
+    }
+
+    /// Review 2026-11-06 r23 SEC-200: a user writing a new file into a folder
+    /// of root's with setgid, or into `/tmp`, was refused with EPERM, as the
+    /// file was given the folder's owner, which only root can give.
+    #[test]
+    fn a_user_writing_into_another_users_folder_keeps_the_new_file() {
+        let refused = |_: Option<u32>, _: Option<u32>| -> io::Result<()> {
+            Err(io::ErrorKind::PermissionDenied.into())
+        };
+        assert!(keep_owner((1000, 65534), (0, 65534), false, refused).is_ok());
+        assert!(keep_owner((1000, 1000), (0, 0), false, refused).is_ok());
+        // Under `sudo` it is still the folder owner's.
+        let given = std::cell::Cell::new(None);
+        keep_owner((0, 0), (1000, 1000), false, |uid, gid| {
+            given.set(Some((uid, gid)));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(given.get(), Some((Some(1000), Some(1000))));
+        // `/tmp`, root's with the sticky bit, as the review wrote into.
+        #[cfg(unix)]
+        {
+            let folder =
+                std::env::temp_dir().join(format!("ketchup-sec200-{}", std::process::id()));
+            let file = folder.join("codex").join("config.toml");
+            write_keeping_file(&file, "x = 1\n", false).unwrap();
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), "x = 1\n");
+            std::fs::remove_dir_all(&folder).unwrap();
+        }
+    }
+
+    /// Review 2026-11-06 r23 SEC-200: the folders made for a file that was not
+    /// written stayed behind, empty.
+    #[test]
+    fn the_empty_folders_made_for_a_file_not_written_are_removed() {
+        let directory = tempfile::tempdir().unwrap();
+        let made = directory.path().join("shared").join("codex");
+        std::fs::create_dir_all(&made).unwrap();
+        remove_made_folders(directory.path(), &made);
+        assert!(directory.path().exists());
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+        // A folder that holds something stays, and the ones above it.
+        std::fs::create_dir_all(&made).unwrap();
+        std::fs::write(directory.path().join("shared").join("other.json"), "{}").unwrap();
+        remove_made_folders(directory.path(), &made);
+        assert!(!made.exists());
+        assert!(directory.path().join("shared").exists());
     }
 
     #[test]
@@ -883,22 +984,30 @@ command = "C:\\Program Files\\Ketchup\\Ketchup.exe"
         // Review 2026-11-06 SEC-181: the network server's token and headers
         // stayed on the program beside its new command.
         let networked = r#"{"mcpServers":{"ketchup":{"type":"http","url":"http://x/mcp",
-            "headers":{"Authorization":"Bearer s3cret"},"oauth":{"clientId":"c"},"env":{"A":"1"}}}}"#;
+            "headers":{"Authorization":"Bearer s3cret"},"oauth":{"clientId":"c"},"env":{"A":"1"},
+            "headersHelper":"/bin/print-s3cret"}}}"#;
         let written =
             with_json_server(networked, r"C:\k\Ketchup.exe", true, &Rewrite::every()).unwrap();
         assert!(!written.contains("s3cret"), "{written}");
         let entry = server(&written);
-        for key in ["headers", "oauth", "url"] {
+        for key in ["headers", "headersHelper", "oauth", "url"] {
             assert!(entry.get(key).is_none(), "{key}: {written}");
         }
         assert_eq!(entry["env"]["A"], "1");
         let networked = "[mcp_servers.ketchup]\nurl = \"http://x/mcp\"\n\
             bearer_token_env_var = \"KETCHUP_TOKEN\"\nbearer_token = \"s3cret\"\n\
             http_headers = { \"X-Key\" = \"s3cret\" }\nenv_http_headers = { \"X-Env\" = \"KEY\" }\n\
+            scopes = [\"read\", \"write\"]\noauth_resource = \"http://x/\"\n\
             startup_timeout_sec = 20\n";
         let written = with_codex_server(networked, r"C:\k\Ketchup.exe").unwrap();
         assert!(!written.contains("s3cret"), "{written}");
-        for key in ["bearer_token_env_var", "env_http_headers", "url"] {
+        for key in [
+            "bearer_token_env_var",
+            "env_http_headers",
+            "url",
+            "scopes",
+            "oauth_resource",
+        ] {
             assert!(!written.contains(key), "{key}: {written}");
         }
         assert!(written.contains("startup_timeout_sec = 20"), "{written}");

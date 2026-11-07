@@ -698,12 +698,28 @@ fn joints<'a>(
 
 fn params(model: &ProgramModel, issues: &mut Vec<Issue>) {
     for param in &model.params {
-        if let Some(refused) = param.refused_override {
+        if let Some(value) = param.refused_override {
             // 1e300 in a sentence, not its 301 digits.
-            let refused = if refused.abs() >= 1.0e15 {
-                format!("{refused:e}")
+            let refused = if value.abs() >= 1.0e15 {
+                format!("{value:e}")
             } else {
-                refused.to_string()
+                value.to_string()
+            };
+            // A count given 2.5 is refused as one outside its range is
+            // (review 2026-11-06 r23 P3: it failed the whole program).
+            let (why, hint) = if crate::eval::is_whole_override(param, value) {
+                (
+                    format!(
+                        "is outside {}",
+                        crate::eval::range_text(param.min, param.max)
+                    ),
+                    "Set a value inside the declared range, or widen the range.",
+                )
+            } else {
+                (
+                    crate::eval::WHOLE_ONLY.to_owned(),
+                    "Set a whole number, or drop whole = True from the param.",
+                )
             };
             issues.push(Issue {
                 source_lines: Vec::new(),
@@ -711,13 +727,11 @@ fn params(model: &ProgramModel, issues: &mut Vec<Issue>) {
                 kind: "param_out_of_range",
                 parts: Vec::new(),
                 message: format!(
-                    "param {} = {refused} is outside {}; the default {} is used",
-                    param.name,
-                    crate::eval::range_text(param.min, param.max),
-                    param.default,
+                    "param {} = {refused} {why}; the default {} is used",
+                    param.name, param.default,
                 ),
                 where_mm: None,
-                hint: "Set a value inside the declared range, or widen the range.".to_owned(),
+                hint: hint.to_owned(),
             });
         }
         let low = param.min.is_some_and(|min| param.value < min);

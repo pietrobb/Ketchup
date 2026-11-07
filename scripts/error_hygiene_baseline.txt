@@ -1,5 +1,5 @@
 # Remaining errors that drop their cause or cases the types still allow (<file> <form> <count>, forms in scripts/check_error_hygiene.py); may only shrink.
-# forms: discard string unreachable silent_unreachable string_result str_result stringified_cause debug_formatted stringified_variant formatted_variant unwrap dropped_variant dropped_error formatted_cause stringified_field let_else_error dropped_quietly dropped_arm dropped_closure let_underscore guarded_arm named_underscore ok_statement from_discard empty_is_err irrefutable_let dropped_call or_default eprintln
+# forms: discard string unreachable silent_unreachable string_result str_result stringified_cause debug_formatted stringified_variant formatted_variant unwrap dropped_variant dropped_error formatted_cause stringified_field let_else_error dropped_quietly dropped_arm dropped_closure let_underscore guarded_arm named_underscore ok_statement from_discard empty_is_err irrefutable_let dropped_call or_default or_unit eprintln
 crates/ketchup-analysis/src/fea.rs dropped_error 1
 crates/ketchup-analysis/src/validator_hosting.rs formatted_variant 1
 crates/ketchup-app/src/app/commands.rs or_default 2
@@ -13,7 +13,6 @@ crates/ketchup-app/src/app/document.rs unreachable 2
 crates/ketchup-app/src/app/draft.rs dropped_error 1
 crates/ketchup-app/src/app/drawing.rs dropped_error 22
 crates/ketchup-app/src/app/drawing_export_activity.rs let_else_error 1
-crates/ketchup-app/src/app/drawing_sheet_export.rs or_default 1
 crates/ketchup-app/src/app/exact.rs dropped_error 2
 crates/ketchup-app/src/app/exact.rs or_default 1
 crates/ketchup-app/src/app/exact.rs str_result 1
@@ -120,7 +119,7 @@ crates/ketchup-app/src/live_bridge/underlay_program.rs formatted_cause 2
 crates/ketchup-app/src/live_bridge/underlay_program.rs let_else_error 1
 crates/ketchup-app/src/live_bridge/underlay_program.rs or_default 6
 crates/ketchup-app/src/live_bridge/underlay_program.rs str_result 8
-crates/ketchup-app/src/live_bridge/underlay_regions.rs dropped_call 2
+crates/ketchup-app/src/live_bridge/underlay_regions.rs dropped_call 1
 crates/ketchup-app/src/live_bridge/underlay_regions.rs dropped_error 4
 crates/ketchup-app/src/live_bridge/underlay_regions.rs formatted_cause 1
 crates/ketchup-app/src/live_bridge/underlay_regions.rs let_else_error 3

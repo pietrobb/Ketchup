@@ -69,5 +69,32 @@ fn a_dropped_error_is_logged_with_its_reason_and_cause() {
             .ends_with(&format!("] {long}\n"))
     );
     assert_eq!(lost_lines(), 0);
+
+    // Review 2026-11-06 r23 P3: another window logs to the same file. It filled
+    // it and moved it aside, so this window's file is the old one: its next line
+    // goes to the new log.
+    {
+        use std::io::Write;
+        let mut other = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap();
+        other.write_all(&vec![b'z'; 1 << 20]).unwrap();
+    }
+    std::fs::rename(&file, &old).unwrap();
+    std::fs::write(&file, "[0] the other window\n").unwrap();
+    ketchup_rejection::log!("after the other window moved it aside");
+    let log = std::fs::read_to_string(&file).unwrap();
+    assert!(log.starts_with("[0] the other window\n"), "{log}");
+    assert!(
+        log.ends_with("] after the other window moved it aside\n"),
+        "{log}"
+    );
+    assert!(
+        !std::fs::read_to_string(&old)
+            .unwrap()
+            .contains("after the other window")
+    );
+    assert_eq!(lost_lines(), 0);
     std::fs::remove_dir_all(folder).unwrap();
 }

@@ -310,6 +310,15 @@ pub(crate) struct DrawingsState {
     /// not kept with the user's settings, by canonical path, with the SHA-256
     /// of each (review 2026-11-06 SEC-182).
     pub(crate) written: BTreeMap<PathBuf, String>,
+    /// The worker forgetting the document's written drawings that are gone
+    /// (review 2026-11-06 r23 SEC-202).
+    pub(crate) forgetting: Option<std::thread::JoinHandle<()>>,
+    /// The worker keeping the drawings of a file moved before it was saved by
+    /// the file saved (review 2026-11-06 r23 SEC-203).
+    pub(crate) settling: Option<std::thread::JoinHandle<()>>,
+    /// The token and identity of the document's file as on disk while a save
+    /// of it has not succeeded (review 2026-11-06 r23 P3).
+    pub(crate) on_disk: Option<crate::app::written_drawings::OnDisk>,
     /// The set the last export was refused at as another project's, with
     /// what it was exported from, offered to take over (review 2026-11-04 r19
     /// MF-162).
@@ -341,6 +350,25 @@ pub(crate) struct TakeoffCache {
     pub(crate) model: Result<Arc<ketchup_program::ProgramModel>, ketchup_program::ProgramError>,
     pub(crate) key: ExactCacheKey,
     pub(crate) takeoff: Result<Arc<ketchup_program::takeoff::Takeoff>, TakeoffError>,
+}
+
+/// How the File menu writes BTLX for the machine.
+pub(crate) struct BtlxSettings {
+    pub(crate) profile_strategy: BtlxProfileStrategy,
+    pub(crate) intermediate_saw_cuts: u8,
+    /// The machine's largest drill, mm; 0 mills every round hole (review
+    /// 2026-11-06 r23 MF-202: it was never set, so every one was milled).
+    pub(crate) largest_drill_mm: f64,
+}
+
+impl Default for BtlxSettings {
+    fn default() -> Self {
+        Self {
+            profile_strategy: BtlxProfileStrategy::EdgeSawCutsThenMillContour,
+            intermediate_saw_cuts: 0,
+            largest_drill_mm: ketchup_manufacturing::fabrication::DEFAULT_LARGEST_DRILL_MM,
+        }
+    }
 }
 
 /// Why there is no material takeoff, or why it could not be written.

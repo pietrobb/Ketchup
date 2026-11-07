@@ -118,6 +118,20 @@ pub const MESH_FACET_ANGLE_RAD: f64 = 0.001;
 /// Fraction of an edge interval used to sample either side of a Boolean boundary.
 pub const BOUNDARY_PROBE_FRACTION: f64 = 1.0e-4;
 
+/// Relative rounding of a coordinate a drawing file holds as text: one written back with 15
+/// significant digits, or read in another unit, is off by about 1e-15 of its size, and a
+/// geodetic drawing (S-JTSK, UTM: some 5e9 mm from its origin) has a step of 1e-6 mm.
+pub const COORDINATE_ROUNDING: f64 = 1.0e-12;
+
+/// Whether two coordinates in mm read from a drawing are the same: within the linear
+/// tolerance, or within [`COORDINATE_ROUNDING`] of their size, which is larger far from the
+/// origin (review 2026-11-06 r23 CD-202: at 1e-7 mm a geodetic drawing written back was
+/// read as other lines).
+#[must_use]
+pub fn same_coordinate_mm(a: f64, b: f64) -> bool {
+    (a - b).abs() <= DEFAULT_LINEAR_TOLERANCE_MM.max(COORDINATE_ROUNDING * a.abs().max(b.abs()))
+}
+
 /// Numeric guard: a scaled quantity at most this large counts as zero. It marks a singular
 /// determinant or pivot, a degenerate area, and a residual that has converged relative to
 /// where it started. Such quantities are products of several values, so the bound is

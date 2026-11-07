@@ -129,7 +129,7 @@ impl SettingsFile {
             .truncate(false)
             .write(true)
             .open(self.path.with_extension("txt.lock"))?;
-        let _lock = take_turn(move || lock.lock().map(|()| lock), TURN_WAIT)?;
+        take_turn(|| lock.try_lock(), || saved_at(&self.path), TURN_WAIT)?;
         let (lines, damaged) = self.read()?;
         if damaged {
             std::fs::copy(&self.path, self.path.with_extension("txt.bad"))?;
@@ -164,38 +164,53 @@ impl SettingsFile {
 
 /// How long a save waits for another window saving the settings.
 const TURN_WAIT: Duration = Duration::from_secs(2);
+/// How often a waiting save tries the lock again.
+const TURN_POLL: Duration = Duration::from_millis(2);
 
-/// Takes the settings lock through `lock`, which waits its turn, on a thread of
-/// its own: the window saving waits at most `wait` for the window that holds
-/// it, not without end behind one that hangs (review 2026-11-06 P3: `lock()`
-/// on the window's thread). The lock held, or `None` on a file system that
-/// cannot lock (NFS without lockd), which saves without it rather than never.
-/// A lock taken after the save gave up is let go at once.
-fn take_turn<T: Send + 'static>(
-    lock: impl FnOnce() -> io::Result<T> + Send + 'static,
+/// Takes the settings lock through `attempt`, which does not wait: the window
+/// saving tries it while other windows save, `saved` telling when one did, but
+/// gives up once one held it `wait` without saving, not waiting without end
+/// behind one that hangs (review 2026-11-06 P3: `lock()` on the window's
+/// thread). On a file system that cannot lock (NFS without lockd) it saves
+/// without the lock rather than never. A save that gave up leaves nothing
+/// behind (review 2026-11-06 r23 P3: a thread waited on in `lock()` with the
+/// file open as long as the other window hung).
+fn take_turn<T: PartialEq>(
+    mut attempt: impl FnMut() -> Result<(), std::fs::TryLockError>,
+    mut saved: impl FnMut() -> T,
     wait: Duration,
-) -> io::Result<Option<T>> {
-    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-    std::thread::Builder::new()
-        .name("settings lock".to_owned())
-        .spawn(move || {
-            ketchup_rejection::dropped(
-                sender.send(lock()),
-                ketchup_rejection::Reason::NobodyWaiting,
-            );
-        })?;
-    match receiver.recv_timeout(wait) {
-        Ok(Ok(held)) => Ok(Some(held)),
-        Ok(Err(error)) if cannot_lock(&error) => Ok(None),
-        Ok(Err(error)) => Err(error),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            "another Kečup window has been saving the settings too long",
-        )),
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(io::Error::other(
-            "the thread taking the settings lock ended without it",
-        )),
+) -> io::Result<()> {
+    let mut seen = saved();
+    let mut until = std::time::Instant::now() + wait;
+    loop {
+        match attempt() {
+            Ok(()) => return Ok(()),
+            Err(std::fs::TryLockError::Error(error)) if cannot_lock(&error) => return Ok(()),
+            Err(std::fs::TryLockError::Error(error)) => return Err(error),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < until => {
+                std::thread::sleep(TURN_POLL);
+                let now = saved();
+                if now != seen {
+                    seen = now;
+                    until = std::time::Instant::now() + wait;
+                }
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "another Kečup window has been saving the settings too long",
+                ));
+            }
+        }
     }
+}
+
+/// When and how long the settings were last written; the same nothing while
+/// they cannot be read.
+fn saved_at(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+    std::fs::metadata(path)
+        .and_then(|metadata| Ok((metadata.modified()?, metadata.len())))
+        .ok()
 }
 
 /// The file system has no locks: `ENOLCK` from NFS without lockd, or none at all.
@@ -393,23 +408,60 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert!(!path.exists(), "nothing is written without the turn");
         held.unlock().unwrap();
-        // The lock the given-up save took once it was let go is let go too.
+        // Review 2026-11-06 r23 P3: the given-up save left a thread waiting in
+        // `lock()` with the file open; nothing of it takes the lock now.
+        let other = std::fs::File::create(path.with_extension("txt.lock")).unwrap();
+        other.try_lock().unwrap();
+        other.unlock().unwrap();
         SettingsFile::at(path.clone()).save_language("sk").unwrap();
 
-        let refused = |kind| move || Err::<(), _>(io::Error::from(kind));
-        assert!(matches!(
-            take_turn(refused(io::ErrorKind::Unsupported), TURN_WAIT),
-            Ok(None)
-        ));
+        let tries = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = std::sync::Arc::clone(&tries);
+        let busy = move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Err(std::fs::TryLockError::WouldBlock)
+        };
+        let error = take_turn(busy, || (), Duration::from_millis(60)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(
+            tries.load(std::sync::atomic::Ordering::Relaxed) > 1,
+            "it tried again"
+        );
+        assert_eq!(std::sync::Arc::strong_count(&tries), 1, "nothing tries on");
+        // Windows that go on saving are waited for, however long they queue.
+        let mut queued = 0;
+        let mut saves = 0;
+        take_turn(
+            || {
+                queued += 1;
+                if queued < 40 {
+                    Err(std::fs::TryLockError::WouldBlock)
+                } else {
+                    Ok(())
+                }
+            },
+            || {
+                saves += 1;
+                saves
+            },
+            Duration::from_millis(30),
+        )
+        .unwrap();
+
+        let refused = |kind| move || Err(std::fs::TryLockError::Error(io::Error::from(kind)));
+        take_turn(refused(io::ErrorKind::Unsupported), || (), TURN_WAIT).unwrap();
         #[cfg(unix)]
-        assert!(matches!(
-            take_turn(
-                || Err::<(), _>(io::Error::from_raw_os_error(libc::ENOLCK)),
-                TURN_WAIT
-            ),
-            Ok(None)
-        ));
-        assert!(take_turn(refused(io::ErrorKind::PermissionDenied), TURN_WAIT).is_err());
+        take_turn(
+            || {
+                Err(std::fs::TryLockError::Error(io::Error::from_raw_os_error(
+                    libc::ENOLCK,
+                )))
+            },
+            || (),
+            TURN_WAIT,
+        )
+        .unwrap();
+        assert!(take_turn(refused(io::ErrorKind::PermissionDenied), || (), TURN_WAIT).is_err());
     }
 
     #[test]

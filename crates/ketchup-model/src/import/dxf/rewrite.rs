@@ -272,15 +272,18 @@ impl fmt::Display for DxfEditRefusal {
                 edit.done(),
                 at(*was_mm)
             ),
+            // The first few, as a long list reaches the status line and an MCP reply
+            // (review 2026-11-06 r23 CD-201); `refused_edits` has them all.
             Self::Several(refusals) => {
                 write!(formatter, "{} edits are refused: ", refusals.len())?;
-                for (index, refusal) in refusals.iter().enumerate() {
-                    if index > 0 {
-                        formatter.write_str("; ")?;
-                    }
-                    write!(formatter, "{}) {refusal}", index + 1)?;
-                }
-                Ok(())
+                ketchup_rejection::write_listed(
+                    formatter,
+                    refusals
+                        .iter()
+                        .enumerate()
+                        .map(|(index, refusal)| format!("{}) {refusal}", index + 1)),
+                    "; ",
+                )
             }
         }
     }
@@ -332,7 +335,9 @@ pub fn write_edited_dxf(
     // The header names the code page the texts are read and written in, so the drawing
     // reads so again, however few of its texts are left (review 2026-11-04 r19 UL-161).
     drawing.code_page_renamed = encoding.code_page_over_header().map(str::to_owned);
-    let utf8_over_header = encoding.utf8_over_header();
+    let escapes = encoding
+        .escapes_beyond_ascii()
+        .then_some(encoding.code_page);
     let (frame, rebound) = match frame {
         Ok(frame) => frame,
         Err(Some(refusal)) => return Err(refusal.into()),
@@ -348,8 +353,8 @@ pub fn write_edited_dxf(
         }
     };
     let mut dxf = drawing.write(lines, edits, &frame)?;
-    if utf8_over_header {
-        dxf = escaped_beyond_ascii(&dxf);
+    if let Some(code_page) = escapes {
+        dxf = escaped_beyond_ascii(&dxf, code_page);
     }
     Ok(EditedDxf {
         dxf,
@@ -359,11 +364,18 @@ pub fn write_edited_dxf(
     })
 }
 
-/// `dxf`, UTF-8 under a header naming a code page, with each character beyond ASCII
-/// written as `\U+XXXX` (each UTF-16 unit), which reads alike in any code page however
-/// few texts are left to tell the encoding by (review 2026-11-06 UL-180). A byte order
-/// mark stays as it is; so does what is not UTF-8.
-fn escaped_beyond_ascii(dxf: &[u8]) -> Vec<u8> {
+/// `dxf`, written in `code_page` or else in UTF-8 under a header naming a code page, with
+/// each character beyond ASCII written as `\U+XXXX` (each UTF-16 unit), which reads alike
+/// in any code page however few texts are left to tell the encoding by (review 2026-11-06
+/// UL-180, r23 UL-200). A byte order mark stays as it is; so does what is not UTF-8, or
+/// a drawing the code page does not read.
+fn escaped_beyond_ascii(dxf: &[u8], code_page: Option<CodePage>) -> Vec<u8> {
+    if let Some(code_page) = code_page {
+        return match code_page.decode(dxf) {
+            Some(text) => escaped_beyond_ascii(text.as_bytes(), None),
+            None => dxf.to_vec(),
+        };
+    }
     let (mark, rest) = match dxf.strip_prefix(super::BYTE_ORDER_MARK) {
         Some(rest) => (super::BYTE_ORDER_MARK, rest),
         None => (&[][..], dxf),
@@ -403,7 +415,7 @@ fn frame_of(
         let changed = if read.lines == *lines {
             Ok(Rebound::default())
         } else {
-            rebinds(&read.lines, lines, edits)
+            rebinds(&read.lines, lines, edits, read.offset_mm)
         };
         changed.map(|changed| {
             let frame = Frame {
@@ -446,11 +458,13 @@ type Bound = Result<(Frame, Rebound), Option<DxfEditRefusal>>;
 /// either read, so one read differently and not edited is written as the file has it, as
 /// is one the file gained since (review 2026-11-04 CD-140): how many of each, when bound
 /// again. An edited object that does not lie where it lay, while another does, is named
-/// (review 2026-11-04 r19 CD-163).
+/// (review 2026-11-04 r19 CD-163). Their points are compared, and placed, where the file
+/// has them, `offset_mm` from where the lines do (review 2026-11-06 r23 CD-202).
 fn rebinds(
     read: &UnderlayLines,
     lines: &UnderlayLines,
     edits: &UnderlayEdits,
+    offset_mm: [f64; 2],
 ) -> Result<Rebound, Option<DxfEditRefusal>> {
     type Key = (u64, &'static str, usize);
     /// The top-level objects by key, each with its id.
@@ -488,28 +502,31 @@ fn rebinds(
     // An object taken out names an entity as a moved one does, so it too must lie where
     // it lay, with what it placed; and an object an insert placed is checked with the
     // insert (review 2026-11-04 CD-140: the entity of its handle, or its place, could be
-    // another one in a file changed since).
+    // another one in a file changed since). An object taken out is so whatever was done
+    // to it before (review 2026-11-06 r23 CD-200: one moved, then taken out, was taken
+    // for moved, and refused where the file had deleted it too), unless a copy of it is
+    // left, which needs its entity.
     let mut edited = BTreeMap::new();
     for (ids, edit) in [
         (
-            edits.moved_objects.keys().copied().collect::<Vec<_>>(),
-            EditOfObject::Moved,
-        ),
-        (
-            edits.stretched_objects.keys().copied().collect(),
-            EditOfObject::Stretched,
+            edits
+                .added
+                .iter()
+                .filter_map(AddedObject::copy_of)
+                .collect::<Vec<_>>(),
+            EditOfObject::Copied,
         ),
         (
             edits.removed_objects.iter().copied().collect(),
             EditOfObject::Removed,
         ),
         (
-            edits
-                .added
-                .iter()
-                .filter_map(AddedObject::copy_of)
-                .collect(),
-            EditOfObject::Copied,
+            edits.moved_objects.keys().copied().collect(),
+            EditOfObject::Moved,
+        ),
+        (
+            edits.stretched_objects.keys().copied().collect(),
+            EditOfObject::Stretched,
         ),
     ] {
         for id in ids {
@@ -553,13 +570,13 @@ fn rebinds(
                     handle: key.0,
                     kind: key.1.to_owned(),
                     edit,
-                    was_mm: compare::place_mm(lines, id),
+                    was_mm: compare::place_mm(lines, id, offset_mm),
                 });
             }
             removed += 1;
             continue;
         };
-        let difference = compare::difference(lines, id, read, found);
+        let difference = compare::difference(lines, id, read, found, offset_mm);
         if let (Some(difference), Some(&(object, edit))) = (difference, edited.get(&id)) {
             refused.push(DxfEditRefusal::ChangedInFile {
                 object,
@@ -567,8 +584,8 @@ fn rebinds(
                 kind: key.1.to_owned(),
                 edit,
                 difference,
-                was_mm: compare::place_mm(lines, id),
-                now_mm: compare::place_mm(read, found),
+                was_mm: compare::place_mm(lines, id, offset_mm),
+                now_mm: compare::place_mm(read, found, offset_mm),
             });
         }
         let alike = difference.is_none();

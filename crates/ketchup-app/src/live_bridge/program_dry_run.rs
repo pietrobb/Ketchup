@@ -55,7 +55,7 @@ fn build(document: &mut DocumentStore, batch: CommandBatch) -> Result<(), RulePr
 /// gives its report and exact check, so both reach the same verdict.
 fn check(
     mut document: DocumentStore,
-    source: &RuleProgramSource,
+    (source, given): (&RuleProgramSource, &[String]),
     container: &ContainerData,
     worker_path: Option<PathBuf>,
     cancelled: Arc<AtomicBool>,
@@ -65,6 +65,7 @@ fn check(
     // check (review 2026-11-02 MCP-101).
     let cancel = ketchup_program::CancelToken::from(Arc::clone(&cancelled));
     let plan = ketchup_application::plan_rule_program_cancellable(&document, source, &cancel)?;
+    super::program_check::refuse_given_overrides(&plan.evaluated.model, given)?;
     let mut report = plan.report(deadline, &cancel);
     let before = document.current();
     let (change, after) = match plan.change {
@@ -148,7 +149,7 @@ impl LiveBridge {
         request: Request,
         ui_busy: bool,
         cancelled: &AtomicBool,
-    ) -> Result<RuleProgramSource, &'static str> {
+    ) -> Result<(RuleProgramSource, Vec<String>), &'static str> {
         let Request::CheckProgram {
             expected,
             source,
@@ -185,7 +186,8 @@ impl LiveBridge {
                 ));
             }
         };
-        Self::program_source(app, request, ui_busy, cancelled).map(|(source, _)| source)
+        Self::program_source(app, request, ui_busy, cancelled)
+            .map(|(source, _, given)| (source, given))
     }
 
     fn check_context(app: &KetchupApp, source: &RuleProgramSource) -> CheckContext {
@@ -208,11 +210,11 @@ impl LiveBridge {
         ui_busy: bool,
         cancelled: &AtomicBool,
     ) -> Result<Value, &'static str> {
-        let source = Self::checked_source(app, request, ui_busy, cancelled)?;
+        let (source, given) = Self::checked_source(app, request, ui_busy, cancelled)?;
         let context = Self::check_context(app, &source);
         let checked = check(
             app.document.fork_for_planning(),
-            &source,
+            (&source, &given),
             &app.file.container_data,
             Self::worker_path(app),
             Arc::new(AtomicBool::new(false)),
@@ -250,7 +252,7 @@ impl LiveBridge {
             );
             return;
         }
-        let source = match Self::checked_source(app, request, ui_busy, &cancelled) {
+        let (source, given) = match Self::checked_source(app, request, ui_busy, &cancelled) {
             Ok(source) => source,
             Err(code) => {
                 Self::reply(app, id, &reply, Err(code));
@@ -269,7 +271,7 @@ impl LiveBridge {
             .spawn(move || {
                 let result = check(
                     document,
-                    &source,
+                    (&source, &given),
                     &container,
                     worker_path,
                     worker_cancelled,

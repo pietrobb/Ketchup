@@ -3013,7 +3013,8 @@ def _opening_in(name, o, origin, along, up, out, depth, length, top_v):
 #   it sideways (part, edge top or bottom, from_mm = to_mm, the place it holds): a part
 #   bearing on it and on a part declared grounded (which must be stiff sideways: a wall,
 #   not a free stud) beside it, across the member, and fastened to both by a joint();
-#   kinds "none", "contact" and "friction" fasten nothing, and a fixed tag ties nothing.
+#   kinds "none", "contact", "friction", "unfastened", "loose", "free" and "rests"
+#   fasten nothing, and a fixed tag ties nothing.
 #   It holds the member at the joint's fasteners where the two touch (others are
 #   reported, fastener_off_contact), or at the middle of each place they touch when the
 #   joint lists none, so name the fasteners of a lath along a beam. A plank screwed only

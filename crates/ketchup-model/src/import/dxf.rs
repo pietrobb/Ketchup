@@ -3647,14 +3647,14 @@ fn parse_dimension(
         diagnostics.add(
             ImportDiagnosticSeverity::Warning,
             "dxf.dimension-semantics-dropped",
-            Some(name.to_owned()),
+            Some(text::unicode_escapes(name).into_owned()),
             1,
         )?;
     }
     diagnostics.add(
         ImportDiagnosticSeverity::Info,
         "dxf.dimension-graphics",
-        Some(name.to_owned()),
+        Some(text::unicode_escapes(name).into_owned()),
         1,
     )?;
     let texts = text::place_texts(
@@ -3928,7 +3928,7 @@ fn parse_insert(
     diagnostics.add(
         ImportDiagnosticSeverity::Info,
         "dxf.block-insert",
-        Some(name.to_owned()),
+        Some(text::unicode_escapes(name).into_owned()),
         u32::try_from(placement_count)
             .map_err(|_out_of_range: std::num::TryFromIntError| DxfImportError::TooManyEntities)?,
     )?;
@@ -4013,7 +4013,7 @@ fn parse_insert_attributes(
         diagnostics.add(
             ImportDiagnosticSeverity::Warning,
             "dxf.insert-attributes-dropped",
-            Some(block_name.to_owned()),
+            Some(text::unicode_escapes(block_name).into_owned()),
             attribute_count,
         )?;
     }
@@ -4202,25 +4202,29 @@ fn parse_optional_text<'a>(
     Ok(value)
 }
 
+/// The string at `code` as the drawing means it, each `\U+XXXX` and `\M+nXXXX` read as
+/// its character ([`text::unicode_escapes`]): a block's name, an attribute's tag and
+/// value, a hatch's pattern, a dimension's text. A drawing older than 2007 escapes so what
+/// its code page lacks, and Kečup writes so all it rewrites under a code page header;
+/// kept raw, a name read back after a save was not the name read before it (capability
+/// review of r23 UL-200).
+fn parse_optional_string(
+    record: &[DxfPair<'_>],
+    code: i16,
+) -> Result<Option<String>, DxfImportError> {
+    Ok(parse_optional_text(record, code)?.map(|value| text::unicode_escapes(value).into_owned()))
+}
+
 /// The key of a block name: in capitals, each `\U+XXXX` read as its character (a DXF
-/// older than 2007 writes so a character outside its code page, `Profondit\U+00E0`).
-/// No other backslash, no slash and no control character belongs in a name.
+/// older than 2007 writes so a character outside its code page, `Profondit\U+00E0`, and
+/// one beyond U+FFFF as the pair of its UTF-16 units: review 2026-11-06 r23 P3), as
+/// [`text::unicode_escapes`] reads them. No other backslash, no slash and no control
+/// character belongs in a name.
 fn block_name_key(name: &str) -> Result<String, DxfImportError> {
-    let mut key = String::with_capacity(name.len());
-    let mut rest = name;
-    while let Some(at) = rest.find('\\') {
-        key.push_str(&rest[..at]);
-        let character = rest[at + 1..]
-            .strip_prefix("U+")
-            .and_then(|code| code.get(..4))
-            .filter(|hex| hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            .and_then(|hex| u32::from_str_radix(hex, 16).ok())
-            .and_then(char::from_u32)
-            .ok_or(DxfImportError::InvalidBlock)?;
-        key.push(character);
-        rest = &rest[at + "\\U+XXXX".len()..];
+    let key = text::unicode_escapes(name);
+    if key.contains(char::REPLACEMENT_CHARACTER) && !name.contains(char::REPLACEMENT_CHARACTER) {
+        return Err(DxfImportError::InvalidBlock);
     }
-    key.push_str(rest);
     if key.is_empty()
         || name.len() > 255
         || key.chars().any(char::is_control)

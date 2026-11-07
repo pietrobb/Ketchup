@@ -2,7 +2,7 @@
 //! body instance, colors, selection, visibility, display style and section.
 
 use crate::{camera::Camera, guides::Guides, model::Model};
-use ketchup_rejection::{Rejection, RejectionPhase};
+use ketchup_rejection::{Reason, Rejection, RejectionPhase};
 use ketchup_view_format::{DisplayStyle, PrimitiveTopology, Section};
 use num_traits::ToPrimitive;
 use std::collections::BTreeMap;
@@ -127,7 +127,7 @@ impl RenderTarget {
             .map_async(wgpu::MapMode::Read, move |result| {
                 // A send fails only once the readback below was given up and its
                 // receiver dropped: nobody waits for the map then.
-                sender.send(result).unwrap_or(());
+                ketchup_rejection::dropped(sender.send(result), Reason::NobodyWaiting);
             });
         let completed = device.poll(wgpu::PollType::Wait).is_ok()
             && receiver.recv().is_ok_and(|result| result.is_ok());
