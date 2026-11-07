@@ -408,6 +408,62 @@ def test_the_drops_review_1106_r23_found_past_the_ratchet_count(tmp_path):
     }
 
 
+def test_the_forms_with_a_path_or_a_name_review_1107_found_count(tmp_path):
+    # Review 2026-11-07 P3: a default named by its type, `unwrap_or_else(drop)`,
+    # `map_or_else(|_| (), ...)`, a bare `.is_ok();`, an empty `if let Ok(()) = ... {}`
+    # and `.expect(` slipped past.
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "let text = read(&path).unwrap_or_else(String::default);\n"
+        "let list = read(&path).unwrap_or_else(<_>::default);\n"
+        "let bytes = read(&path).unwrap_or_else(std::vec::Vec::default);\n"
+        "save(&path).unwrap_or_else(drop);\n"
+        "save(&path).map_or_else(|_| (), |()| done());\n"
+        "save(&path).is_ok();\n"
+        "if let Ok(()) = save(&path) {}\n"
+        "if let Ok(_) = tx.send(Msg { a: 1 }) { /* Gone. */ }\n"
+        'let value = parse(text).expect("checked above");\n'
+        "// What keeps or answers it is not counted.\n"
+        "let saved = save(&path).is_ok();\n"
+        "if let Ok(()) = save(&path) { done(); }\n"
+        "let size = len.unwrap_or_else(|| 0);\n"
+        "let kept = found.map_or_else(|| 0, |n| n);\n",
+    )
+    # In an entry point: `log_window_to` inside an `if`, braces in strings and
+    # characters, a helper passed by its name and a method called on `self`.
+    write(
+        tmp_path,
+        "crates/b/src/main.rs",
+        "fn main() {\n"
+        "    if help { usage(); return; }\n"
+        "    if window {\n"
+        '        log_window_to("B", "b.log");\n'
+        "    }\n"
+        '    let close = "}";\n'
+        "    let brace = '}';\n"
+        '    eprintln!("after the if");\n'
+        "    load().unwrap_or_else(bootstrap_failed);\n"
+        "    App::start(&app);\n"
+        "}\n"
+        'fn usage() { eprintln!("usage: b <file>"); }\n'
+        'fn bootstrap_failed(error: Error) { eprintln!("{error}"); }\n'
+        "impl App {\n"
+        "    fn start(&self) { self.fail(); }\n"
+        '    fn fail(&self) { eprintln!("failed"); }\n'
+        "}\n",
+    )
+    assert checker.current_counts(tmp_path) == {
+        "crates/a/src/lib.rs or_default": 3,
+        "crates/a/src/lib.rs dropped_error": 1,
+        "crates/a/src/lib.rs dropped_closure": 1,
+        "crates/a/src/lib.rs ok_statement": 1,
+        "crates/a/src/lib.rs empty_is_err": 2,
+        "crates/a/src/lib.rs expect": 1,
+        "crates/b/src/main.rs eprintln": 3,
+    }
+
+
 def test_a_new_form_is_recorded_once_and_then_may_only_shrink(tmp_path):
     # A form the baseline does not list yet is recorded as found when it is
     # added to the check; a form it lists may never grow, even from zero.

@@ -10,7 +10,7 @@ use super::plugin_manifest::{self, Description, InputType};
 use super::window_request::{Polled, WindowRequest};
 use super::*;
 use crate::delivery::Deliver;
-use crate::length_input::DecimalSeparator;
+use crate::length_input::{DecimalSeparator, Refusal};
 use std::fs;
 
 /// `%APPDATA%\Ketchup\plugins`.
@@ -97,10 +97,10 @@ impl FormField {
             InputType::Boolean => Some(Value::Bool(self.checked)),
             InputType::String => Some(Value::String(self.text.clone())),
             _ if text.is_empty() => None,
-            InputType::Integer => Some(
-                crate::length_input::read_integer(text, decimal)
-                    .map_or_else(|_| json!(text), Value::from),
-            ),
+            InputType::Integer => Some(match crate::length_input::read_integer(text, decimal) {
+                Ok(whole) => Value::from(whole),
+                Err(Refusal::Unreadable | Refusal::Comma) => json!(text),
+            }),
             InputType::Number => Some(
                 crate::length_input::parse_number(text, decimal)
                     .and_then(serde_json::Number::from_f64)
