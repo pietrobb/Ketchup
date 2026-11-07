@@ -1489,8 +1489,9 @@ fn braces(
 }
 
 /// The fasteners of joints between parts no bearing looked at, as a batten
-/// butting a wall end on, that lie outside either part: they were not
-/// looked at at all (review 2026-11-06 r23 P3: one 1 950 mm into the wall).
+/// butting a wall end on, that do not reach from one part into the other:
+/// they were not looked at at all (review 2026-11-06 r23 P3: one 1 950 mm
+/// into the wall).
 fn unlooked_stray_fasteners(
     model: &ProgramModel,
     looked: &BTreeSet<(usize, usize)>,
@@ -1504,14 +1505,22 @@ fn unlooked_stray_fasteners(
         if a == b || looked.contains(&(a.min(b), a.max(b))) {
             continue;
         }
+        // In one part and no farther from the other than the thinner part is
+        // thick, as a sill anchor halfway up the plate above the slab.
+        let boxes = [model.parts[a].obb(), model.parts[b].obb()];
+        let reach = boxes
+            .iter()
+            .flat_map(|obb| obb.half.iter().map(|half| 2.0 * half))
+            .fold(f64::INFINITY, f64::min);
         let outside: Vec<[f64; 3]> = joint
             .fasteners_mm
             .iter()
             .copied()
             .filter(|point| {
-                ![a, b]
-                    .iter()
-                    .all(|part| model.parts[*part].obb().contains(*point, CONTACT_FIT_MM))
+                !(boxes.iter().any(|obb| obb.contains(*point, CONTACT_FIT_MM))
+                    && boxes
+                        .iter()
+                        .all(|obb| obb.contains(*point, reach + CONTACT_FIT_MM)))
             })
             .collect();
         if outside.is_empty() {

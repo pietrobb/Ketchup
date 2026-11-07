@@ -975,6 +975,12 @@ fn the_fasteners_of_parts_that_bear_on_nothing_are_still_looked_at() {
         stray_fastener_parts(&butting("(525, 1000, 2425)")),
         Vec::<Vec<String>>::new()
     );
+    // Inside one part, no farther from the other than the thinner is thick, as
+    // a sill anchor halfway up the plate above the slab: it reaches the other.
+    assert_eq!(
+        stray_fastener_parts(&butting("(525, 975, 2425)")),
+        Vec::<Vec<String>>::new()
+    );
 }
 
 /// Review 2026-11-06 P3: a kind misspelt from one that fastens nothing
