@@ -1240,19 +1240,7 @@ fn braced_stretches(
         if fasteners.is_empty() {
             return Some(pieces.into_iter().filter_map(|p| middle(p)).collect());
         }
-        // A fastener reaches no deeper from the contact than the thinner part
-        // is thick (review 2026-11-06 P3: one at a wall's foot held a batten).
-        let thinner = |normal: [f64; 3]| {
-            [item, other]
-                .iter()
-                .map(|part| {
-                    let obb = parts[*part].obb();
-                    (0..3)
-                        .map(|axis| 2.0 * dot(obb.axes[axis], normal).abs() * obb.half[axis])
-                        .sum::<f64>()
-                })
-                .fold(f64::INFINITY, f64::min)
-        };
+        let thinner = |normal: [f64; 3]| reach_across([&parts[item], &parts[other]], normal);
         let (inside, outside): (Vec<[f64; 3]>, Vec<[f64; 3]>) =
             fasteners.into_iter().partition(|point| {
                 [item, other]
@@ -1341,6 +1329,20 @@ fn braced_stretches(
         }
     }
     braced
+}
+
+/// How deep a fastener reaches from a contact of `normal` between `pair`: no
+/// deeper than the thinner part is thick across it (review 2026-11-06 P3: one
+/// at a wall's foot held a batten).
+fn reach_across(pair: [&Part; 2], normal: [f64; 3]) -> f64 {
+    pair.iter()
+        .map(|part| {
+            let obb = part.obb();
+            (0..3)
+                .map(|axis| 2.0 * dot(obb.axes[axis], normal).abs() * obb.half[axis])
+                .sum::<f64>()
+        })
+        .fold(f64::INFINITY, f64::min)
 }
 
 /// Whether `point`, seen along the contact's normal, falls on the contact
@@ -1437,12 +1439,13 @@ pub fn loads(model: &ProgramModel) -> LoadReport {
 /// [`braced_stretches`] of the model: a brace is anchored by a declared
 /// grounded part only, fastened by a joint() that fastens (`joined`); a
 /// `fixed` tag passes weight, it ties nothing.
-fn braces(
-    model: &ProgramModel,
+fn braces<'a>(
+    model: &'a ProgramModel,
     supports: &[Vec<Support>],
     member: &[bool],
     frames: &[Frame],
     joined: &BTreeSet<(&str, &str)>,
+    faces: &mut ContactFaces<'a>,
 ) -> (Vec<Vec<Bracing>>, Vec<StrayFastener>, Vec<[String; 2]>) {
     let parts = &model.parts;
     let grounded = model.grounded_parts();
@@ -1467,7 +1470,7 @@ fn braces(
         },
         &mut stray,
     );
-    stray.extend(unlooked_stray_fasteners(model, &looked.into_inner()));
+    stray.extend(unlooked_stray_fasteners(model, &looked.into_inner(), faces));
     // An anchorage smaller across the member than the member is deep (a 50 mm
     // block beside a 400 mm beam) still braces it, but is reported (review
     // 2026-11-06 P3; r23 P3: so is a rod 5 900 × 10 × 10 along it, measured
@@ -1491,10 +1494,12 @@ fn braces(
 /// The fasteners of joints between parts no bearing looked at, as a batten
 /// butting a wall end on, that do not reach from one part into the other:
 /// they were not looked at at all (review 2026-11-06 r23 P3: one 1 950 mm
-/// into the wall).
-fn unlooked_stray_fasteners(
-    model: &ProgramModel,
+/// into the wall), or reach it beside where they touch (review 2026-11-07
+/// P3: one 40 mm beside a batten's end in the wall it butts).
+fn unlooked_stray_fasteners<'a>(
+    model: &'a ProgramModel,
     looked: &BTreeSet<(usize, usize)>,
+    faces: &mut ContactFaces<'a>,
 ) -> Vec<StrayFastener> {
     let index = |name: &str| model.parts.iter().position(|part| part.name == name);
     let mut stray: Vec<StrayFastener> = Vec::new();
@@ -1505,9 +1510,14 @@ fn unlooked_stray_fasteners(
         if a == b || looked.contains(&(a.min(b), a.max(b))) {
             continue;
         }
-        // In one part and no farther from the other than the thinner part is
-        // thick, as a sill anchor halfway up the plate above the slab.
-        let boxes = [model.parts[a].obb(), model.parts[b].obb()];
+        // In one part and over where the parts touch, no farther from it than
+        // the thinner part is thick, as a sill anchor halfway up the plate
+        // above the slab: as `braced_stretches` judges a looked-at pair's.
+        let pair = [&model.parts[a], &model.parts[b]];
+        let boxes = pair.map(Part::obb);
+        let contacts = faces.contacts(pair[0], pair[1]);
+        let thinner = |normal: [f64; 3]| reach_across(pair, normal);
+        // Parts touching on no flat face (round ones) keep their boxes.
         let reach = boxes
             .iter()
             .flat_map(|obb| obb.half.iter().map(|half| 2.0 * half))
@@ -1518,9 +1528,15 @@ fn unlooked_stray_fasteners(
             .copied()
             .filter(|point| {
                 !(boxes.iter().any(|obb| obb.contains(*point, CONTACT_FIT_MM))
-                    && boxes
-                        .iter()
-                        .all(|obb| obb.contains(*point, reach + CONTACT_FIT_MM)))
+                    && if contacts.is_empty() {
+                        boxes
+                            .iter()
+                            .all(|obb| obb.contains(*point, reach + CONTACT_FIT_MM))
+                    } else {
+                        contacts
+                            .iter()
+                            .any(|contact| over_contact(*point, &contact.points_mm, &thinner))
+                    })
             })
             .collect();
         if outside.is_empty() {
@@ -1770,7 +1786,7 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
     let own = own_loads(model, &frames);
     let (mut patches, mut missing) = (own.patches, own.missing);
     let (braced, stray, small_anchorages) =
-        braces(model, &supports, &member, &frames, &joined_pairs);
+        braces(model, &supports, &member, &frames, &joined_pairs, faces);
 
     // Pass the loads down, each part after everything it carries.
     let mut pending = vec![0usize; parts.len()];

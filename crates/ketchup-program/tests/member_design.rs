@@ -981,6 +981,12 @@ fn the_fasteners_of_parts_that_bear_on_nothing_are_still_looked_at() {
         stray_fastener_parts(&butting("(525, 975, 2425)")),
         Vec::<Vec<String>>::new()
     );
+    // Review 2026-11-07 P3: but only over where they touch. One in the wall
+    // 40 mm beside the batten's end was within its 50 mm of it, and passed.
+    assert_eq!(
+        stray_fastener_parts(&butting("(590, 1025, 2425)")),
+        [["batten", "wall"]]
+    );
 }
 
 /// Review 2026-11-06 P3: a kind misspelt from one that fastens nothing
