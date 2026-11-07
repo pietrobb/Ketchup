@@ -96,7 +96,7 @@ From the same model you get a numbered drawing set (**File → Export → Drawin
 
 Export a `.ketchup-view` package and send it. **Ketchup Viewer** opens it read-only: your customer can orbit the model, switch your saved scenes, pick a part to see its name, material, size and notes, show your dimensions, measure between points, and add comments with arrows and the camera position, then save them in a small file to send back to you, all without being able to change the geometry. The package carries geometry, materials and notes, not your design history or programs.
 
-The Windows Viewer is installed with Ketchup. A macOS app, an Android app and a static web version that runs entirely in the browser ([hosting guide](viewer/web/HOSTING.md)) share its code in [`viewer/`](viewer).
+The Windows Viewer is installed with Ketchup. A macOS app, an Android app and a static web version that runs entirely in the browser ([hosting guide](viewer/web/HOSTING.md)) share its code in `viewer/`.
 
 ### Let your AI assistant model it
 
@@ -148,7 +148,7 @@ More programs you can run on an empty model are in [`examples/programs`](example
 
 ## Connect your AI harness (MCP)
 
-Your harness keeps its own model, account and subscription; Ketchup doesn't need an API key. `Ketchup.exe --mcp` runs an MCP server on stdio, and a connected harness works in the Ketchup window you have open. Besides modeling, it can import STEP, IGES, STL, DXF, DWG, GLB and SketchUp scene files, read a drawing as objects, closed regions (rooms) and parallel line pairs (wall thicknesses), and export everything the window can, including project drawings as PDF.
+Your harness keeps its own model, account and subscription; Ketchup doesn't need an API key. `Ketchup.exe --mcp` runs an MCP server on stdio, and a connected harness works in the Ketchup window you have open. Besides modeling, it can import STEP, IGES, STL, DXF, DWG, GLB and SketchUp scene files, read a drawing as objects, closed regions (rooms) and parallel line pairs (wall thicknesses), edit it (remove, draw, move, trim, extend, offset), and export everything the window can, including project drawings as PDF.
 
 Set it up once, in any of these ways:
 
@@ -223,7 +223,7 @@ Honest limits, so you know where it stands next to a mature mechanical CAD such 
 - **Undo history lives in memory** for the session and reaches back 30 edits; Save writes only the current revision. A work-recovery copy keeps your edits and their Undo steps through a crash.
 - **One memory limit per kind of background job**, not for the whole window: several large imports and exports at once can use more memory than the computer has.
 - **Windows is the supported desktop platform.** macOS and Linux builds work from source (below); the installer and signed release are Windows-only.
-- **No stable public API or long-term file-format promise yet.** A newer Ketchup opens older files. Ketchup 0.2.0 and later refuse a file a newer version saved and change nothing. **Do not open files saved by a later version in 0.1.0:** it takes them for damaged files and may open an older `.recovery` copy instead, and saving there can overwrite the newer file.
+- **No stable public API or long-term file-format promise yet.** A newer Ketchup opens older files. A document without underlays and annotations whose imports stay within the limits of 0.2.0 (at most 1 024 objects made by one import, a DXF source of at most 8 MiB, other sources of at most 32 MiB) is saved so that 0.2.0 opens it too. Ketchup 0.2.0 and later refuse a file a newer version saved and change nothing. **Do not open files saved by a later version in 0.1.0:** it takes them for damaged files and may open an older `.recovery` copy instead, and saving there can overwrite the newer file.
 
 ## Where it goes next
 
