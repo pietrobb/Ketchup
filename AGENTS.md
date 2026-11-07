@@ -35,6 +35,9 @@ normative English documents and ADRs; dated reviews, status files and notes go t
   `Result<_, String>`, no `map_err(|e| e.to_string())`, no `Variant(format!(…))` instead of
   fields, no bare `unreachable!()` or `.unwrap()`, no
   rewriting of messages in the SDK or skills, no collapsing many causes into one code.
+  `.expect("…")` panics as `.unwrap()` does: new production code has neither. Shape the type
+  so the case cannot exist, or return a `Rejection`; the older ones are counted per file and
+  may only go down.
   Only an error type that carries nothing but its type (`TryFromIntError`, `PoisonError`, …; the
   list is `CONTENT_FREE` in `scripts/check_error_hygiene.py`) may be dropped, and the closure names
   it: `map_err(|_: std::num::TryFromIntError| …)`. The script is a CI ratchet: counts per file may
@@ -83,8 +86,9 @@ reproduced failure that they catch, or explicit approval by the owner.
 
 - When a new path replaces an old one, remove the old one in the same change. No parallel
   "legacy" paths.
-- Do not grow `crates/ketchup-app/src/lib.rs` or `crates/ketchup-model/src/document.rs`. Put new
-  code in new modules.
+- Do not grow `crates/ketchup-app/src/lib.rs`, `crates/ketchup-model/src/document.rs`,
+  `crates/ketchup-manufacturing/src/fabrication.rs` or `crates/ketchup-model/src/import/dxf.rs`
+  (`FROZEN_MODULES` in `scripts/check_crate_layers.py`). Put new code in new modules.
 - New code: functions under ~150 lines, files under ~3000 lines. No crate source module may
   exceed 5000 lines; `scripts/check_crate_layers.py` enforces it and only lets the listed
   older modules shrink.

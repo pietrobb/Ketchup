@@ -19,11 +19,13 @@ use ketchup_model::sheet_pdf::{Anchor, Mark, Page, Stroke};
 use ketchup_model::tolerance::{HIDDEN_LINE_TOUCH_MM, NEGLIGIBLE, ROUNDING};
 use serde::Serialize;
 use std::collections::BTreeMap;
+use std::sync::atomic::AtomicBool;
 
 mod annotations;
 mod cutting;
 mod levels;
 mod openings;
+mod plan_overlap;
 mod set;
 mod shop;
 mod table;
@@ -741,6 +743,10 @@ const STANDING_WIDTH_MM: f64 = 750.0;
 /// table, a kitchen island or a bar counter is lower (not a tolerance: a
 /// height, review 2026-11-04 r19 MF-161).
 const RAISED_LEVEL_MM: f64 = 1200.0;
+/// Share of a top a level under it covers in plan to be the level it stands
+/// over, as a gallery under a table past its edge or a bed over its opening is
+/// (not a tolerance: a ratio of areas, review 2026-11-07 P3).
+const UNDER_SHARE_OF_TOP: f64 = 0.25;
 /// How far below z = 0 a ground floor modelled under it lies at most; the
 /// floor of a basement is a storey below (not a tolerance: a depth, review
 /// 2026-11-06 P3).
@@ -1030,68 +1036,10 @@ struct UpwardLevel {
 }
 
 impl UpwardLevel {
-    /// How much of the level lies over `other` in plan.
-    fn area_over(&self, other: &Self) -> f64 {
-        fn boxed(triangle: &[[f64; 2]; 3]) -> (&[[f64; 2]; 3], [f64; 2], [f64; 2]) {
-            let [min, max] = triangle.iter().fold(
-                [[f64::INFINITY; 2], [f64::NEG_INFINITY; 2]],
-                |[min, max], corner| {
-                    [
-                        [min[0].min(corner[0]), min[1].min(corner[1])],
-                        [max[0].max(corner[0]), max[1].max(corner[1])],
-                    ]
-                },
-            );
-            (triangle, min, max)
-        }
-        let theirs: Vec<_> = other.triangles.iter().map(boxed).collect();
-        self.triangles
-            .iter()
-            .map(boxed)
-            .map(|(triangle, min, max)| {
-                theirs
-                    .iter()
-                    .filter(|(_, other_min, other_max)| {
-                        (0..2).all(|axis| {
-                            max[axis].min(other_max[axis]) - min[axis].max(other_min[axis])
-                                > ROUNDING
-                        })
-                    })
-                    .map(|(other, ..)| polygon_area(&clipped(triangle, other)))
-                    .sum::<f64>()
-            })
-            .sum()
+    /// How much of the level lies over `other` in plan; None once `stop` is set.
+    fn area_over(&self, other: &Self, stop: &AtomicBool) -> Option<f64> {
+        plan_overlap::area_over(&self.triangles, &other.triangles, stop)
     }
-}
-
-/// The part of `triangle` inside `within`, both counter-clockwise.
-fn clipped(triangle: &[[f64; 2]; 3], within: &[[f64; 2]; 3]) -> Vec<[f64; 2]> {
-    let mut points = triangle.to_vec();
-    for index in 0..3 {
-        let (from, to) = (within[index], within[(index + 1) % 3]);
-        let edge = [to[0] - from[0], to[1] - from[1]];
-        let side = |point: [f64; 2]| cross2(edge, [point[0] - from[0], point[1] - from[1]]);
-        let mut kept = Vec::with_capacity(points.len() + 1);
-        for (position, point) in points.iter().enumerate() {
-            let next = points[(position + 1) % points.len()];
-            let (here, there) = (side(*point), side(next));
-            if here >= 0.0 {
-                kept.push(*point);
-            }
-            if (here >= 0.0) != (there >= 0.0) {
-                let t = here / (here - there);
-                kept.push([
-                    point[0] + t * (next[0] - point[0]),
-                    point[1] + t * (next[1] - point[1]),
-                ]);
-            }
-        }
-        points = kept;
-        if points.is_empty() {
-            break;
-        }
-    }
-    points
 }
 
 /// One solid's upward faces at one level: their area, the edges of their
@@ -1282,44 +1230,47 @@ fn floor_levels<'a>(solids: impl IntoIterator<Item = &'a DrawingSolid>) -> Vec<f
 /// plans and every level a person stands on, however small, such as a
 /// gallery or a mezzanine; not the top of a wall, a knee wall or a parapet
 /// (review 2026-11-04 MF-141), nor a top to sit or work at, less than
-/// [`RAISED_LEVEL_MM`] over the level marked under the most of it in plan, or
-/// with none under it, over the highest level marked below it (r19 MF-161;
-/// review 2026-11-06 MF-180: a landing on the way up, the last level marked,
-/// unmarked a gallery across the hall; r23 MF-200: so did a landing in the
-/// free corner of an L-shaped gallery or under its edge; r23 P3: tables
-/// beside the floor were marked).
-fn marked_floor_levels(solids: &[DrawingSolid]) -> Vec<f64> {
+/// [`RAISED_LEVEL_MM`] over the highest level marked under
+/// [`UNDER_SHARE_OF_TOP`] of it in plan, or with none under it, over the
+/// highest floor below it (r19 MF-161; review 2026-11-06 MF-180: a landing on
+/// the way up, the last level marked, unmarked a gallery across the hall; r23
+/// MF-200: so did a landing in the free corner of an L-shaped gallery or under
+/// its edge; r23 P3: tables beside the floor were marked; 2026-11-07 P3: a
+/// table past the gallery's edge and a bed over an opening in it were measured
+/// against the floor under the most of them, and a platform beside the hall
+/// against a landing elsewhere). None once `stop` is set.
+fn marked_floor_levels(solids: &[DrawingSolid], stop: &AtomicBool) -> Option<Vec<f64>> {
     let levels = upward_levels(solids);
     let largest = levels
         .iter()
         .map(|(_, level)| level.area)
         .fold(0.0, f64::max);
-    let mut marked: Vec<(f64, UpwardLevel)> = Vec::new();
+    // Each with whether it is a floor of the plans.
+    let mut marked: Vec<(f64, UpwardLevel, bool)> = Vec::new();
     for (height, level) in levels {
         let floor = level.area >= largest * FLOOR_SHARE_OF_LARGEST_LEVEL;
-        // Of levels under as much of it, as a desk on a gallery is over the
-        // floor too, the highest.
-        let under = || {
-            let areas: Vec<(f64, f64)> = marked
-                .iter()
-                .map(|(below, under)| (*below, level.area_over(under)))
-                .filter(|(_, area)| *area > ROUNDING)
-                .collect();
-            let most = areas.iter().map(|(_, area)| *area).fold(0.0, f64::max);
-            areas
-                .iter()
-                .filter(|(_, area)| *area >= most * (1.0 - ROUNDING))
-                .map(|(below, _)| *below)
-                .reduce(f64::max)
-                .or_else(|| marked.last().map(|(below, _)| *below))
-        };
+        let mut under = None;
+        if level.widest_mm >= STANDING_WIDTH_MM {
+            for (below, beneath, _) in &marked {
+                if level.area_over(beneath, stop)? >= level.area * UNDER_SHARE_OF_TOP {
+                    under = Some(under.map_or(*below, |under: f64| under.max(*below)));
+                }
+            }
+            under = under.or_else(|| {
+                marked
+                    .iter()
+                    .filter(|(_, _, floor)| *floor)
+                    .map(|(below, ..)| *below)
+                    .reduce(f64::max)
+            });
+        }
         let raised = level.widest_mm >= STANDING_WIDTH_MM
-            && under().is_none_or(|below| height - below >= RAISED_LEVEL_MM);
+            && under.is_none_or(|below| height - below >= RAISED_LEVEL_MM);
         if floor || raised {
-            marked.push((height, level));
+            marked.push((height, level, floor));
         }
     }
-    marked.into_iter().map(|(height, _)| height).collect()
+    Some(marked.into_iter().map(|(height, ..)| height).collect())
 }
 
 /// Where ±0,000 is by default, as Czech and Slovak drawings put it: the floor
@@ -1879,6 +1830,99 @@ mod tests {
             expected,
             "over the landing's edge"
         );
+    }
+
+    /// Review 2026-11-07 P3: a top was measured against the level under the
+    /// most of it, so a table 800 mm wide at +3,440, 500 mm of it past the
+    /// gallery's edge, and a bed over the stair's opening in the gallery were
+    /// measured against the floor and marked; so was a desk on the gallery
+    /// over a floor laid twice (finish and board of one top), counted twice.
+    /// A platform at +2,400 beside the hall, nothing under it, was measured
+    /// against the landing at +1,800 elsewhere and went unmarked. A top is
+    /// measured against the highest level under a quarter of it, else the
+    /// highest floor below it.
+    #[test]
+    fn a_top_is_measured_against_the_highest_level_under_a_quarter_of_it() {
+        let hall = |extra: Vec<DrawingSolid>| {
+            let mut hall = vec![
+                cuboid("floor", [0.0, 0.0, -200.0], [8000.0, 6000.0, 0.0]),
+                cuboid("roof", [0.0, 0.0, 5000.0], [8000.0, 6000.0, 5200.0]),
+                cuboid(
+                    "landing",
+                    [5000.0, 1500.0, 1700.0],
+                    [6200.0, 2700.0, 1800.0],
+                ),
+                // The stair's opening between y = 2000 and 3000.
+                cuboid("gallery", [0.0, 0.0, 2500.0], [3000.0, 2000.0, 2700.0]),
+                cuboid("gallery", [0.0, 3000.0, 2500.0], [3000.0, 6000.0, 2700.0]),
+            ];
+            hall.extend(extra);
+            let options = DrawingSetOptions {
+                decimal_separator: ketchup_model::annotation::DecimalMark::Comma,
+                ..options(&hall, None)
+            };
+            let set = drawing_set(&hall, &options).unwrap();
+            summary(&set, ProjectView::LongitudinalSection)
+                .levels
+                .clone()
+        };
+        let expected = ["-0,200", "±0,000", "+1,800", "+2,700", "+5,200"];
+        assert_eq!(hall(Vec::new()), expected, "bare");
+        let table = cuboid("table", [2700.0, 3500.0, 3400.0], [3500.0, 4500.0, 3440.0]);
+        assert_eq!(hall(vec![table]), expected, "table past the edge");
+        let bed = cuboid("bed", [500.0, 1800.0, 2900.0], [2500.0, 3200.0, 3150.0]);
+        assert_eq!(hall(vec![bed]), expected, "bed over the opening");
+        let doubled = vec![
+            cuboid("finish", [0.0, 0.0, -20.0], [8000.0, 6000.0, 0.0]),
+            cuboid("desk", [500.0, 4000.0, 3400.0], [2000.0, 5000.0, 3440.0]),
+        ];
+        assert_eq!(hall(doubled), expected, "floor laid twice");
+        let platform = cuboid("platform", [9000.0, 0.0, 2300.0], [11000.0, 2000.0, 2400.0]);
+        assert_eq!(
+            hall(vec![platform]),
+            ["-0,200", "±0,000", "+1,800", "+2,400", "+2,700", "+5,200"],
+            "platform beside the hall"
+        );
+    }
+
+    /// Three floors of 100 × 100 tiles 50 mm square, 20 000 top triangles each.
+    fn tiled_floors() -> Vec<DrawingSolid> {
+        let mut tiles = Vec::new();
+        for top in [0.0, 1500.0, 3000.0] {
+            for index in 0..10_000_u32 {
+                let [x, y] = [f64::from(index % 100) * 50.0, f64::from(index / 100) * 50.0];
+                tiles.push(cuboid(
+                    "tile",
+                    [x, y, top - 10.0],
+                    [x + 50.0, y + 50.0, top],
+                ));
+            }
+        }
+        tiles
+    }
+
+    /// Review 2026-11-07 P3: the levels' triangles were overlapped each with
+    /// each, and nothing stopped it.
+    #[test]
+    fn the_triangles_of_many_levels_are_overlapped_and_can_be_stopped() {
+        let tiles = tiled_floors();
+        assert_eq!(
+            marked_floor_levels(&tiles, &AtomicBool::new(false)),
+            Some(vec![0.0, 1500.0, 3000.0])
+        );
+        assert_eq!(marked_floor_levels(&tiles, &AtomicBool::new(true)), None);
+    }
+
+    /// Review 2026-11-07 P3: 3 s for three levels of 20 000 triangles, tens
+    /// for more (50 s in a debug build).
+    #[test]
+    #[ignore = "perf: release timing budget, runs nightly"]
+    fn perf_the_triangles_of_many_levels_are_overlapped_in_a_second() {
+        let tiles = tiled_floors();
+        let started = std::time::Instant::now();
+        assert!(marked_floor_levels(&tiles, &AtomicBool::new(false)).is_some());
+        let took = started.elapsed();
+        assert!(took < std::time::Duration::from_secs(1), "{took:?}");
     }
 
     /// Review 2026-11-06 r23 MF-203: with the model's origin on the ground,

@@ -8,7 +8,7 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
-use crate::recent_files::presence::{Presence, presence};
+use crate::recent_files::presence::{Presence, presence_below};
 
 use super::mcp_config::{
     Rewrite, SERVER, codex_command, codex_server_off, invalid_data, json_server_off, read_or_empty,
@@ -159,6 +159,10 @@ pub struct Environment {
     /// own `skills\mcp_servers.json`, next to its `skills\mcp_bridge.py`. An
     /// error when the system did not list the running programs.
     pub supervisor_folders: Result<Vec<PathBuf>, RowError>,
+    /// Folders outside home that programs are installed in and deleted from
+    /// whole, not where shares are mounted: a program missing in a folder
+    /// gone below one was deleted (review 2026-11-07 P3).
+    pub program_folders: Vec<PathBuf>,
 }
 
 impl Environment {
@@ -172,6 +176,7 @@ impl Environment {
             claude_config_dir: None,
             codex_home: None,
             supervisor_folders: Ok(Vec::new()),
+            program_folders: Vec::new(),
         }
     }
 
@@ -186,6 +191,14 @@ impl Environment {
             codex_home: folder("CODEX_HOME"),
             supervisor_folders: super::running_programs::folders_of_running("supervisor")
                 .map_err(RowError::from),
+            // An AppImage runs from `/tmp/.mount_*`, removed when it ends.
+            program_folders: if cfg!(windows) {
+                Vec::new()
+            } else {
+                ["/opt", "/usr", "/Applications", "/tmp"]
+                    .map(PathBuf::from)
+                    .into()
+            },
             ..Self::in_home(PathBuf::from(home))
         })
     }
@@ -391,11 +404,15 @@ impl Environment {
             // A folder may not be read, a volume not be mounted, a drive or share
             // be out (review 2026-11-06 SEC-180, r23 SEC-201: each counted as no
             // file, and the installer replaced the entry); a missing folder is
-            // trusted to be deleted in the client's home folder only.
-            let local = (!cfg!(windows)).then_some(self.home.as_path());
+            // trusted to be deleted in the client's home folder and the folders
+            // programs are installed in only (review 2026-11-07 P3).
+            let trusted: Vec<&Path> = std::iter::once(self.home.as_path())
+                .chain(self.program_folders.iter().map(PathBuf::as_path))
+                .collect();
+            let trusted = (!cfg!(windows)).then_some(trusted.as_slice());
             let mut unknown = false;
             for candidate in candidates {
-                match presence(&candidate, local) {
+                match presence_below(&candidate, trusted) {
                     Presence::Here => return Some(Some(candidate)),
                     Presence::Gone => {}
                     Presence::Unknown => {

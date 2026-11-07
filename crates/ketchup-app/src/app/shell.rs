@@ -93,7 +93,6 @@ impl KetchupApp {
             },
             confirmation_surface,
             side_effect_receipts: Vec::new(),
-            btlx: app_state::BtlxSettings::default(),
             language: language::UiLanguage::ALL
                 .into_iter()
                 .find(|language| language.catalog() == catalog),
@@ -154,6 +153,8 @@ impl KetchupApp {
                 dock_tab: None,
                 recent: recent_files::RecentFiles::default(),
                 written_drawings: None,
+                btlx: app_state::BtlxSettings::default(),
+                btlx_settings: None,
             },
             camera: app_state::CameraState {
                 projection_mode: ProjectionMode::Parallel,
@@ -286,6 +287,10 @@ impl KetchupApp {
             app.window.recent = recent_files::RecentFiles::from_store(Box::new(settings));
         }
         app.window.written_drawings = crate::app::written_drawings::of_user();
+        if let Some(file) = crate::app::btlx_settings::of_user() {
+            app.window.btlx = crate::app::btlx_settings::read(&file);
+            app.window.btlx_settings = Some(file);
+        }
         app.window.decimal = crate::length_input::DecimalSeparator::at_startup();
         app.dialogs = Box::new(NativeFileDialogs::with_parent(
             DialogParentWindow::from_creation_context(context),

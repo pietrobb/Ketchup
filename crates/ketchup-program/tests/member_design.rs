@@ -946,6 +946,23 @@ box(\"wall\"",
     );
     assert_eq!(braced_by(&rod), [("batten".to_owned(), 525.0, 525.0)]);
     assert_eq!(issue_parts(&rod, "anchorage_small"), [["beam", "wall"]]);
+
+    // Review 2026-11-07 P3: one turned 45° to the beam was measured by its
+    // height alone, its sides at 45° left out, so a slab 300 mm square was
+    // 10 mm across.
+    let turned = report(
+        &one_batten("", "").replace(
+            "box(\"wall\", (5900, 100, 2400), at = (0, 1000, 0), material = \"GL24h\", grounded = True)",
+            "box(\"wall\", (300, 300, 10), at = (375, 900, 2390), material = \"GL24h\", grounded = True)
+rotate(\"wall\", axis = (0, 0, 1), angle = 45, pivot = (525, 1050, 2390))",
+        ),
+        &[],
+    );
+    assert_eq!(braced_by(&turned), [("batten".to_owned(), 525.0, 525.0)]);
+    assert_eq!(
+        issue_parts(&turned, "anchorage_small"),
+        Vec::<Vec<String>>::new()
+    );
 }
 
 /// Review 2026-11-06 r23 P3: the fasteners of a joint were looked at only
@@ -981,6 +998,12 @@ fn the_fasteners_of_parts_that_bear_on_nothing_are_still_looked_at() {
         stray_fastener_parts(&butting("(525, 975, 2425)")),
         Vec::<Vec<String>>::new()
     );
+    // Review 2026-11-07 P3: but only over where they touch. One in the wall
+    // 40 mm beside the batten's end was within its 50 mm of it, and passed.
+    assert_eq!(
+        stray_fastener_parts(&butting("(590, 1025, 2425)")),
+        [["batten", "wall"]]
+    );
 }
 
 /// Review 2026-11-06 P3: a kind misspelt from one that fastens nothing
@@ -996,7 +1019,17 @@ fn a_joint_kind_like_one_that_fastens_nothing_is_reported() {
             &[],
         )
     };
-    for misspelt in ["contcat", "Contacts", "fricton", "unfastend"] {
+    // Review 2026-11-07 P3: and under five letters a slip of a kind but "none",
+    // as "lose" for "loose", "rest" for "rests" and "frei" for "free".
+    for misspelt in [
+        "contcat",
+        "Contacts",
+        "fricton",
+        "unfastend",
+        "lose",
+        "rest",
+        "frei",
+    ] {
         let doubtful = kind(misspelt);
         assert_eq!(
             issue_parts(&doubtful, "joint_kind_doubtful"),

@@ -282,10 +282,11 @@ pub(crate) fn write_keeping_file(file: &Path, text: &str, backup: bool) -> io::R
             let file = link_target(file);
             let directory = file.parent().unwrap_or(Path::new("."));
             let nearest = nearest_folder(directory);
-            std::fs::create_dir_all(directory)?;
-            let written = write_new(directory, &file, text, nearest.as_ref());
+            let written = std::fs::create_dir_all(directory)
+                .and_then(|()| write_new(directory, &file, text, nearest.as_ref()));
             // The folders made for a file not written are not left behind (review
-            // 2026-11-06 r23 SEC-200).
+            // 2026-11-06 r23 SEC-200), nor those made before a folder that could
+            // not be (review 2026-11-07 P3).
             if written.is_err()
                 && let Some((folder, _)) = &nearest
             {
@@ -337,6 +338,10 @@ fn write_new(
 /// deepest first.
 fn remove_made_folders(folder: &Path, directory: &Path) {
     for made in directory.ancestors().take_while(|made| *made != folder) {
+        // A folder not made, below one that could not be, is passed over.
+        if std::fs::symlink_metadata(made).is_err() {
+            continue;
+        }
         if let Err(error) = std::fs::remove_dir(made) {
             ketchup_rejection::log!("the folder {} made for it stays: {error}", made.display());
             return;
@@ -694,6 +699,20 @@ mod tests {
         remove_made_folders(directory.path(), &made);
         assert!(!made.exists());
         assert!(directory.path().join("shared").exists());
+    }
+
+    /// Review 2026-11-07 P3: when a folder could not be made, those made above
+    /// it stayed behind.
+    #[test]
+    fn the_folders_made_before_one_that_could_not_be_are_removed() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory
+            .path()
+            .join("shared")
+            .join("x".repeat(300))
+            .join("config.toml");
+        assert!(write_keeping_file(&file, "x = 1\n", false).is_err());
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
     }
 
     #[test]

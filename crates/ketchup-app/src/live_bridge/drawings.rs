@@ -747,24 +747,32 @@ pub(super) fn export_failed(error: ProjectDrawingsError) -> &'static str {
             list,
             project,
             sheets,
-        } => failure(
-            "drawings_set_of_another_project",
-            format!(
-                "The drawing set listed in {} was exported from {}, not from this document, so none of its sheets is replaced. It has {} {}, {}: taking it over replaces {} and deletes those beyond the last sheet of this project's set. Ask the user: export to another folder or file name, or, if they agree to take that set over for this project, export again with take_over: true.",
-                list.display(),
-                project.as_deref().unwrap_or("a project not saved"),
-                sheets.len(),
-                if sheets.len() == 1 { "sheet" } else { "sheets" },
-                crate::app::project_drawings::sheet_names(&sheets),
-                if sheets.len() == 1 { "it" } else { "them" },
-            ),
-            json!({
-                "list": list.display().to_string(),
-                "exported_from": project,
-                "sheets": sheets.len(),
-                "sheet_files": &sheets[..sheets.len().min(ketchup_rejection::LISTED)],
-            }),
-        ),
+        } => {
+            let names = crate::app::project_drawings::sheet_names(&sheets);
+            let deletes = "deletes those beyond the last sheet of this project's set";
+            let has = match sheets.len() {
+                0 => "no sheets listed, so taking it over only writes this project's set there"
+                    .to_owned(),
+                1 => format!("1 sheet, {names}: taking it over replaces it and {deletes}"),
+                count => {
+                    format!("{count} sheets, {names}: taking it over replaces them and {deletes}")
+                }
+            };
+            failure(
+                "drawings_set_of_another_project",
+                format!(
+                    "The drawing set listed in {} was exported from {}, not from this document, so none of its sheets is replaced. It has {has}. Ask the user: export to another folder or file name, or, if they agree to take that set over for this project, export again with take_over: true.",
+                    list.display(),
+                    project.as_deref().unwrap_or("a project not saved"),
+                ),
+                json!({
+                    "list": list.display().to_string(),
+                    "exported_from": project,
+                    "sheets": sheets.len(),
+                    "sheet_files": crate::app::project_drawings::listed_sheets(&sheets),
+                }),
+            )
+        }
         ProjectDrawingsError::Write(error) => write_failed(error),
     }
 }
@@ -799,6 +807,35 @@ mod tests {
             },
             false,
         )
+    }
+
+    /// Review 2026-11-07 P3: a list of no sheets was told as "It has 0 sheets,
+    /// : taking it over replaces them", and the names a list on a share holds
+    /// went to the client however long.
+    #[test]
+    fn the_answer_for_another_projects_set_says_no_sheets_and_cuts_long_names() {
+        use crate::app::project_drawings::SHEET_NAME_CHARS;
+        let refused = |sheets: Vec<String>| {
+            let code = export_failed(ProjectDrawingsError::SetOfAnotherProject {
+                list: PathBuf::from("house.dxf.sheets.txt"),
+                project: Some("barn.ketchup".to_owned()),
+                sheets,
+            });
+            assert_eq!(code, "drawings_set_of_another_project");
+            crate::live_bridge::take_error_details().unwrap_or_default()
+        };
+        let none = refused(Vec::new()).to_string();
+        assert!(none.contains("It has no sheets listed"), "{none}");
+        assert!(!none.contains(", :"), "{none}");
+        let long = "a".repeat(10_000);
+        let answer = refused(vec![long.clone(), "house-02.dxf".to_owned()]);
+        let text = answer.to_string();
+        assert!(text.len() < 2_000, "{} characters", text.len());
+        assert!(text.contains("house-02.dxf"), "{text}");
+        assert!(
+            text.contains(&format!("{}…", &long[..SHEET_NAME_CHARS])),
+            "{text}"
+        );
     }
 
     #[test]

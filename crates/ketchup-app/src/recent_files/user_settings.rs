@@ -129,7 +129,16 @@ impl SettingsFile {
             .truncate(false)
             .write(true)
             .open(self.path.with_extension("txt.lock"))?;
-        take_turn(|| lock.try_lock(), || saved_at(&self.path), TURN_WAIT)?;
+        take_turn(|| lock.try_lock(), || seen(&self.path), TURN_WAIT, TURN_CAP)?;
+        let turns = turns_of(&self.path);
+        // Told to the windows waiting: on FAT, HFS+ or SMB a save of the same
+        // length within the second or two of the time kept changes nothing
+        // they see of the settings (review 2026-11-07 P3).
+        let turn = std::fs::read_to_string(&turns)
+            .ok()
+            .and_then(|text| text.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        std::fs::write(&turns, turn.wrapping_add(1).to_string())?;
         let (lines, damaged) = self.read()?;
         if damaged {
             std::fs::copy(&self.path, self.path.with_extension("txt.bad"))?;
@@ -164,6 +173,9 @@ impl SettingsFile {
 
 /// How long a save waits for another window saving the settings.
 const TURN_WAIT: Duration = Duration::from_secs(2);
+/// How long a save waits for other windows in all, however they go on saving:
+/// the window's thread is not held longer (review 2026-11-07 P3).
+const TURN_CAP: Duration = Duration::from_secs(10);
 /// How often a waiting save tries the lock again.
 const TURN_POLL: Duration = Duration::from_millis(2);
 
@@ -171,7 +183,8 @@ const TURN_POLL: Duration = Duration::from_millis(2);
 /// saving tries it while other windows save, `saved` telling when one did, but
 /// gives up once one held it `wait` without saving, not waiting without end
 /// behind one that hangs (review 2026-11-06 P3: `lock()` on the window's
-/// thread). On a file system that cannot lock (NFS without lockd) it saves
+/// thread), and after `cap` in all behind windows that go on saving (review
+/// 2026-11-07 P3). On a file system that cannot lock (NFS without lockd) it saves
 /// without the lock rather than never. A save that gave up leaves nothing
 /// behind (review 2026-11-06 r23 P3: a thread waited on in `lock()` with the
 /// file open as long as the other window hung).
@@ -179,15 +192,19 @@ fn take_turn<T: PartialEq>(
     mut attempt: impl FnMut() -> Result<(), std::fs::TryLockError>,
     mut saved: impl FnMut() -> T,
     wait: Duration,
+    cap: Duration,
 ) -> io::Result<()> {
     let mut seen = saved();
-    let mut until = std::time::Instant::now() + wait;
+    let start = std::time::Instant::now();
+    let mut until = start + wait;
     loop {
         match attempt() {
             Ok(()) => return Ok(()),
             Err(std::fs::TryLockError::Error(error)) if cannot_lock(&error) => return Ok(()),
             Err(std::fs::TryLockError::Error(error)) => return Err(error),
-            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < until => {
+            Err(std::fs::TryLockError::WouldBlock)
+                if std::time::Instant::now() < until.min(start + cap) =>
+            {
                 std::thread::sleep(TURN_POLL);
                 let now = saved();
                 if now != seen {
@@ -203,6 +220,17 @@ fn take_turn<T: PartialEq>(
             }
         }
     }
+}
+
+/// The file beside the settings at `path` that counts the turns taken.
+fn turns_of(path: &Path) -> PathBuf {
+    path.with_extension("txt.turn")
+}
+
+/// What a window waiting sees of the saves of others: when and how long the
+/// settings were last written, and the count of the turns taken.
+fn seen(path: &Path) -> (Option<(std::time::SystemTime, u64)>, Option<Vec<u8>>) {
+    (saved_at(path), std::fs::read(turns_of(path)).ok())
 }
 
 /// When and how long the settings were last written; the same nothing while
@@ -324,12 +352,13 @@ mod tests {
         );
     }
 
-    /// The names in `folder` other than the lock windows take turns on.
+    /// The names in `folder` other than the lock windows take turns on and
+    /// the count of the turns taken.
     fn beside_lock(folder: &Path) -> Vec<String> {
         let mut names: Vec<String> = std::fs::read_dir(folder)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|name| name != "settings.txt.lock")
+            .filter(|name| name != "settings.txt.lock" && name != "settings.txt.turn")
             .collect();
         names.sort();
         names
@@ -421,7 +450,7 @@ mod tests {
             counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Err(std::fs::TryLockError::WouldBlock)
         };
-        let error = take_turn(busy, || (), Duration::from_millis(60)).unwrap_err();
+        let error = take_turn(busy, || (), Duration::from_millis(60), TURN_CAP).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert!(
             tries.load(std::sync::atomic::Ordering::Relaxed) > 1,
@@ -445,11 +474,31 @@ mod tests {
                 saves
             },
             Duration::from_millis(30),
+            TURN_CAP,
         )
         .unwrap();
+        // Review 2026-11-07 P3: but not past the cap, however they go on.
+        let mut saves = 0;
+        let error = take_turn(
+            || Err(std::fs::TryLockError::WouldBlock),
+            || {
+                saves += 1;
+                saves
+            },
+            Duration::from_millis(30),
+            Duration::from_millis(150),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
 
         let refused = |kind| move || Err(std::fs::TryLockError::Error(io::Error::from(kind)));
-        take_turn(refused(io::ErrorKind::Unsupported), || (), TURN_WAIT).unwrap();
+        take_turn(
+            refused(io::ErrorKind::Unsupported),
+            || (),
+            TURN_WAIT,
+            TURN_CAP,
+        )
+        .unwrap();
         #[cfg(unix)]
         take_turn(
             || {
@@ -459,9 +508,54 @@ mod tests {
             },
             || (),
             TURN_WAIT,
+            TURN_CAP,
         )
         .unwrap();
-        assert!(take_turn(refused(io::ErrorKind::PermissionDenied), || (), TURN_WAIT).is_err());
+        assert!(
+            take_turn(
+                refused(io::ErrorKind::PermissionDenied),
+                || (),
+                TURN_WAIT,
+                TURN_CAP
+            )
+            .is_err()
+        );
+    }
+
+    /// Review 2026-11-07 P3: a window waited for others only while the time
+    /// or length of the settings changed, which on FAT, HFS+ or SMB stay the
+    /// same over saves of a second or two. Each turn taken is counted beside
+    /// the lock, and a window waits while the count goes on.
+    #[test]
+    fn a_save_waits_while_other_windows_take_turns_the_settings_do_not_show() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join(FILE_NAME);
+        let settings = SettingsFile::at(path.clone());
+        settings.save_language("sk").unwrap();
+        let turns = turns_of(&path);
+        let count = || std::fs::read_to_string(&turns).unwrap();
+        let first = count();
+        settings.save_language("sk").unwrap();
+        assert_ne!(count(), first, "a turn taken is counted");
+
+        // Other windows take 60 turns, each polled after the last, far past
+        // the wait, the settings as they were.
+        let mut queued = 0;
+        take_turn(
+            || {
+                queued += 1;
+                std::fs::write(&turns, format!("other {queued}")).unwrap();
+                if queued < 60 {
+                    Err(std::fs::TryLockError::WouldBlock)
+                } else {
+                    Ok(())
+                }
+            },
+            || seen(&path),
+            Duration::from_millis(30),
+            TURN_CAP,
+        )
+        .unwrap();
     }
 
     #[test]
