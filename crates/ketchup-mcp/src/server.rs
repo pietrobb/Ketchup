@@ -7,7 +7,7 @@ use crate::{
 use serde_json::{Map, Value, json};
 use std::{
     borrow::{Borrow, BorrowMut},
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, VecDeque},
     io::{self, BufRead, Write},
     path::PathBuf,
     sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
@@ -197,17 +197,21 @@ fn route(session: &Arc<Session<Tools>>, message: Value) -> Routed {
         return Routed::Now(handle(session, message));
     };
     // Known before its turn, so a cancellation meanwhile keeps it from running.
-    session.queued(id);
+    let turn = session.queued(id);
     let (refused, waits, id) = (Arc::clone(session), Arc::clone(session), id.clone());
-    let key = id.to_string();
     let session = Arc::clone(session);
     Routed::InTurn(
-        Box::new(move || handle(&session, message)),
         Box::new(move || {
-            refused.forget(&id);
+            let reply = answer(&session, message, Some(turn));
+            // A call refused as malformed did not run, so it is forgotten here.
+            session.forget(turn);
+            reply
+        }),
+        Box::new(move || {
+            refused.forget(turn);
             refusal(id)
         }),
-        Box::new(move || waits.waits(&key)),
+        Box::new(move || waits.waits(turn)),
     )
 }
 
@@ -340,12 +344,17 @@ pub(crate) struct Session<T> {
     client: ClientName,
 }
 
-/// Tool calls waiting for the tools or running on them.
+/// Tool calls waiting for the tools or running on them, each by the number of
+/// its turn, not its request id: a client may send a call again under the id
+/// of one still waiting or running (review 2026-11-07 P3: refusing or ending
+/// the first forgot the other, which the queue then dropped unanswered).
 #[derive(Default)]
 struct Calls {
-    /// By request id: whether the client cancelled the call.
-    cancelled: HashMap<String, bool>,
-    running: Option<String>,
+    /// The number the next call gets.
+    next: u64,
+    /// By turn: the call's request id and whether the client cancelled it.
+    known: BTreeMap<u64, (String, bool)>,
+    running: Option<u64>,
     /// Calls cancelled after they reached the window, told with the next reply.
     cancelled_after_sent: Vec<Value>,
 }
@@ -371,52 +380,71 @@ impl<T: BorrowMut<Tools>> Session<T> {
         self.calls.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Notes a tool call waiting for its turn, so a cancellation finds it.
-    fn queued(&self, id: &Value) {
-        self.calls().cancelled.insert(id.to_string(), false);
+    /// Notes a tool call waiting for its turn, so a cancellation finds it;
+    /// the number of its turn.
+    fn queued(&self, id: &Value) -> u64 {
+        let mut calls = self.calls();
+        let turn = calls.next;
+        calls.next += 1;
+        calls.known.insert(turn, (id.to_string(), false));
+        turn
     }
 
     /// Forgets a tool call refused before its turn.
-    fn forget(&self, id: &Value) {
-        self.calls().cancelled.remove(&id.to_string());
+    fn forget(&self, turn: u64) {
+        self.calls().known.remove(&turn);
     }
 
-    /// Whether the queued call `key` still waits for its turn. One cancelled
+    /// Whether the queued call of `turn` still waits for it. One cancelled
     /// meanwhile is forgotten: only the [`Queue`] asks, and drops it then.
-    fn waits(&self, key: &str) -> bool {
+    fn waits(&self, turn: u64) -> bool {
         let mut calls = self.calls();
-        if calls.running.as_deref() == Some(key) {
+        if calls.running == Some(turn) {
             return false;
         }
-        match calls.cancelled.get(key) {
-            Some(false) => true,
-            Some(true) => {
-                calls.cancelled.remove(key);
+        match calls.known.get(&turn) {
+            Some((_, false)) => true,
+            Some((_, true)) => {
+                calls.known.remove(&turn);
                 false
             }
             None => false,
         }
     }
 
-    /// Runs one tool call when its turn comes; `None` when the client
-    /// cancelled it meanwhile, which then gets no reply.
-    fn call(&self, id: &Value, name: &str, arguments: Map<String, Value>) -> Option<ToolOutput> {
-        let key = id.to_string();
-        self.calls().cancelled.entry(key.clone()).or_insert(false);
+    /// Runs one tool call when its turn comes (`None`: a call not queued,
+    /// which takes the next); `None` when the client cancelled it meanwhile,
+    /// which then gets no reply.
+    fn call(
+        &self,
+        turn: Option<u64>,
+        id: &Value,
+        name: &str,
+        arguments: Map<String, Value>,
+    ) -> Option<ToolOutput> {
+        let turn = turn.unwrap_or_else(|| self.queued(id));
         let mut tools = self.tools.lock().unwrap_or_else(PoisonError::into_inner);
         {
             let mut calls = self.calls();
-            if calls.cancelled.get(&key) == Some(&true) {
-                calls.cancelled.remove(&key);
+            if calls
+                .known
+                .get(&turn)
+                .is_none_or(|(_, cancelled)| *cancelled)
+            {
+                calls.known.remove(&turn);
                 return None;
             }
             self.cancel.clear();
-            calls.running = Some(key.clone());
+            calls.running = Some(turn);
         }
         let output = BorrowMut::<Tools>::borrow_mut(&mut *tools).call(name, arguments);
         let mut calls = self.calls();
         calls.running = None;
-        if calls.cancelled.remove(&key) != Some(true) {
+        if calls
+            .known
+            .remove(&turn)
+            .is_none_or(|(_, cancelled)| !cancelled)
+        {
             return Some(output);
         }
         if let Some(outcome) = cancelled_outcome(id, name, &output) {
@@ -441,17 +469,24 @@ impl<T: BorrowMut<Tools>> Session<T> {
     }
 
     /// `notifications/cancelled`: the call stops waiting for the window, or
-    /// is not started when still waiting for its turn.
+    /// is not started when still waiting for its turn; every call known under
+    /// the id then, as the client cannot tell them apart.
     fn cancelled(&self, params: &Value) {
         let key = params["requestId"].to_string();
         let mut calls = self.calls();
-        let Some(cancelled) = calls.cancelled.get_mut(&key) else {
-            return;
-        };
-        *cancelled = true;
-        if calls.running.as_ref() == Some(&key)
-            && let Err(error) = self.cancel.cancel()
-        {
+        let mut running = false;
+        let Calls {
+            known,
+            running: now,
+            ..
+        } = &mut *calls;
+        for (turn, (id, cancelled)) in known.iter_mut() {
+            if *id == key {
+                *cancelled = true;
+                running |= *now == Some(*turn);
+            }
+        }
+        if running && let Err(error) = self.cancel.cancel() {
             eprintln!("ketchup-mcp: the cancelled call {key} still waits for the window: {error}");
         }
     }
@@ -478,6 +513,15 @@ fn cancelled_outcome(id: &Value, name: &str, output: &ToolOutput) -> Option<Valu
 /// The reply to one message; notifications get none. Tool calls take turns
 /// on the tools; every other request is answered without waiting for them.
 pub(crate) fn handle(session: &Session<impl BorrowMut<Tools>>, message: Value) -> Option<Value> {
+    answer(session, message, None)
+}
+
+/// [`handle`] of a message that is the tool call of `turn`, if queued.
+fn answer(
+    session: &Session<impl BorrowMut<Tools>>,
+    message: Value,
+    turn: Option<u64>,
+) -> Option<Value> {
     if message["method"] == "notifications/cancelled" {
         session.cancelled(&message["params"]);
         return None;
@@ -503,7 +547,7 @@ pub(crate) fn handle(session: &Session<impl BorrowMut<Tools>>, message: Value) -
                 Some(Value::Object(arguments)) => arguments.clone(),
                 Some(_) => return Some(failure(id, -32602, "arguments must be an object")),
             };
-            let output = session.call(&id, name, arguments)?;
+            let output = session.call(turn, &id, name, arguments)?;
             let mut content = output.content;
             if let Some(earlier) = session.take_cancelled_after_sent() {
                 content.push(json!({"type": "text", "text": earlier.to_string()}));
@@ -1079,7 +1123,7 @@ mod tests {
             "params": {"requestId": 9}});
         assert!(matches!(route(&session, cancel), Routed::Now(None)));
         assert!(!waits());
-        assert!(session.calls().cancelled.is_empty());
+        assert!(session.calls().known.is_empty());
     }
 
     /// Review 2026-11-06 MCP-180: with [`QUEUED_CALLS`] waiting the reader
@@ -1165,7 +1209,7 @@ mod tests {
         assert!(matches!(route(&session, cancel), Routed::Now(None)));
         assert_eq!(turn(), None, "the cancelled call ran and was answered");
         assert!(
-            session.calls().cancelled.is_empty(),
+            session.calls().known.is_empty(),
             "nothing is left registered"
         );
     }
@@ -1184,6 +1228,35 @@ mod tests {
             (reply["id"].clone(), reply["error"]["code"].clone()),
             (json!(7), json!(BUSY))
         );
-        assert!(session.calls().cancelled.is_empty());
+        assert!(session.calls().known.is_empty());
+    }
+
+    /// Review 2026-11-07 P3: the calls were known by their id, so a client
+    /// that sent a call again under the id of one refused or run meanwhile
+    /// lost the one waiting: refusing or ending the first forgot it, and the
+    /// queue dropped it without a reply.
+    #[test]
+    fn a_call_sent_again_under_the_id_of_another_still_waits_when_that_one_ends() {
+        let root = tempfile::tempdir().expect("a temporary folder");
+        let session = Arc::new(Session::new(Tools::new(None, Some(root.path().to_owned()))));
+        let Routed::InTurn(_, refused, _) = route(&session, tool_call(7)) else {
+            panic!("a tool call waits for its turn");
+        };
+        let Routed::InTurn(ran, _, _) = route(&session, tool_call(7)) else {
+            panic!("a tool call waits for its turn");
+        };
+        let Routed::InTurn(_, _, waits) = route(&session, tool_call(7)) else {
+            panic!("a tool call waits for its turn");
+        };
+        assert_eq!(refused()["error"]["code"], json!(BUSY));
+        assert!(waits(), "refusing the first forgot the last");
+        assert!(ran().is_some(), "the second is answered");
+        assert!(waits(), "running the second forgot the last");
+        // A cancellation of the id stops the call still waiting.
+        let cancel = json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+            "params": {"requestId": 7}});
+        assert!(matches!(route(&session, cancel), Routed::Now(None)));
+        assert!(!waits());
+        assert!(session.calls().known.is_empty());
     }
 }
