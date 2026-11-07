@@ -1257,6 +1257,11 @@ mod tests {
             "params": {"requestId": 7}});
         assert!(matches!(route(&session, cancel), Routed::Now(None)));
         assert!(!waits());
-        assert!(session.calls().known.is_empty());
+        // It reaches no call sent under the id after it.
+        let Routed::InTurn(again, _, waits_again) = route(&session, tool_call(7)) else {
+            panic!("a tool call waits for its turn");
+        };
+        assert!(waits_again(), "a call sent after the cancellation waits");
+        assert!(again().is_some(), "and is answered");
     }
 }
