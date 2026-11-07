@@ -33,7 +33,7 @@ None were reported.
 | | a fraction for a `whole` param is a hard error, an override out of range a warning | Fixed, bb7e369b: both are refused alike, the model builds with the default and reports it |
 | | MCP `program apply`/`check` store overrides without the range check | Fixed, bb7e369b: overrides the program refuses are refused |
 | | a bad `--set` prints the whole usage | Fixed, bb7e369b |
-| | joint points are not checked when the contact makes no bearing | Fixed, bb7e369b |
+| | joint points are not checked when the contact makes no bearing | Fixed, bb7e369b; 7222050e: a point in one part that reaches the other within the thinner part's thickness passes, as a sill anchor halfway up the plate |
 | AI connection and MCP | cancelled queued calls still take the queue | Fixed, 4808d3e2: a cancelled queued call frees its place |
 | | a copy in a file manager shares the token (SEC-203) | Fixed, ec2de414: a written drawing's line keeps the identity of the document's file (inode, or volume serial and file index); a copy gets a token of its own on its first save |
 | | a register line is taken by its path though its token differs (`Owner::holds`) | Fixed, ec2de414 |
