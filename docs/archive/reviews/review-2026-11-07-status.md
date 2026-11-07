@@ -65,3 +65,9 @@ None were reported.
 - `replace: true` stays a flag the client sets (SEC-182).
 - `plugin_sandbox::host_max_response_honors_timeout_when_plugin_stops_reading` times out on this
   Windows machine, alone too; `ketchup-scheduler` is untouched since `ca8bc99f`, so CI decides.
+- `feature_history_ui_verifier::component_replacement_hidden_self_cross_document_and_failed_paths_are_unavailable`
+  failed once in the full local suite on `e69adc63` (538 passed, 1 failed): at
+  `feature_history_ui_verifier.rs:1101` the message still said the exact bodies were being
+  computed. Alone it passed 3 of 3 times on `e69adc63`, and the same failure at the same line is
+  in full-suite logs from 2026-11-03/04, before this branch. It is the known load-sensitive race
+  of issue #29, not caused by this review.
