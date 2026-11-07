@@ -21,8 +21,8 @@ None were reported.
 | Area | Item | Status |
 |---|---|---|
 | Drawings | `polygon_area` from absolute coordinates | Fixed with MF-240, d1184abd |
-| Statics and program | a grounded rod turned over about 3.8° counts as a full anchorage again | Open (R4) |
-| | "or widen the range" does not help an override that is no whole number | Open (R4) |
+| Statics and program | a grounded rod turned over about 3.8° counts as a full anchorage again | Fixed, ab647343: a side of the anchorage's box within acos 0.9 of the member's axis is its length and is left out of its depth. Test: the rod 5 900 × 10 × 10 turned 4.2° and 20° is reported `anchorage_small` (failed before); the 45° slab, and the tiny house in release with the ignored tests, are unchanged |
+| | "or widen the range" does not help an override that is no whole number | Fixed, 1a9dc52a: the hint names the range and the whole number in it nearest the value ("Set a whole number inside [1, 4], as 4.") |
 | DXF | the `drawing_text_too_long` advice ignores the cause | Open (R5) |
 | | names outside the BMP and unreadable blocks make a drawing unwritable | Open (R5) |
 | | the `mtext_pieces` comment promises more than it does | Open (R5) |
