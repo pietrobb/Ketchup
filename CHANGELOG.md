@@ -40,6 +40,7 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 - A program parameter set outside its `min`/`max` (`--set shelves=5000` for `max = 20`, or typed in the **Variants** field) is refused at once, naming the parameter and its range, instead of building the model with it for minutes and only then reporting it. A `whole = True` parameter whose default is written `3.0` is a whole number in the program, so `range()` takes it.
 - On Linux, a connected AI can no longer have Ketchup read or write files on the Windows drives of WSL (`/mnt/c`, which can be a mapped network share), a virtual machine's host folder (`9p`, `virtiofs`) or a cluster file system (`gpfs`), as for other network file systems. Choose a folder in the Linux file system instead.
 - The signed Windows installer signs every program and library it installs, also one that the build computer already trusted through a Windows catalog, which your computer does not have.
+- HOMAG woodWOP programs (MPR) end their lines with CRLF, as woodWOP writes them. woodWOP opened the earlier LF files as an empty 1500 × 120 × 19 part without any machining.
 
 ## 0.3.2 — 2026-11-04
 
