@@ -27,11 +27,11 @@ None were reported.
 | | names outside the BMP and unreadable blocks make a drawing unwritable | Fixed, 2a425876: a line other than a text that escaping would push past 2 049 characters keeps its bytes as read (test: a layer of 150 „𝔸“ and a block of 300 Cyrillic characters under ANSI_1252 read the same through two saves; it fails without the fix) |
 | | the `mtext_pieces` comment promises more than it does | Fixed, 2a425876: it says only a `\U+XXXX` is never cut, and a longer format code may be, as readers join the pieces first |
 | | several texts too long need several exports | Fixed, 2a425876: every text too long is refused at once in one `Several`, coded `drawing_text_too_long` (test: two too-long TEXTs give both; it fails when only the first is returned). ed98d53f: `release_reads.py` lists `DrawnTextTooLong`, which UL-240 added without |
-| File presence and settings | the "below home" check compares path text | Open (R6) |
-| | `/opt` and `/usr` from autofs or a network share (S) | Open (R6) |
-| | a link to a file deleted in home stays Unknown | Open (R6) |
-| | `forget_gone` counts Gone before taking the lock | Open (R6) |
-| | a failed write of `settings.txt.turn` stops the whole save | Open (R6) |
+| File presence and settings | the "below home" check compares path text | Fixed, 57ca2d28: the nearest existing folder and the trusted folders are compared as the system resolves them, so `~/NAS` linked to gvfs is not below home and a file below macOS `/tmp` is below `/private/tmp` (test `folders_are_compared_as_the_system_resolves_them`: a file under a home link to an unmounted share is Unknown, one deleted below a trusted folder named by a link is Gone; it fails without the fix) |
+| | `/opt` and `/usr` from autofs or a network share (S) | Fixed, 57ca2d28: on Linux a folder whose deepest mount in `/proc/self/mountinfo` is autofs or a network file system does not answer, so it gives Unknown, not Gone (test `a_folder_on_a_server_or_mounted_on_demand_is_remote`: `/opt` from autofs, an nfs4 share with an escaped space in its mount point and fuse.sshfs are remote; a local `/home` mounted later over autofs and `/usr` on the root are not) |
+| | a link to a file deleted in home stays Unknown | Fixed, 57ca2d28: a dangling link is judged by its target, followed through at most 40 links (test `a_dangling_link_to_a_file_is_as_its_target`: Gone when its target was deleted in home, Unknown on a volume not mounted; it fails without the fix) |
+| | `forget_gone` counts Gone before taking the lock | Fixed, 57ca2d28: a drawing found gone before the lock is forgotten only if it is still missing under it (test `a_drawing_written_again_before_the_lock_keeps_its_line`; it fails without the fix) |
+| | a failed write of `settings.txt.turn` stops the whole save | Fixed, 57ca2d28: the turn only tells other windows to wait, so a failed write of it is logged and the settings are saved (test `a_turn_not_counted_does_not_hold_the_save`; it fails without the fix) |
 | Drawings and BTLx | one far triangle collapses the level grid | Open (R7) |
 | | a fan of triangles is slower in the grid than by brute force | Open (R7) |
 | | BTLx save runs `replace` three times on the UI thread; "20,5" falls back to 35 mm | Open (R7) |
