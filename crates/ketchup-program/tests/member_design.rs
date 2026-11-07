@@ -996,7 +996,17 @@ fn a_joint_kind_like_one_that_fastens_nothing_is_reported() {
             &[],
         )
     };
-    for misspelt in ["contcat", "Contacts", "fricton", "unfastend"] {
+    // Review 2026-11-07 P3: and under five letters a slip of a kind but "none",
+    // as "lose" for "loose", "rest" for "rests" and "frei" for "free".
+    for misspelt in [
+        "contcat",
+        "Contacts",
+        "fricton",
+        "unfastend",
+        "lose",
+        "rest",
+        "frei",
+    ] {
         let doubtful = kind(misspelt);
         assert_eq!(
             issue_parts(&doubtful, "joint_kind_doubtful"),
