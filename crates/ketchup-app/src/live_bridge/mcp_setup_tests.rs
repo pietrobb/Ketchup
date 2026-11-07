@@ -697,13 +697,12 @@ fn a_program_on_a_drive_that_is_out_is_not_gone() {
     let this = std::env::current_exe().unwrap();
     #[cfg(windows)]
     let volume = crate::recent_files::presence::drive_not_in_use();
-    // A volume is mounted in a folder volumes are mounted in, as `/media/usb`.
+    // A volume is mounted outside the home folder and the folders programs
+    // are installed in, as `/media/usb` or gvfs below `/run/user/1000`.
     #[cfg(not(windows))]
-    let volume = crate::recent_files::presence::MOUNT_ROOTS
-        .iter()
-        .map(Path::new)
-        .find(|root| root.is_dir())
-        .expect("a folder volumes are mounted in")
+    let volume = home
+        .parent()
+        .unwrap()
         .join(format!("ketchup-volume-{}", std::process::id()));
     let program = volume.join("tools").join("ketchup.exe");
     let file = environment.config_file(Harness::ClaudeCode).unwrap();
@@ -730,11 +729,14 @@ fn a_program_on_a_drive_that_is_out_is_not_gone() {
 #[test]
 fn a_program_of_a_folder_deleted_outside_the_home_folder_is_replaced() {
     let home = temporary_home("deleted-outside");
-    let environment = clean_profile(&home);
+    // The folder beside home stands for `/opt`.
+    let opt = home.parent().unwrap().to_owned();
+    let environment = Environment {
+        program_folders: vec![opt.clone()],
+        ..clean_profile(&home)
+    };
     let this = std::env::current_exe().unwrap();
-    let program = home
-        .parent()
-        .unwrap()
+    let program = opt
         .join(format!("ketchup-1.0-{}", std::process::id()))
         .join("bin")
         .join("ketchup");
