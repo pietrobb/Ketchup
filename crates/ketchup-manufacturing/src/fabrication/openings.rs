@@ -50,12 +50,18 @@ pub(super) fn opening_cuts(
 /// The drilling a format set up with drills up to `largest_drill_mm` makes of
 /// a round cut, or the cut a drilling larger than that drill is milled as:
 /// its two half arcs (review 2026-11-06 MF-181). Any other machining is left
-/// as it is.
+/// as it is. A hole as large as the drill but for rounding is drilled (review
+/// 2026-11-07 P3).
 pub(super) fn as_tooled(
     machining: &GeneralMachiningGeometry,
     largest_drill_mm: Option<f64>,
 ) -> Option<GeneralMachiningGeometry> {
-    let drills = |diameter_mm: f64| largest_drill_mm.is_some_and(|largest| diameter_mm <= largest);
+    let drills = |diameter_mm: f64| {
+        largest_drill_mm.is_some_and(|largest| {
+            diameter_mm <= largest
+                || ketchup_model::tolerance::same_coordinate_mm(diameter_mm, largest)
+        })
+    };
     match *machining {
         GeneralMachiningGeometry::ProfileCut {
             frame,
