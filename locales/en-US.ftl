@@ -2195,9 +2195,10 @@ drawings-parts-not-evaluated = { $count ->
     } until the model is evaluated.
 drawings-settings-unreadable = The title block and sheet format stored in the document cannot be read ({ $reason }); they are kept as they are. Fill in the title block again in Project drawings to replace them.
 drawings-set-of-another-project = The drawing set listed in { $list } was exported from { $project }, not from this document, so none of its sheets is replaced. It has { $sheets ->
-        [one] { $sheets } sheet, { $names }: taking it over replaces it
-       *[other] { $sheets } sheets, { $names }: taking it over replaces them
-    } and deletes those beyond the last sheet of this project's set. Export to another folder or file name, or take the set over for this project.
+        [0] no sheets listed, so taking it over only writes this project's set there
+        [one] { $sheets } sheet, { $names }: taking it over replaces it and deletes those beyond the last sheet of this project's set
+       *[other] { $sheets } sheets, { $names }: taking it over replaces them and deletes those beyond the last sheet of this project's set
+    }. Export to another folder or file name, or take the set over for this project.
 drawings-set-of-an-unsaved-project = a project not saved
 drawings-take-over-set = Take the set over and export
 drawings-part-bodies-unresolved = The bodies of { $part } do not resolve to one exact solid each ({ $reason }), so the sheet would leave it out. Give each extrusion its own body, or suppress one, then export again.

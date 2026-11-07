@@ -146,6 +146,17 @@ fn the_question_to_take_a_set_over_names_its_sheets() {
     );
     let text = slovak.project_drawings_error_text(&refused(&seven[..3]));
     assert!(text.contains("Má 3 listy, house-01.dxf"), "{text}");
+    // Review 2026-11-07 P3: a list of no sheets read "It has 0 sheets, :
+    // taking it over replaces them", and a name of a list on a share was
+    // shown however long.
+    let text = english.project_drawings_error_text(&refused(&[]));
+    assert!(text.contains("It has no sheets listed"), "{text}");
+    assert!(!text.contains(", :"), "{text}");
+    let text = slovak.project_drawings_error_text(&refused(&[]));
+    assert!(text.contains("Nemá žiadny list"), "{text}");
+    let long = "a".repeat(10_000);
+    let text = english.project_drawings_error_text(&refused(&[&long]));
+    assert!(text.len() < 1_000, "{} characters", text.len());
 }
 
 /// Review 2026-10-19 P3: a drawing number too long for its corner cell ran

@@ -87,10 +87,27 @@ pub(crate) enum ProjectDrawingsError {
     Write(std::io::Error),
 }
 
+/// The characters of a sheet's name a question shows, the rest as "…": a
+/// list on a share may hold names of any length (review 2026-11-07 P3).
+pub(crate) const SHEET_NAME_CHARS: usize = 100;
+
+/// The first [`ketchup_rejection::LISTED`] of `sheets`, each cut to
+/// [`SHEET_NAME_CHARS`].
+pub(crate) fn listed_sheets(sheets: &[String]) -> Vec<String> {
+    sheets
+        .iter()
+        .take(ketchup_rejection::LISTED)
+        .map(|name| match name.char_indices().nth(SHEET_NAME_CHARS) {
+            Some((end, _)) => format!("{}…", &name[..end]),
+            None => name.clone(),
+        })
+        .collect()
+}
+
 /// The first [`ketchup_rejection::LISTED`] of `sheets`, then "…" for the rest,
 /// as a question names the sheets of a set it would replace.
 pub(crate) fn sheet_names(sheets: &[String]) -> String {
-    let mut names = sheets[..sheets.len().min(ketchup_rejection::LISTED)].join(", ");
+    let mut names = listed_sheets(sheets).join(", ");
     if sheets.len() > ketchup_rejection::LISTED {
         names.push_str(", …");
     }

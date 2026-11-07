@@ -2109,11 +2109,12 @@ drawings-title-value-does-not-fit = Hodnota poľa „{ $field }“ sa do bunky p
     } z { $length }. Skráť ju; hodnota sa nikdy neoreže.
 drawings-parts-not-evaluated = Viditeľné diely bez presného telesa ({ $count }) by vo výkrese chýbali: { $parts }. Oprav ich alebo skry, prípadne počkaj, kým sa model vyhodnotí.
 drawings-settings-unreadable = Rohová pečiatka a formát výkresu uložené v dokumente sa nedajú prečítať ({ $reason }); ostávajú, ako sú. Vyplň pečiatku znova v okne Projektové výkresy, tým ich nahradíš.
-drawings-set-of-another-project = Sada výkresov so zoznamom { $list } bola exportovaná z { $project }, nie z tohto dokumentu, takže sa žiaden jej list nenahradí. Má { $sheets ->
-        [one] { $sheets } list, { $names }; prevzatím sa nahradí
-        [few] { $sheets } listy, { $names }; prevzatím sa nahradia
-       *[other] { $sheets } listov, { $names }; prevzatím sa nahradia
-    } a tie nad posledným listom sady tohto projektu sa zmažú. Exportuj do iného priečinka alebo pod iným menom, alebo sadu prevezmi pre tento projekt.
+drawings-set-of-another-project = Sada výkresov so zoznamom { $list } bola exportovaná z { $project }, nie z tohto dokumentu, takže sa žiaden jej list nenahradí. { $sheets ->
+        [0] Nemá žiadny list, takže sa prevzatím len zapíše sada tohto projektu
+        [one] Má { $sheets } list, { $names }; prevzatím sa nahradí a tie nad posledným listom sady tohto projektu sa zmažú
+        [few] Má { $sheets } listy, { $names }; prevzatím sa nahradia a tie nad posledným listom sady tohto projektu sa zmažú
+       *[other] Má { $sheets } listov, { $names }; prevzatím sa nahradia a tie nad posledným listom sady tohto projektu sa zmažú
+    }. Exportuj do iného priečinka alebo pod iným menom, alebo sadu prevezmi pre tento projekt.
 drawings-set-of-an-unsaved-project = neuloženého projektu
 drawings-take-over-set = Prevziať sadu a exportovať
 drawings-part-bodies-unresolved = Telesá dielu { $part } sa nedajú určiť každé ako jedno presné teleso ({ $reason }), takže by ho výkres vynechal. Daj každému vytiahnutiu vlastné teleso alebo jedno potlač a exportuj znova.
