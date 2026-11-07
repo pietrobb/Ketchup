@@ -963,6 +963,27 @@ rotate(\"wall\", axis = (0, 0, 1), angle = 45, pivot = (525, 1050, 2390))",
         issue_parts(&turned, "anchorage_small"),
         Vec::<Vec<String>>::new()
     );
+
+    // Review 2026-11-07 r26 P3: the rod turned 4.2° was measured along its
+    // length again, 5 900 · sin 4.2° = 432 mm across, deeper than the beam.
+    for angle in [4.2, 20.0] {
+        let rod = report(
+            &one_batten("", "").replace(
+                "box(\"wall\", (5900, 100, 2400), at = (0, 1000, 0), material = \"GL24h\", grounded = True)",
+                &format!(
+                    "box(\"wall\", (5900, 10, 10), at = (0, 1000, 2390), material = \"GL24h\", grounded = True)
+rotate(\"wall\", axis = (0, 0, 1), angle = {angle}, pivot = (525, 1005, 2390))"
+                ),
+            ),
+            &[],
+        );
+        assert_eq!(
+            issue_parts(&rod, "anchorage_small"),
+            [["beam", "wall"]],
+            "{angle}°: {:?}",
+            braced_by(&rod)
+        );
+    }
 }
 
 /// Review 2026-11-06 r23 P3: the fasteners of a joint were looked at only

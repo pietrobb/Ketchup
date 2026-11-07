@@ -1557,8 +1557,11 @@ fn unlooked_stray_fasteners<'a>(
 /// The largest size of `part` across the axis of the member of `frame`, mm:
 /// its box measured along the two directions square to the axis, so a part
 /// turned to the member counts with all its sides (review 2026-11-07 P3: one
-/// at 45° was measured by its height alone).
+/// at 45° was measured by its height alone). A side lying nearly along the
+/// axis is its length, not its depth, and is left out (r26 P3: a rod 5 900 mm
+/// long turned 4.2° was 432 mm across).
 fn depth(part: &Part, frame: &Frame) -> f64 {
+    const ALONG: f64 = 0.9;
     let obb = part.obb();
     let seed = if frame.axis[2].abs() < 0.9 {
         [0.0, 0.0, 1.0]
@@ -1572,6 +1575,7 @@ fn depth(part: &Part, frame: &Frame) -> f64 {
         .into_iter()
         .map(|direction| {
             (0..3)
+                .filter(|axis| dot(obb.axes[*axis], frame.axis).abs() <= ALONG)
                 .map(|axis| 2.0 * dot(obb.axes[axis], direction).abs() * obb.half[axis])
                 .sum::<f64>()
         })
