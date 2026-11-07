@@ -196,6 +196,17 @@ pub(crate) struct WindowSettings {
     /// Where the BTLx options are kept between starts; `None` keeps them for
     /// this window only.
     pub(crate) btlx_settings: Option<crate::recent_files::user_settings::SettingsFile>,
+    /// The BTLx options being kept on a worker.
+    pub(crate) btlx_saving: BtlxSaving,
+}
+
+/// The BTLx options being kept on a worker, as the settings' lock may be
+/// waited for (review 2026-11-07 r26 P3: three times on the window).
+#[derive(Default)]
+pub(crate) struct BtlxSaving {
+    pub(crate) worker: Option<std::thread::JoinHandle<std::io::Result<()>>>,
+    /// They changed while the worker kept them, so are kept again after.
+    pub(crate) again: bool,
 }
 
 /// Which side panes and windows are open.

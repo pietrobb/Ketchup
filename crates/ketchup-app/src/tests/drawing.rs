@@ -85,6 +85,7 @@ fn new_keeps_every_setting_of_the_window() {
         written_drawings,
         btlx,
         btlx_settings,
+        btlx_saving: _,
     } = &app.window;
     assert!(written_drawings.is_some());
     assert!(btlx_settings.is_some());

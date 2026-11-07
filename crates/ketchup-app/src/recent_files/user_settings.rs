@@ -122,6 +122,35 @@ impl SettingsFile {
         key: &str,
         values: impl FnOnce(Vec<String>) -> Vec<String>,
     ) -> io::Result<()> {
+        self.rewrite(|lines| {
+            let (mut lines, of_key): (Vec<String>, Vec<String>) =
+                lines.into_iter().partition(|line| !of(line, key));
+            let before = of_key
+                .into_iter()
+                .filter_map(|line| line.split_once('=').map(|(_, value)| value.to_owned()))
+                .collect();
+            lines.extend(values(before).iter().map(|value| format!("{key}={value}")));
+            lines
+        })
+    }
+
+    /// As [`Self::replace`], each key of `keyed` given its value at one
+    /// turn: the BTLx options waited for the lock three times on the window
+    /// (review 2026-11-07 r26 P3).
+    pub(crate) fn replace_each(&self, keyed: &[(&str, String)]) -> io::Result<()> {
+        self.rewrite(|lines| {
+            let mut lines: Vec<String> = lines
+                .into_iter()
+                .filter(|line| !keyed.iter().any(|(key, _)| of(line, key)))
+                .collect();
+            lines.extend(keyed.iter().map(|(key, value)| format!("{key}={value}")));
+            lines
+        })
+    }
+
+    /// The lines of the file made by `change` from those in it, while it
+    /// waits for no other window.
+    fn rewrite(&self, change: impl FnOnce(Vec<String>) -> Vec<String>) -> io::Result<()> {
         let folder = self.path.parent().unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(folder)?;
         let lock = std::fs::OpenOptions::new()
@@ -146,15 +175,7 @@ impl SettingsFile {
         if damaged {
             std::fs::copy(&self.path, self.path.with_extension("txt.bad"))?;
         }
-        let (mut lines, of_key): (Vec<String>, Vec<String>) = lines.into_iter().partition(|line| {
-            line.split_once('=')
-                .is_none_or(|(name, _)| name.trim() != key)
-        });
-        let before = of_key
-            .into_iter()
-            .filter_map(|line| line.split_once('=').map(|(_, value)| value.to_owned()))
-            .collect();
-        lines.extend(values(before).iter().map(|value| format!("{key}={value}")));
+        let lines = change(lines);
         let mut text = lines.join("\n");
         if !lines.is_empty() {
             text.push('\n');
@@ -223,6 +244,12 @@ fn take_turn<T: PartialEq>(
             }
         }
     }
+}
+
+/// Whether `line` is a value of `key`.
+fn of(line: &str, key: &str) -> bool {
+    line.split_once('=')
+        .is_some_and(|(name, _)| name.trim() == key)
 }
 
 /// The file beside the settings at `path` that counts the turns taken.
