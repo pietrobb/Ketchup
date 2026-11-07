@@ -40,3 +40,10 @@ None were reported.
 | | test 48a1bc40 checks inner structure | Fixed, 77bdb9ca: instead of `calls().known.is_empty()` the test sends a call again under the cancelled id and checks it waits and is answered. The older tests of MCP-142/180 still check `known`; left as they were, outside this finding |
 | | `project_drawings.rs` and `dxf/rewrite.rs` over 3 000 lines | Fixed, 95b7efd8: the refusals and their text moved to `dxf/rewrite/refusal.rs` (rewrite.rs 3 211 → 2 895 lines), the project drawing tests to `project_drawings/tests.rs` (3 099 → 1 387) |
 | README | four inaccuracies | Fixed, d9f32171: the table program is shown with its first line and said to be kept inside the document; `Use this Kečup` and `File → Open Recent` as the window has them. The two studio desk pictures (Hettich KA 4620) are gone with their files, as the desk is a joinery's design not in `examples/`; adding it there is the operator's call |
+
+## Found by the full local check (R9)
+
+| Area | Item | Status |
+|---|---|---|
+| MCP | a call whose client went sometimes still waited for the window to the end | Fixed, 34933b90: `Cancel` ended a `try_clone` duplicate of the window socket, which Windows can leave "not connected" (`shutdown` and `peer_addr` give WSAENOTCONN for good); it now ends the connection's own socket, shared as `Arc<TcpStream>`, so arming can no longer fail and `call_not_prepared` with its test hook is gone. `the_call_running_when_the_client_goes_is_cancelled` failed about 1 run in 30–80 of the `ketchup-mcp` library before, and passes 200 of 200 runs after it; the `--test integration` target passes |
+| Settings | `a_save_waits_while_other_windows_take_turns_the_settings_do_not_show` failed under the full suite | Fixed, 4c8396b6: one turn of file writes outlasted the 30 ms wait on a busy machine. `take_turn_by` takes the clock, and the two tests that expect a save to succeed tell the turns on a test clock (40 ms a turn), so they pass however busy the machine is and still fail if the turns were not counted |
