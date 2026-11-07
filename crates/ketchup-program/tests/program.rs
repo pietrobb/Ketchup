@@ -860,8 +860,10 @@ fn a_whole_param_refuses_a_fraction() {
         assert_eq!(evaluated.model.parts.len(), 2);
     }
     // Review 2026-11-07 P3: one outside the range too was told of whole numbers
-    // only, and to drop whole = True, which takes it no more.
-    for (value, written) in [(-0.5, "-0.5"), (1e9, "1000000000")] {
+    // only, and to drop whole = True, which takes it no more. Review r26 P3:
+    // then to widen the range, which takes no fraction either; it is told the
+    // whole number of the range nearest it.
+    for (value, written, nearest) in [(-0.5, "-0.5", 1), (4.5, "4.5", 4), (1e9, "1000000000", 4)] {
         let overrides = BTreeMap::from([("count".to_owned(), value)]);
         let (_, report) = run("t.star", source, &overrides).unwrap();
         let issue = report
@@ -878,7 +880,7 @@ fn a_whole_param_refuses_a_fraction() {
         );
         assert_eq!(
             issue.hint,
-            "Set a whole number inside the declared range, or widen the range."
+            format!("Set a whole number inside [1, 4], as {nearest}.")
         );
     }
     // Review 2026-11-04 (rest of WB-42): 1e300 is whole but no int, so range()
