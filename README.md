@@ -29,12 +29,10 @@ Ketchup is a 2D/3D modeler for anyone who designs things to be made: furniture, 
 
 <table>
   <tr>
-    <td width="50%"><img src="pic/tiny-house-viewer.png" alt="A tiny house with cladding, a metal roof, windows, a door, a deck and a flue, in Ketchup Viewer"></td>
-    <td width="50%"><img src="pic/studio-desk-viewer.png" alt="A studio desk with a monitor shelf, side panels, a cable cut-out and drilled holes, in Ketchup Viewer"></td>
+    <td colspan="2"><img src="pic/tiny-house-viewer.png" alt="A tiny house with cladding, a metal roof, windows, a door, a deck and a flue, in Ketchup Viewer"></td>
   </tr>
   <tr>
-    <td><em>A tiny house of about 750 parts from <a href="examples/programs/tiny-house.star"><code>tiny-house.star</code></a>: a timber frame with insulation under the cladding, and a concept version on its own layer.</em></td>
-    <td><em>A studio desk of 28 parts designed for a joinery, with its cut-outs, edge radii and drilled holes, ready for the cut list and the CNC programs.</em></td>
+    <td colspan="2"><em>A tiny house of about 750 parts from <a href="examples/programs/tiny-house.star"><code>tiny-house.star</code></a>: a timber frame with insulation under the cladding, and a concept version on its own layer.</em></td>
   </tr>
   <tr>
     <td colspan="2"><img src="pic/wardrobe-chair-table.png" alt="A wardrobe with shelves and drawers, a chair and a table in the Ketchup editor"></td>
@@ -51,6 +49,7 @@ Ketchup is a 2D/3D modeler for anyone who designs things to be made: furniture, 
 A model can be a short [Starlark](https://github.com/bazelbuild/starlark) rule program. This is the whole [`table.star`](examples/programs/table.star) example:
 
 ```python
+# Parametric table for the Starlark model-state GUI trial.
 WIDTH = param("width", 1200, min = 600, max = 2400)
 DEPTH = param("depth", 700, min = 400, max = 1200)
 HEIGHT = param("height", 720, min = 400, max = 1100)
@@ -102,14 +101,6 @@ The Windows Viewer is installed with Ketchup. A macOS app, an Android app and a 
 
 Ketchup has no built-in chat. You connect the AI harness you already use — Claude Code, Codex, Claude Desktop, Cursor — over the [Model Context Protocol](https://modelcontextprotocol.io), and it works in your open Ketchup window. It can write and patch the rule program, set parameters, inspect and measure parts, render the viewport, import and export files, and edit drawings. Every AI edit goes through the same validation and Undo as yours, so you can always step back.
 
-<p align="center">
-  <img src="pic/studio-desk-section.png" alt="A desk cut open by a section plane under the top, showing a keyboard tray on Hettich slides" width="70%">
-</p>
-
-<p align="center">
-  <em>A desk designed with an AI agent over MCP, cut open by a section plane: the keyboard tray runs on Hettich KA 4620 full-extension slides imported as exact STEP.</em>
-</p>
-
 See [Connect your AI harness](#connect-your-ai-harness-mcp) below for the one-click setup.
 
 ### Model mechanical parts and assemblies
@@ -135,7 +126,7 @@ The examples are in `Ketchup-0.3.2-Examples.zip` on the [release page](https://g
 
 | Example | Try it for |
 |---|---|
-| [`table.ketchup`](examples/programs/table.ketchup) | The table program above. A good first model to edit by hand or with AI: your edits are written into [`table.star`](examples/programs/table.star). |
+| [`table.ketchup`](examples/programs/table.ketchup) | The table program above. A good first model to edit by hand or with AI: your edits are written into the program saved inside the document; [`table.star`](examples/programs/table.star) is that program as it ships, to read. |
 | [`wardrobe-chair-table.ketchup`](examples/wardrobe-chair-table.ketchup) | Furniture with 82 bodies and hundreds of drilled holes. |
 | [`hettich-quadro-v6-drawer.ketchup`](examples/hettich-quadro-v6-drawer.ketchup) | A drawer assembly with exact STEP hardware, joints, travel limits and a motion study. |
 | [`house-project.ketchup`](examples/house-project.ketchup) | The large timber-frame house from [`house-project.star`](examples/programs/house-project.star). Try the drawing set and the material takeoff (**Tools**). |
@@ -153,7 +144,7 @@ Your harness keeps its own model, account and subscription; Ketchup doesn't need
 Set it up once, in any of these ways:
 
 - **Installer:** keep *Connect your AI clients to Ketchup* checked on its last page.
-- **Window:** the **Connect AI** section of the side panel lists Claude Code, Codex, Claude Desktop and Supervisor. **Connect** writes this Ketchup into the client's own configuration (`.claude.json`, `.codex\config.toml`, `claude_desktop_config.json`, Supervisor's `skills\mcp_servers.json`), so it works even when the client's command is not on the window's PATH; **Use this Ketchup** replaces an entry that starts another program, for example a deleted development build.
+- **Window:** the **Connect AI** section of the side panel lists Claude Code, Codex, Claude Desktop and Supervisor. **Connect** writes this Ketchup into the client's own configuration (`.claude.json`, `.codex\config.toml`, `claude_desktop_config.json`, Supervisor's `skills\mcp_servers.json`), so it works even when the client's command is not on the window's PATH; **Use this Kečup** replaces an entry that starts another program, for example a deleted development build.
 - **Terminal:** `& "$env:LOCALAPPDATA\Programs\Ketchup\Ketchup.exe" --mcp-setup | Out-Host` sets up every client it finds and prints what each starts now.
 - **By hand**, with the default installation:
 
@@ -177,7 +168,7 @@ Other harnesses take the same command in their MCP configuration. Replace `<you>
 
 Then start a new session of the harness and ask, for example, to *"open tiny-house.ketchup in Ketchup and make the house 1 m longer"*.
 
-The tools connect to the open window by themselves (with several windows open the agent picks one); if none is open, the agent can start one. A newly connected client replaces the previous one. While a client is connected, the status line names it (*Connected AI: Claude Code*) next to a **Disconnect** button. Documents the agent opens or saves join **File > Open Recent**.
+The tools connect to the open window by themselves (with several windows open the agent picks one); if none is open, the agent can start one. A newly connected client replaces the previous one. While a client is connected, the status line names it (*Connected AI: Claude Code*) next to a **Disconnect** button. Documents the agent opens or saves join **File → Open Recent**.
 
 When an agent also develops Ketchup in this checkout, use `scripts\ketchup-mcp-server.cmd` as the command instead. It runs the server from `target\mcp-server` and the windows it opens from copies of the newest build under `target\mcp-windows`, so `cargo build --release` can replace `target\release` while those windows stay open. **Connect** and `--mcp-setup` in a window built in this checkout register it. By hand, from the checkout root (PowerShell):
 
