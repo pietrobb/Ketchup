@@ -89,8 +89,8 @@ fn presence_within(path: &Path, trusted: Option<&[&Path]>, hops: usize) -> Prese
 /// not answer: it may be where a share is mounted, as sshfs under the home
 /// folder, while it is not (review 2026-11-06 P3). The folder and `trusted`
 /// are compared as the system resolves them, so `~/NAS` linked to gvfs is not
-/// below the home folder (review 2026-11-07 r26 P3), nor is a folder on a
-/// server or mounted on demand, as `/opt` from autofs ([`on_remote_mount`]).
+/// below the home folder (review 2026-11-07 r26 P3), nor is a folder mounted
+/// on demand or through FUSE, as `/opt` from autofs ([`on_remote_mount`]).
 fn folder_answers(path: &Path, trusted: Option<&[&Path]>) -> bool {
     // A folder the system does not resolve is compared as it is written.
     let real = |folder: &Path| {
@@ -129,7 +129,7 @@ fn is_dangling_link(path: &Path) -> bool {
 }
 
 /// Whether `folder`, resolved, is on a file system the system mounts on
-/// demand or from a server, which says a folder is not there while the server
+/// demand or through FUSE, which says a folder is not there while its server
 /// does not answer (review 2026-11-07 r26 P3: `/opt` or `/usr` so on a cluster
 /// was gone, and `--mcp-setup` replaced the client's entry). Only Linux says.
 #[cfg(target_os = "linux")]
@@ -144,7 +144,12 @@ const fn mounted_remotely(_: &Path) -> bool {
 }
 
 /// Whether the mount of `folder` in `mountinfo` (as `/proc/self/mountinfo`),
-/// the last of those mounted deepest above it, is of a server or automounted.
+/// the last of those mounted deepest above it, is a mount on demand not made
+/// (autofs) or a FUSE daemon's, which says a share it lost is not there. NFS,
+/// CIFS and the like are not: a server that says a folder is not there has
+/// answered, and one that is down hangs or fails otherwise (review 2026-11-07
+/// r26 capability finding: a folder deleted in a home folder on NFS was never
+/// gone, as review 2026-11-04 r19 P3 had it).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn on_remote_mount(mountinfo: &str, folder: &Path) -> bool {
     mountinfo
@@ -156,27 +161,7 @@ fn on_remote_mount(mountinfo: &str, folder: &Path) -> bool {
         })
         .filter(|(point, _)| folder.starts_with(point))
         .max_by_key(|(point, _)| point.components().count())
-        .is_some_and(|(_, kind)| {
-            kind.starts_with("fuse.")
-                || matches!(
-                    kind,
-                    "autofs"
-                        | "nfs"
-                        | "nfs4"
-                        | "cifs"
-                        | "smb3"
-                        | "smbfs"
-                        | "ncpfs"
-                        | "afs"
-                        | "ceph"
-                        | "glusterfs"
-                        | "lustre"
-                        | "gpfs"
-                        | "beegfs"
-                        | "9p"
-                        | "davfs"
-                )
-        })
+        .is_some_and(|(_, kind)| kind == "autofs" || kind.starts_with("fuse."))
 }
 
 /// A mount point as `mountinfo` writes it, a space, tab, line feed or
@@ -391,8 +376,8 @@ mod tests {
         assert_eq!(presence(&deleted, Some(&by_link)), Presence::Gone);
     }
 
-    /// Review 2026-11-07 r26 P3: `/opt` from autofs or a share of a cluster
-    /// says a folder is not there while its server does not answer.
+    /// Review 2026-11-07 r26 P3: `/opt` from autofs, or a share a FUSE daemon
+    /// mounts, says a folder is not there while its server does not answer.
     #[test]
     fn a_folder_on_a_server_or_mounted_on_demand_is_remote() {
         let mountinfo = "\
@@ -400,7 +385,7 @@ mod tests {
 30 22 0:40 / /opt rw,relatime shared:9 - autofs systemd-1 rw,fd=50
 31 22 0:41 / /home rw,relatime shared:10 - autofs systemd-1 rw,fd=51
 32 31 8:2 / /home rw,relatime shared:11 - ext4 /dev/sda2 rw
-33 22 0:42 / /mnt/lab\\040share rw,relatime - nfs4 server:/lab rw
+33 22 0:42 / /mnt/lab\\040share rw,relatime - fuse.rclone lab: rw
 34 32 0:43 / /home/u/NAS rw,nosuid - fuse.sshfs u@nas: rw
 ";
         for (folder, remote) in [
@@ -410,6 +395,34 @@ mod tests {
             ("/mnt/lab share/Domy", true),
             ("/mnt/lab", false),
             ("/home/u/NAS/Domy", true),
+        ] {
+            assert_eq!(
+                on_remote_mount(mountinfo, Path::new(folder)),
+                remote,
+                "{folder}"
+            );
+        }
+    }
+
+    /// Review 2026-11-07 r26 capability finding on its P3 fix: a server that
+    /// says a folder is not there has answered, so a folder deleted in a home
+    /// folder or a lab share on NFS or CIFS is gone (review 2026-11-04 r19 P3).
+    /// It says nothing while it is down; only a mount on demand not made then
+    /// says a folder is not there.
+    #[test]
+    fn a_folder_a_server_says_is_not_there_answers() {
+        let mountinfo = "\
+22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw
+40 22 0:50 / /home rw,relatime - nfs4 server:/home rw
+41 22 0:51 / /mnt/lab rw,relatime - cifs //server/lab rw
+42 22 0:52 / /opt rw,relatime shared:9 - autofs systemd-1 rw,fd=50
+43 42 0:53 / /opt/tools rw,relatime - nfs4 server:/tools rw
+";
+        for (folder, remote) in [
+            ("/home/u/Projects", false),
+            ("/mnt/lab/Domy", false),
+            ("/opt/tools/bin", false),
+            ("/opt/other", true),
         ] {
             assert_eq!(
                 on_remote_mount(mountinfo, Path::new(folder)),
