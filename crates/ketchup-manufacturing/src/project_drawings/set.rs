@@ -389,7 +389,7 @@ pub fn drawing_set_until(
     }
     if !options.plan_only {
         let frames = view_frames(min, max, first_cut, false);
-        let levels = section_levels(solids, options);
+        let levels = section_levels(solids, options, stop)?;
         let drawn = |wanted: &[ProjectView]| {
             frames
                 .iter()
@@ -703,17 +703,23 @@ fn zero_level(solids: &[DrawingSolid], options: &DrawingSetOptions) -> f64 {
 /// The level marks of the sections and elevations (Měchenice MECH-6): ±0,000
 /// where the options set it, else at the ground floor; every floor, with a
 /// plan of its own or not, the model's top and its bottom below ±0,000 (review
-/// 2026-11-04 MF-141).
-fn section_levels(solids: &[DrawingSolid], options: &DrawingSetOptions) -> Vec<(f64, String)> {
+/// 2026-11-04 MF-141); [`ProjectDrawingError::Cancelled`] once `stop` is set
+/// (review 2026-11-07 P3).
+fn section_levels(
+    solids: &[DrawingSolid],
+    options: &DrawingSetOptions,
+    stop: &AtomicBool,
+) -> Result<Vec<(f64, String)>, ProjectDrawingError> {
     let Some((low, high)) = bounds(solids) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let datum = zero_level(solids, options);
     let separator = options.decimal_separator;
-    level_heights(datum, &marked_floor_levels(solids), low[2], high[2])
+    let floors = marked_floor_levels(solids, stop).ok_or(ProjectDrawingError::Cancelled)?;
+    Ok(level_heights(datum, &floors, low[2], high[2])
         .into_iter()
         .map(|height| (height, level_text(height - datum, separator)))
-        .collect()
+        .collect())
 }
 
 /// Shop drawing `drawing` as sheet `number`, its title block filled with `values`.
