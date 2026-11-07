@@ -2720,10 +2720,14 @@ fn a_long_text_beyond_ascii_under_a_code_page_header_is_written_so_it_reads_back
 
 /// Review 2026-11-07 UL-220 (capability review): a text drawn into a drawing read in its
 /// code page escapes what the page has not as well, and that writer checked no length, so
-/// 300 Cyrillic characters made a line of 2 100 Kečup could not read back. It is refused,
-/// named; a long text in a DXF 2007, whose line holds characters not bytes, is not.
+/// 300 Cyrillic characters made a line of 2 100 Kečup could not read back. Review r26
+/// UL-240: it was then refused, naming a handle Kečup had given it, so a note written in
+/// Kečup could not be exported. A text drawn too long for a TEXT is an MTEXT, cut into
+/// pieces, and reads back the same through two saves; a DXF 12 drawing, which has no
+/// MTEXT, refuses it naming the text; a long text in a DXF 2007, whose line holds
+/// characters not bytes, stays a TEXT.
 #[test]
-fn a_text_drawn_too_long_for_a_dxf_line_is_refused_in_every_encoding() {
+fn a_text_drawn_too_long_for_a_text_line_is_written_as_an_mtext() {
     let drawn = |text: String| {
         let mut edits = UnderlayEdits::default();
         edits.added.push(AddedObject::Drawn {
@@ -2741,10 +2745,62 @@ fn a_text_drawn_too_long_for_a_dxf_line_is_refused_in_every_encoding() {
         "9\n$INSUNITS\n",
         "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
     );
-    let source = format!("{header}{TABLES}{BLOCKS}{ENTITIES}0\nEOF\n");
-    let original = read(source.as_bytes());
+    let texts = |dxf: &[u8]| {
+        read(dxf)
+            .lines
+            .layers()
+            .iter()
+            .flat_map(|layer| layer.texts())
+            .map(|text| (text.text.clone(), text.rotation_rad))
+            .collect::<Vec<_>>()
+    };
+    // A note with what an MTEXT reads as format codes, turned as drawn.
+    let note = format!("{{\\P}} {}", "Ж".repeat(400));
+    let mut turned = drawn(note.clone());
+    if let Some(AddedObject::Drawn {
+        shape: DrawnShape::Text { rotation_deg, .. },
+        ..
+    }) = turned.added.first_mut()
+    {
+        *rotation_deg = 30.0;
+    }
+    let plain = format!("{HEADER}{TABLES}{BLOCKS}{ENTITIES}0\nEOF\n");
+    let coded = format!("{header}{TABLES}{BLOCKS}{ENTITIES}0\nEOF\n");
+    for source in [&coded, &plain] {
+        let original = read(source.as_bytes());
+        let once = write_edited_dxf(
+            source.as_bytes(),
+            DxfImportOptions::new(None),
+            &original.lines,
+            &turned,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        let longest = once.split(|byte| *byte == b'\n').map(<[u8]>::len).max();
+        assert!(longest <= Some(2049), "{longest:?}");
+        let read_once = texts(&once);
+        let (_, turn) = read_once
+            .iter()
+            .find(|(text, _)| *text == note)
+            .unwrap_or_else(|| panic!("{read_once:?}"));
+        assert!((turn - 30_f64.to_radians()).abs() < 1e-9, "{turn}");
+        // Saved again over the file just written, the note as it was.
+        let twice = write_edited_dxf(
+            &once,
+            DxfImportOptions::new(None),
+            &read(&once).lines,
+            &UnderlayEdits::default(),
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(texts(&twice), read_once);
+    }
+
+    let r12 = R12.replace(
+        "9\n$INSUNITS\n",
+        "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
+    );
+    let original = read(r12.as_bytes());
     let refused = write_edited_dxf(
-        source.as_bytes(),
+        r12.as_bytes(),
         DxfImportOptions::new(None),
         &original.lines,
         &drawn("Ж".repeat(300)),
@@ -2752,18 +2808,16 @@ fn a_text_drawn_too_long_for_a_dxf_line_is_refused_in_every_encoding() {
     assert!(
         matches!(
             refused,
-            Err(EditedDxfError::Refused(DxfEditRefusal::TextTooLong {
-                ref kind,
-                code: 1,
+            Err(EditedDxfError::Refused(DxfEditRefusal::DrawnTextTooLong {
+                ref starts,
                 characters: 2100,
-                ..
-            })) if kind == "TEXT"
+            })) if starts.starts_with("ЖЖЖ")
         ),
         "{:?}",
         refused.map(|written| written.split(|byte| *byte == b'\n').map(<[u8]>::len).max())
     );
 
-    let source = source.replace("AC1015", "AC1021");
+    let source = coded.replace("AC1015", "AC1021");
     let original = read(source.as_bytes());
     let long = "Ж".repeat(1500);
     let written = write_edited_dxf(
@@ -2773,14 +2827,14 @@ fn a_text_drawn_too_long_for_a_dxf_line_is_refused_in_every_encoding() {
         &drawn(long.clone()),
     )
     .unwrap_or_else(|error| panic!("{error}"));
-    let texts = read(&written)
-        .lines
-        .layers()
-        .iter()
-        .flat_map(|layer| layer.texts())
-        .map(|text| text.text.clone())
-        .collect::<Vec<_>>();
-    assert!(texts.contains(&long), "{}", texts.len());
+    let mtexts = |dxf: &[u8]| dxf.windows(7).filter(|kind| kind == b"\nMTEXT").count();
+    assert_eq!(mtexts(&written), mtexts(source.as_bytes()));
+    let read_back = texts(&written);
+    assert!(
+        read_back.iter().any(|(text, _)| *text == long),
+        "{}",
+        read_back.len()
+    );
 }
 
 /// Review 2026-10-31 P3: a polyline drawn into an R13 drawing was written as LWPOLYLINE,

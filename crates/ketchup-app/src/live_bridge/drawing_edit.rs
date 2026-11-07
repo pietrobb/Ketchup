@@ -498,9 +498,9 @@ pub(super) fn drawing_export_code(error: &UnderlayExportError) -> &'static str {
                 | DxfEditRefusal::DeletedInFile { .. }
                 | DxfEditRefusal::Several(..),
             ) => "drawing_edit_not_writable",
-            UnderlayRefusal::NotWritten(DxfEditRefusal::TextTooLong { .. }) => {
-                "drawing_text_too_long"
-            }
+            UnderlayRefusal::NotWritten(
+                DxfEditRefusal::TextTooLong { .. } | DxfEditRefusal::DrawnTextTooLong { .. },
+            ) => "drawing_text_too_long",
             UnderlayRefusal::NotWritten(..)
             | UnderlayRefusal::Dwg(..)
             | UnderlayRefusal::UnitsRequired

@@ -109,6 +109,11 @@ pub enum DxfEditRefusal {
         code: i32,
         characters: usize,
     },
+    /// A text drawn in Kečup, beginning `starts`, would be `characters` long written in
+    /// a DXF 12 drawing, longer than a DXF line holds, which has no MTEXT to cut it into
+    /// pieces (review 2026-11-07 r26 UL-240: the refusal named the handle Kečup had given
+    /// the text, found in no file of the user's).
+    DrawnTextTooLong { starts: String, characters: usize },
 }
 
 impl DxfEditRefusal {
@@ -308,6 +313,13 @@ impl fmt::Display for DxfEditRefusal {
                 entity(kind, *handle),
                 super::MAX_DXF_LINE_CHARS
             ),
+            Self::DrawnTextTooLong { starts, characters } => write!(
+                formatter,
+                "the text \"{starts}…\" drawn in Kečup would be {characters} characters long \
+                 in this DXF 12 drawing, longer than the {} a DXF line holds, and DXF 12 has \
+                 no multi-line text to cut it into; shorten it or draw it as several texts",
+                super::MAX_DXF_LINE_CHARS
+            ),
         }
     }
 }
@@ -358,9 +370,8 @@ pub fn write_edited_dxf(
     // The header names the code page the texts are read and written in, so the drawing
     // reads so again, however few of its texts are left (review 2026-11-04 r19 UL-161).
     drawing.code_page_renamed = encoding.code_page_over_header().map(str::to_owned);
-    let escapes = encoding
-        .escapes_beyond_ascii()
-        .then_some(encoding.code_page);
+    drawing.escapes = encoding.escapes_beyond_ascii();
+    let escapes = drawing.escapes.then_some(encoding.code_page);
     let (frame, rebound) = match frame {
         Ok(frame) => frame,
         Err(Some(refusal)) => return Err(refusal.into()),
@@ -881,6 +892,9 @@ struct Drawing<'a> {
     lightweight: bool,
     /// Whether its texts are UTF-8: DXF 2007 or later.
     utf8: bool,
+    /// Whether what it is written with beyond ASCII is then escaped `\U+XXXX`
+    /// ([`escaped_beyond_ascii`]).
+    escapes: bool,
     /// The code page its texts are read in, if any.
     code_page: Option<CodePage>,
     /// The pair of the value of `$DWGCODEPAGE`.
@@ -976,6 +990,7 @@ impl<'a> Drawing<'a> {
             subclassed: false,
             lightweight: false,
             utf8: false,
+            escapes: false,
             code_page: encoding,
             code_page_value: None,
             code_page_renamed: None,
@@ -1442,7 +1457,7 @@ impl<'a> Drawing<'a> {
                     added.extend(self.mapped(*of, entity, &map, true, handles, blocks)?);
                 }
                 AddedObject::Drawn { layer, shape } => {
-                    added.extend(self.drawn(layer, shape, frame, handles));
+                    added.extend(self.drawn(layer, shape, frame, handles)?);
                 }
             }
         }
@@ -2584,7 +2599,7 @@ impl<'a> Drawing<'a> {
         shape: &DrawnShape,
         frame: &Frame,
         handles: &mut Option<u64>,
-    ) -> Vec<u8> {
+    ) -> Result<Vec<u8>, DxfEditRefusal> {
         let mut out = Vec::new();
         let mut pair = |code: i32, value: &[u8]| {
             out.extend_from_slice(format!("{code:>3}").as_bytes());
@@ -2698,13 +2713,83 @@ impl<'a> Drawing<'a> {
                 rotation_deg,
                 text,
             } => {
-                head(&mut pair, "TEXT", handles);
-                subclass(&mut pair, "AcDbText");
-                point(&mut pair, 10, *anchor_mm);
-                pair(40, length(*height_mm).as_bytes());
-                pair(1, &self.text(text));
-                pair(50, number(rotation_deg.rem_euclid(360.0)).as_bytes());
-                subclass(&mut pair, "AcDbText");
+                let characters = self.text_characters(text);
+                let rotation = number(rotation_deg.rem_euclid(360.0));
+                if characters <= super::MAX_DXF_LINE_CHARS {
+                    head(&mut pair, "TEXT", handles);
+                    subclass(&mut pair, "AcDbText");
+                    point(&mut pair, 10, *anchor_mm);
+                    pair(40, length(*height_mm).as_bytes());
+                    pair(1, &self.text(text));
+                    pair(50, rotation.as_bytes());
+                    subclass(&mut pair, "AcDbText");
+                } else if self.subclassed {
+                    // Too long for a TEXT's one line: an MTEXT, which the line limit cuts
+                    // into pieces (review 2026-11-07 r26 UL-240), from its bottom left.
+                    head(&mut pair, "MTEXT", handles);
+                    subclass(&mut pair, "AcDbMText");
+                    point(&mut pair, 10, *anchor_mm);
+                    pair(40, length(*height_mm).as_bytes());
+                    pair(71, b"7");
+                    pair(72, b"1");
+                    pair(1, &self.mtext(text));
+                    pair(50, rotation.as_bytes());
+                } else {
+                    return Err(DxfEditRefusal::DrawnTextTooLong {
+                        starts: text.chars().take(20).collect(),
+                        characters,
+                    });
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// How many characters `text` is as [`Self::text`] writes it, as it is read (and
+    /// escaped beyond ASCII where the drawing is).
+    fn text_characters(&self, text: &str) -> usize {
+        let percent = text.contains("%%");
+        text.chars()
+            .map(|character| match character {
+                '%' if percent => 3,
+                character if character.is_ascii() || character.is_control() || self.utf8 => 1,
+                character
+                    if !self.escapes
+                        && self
+                            .code_page
+                            .is_some_and(|page| page.encode(character).is_some()) =>
+                {
+                    1
+                }
+                character => "\\U+XXXX".len() * character.len_utf16(),
+            })
+            .sum()
+    }
+
+    /// `text` as the drawing writes an MTEXT's text that reads back as `text`: a backslash
+    /// and braces escaped, `^` as its `\U+005E`, a line break `\P`; beyond ASCII UTF-8
+    /// from DXF 2007 on, else `\U+XXXX` for each UTF-16 unit, so that the line limit can
+    /// cut it into pieces anywhere ([`within_line_limit`]).
+    fn mtext(&self, text: &str) -> Vec<u8> {
+        let percent = text.contains("%%");
+        let mut out = Vec::with_capacity(text.len());
+        for character in text.chars() {
+            match character {
+                '%' if percent => out.extend_from_slice(b"%%%"),
+                '\\' => out.extend_from_slice(b"\\\\"),
+                '{' => out.extend_from_slice(b"\\{"),
+                '}' => out.extend_from_slice(b"\\}"),
+                '^' => out.extend_from_slice(b"\\U+005E"),
+                '\n' => out.extend_from_slice(b"\\P"),
+                character if character.is_control() => out.push(b' '),
+                character if character.is_ascii() || self.utf8 => {
+                    out.extend_from_slice(character.encode_utf8(&mut [0; 4]).as_bytes());
+                }
+                character => {
+                    for unit in character.encode_utf16(&mut [0; 2]) {
+                        out.extend_from_slice(format!("\\U+{unit:04X}").as_bytes());
+                    }
+                }
             }
         }
         out
