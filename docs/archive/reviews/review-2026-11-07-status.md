@@ -1,4 +1,4 @@
-﻿# Review 2026-11-07: status of the findings
+# Review 2026-11-07: status of the findings
 
 Branch `r26-review1107` (`origin/main` `ca8bc99f`). Every finding of `review-2026-11-07.md` is
 listed here as fixed (with its commits) or deferred (with the reason). Each code fix began with
