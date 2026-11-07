@@ -319,6 +319,10 @@ pub(crate) struct DrawingsState {
     /// The token and identity of the document's file as on disk while a save
     /// of it has not succeeded (review 2026-11-06 r23 P3).
     pub(crate) on_disk: Option<crate::app::written_drawings::OnDisk>,
+    /// The document's file as resolved for its written drawings, so the disk
+    /// is asked once per file opened or saved, not at each export or check
+    /// (review 2026-11-07 P3 `written_owner`).
+    pub(crate) resolved: std::cell::RefCell<Option<crate::app::written_drawings::Resolved>>,
     /// The set the last export was refused at as another project's, with
     /// what it was exported from, offered to take over (review 2026-11-04 r19
     /// MF-162).
