@@ -1,4 +1,4 @@
-# Review 2026-11-07: status of the findings
+﻿# Review 2026-11-07: status of the findings
 
 Branch `r26-review1107` (`origin/main` `ca8bc99f`). Every finding of `review-2026-11-07.md` is
 listed here as fixed (with its commits) or deferred (with the reason). Each code fix began with
@@ -12,7 +12,7 @@ None were reported.
 
 | Finding | Status |
 |---|---|
-| UL-220: escaping can make a line longer than the reader allows | Fixed, 02b02426: a long MTEXT is written in pieces of group 3 under 250 characters, cut before an escape, as AutoCAD writes one; any other text longer than the 2 049 a DXF line holds is refused with `drawing_text_too_long`, naming its entity (test: 2 000 Cyrillic characters written and read back). 3a7d7a3a sorts the new code in the catalog; 67323810 lists the new refusal in `release_reads.py`, as it is never saved in a document |
+| UL-220: escaping can make a line longer than the reader allows | Fixed, 02b02426: a long MTEXT is written in pieces of group 3 under 250 characters, cut before an escape, as AutoCAD writes one; any other text longer than the 2 049 a DXF line holds is refused with `drawing_text_too_long`, naming its entity (test: 2 000 Cyrillic characters written and read back). 3a7d7a3a sorts the new code in the catalog; 67323810 lists the new refusal in `release_reads.py`, as it is never saved in a document. The capability review found the check ran only where the whole file is escaped, while a text drawn into a drawing read in its code page escapes too: 29c9830c holds every drawing written to the limit, counted in characters as it is read, so 300 Cyrillic characters drawn into an ANSI_1252 drawing are refused and 1 500 in a DXF 2007 still read back |
 | UL-221: block names and attribute tags measured escaped | Fixed, 02b02426: names of layers and blocks and tags of attributes are measured in characters as read (`chars().count() > 255`); a 43-character Cyrillic block name and tag stay readable through two saves |
 | UI-220: a dangling link to a folder counts as gone | Fixed, 966b475e: a file below a dangling link (or a junction to a share that is out) is Unknown, so Open Recent and `--mcp-setup` keep it (tests with a dangling symlink and a junction made with `mklink /J`). 158f3a14 (capability finding 546 on 60471ae5): a folder missing outside the home folder is Unknown again for Open Recent and `drawings.txt` (test: a gvfs share not mounted outside home) |
 
