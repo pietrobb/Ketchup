@@ -25,17 +25,51 @@ use ketchup_program::{ProgramModel, Report, exact_candidates};
 fn plan_with_report(
     document: &DocumentStore,
     source: &RuleProgramSource,
+    given: &[String],
     deadline: CheckDeadline,
     exact_follows: bool,
     cancel: &ketchup_program::CancelToken,
 ) -> Result<(RuleProgramPlan, Report), RuleProgramApplyError> {
     let plan = ketchup_application::plan_rule_program_cancellable(document, source, cancel)?;
+    refuse_given_overrides(&plan.evaluated.model, given)?;
     let report = if exact_follows && !exact_candidates(&plan.evaluated.model).is_empty() {
         plan.report_before_exact(deadline, cancel)
     } else {
         plan.report(deadline, cancel)
     };
     Ok((plan, report))
+}
+
+/// The code of a request whose own parameter value the program refuses.
+pub(super) const OVERRIDE_REFUSED: &str = "param_override_refused";
+
+/// A value `given` by the request that the program refuses (outside the
+/// parameter's range, or no whole number of a count) fails it, applied or only
+/// checked, before anything stores it (review 2026-11-06 r23 P3: apply stored
+/// it and the model was built with the default, as set_params refuses).
+pub(super) fn refuse_given_overrides(
+    model: &ProgramModel,
+    given: &[String],
+) -> Result<(), RuleProgramApplyError> {
+    let Some((param, value)) = model.params.iter().find_map(|param| {
+        let value = param.refused_override?;
+        given.contains(&param.name).then_some((param, value))
+    }) else {
+        return Ok(());
+    };
+    let why = if ketchup_program::eval::is_whole_override(param, value) {
+        format!(
+            "is outside {}",
+            ketchup_program::eval::range_text(param.min, param.max)
+        )
+    } else {
+        ketchup_program::eval::WHOLE_ONLY.to_owned()
+    };
+    Err(RuleProgramApplyError::Program {
+        code: OVERRIDE_REFUSED.to_owned(),
+        message: format!("param {} = {value} {why}", param.name),
+        location: None,
+    })
 }
 
 pub(super) const PROGRAM_EXACT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -287,7 +321,7 @@ impl LiveBridge {
         request: Request,
         ui_busy: bool,
         cancelled: &AtomicBool,
-    ) -> Result<(RuleProgramSource, bool), &'static str> {
+    ) -> Result<(RuleProgramSource, bool, Vec<String>), &'static str> {
         let request = Self::expand_program_patch(app, request)?;
         let Request::ApplyProgram {
             expected,
@@ -303,18 +337,24 @@ impl LiveBridge {
         Self::available(app, ui_busy)?;
         Self::require_request_authority(cancelled)?;
         let current = app.document.current_rule_program();
+        let stored = current
+            .filter(|program| {
+                file_name
+                    .as_ref()
+                    .is_none_or(|name| *name == program.file_name)
+            })
+            .map(|program| &program.overrides);
+        // The values this request sets, not those it keeps: one stored before
+        // the program narrowed its range still opens (review 2026-11-06 P3).
+        let given = overrides
+            .iter()
+            .flatten()
+            .filter(|(name, value)| stored.and_then(|stored| stored.get(*name)) != Some(*value))
+            .map(|(name, _)| name.clone())
+            .collect();
         // A whole program sent again for the same file keeps what the window
         // stored for it; dropping that silently undid a Push/Pull.
-        let overrides = overrides.unwrap_or_else(|| {
-            current
-                .filter(|program| {
-                    file_name
-                        .as_ref()
-                        .is_none_or(|name| *name == program.file_name)
-                })
-                .map(|program| program.overrides.clone())
-                .unwrap_or_default()
-        });
+        let overrides = overrides.unwrap_or_else(|| stored.cloned().unwrap_or_default());
         let file_name = file_name
             .or_else(|| current.map(|program| program.file_name.clone()))
             .unwrap_or_else(|| "model.star".to_owned());
@@ -331,6 +371,7 @@ impl LiveBridge {
                 overrides,
             },
             replace_document,
+            given,
         ))
     }
 
@@ -343,12 +384,13 @@ impl LiveBridge {
         ui_busy: bool,
         cancelled: &AtomicBool,
     ) -> Result<AppliedProgram, &'static str> {
-        let (source, replace) = Self::program_source(app, request, ui_busy, cancelled)?;
+        let (source, replace, given) = Self::program_source(app, request, ui_busy, cancelled)?;
         let before = app.live_bridge_stamp();
         // This path answers without an exact check.
         let planned = plan_with_report(
             &app.document,
             &source,
+            &given,
             program_request_deadline(),
             false,
             &ketchup_program::CancelToken::default(),
@@ -426,7 +468,8 @@ impl LiveBridge {
             );
             return;
         }
-        let (source, replace) = match Self::program_source(app, request, ui_busy, &cancelled) {
+        let (source, replace, given) = match Self::program_source(app, request, ui_busy, &cancelled)
+        {
             Ok(source) => source,
             Err(code) => {
                 Self::reply(app, id, &reply, Err(code));
@@ -442,7 +485,8 @@ impl LiveBridge {
         let spawn = std::thread::Builder::new()
             .name("ketchup-live-program-plan".into())
             .spawn(move || {
-                let result = plan_with_report(&document, &worker_source, deadline, true, &cancel);
+                let result =
+                    plan_with_report(&document, &worker_source, &given, deadline, true, &cancel);
                 sender.deliver(result);
                 repaint.request_repaint();
             });

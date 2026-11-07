@@ -113,7 +113,7 @@ impl Preferences {
             .write(true)
             .open(path.with_extension("txt.lock"))
             .map_err(failed)?;
-        let _lock = take_turn(move || lock.lock().map(|()| lock), TURN_WAIT).map_err(failed)?;
+        take_turn(|| lock.try_lock(), || saved_at(path), TURN_WAIT).map_err(failed)?;
         let (lines, damaged) = read_lines(path).map_err(|error| {
             Rejection::new("viewer.settings.read", RejectionPhase::Io)
                 .target(path.display().to_string())
@@ -155,38 +155,52 @@ static PARTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0
 
 /// How long a save waits for another Viewer saving the settings.
 const TURN_WAIT: Duration = Duration::from_secs(2);
+/// How often a waiting save tries the lock again.
+const TURN_POLL: Duration = Duration::from_millis(2);
 
-/// Takes the settings lock through `lock`, which waits its turn, on a thread of
-/// its own: the save waits at most `wait` for the Viewer that holds it, not
-/// without end behind one that hangs (review 2026-11-06 P3). The lock held, or
-/// `None` on a file system that cannot lock (NFS without lockd), which saves
-/// without it rather than never. A lock taken after the save gave up is let go
-/// at once.
-fn take_turn<T: Send + 'static>(
-    lock: impl FnOnce() -> std::io::Result<T> + Send + 'static,
+/// Takes the settings lock through `attempt`, which does not wait: the save
+/// tries it while other Viewers save, `saved` telling when one did, but gives
+/// up once one held it `wait` without saving, not waiting without end behind
+/// one that hangs (review 2026-11-06 P3). On a file system that cannot lock
+/// (NFS without lockd) it saves without the lock rather than never. A save that
+/// gave up leaves nothing behind (review 2026-11-06 r23 P3: a thread waited on
+/// in `lock()` with the file open as long as the other Viewer hung).
+fn take_turn<T: PartialEq>(
+    mut attempt: impl FnMut() -> Result<(), std::fs::TryLockError>,
+    mut saved: impl FnMut() -> T,
     wait: Duration,
-) -> std::io::Result<Option<T>> {
-    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-    std::thread::Builder::new()
-        .name("settings lock".to_owned())
-        .spawn(move || {
-            ketchup_rejection::dropped(
-                sender.send(lock()),
-                ketchup_rejection::Reason::NobodyWaiting,
-            );
-        })?;
-    match receiver.recv_timeout(wait) {
-        Ok(Ok(held)) => Ok(Some(held)),
-        Ok(Err(error)) if cannot_lock(&error) => Ok(None),
-        Ok(Err(error)) => Err(error),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            "another Viewer has been saving the settings too long",
-        )),
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(std::io::Error::other(
-            "the thread taking the settings lock ended without it",
-        )),
+) -> std::io::Result<()> {
+    let mut seen = saved();
+    let mut until = std::time::Instant::now() + wait;
+    loop {
+        match attempt() {
+            Ok(()) => return Ok(()),
+            Err(std::fs::TryLockError::Error(error)) if cannot_lock(&error) => return Ok(()),
+            Err(std::fs::TryLockError::Error(error)) => return Err(error),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < until => {
+                std::thread::sleep(TURN_POLL);
+                let now = saved();
+                if now != seen {
+                    seen = now;
+                    until = std::time::Instant::now() + wait;
+                }
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "another Viewer has been saving the settings too long",
+                ));
+            }
+        }
     }
+}
+
+/// When and how long the settings were last written; the same nothing while
+/// they cannot be read.
+fn saved_at(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+    std::fs::metadata(path)
+        .and_then(|metadata| Ok((metadata.modified()?, metadata.len())))
+        .ok()
 }
 
 /// The file system has no locks: `ENOLCK` from NFS without lockd, or none at all.
@@ -380,15 +394,38 @@ mod tests {
         );
         assert_eq!(parts_in(folder.path()), [theirs.file_name().unwrap()]);
 
-        let unsupported = || Err::<(), _>(std::io::Error::from(std::io::ErrorKind::Unsupported));
-        assert!(matches!(take_turn(unsupported, TURN_WAIT), Ok(None)));
+        let unsupported = || {
+            Err(std::fs::TryLockError::Error(std::io::Error::from(
+                std::io::ErrorKind::Unsupported,
+            )))
+        };
+        take_turn(unsupported, || (), TURN_WAIT).unwrap();
         #[cfg(unix)]
-        assert!(matches!(
-            take_turn(
-                || Err::<(), _>(std::io::Error::from_raw_os_error(libc::ENOLCK)),
-                TURN_WAIT
-            ),
-            Ok(None)
-        ));
+        take_turn(
+            || {
+                Err(std::fs::TryLockError::Error(
+                    std::io::Error::from_raw_os_error(libc::ENOLCK),
+                ))
+            },
+            || (),
+            TURN_WAIT,
+        )
+        .unwrap();
+
+        // Review 2026-11-06 r23 P3: a save that gave up left a thread waiting in
+        // `lock()` with the file open as long as the other Viewer hung.
+        let tries = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = std::sync::Arc::clone(&tries);
+        let busy = move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Err(std::fs::TryLockError::WouldBlock)
+        };
+        let error = take_turn(busy, || (), Duration::from_millis(60)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(
+            tries.load(std::sync::atomic::Ordering::Relaxed) > 1,
+            "it tried again"
+        );
+        assert_eq!(std::sync::Arc::strong_count(&tries), 1, "nothing tries on");
     }
 }

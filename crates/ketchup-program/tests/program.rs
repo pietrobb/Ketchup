@@ -828,26 +828,43 @@ fn a_whole_param_refuses_a_fraction() {
                   s = param(\"switch\", 0, min = 0, max = 1, whole = True, unit = \"\")\n\
                   w = param(\"width\", 0, min = 0, max = 1)\n\
                   for i in range(n):\n    box(\"p%d\" % i, (10, 10, 10), at = (20 * i, 0, 0))\n";
-    for (name, value) in [("count", 2.5), ("switch", 0.001)] {
-        let overrides = BTreeMap::from([(name.to_owned(), value), ("width".to_owned(), 0.5)]);
-        let error = run("t.star", source, &overrides).unwrap_err();
+    // Review 2026-11-06 r23 P3: it failed the whole program, while one outside
+    // the range was only reported, so a document opened no more once its
+    // program said whole = True. It is refused as that one is: reported, and
+    // the default used.
+    let refused = |source: &str, name: &str, value: f64, written: &str| {
+        let overrides = BTreeMap::from([(name.to_owned(), value)]);
+        let (evaluated, report) = run("t.star", source, &overrides).unwrap();
+        let param = evaluated
+            .model
+            .params
+            .iter()
+            .find(|param| param.name == name)
+            .unwrap();
+        assert_eq!(param.value, param.default, "{name} = {value}");
         assert!(
-            format!("{error:#}")
-                .contains(&format!("param {name} = {value} takes whole numbers only")),
-            "{error:#}"
+            report
+                .issues
+                .iter()
+                .any(|issue| issue.kind == "param_out_of_range"
+                    && issue.message.contains(&format!(
+                        "param {name} = {written} takes whole numbers under 1e9 only"
+                    ))),
+            "{:?}",
+            report.issues
         );
+        evaluated
+    };
+    for (name, value) in [("count", 2.5), ("switch", 0.001)] {
+        let evaluated = refused(source, name, value, &value.to_string());
+        assert_eq!(evaluated.model.parts.len(), 2);
     }
     // Review 2026-11-04 (rest of WB-42): 1e300 is whole but no int, so range()
     // failed on it with a general type error. (Outside a range, the default is
     // used instead, review 2026-11-06 P3.)
     let unbounded = "n = param(\"count\", 2, whole = True, unit = \"\")\nrange(n)\n";
-    for value in [1e300, -1e300, 3.0e9] {
-        let overrides = BTreeMap::from([("count".to_owned(), value)]);
-        let error = format!("{:#}", run("t.star", unbounded, &overrides).unwrap_err());
-        assert!(
-            error.contains(&format!("param count = {value:e} is too large")),
-            "{error}"
-        );
+    for (value, written) in [(1e300, "1e300"), (-1e300, "-1e300"), (3.0e9, "3000000000")] {
+        refused(unbounded, "count", value, written);
     }
     let overrides = BTreeMap::from([("count".to_owned(), 3.0), ("width".to_owned(), 0.5)]);
     let (evaluated, report) = run("t.star", source, &overrides).unwrap();

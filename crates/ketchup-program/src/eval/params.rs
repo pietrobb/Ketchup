@@ -46,20 +46,20 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         // first, review 2026-11-04 r19 WB-42), and the model reports it, so a
         // document saved before its program narrowed the range still opens
         // (review 2026-11-06 P3). A default outside it is the program's own.
+        // So is one no whole number of a count, or too large to count with
+        // (review 2026-11-02 WB-42: range() failed on it naming no parameter;
+        // r23 P3: it failed the program, so a document opened no more once its
+        // program said whole = True).
         let mut refused_override = None;
         if let Some(value) = overridden
-            && (min.is_some_and(|min| value < min) || max.is_some_and(|max| value > max))
+            && (min.is_some_and(|min| value < min)
+                || max.is_some_and(|max| value > max)
+                || whole && !whole_number(value))
         {
             refused_override = Some(value);
             overridden = None;
         }
         let value = overridden.unwrap_or(default);
-        // Refused here, before the program uses it (review 2026-11-02 WB-42: as
-        // an issue of the finished model, range() failed on it first, naming
-        // no parameter).
-        if whole && value.fract() != 0.0 {
-            anyhow::bail!("param {name} = {value} takes whole numbers only; choose a whole number");
-        }
         // A whole number the program can count with: 1e300 is whole but no int,
         // so range() failed on it naming no parameter (review 2026-11-04, rest of WB-42).
         if whole && value.abs() >= WHOLE_LIMIT {
@@ -95,6 +95,22 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
 
 /// The bound of a parameter returned as an int.
 const WHOLE_LIMIT: f64 = 1.0e9;
+
+/// What a count refusing a value says of it.
+pub const WHOLE_ONLY: &str = "takes whole numbers under 1e9 only";
+
+/// Whether `value` is a whole number a count can be: no fraction, below
+/// [`WHOLE_LIMIT`].
+fn whole_number(value: f64) -> bool {
+    value.fract() == 0.0 && value.abs() < WHOLE_LIMIT
+}
+
+/// Whether `value`, refused for `param`, is a number it could take but for its
+/// range; false when `param` counts and `value` is no whole number.
+#[must_use]
+pub fn is_whole_override(param: &Param, value: f64) -> bool {
+    !param.whole || whole_number(value)
+}
 
 /// `[min, max]` as the range of a parameter is written, an open side as `-inf` or `inf`.
 #[must_use]

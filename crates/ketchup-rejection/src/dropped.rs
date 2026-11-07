@@ -80,25 +80,26 @@ pub fn log(line: fmt::Arguments<'_>) {
             let seconds = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |since| since.as_secs());
-            let text = format!("[{seconds}] {line}\n");
-            let written = log.file.write_all(text.as_bytes());
-            log.len = log
-                .len
-                .saturating_add(u64::try_from(text.len()).unwrap_or(u64::MAX));
-            if written.is_ok() && log.len > LOG_LIMIT {
+            // Another window may log to the same file: what it wrote counts, and
+            // when it moved the full log aside this window's file is the old one,
+            // longer than full, so the line goes to the new log (review
+            // 2026-11-06 r23 P3: it went on into `.old`).
+            let len = log.file.metadata().map_or(0, |metadata| metadata.len());
+            if len > log.full_at {
                 match LogFile::open(&log.path) {
                     Ok(begun) => *log = begun,
                     // Said in the full log, which is tried again a megabyte later.
                     Err(error) => {
-                        log.len = 0;
-                        return count_lost(writeln!(
+                        log.full_at = len.saturating_add(LOG_LIMIT);
+                        count_lost(writeln!(
                             log.file,
                             "[{seconds}] the full log could not be moved aside: {error}"
                         ));
                     }
                 }
             }
-            written
+            log.file
+                .write_all(format!("[{seconds}] {line}\n").as_bytes())
         }
         None => writeln!(io::stderr(), "{line}"),
     };
@@ -158,11 +159,11 @@ fn create_private_folder(folder: &Path) -> io::Result<()> {
     std::fs::create_dir_all(folder)
 }
 
-/// The open log file, where it is and how long it is.
+/// The open log file, where it is and the length past which it is moved aside.
 struct LogFile {
     file: File,
     path: PathBuf,
-    len: u64,
+    full_at: u64,
 }
 
 impl LogFile {
@@ -172,13 +173,17 @@ impl LogFile {
         if std::fs::metadata(path).is_ok_and(|metadata| metadata.len() > LOG_LIMIT) {
             let mut old = path.as_os_str().to_owned();
             old.push(".old");
-            std::fs::rename(path, old)?;
+            match std::fs::rename(path, old) {
+                // Another window moved it aside first (review 2026-11-06 r23 P3:
+                // this window was left without a log).
+                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+                _ => {}
+            }
         }
-        let file = open_private(path)?;
         Ok(Self {
-            len: file.metadata()?.len(),
-            file,
+            file: open_private(path)?,
             path: path.to_owned(),
+            full_at: LOG_LIMIT,
         })
     }
 }

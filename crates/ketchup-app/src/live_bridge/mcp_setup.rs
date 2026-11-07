@@ -8,6 +8,8 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
+use crate::recent_files::presence::{Presence, presence};
+
 use super::mcp_config::{
     Rewrite, SERVER, codex_command, codex_server_off, invalid_data, json_server_off, read_or_empty,
     replace_file, with_codex_server, with_json_server,
@@ -386,12 +388,23 @@ impl Environment {
                         .map(|extension| folder.join(format!("{name}{extension}"))),
                 );
             }
+            // A folder may not be read, a volume not be mounted, a drive or share
+            // be out (review 2026-11-06 SEC-180, r23 SEC-201: each counted as no
+            // file, and the installer replaced the entry); a missing folder is
+            // trusted to be deleted in the client's home folder only.
+            let local = (!cfg!(windows)).then_some(self.home.as_path());
             let mut unknown = false;
             for candidate in candidates {
-                match presence(&candidate) {
-                    Some(true) => return Some(Some(candidate)),
-                    Some(false) => {}
-                    None => unknown = true,
+                match presence(&candidate, local) {
+                    Presence::Here => return Some(Some(candidate)),
+                    Presence::Gone => {}
+                    Presence::Unknown => {
+                        ketchup_rejection::log!(
+                            "cannot tell whether {} is there",
+                            candidate.display()
+                        );
+                        unknown = true;
+                    }
                 }
             }
             return (!unknown).then_some(None);
@@ -655,28 +668,6 @@ fn started(harness: Harness, server: &serde_json::Value) -> Option<Started> {
     } else {
         command.to_owned()
     }))
-}
-
-/// Whether the file at `path` is there: `None` when the system cannot say,
-/// as for a folder it may not read, a volume not mounted or a disk gone
-/// (review 2026-11-06 SEC-180: each such error counted as no file, and the
-/// installer replaced the entry).
-fn presence(path: &Path) -> Option<bool> {
-    match std::fs::metadata(path) {
-        Ok(metadata) => Some(metadata.is_file()),
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-            ) =>
-        {
-            Some(false)
-        }
-        Err(error) => {
-            ketchup_rejection::log!("cannot tell whether {} is there: {error}", path.display());
-            None
-        }
-    }
 }
 
 /// What a client's `ketchup` entry starts.

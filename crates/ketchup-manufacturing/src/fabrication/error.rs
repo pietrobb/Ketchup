@@ -180,11 +180,13 @@ pub enum GeneralFabricationError {
     /// The production package could not be packed into one ZIP.
     Package(ketchup_model::exact_product::ExactProductError),
     /// `what`, of the value `value`, is out of what the file can write, `limit`
-    /// (review 2026-11-06 P3: the refusal named neither).
+    /// (review 2026-11-06 P3: the refusal named neither), of `part` once
+    /// [`Self::at_part`] names it (r23 P3: nor the part).
     ValueOutOfRange {
         what: &'static str,
         value: String,
         limit: &'static str,
+        part: Option<String>,
     },
 }
 
@@ -196,6 +198,7 @@ impl GeneralFabricationError {
             what,
             value: format!("{value_mm} mm"),
             limit: "a finite length more than 0 mm",
+            part: None,
         })
     }
 }
@@ -214,6 +217,17 @@ impl GeneralFabricationError {
             },
             Self::UnsupportedOrUnavailableGeometry => Self::PartGeometryUnavailable {
                 part: part.to_owned(),
+            },
+            Self::ValueOutOfRange {
+                what,
+                value,
+                limit,
+                part: None,
+            } => Self::ValueOutOfRange {
+                what,
+                value,
+                limit,
+                part: Some(part.to_owned()),
             },
             other => other,
         }
@@ -340,10 +354,18 @@ impl fmt::Display for GeneralFabricationError {
                 "{parts} different parts are made, and one HOMAG MPR program machines one part; export the HOMAG MPR to a .zip destination for one program and barcode label per piece, named by its production code",
             ),
             Self::Package(error) => write!(formatter, "the production package was not packed: {error}"),
-            Self::ValueOutOfRange { what, value, limit } => write!(
-                formatter,
-                "the fabrication export is refused: {what} is {value}, and the file writes {limit}",
-            ),
+            Self::ValueOutOfRange {
+                what,
+                value,
+                limit,
+                part,
+            } => {
+                write!(formatter, "the fabrication export is refused: ")?;
+                if let Some(part) = part {
+                    write!(formatter, "in part \"{part}\", ")?;
+                }
+                write!(formatter, "{what} is {value}, and the file writes {limit}")
+            }
         }
     }
 }

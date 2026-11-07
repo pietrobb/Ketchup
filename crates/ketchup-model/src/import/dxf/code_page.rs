@@ -120,6 +120,8 @@ pub(super) struct HighBytes {
     central_words: BTreeSet<Vec<u8>>,
     /// The words of `central_words` that name a layer of the layer table.
     layer_words: BTreeSet<Vec<u8>>,
+    /// Whether a word reads rightly in both ([`Reading::Either`]).
+    either_word: bool,
     /// Whether a text's font names the East European character set, Windows-1250's
     /// (`\f…|c238;`, review 2026-11-04 r19 P3).
     east_european_font: bool,
@@ -132,6 +134,7 @@ impl Default for HighBytes {
             western_words: BTreeSet::new(),
             central_words: BTreeSet::new(),
             layer_words: BTreeSet::new(),
+            either_word: false,
             east_european_font: false,
         }
     }
@@ -156,6 +159,10 @@ impl HighBytes {
             let words = match reading {
                 Reading::Western => &mut self.western_words,
                 Reading::CentralEuropean => &mut self.central_words,
+                Reading::Either => {
+                    self.either_word = true;
+                    return;
+                }
             };
             if !words.contains(word) {
                 words.insert(word.to_vec());
@@ -185,9 +192,17 @@ impl HighBytes {
     }
 
     /// The votes for Windows-1250: each word read rightly only in it, twice where it is of
-    /// letters 1252 leaves one of undefined and so cannot read at all („žluťoučký“), and
-    /// a font of its character set.
+    /// letters 1252 leaves one of undefined and so cannot read at all („žluťoučký“) or
+    /// names a layer, and a font of its character set. A layer name votes twice only
+    /// where no text reads rightly in both: „crème brûlée très chère“ is French in 1252
+    /// and Hungarian-Czech in 1250, and one layer „Kuchyně“ turned it (review 2026-11-06
+    /// r23 UL-201).
     fn central_votes(&self) -> usize {
+        let layers = if self.either_word {
+            0
+        } else {
+            self.layer_words.len()
+        };
         let unreadable = self
             .central_words
             .iter()
@@ -195,10 +210,7 @@ impl HighBytes {
                 word.len() > 1 && word.iter().any(|byte| UNDEFINED_IN_1252.contains(byte))
             })
             .count();
-        self.central_words.len()
-            + unreadable
-            + self.layer_words.len()
-            + usize::from(self.east_european_font)
+        self.central_words.len() + unreadable + layers + usize::from(self.east_european_font)
     }
 }
 
@@ -235,11 +247,13 @@ const UNDEFINED_IN_1252: [u8; 5] = [0x81, 0x8D, 0x8F, 0x90, 0x9D];
 enum Reading {
     Western,
     CentralEuropean,
+    /// Both read it as a word of their languages: „crème“ and „crčme“.
+    Either,
 }
 
 /// Which of Windows-1252 and Windows-1250 alone reads `word` as a word of its languages
-/// ([`western_word`], [`central_word`]); `None` where both read it alike, or both or
-/// neither read it rightly. `abbreviation`: a period follows it. ª and º, 1252's ordinal
+/// ([`western_word`], [`central_word`]), or that both do; `None` where both read it
+/// alike, or neither reads it rightly. `abbreviation`: a period follows it. ª and º, 1252's ordinal
 /// indicators and 1250's Ş and ş, are left out: „Nº“, „1ª“ and „45º“ tell neither
 /// (review 2026-11-02 UL-120). A word both read rightly is Western where it has a sign
 /// 1250 reads as a mark no word has, ² or ½, or is Ø before a number: „m²“, „Ø 100“
@@ -275,7 +289,8 @@ fn reading_of(word: &[u8], abbreviation: bool, before_number: bool) -> Option<Re
         (true, false) => Some(Reading::Western),
         (false, true) => Some(Reading::CentralEuropean),
         (true, true) if sign => Some(Reading::Western),
-        _ => None,
+        (true, true) => Some(Reading::Either),
+        (false, false) => None,
     }
 }
 
@@ -459,6 +474,10 @@ pub(super) type CodePageRead = (String, Option<String>);
 pub(super) struct TextEncoding {
     pub(super) code_page: Option<CodePage>,
     pub(super) read: Option<CodePageRead>,
+    /// Whether a drawing before DXF 2007 names in its header a code page it is not read
+    /// in: UTF-8 is read in its place, or the code page read was doubted, as the text is
+    /// valid UTF-8 too.
+    against_header: bool,
 }
 
 impl TextEncoding {
@@ -471,10 +490,15 @@ impl TextEncoding {
         }
     }
 
-    /// Whether the text is read in UTF-8 against a header that names a code page: a
-    /// drawing before DXF 2007 cannot name UTF-8 there (review 2026-11-06 UL-180).
-    pub(super) fn utf8_over_header(&self) -> bool {
-        matches!((&self.code_page, &self.read), (None, Some((_, Some(_)))))
+    /// Whether what the drawing is written with beyond ASCII is to be written as
+    /// `\U+XXXX`, which reads alike in any code page: where its text is read in UTF-8
+    /// against a header that names a code page, as a drawing before DXF 2007 cannot name
+    /// UTF-8 there (review 2026-11-06 UL-180), whatever characters it holds (r23 UL-200:
+    /// one „€“ or „–“ left the Greek and Cyrillic of the rest unescaped); and where it is
+    /// read in the code page but is valid UTF-8 too, so that what is left of it once
+    /// edited cannot read as UTF-8 instead (r23 P3).
+    pub(super) fn escapes_beyond_ascii(&self) -> bool {
+        self.against_header
     }
 }
 
@@ -597,11 +621,12 @@ impl TextSeen {
             .is_none_or(|version| version.as_slice() < b"AC1021".as_slice())
             .then_some(self.code_page.value)
             .flatten();
+        let named = name.as_deref().and_then(code_page_encoding);
         let utf8 = |read| TextEncoding {
             code_page: None,
             read,
+            against_header: named.is_some(),
         };
-        let named = name.as_deref().and_then(code_page_encoding);
         if self.utf8 {
             let Some(named) = named else {
                 return Ok(utf8(None));
@@ -645,6 +670,7 @@ impl TextSeen {
         Ok(TextEncoding {
             code_page: Some(code_page),
             read: Some((read, doubted)),
+            against_header: both_readings,
         })
     }
 }

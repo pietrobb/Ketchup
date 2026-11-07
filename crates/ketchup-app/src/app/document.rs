@@ -279,6 +279,10 @@ impl KetchupApp {
                 let (outcome, effective_path, source, work_recovery_identity) =
                     loaded_file.into_parts();
                 if !outcome.is_editable() {
+                    // A document came to the window for its review: a late
+                    // answer of Open Recent opens nothing over it (review
+                    // 2026-11-06 r23 P3).
+                    self.file.generation += 1;
                     let plan = match self.prepare_migration_review_plan(
                         path,
                         effective_path,

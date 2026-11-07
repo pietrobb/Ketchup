@@ -739,6 +739,16 @@ fn a_value_out_of_range_is_refused_with_the_value_and_the_limit() {
     for named in ["\"ú\"", "plain ASCII"] {
         assert!(refused.contains(named), "{named}: {refused}");
     }
+    // Review 2026-11-06 r23 P3: nor the part, of the many in a file.
+    let refused = GeneralFabricationError::positive_length("the width of a part", 0.0)
+        .unwrap_err()
+        .at_part("Shelf")
+        .at_part("Door")
+        .to_string();
+    assert!(
+        refused.contains("in part \"Shelf\", the width of a part is 0 mm"),
+        "{refused}"
+    );
 }
 
 /// Review 2026-11-06 MF-181: a round cut is drilled only by a drill as large as

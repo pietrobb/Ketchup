@@ -1750,7 +1750,7 @@ mod face_cache;
 mod joints;
 mod machining;
 mod params;
-pub use params::range_text;
+pub use params::{WHOLE_ONLY, is_whole_override, range_text};
 mod support;
 
 /// Booleans between parts and tool bodies.

@@ -1908,6 +1908,19 @@ fn an_entity_deleted_in_the_file_is_left_out_unless_it_was_edited() {
         !text.contains("5\nA1\n") && text.contains("5\nA0\n"),
         "{text}"
     );
+
+    // Review 2026-11-06 r23 CD-200: moved first, then taken out, it was still refused as
+    // moved. Taken out is what was done to it.
+    let mut moved_then_removed = moved.clone();
+    moved_then_removed.removed_objects.insert(arc_id);
+    let written = write_reported(
+        deleted.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &moved_then_removed,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(written.removed_in_file, 1);
 }
 
 /// Review 2026-10-29 CD-63: a drawing that declares no unit, read in centimetres and
@@ -2462,27 +2475,51 @@ fn a_drawing_read_in_another_code_page_than_its_header_names_is_written_naming_i
 /// Review 2026-11-06 UL-180: a drawing before DXF 2007 whose header names ANSI_1252 and
 /// whose texts are UTF-8 was read in UTF-8, but its header cannot name UTF-8; with texts
 /// taken out the few left were read in 1252 again, „Δh = 5“ as „Î”h = 5“. What is not
-/// ASCII is written as `\U+XXXX`, which reads alike whatever the header names.
+/// ASCII is written as `\U+XXXX`, which reads alike whatever the header names. Review
+/// 2026-11-06 r23 UL-200: so too where a text holds a character of three bytes, „€“ or
+/// „–“, which turned the escaping off. And r23 P3: a drawing read in 1252 that is valid
+/// UTF-8 too reads in 1252 still once the texts that told it are taken out.
 #[test]
 fn a_utf8_drawing_under_a_code_page_header_reads_alike_after_texts_are_taken_out() {
     let header = HEADER.replace(
         "9\n$INSUNITS\n",
         "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
     );
-    for (all, removed, left) in [
+    for (written_texts, all, removed, left) in [
         (
+            &["Δh = 3", "Δh = 4", "Δh = 5", "εr", "κ"][..],
             &["Δh = 3", "Δh = 4", "Δh = 5", "εr", "κ"][..],
             &[0xB0, 0xB1][..],
             &["Δh = 5", "εr", "κ"][..],
         ),
         (
             &["Кухня", "Спальня", "Ванная", "к"][..],
+            &["Кухня", "Спальня", "Ванная", "к"][..],
             &[0xB0, 0xB1, 0xB2][..],
             &["к"][..],
         ),
+        (
+            &["€ 120", "Δh = 5", "εr"][..],
+            &["€ 120", "Δh = 5", "εr"][..],
+            &[0xB0][..],
+            &["Δh = 5", "εr"][..],
+        ),
+        (
+            &["Ø 20 – 30", "Кухня", "к"][..],
+            &["Ø 20 – 30", "Кухня", "к"][..],
+            &[0xB0][..],
+            &["Кухня", "к"][..],
+        ),
+        // The bytes of „ÍŽ“ in 1252 are U+034E in UTF-8, those of „Â°“ a degree sign.
+        (
+            &["\u{34E}", "\u{34E} x", "°C"][..],
+            &["ÍŽ", "ÍŽ x", "Â°C"][..],
+            &[0xB0, 0xB1][..],
+            &["Â°C"][..],
+        ),
     ] {
         let mut source = format!("{header}{TABLES}0\nSECTION\n2\nENTITIES\n");
-        for (index, text) in all.iter().enumerate() {
+        for (index, text) in written_texts.iter().enumerate() {
             source.push_str(&format!(
                 "0\nTEXT\n5\nB{index}\n330\n1F\n100\nAcDbEntity\n8\nnotes\n100\nAcDbText\n\
                  10\n0\n20\n{y}\n30\n0\n40\n250\n1\n{text}\n100\nAcDbText\n",
@@ -2517,6 +2554,72 @@ fn a_utf8_drawing_under_a_code_page_header_reads_alike_after_texts_are_taken_out
         assert_eq!(texts(&read(&written)), left);
         assert!(written.is_ascii(), "{}", String::from_utf8_lossy(&written));
     }
+}
+
+/// Capability review of r23 UL-200: with what is not ASCII written as `\U+XXXX` all
+/// through the file, a block's name, an attribute's tag and value and a hatch's pattern
+/// were read back as written, „\U+0394-zna\U+010Dka“: the drawing no longer read as the
+/// one edited, and a second save found the insert and the hatch changed in the file.
+#[test]
+fn a_utf8_drawing_under_a_code_page_header_keeps_its_names_through_two_saves() {
+    let header = HEADER.replace(
+        "9\n$INSUNITS\n",
+        "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
+    );
+    let named = |part: &str| {
+        part.replace("2\nleaf\n", "2\nΔ-značka\n")
+            .replace("1\nD-01\n", "1\nКухня 𝔸\n")
+            .replace("2\nNAME\n", "2\nМІСТО\n")
+            .replace("2\nUSER\n", "2\nØ-vzor\n")
+    };
+    let notes = "0\nTEXT\n5\nB0\n330\n1F\n100\nAcDbEntity\n8\nnotes\n100\nAcDbText\n\
+                 10\n0\n20\n9000\n30\n0\n40\n250\n1\n€ 120\n100\nAcDbText\n\
+                 0\nTEXT\n5\nB1\n330\n1F\n100\nAcDbEntity\n8\nnotes\n100\nAcDbText\n\
+                 10\n0\n20\n9500\n30\n0\n40\n250\n1\nΔh = 5\n100\nAcDbText\n0\nENDSEC\n";
+    let entities = named(ENTITIES).replace("0\nENDSEC\n", notes);
+    let source = format!("{header}{TABLES}{}{entities}0\nEOF\n", named(BLOCKS));
+    let original = read(source.as_bytes());
+    let details = |underlay: &DxfUnderlay| {
+        underlay
+            .lines
+            .objects()
+            .objects
+            .iter()
+            .filter(|object| matches!(object.kind.name(), "INSERT" | "HATCH"))
+            .map(|object| format!("{:?}", object.detail))
+            .collect::<Vec<_>>()
+    };
+    let before = details(&original);
+    assert!(before.iter().any(|detail| detail.contains("Δ-značka")
+        && detail.contains("Кухня 𝔸")
+        && detail.contains("МІСТО")));
+    assert!(before.iter().any(|detail| detail.contains("Ø-vzor")));
+
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(id_of(&original.lines, 0xB0));
+    let once = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        &original.lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert!(once.is_ascii(), "{}", String::from_utf8_lossy(&once));
+    assert_eq!(details(&read(&once)), before);
+
+    // Saved again over the file just written, with one more text taken out.
+    edits.removed_objects.insert(id_of(&original.lines, 0xB1));
+    let twice = write_reported(&once, DxfImportOptions::new(None), &original.lines, &edits)
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        (
+            twice.changed_in_file,
+            twice.added_in_file,
+            twice.removed_in_file
+        ),
+        (0, 0, 1)
+    );
+    assert_eq!(details(&read(&twice.dxf)), before);
 }
 
 /// Review 2026-10-31 P3: a polyline drawn into an R13 drawing was written as LWPOLYLINE,
@@ -2630,6 +2733,75 @@ fn every_edit_refused_by_the_file_is_named_at_once() {
             && message.contains("the CIRCLE of handle A7"),
         "{message}"
     );
+
+    // Review 2026-11-06 r23 CD-201: 9 999 refused edits were said in 3.5 MB, into the
+    // status line and an MCP reply. The first five are named, the rest counted.
+    let many = DxfEditRefusal::Several(
+        (0..9_999)
+            .map(|object| DxfEditRefusal::NoHandle { object })
+            .collect(),
+    );
+    let message = many.to_string();
+    assert!(
+        message.starts_with("9999 edits are refused: 1) object 0")
+            && message.contains("; 5) object 4")
+            && !message.contains("6) object 5")
+            && message.ends_with("; and 9994 more"),
+        "{message}"
+    );
+    assert!(message.len() < 2_000, "{}", message.len());
+}
+
+/// Review 2026-11-06 r23 CD-202: a drawing in metres at geodetic coordinates (S-JTSK, UTM:
+/// some 5e9 mm, where a step of `f64` is 1e-6 mm) written back with 15 significant digits
+/// was read as other lines at a tolerance of 1e-7 mm, and the edit refused. Its own
+/// rounding changes nothing; a real change still refuses.
+#[test]
+fn a_geodetic_drawing_written_back_with_its_own_rounding_is_edited() {
+    let line = |handle: &str, x: &str, y: &str| {
+        format!(
+            "0\nLINE\n5\n{handle}\n330\n1F\n100\nAcDbEntity\n8\nwalls\n100\nAcDbLine\n\
+             10\n{x}\n20\n{y}\n30\n0\n11\n512346.123456789\n21\n5432110.123456789\n31\n0\n"
+        )
+    };
+    let drawing = |first: &str| {
+        format!(
+            "{}{TABLES}0\nSECTION\n2\nENTITIES\n{first}{}0\nENDSEC\n0\nEOF\n",
+            HEADER.replace("$INSUNITS\n70\n4", "$INSUNITS\n70\n6"),
+            line("B1", "512340.5", "5432100.25"),
+        )
+    };
+    let source = drawing(&line("B0", "512345.123456789", "5432109.123456789"));
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let mut edits = UnderlayEdits::default();
+    edits
+        .moved_objects
+        .insert(id_of(lines, 0xB0), [[1.0, 0.0, 1000.0], [0.0, 1.0, 0.0]]);
+    let options = DxfImportOptions::new(None);
+    for rounded in ["512345.123456789", "512345.12345679", "512345.1234567891"] {
+        let written = write_reported(
+            drawing(&line("B0", rounded, "5432109.12345679")).as_bytes(),
+            options,
+            lines,
+            &edits,
+        )
+        .unwrap_or_else(|error| panic!("{rounded}: {error}"));
+        assert_eq!(written.changed_in_file, 0, "{rounded}");
+    }
+    // Moved by a millimetre in the file, it is refused as changed there, and said to lie
+    // where the file has it, not where it lies against the underlay's origin.
+    let refused = write_reported(
+        drawing(&line("B0", "512345.124456789", "5432109.123456789")).as_bytes(),
+        options,
+        lines,
+        &edits,
+    );
+    let Err(EditedDxfError::Refused(refusal)) = refused else {
+        panic!("{refused:?}")
+    };
+    let message = refusal.to_string();
+    assert!(message.contains("512345123, 5432109123 mm"), "{message}");
 }
 
 /// Review 2026-11-06 P3: in a drawing without handles an entity is told by its place

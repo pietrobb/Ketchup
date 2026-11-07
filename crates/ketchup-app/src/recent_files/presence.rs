@@ -1,0 +1,151 @@
+//! Whether a file the user named is there, the one answer Open Recent, the
+//! installer of a client's entry and the list of written drawings take
+//! (review 2026-11-06 r23 SEC-201, SEC-202): a file whose drive, share or
+//! mounted volume does not answer is neither there nor gone. Asking may wait
+//! for a server that does not answer, so it is asked on a worker, never on
+//! the window's thread.
+
+use std::path::{Path, PathBuf};
+
+/// Whether a file is there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Presence {
+    Here,
+    /// Its folder answers and holds no such file: gone for good.
+    Gone,
+    /// Its folder does not answer, as on a server, a disk or a volume that is
+    /// offline or not mounted: it may be back later.
+    Unknown,
+}
+
+/// The folder below which a missing folder was deleted, not a volume that is
+/// not mounted now: the home folder, on Windows none, where a drive or share
+/// that is out answers nothing at all.
+pub(crate) fn local_folder() -> Option<PathBuf> {
+    // Without a home folder no folder above a file's own is trusted: an
+    // absolute folder is never below a relative one.
+    (!cfg!(windows)).then(|| {
+        std::env::home_dir()
+            .filter(|home| home.is_absolute())
+            .unwrap_or_else(|| PathBuf::from("."))
+    })
+}
+
+/// Whether the file at `path` is there, a missing folder above it trusted to
+/// be deleted below `local` only (`None`: anywhere; see [`local_folder`]).
+pub(crate) fn presence(path: &Path, local: Option<&Path>) -> Presence {
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => Presence::Here,
+        Ok(_) => Presence::Gone,
+        Err(error) => {
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) && folder_answers(path, local)
+            {
+                Presence::Gone
+            } else {
+                Presence::Unknown
+            }
+        }
+    }
+}
+
+/// Whether the folders of a missing `path` answer: its own folder is there,
+/// or the nearest one above it that is there is below `local` (review
+/// 2026-11-04 r19 P3: a document whose folder was deleted stayed out of reach
+/// for ever). A drive, share or volume that is out has no folder there at all
+/// (Windows says so of `E:\` and `\\server\share` alike), and an empty folder
+/// does not answer: it may be where a share is mounted, as sshfs under the
+/// home folder, while it is not (review 2026-11-06 P3).
+fn folder_answers(path: &Path, local: Option<&Path>) -> bool {
+    for folder in path.ancestors().skip(1) {
+        match std::fs::metadata(folder) {
+            Ok(metadata) => {
+                return metadata.is_dir()
+                    && std::fs::read_dir(folder).is_ok_and(|mut entries| entries.next().is_some())
+                    && (Some(folder) == path.parent()
+                        || local.is_none_or(|local| folder.starts_with(local)));
+            }
+            // Only a folder that is not there lets the search go up.
+            Err(error) => {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    return false;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// The root of a drive letter no drive has, as of a USB disk or a share
+/// taken out: the system says its path is not found.
+#[cfg(all(test, windows))]
+pub(crate) fn drive_not_in_use() -> PathBuf {
+    (b'D'..=b'Z')
+        .map(|letter| PathBuf::from(format!("{}:\\", letter as char)))
+        .find(|root| {
+            std::fs::metadata(root).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        })
+        .expect("a drive letter not in use")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_in_a_folder_deleted_locally_is_gone() {
+        let directory = tempfile::tempdir().unwrap();
+        let document = directory
+            .path()
+            .join("Projects")
+            .join("Phase 2")
+            .join("a.ketchup");
+        std::fs::write(directory.path().join("notes.txt"), "kept").unwrap();
+        assert_eq!(presence(&document, Some(directory.path())), Presence::Gone);
+        assert_eq!(presence(&document, None), Presence::Gone);
+        // Outside the computer's own folders a missing folder may be a volume
+        // not mounted now, as `/Volumes/NAS`: it may come back.
+        let home = directory.path().join("home");
+        assert_eq!(presence(&document, Some(&home)), Presence::Unknown);
+        // Its own folder there still says it is gone anywhere.
+        let beside = directory.path().join("a.ketchup");
+        assert_eq!(presence(&beside, Some(&home)), Presence::Gone);
+        std::fs::write(&beside, "here").unwrap();
+        assert_eq!(presence(&beside, Some(&home)), Presence::Here);
+    }
+
+    /// Review 2026-11-06 P3: an sshfs share under the home folder that is not
+    /// mounted now is an empty folder, which answered.
+    #[test]
+    fn a_file_on_a_share_not_mounted_is_unknown() {
+        let home = tempfile::tempdir().unwrap();
+        let mount = home.path().join("nas");
+        std::fs::create_dir(&mount).unwrap();
+        let deep = mount.join("Domy").join("a.ketchup");
+        assert_eq!(presence(&deep, Some(home.path())), Presence::Unknown);
+        assert_eq!(
+            presence(&mount.join("a.ketchup"), Some(home.path())),
+            Presence::Unknown
+        );
+        std::fs::write(mount.join("b.ketchup"), "mounted").unwrap();
+        assert_eq!(presence(&deep, Some(home.path())), Presence::Gone);
+        assert_eq!(
+            presence(&mount.join("a.ketchup"), Some(home.path())),
+            Presence::Gone
+        );
+    }
+
+    /// Review 2026-11-06 r23 SEC-201: a program on a drive that is out, or a
+    /// share that does not answer, was gone, so the installer replaced its
+    /// client's entry.
+    #[cfg(windows)]
+    #[test]
+    fn a_file_on_a_drive_or_share_that_is_out_is_unknown() {
+        let free = drive_not_in_use();
+        let program = free.join("tools").join("ketchup.exe");
+        assert_eq!(presence(&program, None), Presence::Unknown);
+        assert_eq!(presence(&free.join("ketchup.exe"), None), Presence::Unknown);
+    }
+}

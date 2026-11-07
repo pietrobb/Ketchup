@@ -1310,13 +1310,21 @@ fn braced_stretches(
             let side: f64 = (0..3)
                 .map(|axis| dot(obb.axes[axis], sideways).abs() * obb.half[axis])
                 .sum();
+            // Of the anchorages that hold it, the largest across the member,
+            // whatever order they are declared in (review 2026-11-06 r23 P3:
+            // a small block declared before a wall holding the same point
+            // was reported as the anchorage).
             let held = |point: [f64; 3]| {
-                anchors.iter().find_map(|(other, anchor)| {
-                    let path = sub(*anchor, point);
-                    let lever = dot(path, sideways).abs();
-                    (lever >= dot(path, frame.axis).abs() && lever > side + CONTACT_FIT_MM)
-                        .then_some(*other)
-                })
+                anchors
+                    .iter()
+                    .filter(|(_, anchor)| {
+                        let path = sub(*anchor, point);
+                        let lever = dot(path, sideways).abs();
+                        lever >= dot(path, frame.axis).abs() && lever > side + CONTACT_FIT_MM
+                    })
+                    .map(|(other, _)| (*other, depth(&parts[*other], frame)))
+                    .max_by(|(a, a_depth), (b, b_depth)| a_depth.total_cmp(b_depth).then(b.cmp(a)))
+                    .map(|(other, _)| other)
             };
             braced[support.supporter].extend(
                 points
@@ -1443,6 +1451,7 @@ fn braces(
         .map(|part| grounded.contains(&part.name))
         .collect();
     let mut stray = Vec::new();
+    let looked = std::cell::RefCell::new(BTreeSet::new());
     let braced = braced_stretches(
         supports,
         member,
@@ -1450,6 +1459,7 @@ fn braces(
         parts,
         frames,
         |item, held| {
+            looked.borrow_mut().insert((item.min(held), item.max(held)));
             let (a, b) = (parts[item].name.as_str(), parts[held].name.as_str());
             joined
                 .contains(&(a, b))
@@ -1457,15 +1467,18 @@ fn braces(
         },
         &mut stray,
     );
-    // An anchorage smaller every way than the member is deep (a 50 mm block
-    // beside a 400 mm beam) still braces it, but is reported (review 2026-11-06 P3).
+    stray.extend(unlooked_stray_fasteners(model, &looked.into_inner()));
+    // An anchorage smaller across the member than the member is deep (a 50 mm
+    // block beside a 400 mm beam) still braces it, but is reported (review
+    // 2026-11-06 P3; r23 P3: so is a rod 5 900 × 10 × 10 along it, measured
+    // along its length before).
     let small: BTreeSet<(usize, usize)> = braced
         .iter()
         .enumerate()
         .flat_map(|(member, list)| list.iter().map(move |brace| (member, brace.anchor)))
         .filter(|(member, anchor)| {
-            let largest = parts[*anchor].obb().half.into_iter().fold(0.0, f64::max) * 2.0;
-            largest < depth(&parts[*member], &frames[*member])
+            let frame = &frames[*member];
+            depth(&parts[*anchor], frame) < depth(&parts[*member], frame)
         })
         .collect();
     let small = small
@@ -1475,7 +1488,57 @@ fn braces(
     (braced, stray, small)
 }
 
-/// The largest size of a member across its axis, mm.
+/// The fasteners of joints between parts no bearing looked at, as a batten
+/// butting a wall end on, that do not reach from one part into the other:
+/// they were not looked at at all (review 2026-11-06 r23 P3: one 1 950 mm
+/// into the wall).
+fn unlooked_stray_fasteners(
+    model: &ProgramModel,
+    looked: &BTreeSet<(usize, usize)>,
+) -> Vec<StrayFastener> {
+    let index = |name: &str| model.parts.iter().position(|part| part.name == name);
+    let mut stray: Vec<StrayFastener> = Vec::new();
+    for joint in model.joints.iter().filter(|joint| joint.fastens()) {
+        let (Some(a), Some(b)) = (index(&joint.parts[0]), index(&joint.parts[1])) else {
+            continue;
+        };
+        if a == b || looked.contains(&(a.min(b), a.max(b))) {
+            continue;
+        }
+        // In one part and no farther from the other than the thinner part is
+        // thick, as a sill anchor halfway up the plate above the slab.
+        let boxes = [model.parts[a].obb(), model.parts[b].obb()];
+        let reach = boxes
+            .iter()
+            .flat_map(|obb| obb.half.iter().map(|half| 2.0 * half))
+            .fold(f64::INFINITY, f64::min);
+        let outside: Vec<[f64; 3]> = joint
+            .fasteners_mm
+            .iter()
+            .copied()
+            .filter(|point| {
+                !(boxes.iter().any(|obb| obb.contains(*point, CONTACT_FIT_MM))
+                    && boxes
+                        .iter()
+                        .all(|obb| obb.contains(*point, reach + CONTACT_FIT_MM)))
+            })
+            .collect();
+        if outside.is_empty() {
+            continue;
+        }
+        let parts = [joint.parts[0].clone(), joint.parts[1].clone()];
+        match stray.iter_mut().find(|known| known.parts == parts) {
+            Some(known) => known.at_mm.extend(outside),
+            None => stray.push(StrayFastener {
+                parts,
+                at_mm: outside,
+            }),
+        }
+    }
+    stray
+}
+
+/// The largest size of `part` across the axis of the member of `frame`, mm.
 fn depth(part: &Part, frame: &Frame) -> f64 {
     let obb = part.obb();
     (0..3)

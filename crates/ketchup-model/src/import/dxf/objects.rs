@@ -95,7 +95,10 @@ pub(super) fn claim(
         "INSERT" => insert_detail(record, following, placement),
         "DIMENSION" => dimension_detail(record, units),
         "HATCH" => ObjectDetail::Hatch {
-            pattern: text(2).unwrap_or_default().to_owned(),
+            pattern: parse_optional_string(record, 2)
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
             solid: parse_optional_i64(record, 70).ok().flatten() == Some(1),
             rings: output
                 .fills
@@ -200,22 +203,20 @@ fn insert_detail(
         let (attribute, after) = tail.split_at(end);
         if head.value.eq_ignore_ascii_case("ATTRIB") {
             let value = |code| {
-                parse_optional_text(attribute, code)
+                parse_optional_string(attribute, code)
                     .ok()
                     .flatten()
                     .unwrap_or_default()
-                    .to_owned()
             };
             attributes.push((value(2), value(1)));
         }
         rest = after;
     }
     ObjectDetail::Insert {
-        block: parse_optional_text(record, 2)
+        block: parse_optional_string(record, 2)
             .ok()
             .flatten()
-            .unwrap_or_default()
-            .to_owned(),
+            .unwrap_or_default(),
         transform: placement.unwrap_or([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
         copies,
         attributes,
@@ -251,11 +252,10 @@ fn dimension_detail(record: &[DxfPair<'_>], units: ImportUnitDecision) -> Object
     ObjectDetail::Dimension {
         dimension_type,
         measurement,
-        text_override: parse_optional_text(record, 1)
+        text_override: parse_optional_string(record, 1)
             .ok()
             .flatten()
-            .unwrap_or_default()
-            .to_owned(),
+            .unwrap_or_default(),
         points_mm,
     }
 }

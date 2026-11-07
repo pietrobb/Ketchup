@@ -94,19 +94,24 @@ impl KetchupApp {
     fn btlx_options_menu(&mut self, ui: &mut egui::Ui) {
         ui.menu_button(self.catalog.text("file-short-btlx-options"), |ui| {
             ui.selectable_value(
-                &mut self.btlx_profile_strategy,
+                &mut self.btlx.profile_strategy,
                 BtlxProfileStrategy::PortableFreeContour,
                 self.catalog.text("file-export-btlx-portable-contour"),
             );
             ui.selectable_value(
-                &mut self.btlx_profile_strategy,
+                &mut self.btlx.profile_strategy,
                 BtlxProfileStrategy::EdgeSawCutsThenMillContour,
                 self.catalog.text("file-export-btlx-saw-then-mill"),
             );
             ui.add_enabled(
-                self.btlx_profile_strategy == BtlxProfileStrategy::EdgeSawCutsThenMillContour,
-                egui::Slider::new(&mut self.btlx_intermediate_saw_cuts, 0..=32)
+                self.btlx.profile_strategy == BtlxProfileStrategy::EdgeSawCutsThenMillContour,
+                egui::Slider::new(&mut self.btlx.intermediate_saw_cuts, 0..=32)
                     .text(self.catalog.text("file-export-btlx-intermediate-saw-cuts")),
+            );
+            ui.add(
+                egui::Slider::new(&mut self.btlx.largest_drill_mm, 0.0..=80.0)
+                    .step_by(1.0)
+                    .text(self.catalog.text("file-export-btlx-largest-drill")),
             );
         });
     }
@@ -135,7 +140,7 @@ impl KetchupApp {
             let missing = match self.window.recent.on_disk(path) {
                 None | Some(Presence::Here) => None,
                 Some(Presence::Gone) => Some("file-recent-missing-name"),
-                Some(Presence::Unavailable) => Some("file-recent-unavailable-name"),
+                Some(Presence::Unknown) => Some("file-recent-unavailable-name"),
             };
             let (text, accessible) = match missing {
                 None => (egui::RichText::new(name), full),
@@ -202,7 +207,7 @@ impl KetchupApp {
                 self.report_recent_files(result);
                 return;
             }
-            Presence::Unavailable => {
+            Presence::Unknown => {
                 self.digest = self.catalog.format("digest-recent-unavailable", &shown);
                 return;
             }
