@@ -706,20 +706,28 @@ fn params(model: &ProgramModel, issues: &mut Vec<Issue>) {
                 value.to_string()
             };
             // A count given 2.5 is refused as one outside its range is
-            // (review 2026-11-06 r23 P3: it failed the whole program).
-            let (why, hint) = if crate::eval::is_whole_override(param, value) {
-                (
-                    format!(
-                        "is outside {}",
-                        crate::eval::range_text(param.min, param.max)
-                    ),
+            // (review 2026-11-06 r23 P3: it failed the whole program); one
+            // refused for both is told both (review 2026-11-07 P3).
+            let outside = param.min.is_some_and(|min| value < min)
+                || param.max.is_some_and(|max| value > max);
+            let whole = crate::eval::is_whole_override(param, value);
+            let range = format!(
+                "is outside {}",
+                crate::eval::range_text(param.min, param.max)
+            );
+            let (why, hint) = match (outside, whole) {
+                (true, true) => (
+                    range,
                     "Set a value inside the declared range, or widen the range.",
-                )
-            } else {
-                (
+                ),
+                (true, false) => (
+                    format!("{range} and {}", crate::eval::WHOLE_ONLY),
+                    "Set a whole number inside the declared range, or widen the range.",
+                ),
+                (false, _) => (
                     crate::eval::WHOLE_ONLY.to_owned(),
                     "Set a whole number, or drop whole = True from the param.",
-                )
+                ),
             };
             issues.push(Issue {
                 source_lines: Vec::new(),
