@@ -213,27 +213,37 @@ const TURN_POLL: Duration = Duration::from_millis(2);
 /// behind (review 2026-11-06 r23 P3: a thread waited on in `lock()` with the
 /// file open as long as the other window hung).
 fn take_turn<T: PartialEq>(
+    attempt: impl FnMut() -> Result<(), std::fs::TryLockError>,
+    saved: impl FnMut() -> T,
+    wait: Duration,
+    cap: Duration,
+) -> io::Result<()> {
+    take_turn_by(attempt, saved, wait, cap, std::time::Instant::now)
+}
+
+/// [`take_turn`] with the time read from `now`, so a test of how long it waits
+/// does not hang on how busy the machine is.
+fn take_turn_by<T: PartialEq>(
     mut attempt: impl FnMut() -> Result<(), std::fs::TryLockError>,
     mut saved: impl FnMut() -> T,
     wait: Duration,
     cap: Duration,
+    mut now: impl FnMut() -> std::time::Instant,
 ) -> io::Result<()> {
     let mut seen = saved();
-    let start = std::time::Instant::now();
+    let start = now();
     let mut until = start + wait;
     loop {
         match attempt() {
             Ok(()) => return Ok(()),
             Err(std::fs::TryLockError::Error(error)) if cannot_lock(&error) => return Ok(()),
             Err(std::fs::TryLockError::Error(error)) => return Err(error),
-            Err(std::fs::TryLockError::WouldBlock)
-                if std::time::Instant::now() < until.min(start + cap) =>
-            {
+            Err(std::fs::TryLockError::WouldBlock) if now() < until.min(start + cap) => {
                 std::thread::sleep(TURN_POLL);
-                let now = saved();
-                if now != seen {
-                    seen = now;
-                    until = std::time::Instant::now() + wait;
+                let latest = saved();
+                if latest != seen {
+                    seen = latest;
+                    until = now() + wait;
                 }
             }
             Err(std::fs::TryLockError::WouldBlock) => {
@@ -487,10 +497,11 @@ mod tests {
             "it tried again"
         );
         assert_eq!(std::sync::Arc::strong_count(&tries), 1, "nothing tries on");
-        // Windows that go on saving are waited for, however long they queue.
+        // Windows that go on saving are waited for, however long they queue:
+        // 40 turns 40 ms apart, far past the wait of 30 ms.
         let mut queued = 0;
         let mut saves = 0;
-        take_turn(
+        take_turn_by(
             || {
                 queued += 1;
                 if queued < 40 {
@@ -505,6 +516,7 @@ mod tests {
             },
             Duration::from_millis(30),
             TURN_CAP,
+            ticking(),
         )
         .unwrap();
         // Review 2026-11-07 P3: but not past the cap, however they go on.
@@ -568,10 +580,11 @@ mod tests {
         settings.save_language("sk").unwrap();
         assert_ne!(count(), first, "a turn taken is counted");
 
-        // Other windows take 60 turns, each polled after the last, far past
-        // the wait, the settings as they were.
+        // Other windows take 60 turns, 40 ms apart, far past the wait of 30 ms,
+        // the settings as they were. The clock is the test's, so a busy
+        // machine does not make one turn outlast the wait.
         let mut queued = 0;
-        take_turn(
+        take_turn_by(
             || {
                 queued += 1;
                 std::fs::write(&turns, format!("other {queued}")).unwrap();
@@ -584,8 +597,19 @@ mod tests {
             || seen(&path),
             Duration::from_millis(30),
             TURN_CAP,
+            ticking(),
         )
         .unwrap();
+    }
+
+    /// A clock that moves on 20 ms each time it is read: a turn that reads it
+    /// twice is 40 ms.
+    fn ticking() -> impl FnMut() -> std::time::Instant {
+        let mut at = std::time::Instant::now();
+        move || {
+            at += Duration::from_millis(20);
+            at
+        }
     }
 
     /// Review 2026-11-07 r26 P3: the turn counted only tells other windows to
