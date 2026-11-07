@@ -92,28 +92,41 @@ impl KetchupApp {
     }
 
     fn btlx_options_menu(&mut self, ui: &mut egui::Ui) {
+        // A slider is kept once let go, not at each step of a drag.
+        let set = |response: egui::Response| {
+            response.drag_stopped() || (response.changed() && !response.dragged())
+        };
+        let mut changed = false;
         ui.menu_button(self.catalog.text("file-short-btlx-options"), |ui| {
-            ui.selectable_value(
-                &mut self.btlx.profile_strategy,
-                BtlxProfileStrategy::PortableFreeContour,
-                self.catalog.text("file-export-btlx-portable-contour"),
-            );
-            ui.selectable_value(
-                &mut self.btlx.profile_strategy,
-                BtlxProfileStrategy::EdgeSawCutsThenMillContour,
-                self.catalog.text("file-export-btlx-saw-then-mill"),
-            );
-            ui.add_enabled(
-                self.btlx.profile_strategy == BtlxProfileStrategy::EdgeSawCutsThenMillContour,
-                egui::Slider::new(&mut self.btlx.intermediate_saw_cuts, 0..=32)
+            let btlx = &mut self.window.btlx;
+            changed |= ui
+                .selectable_value(
+                    &mut btlx.profile_strategy,
+                    BtlxProfileStrategy::PortableFreeContour,
+                    self.catalog.text("file-export-btlx-portable-contour"),
+                )
+                .changed();
+            changed |= ui
+                .selectable_value(
+                    &mut btlx.profile_strategy,
+                    BtlxProfileStrategy::EdgeSawCutsThenMillContour,
+                    self.catalog.text("file-export-btlx-saw-then-mill"),
+                )
+                .changed();
+            changed |= set(ui.add_enabled(
+                btlx.profile_strategy == BtlxProfileStrategy::EdgeSawCutsThenMillContour,
+                egui::Slider::new(&mut btlx.intermediate_saw_cuts, 0..=32)
                     .text(self.catalog.text("file-export-btlx-intermediate-saw-cuts")),
-            );
-            ui.add(
-                egui::Slider::new(&mut self.btlx.largest_drill_mm, 0.0..=80.0)
+            ));
+            changed |= set(ui.add(
+                egui::Slider::new(&mut btlx.largest_drill_mm, 0.0..=80.0)
                     .step_by(1.0)
                     .text(self.catalog.text("file-export-btlx-largest-drill")),
-            );
+            ));
         });
+        if changed {
+            self.remember_btlx_settings();
+        }
     }
 
     /// The documents of Open Recent, newest first: the name to read, the

@@ -190,6 +190,12 @@ pub(crate) struct WindowSettings {
     /// Where the drawing files each saved document wrote are kept between
     /// windows; `None` keeps them in memory (review 2026-11-06 SEC-182).
     pub(crate) written_drawings: Option<crate::recent_files::user_settings::SettingsFile>,
+    /// How the File menu writes BTLx, a setting of the machine, not of the
+    /// document.
+    pub(crate) btlx: BtlxSettings,
+    /// Where the BTLx options are kept between starts; `None` keeps them for
+    /// this window only.
+    pub(crate) btlx_settings: Option<crate::recent_files::user_settings::SettingsFile>,
 }
 
 /// Which side panes and windows are open.
