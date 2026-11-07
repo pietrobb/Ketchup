@@ -2560,16 +2560,33 @@ fn a_utf8_drawing_under_a_code_page_header_reads_alike_after_texts_are_taken_out
 /// through the file, a block's name, an attribute's tag and value and a hatch's pattern
 /// were read back as written, „\U+0394-zna\U+010Dka“: the drawing no longer read as the
 /// one edited, and a second save found the insert and the hatch changed in the file.
+/// Review 2026-11-07 UL-221: a name of 43 Cyrillic characters, 301 escaped, was measured
+/// escaped against the 255 a name holds, and its block was unreadable after one save.
 #[test]
 fn a_utf8_drawing_under_a_code_page_header_keeps_its_names_through_two_saves() {
+    let long_block = "КухонныйШкафНавеснойДвухдверныйШестьдесятСм";
+    let long_tag = "НаименованиеИзделияПоКаталогуПроизводителя1";
+    assert_eq!(
+        (long_block.chars().count(), long_tag.chars().count()),
+        (43, 43)
+    );
+    for [block, value, tag] in [
+        ["Δ-značka", "Кухня 𝔸", "МІСТО"],
+        [long_block, "Кухня", long_tag],
+    ] {
+        names_survive_two_saves(block, value, tag);
+    }
+}
+
+fn names_survive_two_saves(block: &str, value: &str, tag: &str) {
     let header = HEADER.replace(
         "9\n$INSUNITS\n",
         "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
     );
     let named = |part: &str| {
-        part.replace("2\nleaf\n", "2\nΔ-značka\n")
-            .replace("1\nD-01\n", "1\nКухня 𝔸\n")
-            .replace("2\nNAME\n", "2\nМІСТО\n")
+        part.replace("2\nleaf\n", &format!("2\n{block}\n"))
+            .replace("1\nD-01\n", &format!("1\n{value}\n"))
+            .replace("2\nNAME\n", &format!("2\n{tag}\n"))
             .replace("2\nUSER\n", "2\nØ-vzor\n")
     };
     let notes = "0\nTEXT\n5\nB0\n330\n1F\n100\nAcDbEntity\n8\nnotes\n100\nAcDbText\n\
@@ -2590,9 +2607,12 @@ fn a_utf8_drawing_under_a_code_page_header_keeps_its_names_through_two_saves() {
             .collect::<Vec<_>>()
     };
     let before = details(&original);
-    assert!(before.iter().any(|detail| detail.contains("Δ-značka")
-        && detail.contains("Кухня 𝔸")
-        && detail.contains("МІСТО")));
+    assert!(
+        before
+            .iter()
+            .any(|detail| detail.contains(block) && detail.contains(value) && detail.contains(tag)),
+        "{before:?}"
+    );
     assert!(before.iter().any(|detail| detail.contains("Ø-vzor")));
 
     let mut edits = UnderlayEdits::default();
@@ -2620,6 +2640,82 @@ fn a_utf8_drawing_under_a_code_page_header_keeps_its_names_through_two_saves() {
         (0, 0, 1)
     );
     assert_eq!(details(&read(&twice.dxf)), before);
+}
+
+/// Review 2026-11-07 UL-220: escaped, a character beyond ASCII takes seven (one beyond
+/// U+FFFF fourteen), so a long Cyrillic note made a line longer than a DXF line holds,
+/// and Kečup could not read the drawing it had written. An MTEXT is written in pieces of
+/// group 3, as AutoCAD writes one; a TEXT too long is refused, named.
+#[test]
+fn a_long_text_beyond_ascii_under_a_code_page_header_is_written_so_it_reads_back() {
+    let header = HEADER.replace(
+        "9\n$INSUNITS\n",
+        "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
+    );
+    let text = |handle: &str, kind: &str, class: &str, groups: &str| {
+        format!(
+            "0\n{kind}\n5\n{handle}\n330\n1F\n100\nAcDbEntity\n8\nnotes\n100\n{class}\n\
+             10\n0\n20\n0\n30\n0\n40\n250\n{groups}"
+        )
+    };
+    let note = format!("{}{}", "𝔸".repeat(200), "Ж".repeat(50));
+    let long = "Ж".repeat(2000);
+    let mtext = text(
+        "B0",
+        "MTEXT",
+        "AcDbMText",
+        &format!("3\n{note}\n1\n{long}\n"),
+    );
+    let short = text("B1", "TEXT", "AcDbText", "1\nк\n100\nAcDbText\n");
+    let source =
+        format!("{header}{TABLES}0\nSECTION\n2\nENTITIES\n{mtext}{short}0\nENDSEC\n0\nEOF\n");
+    let original = read(source.as_bytes());
+    let texts = |underlay: &DxfUnderlay| {
+        underlay
+            .lines
+            .layers()
+            .iter()
+            .flat_map(|layer| layer.texts())
+            .map(|text| text.text.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(texts(&original), [format!("{note}{long}"), "к".to_owned()]);
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(id_of(&original.lines, 0xB1));
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        &original.lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let longest = written.split(|byte| *byte == b'\n').map(<[u8]>::len).max();
+    assert!(longest <= Some(2049), "{longest:?}");
+    assert_eq!(texts(&read(&written)), [format!("{note}{long}")]);
+
+    let too_long = format!("1\n{}\n100\nAcDbText\n", "Ж".repeat(400));
+    let source = source.replace(&short, &text("B1", "TEXT", "AcDbText", &too_long));
+    let original = read(source.as_bytes());
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(id_of(&original.lines, 0xB0));
+    let refused = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        &original.lines,
+        &edits,
+    );
+    assert!(
+        matches!(
+            refused,
+            Err(EditedDxfError::Refused(DxfEditRefusal::TextTooLong {
+                ref kind,
+                handle: 0xB1,
+                code: 1,
+                characters: 2800,
+            })) if kind == "TEXT"
+        ),
+        "{refused:?}"
+    );
 }
 
 /// Review 2026-10-31 P3: a polyline drawn into an R13 drawing was written as LWPOLYLINE,

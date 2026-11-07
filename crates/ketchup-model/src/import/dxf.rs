@@ -20,6 +20,8 @@ pub const DXF_PARSER_VERSION: &str = "30";
 /// The longest string a DXF group holds (AutoCAD 2007 and later), in characters: an
 /// MTEXT piece of 250 CJK characters is 750 bytes of UTF-8.
 const MAX_DXF_LINE_CHARS: usize = 2049;
+/// A name or tag's longest, in characters as read, not as escaped (review 2026-11-07 UL-221).
+const MAX_DXF_NAME_CHARS: usize = 255;
 /// No encoding a DXF uses takes more than four bytes for a character.
 const MAX_DXF_LINE_BYTES: usize = 4 * MAX_DXF_LINE_CHARS;
 
@@ -4022,10 +4024,10 @@ fn parse_insert_attributes(
 
 fn validate_insert_attribute(record: &[DxfPair<'_>]) -> Result<(), DxfImportError> {
     let mut tags = record.iter().filter(|pair| pair.code == 2);
-    let tag = tags.next().ok_or(DxfImportError::MalformedPairs)?.value;
+    let tag = text::unicode_escapes(tags.next().ok_or(DxfImportError::MalformedPairs)?.value);
     if tags.next().is_some()
         || tag.is_empty()
-        || tag.len() > 255
+        || tag.chars().count() > MAX_DXF_NAME_CHARS
         || tag.chars().any(char::is_control)
     {
         return Err(DxfImportError::MalformedPairs);
@@ -4226,7 +4228,7 @@ fn block_name_key(name: &str) -> Result<String, DxfImportError> {
         return Err(DxfImportError::InvalidBlock);
     }
     if key.is_empty()
-        || name.len() > 255
+        || key.chars().count() > MAX_DXF_NAME_CHARS
         || key.chars().any(char::is_control)
         || key.contains(['/', '\\'])
     {
@@ -4249,7 +4251,7 @@ fn parse_optional_layer(record: &[DxfPair<'_>]) -> Result<Option<String>, DxfImp
     layer
         .map(|layer| {
             if layer.is_empty()
-                || layer.len() > 255
+                || layer.chars().count() > MAX_DXF_NAME_CHARS
                 || layer.chars().any(char::is_control)
                 || layer.contains(['/', '\\'])
             {

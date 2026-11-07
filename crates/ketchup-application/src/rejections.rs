@@ -157,6 +157,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Pass as source the DXF or DWG the drawing was imported from, unchanged since; if it changed, import it again and repeat the changes, then export again.",
     ),
     entry(
+        "drawing_text_too_long",
+        Validation,
+        "source",
+        "A text of the drawing would be longer than a DXF line holds once written under the code page its header names, where each character beyond ASCII takes seven (\\U+XXXX); caused_by names its entity and length. Nothing was written.",
+        "Shorten that text or take it out of the drawing, or save the source as DXF 2007 or later (UTF-8) from the program that made it and import that, then export again.",
+    ),
+    entry(
         "drawing_source_unwritable",
         Validation,
         "source",
