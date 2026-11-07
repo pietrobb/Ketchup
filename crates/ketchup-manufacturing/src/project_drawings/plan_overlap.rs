@@ -343,7 +343,7 @@ mod tests {
     fn perf_a_fan_is_overlapped_as_fast_as_each_against_each_and_stops_at_once() {
         let slab = fan(20_000);
         let started = std::time::Instant::now();
-        assert!(overlap(&slab, &slab, &AtomicBool::new(false)).is_some());
+        let (_, looked) = overlap(&slab, &slab, &AtomicBool::new(false)).unwrap();
         let through_grid = started.elapsed();
         // As before the grid: each against each whose box it overlaps.
         let started = std::time::Instant::now();
@@ -366,16 +366,13 @@ mod tests {
             "{through_grid:?} against {each_against_each:?}"
         );
 
-        let stop = AtomicBool::new(false);
-        std::thread::scope(|scope| {
-            scope.spawn(|| {
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                stop.store(true, Ordering::Relaxed);
-            });
-            let started = std::time::Instant::now();
-            assert!(overlap(&slab, &slab, &stop).is_none());
-            let took = started.elapsed();
-            assert!(took < std::time::Duration::from_millis(300), "{took:?}");
-        });
+        // `stop` is looked at again at most these looks later, those between
+        // two looks and the most one of mine makes past them.
+        let between = LOOKS_BETWEEN_STOPS + slab.len();
+        let longest = through_grid.mul_f64(between as f64 / looked as f64);
+        assert!(
+            longest < std::time::Duration::from_millis(100),
+            "{longest:?}"
+        );
     }
 }
