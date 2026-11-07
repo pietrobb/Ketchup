@@ -1554,12 +1554,27 @@ fn unlooked_stray_fasteners<'a>(
     stray
 }
 
-/// The largest size of `part` across the axis of the member of `frame`, mm.
+/// The largest size of `part` across the axis of the member of `frame`, mm:
+/// its box measured along the two directions square to the axis, so a part
+/// turned to the member counts with all its sides (review 2026-11-07 P3: one
+/// at 45° was measured by its height alone).
 fn depth(part: &Part, frame: &Frame) -> f64 {
     let obb = part.obb();
-    (0..3)
-        .filter(|axis| dot(obb.axes[*axis], frame.axis).abs() < 0.5)
-        .map(|axis| 2.0 * obb.half[axis])
+    let seed = if frame.axis[2].abs() < 0.9 {
+        [0.0, 0.0, 1.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    let Some(across) = linalg::normalize(cross(frame.axis, seed)) else {
+        return 0.0;
+    };
+    [across, cross(frame.axis, across)]
+        .into_iter()
+        .map(|direction| {
+            (0..3)
+                .map(|axis| 2.0 * dot(obb.axes[axis], direction).abs() * obb.half[axis])
+                .sum::<f64>()
+        })
         .fold(0.0, f64::max)
 }
 
