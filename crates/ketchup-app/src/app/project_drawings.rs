@@ -563,7 +563,8 @@ fn names_the_project(project: &str, owner: &SetOwner) -> bool {
 
 /// What `list`, at `list_path`, is to `owner`: its set when the document
 /// last wrote it there or `take_over` says to take it, or when it is the same
-/// document's list naming the project's file (see [`names_the_project`]); a
+/// document's list naming the project's file (see [`names_the_project`]), of
+/// a file with a token in a list of this Kečup; a
 /// list older than Kečup 0.3.2, naming no file, of the project's id. Any
 /// other is another project's, or another copy's, never this one's by its
 /// file name alone.
@@ -589,6 +590,9 @@ fn set_list_of(list: &[u8], list_path: &Path, owner: &SetOwner, take_over: bool)
         format!("document {}", owner.document.0)
     };
     let same_document = lines.next() == Some(whose.as_str());
+    // A file without a token is named by the document id its copies share:
+    // it takes no set by its name (review 2026-11-07 P3).
+    let by_name = header != DOCUMENT_SET_LIST_HEADER || owner.token.is_some();
     let project = (header != SET_LIST_HEADER)
         .then(|| lines.next().unwrap_or_default())
         .and_then(|line| line.strip_prefix("project "));
@@ -603,6 +607,7 @@ fn set_list_of(list: &[u8], list_path: &Path, owner: &SetOwner, take_over: bool)
         || wrote(&ketchup_model::graph::sha256_hex(list))
         || replacing.is_some_and(|replaced| wrote(replaced) || replaced == "none" && same_document)
         || same_document
+            && by_name
             && (header == SET_LIST_HEADER
                 || project.is_some_and(|project| names_the_project(project, owner)));
     let mut listed = BTreeMap::<String, BTreeSet<String>>::new();

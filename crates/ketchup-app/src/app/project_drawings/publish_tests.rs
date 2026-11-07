@@ -231,6 +231,56 @@ fn a_set_is_the_documents_that_wrote_it_last_whatever_its_file_is_called() {
     assert_eq!(std::fs::read(&sheets[1]).unwrap(), b"listed by id 2");
 }
 
+/// Review 2026-11-07 P3: a file without a token, not saved since tokens came
+/// or with no random bytes for one, is named in its set's list by the document
+/// id its copies share, so its copy from a file manager, of its name in
+/// another folder, took the set by the name. A file without a token takes a
+/// set as the list it last wrote only; one with a token, moved, by its name
+/// still.
+#[test]
+fn a_file_without_a_token_takes_no_set_by_its_name() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("house.dxf");
+    let format = SetFileFormat::Dxf;
+    let sheets = set_file_paths(&path, format, 1);
+    let publish =
+        |owner: &mut SetOwner, file: &[u8]| publish_noted(&path, format, &[file.to_vec()], owner);
+    let mut original = SetOwner {
+        document: DocumentId(42),
+        file: Some(directory.path().join("house.ketchup")),
+        token: None,
+        written: BTreeMap::new(),
+    };
+    publish(&mut original, b"original").unwrap();
+    let mut copy = SetOwner {
+        file: Some(directory.path().join("copy").join("house.ketchup")),
+        written: BTreeMap::new(),
+        ..original.clone()
+    };
+    assert!(
+        matches!(
+            publish(&mut copy, b"copy"),
+            Err(ProjectDrawingsError::SetOfAnotherProject { .. })
+        ),
+        "the copy without a token is not the project"
+    );
+    assert_eq!(std::fs::read(&sheets[0]).unwrap(), b"original");
+    publish(&mut original, b"again").unwrap();
+
+    let mut saved = SetOwner {
+        token: Some("abc".to_owned()),
+        ..original
+    };
+    publish(&mut saved, b"saved").unwrap();
+    let mut moved = SetOwner {
+        file: Some(directory.path().join("moved").join("house.ketchup")),
+        written: BTreeMap::new(),
+        ..saved
+    };
+    publish(&mut moved, b"moved").unwrap();
+    assert_eq!(std::fs::read(&sheets[0]).unwrap(), b"moved");
+}
+
 /// Review 2026-11-04 r19 MF-162 (capability review run 501): a list of Kečup
 /// 0.3.2 names the project's file by its absolute path, compared as text, so
 /// the same file opened as `c:\proj\dom.ketchup` after an export from
