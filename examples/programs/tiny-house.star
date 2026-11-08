@@ -124,12 +124,15 @@ load_path(only = ["stĺpiky", "stropnice", "krokvy"], carriers = ["OSB", "krytin
           fixed = ["sadrokartón", "fasáda", "izolácia"], name = "nosná konštrukcia")
 
 # Zaťaženia: vlastná tiaž konštrukcie (hustoty z knižnice), úžitkové na podlahe podkrovia,
-# údržba strechy a sneh na krytine (na pôdorys). Miesto stavby je na Slovensku: sneh na zemi
-# sk pre obec treba odčítať z mapy STN EN 1991-1-3/NA1; kým nie je zadaný (0), site() povie,
-# čo odčítať, a prvky pod strechou sú neúplné. V Česku stačí site("CZ", snow_zone = "II").
-SNOW_SK = param("snow_sk", 0, min = 0, max = 10, doc = "sneh na zemi sk v kN/m² z mapy STN EN 1991-1-3/NA1 pre obec stavby (0 = nezadané)")
-SITE = site("SK", sk = SNOW_SK if SNOW_SK > 0 else None,
-            source = "mapa STN EN 1991-1-3/NA1 pre obec stavby, sk = %s kN/m² (--set snow_sk)" % SNOW_SK)
+# údržba strechy a sneh na krytine (na pôdorys). Ukážkové miesto stavby je Senec, 150 m n. m.,
+# v snehovej oblasti 1 mapy STN EN 1991-1-3/NA1: site() z nich vypočíta sk = a + A/b
+# (tab. NA.1). Pre iné miesto zmeň obec, výšku a oblasť z mapy, alebo zadaj sk priamo cez
+# --set snow_sk. V Česku stačí site("CZ", snow_zone = "II").
+SNOW_SK = param("snow_sk", 0, min = 0, max = 10, doc = "sneh na zemi sk v kN/m², ak nie z oblasti miesta stavby (0 = z oblasti)")
+SITE = site("SK", municipality = "Senec", altitude = 150,
+            snow_zone = None if SNOW_SK > 0 else 1,
+            sk = SNOW_SK if SNOW_SK > 0 else None,
+            source = "zadané --set snow_sk = %s kN/m²" % SNOW_SK if SNOW_SK > 0 else None)
 # Vlastnú tiaž zapína self_weight(...) na konci programu.
 area_load("úžitkové podkrovie", kind = "imposed", kn_m2 = IMPOSED_LOADS["A"][0], on = ["podlaha"],
           source = IMPOSED_LOADS["A"][1])

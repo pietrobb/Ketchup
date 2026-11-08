@@ -1,6 +1,7 @@
 //! The building site (`site()`, review 2026-11-08 §5.3): its country, municipality and
 //! altitude, and the characteristic snow load on the ground s_k from that country's
-//! national annex to EN 1991-1-3. A value the annex does not give for the inputs is
+//! national annex to EN 1991-1-3: the zone of the Czech map, or the zone of the Slovak
+//! map with the altitude. A value the annex does not give for the inputs is
 //! left unknown with what to read and where, never guessed.
 
 use serde::{Deserialize, Serialize};
@@ -18,6 +19,17 @@ const CZ_SNOW_ZONES: [(&str, f64); 7] = [
     ("VI", 3.0),
     ("VII", 4.0),
 ];
+/// STN EN 1991-1-3/NA1:2012 (NA 2.8, table NA.1): s_k = a + A/b in kN/m² with the altitude
+/// A in metres, for the snow zones 1-5 of its map; zones 1 and 3 share a and b.
+const SK_SNOW_ZONES: [(&str, f64, f64); 5] = [
+    ("1", 0.454, 970.0),
+    ("2", 0.425, 505.0),
+    ("3", 0.454, 970.0),
+    ("4", 0.716, 430.0),
+    ("5", 0.934, 315.0),
+];
+/// EN 1991-1-3 1.1(2) covers sites up to this altitude.
+const SK_MAX_ALTITUDE_M: f64 = 1500.0;
 const CZ_ANNEX: &str = "ČSN EN 1991-1-3 national annex with Z1:2006";
 const SK_ANNEX: &str = "STN EN 1991-1-3/NA1:2012";
 /// Above this altitude snow takes psi0 0.7 and psi2 0.2 (EN 1990 table A1.1).
@@ -44,16 +56,68 @@ pub struct SiteInput<'a> {
     pub country: &'a str,
     pub municipality: Option<String>,
     pub altitude_m: Option<f64>,
-    /// "I" to "VIII", or 1 to 8.
+    /// CZ: "I" to "VIII" (or 1 to 8); SK: 1 to 5 (or "I" to "V").
     pub snow_zone: Option<String>,
     pub sk: Option<f64>,
     pub source: Option<String>,
 }
 
-fn roman(zone: &str) -> Option<&'static str> {
-    const ZONES: [&str; 8] = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII"];
+/// The zone as the annex map names it: "I"-"VIII" in Czechia, "1"-"5" in Slovakia.
+fn zone_name(country: &str, zone: &str) -> Option<&'static str> {
+    let index = roman(zone)?;
+    if country == "SK" {
+        SK_SNOW_ZONES.get(index).map(|(z, _, _)| *z)
+    } else {
+        Some(CZ_ROMAN[index])
+    }
+}
+
+/// s_k of a Slovak snow zone at the site's altitude, rounded up to 0.001 kN/m², with its
+/// source; or what is missing for it.
+fn sk_zone_sk(
+    zone: &str,
+    altitude_m: Option<f64>,
+    place: &str,
+) -> (Option<(f64, String)>, Option<String>) {
+    let Some(&(_, a, b)) = SK_SNOW_ZONES.iter().find(|(z, _, _)| *z == zone) else {
+        return (None, None);
+    };
+    match altitude_m {
+        None => (
+            None,
+            Some(format!(
+                "s_k not given: {SK_ANNEX} snow zone {zone} gives s_k = {a} + A/{b} by the \
+                 altitude A; give altitude= of {place}"
+            )),
+        ),
+        Some(altitude) if altitude > SK_MAX_ALTITUDE_M => (
+            None,
+            Some(format!(
+                "s_k not given: EN 1991-1-3 covers sites up to {SK_MAX_ALTITUDE_M} m; ask SHMÚ \
+                 for {place} at {altitude} m and give sk= and source="
+            )),
+        ),
+        Some(altitude) => {
+            let sk = ((a + altitude.max(0.0) / b) * 1000.0).ceil() / 1000.0;
+            (
+                Some((
+                    sk,
+                    format!(
+                        "{SK_ANNEX} NA 2.8 table NA.1, snow zone {zone}: s_k = {a} + {altitude}/{b}"
+                    ),
+                )),
+                None,
+            )
+        }
+    }
+}
+
+const CZ_ROMAN: [&str; 8] = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII"];
+
+/// The zone's index from "I"-"VIII" or 1-8.
+fn roman(zone: &str) -> Option<usize> {
     let zone = zone.trim();
-    ZONES
+    CZ_ROMAN
         .iter()
         .position(|z| z.eq_ignore_ascii_case(zone))
         .or_else(|| {
@@ -62,7 +126,6 @@ fn roman(zone: &str) -> Option<&'static str> {
                 .filter(|n| (1..=8).contains(n))
                 .map(|n| n - 1)
         })
-        .map(|i| ZONES[i])
 }
 
 impl Site {
@@ -100,45 +163,54 @@ impl Site {
             .map_or_else(|| "the site".to_owned(), |m| format!("{m:?}"));
         let snow_zone = match input.snow_zone.as_deref() {
             None => None,
-            Some(_) if country == "SK" => anyhow::bail!(
-                "site(\"SK\"): {SK_ANNEX} gives s_k by region and altitude on its map, not by \
-                 a zone; read s_k for {place} off the map and give sk= and source="
-            ),
-            Some(zone) => Some(roman(zone).ok_or_else(|| {
-                anyhow::anyhow!("site(\"CZ\"): snow_zone is I to VIII (or 1 to 8), got {zone:?}")
+            Some(zone) => Some(zone_name(&country, zone).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "site(\"{country}\"): snow_zone is {}, got {zone:?}",
+                    if country == "SK" {
+                        "1 to 5 (or I to V) of the STN EN 1991-1-3/NA1 map"
+                    } else {
+                        "I to VIII (or 1 to 8)"
+                    }
+                )
             })?),
         };
-        let zone_sk = snow_zone.and_then(|zone| {
-            CZ_SNOW_ZONES
-                .iter()
-                .find(|(z, _)| *z == zone)
-                .map(|(_, sk)| *sk)
-        });
         let zone = snow_zone.unwrap_or("none");
+        let (zone_sk, zone_missing) = match (country.as_str(), snow_zone) {
+            (_, None) => (None, None),
+            ("SK", Some(zone)) => sk_zone_sk(zone, input.altitude_m, &place),
+            (_, Some(zone)) => (
+                CZ_SNOW_ZONES
+                    .iter()
+                    .find(|(z, _)| *z == zone)
+                    .map(|(_, sk)| (*sk, format!("{CZ_ANNEX}, snow zone {zone}"))),
+                (zone == "VIII").then(|| {
+                    format!(
+                        "s_k not given: snow zone VIII of the {CZ_ANNEX} map has no value; \
+                         ask ČHMÚ for {place} and give sk= and source="
+                    )
+                }),
+            ),
+        };
         let (sk_kn_m2, source) = match (zone_sk, input.sk, source) {
             (Some(_), Some(_), _) => anyhow::bail!(
-                "site(\"CZ\"): snow zone {zone} has s_k from the annex; give snow_zone or sk, not both"
+                "site(\"{country}\"): snow zone {zone} gives s_k from the annex; give snow_zone or sk, not both"
             ),
-            (Some(sk), None, _) => (Some(sk), format!("{CZ_ANNEX}, snow zone {zone}")),
+            (Some((sk, from)), None, _) => (Some(sk), from),
             (None, Some(sk), Some(source)) => (Some(sk), source),
-            (None, _, _) if snow_zone == Some("VIII") => (
-                None,
-                format!(
-                    "s_k not given: snow zone VIII of the {CZ_ANNEX} map has no value; \
-                     ask ČHMÚ for {place} and give sk= and source="
-                ),
-            ),
             (None, _, _) => (
                 None,
-                format!(
-                    "s_k not given: read it for {place} off the {} map and give {}",
-                    if country == "SK" { SK_ANNEX } else { CZ_ANNEX },
-                    if country == "SK" {
-                        "sk= and source="
-                    } else {
-                        "snow_zone= (or sk= and source=)"
-                    }
-                ),
+                zone_missing.unwrap_or_else(|| {
+                    format!(
+                        "s_k not given: read the snow zone of {place} off the {} map and give \
+                         snow_zone={} (or sk= and source=)",
+                        if country == "SK" { SK_ANNEX } else { CZ_ANNEX },
+                        if country == "SK" {
+                            " and altitude="
+                        } else {
+                            ""
+                        }
+                    )
+                }),
             ),
         };
         Ok(Self {

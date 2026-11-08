@@ -117,7 +117,7 @@ fn a_slovak_site_takes_sk_read_off_the_map_and_without_it_says_what_to_read() {
     let unknown = report(&beam("site(\"sk\", municipality = \"Žilina\")"));
     let line = site_line(&unknown);
     assert!(
-        line.contains("s_k not given: read it for \"Žilina\" off the STN EN 1991-1-3/NA1:2012 map and give sk= and source="),
+        line.contains("s_k not given: read the snow zone of \"Žilina\" off the STN EN 1991-1-3/NA1:2012 map and give snow_zone= and altitude= (or sk= and source=)"),
         "{line}"
     );
     assert!(
@@ -132,6 +132,42 @@ fn a_slovak_site_takes_sk_read_off_the_map_and_without_it_says_what_to_read() {
         .unwrap();
     assert_eq!(beam.status, "not_verified");
     assert_eq!(beam.missing, ["snow (snow) has no value"]);
+}
+
+#[test]
+fn a_slovak_snow_zone_and_altitude_give_sk_by_table_na_1() {
+    // Senec, zone 1, 150 m: 0.454 + 150/970 = 0.6086, the worked example of the Slovak
+    // roofers' guild rules; zone 2 at 245 m: 0.425 + 245/505 = 0.9102.
+    let senec = report(&beam(
+        "site(\"SK\", municipality = \"Senec\", altitude = 150, snow_zone = 1)",
+    ));
+    let line = site_line(&senec);
+    assert!(
+        line.contains("s_k = 0.609 kN/m² (STN EN 1991-1-3/NA1:2012 NA 2.8 table NA.1, snow zone 1: s_k = 0.454 + 150/970)"),
+        "{line}"
+    );
+    bending(&senec);
+    let roman = report(&beam("site(\"SK\", altitude = 245, snow_zone = \"II\")"));
+    assert!(
+        site_line(&roman).contains("s_k = 0.911 kN/m²"),
+        "{}",
+        site_line(&roman)
+    );
+    let zone_3 = report(&beam("site(\"SK\", altitude = 150, snow_zone = 3)"));
+    assert!(site_line(&zone_3).contains("s_k = 0.609 kN/m²"));
+
+    let no_altitude = report(&beam(
+        "site(\"SK\", municipality = \"Senec\", snow_zone = 1)",
+    ));
+    assert!(
+        site_line(&no_altitude).contains(
+            "snow zone 1 gives s_k = 0.454 + A/970 by the altitude A; give altitude= of \"Senec\""
+        ),
+        "{}",
+        site_line(&no_altitude)
+    );
+    let too_high = report(&beam("site(\"SK\", altitude = 1600, snow_zone = 5)"));
+    assert!(site_line(&too_high).contains("EN 1991-1-3 covers sites up to 1500 m; ask SHMÚ"));
 }
 
 #[test]
@@ -156,8 +192,12 @@ fn site_refuses_what_its_annex_does_not_give() {
     for (source, expected) in [
         ("site(\"AT\")", "country must be one of [\"SK\", \"CZ\"]"),
         (
-            "site(\"SK\", snow_zone = \"II\")",
-            "gives s_k by region and altitude on its map, not by a zone",
+            "site(\"SK\", snow_zone = 6)",
+            "snow_zone is 1 to 5 (or I to V) of the STN EN 1991-1-3/NA1 map",
+        ),
+        (
+            "site(\"SK\", altitude = 300, snow_zone = 2, sk = 1.2, source = \"x\")",
+            "give snow_zone or sk, not both",
         ),
         ("site(\"CZ\", snow_zone = \"IX\")", "snow_zone is I to VIII"),
         (

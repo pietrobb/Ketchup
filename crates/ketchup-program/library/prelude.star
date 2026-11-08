@@ -3009,8 +3009,10 @@ def _opening_in(name, o, origin, along, up, out, depth, length, top_v):
 #   site(country, municipality=None, altitude=None, snow_zone=None, sk=None, source=None)
 #     -> struct(country, sk, source, altitude): the one building site, "SK" or "CZ".
 #     CZ: snow_zone "I"-"VII" (or 1-7) gives sk from the ČSN EN 1991-1-3 national annex
-#     map; zone VIII and SK (STN EN 1991-1-3/NA1 maps sk by region and altitude) take
-#     sk= read off the map with source=, else sk is None and source says what to read.
+#     map; SK: snow_zone 1-5 (or "I"-"V") of the STN EN 1991-1-3/NA1 map with altitude
+#     gives sk = a + altitude/b (table NA.1), up to 1500 m. Czech zone VIII, a site above
+#     1500 m, or any other source take sk= with source=; else sk is None and source says
+#     what to read.
 #     altitude (m) above 1000 combines snow with psi0 0.7, psi2 0.2 (EN 1990 table A1.1).
 #     The design basis names the site. Example:
 #       SITE = site("CZ", municipality = "Brno", altitude = 237, snow_zone = "II")
