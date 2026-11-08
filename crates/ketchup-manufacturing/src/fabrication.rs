@@ -1717,8 +1717,7 @@ fn woodwop_mpr_output(
     let width = GeneralFabricationError::positive_length("the width of a part", width_mm)?;
     let thickness =
         GeneralFabricationError::positive_length("the thickness of a part", thickness_mm)?;
-    // A part machined from below is laid its underside (as drawn) up; the
-    // operator needs to be told which face goes up.
+    // A part machined from below lies underside (as drawn) up; tell the operator.
     let face_up = if stock_frame.turned_over {
         WOODWOP_UNDERSIDE_UP_NOTE
     } else {
@@ -1739,8 +1738,7 @@ fn woodwop_mpr_output(
             part: None,
         });
     }
-    // woodWOP reads a program with bare LF line ends as an empty 1500 x 120 x 19
-    // part with no machining; it writes and expects CRLF.
+    // woodWOP expects CRLF; with bare LF it reads an empty part, no machining.
     Ok(output.replace('\n', "\r\n").into_bytes())
 }
 
