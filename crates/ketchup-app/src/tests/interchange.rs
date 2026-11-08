@@ -957,7 +957,8 @@ fn hundegger_btlx_file_menu_configures_profile_strategy_and_intermediate_cuts() 
         BtlxProfileProcessingRequest::PortableFreeContour
     );
     // Review 2026-11-07 P3: the options were not kept, so the next start was
-    // back at the defaults.
+    // back at the defaults. They are kept on a worker (r26 P3).
+    harness.state_mut().btlx_saved();
     assert_eq!(
         crate::app::btlx_settings::read(&file).profile_strategy,
         BtlxProfileStrategy::PortableFreeContour

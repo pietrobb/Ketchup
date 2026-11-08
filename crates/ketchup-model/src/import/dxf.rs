@@ -136,9 +136,8 @@ use code_page::{
 use extrusion::{ensure_planar, ensure_planar_ocs, ensure_planar_wcs, extrusion_sign, mirror_ocs};
 use hatch::OrderedFill;
 use polyline::{PolylineVertex, build_polyline_profile, parse_lwpolyline, parse_polyline};
-pub use rewrite::{
-    Difference, DxfEditRefusal, EditOfObject, EditedDxf, EditedDxfError, write_edited_dxf,
-};
+pub use rewrite::{Difference, DxfEditRefusal, EditOfObject, EditedDxf, EditedDxfError};
+pub use rewrite::{TextWritten, write_edited_dxf};
 use style::EntityStyle;
 use text::OrderedText;
 pub use underlay::{DxfUnderlay, read_dxf_underlay, read_dxf_underlay_from};

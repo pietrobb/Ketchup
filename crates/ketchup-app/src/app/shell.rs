@@ -155,6 +155,7 @@ impl KetchupApp {
                 written_drawings: None,
                 btlx: app_state::BtlxSettings::default(),
                 btlx_settings: None,
+                btlx_saving: app_state::BtlxSaving::default(),
             },
             camera: app_state::CameraState {
                 projection_mode: ProjectionMode::Parallel,
@@ -1512,6 +1513,7 @@ impl KetchupApp {
         self.poll_mesh_conversion(context);
         self.poll_feature_history_exact(context);
         self.poll_recent_pick();
+        self.poll_btlx_saving();
         if let Some(program) = self.document.current_rule_program() {
             self.program_evaluations.warm(program, context);
         } else {

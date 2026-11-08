@@ -146,8 +146,12 @@ FORMATTED_VARIANT = re.compile(r"\b(?!(?:Some|Ok|Err)\()[A-Z]\w*\(\s*format!\(")
 UNWRAP = re.compile(r"\.unwrap\(\)")
 # `.expect(` panics as `.unwrap()` does, only with a sentence (review 2026-11-07 P3).
 EXPECT = re.compile(r"\.expect\(")
+# `drop` by its path, `std::mem::drop`, and as the first closure of `map_or_else` too
+# (review 2026-11-07 r26 P3).
+DROP_FN = r"(?:(?:std\s*::\s*)?mem\s*::\s*)?drop\s*"
 DROPPED_ERROR = re.compile(
-    r"(?:map_err|unwrap_or_else)\(\s*drop\s*\)|\bif\s+let\s+Err\(\s*_\s*\)\s*=|\.ok\(\)\s*\?")
+    r"(?:map_err|unwrap_or_else)\(\s*" + DROP_FN + r"\)|\bmap_or_else\(\s*" + DROP_FN + r","
+    r"|\bif\s+let\s+Err\(\s*_\s*\)\s*=|\.ok\(\)\s*\?")
 FORMATTED_CAUSE = re.compile(
     r'format!\(\s*"(?:[^"\\]|\\.)*?(?:\{' + ERROR_NAME + r'(?::[^}?]*)?\}'
     r'|\{(?::[^}?]*)?\}(?:[^"\\]|\\.)*"\s*,\s*&?' + ERROR_NAME + r'\s*[,)])')
@@ -201,7 +205,8 @@ FROM_DISCARD = re.compile(r"\bfn\s+from\(\s*_\w*\s*:")
 # `.is_err() {}` with nothing but comments in the block, whatever the condition holds
 # (a struct literal too, review 2026-11-06 P3).
 # An empty `if let Ok(()) = call() {}` does it too (review 2026-11-07 P3).
-EMPTY_BLOCK = r"\{\s*(?:(?://[^\n]*\n|/\*.*?\*/)\s*)*\}"
+# An empty block an `else` follows answers the case in the `else` (review 2026-11-07 r26 P3).
+EMPTY_BLOCK = r"\{\s*(?:(?://[^\n]*\n|/\*.*?\*/)\s*)*\}(?!\s*else\b)"
 EMPTY_IS_ERR = re.compile(
     r"\.is_err\(\)\s*" + EMPTY_BLOCK
     + r"|\bif\s+let\s+Ok\(\s*(?:\(\)|_\w*)\s*\)\s*=[^;{}]*(?:\{[^{};]*\}(?=\s*[),.])[^;{}]*)*?" + EMPTY_BLOCK,
@@ -229,9 +234,10 @@ DROPPED_CALL = re.compile(r"(?<![.\w])(?:drop|(?:std::)?mem::forget)\(\s*[^()]*\
 # `.unwrap_or_else(Default::default)` with them (r23 P3).
 # A default named by its type, `String::default` or `<_>::default`, is the same (review
 # 2026-11-07 P3).
+# So is an empty value named by its constructor, `Vec::new` or `String::new` (r26 P3).
 OR_DEFAULT = re.compile(
     r"\.unwrap_or_default\(\)"
-    r"|\.unwrap_or_else\(\s*(?:<[^()]*?>|[A-Za-z_][\w:]*?(?:::<[^()]*?>)?)::default\s*\)")
+    r"|\.unwrap_or_else\(\s*(?:<[^()]*?>|[A-Za-z_][\w:]*?(?:::<[^()]*?>)?)::(?:default|new)\s*\)")
 # `.unwrap_or(())` and `.map_or((), ...)` answer an error with nothing (review 2026-11-06
 # r23 P3: `ketchup-viewer/src/gpu.rs` threw a send's away so).
 OR_UNIT = re.compile(r"\.(?:unwrap_or|map_or)\(\s*\(\)\s*[,)]")
@@ -294,7 +300,7 @@ def file_counts(text: str, entry_point: bool = False) -> dict[str, int]:
             "stringified_variant": len(STRINGIFIED_VARIANT.findall(text)),
             "formatted_variant": len(FORMATTED_VARIANT.findall(text)),
             "unwrap": len(UNWRAP.findall(text)),
-            "expect": len(EXPECT.findall(text)),
+            "expect": len(EXPECT.findall(code_only(text))),
             "dropped_variant": len(DROPPED_VARIANT.findall(text)),
             "dropped_error": len(DROPPED_ERROR.findall(text)),
             "formatted_cause": len(FORMATTED_CAUSE.findall(text)),
@@ -324,10 +330,16 @@ FN_BODY = re.compile(r"\bfn\s+(\w+)\b[^{;]*\{")
 # A function of the file called, a method called on `self`, or one passed by its name
 # (`unwrap_or_else(bootstrap_failed)`, review 2026-11-07 P3).
 CALLED = re.compile(r"(?:(?<![.\w])|\bself\s*\.\s*)([a-z_]\w*)\s*(?:::<[^>]*>)?\("
-                    r"|(?<=[(,])\s*([a-z_]\w*)\s*(?=[,)])")
+                    r"|(?<=[(,])\s*(?:Self\s*::\s*)?([a-z_]\w*)\s*(?=[,)])")
 # What a brace inside does not open or close a block in: a string, a character, a comment.
 NOT_CODE = re.compile(r'r(#*)".*?"\1|"(?:[^"\\]|\\.)*"|\'(?:\\.|[^\\\'])\'|//[^\n]*|/\*.*?\*/',
                       re.DOTALL)
+
+
+def code_only(text: str) -> str:
+    """`text` with its comments gone and its strings and characters emptied, so a
+    comment cannot hold a count a real call may take (review 2026-11-07 r26 P3)."""
+    return NOT_CODE.sub(lambda found: '""' if found.group().endswith('"') else " ", text)
 
 
 def block_end(text: str, at: int) -> int:
@@ -350,12 +362,15 @@ def window_eprintlns(text: str) -> int:
     `if` (review 2026-11-06 UI-181, 2026-11-07 P3), and in the file's functions
     called or passed by name from there, theirs too (r23 P3: `bootstrap_failed` was
     one). Its command line's branches before that write to the console. A helper in
-    another module is not followed."""
-    bodies = {match.group(1): (match.end(), block_end(text, match.end()))
-              for match in FN_BODY.finditer(text)}
+    another module is not followed; one passed as `Self::name` is, and every function
+    of a name called, as a text check cannot tell two `fn run` apart (r26 P3)."""
+    bodies: dict[str, list[tuple[int, int]]] = {}
+    for match in FN_BODY.finditer(text):
+        bodies.setdefault(match.group(1), []).append(
+            (match.end(), block_end(text, match.end())))
 
     def function_end(at: int) -> int:
-        inside = [end for start, end in bodies.values() if start <= at < end]
+        inside = [end for spans in bodies.values() for start, end in spans if start <= at < end]
         return min(inside) if inside else block_end(text, at)
 
     spans = [(call.end(), function_end(call.start())) for call in WINDOW_LOG.finditer(text)]
@@ -368,7 +383,7 @@ def window_eprintlns(text: str) -> int:
             name = call.group(1) or call.group(2)
             if name in bodies and name not in followed:
                 followed.add(name)
-                spans.append(bodies[name])
+                spans.extend(bodies[name])
     return len(found)
 
 

@@ -464,6 +464,50 @@ def test_the_forms_with_a_path_or_a_name_review_1107_found_count(tmp_path):
     }
 
 
+def test_the_forms_review_r26_found_count_and_a_comment_or_an_else_does_not(tmp_path):
+    # Review 2026-11-07 r26 P3: a default named by its constructor, `std::mem::drop`
+    # passed by its path and `map_or_else(drop, ...)` slipped past; `.expect(` in a
+    # comment was counted, and so was an empty block an `else` answers.
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "let list = read(&path).unwrap_or_else(Vec::new);\n"
+        "let text = read(&path).unwrap_or_else(String::new);\n"
+        "save(&path).map_err(std::mem::drop)?;\n"
+        "save(&path).map_or_else(drop, |()| done());\n"
+        'let value = parse(text).expect("checked above");\n'
+        "// Not counted: `.expect(` in a comment, an empty block an else answers.\n"
+        "/* parse(text).expect(\"a\") */\n"
+        'let url = "http://a.expect(";\n'
+        "if let Ok(()) = save(&path) {} else { refuse(); }\n"
+        "if save(&path).is_err() {} else { done(); }\n",
+    )
+    # In an entry point: two functions of one name and a helper passed as `Self::name`.
+    write(
+        tmp_path,
+        "crates/b/src/main.rs",
+        "fn main() {\n"
+        '    log_window_to("B", "b.log");\n'
+        "    run();\n"
+        "    App::start();\n"
+        "}\n"
+        'fn run() { eprintln!("first run"); }\n'
+        "impl App {\n"
+        "    fn start() { load().unwrap_or_else(Self::failed); }\n"
+        '    fn failed(error: Error) { eprintln!("{error}"); }\n'
+        "}\n"
+        "impl Other {\n"
+        '    fn run() { eprintln!("second run"); }\n'
+        "}\n",
+    )
+    assert checker.current_counts(tmp_path) == {
+        "crates/a/src/lib.rs or_default": 2,
+        "crates/a/src/lib.rs dropped_error": 2,
+        "crates/a/src/lib.rs expect": 1,
+        "crates/b/src/main.rs eprintln": 3,
+    }
+
+
 def test_a_new_form_is_recorded_once_and_then_may_only_shrink(tmp_path):
     # A form the baseline does not list yet is recorded as found when it is
     # added to the check; a form it lists may never grow, even from zero.

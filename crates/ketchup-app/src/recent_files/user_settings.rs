@@ -122,6 +122,35 @@ impl SettingsFile {
         key: &str,
         values: impl FnOnce(Vec<String>) -> Vec<String>,
     ) -> io::Result<()> {
+        self.rewrite(|lines| {
+            let (mut lines, of_key): (Vec<String>, Vec<String>) =
+                lines.into_iter().partition(|line| !of(line, key));
+            let before = of_key
+                .into_iter()
+                .filter_map(|line| line.split_once('=').map(|(_, value)| value.to_owned()))
+                .collect();
+            lines.extend(values(before).iter().map(|value| format!("{key}={value}")));
+            lines
+        })
+    }
+
+    /// As [`Self::replace`], each key of `keyed` given its value at one
+    /// turn: the BTLx options waited for the lock three times on the window
+    /// (review 2026-11-07 r26 P3).
+    pub(crate) fn replace_each(&self, keyed: &[(&str, String)]) -> io::Result<()> {
+        self.rewrite(|lines| {
+            let mut lines: Vec<String> = lines
+                .into_iter()
+                .filter(|line| !keyed.iter().any(|(key, _)| of(line, key)))
+                .collect();
+            lines.extend(keyed.iter().map(|(key, value)| format!("{key}={value}")));
+            lines
+        })
+    }
+
+    /// The lines of the file made by `change` from those in it, while it
+    /// waits for no other window.
+    fn rewrite(&self, change: impl FnOnce(Vec<String>) -> Vec<String>) -> io::Result<()> {
         let folder = self.path.parent().unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(folder)?;
         let lock = std::fs::OpenOptions::new()
@@ -133,25 +162,20 @@ impl SettingsFile {
         let turns = turns_of(&self.path);
         // Told to the windows waiting: on FAT, HFS+ or SMB a save of the same
         // length within the second or two of the time kept changes nothing
-        // they see of the settings (review 2026-11-07 P3).
+        // they see of the settings (review 2026-11-07 P3). It only tells them
+        // to wait: one not written does not hold the save (r26 P3).
         let turn = std::fs::read_to_string(&turns)
             .ok()
             .and_then(|text| text.trim().parse::<u64>().ok())
             .unwrap_or(0);
-        std::fs::write(&turns, turn.wrapping_add(1).to_string())?;
+        if let Err(error) = std::fs::write(&turns, turn.wrapping_add(1).to_string()) {
+            ketchup_rejection::log!("the settings are saved without their turn counted: {error}");
+        }
         let (lines, damaged) = self.read()?;
         if damaged {
             std::fs::copy(&self.path, self.path.with_extension("txt.bad"))?;
         }
-        let (mut lines, of_key): (Vec<String>, Vec<String>) = lines.into_iter().partition(|line| {
-            line.split_once('=')
-                .is_none_or(|(name, _)| name.trim() != key)
-        });
-        let before = of_key
-            .into_iter()
-            .filter_map(|line| line.split_once('=').map(|(_, value)| value.to_owned()))
-            .collect();
-        lines.extend(values(before).iter().map(|value| format!("{key}={value}")));
+        let lines = change(lines);
         let mut text = lines.join("\n");
         if !lines.is_empty() {
             text.push('\n');
@@ -189,27 +213,37 @@ const TURN_POLL: Duration = Duration::from_millis(2);
 /// behind (review 2026-11-06 r23 P3: a thread waited on in `lock()` with the
 /// file open as long as the other window hung).
 fn take_turn<T: PartialEq>(
+    attempt: impl FnMut() -> Result<(), std::fs::TryLockError>,
+    saved: impl FnMut() -> T,
+    wait: Duration,
+    cap: Duration,
+) -> io::Result<()> {
+    take_turn_by(attempt, saved, wait, cap, std::time::Instant::now)
+}
+
+/// [`take_turn`] with the time read from `now`, so a test of how long it waits
+/// does not hang on how busy the machine is.
+fn take_turn_by<T: PartialEq>(
     mut attempt: impl FnMut() -> Result<(), std::fs::TryLockError>,
     mut saved: impl FnMut() -> T,
     wait: Duration,
     cap: Duration,
+    mut now: impl FnMut() -> std::time::Instant,
 ) -> io::Result<()> {
     let mut seen = saved();
-    let start = std::time::Instant::now();
+    let start = now();
     let mut until = start + wait;
     loop {
         match attempt() {
             Ok(()) => return Ok(()),
             Err(std::fs::TryLockError::Error(error)) if cannot_lock(&error) => return Ok(()),
             Err(std::fs::TryLockError::Error(error)) => return Err(error),
-            Err(std::fs::TryLockError::WouldBlock)
-                if std::time::Instant::now() < until.min(start + cap) =>
-            {
+            Err(std::fs::TryLockError::WouldBlock) if now() < until.min(start + cap) => {
                 std::thread::sleep(TURN_POLL);
-                let now = saved();
-                if now != seen {
-                    seen = now;
-                    until = std::time::Instant::now() + wait;
+                let latest = saved();
+                if latest != seen {
+                    seen = latest;
+                    until = now() + wait;
                 }
             }
             Err(std::fs::TryLockError::WouldBlock) => {
@@ -220,6 +254,12 @@ fn take_turn<T: PartialEq>(
             }
         }
     }
+}
+
+/// Whether `line` is a value of `key`.
+fn of(line: &str, key: &str) -> bool {
+    line.split_once('=')
+        .is_some_and(|(name, _)| name.trim() == key)
 }
 
 /// The file beside the settings at `path` that counts the turns taken.
@@ -457,10 +497,11 @@ mod tests {
             "it tried again"
         );
         assert_eq!(std::sync::Arc::strong_count(&tries), 1, "nothing tries on");
-        // Windows that go on saving are waited for, however long they queue.
+        // Windows that go on saving are waited for, however long they queue:
+        // 40 turns 40 ms apart, far past the wait of 30 ms.
         let mut queued = 0;
         let mut saves = 0;
-        take_turn(
+        take_turn_by(
             || {
                 queued += 1;
                 if queued < 40 {
@@ -475,6 +516,7 @@ mod tests {
             },
             Duration::from_millis(30),
             TURN_CAP,
+            ticking(),
         )
         .unwrap();
         // Review 2026-11-07 P3: but not past the cap, however they go on.
@@ -538,10 +580,11 @@ mod tests {
         settings.save_language("sk").unwrap();
         assert_ne!(count(), first, "a turn taken is counted");
 
-        // Other windows take 60 turns, each polled after the last, far past
-        // the wait, the settings as they were.
+        // Other windows take 60 turns, 40 ms apart, far past the wait of 30 ms,
+        // the settings as they were. The clock is the test's, so a busy
+        // machine does not make one turn outlast the wait.
         let mut queued = 0;
-        take_turn(
+        take_turn_by(
             || {
                 queued += 1;
                 std::fs::write(&turns, format!("other {queued}")).unwrap();
@@ -554,8 +597,31 @@ mod tests {
             || seen(&path),
             Duration::from_millis(30),
             TURN_CAP,
+            ticking(),
         )
         .unwrap();
+    }
+
+    /// A clock that moves on 20 ms each time it is read: a turn that reads it
+    /// twice is 40 ms.
+    fn ticking() -> impl FnMut() -> std::time::Instant {
+        let mut at = std::time::Instant::now();
+        move || {
+            at += Duration::from_millis(20);
+            at
+        }
+    }
+
+    /// Review 2026-11-07 r26 P3: the turn counted only tells other windows to
+    /// wait, yet one not written failed the whole save.
+    #[test]
+    fn a_turn_not_counted_does_not_hold_the_save() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join(FILE_NAME);
+        std::fs::create_dir(turns_of(&path)).unwrap();
+        let settings = SettingsFile::at(path);
+        settings.save_language("sk").unwrap();
+        assert_eq!(settings.language().as_deref(), Some("sk"));
     }
 
     #[test]

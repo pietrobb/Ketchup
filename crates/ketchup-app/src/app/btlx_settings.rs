@@ -37,8 +37,10 @@ pub(crate) fn read(file: &SettingsFile) -> BtlxSettings {
     {
         settings.intermediate_saw_cuts = cuts;
     }
+    // Written by hand with a decimal comma, it fell back to 35 mm (review
+    // 2026-11-07 r26 P3).
     if let Some(drill) = last(LARGEST_DRILL_MM)
-        .and_then(|text| text.trim().parse::<f64>().ok())
+        .and_then(|text| text.trim().replace(',', ".").parse::<f64>().ok())
         .filter(|drill| (0.0..=80.0).contains(drill))
     {
         settings.largest_drill_mm = drill;
@@ -46,32 +48,91 @@ pub(crate) fn read(file: &SettingsFile) -> BtlxSettings {
     settings
 }
 
-/// Keep `settings` in `file`.
-pub(crate) fn save(file: &SettingsFile, settings: &BtlxSettings) -> std::io::Result<()> {
+/// Each key of `settings` and its value as kept.
+fn keyed(settings: &BtlxSettings) -> [(&'static str, String); 3] {
     let profile = match settings.profile_strategy {
         BtlxProfileStrategy::PortableFreeContour => PORTABLE,
         BtlxProfileStrategy::EdgeSawCutsThenMillContour => SAW_THEN_MILL,
     };
-    file.replace(PROFILE, &[profile.to_owned()])?;
-    file.replace(
-        INTERMEDIATE_SAW_CUTS,
-        &[settings.intermediate_saw_cuts.to_string()],
-    )?;
-    file.replace(LARGEST_DRILL_MM, &[settings.largest_drill_mm.to_string()])
+    [
+        (PROFILE, profile.to_owned()),
+        (
+            INTERMEDIATE_SAW_CUTS,
+            settings.intermediate_saw_cuts.to_string(),
+        ),
+        (LARGEST_DRILL_MM, settings.largest_drill_mm.to_string()),
+    ]
+}
+
+/// Keep `settings` in `file`, all at one turn of its lock.
+#[cfg(test)]
+fn save(file: &SettingsFile, settings: &BtlxSettings) -> std::io::Result<()> {
+    file.replace_each(&keyed(settings))
 }
 
 impl KetchupApp {
-    /// Keep the BTLx options for the next start, telling the digest when they
-    /// cannot be.
+    /// Keep the BTLx options for the next start on a worker, as the lock of
+    /// the settings may be waited for (review 2026-11-07 r26 P3: three times
+    /// on the window). Changed again while a worker keeps them, they are kept
+    /// once it is done, so an older value is not kept last.
     pub(super) fn remember_btlx_settings(&mut self) {
-        let Some(file) = &self.window.btlx_settings else {
+        let saving = &mut self.window.btlx_saving;
+        if saving.worker.is_some() {
+            saving.again = true;
+            return;
+        }
+        let Some(file) = self.window.btlx_settings.clone() else {
             return;
         };
-        if let Err(error) = save(file, &self.window.btlx) {
+        let keyed = keyed(&self.window.btlx);
+        let context = self.file.activity.context.clone();
+        saving.worker = Some(std::thread::spawn(move || {
+            let saved = file.replace_each(&keyed);
+            if let Some(context) = context {
+                context.request_repaint();
+            }
+            saved
+        }));
+    }
+
+    /// Once the worker keeping the BTLx options is done, tells the digest
+    /// when they could not be kept, and keeps them again if they changed.
+    pub(super) fn poll_btlx_saving(&mut self) {
+        let saving = &mut self.window.btlx_saving;
+        if saving
+            .worker
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished)
+            && let Some(worker) = saving.worker.take()
+        {
+            self.btlx_kept(worker);
+        }
+    }
+
+    /// Joins `worker`, which kept the BTLx options, telling the digest when it
+    /// could not, and keeps them again if they changed meanwhile.
+    fn btlx_kept(&mut self, worker: std::thread::JoinHandle<std::io::Result<()>>) {
+        let saved = worker
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        let again = std::mem::take(&mut self.window.btlx_saving.again);
+        if let Err(error) = saved {
             self.digest = self.catalog.format(
                 "digest-btlx-options-not-remembered",
                 &BTreeMap::from([("error", error.to_string())]),
             );
+        }
+        if again {
+            self.remember_btlx_settings();
+        }
+    }
+
+    /// Waits for the worker keeping the BTLx options, and for the one keeping
+    /// them again after it.
+    #[cfg(test)]
+    pub(crate) fn btlx_saved(&mut self) {
+        while let Some(worker) = self.window.btlx_saving.worker.take() {
+            self.btlx_kept(worker);
         }
     }
 }
@@ -111,5 +172,51 @@ mod tests {
         assert_eq!(unread.largest_drill_mm, defaults.largest_drill_mm);
         save(&file, &chosen).unwrap();
         assert_eq!(file.values("future"), ["1"]);
+    }
+
+    /// Review 2026-11-07 r26 P3: each option waited for the lock of the
+    /// settings on its own, and a drill written with a decimal comma was
+    /// back at 35 mm.
+    #[test]
+    fn the_options_are_kept_at_one_turn_and_a_decimal_comma_is_read() {
+        let folder = tempfile::tempdir().unwrap();
+        let file = SettingsFile::at(folder.path().join(FILE_NAME));
+        let turn = || std::fs::read_to_string(folder.path().join("btlx.txt.turn")).unwrap();
+        save(&file, &BtlxSettings::default()).unwrap();
+        let before: u64 = turn().parse().unwrap();
+        save(&file, &BtlxSettings::default()).unwrap();
+        assert_eq!(turn().parse::<u64>().unwrap(), before + 1);
+
+        std::fs::write(folder.path().join(FILE_NAME), "largest-drill-mm=20,5\n").unwrap();
+        assert_eq!(read(&file).largest_drill_mm, 20.5);
+    }
+
+    /// Review 2026-11-07 r26 P3: the options were kept on the window, which
+    /// waited for the lock. A change while a worker keeps them is kept after
+    /// it, and one not kept is told.
+    #[test]
+    fn the_options_are_kept_on_a_worker_and_again_when_changed_meanwhile() {
+        let folder = tempfile::tempdir().unwrap();
+        let file = SettingsFile::at(folder.path().join(FILE_NAME));
+        let mut app = KetchupApp::new();
+        app.window.btlx_settings = Some(file.clone());
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        app.window.btlx_saving.worker = Some(std::thread::spawn(move || {
+            held.recv().ok();
+            Ok(())
+        }));
+        app.window.btlx.largest_drill_mm = 20.5;
+        app.remember_btlx_settings();
+        assert!(app.window.btlx_saving.again);
+        assert!(file.values(LARGEST_DRILL_MM).is_empty());
+        release.send(()).unwrap();
+        app.btlx_saved();
+        assert_eq!(read(&file).largest_drill_mm, 20.5);
+
+        app.window.btlx_saving.worker = Some(std::thread::spawn(|| {
+            Err(std::io::Error::other("the disk is full"))
+        }));
+        app.btlx_saved();
+        assert!(app.digest.contains("the disk is full"), "{}", app.digest);
     }
 }
