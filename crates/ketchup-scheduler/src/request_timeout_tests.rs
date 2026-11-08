@@ -219,27 +219,39 @@ fn workers_and_plugins_have_a_memory_cap() {
 /// the process. Exact workers are started on threads that end long before them, so
 /// KillOnDrop there killed them mid-request ("worker exited before replying"). The
 /// worker dies with its handle through ExactWorkerClient::drop and with the host
-/// through exit_with_parent instead.
-#[cfg(unix)]
+/// through exit_with_parent instead. The worker reads its own parent-death signal,
+/// so the test does not guess how long the starting thread takes to end.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "subprocess used by request timeout tests"]
+fn worker_reporting_its_parent_death_signal() {
+    println!("PDEATHSIG {:?}", nix::sys::prctl::get_pdeathsig().unwrap());
+}
+
+#[cfg(target_os = "linux")]
 #[test]
 fn a_worker_outlives_the_thread_that_started_it() {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .args([
             "--exact",
-            "request_timeout_tests::sleeping_worker",
+            "request_timeout_tests::worker_reporting_its_parent_death_signal",
             "--ignored",
+            "--nocapture",
         ])
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    let mut child =
-        std::thread::spawn(move || spawn_limited_worker_command(command, None).unwrap())
-            .join()
-            .unwrap();
-    std::thread::sleep(Duration::from_millis(500));
-    let alive = matches!(child.try_wait(), Ok(None));
-    child_process::terminate(child.as_mut()).unwrap();
-    assert!(alive, "the worker died with the thread that started it");
+    let mut child = spawn_limited_worker_command(command, None).unwrap();
+    let signal = BufReader::new(child.stdout().take().unwrap())
+        .lines()
+        .map(Result::unwrap)
+        .find(|line| line.starts_with("PDEATHSIG "));
+    child.wait().unwrap();
+    assert_eq!(
+        signal.as_deref(),
+        Some("PDEATHSIG None"),
+        "the worker would die with the thread that started it"
+    );
 }
 
 // The worker compares its parent with this pid, not with the parent it finds
