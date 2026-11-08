@@ -1129,6 +1129,54 @@ fn joints_of_a_kind_that_fastens_nothing_do_not_brace() {
     }
 }
 
+/// Review 2026-11-08 PG-242: battens of mineral wool glued to the beam and the
+/// wall braced it like timber, and nothing said what a brace must take (EN
+/// 1995-1-1 9.2.5.2). A brace of a material without a timber strength class
+/// holds nothing; the force and stiffness the braces of timber must give are
+/// reported with the member.
+#[test]
+fn a_brace_without_a_strength_class_holds_nothing_and_what_a_brace_takes_is_reported() {
+    let battens = slender_beam(&[300.0, 1200.0, 2100.0, 3600.0, 4500.0, 5400.0]);
+    let wool = report(
+        &battens
+            .replace(
+                "material = \"GL24h\")\njoint(\"batten",
+                "material = \"mineral wool\")\njoint(\"batten",
+            )
+            .replace("kind = \"screw\"", "kind = \"glue\""),
+        &[],
+    );
+    let beam = member(&wool, "beam");
+    assert_eq!(beam.status, "not_verified", "{beam:?}");
+    assert!(
+        beam.missing
+            .iter()
+            .any(|reason| reason.contains("lateral torsional buckling")
+                && reason.contains("batten 0")
+                && reason.contains("no timber strength class")),
+        "{:?}",
+        beam.missing
+    );
+    assert_eq!(beam.bracing, []);
+
+    let timber = report(&battens, &[]);
+    let beam = member(&timber, "beam");
+    assert_eq!(beam.status, "pass", "{beam:?}");
+    let [bracing] = beam.bracing.as_slice() else {
+        panic!("what the braces of the top take: {:?}", beam.bracing);
+    };
+    assert_eq!(bracing.edge, "top");
+    assert_eq!(bracing.by.len(), 6, "{bracing:?}");
+    // N_d = (1 - kcrit) M_d / h of the beam unbraced, F_d = N_d / 80 (glulam),
+    // C = 4 N_d / a over the longest free stretch, 1500 mm.
+    assert!(bracing.axial_n > 0.0, "{bracing:?}");
+    close(bracing.force_n, bracing.axial_n / 80.0);
+    close(
+        bracing.stiffness_n_mm.expect("a stretch between braces"),
+        4.0 * bracing.axial_n / 1500.0,
+    );
+}
+
 /// Review 2026-11-04 r19 P3: a part of a load path's `fixed` tags counted as
 /// fastened to whatever it touched, so loose battens tagged fixed braced the
 /// beam. A fixed tag passes weight; only a joint() fastens a brace.
@@ -1269,23 +1317,38 @@ fn battens_on_top_do_not_brace_the_bottom_a_hogging_moment_compresses() {
             .collect::<Vec<_>>()
             .join(", ")
     };
-    let ceiling = report(
-        &two_span_beam(&format!(
-            "box(\"ceiling a\", (5400, 1260, 20), at = (200, -260, 1980), material = \"OSB\")
+    let ceiling = |class: &str| {
+        report(
+            &two_span_beam(&format!(
+                "{class}box(\"ceiling a\", (5400, 1260, 20), at = (200, -260, 1980), material = \"OSB\")
 box(\"ceiling b\", (5400, 1260, 20), at = (6100, -260, 1980), material = \"OSB\")
 joint(\"ceiling a\", \"beam\", kind = \"screw\", fasteners = [{}])
 joint(\"ceiling a\", \"wall\", kind = \"screw\")
 joint(\"ceiling b\", \"beam\", kind = \"screw\", fasteners = [{}])
 joint(\"ceiling b\", \"wall\", kind = \"screw\")
 ",
-            screws(250, 5550),
-            screws(6150, 11450)
-        )),
-        &[],
+                screws(250, 5550),
+                screws(6150, 11450)
+            )),
+            &[],
+        )
+    };
+    // Review 2026-11-08 PG-242: a brace of a material without a strength class holds nothing.
+    let unknown = ceiling("");
+    assert!(ltb_not_verified(&unknown), "{:?}", member(&unknown, "beam"));
+    let osb = ceiling(
+        "timber_strength(\"OSB\", strength_class = \"OSB/3\", service_class = 1, glulam = False, product = \"osb3\", \
+         fm_k = 14.8, fv_k = 6.8, fc0_k = 15.9, fc90_k = 10, e0_mean = 4930, e0_05 = 4200, source = \"EN 12369-1\")\n",
     );
-    let beam = member(&ceiling, "beam");
+    let beam = member(&osb, "beam");
     assert_eq!(beam.missing, Vec::<String>::new(), "{beam:?}");
     assert_eq!(beam.status, "pass", "{:?}", beam.checks);
+    let edges: Vec<(&str, usize)> = beam
+        .bracing
+        .iter()
+        .map(|demand| (demand.edge.as_str(), demand.by.len()))
+        .collect();
+    assert_eq!(edges, [("top", 13), ("bottom", 2)], "{:?}", beam.bracing);
 }
 
 /// PG-105 (review 2026-11-01): loads on load-path members without

@@ -187,6 +187,15 @@ it (the members it joins or braces, its joint check) is `not_verified`. A load
 path's `fixed` tag passes weight but braces nothing. A joint's `kind` may not be
 empty; one of five letters or more that reads like a slip of a kind fastening
 nothing (`contcat`, `contacts`) fastens and is reported as `joint_kind_doubtful`.
+A brace holds the beam only when its material has a timber strength class
+(`timber_design` or `timber_strength`, OSB with `product="osb3"`); one of mineral
+wool or any undeclared material holds nothing, and the not-verified reason names
+it. `design.members[].bracing` gives, for each edge something braces, what each
+brace must take after EN 1995-1-1 9.2.5.2: `axial_n` = (1 - kcrit) M_d / h with
+kcrit of the beam unbraced, `force_n` = N_d / 60 (solid timber) or / 80 (glulam)
+and `stiffness_n_mm` = 4 N_d / a over the longest free stretch. The braces, their
+anchorage and their fasteners are not checked against it, nor a bracing of
+several members (9.2.5.3); the design basis says so.
 A brace anchored to a grounded part smaller across the member than the member
 is deep is reported as `anchorage_small`. A brace holds the beam at its
 joint's `fasteners` that lie where the two parts touch, in any of their contacts
