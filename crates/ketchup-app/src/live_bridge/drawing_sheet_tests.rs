@@ -221,14 +221,14 @@ fn the_project_drawings_are_written_as_a_dxf_or_dwg_per_sheet() {
         assert_eq!(sheet["path"], path.display().to_string());
         assert_eq!(exported["files"][index], path.display().to_string());
         let dxf = std::fs::read_to_string(&path).unwrap();
-        assert!(dxf.contains("$ACADVER\n1\nAC1009"));
+        assert!(dxf.contains("$ACADVER\r\n  1\r\nAC1027\r\n"), "AutoCAD 2013");
         assert!(
-            dxf.contains(&format!("\n1\n{number} / 3\n")),
+            dxf.contains(&format!("\r\n{number} / 3\r\n")),
             "sheet {number}"
         );
         assert!(
-            dxf.contains("0\nLINE\n8\nPEN-"),
-            "sheet {number} draws lines"
+            dxf.contains("\r\nLWPOLYLINE\r\n") && dxf.contains("\r\nVIEWPORT\r\n"),
+            "sheet {number} draws lines and shows its views through viewports"
         );
     }
     assert!(!file("house.dxf").exists());
