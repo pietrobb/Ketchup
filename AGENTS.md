@@ -132,6 +132,9 @@ reproduced failure that they catch, or explicit approval by the owner.
 - Commit messages and PR descriptions are short, plain prose: what changed and why.
 - No walls of hashes, nonces, test counts or "evidence" paragraphs.
 - Code, identifiers, schemas and error codes are in English (ADR 0001).
+- A review finding is named with the date of its review, `R<MMDD>-<ID>` (`R1108-PG-244`), in
+  commits, status files and later reviews, since the bare IDs of reviews on different branches
+  collide. A review lands on `main` with its status file; a later review reads both.
 
 ## 8. Definition of done
 
