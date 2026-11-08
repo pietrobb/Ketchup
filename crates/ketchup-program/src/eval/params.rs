@@ -117,9 +117,22 @@ pub fn is_whole_override(param: &Param, value: f64) -> bool {
 pub fn range_text(min: Option<f64>, max: Option<f64>) -> String {
     format!(
         "[{}, {}]",
-        min.map_or("-inf".to_owned(), |value| value.to_string()),
-        max.map_or("inf".to_owned(), |value| value.to_string()),
+        min.map_or("-inf".to_owned(), number_text),
+        max.map_or("inf".to_owned(), number_text),
     )
+}
+
+/// A number as a message writes it: a decimal as long as one reads it, with
+/// an exponent past that, so 1e300 and 1e-320 are not told back in hundreds of
+/// digits (review 2026-11-08 P3).
+#[must_use]
+pub fn number_text(value: f64) -> String {
+    let size = value.abs();
+    if size != 0.0 && size.is_finite() && !(1.0e-6..1.0e15).contains(&size) {
+        format!("{value:e}")
+    } else {
+        value.to_string()
+    }
 }
 
 /// Whether `param(name, unit = unit)` is a count, a factor or an angle (`""`)

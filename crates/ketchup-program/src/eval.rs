@@ -320,7 +320,8 @@ fn number(value: Value, what: &str) -> anyhow::Result<f64> {
         .0;
     if !number.is_finite() || number.abs() > MAX_COORDINATE_MM {
         anyhow::bail!(
-            "{what} must be a finite number within ±{MAX_COORDINATE_MM} mm, got {number}"
+            "{what} must be a finite number within ±{MAX_COORDINATE_MM} mm, got {}",
+            number_text(number)
         );
     }
     Ok(number)
@@ -1751,7 +1752,7 @@ mod face_cache;
 mod joints;
 mod machining;
 mod params;
-pub use params::{WHOLE_ONLY, is_whole_override, range_text};
+pub use params::{WHOLE_ONLY, is_whole_override, number_text, range_text};
 mod support;
 
 /// Booleans between parts and tool bodies.

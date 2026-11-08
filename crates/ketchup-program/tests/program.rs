@@ -912,6 +912,39 @@ fn a_whole_param_refuses_a_fraction() {
     );
 }
 
+/// Review 2026-11-08 P3 nit: `--set width=1e-320` was told back as a decimal
+/// of 378 characters. A number in a message too small or too large to read
+/// as a decimal is written with an exponent, as the value given.
+#[test]
+fn a_tiny_or_huge_param_value_is_written_with_an_exponent_in_its_message() {
+    let messages = |source: &str, overrides: BTreeMap<String, f64>| -> Vec<String> {
+        let (_, report) = run("t.star", source, &overrides).unwrap();
+        report
+            .issues
+            .into_iter()
+            .filter(|issue| issue.kind == "param_out_of_range")
+            .map(|issue| issue.message)
+            .collect()
+    };
+    let width = "w = param(\"width\", 1200, min = 600, max = 2400)\nbox(\"a\", (w, 100, 18))\n";
+    for (value, written) in [(1e-320, "1e-320"), (-2.5e-12, "-2.5e-12"), (0.25, "0.25")] {
+        let found = messages(width, BTreeMap::from([("width".to_owned(), value)]));
+        assert!(
+            found.iter().any(|message| message
+                == &format!(
+                    "param width = {written} is outside [600, 2400]; the default 1200 is used"
+                )),
+            "{found:?}"
+        );
+    }
+    let tiny = "t = param(\"tiny\", 1e-320, min = 1e-9, max = 1000)\nbox(\"a\", (100, 100, 18))\n";
+    let found = messages(tiny, BTreeMap::new());
+    assert_eq!(found, ["param tiny = 1e-320 is outside [1e-9, 1000]"]);
+    let huge = "t = param(\"huge\", 10, max = 1e20)\nbox(\"a\", (100, 100, 18))\n";
+    let error = run("t.star", huge, &BTreeMap::new()).unwrap_err();
+    assert!(error.message.contains("got 1e20\n"), "{}", error.message);
+}
+
 /// PRG-3 (review 2026-10-15): a boolean records a copy of its tool with the
 /// tool's own booleans, so two parts cutting each other in turn double in
 /// size like a Fibonacci series. The copy is refused at a named bound long

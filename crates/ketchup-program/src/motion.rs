@@ -227,11 +227,10 @@ pub(crate) fn issues(model: &ProgramModel, issues: &mut Vec<crate::Issue>) {
                 kind: "joint_out_of_range",
                 parts: motion.endpoints.to_vec(),
                 message: format!(
-                    "joint {} position {} is outside [{}, {}]",
+                    "joint {} position {} is outside {}",
                     motion.name,
-                    motion.position,
-                    motion.limits.min(),
-                    motion.limits.max()
+                    crate::eval::number_text(motion.position),
+                    crate::eval::range_text(Some(motion.limits.min()), Some(motion.limits.max()))
                 ),
                 where_mm: None,
                 hint:

@@ -699,12 +699,7 @@ fn joints<'a>(
 fn params(model: &ProgramModel, issues: &mut Vec<Issue>) {
     for param in &model.params {
         if let Some(value) = param.refused_override {
-            // 1e300 in a sentence, not its 301 digits.
-            let refused = if value.abs() >= 1.0e15 {
-                format!("{value:e}")
-            } else {
-                value.to_string()
-            };
+            let refused = crate::eval::number_text(value);
             // A count given 2.5 is refused as one outside its range is
             // (review 2026-11-06 r23 P3: it failed the whole program); one
             // refused for both is told both (review 2026-11-07 P3).
@@ -745,7 +740,8 @@ fn params(model: &ProgramModel, issues: &mut Vec<Issue>) {
                 parts: Vec::new(),
                 message: format!(
                     "param {} = {refused} {why}; the default {} is used",
-                    param.name, param.default,
+                    param.name,
+                    crate::eval::number_text(param.default),
                 ),
                 where_mm: None,
                 hint,
@@ -762,7 +758,7 @@ fn params(model: &ProgramModel, issues: &mut Vec<Issue>) {
                 message: format!(
                     "param {} = {} is outside {}",
                     param.name,
-                    param.value,
+                    crate::eval::number_text(param.value),
                     crate::eval::range_text(param.min, param.max),
                 ),
                 where_mm: None,
