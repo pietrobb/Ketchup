@@ -25,10 +25,11 @@ const LOOKS_BETWEEN_STOPS: usize = 1 << 16;
 /// of the whole level (review 2026-11-07 r26 P3). They are in the outer cells.
 const TRIANGLES_OUTSIDE_PER_SIDE: usize = 100;
 
-/// The area of `mine` over `theirs`, both counter-clockwise; each of mine
-/// counts at most its own area, however many of theirs lie on one another
-/// (review 2026-11-07 P3: a floor laid twice, two layers of one top, counted
-/// twice). None once `stop` is set.
+/// The area of `mine` over `theirs`, both counter-clockwise; what of each of
+/// mine lies under several of theirs counts once, however many lie on one
+/// another there, in whole or in part (review 2026-11-07 P3: a floor laid
+/// twice, two layers of one top, counted twice; review 2026-11-08: so did
+/// two over part of one). None once `stop` is set.
 pub(super) fn area_over(mine: &[Triangle], theirs: &[Triangle], stop: &AtomicBool) -> Option<f64> {
     overlap(mine, theirs, stop).map(|(area, _)| area)
 }
@@ -54,32 +55,38 @@ fn overlap(mine: &[Triangle], theirs: &[Triangle], stop: &AtomicBool) -> Option<
             next_stop = looked + LOOKS_BETWEEN_STOPS;
         }
         let [min, max] = boxed(triangle);
-        let clip = |candidate: usize| {
+        // What of mine none of theirs looked at so far lies over, in pieces
+        // that do not overlap (review 2026-11-08: two of theirs on one another
+        // over part of mine counted twice).
+        let mut uncovered = vec![triangle.to_vec()];
+        let mut subtract = |candidate: usize| {
             let [other_min, other_max] = grid.boxes[candidate];
-            if (0..2).all(|axis| {
-                max[axis].min(other_max[axis]) - min[axis].max(other_min[axis]) > ROUNDING
-            }) {
-                polygon_area(&clipped(triangle, &theirs[candidate]))
-            } else {
-                0.0
+            if !uncovered.is_empty()
+                && (0..2).all(|axis| {
+                    max[axis].min(other_max[axis]) - min[axis].max(other_min[axis]) > ROUNDING
+                })
+            {
+                uncovered = uncovered
+                    .iter()
+                    .flat_map(|piece| outside(piece, &theirs[candidate]))
+                    .collect();
             }
         };
         let span = grid.span(min, max);
         // Through the cells one of theirs costs more than passed in order.
-        let over: f64 = if grid.entries_in(span).saturating_mul(2) > theirs.len() {
+        if grid.entries_in(span).saturating_mul(2) > theirs.len() {
             looked += theirs.len();
-            (0..theirs.len()).map(clip).sum()
+            (0..theirs.len()).for_each(&mut subtract);
         } else {
-            let mut over = 0.0;
             for candidate in grid.near(span) {
                 looked += 1;
                 if std::mem::replace(&mut seen[candidate], index) != index {
-                    over += clip(candidate);
+                    subtract(candidate);
                 }
             }
-            over
-        };
-        total += over.min(polygon_area(triangle));
+        }
+        let left: f64 = uncovered.iter().map(|piece| polygon_area(piece)).sum();
+        total += (polygon_area(triangle) - left).max(0.0);
     }
     Some((total, looked))
 }
@@ -249,33 +256,71 @@ fn boxed(triangle: &Triangle) -> [[f64; 2]; 2] {
 }
 
 /// The part of `triangle` inside `within`, both counter-clockwise.
+#[cfg(test)]
 fn clipped(triangle: &Triangle, within: &Triangle) -> Vec<[f64; 2]> {
     let mut points = triangle.to_vec();
     for index in 0..3 {
-        let (from, to) = (within[index], within[(index + 1) % 3]);
-        let edge = [to[0] - from[0], to[1] - from[1]];
-        let side = |point: [f64; 2]| cross2(edge, [point[0] - from[0], point[1] - from[1]]);
-        let mut kept = Vec::with_capacity(points.len() + 1);
-        for (position, point) in points.iter().enumerate() {
-            let next = points[(position + 1) % points.len()];
-            let (here, there) = (side(*point), side(next));
-            if here >= 0.0 {
-                kept.push(*point);
-            }
-            if (here >= 0.0) != (there >= 0.0) {
-                let t = here / (here - there);
-                kept.push([
-                    point[0] + t * (next[0] - point[0]),
-                    point[1] + t * (next[1] - point[1]),
-                ]);
-            }
-        }
-        points = kept;
+        points = split(&points, within[index], within[(index + 1) % 3]).0;
         if points.is_empty() {
             break;
         }
     }
     points
+}
+
+/// The parts of the convex `piece` outside `within`, both counter-clockwise,
+/// none on another; slivers thinner than [`ROUNDING`] are left out.
+fn outside(piece: &[[f64; 2]], within: &Triangle) -> Vec<Vec<[f64; 2]>> {
+    let mut parts = Vec::new();
+    let mut inside = piece.to_vec();
+    for index in 0..3 {
+        let (kept, cut) = split(&inside, within[index], within[(index + 1) % 3]);
+        if polygon_area(&cut) > ROUNDING * perimeter(&cut) {
+            parts.push(cut);
+        }
+        inside = kept;
+        if inside.is_empty() {
+            break;
+        }
+    }
+    parts
+}
+
+/// The convex `points` on the left of the line `from` `to`, and on its right.
+fn split(points: &[[f64; 2]], from: [f64; 2], to: [f64; 2]) -> (Vec<[f64; 2]>, Vec<[f64; 2]>) {
+    let edge = [to[0] - from[0], to[1] - from[1]];
+    let side = |point: [f64; 2]| cross2(edge, [point[0] - from[0], point[1] - from[1]]);
+    let mut left = Vec::with_capacity(points.len() + 1);
+    let mut right = Vec::with_capacity(points.len() + 1);
+    for (position, point) in points.iter().enumerate() {
+        let next = points[(position + 1) % points.len()];
+        let (here, there) = (side(*point), side(next));
+        if here >= 0.0 {
+            left.push(*point);
+        } else {
+            right.push(*point);
+        }
+        if (here >= 0.0) != (there >= 0.0) {
+            let t = here / (here - there);
+            let crossing = [
+                point[0] + t * (next[0] - point[0]),
+                point[1] + t * (next[1] - point[1]),
+            ];
+            left.push(crossing);
+            right.push(crossing);
+        }
+    }
+    (left, right)
+}
+
+/// How far around `points`.
+fn perimeter(points: &[[f64; 2]]) -> f64 {
+    (0..points.len())
+        .map(|index| {
+            let [from, to] = [points[index], points[(index + 1) % points.len()]];
+            (to[0] - from[0]).hypot(to[1] - from[1])
+        })
+        .sum()
 }
 
 #[cfg(test)]
@@ -305,6 +350,36 @@ mod tests {
         (0..count)
             .map(|index| [[0.0, 0.0], corner(index), corner(index + 1)])
             .collect()
+    }
+
+    /// A rectangle `from` to `to`, counter-clockwise, as two triangles.
+    fn rectangle(from: [f64; 2], to: [f64; 2]) -> [Triangle; 2] {
+        [[from, [to[0], from[1]], to], [from, to, [from[0], to[1]]]]
+    }
+
+    /// Review 2026-11-08: each of mine counted at most its own area, but two
+    /// of theirs over part of it, one on the other, counted twice: the left
+    /// 60 mm and the left 50 mm of a 100 mm square came to 8 050 mm², not
+    /// 6 000 mm².
+    #[test]
+    fn two_of_theirs_on_one_another_over_part_of_mine_count_once() {
+        let mine = rectangle([0.0, 0.0], [100.0, 100.0]);
+        let theirs = [
+            rectangle([0.0, 0.0], [60.0, 100.0]),
+            rectangle([0.0, 0.0], [50.0, 100.0]),
+            rectangle([-10.0, 20.0], [55.0, 30.0]),
+        ]
+        .concat();
+        let area = area_over(&mine, &theirs, &AtomicBool::new(false)).unwrap();
+        assert!((area - 6000.0).abs() < 1e-6, "{area}");
+        // Each of theirs over one of mine in part, side by side, still counts.
+        let halves = [
+            rectangle([0.0, 0.0], [50.0, 100.0]),
+            rectangle([50.0, 0.0], [100.0, 100.0]),
+        ]
+        .concat();
+        let area = area_over(&mine, &halves, &AtomicBool::new(false)).unwrap();
+        assert!((area - 10_000.0).abs() < 1e-6, "{area}");
     }
 
     /// Review 2026-11-07 r26 P3: one triangle far away, as a survey point,
