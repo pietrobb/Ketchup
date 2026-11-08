@@ -1035,6 +1035,7 @@ fn the_image_paints_an_underlay_fill_under_its_line_beside_the_model() {
                 path: path.display().to_string(),
                 unit: None,
                 as_underlay: true,
+                revision_of: None,
             },
             false,
         )

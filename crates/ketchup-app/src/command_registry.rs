@@ -3,7 +3,7 @@
 use crate::*;
 
 impl CommandRegistry {
-    pub(crate) const COMMANDS: [CommandSpec; 147] = [
+    pub(crate) const COMMANDS: [CommandSpec; 148] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -43,6 +43,12 @@ impl CommandRegistry {
         CommandSpec {
             id: AppCommand::ImportDrawingUnderlay,
             label_key: "file-import-underlay",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::CompareUnderlayRevision,
+            label_key: "file-import-underlay-revision",
             tool: None,
             implemented: true,
         },

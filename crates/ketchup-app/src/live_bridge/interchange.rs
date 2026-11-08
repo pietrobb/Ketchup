@@ -182,6 +182,7 @@ impl LiveBridge {
             path,
             unit,
             as_underlay,
+            revision_of,
         } = request
         else {
             return Err("invalid_request");
@@ -210,6 +211,19 @@ impl LiveBridge {
                 "as_underlay imports a .dxf or .dwg drawing.",
                 json!({"path": path}),
             ));
+        }
+        if let Some(of) = revision_of {
+            if !*as_underlay {
+                return Err(failure(
+                    "invalid_params",
+                    "revision_of compares a drawing imported as_underlay with an underlay.",
+                    json!({"revision_of": of}),
+                ));
+            }
+            let of = ketchup_model::underlay::UnderlayId(*of);
+            if app.document.current().underlay(of).is_none() {
+                return Err("entity_not_found");
+            }
         }
         let unit = unit
             .as_deref()

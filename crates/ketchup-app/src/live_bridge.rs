@@ -398,7 +398,8 @@ pub enum Request {
     /// a drawing sheet of the document as DXF or DWG.
     ExportDrawings(drawings::ExportDrawingsRequest),
     /// Imports a STEP, IGES, STL, DXF, GLB or SketchUp scene file as one Undo step;
-    /// `as_underlay` keeps a DXF or DWG drawing under the model as an underlay instead.
+    /// `as_underlay` keeps a DXF or DWG drawing under the model as an underlay instead;
+    /// with `revision_of` it adds only what changed since that underlay's drawing.
     Import {
         #[serde(default)]
         expected: Option<Stamp>,
@@ -407,6 +408,7 @@ pub enum Request {
         unit: Option<String>,
         #[serde(default)]
         as_underlay: bool,
+        revision_of: Option<u64>,
     },
     /// Removes an underlay and the tags only it held, as one Undo step.
     RemoveUnderlay {
@@ -3470,11 +3472,8 @@ impl LiveBridge {
             request @ Request::Import { .. } => {
                 Self::import_file(app, &request, ui_busy, cancelled, ReadAlready::Nothing)
             }
-            request @ Request::RemoveUnderlay { .. } => {
-                self.remove_underlay(app, &request, ui_busy, cancelled)
-            }
-            request @ Request::FitUnderlay { .. } => {
-                self.fit_underlay(app, &request, ui_busy, cancelled)
+            request @ (Request::RemoveUnderlay { .. } | Request::FitUnderlay { .. }) => {
+                self.underlay_request(app, &request, ui_busy, cancelled)
             }
             request @ (Request::DrawingRemove { .. }
             | Request::DrawingDraw { .. }

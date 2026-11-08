@@ -68,6 +68,8 @@ mod project_drawings_job;
 mod underlay_objects;
 #[path = "underlay_program_tests.rs"]
 mod underlay_program;
+#[path = "underlay_revision_tests.rs"]
+mod underlay_revision;
 #[path = "underlay_views_tests.rs"]
 mod underlay_views;
 #[test]
