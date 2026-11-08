@@ -963,12 +963,10 @@ fn limited_worker_command(mut command: Command, memory_limit: Option<usize>) -> 
         }
         command.wrap(JobObject);
     }
-    // Unix has no job object: the worker gets its own process group, so a kill reaches
-    // anything it started. It dies with its handle in ExactWorkerClient::drop and with
-    // this process through exit_with_parent. Not KillOnDrop: its PR_SET_PDEATHSIG fires
-    // when the thread that started the worker ends, which is long before the request.
-    // The memory limit is its own RLIMIT_DATA on Linux; on macOS a watch of its
-    // footprint and the RLIMIT_AS it sets itself (child_process::keep_memory_limit).
+    // Unix: own process group, so a kill reaches what it started; it dies with its handle
+    // (ExactWorkerClient::drop) and with us (exit_with_parent), not by KillOnDrop, whose
+    // PR_SET_PDEATHSIG fires when the starting thread ends. Memory: RLIMIT_DATA on Linux,
+    // on macOS a footprint watch and its own RLIMIT_AS (child_process::keep_memory_limit).
     #[cfg(unix)]
     {
         command.wrap(ProcessGroup::leader());
