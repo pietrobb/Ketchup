@@ -1,8 +1,12 @@
 //! File > Manufacturing > Send to workshop: every shop file of the model in
 //! one ZIP the workshop can check (review 2026-11-08 §5.2).
 
+use crate::app_state::TakeoffError;
 use crate::*;
-use ketchup_manufacturing::workshop_package::{WorkshopPackageError, WorkshopPackageOptions};
+use ketchup_manufacturing::workshop_package::{
+    NotMade, WorkshopPackage, WorkshopPackageError, WorkshopPackageOptions,
+};
+use ketchup_program::table::DecimalSeparator;
 
 impl KetchupApp {
     pub(crate) fn export_current_workshop_package_to(
@@ -26,19 +30,7 @@ impl KetchupApp {
                     requirement: "an explicit .zip destination",
                 });
             }
-            let render = |projection: &GeneralFabricationProjection, snapshot: &Snapshot| {
-                projection
-                    .workshop_package(snapshot, options)
-                    .zip()
-                    .map_err(|error| match error {
-                        WorkshopPackageError::Empty => ExportError::NothingToExport {
-                            subject: "shop file",
-                        },
-                        error => ExportError::failed(error),
-                    })
-            };
-            let projection = self.current_general_fabrication_projection()?;
-            let zip = render(&projection, &snapshot)?;
+            let zip = self.workshop_package_zip(&snapshot, options)?;
             let expected_sha256 = export_target_sha256(path)?;
             let title = self.catalog.text("dialog-export-workshop-package-title");
             let risk = self.catalog.text("dialog-export-workshop-package-risk");
@@ -63,11 +55,10 @@ impl KetchupApp {
                 )?;
             }
             let current = self.document.current();
-            let current_projection = self.current_general_fabrication_projection()?;
             if current.document_id() != snapshot.document_id()
                 || current.revision_id() != snapshot.revision_id()
                 || current.canonical_digest() != snapshot.canonical_digest()
-                || render(&current_projection, &current)? != zip
+                || self.workshop_package_zip(&current, options)? != zip
             {
                 return Err(ExportError::ChangedDuringConsent);
             }
@@ -75,5 +66,65 @@ impl KetchupApp {
             Ok(Written::alone(path))
         })();
         self.report_export_outcome("workshop-package", path, result)
+    }
+
+    /// The shop files of the made parts and, under `cnc/`, the CNC drawings
+    /// of the program's flat parts with their table; a part that cannot be
+    /// drawn is named in `not_made.txt` with its reason.
+    fn workshop_package_zip(
+        &mut self,
+        snapshot: &Snapshot,
+        options: WorkshopPackageOptions,
+    ) -> Result<Vec<u8>, ExportError> {
+        let mut package = self
+            .current_general_fabrication_projection()?
+            .workshop_package(snapshot, options);
+        self.add_cnc_drawings(&mut package)?;
+        package.zip().map_err(|error| match error {
+            WorkshopPackageError::Empty => ExportError::NothingToExport {
+                subject: "shop file",
+            },
+            error => ExportError::failed(error),
+        })
+    }
+
+    fn add_cnc_drawings(&self, package: &mut WorkshopPackage) -> Result<(), ExportError> {
+        let cnc = match self.cnc_drawings() {
+            Ok(cnc) => cnc,
+            // A model made without a program has no CNC drawings to send.
+            Err(TakeoffError::NoProgram) => return Ok(()),
+            Err(TakeoffError::Program(error)) => {
+                package.not_made.push(NotMade {
+                    output: "CNC DXF".to_owned(),
+                    reason: Arc::new(error),
+                });
+                return Ok(());
+            }
+            // The package would not be of the program the window shows.
+            Err(TakeoffError::Planning | TakeoffError::NoPrices | TakeoffError::Write(_)) => {
+                return Err(ExportError::NothingToExport {
+                    subject: "CNC drawing of the evaluated program",
+                });
+            }
+        };
+        if cnc.parts.is_empty() && cnc.not_drawn.is_empty() {
+            return Ok(());
+        }
+        package.files.extend(
+            cnc.parts
+                .iter()
+                .map(|part| (format!("cnc/{}", part.file), part.dxf())),
+        );
+        package.files.push((
+            "cnc/parts.csv".to_owned(),
+            cnc.table().csv(DecimalSeparator::Point).into_bytes(),
+        ));
+        package
+            .not_made
+            .extend(cnc.not_drawn.into_iter().map(|part| NotMade {
+                output: format!("CNC DXF of {}", part.part),
+                reason: Arc::new(part.reason),
+            }));
+        Ok(())
     }
 }

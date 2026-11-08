@@ -8,7 +8,7 @@ fn package() -> WorkshopPackage {
         ],
         not_made: vec![NotMade {
             output: "woodWOP".to_owned(),
-            reason: GeneralFabricationError::NoPieceToProgram,
+            reason: Arc::new(GeneralFabricationError::NoPieceToProgram),
         }],
     }
 }

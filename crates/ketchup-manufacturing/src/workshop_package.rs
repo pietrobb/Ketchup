@@ -10,6 +10,7 @@ use ketchup_model::exact_product::ExactProductError;
 use ketchup_model::graph::sha256_hex;
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::Utf8Error;
+use std::sync::Arc;
 
 // not a tolerance: the length of a SHA-256 written in hex.
 const SHA256_HEX_LEN: usize = 64;
@@ -20,15 +21,15 @@ pub const WORKSHOP_SUMS: &str = "SHA256SUMS";
 pub const WORKSHOP_REPORT: &str = "not_made.txt";
 
 /// A shop output the package does not hold, and why.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct NotMade {
     pub output: String,
-    pub reason: GeneralFabricationError,
+    pub reason: Arc<dyn std::error::Error + Send + Sync>,
 }
 
 /// The files to send, by their path in the package, and the outputs that
 /// could not be made.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct WorkshopPackage {
     pub files: Vec<(String, Vec<u8>)>,
     pub not_made: Vec<NotMade>,
@@ -144,7 +145,7 @@ impl GeneralFabricationProjection {
                 Ok(files) => package.files.extend(files),
                 Err(error) => package.not_made.push(NotMade {
                     output: output.to_owned(),
-                    reason: error,
+                    reason: Arc::new(error),
                 }),
             };
         let one = |name: &str, bytes: Vec<u8>| vec![(name.to_owned(), bytes)];

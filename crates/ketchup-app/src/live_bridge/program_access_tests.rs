@@ -1012,6 +1012,44 @@ fn the_cnc_dxf_section_pages_each_drawing_and_what_is_not_drawn() {
     );
 }
 
+/// Review 2026-11-08 §5.2: the workshop package carries the CNC drawings of
+/// the program's flat parts with their table, and names each part that
+/// cannot be drawn in not_made.txt with why.
+#[test]
+fn the_workshop_package_holds_the_cnc_drawings_and_names_a_part_it_cannot_draw() {
+    use ketchup_manufacturing::workshop_package::check_workshop_package;
+    let (app, mut bridge) = setup();
+    let mut app = app.with_dialogs(Box::new(
+        ScriptedFileDialogs::new().always_confirm_high_risk_as(84),
+    ));
+    let source = "p = board('Doska', (600, 400, 18))\n\
+        hole(p, 'z+', world = (100, 200, 18), diameter = 5, depth = 10)\n\
+        bent = board('bent', (400, 300, 18), at = (0, 1000, 0))\n\
+        mirror(bent, axis = 'x')\n";
+    bridge
+        .execute(&mut app, apply_source(source), false)
+        .unwrap();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("shop.zip");
+    app.export_current_workshop_package_to(&path)
+        .unwrap_or_else(|error| panic!("{error}"));
+
+    let accepted = check_workshop_package(&std::fs::read(&path).unwrap()).unwrap();
+    for file in ["cnc/Doska.dxf", "cnc/parts.csv"] {
+        assert!(
+            accepted.files.iter().any(|name| name == file),
+            "{accepted:?}"
+        );
+    }
+    let bent = accepted
+        .not_made
+        .lines()
+        .find(|line| line.starts_with("- CNC DXF of bent: "))
+        .unwrap_or_else(|| panic!("{}", accepted.not_made));
+    assert!(bent.contains("mirror"), "{bent}");
+}
+
 /// #2482: a B500B bar Ø12 x 1000 is 0.888 kg ±1 % both in the bar schedule
 /// (the library's nominal EN 10080 mass, derived; bars are ordered as pieces)
 /// and in inspect mass (the exact solid x steel density). Each is checked on its

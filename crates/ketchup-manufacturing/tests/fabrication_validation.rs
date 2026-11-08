@@ -4616,7 +4616,7 @@ fn the_workshop_package_holds_every_shop_file_and_says_why_one_was_not_made() {
     };
     let (snapshot, projection) = circular_drill_fabrication_projection();
     let package = projection.workshop_package(&snapshot, WorkshopPackageOptions::default());
-    assert_eq!(package.not_made, [], "{:?}", package.not_made);
+    assert!(package.not_made.is_empty(), "{:?}", package.not_made);
     let names = package
         .files
         .iter()
