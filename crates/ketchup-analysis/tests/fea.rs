@@ -77,6 +77,16 @@ fn axial_bar_matches_closed_form_and_reports_equilibrium_and_limits() {
     assert_eq!(solution.model_digest, model.digest());
     assert_eq!(solution.validity.maximum_yield_utilization, Some(0.4));
     assert!(solution.is_within_declared_limits());
+    // Review 2026-11-08 PG-246: the limits are of an isotropic material, not timber.
+    assert!(
+        solution
+            .validity
+            .excluded_physics
+            .iter()
+            .any(|physics| physics.contains("isotropic") && physics.contains("timber")),
+        "{:?}",
+        solution.validity.excluded_physics
+    );
 }
 
 #[test]
