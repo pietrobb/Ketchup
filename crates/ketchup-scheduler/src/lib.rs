@@ -45,9 +45,9 @@ use ketchup_model::import::{
 use process_wrap::std::JobMemoryLimit;
 #[cfg(unix)]
 use process_wrap::std::ProcessGroup;
-use process_wrap::std::{ChildWrapper, CommandWrap};
+use process_wrap::std::{ChildWrapper, CommandWrap, KillOnDrop};
 #[cfg(windows)]
-use process_wrap::std::{CreationFlags, JobObject, KillOnDrop};
+use process_wrap::std::{CreationFlags, JobObject};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -963,13 +963,13 @@ fn limited_worker_command(mut command: Command, memory_limit: Option<usize>) -> 
         }
         command.wrap(JobObject);
     }
-    // Unix has no job object: the worker gets its own process group, so a kill
-    // reaches anything it started. The memory limit is its own RLIMIT_DATA on Linux;
-    // on macOS a watch of its footprint and the RLIMIT_AS it sets itself
-    // (child_process::keep_memory_limit).
+    // Unix has no job object: the worker gets its own process group, so a kill reaches
+    // anything it started, and dies with its handle (review 2026-11-03 PL-141). The memory
+    // limit is its own RLIMIT_DATA on Linux; on macOS a watch of its footprint and the
+    // RLIMIT_AS it sets itself (child_process::keep_memory_limit).
     #[cfg(unix)]
     {
-        command.wrap(ProcessGroup::leader());
+        command.wrap(ProcessGroup::leader()).wrap(KillOnDrop);
         if let Some(bytes) = memory_limit {
             command.wrap(JobMemoryLimit(bytes));
         }

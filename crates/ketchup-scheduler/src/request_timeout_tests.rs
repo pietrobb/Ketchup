@@ -204,6 +204,19 @@ fn workers_and_plugins_start_without_a_console_window_inside_their_job() {
     }
 }
 
+/// Review 2026-11-03 PL-141: a plugin had no memory cap on any platform, and the
+/// exact worker on Unix did not die with the handle the scheduler dropped.
+#[test]
+fn workers_and_plugins_have_a_memory_cap_and_die_with_their_handle() {
+    use process_wrap::std::{JobMemoryLimit, KillOnDrop};
+    let worker = limited_worker_command(Command::new("ketchup-exact-worker"), Some(1 << 30));
+    let plugin = crate::plugin::plugin_command(Path::new("python3"), &[], None);
+    for command in [worker, plugin] {
+        assert!(command.has_wrap::<KillOnDrop>());
+        assert!(command.has_wrap::<JobMemoryLimit>());
+    }
+}
+
 // The worker compares its parent with this pid, not with the parent it finds
 // when it starts watching: by then a dead parent has been replaced.
 #[test]

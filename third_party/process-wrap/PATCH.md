@@ -63,7 +63,9 @@ forked parent reserves differs from what the program reserves after `exec`. macO
   `proc_pid_rusage(RUSAGE_INFO_V4).ri_phys_footprint` every 50 ms and past the limit kills its
   process group with `SIGKILL`; `memory_limit_exceeded(child)` then returns `true`. This holds
   also for a child that does not call `apply_inherited_memory_limit()`. The sample checks the
-  process start time, so a pid reused after the child was reaped is never killed.
+  process start time, so a pid reused after the child was reaped is never killed. A child whose
+  footprint cannot be read at once is killed with its group and reaped, and `wrap_child` fails,
+  instead of running without its limit (Ketchup review 2026-11-03 PL-141).
 
 `src/std/job_memory_limit.rs` also has `physical_memory_bytes()` (`GlobalMemoryStatusEx` on
 Windows, which adds `Win32_System_SystemInformation` to the `job-object` feature in `Cargo.toml`;
