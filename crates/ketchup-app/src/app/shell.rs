@@ -72,6 +72,8 @@ impl KetchupApp {
                 variants: Default::default(),
                 edits: Default::default(),
                 harnesses: None,
+                harness_rows: crate::app::connect_ai::read_harness_rows,
+                harness_work: None,
                 chosen_window_error: None,
             },
             close_guard: close_guard::CloseGuard::default(),

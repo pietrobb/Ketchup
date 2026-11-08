@@ -30,6 +30,7 @@ connect-ai-replace = Use this Kečup
 connect-ai-set-up-failed = Set-up failed
 connect-ai-mark-window-failed = The AI will ask which window to use, because this one could not be marked
 connect-ai-check-again = Check again
+connect-ai-checking = Checking the AI clients…
 connect-ai-this-window = The AI knows this window as { $name }. With several windows open it connects to the one you last clicked Connect or Use this window in.
 connect-ai-use-this-window = Use this window
 connect-ai-manual = Another AI: set up by hand

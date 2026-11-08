@@ -9,7 +9,7 @@ mod annotations_view_tests;
 pub(crate) mod btlx_settings;
 mod cad_program;
 mod commands;
-mod connect_ai;
+pub(crate) mod connect_ai;
 pub(crate) mod dimensions_ui;
 #[cfg(test)]
 #[path = "app/dimensions_ui_tests.rs"]

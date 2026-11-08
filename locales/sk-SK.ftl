@@ -30,6 +30,7 @@ connect-ai-replace = Použiť tento Kečup
 connect-ai-set-up-failed = Nastavenie zlyhalo
 connect-ai-mark-window-failed = AI sa opýta, ktoré okno použiť, lebo toto sa nepodarilo označiť
 connect-ai-check-again = Skontrolovať znova
+connect-ai-checking = Kontrolujem klientov AI…
 connect-ai-this-window = AI pozná toto okno ako { $name }. Pri viacerých otvorených oknách sa pripojí k tomu, v ktorom ste naposledy klikli Pripojiť alebo Použiť toto okno.
 connect-ai-use-this-window = Použiť toto okno
 connect-ai-manual = Iná AI: nastaviť ručne
