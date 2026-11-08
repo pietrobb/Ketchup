@@ -318,12 +318,11 @@ fn number(value: Value, what: &str) -> anyhow::Result<f64> {
         .flatten()
         .ok_or_else(|| anyhow::anyhow!("{what} must be a number, got {}", value.get_type()))?
         .0;
-    if !number.is_finite() || number.abs() > MAX_COORDINATE_MM {
-        anyhow::bail!(
-            "{what} must be a finite number within ±{MAX_COORDINATE_MM} mm, got {}",
-            number_text(number)
-        );
-    }
+    anyhow::ensure!(
+        number.is_finite() && number.abs() <= MAX_COORDINATE_MM,
+        "{what} must be a finite number within ±{MAX_COORDINATE_MM} mm, got {}",
+        number_text(number)
+    );
     Ok(number)
 }
 

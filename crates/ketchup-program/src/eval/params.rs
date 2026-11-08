@@ -122,13 +122,17 @@ pub fn range_text(min: Option<f64>, max: Option<f64>) -> String {
     )
 }
 
+/// The sizes a message writes as a decimal: from a millionth, as far as a
+/// reader still takes in the digits. A choice of how text reads, no tolerance.
+const DECIMAL_SIZES: std::ops::Range<f64> = 0.000_001..1.0e15;
+
 /// A number as a message writes it: a decimal as long as one reads it, with
-/// an exponent past that, so 1e300 and 1e-320 are not told back in hundreds of
-/// digits (review 2026-11-08 P3).
+/// an exponent past that, so a huge or a subnormal value is not told back in
+/// hundreds of digits (review 2026-11-08 P3).
 #[must_use]
 pub fn number_text(value: f64) -> String {
     let size = value.abs();
-    if size != 0.0 && size.is_finite() && !(1.0e-6..1.0e15).contains(&size) {
+    if size != 0.0 && size.is_finite() && !DECIMAL_SIZES.contains(&size) {
         format!("{value:e}")
     } else {
         value.to_string()
