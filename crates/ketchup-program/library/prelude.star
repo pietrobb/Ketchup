@@ -3006,6 +3006,16 @@ def _opening_in(name, o, origin, along, up, out, depth, length, top_v):
 #   snow_load(sk, pitch, exposure=1.0, thermal=1.0) -> mu1 * Ce * Ct * sk in kN/m², or None
 #     when sk is None or 0 (the site's characteristic snow load on the ground, from the
 #     national annex map, is not given).
+#   site(country, municipality=None, altitude=None, snow_zone=None, sk=None, source=None)
+#     -> struct(country, sk, source, altitude): the one building site, "SK" or "CZ".
+#     CZ: snow_zone "I"-"VII" (or 1-7) gives sk from the ČSN EN 1991-1-3 national annex
+#     map; zone VIII and SK (STN EN 1991-1-3/NA1 maps sk by region and altitude) take
+#     sk= read off the map with source=, else sk is None and source says what to read.
+#     altitude (m) above 1000 combines snow with psi0 0.7, psi2 0.2 (EN 1990 table A1.1).
+#     The design basis names the site. Example:
+#       SITE = site("CZ", municipality = "Brno", altitude = 237, snow_zone = "II")
+#       area_load("snow", kind = "snow", kn_m2 = snow_load(SITE.sk, 35), on = ["cover"],
+#                 source = SITE.source)
 #   The report's loads.members lists every load_path() member: its length and axis, the
 #   loads on it by kind (newtons, characteristic, unfactored), where they act (patches
 #   along the member: own weight, area loads, parts it carries) and what it passes to

@@ -2276,6 +2276,9 @@ pub struct ProgramModel {
     /// The one currency of the prices, when a `price()` names it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currency: Option<String>,
+    /// The building site (`site()`): its snow load and the altitude snow's psi depend on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<crate::site::Site>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub declared_issues: Vec<crate::validate::Issue>,
     /// Sets of tags that are alternative representations (`alternatives()`).

@@ -124,16 +124,19 @@ load_path(only = ["stĺpiky", "stropnice", "krokvy"], carriers = ["OSB", "krytin
           fixed = ["sadrokartón", "fasáda", "izolácia"], name = "nosná konštrukcia")
 
 # Zaťaženia: vlastná tiaž konštrukcie (hustoty z knižnice), úžitkové na podlahe podkrovia,
-# údržba strechy a sneh na krytine (na pôdorys). Sneh na zemi sk pre miesto stavby treba
-# odčítať z mapy STN EN 1991-1-3/NA; kým nie je zadaný (0), prvky pod strechou sú neúplné.
-SNOW_SK = param("snow_sk", 0, min = 0, max = 10, doc = "sneh na zemi sk v kN/m² podľa miesta stavby (0 = nezadané)")
+# údržba strechy a sneh na krytine (na pôdorys). Miesto stavby je na Slovensku: sneh na zemi
+# sk pre obec treba odčítať z mapy STN EN 1991-1-3/NA1; kým nie je zadaný (0), site() povie,
+# čo odčítať, a prvky pod strechou sú neúplné. V Česku stačí site("CZ", snow_zone = "II").
+SNOW_SK = param("snow_sk", 0, min = 0, max = 10, doc = "sneh na zemi sk v kN/m² z mapy STN EN 1991-1-3/NA1 pre obec stavby (0 = nezadané)")
+SITE = site("SK", sk = SNOW_SK if SNOW_SK > 0 else None,
+            source = "mapa STN EN 1991-1-3/NA1 pre obec stavby, sk = %s kN/m² (--set snow_sk)" % SNOW_SK)
 # Vlastnú tiaž zapína self_weight(...) na konci programu.
 area_load("úžitkové podkrovie", kind = "imposed", kn_m2 = IMPOSED_LOADS["A"][0], on = ["podlaha"],
           source = IMPOSED_LOADS["A"][1])
 area_load("údržba strechy", kind = "roof", kn_m2 = IMPOSED_LOADS["H"][0], on = ["krytina"],
           source = IMPOSED_LOADS["H"][1])
-area_load("sneh", kind = "snow", kn_m2 = snow_load(SNOW_SK, PITCH), on = ["krytina"],
-          source = "EN 1991-1-3 5.2(3), tab. 5.2; sk = %s kN/m²" % SNOW_SK)
+area_load("sneh", kind = "snow", kn_m2 = snow_load(SITE.sk, PITCH), on = ["krytina"],
+          source = "EN 1991-1-3 5.2(3), tab. 5.2; " + SITE.source)
 # Posudok prútov podľa EC5: KVH C24, vnútorné prostredie (trieda prevádzky 1).
 timber_design({"KVH C24": "C24", "BSH GL24h": "GL24h"}, service_class = 1)
 

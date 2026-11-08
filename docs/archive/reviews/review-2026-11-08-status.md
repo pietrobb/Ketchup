@@ -117,7 +117,7 @@ they follow under this review or in a later milestone is the owner's call, asked
 | §5.2 Workshop acceptance check and a "send to workshop" ZIP (BTLx, woodWOP, CNC DXF, drawings, parts list, what the machine cannot do, SHA-256) | Not started |
 | §5.2 Partial HOMAG package with a report | Partly: one part's `.mpr` shares the package's writer (5815b7dc, MF-140). A partial package with a report of what was left out is not started |
 | §5.2 North arrow and compass directions in views ("South view"), A-A section marks | Not started |
-| §5.3 `site(country, municipality, altitude)`: s_k from STN/ČSN EN 1991-1-3 snow maps, kmod, γM and ψ from the national annexes, source in `basis` | Not started |
+| §5.3 `site(country, municipality, altitude)`: s_k from STN/ČSN EN 1991-1-3 snow maps, kmod, γM and ψ from the national annexes, source in `basis` | Partly, S11: `site()` gives s_k of the Czech snow zones I–VII from the ČSN annex; Slovakia (NA1:2012 maps s_k by region and altitude) and Czech zone VIII take s_k read off the map with its source, else the basis says what to read; above 1000 m snow takes ψ0 0.7, ψ2 0.2; the basis names the site. The annexes' own γ and ψ are not read (the basis says so); kmod is not a nationally set value. The tiny house uses `site("SK")` |
 | §5.3 Thermal check of layer build-ups per ČSN/STN 73 0540-2 (U, condensation, inner surface temperature) | Not started |
 | §5.3 Printable SK/CZ structural calculation per member | Not started |
 | §5.3 Revisions of the drawing set and an overlay of the architect's DXF revisions by handle | Not started (R1103-CD-141 waits for the same source identity) |

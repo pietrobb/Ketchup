@@ -34,6 +34,7 @@ mod report_before_exact;
 mod report_material;
 mod revolve_bounds;
 mod shop_golden;
+mod site;
 mod support;
 mod sweep_loft;
 mod takeoff_house;

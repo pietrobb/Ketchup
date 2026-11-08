@@ -217,17 +217,21 @@ pub struct BracingDemand {
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 pub struct DesignReport {
     #[serde(deserialize_with = "basis")]
-    pub basis: Vec<&'static str>,
+    pub basis: Vec<String>,
     pub members: Vec<MemberCheck>,
 }
 
-/// The basis comes back from the program worker as [`BASIS`] or empty.
-fn basis<'de, D: serde::Deserializer<'de>>(reader: D) -> Result<Vec<&'static str>, D::Error> {
+/// The basis comes back from the program worker as [`BASIS`], with at most
+/// the line of the site after it, or empty.
+fn basis<'de, D: serde::Deserializer<'de>>(reader: D) -> Result<Vec<String>, D::Error> {
     let basis = Vec::<String>::deserialize(reader)?;
-    if basis.is_empty() {
-        Ok(Vec::new())
-    } else if basis.iter().map(String::as_str).eq(BASIS) {
-        Ok(BASIS.to_vec())
+    let (fixed, rest) = basis.split_at(basis.len().min(BASIS.len()));
+    if basis.is_empty()
+        || (fixed.iter().map(String::as_str).eq(BASIS)
+            && rest.len() <= 1
+            && rest.iter().all(|line| line.starts_with("site: ")))
+    {
+        Ok(basis)
     } else {
         Err(serde::de::Error::custom(
             "the design basis is not this build's",
@@ -313,7 +317,7 @@ pub const NOT_CHECKED: [&str; 3] = [
 pub const BASIS: [&str; 9] = [
     "scope: vertical (gravity) loads only, permanent, imposed, roof and snow; wind, horizontal stability (bracing, racking) and bending combined with axial force (EN 1995-1-1 6.2.3, 6.2.4, 6.3.2 (6.23, 6.24)) are not checked",
     "EN 1990 6.4.3.2 (6.10): 1.35 G + 1.5 Q1 + 1.5 psi0 Qi; SLS characteristic, w_fin with kdef and psi2 (recommended values, the national annex may differ)",
-    "psi0/psi2 (EN 1990 table A1.1): imposed category A 0.7/0.3, roof category H 0/0 and never with snow (EN 1991-1-1 3.3.2), snow below 1000 m 0.5/0",
+    "psi0/psi2 (EN 1990 table A1.1): imposed category A 0.7/0.3, roof category H 0/0 and never with snow (EN 1991-1-1 3.3.2), snow 0.5/0, on a site() above 1000 m 0.7/0.2",
     "load duration (EN 1995-1-1 2.3.1.2): permanent G, medium-term imposed, short-term roof and snow; kmod table 3.1, kdef table 3.2 and gamma_M table 2.3 of the product each class names (solid timber 1.3, glulam 1.25, LVL, plywood and OSB 1.2, particleboard 1.3)",
     "bending with kh (3.2, 3.3); lateral torsional buckling (6.3.3) between the places that hold its compressed edge sideways (its bearings, and the fasteners where the parts touch, or the middle of each contact when a joint lists none, of parts bearing on that edge and on a part declared grounded across the member, fastened to both by a joint() of a kind that fastens: decking, battens, a ceiling; the top under sagging, the bottom under hogging; a deck fastened only to the members holds nothing, so a usual floor is not verified until a diaphragm can be declared), with kcrit (6.34) of sigma_m,crit (6.32) over lef at the upper bound of table 6.1 (the stretch, plus 2h where the top is compressed): bending over kcrit is the check lateral_torsional, and a member where it exceeds the strength is not verified; a brace holds only when its material has a timber strength class, and bracing gives what the braces of the compressed edge must take (9.2.5.2: N_d = (1 - kcrit) M_d / h with kcrit of the member unbraced, F_d = N_d / k_f,1 = 60 or k_f,2 = 80 for glulam, C = k_s N_d / a with k_s = 4), which the braces, their anchorage and their fasteners are not checked against, nor a bracing of several members (9.2.5.3)",
     "shear with kcr = 0.67 (6.1.7); notches at bearings with kv (6.5.2), right-angled, x from the middle of the reaction to the corner of the notch, kv = 1 for a notch in the top over a bearing under the member (fig. 6.11(b)); elsewhere a change in depth steeper than 1:10 on the side in tension is not verified (6.5.1(2))",
@@ -367,6 +371,7 @@ fn label(parts: &[(f64, &str)]) -> String {
 fn combinations(
     present: &[&'static str],
     kdef: f64,
+    snow_psi: (f64, f64),
 ) -> (Vec<Combination>, Vec<(Combination, Loads)>) {
     let mut uls = vec![Combination {
         label: label(&[(GAMMA_G, "permanent")]),
@@ -395,7 +400,10 @@ fn combinations(
             let mut char_parts = vec![(1.0, "permanent")];
             let mut fin = Loads::from([("permanent".to_owned(), 1.0 + kdef)]);
             for kind in &set {
-                let (_, psi0, psi2) = action(kind);
+                let (psi0, psi2) = match action(kind) {
+                    _ if *kind == "snow" => snow_psi,
+                    (_, psi0, psi2) => (psi0, psi2),
+                };
                 if kind == lead {
                     parts.push((GAMMA_Q, kind));
                     char_parts.push((1.0, kind));
@@ -435,13 +443,13 @@ pub(crate) const GAMMA_M_CONNECTION: f64 = 1.3;
 
 /// `loads` in every ultimate combination (6.10): design value, load-duration
 /// class and label.
-pub(crate) fn ultimate(loads: &Loads) -> Vec<(f64, usize, String)> {
+pub(crate) fn ultimate(loads: &Loads, snow_psi: (f64, f64)) -> Vec<(f64, usize, String)> {
     let present: Vec<&'static str> = LOAD_KINDS[1..]
         .iter()
         .copied()
         .filter(|kind| loads.get(*kind).is_some_and(|v| *v != 0.0))
         .collect();
-    combinations(&present, 0.0)
+    combinations(&present, 0.0, snow_psi)
         .0
         .into_iter()
         .map(|c| (factor(&c.factors, loads), c.duration, c.label))
@@ -2520,6 +2528,7 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
     let mut beams: BTreeMap<String, (TimberClass, f64)> = BTreeMap::new();
     let mut pending_bearings: Vec<(String, f64, Loads, String)> = Vec::new();
     let parts = model.parts_by_name();
+    let snow_psi = crate::site::Site::snow_psi(model.site.as_ref());
     for load in &loads.members {
         let part = parts.get(load.part.as_str()).copied();
         let material = part.and_then(|p| p.material.clone()).unwrap_or_default();
@@ -2575,7 +2584,7 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
             .copied()
             .filter(|kind| load.loads_n.get(*kind).is_some_and(|v| *v > 0.0))
             .collect();
-        let (uls, sls) = combinations(&present, design.kdef);
+        let (uls, sls) = combinations(&present, design.kdef, snow_psi);
         if load.reactions.is_empty() {
             missing.push("the member has no supports to check against".to_owned());
         } else if role == "column" {
@@ -2666,7 +2675,7 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
             .copied()
             .filter(|kind| reaction.get(*kind).is_some_and(|v| *v > 0.0))
             .collect();
-        let (uls, _) = combinations(&present, 0.0);
+        let (uls, _) = combinations(&present, 0.0, snow_psi);
         let mut best = Best(None);
         for combination in &uls {
             let sigma = factor(&combination.factors, &reaction) / area;
@@ -2685,10 +2694,9 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
         }
         settle(member);
     }
-    DesignReport {
-        basis: BASIS.to_vec(),
-        members,
-    }
+    let mut basis: Vec<String> = BASIS.iter().map(|line| (*line).to_owned()).collect();
+    basis.extend(model.site.as_ref().map(crate::site::Site::basis));
+    DesignReport { basis, members }
 }
 
 /// Governing check and status of a member from its checks. A check that is

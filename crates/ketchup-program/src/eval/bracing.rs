@@ -1,6 +1,6 @@
 //! Bracing a program declares where the geometry cannot show it: the edge of
 //! a load-path member a brace holds, and sheets that are one anchored stiff plane
-//! (review 2026-11-08 PG-240).
+//! (review 2026-11-08 PG-240); and the building site its snow comes from (§5.3).
 use super::*;
 
 #[starlark_module]
@@ -59,5 +59,61 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         }
         state(eval)?.model.borrow_mut().diaphragms.push(diaphragm);
         Ok(NoneType)
+    }
+
+    /// The building site: country "SK" or "CZ", municipality, altitude in m, and
+    /// the snow zone of the national annex map or s_k read off it (with its
+    /// source). Returns struct(country, sk, source, altitude); sk is None when
+    /// the annex gives no value for the inputs. The design basis names the site.
+    fn site<'v>(
+        #[starlark(require = pos)] country: &str,
+        #[starlark(require = named)] municipality: Option<Value<'v>>,
+        #[starlark(require = named)] altitude: Option<Value<'v>>,
+        #[starlark(require = named)] snow_zone: Option<Value<'v>>,
+        #[starlark(require = named)] sk: Option<Value<'v>>,
+        #[starlark(require = named)] source: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let snow_zone = given(snow_zone)
+            .map(|zone| match zone.unpack_i32() {
+                Some(n) => Ok(n.to_string()),
+                None => zone.unpack_str().map(ToOwned::to_owned).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "site(): snow_zone must be a string or a number, got {}",
+                        zone.get_type()
+                    )
+                }),
+            })
+            .transpose()?;
+        let site = crate::site::Site::resolve(crate::site::SiteInput {
+            country,
+            municipality: text(municipality, "site municipality")?,
+            altitude_m: given(altitude).map(|v| number(v, "altitude")).transpose()?,
+            snow_zone,
+            sk: given(sk).map(|v| number(v, "sk")).transpose()?,
+            source: text(source, "site source")?,
+        })?;
+        let heap = eval.heap();
+        let state = state(eval)?;
+        let mut model = state.model.borrow_mut();
+        if model.site.is_some() {
+            anyhow::bail!("site(): a program has one site; it is already given");
+        }
+        let value = heap.alloc(AllocStruct([
+            ("country", heap.alloc(site.country.as_str())),
+            (
+                "sk",
+                site.sk_kn_m2
+                    .map_or_else(Value::new_none, |sk| heap.alloc(sk)),
+            ),
+            ("source", heap.alloc(site.source.as_str())),
+            (
+                "altitude",
+                site.altitude_m
+                    .map_or_else(Value::new_none, |a| heap.alloc(a)),
+            ),
+        ]));
+        model.site = Some(site);
+        Ok(value)
     }
 }
