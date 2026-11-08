@@ -795,7 +795,7 @@ fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -
             // the others, two or three narrow sheets where one holds them all).
             // A piece spanning a size in both axes is that whole sheet: it opens the
             // smallest such size, as a larger one it fits trimmed can no longer shrink
-            // to it (review 2026-11-08 PG-244: two 2 500 x 1 250 panels took two
+            // to it (review 2026-11-08 PG-244: two 2 500 x 1 250 pieces took two
             // 2 800 x 1 250 sheets, +12 %).
             let mut openings: Vec<([f64; 2], [bool; 2])> = Vec::new();
             for &size in &sizes {
