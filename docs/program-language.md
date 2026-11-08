@@ -171,8 +171,16 @@ parts that hold the compressed edge (the top under sagging, the bottom under
 hogging), bear on a part declared `grounded=True` beside the beam (across it,
 beyond its side) and are fastened to both by `joint()`;
 `loads.members[].braced_by` lists them. A grounded part must be stiff sideways
-(a wall, not a hinged stud). Every `joint()` fastens its parts except of the kinds
-`none`, `contact`, `friction`, `unfastened`, `loose`, `free` and `rests`; a load
+(a wall, not a hinged stud). A joint's `kind` is read against a closed catalogue
+in English, Slovak, Czech and German (`ketchup-program/src/joint_kind.rs`), in any
+case, with `_` and `-` read as spaces, by its leading words, so a side, size or
+product after them counts as it does (`vrut 6x120`, `Schraube links`). Kinds such
+as `none`, `contact`, `friction`, `unfastened`, `loose`, `free`, `rests`, `volne`,
+`kontakt`, `dotyk`, `lose`, `frei` or `nichts` fasten nothing; when a kind starts
+with words of both catalogues (`lose Schraube`), it fastens nothing. Kinds such as
+`screw`, `hanger`, `glue`, `vrut`, `spojka` or `Balkenschuh` fasten. A kind of neither is
+taken to fasten and reported as `joint_kind_unknown`, and every check standing on
+it (the members it joins or braces, its joint check) is `not_verified`. A load
 path's `fixed` tag passes weight but braces nothing. A joint's `kind` may not be
 empty; one of five letters or more that reads like a slip of a kind fastening
 nothing (`contcat`, `contacts`) fastens and is reported as `joint_kind_doubtful`.

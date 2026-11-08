@@ -548,6 +548,15 @@ fn large_house_every_load_of_the_house_reaches_something_that_carries_it() {
 fn large_house_every_member_of_the_house_carries_its_loads_once_the_site_snow_is_given() {
     let without = report(HOUSE, &[]);
     let with = report(HOUSE, &[("snow_sk", 1.0)]);
+    // Review 2026-11-08 PG-241: a kind qualified by side or product ("krokvová
+    // spojka ľavá") is the catalogue's kind, not an unknown one.
+    let unknown = with
+        .issues
+        .iter()
+        .filter(|issue| issue.kind == ketchup_program::loads::JOINT_KIND_UNKNOWN)
+        .map(|issue| issue.message.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(unknown, Vec::<&str>::new());
     assert!(
         with.loads.members.len() > 200,
         "{}",

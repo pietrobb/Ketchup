@@ -7,6 +7,8 @@
 //! program writes them.
 
 use crate::frame::{self, Mat3, Obb};
+use crate::joint_kind::normalized;
+pub use crate::joint_kind::{JointFastening, UNFASTENED_JOINT_KINDS};
 use ketchup_geometry::linalg::{CubicBezier, dot};
 use ketchup_model::tolerance::ROUNDING;
 use serde::{Deserialize, Serialize};
@@ -1946,43 +1948,39 @@ pub struct Joint {
     pub hardware: BTreeMap<String, usize>,
 }
 
-/// Joint kinds that only record how two parts meet and fasten nothing
-/// (review 2026-11-04 r19 PG-162): they neither hold a part down nor brace;
-/// "unfastened", "loose", "free" and "rests" say so too (review 2026-11-06
-/// r23 P3: they fastened, unsaid).
-pub const UNFASTENED_JOINT_KINDS: [&str; 7] = [
-    "none",
-    "contact",
-    "friction",
-    "unfastened",
-    "loose",
-    "free",
-    "rests",
-];
-
 /// The fewest letters a kind has before it is taken for a slip of "none":
 /// "cone", "node", "bone" and "one" are words (review 2026-11-06 r23 P3), but
-/// "lose", "rest" and "frei" are slips of "loose", "rests" and "free", which
-/// fastened unsaid (review 2026-11-07 P3).
+/// "rest" is a slip of "rests", which fastened unsaid (review 2026-11-07 P3).
 const NONE_SLIP_LETTERS: usize = 5;
 
 impl Joint {
-    /// Whether the joint fastens its parts to each other; every kind does
-    /// but those of [`UNFASTENED_JOINT_KINDS`].
+    /// What the joint's kind says of how its parts join ([`crate::joint_kind`]).
     #[must_use]
-    pub fn fastens(&self) -> bool {
-        !UNFASTENED_JOINT_KINDS.contains(&self.kind.trim().to_lowercase().as_str())
+    pub fn fastening(&self) -> JointFastening {
+        crate::joint_kind::fastening(&self.kind)
     }
 
-    /// The kind of [`UNFASTENED_JOINT_KINDS`] this joint's kind is likely a
-    /// misspelling of ("contcat", "contacts"), though it fastens (review
-    /// 2026-11-06 P3); "none" not of fewer than [`NONE_SLIP_LETTERS`].
+    /// Whether the checks take the joint to fasten its parts to each other: a
+    /// fastening of the catalogue, or a kind it does not know, which also
+    /// leaves every check standing on it not verified (review 2026-11-08 PG-241).
+    #[must_use]
+    pub fn fastens(&self) -> bool {
+        self.fastening() != JointFastening::Unfastened
+    }
+
+    /// The kind of [`UNFASTENED_JOINT_KINDS`] this joint's kind, one the catalogue
+    /// does not know, is likely a misspelling of ("contcat", "contacts") (review
+    /// 2026-11-06 P3); a kind of fewer than [`NONE_SLIP_LETTERS`] not of a word as
+    /// short ("none", "lose", "nic"), as "nose" is no slip of "lose".
     #[must_use]
     pub fn misspelt_unfastened_kind(&self) -> Option<&'static str> {
-        let kind: Vec<char> = self.kind.trim().to_lowercase().chars().collect();
-        UNFASTENED_JOINT_KINDS.into_iter().find(|unfastened| {
+        if self.fastening() != JointFastening::Unknown {
+            return None;
+        }
+        let kind: Vec<char> = normalized(&self.kind).chars().collect();
+        UNFASTENED_JOINT_KINDS.iter().copied().find(|unfastened| {
             let base: Vec<char> = unfastened.chars().collect();
-            (*unfastened != "none" || kind.len() >= NONE_SLIP_LETTERS)
+            (base.len() >= NONE_SLIP_LETTERS || kind.len() >= NONE_SLIP_LETTERS)
                 && kind != base
                 && one_slip(&kind, &base)
         })

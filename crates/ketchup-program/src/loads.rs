@@ -13,7 +13,7 @@
 use crate::contact::ContactFaces;
 use crate::continuous_span::{self, Piece};
 use crate::load_path::{joint_points, on_floor};
-use crate::model::{Part, ProgramModel, ProgramPartBody};
+use crate::model::{Joint, JointFastening, Part, ProgramModel, ProgramPartBody};
 use crate::validate::{Issue, Severity};
 use ketchup_geometry::linalg::{self, cross, dot, length, sub};
 use ketchup_model::tolerance::CONTACT_FIT_MM;
@@ -185,18 +185,22 @@ pub struct LoadReport {
     /// every direction than the member is deep.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub small_anchorages: Vec<[String; 2]>,
-    /// Fastening joints whose kind reads like one that fastens nothing, with it.
+    /// Joints of a kind the catalogue does not know ([`crate::joint_kind`]), each
+    /// with the kind that fastens nothing it reads like, if one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub doubtful_joint_kinds: Vec<DoubtfulJointKind>,
 }
 
-/// A joint of `parts` whose `kind` fastens them, though it reads like `like`,
-/// a kind that fastens nothing (review 2026-11-06 P3).
+/// A joint of `parts` whose `kind` the catalogue does not know (review
+/// 2026-11-08 PG-241), and reads like `like`, a kind that fastens nothing
+/// (review 2026-11-06 P3): it is taken to fasten them, and every check
+/// standing on it is not verified.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct DoubtfulJointKind {
     pub parts: [String; 2],
     pub kind: String,
-    pub like: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub like: Option<String>,
 }
 
 /// Issue kind of a loaded part whose load reaches no member: the checks of
@@ -208,8 +212,10 @@ pub const FASTENER_OFF_CONTACT: &str = "fastener_off_contact";
 pub const AREA_LOAD_EDGE_ON: &str = "area_load_edge_on";
 /// Issue kind of a member braced from a grounded part smaller than it is deep.
 pub const ANCHORAGE_SMALL: &str = "anchorage_small";
-/// Issue kind of a joint that fastens, of a kind that reads like one that does not.
+/// Issue kind of a joint of a kind that reads like one that does not fasten.
 pub const JOINT_KIND_DOUBTFUL: &str = "joint_kind_doubtful";
+/// Issue kind of a joint of a kind the catalogue does not know.
+pub const JOINT_KIND_UNKNOWN: &str = "joint_kind_unknown";
 
 impl LoadReport {
     #[must_use]
@@ -289,18 +295,32 @@ impl LoadReport {
             }))
             .chain(self.doubtful_joint_kinds.iter().map(|doubtful| {
                 let [a, b] = &doubtful.parts;
-                let (kind, like) = (&doubtful.kind, &doubtful.like);
+                let kind = &doubtful.kind;
+                let (issue, message, hint) = match &doubtful.like {
+                    Some(like) => (
+                        JOINT_KIND_DOUBTFUL,
+                        format!(
+                            "The joint of {a} and {b} is of kind \"{kind}\", which reads like \"{like}\", which fastens nothing; the checks standing on it are not verified."
+                        ),
+                        format!(
+                            "Write kind=\"{like}\" if they only meet, or name the fastening, e.g. kind=\"screw\"."
+                        ),
+                    ),
+                    None => (
+                        JOINT_KIND_UNKNOWN,
+                        format!(
+                            "The joint of {a} and {b} is of kind \"{kind}\", which is not a kind the checks know to fasten or not; the checks standing on it are not verified."
+                        ),
+                        "Name the fastening, e.g. kind=\"screw\", \"nail\", \"vrut\" or \"Schraube\", or kind=\"none\" (\"kontakt\", \"volně\") if the parts only meet.".to_owned(),
+                    ),
+                };
                 Issue {
                     severity: Severity::Warning,
-                    kind: JOINT_KIND_DOUBTFUL,
+                    kind: issue,
                     parts: doubtful.parts.to_vec(),
-                    message: format!(
-                        "The joint of {a} and {b} is of kind \"{kind}\", which fastens them, though it reads like \"{like}\", which fastens nothing."
-                    ),
+                    message,
                     where_mm: None,
-                    hint: format!(
-                        "Write kind=\"{like}\" if they only meet, or name the fastening, e.g. kind=\"screw\"."
-                    ),
+                    hint,
                     source_lines: Vec::new(),
                 }
             }))
@@ -2038,18 +2058,47 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
     report.stray_fasteners = stray;
     report.edge_on = own.edge_on;
     report.small_anchorages = small_anchorages;
-    report.doubtful_joint_kinds = model
+    let unknown: Vec<&Joint> = model
         .joints
         .iter()
-        .filter_map(|joint| {
-            Some(DoubtfulJointKind {
-                like: joint.misspelt_unfastened_kind()?.to_owned(),
-                parts: joint.parts.clone(),
-                kind: joint.kind.clone(),
-            })
+        .filter(|joint| joint.fastening() == JointFastening::Unknown)
+        .collect();
+    not_verified_on_unknown_kinds(&mut report, &unknown);
+    report.doubtful_joint_kinds = unknown
+        .into_iter()
+        .map(|joint| DoubtfulJointKind {
+            like: joint.misspelt_unfastened_kind().map(str::to_owned),
+            parts: joint.parts.clone(),
+            kind: joint.kind.clone(),
         })
         .collect();
     report
+}
+
+/// Leaves not verified each check standing on a joint of a kind the catalogue
+/// does not know (review 2026-11-08 PG-241: "voľne", "kontakt" or "nichts"
+/// braced a beam, which passed): that of a member it joins or a part bracing
+/// the member joins, and that of the joint itself.
+fn not_verified_on_unknown_kinds(report: &mut LoadReport, unknown: &[&Joint]) {
+    for joint in unknown {
+        let reason = format!(
+            "joint {} is of kind \"{}\", not a kind the checks know to fasten or not",
+            joint.name, joint.kind
+        );
+        let joins = |part: &str| joint.parts.iter().any(|joined| joined == part);
+        for member in &mut report.members {
+            let stands =
+                joins(&member.part) || member.braced_by.iter().any(|brace| joins(&brace.part));
+            if stands && !member.missing.contains(&reason) {
+                member.missing.push(reason.clone());
+            }
+        }
+        if let Some(load) = report.joints.get_mut(&joint.name)
+            && !load.missing.contains(&reason)
+        {
+            load.missing.push(reason);
+        }
+    }
 }
 
 #[cfg(test)]

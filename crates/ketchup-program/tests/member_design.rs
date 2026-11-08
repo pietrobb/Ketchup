@@ -1041,16 +1041,8 @@ fn a_joint_kind_like_one_that_fastens_nothing_is_reported() {
         )
     };
     // Review 2026-11-07 P3: and under five letters a slip of a kind but "none",
-    // as "lose" for "loose", "rest" for "rests" and "frei" for "free".
-    for misspelt in [
-        "contcat",
-        "Contacts",
-        "fricton",
-        "unfastend",
-        "lose",
-        "rest",
-        "frei",
-    ] {
+    // as "rest" for "rests" ("lose" and "frei" are German, review 2026-11-08 PG-241).
+    for misspelt in ["contcat", "Contacts", "fricton", "unfastend", "rest"] {
         let doubtful = kind(misspelt);
         assert_eq!(
             issue_parts(&doubtful, "joint_kind_doubtful"),
@@ -1062,7 +1054,7 @@ fn a_joint_kind_like_one_that_fastens_nothing_is_reported() {
     // Review 2026-11-06 r23 P3: "cone", "node", "nose" and "bone" were taken
     // for slips of "none"; a word under five letters is not looked at.
     for named in [
-        "vrut", "one", "glue", "none", "cone", "node", "nose", "bone",
+        "vrut", "one", "glue", "none", "cone", "node", "nose", "bone", "rose", "free", "nick",
     ] {
         assert_eq!(
             issue_parts(&kind(named), "joint_kind_doubtful"),
@@ -1072,7 +1064,16 @@ fn a_joint_kind_like_one_that_fastens_nothing_is_reported() {
     }
     // And "unfastened", "loose", "free" and "rests" fastened, unsaid: they
     // fasten nothing, as "none" does.
-    for unfastened in ["unfastened", "Loose", "free", "rests"] {
+    for unfastened in [
+        "unfastened",
+        "Loose",
+        "free",
+        "rests",
+        "lose",
+        "frei",
+        "voľne uložené",
+        "kontakt",
+    ] {
         let loose = kind(unfastened);
         assert_eq!(braced_by(&loose), Vec::new(), "{unfastened}");
         assert_eq!(

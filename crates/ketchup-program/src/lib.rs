@@ -28,6 +28,7 @@ mod face_at;
 pub mod faces;
 pub mod frame;
 pub mod joint_check;
+pub mod joint_kind;
 pub mod load_path;
 pub mod loads;
 mod material;
@@ -239,6 +240,7 @@ impl Report {
                         loads::AREA_LOAD_EDGE_ON,
                         loads::ANCHORAGE_SMALL,
                         loads::JOINT_KIND_DOUBTFUL,
+                        loads::JOINT_KIND_UNKNOWN,
                         cutting::CUTTING_UNPLACED,
                     ]
                     .contains(&issue.kind)
