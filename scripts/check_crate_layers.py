@@ -404,7 +404,9 @@ CASTS_AND_ALLOWS = {
     # configuration is swapped in one step and keeps its ACL), so 14 -> 15.
     # geteuid of live_bridge::mcp_config (review 2026-11-08 SEC-241: under sudo root writes
     # only where the user the file is named for owns), so 15 -> 16.
-    "ketchup-app allows": 16,
+    # GetFileInformationByHandleEx(FileIdInfo) of app::written_drawings (review 2026-11-08:
+    # on ReFS the 64-bit file index does not tell one file from another), so 16 -> 17.
+    "ketchup-app allows": 17,
     "ketchup-app casts": 216,
     "ketchup-application allows": 9,
     "ketchup-application casts": 29,
