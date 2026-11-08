@@ -328,7 +328,7 @@ const KCR: f64 = 0.67;
 /// A bearing longer than this supports the member along it instead of at a point.
 const BED_MM: f64 = 400.0;
 /// A member closer to vertical than this (cosine of its slope) is a column.
-const COLUMN_COS: f64 = 0.44;
+pub(crate) const COLUMN_COS: f64 = 0.44;
 const STEPS: usize = 64;
 
 /// Duration class, psi0 and psi2 of each load kind.

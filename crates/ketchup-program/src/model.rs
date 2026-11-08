@@ -1236,52 +1236,8 @@ impl Part {
     /// and bottom edges were taken for each other).
     #[must_use]
     pub fn bar_frame(&self) -> BarFrame {
-        let named = self.named_length_axis();
-        if let ProgramPartBody::Extrusion {
-            segments,
-            distance_mm,
-            caps,
-        } = &self.body
-            && self.joined().next().is_none()
-        {
-            let (profile, span, grow) = self.pulled_profile(segments, *distance_mm, caps);
-            let (along, widths) = smallest_enclosing_rectangle(&profile);
-            let across = [-along[1], along[0]];
-            let reach = |d: [f64; 2]| {
-                profile
-                    .iter()
-                    .map(|segment| segment.support(d))
-                    .fold(f64::NEG_INFINITY, f64::max)
-            };
-            let middle = |d: [f64; 2]| (reach(d) - reach([-d[0], -d[1]])) / 2.0;
-            let (along_mid, across_mid) = (middle(along), middle(across));
-            let centre = [
-                along[0] * along_mid + across[0] * across_mid,
-                along[1] * along_mid + across[1] * across_mid,
-                (span[0] + span[1]) / 2.0,
-            ];
-            let [long, short] = if widths[0] >= widths[1] {
-                [(along, widths[0]), (across, widths[1])]
-            } else {
-                [(across, widths[1]), (along, widths[0])]
-            }
-            .map(|(d, width)| ([d[0], d[1], 0.0], width + 2.0 * grow));
-            let pulled = ([0.0, 0.0, 1.0], span[1] - span[0] + 2.0 * grow);
-            let lengthwise = match named {
-                Some(2) => true,
-                Some(_) => false,
-                None => pulled.1 > long.1,
-            };
-            let [axis, a, b] = if lengthwise {
-                [pulled, long, short]
-            } else {
-                [long, short, pulled]
-            };
-            return BarFrame {
-                centre,
-                axes: [axis.0, a.0, b.0],
-                sizes: [axis.1, a.1, b.1],
-            };
+        if let Some(bar) = self.extruded_bar() {
+            return bar;
         }
         let (min, max) = self.local_bounds();
         let size: [f64; 3] = std::array::from_fn(|axis| max[axis] - min[axis]);
@@ -1295,18 +1251,97 @@ impl Part {
         }
     }
 
+    /// [`Part::bar_frame`] of an extrusion no boolean changed, from its profile.
+    fn extruded_bar(&self) -> Option<BarFrame> {
+        let named = self.named_length_axis();
+        let ProgramPartBody::Extrusion {
+            segments,
+            distance_mm,
+            caps,
+        } = &self.body
+        else {
+            return None;
+        };
+        if self.joined().next().is_some() {
+            return None;
+        }
+        let (profile, span, grow) = self.pulled_profile(segments, *distance_mm, caps);
+        let (along, widths) = smallest_enclosing_rectangle(&profile);
+        let across = [-along[1], along[0]];
+        let reach = |d: [f64; 2]| {
+            profile
+                .iter()
+                .map(|segment| segment.support(d))
+                .fold(f64::NEG_INFINITY, f64::max)
+        };
+        let middle = |d: [f64; 2]| (reach(d) - reach([-d[0], -d[1]])) / 2.0;
+        let (along_mid, across_mid) = (middle(along), middle(across));
+        let centre = [
+            along[0] * along_mid + across[0] * across_mid,
+            along[1] * along_mid + across[1] * across_mid,
+            (span[0] + span[1]) / 2.0,
+        ];
+        let [long, short] = if widths[0] >= widths[1] {
+            [(along, widths[0]), (across, widths[1])]
+        } else {
+            [(across, widths[1]), (along, widths[0])]
+        }
+        .map(|(d, width)| ([d[0], d[1], 0.0], width + 2.0 * grow));
+        let pulled = ([0.0, 0.0, 1.0], span[1] - span[0] + 2.0 * grow);
+        let lengthwise = match named {
+            Some(2) => true,
+            Some(_) => false,
+            None => pulled.1 > long.1,
+        };
+        let [axis, a, b] = if lengthwise {
+            [pulled, long, short]
+        } else {
+            [long, short, pulled]
+        };
+        Some(BarFrame {
+            centre,
+            axes: [axis.0, a.0, b.0],
+            sizes: [axis.1, a.1, b.1],
+        })
+    }
+
     /// The local axis a member's loads are placed along: the one
-    /// [`LENGTH_AXIS`] names, else its longest (review 2026-11-08 PG-243: a
-    /// 29 mm long upright piece in a 140 mm wall was checked as bending
-    /// across the wall).
+    /// [`LENGTH_AXIS`] names (review 2026-11-08 PG-243: a 29 mm long upright
+    /// piece in a 140 mm wall was checked as bending across the wall). An
+    /// extrusion drawn from its side, its length in its profile's plane, runs
+    /// along the axis of that plane its length follows most nearly level while
+    /// it lies (bends), most nearly plumb while it stands: a bar extruded at
+    /// 40 degrees or more, its rise and plumb cut taller than its run, ran up
+    /// its vertical axis, so nothing braced it (review 2026-11-03 PG-141(b)).
+    /// Else the longest.
     #[must_use]
     pub fn load_axis(&self) -> usize {
-        self.named_length_axis().unwrap_or_else(|| {
+        if let Some(named) = self.named_length_axis() {
+            return named;
+        }
+        let side_view = self.extruded_bar().filter(|bar| bar.axes[0][2] == 0.0);
+        let Some(bar) = side_view else {
             let (min, max) = self.local_bounds();
-            (0..3)
+            return (0..3)
                 .max_by(|a, b| (max[*a] - min[*a]).total_cmp(&(max[*b] - min[*b])))
-                .unwrap_or(0)
-        })
+                .unwrap_or(0);
+        };
+        let world = |local: [f64; 3]| {
+            let v = frame::apply(&self.rotation, local);
+            ketchup_geometry::linalg::normalize(v).unwrap_or(v)
+        };
+        let level = |v: [f64; 3]| v[0].hypot(v[1]);
+        let lies = level(world(bar.axes[0])) >= crate::member_check::COLUMN_COS;
+        let follows = |axis: usize| {
+            let direction = world(std::array::from_fn(|i| f64::from(u8::from(i == axis))));
+            let lie = if lies {
+                level(direction)
+            } else {
+                direction[2].abs()
+            };
+            bar.axes[0][axis].abs() * lie
+        };
+        usize::from(follows(1) > follows(0))
     }
 
     /// The local axis the part's [`LENGTH_AXIS`] names, if it names one.

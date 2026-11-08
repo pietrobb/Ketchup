@@ -234,12 +234,17 @@ fn a_deck_declared_a_diaphragm_anchored_to_a_wall_braces_the_joists() {
 /// of its side or as a turned box, and a board under its upper half screwed to
 /// it and to a grounded wall past its side.
 fn sloped_rafter(extruded: bool) -> String {
-    let (sin, cos) = 30f64.to_radians().sin_cos();
-    let rise = 3000.0 * sin / cos;
+    rafter_at(extruded, 30.0, 3000.0)
+}
+
+/// The rafter of [`sloped_rafter`] at `degrees`, running `run` mm in plan.
+fn rafter_at(extruded: bool, degrees: f64, run: f64) -> String {
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    let rise = run * sin / cos;
     let plumb = 400.0 / cos;
     let rafter = if extruded {
         format!(
-            "part = extrude(\"rafter\", profile = [(0, 0), (3000, {rise}), (3000, {}), (0, {plumb})],
+            "part = extrude(\"rafter\", profile = [(0, 0), ({run}, {rise}), ({run}, {}), (0, {plumb})],
                distance = 80, material = \"GL24h\", tags = [\"frame\"])
 place(part, origin = (0, 80, 2000), z = (0, -1, 0), x = (1, 0, 0))
 ",
@@ -250,12 +255,12 @@ place(part, origin = (0, 80, 2000), z = (0, -1, 0), x = (1, 0, 0))
             "part = box(\"rafter\", ({}, 80, 400), material = \"GL24h\", tags = [\"frame\"])
 place(part, origin = (0, 0, 2000), z = ({}, 0, {cos}), x = ({cos}, 0, {sin}))
 ",
-            3000.0 / cos,
+            run / cos,
             -sin
         )
     };
-    // The board's top on the rafter's underside 1800 mm along the level.
-    let (x, z) = (1800.0, 2000.0 + 1800.0 * sin / cos);
+    // The board's top on the rafter's underside 60 % of the run along the level.
+    let (x, z) = (0.6 * run, 2000.0 + 0.6 * run * sin / cos);
     format!(
         "load_path(only = [\"frame\"])
 timber_design({{\"GL24h\": \"GL24h\"}})
@@ -291,5 +296,38 @@ fn a_board_under_a_rafter_extruded_at_a_slope_holds_its_bottom() {
             edges.iter().all(|edge| *edge == "bottom"),
             "{extruded}: {edges:?}"
         );
+    }
+}
+
+/// R1103-PG-146: a rafter steeper than about 72.5 degrees had no top or bottom
+/// (the contact had to lie 0.3 of the way up from its centre). R1103-PG-141(b)
+/// at a steeper pitch: a rafter extruded from its side whose rise and plumb
+/// cut outgrow its run, from about 40 degrees, ran along its vertical local
+/// axis, so nothing held it sideways. The board under it holds its bottom at
+/// every pitch, and drawn either way while it is a beam; past about 64 degrees
+/// an extruded one is a column, as the box is, and runs up its plumb axis.
+#[test]
+fn a_board_under_a_steep_rafter_holds_its_bottom() {
+    for degrees in [35.0_f64, 45.0, 60.0, 70.0, 80.0] {
+        let drawn = if degrees < 64.0 {
+            &[false, true][..]
+        } else {
+            &[false]
+        };
+        for &extruded in drawn {
+            // The same 3 464 mm along the slope at every pitch.
+            let run = 3464.0 * degrees.to_radians().cos();
+            let report = report(&rafter_at(extruded, degrees, run));
+            let rafter = load(&report, "rafter");
+            let edges: Vec<&str> = rafter
+                .braced_by
+                .iter()
+                .filter(|brace| brace.part == "board")
+                .map(|brace| brace.edge.as_str())
+                .collect();
+            let case = format!("{degrees} degrees, extruded {extruded}");
+            assert_eq!(edges, ["bottom"], "{case}: {:?}", rafter.braced_by);
+            assert!(rafter.axis[0].abs() > 0.1, "{case}: {:?}", rafter.axis);
+        }
     }
 }
