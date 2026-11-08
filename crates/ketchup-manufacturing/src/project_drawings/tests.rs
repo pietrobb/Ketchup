@@ -973,6 +973,65 @@ fn the_plan_marks_where_sections_a_and_b_cut_it_and_they_carry_the_letters() {
     assert!(summary(&plans, ProjectView::Plan).section_marks.is_empty());
 }
 
+/// Review 2026-11-08 §5.3: every sheet of the set, its PDF page and its DXF
+/// alike, lists the revisions of the set beside its title block; too many to
+/// list refuse the set rather than drop one.
+#[test]
+fn every_sheet_lists_the_revisions_of_the_set() {
+    use crate::revision_table::{RevisionCaptions, SheetRevision};
+    let revision = |index: &str, change: &str| SheetRevision {
+        index: index.to_owned(),
+        date: "8. 11. 2026".to_owned(),
+        change: change.to_owned(),
+    };
+    let revised = DrawingSetOptions {
+        revisions: vec![
+            revision("A", "Vydanie pre stavebné povolenie"),
+            revision("B", "Zväčšené okno v obývačke"),
+        ],
+        revision_captions: RevisionCaptions {
+            index: "Index".to_owned(),
+            date: "Dátum".to_owned(),
+            change: "Popis zmeny".to_owned(),
+        },
+        ..options(&room(), Some(1200.0))
+    };
+    let set = drawing_set(&room(), &revised).unwrap();
+    assert_eq!(set.sheets.len(), 3);
+    for (sheet, dxf) in set.sheets.iter().zip(set.dxf()) {
+        let dxf = String::from_utf8(dxf).unwrap();
+        for text in ["Popis zmeny", "A", "B", "Zväčšené okno v obývačke"] {
+            assert!(
+                texts(&sheet.page).contains(&text),
+                "{text} on {}",
+                sheet.number
+            );
+            assert!(
+                texts(&sheet.lines).contains(&text),
+                "{text} on {}",
+                sheet.number
+            );
+        }
+        for text in ["1\nPopis zmeny\n", "1\nB\n", "1\n8. 11. 2026\n"] {
+            assert!(
+                dxf.contains(text),
+                "{text:?} in the DXF of {}",
+                sheet.number
+            );
+        }
+    }
+    let crowded = DrawingSetOptions {
+        revisions: (1..=12)
+            .map(|index| revision(&index.to_string(), "Zmena"))
+            .collect(),
+        ..revised
+    };
+    assert!(matches!(
+        drawing_set(&room(), &crowded),
+        Err(ProjectDrawingError::RevisionsDoNotFit(refused)) if refused.revisions == 12
+    ));
+}
+
 #[test]
 fn plan_and_sections_fill_the_parts_the_plane_cuts() {
     let set = room_set(Some(1200.0));

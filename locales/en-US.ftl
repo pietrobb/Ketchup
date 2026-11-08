@@ -2208,8 +2208,12 @@ drawings-view-facing-south-west = South-west elevation
 drawings-view-facing-west = West elevation
 drawings-view-facing-north-west = North-west elevation
 drawings-sheet-north-letter = N
+drawings-sheet-revision-index = Rev.
+drawings-sheet-revision-date = Date
+drawings-sheet-revision-change = Change
 drawings-unavailable = There are no visible exact solids to draw yet; wait until the model is evaluated.
 drawings-do-not-fit = At 1:{ $scale } the views do not fit an { $format } sheet; choose a coarser scale or a larger format.
+drawings-revisions-do-not-fit = The revision table beside the title block holds the newest { $fit } of the { $revisions } revisions. Shorten what they say changed or leave out the oldest; no revision is left out of the sheets on its own.
 drawings-title-value-does-not-fit = The { $field } value does not fit its title block cell even at 1.6 mm: { $lines ->
         [one] { $lines } line holds
        *[other] { $lines } lines hold
@@ -2268,6 +2272,10 @@ drawings-zero-altitude = ±0.000 above sea level
 drawings-zero-altitude-none = Not written
 drawings-north = North, ° counter-clockwise from +Y
 drawings-north-none = Not given
+drawings-revisions = Revisions
+drawings-revisions-none = None yet; every sheet lists the revisions beside its title block, oldest at the bottom.
+drawings-revision-add = Add a revision
+drawings-revision-remove = Remove
 drawings-export-pdf = Export PDF…
 drawings-export-set-dxf = Export DXF (a file per sheet)…
 drawings-export-set-dwg = Export DWG (a file per sheet)…

@@ -958,6 +958,20 @@ impl UnderlayLinesBuilder {
         self.claim(index, before);
     }
 
+    /// Adds `points`, already chorded, to `layer` as one polyline; none of fewer than two.
+    pub fn add_polyline(&mut self, layer: &str, points: &[[f64; 2]]) {
+        if points.len() < 2 {
+            return;
+        }
+        let index = self.layer_index(layer);
+        let before = self.sizes(index);
+        let lines = &mut self.layers[index];
+        lines.points_mm.extend_from_slice(points);
+        lines.ends.push(lines.points_mm.len());
+        lines.styles.push(self.style);
+        self.claim(index, before);
+    }
+
     /// Adds a fill of `layer`: what lies inside an odd number of `rings`, each closed and
     /// of at least three points.
     pub fn add_fill(&mut self, layer: &str, rings: &[Vec<[f64; 2]>]) {

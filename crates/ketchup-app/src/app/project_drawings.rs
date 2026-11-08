@@ -20,6 +20,7 @@ use ketchup_manufacturing::project_drawings::{
     ProjectDrawingError, ProjectView, SCALES, SheetTitles, ShopDrawings, ShopPosition, ShopSheet,
     Storey, drawing_set_until, ground_floor, storeys, table_ground_floor, table_storeys,
 };
+use ketchup_manufacturing::revision_table::RevisionCaptions;
 use ketchup_manufacturing::title_block::{
     DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM, SheetFormat, SheetLanguage, SheetSettings, TitleField,
 };
@@ -1813,6 +1814,12 @@ impl KetchupApp {
                 facing_titles: Self::facing_titles(&catalog),
                 storeys: settings.storeys,
                 zero_altitude,
+                revisions: settings.revisions,
+                revision_captions: RevisionCaptions {
+                    index: catalog.text("drawings-sheet-revision-index"),
+                    date: catalog.text("drawings-sheet-revision-date"),
+                    change: catalog.text("drawings-sheet-revision-change"),
+                },
             },
             info,
         })
@@ -1861,6 +1868,15 @@ impl KetchupApp {
                         ("lines", error.lines.to_string()),
                         ("characters", error.characters.to_string()),
                         ("length", error.length.to_string()),
+                    ]),
+                )
+            }
+            ProjectDrawingsError::Drawing(ProjectDrawingError::RevisionsDoNotFit(error)) => {
+                self.catalog.format(
+                    "drawings-revisions-do-not-fit",
+                    &BTreeMap::from([
+                        ("revisions", error.revisions.to_string()),
+                        ("fit", error.fit.to_string()),
                     ]),
                 )
             }
@@ -2211,6 +2227,9 @@ impl KetchupApp {
                             );
                             ui.end_row();
                         }
+                        ui.label(self.catalog.text("drawings-revisions"));
+                        super::revision_rows::show_revisions(ui, &self.catalog, &mut editing);
+                        ui.end_row();
                     });
                 ui.separator();
                 ui.horizontal(|ui| {

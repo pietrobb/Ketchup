@@ -114,6 +114,10 @@ pub struct SheetSettings {
     /// the world they show; none when not given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub north_tenths_deg: Option<i32>,
+    /// The revisions of the set, oldest first (review 2026-11-08 §5.3):
+    /// every sheet lists them beside its title block.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub revisions: Vec<crate::revision_table::SheetRevision>,
 }
 
 impl SheetSettings {
@@ -332,7 +336,7 @@ fn lines_in_cell(cell_height: f64, height: f64) -> usize {
 
 /// `text` broken at spaces into lines no wider than `room`; a word wider than
 /// `room` on its own is broken between its characters.
-fn wrap(font: &SheetFont, text: &str, height: f64, room: f64) -> Vec<String> {
+pub(crate) fn wrap(font: &SheetFont, text: &str, height: f64, room: f64) -> Vec<String> {
     let mut lines = Vec::new();
     let mut line = String::new();
     for word in text.split_whitespace() {

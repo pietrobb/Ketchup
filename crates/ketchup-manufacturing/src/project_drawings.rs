@@ -13,6 +13,7 @@
 //! so the sheet follows whatever is visible: hiding a layer leaves it out.
 //! Lines behind nearer faces are hidden by painting faces from far to near.
 
+use crate::revision_table::RevisionsDoNotFit;
 use crate::title_block::{
     SheetFormat, StoreyLevels, TITLE_BLOCK_MM, TitleValueDoesNotFit, drawing_area,
 };
@@ -141,6 +142,8 @@ pub enum ProjectDrawingError {
     },
     /// A title block value would be cut short.
     TitleValueDoesNotFit(TitleValueDoesNotFit),
+    /// The revision table would lose a revision.
+    RevisionsDoNotFit(RevisionsDoNotFit),
     /// The caller stopped the set before it was drawn.
     Cancelled,
 }
@@ -148,6 +151,12 @@ pub enum ProjectDrawingError {
 impl From<TitleValueDoesNotFit> for ProjectDrawingError {
     fn from(error: TitleValueDoesNotFit) -> Self {
         Self::TitleValueDoesNotFit(error)
+    }
+}
+
+impl From<RevisionsDoNotFit> for ProjectDrawingError {
+    fn from(error: RevisionsDoNotFit) -> Self {
+        Self::RevisionsDoNotFit(error)
     }
 }
 
@@ -166,6 +175,7 @@ impl std::fmt::Display for ProjectDrawingError {
                 )
             ),
             Self::TitleValueDoesNotFit(error) => error.fmt(formatter),
+            Self::RevisionsDoNotFit(error) => error.fmt(formatter),
             Self::Cancelled => formatter.write_str("the drawing was cancelled"),
         }
     }

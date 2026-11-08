@@ -13,9 +13,13 @@ use std::ops::Range;
 
 mod compare;
 mod refusal;
+mod revisions;
 
 pub use compare::Difference;
 pub use refusal::{DxfEditRefusal, EditOfObject, EditedDxfError, TextWritten};
+pub use revisions::{
+    OverlayLayers, RevisedEntity, Revision, RevisionComparison, compare_revisions, revision_overlay,
+};
 
 use super::code_page::CodePage;
 use super::text::unicode_escapes;

@@ -18,6 +18,7 @@ use crate::app::underlay_export::PublishGate;
 use crate::export_bundle::ExportTransactionError;
 use ketchup_manufacturing::dxf_annotations::MAX_PLAN_SCALE;
 use ketchup_manufacturing::project_drawings::DrawingSet;
+use ketchup_manufacturing::revision_table::SheetRevision;
 use ketchup_manufacturing::title_block::{
     SheetFormat, SheetLanguage, SheetSettings, StoreyLevels, TitleField,
 };
@@ -83,6 +84,10 @@ pub struct ExportDrawingsRequest {
     /// document's (review 2026-11-08 §5.2).
     #[serde(default)]
     pub north_deg: Option<Value>,
+    /// The revisions of the set, oldest first, kept in the document in place
+    /// of its own; absent keeps the document's (review 2026-11-08 §5.3).
+    #[serde(default)]
+    pub revisions: Option<Vec<SheetRevision>>,
 }
 
 fn sheet_format(name: &str) -> Result<Option<SheetFormat>, &'static str> {
@@ -137,6 +142,7 @@ impl LiveBridge {
             storeys,
             zero_altitude_mm,
             north_deg,
+            revisions,
         }) = request
         else {
             return Err(failure(
@@ -157,10 +163,11 @@ impl LiveBridge {
             || storeys.is_some()
             || zero_altitude_mm.is_some()
             || north_deg.is_some()
+            || revisions.is_some()
         {
             return Err(failure(
                 "invalid_params",
-                "format, title_block, plan_only, drawing_scale, sheet_language, zero_level_mm, storeys, zero_altitude_mm, north_deg and take_over belong to the project sheets; a drawing sheet keeps its own page, views, scale and title block.",
+                "format, title_block, plan_only, drawing_scale, sheet_language, zero_level_mm, storeys, zero_altitude_mm, north_deg, revisions and take_over belong to the project sheets; a drawing sheet keeps its own page, views, scale and title block.",
                 json!({"sheet_id": id}),
             ));
         }
@@ -620,6 +627,7 @@ pub(super) fn start_export(
         storeys,
         zero_altitude_mm,
         north_deg,
+        revisions,
     }) = request
     else {
         return Err("invalid_request");
@@ -782,6 +790,9 @@ pub(super) fn start_export(
     if let Some(north_tenths_deg) = north_tenths_deg {
         settings.north_tenths_deg = north_tenths_deg;
     }
+    if let Some(revisions) = revisions {
+        settings.revisions = revisions;
+    }
     settings.title_block.extend(title_block);
     app.store_sheet_settings(settings);
     started.kept = app.stored_sheet_settings().ok();
@@ -874,6 +885,7 @@ pub(super) fn finish_export(
         "storeys_from": if settings.storeys.is_empty() { "model" } else { "table" },
         "zero_altitude_mm": settings.zero_altitude_mm.map_or(json!("none"), |altitude| json!(altitude)),
         "north_deg": settings.north_deg().map_or(json!("none"), |north| json!(north)),
+        "revisions": settings.revisions,
         "title_block": settings.title_block,
         "basis": "visible_layers_exact_solids",
         "dirty": app.is_dirty(),
@@ -907,6 +919,16 @@ pub(super) fn export_failed(error: ProjectDrawingsError) -> &'static str {
                 "length": error.length,
             }),
         ),
+        ProjectDrawingsError::Drawing(
+            ketchup_manufacturing::project_drawings::ProjectDrawingError::RevisionsDoNotFit(error),
+        ) => {
+            let details = json!({"revisions": error.revisions, "fit": error.fit});
+            super::record_rejection(
+                &super::rejected("revisions_do_not_fit").caused_by(error),
+                details,
+            );
+            "revisions_do_not_fit"
+        }
         ProjectDrawingsError::Drawing(error) => failed_because("drawings_unavailable", error),
         ProjectDrawingsError::NotEvaluated(parts) => failure(
             "drawings_unavailable",
@@ -1013,6 +1035,7 @@ mod tests {
                 storeys: None,
                 zero_altitude_mm: None,
                 north_deg: None,
+                revisions: None,
             }),
             false,
         )
@@ -1091,6 +1114,7 @@ mod tests {
             storeys: None,
             zero_altitude_mm: None,
             north_deg: None,
+            revisions: None,
         });
         assert_eq!(
             LiveBridge::export_drawings(&mut app, asked.clone(), false),

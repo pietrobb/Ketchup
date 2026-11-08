@@ -2125,8 +2125,12 @@ drawings-view-facing-south-west = Pohľad juhozápadný
 drawings-view-facing-west = Pohľad západný
 drawings-view-facing-north-west = Pohľad severozápadný
 drawings-sheet-north-letter = S
+drawings-sheet-revision-index = Index
+drawings-sheet-revision-date = Dátum
+drawings-sheet-revision-change = Popis zmeny
 drawings-unavailable = Zatiaľ nie sú viditeľné žiadne presné telesá na kreslenie; počkaj, kým sa model vyhodnotí.
 drawings-do-not-fit = V mierke 1:{ $scale } sa pohľady nezmestia na hárok { $format }; zvoľ hrubšiu mierku alebo väčší formát.
+drawings-revisions-do-not-fit = Tabuľka revízií vedľa pečiatky pojme najnovších { $fit } z { $revisions } revízií. Skráť popisy zmien alebo vynechaj najstaršie; sama žiadnu revíziu z listov nevynechá.
 drawings-title-value-does-not-fit = Hodnota poľa „{ $field }“ sa do bunky pečiatky nezmestí ani písmom 1,6 mm: { $lines ->
         [one] na { $lines } riadku
        *[other] na { $lines } riadkoch
@@ -2186,6 +2190,10 @@ drawings-zero-altitude = ±0,000 nad morom
 drawings-zero-altitude-none = Neuvádzať
 drawings-north = Sever, ° proti smeru hodinových ručičiek od +Y
 drawings-north-none = Nezadaný
+drawings-revisions = Revízie
+drawings-revisions-none = Zatiaľ žiadna; každý list uvedie revízie vedľa pečiatky, najstaršiu dole.
+drawings-revision-add = Pridať revíziu
+drawings-revision-remove = Odstrániť
 drawings-export-pdf = Exportovať PDF…
 drawings-export-set-dxf = Exportovať DXF (súbor na každý list)…
 drawings-export-set-dwg = Exportovať DWG (súbor na každý list)…

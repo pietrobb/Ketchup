@@ -48,6 +48,7 @@ fn export(path: &Path) -> Request {
         storeys: None,
         zero_altitude_mm: None,
         north_deg: None,
+        revisions: None,
     })
 }
 

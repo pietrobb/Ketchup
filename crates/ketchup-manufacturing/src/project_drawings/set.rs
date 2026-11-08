@@ -27,6 +27,7 @@ use super::{
     draw_view_on_page, extent, finished_floors, floor_levels, format_at_scale, ground_floor_of,
     lerp, marked_floor_levels, solid_edges, table_ground_floor, view_frames,
 };
+use crate::revision_table::{RevisionCaptions, SheetRevision, draw_revisions};
 use crate::sheet_dxf::page_dxf;
 use crate::title_block::{
     DEFAULT_COARSEST_SCALE, SheetFormat, StoreyLevels, TitleBlock, TitleField,
@@ -122,6 +123,10 @@ pub struct DrawingSetOptions {
     /// The title of an elevation that shows each side of the world, such as
     /// "South elevation"; a side missing here keeps the view's title.
     pub facing_titles: BTreeMap<CompassSide, String>,
+    /// The revisions of the set, oldest first, which every sheet lists
+    /// beside its title block (review 2026-11-08 §5.3).
+    pub revisions: Vec<SheetRevision>,
+    pub revision_captions: RevisionCaptions,
 }
 
 /// What a sheet of the set shows.
@@ -558,7 +563,7 @@ pub fn drawing_set_until(
         };
         let mut page = blank();
         draw_views(&mut page, &sheet, format, scale, None);
-        draw_frame_and_title_block(&mut page, format, &options.title_labels, &values)?;
+        draw_frame(&mut page, format, options, &values)?;
         let visible = sheet
             .views
             .views
@@ -568,7 +573,7 @@ pub fn drawing_set_until(
         stopped()?;
         let mut lines = blank();
         draw_views(&mut lines, &sheet, format, scale, Some(&visible));
-        draw_frame_and_title_block(&mut lines, format, &options.title_labels, &values)?;
+        draw_frame(&mut lines, format, options, &values)?;
         let views = sheet
             .views
             .views
@@ -635,7 +640,7 @@ pub fn drawing_set_until(
             shop,
             number,
             &options.shop.columns,
-            &options.title_labels,
+            options,
             &values,
             stop,
         )?);
@@ -658,7 +663,7 @@ pub fn drawing_set_until(
             marks: Vec::new(),
         };
         let summary = cutting.draw(&mut page);
-        draw_frame_and_title_block(&mut page, cutting.format, &options.title_labels, &values)?;
+        draw_frame(&mut page, cutting.format, options, &values)?;
         sheets.push(SetSheet {
             kind: SheetKind::Cutting {
                 plan: cutting.plan,
@@ -691,7 +696,7 @@ pub fn drawing_set_until(
             marks: Vec::new(),
         };
         draw_schedule(&mut page, format, &options.openings.columns, &schedule);
-        draw_frame_and_title_block(&mut page, format, &options.title_labels, &values)?;
+        draw_frame(&mut page, format, options, &values)?;
         sheets.push(SetSheet {
             kind: SheetKind::Openings,
             number: count,
@@ -816,13 +821,26 @@ fn section_levels(
         .collect())
 }
 
+/// The frame of a `format` sheet, its title block filled with `values` and
+/// the set's revisions beside it.
+fn draw_frame(
+    page: &mut Page,
+    format: SheetFormat,
+    options: &DrawingSetOptions,
+    values: &TitleBlock,
+) -> Result<(), ProjectDrawingError> {
+    draw_frame_and_title_block(page, format, &options.title_labels, values)?;
+    draw_revisions(page, format, &options.revision_captions, &options.revisions)?;
+    Ok(())
+}
+
 /// Shop drawing `drawing` as sheet `number`, its title block filled with `values`.
 fn shop_sheet(
     drawing: usize,
     shop: PlannedShop,
     number: usize,
     columns: &[String; 4],
-    labels: &BTreeMap<TitleField, String>,
+    options: &DrawingSetOptions,
     values: &TitleBlock,
     stop: &AtomicBool,
 ) -> Result<SetSheet, ProjectDrawingError> {
@@ -832,11 +850,11 @@ fn shop_sheet(
     };
     let mut page = blank();
     shop.draw(&mut page, columns, None);
-    draw_frame_and_title_block(&mut page, shop.format, labels, values)?;
+    draw_frame(&mut page, shop.format, options, values)?;
     let visible = shop.visible_lines(stop);
     let mut lines = blank();
     shop.draw(&mut lines, columns, Some(&visible));
-    draw_frame_and_title_block(&mut lines, shop.format, labels, values)?;
+    draw_frame(&mut lines, shop.format, options, values)?;
     let summary = |title: &str, view: &DrawnView| ViewSummary {
         view: ProjectView::Shop,
         title: title.to_owned(),

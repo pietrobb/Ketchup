@@ -778,6 +778,7 @@ fn a_plan_of_its_own_is_drawn_as_a_pdf_at_the_scale_the_client_names() {
                 storeys: None,
                 zero_altitude_mm: None,
                 north_deg: None,
+                revisions: None,
             })
         };
 
@@ -893,6 +894,7 @@ fn a_sheet_names_the_letters_it_prints_as_question_marks() {
                 storeys: None,
                 zero_altitude_mm: None,
                 north_deg: None,
+                revisions: None,
             }),
             false,
         )
@@ -1030,4 +1032,81 @@ fn a_client_sets_north_and_the_document_keeps_it() {
     assert_eq!(written["north_deg"], "none", "{written}");
     assert_eq!(stored(&app), None);
     assert_eq!(front_facing(&written), Some(Value::Null), "{written}");
+}
+
+/// Review 2026-11-08 §5.3: a drawing set had no revisions. A client gives
+/// them, oldest first; the document keeps them, every sheet lists them beside
+/// its title block under the sheet language's headings, and more than the
+/// table holds refuse the export and keep the document's.
+#[test]
+fn a_client_gives_the_revisions_every_sheet_lists() {
+    use ketchup_manufacturing::title_block::SheetLanguage;
+    let (mut app, mut bridge, directory) = window();
+    let program = Request::ApplyProgram {
+        expected: None,
+        source: "box('house', (6000, 3000, 2500))\n".into(),
+        overrides: None,
+        file_name: Some("house.star".into()),
+        replace_document: true,
+    };
+    bridge
+        .execute(&mut app, program, false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let drawings = |name: &str, revisions: Value| {
+        serde_json::from_value::<Request>(json!({
+            "method": "export_drawings",
+            "path": directory.path().join(name).display().to_string(),
+            "drawing_scale": 250,
+            "sheet_language": "cs",
+            "revisions": revisions,
+        }))
+        .unwrap()
+    };
+    let revision = |index: &str, change: &str| json!({"index": index, "date": "8. 11. 2026", "change": change});
+    let given = json!([
+        revision("A", "Vydání pro stavební povolení"),
+        revision("B", "Zvětšené okno v obývacím pokoji"),
+    ]);
+    let written = bridge
+        .execute(&mut app, drawings("set.pdf", given.clone()), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["revisions"], given, "{written}");
+    let stored = |app: &KetchupApp| app.stored_sheet_settings().unwrap().revisions;
+    assert_eq!(stored(&app).len(), 2);
+    assert_eq!(
+        app.stored_sheet_settings().unwrap().language,
+        Some(SheetLanguage::Czech)
+    );
+    let set = app
+        .project_drawings_job_for(crate::app::project_drawings::SheetRequest::default())
+        .unwrap()
+        .render(
+            crate::app::project_drawings::SetFileFormat::Pdf,
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        .0;
+    for sheet in &set.sheets {
+        let texts = sheet.page.texts().collect::<Vec<_>>();
+        for text in ["Popis změny", "Datum", "Zvětšené okno v obývacím pokoji"] {
+            assert!(
+                texts.contains(&text),
+                "{text} on sheet {}: {texts:?}",
+                sheet.number
+            );
+        }
+    }
+
+    let crowded = Value::Array(
+        (1..=12)
+            .map(|index| revision(&index.to_string(), "Změna"))
+            .collect(),
+    );
+    assert_eq!(
+        bridge.execute(&mut app, drawings("crowded.pdf", crowded), false),
+        Err("revisions_do_not_fit")
+    );
+    assert!(!directory.path().join("crowded.pdf").exists());
+    assert_eq!(stored(&app).len(), 2, "the document keeps its revisions");
 }

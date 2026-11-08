@@ -76,6 +76,7 @@ mod project_drawings_tests;
 #[path = "app/push_pull_house_tests.rs"]
 mod push_pull_house_tests;
 pub(crate) mod received_comments;
+mod revision_rows;
 mod save_activity;
 pub(crate) mod saved_views;
 mod scale_grips;
