@@ -313,6 +313,59 @@ fn a_homag_package_names_the_piece_without_a_code_and_assigned_codes_pass() {
             code: Some("TOP-A".into())
         })
     );
+    // Review 2026-11-08 §5.2: the partial package programs the rail and names
+    // the shelf with why, in the ZIP and in the workshop package.
+    let partial = projection
+        .woodwop_mpr_4_0_partial_production_package(&snapshot, Default::default())
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        partial
+            .programs
+            .iter()
+            .map(|program| program.program_name.as_str())
+            .collect::<Vec<_>>(),
+        ["000000000007"]
+    );
+    let shelf_refusal = GeneralFabricationError::HomagProgramCodeUnusable {
+        part: "shelf".into(),
+        code: Some("TOP-A".into()),
+    };
+    assert_eq!(
+        partial.not_programmed,
+        [ketchup_manufacturing::fabrication::NotProgrammed {
+            part: "shelf".into(),
+            reason: shelf_refusal.clone(),
+        }]
+    );
+    let zip = partial.zip().unwrap_or_else(|error| panic!("{error}"));
+    let contains = |needle: &str| {
+        zip.windows(needle.len())
+            .any(|window| window == needle.as_bytes())
+    };
+    assert!(contains("000000000007.mpr"));
+    assert!(contains(
+        ketchup_manufacturing::fabrication::HOMAG_PACKAGE_REPORT
+    ));
+    assert!(contains(&format!("- shelf: {shelf_refusal}")));
+    let workshop = projection.workshop_package(&snapshot, Default::default());
+    assert!(
+        workshop
+            .files
+            .iter()
+            .any(|(name, _)| name == "woodwop/000000000007.mpr"),
+        "{:?}",
+        workshop.not_made
+    );
+    let accepted =
+        ketchup_manufacturing::workshop_package::check_workshop_package(&workshop.zip().unwrap())
+            .unwrap();
+    assert!(
+        accepted
+            .not_made
+            .contains(&format!("- woodWOP shelf: {shelf_refusal}")),
+        "{}",
+        accepted.not_made
+    );
     // The rail keeps its code; the shelf's unusable one is replaced, counting on.
     let assignments = projection.production_code_assignments(&snapshot);
     assert_eq!(

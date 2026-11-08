@@ -164,24 +164,34 @@ impl GeneralFabricationProjection {
             self.btlx_2_3_1_export_with_options(snapshot, options.btlx)
                 .map(|bytes| one("btlx/model.btlx", bytes)),
         );
-        add(
-            "woodWOP",
-            self.woodwop_mpr_4_0_production_package(snapshot, options.woodwop)
-                .map(|programs| {
-                    programs
-                        .into_iter()
-                        .flat_map(|program| {
-                            [
-                                (format!("woodwop/{}.mpr", program.program_name), program.mpr),
-                                (
-                                    format!("woodwop/{}.svg", program.program_name),
-                                    program.barcode_svg,
-                                ),
-                            ]
-                        })
-                        .collect()
-                }),
-        );
+        // A part the machine cannot take is named by itself; the other parts
+        // keep their programs.
+        let woodwop = self
+            .woodwop_mpr_4_0_partial_production_package(snapshot, options.woodwop)
+            .and_then(|partial| {
+                if partial.programs.is_empty() && partial.not_programmed.is_empty() {
+                    return Err(GeneralFabricationError::NoPieceToProgram);
+                }
+                Ok(partial)
+            });
+        match woodwop {
+            Ok(partial) => {
+                for program in partial.programs {
+                    let name = &program.program_name;
+                    package.files.extend([
+                        (format!("woodwop/{name}.mpr"), program.mpr),
+                        (format!("woodwop/{name}.svg"), program.barcode_svg),
+                    ]);
+                }
+                package
+                    .not_made
+                    .extend(partial.not_programmed.into_iter().map(|part| NotMade {
+                        output: format!("woodWOP {}", part.part),
+                        reason: Arc::new(part.reason),
+                    }));
+            }
+            Err(error) => add("woodWOP", Err(error)),
+        }
         package
     }
 }
