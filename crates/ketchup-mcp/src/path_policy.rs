@@ -240,19 +240,63 @@ fn mounts() -> std::io::Result<Vec<Mount>> {
 
 /// The mounts of a Linux mount table (`/proc/self/mounts`): `device mount-point type
 /// options ...` per line, a space, tab, newline or backslash in the mount point written
-/// as its octal escape (`\040`).
+/// as its octal escape (`\040`). An overlay is local when each of its layers lies on a
+/// local mount of those mounted before it (review 2026-11-03 SEC-141: one with a layer
+/// on a share passed).
 #[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
 fn linux_mounts(table: &str) -> Vec<Mount> {
-    table
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split(' ');
-            let (_device, on, kind) = (fields.next()?, fields.next()?, fields.next()?);
-            Some(Mount::new(
-                &unescape_mount_point(on),
-                linux_local_type(kind),
-            ))
-        })
+    let mut mounts = Vec::new();
+    for line in table.lines() {
+        let mut fields = line.split(' ');
+        let (Some(_device), Some(on), Some(kind)) = (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let options = fields.next().unwrap_or("");
+        let local = linux_local_type(kind)
+            && (kind != "overlay"
+                || overlay_layers(options)
+                    .iter()
+                    .all(|layer| local_mounted_path(layer, &mounts, &[])));
+        mounts.push(Mount::new(&unescape_mount_point(on), local));
+    }
+    mounts
+}
+
+/// The directories an overlay's mount options name as its layers: those of `lowerdir`
+/// (`:` between them, `\:` within a name), `upperdir`, `workdir`, and the `lowerdir+`
+/// and `datadir+` of a newer kernel.
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+fn overlay_layers(options: &str) -> Vec<String> {
+    let mut layers = Vec::new();
+    for (key, value) in options
+        .split(',')
+        .filter_map(|option| option.split_once('='))
+    {
+        match key {
+            "lowerdir" => {
+                let mut layer = String::new();
+                let mut characters = value.chars();
+                while let Some(character) = characters.next() {
+                    match character {
+                        '\\' if characters.as_str().starts_with(':') => {
+                            layer.push(':');
+                            characters.next();
+                        }
+                        ':' => layers.push(std::mem::take(&mut layer)),
+                        _ => layer.push(character),
+                    }
+                }
+                layers.push(layer);
+            }
+            "upperdir" | "workdir" | "lowerdir+" | "datadir+" => layers.push(value.to_owned()),
+            _ => {}
+        }
+    }
+    layers
+        .iter()
+        .filter(|layer| !layer.is_empty())
+        .map(|layer| unescape_mount_point(layer))
         .collect()
 }
 
@@ -428,6 +472,44 @@ mod mount_tests {
             // Review 2026-11-06 P3: the host folders of VirtualBox and Parallels.
             "/media/sf_host/x.pdf",
             "/media/psf/Home/x.pdf",
+        ] {
+            assert!(!local_mounted_path(remote, &mounts, &[]), "{remote:?}");
+        }
+    }
+
+    // Review 2026-11-03 SEC-141: an overlay is as local as its layers, and one whose
+    // lower or upper layer lies on a share passed as local.
+    #[test]
+    fn an_overlay_with_a_layer_on_a_share_is_not_local() {
+        let mounts = linux_mounts(
+            "/dev/sda2 / ext4 rw 0 0\n\
+             nas:/export /srv/export nfs4 rw 0 0\n\
+             //nas/a\\040b /mnt/a\\040b cifs rw 0 0\n\
+             overlay /var/lib/docker/overlay2/x/merged overlay \
+             rw,lowerdir=/var/lib/docker/overlay2/l/A:/var/lib/docker/overlay2/l/B,\
+             upperdir=/var/lib/docker/overlay2/x/diff,workdir=/var/lib/docker/overlay2/x/work 0 0\n\
+             overlay /mnt/lower-share overlay rw,lowerdir=/home/me/l:/srv/export/base,\
+             upperdir=/home/me/u,workdir=/home/me/w 0 0\n\
+             overlay /mnt/upper-share overlay rw,lowerdir=/home/me/l,\
+             upperdir=/srv/export/u,workdir=/srv/export/w 0 0\n\
+             overlay /mnt/escaped overlay rw,lowerdir=/home/me/c\\:d:/mnt/a\\040b/l,\
+             upperdir=/home/me/u,workdir=/home/me/w 0 0\n\
+             overlay /mnt/new overlay rw,lowerdir+=/home/me/l,datadir+=/srv/export/d,\
+             upperdir=/home/me/u,workdir=/home/me/w 0 0\n\
+             overlay /mnt/stacked overlay rw,lowerdir=/mnt/lower-share,\
+             upperdir=/home/me/u2,workdir=/home/me/w2 0 0\n",
+        );
+        assert!(local_mounted_path(
+            "/var/lib/docker/overlay2/x/merged/etc/x.pdf",
+            &mounts,
+            &[]
+        ));
+        for remote in [
+            "/mnt/lower-share/x.pdf",
+            "/mnt/upper-share/x.pdf",
+            "/mnt/escaped/x.pdf",
+            "/mnt/new/x.pdf",
+            "/mnt/stacked/x.pdf",
         ] {
             assert!(!local_mounted_path(remote, &mounts, &[]), "{remote:?}");
         }
