@@ -6,6 +6,7 @@
 use std::collections::BTreeSet;
 
 use super::place;
+use crate::tolerance::{DEFAULT_ANGULAR_TOLERANCE_RAD, ROUNDING, same_coordinate_mm};
 use crate::underlay::UnderlayLines;
 use crate::underlay::fill::UnderlayFill;
 use crate::underlay::text::UnderlayText;
@@ -92,25 +93,28 @@ fn drawn(lines: &UnderlayLines, id: usize) -> Vec<Drawn<'_>> {
 }
 
 /// How object `found` of `now` differs from object `id` of `then`, the first difference
-/// found; `None` where it draws alike.
+/// found; `None` where it draws alike. The points of both lie `offset_mm` from where the
+/// file has them.
 pub(super) fn difference(
     then: &UnderlayLines,
     id: usize,
     now: &UnderlayLines,
     found: usize,
+    offset_mm: [f64; 2],
 ) -> Option<Difference> {
     let (then, now) = (drawn(then, id), drawn(now, found));
     if then.len() != now.len() {
         return Some(Difference::Lines);
     }
+    let alike = Alike { offset_mm };
     then.iter().zip(&now).find_map(|(then, now)| {
         if then.layer != now.layer {
             Some(Difference::Layer)
-        } else if then.lines != now.lines {
+        } else if !alike.runs(&then.lines, &now.lines) {
             Some(Difference::Lines)
-        } else if then.texts != now.texts {
+        } else if !all_alike(&then.texts, &now.texts, |a, b| alike.texts(a, b)) {
             Some(Difference::Text)
-        } else if then.fills != now.fills {
+        } else if !all_alike(&then.fills, &now.fills, |a, b| alike.runs(a, b)) {
             Some(Difference::Fill)
         } else {
             None
@@ -118,9 +122,56 @@ pub(super) fn difference(
     })
 }
 
-/// Where object `id` of `lines` lies, to the millimetre: the anchor of its first text, or
-/// else the first point of its lines, or of its fills; `None` where it draws nothing.
-pub(super) fn place_mm(lines: &UnderlayLines, id: usize) -> Option<[i64; 2]> {
+/// Whether `a` and `b` pair up one by one, each pair `alike`.
+fn all_alike<T>(a: &[T], b: &[T], alike: impl Fn(&T, &T) -> bool) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(a, b)| alike(a, b))
+}
+
+/// Points and lengths in millimetres alike as a drawing's are: a CAD writing a coordinate
+/// back with its own rounding (far below a micrometre off) changes nothing (review
+/// 2026-11-06 P3: it was refused as a line changed in the file), however far from the
+/// origin the file has it (r23 CD-202: a geodetic drawing, 5e9 mm out, was refused).
+struct Alike {
+    /// Where the file's origin lies against the points compared.
+    offset_mm: [f64; 2],
+}
+
+impl Alike {
+    fn point(&self, p: [f64; 2], q: [f64; 2]) -> bool {
+        (0..2).all(|axis| {
+            let offset = self.offset_mm[axis];
+            same_coordinate_mm(p[axis] + offset, q[axis] + offset)
+        })
+    }
+
+    fn runs(&self, a: &[&[[f64; 2]]], b: &[&[[f64; 2]]]) -> bool {
+        all_alike(a, b, |a, b| all_alike(a, b, |p, q| self.point(*p, *q)))
+    }
+
+    fn texts(&self, a: &UnderlayText, b: &UnderlayText) -> bool {
+        texts_alike(a, b) && self.point(a.anchor_mm, b.anchor_mm)
+    }
+}
+
+/// Whether two texts are alike but for where they lie.
+fn texts_alike(a: &UnderlayText, b: &UnderlayText) -> bool {
+    a.text == b.text
+        && a.horizontal == b.horizontal
+        && a.vertical == b.vertical
+        && a.fit == b.fit
+        && same_coordinate_mm(a.height_mm, b.height_mm)
+        && same_coordinate_mm(a.wrap_width_mm, b.wrap_width_mm)
+        && same_coordinate_mm(a.line_pitch_mm, b.line_pitch_mm)
+        && (a.rotation_rad - b.rotation_rad).abs() <= DEFAULT_ANGULAR_TOLERANCE_RAD
+        && (a.width_factor - b.width_factor).abs()
+            <= ROUNDING * a.width_factor.abs().max(b.width_factor.abs()).max(1.0)
+}
+
+/// Where object `id` of `lines` lies, to the millimetre, where the file has it, `offset_mm`
+/// from the lines (review 2026-11-06 r23 CD-202: a geodetic drawing's object was said to
+/// lie at -877, -877 mm): the anchor of its first text, or else the first point of its
+/// lines, or of its fills; `None` where it draws nothing.
+pub(super) fn place_mm(lines: &UnderlayLines, id: usize, offset_mm: [f64; 2]) -> Option<[i64; 2]> {
     let drawn = drawn(lines, id);
     let first = |pick: fn(&Drawn<'_>) -> Option<[f64; 2]>| drawn.iter().find_map(pick);
     let point = first(|drawn| drawn.texts.first().map(|text| text.anchor_mm))
@@ -134,7 +185,7 @@ pub(super) fn place_mm(lines: &UnderlayLines, id: usize) -> Option<[i64; 2]> {
                     .find_map(|ring| ring.first().copied())
             })
         })?;
-    let [x, y] = point.map(millimetre);
+    let [x, y] = [point[0] + offset_mm[0], point[1] + offset_mm[1]].map(millimetre);
     Some([x?, y?])
 }
 

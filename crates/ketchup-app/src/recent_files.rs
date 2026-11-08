@@ -5,13 +5,15 @@
 //! keeps it with the other user settings (the language choice); a window
 //! made by a test keeps it in memory unless the test hands it a store.
 
+pub(crate) use crate::recent_files::presence::Presence;
+use crate::recent_files::presence::{local_folder, presence};
 use eframe::egui;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-#[cfg(any(not(windows), test))]
+pub(crate) mod presence;
 pub(crate) mod user_settings;
 
 /// How many documents File > Open Recent offers.
@@ -113,17 +115,6 @@ impl RecentFilesStore for RegistryRecentFiles {
 /// document on a server that does not answer is shown as listed meanwhile.
 const CHECK_WAIT: Duration = Duration::from_millis(100);
 
-/// Whether a listed document is there.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Presence {
-    Here,
-    /// Its folder answers and holds no such document: gone for good.
-    Gone,
-    /// Its folder does not answer, as on a server or disk that is offline:
-    /// it may be back later, so it stays listed.
-    Unavailable,
-}
-
 /// What the list asks the disk; a test stands in for a slow server.
 pub(crate) trait PathProbe: Send + Sync {
     fn presence(&self, path: &Path) -> Presence;
@@ -131,65 +122,23 @@ pub(crate) trait PathProbe: Send + Sync {
     fn resolved(&self, path: &Path) -> Option<PathBuf>;
 }
 
+/// The disk of this computer, a missing folder trusted to be deleted below
+/// [`local_folder`] only.
 struct Disk {
-    /// The folder below which a missing folder was deleted, not a volume that
-    /// is not mounted now; `None` where an answering folder says so for its
-    /// whole volume (Windows: a drive or share that is out answers nothing).
     local: Option<PathBuf>,
 }
 
 impl Disk {
     fn of_this_computer() -> Self {
-        // Without a home folder no folder above a document's own is trusted:
-        // an absolute folder is never below a relative one.
-        let local = (!cfg!(windows)).then(|| {
-            std::env::home_dir()
-                .filter(|home| home.is_absolute())
-                .unwrap_or_else(|| PathBuf::from("."))
-        });
-        Self { local }
-    }
-
-    /// Whether the folders of a missing `path` answer: its own folder is
-    /// there, or the nearest one above it that is there is on this
-    /// computer's disk (review 2026-11-04 r19 P3: a document whose folder was
-    /// deleted stayed out of reach for ever).
-    fn folder_answers(&self, path: &Path) -> bool {
-        for folder in path.ancestors().skip(1) {
-            match std::fs::metadata(folder) {
-                Ok(metadata) => {
-                    return metadata.is_dir()
-                        && (Some(folder) == path.parent()
-                            || self
-                                .local
-                                .as_deref()
-                                .is_none_or(|local| folder.starts_with(local)));
-                }
-                // Only a folder that is not there lets the search go up.
-                Err(error) => {
-                    if error.kind() != std::io::ErrorKind::NotFound {
-                        return false;
-                    }
-                }
-            }
+        Self {
+            local: local_folder(),
         }
-        false
     }
 }
 
 impl PathProbe for Disk {
     fn presence(&self, path: &Path) -> Presence {
-        match std::fs::metadata(path) {
-            Ok(metadata) if metadata.is_file() => Presence::Here,
-            Ok(_) => Presence::Gone,
-            Err(error) => {
-                if error.kind() == std::io::ErrorKind::NotFound && self.folder_answers(path) {
-                    Presence::Gone
-                } else {
-                    Presence::Unavailable
-                }
-            }
-        }
+        presence(path, self.local.as_deref())
     }
 
     fn resolved(&self, path: &Path) -> Option<PathBuf> {
@@ -202,6 +151,14 @@ struct Checked {
     path: PathBuf,
     presence: Presence,
     key: Option<String>,
+}
+
+/// A picked document whose check runs on a worker.
+struct Picking {
+    path: PathBuf,
+    answer: mpsc::Receiver<Presence>,
+    /// The window's document it was picked in (review 2026-11-06 UI-180).
+    generation: u64,
 }
 
 /// The list File > Open Recent shows, and the store that keeps it. Neither
@@ -219,7 +176,7 @@ pub(crate) struct RecentFiles {
     on_disk: HashMap<PathBuf, Presence>,
     checking: Option<mpsc::Receiver<Checked>>,
     /// The document picked last, while its check runs on a worker.
-    picking: Option<(PathBuf, mpsc::Receiver<Presence>)>,
+    picking: Option<Picking>,
     /// The pass the menu was last drawn in.
     shown_pass: Option<u64>,
 }
@@ -376,9 +333,16 @@ impl RecentFiles {
     /// answer: [`Self::picked`] gives the answer when it comes, and `context`
     /// is woken for it. Asking on the window held it until the system gave up
     /// on a server that does not answer (review 2026-11-04 r19 UI-161).
-    pub(crate) fn pick(&mut self, path: &Path, context: Option<egui::Context>) -> Option<Presence> {
-        if self.on_disk(path) == Some(Presence::Unavailable) {
-            return Some(Presence::Unavailable);
+    /// `generation` is the window's document it is picked in
+    /// ([`crate::app_state::FileState::generation`]), given back with the answer.
+    pub(crate) fn pick(
+        &mut self,
+        path: &Path,
+        context: Option<egui::Context>,
+        generation: u64,
+    ) -> Option<Presence> {
+        if self.on_disk(path) == Some(Presence::Unknown) {
+            return Some(Presence::Unknown);
         }
         let (send, answer) = mpsc::channel();
         let (probe, asked) = (Arc::clone(&self.probe), path.to_owned());
@@ -389,32 +353,38 @@ impl RecentFiles {
                 context.request_repaint();
             }
         });
-        self.picking = Some((path.to_owned(), answer));
+        self.picking = Some(Picking {
+            path: path.to_owned(),
+            answer,
+            generation,
+        });
         self.picked(Some(Instant::now() + CHECK_WAIT))
-            .map(|(_, presence)| presence)
+            .map(|(_, presence, _)| presence)
     }
 
-    /// The document picked last and whether it is there, once its check
-    /// answers, waiting until `until` for it; a check that ended without an
-    /// answer counts as out of reach.
-    pub(crate) fn picked(&mut self, until: Option<Instant>) -> Option<(PathBuf, Presence)> {
-        let (_, answer) = self.picking.as_ref()?;
+    /// The document picked last, whether it is there and the generation it was
+    /// picked in, once its check answers, waiting until `until` for it; a check
+    /// that ended without an answer counts as out of reach.
+    pub(crate) fn picked(&mut self, until: Option<Instant>) -> Option<(PathBuf, Presence, u64)> {
+        let answer = &self.picking.as_ref()?.answer;
         let left = until.and_then(|until| until.checked_duration_since(Instant::now()));
         let presence = match left {
             Some(left) => match answer.recv_timeout(left) {
                 Ok(presence) => presence,
                 Err(mpsc::RecvTimeoutError::Timeout) => return None,
-                Err(mpsc::RecvTimeoutError::Disconnected) => Presence::Unavailable,
+                Err(mpsc::RecvTimeoutError::Disconnected) => Presence::Unknown,
             },
             None => match answer.try_recv() {
                 Ok(presence) => presence,
                 Err(mpsc::TryRecvError::Empty) => return None,
-                Err(mpsc::TryRecvError::Disconnected) => Presence::Unavailable,
+                Err(mpsc::TryRecvError::Disconnected) => Presence::Unknown,
             },
         };
-        let (path, _) = self.picking.take()?;
+        let Picking {
+            path, generation, ..
+        } = self.picking.take()?;
         self.on_disk.insert(path.clone(), presence);
-        Some((path, presence))
+        Some((path, presence, generation))
     }
 }
 
@@ -445,30 +415,6 @@ mod tests {
 
     fn list(store: &MemoryRecentFiles) -> RecentFiles {
         RecentFiles::from_store(Box::new(store.clone()))
-    }
-
-    /// Review 2026-11-04 r19 P3: a document whose folder was deleted on the
-    /// computer's own disk stayed listed as out of reach for ever.
-    #[test]
-    fn a_document_in_a_folder_deleted_locally_is_gone() {
-        let directory = tempfile::tempdir().unwrap();
-        let document = directory
-            .path()
-            .join("Old")
-            .join("Phase 2")
-            .join("a.ketchup");
-        let local = |folder: &Path| Disk {
-            local: Some(folder.to_owned()),
-        };
-        assert_eq!(local(directory.path()).presence(&document), Presence::Gone);
-        assert_eq!(Disk { local: None }.presence(&document), Presence::Gone);
-        // Outside the computer's own folders a missing folder may be a volume
-        // not mounted now, as `/Volumes/NAS`: it may come back.
-        let home = directory.path().join("home");
-        assert_eq!(local(&home).presence(&document), Presence::Unavailable);
-        // Its own folder there still says it is gone anywhere.
-        let beside = directory.path().join("a.ketchup");
-        assert_eq!(local(&home).presence(&beside), Presence::Gone);
     }
 
     #[test]
@@ -656,10 +602,8 @@ mod tests {
 
         let answering = Arc::new(SlowServer::default());
         let mut recent = RecentFiles::with_probe(stored(), answering.clone());
-        recent
-            .on_disk
-            .insert(offline.clone(), Presence::Unavailable);
-        assert_eq!(recent.pick(&offline, None), Some(Presence::Unavailable));
+        recent.on_disk.insert(offline.clone(), Presence::Unknown);
+        assert_eq!(recent.pick(&offline, None, 0), Some(Presence::Unknown));
         assert!(
             answering.is_file.lock().unwrap().is_empty(),
             "the menu's answer is not asked again"
@@ -673,15 +617,77 @@ mod tests {
         let mut recent = RecentFiles::with_probe(stored(), server.clone());
         // The server answers only when released below, so a pick that asked
         // it here would never return.
-        assert_eq!(recent.pick(&offline, None), None, "no answer yet");
+        assert_eq!(recent.pick(&offline, None, 7), None, "no answer yet");
         assert_eq!(recent.picked(None), None);
         release.send(()).unwrap();
         assert_eq!(
             recent.picked(Some(Instant::now() + Duration::from_secs(5))),
-            Some((offline.clone(), Presence::Here))
+            Some((offline.clone(), Presence::Here, 7))
         );
         assert_eq!(recent.on_disk(&offline), Some(Presence::Here));
         assert_eq!(recent.picked(None), None, "answered once");
+    }
+
+    /// Review 2026-11-06 UI-180: a recent document on a server that answered
+    /// late was opened when it did, after the user had made a new model or
+    /// opened another one, replacing that one. It opens only if no other
+    /// document came to the window since it was picked.
+    #[test]
+    fn a_late_answer_opens_nothing_once_another_document_came() {
+        let directory = tempfile::tempdir().unwrap();
+        let picked = directory.path().join("picked.ketchup");
+        let other = directory.path().join("other.ketchup");
+        for path in [&picked, &other] {
+            let mut source = crate::KetchupApp::new();
+            assert!(source.create_box());
+            assert!(source.save_document_to(path));
+        }
+        // Review 2026-11-06 r23 P3: one opened for a migration review did
+        // not count, so the late answer opened over the review.
+        let legacy = directory.path().join("legacy.ketchup");
+        std::fs::write(&legacy, crate::tests::lossy_legacy_document()).unwrap();
+        type Then = fn(&mut crate::KetchupApp, &Path, &Path);
+        let meanwhile: [(&str, Then); 4] = [
+            ("nothing", |_, _, _| {}),
+            ("New", |app, _, _| app.new_document()),
+            ("Open", |app, other, _| {
+                assert!(app.open_document_from(other))
+            }),
+            ("Open for review", |app, _, legacy| {
+                assert!(!app.open_document_from(legacy));
+                assert!(app.has_review_candidate());
+            }),
+        ];
+        for (what, then) in meanwhile {
+            let (release, released) = mpsc::channel();
+            let server = Arc::new(SlowServer {
+                release: Mutex::new(Some(released)),
+                ..SlowServer::default()
+            });
+            let mut app = crate::KetchupApp::new();
+            app.window.recent = RecentFiles::with_probe(
+                Box::new(MemoryRecentFiles::holding(vec![picked.clone()])),
+                server,
+            );
+            app.open_recent(&picked);
+            assert_eq!(app.document_path(), None, "{what}: not answered yet");
+            then(&mut app, &other, &legacy);
+            let before = app.document_path().map(Path::to_owned);
+            release.send(()).unwrap();
+            let until = Instant::now() + Duration::from_secs(5);
+            while app.window.recent.picking.is_some() && Instant::now() < until {
+                app.poll_recent_pick();
+            }
+            let expected = if what == "nothing" {
+                Some(picked.clone())
+            } else {
+                before
+            };
+            assert_eq!(app.document_path().map(Path::to_owned), expected, "{what}");
+            if what == "Open for review" {
+                assert!(app.has_review_candidate(), "the review is kept");
+            }
+        }
     }
 
     #[cfg(windows)]

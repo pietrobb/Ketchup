@@ -196,6 +196,7 @@ impl KetchupApp {
         let saved_digest = document.history_digest();
         self.document = document;
         self.file.container_data = container_data;
+        self.drawings.on_disk = None;
         self.file.review_candidate = None;
         self.file.migration_review_plan = None;
         self.file.recovery_open = None;

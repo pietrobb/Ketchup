@@ -318,10 +318,193 @@ def test_the_idioms_that_act_as_let_underscore_count(tmp_path):
     # A command-line entry point writes to its console.
     write(tmp_path, "crates/a/src/main.rs", 'eprintln!("usage: a <file>");\n')
     write(tmp_path, "crates/a/src/bin/tool.rs", 'eprintln!("usage: tool <file>");\n')
+    # Review 2026-11-06 UI-181: once its window logs to a file, an entry
+    # point has no console either; its command line's branches still do.
+    write(
+        tmp_path,
+        "crates/b/src/main.rs",
+        "fn main() {\n"
+        '    if verify { eprintln!("usage: b --verify <file>"); return; }\n'
+        '    log_window_to("B", "b.log");\n'
+        '    if let Err(error) = run(|| { eprintln!("{error}"); }) {\n'
+        '        eprintln!("window failed: {error}");\n'
+        "    }\n"
+        "}\n"
+        'fn usage() { eprintln!("usage: b <file>"); }\n',
+    )
     assert checker.current_counts(tmp_path) == {
         "crates/a/src/lib.rs empty_is_err": 3,
         "crates/a/src/lib.rs irrefutable_let": 2,
         "crates/a/src/lib.rs eprintln": 1,
+        "crates/b/src/main.rs eprintln": 2,
+    }
+
+
+def test_the_drops_review_1106_found_past_the_ratchet_count(tmp_path):
+    # Review 2026-11-06 P3: a struct literal in an empty `is_err` condition,
+    # `drop(call())`, `.ok().is_some();`, `Ok(Some(()))` in an irrefutable let and
+    # `unwrap_or_default()` all slipped past.
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "if tx.send(Msg { a: 1 }).is_err() {}\n"
+        "drop(call());\n"
+        "drop(sender.send(Msg { a: 1 }));\n"
+        "save(&path).ok().is_some();\n"
+        "let (Ok(Some(())) | Err(_)) = receiver.recv();\n"
+        "let text = read(&path).unwrap_or_default();\n"
+        "// What keeps or answers it is not counted.\n"
+        "drop(guard);\n"
+        "let sent = save(&path).ok().is_some();\n"
+        "if tx.send(Msg { a: 1 }).is_err() { return Err(Gone); }\n",
+    )
+    assert checker.current_counts(tmp_path) == {
+        "crates/a/src/lib.rs empty_is_err": 1,
+        "crates/a/src/lib.rs dropped_call": 2,
+        "crates/a/src/lib.rs ok_statement": 1,
+        "crates/a/src/lib.rs irrefutable_let": 1,
+        "crates/a/src/lib.rs or_default": 1,
+    }
+
+
+def test_the_drops_review_1106_r23_found_past_the_ratchet_count(tmp_path):
+    # Review 2026-11-06 r23 P3: `.unwrap_or(())` (live in ketchup-viewer/src/gpu.rs),
+    # `.err();`, `std::mem::forget(call())`, `unwrap_or_else(Default::default)` and
+    # `map_or((), ...)` slipped past; an `eprintln!` in a helper `main.rs` calls after
+    # its window logs to a file did too (`bootstrap_failed`).
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "sender.send(result).unwrap_or(());\n"
+        "remove(&path).err();\n"
+        "std::mem::forget(child.kill());\n"
+        "mem::forget(call());\n"
+        "let text = read(&path).unwrap_or_else(Default::default);\n"
+        "sent.map_or((), |_| ());\n"
+        "// What keeps or answers it is not counted.\n"
+        "self.failure = report.err();\n"
+        "let error = save(&path).err();\n"
+        "let size = len.unwrap_or(0);\n"
+        "found.remove(oldest);\n",
+    )
+    write(
+        tmp_path,
+        "crates/b/src/main.rs",
+        "fn main() {\n"
+        '    if verify { usage(); return; }\n'
+        '    log_window_to("B", "b.log");\n'
+        "    if let Err(error) = start() { bootstrap_failed(&error); }\n"
+        "}\n"
+        'fn usage() { eprintln!("usage: b <file>"); }\n'
+        'fn bootstrap_failed(error: &Error) { eprintln!("{error}"); report(error); }\n'
+        'fn report(error: &Error) { eprintln!("again: {error}"); bootstrap_failed(error); }\n',
+    )
+    assert checker.current_counts(tmp_path) == {
+        "crates/a/src/lib.rs or_unit": 2,
+        "crates/a/src/lib.rs ok_statement": 1,
+        "crates/a/src/lib.rs dropped_call": 2,
+        "crates/a/src/lib.rs or_default": 1,
+        "crates/b/src/main.rs eprintln": 2,
+    }
+
+
+def test_the_forms_with_a_path_or_a_name_review_1107_found_count(tmp_path):
+    # Review 2026-11-07 P3: a default named by its type, `unwrap_or_else(drop)`,
+    # `map_or_else(|_| (), ...)`, a bare `.is_ok();`, an empty `if let Ok(()) = ... {}`
+    # and `.expect(` slipped past.
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "let text = read(&path).unwrap_or_else(String::default);\n"
+        "let list = read(&path).unwrap_or_else(<_>::default);\n"
+        "let bytes = read(&path).unwrap_or_else(std::vec::Vec::default);\n"
+        "save(&path).unwrap_or_else(drop);\n"
+        "save(&path).map_or_else(|_| (), |()| done());\n"
+        "save(&path).is_ok();\n"
+        "if let Ok(()) = save(&path) {}\n"
+        "if let Ok(_) = tx.send(Msg { a: 1 }) { /* Gone. */ }\n"
+        'let value = parse(text).expect("checked above");\n'
+        "// What keeps or answers it is not counted.\n"
+        "let saved = save(&path).is_ok();\n"
+        "if let Ok(()) = save(&path) { done(); }\n"
+        "let size = len.unwrap_or_else(|| 0);\n"
+        "let kept = found.map_or_else(|| 0, |n| n);\n",
+    )
+    # In an entry point: `log_window_to` inside an `if`, braces in strings and
+    # characters, a helper passed by its name and a method called on `self`.
+    write(
+        tmp_path,
+        "crates/b/src/main.rs",
+        "fn main() {\n"
+        "    if help { usage(); return; }\n"
+        "    if window {\n"
+        '        log_window_to("B", "b.log");\n'
+        "    }\n"
+        '    let close = "}";\n'
+        "    let brace = '}';\n"
+        '    eprintln!("after the if");\n'
+        "    load().unwrap_or_else(bootstrap_failed);\n"
+        "    App::start(&app);\n"
+        "}\n"
+        'fn usage() { eprintln!("usage: b <file>"); }\n'
+        'fn bootstrap_failed(error: Error) { eprintln!("{error}"); }\n'
+        "impl App {\n"
+        "    fn start(&self) { self.fail(); }\n"
+        '    fn fail(&self) { eprintln!("failed"); }\n'
+        "}\n",
+    )
+    assert checker.current_counts(tmp_path) == {
+        "crates/a/src/lib.rs or_default": 3,
+        "crates/a/src/lib.rs dropped_error": 1,
+        "crates/a/src/lib.rs dropped_closure": 1,
+        "crates/a/src/lib.rs ok_statement": 1,
+        "crates/a/src/lib.rs empty_is_err": 2,
+        "crates/a/src/lib.rs expect": 1,
+        "crates/b/src/main.rs eprintln": 3,
+    }
+
+
+def test_the_forms_review_r26_found_count_and_a_comment_or_an_else_does_not(tmp_path):
+    # Review 2026-11-07 r26 P3: a default named by its constructor, `std::mem::drop`
+    # passed by its path and `map_or_else(drop, ...)` slipped past; `.expect(` in a
+    # comment was counted, and so was an empty block an `else` answers.
+    write(
+        tmp_path,
+        "crates/a/src/lib.rs",
+        "let list = read(&path).unwrap_or_else(Vec::new);\n"
+        "let text = read(&path).unwrap_or_else(String::new);\n"
+        "save(&path).map_err(std::mem::drop)?;\n"
+        "save(&path).map_or_else(drop, |()| done());\n"
+        'let value = parse(text).expect("checked above");\n'
+        "// Not counted: `.expect(` in a comment, an empty block an else answers.\n"
+        "/* parse(text).expect(\"a\") */\n"
+        'let url = "http://a.expect(";\n'
+        "if let Ok(()) = save(&path) {} else { refuse(); }\n"
+        "if save(&path).is_err() {} else { done(); }\n",
+    )
+    # In an entry point: two functions of one name and a helper passed as `Self::name`.
+    write(
+        tmp_path,
+        "crates/b/src/main.rs",
+        "fn main() {\n"
+        '    log_window_to("B", "b.log");\n'
+        "    run();\n"
+        "    App::start();\n"
+        "}\n"
+        'fn run() { eprintln!("first run"); }\n'
+        "impl App {\n"
+        "    fn start() { load().unwrap_or_else(Self::failed); }\n"
+        '    fn failed(error: Error) { eprintln!("{error}"); }\n'
+        "}\n"
+        "impl Other {\n"
+        '    fn run() { eprintln!("second run"); }\n'
+        "}\n",
+    )
+    assert checker.current_counts(tmp_path) == {
+        "crates/a/src/lib.rs or_default": 2,
+        "crates/a/src/lib.rs dropped_error": 2,
+        "crates/a/src/lib.rs expect": 1,
+        "crates/b/src/main.rs eprintln": 3,
     }
 
 

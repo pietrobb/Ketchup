@@ -92,23 +92,41 @@ impl KetchupApp {
     }
 
     fn btlx_options_menu(&mut self, ui: &mut egui::Ui) {
+        // A slider is kept once let go, not at each step of a drag.
+        let set = |response: egui::Response| {
+            response.drag_stopped() || (response.changed() && !response.dragged())
+        };
+        let mut changed = false;
         ui.menu_button(self.catalog.text("file-short-btlx-options"), |ui| {
-            ui.selectable_value(
-                &mut self.btlx_profile_strategy,
-                BtlxProfileStrategy::PortableFreeContour,
-                self.catalog.text("file-export-btlx-portable-contour"),
-            );
-            ui.selectable_value(
-                &mut self.btlx_profile_strategy,
-                BtlxProfileStrategy::EdgeSawCutsThenMillContour,
-                self.catalog.text("file-export-btlx-saw-then-mill"),
-            );
-            ui.add_enabled(
-                self.btlx_profile_strategy == BtlxProfileStrategy::EdgeSawCutsThenMillContour,
-                egui::Slider::new(&mut self.btlx_intermediate_saw_cuts, 0..=32)
+            let btlx = &mut self.window.btlx;
+            changed |= ui
+                .selectable_value(
+                    &mut btlx.profile_strategy,
+                    BtlxProfileStrategy::PortableFreeContour,
+                    self.catalog.text("file-export-btlx-portable-contour"),
+                )
+                .changed();
+            changed |= ui
+                .selectable_value(
+                    &mut btlx.profile_strategy,
+                    BtlxProfileStrategy::EdgeSawCutsThenMillContour,
+                    self.catalog.text("file-export-btlx-saw-then-mill"),
+                )
+                .changed();
+            changed |= set(ui.add_enabled(
+                btlx.profile_strategy == BtlxProfileStrategy::EdgeSawCutsThenMillContour,
+                egui::Slider::new(&mut btlx.intermediate_saw_cuts, 0..=32)
                     .text(self.catalog.text("file-export-btlx-intermediate-saw-cuts")),
-            );
+            ));
+            changed |= set(ui.add(
+                egui::Slider::new(&mut btlx.largest_drill_mm, 0.0..=80.0)
+                    .step_by(1.0)
+                    .text(self.catalog.text("file-export-btlx-largest-drill")),
+            ));
         });
+        if changed {
+            self.remember_btlx_settings();
+        }
     }
 
     /// The documents of Open Recent, newest first: the name to read, the
@@ -135,7 +153,7 @@ impl KetchupApp {
             let missing = match self.window.recent.on_disk(path) {
                 None | Some(Presence::Here) => None,
                 Some(Presence::Gone) => Some("file-recent-missing-name"),
-                Some(Presence::Unavailable) => Some("file-recent-unavailable-name"),
+                Some(Presence::Unknown) => Some("file-recent-unavailable-name"),
             };
             let (text, accessible) = match missing {
                 None => (egui::RichText::new(name), full),
@@ -170,7 +188,7 @@ impl KetchupApp {
     /// opens when it does (review 2026-11-04 r19 UI-161).
     pub(crate) fn open_recent(&mut self, path: &Path) {
         let context = self.file.activity.context.clone();
-        match self.window.recent.pick(path, context) {
+        match self.window.recent.pick(path, context, self.file.generation) {
             Some(presence) => self.open_recent_found(path, presence),
             None => {
                 self.digest = self.catalog.format(
@@ -182,9 +200,12 @@ impl KetchupApp {
     }
 
     /// The answer for a picked recent document that came after the frame it
-    /// was picked in.
+    /// was picked in. Once New, Open or a client brought another document to
+    /// the window, the answer opens nothing (review 2026-11-06 UI-180).
     pub(crate) fn poll_recent_pick(&mut self) {
-        if let Some((path, presence)) = self.window.recent.picked(None) {
+        if let Some((path, presence, generation)) = self.window.recent.picked(None)
+            && generation == self.file.generation
+        {
             self.open_recent_found(&path, presence);
         }
     }
@@ -199,7 +220,7 @@ impl KetchupApp {
                 self.report_recent_files(result);
                 return;
             }
-            Presence::Unavailable => {
+            Presence::Unknown => {
                 self.digest = self.catalog.format("digest-recent-unavailable", &shown);
                 return;
             }

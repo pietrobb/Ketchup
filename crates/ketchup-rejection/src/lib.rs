@@ -14,6 +14,31 @@ use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 
+/// How many items a message for the user or a client names before it only counts the
+/// rest: a list grows with the drawing or the model, the status line and an MCP reply
+/// do not (review 2026-11-06 r23 CD-201: 9 999 refused edits were said in 3.5 MB).
+pub const LISTED: usize = 5;
+
+/// Writes the first [`LISTED`] of `items`, each after `separator` but the first, then
+/// `{separator}and K more` for the K left.
+pub fn write_listed<T: fmt::Display>(
+    out: &mut impl fmt::Write,
+    items: impl ExactSizeIterator<Item = T>,
+    separator: &str,
+) -> fmt::Result {
+    let more = items.len().saturating_sub(LISTED);
+    for (index, item) in items.take(LISTED).enumerate() {
+        if index > 0 {
+            out.write_str(separator)?;
+        }
+        write!(out, "{item}")?;
+    }
+    if more > 0 {
+        write!(out, "{separator}and {more} more")?;
+    }
+    Ok(())
+}
+
 /// The stage of work that refused the request.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]

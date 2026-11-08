@@ -26,7 +26,9 @@ from happening:
    2026-11-04 REL-143). The release saves each file it opens editable once more, and
    once with its Undo history as its work recovery does, and HEAD
    (`crates/ketchup-model/examples/resaved.rs`) must find the original's document in the
-   one and every revision of it in the other (review 2026-11-04 r19 P3).
+   one and every revision of it in the other (review 2026-11-04 r19 P3). A release that
+   does not restore the history saves none; every release read must restore it for one
+   file at least (review 2026-11-06 P3 and r23 P3).
 
 `--tag vX` checks one release instead of all. Needs the tags (`git fetch --no-tags
 --depth=1 origin tag v0.2.0 tag v0.3.0 tag v0.3.1 tag v0.3.2` in a shallow clone). The old crates and their
@@ -66,11 +68,25 @@ REVIEWED = {
         # CD-61: `format_of` writes a document with a stretched line as 107.
         "AddedObject": {"Stretched"},
         # The program worker's answer to a drawing export, never part of a document;
-        # ChangedInFile and DeletedInFile too (review 2026-11-04 r19 CD-163 and P3).
-        "DxfEditRefusal": {"ReadDifferently", "TooLarge", "ChangedInFile", "DeletedInFile"},
+        # ChangedInFile and DeletedInFile too (review 2026-11-04 r19 CD-163 and P3), and
+        # Several, every refusal of one export at once (review 2026-11-06 DXF P3), and
+        # TextTooLong, a value over the DXF line limit (review 2026-11-07 UL-220), and
+        # DrawnTextTooLong, a text drawn so into a DXF 12 drawing (r26 UL-240).
+        "DxfEditRefusal": {
+            "ReadDifferently", "TooLarge", "ChangedInFile", "DeletedInFile", "Several",
+            "TextTooLong", "DrawnTextTooLong",
+        },
     },
-    "v0.3.1": {"DxfEditRefusal": {"ChangedInFile", "DeletedInFile"}},
-    "v0.3.2": {"DxfEditRefusal": {"ChangedInFile", "DeletedInFile"}},
+    "v0.3.1": {
+        "DxfEditRefusal": {
+            "ChangedInFile", "DeletedInFile", "Several", "TextTooLong", "DrawnTextTooLong",
+        },
+    },
+    "v0.3.2": {
+        "DxfEditRefusal": {
+            "ChangedInFile", "DeletedInFile", "Several", "TextTooLong", "DrawnTextTooLong",
+        },
+    },
 }
 
 ENUM = re.compile(
@@ -261,11 +277,19 @@ def main(arguments: list[str]) -> int:
         else:
             files = Path(written)
             written_by_tests = write_files(files)
+        resaved = [Path(written) / f"resaved-{version(tag)}" for tag in tags]
         results = [
-            read_files(tag, old_workspace(tag, target), files, Path(written) / f"resaved-{version(tag)}")
-            for tag in tags
+            read_files(tag, old_workspace(tag, target), files, directory)
+            for tag, directory in zip(tags, resaved)
         ]
         results.append(written_by_tests)
+        # A release that does not restore a file's history saves none in history/, and its
+        # comparison is skipped; each release read must restore one (review 2026-11-06 P3,
+        # and r23 P3: one restoring it let another that stopped pass).
+        for tag, directory in zip(tags, resaved):
+            if not any((directory / "history").glob("*.ketchup")):
+                print(f"Kečup {version(tag)} restored the Undo history of no file, so none was compared")
+                results.append(1)
     return 1 if any(results) else 0
 
 

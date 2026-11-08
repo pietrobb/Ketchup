@@ -22,6 +22,9 @@ pub(crate) struct FileState {
         Option<(PathBuf, ketchup_model::persistence::FileIdentity)>,
     pub(crate) work_recovery_digest: Option<String>,
     pub(crate) saved_digest: String,
+    /// Counts the documents the window has held: New and each open take the next,
+    /// so what was begun for one is not applied to another (review 2026-11-06).
+    pub(crate) generation: u64,
 }
 
 /// A file opened from a recovery copy in place of the one the user asked for.
@@ -184,6 +187,26 @@ pub(crate) struct WindowSettings {
     pub(crate) dock_tab: Option<crate::DockTab>,
     /// File > Open Recent.
     pub(crate) recent: crate::recent_files::RecentFiles,
+    /// Where the drawing files each saved document wrote are kept between
+    /// windows; `None` keeps them in memory (review 2026-11-06 SEC-182).
+    pub(crate) written_drawings: Option<crate::recent_files::user_settings::SettingsFile>,
+    /// How the File menu writes BTLx, a setting of the machine, not of the
+    /// document.
+    pub(crate) btlx: BtlxSettings,
+    /// Where the BTLx options are kept between starts; `None` keeps them for
+    /// this window only.
+    pub(crate) btlx_settings: Option<crate::recent_files::user_settings::SettingsFile>,
+    /// The BTLx options being kept on a worker.
+    pub(crate) btlx_saving: BtlxSaving,
+}
+
+/// The BTLx options being kept on a worker, as the settings' lock may be
+/// waited for (review 2026-11-07 r26 P3: three times on the window).
+#[derive(Default)]
+pub(crate) struct BtlxSaving {
+    pub(crate) worker: Option<std::thread::JoinHandle<std::io::Result<()>>>,
+    /// They changed while the worker kept them, so are kept again after.
+    pub(crate) again: bool,
 }
 
 /// Which side panes and windows are open.
@@ -300,6 +323,23 @@ pub(crate) struct DrawingsState {
     pub(crate) unreadable: Option<String>,
     /// The document's sheet settings changed since it was opened or saved.
     pub(crate) unsaved: bool,
+    /// The drawing files the window wrote for the document while they are
+    /// not kept with the user's settings, by canonical path, with the SHA-256
+    /// of each (review 2026-11-06 SEC-182).
+    pub(crate) written: BTreeMap<PathBuf, String>,
+    /// The worker forgetting the document's written drawings that are gone
+    /// (review 2026-11-06 r23 SEC-202).
+    pub(crate) forgetting: Option<std::thread::JoinHandle<()>>,
+    /// The worker keeping the drawings of a file moved before it was saved by
+    /// the file saved (review 2026-11-06 r23 SEC-203).
+    pub(crate) settling: Option<std::thread::JoinHandle<()>>,
+    /// The token and identity of the document's file as on disk while a save
+    /// of it has not succeeded (review 2026-11-06 r23 P3).
+    pub(crate) on_disk: Option<crate::app::written_drawings::OnDisk>,
+    /// The document's file as resolved for its written drawings, so the disk
+    /// is asked once per file opened or saved, not at each export or check
+    /// (review 2026-11-07 P3 `written_owner`).
+    pub(crate) resolved: std::cell::RefCell<Option<crate::app::written_drawings::Resolved>>,
     /// The set the last export was refused at as another project's, with
     /// what it was exported from, offered to take over (review 2026-11-04 r19
     /// MF-162).
@@ -331,6 +371,25 @@ pub(crate) struct TakeoffCache {
     pub(crate) model: Result<Arc<ketchup_program::ProgramModel>, ketchup_program::ProgramError>,
     pub(crate) key: ExactCacheKey,
     pub(crate) takeoff: Result<Arc<ketchup_program::takeoff::Takeoff>, TakeoffError>,
+}
+
+/// How the File menu writes BTLX for the machine.
+pub(crate) struct BtlxSettings {
+    pub(crate) profile_strategy: BtlxProfileStrategy,
+    pub(crate) intermediate_saw_cuts: u8,
+    /// The machine's largest drill, mm; 0 mills every round hole (review
+    /// 2026-11-06 r23 MF-202: it was never set, so every one was milled).
+    pub(crate) largest_drill_mm: f64,
+}
+
+impl Default for BtlxSettings {
+    fn default() -> Self {
+        Self {
+            profile_strategy: BtlxProfileStrategy::EdgeSawCutsThenMillContour,
+            intermediate_saw_cuts: 0,
+            largest_drill_mm: ketchup_manufacturing::fabrication::DEFAULT_LARGEST_DRILL_MM,
+        }
+    }
 }
 
 /// Why there is no material takeoff, or why it could not be written.

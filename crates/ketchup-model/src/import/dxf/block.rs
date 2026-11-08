@@ -272,10 +272,11 @@ fn skip_block(
     if error.ends_reading() {
         return Err(error);
     }
+    // Named as read, not as escaped (review 2026-11-07 P3).
     diagnostics.skip(
         "dxf.block-unreadable",
         error.reason(),
-        Some(("blocks", name)),
+        Some(("blocks", &super::text::unicode_escapes(name))),
         Some(error),
     )
 }

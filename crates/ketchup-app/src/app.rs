@@ -6,6 +6,7 @@ pub(crate) mod annotations_view;
 #[cfg(test)]
 #[path = "app/annotations_view_tests.rs"]
 mod annotations_view_tests;
+pub(crate) mod btlx_settings;
 mod cad_program;
 mod commands;
 mod connect_ai;
@@ -137,6 +138,7 @@ mod viewer_settings_tests;
 mod viewer_workflow_tests;
 mod viewport;
 mod viewport_paint;
+pub(crate) mod written_drawings;
 
 pub(crate) use commands::*;
 pub(crate) use document::SaveFailure;

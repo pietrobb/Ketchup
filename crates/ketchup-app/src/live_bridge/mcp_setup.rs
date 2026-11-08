@@ -8,8 +8,10 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
+use crate::recent_files::presence::{Presence, presence_below};
+
 use super::mcp_config::{
-    SERVER, codex_command, codex_server_off, invalid_data, json_server_off, read_or_empty,
+    Rewrite, SERVER, codex_command, codex_server_off, invalid_data, json_server_off, read_or_empty,
     replace_file, with_codex_server, with_json_server,
 };
 
@@ -157,6 +159,10 @@ pub struct Environment {
     /// own `skills\mcp_servers.json`, next to its `skills\mcp_bridge.py`. An
     /// error when the system did not list the running programs.
     pub supervisor_folders: Result<Vec<PathBuf>, RowError>,
+    /// Folders outside home that programs are installed in and deleted from
+    /// whole, not where shares are mounted: a program missing in a folder
+    /// gone below one was deleted (review 2026-11-07 P3).
+    pub program_folders: Vec<PathBuf>,
 }
 
 impl Environment {
@@ -170,6 +176,7 @@ impl Environment {
             claude_config_dir: None,
             codex_home: None,
             supervisor_folders: Ok(Vec::new()),
+            program_folders: Vec::new(),
         }
     }
 
@@ -184,6 +191,14 @@ impl Environment {
             codex_home: folder("CODEX_HOME"),
             supervisor_folders: super::running_programs::folders_of_running("supervisor")
                 .map_err(RowError::from),
+            // An AppImage runs from `/tmp/.mount_*`, removed when it ends.
+            program_folders: if cfg!(windows) {
+                Vec::new()
+            } else {
+                ["/opt", "/usr", "/Applications", "/tmp"]
+                    .map(PathBuf::from)
+                    .into()
+            },
             ..Self::in_home(PathBuf::from(home))
         })
     }
@@ -295,18 +310,7 @@ impl Environment {
             Harness::ClaudeCode | Harness::ClaudeDesktop | Harness::Supervisor => {
                 let config: serde_json::Value =
                     serde_json::from_str(&text).map_err(invalid_data)?;
-                let command = |servers: &serde_json::Value| {
-                    let server = &servers[SERVER];
-                    if let Some(off) = json_server_off(server) {
-                        return Some(Started::Off(off));
-                    }
-                    let command = server["command"].as_str()?;
-                    Some(Started::Program(if harness == Harness::Supervisor {
-                        expand_variables(command)
-                    } else {
-                        command.to_owned()
-                    }))
-                };
+                let command = |servers: &serde_json::Value| started(harness, &servers[SERVER]);
                 let projects = config["projects"]
                     .as_object()
                     .filter(|_| harness == Harness::ClaudeCode)
@@ -340,8 +344,9 @@ impl Environment {
             }
         };
         // Any entry starting another program, or none, is what some project
-        // starts. One the client may still start wins over a gone one (r19
-        // SEC-160): the installer replaces a client only when no entry works.
+        // starts. One the client may still start wins (r19 SEC-160); one
+        // turned off starts nothing either, so it ranks with a gone one
+        // (review 2026-11-06 SEC-180).
         let elsewhere = user
             .iter()
             .chain(&projects)
@@ -358,7 +363,7 @@ impl Environment {
                     }),
                 },
             })
-            .min_by_key(|found| matches!(found, Registration::Elsewhere { exists: false, .. }));
+            .min_by_key(|found| !matches!(found, Registration::Elsewhere { exists: true, .. }));
         match (elsewhere, user.is_some()) {
             (Some(registration), _) => registration,
             (None, true) => Registration::ThisKetchup,
@@ -372,7 +377,8 @@ impl Environment {
     /// path from `~` in the home folder, on Windows a path without its
     /// extension by PATHEXT. `Some(None)` when it is certainly not there;
     /// `None` when Kečup cannot tell: a name not on its own PATH (the client
-    /// may have another) or a path relative to the client's folder.
+    /// may have another), a path relative to the client's folder, or a path
+    /// the system cannot answer for.
     fn program_of(&self, command: &str) -> Option<Option<PathBuf>> {
         let path = match command.strip_prefix('~') {
             Some(rest) if rest.is_empty() || rest.starts_with(['/', '\\']) => {
@@ -381,14 +387,44 @@ impl Environment {
             _ => PathBuf::from(command),
         };
         if path.is_absolute() {
-            let found = path.is_file().then(|| path.clone()).or_else(|| {
-                let folder = path.parent()?;
-                let name = path.file_name()?.to_str()?;
-                (cfg!(windows) && path.extension().is_none())
-                    .then(|| find_program(&[folder.to_path_buf()], name))
-                    .flatten()
-            });
-            return Some(found);
+            let mut candidates = vec![path.clone()];
+            if cfg!(windows)
+                && path.extension().is_none()
+                && let (Some(folder), Some(name)) = (
+                    path.parent(),
+                    path.file_name().and_then(|name| name.to_str()),
+                )
+            {
+                candidates.extend(
+                    extensions(name)
+                        .iter()
+                        .map(|extension| folder.join(format!("{name}{extension}"))),
+                );
+            }
+            // A folder may not be read, a volume not be mounted, a drive or share
+            // be out (review 2026-11-06 SEC-180, r23 SEC-201: each counted as no
+            // file, and the installer replaced the entry); a missing folder is
+            // trusted to be deleted in the client's home folder and the folders
+            // programs are installed in only (review 2026-11-07 P3).
+            let trusted: Vec<&Path> = std::iter::once(self.home.as_path())
+                .chain(self.program_folders.iter().map(PathBuf::as_path))
+                .collect();
+            let trusted = (!cfg!(windows)).then_some(trusted.as_slice());
+            let mut unknown = false;
+            for candidate in candidates {
+                match presence_below(&candidate, trusted) {
+                    Presence::Here => return Some(Some(candidate)),
+                    Presence::Gone => {}
+                    Presence::Unknown => {
+                        ketchup_rejection::log!(
+                            "cannot tell whether {} is there",
+                            candidate.display()
+                        );
+                        unknown = true;
+                    }
+                }
+            }
+            return (!unknown).then_some(None);
         }
         if path.components().count() > 1 {
             return None;
@@ -449,30 +485,46 @@ impl Environment {
     /// of Supervisor only the installed one; another running instance changes
     /// only when the user clicks Connect on its row. A client already starting
     /// another program that exists keeps it (review 2026-11-04 SEC-142: the
-    /// installer runs this hidden); only a missing or gone one is replaced.
+    /// installer runs this hidden); only a missing or gone one is replaced,
+    /// each gone entry on its own (review 2026-11-06 SEC-180: a gone project
+    /// entry stayed broken while another project's worked).
     pub fn set_up_installed(&self, executable: &Path) -> Vec<HarnessRow> {
         Harness::ALL
             .into_iter()
             .map(|harness| {
                 let found = self.row(harness, self.config_file(harness), executable);
-                match found.registration {
-                    Registration::NotSetUp | Registration::Elsewhere { exists: false, .. } => {
-                        self.set_up_in(harness, found.file, executable)
-                    }
-                    _ => found,
-                }
+                let set_up = match found.registration {
+                    Registration::NotSetUp => true,
+                    Registration::ThisKetchup
+                    | Registration::Elsewhere { .. }
+                    | Registration::Off { .. } => false,
+                    _ => return found,
+                };
+                self.written(harness, found.file, executable, Write::Installer { set_up })
             })
             .collect()
     }
 
-    /// Replaces the `ketchup` server in `file`, the one a row describes.
+    /// Replaces the `ketchup` server in `file`, the one a row describes, and
+    /// of the projects' own entries those that are gone.
     pub fn set_up_in(
         &self,
         harness: Harness,
         file: Option<PathBuf>,
         executable: &Path,
     ) -> HarnessRow {
-        let setup_error = Self::write(harness, file.as_deref(), executable)
+        self.written(harness, file, executable, Write::Connect)
+    }
+
+    fn written(
+        &self,
+        harness: Harness,
+        file: Option<PathBuf>,
+        executable: &Path,
+        how: Write,
+    ) -> HarnessRow {
+        let setup_error = self
+            .write(harness, file.as_deref(), executable, how)
             .err()
             .map(|error| format!("{error}"));
         HarnessRow {
@@ -481,7 +533,19 @@ impl Environment {
         }
     }
 
-    fn write(harness: Harness, file: Option<&Path>, executable: &Path) -> Result<(), WriteError> {
+    /// Whether the JSON entry `server` starts a program that is certainly gone.
+    fn gone(&self, harness: Harness, server: &serde_json::Value) -> bool {
+        matches!(started(harness, server),
+            Some(Started::Program(command)) if matches!(self.program_of(&command), Some(None)))
+    }
+
+    fn write(
+        &self,
+        harness: Harness,
+        file: Option<&Path>,
+        executable: &Path,
+        how: Write,
+    ) -> Result<(), WriteError> {
         let file = file.ok_or(WriteError::NoConfigurationFolder)?.to_owned();
         let failed = |error| WriteError::File {
             file: file.clone(),
@@ -489,15 +553,63 @@ impl Environment {
         };
         let text = read_or_empty(&file).map_err(failed)?;
         let executable = executable.to_string_lossy();
+        let installer_set_up = match how {
+            Write::Connect => None,
+            Write::Installer { set_up } => Some(set_up),
+        };
         let text = match harness {
-            Harness::Codex => with_codex_server(&text, &executable).map_err(failed)?,
+            Harness::Codex => {
+                if installer_set_up == Some(false) {
+                    let off =
+                        codex_server_off(&text).map_err(|error| failed(invalid_data(error)))?;
+                    let command =
+                        codex_command(&text).map_err(|error| failed(invalid_data(error)))?;
+                    let gone = off.is_none()
+                        && command
+                            .is_some_and(|command| matches!(self.program_of(&command), Some(None)));
+                    if !gone {
+                        return Ok(());
+                    }
+                }
+                with_codex_server(&text, &executable).map_err(failed)?
+            }
             Harness::ClaudeCode | Harness::ClaudeDesktop | Harness::Supervisor => {
-                with_json_server(&text, &executable, harness == Harness::ClaudeCode)
+                let config: serde_json::Value = if text.trim().is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::from_str(&text).map_err(|error| failed(invalid_data(error)))?
+                };
+                let gone = |server: &serde_json::Value| self.gone(harness, server);
+                let user = installer_set_up.is_none_or(|set_up| {
+                    set_up || config["mcpServers"].get(SERVER).is_some_and(gone)
+                });
+                let a_project_gone = config["projects"].as_object().is_some_and(|projects| {
+                    projects
+                        .values()
+                        .any(|project| project["mcpServers"].get(SERVER).is_some_and(gone))
+                });
+                if !user && !a_project_gone {
+                    return Ok(());
+                }
+                let rewrite = Rewrite {
+                    user,
+                    project: &gone,
+                };
+                with_json_server(&text, &executable, harness == Harness::ClaudeCode, &rewrite)
                     .map_err(failed)?
             }
         };
         replace_file(&file, &text).map_err(failed)
     }
+}
+
+/// Who writes a client's file: Connect, which the user asked for, or the
+/// installer, which only sets up a client without one (`set_up`) and
+/// replaces entries that are gone.
+#[derive(Clone, Copy)]
+enum Write {
+    Connect,
+    Installer { set_up: bool },
 }
 
 /// Why Connect did not write a client's configuration.
@@ -562,6 +674,19 @@ impl std::error::Error for SetupFailure {
     }
 }
 
+/// What the JSON `ketchup` entry `server` of `harness` starts, if it is one.
+fn started(harness: Harness, server: &serde_json::Value) -> Option<Started> {
+    if let Some(off) = json_server_off(server) {
+        return Some(Started::Off(off));
+    }
+    let command = server["command"].as_str()?;
+    Some(Started::Program(if harness == Harness::Supervisor {
+        expand_variables(command)
+    } else {
+        command.to_owned()
+    }))
+}
+
 /// What a client's `ketchup` entry starts.
 enum Started {
     Program(String),
@@ -569,10 +694,10 @@ enum Started {
     Off(String),
 }
 
-/// The program `name` in one of `folders`, as a shell would find it: on
-/// Windows a name with its extension as written, one without it by PATHEXT.
-fn find_program(folders: &[PathBuf], name: &str) -> Option<PathBuf> {
-    let extensions: Vec<String> = if !cfg!(windows) || Path::new(name).extension().is_some() {
+/// The endings a shell tries after `name`: on Windows those of PATHEXT when
+/// it has none of its own, else only `name` as written.
+fn extensions(name: &str) -> Vec<String> {
+    if !cfg!(windows) || Path::new(name).extension().is_some() {
         vec![String::new()]
     } else {
         std::env::var_os("PATHEXT")
@@ -584,7 +709,13 @@ fn find_program(folders: &[PathBuf], name: &str) -> Option<PathBuf> {
             .filter(|extension| extension.starts_with('.'))
             .map(str::to_lowercase)
             .collect()
-    };
+    }
+}
+
+/// The program `name` in one of `folders`, as a shell would find it: on
+/// Windows a name with its extension as written, one without it by PATHEXT.
+fn find_program(folders: &[PathBuf], name: &str) -> Option<PathBuf> {
+    let extensions = extensions(name);
     folders.iter().find_map(|folder| {
         extensions
             .iter()

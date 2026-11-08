@@ -45,7 +45,7 @@ pub(super) fn parse_text(
     report_ignored_groups(kind, record, &accepted, diagnostics)?;
     if attribute {
         let flags = parse_optional_i64(record, 70)?.unwrap_or(0);
-        let tag = parse_optional_text(record, 2)?.map(str::to_owned);
+        let tag = parse_optional_string(record, 2)?;
         let hidden = if flags & 1 != 0 {
             Some("dxf.attribute-invisible")
         } else if kind == "ATTDEF" && flags & 2 == 0 {
@@ -275,7 +275,7 @@ fn report_style(
     fonts: &[String],
     diagnostics: &mut DiagnosticCounts,
 ) -> Result<(), DxfImportError> {
-    let style = parse_optional_text(record, 7)?.unwrap_or("STANDARD");
+    let style = parse_optional_string(record, 7)?.unwrap_or_else(|| "STANDARD".to_owned());
     for font in std::iter::once(format!("style {style}"))
         .chain(fonts.iter().map(|font| format!("{kind} font {font}")))
     {
@@ -424,7 +424,7 @@ fn escaped_character(escape: &str) -> Option<(char, usize)> {
 }
 
 /// `raw` with each `\U+XXXX` and `\M+nXXXX` its character ([`escaped_character`]): in a
-/// TEXT, an attribute and a layer's name.
+/// TEXT, a layer's and a style's name, and every string `parse_optional_string` keeps.
 pub(super) fn unicode_escapes(raw: &str) -> std::borrow::Cow<'_, str> {
     if !raw.contains("\\U+") && !raw.contains("\\M+") {
         return raw.into();

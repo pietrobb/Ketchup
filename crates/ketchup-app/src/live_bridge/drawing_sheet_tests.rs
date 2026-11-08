@@ -360,13 +360,16 @@ fn a_pdf_or_sheet_the_window_did_not_write_is_replaced_only_when_asked() {
 /// Review 2026-11-04 r19 SEC-161: which file the window wrote lived only in
 /// memory, keyed by the path as typed, so after a restart, or with the path
 /// spelled otherwise (`c:\X` for `C:\x`), the usual export after an edit was
-/// refused with drawings_target_exists. The document keeps the SHA-256 of each
-/// file it wrote by its canonical path, and the refusal says to ask the user.
+/// refused with drawings_target_exists. The SHA-256 of each file the document
+/// wrote is kept by its canonical path with the user's settings (review
+/// 2026-11-06 SEC-182), and the refusal says to ask the user.
 #[test]
 fn the_documents_own_drawing_is_replaced_after_a_restart_and_however_its_path_is_spelled() {
-    let (mut app, mut bridge) = setup();
-    let id = sheet_of_the_block(&mut app, &mut bridge);
     let directory = tempfile::tempdir().unwrap();
+    let store = directory.path().join("drawings.txt");
+    let (app, mut bridge) = setup();
+    let mut app = app.with_written_drawings(&store);
+    let id = sheet_of_the_block(&mut app, &mut bridge);
     let targets = [
         (directory.path().join("House.pdf"), json!({})),
         (directory.path().join("Survey.dwg"), json!({"sheet_id": id})),
@@ -405,7 +408,8 @@ fn the_documents_own_drawing_is_replaced_after_a_restart_and_however_its_path_is
     };
     bridge.execute(&mut app, save, false).unwrap();
     drop((app, bridge));
-    let (mut opened, mut bridge) = setup();
+    let (opened, mut bridge) = setup();
+    let mut opened = opened.with_written_drawings(&store);
     let open = Request::Open {
         expected: None,
         path: document.display().to_string(),
@@ -415,6 +419,452 @@ fn the_documents_own_drawing_is_replaced_after_a_restart_and_however_its_path_is
     for (path, extra) in &targets {
         export(&mut opened, &mut bridge, path, extra);
     }
+}
+
+/// Review 2026-11-06 SEC-182: the export noted its file in the document and so
+/// made it unsaved; once the user did not save it, the next window refused the
+/// usual export again. An export leaves a saved document saved, and the
+/// document's own file is replaced after a restart without its being saved.
+#[test]
+fn an_export_leaves_the_document_saved_and_its_file_its_own_after_a_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = directory.path().join("user").join("drawings.txt");
+    let with_store = || {
+        let (app, bridge) = setup();
+        (app.with_written_drawings(&store), bridge)
+    };
+    let (mut app, mut bridge) = with_store();
+    let id = sheet_of_the_block(&mut app, &mut bridge);
+    let document = directory.path().join("plan.ketchup");
+    let save = Request::SaveAs {
+        expected: None,
+        path: document.display().to_string(),
+    };
+    bridge.execute(&mut app, save, false).unwrap();
+    let sheet = directory.path().join("Survey.dwg");
+    let answer = bridge
+        .execute(
+            &mut app,
+            export_drawings(&sheet, json!({"sheet_id": id})),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {:?}", take_error_details()));
+    assert_eq!(answer["dirty"], false, "{answer}");
+    assert!(!app.is_dirty());
+    drop((app, bridge));
+
+    let (mut opened, mut bridge) = with_store();
+    let open = Request::Open {
+        expected: None,
+        path: document.display().to_string(),
+    };
+    bridge.execute(&mut opened, open, false).unwrap();
+    evaluate_exact(&mut opened);
+    bridge
+        .execute(
+            &mut opened,
+            export_drawings(&sheet, json!({"sheet_id": id})),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {:?}", take_error_details()));
+}
+
+/// Review 2026-11-06 SEC-182: Save As carried the list of the files the
+/// document wrote, so the copy replaced the first document's drawing unasked.
+/// A document saved as another file asks before replacing what the first wrote.
+#[test]
+fn a_document_saved_as_another_asks_before_replacing_the_first_ones_drawing() {
+    let (mut app, mut bridge) = setup();
+    let id = sheet_of_the_block(&mut app, &mut bridge);
+    let directory = tempfile::tempdir().unwrap();
+    let save_as = |app: &mut KetchupApp, bridge: &mut LiveBridge, name: &str| {
+        let path = directory.path().join(name).display().to_string();
+        let save = Request::SaveAs {
+            expected: None,
+            path,
+        };
+        bridge.execute(app, save, false).unwrap();
+    };
+    save_as(&mut app, &mut bridge, "a.ketchup");
+    let sheet = directory.path().join("A.dxf");
+    let export = |app: &mut KetchupApp, bridge: &mut LiveBridge| {
+        bridge.execute(app, export_drawings(&sheet, json!({"sheet_id": id})), false)
+    };
+    export(&mut app, &mut bridge).unwrap();
+    export(&mut app, &mut bridge).expect("its own file is replaced");
+    save_as(&mut app, &mut bridge, "b.ketchup");
+    assert_eq!(export(&mut app, &mut bridge), Err("drawings_target_exists"));
+    let answer = take_error_details().unwrap_or_default().to_string();
+    assert!(answer.contains("Ask the user"), "{answer}");
+}
+
+/// Review 2026-11-06 SEC-182 (capability review run 529): a moved document
+/// kept its drawings by its id, which Save As carries to the copy, so once
+/// the first was renamed the copy replaced its drawing unasked. The copy
+/// still asks; the first, renamed, still replaces its own.
+#[test]
+fn a_copy_saved_as_asks_once_the_first_document_is_renamed() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = directory.path().join("user").join("drawings.txt");
+    let with_store = || {
+        let (app, bridge) = setup();
+        (app.with_written_drawings(&store), bridge)
+    };
+    let (mut app, mut bridge) = with_store();
+    let id = sheet_of_the_block(&mut app, &mut bridge);
+    let save_as = |app: &mut KetchupApp, bridge: &mut LiveBridge, path: &Path| {
+        let save = Request::SaveAs {
+            expected: None,
+            path: path.display().to_string(),
+        };
+        bridge.execute(app, save, false).unwrap();
+    };
+    let sheet = directory.path().join("A.dxf");
+    let export = |app: &mut KetchupApp, bridge: &mut LiveBridge| {
+        bridge.execute(app, export_drawings(&sheet, json!({"sheet_id": id})), false)
+    };
+    let first = directory.path().join("a.ketchup");
+    save_as(&mut app, &mut bridge, &first);
+    export(&mut app, &mut bridge).unwrap();
+    save_as(&mut app, &mut bridge, &directory.path().join("b.ketchup"));
+    let renamed = directory.path().join("a2.ketchup");
+    std::fs::rename(&first, &renamed).unwrap();
+    assert_eq!(export(&mut app, &mut bridge), Err("drawings_target_exists"));
+    let answer = take_error_details().unwrap_or_default().to_string();
+    assert!(answer.contains("Ask the user"), "{answer}");
+    drop((app, bridge));
+
+    let (mut opened, mut bridge) = with_store();
+    let open = Request::Open {
+        expected: None,
+        path: renamed.display().to_string(),
+    };
+    bridge.execute(&mut opened, open, false).unwrap();
+    evaluate_exact(&mut opened);
+    export(&mut opened, &mut bridge).unwrap_or_else(|code| {
+        panic!(
+            "the renamed first's own: {code}: {:?}",
+            take_error_details()
+        )
+    });
+}
+
+/// Review 2026-11-06 r23 SEC-203: a copy of the document made in a file
+/// manager has the token of its file, so once the first was renamed the copy
+/// replaced its drawing unasked. A drawing is kept by the identity of the
+/// file too, which a rename keeps and a copy does not: the copy asks, and its
+/// first save gives it a token of its own; the first, renamed, still
+/// replaces its own.
+#[test]
+fn a_copy_made_in_a_file_manager_asks_once_the_first_document_is_renamed() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = directory.path().join("user").join("drawings.txt");
+    let with_store = || {
+        let (app, bridge) = setup();
+        (app.with_written_drawings(&store), bridge)
+    };
+    let (mut app, mut bridge) = with_store();
+    let id = sheet_of_the_block(&mut app, &mut bridge);
+    let sheet = directory.path().join("A.dxf");
+    let export = |app: &mut KetchupApp, bridge: &mut LiveBridge| {
+        bridge.execute(app, export_drawings(&sheet, json!({"sheet_id": id})), false)
+    };
+    let first = directory.path().join("a.ketchup");
+    let save = Request::SaveAs {
+        expected: None,
+        path: first.display().to_string(),
+    };
+    bridge.execute(&mut app, save, false).unwrap();
+    export(&mut app, &mut bridge).unwrap();
+    drop((app, bridge));
+    let copy = directory.path().join("b.ketchup");
+    std::fs::copy(&first, &copy).unwrap();
+    let renamed = directory.path().join("a2.ketchup");
+    std::fs::rename(&first, &renamed).unwrap();
+    let open = |path: &Path| {
+        let (mut app, mut bridge) = with_store();
+        let open = Request::Open {
+            expected: None,
+            path: path.display().to_string(),
+        };
+        bridge.execute(&mut app, open, false).unwrap();
+        evaluate_exact(&mut app);
+        (app, bridge)
+    };
+
+    let (mut copied, mut bridge) = open(&copy);
+    assert_eq!(
+        export(&mut copied, &mut bridge),
+        Err("drawings_target_exists")
+    );
+    let token = copied.file_token().map(str::to_owned);
+    bridge
+        .execute(&mut copied, Request::Save { expected: None }, false)
+        .unwrap();
+    assert_ne!(
+        copied.file_token().map(str::to_owned),
+        token,
+        "the copy's own token"
+    );
+    drop((copied, bridge));
+
+    let (mut opened, mut bridge) = open(&renamed);
+    export(&mut opened, &mut bridge).unwrap_or_else(|code| {
+        panic!(
+            "the renamed first's own: {code}: {:?}",
+            take_error_details()
+        )
+    });
+    // Saved again, the file has another identity: its drawing is still its
+    // own, here and moved once more.
+    bridge
+        .execute(&mut opened, Request::Save { expected: None }, false)
+        .unwrap();
+    export(&mut opened, &mut bridge).expect("its own after a save");
+    drop((opened, bridge));
+    let moved = directory.path().join("a3.ketchup");
+    std::fs::rename(&renamed, &moved).unwrap();
+    let (mut opened, mut bridge) = open(&moved);
+    export(&mut opened, &mut bridge).unwrap_or_else(|code| {
+        panic!(
+            "moved again after a save: {code}: {:?}",
+            take_error_details()
+        )
+    });
+}
+
+/// Review 2026-11-06 r23 P3: a line was taken by the path of its document
+/// whatever its token, so a new document saved where another had been took
+/// its drawings; and Save As set the token before the file was written, so a
+/// Save As that failed left the document with a token its file did not have.
+#[test]
+fn a_new_document_saved_where_another_was_asks_and_a_failed_save_as_keeps_the_drawings() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = directory.path().join("user").join("drawings.txt");
+    let with_store = || {
+        let (app, bridge) = setup();
+        (app.with_written_drawings(&store), bridge)
+    };
+    let (mut app, mut bridge) = with_store();
+    let id = sheet_of_the_block(&mut app, &mut bridge);
+    let sheet = directory.path().join("A.dxf");
+    let export = |app: &mut KetchupApp, bridge: &mut LiveBridge| {
+        bridge.execute(app, export_drawings(&sheet, json!({"sheet_id": id})), false)
+    };
+    let save_as = |app: &mut KetchupApp, bridge: &mut LiveBridge, path: &Path| {
+        let save = Request::SaveAs {
+            expected: None,
+            path: path.display().to_string(),
+        };
+        bridge.execute(app, save, false)
+    };
+    let document = directory.path().join("a.ketchup");
+    save_as(&mut app, &mut bridge, &document).unwrap();
+    export(&mut app, &mut bridge).unwrap();
+    // A Save As cancelled as the file is about to be written.
+    let elsewhere = directory.path().join("c.ketchup");
+    let token = app.file_token().map(str::to_owned);
+    let asked = std::cell::Cell::new(0);
+    let authorized = || {
+        asked.set(asked.get() + 1);
+        asked.get() == 1
+    };
+    assert!(app.save_document_to_while(&elsewhere, authorized).is_err());
+    assert_eq!(app.file_token().map(str::to_owned), token);
+    assert!(!elsewhere.exists());
+    export(&mut app, &mut bridge).expect("its own after a Save As that failed");
+    drop((app, bridge));
+
+    std::fs::remove_file(&document).unwrap();
+    let (mut app, mut bridge) = with_store();
+    let id = sheet_of_the_block(&mut app, &mut bridge);
+    save_as(&mut app, &mut bridge, &document).unwrap();
+    assert_eq!(
+        bridge.execute(
+            &mut app,
+            export_drawings(&sheet, json!({"sheet_id": id})),
+            false
+        ),
+        Err("drawings_target_exists")
+    );
+}
+
+/// Review 2026-11-06 SEC-182: the list of the files written only grew. A file
+/// that is gone leaves it at the next export, and a file written again is
+/// listed once.
+#[test]
+fn the_list_of_written_drawings_forgets_files_that_are_gone() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = directory.path().join("drawings.txt");
+    let (app, mut bridge) = setup();
+    let mut app = app.with_written_drawings(&store);
+    let id = sheet_of_the_block(&mut app, &mut bridge);
+    let document = directory.path().join("plan.ketchup");
+    let save = Request::SaveAs {
+        expected: None,
+        path: document.display().to_string(),
+    };
+    bridge.execute(&mut app, save, false).unwrap();
+    let mut export = |app: &mut KetchupApp, name: &str| {
+        let path = directory.path().join(name);
+        bridge
+            .execute(app, export_drawings(&path, json!({"sheet_id": id})), false)
+            .unwrap_or_else(|code| panic!("{code}: {:?}", take_error_details()));
+    };
+    export(&mut app, "first.dxf");
+    let listed = || std::fs::read_to_string(&store).unwrap();
+    assert!(listed().contains("first.dxf"), "{}", listed());
+    // Review 2026-11-06 r23 SEC-202: every line of every document was asked
+    // for at each export, on the window's thread: another document's gone
+    // drawing, one on a drive that is out, and a line of a newer Kečup are
+    // kept; this document's gone drawing is forgotten on a worker.
+    let other = directory.path().join("other.ketchup");
+    std::fs::write(&other, b"another document").unwrap();
+    let theirs = directory.path().join("theirs.dxf");
+    // Review 2026-11-07 P3: the lines of a document deleted stayed for
+    // good; its drawing that is gone goes, one still there stays.
+    let deleted = directory.path().join("deleted.ketchup");
+    let left = directory.path().join("left.dxf");
+    std::fs::write(&left, b"still there").unwrap();
+    #[cfg(windows)]
+    let out = crate::recent_files::presence::drive_not_in_use()
+        .join("plans")
+        .join("out.dxf");
+    // A share mounted outside the home folder, as `/media/nas`, not mounted.
+    #[cfg(not(windows))]
+    let out = directory.path().join("nas").join("out.dxf");
+    let ours = std::fs::canonicalize(&document).unwrap();
+    let token = listed().split('\t').nth(1).unwrap().to_owned();
+    let newer = format!(
+        "{}\t{token}\t{}\tabc\tid\tnewer field",
+        ours.display(),
+        out.display()
+    );
+    let mut text = listed();
+    for line in [
+        format!("drawing={}\tx\t{}\tabc", other.display(), theirs.display()),
+        format!(
+            "drawing={}\t{token}\t{}\tabc",
+            ours.display(),
+            out.display()
+        ),
+        format!("drawing={newer}"),
+        format!(
+            "drawing={}\ty\t{}\tabc",
+            deleted.display(),
+            directory.path().join("removed.dxf").display()
+        ),
+        format!("drawing={}\ty\t{}\tabc", deleted.display(), left.display()),
+    ] {
+        text.push_str(&line);
+        text.push('\n');
+    }
+    std::fs::write(&store, text).unwrap();
+    std::fs::remove_file(directory.path().join("first.dxf")).unwrap();
+    export(&mut app, "second.dxf");
+    app.drawings.forgetting.take().unwrap().join().unwrap();
+    for forgotten in ["first.dxf", "removed.dxf"] {
+        assert!(!listed().contains(forgotten), "{forgotten}: {}", listed());
+    }
+    assert!(listed().contains("second.dxf"), "{}", listed());
+    for kept in ["theirs.dxf", "newer field", "left.dxf"] {
+        assert!(listed().contains(kept), "{kept}: {}", listed());
+    }
+    assert_eq!(listed().matches("out.dxf").count(), 2, "{}", listed());
+    export(&mut app, "second.dxf");
+    assert_eq!(listed().matches("second.dxf").count(), 1, "{:?}", listed());
+}
+
+/// Review 2026-11-07 P3 `written_owner`: the document's file was resolved,
+/// and on Windows opened, on the window's thread at each export and check,
+/// and a failure logged again each time. It is resolved once per file opened
+/// or saved: the file moved away while open asks the disk no more, and its
+/// drawing is still its own.
+#[test]
+fn the_documents_file_is_resolved_once_for_its_written_drawings() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = directory.path().join("user").join("drawings.txt");
+    let (app, mut bridge) = setup();
+    let mut app = app.with_written_drawings(&store);
+    let id = sheet_of_the_block(&mut app, &mut bridge);
+    let document = directory.path().join("plan.ketchup");
+    let save = Request::SaveAs {
+        expected: None,
+        path: document.display().to_string(),
+    };
+    bridge.execute(&mut app, save, false).unwrap();
+    let sheet = directory.path().join("A.dxf");
+    let mut export = |app: &mut KetchupApp| {
+        bridge.execute(app, export_drawings(&sheet, json!({"sheet_id": id})), false)
+    };
+    export(&mut app).unwrap_or_else(|code| panic!("{code}: {:?}", take_error_details()));
+    std::fs::rename(&document, directory.path().join("moved.ketchup")).unwrap();
+    export(&mut app).unwrap_or_else(|code| {
+        panic!(
+            "its own with its file moved away: {code}: {:?}",
+            take_error_details()
+        )
+    });
+}
+
+/// Review 2026-11-06 P3: a client's export of a drawing sheet took the SHA-256
+/// of the file at the path, drew the sheet and wrote it on the window's
+/// thread. It runs as a job, answered once its worker is done; the file of
+/// someone else's is still kept unless the client says replace.
+#[test]
+fn a_clients_sheet_export_runs_off_the_windows_thread() {
+    use crate::live_bridge::program_check::ProgramCheckJob;
+    use crate::live_bridge::program_dry_run::QueuedReply;
+    let (mut app, mut bridge) = setup();
+    let id = sheet_of_the_block(&mut app, &mut bridge);
+    let directory = tempfile::tempdir().unwrap();
+    let dwg = directory.path().join("Block.dwg");
+    std::fs::write(&dwg, b"the user's own").unwrap();
+    let context = egui::Context::default();
+    let mut export = |app: &mut KetchupApp, extra: Value| {
+        let (reply, answers) = mpsc::sync_channel(1);
+        let queued = QueuedReply {
+            id: 1,
+            reply,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        };
+        bridge.start_project_drawings_export(
+            app,
+            &context,
+            queued,
+            export_drawings(&dwg, extra),
+            false,
+        );
+        assert!(
+            matches!(
+                bridge.program_check_job,
+                Some(ProgramCheckJob::ProjectDrawings(_))
+            ),
+            "the window drew and wrote the sheet itself"
+        );
+        assert!(answers.try_recv().is_err(), "answered before its job");
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            assert!(Instant::now() < deadline, "the export did not finish");
+            bridge.poll_program_check_job(app, &context);
+            if let Ok(answer) = answers.recv_timeout(Duration::from_millis(5)) {
+                break answer;
+            }
+        }
+    };
+    let kept = export(&mut app, json!({"sheet_id": id}));
+    assert_eq!(
+        kept.error.as_deref(),
+        Some("drawings_target_exists"),
+        "{kept:?}"
+    );
+    assert_eq!(std::fs::read(&dwg).unwrap(), b"the user's own");
+    let asked = export(&mut app, json!({"sheet_id": id, "replace": true}));
+    assert!(asked.ok, "{asked:?}");
+    assert_eq!(asked.result.unwrap()["sheet"], "Block");
+    assert!(std::fs::read(&dwg).unwrap().starts_with(b"AC1032"));
+    let again = export(&mut app, json!({"sheet_id": id}));
+    assert!(again.ok, "its own file is replaced unasked: {again:?}");
 }
 
 /// MECH-2: a PDF another program holds open (a PDF viewer shares it for
@@ -492,8 +942,9 @@ fn a_file_of_someone_elses_named_like_a_sheet_is_named_and_kept() {
 /// absolute path, compared as text, so a project renamed or moved (another
 /// folder, drive letter or letter case, Save As "v2") refused its own set as
 /// "changed concurrently after authorization", and the list carried the
-/// user's name in that path. The document keeps which list it wrote; another
-/// project is told whose set it is and may take it over.
+/// user's name in that path. Which list the document wrote is kept, and it
+/// stays its own once moved; another project, or a copy, is told whose set it
+/// is and may take it over.
 #[test]
 fn a_moved_project_exports_its_set_again_and_another_is_told_whose_it_is() {
     let directory = tempfile::tempdir().unwrap();
@@ -510,7 +961,12 @@ fn a_moved_project_exports_its_set_again_and_another_is_told_whose_it_is() {
         answer.map_err(|code| (code, take_error_details().unwrap_or_default().to_string()))
     };
 
-    let (mut app, mut bridge) = setup();
+    let store = directory.path().join("drawings.txt");
+    let with_store = || {
+        let (app, bridge) = setup();
+        (app.with_written_drawings(&store), bridge)
+    };
+    let (mut app, mut bridge) = with_store();
     evaluate_exact(&mut app);
     let save_as = |path: &Path| request(json!({"method": "save_as", "path": path}));
     bridge.execute(&mut app, save_as(&saved), false).unwrap();
@@ -522,10 +978,23 @@ fn a_moved_project_exports_its_set_again_and_another_is_told_whose_it_is() {
         "no absolute path: {list}"
     );
 
+    // A copy of the project, the original left where it was, is not it
+    // (review 2026-11-06 SEC-182).
+    let copy = folder("copies").join("house copy.ketchup");
+    std::fs::copy(&saved, &copy).unwrap();
+    let (mut copied, mut copy_bridge) = with_store();
+    let open = request(json!({"method": "open", "path": copy}));
+    copy_bridge.execute(&mut copied, open, false).unwrap();
+    evaluate_exact(&mut copied);
+    let (code, answer) = export(&mut copied, &mut copy_bridge, json!({})).unwrap_err();
+    assert_eq!(code, "drawings_set_of_another_project", "{answer}");
+    drop((copied, copy_bridge));
+    std::fs::remove_file(&copy).unwrap();
+
     let moved = folder("moved").join("house v2.ketchup");
     std::fs::rename(&saved, &moved).unwrap();
     drop((app, bridge));
-    let (mut app, mut bridge) = setup();
+    let (mut app, mut bridge) = with_store();
     let open = request(json!({"method": "open", "path": moved}));
     bridge.execute(&mut app, open, false).unwrap();
     evaluate_exact(&mut app);
@@ -534,17 +1003,70 @@ fn a_moved_project_exports_its_set_again_and_another_is_told_whose_it_is() {
     let list = std::fs::read_to_string(set.with_file_name("house.dxf.sheets.txt")).unwrap();
     assert!(list.contains("house v2.ketchup"), "{list}");
 
-    let (mut other, mut other_bridge) = setup();
+    let (mut other, mut other_bridge) = with_store();
     evaluate_exact(&mut other);
     let (code, answer) = export(&mut other, &mut other_bridge, json!({})).unwrap_err();
     assert_eq!(code, "drawings_set_of_another_project", "{answer}");
-    for said in ["house v2.ketchup", "take_over", "Ask the user"] {
+    // Taking it over deletes sheets of the other set, which the user is told
+    // before (review 2026-11-06 P3).
+    for said in [
+        "house v2.ketchup",
+        "take_over",
+        "Ask the user",
+        "deletes those beyond the last sheet",
+        "\"sheets\":",
+        // And names them, in the singular for one (r23 P3: "1 sheets").
+        "house-01.dxf",
+        "\"sheet_files\":",
+    ] {
         assert!(answer.contains(said), "{said:?} missing: {answer}");
     }
+    assert!(!answer.contains("1 sheets"), "{answer}");
     export(&mut other, &mut other_bridge, json!({"take_over": true})).unwrap();
     // Taken over, the set is no longer the moved project's.
     let (code, _) = export(&mut app, &mut bridge, json!({})).unwrap_err();
     assert_eq!(code, "drawings_set_of_another_project");
+}
+
+/// Review 2026-11-06 MF-182: a project moved together with its drawings
+/// folder, `C:\Jobs\Dom\` to `D:\Archiv\Dom\` or a folder synced to a
+/// colleague, refused its own set as exported "from dom.ketchup, not this
+/// document": the list it wrote was kept by its old path. A list of the same
+/// document naming the project's file is its own.
+#[test]
+fn a_project_moved_with_its_drawings_folder_exports_its_set_again() {
+    let directory = tempfile::tempdir().unwrap();
+    let request = |value: Value| serde_json::from_value::<Request>(value).unwrap();
+    let job = directory.path().join("Jobs").join("Dom");
+    std::fs::create_dir_all(job.join("dwg")).unwrap();
+    let store = directory.path().join("drawings.txt");
+    let (app, mut bridge) = setup();
+    let mut app = app.with_written_drawings(&store);
+    evaluate_exact(&mut app);
+    let save = request(json!({"method": "save_as", "path": job.join("dom.ketchup")}));
+    bridge.execute(&mut app, save, false).unwrap();
+    let set = job.join("dwg").join("dom.dxf");
+    bridge
+        .execute(&mut app, export_drawings(&set, json!({})), false)
+        .unwrap();
+    drop((app, bridge));
+
+    let archive = directory.path().join("Archiv");
+    std::fs::create_dir_all(&archive).unwrap();
+    let moved = archive.join("Dom");
+    std::fs::rename(&job, &moved).unwrap();
+    // On this computer, and on a colleague's, which never wrote the set.
+    for store in [store, directory.path().join("colleague.txt")] {
+        let (app, mut bridge) = setup();
+        let mut app = app.with_written_drawings(&store);
+        let open = request(json!({"method": "open", "path": moved.join("dom.ketchup")}));
+        bridge.execute(&mut app, open, false).unwrap();
+        evaluate_exact(&mut app);
+        let set = moved.join("dwg").join("dom.dxf");
+        bridge
+            .execute(&mut app, export_drawings(&set, json!({})), false)
+            .unwrap_or_else(|code| panic!("{store:?} {code}: {:?}", take_error_details()));
+    }
 }
 
 /// One DXF entity: its type, layer, numeric codes and KETCHUP id.

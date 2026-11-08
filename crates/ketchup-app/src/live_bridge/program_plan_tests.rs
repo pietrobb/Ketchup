@@ -21,6 +21,7 @@ fn cancelled_or_replaced_document_never_publishes_a_finished_plan() {
         let plan = plan_with_report(
             &app.document.fork_for_planning(),
             &source,
+            &[],
             CheckDeadline::start(),
             true,
             &ketchup_program::CancelToken::default(),
@@ -106,6 +107,7 @@ fn client_eof_while_program_plan_is_pending_prevents_publication() {
     let plan = plan_with_report(
         &app.document.fork_for_planning(),
         &source,
+        &[],
         CheckDeadline::start(),
         true,
         &ketchup_program::CancelToken::default(),

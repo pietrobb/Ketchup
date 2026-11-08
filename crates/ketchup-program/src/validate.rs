@@ -698,6 +698,59 @@ fn joints<'a>(
 
 fn params(model: &ProgramModel, issues: &mut Vec<Issue>) {
     for param in &model.params {
+        if let Some(value) = param.refused_override {
+            // 1e300 in a sentence, not its 301 digits.
+            let refused = if value.abs() >= 1.0e15 {
+                format!("{value:e}")
+            } else {
+                value.to_string()
+            };
+            // A count given 2.5 is refused as one outside its range is
+            // (review 2026-11-06 r23 P3: it failed the whole program); one
+            // refused for both is told both (review 2026-11-07 P3).
+            let outside = param.min.is_some_and(|min| value < min)
+                || param.max.is_some_and(|max| value > max);
+            let whole = crate::eval::is_whole_override(param, value);
+            let bounds = crate::eval::range_text(param.min, param.max);
+            let range = format!("is outside {bounds}");
+            let (why, hint) = match (outside, whole) {
+                (true, true) => (
+                    range,
+                    "Set a value inside the declared range, or widen the range.".to_owned(),
+                ),
+                // Widening the range takes no fraction either (review r26 P3):
+                // the whole number of the range nearest it.
+                (true, false) => {
+                    let mut nearest = value.round();
+                    if let Some(max) = param.max {
+                        nearest = nearest.min(max.floor());
+                    }
+                    if let Some(min) = param.min {
+                        nearest = nearest.max(min.ceil());
+                    }
+                    (
+                        format!("{range} and {}", crate::eval::WHOLE_ONLY),
+                        format!("Set a whole number inside {bounds}, as {nearest}."),
+                    )
+                }
+                (false, _) => (
+                    crate::eval::WHOLE_ONLY.to_owned(),
+                    "Set a whole number, or drop whole = True from the param.".to_owned(),
+                ),
+            };
+            issues.push(Issue {
+                source_lines: Vec::new(),
+                severity: Severity::Error,
+                kind: "param_out_of_range",
+                parts: Vec::new(),
+                message: format!(
+                    "param {} = {refused} {why}; the default {} is used",
+                    param.name, param.default,
+                ),
+                where_mm: None,
+                hint,
+            });
+        }
         let low = param.min.is_some_and(|min| param.value < min);
         let high = param.max.is_some_and(|max| param.value > max);
         if low || high {

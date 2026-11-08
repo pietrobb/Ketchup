@@ -1960,6 +1960,21 @@ fn status_bar_shows_the_exact_build_version() {
 }
 
 #[test]
+fn help_about_says_where_the_window_logs() {
+    // Review 2026-11-06 P3: a window logs to a file it never named.
+    let folder = tempfile::tempdir().unwrap();
+    let file = folder.path().join("ketchup.log");
+    ketchup_rejection::dropped::log_to_file(&file).unwrap();
+    let mut shell = Shell::new();
+    shell.click_menu_command("menu-help", AppCommand::About);
+    let named = shell.catalog().format(
+        "about-log",
+        &BTreeMap::from([("path", file.display().to_string())]),
+    );
+    assert!(shell.has_visible_label(&named), "{named}");
+}
+
+#[test]
 fn help_about_is_localized_informative_and_presentation_only() {
     for catalog in [
         LocaleCatalog::english(),

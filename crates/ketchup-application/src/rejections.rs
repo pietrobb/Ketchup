@@ -164,6 +164,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Save the drawing again from the program that made it, as a smaller DXF if it is too large, import that, repeat the changes, then export again.",
     ),
     entry(
+        "drawing_text_too_long",
+        Validation,
+        "source",
+        "A text of the drawing, or several, would be longer than a DXF line holds as the drawing is written; caused_by names each entity, its length and why: before DXF 2007 a character its code page has not is written as \\U+XXXX, seven characters. Nothing was written.",
+        "Shorten those texts or take them out of the drawing; where caused_by names \\U+XXXX, saving the source as DXF 2007 or later (UTF-8) from the program that made it and importing that helps too. Then export again.",
+    ),
+    entry(
         "drawing_worker_failed",
         Io,
         "window",

@@ -22,9 +22,10 @@ function Get-WorkspaceVersion([string]$RepoRoot) {
 # P3 platform; r19 P3: -rc.1, -rc.2 and -dev shared one code). Other pre-releases are
 # refused rather than given a code another build has. 0.3.2 shipped as 30029 under the
 # rule before, below any code of this one. scripts/macos/bundle-version.sh gives the Mac
-# apps the same.
+# apps the same. Matched with case, as bash does: -RC.1 is refused, not given the code
+# of -rc.1 (review 2026-11-06 P3).
 function Get-AndroidVersionCode([string]$Version) {
-    if ($Version -notmatch '^(\d+)\.(\d+)\.(\d+)(?:-(dev|rc)(?:\.(\d+))?)?$') {
+    if ($Version -cnotmatch '^(\d+)\.(\d+)\.(\d+)(?:-(dev|rc)(?:\.(\d+))?)?$') {
         throw "Version $Version is not major.minor.patch with an optional -dev[.N] or -rc[.N]"
     }
     $major = [int]$Matches[1]

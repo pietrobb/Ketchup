@@ -116,6 +116,49 @@ fn every_visible_body_is_drawn_and_a_part_without_its_exact_solid_stops_the_shee
     assert_eq!(drawn(&app, "wall B"), 1);
 }
 
+/// Review 2026-11-06 r23 P3: the question before taking another project's set
+/// over said only how many sheets it deletes, and "1 sheets". It names the
+/// first five, in the plural of the window's language.
+#[test]
+fn the_question_to_take_a_set_over_names_its_sheets() {
+    let refused = |sheets: &[&str]| ProjectDrawingsError::SetOfAnotherProject {
+        list: PathBuf::from("house.dxf.sheets.txt"),
+        project: Some("barn.ketchup".to_owned()),
+        sheets: sheets.iter().map(|&sheet| sheet.to_owned()).collect(),
+    };
+    let english = KetchupApp::with_catalog(LocaleCatalog::english());
+    let text = english.project_drawings_error_text(&refused(&["house-01.dxf"]));
+    assert!(
+        text.contains("It has 1 sheet, house-01.dxf: taking it over replaces it and"),
+        "{text}"
+    );
+    let slovak = KetchupApp::with_catalog(LocaleCatalog::slovak());
+    let seven: Vec<String> = (1..=7)
+        .map(|sheet| format!("house-{sheet:02}.dxf"))
+        .collect();
+    let seven: Vec<&str> = seven.iter().map(String::as_str).collect();
+    let text = slovak.project_drawings_error_text(&refused(&seven));
+    assert!(
+        text.contains(
+            "Má 7 listov, house-01.dxf, house-02.dxf, house-03.dxf, house-04.dxf, house-05.dxf, …;"
+        ),
+        "{text}"
+    );
+    let text = slovak.project_drawings_error_text(&refused(&seven[..3]));
+    assert!(text.contains("Má 3 listy, house-01.dxf"), "{text}");
+    // Review 2026-11-07 P3: a list of no sheets read "It has 0 sheets, :
+    // taking it over replaces them", and a name of a list on a share was
+    // shown however long.
+    let text = english.project_drawings_error_text(&refused(&[]));
+    assert!(text.contains("It has no sheets listed"), "{text}");
+    assert!(!text.contains(", :"), "{text}");
+    let text = slovak.project_drawings_error_text(&refused(&[]));
+    assert!(text.contains("Nemá žiadny list"), "{text}");
+    let long = "a".repeat(10_000);
+    let text = english.project_drawings_error_text(&refused(&[&long]));
+    assert!(text.len() < 1_000, "{} characters", text.len());
+}
+
 /// Review 2026-10-19 P3: a drawing number too long for its corner cell ran
 /// out of the title block. It stops the export, naming the field and what
 /// fits in the window's language, and is never cut short.
@@ -1322,6 +1365,52 @@ fn the_drawings_window_shows_the_found_zero_and_keeps_any_height() {
     );
 }
 
+/// Review 2026-11-06 P3: ±0,000 unticked before its worker found the ground
+/// floor started the height the user sets from 0. It cannot be unticked
+/// until the floor is found, then starts from it.
+#[test]
+fn zero_is_set_from_the_floor_found_not_from_nothing() {
+    use egui_kittest::kittest::Queryable;
+    let mut app = KetchupApp::new();
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let snapshot = app.document.current();
+    let key = (
+        snapshot.document_id(),
+        snapshot.revision_id(),
+        app.exact.results.contents_stamp(),
+    );
+    let (floor, finding) = std::sync::mpsc::channel();
+    *app.drawings.found_zero.borrow_mut() = Some((
+        key,
+        crate::app::project_drawings::FoundZero::Finding(finding),
+    ));
+    let ground = |height: &str| {
+        app.catalog.format(
+            "drawings-zero-level-ground",
+            &BTreeMap::from([("height", height.to_owned())]),
+        )
+    };
+    let (being_found, found) = (ground("…"), ground("650"));
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(1600.0, 1200.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.state_mut().open_project_drawings_window();
+    harness.step();
+    harness.step();
+    harness.get_by_label(&being_found).click_accesskit();
+    harness.step();
+    harness.step();
+    assert_eq!(harness.state().drawings.editing.zero_level_mm, None);
+
+    floor.send(Ok(650.0)).unwrap();
+    harness.step();
+    harness.step();
+    harness.get_by_label(&found).click_accesskit();
+    harness.step();
+    harness.step();
+    assert_eq!(harness.state().drawings.editing.zero_level_mm, Some(650));
+}
+
 /// Review 2026-11-04 MF-140: the level marks of a Czech sheet wrote a comma
 /// but its dimensions and cutting captions a point ("1234.5", "využito
 /// 87.5 %"), both on one sheet, in the PDF and the DXF. Every number a Czech or
@@ -1537,6 +1626,7 @@ fn a_recovered_session_exports_the_sets_of_the_file_it_was_found_for() {
 const DOCUMENT: crate::app::project_drawings::SetOwner = crate::app::project_drawings::SetOwner {
     document: ketchup_model::document::DocumentId(7),
     file: None,
+    token: None,
     written: BTreeMap::new(),
 };
 
@@ -1672,6 +1762,7 @@ fn sheets_of_another_project_under_the_same_name_are_neither_replaced_nor_remove
     let mut other = SetOwner {
         document: DocumentId(8),
         file: None,
+        token: None,
         written: BTreeMap::new(),
     };
     let mut this = DOCUMENT;

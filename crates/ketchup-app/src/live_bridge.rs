@@ -83,7 +83,6 @@ mod program_navigation;
 pub use program_access::{ReportSection, SourceEdit};
 pub use program_variant_export::CsvDecimal;
 mod mcp_config;
-#[cfg(any(not(windows), test))]
 pub(crate) use mcp_config::write_keeping_file;
 pub mod mcp_setup;
 mod measurement;
@@ -1042,6 +1041,10 @@ fn program_failure(error: ketchup_application::RuleProgramApplyError) -> &'stati
     use ketchup_application::RuleProgramApplyError as Error;
     let (reason, hint) = match &error {
         Error::Rejected(rejection) => return program_write_failure(rejection),
+        Error::Program { code, .. } if code == program_check::OVERRIDE_REFUSED => (
+            code.clone(),
+            "Give the parameter a value it takes (inside its range, whole for a count), or leave it out of overrides to keep its default.",
+        ),
         Error::Program { code, .. } => (
             code.clone(),
             "Fix the line named in details.location (its excerpt is the evaluated text) and apply or patch again.",

@@ -24,6 +24,7 @@ use ketchup_manufacturing::title_block::{
     DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM, SheetFormat, SheetLanguage, SheetSettings, TitleField,
 };
 use ketchup_model::annotation::{DecimalMark, dimension_text_with};
+use ketchup_model::exact_product::ExactResultRegistry;
 use ketchup_model::sheet_pdf::PdfInfo;
 use ketchup_program::Evaluated;
 use std::borrow::Cow;
@@ -75,12 +76,42 @@ pub(crate) enum ProjectDrawingsError {
     Dwg(ketchup_dwg::DwgError),
     /// The set at the path, listed at `list`, is another project's, or
     /// another copy's that wrote it since; `project` names the file it was
-    /// exported from (review 2026-11-04 r19 MF-162).
+    /// exported from (review 2026-11-04 r19 MF-162), and `sheets` the files
+    /// of its sheets, which taking it over replaces or deletes (review
+    /// 2026-11-06 P3; r23 P3: the question named only how many).
     SetOfAnotherProject {
         list: PathBuf,
         project: Option<String>,
+        sheets: Vec<String>,
     },
     Write(std::io::Error),
+}
+
+/// The characters of a sheet's name a question shows, the rest as "…": a
+/// list on a share may hold names of any length (review 2026-11-07 P3).
+pub(crate) const SHEET_NAME_CHARS: usize = 100;
+
+/// The first [`ketchup_rejection::LISTED`] of `sheets`, each cut to
+/// [`SHEET_NAME_CHARS`].
+pub(crate) fn listed_sheets(sheets: &[String]) -> Vec<String> {
+    sheets
+        .iter()
+        .take(ketchup_rejection::LISTED)
+        .map(|name| match name.char_indices().nth(SHEET_NAME_CHARS) {
+            Some((end, _)) => format!("{}…", &name[..end]),
+            None => name.clone(),
+        })
+        .collect()
+}
+
+/// The first [`ketchup_rejection::LISTED`] of `sheets`, then "…" for the rest,
+/// as a question names the sheets of a set it would replace.
+pub(crate) fn sheet_names(sheets: &[String]) -> String {
+    let mut names = listed_sheets(sheets).join(", ");
+    if sheets.len() > ketchup_rejection::LISTED {
+        names.push_str(", …");
+    }
+    names
 }
 
 /// Why a shown underlay's lines do not read, in words.
@@ -209,23 +240,34 @@ pub(crate) enum FoundZeroError {
 /// The ground floor the drawings window shows for ±0,000 (review 2026-11-04
 /// r19 MF-161): being found on a worker, or found, or why it cannot be.
 pub(crate) enum FoundZero {
-    Finding(std::sync::mpsc::Receiver<f64>),
+    Finding(std::sync::mpsc::Receiver<Result<f64, FoundZeroError>>),
     Found(Result<f64, Arc<FoundZeroError>>),
 }
 
 impl FoundZero {
-    /// Finds the ground floor among `bodies`, placed, on a worker thread.
-    fn find(bodies: Vec<(Arc<ExactBodyPackage>, Transform)>) -> Self {
+    /// Finds the ground floor among the bodies of `snapshot` (see
+    /// [`KetchupApp::job_bodies`]), placed, on a worker thread: which bodies
+    /// those are is found there too (review 2026-11-06 P3).
+    fn find(snapshot: Snapshot, results: ExactResultRegistry) -> Self {
         let (sender, receiver) = std::sync::mpsc::channel();
         let spawned = std::thread::Builder::new()
             .name("ketchup-ground-floor".to_owned())
             .spawn(move || {
-                let solids = bodies
-                    .iter()
-                    .map(|(package, transform)| level_solid(package, transform))
-                    .collect::<Vec<_>>();
+                let found = KetchupApp::job_bodies(&results, &snapshot)
+                    .map(|scoped| {
+                        let solids = scoped
+                            .iter()
+                            .flat_map(|(occurrence, packages)| {
+                                packages
+                                    .iter()
+                                    .map(|(package, _)| level_solid(package, &occurrence.transform))
+                            })
+                            .collect::<Vec<_>>();
+                        ground_floor(&solids)
+                    })
+                    .map_err(FoundZeroError::Bodies);
                 // Sending fails only when the window has gone: nobody to tell.
-                sender.send(ground_floor(&solids)).unwrap_or_default();
+                crate::delivery::Deliver::deliver(&sender, found);
             });
         match spawned {
             Ok(_) => Self::Finding(receiver),
@@ -237,7 +279,7 @@ impl FoundZero {
     fn poll(&mut self) -> Option<Result<f64, Arc<FoundZeroError>>> {
         if let Self::Finding(receiver) = self {
             *self = match receiver.try_recv() {
-                Ok(height) => Self::Found(Ok(height)),
+                Ok(found) => Self::Found(found.map_err(Arc::new)),
                 Err(std::sync::mpsc::TryRecvError::Empty) => return None,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     Self::Found(Err(Arc::new(FoundZeroError::WorkerStopped)))
@@ -347,18 +389,18 @@ const SET_LIST_HEADER: &str = "Ketchup drawing set";
 const OWNED_SET_LIST_HEADER: &str = "Ketchup drawing set of a project file";
 /// The first line of the list a DXF or DWG set is written with, its third
 /// line naming the project's file by its name alone, so the list carries no
-/// folder with the user's name. Whose the set is the document says: it keeps
-/// the list it wrote (review 2026-11-04 r19 MF-162).
+/// folder with the user's name. Whose the set is says the list each document
+/// wrote, kept with the user's settings (review 2026-11-04 r19 MF-162,
+/// 2026-11-06 SEC-182).
 const DOCUMENT_SET_LIST_HEADER: &str = "Ketchup drawing set of a document";
 
-/// The line of a 0.3.2 set's list naming the file of the project it is drawn
-/// from, none for a project not saved.
-fn project_path_line(owner: &SetOwner) -> String {
-    let file = owner
-        .file
-        .as_ref()
-        .map_or_else(String::new, |file| file.display().to_string());
-    format!("project {file}")
+/// The second line of a set's list: the token of the project's file, or the
+/// document's id while it has none.
+fn document_line(owner: &SetOwner) -> String {
+    match &owner.token {
+        Some(token) => format!("file {token}"),
+        None => format!("document {}", owner.document.0),
+    }
 }
 
 /// The line of a set's list naming the file the project is kept in by its
@@ -395,6 +437,10 @@ pub(crate) struct SetOwner {
     pub(crate) document: DocumentId,
     /// None while the project has not been saved.
     pub(crate) file: Option<PathBuf>,
+    /// The token of the project's file, new in a copy saved as another file:
+    /// what a set's list names, not the document id a copy shares (review
+    /// 2026-11-06 r23 MF-201). None while it has none.
+    pub(crate) token: Option<String>,
     /// The SHA-256 of each drawing file the document wrote, by
     /// [`written_key`](super::drawing_sheet_export::written_key).
     pub(crate) written: BTreeMap<String, String>,
@@ -432,7 +478,8 @@ impl KetchupApp {
                 .path
                 .clone()
                 .or_else(|| self.recovery_requested_path().map(Path::to_path_buf)),
-            written: self.written_drawings().unwrap_or_default(),
+            token: self.file_token().map(str::to_owned),
+            written: self.written_drawings(),
         }
     }
 }
@@ -451,8 +498,8 @@ const REPLACING: &str = "replacing ";
 /// the sheets are written.
 fn list_of(owner: &SetOwner, replacing: Option<&str>, sheets: &[(String, String)]) -> Vec<u8> {
     let mut list = format!(
-        "{DOCUMENT_SET_LIST_HEADER}\ndocument {}\n{}\n",
-        owner.document.0,
+        "{DOCUMENT_SET_LIST_HEADER}\n{}\n{}\n",
+        document_line(owner),
         project_name_line(owner)
     );
     if let Some(replacing) = replacing {
@@ -500,18 +547,44 @@ enum SetList {
     Its(BTreeMap<String, BTreeSet<String>>),
     /// The set of another project, or another copy of this one that wrote it
     /// since: the name of the file it was exported from, none when unsaved or
-    /// not named.
-    Another(Option<String>),
+    /// not named, and the files of the sheets it lists.
+    Another {
+        project: Option<String>,
+        sheets: Vec<String>,
+    },
     /// No list of a drawing set at all.
     NotAList,
 }
 
+/// Whether `project`, the project file a set's list names (by its absolute
+/// path in a list of Kečup 0.3.2), has the name of the file `owner` is kept
+/// in, as Windows compares names: a project moved with its drawings folder,
+/// to an archive or a colleague's synced folder, or opened by another
+/// spelling of its path, keeps its set (review 2026-11-06 MF-182, r19 MF-162,
+/// capability review run 501). No file is looked at, so an offline share
+/// does not hold the window (2026-11-06 P3).
+fn names_the_project(project: &str, owner: &SetOwner) -> bool {
+    let listed = project
+        .rsplit_once(['/', '\\'])
+        .map_or(project, |(_, name)| name);
+    let name = owner
+        .file
+        .as_deref()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str());
+    !listed.is_empty()
+        && name.is_some_and(|name| {
+            name == listed || cfg!(windows) && name.to_lowercase() == listed.to_lowercase()
+        })
+}
+
 /// What `list`, at `list_path`, is to `owner`: its set when the document
-/// last wrote it there or `take_over` says to take it. A list of Kečup 0.3.2,
-/// which named the project by its absolute path, is the set of the project
-/// still kept in that file, the same file on disk however its path is spelt
-/// (case, `.`, `\\?\`, a mapped drive or its share; r19 MF-162, capability
-/// review run 501); an older one, naming no file, of the project's id. Any other is another project's, never this one's by its file name.
+/// last wrote it there or `take_over` says to take it, or when it is the same
+/// document's list naming the project's file (see [`names_the_project`]), of
+/// a file with a token in a list of this Kečup; a
+/// list older than Kečup 0.3.2, naming no file, of the project's id. Any
+/// other is another project's, or another copy's, never this one's by its
+/// file name alone.
 fn set_list_of(list: &[u8], list_path: &Path, owner: &SetOwner, take_over: bool) -> SetList {
     // A file that is not UTF-8 has no header of a list.
     let text = String::from_utf8_lossy(list);
@@ -526,7 +599,17 @@ fn set_list_of(list: &[u8], list_path: &Path, owner: &SetOwner, take_over: bool)
     {
         return SetList::NotAList;
     }
-    let same_document = lines.next() == Some(format!("document {}", owner.document.0).as_str());
+    // A list of this Kečup names the project's file by its token; an older
+    // one, by the document id a copy shares too.
+    let whose = if header == DOCUMENT_SET_LIST_HEADER {
+        document_line(owner)
+    } else {
+        format!("document {}", owner.document.0)
+    };
+    let same_document = lines.next() == Some(whose.as_str());
+    // A file without a token is named by the document id its copies share:
+    // it takes no set by its name (review 2026-11-07 P3).
+    let by_name = header != DOCUMENT_SET_LIST_HEADER || owner.token.is_some();
     let project = (header != SET_LIST_HEADER)
         .then(|| lines.next().unwrap_or_default())
         .and_then(|line| line.strip_prefix("project "));
@@ -541,33 +624,30 @@ fn set_list_of(list: &[u8], list_path: &Path, owner: &SetOwner, take_over: bool)
         || wrote(&ketchup_model::graph::sha256_hex(list))
         || replacing.is_some_and(|replaced| wrote(replaced) || replaced == "none" && same_document)
         || same_document
-            && match header {
-                SET_LIST_HEADER => true,
-                OWNED_SET_LIST_HEADER => project.is_some_and(|project| {
-                    owner.file.as_deref().is_some_and(|file| {
-                        format!("project {project}") == project_path_line(owner)
-                            || same_file::is_same_file(project, file).unwrap_or(false)
-                    })
-                }),
-                _ => false,
-            };
-    if !its {
-        let name = project
-            .filter(|project| !project.is_empty())
-            .map(|project| {
-                Path::new(project).file_name().map_or_else(
-                    || project.to_owned(),
-                    |name| name.to_string_lossy().into_owned(),
-                )
-            });
-        return SetList::Another(name);
-    }
+            && by_name
+            && (header == SET_LIST_HEADER
+                || project.is_some_and(|project| names_the_project(project, owner)));
     let mut listed = BTreeMap::<String, BTreeSet<String>>::new();
     for (name, sha256) in lines.filter_map(|line| line.rsplit_once(' ')) {
         listed
             .entry(name.to_owned())
             .or_default()
             .insert(sha256.to_owned());
+    }
+    if !its {
+        let project = project
+            .filter(|project| !project.is_empty())
+            .map(|project| {
+                project
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .unwrap_or(project)
+                    .to_owned()
+            });
+        return SetList::Another {
+            project,
+            sheets: listed.into_keys().collect(),
+        };
     }
     SetList::Its(listed)
 }
@@ -792,10 +872,11 @@ pub(crate) fn project_drawings_targets(
     };
     let listed = match set_list_of(&list, &list_path, owner, take_over) {
         SetList::Its(listed) => listed,
-        SetList::Another(project) => {
+        SetList::Another { project, sheets } => {
             return Err(ProjectDrawingsError::SetOfAnotherProject {
                 list: list_path,
                 project,
+                sheets,
             });
         }
         // Writing the list there is refused as for any file not the set's.
@@ -958,10 +1039,11 @@ impl KetchupApp {
     /// on a hidden tag does not decide it (r19 MF-161). A drawn body with no
     /// current exact solid is an error naming its part, and exact results
     /// that do not read are an error, never no solid at all (r19 MF-161).
-    fn job_bodies(&self, snapshot: &Snapshot) -> Result<Vec<JobOccurrence>, ProjectDrawingsError> {
-        let exact = self
-            .exact
-            .results
+    fn job_bodies(
+        results: &ExactResultRegistry,
+        snapshot: &Snapshot,
+    ) -> Result<Vec<JobOccurrence>, ProjectDrawingsError> {
+        let exact = results
             .body_values(snapshot)
             .map_err(ProjectDrawingsError::ExactResults)?
             .into_iter()
@@ -1052,7 +1134,7 @@ impl KetchupApp {
         }
         let mut drawn = Vec::new();
         let mut zero_among = Vec::new();
-        for (occurrence, packages) in self.job_bodies(snapshot)? {
+        for (occurrence, packages) in Self::job_bodies(&self.exact.results, snapshot)? {
             let placed = threads
                 .get(&occurrence.definition_id)
                 .into_iter()
@@ -1122,19 +1204,7 @@ impl KetchupApp {
         );
         let mut found = self.drawings.found_zero.borrow_mut();
         if found.as_ref().is_none_or(|(cached, _)| *cached != key) {
-            let finding = match self.job_bodies(snapshot) {
-                Ok(scoped) => FoundZero::find(
-                    scoped
-                        .into_iter()
-                        .flat_map(|(occurrence, packages)| {
-                            packages
-                                .into_iter()
-                                .map(move |(package, _)| (package, occurrence.transform))
-                        })
-                        .collect(),
-                ),
-                Err(error) => FoundZero::Found(Err(Arc::new(FoundZeroError::Bodies(error)))),
-            };
+            let finding = FoundZero::find(snapshot.clone(), self.exact.results.clone());
             *found = Some((key, finding));
         }
         let (_, finding) = found.as_mut()?;
@@ -1711,10 +1781,16 @@ impl KetchupApp {
                 error.to_string()
             }
             ProjectDrawingsError::Dwg(error) => error.to_string(),
-            ProjectDrawingsError::SetOfAnotherProject { list, project } => self.catalog.format(
+            ProjectDrawingsError::SetOfAnotherProject {
+                list,
+                project,
+                sheets,
+            } => self.catalog.format(
                 "drawings-set-of-another-project",
                 &BTreeMap::from([
                     ("list", list.display().to_string()),
+                    ("sheets", sheets.len().to_string()),
+                    ("names", sheet_names(sheets)),
                     (
                         "project",
                         project.clone().unwrap_or_else(|| {
@@ -1966,6 +2042,7 @@ impl KetchupApp {
                             .and_then(|height| format!("{height:.0}").parse::<i32>().ok());
                         ui.horizontal(|ui| {
                             let mut ground = editing.zero_level_mm.is_none();
+                            let ready = finding.is_some() || !ground;
                             let shown = match (&finding, found) {
                                 (_, Some(found)) => found.to_string(),
                                 (None, None) => "…".to_owned(),
@@ -1974,16 +2051,16 @@ impl KetchupApp {
                             let why = finding
                                 .and_then(Result::err)
                                 .map(|error| self.found_zero_error_text(&error));
-                            if ui
-                                .checkbox(
-                                    &mut ground,
-                                    self.catalog.format(
-                                        "drawings-zero-level-ground",
-                                        &BTreeMap::from([("height", shown)]),
-                                    ),
-                                )
-                                .changed()
-                            {
+                            // Unticked only once found, so the height set starts
+                            // from the floor, not from 0 (review 2026-11-06 P3).
+                            let checkbox = egui::Checkbox::new(
+                                &mut ground,
+                                self.catalog.format(
+                                    "drawings-zero-level-ground",
+                                    &BTreeMap::from([("height", shown)]),
+                                ),
+                            );
+                            if ui.add_enabled(ready, checkbox).changed() {
                                 editing.zero_level_mm = (!ground).then(|| found.unwrap_or(0));
                             }
                             if let Some(why) = why {

@@ -106,7 +106,7 @@ point and outward normal in the part's frame and in the world. An edge gives
 
 | Builtin | Purpose |
 |---|---|
-| `param(name, default, min=, max=, doc=, unit=, whole=)` | a number the caller can override; `whole=True` for a count or a switch, an int in the program even with a default written `3.0`, whose fraction stops the program at `param()`, naming the parameter, and is refused by the window's field. An override outside `min`/`max` stops the program at `param()` the same way, before anything is built with it, and the window's field refuses it; a default outside them is reported as `param_out_of_range` |
+| `param(name, default, min=, max=, doc=, unit=, whole=)` | a number the caller can override; `whole=True` for a count or a switch, an int in the program even with a default written `3.0`, whose fraction stops the program at `param()`, naming the parameter. An override outside `min`/`max`, or one with a fraction (or of 1e9 or more) for a `whole=True` count, is not used: the program is built with the default and reports `param_out_of_range`, so a document saved before its program narrowed still opens. The window's field, MCP `set_params` and program `apply`/`check` with `overrides` refuse such a value outright; a default outside `min`/`max` is reported as `param_out_of_range` |
 | `box(name, size, at=, material=, color=, attributes=)` | an axis-aligned part; `at` is its minimum corner. Every body (`box`, `extrude`, `revolve`, `sweep`, `loft`) takes `material=`, `color=` and `attributes=` (a dict of strings kept on the part; the library's `board(grain=)` stores `"grain"` there, and `"material:axis"`, the axis the cut list keeps its blank square to; an extrusion turned in its profile's plane needs that one to keep it) |
 | `part_info(part)` | current `name`, `size`, `at`, `max` of a part |
 | `face(part, name)`, `faces(part)`, `face_at(part, point)` | a flat or round face of any part in world: `kind`, `origin`, `normal`, `u`, `v`, `min`, `max`, `radius`, `center` |
@@ -172,10 +172,17 @@ hogging), bear on a part declared `grounded=True` beside the beam (across it,
 beyond its side) and are fastened to both by `joint()`;
 `loads.members[].braced_by` lists them. A grounded part must be stiff sideways
 (a wall, not a hinged stud). Every `joint()` fastens its parts except of the kinds
-`none`, `contact` and `friction`; a load path's `fixed` tag passes weight but
-braces nothing. A brace holds the beam at its joint's `fasteners` that lie where
-the two parts touch (others are reported as `fastener_off_contact` and hold
-nothing), or at the middle of each place they touch when the joint names none.
+`none`, `contact`, `friction`, `unfastened`, `loose`, `free` and `rests`; a load
+path's `fixed` tag passes weight but braces nothing. A joint's `kind` may not be
+empty; one of five letters or more that reads like a slip of a kind fastening
+nothing (`contcat`, `contacts`) fastens and is reported as `joint_kind_doubtful`.
+A brace anchored to a grounded part smaller across the member than the member
+is deep is reported as `anchorage_small`. A brace holds the beam at its
+joint's `fasteners` that lie where the two parts touch, in any of their contacts
+and no deeper from it than the thinner part is thick (others are reported as
+`fastener_off_contact` and hold nothing), or at the middle of each place they
+touch when the joint names none; a `bearing=True` joint holds nothing sideways
+where its parts do not touch.
 Sheathing or a deck fastened only to the beams braces nothing, so a usual floor
 of joists under a screwed deck is `not_verified` for lateral torsional buckling
 until a diaphragm can be declared. It is a computed check, not an authorized structural design.

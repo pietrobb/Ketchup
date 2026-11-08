@@ -225,18 +225,20 @@ impl KetchupApp {
     }
 
     pub(crate) fn btlx_export_options(&self) -> BtlxExportOptions {
-        let profile_processing_request = match self.btlx_profile_strategy {
+        let profile_processing_request = match self.window.btlx.profile_strategy {
             BtlxProfileStrategy::PortableFreeContour => {
                 BtlxProfileProcessingRequest::PortableFreeContour
             }
             BtlxProfileStrategy::EdgeSawCutsThenMillContour => {
                 BtlxProfileProcessingRequest::EdgeSawCutsThenMillContour {
-                    intermediate_saw_cuts: self.btlx_intermediate_saw_cuts,
+                    intermediate_saw_cuts: self.window.btlx.intermediate_saw_cuts,
                 }
             }
         };
         BtlxExportOptions {
             profile_processing_request,
+            largest_drill_mm: (self.window.btlx.largest_drill_mm > 0.0)
+                .then_some(self.window.btlx.largest_drill_mm),
         }
     }
 

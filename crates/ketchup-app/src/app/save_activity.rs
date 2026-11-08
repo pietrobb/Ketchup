@@ -64,6 +64,7 @@ impl KetchupApp {
         context: &egui::Context,
         prepare: impl FnOnce(&DocumentStore, &ContainerData) -> PreparedSave + Send + 'static,
     ) {
+        self.token_for_save(&path);
         let source = Source::capture(self);
         let document = self.document.fork_for_planning();
         let container = source.container.clone();
@@ -215,6 +216,7 @@ impl KetchupApp {
                             .is_some_and(|error| error.published_identity(&task.path).is_some())
                     {
                         self.file.path = Some(task.path.clone());
+                        self.drawings_saved(Some(&task.path));
                         self.file.work_recovery_off = false;
                         self.file.identity = Some(*identity);
                         self.file.saved_digest = task.source.history;

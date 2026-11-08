@@ -9,12 +9,18 @@
 //! waits in the window for it and is then drawn from its solids, in the same
 //! request (Měchenice MECH-4); it was refused, and the client had to poll.
 
-use super::drawings::{StartedDrawings, export_failed, finish_export, start_export};
+use super::drawings::{
+    SheetMade, SheetRefusal, SheetTarget, StartedDrawings, export_failed, finish_export,
+    finish_sheet, sheet_refused, start_export,
+};
 use super::program_check::ProgramCheckJob;
 use super::program_dry_run::QueuedReply;
 use super::*;
+use crate::app::drawing_sheet_export::DrawingSheetExportError;
 use crate::app::project_drawings::ProjectDrawingsError;
+use crate::app::underlay_export::PublishGate;
 use crate::delivery::Deliver;
+use crate::export_bundle::ExportTransactionError;
 use ketchup_manufacturing::project_drawings::DrawingSet;
 
 type Made = Result<(DrawingSet, Vec<Vec<u8>>), ProjectDrawingsError>;
@@ -43,6 +49,13 @@ enum Stage {
         started: StartedDrawings,
         receiver: mpsc::Receiver<Made>,
     },
+    /// One drawing sheet, drawn and written on a thread (review 2026-11-06
+    /// P3); a cancel stops it only before the sheet takes the file's place.
+    Sheet {
+        target: SheetTarget,
+        gate: PublishGate,
+        receiver: mpsc::Receiver<SheetMade>,
+    },
 }
 
 impl ProjectDrawingsExportJob {
@@ -54,10 +67,12 @@ impl ProjectDrawingsExportJob {
     /// document it was started for is open (`document_epoch`); its worker
     /// sees the cancelled flag and stops.
     pub(super) fn abandon(&self, app: &mut KetchupApp, document_epoch: u64) {
-        if let Stage::Drawing { started, .. } = &self.stage
-            && self.epoch == document_epoch
-        {
-            started.undo(app);
+        match &self.stage {
+            Stage::Drawing { started, .. } if self.epoch == document_epoch => started.undo(app),
+            Stage::Sheet { gate, .. } => {
+                gate.cancel();
+            }
+            _ => {}
         }
     }
 }
@@ -142,10 +157,41 @@ impl LiveBridge {
             return;
         }
         if !exports_project_drawings(&request) {
-            // One sheet is drawn in the frame, as when nothing was evaluated.
-            let result = self.execute_authorized(app, request, ui_busy, &cancelled);
-            Self::reply(app, id, &reply, result);
-            context.request_repaint();
+            let export = match Self::sheet_export_of(app, request, ui_busy) {
+                Ok(export) => export,
+                Err(code) => {
+                    Self::reply(app, id, &reply, Err(code));
+                    return;
+                }
+            };
+            let target = export.target.clone();
+            let (sender, receiver) = mpsc::sync_channel(1);
+            let (gate, repaint) = (PublishGate::default(), context.clone());
+            let worker_gate = gate.clone();
+            let spawn = std::thread::Builder::new()
+                .name("ketchup-sheet-export".into())
+                .spawn(move || {
+                    sender.deliver(export.run(&worker_gate));
+                    repaint.request_repaint();
+                });
+            if let Err(error) = spawn {
+                let error = failed_because("job_worker_unavailable", error);
+                Self::reply(app, id, &reply, Err(error));
+                return;
+            }
+            self.program_check_job =
+                Some(ProgramCheckJob::ProjectDrawings(ProjectDrawingsExportJob {
+                    id,
+                    reply,
+                    cancelled,
+                    stage: Stage::Sheet {
+                        target,
+                        gate,
+                        receiver,
+                    },
+                    epoch: self.document_epoch,
+                }));
+            context.request_repaint_after(Duration::from_millis(10));
             return;
         }
         let (started, job) = match start_export(app, request, ui_busy) {
@@ -190,6 +236,7 @@ impl LiveBridge {
         // would write them into the one open now (review 2026-11-02 MCP-122).
         if job.epoch != self.document_epoch {
             job.cancelled.store(true, Ordering::Release);
+            job.abandon(app, self.document_epoch);
             Self::reply(app, job.id, &job.reply, Err(Self::document_replaced()));
             return;
         }
@@ -245,6 +292,49 @@ impl LiveBridge {
                         epoch,
                     }));
                 context.request_repaint_after(Duration::from_millis(50));
+                return;
+            }
+            Stage::Sheet {
+                target,
+                gate,
+                receiver,
+            } => {
+                // A sheet already taking the file's place is answered as it
+                // comes, as the file is then written.
+                if cancelled.load(Ordering::Acquire) && gate.cancel() {
+                    Self::reply(app, id, &reply, Err("request_cancelled"));
+                    return;
+                }
+                let made = match receiver.try_recv() {
+                    Ok(made) => made,
+                    Err(mpsc::TryRecvError::Empty) => {
+                        self.program_check_job =
+                            Some(ProgramCheckJob::ProjectDrawings(ProjectDrawingsExportJob {
+                                id,
+                                reply,
+                                cancelled,
+                                stage: Stage::Sheet {
+                                    target,
+                                    gate,
+                                    receiver,
+                                },
+                                epoch,
+                            }));
+                        context.request_repaint_after(Duration::from_millis(10));
+                        return;
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        let stopped =
+                            std::io::Error::other("the thread that draws the sheet stopped");
+                        let error = ExportTransactionError::io(target.path())(stopped);
+                        Err(SheetRefusal::Failed(DrawingSheetExportError::Write(error)))
+                    }
+                };
+                take_error_details();
+                let result = finish_sheet(app, &target, made)
+                    .map_err(|refusal| sheet_refused(&target, refusal));
+                Self::reply(app, id, &reply, result);
+                context.request_repaint();
                 return;
             }
             Stage::Drawing { started, receiver } => (started, receiver),

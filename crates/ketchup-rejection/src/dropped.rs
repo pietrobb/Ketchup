@@ -70,21 +70,54 @@ impl<T> fmt::Display for Held<T> {
     }
 }
 
-/// Writes one line to the log: [`dropped`] and [`log!`](crate::log) use it.
+/// Writes one line to the log: [`dropped`] and [`log!`](crate::log) use it. A log
+/// file that grows past a megabyte is moved to `<file>.old` and begun again, while
+/// the window runs (review 2026-11-06 P3: only when it opened).
 pub fn log(line: fmt::Arguments<'_>) {
-    let mut file = FILE.lock().unwrap_or_else(PoisonError::into_inner);
-    let written = match file.as_mut() {
-        Some(file) => {
+    let mut log = FILE.lock().unwrap_or_else(PoisonError::into_inner);
+    let written = match log.as_mut() {
+        Some(log) => {
             let seconds = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |since| since.as_secs());
-            writeln!(file, "[{seconds}] {line}")
+            // Another window may log to the same file: what it wrote counts, and
+            // when it moved the full log aside this window's file is the old one,
+            // longer than full, so the line goes to the new log (review
+            // 2026-11-06 r23 P3: it went on into `.old`).
+            let len = log.file.metadata().map_or(0, |metadata| metadata.len());
+            if len > log.full_at {
+                match LogFile::open(&log.path) {
+                    Ok(begun) => *log = begun,
+                    // Said in the full log, which is tried again a megabyte later.
+                    Err(error) => {
+                        log.full_at = len.saturating_add(LOG_LIMIT);
+                        count_lost(writeln!(
+                            log.file,
+                            "[{seconds}] the full log could not be moved aside: {error}"
+                        ));
+                    }
+                }
+            }
+            log.file
+                .write_all(format!("[{seconds}] {line}\n").as_bytes())
         }
         None => writeln!(io::stderr(), "{line}"),
     };
+    count_lost(written);
+}
+
+fn count_lost(written: io::Result<()>) {
     if written.is_err() {
         LOST.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// The file the log goes to, if a window gave one; a window says where it is.
+pub fn log_file() -> Option<PathBuf> {
+    FILE.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .map(|log| log.path.clone())
 }
 
 /// Lines the log could not take; nothing is left to say them to.
@@ -101,16 +134,76 @@ pub fn lost_lines() -> u64 {
 /// was.
 pub fn log_to_file(file: &Path) -> io::Result<()> {
     if let Some(folder) = file.parent() {
-        std::fs::create_dir_all(folder)?;
+        create_private_folder(folder)?;
     }
-    if std::fs::metadata(file).is_ok_and(|metadata| metadata.len() > LOG_LIMIT) {
-        let mut old = file.as_os_str().to_owned();
-        old.push(".old");
-        std::fs::rename(file, old)?;
-    }
-    let opened = OpenOptions::new().create(true).append(true).open(file)?;
+    let opened = LogFile::open(file)?;
     *FILE.lock().unwrap_or_else(PoisonError::into_inner) = Some(opened);
     Ok(())
+}
+
+/// The log names the documents a window opened: only its user reads it (review
+/// 2026-11-06 P3: it was made readable to everyone).
+#[cfg(unix)]
+fn create_private_folder(folder: &Path) -> io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(folder)?;
+    // A folder an earlier version made readable to everyone is closed too.
+    std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+fn create_private_folder(folder: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(folder)
+}
+
+/// The open log file, where it is and the length past which it is moved aside.
+struct LogFile {
+    file: File,
+    path: PathBuf,
+    full_at: u64,
+}
+
+impl LogFile {
+    /// Opens `path` to append to, moving it to `<path>.old` first when it is larger
+    /// than a megabyte; only its user may read it.
+    fn open(path: &Path) -> io::Result<Self> {
+        if std::fs::metadata(path).is_ok_and(|metadata| metadata.len() > LOG_LIMIT) {
+            let mut old = path.as_os_str().to_owned();
+            old.push(".old");
+            match std::fs::rename(path, old) {
+                // Another window moved it aside first (review 2026-11-06 r23 P3:
+                // this window was left without a log).
+                Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+                _ => {}
+            }
+        }
+        Ok(Self {
+            file: open_private(path)?,
+            path: path.to_owned(),
+            full_at: LOG_LIMIT,
+        })
+    }
+}
+
+#[cfg(unix)]
+fn open_private(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)?;
+    // A log an earlier version made readable to everyone is closed too.
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn open_private(path: &Path) -> io::Result<File> {
+    OpenOptions::new().create(true).append(true).open(path)
 }
 
 /// Where a window keeps its log: `%LOCALAPPDATA%\<folder>\<file>` on
@@ -133,7 +226,7 @@ pub fn user_log_file(folder: &str, file: &str) -> Option<PathBuf> {
 }
 
 const LOG_LIMIT: u64 = 1 << 20;
-static FILE: Mutex<Option<File>> = Mutex::new(None);
+static FILE: Mutex<Option<LogFile>> = Mutex::new(None);
 static LOST: AtomicU64 = AtomicU64::new(0);
 
 /// A window built for release has no console to read: its log goes to

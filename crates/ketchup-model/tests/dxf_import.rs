@@ -3154,6 +3154,28 @@ fn uniformly_scaled_mirrored_and_escaped_block_inserts_are_placed() {
         placed.profiles()[0].segments(),
         drawn.profiles()[0].segments()
     );
+    // Review 2026-11-06 r23 P3: the name is said as read, not as escaped; and one beyond
+    // U+FFFF, written as the pair of its UTF-16 units, is a name too.
+    let said = |block: &str, insert: &str, name: &str| {
+        let parsed = inspect_dxf(&dxf_with_blocks(4, block, insert), options).unwrap();
+        assert!(
+            parsed.diagnostics().iter().any(|diagnostic| {
+                diagnostic.code() == "dxf.block-insert" && diagnostic.subject() == Some(name)
+            }),
+            "{:?}",
+            parsed.diagnostics()
+        );
+    };
+    said(
+        line_block,
+        "0\nINSERT\n2\nProfondit\\U+00E0 600\n10\n0\n20\n0\n",
+        "Profondità 600",
+    );
+    said(
+        &line_block.replace("\\U+00E0", "\\U+D83D\\U+DE00"),
+        "0\nINSERT\n2\nProfondit\\U+D83D\\U+DE00 600\n10\n0\n20\n0\n",
+        "Profondit\u{1F600} 600",
+    );
     // A backslash that starts no character is still refused.
     assert_eq!(
         inspect_dxf(

@@ -558,9 +558,10 @@ fn mcp_setup_keeps_commands_found_on_path_from_home_or_without_extension() {
 /// Review 2026-11-04 r19 SEC-160: of several `ketchup` entries in
 /// `.claude.json` only the first other one decided, so one gone entry made the
 /// installer's hidden `--mcp-setup` rewrite every entry, a working one too.
-/// A client is replaced only when no entry starts a program that may exist.
+/// An entry that may work is kept. Review 2026-11-06 SEC-180: so was a gone
+/// one beside it, which stayed broken; each gone entry is replaced on its own.
 #[test]
-fn mcp_setup_keeps_every_entry_when_one_is_gone_and_another_may_work() {
+fn mcp_setup_replaces_only_the_gone_entries_and_keeps_one_that_may_work() {
     let home = temporary_home("mixed-entries");
     let environment = clean_profile(&home);
     let this = std::env::current_exe().unwrap();
@@ -573,20 +574,39 @@ fn mcp_setup_keeps_every_entry_when_one_is_gone_and_another_may_work() {
         serde_json::json!("ketchup-other"),
     );
     let configs = [
-        serde_json::json!({
-            "mcpServers": server(gone.clone())["mcpServers"],
-            "projects": {"C:/work": server(other.clone())}
-        }),
-        serde_json::json!({
-            "mcpServers": server(this_one)["mcpServers"],
-            "projects": {"C:/a": server(gone), "C:/b": server(other)}
-        }),
+        (
+            serde_json::json!({
+                "mcpServers": server(gone.clone())["mcpServers"],
+                "projects": {"C:/work": server(other.clone())}
+            }),
+            ["/mcpServers/ketchup/command"].as_slice(),
+        ),
+        (
+            serde_json::json!({
+                "mcpServers": server(this_one.clone())["mcpServers"],
+                "projects": {"C:/a": server(gone.clone()), "C:/b": server(other.clone())}
+            }),
+            ["/projects/C:~1a/mcpServers/ketchup/command"].as_slice(),
+        ),
     ];
-    for config in configs {
-        let text = config.to_string();
-        std::fs::write(&file, &text).unwrap();
+    for (config, replaced) in configs {
+        std::fs::write(&file, config.to_string()).unwrap();
         let rows = environment.set_up_installed(&this);
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        for pointer in [
+            "/mcpServers/ketchup/command",
+            "/projects/C:~1work/mcpServers/ketchup/command",
+            "/projects/C:~1a/mcpServers/ketchup/command",
+            "/projects/C:~1b/mcpServers/ketchup/command",
+        ] {
+            let expected = if replaced.contains(&pointer) {
+                Some(&this_one)
+            } else {
+                config.pointer(pointer)
+            };
+            assert_eq!(written.pointer(pointer), expected, "{pointer}: {written}");
+        }
         let claude = rows
             .iter()
             .find(|row| row.harness == Harness::ClaudeCode)
@@ -599,6 +619,138 @@ fn mcp_setup_keeps_every_entry_when_one_is_gone_and_another_may_work() {
             }
         );
     }
+    // Connect, which the user asks for, sets up the user's entry and repairs
+    // the gone project's, but leaves another project's working program.
+    let config = serde_json::json!({
+        "mcpServers": server(other.clone())["mcpServers"],
+        "projects": {"C:/a": server(gone), "C:/b": server(other.clone())}
+    });
+    std::fs::write(&file, config.to_string()).unwrap();
+    environment.set_up(Harness::ClaudeCode, &this);
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(written["mcpServers"]["ketchup"]["command"], this_one);
+    assert_eq!(
+        written["projects"]["C:/a"]["mcpServers"]["ketchup"]["command"],
+        this_one
+    );
+    assert_eq!(
+        written["projects"]["C:/b"]["mcpServers"]["ketchup"]["command"],
+        other
+    );
+    // A gone entry beside one turned off is replaced; the one turned off stays.
+    let config = serde_json::json!({
+        "mcpServers": server(serde_json::json!(home.join("Old").join("Ketchup.exe")))["mcpServers"],
+        "projects": {"C:/a": {"mcpServers": {"ketchup": {"command": "ketchup-other", "disabled": true}}}}
+    });
+    std::fs::write(&file, config.to_string()).unwrap();
+    environment.set_up_installed(&this);
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(written["mcpServers"]["ketchup"]["command"], this_one);
+    assert_eq!(written["projects"]["C:/a"], config["projects"]["C:/a"]);
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// Review 2026-11-06 SEC-180: a program in a folder Kečup may not read (or on a
+/// volume not mounted) counted as gone, and the installer replaced it.
+#[cfg(unix)]
+#[test]
+fn a_program_kecup_cannot_look_at_is_not_gone() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = temporary_home("unreadable");
+    let environment = clean_profile(&home);
+    let this = std::env::current_exe().unwrap();
+    let locked = home.join("locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    let program = locked.join("ketchup");
+    std::fs::write(&program, "").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let file = environment.config_file(Harness::ClaudeCode).unwrap();
+    let config =
+        serde_json::json!({"mcpServers": {"ketchup": {"command": program, "args": ["--mcp"]}}})
+            .to_string();
+    std::fs::write(&file, &config).unwrap();
+    // As root every folder can be read, and the program is simply there.
+    let readable = std::fs::metadata(&program).is_ok();
+    environment.set_up_installed(&this);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), config);
+    assert_eq!(
+        environment.registration(Harness::ClaudeCode, &this),
+        Registration::Elsewhere {
+            command: program.display().to_string(),
+            exists: true
+        },
+        "readable as root: {readable}"
+    );
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// Review 2026-11-06 r23 SEC-201: a program on a drive or share that is out,
+/// or on a volume not mounted, was gone (the system says no file), and the
+/// installer replaced its entry.
+#[test]
+fn a_program_on_a_drive_that_is_out_is_not_gone() {
+    let home = temporary_home("drive-out");
+    let environment = clean_profile(&home);
+    let this = std::env::current_exe().unwrap();
+    #[cfg(windows)]
+    let volume = crate::recent_files::presence::drive_not_in_use();
+    // A volume is mounted outside the home folder and the folders programs
+    // are installed in, as `/media/usb` or gvfs below `/run/user/1000`.
+    #[cfg(not(windows))]
+    let volume = home
+        .parent()
+        .unwrap()
+        .join(format!("ketchup-volume-{}", std::process::id()));
+    let program = volume.join("tools").join("ketchup.exe");
+    let file = environment.config_file(Harness::ClaudeCode).unwrap();
+    let config =
+        serde_json::json!({"mcpServers": {"ketchup": {"command": program, "args": ["--mcp"]}}})
+            .to_string();
+    std::fs::write(&file, &config).unwrap();
+    environment.set_up_installed(&this);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), config);
+    assert_eq!(
+        environment.registration(Harness::ClaudeCode, &this),
+        Registration::Elsewhere {
+            command: program.display().to_string(),
+            exists: true
+        }
+    );
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// Review 2026-11-07 P3: a program of a folder deleted outside the home
+/// folder, as `/opt/ketchup-1.0/bin` or `/Applications/Kečup 1.2.app`, was
+/// neither there nor gone, so the installer never replaced its entry.
+#[cfg(unix)]
+#[test]
+fn a_program_of_a_folder_deleted_outside_the_home_folder_is_replaced() {
+    let home = temporary_home("deleted-outside");
+    // The folder beside home stands for `/opt`.
+    let opt = home.parent().unwrap().to_owned();
+    let environment = Environment {
+        program_folders: vec![opt.clone()],
+        ..clean_profile(&home)
+    };
+    let this = std::env::current_exe().unwrap();
+    let program = opt
+        .join(format!("ketchup-1.0-{}", std::process::id()))
+        .join("bin")
+        .join("ketchup");
+    let file = environment.config_file(Harness::ClaudeCode).unwrap();
+    let config =
+        serde_json::json!({"mcpServers": {"ketchup": {"command": program, "args": ["--mcp"]}}});
+    std::fs::write(&file, config.to_string()).unwrap();
+    environment.set_up_installed(&this);
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(
+        written["mcpServers"]["ketchup"]["command"],
+        serde_json::json!(this)
+    );
     std::fs::remove_dir_all(home).unwrap();
 }
 

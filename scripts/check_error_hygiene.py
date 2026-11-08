@@ -29,10 +29,12 @@ Two forms are counted in production source (crates/*/src, test modules and
   sentence instead of fields (`Some`, `Ok` and `Err` are not error variants;
   `Err(format!)` is already a string_result).
 - unwrap: `.unwrap()` panics without saying which assumption broke.
+- expect: `.expect("...")` panics too, only with a sentence; new production code shapes
+  its types or returns a Rejection instead (review 2026-11-07 P3, AGENTS.md §2).
 - dropped_variant: `SomeError::Variant(_) => "code"` answers an error that carries
   a cause with a bare code and throws the cause away; record it
   (`failed_because(code, cause)`) or map the variant to a typed error.
-- dropped_error: `map_err(drop)`, `if let Err(_) = ...` and `.ok()?` drop the error
+- dropped_error: `map_err(drop)`, `unwrap_or_else(drop)`, `if let Err(_) = ...` and `.ok()?` drop the error
   as `map_err(|_| ...)` does (review 2026-10-31 TST-80).
 - formatted_cause: `format!("{e}")` or `format!("{}", error)` turns an error into its
   Display text in place of the error.
@@ -45,20 +47,29 @@ Two forms are counted in production source (crates/*/src, test modules and
   `map_err(|_| ...)` does.
 - dropped_arm: any other arm `Err(_) =>` or `Err(_name) =>`, such as
   `Err(_) => { return Err(..) }` (review 2026-11-02 TST-121).
-- dropped_closure: `.unwrap_or_else(|_| ...)` answers an error with a value.
+- dropped_closure: `.unwrap_or_else(|_| ...)` and `.map_or_else(|_| ...)` answer an error
+  with a value.
 - let_underscore: `let _ = call(...);` throws away what the call answers; clippy's
   `let_underscore_must_use` sees the same where a crate holds none (TST-121).
 - guarded_arm: `Err(_) if cond =>` drops the error the guard decides on.
 - named_underscore: `let _name = call();` keeps what the call answers unread; a
   guard held to the end of the scope (`_lock`, `_guard`, `_permit`, `_reset`,
   `_restore`) is exempt.
-- ok_statement: a bare `.ok();` throws the error away as `let _ =` does.
+- ok_statement: a bare `.ok();`, `.err();` or `.is_ok();` (or `.ok().is_some();`) throws
+  the error away as `let _ =` does.
 - from_discard: `fn from(_: E)` turns an error into another without its content.
-- empty_is_err: `if call().is_err() { /* comment */ }` does what `let _ =` does
-  (review 2026-11-04 r19 TST-160).
+- empty_is_err: `if call().is_err() { /* comment */ }` and an empty
+  `if let Ok(()) = call() {}` do what `let _ =` does (review 2026-11-04 r19 TST-160).
 - irrefutable_let: `let (Ok(()) | Err(..)) = call();` does it too.
+- dropped_call: `drop(call())` and `std::mem::forget(call())` do it too (review
+  2026-11-06 P3 and r23 P3).
+- or_default: `.unwrap_or_default()` and `.unwrap_or_else(Default::default)` (or
+  `String::default`, `<_>::default`) answer an
+  error with a default value; a text check cannot tell an Option's, so each one counts.
+- or_unit: `.unwrap_or(())` and `.map_or((), ...)` answer an error with nothing.
 - eprintln: `eprintln!` outside a command line's entry point (`src/main.rs`,
-  `src/bin/`) writes where a window started without a console throws it away.
+  `src/bin/`), or in one after its window logs to a file (`log_window_to`),
+  writes where a window started without a console throws it away.
   `ketchup_rejection::dropped(result, Reason::...)` is the one way to drop an
   error, and `ketchup_rejection::log!` the way to log one; both write to the
   window's log file.
@@ -133,7 +144,14 @@ STRINGIFIED_VARIANT = re.compile(
     + r"\s*\.\s*to_string\(\)\s*\)")
 FORMATTED_VARIANT = re.compile(r"\b(?!(?:Some|Ok|Err)\()[A-Z]\w*\(\s*format!\(")
 UNWRAP = re.compile(r"\.unwrap\(\)")
-DROPPED_ERROR = re.compile(r"map_err\(\s*drop\s*\)|\bif\s+let\s+Err\(\s*_\s*\)\s*=|\.ok\(\)\s*\?")
+# `.expect(` panics as `.unwrap()` does, only with a sentence (review 2026-11-07 P3).
+EXPECT = re.compile(r"\.expect\(")
+# `drop` by its path, `std::mem::drop`, and as the first closure of `map_or_else` too
+# (review 2026-11-07 r26 P3).
+DROP_FN = r"(?:(?:std\s*::\s*)?mem\s*::\s*)?drop\s*"
+DROPPED_ERROR = re.compile(
+    r"(?:map_err|unwrap_or_else)\(\s*" + DROP_FN + r"\)|\bmap_or_else\(\s*" + DROP_FN + r","
+    r"|\bif\s+let\s+Err\(\s*_\s*\)\s*=|\.ok\(\)\s*\?")
 FORMATTED_CAUSE = re.compile(
     r'format!\(\s*"(?:[^"\\]|\\.)*?(?:\{' + ERROR_NAME + r'(?::[^}?]*)?\}'
     r'|\{(?::[^}?]*)?\}(?:[^"\\]|\\.)*"\s*,\s*&?' + ERROR_NAME + r'\s*[,)])')
@@ -147,15 +165,18 @@ DROPPED_QUIETLY = re.compile(
 # discard and dropped_quietly count (`Err(_) => Err(`, `Err(_) => None`) are left to them.
 ERR_ARM = re.compile(r"\bErr\(\s*(_\w*)\s*\)\s*=>")
 COUNTED_ARM = re.compile(r"\s*(?:return\s+)?(?:Err\(|None\b)")
-# `.unwrap_or_else(|_| ...)`: an Option's closure takes nothing, so `_` is an error.
-DROPPED_CLOSURE = re.compile(r"\.unwrap_or_else\(\s*(?:move\s*)?\|\s*_\w*\s*(?::[^|]*)?\|")
+# `.unwrap_or_else(|_| ...)`: an Option's closure takes nothing, so `_` is an error;
+# the first closure of `.map_or_else(|_| ...)` too.
+DROPPED_CLOSURE = re.compile(
+    r"\.(?:unwrap_or_else|map_or_else)\(\s*(?:move\s*)?\|\s*_\w*\s*(?::[^|]*)?\|")
 # `let _ = call(...);` throws away what the call answers, an error with it.
 LET_UNDERSCORE = re.compile(r"\blet\s+_\s*=\s*[^;]*\)\s*;")
 GUARDED_ARM = re.compile(r"\bErr\(\s*_\w*\s*\)\s*if\b")
 NAMED_UNDERSCORE = re.compile(
     r"^\s*let\s+_(?!\w*(?:lock|guard|permit|reset|restore)\b)[a-z]\w*\s*(?::[^=]+)?=[^=]",
     re.MULTILINE)
-OK_STATEMENT = re.compile(r"\.ok\(\)\s*;")
+OK_STATEMENT = re.compile(
+    r"\.(?:(?:ok|err)\(\)(?:\s*\.\s*is_(?:some|none)\(\))?|is_(?:ok|err)\(\))\s*;")
 # What a statement keeps its value with: a binding, an assignment or a return.
 KEPT = re.compile(r"^\s*(?:let|return|break)\b|[^=!<>+\-*/%&|^]=[^=>]")
 
@@ -181,11 +202,45 @@ def bare_ok_statements(text: str) -> int:
             found += 1
     return found
 FROM_DISCARD = re.compile(r"\bfn\s+from\(\s*_\w*\s*:")
-# `if ... .is_err() {}` with nothing but comments in the block.
-EMPTY_IS_ERR = re.compile(r"\bif\s[^{};]*?\.is_err\(\)\s*\{\s*(?:(?://[^\n]*\n|/\*.*?\*/)\s*)*\}", re.DOTALL)
-# `let (Ok(..) | Err(..)) =`, either way round, `Ok(())` nested once.
+# `.is_err() {}` with nothing but comments in the block, whatever the condition holds
+# (a struct literal too, review 2026-11-06 P3).
+# An empty `if let Ok(()) = call() {}` does it too (review 2026-11-07 P3).
+# An empty block an `else` follows answers the case in the `else` (review 2026-11-07 r26 P3).
+EMPTY_BLOCK = r"\{\s*(?:(?://[^\n]*\n|/\*.*?\*/)\s*)*\}(?!\s*else\b)"
+EMPTY_IS_ERR = re.compile(
+    r"\.is_err\(\)\s*" + EMPTY_BLOCK
+    + r"|\bif\s+let\s+Ok\(\s*(?:\(\)|_\w*)\s*\)\s*=[^;{}]*(?:\{[^{};]*\}(?=\s*[),.])[^;{}]*)*?" + EMPTY_BLOCK,
+    re.DOTALL)
+
+
+def nested_parens(levels: int) -> str:
+    """Text with parentheses balanced up to `levels` deep."""
+    inner = r"[^()]*"
+    for _ in range(levels):
+        inner = r"[^()]*(?:\(" + inner + r"\)[^()]*)*"
+    return inner
+
+
+# `let (Ok(..) | Err(..)) =`, either way round, `Ok(Some(()))` nested too.
 IRREFUTABLE_LET = re.compile(
-    r"\blet\s*\(\s*(?:Ok\([^()]*(?:\([^()]*\))?[^()]*\)\s*\|\s*Err\(|Err\([^()]*\)\s*\|\s*Ok\()")
+    r"\blet\s*\(\s*(?:Ok\(" + nested_parens(3) + r"\)\s*\|\s*Err\(|Err\([^()]*\)\s*\|\s*Ok\()")
+# `drop(call())` throws away what the call answers as `let _ =` does; `drop(guard)` ends
+# a value's life.
+# `mem::forget(call())` does it too (review 2026-11-06 r23 P3). A text check cannot tell
+# a call answering a plain value, so `drop(found.remove(i))` counts as well.
+DROPPED_CALL = re.compile(r"(?<![.\w])(?:drop|(?:std::)?mem::forget)\(\s*[^()]*\(")
+# `.unwrap_or_default()` answers an error with a default; a text check cannot tell an
+# Option's, so every one is counted (review 2026-11-06 P3: 167 unseen), and
+# `.unwrap_or_else(Default::default)` with them (r23 P3).
+# A default named by its type, `String::default` or `<_>::default`, is the same (review
+# 2026-11-07 P3).
+# So is an empty value named by its constructor, `Vec::new` or `String::new` (r26 P3).
+OR_DEFAULT = re.compile(
+    r"\.unwrap_or_default\(\)"
+    r"|\.unwrap_or_else\(\s*(?:<[^()]*?>|[A-Za-z_][\w:]*?(?:::<[^()]*?>)?)::(?:default|new)\s*\)")
+# `.unwrap_or(())` and `.map_or((), ...)` answer an error with nothing (review 2026-11-06
+# r23 P3: `ketchup-viewer/src/gpu.rs` threw a send's away so).
+OR_UNIT = re.compile(r"\.(?:unwrap_or|map_or)\(\s*\(\)\s*[,)]")
 EPRINTLN = re.compile(r"\beprintln!\s*\(")
 # A variant of an error type (`...Error::Name(_)`) matched to a bare string.
 DROPPED_VARIANT = re.compile(r"\b\w*Error::\w+\(\s*_\s*\)\s*=>\s*\"")
@@ -245,6 +300,7 @@ def file_counts(text: str, entry_point: bool = False) -> dict[str, int]:
             "stringified_variant": len(STRINGIFIED_VARIANT.findall(text)),
             "formatted_variant": len(FORMATTED_VARIANT.findall(text)),
             "unwrap": len(UNWRAP.findall(text)),
+            "expect": len(EXPECT.findall(code_only(text))),
             "dropped_variant": len(DROPPED_VARIANT.findall(text)),
             "dropped_error": len(DROPPED_ERROR.findall(text)),
             "formatted_cause": len(FORMATTED_CAUSE.findall(text)),
@@ -261,7 +317,74 @@ def file_counts(text: str, entry_point: bool = False) -> dict[str, int]:
             "from_discard": len(FROM_DISCARD.findall(text)),
             "empty_is_err": len(EMPTY_IS_ERR.findall(text)),
             "irrefutable_let": len(IRREFUTABLE_LET.findall(text)),
-            "eprintln": 0 if entry_point else len(EPRINTLN.findall(text))}
+            "dropped_call": len(DROPPED_CALL.findall(text)),
+            "or_default": len(OR_DEFAULT.findall(text)),
+            "or_unit": len(OR_UNIT.findall(text)),
+            "eprintln": window_eprintlns(text) if entry_point else len(EPRINTLN.findall(text))}
+
+
+WINDOW_LOG = re.compile(r"\blog_window_to\s*\(")
+
+
+FN_BODY = re.compile(r"\bfn\s+(\w+)\b[^{;]*\{")
+# A function of the file called, a method called on `self`, or one passed by its name
+# (`unwrap_or_else(bootstrap_failed)`, review 2026-11-07 P3).
+CALLED = re.compile(r"(?:(?<![.\w])|\bself\s*\.\s*)([a-z_]\w*)\s*(?:::<[^>]*>)?\("
+                    r"|(?<=[(,])\s*(?:Self\s*::\s*)?([a-z_]\w*)\s*(?=[,)])")
+# What a brace inside does not open or close a block in: a string, a character, a comment.
+NOT_CODE = re.compile(r'r(#*)".*?"\1|"(?:[^"\\]|\\.)*"|\'(?:\\.|[^\\\'])\'|//[^\n]*|/\*.*?\*/',
+                      re.DOTALL)
+
+
+def code_only(text: str) -> str:
+    """`text` with its comments gone and its strings and characters emptied, so a
+    comment cannot hold a count a real call may take (review 2026-11-07 r26 P3)."""
+    return NOT_CODE.sub(lambda found: '""' if found.group().endswith('"') else " ", text)
+
+
+def block_end(text: str, at: int) -> int:
+    """Where the block `at` is inside of ends; braces in strings, characters and
+    comments are not counted (review 2026-11-07 P3)."""
+    depth = 0
+    while at < len(text) and depth >= 0:
+        skipped = NOT_CODE.match(text, at)
+        if skipped:
+            at = skipped.end()
+            continue
+        depth += {"{": 1, "}": -1}.get(text[at], 0)
+        at += 1
+    return at
+
+
+def window_eprintlns(text: str) -> int:
+    """`eprintln!` an entry point runs once its window logs to a file: from
+    `log_window_to(` to the end of the function calling it, even from inside an
+    `if` (review 2026-11-06 UI-181, 2026-11-07 P3), and in the file's functions
+    called or passed by name from there, theirs too (r23 P3: `bootstrap_failed` was
+    one). Its command line's branches before that write to the console. A helper in
+    another module is not followed; one passed as `Self::name` is, and every function
+    of a name called, as a text check cannot tell two `fn run` apart (r26 P3)."""
+    bodies: dict[str, list[tuple[int, int]]] = {}
+    for match in FN_BODY.finditer(text):
+        bodies.setdefault(match.group(1), []).append(
+            (match.end(), block_end(text, match.end())))
+
+    def function_end(at: int) -> int:
+        inside = [end for spans in bodies.values() for start, end in spans if start <= at < end]
+        return min(inside) if inside else block_end(text, at)
+
+    spans = [(call.end(), function_end(call.start())) for call in WINDOW_LOG.finditer(text)]
+    followed: set[str] = set()
+    found: set[int] = set()
+    while spans:
+        start, end = spans.pop()
+        found.update(match.start() for match in EPRINTLN.finditer(text, start, end))
+        for call in CALLED.finditer(text, start, end):
+            name = call.group(1) or call.group(2)
+            if name in bodies and name not in followed:
+                followed.add(name)
+                spans.extend(bodies[name])
+    return len(found)
 
 
 FORMS = tuple(file_counts(""))

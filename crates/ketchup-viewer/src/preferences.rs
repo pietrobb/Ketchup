@@ -11,6 +11,7 @@ use crate::text::Language;
 use ketchup_rejection::{Rejection, RejectionPhase};
 use ketchup_view_format::FittedProjection;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Preferences {
@@ -84,12 +85,13 @@ impl Preferences {
         }
     }
 
-    /// Write to `path` through `<path>.part`, so a cut-off write keeps the old
-    /// settings. The lines of the file this Viewer does not know are kept, so a
+    /// Write to `path` through a part file of this Viewer's own, so a cut-off
+    /// write keeps the old settings. The lines of the file this Viewer does not know are kept, so a
     /// newer Viewer's settings survive; a file with a line that is not UTF-8 is
     /// first kept whole as `<path>.bad`, and one that cannot be read is not
     /// written over. Another Viewer saving meanwhile waits on `<path>.lock`
-    /// (review 2026-11-04 r19 UI-162).
+    /// (review 2026-11-04 r19 UI-162), two seconds at most; a file system
+    /// without locks saves without it.
     pub fn save(&self, path: &Path) -> Result<(), Rejection> {
         let failed = |error: std::io::Error| {
             Rejection::new("viewer.settings.save", RejectionPhase::Io)
@@ -111,7 +113,7 @@ impl Preferences {
             .write(true)
             .open(path.with_extension("txt.lock"))
             .map_err(failed)?;
-        lock.lock().map_err(failed)?;
+        take_turn(|| lock.try_lock(), || saved_at(path), TURN_WAIT).map_err(failed)?;
         let (lines, damaged) = read_lines(path).map_err(|error| {
             Rejection::new("viewer.settings.read", RejectionPhase::Io)
                 .target(path.display().to_string())
@@ -130,10 +132,84 @@ impl Preferences {
             text.push_str(line);
             text.push('\n');
         }
-        let part = path.with_extension("part");
-        std::fs::write(&part, text).map_err(failed)?;
-        std::fs::rename(&part, path).map_err(failed)
+        // This Viewer's own part file: another one saving without a lock does not
+        // rename it away (review 2026-11-06 P3: one fixed `.part`).
+        let part = path.with_extension(format!(
+            "{}-{}.part",
+            std::process::id(),
+            PARTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let written = std::fs::write(&part, text).and_then(|()| std::fs::rename(&part, path));
+        if written.is_err() {
+            ketchup_rejection::dropped(
+                std::fs::remove_file(&part),
+                ketchup_rejection::Reason::ReportedElsewhere,
+            );
+        }
+        written.map_err(failed)
     }
+}
+
+/// The part files this Viewer has written, each named by its number.
+static PARTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How long a save waits for another Viewer saving the settings.
+const TURN_WAIT: Duration = Duration::from_secs(2);
+/// How often a waiting save tries the lock again.
+const TURN_POLL: Duration = Duration::from_millis(2);
+
+/// Takes the settings lock through `attempt`, which does not wait: the save
+/// tries it while other Viewers save, `saved` telling when one did, but gives
+/// up once one held it `wait` without saving, not waiting without end behind
+/// one that hangs (review 2026-11-06 P3). On a file system that cannot lock
+/// (NFS without lockd) it saves without the lock rather than never. A save that
+/// gave up leaves nothing behind (review 2026-11-06 r23 P3: a thread waited on
+/// in `lock()` with the file open as long as the other Viewer hung).
+fn take_turn<T: PartialEq>(
+    mut attempt: impl FnMut() -> Result<(), std::fs::TryLockError>,
+    mut saved: impl FnMut() -> T,
+    wait: Duration,
+) -> std::io::Result<()> {
+    let mut seen = saved();
+    let mut until = std::time::Instant::now() + wait;
+    loop {
+        match attempt() {
+            Ok(()) => return Ok(()),
+            Err(std::fs::TryLockError::Error(error)) if cannot_lock(&error) => return Ok(()),
+            Err(std::fs::TryLockError::Error(error)) => return Err(error),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < until => {
+                std::thread::sleep(TURN_POLL);
+                let now = saved();
+                if now != seen {
+                    seen = now;
+                    until = std::time::Instant::now() + wait;
+                }
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "another Viewer has been saving the settings too long",
+                ));
+            }
+        }
+    }
+}
+
+/// When and how long the settings were last written; the same nothing while
+/// they cannot be read.
+fn saved_at(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+    std::fs::metadata(path)
+        .and_then(|metadata| Ok((metadata.modified()?, metadata.len())))
+        .ok()
+}
+
+/// The file system has no locks: `ENOLCK` from NFS without lockd, or none at all.
+fn cannot_lock(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    if error.raw_os_error() == Some(libc::ENOLCK) {
+        return true;
+    }
+    error.kind() == std::io::ErrorKind::Unsupported
 }
 
 const HEADER: &str = "# Kečup Viewer settings";
@@ -205,7 +281,7 @@ mod tests {
         };
         slovak.save(&path).unwrap();
         assert_eq!(Preferences::load(&path), slovak);
-        assert!(!path.with_extension("part").exists());
+        assert!(parts_in(&folder).is_empty());
         let newer =
             "language = sk-SK\nprojection = orthographic\nfuture-setting = 3\nno equals sign\n";
         assert_eq!(Preferences::parse(newer), slovak);
@@ -278,6 +354,78 @@ mod tests {
         };
         assert!(preferences.save(&path).is_err());
         assert!(path.is_dir());
-        assert!(!path.with_extension("part").exists());
+        assert!(parts_in(folder.path()).is_empty());
+    }
+
+    /// The part files left in `folder`.
+    fn parts_in(folder: &Path) -> Vec<std::ffi::OsString> {
+        std::fs::read_dir(folder)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name.to_string_lossy().ends_with(".part"))
+            .collect()
+    }
+
+    /// Review 2026-11-06 P3: a save waited without end behind a Viewer that hung
+    /// while saving, a file system without locks never let it save, and two
+    /// Viewers wrote one fixed `.part`.
+    #[test]
+    fn a_save_waits_a_while_saves_without_locks_and_writes_its_own_part() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("viewer-settings.txt");
+        let held = std::fs::File::create(path.with_extension("txt.lock")).unwrap();
+        held.lock().unwrap();
+        let slovak = Preferences {
+            language: Language::from_tag("sk"),
+            projection: None,
+        };
+        assert!(slovak.save(&path).is_err());
+        assert!(!path.exists());
+        held.unlock().unwrap();
+
+        // A part file another Viewer is writing is not this one's.
+        let theirs = path.with_extension("part");
+        std::fs::write(&theirs, "another Viewer's").unwrap();
+        slovak.save(&path).unwrap();
+        assert_eq!(Preferences::load(&path), slovak);
+        assert_eq!(
+            std::fs::read_to_string(&theirs).unwrap(),
+            "another Viewer's"
+        );
+        assert_eq!(parts_in(folder.path()), [theirs.file_name().unwrap()]);
+
+        let unsupported = || {
+            Err(std::fs::TryLockError::Error(std::io::Error::from(
+                std::io::ErrorKind::Unsupported,
+            )))
+        };
+        take_turn(unsupported, || (), TURN_WAIT).unwrap();
+        #[cfg(unix)]
+        take_turn(
+            || {
+                Err(std::fs::TryLockError::Error(
+                    std::io::Error::from_raw_os_error(libc::ENOLCK),
+                ))
+            },
+            || (),
+            TURN_WAIT,
+        )
+        .unwrap();
+
+        // Review 2026-11-06 r23 P3: a save that gave up left a thread waiting in
+        // `lock()` with the file open as long as the other Viewer hung.
+        let tries = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = std::sync::Arc::clone(&tries);
+        let busy = move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Err(std::fs::TryLockError::WouldBlock)
+        };
+        let error = take_turn(busy, || (), Duration::from_millis(60)).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(
+            tries.load(std::sync::atomic::Ordering::Relaxed) > 1,
+            "it tried again"
+        );
+        assert_eq!(std::sync::Arc::strong_count(&tries), 1, "nothing tries on");
     }
 }

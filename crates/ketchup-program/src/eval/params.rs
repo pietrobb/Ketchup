@@ -21,33 +21,50 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         if whole && default.fract() != 0.0 {
             anyhow::bail!("param({name:?}): whole = True needs a whole default, got {default}");
         }
-        let min = given(min).map(|value| number(value, "min")).transpose()?;
-        let max = given(max).map(|value| number(value, "max")).transpose()?;
-        let state = state(eval)?;
-        let overridden = state.overrides.get(name).copied();
-        let value = overridden.unwrap_or(default);
-        // Refused here, before the program uses it (review 2026-11-02 WB-42: as
-        // an issue of the finished model, range() failed on it first, naming
-        // no parameter).
-        if whole && value.fract() != 0.0 {
-            anyhow::bail!("param {name} = {value} takes whole numbers only; choose a whole number");
+        let min = given(min)
+            .map(|value| number(value, &format!("param({name:?}) min")))
+            .transpose()?;
+        let max = given(max)
+            .map(|value| number(value, &format!("param({name:?}) max")))
+            .transpose()?;
+        if let (Some(min), Some(max)) = (min, max)
+            && min > max
+        {
+            anyhow::bail!("param({name:?}): min {min} is above max {max}; no value is inside");
         }
+        let state = state(eval)?;
+        let mut overridden = state.overrides.get(name).copied();
+        // NaN passes every range check, as each comparison with it is false
+        // (review 2026-11-06 PG-182).
+        if let Some(value) = overridden
+            && !value.is_finite()
+        {
+            anyhow::bail!("param {name} = {value} is not a finite number; choose a finite one");
+        }
+        // An override outside the range is never used: the program builds with
+        // the default (a count set to 5000 for `max = 20` built 5000 parts
+        // first, review 2026-11-04 r19 WB-42), and the model reports it, so a
+        // document saved before its program narrowed the range still opens
+        // (review 2026-11-06 P3). A default outside it is the program's own.
+        // So is one no whole number of a count, or too large to count with
+        // (review 2026-11-02 WB-42: range() failed on it naming no parameter;
+        // r23 P3: it failed the program, so a document opened no more once its
+        // program said whole = True).
+        let mut refused_override = None;
+        if let Some(value) = overridden
+            && (min.is_some_and(|min| value < min)
+                || max.is_some_and(|max| value > max)
+                || whole && !whole_number(value))
+        {
+            refused_override = Some(value);
+            overridden = None;
+        }
+        let value = overridden.unwrap_or(default);
         // A whole number the program can count with: 1e300 is whole but no int,
         // so range() failed on it naming no parameter (review 2026-11-04, rest of WB-42).
         if whole && value.abs() >= WHOLE_LIMIT {
             anyhow::bail!(
                 "param {name} = {value:e} is too large for a whole number; choose one between -{WHOLE_LIMIT} and {WHOLE_LIMIT}"
-            );
-        }
-        // An override outside the range is refused before the program builds with it
-        // (a count set to 5000 for `max = 20` built 5000 parts first, review 2026-11-04 r19 WB-42);
-        // a default outside it is the program's own, reported with the model.
-        if overridden.is_some()
-            && (min.is_some_and(|min| value < min) || max.is_some_and(|max| value > max))
-        {
-            anyhow::bail!(
-                "param {name} = {value} is outside {}; choose a value inside it",
-                range_text(min, max)
             );
         }
         {
@@ -64,6 +81,7 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
                 doc: doc.to_owned(),
                 plain,
                 whole,
+                refused_override,
             });
         }
         let heap = eval.heap();
@@ -77,6 +95,22 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
 
 /// The bound of a parameter returned as an int.
 const WHOLE_LIMIT: f64 = 1.0e9;
+
+/// What a count refusing a value says of it.
+pub const WHOLE_ONLY: &str = "takes whole numbers under 1e9 only";
+
+/// Whether `value` is a whole number a count can be: no fraction, below
+/// [`WHOLE_LIMIT`].
+fn whole_number(value: f64) -> bool {
+    value.fract() == 0.0 && value.abs() < WHOLE_LIMIT
+}
+
+/// Whether `value`, refused for `param`, is a number it could take but for its
+/// range; false when `param` counts and `value` is no whole number.
+#[must_use]
+pub fn is_whole_override(param: &Param, value: f64) -> bool {
+    !param.whole || whole_number(value)
+}
 
 /// `[min, max]` as the range of a parameter is written, an open side as `-inf` or `inf`.
 #[must_use]

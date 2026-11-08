@@ -20,6 +20,8 @@ pub const DXF_PARSER_VERSION: &str = "30";
 /// The longest string a DXF group holds (AutoCAD 2007 and later), in characters: an
 /// MTEXT piece of 250 CJK characters is 750 bytes of UTF-8.
 const MAX_DXF_LINE_CHARS: usize = 2049;
+/// A name or tag's longest, in characters as read, not as escaped (review 2026-11-07 UL-221).
+const MAX_DXF_NAME_CHARS: usize = 255;
 /// No encoding a DXF uses takes more than four bytes for a character.
 const MAX_DXF_LINE_BYTES: usize = 4 * MAX_DXF_LINE_CHARS;
 
@@ -134,9 +136,8 @@ use code_page::{
 use extrusion::{ensure_planar, ensure_planar_ocs, ensure_planar_wcs, extrusion_sign, mirror_ocs};
 use hatch::OrderedFill;
 use polyline::{PolylineVertex, build_polyline_profile, parse_lwpolyline, parse_polyline};
-pub use rewrite::{
-    Difference, DxfEditRefusal, EditOfObject, EditedDxf, EditedDxfError, write_edited_dxf,
-};
+pub use rewrite::{Difference, DxfEditRefusal, EditOfObject, EditedDxf, EditedDxfError};
+pub use rewrite::{TextWritten, write_edited_dxf};
 use style::EntityStyle;
 use text::OrderedText;
 pub use underlay::{DxfUnderlay, read_dxf_underlay, read_dxf_underlay_from};
@@ -3647,14 +3648,14 @@ fn parse_dimension(
         diagnostics.add(
             ImportDiagnosticSeverity::Warning,
             "dxf.dimension-semantics-dropped",
-            Some(name.to_owned()),
+            Some(text::unicode_escapes(name).into_owned()),
             1,
         )?;
     }
     diagnostics.add(
         ImportDiagnosticSeverity::Info,
         "dxf.dimension-graphics",
-        Some(name.to_owned()),
+        Some(text::unicode_escapes(name).into_owned()),
         1,
     )?;
     let texts = text::place_texts(
@@ -3928,7 +3929,7 @@ fn parse_insert(
     diagnostics.add(
         ImportDiagnosticSeverity::Info,
         "dxf.block-insert",
-        Some(name.to_owned()),
+        Some(text::unicode_escapes(name).into_owned()),
         u32::try_from(placement_count)
             .map_err(|_out_of_range: std::num::TryFromIntError| DxfImportError::TooManyEntities)?,
     )?;
@@ -4013,7 +4014,7 @@ fn parse_insert_attributes(
         diagnostics.add(
             ImportDiagnosticSeverity::Warning,
             "dxf.insert-attributes-dropped",
-            Some(block_name.to_owned()),
+            Some(text::unicode_escapes(block_name).into_owned()),
             attribute_count,
         )?;
     }
@@ -4022,10 +4023,10 @@ fn parse_insert_attributes(
 
 fn validate_insert_attribute(record: &[DxfPair<'_>]) -> Result<(), DxfImportError> {
     let mut tags = record.iter().filter(|pair| pair.code == 2);
-    let tag = tags.next().ok_or(DxfImportError::MalformedPairs)?.value;
+    let tag = text::unicode_escapes(tags.next().ok_or(DxfImportError::MalformedPairs)?.value);
     if tags.next().is_some()
         || tag.is_empty()
-        || tag.len() > 255
+        || tag.chars().count() > MAX_DXF_NAME_CHARS
         || tag.chars().any(char::is_control)
     {
         return Err(DxfImportError::MalformedPairs);
@@ -4202,27 +4203,31 @@ fn parse_optional_text<'a>(
     Ok(value)
 }
 
+/// The string at `code` as the drawing means it, each `\U+XXXX` and `\M+nXXXX` read as
+/// its character ([`text::unicode_escapes`]): a block's name, an attribute's tag and
+/// value, a hatch's pattern, a dimension's text. A drawing older than 2007 escapes so what
+/// its code page lacks, and Kečup writes so all it rewrites under a code page header;
+/// kept raw, a name read back after a save was not the name read before it (capability
+/// review of r23 UL-200).
+fn parse_optional_string(
+    record: &[DxfPair<'_>],
+    code: i16,
+) -> Result<Option<String>, DxfImportError> {
+    Ok(parse_optional_text(record, code)?.map(|value| text::unicode_escapes(value).into_owned()))
+}
+
 /// The key of a block name: in capitals, each `\U+XXXX` read as its character (a DXF
-/// older than 2007 writes so a character outside its code page, `Profondit\U+00E0`).
-/// No other backslash, no slash and no control character belongs in a name.
+/// older than 2007 writes so a character outside its code page, `Profondit\U+00E0`, and
+/// one beyond U+FFFF as the pair of its UTF-16 units: review 2026-11-06 r23 P3), as
+/// [`text::unicode_escapes`] reads them. No other backslash, no slash and no control
+/// character belongs in a name.
 fn block_name_key(name: &str) -> Result<String, DxfImportError> {
-    let mut key = String::with_capacity(name.len());
-    let mut rest = name;
-    while let Some(at) = rest.find('\\') {
-        key.push_str(&rest[..at]);
-        let character = rest[at + 1..]
-            .strip_prefix("U+")
-            .and_then(|code| code.get(..4))
-            .filter(|hex| hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            .and_then(|hex| u32::from_str_radix(hex, 16).ok())
-            .and_then(char::from_u32)
-            .ok_or(DxfImportError::InvalidBlock)?;
-        key.push(character);
-        rest = &rest[at + "\\U+XXXX".len()..];
+    let key = text::unicode_escapes(name);
+    if key.contains(char::REPLACEMENT_CHARACTER) && !name.contains(char::REPLACEMENT_CHARACTER) {
+        return Err(DxfImportError::InvalidBlock);
     }
-    key.push_str(rest);
     if key.is_empty()
-        || name.len() > 255
+        || key.chars().count() > MAX_DXF_NAME_CHARS
         || key.chars().any(char::is_control)
         || key.contains(['/', '\\'])
     {
@@ -4245,7 +4250,7 @@ fn parse_optional_layer(record: &[DxfPair<'_>]) -> Result<Option<String>, DxfImp
     layer
         .map(|layer| {
             if layer.is_empty()
-                || layer.len() > 255
+                || layer.chars().count() > MAX_DXF_NAME_CHARS
                 || layer.chars().any(char::is_control)
                 || layer.contains(['/', '\\'])
             {

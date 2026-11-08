@@ -262,9 +262,19 @@ pub enum BtlxProfileProcessingRequest {
     EdgeSawCutsThenMillContour { intermediate_saw_cuts: u8 },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The largest drill a machine is taken to have when none is set, mm: a round
+/// hole up to it, Ø5 to Ø35, is drilled, not milled (review 2026-11-06 r23
+/// MF-202).
+pub const DEFAULT_LARGEST_DRILL_MM: f64 = 35.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BtlxExportOptions {
     pub profile_processing_request: BtlxProfileProcessingRequest,
+    /// The diameter of the largest drill of the machine, mm: a round opening
+    /// up to it is drilled, and a drilling larger than it milled along its
+    /// two half arcs. Unset, an opening is milled and a drilling the model
+    /// declares is drilled as declared (review 2026-11-06 MF-181).
+    pub largest_drill_mm: Option<f64>,
 }
 
 impl Default for BtlxExportOptions {
@@ -273,6 +283,7 @@ impl Default for BtlxExportOptions {
             profile_processing_request: BtlxProfileProcessingRequest::EdgeSawCutsThenMillContour {
                 intermediate_saw_cuts: 0,
             },
+            largest_drill_mm: None,
         }
     }
 }
@@ -1112,6 +1123,7 @@ impl GeneralFabricationProjection {
             WOODWOP_MPR_4_0_DRILL_EXPORT_V1
         };
         woodwop_mpr_output(stock_frame, &macros, export_contract)
+            .map_err(|error| error.at_part(part))
     }
 
     pub fn woodwop_mpr_4_0_production_package(
@@ -1122,10 +1134,7 @@ impl GeneralFabricationProjection {
         self.woodwop_mpr_4_0_setup_a_programs(snapshot, options)?
             .into_iter()
             .map(|(instance_path, mpr)| {
-                let program_name = homag_program_name(snapshot, &instance_path)?;
-                let barcode_svg = homag_code128_svg(&program_name).ok_or(
-                    GeneralFabricationError::ExportBlocked(ExportBlock::ValueOutOfRange),
-                )?;
+                let (program_name, barcode_svg) = homag_program_label(snapshot, &instance_path)?;
                 Ok(HomagProductionProgram {
                     schema: HOMAG_BHX_PRODUCTION_PACKAGE_V1,
                     program_name,
@@ -1315,6 +1324,7 @@ impl GeneralFabricationProjection {
             snapshot,
             BtlxExportOptions {
                 profile_processing_request: BtlxProfileProcessingRequest::PortableFreeContour,
+                largest_drill_mm: None,
             },
         )
     }
@@ -1388,9 +1398,12 @@ impl GeneralFabricationProjection {
                 let Some((count, single_member_number)) =
                     btlx_component_identifiers(row.quantity, index)
                 else {
-                    return Err(GeneralFabricationError::ExportBlocked(
-                        ExportBlock::ValueOutOfRange,
-                    ));
+                    return Err(GeneralFabricationError::ValueOutOfRange {
+                        what: "the count of a part",
+                        value: row.quantity.to_string(),
+                        limit: "a count from 1 to 2147483647",
+                        part: None,
+                    });
                 };
                 let Some(blank) = rectangular_stock(&stock.machining) else {
                     return Err(GeneralFabricationError::ExportBlocked(
@@ -1399,15 +1412,12 @@ impl GeneralFabricationProjection {
                 };
                 let [length_mm, width_mm, height_mm] =
                     btlx_part_coordinate(blank, blank.extents_mm);
-                let length = format_btlx_positive_number(length_mm).ok_or(
-                    GeneralFabricationError::ExportBlocked(ExportBlock::ValueOutOfRange),
-                )?;
-                let width = format_btlx_positive_number(width_mm).ok_or(
-                    GeneralFabricationError::ExportBlocked(ExportBlock::ValueOutOfRange),
-                )?;
-                let height = format_btlx_positive_number(height_mm).ok_or(
-                    GeneralFabricationError::ExportBlocked(ExportBlock::ValueOutOfRange),
-                )?;
+                let length =
+                    GeneralFabricationError::positive_length("the length of a part", length_mm)?;
+                let width =
+                    GeneralFabricationError::positive_length("the width of a part", width_mm)?;
+                let height =
+                    GeneralFabricationError::positive_length("the height of a part", height_mm)?;
                 let processings = machining
                     .iter()
                     .map(|operation| btlx_processings(operation, options, blank, part))
@@ -1675,14 +1685,15 @@ pub fn is_homag_program_code(code: &str) -> bool {
 }
 
 /// The production code naming the HOMAG program of the piece at
-/// `instance_path`, or a refusal naming its part (review 2026-11-02 MF-120).
-fn homag_program_name(
+/// `instance_path` with its barcode label, or a refusal naming its part
+/// (review 2026-11-02 MF-120; the label's too, review 2026-11-06 P3).
+fn homag_program_label(
     snapshot: &Snapshot,
     instance_path: &InstancePath,
-) -> Result<String, GeneralFabricationError> {
+) -> Result<(String, Vec<u8>), GeneralFabricationError> {
     let code = snapshot.production_code(instance_path);
-    if let Some(code) = code.filter(|code| is_homag_program_code(code)) {
-        return Ok(code.to_owned());
+    if let Some(label) = code.and_then(|code| Some((code.to_owned(), homag_code128_svg(code)?))) {
+        return Ok(label);
     }
     let resolved = snapshot
         .resolve_instance_path(instance_path)
@@ -1702,15 +1713,10 @@ fn woodwop_mpr_output(
     export_contract: &str,
 ) -> Result<Vec<u8>, GeneralFabricationError> {
     let [length_mm, width_mm, thickness_mm] = stock_frame.dimensions_mm;
-    let length = format_btlx_positive_number(length_mm).ok_or(
-        GeneralFabricationError::ExportBlocked(ExportBlock::ValueOutOfRange),
-    )?;
-    let width = format_btlx_positive_number(width_mm).ok_or(
-        GeneralFabricationError::ExportBlocked(ExportBlock::ValueOutOfRange),
-    )?;
-    let thickness = format_btlx_positive_number(thickness_mm).ok_or(
-        GeneralFabricationError::ExportBlocked(ExportBlock::ValueOutOfRange),
-    )?;
+    let length = GeneralFabricationError::positive_length("the length of a part", length_mm)?;
+    let width = GeneralFabricationError::positive_length("the width of a part", width_mm)?;
+    let thickness =
+        GeneralFabricationError::positive_length("the thickness of a part", thickness_mm)?;
     // A part machined from below is laid its underside (as drawn) up; the
     // operator needs to be told which face goes up.
     let face_up = if stock_frame.turned_over {
@@ -1725,10 +1731,13 @@ fn woodwop_mpr_output(
         output.push_str(processing);
     }
     output.push_str("!\n");
-    if !output.is_ascii() {
-        return Err(GeneralFabricationError::ExportBlocked(
-            ExportBlock::ValueOutOfRange,
-        ));
+    if let Some(character) = output.chars().find(|character| !character.is_ascii()) {
+        return Err(GeneralFabricationError::ValueOutOfRange {
+            what: "a character of the program",
+            value: format!("\"{character}\""),
+            limit: "plain ASCII",
+            part: None,
+        });
     }
     // woodWOP reads a program with bare LF line ends as an empty 1500 x 120 x 19
     // part with no machining; it writes and expects CRLF.

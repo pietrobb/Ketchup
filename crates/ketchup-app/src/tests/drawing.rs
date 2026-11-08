@@ -67,6 +67,11 @@ fn new_keeps_every_setting_of_the_window() {
     app.window.dock_tab = Some(crate::DockTab::Views);
     app.window.recent.add(Path::new("dom.ketchup")).unwrap();
     let recent_files = app.window.recent.files().to_vec();
+    let mut app = app.with_written_drawings(Path::new("drawings.txt"));
+    app.window.btlx_settings = Some(crate::recent_files::user_settings::SettingsFile::at(
+        "btlx.txt".into(),
+    ));
+    app.window.btlx.largest_drill_mm = 20.0;
 
     app.new_document();
 
@@ -77,7 +82,17 @@ fn new_keeps_every_setting_of_the_window() {
         panes,
         dock_tab,
         recent,
+        written_drawings,
+        btlx,
+        btlx_settings,
+        btlx_saving: _,
     } = &app.window;
+    assert!(written_drawings.is_some());
+    assert!(btlx_settings.is_some());
+    assert_eq!(
+        btlx.largest_drill_mm, 20.0,
+        "File > New keeps the BTLx options"
+    );
     assert_eq!(*theme, ThemeKind::Paper);
     assert_eq!(*decimal, DecimalSeparator::Comma);
     assert!(*remember_language);

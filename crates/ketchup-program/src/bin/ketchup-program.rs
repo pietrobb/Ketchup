@@ -27,9 +27,11 @@ const NAMED_PARTS: usize = 5;
 /// Characters of the example message per issue group in the summary.
 const EXAMPLE_CHARS: usize = 240;
 
-fn usage() -> ExitCode {
-    eprintln!("{USAGE}");
-    ExitCode::from(2)
+/// What a refused command line prints: the usage only when the command itself
+/// is wrong, not under a bad `--set` (review 2026-11-06 r23 P3: the whole usage
+/// buried the one line that said what was wrong).
+fn complaint(error: &CliError) -> String {
+    error.to_string()
 }
 
 struct Options {
@@ -53,6 +55,10 @@ enum CliError {
         value: String,
         source: std::num::ParseFloatError,
     },
+    SetNotFinite {
+        name: String,
+        value: String,
+    },
     Read {
         path: String,
         source: std::io::Error,
@@ -74,6 +80,9 @@ impl std::fmt::Display for CliError {
                 value,
                 source,
             } => write!(f, "--set {name}: {value:?} is not a number ({source})"),
+            Self::SetNotFinite { name, value } => {
+                write!(f, "--set {name}: {value:?} is not a finite number")
+            }
             Self::Read { path, source } => write!(f, "cannot read {path}: {source}"),
             Self::NotJson { path, source } => write!(f, "{path} is not JSON: {source}"),
         }
@@ -122,6 +131,12 @@ fn parse(args: &[String]) -> Result<Options, CliError> {
                         value: number.to_owned(),
                         source,
                     })?;
+                if !parsed.is_finite() {
+                    return Err(CliError::SetNotFinite {
+                        name: name.to_owned(),
+                        value: number.to_owned(),
+                    });
+                }
                 options.overrides.insert(name.to_owned(), parsed);
             }
             _ => return Err(CliError::Usage),
@@ -141,10 +156,9 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let options = match parse(&args) {
         Ok(options) => options,
-        Err(CliError::Usage) => return usage(),
         Err(error) => {
-            eprintln!("{error}");
-            return usage();
+            eprintln!("{}", complaint(&error));
+            return ExitCode::from(2);
         }
     };
     let loaded = (|| {
@@ -317,6 +331,34 @@ mod tests {
             "{}",
             error.message
         );
+    }
+
+    /// Review 2026-11-06 PG-182: `--set f=nan` passed every range check, as
+    /// comparisons with NaN are false, and the program failed later naming no
+    /// parameter.
+    #[test]
+    fn set_refuses_a_number_that_is_not_finite_by_its_name() {
+        for value in ["nan", "inf", "-inf", "1e999"] {
+            let args = ["check", "a.star", "--set", &format!("f={value}")].map(str::to_owned);
+            let error = parse(&args).err().expect(value).to_string();
+            assert!(error.starts_with("--set f:"), "{error}");
+            assert!(error.contains("finite"), "{error}");
+        }
+    }
+
+    /// Review 2026-11-06 r23 P3: a bad `--set` printed the whole usage after
+    /// its one line.
+    #[test]
+    fn a_bad_set_says_what_is_wrong_without_the_usage() {
+        for pair in ["n", "n=two", "n=nan"] {
+            let args = ["check", "a.star", "--set", pair].map(str::to_owned);
+            let said = complaint(&parse(&args).err().expect(pair));
+            assert!(said.starts_with("--set "), "{said}");
+            assert!(!said.contains("usage:"), "{said}");
+            assert_eq!(said.lines().count(), 1, "{said}");
+        }
+        let said = complaint(&parse(&["run".to_owned()]).err().expect("no command"));
+        assert!(said.starts_with("usage:"), "{said}");
     }
 
     #[test]

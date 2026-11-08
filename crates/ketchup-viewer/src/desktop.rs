@@ -82,7 +82,8 @@ pub fn main(requests: OpenRequests) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("{error}");
+            // In the window's log file: it has no console (review 2026-11-06 UI-181).
+            ketchup_rejection::log!("the window could not open: {error}");
             ExitCode::FAILURE
         }
     }

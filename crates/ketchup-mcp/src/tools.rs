@@ -824,29 +824,13 @@ impl Tools {
             ));
         };
         args.insert("method".into(), method.into());
-        let armed = self.cancel.arm(&attached.connection);
-        let sent = match armed {
-            Ok(true) => attached.connection.request(Value::Object(args), wait),
-            Ok(false) => {
-                return Err(ToolError::new(
-                    "cancelled",
-                    "The client cancelled this call; it was not sent to the window.",
-                ));
-            }
-            // This server's own failure, not the window's: the connection
-            // stays (review 2026-11-04 P3).
-            Err(error) => {
-                return Err(ToolError::new(
-                    "call_not_prepared",
-                    "This MCP server could not make the call cancellable (details.cause), so it \
-                     did not send it; the connection to the Kečup window is kept. Call again.",
-                )
-                .with_details(json!({"cause": {
-                    "kind": error.kind().to_string(),
-                    "os_error": error.raw_os_error(),
-                }})));
-            }
-        };
+        if !self.cancel.arm(&attached.connection) {
+            return Err(ToolError::new(
+                "cancelled",
+                "The client cancelled this call; it was not sent to the window.",
+            ));
+        }
+        let sent = attached.connection.request(Value::Object(args), wait);
         self.cancel.disarm();
         match sent {
             Ok(reply) => Ok(reply),

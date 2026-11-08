@@ -65,6 +65,12 @@ impl KetchupApp {
     }
 
     pub(crate) fn reset_document_presentation(&mut self) {
+        self.file.generation += 1;
+        // Its underlay ids start at 1 again: a refused edit of the one that went
+        // is not discarded in this one, nor its drawing taken for this one's source
+        // (review 2026-11-06 P3).
+        self.file.activity.underlay.refused_edit = None;
+        self.file.activity.underlay.sources.clear();
         // Another document's program is detached with its own warning
         // (review 2026-10-19 WB-7).
         self.program_detach_warned = false;
@@ -153,6 +159,7 @@ impl KetchupApp {
         let wgpu_target_format = self.render.wgpu_target_format;
         let wgpu_device = self.render.wgpu_device.clone();
         let wgpu_queue = self.render.wgpu_queue.clone();
+        let generation = self.file.generation + 1;
         let mut fresh = Self::with_catalog_and_initial_box(catalog, false).with_dialogs(dialogs);
         // The window's settings are not the document's: New keeps the whole
         // struct, so a setting added to it is kept too (review 2026-11-04 r19).
@@ -168,6 +175,7 @@ impl KetchupApp {
         self.render.wgpu_queue = wgpu_queue;
         self.exact.worker_path = exact_worker_path;
         self.exact.worker_attempted = exact_worker_attempted;
+        self.file.generation = generation;
         self.digest = self.catalog.text("digest-new-document");
     }
 
@@ -271,6 +279,10 @@ impl KetchupApp {
                 let (outcome, effective_path, source, work_recovery_identity) =
                     loaded_file.into_parts();
                 if !outcome.is_editable() {
+                    // A document came to the window for its review: a late
+                    // answer of Open Recent opens nothing over it (review
+                    // 2026-11-06 r23 P3).
+                    self.file.generation += 1;
                     let plan = match self.prepare_migration_review_plan(
                         path,
                         effective_path,
@@ -763,6 +775,9 @@ impl KetchupApp {
             self.report_file_persistence_error("error-save-document", path, &error);
             return Err(SaveFailure::Failed);
         }
+        if prepared.is_none() {
+            self.token_for_save(path);
+        }
         let prepared = match prepared.unwrap_or_else(|| {
             super::save_activity::prepare_save(&self.document, &self.file.container_data)
         }) {
@@ -879,7 +894,8 @@ impl KetchupApp {
                 // Save As and the first save of a new model; a plain Save
                 // leaves Open Recent as it is.
                 let new_name = self.file.path.as_deref() != Some(path);
-                self.file.path = Some(path.to_owned());
+                let before = self.file.path.replace(path.to_owned());
+                self.drawings_saved(before.as_deref());
                 self.file.recovery_open = None;
                 self.file.identity = Some(saved_identity);
                 self.file.work_recovery_lock = None;

@@ -89,11 +89,10 @@ impl KetchupApp {
                 pending_work_recovery_cleanup: None,
                 work_recovery_digest: None,
                 saved_digest,
+                generation: 0,
             },
             confirmation_surface,
             side_effect_receipts: Vec::new(),
-            btlx_profile_strategy: BtlxProfileStrategy::EdgeSawCutsThenMillContour,
-            btlx_intermediate_saw_cuts: 0,
             language: language::UiLanguage::ALL
                 .into_iter()
                 .find(|language| language.catalog() == catalog),
@@ -153,6 +152,10 @@ impl KetchupApp {
                 },
                 dock_tab: None,
                 recent: recent_files::RecentFiles::default(),
+                written_drawings: None,
+                btlx: app_state::BtlxSettings::default(),
+                btlx_settings: None,
+                btlx_saving: app_state::BtlxSaving::default(),
             },
             camera: app_state::CameraState {
                 projection_mode: ProjectionMode::Parallel,
@@ -284,6 +287,11 @@ impl KetchupApp {
         if let Some(settings) = recent_files::user_settings::SettingsFile::of_user() {
             app.window.recent = recent_files::RecentFiles::from_store(Box::new(settings));
         }
+        app.window.written_drawings = crate::app::written_drawings::of_user();
+        if let Some(file) = crate::app::btlx_settings::of_user() {
+            app.window.btlx = crate::app::btlx_settings::read(&file);
+            app.window.btlx_settings = Some(file);
+        }
         app.window.decimal = crate::length_input::DecimalSeparator::at_startup();
         app.dialogs = Box::new(NativeFileDialogs::with_parent(
             DialogParentWindow::from_creation_context(context),
@@ -317,6 +325,16 @@ impl KetchupApp {
     #[must_use]
     pub fn with_recent_files(mut self, store: Box<dyn recent_files::RecentFilesStore>) -> Self {
         self.window.recent = recent_files::RecentFiles::from_store(store);
+        self
+    }
+
+    /// Keep the drawing files each saved document wrote in the file at `path`.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_written_drawings(mut self, path: &Path) -> Self {
+        self.window.written_drawings = Some(recent_files::user_settings::SettingsFile::at(
+            path.to_path_buf(),
+        ));
         self
     }
 
@@ -1297,6 +1315,13 @@ impl KetchupApp {
                     "about-license",
                     &BTreeMap::from([("license", env!("CARGO_PKG_LICENSE").to_owned())]),
                 ));
+                // Review 2026-11-06 P3: a window logs to a file it never named.
+                if let Some(log) = ketchup_rejection::dropped::log_file() {
+                    ui.label(self.catalog.format(
+                        "about-log",
+                        &BTreeMap::from([("path", log.display().to_string())]),
+                    ));
+                }
                 ui.separator();
                 if ui.button(self.catalog.text("about-close")).clicked() {
                     self.window.panes.about_open = false;
@@ -1488,6 +1513,7 @@ impl KetchupApp {
         self.poll_mesh_conversion(context);
         self.poll_feature_history_exact(context);
         self.poll_recent_pick();
+        self.poll_btlx_saving();
         if let Some(program) = self.document.current_rule_program() {
             self.program_evaluations.warm(program, context);
         } else {

@@ -1,164 +1,154 @@
 # Ketchup
 
-> [!WARNING]
-> ## Work in progress — not a finished product
->
-> **Ketchup is under active development and is still far from a finished, stable release.**
->
-> You are welcome to download it, build it, and look around — but expect missing features, rough edges, breaking changes, and bugs. Please do not rely on it for real work or keep important models only in Ketchup yet.
-
 <p align="center">
   <img src="pic/splash.png" alt="Ketchup — AI-native 2D/3D parametric modeler" width="100%">
 </p>
 
 <p align="center">
-  <strong>Open-source 2D/3D parametric modeling with exact geometry and safe, undoable AI.</strong>
+  <strong>Design anything you want to build, check it, and get the drawings, cut lists and CNC files to make it.</strong>
 </p>
 
 <p align="center">
-  Windows x86-64 · Rust · Open CASCADE Technology · wgpu · Apache-2.0
+  Open source · Exact geometry (Open CASCADE) · Rule programs · Safe, undoable AI over MCP · Windows, with macOS and Linux builds · Apache-2.0
 </p>
 
-Ketchup is an AI-native desktop modeler for creating, editing, assembling, validating, and exporting real geometry. Manual tools and AI clients connected over MCP share the same canonical command path: every accepted model change is validated, revision-bound, atomic, and undoable. A model can also be a short rule program (Starlark) that you or an AI writes; edits in the window are written back into that program.
+Ketchup is a 2D/3D modeler for anyone who designs things to be made: furniture, cabinets, a garden studio, a timber-frame house, a machine part. You can draw by hand, describe the model in a few lines of a rule program, or let the AI assistant you already use build it for you. Every change, by hand or by AI, goes through the same checks and the same Undo. When the design is ready, Ketchup gives you drawing sets, cut lists, material takeoffs, quotes and files for CNC machines, and a Viewer package you can send to a customer.
+
+> [!NOTE]
+> Ketchup is young and changes quickly. It is usable for the jobs described below, but expect rough edges, and keep copies of important work: the file format can still change between versions. What it does not do yet is listed [near the end](#what-ketchup-does-not-do-yet).
+
+## What people make with it
 
 <p align="center">
-  <img src="pic/studio-desk.png" alt="A 2.2 m studio desk in Ketchup with a monitor shelf, a keyboard tray and a 180 cm reference figure" width="49%">
-  <img src="pic/studio-desk-section.png" alt="The same desk cut open by a section plane under the top, showing the keyboard tray on Hettich slides" width="49%">
+  <img src="pic/house-project-viewer.png" alt="A timber-frame house of about 1,850 parts on concrete footings, shown in Ketchup Viewer" width="100%">
 </p>
 
 <p align="center">
-  <em>A 2.2 m studio desk designed in Ketchup with an AI agent over MCP. Left: the desk with a 180 cm reference figure and chair. Right: a section plane under the top shows the keyboard tray for a stage piano. It runs on Hettich KA 4620 full-extension slides, imported as exact STEP, and its hangers are held by stainless angle brackets.</em>
+  <em>A timber-frame house of about 1,850 parts — studs, plates, rafters, a chimney and concrete footings — generated from <a href="examples/programs/house-project.star"><code>house-project.star</code></a> and opened in Ketchup Viewer, the free reader you send to your customer.</em>
 </p>
+
+<table>
+  <tr>
+    <td colspan="2"><img src="pic/tiny-house-viewer.png" alt="A tiny house with cladding, a metal roof, windows, a door, a deck and a flue, in Ketchup Viewer"></td>
+  </tr>
+  <tr>
+    <td colspan="2"><em>A tiny house of about 750 parts from <a href="examples/programs/tiny-house.star"><code>tiny-house.star</code></a>: a timber frame with insulation under the cladding, and a concept version on its own layer.</em></td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="pic/wardrobe-chair-table.png" alt="A wardrobe with shelves and drawers, a chair and a table in the Ketchup editor"></td>
+  </tr>
+  <tr>
+    <td colspan="2"><em>A wardrobe, a chair and a table in the Ketchup editor: 82 bodies with hundreds of drilled holes for dowels and hardware.</em></td>
+  </tr>
+</table>
+
+## What you can do with it
+
+### Describe a piece of furniture in a few lines
+
+A model can be a short [Starlark](https://github.com/bazelbuild/starlark) rule program. This is the whole [`table.star`](examples/programs/table.star) example:
+
+```python
+# Parametric table for the Starlark model-state GUI trial.
+WIDTH = param("width", 1200, min = 600, max = 2400)
+DEPTH = param("depth", 700, min = 400, max = 1200)
+HEIGHT = param("height", 720, min = 400, max = 1100)
+TOP = param("top_thickness", 25, min = 15, max = 60)
+LEG = param("leg_size", 70, min = 40, max = 120)
+INSET = param("leg_inset", 45, min = 20, max = 150)
+
+top = board("table/top", (WIDTH, DEPTH, TOP), at = (0, 0, HEIGHT))
+legs = (
+    board("table/leg-front-left", (LEG, LEG, HEIGHT), at = (INSET, INSET, 0)),
+    board("table/leg-front-right", (LEG, LEG, HEIGHT), at = (WIDTH - INSET - LEG, INSET, 0)),
+    board("table/leg-back-left", (LEG, LEG, HEIGHT), at = (INSET, DEPTH - INSET - LEG, 0)),
+    board("table/leg-back-right", (LEG, LEG, HEIGHT), at = (WIDTH - INSET - LEG, DEPTH - INSET - LEG, 0)),
+)
+for leg in legs:
+    dowels(top, leg, dowel = "8x40", margin = 15)
+```
+
+Each `param()` becomes a field in the parameter panel, and the dowel holes follow when you change the width. Parts can be placed by relation (`on`, `flush`, `between`, `distribute`), machined with holes, pockets, grooves, rebates and booleans, and joined with dowels, hardware and standard fasteners (ISO and DIN nuts, bolts, washers, threaded rods, reinforcing bars). Saved variants keep several sizes of one design; **Export all variants** writes the cut list and material takeoff of each.
+
+You do not have to give up the mouse. Moving, turning, mirroring, deleting, renaming or recolouring a part in the window, or typing a new value for it, is written back into the program, so the model stays parametric. An edit the program cannot express, such as scaling, detaches the program and says which part and why. The language is described in [docs/program-language.md](docs/program-language.md).
+
+### Design a timber-frame house and check it
+
+[`house-project.star`](examples/programs/house-project.star) and [`tiny-house.star`](examples/programs/tiny-house.star) generate whole houses: footings, floors, stud walls with openings, rafters and roof build-ups. Ketchup checks what it builds: collisions and clearances, parts that rest on nothing, load paths with self-weight, imposed and snow loads, and timber members after EN 1995-1-1 (EC5), including lateral-torsional buckling with the bracing it can actually see. Checks list issues; they never stop you from editing.
+
+From the same model you get a numbered drawing set (**File → Export → Drawings**): a floor plan of each storey, sections, elevations, a shop drawing of each wall or floor build-up with its pieces numbered and dimensioned, and a schedule of windows and doors, as one PDF or as DXF/DWG sheets. Timber members go to Hundegger BTLx 2.3.1, and the takeoff window exports the material list, a cutting plan on the bars and sheets you buy, and a quote from your own price list.
+
+### Make it: cut lists and CNC files
+
+- Cut lists, hardware lists, bar schedules and material takeoff as CSV or XLSX.
+- Cutting plans of every piece on bars and sheets, with kerf, trim and offcuts (`bar_stock`, `sheet_stock`), and quotes from a `price_list`. Ketchup has no prices of its own.
+- HOMAG woodWOP programs, one per piece in a ZIP; Hundegger BTLx for timber; a reviewed ISO metric CAM program.
+- Every flat part as an AutoCAD R12 DXF in a ZIP, with its outline, cut-outs, holes and pockets on named layers, for any CNC router.
+- Sheet-metal flat patterns with bend tables, and weldment cut lists.
+- Exports for production refuse to write a file from stale or failed geometry, and say what to fix.
+
+### Work with DXF and DWG drawings
+
+**File → Import DXF/DWG as underlay…** keeps a site plan or a floor plan under the model. You can snap to it, fit it by two points, and edit it in 2D: delete, move, rotate, mirror, trim, extend, offset, and draw lines, rectangles, circles, arcs and text. **Tools → Export drawing to DXF/DWG…** writes it back with the header, layers, blocks, dimensions and hatches kept, and every unchanged object as it was; the source file is never overwritten. National grid coordinates such as S-JTSK keep their precision. **Tools → Pull drawing area up** turns a room or a parcel into a solid that follows the drawing when it changes.
+
+### Show it to your customer with Ketchup Viewer
+
+Export a `.ketchup-view` package and send it. **Ketchup Viewer** opens it read-only: your customer can orbit the model, switch your saved scenes, pick a part to see its name, material, size and notes, show your dimensions, measure between points, and add comments with arrows and the camera position, then save them in a small file to send back to you, all without being able to change the geometry. The package carries geometry, materials and notes, not your design history or programs.
+
+The Windows Viewer is installed with Ketchup. A macOS app, an Android app and a static web version that runs entirely in the browser ([hosting guide](viewer/web/HOSTING.md)) share its code in `viewer/`.
+
+### Let your AI assistant model it
+
+Ketchup has no built-in chat. You connect the AI harness you already use — Claude Code, Codex, Claude Desktop, Cursor — over the [Model Context Protocol](https://modelcontextprotocol.io), and it works in your open Ketchup window. It can write and patch the rule program, set parameters, inspect and measure parts, render the viewport, import and export files, and edit drawings. Every AI edit goes through the same validation and Undo as yours, so you can always step back.
+
+See [Connect your AI harness](#connect-your-ai-harness-mcp) below for the one-click setup.
+
+### Model mechanical parts and assemblies
+
+- Sketches on any plane with lines, arcs, circles, polygons, ellipses and splines, and constraints (horizontal, vertical, coincident, distance, radius, parallel, perpendicular, tangent, angle, equal, symmetric, concentric, collinear, midpoint, point on curve).
+- Exact solids: Push/Pull, pockets, holes with ISO metric threads, revolve, sweep, loft, helix, shell, fillet, chamfer, draft, offset, and Boolean cut, union, intersect and split, with an ordered, editable feature history.
+- Assemblies with mates, fixed, revolute, prismatic and helical joints, travel limits, gear, belt, chain, rack and lead-screw couplings, swept collision checks and motion studies. The [`hettich-quadro-v6-drawer.ketchup`](examples/hettich-quadro-v6-drawer.ketchup) example is a drawer on real runners you can open and pull.
+- Drawing sheets with front, top, right, isometric, auxiliary, section and detail views, associative dimensions with tolerances, notes and BOM balloons, exported as DXF or DWG.
+- Measurement of distances, volume, mass, centre of mass and moments of inertia, and a small linear-static FEA for a first look at stiffness.
+- Exchange: STEP and IGES in and out as exact geometry (STEP keeps assembly structure, names and colours), STL, 3MF, Blender GLB, COLLADA for SketchUp, and the `.kscene` SketchUp bridge.
 
 ## Download and try it
 
 1. Download **`Ketchup-0.3.2-Setup.exe`** from the [latest release](https://github.com/pietrobb/Ketchup/releases/latest) and run it. It installs for the current user only, without administrator rights, into `%LOCALAPPDATA%\Programs\Ketchup` and adds **Ketchup** and **Ketchup Viewer** to the Start menu. If you prefer not to install anything, use `Ketchup-0.3.2-Portable.zip` from the same release.
-2. Download **`Ketchup-0.3.2-Examples.zip`** from the release, unpack it, and double-click any `.ketchup` file to open it in Ketchup. Double-click `kitchen.ketchup-view` to open it in Ketchup Viewer. The examples are described [below](#examples-you-can-open-right-away).
-3. Optional: connect the AI harness you already use, such as Claude Code, Codex, Claude Desktop, or Cursor. It can then model in the open Ketchup window. See [Connect your AI harness](#connect-your-ai-harness-mcp).
+2. Download **`Ketchup-0.3.2-Examples.zip`** from the release, unpack it, and double-click any `.ketchup` file to open it in Ketchup. Double-click `kitchen.ketchup-view` to open it in Ketchup Viewer.
+3. Optional: connect your AI harness (below) and ask it to *"model a 120 × 60 cm desk with two drawers"*.
 
-Requires Windows 10 or 11 x64. The Visual C++ runtime comes with the programs. Only the older Ketchup 0.3.1 also needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) for x64, version 14.29 or later; on a Windows without it, 0.3.1 does not start. The installer and the programs are signed by AEON GROUP spol. s r.o. No account, API key, or Python is needed. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
-
-## What you can do today
-
-| Model | Organize and edit | Deliver |
-|---|---|---|
-| Draw lines, arcs, circles, rectangles, polygons, ellipses, and splines with snapping and typed lengths | Reuse definitions through occurrences and components; group, Make Unique, Replace Component | Save checksummed `.ketchup` documents; a crash leaves a work-recovery copy |
-| Push/Pull, pocket, holes with ISO metric threads, revolve, sweep, loft, helix, shell, fillet, chamfer, draft, and planar offset | Move, copy, rotate, mirror, align, distribute, and build linear, rectangular, and circular patterns | Import STEP and IGES (exact), STL, Blender GLB, DXF and DWG, and the `.kscene` SketchUp bridge |
-| Exact cut, union, intersect, and split | Edit ordered feature history, sketch constraints, dimensions, layers (tags), and saved views | Export STEP, IGES, STL, 3MF, Blender GLB, COLLADA for SketchUp, and a Ketchup Viewer package |
-| Write the model as a parametric rule program with parameters and saved variants | Assemble with mates, joints, travel limits, gear/belt/chain/rack/screw couplings, and motion studies | Drawing sheets with front, top, right, isometric, auxiliary, section, and detail views; project drawings to PDF, DXF, and DWG |
-| Keep a DXF or DWG drawing under the model as an underlay, snap to it, and fit it by two points | Measure distances, volume, mass, centre of mass, and moments of inertia | Cut lists, hardware lists, bar schedules, and material takeoff as CSV/XLSX; Hundegger BTLx, HOMAG woodWOP, a reviewed CAM program, sheet-metal flat patterns, and weldment cut lists |
-
-Ketchup also checks what it builds: collisions and clearances, parts that rest on nothing, load paths with self-weight, imposed and snow loads, and timber members after EN 1995-1-1 (EC5). Checks report issues instead of blocking your edits.
-
-Advanced operations are intentionally bounded and fail closed when geometry, identity, resource, or worker guarantees cannot be met. This table describes tested product paths, not unrestricted support for every shape or imported model. Underlays, COLLADA export, writing window edits back into a program, and the in-memory Undo described under [Build and run](#build-and-run) are new in 0.3.0.
+Requires Windows 10 or 11 x64. The Visual C++ runtime comes with the programs (only the older 0.3.1 also needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) for x64, 14.29 or later). The installer and the programs are signed by AEON GROUP spol. s r.o. No account, API key or Python is needed. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Examples you can open right away
 
-The examples below are in `Ketchup-0.3.2-Examples.zip` on the [release page](https://github.com/pietrobb/Ketchup/releases/latest) and in the [`examples`](examples) folder of this repository. `tiny-house.ketchup` is too large for the repository; download it from the link in the table. Double-click a file or use **File → Open**.
-
-The [`hettich-quadro-v6-drawer.ketchup`](examples/hettich-quadro-v6-drawer.ketchup) example is an articulated drawer assembly. It combines an editable assembly with embedded exact STEP components, reusable occurrences, stable mechanical references, joints, travel limits, a coordinated motion study, and a persisted mounting contract. Its geometry and engineering intent stay connected, which is what Ketchup is built for.
+The examples are in `Ketchup-0.3.2-Examples.zip` on the [release page](https://github.com/pietrobb/Ketchup/releases/latest) and in the [`examples`](examples) folder. Double-click a file or use **File → Open**.
 
 | Example | Try it for |
 |---|---|
-| [`hettich-quadro-v6-drawer.ketchup`](examples/hettich-quadro-v6-drawer.ketchup) | The drawer assembly described above, with joints, travel limits, and a motion study. |
-| [`table.ketchup`](examples/programs/table.ketchup) | A small table driven by a rule program ([`table.star`](examples/programs/table.star)). It is a good first model to edit by hand or with AI: moving, turning, mirroring, deleting, renaming or recolouring a part, or changing a value in the parameter panel, is written into the program, so the table stays parametric. |
+| [`table.ketchup`](examples/programs/table.ketchup) | The table program above. A good first model to edit by hand or with AI: your edits are written into the program saved inside the document; [`table.star`](examples/programs/table.star) is that program as it ships, to read. |
 | [`wardrobe-chair-table.ketchup`](examples/wardrobe-chair-table.ketchup) | Furniture with 82 bodies and hundreds of drilled holes. |
-| [`tiny-house.ketchup`](https://github.com/pietrobb/Ketchup/releases/download/sample-files/tiny-house.ketchup) | A timber-frame house of about 750 parts, with studs, noggins, and insulation, generated from [`tiny-house.star`](examples/programs/tiny-house.star). You can try layers, material takeoff (**Tools**), and project drawings. A 25 MB download from the [sample files](https://github.com/pietrobb/Ketchup/releases/tag/sample-files) release. |
-| [`house-project.ketchup`](examples/house-project.ketchup) | A larger house generated from [`house-project.star`](examples/programs/house-project.star). |
-| [`garden-studio-colored.ketchup`](examples/garden-studio-colored.ketchup) | A colored garden studio built from exact solids. |
-| [`grooved-beam-array.ketchup`](examples/grooved-beam-array.ketchup) | A 480-occurrence timber stress scene with 24 shared definitions. Use it to test the viewport, selection, the Outliner, and instancing. |
-| [`kitchen.ketchup-view`](viewer/samples/kitchen.ketchup-view) | A read-only package for **Ketchup Viewer**, where you can review a model and save comments. |
+| [`hettich-quadro-v6-drawer.ketchup`](examples/hettich-quadro-v6-drawer.ketchup) | A drawer assembly with exact STEP hardware, joints, travel limits and a motion study. |
+| [`house-project.ketchup`](examples/house-project.ketchup) | The large timber-frame house from [`house-project.star`](examples/programs/house-project.star). Try the drawing set and the material takeoff (**Tools**). |
+| [`tiny-house.ketchup`](https://github.com/pietrobb/Ketchup/releases/download/sample-files/tiny-house.ketchup) | The tiny house from [`tiny-house.star`](examples/programs/tiny-house.star), with layers, takeoff and project drawings. A 25 MB download from the [sample files](https://github.com/pietrobb/Ketchup/releases/tag/sample-files) release. |
+| [`garden-studio-colored.ketchup`](examples/garden-studio-colored.ketchup) | A coloured garden studio built from exact solids. |
+| [`grooved-beam-array.ketchup`](examples/grooved-beam-array.ketchup) | 480 occurrences of 24 shared definitions, to try the viewport, selection, the Outliner and instancing. |
+| [`kitchen.ketchup-view`](viewer/samples/kitchen.ketchup-view) | A package for **Ketchup Viewer**, where you can review a model and save comments. |
 
-The rule programs behind several of these models are in [`examples/programs`](examples/programs), together with programs you can apply to an empty model: a cabinet, a modular doweled cabinet, shelves on a shared partition, a round stool, and an anchored beam. An AI harness can read them and use them as templates.
-
-## One path from intent to geometry
-
-```mermaid
-flowchart LR
-    UI[Manual tools] --> CMD[Canonical command batch]
-    AI[AI client over MCP] --> PLAN[Bounded proposal]
-    SDK[Plugin / script] --> PLAN
-    PLAN --> CMD
-    CMD --> CHECK[Validate identity, limits, and revision]
-    CHECK --> DOC[Immutable document revision]
-    DOC --> GRAPH[ExactBRepGraph]
-    GRAPH --> WORKER[Isolated OCCT worker]
-    WORKER --> RESULT[Verified exact result]
-    DOC --> VIEW[Viewport and Outliner]
-    RESULT --> VIEW
-    RESULT --> EXPORT[Exports and production files]
-    DOC --> UNDO[Undo / Redo]
-```
-
-AI proposals cannot write around validation, persistence, or Undo/Redo. Stale, invalid, oversized, timed-out, or disconnected proposals are rejected without replacing the last valid model.
-
-## Modeling capabilities
-
-### Rule programs
-
-A model can be a [Starlark](https://github.com/bazelbuild/starlark) rule program instead of a list of absolute pieces. Parts are placed by relation (`on`, `flush`, `between`, `distribute`), machined with holes, pockets, grooves, rebates and booleans, and joined with dowels, hardware, and standard fasteners (ISO and DIN nuts, bolts, washers, threaded rods, reinforcing bars). `param()` values appear in the parameter panel and can be saved as variants; **Export all variants** writes the cut list and material takeoff of every variant at once.
-
-Moving, turning, mirroring, deleting, renaming, or recolouring a program part in the window, or typing a new value for it, is written into the program, so the model stays parametric. An edit the program cannot express, such as scaling or adding new geometry, detaches the program, and the notice names the part and the reason.
-
-The language and its library are described in [docs/program-language.md](docs/program-language.md). Example programs are in [`examples/programs`](examples/programs).
-
-### Sketching and parametric history
-
-- Principal, offset, and planar-face workplanes.
-- Line, arc, circle, polygon, ellipse, and spline entities with deterministic region extraction and holes.
-- Bounded geometric solving for horizontal, vertical, coincident, distance, radius, fixed-point, parallel, perpendicular, tangent, angle, equal, symmetric, concentric, collinear, midpoint, and point-on-curve constraints.
-- Ordered body/feature history, dimensional edits, hole/slot repositioning, feature suppression/resume, and multi-body activation.
-
-### Exact geometry
-
-Exact bodies are evaluated through a supervised, versioned worker backed by Open CASCADE Technology. Current bounded operation families include extrusion, pocket, Boolean cut/union/intersect/split, revolve, sweep, loft, shell, fillet, chamfer, and signed planar offset. Accepted results carry freshness and topology evidence before they can drive rendering, picking, or export.
-
-### Assemblies and drawings
-
-- **Assemblies:** reusable occurrences, grounding, coincident, concentric, distance, and angle mates with rigid-solve diagnostics; fixed, revolute, prismatic, and helical joints with travel limits; gear, belt, chain, rack-and-pinion, and lead-screw couplings; mechanism drag with swept collision checks; motion studies.
-- **Drawings:** persisted drawing sheets with front, top, right, isometric, auxiliary, section, and detail views, associative dimensions, and notes, exported as DXF or DWG. Project drawings (floor plan, sections, elevations) go to PDF, DXF, or DWG.
-
-This is an evolving assembly and drafting path, not yet a complete mechanical simulation or drafting suite.
-
-### Underlays
-
-**File → Import DXF/DWG as underlay…** keeps a drawing under the model, for example a site plan or a floor plan. The drawing itself is not a part: its lines never reach the cut list, collision checks, or production exports until you pull an area of it up into a solid (below). Each drawing layer becomes a layer you can hide, lines keep their color, linetype, and lineweight, and texts are shown on their own layers. The drawing tools snap to its endpoints, midpoints, and crossings, and **Tools → Fit underlay to model** places it by two points on its lines and two points in the model. A selected underlay moves and turns with the Move and Rotate tools. National grid coordinates (such as S-JTSK, hundreds of kilometres from the origin) keep their precision, and what cannot be drawn exactly, such as an xref, is named in the import report.
-
-The drawing can be edited in 2D. A click picks one of its objects (Shift+click more); Delete takes them out, Move, Rotate, and Mirror move them (Ctrl copies), and the Tools menu trims, extends, and offsets a line and draws lines, rectangles, circles, arcs, and text into a layer of the drawing. Each edit is one Undo step and is saved with the document; the imported file is never changed. **Tools → Export drawing to DXF/DWG…** writes the drawing with these edits: header, layers, blocks, dimensions, hatches, and every unchanged object as they were, each edited line keeping its handle, colour, and linetype. The export never replaces the file the drawing came from.
-
-**Tools → Pull drawing area up** turns a closed area of the drawing (a room, a parcel, a closed polyline or hatch) into a solid of the typed height, its holes cut through. In a program-owned or empty document the area is written into the program as a generated `# underlay data AREA_n` section bound to the drawing: when the drawing is edited, the area and its solid follow it, and the result names any area that changed. **Tools → Unlink pulled areas from the drawing** keeps the present outlines instead. The program reference ([docs/program-language.md](docs/program-language.md#outlines-from-a-drawing)) describes the generated section. A drawing can also stand as a front, side, or back view (**Tools → Drawing view**), and over the AI connection two or more such views make one solid.
-
-### Imports and exports
-
-- **STEP and IGES:** exact B-Rep import with preserved source bytes. STEP keeps assembly hierarchy, repeated instances, names, and colors; IGES has no hierarchy, so its parts become independent roots. A file with some broken solids still imports the rest: the import review, the status line, and the AI connection name each solid or part left out, with its source entity and the reason.
-- **STL:** binary/ASCII import with declared units and strict closed-manifold validation; no silent repair.
-- **DXF and DWG:** a bounded 2D geometry subset with a loss report, or a whole drawing as an underlay; a DWG is read as the DXF it converts to.
-- **Blender GLB:** mesh import preserving names, hierarchy, transforms, opaque colors, and shared instances. Imported geometry stays a mesh; boxes, cylinders, and linear extrusions can be converted to exact features after verification.
-- **SketchUp bridge:** open `.kscene` interchange subset rather than native `.skp` parsing.
-- **Export:** the visible exact model to STEP and IGES; tessellation to STL, 3MF, and Blender GLB; COLLADA for SketchUp, where equal parts become one component; and a `.ketchup-view` package for Ketchup Viewer. All exports check freshness and write a loss report where something is left out.
-- **Production:** cut lists, hardware lists, bar schedules, and material takeoff as CSV or XLSX; a general BOM with drawings; Hundegger BTLx 2.3.1 for timber members; HOMAG woodWOP drilling programs, one per piece in a ZIP when several parts are made; a reviewed ISO metric CAM program; sheet-metal flat patterns with bend tables; and weldment cut lists.
-- **Cutting plans and quotes:** when a program declares the bars and sheets its materials come in (`bar_stock`, `sheet_stock`), the takeoff window exports a cutting plan of every piece on bars and sheets with kerf, trim, and offcuts; with a `price_list` it exports a quote of materials, bought items, and machining, listing whatever has no price. Ketchup has no prices of its own.
-- **CNC DXF:** every made flat part as an AutoCAD R12 DXF in a ZIP, with its outline, cut-outs, holes, and pockets on named layers, and `parts.csv` saying why a part could not be drawn.
-- **Drawing sets:** **File → Export → Drawings (PDF, DXF, DWG)…** writes the visible model as a numbered set of sheets with frame and title block: a floor plan of each storey, sections, elevations, a shop drawing of each wall or floor build-up with its pieces numbered and dimensioned, and a schedule of windows and doors, as one PDF or a DXF or DWG file per sheet.
-
-### Ketchup Viewer
-
-Ketchup Viewer opens a read-only `.ketchup-view` package exported from Ketchup. A customer can orbit the model in perspective or orthographic view, pick a part to see its name, material, size, and notes, switch the saved scenes (each opens in the projection it was saved in), show the dimensions the author placed, measure between two points snapped to vertices, edges, or faces, and send back comments with arrows and the camera position, without being able to change the geometry. The Windows Viewer is installed with Ketchup; Android, macOS, and a static web version that runs entirely in the browser ([hosting guide](viewer/web/HOSTING.md)) share its code in `viewer/`.
+More programs you can run on an empty model are in [`examples/programs`](examples/programs): a cabinet, a modular doweled cabinet, shelves on a shared partition, a round stool and an anchored beam. An AI harness can read them and use them as templates.
 
 ## Connect your AI harness (MCP)
 
-Ketchup has no built-in chat. Instead, you connect the AI harness you already use, such as Claude Code, Codex, Claude Desktop, or Cursor. Your harness keeps its own model, account, and subscription. Ketchup doesn't need an API key.
-
-`Ketchup.exe --mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server on stdio. A connected harness works in the Ketchup window you have open. It can read, patch, and apply the model's program, set its parameters and variants, inspect and measure parts, make verified edits, undo, save, and render images of the viewport, including saved views and section cuts. It can also import STEP, IGES, STL, DXF, DWG, GLB, and SketchUp scene files, bring in and fit underlays, read a drawing as objects, closed regions (rooms), and parallel line pairs (wall thicknesses), edit it (remove, draw, move, trim, extend, offset) and export it as DXF or DWG, write a region or a block of it into the program as outlines or solids that follow the drawing, and export STEP, IGES, STL, 3MF, GLB, COLLADA, DXF, BTLx, woodWOP, cut-list CSV, Viewer packages, project drawings as PDF, and drawing sheets as DXF or DWG. Every AI edit goes through the same validation and Undo as a manual edit.
+Your harness keeps its own model, account and subscription; Ketchup doesn't need an API key. `Ketchup.exe --mcp` runs an MCP server on stdio, and a connected harness works in the Ketchup window you have open. Besides modeling, it can import STEP, IGES, STL, DXF, DWG, GLB and SketchUp scene files, read a drawing as objects, closed regions (rooms) and parallel line pairs (wall thicknesses), edit it (remove, draw, move, trim, extend, offset), and export everything the window can, including project drawings as PDF.
 
 Set it up once, in any of these ways:
 
 - **Installer:** keep *Connect your AI clients to Ketchup* checked on its last page.
-- **Window:** the **Connect AI** section of the side panel shows what Claude Code, Codex, Claude Desktop and Supervisor start as `ketchup`. **Connect** writes this Ketchup into the client's own configuration file (`.claude.json`, `.codex\config.toml`, `claude_desktop_config.json`, Supervisor's `skills\mcp_servers.json`), so it works even when the client's command is not on the window's PATH; **Use this Ketchup** replaces an entry that starts another program, for example a development build that was deleted (the harness then only reports *connection closed*).
-- **Terminal:** `& "$env:LOCALAPPDATA\Programs\Ketchup\Ketchup.exe" --mcp-setup | Out-Host` sets up every client it finds and prints what each starts now. Of Supervisor it sets up only the installed one; another running Supervisor instance changes only when you click **Connect** on its row.
+- **Window:** the **Connect AI** section of the side panel lists Claude Code, Codex, Claude Desktop and Supervisor. **Connect** writes this Ketchup into the client's own configuration (`.claude.json`, `.codex\config.toml`, `claude_desktop_config.json`, Supervisor's `skills\mcp_servers.json`), so it works even when the client's command is not on the window's PATH; **Use this Kečup** replaces an entry that starts another program, for example a deleted development build.
+- **Terminal:** `& "$env:LOCALAPPDATA\Programs\Ketchup\Ketchup.exe" --mcp-setup | Out-Host` sets up every client it finds and prints what each starts now.
 - **By hand**, with the default installation:
 
-Claude Code (PowerShell). `--scope user` makes the server available in every folder; without it Claude Code keeps it for the current folder only:
+Claude Code (PowerShell). `--scope user` makes the server available in every folder:
 
 ```powershell
 claude mcp add --scope user ketchup -- "$env:LOCALAPPDATA\Programs\Ketchup\Ketchup.exe" --mcp
@@ -176,13 +166,11 @@ Other harnesses take the same command in their MCP configuration. Replace `<you>
 { "mcpServers": { "ketchup": { "command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\Ketchup\\Ketchup.exe", "args": ["--mcp"] } } }
 ```
 
-Then start a new session of the harness (it reads its MCP servers when a session starts) and ask the agent, for example, to *"open tiny-house.ketchup in Ketchup and make the house 1 m longer"* or *"model a 120 × 60 cm desk with two drawers"*.
+Then start a new session of the harness and ask, for example, to *"open tiny-house.ketchup in Ketchup and make the house 1 m longer"*.
 
-The tools connect to the open window by themselves (with several windows open the agent picks one); if none is open, the agent can start one. A newly connected client replaces the previous one. While a client is connected, the status line names it (*Connected AI: Claude Code*, from the name the client gives itself) next to a **Disconnect** button.
+The tools connect to the open window by themselves (with several windows open the agent picks one); if none is open, the agent can start one. A newly connected client replaces the previous one. While a client is connected, the status line names it (*Connected AI: Claude Code*) next to a **Disconnect** button. Documents the agent opens or saves join **File → Open Recent**.
 
-A document the agent opens or saves under a new name joins **File > Open Recent**, as when you open it yourself, so the list shows the agent's documents as well as yours. **Clear List** at the bottom of that menu empties it.
-
-When an agent also develops Ketchup in this checkout, use `scripts\ketchup-mcp-server.cmd` as the command instead. It runs the server from `target\mcp-server` and the windows it opens from copies of the newest build under `target\mcp-windows`, so `cargo build --release` can replace `target\release` while those windows stay open. A window built in this checkout shows this script in **Connect AI**, and its **Connect** and `--mcp-setup` register it. To do it by hand, run this from the checkout root (PowerShell):
+When an agent also develops Ketchup in this checkout, use `scripts\ketchup-mcp-server.cmd` as the command instead. It runs the server from `target\mcp-server` and the windows it opens from copies of the newest build under `target\mcp-windows`, so `cargo build --release` can replace `target\release` while those windows stay open. **Connect** and `--mcp-setup` in a window built in this checkout register it. By hand, from the checkout root (PowerShell):
 
 ```powershell
 claude mcp add --scope user ketchup -- "$PWD\scripts\ketchup-mcp-server.cmd"
@@ -190,6 +178,55 @@ codex mcp add ketchup -- "$PWD\scripts\ketchup-mcp-server.cmd"
 ```
 
 If the server does not start, the script writes the reason to stderr, which the harness shows in its MCP log; for example, there is no `target\release\ketchup-app.exe` yet because `cargo build --release` has not run.
+
+## How a change reaches the model
+
+```mermaid
+flowchart LR
+    UI[Manual tools] --> CMD[Canonical command batch]
+    AI[AI client over MCP] --> PLAN[Bounded proposal]
+    SDK[Plugin / script] --> PLAN
+    PROG[Rule program] --> CMD
+    PLAN --> CMD
+    CMD --> CHECK[Validate identity, limits, and revision]
+    CHECK --> DOC[Immutable document revision]
+    DOC --> GRAPH[ExactBRepGraph]
+    GRAPH --> WORKER[Isolated OCCT worker]
+    WORKER --> RESULT[Verified exact result]
+    DOC --> VIEW[Viewport and Outliner]
+    RESULT --> VIEW
+    RESULT --> EXPORT[Exports and production files]
+    DOC --> UNDO[Undo / Redo]
+```
+
+Manual tools, rule programs, plugins and AI all change the model through one command path: every accepted change is validated, atomic and one Undo step. Stale, invalid, oversized, timed-out or disconnected AI proposals are rejected without replacing the last valid model. Exact geometry is computed by Open CASCADE Technology in a supervised worker process, so a crash there cannot take your document with it; a crash of the window leaves a work-recovery copy beside the file.
+
+## What Ketchup does not do yet
+
+Honest limits, so you know where it stands next to a mature mechanical CAD such as SolidWorks:
+
+- **Drawings for machined parts are not complete.** The drawing format holds angular, radius and diameter dimensions, datums and GD&T feature control frames, but no tool places them yet; linear dimensions with tolerances, notes and BOM balloons work. There are no automatic hole and thread callouts.
+- **No native SolidWorks, Parasolid or SketchUp `.skp` files.** Use STEP or IGES (exact) for CAD exchange and COLLADA or `.kscene` for SketchUp.
+- **No catalogue of standard mechanical parts** such as bearings, linear rails, ball screws or aluminium profiles. The program library has standard fasteners, dowels and hinges; other supplier parts come in as STEP.
+- **Simulation is basic.** Load paths, EC5 timber checks and a small linear-static FEA (trusses and tetrahedra, up to 4,096 elements) — not nonlinear, thermal, dynamic or fatigue analysis.
+- **CAM is limited.** Drilling programs for woodWOP, BTLx for timber, R12 DXF outlines for CNC routers and one reviewed ISO metric program; no general toolpath generation or post-processors for arbitrary machines. woodWOP contour milling and pockets are in progress.
+- **Exact operations are bounded.** Fillet, shell, sweep, loft and Booleans cover tested cases and fail with an explanation rather than produce doubtful geometry. Freeform surfacing is not there.
+- **Undo history lives in memory** for the session and reaches back 30 edits; Save writes only the current revision. A work-recovery copy keeps your edits and their Undo steps through a crash.
+- **One memory limit per kind of background job**, not for the whole window: several large imports and exports at once can use more memory than the computer has.
+- **Windows is the supported desktop platform.** macOS and Linux builds work from source (below); the installer and signed release are Windows-only.
+- **No stable public API or long-term file-format promise yet.** A newer Ketchup opens older files. A document without underlays and annotations whose imports stay within the limits of 0.2.0 (at most 1 024 objects made by one import, a DXF source of at most 8 MiB, other sources of at most 32 MiB) is saved so that 0.2.0 opens it too. Ketchup 0.2.0 and later refuse a file a newer version saved and change nothing. **Do not open files saved by a later version in 0.1.0:** it takes them for damaged files and may open an older `.recovery` copy instead, and saving there can overwrite the newer file.
+
+## Where it goes next
+
+The next steps that would move Ketchup furthest toward a full production CAD:
+
+1. Tools to place angular, radial and diameter dimensions, GD&T frames and hole/thread callouts on drawing sheets.
+2. A library of standard parts (bearings, linear rails, ball screws, aluminium profiles, motors) as rule-program components with exact geometry.
+3. General CAM: 2.5D toolpaths (contours, pockets, drilling) with post-processors for common controllers, beyond woodWOP and BTLx.
+4. Broader exact modeling: more fillet and shell cases, variable-radius fillets and surfaces.
+5. Stronger simulation for machine frames: stiffness and modes of a whole assembly.
+
+With these, Ketchup could design a machine like its own CNC router end to end: frame from aluminium profiles, linear rails and ball screws from the parts library, drawings with tolerances for the machined plates, and toolpaths to make those plates.
 
 ## Build and run
 
@@ -240,28 +277,17 @@ Both app scripts sign ad hoc, for this Mac; `--sign "Developer ID Application: �
 
 `KETCHUP_OCCT_ROOT` points the build at an install elsewhere. CI builds and tests the crates with OCCT on Linux and Windows on every pull request, and on macOS builds the app bundle and runs the live tests against it.
 
-No stable public API or long-term native file-format compatibility is promised yet. Undo/Redo lives in memory for the session and reaches back 30 edits: Save writes only the current revision, and reopening a file starts a new Undo history. A named checkpoint in the revision catalog is saved with the file only when it names the revision you save, so save right after naming it; a checkpoint on an earlier edit lasts only for the session, and 30 newer edits drop it. While you work, a work-recovery copy beside the file keeps your edits and their Undo steps, so a crash loses neither.
-
-A newer Ketchup opens the files of an older one. A document without underlays and annotations, whose imports stay within the limits of Ketchup 0.2.0 (at most 1 024 objects made by one import, such as profiles of a drawing, a DXF source of at most 8 MiB, other sources of at most 32 MiB), is saved in the format 0.2.0 reads, so 0.2.0 opens it too. Ketchup 0.2.0 and later refuse any other file a newer version saved and change nothing. **Do not open in 0.1.0 files a later version has saved:** 0.1.0 opens none of them reliably; it takes a document with a program, as well as any file in a newer format, for a damaged one and opens, without saying so, the `.recovery` copy beside it, which holds the content before that save, and saving there can overwrite the newer file.
-
-Each kind of background job (exact evaluation, import, export) caps its own worker's memory, but there is no single limit for the whole window yet: several large jobs of different kinds at once can together use more memory than the computer has. A reference to a face that matches its solid only within tolerance is kept by the order of the faces, without checking that it is still the same face, so after a rebuild it can point at a neighbouring one.
-
 ## Architecture
 
-Ketchup has one canonical, revisioned document and one validated mutation gateway. Geometry workers, rendering, picking, drawings, validation, imports, exports, UI, plugins, and AI are projections or clients of that authority rather than parallel model stores.
+Ketchup has one canonical, revisioned document and one validated mutation gateway. Geometry workers, rendering, picking, drawings, validation, imports, exports, UI, plugins and AI are projections or clients of that authority rather than parallel model stores.
 
 Read project authority in this order:
 
 1. [`AGENTS.md`](AGENTS.md): the working rules for every contributor and coding agent. Generic geometry only in the core; validators report instead of blocking; only data-protecting checks.
-2. [Accepted ADRs](docs/adr) for the decisions they own. [ADR 0008](docs/adr/0008-retire-gate-governance.md) retired the gate and preregistration process.
+2. [Accepted ADRs](docs/adr) for the decisions they own. [ADR 0009](docs/adr/0009-rule-programs-and-a-generic-core.md) sets the current direction: rule programs and a generic core, with named-product code paths removed and kept out by `scripts/check_no_named_products.py`.
 3. The [interaction specification](docs/design/README.md) and [implementation plan](docs/design/IMPLEMENTATION_PLAN.md) for UI behavior.
-4. [ADR 0009](docs/adr/0009-rule-programs-and-a-generic-core.md) for the current direction: rule programs and a generic core.
 
-Earlier specifications, the execution contract, dated code reviews and working notes are kept in [`docs/archive`](docs/archive) for history only; they are not binding.
-
-## Direction
-
-The model is moving from absolute per-piece geometry to a rule program that the AI or a person writes. Boards, holes and joints will follow from parameters, and validators will report issues instead of rejecting edits. Named-product code paths are being removed; `scripts/check_no_named_products.py` keeps them from returning. See [ADR 0009](docs/adr/0009-rule-programs-and-a-generic-core.md).
+Earlier specifications, dated code reviews and working notes are kept in [`docs/archive`](docs/archive) for history only; they are not binding.
 
 ## License
 

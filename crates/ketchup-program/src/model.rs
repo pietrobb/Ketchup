@@ -44,6 +44,10 @@ pub struct Param {
     /// (review 2026-10-26 WB-42).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub whole: bool,
+    /// The override given outside the range, which the program did not use:
+    /// `value` is the default (review 2026-11-06 P3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused_override: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -1943,8 +1947,24 @@ pub struct Joint {
 }
 
 /// Joint kinds that only record how two parts meet and fasten nothing
-/// (review 2026-11-04 r19 PG-162): they neither hold a part down nor brace.
-pub const UNFASTENED_JOINT_KINDS: [&str; 3] = ["none", "contact", "friction"];
+/// (review 2026-11-04 r19 PG-162): they neither hold a part down nor brace;
+/// "unfastened", "loose", "free" and "rests" say so too (review 2026-11-06
+/// r23 P3: they fastened, unsaid).
+pub const UNFASTENED_JOINT_KINDS: [&str; 7] = [
+    "none",
+    "contact",
+    "friction",
+    "unfastened",
+    "loose",
+    "free",
+    "rests",
+];
+
+/// The fewest letters a kind has before it is taken for a slip of "none":
+/// "cone", "node", "bone" and "one" are words (review 2026-11-06 r23 P3), but
+/// "lose", "rest" and "frei" are slips of "loose", "rests" and "free", which
+/// fastened unsaid (review 2026-11-07 P3).
+const NONE_SLIP_LETTERS: usize = 5;
 
 impl Joint {
     /// Whether the joint fastens its parts to each other; every kind does
@@ -1953,6 +1973,46 @@ impl Joint {
     pub fn fastens(&self) -> bool {
         !UNFASTENED_JOINT_KINDS.contains(&self.kind.trim().to_lowercase().as_str())
     }
+
+    /// The kind of [`UNFASTENED_JOINT_KINDS`] this joint's kind is likely a
+    /// misspelling of ("contcat", "contacts"), though it fastens (review
+    /// 2026-11-06 P3); "none" not of fewer than [`NONE_SLIP_LETTERS`].
+    #[must_use]
+    pub fn misspelt_unfastened_kind(&self) -> Option<&'static str> {
+        let kind: Vec<char> = self.kind.trim().to_lowercase().chars().collect();
+        UNFASTENED_JOINT_KINDS.into_iter().find(|unfastened| {
+            let base: Vec<char> = unfastened.chars().collect();
+            (*unfastened != "none" || kind.len() >= NONE_SLIP_LETTERS)
+                && kind != base
+                && one_slip(&kind, &base)
+        })
+    }
+}
+
+/// Whether `typed` is `meant` with one letter changed or two neighbours
+/// swapped, or one letter left out or added.
+fn one_slip(typed: &[char], meant: &[char]) -> bool {
+    let (shorter, longer) = if typed.len() <= meant.len() {
+        (typed, meant)
+    } else {
+        (meant, typed)
+    };
+    let start = shorter
+        .iter()
+        .zip(longer)
+        .take_while(|(a, b)| a == b)
+        .count();
+    if typed.len() == meant.len() {
+        let differ: Vec<usize> = (0..typed.len())
+            .filter(|i| typed[*i] != meant[*i])
+            .collect();
+        return match differ[..] {
+            [_] => true,
+            [i, j] => j == i + 1 && typed[i] == meant[j] && typed[j] == meant[i],
+            _ => false,
+        };
+    }
+    longer.len() == shorter.len() + 1 && shorter[start..] == longer[start + 1..]
 }
 
 /// A published load rating of one connection, with where it comes from.

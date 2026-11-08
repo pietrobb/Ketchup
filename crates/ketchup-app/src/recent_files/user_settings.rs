@@ -2,7 +2,9 @@
 //! language choice and File > Open Recent, in
 //! `~/Library/Application Support/Ketchup/settings.txt` on macOS and in
 //! `$XDG_CONFIG_HOME/Ketchup/settings.txt` or `~/.config/Ketchup/settings.txt`
-//! elsewhere, the folder the Viewer keeps its settings in.
+//! elsewhere, the folder the Viewer keeps its settings in. Files of that form
+//! beside it keep other things of the user's, the drawing files each document
+//! wrote (`drawings.txt`), on Windows in `%LOCALAPPDATA%\Ketchup`.
 //!
 //! One `key=value` per line, the value as written up to the line's end. A
 //! key may repeat (one line per recent document); a line this window does
@@ -13,8 +15,10 @@
 use super::RecentFilesStore;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 const FILE_NAME: &str = "settings.txt";
+#[cfg_attr(windows, allow(dead_code))]
 const LANGUAGE: &str = "language";
 const RECENT_FILE: &str = "recent";
 
@@ -29,8 +33,17 @@ impl SettingsFile {
     /// platform names a folder for it.
     #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn of_user() -> Option<Self> {
+        Self::of_user_named(FILE_NAME)
+    }
+
+    /// The file `name` of the user who started this window in the folder of
+    /// these settings; on Windows, which keeps them in the registry,
+    /// `%LOCALAPPDATA%\Ketchup`.
+    pub(crate) fn of_user_named(name: &str) -> Option<Self> {
         let var = |name| std::env::var_os(name).map(PathBuf::from);
-        let base = if cfg!(target_os = "macos") {
+        let base = if cfg!(windows) {
+            var("LOCALAPPDATA")
+        } else if cfg!(target_os = "macos") {
             var("HOME").map(|home| home.join("Library").join("Application Support"))
         } else {
             var("XDG_CONFIG_HOME")
@@ -38,7 +51,7 @@ impl SettingsFile {
                 .or_else(|| var("HOME").map(|home| home.join(".config")))
         };
         base.filter(|base| base.is_absolute())
-            .map(|base| Self::at(base.join("Ketchup").join(FILE_NAME)))
+            .map(|base| Self::at(base.join("Ketchup").join(name)))
     }
 
     pub(crate) const fn at(path: PathBuf) -> Self {
@@ -92,11 +105,52 @@ impl SettingsFile {
     /// lines carried over.
     ///
     /// Another window saving meanwhile waits on `settings.txt.lock`, so it
-    /// reads this one's change before making its own. The new text is on the
+    /// reads this one's change before making its own; it waits two seconds at
+    /// most, and a file system without locks saves without it. The new text is on the
     /// disk before it replaces the old, through a symlink to the file, keeping
     /// its permissions; a new file is its owner's only, and no part file is
     /// left behind (review 2026-11-04 r19 P3).
     pub(crate) fn replace(&self, key: &str, values: &[String]) -> io::Result<()> {
+        self.update(key, |_| values.to_vec())
+    }
+
+    /// As [`Self::replace`], the values of `key` made by `values` from those
+    /// in the file while it waits for no other window, so a value another
+    /// window saved meanwhile is not lost.
+    pub(crate) fn update(
+        &self,
+        key: &str,
+        values: impl FnOnce(Vec<String>) -> Vec<String>,
+    ) -> io::Result<()> {
+        self.rewrite(|lines| {
+            let (mut lines, of_key): (Vec<String>, Vec<String>) =
+                lines.into_iter().partition(|line| !of(line, key));
+            let before = of_key
+                .into_iter()
+                .filter_map(|line| line.split_once('=').map(|(_, value)| value.to_owned()))
+                .collect();
+            lines.extend(values(before).iter().map(|value| format!("{key}={value}")));
+            lines
+        })
+    }
+
+    /// As [`Self::replace`], each key of `keyed` given its value at one
+    /// turn: the BTLx options waited for the lock three times on the window
+    /// (review 2026-11-07 r26 P3).
+    pub(crate) fn replace_each(&self, keyed: &[(&str, String)]) -> io::Result<()> {
+        self.rewrite(|lines| {
+            let mut lines: Vec<String> = lines
+                .into_iter()
+                .filter(|line| !keyed.iter().any(|(key, _)| of(line, key)))
+                .collect();
+            lines.extend(keyed.iter().map(|(key, value)| format!("{key}={value}")));
+            lines
+        })
+    }
+
+    /// The lines of the file made by `change` from those in it, while it
+    /// waits for no other window.
+    fn rewrite(&self, change: impl FnOnce(Vec<String>) -> Vec<String>) -> io::Result<()> {
         let folder = self.path.parent().unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(folder)?;
         let lock = std::fs::OpenOptions::new()
@@ -104,32 +158,136 @@ impl SettingsFile {
             .truncate(false)
             .write(true)
             .open(self.path.with_extension("txt.lock"))?;
-        lock.lock()?;
+        take_turn(|| lock.try_lock(), || seen(&self.path), TURN_WAIT, TURN_CAP)?;
+        let turns = turns_of(&self.path);
+        // Told to the windows waiting: on FAT, HFS+ or SMB a save of the same
+        // length within the second or two of the time kept changes nothing
+        // they see of the settings (review 2026-11-07 P3). It only tells them
+        // to wait: one not written does not hold the save (r26 P3).
+        let turn = std::fs::read_to_string(&turns)
+            .ok()
+            .and_then(|text| text.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        if let Err(error) = std::fs::write(&turns, turn.wrapping_add(1).to_string()) {
+            ketchup_rejection::log!("the settings are saved without their turn counted: {error}");
+        }
         let (lines, damaged) = self.read()?;
         if damaged {
             std::fs::copy(&self.path, self.path.with_extension("txt.bad"))?;
         }
-        let mut lines: Vec<String> = lines
-            .into_iter()
-            .filter(|line| {
-                line.split_once('=')
-                    .is_none_or(|(name, _)| name.trim() != key)
-            })
-            .collect();
-        lines.extend(values.iter().map(|value| format!("{key}={value}")));
+        let lines = change(lines);
         let mut text = lines.join("\n");
-        text.push('\n');
+        if !lines.is_empty() {
+            text.push('\n');
+        }
         crate::live_bridge::write_keeping_file(&self.path, &text, false)
     }
 
     /// The language tag chosen to be remembered.
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn language(&self) -> Option<String> {
         self.values(LANGUAGE).pop()
     }
 
+    #[cfg_attr(windows, allow(dead_code))]
     pub(crate) fn save_language(&self, tag: &str) -> io::Result<()> {
         self.replace(LANGUAGE, &[tag.to_owned()])
     }
+}
+
+/// How long a save waits for another window saving the settings.
+const TURN_WAIT: Duration = Duration::from_secs(2);
+/// How long a save waits for other windows in all, however they go on saving:
+/// the window's thread is not held longer (review 2026-11-07 P3).
+const TURN_CAP: Duration = Duration::from_secs(10);
+/// How often a waiting save tries the lock again.
+const TURN_POLL: Duration = Duration::from_millis(2);
+
+/// Takes the settings lock through `attempt`, which does not wait: the window
+/// saving tries it while other windows save, `saved` telling when one did, but
+/// gives up once one held it `wait` without saving, not waiting without end
+/// behind one that hangs (review 2026-11-06 P3: `lock()` on the window's
+/// thread), and after `cap` in all behind windows that go on saving (review
+/// 2026-11-07 P3). On a file system that cannot lock (NFS without lockd) it saves
+/// without the lock rather than never. A save that gave up leaves nothing
+/// behind (review 2026-11-06 r23 P3: a thread waited on in `lock()` with the
+/// file open as long as the other window hung).
+fn take_turn<T: PartialEq>(
+    attempt: impl FnMut() -> Result<(), std::fs::TryLockError>,
+    saved: impl FnMut() -> T,
+    wait: Duration,
+    cap: Duration,
+) -> io::Result<()> {
+    take_turn_by(attempt, saved, wait, cap, std::time::Instant::now)
+}
+
+/// [`take_turn`] with the time read from `now`, so a test of how long it waits
+/// does not hang on how busy the machine is.
+fn take_turn_by<T: PartialEq>(
+    mut attempt: impl FnMut() -> Result<(), std::fs::TryLockError>,
+    mut saved: impl FnMut() -> T,
+    wait: Duration,
+    cap: Duration,
+    mut now: impl FnMut() -> std::time::Instant,
+) -> io::Result<()> {
+    let mut seen = saved();
+    let start = now();
+    let mut until = start + wait;
+    loop {
+        match attempt() {
+            Ok(()) => return Ok(()),
+            Err(std::fs::TryLockError::Error(error)) if cannot_lock(&error) => return Ok(()),
+            Err(std::fs::TryLockError::Error(error)) => return Err(error),
+            Err(std::fs::TryLockError::WouldBlock) if now() < until.min(start + cap) => {
+                std::thread::sleep(TURN_POLL);
+                let latest = saved();
+                if latest != seen {
+                    seen = latest;
+                    until = now() + wait;
+                }
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "another Kečup window has been saving the settings too long",
+                ));
+            }
+        }
+    }
+}
+
+/// Whether `line` is a value of `key`.
+fn of(line: &str, key: &str) -> bool {
+    line.split_once('=')
+        .is_some_and(|(name, _)| name.trim() == key)
+}
+
+/// The file beside the settings at `path` that counts the turns taken.
+fn turns_of(path: &Path) -> PathBuf {
+    path.with_extension("txt.turn")
+}
+
+/// What a window waiting sees of the saves of others: when and how long the
+/// settings were last written, and the count of the turns taken.
+fn seen(path: &Path) -> (Option<(std::time::SystemTime, u64)>, Option<Vec<u8>>) {
+    (saved_at(path), std::fs::read(turns_of(path)).ok())
+}
+
+/// When and how long the settings were last written; the same nothing while
+/// they cannot be read.
+fn saved_at(path: &Path) -> Option<(std::time::SystemTime, u64)> {
+    std::fs::metadata(path)
+        .and_then(|metadata| Ok((metadata.modified()?, metadata.len())))
+        .ok()
+}
+
+/// The file system has no locks: `ENOLCK` from NFS without lockd, or none at all.
+fn cannot_lock(error: &io::Error) -> bool {
+    #[cfg(unix)]
+    if error.raw_os_error() == Some(libc::ENOLCK) {
+        return true;
+    }
+    error.kind() == io::ErrorKind::Unsupported
 }
 
 impl RecentFilesStore for SettingsFile {
@@ -234,12 +392,13 @@ mod tests {
         );
     }
 
-    /// The names in `folder` other than the lock windows take turns on.
+    /// The names in `folder` other than the lock windows take turns on and
+    /// the count of the turns taken.
     fn beside_lock(folder: &Path) -> Vec<String> {
         let mut names: Vec<String> = std::fs::read_dir(folder)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|name| name != "settings.txt.lock")
+            .filter(|name| name != "settings.txt.lock" && name != "settings.txt.turn")
             .collect();
         names.sort();
         names
@@ -301,6 +460,168 @@ mod tests {
                 .unwrap()
                 .contains("language=cs")
         );
+    }
+
+    /// Review 2026-11-06 P3: `lock()` held the window without end behind a
+    /// window that hung while saving, and a file system without locks (NFS
+    /// without lockd) never let it save.
+    #[test]
+    fn a_save_waits_for_another_window_a_while_and_saves_without_locks() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join(FILE_NAME);
+        let held = std::fs::File::create(path.with_extension("txt.lock")).unwrap();
+        held.lock().unwrap();
+        let error = SettingsFile::at(path.clone())
+            .save_language("sk")
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(!path.exists(), "nothing is written without the turn");
+        held.unlock().unwrap();
+        // Review 2026-11-06 r23 P3: the given-up save left a thread waiting in
+        // `lock()` with the file open; nothing of it takes the lock now.
+        let other = std::fs::File::create(path.with_extension("txt.lock")).unwrap();
+        other.try_lock().unwrap();
+        other.unlock().unwrap();
+        SettingsFile::at(path.clone()).save_language("sk").unwrap();
+
+        let tries = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = std::sync::Arc::clone(&tries);
+        let busy = move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Err(std::fs::TryLockError::WouldBlock)
+        };
+        let error = take_turn(busy, || (), Duration::from_millis(60), TURN_CAP).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(
+            tries.load(std::sync::atomic::Ordering::Relaxed) > 1,
+            "it tried again"
+        );
+        assert_eq!(std::sync::Arc::strong_count(&tries), 1, "nothing tries on");
+        // Windows that go on saving are waited for, however long they queue:
+        // 40 turns 40 ms apart, far past the wait of 30 ms.
+        let mut queued = 0;
+        let mut saves = 0;
+        take_turn_by(
+            || {
+                queued += 1;
+                if queued < 40 {
+                    Err(std::fs::TryLockError::WouldBlock)
+                } else {
+                    Ok(())
+                }
+            },
+            || {
+                saves += 1;
+                saves
+            },
+            Duration::from_millis(30),
+            TURN_CAP,
+            ticking(),
+        )
+        .unwrap();
+        // Review 2026-11-07 P3: but not past the cap, however they go on.
+        let mut saves = 0;
+        let error = take_turn(
+            || Err(std::fs::TryLockError::WouldBlock),
+            || {
+                saves += 1;
+                saves
+            },
+            Duration::from_millis(30),
+            Duration::from_millis(150),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+
+        let refused = |kind| move || Err(std::fs::TryLockError::Error(io::Error::from(kind)));
+        take_turn(
+            refused(io::ErrorKind::Unsupported),
+            || (),
+            TURN_WAIT,
+            TURN_CAP,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        take_turn(
+            || {
+                Err(std::fs::TryLockError::Error(io::Error::from_raw_os_error(
+                    libc::ENOLCK,
+                )))
+            },
+            || (),
+            TURN_WAIT,
+            TURN_CAP,
+        )
+        .unwrap();
+        assert!(
+            take_turn(
+                refused(io::ErrorKind::PermissionDenied),
+                || (),
+                TURN_WAIT,
+                TURN_CAP
+            )
+            .is_err()
+        );
+    }
+
+    /// Review 2026-11-07 P3: a window waited for others only while the time
+    /// or length of the settings changed, which on FAT, HFS+ or SMB stay the
+    /// same over saves of a second or two. Each turn taken is counted beside
+    /// the lock, and a window waits while the count goes on.
+    #[test]
+    fn a_save_waits_while_other_windows_take_turns_the_settings_do_not_show() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join(FILE_NAME);
+        let settings = SettingsFile::at(path.clone());
+        settings.save_language("sk").unwrap();
+        let turns = turns_of(&path);
+        let count = || std::fs::read_to_string(&turns).unwrap();
+        let first = count();
+        settings.save_language("sk").unwrap();
+        assert_ne!(count(), first, "a turn taken is counted");
+
+        // Other windows take 60 turns, 40 ms apart, far past the wait of 30 ms,
+        // the settings as they were. The clock is the test's, so a busy
+        // machine does not make one turn outlast the wait.
+        let mut queued = 0;
+        take_turn_by(
+            || {
+                queued += 1;
+                std::fs::write(&turns, format!("other {queued}")).unwrap();
+                if queued < 60 {
+                    Err(std::fs::TryLockError::WouldBlock)
+                } else {
+                    Ok(())
+                }
+            },
+            || seen(&path),
+            Duration::from_millis(30),
+            TURN_CAP,
+            ticking(),
+        )
+        .unwrap();
+    }
+
+    /// A clock that moves on 20 ms each time it is read: a turn that reads it
+    /// twice is 40 ms.
+    fn ticking() -> impl FnMut() -> std::time::Instant {
+        let mut at = std::time::Instant::now();
+        move || {
+            at += Duration::from_millis(20);
+            at
+        }
+    }
+
+    /// Review 2026-11-07 r26 P3: the turn counted only tells other windows to
+    /// wait, yet one not written failed the whole save.
+    #[test]
+    fn a_turn_not_counted_does_not_hold_the_save() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join(FILE_NAME);
+        std::fs::create_dir(turns_of(&path)).unwrap();
+        let settings = SettingsFile::at(path);
+        settings.save_language("sk").unwrap();
+        assert_eq!(settings.language().as_deref(), Some("sk"));
     }
 
     #[test]
