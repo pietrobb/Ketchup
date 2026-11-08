@@ -182,6 +182,12 @@ jobs:
       - name: clippy without features
         if: ${{ !cancelled() }}
         run: cargo clippy --locked $CRATES --all-targets -- -D warnings
+      # The panics and stderr writes clippy finds in production code may only become
+      # fewer (review 2026-11-08 TST-250); ketchup-mcp is counted here. The Viewer's
+      # production targets have no winit platform on Linux, so the Windows job counts it.
+      - name: panics and stderr writes
+        if: ${{ !cancelled() && (runner.os == 'Linux') }}
+        run: python3 scripts/check_clippy_panics.py $CRATES
       # Every file the tests save also goes to KETCHUP_SAVED_FILES_DIR for the next step.
       - name: tests
         if: ${{ !cancelled() }}
@@ -296,6 +302,13 @@ jobs:
           key: ${{ steps.occt.outputs.cache-primary-key }}
       - name: clippy
         run: cargo clippy --locked $env:CRATES.Split(' ') --all-targets -- -D warnings
+      # ketchup-mcp is counted by the job without OCCT, whose platform the baseline holds.
+      - name: panics and stderr writes
+        if: ${{ !cancelled() }}
+        run: >-
+          python scripts/check_clippy_panics.py -p ketchup-app -p ketchup-application
+          -p ketchup-exact -p ketchup-headless -p ketchup-scheduler -p ketchup-test-gpu
+          -p ketchup-viewer
       # The live MCP tests launch the debug application beside its worker.
       - name: workers, the headless CLI and the application for the tests
         if: ${{ !cancelled() }}

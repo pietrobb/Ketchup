@@ -28,9 +28,6 @@ Two forms are counted in production source (crates/*/src, test modules and
 - formatted_variant: `Variant(format!(...))` puts the facts of an error into a
   sentence instead of fields (`Some`, `Ok` and `Err` are not error variants;
   `Err(format!)` is already a string_result).
-- unwrap: `.unwrap()` panics without saying which assumption broke.
-- expect: `.expect("...")` panics too, only with a sentence; new production code shapes
-  its types or returns a Rejection instead (review 2026-11-07 P3, AGENTS.md §2).
 - dropped_variant: `SomeError::Variant(_) => "code"` answers an error that carries
   a cause with a bare code and throws the cause away; record it
   (`failed_because(code, cause)`) or map the variant to a typed error.
@@ -76,7 +73,8 @@ Two forms are counted in production source (crates/*/src, test modules and
 
 clippy's map_err_ignore, let_underscore_must_use and let_underscore_untyped
 (workspace [lints]) cover the rest; these four are what clippy cannot see
-(review 2026-11-04 TST-140).
+(review 2026-11-04 TST-140). `.unwrap()`, `.expect(..)`, `panic!` and stderr writes
+are counted by clippy itself in scripts/check_clippy_panics.py (review 2026-11-08 TST-250).
 
 The check is a ratchet: scripts/error_hygiene_baseline.txt records what still
 exists, per file and form. A count may only go down; a new file or a higher count
@@ -143,9 +141,6 @@ STRINGIFIED_VARIANT = re.compile(
     r"(?:(?:\"(?:[^\"\\]|\\.)*\"|[\w.]+(?:\(\))?)\s*,\s*)?&?\b" + ERROR_NAME
     + r"\s*\.\s*to_string\(\)\s*\)")
 FORMATTED_VARIANT = re.compile(r"\b(?!(?:Some|Ok|Err)\()[A-Z]\w*\(\s*format!\(")
-UNWRAP = re.compile(r"\.unwrap\(\)")
-# `.expect(` panics as `.unwrap()` does, only with a sentence (review 2026-11-07 P3).
-EXPECT = re.compile(r"\.expect\(")
 # `drop` by its path, `std::mem::drop`, and as the first closure of `map_or_else` too
 # (review 2026-11-07 r26 P3).
 DROP_FN = r"(?:(?:std\s*::\s*)?mem\s*::\s*)?drop\s*"
@@ -302,8 +297,6 @@ def file_counts(text: str, entry_point: bool = False) -> dict[str, int]:
             "debug_formatted": len(DEBUG_FORMATTED.findall(text)),
             "stringified_variant": len(STRINGIFIED_VARIANT.findall(text)),
             "formatted_variant": len(FORMATTED_VARIANT.findall(text)),
-            "unwrap": len(UNWRAP.findall(text)),
-            "expect": len(EXPECT.findall(code_only(text))),
             "dropped_variant": len(DROPPED_VARIANT.findall(text)),
             "dropped_error": len(DROPPED_ERROR.findall(text)),
             "formatted_cause": len(FORMATTED_CAUSE.findall(text)),
@@ -337,12 +330,6 @@ CALLED = re.compile(r"(?:(?<![.\w])|\bself\s*\.\s*)([a-z_]\w*)\s*(?:::<[^>]*>)?\
 # What a brace inside does not open or close a block in: a string, a character, a comment.
 NOT_CODE = re.compile(r'r(#*)".*?"\1|"(?:[^"\\]|\\.)*"|\'(?:\\.|[^\\\'])\'|//[^\n]*|/\*.*?\*/',
                       re.DOTALL)
-
-
-def code_only(text: str) -> str:
-    """`text` with its comments gone and its strings and characters emptied, so a
-    comment cannot hold a count a real call may take (review 2026-11-07 r26 P3)."""
-    return NOT_CODE.sub(lambda found: '""' if found.group().endswith('"') else " ", text)
 
 
 def block_end(text: str, at: int) -> int:

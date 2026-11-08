@@ -36,8 +36,9 @@ normative English documents and ADRs; dated reviews, status files and notes go t
   fields, no bare `unreachable!()` or `.unwrap()`, no
   rewriting of messages in the SDK or skills, no collapsing many causes into one code.
   `.expect("…")` panics as `.unwrap()` does: new production code has neither. Shape the type
-  so the case cannot exist, or return a `Rejection`; the older ones are counted per file and
-  may only go down.
+  so the case cannot exist, or return a `Rejection`; the older ones, `panic!` and stderr
+  writes are counted per file by clippy (`scripts/check_clippy_panics.py -p <crate>`, run by
+  CI in each job) and may only go down.
   Only an error type that carries nothing but its type (`TryFromIntError`, `PoisonError`, …; the
   list is `CONTENT_FREE` in `scripts/check_error_hygiene.py`) may be dropped, and the closure names
   it: `map_err(|_: std::num::TryFromIntError| …)`. The script is a CI ratchet: counts per file may
