@@ -676,8 +676,9 @@ struct Sheet {
 }
 
 /// Guillotine packing (best short side fit, the shorter leftover split off).
-/// A piece no sheet takes opens one of the largest stock size it fits (review
-/// 2026-10-31 PG-80: of the largest area alone); each sheet then shrinks to
+/// A piece no sheet takes opens the smallest stock size it is whole, else one of
+/// the largest it fits (review 2026-10-31 PG-80: of the largest area alone;
+/// 2026-11-08 PG-244); each sheet then shrinks to
 /// the smallest stock size its pieces fit. Each piece takes its size plus one
 /// kerf, the usable sheet one kerf more than its trimmed size. A piece longer
 /// or wider than a stock sheet less its trim at both ends, up to the whole
@@ -792,7 +793,19 @@ fn cut_sheets(stock: &Stock, pieces: Vec<Piece>, unplaced: &mut Vec<Unplaced>) -
             // sheet shrinks below to the smallest that holds its pieces (review
             // 2026-11-02 PG-102: opening the smallest it spans left no room for
             // the others, two or three narrow sheets where one holds them all).
+            // A piece spanning a size in both axes is that whole sheet: it opens the
+            // smallest such size, as a larger one it fits trimmed can no longer shrink
+            // to it (review 2026-11-08 PG-244: two 2 500 x 1 250 panels took two
+            // 2 800 x 1 250 sheets, +12 %).
             let mut openings: Vec<([f64; 2], [bool; 2])> = Vec::new();
+            for &size in &sizes {
+                for &turned in &orientations {
+                    let edges = spans(size, turned);
+                    if edges == [true, true] {
+                        openings.push((size, edges));
+                    }
+                }
+            }
             for &size in sizes.iter().rev() {
                 for &turned in &orientations {
                     let edges = spans(size, turned);
