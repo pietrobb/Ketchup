@@ -322,6 +322,20 @@ fn a_homag_package_names_the_piece_without_a_code_and_assigned_codes_pass() {
             .collect::<Vec<_>>(),
         ["000000000008"]
     );
+    // Review 2026-11-03 MF-142: past the highest 12-digit code the count went
+    // on to 13 digits, no program can be named by; it takes the lowest free one.
+    set_code(&mut session, "rail", Some("999999999999"));
+    let snapshot = session.snapshot();
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        projection
+            .production_code_assignments(&snapshot)
+            .iter()
+            .map(|(_, code)| code.as_str())
+            .collect::<Vec<_>>(),
+        ["000000000001"]
+    );
+    set_code(&mut session, "rail", Some("000000000007"));
     set_code(&mut session, "shelf", Some(&assignments[0].1));
     session.apply_rule_program(program(10), false).unwrap();
     assert!(session.rule_program().is_some());
