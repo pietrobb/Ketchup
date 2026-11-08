@@ -940,6 +940,39 @@ fn with_north_the_plan_has_an_arrow_and_each_elevation_is_named_by_its_side() {
     assert_eq!((front.facing, front.title.as_str()), (None, "Front"));
 }
 
+/// Review 2026-11-08 §5.2: the plan of a set with sections marks where they
+/// cut it, A along the model and B across it, each letter at both ends, and
+/// the sections are titled with their letters; a set of plans alone marks
+/// none.
+#[test]
+fn the_plan_marks_where_sections_a_and_b_cut_it_and_they_carry_the_letters() {
+    let set = room_set(Some(1200.0));
+    assert_eq!(summary(&set, ProjectView::Plan).section_marks, ["A", "B"]);
+    let plan = sheet_of(&set, SheetKind::Plan { storey: 0 });
+    for page in [&plan.page, &plan.lines] {
+        let texts = texts(page);
+        for letter in ["A", "B"] {
+            let count = texts.iter().filter(|&&text| text == letter).count();
+            assert_eq!(count, 2, "{letter} in {texts:?}");
+        }
+    }
+    let section = summary(&set, ProjectView::LongitudinalSection);
+    assert!(section.title.ends_with(" A-A"), "{}", section.title);
+    let cross = summary(&set, ProjectView::CrossSection);
+    assert!(cross.title.ends_with(" B-B"), "{}", cross.title);
+    assert!(summary(&set, ProjectView::Front).section_marks.is_empty());
+
+    let plans = drawing_set(
+        &room(),
+        &DrawingSetOptions {
+            plan_only: true,
+            ..options(&room(), Some(1200.0))
+        },
+    )
+    .unwrap();
+    assert!(summary(&plans, ProjectView::Plan).section_marks.is_empty());
+}
+
 #[test]
 fn plan_and_sections_fill_the_parts_the_plane_cuts() {
     let set = room_set(Some(1200.0));
@@ -1125,13 +1158,20 @@ fn every_sheet_is_a_dxf_of_its_visible_lines_with_its_title_block() {
         assert!(dxf.contains(&format!("1\n{} / 3\n", sheet.number)), "{dxf}");
         assert!(dxf.contains(&format!("1\n{}\n", sheet.title)));
         assert!(dxf.contains("0\nLINE\n8\nPEN-0_18\n"), "the edges");
-        // No face is painted: a fill is only the outline of a cut.
+        // No face is painted: a fill is the outline of a cut, or an
+        // arrowhead of a section mark, a few millimetres long.
+        let painted = |loops: &Vec<Vec<[f64; 2]>>| {
+            let points = loops.iter().flatten().collect::<Vec<_>>();
+            points.iter().any(|a| {
+                points
+                    .iter()
+                    .any(|b| (a[0] - b[0]).hypot(a[1] - b[1]) > 3.0)
+            })
+        };
         assert!(
-            sheet
-                .lines
-                .marks
-                .iter()
-                .all(|mark| !matches!(mark, Mark::Fill { outline: None, .. })),
+            sheet.lines.marks.iter().all(
+                |mark| !matches!(mark, Mark::Fill { outline: None, loops, .. } if painted(loops))
+            ),
             "sheet {}",
             sheet.number
         );

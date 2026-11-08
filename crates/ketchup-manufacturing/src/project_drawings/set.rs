@@ -17,6 +17,7 @@ use super::compass::{CompassSide, NorthArrow, elevation_side};
 use super::cutting::{CuttingSheet, CuttingSummary, plan_cutting};
 use super::levels::{level_heights, level_text};
 use super::openings::{OpeningSchedule, draw_schedule, opening_points, schedule_format};
+use super::section_marks::{lettered, section_marks};
 use super::shop::{PlannedShop, ShopDrawings, ShopSummary, plan_shop};
 use super::visible::{VisibleLine, visible_lines};
 use super::{Annotation, AnnotationCounts, PlanAnnotations};
@@ -345,13 +346,7 @@ pub fn drawing_set_until(
         .storey
         .cut_mm;
     let edges = solids.iter().map(solid_edges).collect::<Vec<_>>();
-    let title_of = |view: ProjectView| {
-        options
-            .view_titles
-            .get(&view)
-            .cloned()
-            .unwrap_or_else(|| format!("{view:?}"))
-    };
+    let title_of = |view: ProjectView| view_title(options, view);
 
     let opening_points = opening_points(&options.openings.openings, solids);
     let mut planned = Vec::new();
@@ -398,6 +393,9 @@ pub fn drawing_set_until(
             .collect::<Vec<_>>();
         drawn.mark_openings(&frame, &marks);
         drawn.north = north_arrow(&frame, options);
+        if !options.plan_only {
+            drawn.sections = section_marks(&frame, &view_frames(min, max, first_cut, false));
+        }
         let (views, titles) = sheet_views(vec![(drawn, plan.view_title.clone())], 1);
         if !views.views.is_empty() {
             planned.push(Planned {
@@ -585,6 +583,11 @@ pub fn drawing_set_until(
                 levels: view.levels.iter().map(|(_, text)| text.clone()).collect(),
                 facing: view.facing,
                 north_arrow: view.north.is_some(),
+                section_marks: view
+                    .sections
+                    .iter()
+                    .map(|mark| mark.letter.to_owned())
+                    .collect(),
             })
             .collect();
         let mut annotations = AnnotationCounts::default();
@@ -720,6 +723,17 @@ fn named(title: &str, fallback: &str) -> String {
     }
 }
 
+/// The title under `view`, a section's with its letters (A-A, B-B), which
+/// the plans mark.
+fn view_title(options: &DrawingSetOptions, view: ProjectView) -> String {
+    let title = options
+        .view_titles
+        .get(&view)
+        .cloned()
+        .unwrap_or_else(|| format!("{view:?}"));
+    lettered(view, title)
+}
+
 /// The north arrow of a plan seen along `frame`, when the options set north.
 fn north_arrow(frame: &ViewFrame, options: &DrawingSetOptions) -> Option<NorthArrow> {
     options
@@ -832,6 +846,7 @@ fn shop_sheet(
         levels: Vec::new(),
         facing: None,
         north_arrow: false,
+        section_marks: Vec::new(),
     };
     let views = std::iter::once(summary(&shop.title, &shop.view))
         .chain(

@@ -29,6 +29,7 @@ mod cutting;
 mod levels;
 mod openings;
 mod plan_overlap;
+mod section_marks;
 mod set;
 mod shop;
 mod table;
@@ -121,6 +122,10 @@ pub struct ViewSummary {
     /// Whether a plan draws its north arrow.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub north_arrow: bool,
+    /// The letters of the sections a plan marks where they cut it, A along
+    /// the model and B across it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub section_marks: Vec<String>,
 }
 
 /// Why no sheet could be drawn.
@@ -500,6 +505,8 @@ struct DrawnView {
     north: Option<compass::NorthArrow>,
     /// The side of the world an elevation shows, when north is set.
     facing: Option<CompassSide>,
+    /// Where the sections cut a plan of the whole set.
+    sections: Vec<section_marks::SectionMark>,
     cut_at_mm: Option<f64>,
 }
 
@@ -660,6 +667,7 @@ fn draw_view(
         levels: Vec::new(),
         north: None,
         facing: None,
+        sections: Vec::new(),
         // `cut` is measured along the depth direction, which is ±1 on the
         // world axis the plane is normal to: divide to get that coordinate.
         cut_at_mm: frame.cut.map(|cut| {
@@ -973,6 +981,9 @@ fn draw_view_on_page(
         // In the room right of the view's top, which a plan leaves free.
         let [right, top] = at(view.max);
         compass::draw_north_arrow(page, [right + VIEW_PAD_MM / 2.0, top + 7.0], arrow);
+    }
+    for mark in &view.sections {
+        section_marks::draw_section_mark(page, mark, [view.min, view.max], at);
     }
     let [outer_left, outer_bottom] = at(view.min);
     // Overall width below the view and overall height on its left, outside
