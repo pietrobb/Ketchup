@@ -580,7 +580,7 @@ impl KetchupApp {
                 } => (
                     "edge SawContour cuts, then MillContour",
                     intermediate_saw_cuts.to_string(),
-                    "rectangular only",
+                    "rectangles sawn on their edges then milled; contours with an arc milled whole",
                 ),
             };
         let result = (|| -> Result<Written, ExportError> {
@@ -592,7 +592,7 @@ impl KetchupApp {
                 .btlx_thread_loss_report(&snapshot)
                 .map_err(ExportError::failed)?;
             let support_report = format!(
-                "schema=ketchup.btlx-support-report.v1\nsource_digest={}\nformat=BTLx 2.3.1\nstock=rectangular straight timber\ndrilling=circular\nportable_profile_removals=pocket, through-cut, extruded boolean-cut\nportable_profile_contours=closed simple line/arc contours\ndefault_profile_request=edge SawContour cuts, then MillContour\nselected_profile_request={selected_profile_request}\nintermediate_saw_cuts={intermediate_saw_cuts}\nselected_profile_contours={selected_profile_contours}\nunsupported=arc or non-rectangular profile with the edge-saw request; non-rectangular stock; other machining operations\nconcrete_importer_verified=false\nmachine_execution_order_guaranteed=false\n{}{}",
+                "schema=ketchup.btlx-support-report.v1\nsource_digest={}\nformat=BTLx 2.3.1\nstock=rectangular straight timber\ndrilling=circular\nportable_profile_removals=pocket, through-cut, extruded boolean-cut\nportable_profile_contours=closed simple line/arc contours\ndefault_profile_request=edge SawContour cuts, then MillContour\nselected_profile_request={selected_profile_request}\nintermediate_saw_cuts={intermediate_saw_cuts}\nselected_profile_contours={selected_profile_contours}\nunsupported=straight-edged non-rectangular profile with the edge-saw request; non-rectangular stock; other machining operations\nconcrete_importer_verified=false\nmachine_execution_order_guaranteed=false\n{}{}",
                 snapshot.canonical_digest(),
                 thread_loss,
                 projection.btlx_drill_report(&snapshot, options.largest_drill_mm)
