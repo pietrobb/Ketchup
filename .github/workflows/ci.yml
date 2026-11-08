@@ -252,9 +252,12 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 330 || 180 }}
     env:
+      # ketchup-mcp has Windows-only code (the ACL of its credential files,
+      # remote drives) that the job without OCCT never compiles (review
+      # 2026-11-08 CI-250).
       CRATES: >-
         -p ketchup-app -p ketchup-application -p ketchup-exact -p ketchup-headless
-        -p ketchup-scheduler -p ketchup-test-gpu
+        -p ketchup-mcp -p ketchup-scheduler -p ketchup-test-gpu
       NIGHTLY: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -370,11 +373,14 @@ jobs:
         if: ${{ !cancelled() }}
         id: house
         run: python scripts/changes_reach_the_house.py
+      # The features of the tests step, so the step reuses its build instead of
+      # building the crates again (review 2026-11-03 CI-141); without
+      # KETCHUP_SAVED_FILES_DIR the feature keeps nothing.
       - name: large-house tests
         if: ${{ !cancelled() && (env.NIGHTLY == 'true' || steps.house.outputs.run == 'true') }}
         env:
           RUST_TEST_THREADS: 2
-        run: cargo test --locked $env:CRATES.Split(' ') --no-fail-fast -- --ignored large_house
+        run: cargo test --locked $env:CRATES.Split(' ') --features ketchup-model/saved-files --no-fail-fast -- --ignored large_house
       # The tests find the worker beside them, so it is built in release too.
       - name: release workers
         if: ${{ !cancelled() && (env.NIGHTLY == 'true') }}
