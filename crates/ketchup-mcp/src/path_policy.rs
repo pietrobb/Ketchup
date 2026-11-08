@@ -87,6 +87,9 @@ const DATA_VOLUME: [&str; 3] = ["system", "volumes", "data"];
 pub(crate) struct Mount {
     on: Vec<String>,
     local: bool,
+    /// A Linux `proc` file system, whose links to a process's root, working
+    /// directory or files lead the kernel to the object, not to their text.
+    proc: bool,
 }
 
 impl Mount {
@@ -98,8 +101,19 @@ impl Mount {
         Self {
             on: lexical_components(on),
             local,
+            proc: false,
         }
     }
+}
+
+/// The mount `components` lie on: the deepest, and of two at one point the
+/// later, on top (systemd's autofs trigger under binfmt_misc); `max_by_key`
+/// keeps the last of equals.
+fn mount_of<'a>(components: &[String], mounts: &'a [Mount]) -> Option<&'a Mount> {
+    mounts
+        .iter()
+        .filter(|mount| components.starts_with(&mount.on))
+        .max_by_key(|mount| mount.on.len())
 }
 
 fn local_mounted_path(path: &str, mounts: &[Mount], automounted: &[&str]) -> bool {
@@ -112,14 +126,7 @@ fn local_mounted_path(path: &str, mounts: &[Mount], automounted: &[&str]) -> boo
             !components
                 .first()
                 .is_some_and(|top| automounted.contains(&top.as_str()))
-                // The table lists mounts in mount order, so of two at one point the
-                // later is on top (systemd's autofs trigger under binfmt_misc);
-                // `max_by_key` keeps the last of equals.
-                && mounts
-                    .iter()
-                    .filter(|mount| components.starts_with(&mount.on))
-                    .max_by_key(|mount| mount.on.len())
-                    .is_none_or(|mount| mount.local)
+                && mount_of(components, mounts).is_none_or(|mount| mount.local)
         })
 }
 
@@ -157,6 +164,14 @@ fn physically_local_path(
                     return false;
                 }
                 let target = target.to_string_lossy();
+                // procfs's own links (`self`, `mounts`) are relative names in
+                // it; a magic one reads absolute (`root`, `cwd` of a process in
+                // another mount namespace) or names no path (`socket:[99]`).
+                if (target.starts_with('/') || target.contains(':'))
+                    && mount_of(&lexical_components(&at), mounts).is_some_and(|mount| mount.proc)
+                {
+                    return false;
+                }
                 resolved.pop();
                 if target.starts_with('/') {
                     resolved.clear();
@@ -258,7 +273,10 @@ fn linux_mounts(table: &str) -> Vec<Mount> {
                 || overlay_layers(options)
                     .iter()
                     .all(|layer| local_mounted_path(layer, &mounts, &[])));
-        mounts.push(Mount::new(&unescape_mount_point(on), local));
+        mounts.push(Mount {
+            proc: kind == "proc",
+            ..Mount::new(&unescape_mount_point(on), local)
+        });
     }
     mounts
 }
@@ -587,6 +605,51 @@ mod mount_tests {
             assert!(
                 !physically_local_path(remote, &mounts, &[], read_link),
                 "{remote:?}"
+            );
+        }
+    }
+
+    /// Review 2026-11-08 P3: `/proc/<pid>/root` of a process in another mount
+    /// namespace reads `/`, but the kernel goes through that namespace's mounts,
+    /// which this table does not list; `cwd`, `exe` and `fd/N` alike lead to an
+    /// object, not to the text read.
+    #[test]
+    fn a_magic_link_of_proc_is_not_followed_as_its_text() {
+        use std::collections::HashMap;
+        use std::path::{Path, PathBuf};
+
+        let mounts = linux_mounts(
+            "/dev/sda1 / ext4 rw 0 0\n\
+             proc /proc proc rw,nosuid 0 0\n\
+             nas:/export /mnt/nfs nfs4 rw 0 0\n",
+        );
+        let links = HashMap::from([
+            ("/proc/self", "4242"),
+            ("/proc/mounts", "self/mounts"),
+            ("/proc/4242/root", "/"),
+            ("/proc/4242/cwd", "/home/me"),
+            ("/proc/4242/fd/3", "socket:[99]"),
+        ]);
+        let read_link = |path: &Path| {
+            Ok(links
+                .get(path.to_str().expect("a test path"))
+                .map(PathBuf::from))
+        };
+        assert!(physically_local_path(
+            "/proc/mounts",
+            &mounts,
+            &[],
+            read_link
+        ));
+        for magic in [
+            "/proc/4242/root/home/me/x.pdf",
+            "/proc/self/root/home/me/x.pdf",
+            "/proc/self/cwd/x.pdf",
+            "/proc/4242/fd/3",
+        ] {
+            assert!(
+                !physically_local_path(magic, &mounts, &[], read_link),
+                "{magic:?}"
             );
         }
     }
