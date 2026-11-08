@@ -1148,7 +1148,7 @@ impl GeneralFabricationProjection {
         options: WoodwopMprOptions,
     ) -> Result<Vec<(InstancePath, Vec<u8>)>, GeneralFabricationError> {
         let mut programs = Vec::new();
-        for (_, written) in self.woodwop_programs_by_part(snapshot, options)? {
+        for (_, written) in self.woodwop_programs_by_part(snapshot, options, true)? {
             programs.extend(written?);
         }
         if programs.is_empty() {

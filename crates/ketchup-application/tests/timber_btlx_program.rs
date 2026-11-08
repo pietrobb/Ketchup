@@ -240,6 +240,97 @@ fn library_members_boards_and_fasteners_carry_their_fabrication_role() {
     assert_eq!(job["parts"].as_array().map(Vec::len), Some(2), "{job}");
 }
 
+/// Review 2026-11-08 §5.2: a part the machine cannot make (a through hole)
+/// refused the whole partial package and every program of the workshop ZIP;
+/// the other part is programmed and only this one is named, with why. The
+/// strict package still refuses on it.
+#[test]
+fn a_part_the_machine_cannot_make_leaves_the_other_programs_in_the_partial_package() {
+    use ketchup_manufacturing::fabrication::{GeneralFabricationError, ShopElement};
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let snapshot = apply(
+        "rail = member('rail', (0, 0, 0), (1000, 0, 0), (60, 80))\n\
+         hole(rail, 'y+', at = (30, 500), diameter = 8, depth = 20)\n\
+         shelf = board('shelf', (600, 300, 18), at = (0, 300, 0))\n\
+         hole(shelf, 'z+', at = (100, 150), diameter = 8, depth = 18, through = True)\n",
+    );
+    let path = |name: &str| {
+        snapshot
+            .scene_query()
+            .into_iter()
+            .find(|occurrence| {
+                snapshot
+                    .definition(occurrence.definition_id)
+                    .is_some_and(|definition| definition.name() == name)
+            })
+            .unwrap()
+            .instance_path
+    };
+    let snapshot = {
+        use ketchup_model::document::{CanonicalCommand, CommandBatch};
+        snapshot
+            .preview_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetProductionCode {
+                    instance_path: path("rail"),
+                    code: Some("000000000001".into()),
+                },
+                CanonicalCommand::SetProductionCode {
+                    instance_path: path("shelf"),
+                    code: Some("000000000002".into()),
+                },
+            ]))
+            .unwrap()
+    };
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    let through = |error: &GeneralFabricationError| {
+        matches!(
+            error,
+            GeneralFabricationError::CannotCarry { part, element: ShopElement::ThroughHole, .. }
+                if part == "shelf"
+        )
+    };
+    let strict = projection
+        .woodwop_mpr_4_0_production_zip(&snapshot, Default::default())
+        .unwrap_err();
+    assert!(through(&strict), "{strict:?}");
+    let partial = projection
+        .woodwop_mpr_4_0_partial_production_package(&snapshot, Default::default())
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        partial
+            .programs
+            .iter()
+            .map(|program| program.program_name.as_str())
+            .collect::<Vec<_>>(),
+        ["000000000001"]
+    );
+    let [refused] = partial.not_programmed.as_slice() else {
+        panic!("{:?}", partial.not_programmed);
+    };
+    assert_eq!(refused.part, "shelf");
+    assert!(through(&refused.reason), "{:?}", refused.reason);
+    let workshop = projection.workshop_package(&snapshot, Default::default());
+    assert!(
+        workshop
+            .files
+            .iter()
+            .any(|(name, _)| name == "woodwop/000000000001.mpr"),
+        "{:?}",
+        workshop.not_made
+    );
+    let accepted =
+        ketchup_manufacturing::workshop_package::check_workshop_package(&workshop.zip().unwrap())
+            .unwrap();
+    assert!(
+        accepted
+            .not_made
+            .contains(&format!("- woodWOP shelf: {}", refused.reason)),
+        "{}",
+        accepted.not_made
+    );
+}
+
 /// Review 2026-11-02 MF-120: a HOMAG package of pieces without a usable
 /// production code was a bare "export blocked"; it names the part and the code
 /// it needs. The codes are assigned for every made piece, the program keeps

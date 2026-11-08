@@ -173,9 +173,10 @@ impl GeneralFabricationProjection {
     }
 
     /// The production package of every made part that can be programmed, and
-    /// each part that cannot with its reason. Whatever refuses the whole
-    /// model (its validation, a pocket tool that is no tool number) still
-    /// refuses the package.
+    /// each part that cannot with its reason, including an element the
+    /// machine cannot make (a through hole, a thread). Whatever refuses the
+    /// whole model (its validation, a pocket tool that is no tool number)
+    /// still refuses the package.
     pub fn woodwop_mpr_4_0_partial_production_package(
         &self,
         snapshot: &Snapshot,
@@ -185,7 +186,7 @@ impl GeneralFabricationProjection {
             programs: Vec::new(),
             not_programmed: Vec::new(),
         };
-        for (part, written) in self.woodwop_programs_by_part(snapshot, options)? {
+        for (part, written) in self.woodwop_programs_by_part(snapshot, options, false)? {
             let programs = written.and_then(|programs| {
                 programs
                     .into_iter()
@@ -201,11 +202,14 @@ impl GeneralFabricationProjection {
     }
 
     /// The woodWOP programs of each made part, by part name, or why the part
-    /// gets none; an error of the whole model refuses them all.
+    /// gets none; an error of the whole model refuses them all. With
+    /// `whole_model_gate` the first part the machine cannot make refuses them
+    /// all too, as the strict package does.
     pub(super) fn woodwop_programs_by_part(
         &self,
         snapshot: &Snapshot,
         options: WoodwopMprOptions,
+        whole_model_gate: bool,
     ) -> Result<PartPrograms, GeneralFabricationError> {
         self.bom_export(snapshot)?;
         self.manufacturing_export(snapshot)?;
@@ -218,11 +222,11 @@ impl GeneralFabricationProjection {
         let format = ShopFormat::Woodwop {
             vertical_pocket_tool: options.vertical_pocket_tool_number.is_some(),
         };
-        self.admit(snapshot, format)?;
-        let holes = capabilities::undrilled_pin_holes(snapshot)?
-            .into_iter()
-            .map(|(_, hole)| hole)
-            .collect::<Vec<_>>();
+        if whole_model_gate {
+            self.admit(snapshot, format)?;
+        }
+        let pin_holes = capabilities::undrilled_pin_holes(snapshot)?;
+        let holes = pin_holes.iter().map(|(_, hole)| hole).collect::<Vec<_>>();
         let mut parts = Vec::new();
         let mut program_paths = BTreeSet::new();
         for row in self
@@ -237,6 +241,7 @@ impl GeneralFabricationProjection {
             let mut write_part =
                 || -> Result<Vec<(InstancePath, Vec<u8>)>, GeneralFabricationError> {
                     let mut programs = Vec::new();
+                    self.admit_row(snapshot, format, row, &pin_holes)?;
                     let GeneralBodySource::Exact(_) = &row.source else {
                         return Err(GeneralFabricationError::ExportBlocked(
                             ExportBlock::NotExactBody,
@@ -292,6 +297,7 @@ impl GeneralFabricationProjection {
                         }
                         let instance_holes = holes
                             .iter()
+                            .copied()
                             .filter(|hole| hole.instance_path == *instance_path)
                             .collect::<Vec<_>>();
                         if machining.is_empty() && instance_holes.is_empty() {
