@@ -3,6 +3,7 @@
 
 mod bracing_edge;
 mod buildup;
+mod calculation;
 mod cnc_dxf;
 mod components;
 mod connectivity;

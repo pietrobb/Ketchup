@@ -12,6 +12,7 @@
 
 pub mod bom;
 pub mod cad;
+pub mod calculation;
 pub mod clearance;
 pub mod cnc_dxf;
 mod connectivity;
