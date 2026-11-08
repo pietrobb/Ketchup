@@ -86,9 +86,10 @@ reproduced failure that they catch, or explicit approval by the owner.
 
 - When a new path replaces an old one, remove the old one in the same change. No parallel
   "legacy" paths.
-- Do not grow `crates/ketchup-app/src/lib.rs`, `crates/ketchup-model/src/document.rs`,
-  `crates/ketchup-manufacturing/src/fabrication.rs` or `crates/ketchup-model/src/import/dxf.rs`
-  (`FROZEN_MODULES` in `scripts/check_crate_layers.py`). Put new code in new modules.
+- Do not grow `crates/ketchup-app/src/lib.rs`, `crates/ketchup-model/src/document.rs` or any
+  module past 3000 lines (`FROZEN_MODULES` in `scripts/check_crate_layers.py`; a production
+  module that crosses 3000 lines fails the check until it is split or listed there). Put new
+  code in new modules.
 - New code: functions under ~150 lines, files under ~3000 lines. No crate source module may
   exceed 5000 lines; `scripts/check_crate_layers.py` enforces it and only lets the listed
   older modules shrink.
