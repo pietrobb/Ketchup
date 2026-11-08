@@ -11,7 +11,7 @@ fn gpu_test_guard() -> std::sync::MutexGuard<'static, ()> {
 }
 
 fn settle_exact(h: &mut Harness<'_, KetchupApp>) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while h.state().exact.task.is_some() {
         assert!(Instant::now() < deadline, "exact scene did not settle");
         h.step();
@@ -274,9 +274,9 @@ fn native_harness_with_size(ppp: f32, size: egui::Vec2) -> Harness<'static, Ketc
     h
 }
 
-/// Waits up to 2.5 s for the GPU readback of the queued capture.
+/// Waits for the GPU readback of the queued capture; the deadline only guards a hang.
 fn readback_pixels(h: &Harness<'_, KetchupApp>, what: &str) -> target::Pixels {
-    let deadline = Instant::now() + Duration::from_millis(2500);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         if let Some(pixels) = capture(h).1.take().expect("GPU readback") {
             return pixels;

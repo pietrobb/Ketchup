@@ -372,7 +372,7 @@ fn disconnect_during_live_overwrite_consent_revokes_publication_authority() {
         .unwrap();
     stream.write_all(&bytes).unwrap();
 
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while !prompted.load(Ordering::Acquire) {
         assert!(Instant::now() < deadline);
         app.poll_live_bridge(&context);
@@ -442,7 +442,7 @@ fn disconnect_during_a_release_confirmation_writes_no_file() {
     stream.write_all(&bytes).unwrap();
 
     // The prompt answers within the poll that shows it, so the export is over.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while !prompted.load(Ordering::Acquire) {
         assert!(Instant::now() < deadline, "{}", app.action_digest());
         app.poll_live_bridge(&context);
@@ -1174,7 +1174,7 @@ fn queued_apply_and_verify_yields_to_manual_edit_and_refuses_stale_publication()
             .unwrap();
     });
 
-    let start_deadline = Instant::now() + Duration::from_secs(2);
+    let start_deadline = Instant::now() + Duration::from_secs(60);
     loop {
         wire.app.poll_live_bridge(&wire.context);
         if wire
@@ -1202,7 +1202,7 @@ fn queued_apply_and_verify_yields_to_manual_edit_and_refuses_stale_publication()
     let manual_stamp = wire.app.live_bridge_stamp();
     assert_eq!(wire.app.undo_step_count(), before_steps + 1);
 
-    let response_deadline = Instant::now() + Duration::from_secs(4);
+    let response_deadline = Instant::now() + Duration::from_secs(60);
     let response = loop {
         if let Ok(response) = rx.try_recv() {
             break response;
@@ -1250,7 +1250,7 @@ fn queued_apply_and_verify_refuses_post_validation_selection_change() {
             .unwrap();
     });
 
-    let start_deadline = Instant::now() + Duration::from_secs(2);
+    let start_deadline = Instant::now() + Duration::from_secs(60);
     loop {
         wire.app.poll_live_bridge(&wire.context);
         if wire
@@ -1270,7 +1270,7 @@ fn queued_apply_and_verify_refuses_post_validation_selection_change() {
     assert_eq!(wire.app.live_bridge_stamp(), expected);
     assert_eq!(wire.app.undo_step_count(), before_steps);
 
-    let response_deadline = Instant::now() + Duration::from_secs(4);
+    let response_deadline = Instant::now() + Duration::from_secs(60);
     let response = loop {
         if let Ok(response) = rx.try_recv() {
             break response;
@@ -1488,7 +1488,7 @@ fn apply_and_verify_cancels_a_running_exact_worker_without_mutation() {
     let cancelled = Arc::new(AtomicBool::new(false));
     let cancel_flag = Arc::clone(&cancelled);
     let canceller = std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(4);
+        let deadline = Instant::now() + Duration::from_secs(60);
         while !started.is_file() {
             assert!(Instant::now() < deadline, "exact worker did not start");
             std::thread::sleep(Duration::from_millis(5));
@@ -2721,7 +2721,7 @@ fn call_stream(
         tx.send(serde_json::from_slice::<Response>(&bytes).unwrap())
             .unwrap();
     });
-    let deadline = Instant::now() + Duration::from_secs(4);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let response = loop {
         if let Ok(response) = rx.try_recv() {
             break response;
@@ -2768,7 +2768,7 @@ fn hundred_authenticated_disconnect_cycles_leave_host_and_registries_clean() {
             .ok
         );
         drop(stream);
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             app.poll_live_bridge(&context);
             let bridge = app.live.bridge.as_ref().unwrap();

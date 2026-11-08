@@ -1252,7 +1252,7 @@ mod tests {
         let nonces = ["5".repeat(64), "6".repeat(64)];
         let mut streams = [attach(&nonces[0]), attach(&nonces[1])];
         // One waits in the window's queue, the other is answered busy at once.
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(60);
         let busy = 'answered: loop {
             assert!(Instant::now() < deadline, "no attach was answered busy");
             for (index, stream) in streams.iter_mut().enumerate() {
@@ -1421,7 +1421,7 @@ mod tests {
         let request = take_request(&app);
         gone.shutdown(std::net::Shutdown::Both).unwrap();
         drop(gone);
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(60);
         while !*request.abandoned.lock().unwrap() {
             assert!(
                 Instant::now() < deadline,

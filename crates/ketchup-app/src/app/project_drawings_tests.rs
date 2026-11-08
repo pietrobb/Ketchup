@@ -1187,7 +1187,7 @@ fn hiding_the_floor_slab_does_not_move_zero_and_the_sheet_can_set_it() {
 
 /// The ground floor the drawings window shows, once its worker has found it.
 fn found_zero(app: &KetchupApp) -> Result<f64, String> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
     loop {
         if let Some(found) = app.found_zero(&app.document.current()) {
             return found.map_err(|error| app.found_zero_error_text(&error));

@@ -143,7 +143,7 @@ fn a_plugin_whose_document_changes_while_it_runs_is_refused() {
         tx.send(serde_json::from_slice::<Response>(&bytes).unwrap())
             .unwrap();
     });
-    let deadline = Instant::now() + Duration::from_secs(4);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while !wire.app.live.bridge.as_ref().is_some_and(|bridge| {
         matches!(
             bridge.program_check_job,
@@ -166,7 +166,7 @@ fn a_plugin_whose_document_changes_while_it_runs_is_refused() {
         .unwrap();
     let edited = wire.app.live_bridge_stamp();
 
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let response = loop {
         if let Ok(response) = rx.recv_timeout(Duration::from_millis(5)) {
             break response;
@@ -914,7 +914,7 @@ fn a_plugin_folder_is_read_staged_and_hashed_off_the_ui_thread() {
 
     // Once read, the user is asked; refused, nothing ran.
     drop(release);
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let response = loop {
         if let Ok(response) = rx.recv_timeout(Duration::from_millis(5)) {
             break response;

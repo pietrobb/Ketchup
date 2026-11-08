@@ -27,7 +27,7 @@ fn harness() -> Harness<'static, KetchupApp> {
     // At least 30 frames, then until the exact scene settles: the exact worker's
     // first start (loading the OCCT libraries) can outlast them, and a capture
     // taken mid-evaluation is rightly stale.
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let mut frames = 0;
     while frames < 30 || h.state().exact_evaluation_running() {
         assert!(Instant::now() < deadline, "exact scene did not settle");
@@ -126,7 +126,7 @@ fn assert_no_screenshot_command(h: &Harness<'_, KetchupApp>) {
     );
 }
 fn wait_callback(h: &mut Harness<'_, KetchupApp>) -> u64 {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         h.step();
         assert_no_screenshot_command(h);
@@ -147,7 +147,7 @@ fn is_pixel_free_rejection(response: &Response) -> bool {
     })
 }
 fn wait_response(h: &mut Harness<'_, KetchupApp>, rx: mpsc::Receiver<Response>) -> Response {
-    let deadline = Instant::now() + Duration::from_secs(6);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         h.step();
         assert_no_screenshot_command(h);

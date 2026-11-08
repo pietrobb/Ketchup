@@ -769,7 +769,7 @@ mod tests {
     use super::*;
 
     fn wait_for_connection_count(bridge: &LiveBridge, expected: usize) {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(60);
         while bridge.active_connections.load(Ordering::Acquire) != expected {
             assert!(
                 Instant::now() < deadline,

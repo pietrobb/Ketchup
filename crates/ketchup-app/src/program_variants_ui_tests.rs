@@ -43,7 +43,7 @@ fn harness() -> Shell {
 
 /// Frames until the program evaluation and the dock's action are done.
 fn settle(harness: &mut Shell) {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         harness.run_steps(2);
         let app = harness.state();

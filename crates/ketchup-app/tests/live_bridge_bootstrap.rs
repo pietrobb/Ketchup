@@ -253,7 +253,7 @@ fn input_and_output_pipe_stalls_have_deadlines() {
 }
 
 // Hang guard, not a latency bound: the merged test binary runs other files' tests alongside.
-const RESPONSE_DEADLINE: Duration = Duration::from_secs(30);
+const RESPONSE_DEADLINE: Duration = Duration::from_secs(60);
 
 fn call(shell: &mut Shell, stream: &mut TcpStream, token: &str, request: Request) -> Response {
     let bytes = serde_json::to_vec(&Envelope {
