@@ -2857,6 +2857,61 @@ fn texts_too_long_are_refused_together_by_their_cause() {
     );
 }
 
+/// Review 2026-11-08 CD-241: a long note drawn in Czech into a drawing read in Windows-1250
+/// Review 2026-11-08 CD-241: a text Kečup made, too long for a line as the drawing writes
+/// it, was refused by the handle Kečup had given it, found in no file of the user's, and
+/// told to save the source as DXF 2007 and import that, which starts every edit over. It
+/// is named by its text.
+#[test]
+fn a_text_copied_too_long_for_its_line_is_named_by_its_text() {
+    let header = HEADER.replace(
+        "9\n$INSUNITS\n",
+        "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
+    );
+    let source = format!(
+        "{header}{TABLES}0\nSECTION\n2\nENTITIES\n0\nTEXT\n5\nB1\n330\n1F\n100\nAcDbEntity\n\
+         8\nnotes\n100\nAcDbText\n10\n0\n20\n0\n30\n0\n40\n250\n1\n{}\n100\nAcDbText\n\
+         0\nENDSEC\n0\nEOF\n",
+        "Ж".repeat(400)
+    );
+    let original = read(source.as_bytes());
+    let text = id_of(&original.lines, 0xB1);
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(text);
+    edits.added.push(AddedObject::Copy {
+        of: text,
+        map: [[1.0, 0.0, 0.0], [0.0, 1.0, 700.0]],
+    });
+    let refusal = match write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        &original.lines,
+        &edits,
+    ) {
+        Err(EditedDxfError::Refused(refusal)) => refusal,
+        other => panic!("{other:?}"),
+    };
+    assert!(
+        matches!(
+            refusal,
+            DxfEditRefusal::DrawnTextTooLong {
+                ref starts,
+                characters: 2800,
+                written: Some(TextWritten::Escaped),
+            } if *starts == "Ж".repeat(20)
+        ),
+        "{refusal:?}"
+    );
+    let message = refusal.to_string();
+    assert!(
+        message.contains("copied in Kečup")
+            && message.contains("\\U+XXXX")
+            && !message.contains("handle")
+            && !message.contains("DXF 2007"),
+        "{message}"
+    );
+}
+
 /// Review 2026-11-07 UL-220 (capability review): a text drawn into a drawing read in its
 /// code page escapes what the page has not as well, and that writer checked no length, so
 /// 300 Cyrillic characters made a line of 2 100 Kečup could not read back. Review r26
@@ -2950,6 +3005,7 @@ fn a_text_drawn_too_long_for_a_text_line_is_written_as_an_mtext() {
             Err(EditedDxfError::Refused(DxfEditRefusal::DrawnTextTooLong {
                 ref starts,
                 characters: 2100,
+                written: None,
             })) if starts.starts_with("ЖЖЖ")
         ),
         "{:?}",
@@ -3047,6 +3103,46 @@ fn a_polyline_drawn_into_an_r13_drawing_is_one_r13_knows() {
         &drawn(&again.lines, &again.layers),
         &drawn(&lines.clone().edited(&edits, &layers), &original.layers),
     );
+}
+
+/// Review 2026-11-08 CD-240: a discarded edit takes the copies of its object out where
+/// they are, so the objects added after them keep their ids; a copy taken out needs no
+/// entity, so the drawing is written though the file changed the object copied. CD-242:
+/// an edit refused for an object without a handle can be discarded too.
+#[test]
+fn a_copy_taken_out_needs_no_entity_of_the_file() {
+    let source = source();
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let line = id_of(lines, 0xA0);
+    let copy = u32::try_from(lines.objects().objects.len()).unwrap();
+    let mut edits = UnderlayEdits::default();
+    edits.added.push(AddedObject::Copy {
+        of: line,
+        map: [[1.0, 0.0, 0.0], [0.0, 1.0, 700.0]],
+    });
+    let changed = source.replace("11\n4000\n21\n0\n", "11\n4100\n21\n0\n");
+    let refusal = match write_edited_dxf(
+        changed.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    ) {
+        Err(EditedDxfError::Refused(refusal)) => refusal,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(refusal.refused_edits(), [line], "{refusal:?}");
+    edits.removed_objects.insert(copy);
+    let written = write_edited_dxf(
+        changed.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(read(&written).lines, read(changed.as_bytes()).lines);
+
+    assert_eq!(DxfEditRefusal::NoHandle { object: 4 }.refused_edits(), [4]);
 }
 
 /// Review 2026-11-06 P3: of the edits refused as their entities changed in the file, only

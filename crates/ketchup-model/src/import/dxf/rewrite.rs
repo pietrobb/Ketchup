@@ -115,7 +115,7 @@ pub fn write_edited_dxf(
         dxf = escaped_beyond_ascii(&dxf, code_page);
         read_in = None;
     }
-    let dxf = within_line_limit(dxf, read_in, written)?;
+    let dxf = within_line_limit(dxf, read_in, written, drawing.next_handle)?;
     Ok(EditedDxf {
         dxf,
         changed_in_file: rebound.changed,
@@ -207,11 +207,14 @@ const MTEXT_PIECE_CHARS: usize = 250;
 /// text refused, naming its entity (review 2026-11-07 UL-220: Kečup wrote a drawing it
 /// could not read back), each of them at once (r26 P3: the first only). A line holds
 /// characters as read: in `code_page`, else UTF-8; an MTEXT in a code page is cut only
-/// where it is ASCII, so no character is cut in two.
+/// where it is ASCII, so no character is cut in two. An entity of handle `new_from` or
+/// later was made in Kečup, drawn or copied, and is named by its text, not by a handle no
+/// file of the user's has (review 2026-11-08 CD-241).
 fn within_line_limit(
     dxf: Vec<u8>,
     code_page: Option<CodePage>,
     written: TextWritten,
+    new_from: Option<u64>,
 ) -> Result<Vec<u8>, DxfEditRefusal> {
     let value = |line: &[u8]| {
         let line = line.strip_suffix(b"\n").unwrap_or(line);
@@ -266,6 +269,20 @@ fn within_line_limit(
         let code = code.ok_or(DxfEditRefusal::Malformed)?;
         let cuttable = code_page.is_none() || text.is_ascii();
         if !(matches!(code, 1 | 3) && kind == b"MTEXT" && cuttable) {
+            if handle != 0 && new_from.is_some_and(|first| handle >= first) {
+                let characters = characters(text);
+                let text = match code_page {
+                    Some(page) => page.decode(text).map(|text| text.into_owned()),
+                    None => std::str::from_utf8(text).map(str::to_owned).ok(),
+                }
+                .unwrap_or_else(|| String::from_utf8_lossy(text).into_owned());
+                refused.push(DxfEditRefusal::DrawnTextTooLong {
+                    starts: unicode_escapes(&text).chars().take(20).collect(),
+                    characters,
+                    written: Some(written),
+                });
+                continue;
+            }
             refused.push(DxfEditRefusal::TextTooLong {
                 kind: String::from_utf8_lossy(kind).into_owned(),
                 handle,
@@ -375,6 +392,36 @@ fn frame_of(
     })
 }
 
+/// The id of the first object each edit of `edits.added` adds after the drawing's own
+/// `objects`, as read: a copy of an object takes as many ids as it is with all it placed.
+fn added_ids(objects: &[UnderlayObject], edits: &UnderlayEdits) -> Vec<u32> {
+    let mut tree = vec![1_u32; objects.len()];
+    for (index, object) in objects.iter().enumerate().rev() {
+        if let Some(parent) = object
+            .parent
+            .and_then(|parent| usize::try_from(parent).ok())
+            && parent < index
+        {
+            tree[parent] = tree[parent].saturating_add(tree[index]);
+        }
+    }
+    let mut id = u32::try_from(objects.len()).unwrap_or(u32::MAX);
+    edits
+        .added
+        .iter()
+        .map(|edit| {
+            let first = id;
+            id = id.saturating_add(
+                edit.copy_of()
+                    .and_then(|of| usize::try_from(of).ok())
+                    .and_then(|of| tree.get(of).copied())
+                    .unwrap_or(1),
+            );
+            first
+        })
+        .collect()
+}
+
 /// How the lines lie against the drawing, with what was bound again; or why not: the
 /// edited object changed in the file, or `None` where the drawing does not read alike.
 type Bound = Result<(Frame, Rebound), Option<DxfEditRefusal>>;
@@ -436,14 +483,17 @@ fn rebinds(
     // another one in a file changed since). An object taken out is so whatever was done
     // to it before (review 2026-11-06 r23 CD-200: one moved, then taken out, was taken
     // for moved, and refused where the file had deleted it too), unless a copy of it is
-    // left, which needs its entity.
+    // left, which needs its entity; a copy taken out does not (review 2026-11-08 CD-240:
+    // a discarded edit takes its copies out so).
     let mut edited = BTreeMap::new();
     for (ids, edit) in [
         (
             edits
                 .added
                 .iter()
-                .filter_map(AddedObject::copy_of)
+                .zip(added_ids(&lines.objects().objects, edits))
+                .filter(|(_, first)| !edits.removed_objects.contains(first))
+                .filter_map(|(added, _)| added.copy_of())
                 .collect::<Vec<_>>(),
             EditOfObject::Copied,
         ),
@@ -1192,30 +1242,8 @@ impl<'a> Drawing<'a> {
         handles: &mut Option<u64>,
         blocks: &mut NewBlocks,
     ) -> Result<Vec<u8>, EditedDxfError> {
-        let objects = read.objects;
-        let read_count = u32::try_from(objects.len()).unwrap_or(u32::MAX);
-        // How many objects each object of the drawing is with all it placed: a copy of it
-        // takes as many ids.
-        let mut tree = vec![1_u32; objects.len()];
-        for (index, object) in objects.iter().enumerate().rev() {
-            if let Some(parent) = object
-                .parent
-                .and_then(|parent| usize::try_from(parent).ok())
-                && parent < index
-            {
-                tree[parent] = tree[parent].saturating_add(tree[index]);
-            }
-        }
         let mut added = Vec::new();
-        let mut id = read_count;
-        for edit in &edits.added {
-            let first = id;
-            id = id.saturating_add(
-                edit.copy_of()
-                    .and_then(|of| usize::try_from(of).ok())
-                    .and_then(|of| tree.get(of).copied())
-                    .unwrap_or(1),
-            );
+        for (edit, first) in edits.added.iter().zip(added_ids(read.objects, edits)) {
             if edits.removed_objects.contains(&first) {
                 continue;
             }
@@ -2513,6 +2541,7 @@ impl<'a> Drawing<'a> {
                     return Err(DxfEditRefusal::DrawnTextTooLong {
                         starts: text.chars().take(20).collect(),
                         characters,
+                        written: None,
                     });
                 }
             }

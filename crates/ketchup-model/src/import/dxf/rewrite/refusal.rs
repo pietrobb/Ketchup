@@ -79,8 +79,16 @@ pub enum DxfEditRefusal {
     /// A text drawn in Kečup, beginning `starts`, would be `characters` long written in
     /// a DXF 12 drawing, longer than a DXF line holds, which has no MTEXT to cut it into
     /// pieces (review 2026-11-07 r26 UL-240: the refusal named the handle Kečup had given
-    /// the text, found in no file of the user's).
-    DrawnTextTooLong { starts: String, characters: usize },
+    /// the text, found in no file of the user's). In a later drawing, a text drawn or
+    /// copied in Kečup, `written` as the drawing is (review 2026-11-08 CD-241: it too was
+    /// named by the handle Kečup gave it, and told to save the source as DXF 2007 and
+    /// import that, which loses every edit).
+    DrawnTextTooLong {
+        starts: String,
+        characters: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        written: Option<TextWritten>,
+    },
 }
 
 /// How a drawing writes the characters of its texts, which decides what makes one too
@@ -99,6 +107,22 @@ pub enum TextWritten {
     Escaped,
 }
 
+impl TextWritten {
+    /// How a text is written so, said after its length.
+    fn how(self) -> &'static str {
+        match self {
+            Self::AsRead => "",
+            Self::CodePage => {
+                " written in its code page, with each character the page has not as \\U+XXXX"
+            }
+            Self::Escaped => {
+                " with each character beyond ASCII written as \\U+XXXX, as its header names a \
+                 code page its texts are not in"
+            }
+        }
+    }
+}
+
 impl DxfEditRefusal {
     /// `refusals` as one: None for none, itself for one, else [`Self::Several`].
     pub(super) fn all(mut refusals: Vec<Self>) -> Option<Self> {
@@ -109,12 +133,18 @@ impl DxfEditRefusal {
         }
     }
 
-    /// The objects whose edits it refuses as their entities changed in the file since,
-    /// so each edit alone can be discarded.
+    /// The objects whose edits it refuses, as their entities changed in the file since,
+    /// cannot be told without a handle, have a handle the file has not, or are of a kind
+    /// not moved in a DXF, so each edit alone can be discarded (review 2026-11-08 CD-242:
+    /// one without a handle had no Discard, and removing it, as told, was refused alike).
     #[must_use]
     pub fn refused_edits(&self) -> Vec<u32> {
         match self {
-            Self::ChangedInFile { object, .. } | Self::DeletedInFile { object, .. } => {
+            Self::ChangedInFile { object, .. }
+            | Self::DeletedInFile { object, .. }
+            | Self::NoHandle { object }
+            | Self::HandleMissing { object, .. }
+            | Self::NotMappable { object, .. } => {
                 vec![*object]
             }
             Self::Several(refusals) => refusals.iter().flat_map(Self::refused_edits).collect(),
@@ -212,7 +242,10 @@ impl fmt::Display for DxfEditRefusal {
             Self::NoHandle { object } => write!(
                 formatter,
                 "object {object} has no handle in the drawing, and its entity cannot be told by \
-                 its place among the drawing's entities"
+                 its place among the drawing's entities, as the file has gained, lost or \
+                 reordered entities since; undo that edit of object {object} (taking it out \
+                 is refused alike) to write the drawing with the others, or import the \
+                 drawing again"
             ),
             Self::HandleMissing { object, handle } => write!(
                 formatter,
@@ -289,32 +322,44 @@ impl fmt::Display for DxfEditRefusal {
                 characters,
                 written,
             } => {
-                let (how, or) = match written {
-                    TextWritten::AsRead => ("", ""),
-                    TextWritten::CodePage => (
-                        " written in its code page, with each character the page has not as \
-                         \\U+XXXX",
-                        ", or save the drawing as DXF 2007 or later and import that",
-                    ),
-                    TextWritten::Escaped => (
-                        " with each character beyond ASCII written as \\U+XXXX, as its header \
-                         names a code page its texts are not in",
-                        ", or save the drawing as DXF 2007 or later and import that",
-                    ),
+                // Imported again, the drawing starts over: the advice says so (review
+                // 2026-11-08 CD-241).
+                let or = if *written == TextWritten::AsRead {
+                    ""
+                } else {
+                    ", or save the drawing as DXF 2007 or later in the program that made it \
+                     and import that, which starts the edits made in Kečup over"
                 };
                 write!(
                     formatter,
-                    "the text in group {code} of {} would be {characters} characters long{how}, \
+                    "the text in group {code} of {} would be {characters} characters long{}, \
                      longer than the {} a DXF line holds; shorten that text or take it out{or}",
                     entity(kind, *handle),
+                    written.how(),
                     MAX_DXF_LINE_CHARS
                 )
             }
-            Self::DrawnTextTooLong { starts, characters } => write!(
+            Self::DrawnTextTooLong {
+                starts,
+                characters,
+                written: None,
+            } => write!(
                 formatter,
                 "the text \"{starts}…\" drawn in Kečup would be {characters} characters long \
                  in this DXF 12 drawing, longer than the {} a DXF line holds, and DXF 12 has \
                  no multi-line text to cut it into; shorten it or draw it as several texts",
+                MAX_DXF_LINE_CHARS
+            ),
+            Self::DrawnTextTooLong {
+                starts,
+                characters,
+                written: Some(written),
+            } => write!(
+                formatter,
+                "the text \"{starts}…\" drawn or copied in Kečup would be {characters} \
+                 characters long{}, longer than the {} a DXF line holds; shorten it, draw it as \
+                 several texts or take it out",
+                written.how(),
                 MAX_DXF_LINE_CHARS
             ),
         }
