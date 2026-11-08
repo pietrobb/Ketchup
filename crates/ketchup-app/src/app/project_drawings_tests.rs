@@ -574,7 +574,7 @@ fn the_plan_marks_each_opening_and_the_schedule_sheet_is_the_hardware_list() {
             .unwrap_or_else(|| panic!("{} not in the schedule: {texts:?}", row.item));
         assert_eq!(texts[at + 1], row.count.to_string(), "{}", row.item);
     }
-    assert_eq!(set.dxf().len(), set.sheets.len());
+    assert_eq!(set.dxf().unwrap().len(), set.sheets.len());
 }
 
 /// A 3 m timber-frame wall panel sheathed with OSB, a window 900 x 1200 in it.
@@ -701,7 +701,7 @@ fn the_set_carries_a_cutting_plan_of_every_material_with_stock() {
         last.page.texts().any(|text| text == total),
         "numbered n / N"
     );
-    assert_eq!(set.dxf().len(), set.sheets.len());
+    assert_eq!(set.dxf().unwrap().len(), set.sheets.len());
 }
 
 /// R9-C step 15: the set has a shop drawing of the panel. Every piece carries
@@ -811,7 +811,7 @@ fn a_panel_has_a_shop_drawing_dimensioning_its_studs_and_its_window() {
             "{row:?} not in {texts:?}"
         );
     }
-    assert_eq!(set.dxf().len(), set.sheets.len());
+    assert_eq!(set.dxf().unwrap().len(), set.sheets.len());
 }
 
 /// An M5 × 10 bolt 7.3 mm into a plate tapped M5 10 mm deep, turned 37°.

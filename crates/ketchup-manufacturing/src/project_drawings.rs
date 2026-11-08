@@ -30,6 +30,7 @@ mod set;
 mod shop;
 mod table;
 mod threads;
+mod view_page;
 mod visible;
 
 use annotations::PlanAnnotations;
@@ -44,6 +45,8 @@ pub use set::{
 pub use shop::{ShopDrawings, ShopPosition, ShopSheet, ShopSummary};
 pub use threads::DrawingThread;
 use threads::ThreadMarks;
+use view_page::draw_view_on_page;
+pub use view_page::{MarkRole, PlacedView};
 
 type Point = [f64; 3];
 /// A closed outline in view millimetres.
@@ -467,6 +470,8 @@ enum Item {
 
 struct DrawnView {
     view: ProjectView,
+    /// The frame it was projected in: a plan's right and up give its world axes.
+    frame: ViewFrame,
     /// Far-to-near faces and edges.
     items: Vec<Item>,
     /// Cut fill per solid: loops and colour.
@@ -634,6 +639,7 @@ fn draw_view(
     }
     DrawnView {
         view,
+        frame,
         items: sorted.into_iter().map(|(_, item)| item).collect(),
         cuts,
         on_cut: threads.on_cut,
@@ -860,119 +866,6 @@ fn tick(page: &mut Page, [x, y]: [f64; 2]) {
         vec![[x - 1.2, y + 1.2], [x + 1.2, y - 1.2]],
         Stroke::solid(0.35),
     );
-}
-
-/// Draws one view with its lower-left model corner at `origin` (page mm):
-/// painted far to near, or with `visible` its visible lines alone (no face
-/// fill), as a DXF carries it.
-fn draw_view_on_page(
-    page: &mut Page,
-    view: &DrawnView,
-    title: &str,
-    origin: [f64; 2],
-    scale: f64,
-    visible: Option<&[visible::VisibleLine]>,
-) {
-    let at = |point: [f64; 2]| {
-        [
-            origin[0] + (point[0] - view.min[0]) / scale,
-            origin[1] - (point[1] - view.min[1]) / scale,
-        ]
-    };
-    let edge = Stroke {
-        width_mm: EDGE_STROKE_MM,
-        color: EDGE_COLOR,
-        dash_mm: Vec::new(),
-    };
-    // First, so the model is drawn over it.
-    for [a, b] in &view.underlay {
-        page.line(
-            vec![at(*a), at(*b)],
-            Stroke {
-                width_mm: UNDERLAY_STROKE_MM,
-                color: UNDERLAY_COLOR,
-                dash_mm: Vec::new(),
-            },
-        );
-    }
-    let thread_line = |page: &mut Page, points: &[[f64; 2]], width_mm: f64| {
-        page.line(
-            points.iter().map(|point| at(*point)).collect(),
-            Stroke {
-                width_mm,
-                color: EDGE_COLOR,
-                dash_mm: Vec::new(),
-            },
-        );
-    };
-    if let Some(lines) = visible {
-        for line in lines {
-            thread_line(page, &line.points, line.width_mm);
-        }
-    }
-    for item in view.items.iter().filter(|_| visible.is_none()) {
-        match item {
-            Item::Face { points, color } => page.marks.push(Mark::Fill {
-                loops: vec![points.iter().map(|point| at(*point)).collect()],
-                color: *color,
-                // A hairline of the face colour closes the seams between pieces.
-                outline: Some(Stroke {
-                    width_mm: 0.05,
-                    color: *color,
-                    dash_mm: Vec::new(),
-                }),
-            }),
-            Item::Edge([a, b]) => page.line(vec![at(*a), at(*b)], edge.clone()),
-            Item::Thread { points, width_mm } => thread_line(page, points, *width_mm),
-        }
-    }
-    for (loops, color) in &view.cuts {
-        page.marks.push(Mark::Fill {
-            loops: loops
-                .iter()
-                .map(|polyline| polyline.iter().map(|point| at(*point)).collect())
-                .collect(),
-            color: color.map(|channel| channel / 2),
-            outline: Some(Stroke::solid(CUT_STROKE_MM)),
-        });
-    }
-    for item in view.on_cut.iter().filter(|_| visible.is_none()) {
-        if let Item::Thread { points, width_mm } = item {
-            thread_line(page, points, *width_mm);
-        }
-    }
-    if let Some(annotations) = &view.annotations {
-        annotations.draw(page, at);
-    }
-    for (point, mark) in &view.marks {
-        openings::draw_mark(page, at(*point), mark, visible.is_none());
-    }
-    let levels = view
-        .levels
-        .iter()
-        .map(|(height, text)| (at([view.min[0], *height])[1], text.clone()))
-        .collect::<Vec<_>>();
-    levels::draw_levels(page, at(view.max)[0], &levels);
-    let [outer_left, outer_bottom] = at(view.min);
-    // Overall width below the view and overall height on its left, outside
-    // whatever the view draws.
-    let below = outer_bottom + 8.0;
-    if let Some((low, high)) = view.solids {
-        overall_dimensions(
-            page,
-            [at(low), at(high)],
-            [high[0] - low[0], high[1] - low[1]],
-            [below, outer_left - 8.0],
-        );
-    }
-    page.marks.push(Mark::Text {
-        at: [outer_left, below + 8.0],
-        text: title.to_owned(),
-        height_mm: VIEW_TITLE_MM,
-        anchor: Anchor::Start,
-        angle_deg: 0.0,
-        bold: true,
-    });
 }
 
 /// The overall width of the solids at `below` and their height at `aside`, from

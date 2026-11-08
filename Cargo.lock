@@ -2489,6 +2489,7 @@ dependencies = [
 name = "ketchup-manufacturing"
 version = "0.3.2"
 dependencies = [
+ "ketchup-dwg",
  "ketchup-geometry",
  "ketchup-model",
  "ketchup-rejection",

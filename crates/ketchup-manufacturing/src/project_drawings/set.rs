@@ -20,12 +20,12 @@ use super::shop::{PlannedShop, ShopDrawings, ShopSummary, plan_shop};
 use super::visible::{VisibleLine, visible_lines};
 use super::{Annotation, AnnotationCounts, PlanAnnotations};
 use super::{
-    DrawingSolid, DrawnView, ProjectDrawingError, ProjectView, SheetViews, Storey, VIEW_PAD_MM,
-    ViewSummary, annotation_bounds, bounds, choose_layout_scale, draw_view, draw_view_on_page,
-    extent, floor_levels, format_at_scale, ground_floor_of, lerp, marked_floor_levels, solid_edges,
-    view_frames,
+    DrawingSolid, DrawnView, PlacedView, ProjectDrawingError, ProjectView, SheetViews, Storey,
+    VIEW_PAD_MM, ViewSummary, annotation_bounds, bounds, choose_layout_scale, draw_view,
+    draw_view_on_page, extent, floor_levels, format_at_scale, ground_floor_of, lerp,
+    marked_floor_levels, solid_edges, view_frames,
 };
-use crate::sheet_dxf::page_dxf;
+use crate::sheet_cad::sheet_cad;
 use crate::title_block::{
     DEFAULT_COARSEST_SCALE, SheetFormat, TitleBlock, TitleField, draw_frame_and_title_block,
     drawing_area,
@@ -140,6 +140,10 @@ pub struct SetSheet {
     pub page: Page,
     /// The sheet with its views as visible lines alone, as its DXF carries it.
     pub lines: Page,
+    /// Where the views of `lines` lie and which of its marks are theirs, at the set's
+    /// scale; empty on a sheet without views of the set (shop drawings, cutting plans,
+    /// the schedule), which a CAD drawing keeps on paper alone.
+    pub placed: Vec<PlacedView>,
     pub views: Vec<ViewSummary>,
     /// The annotations its plan draws (none on the other sheets).
     pub annotations: AnnotationCounts,
@@ -175,12 +179,35 @@ impl DrawingSet {
         pages_pdf(&pages, info)
     }
 
-    /// Each sheet as an R12 DXF of its visible lines, in paper millimetres.
+    /// Each sheet as a CAD drawing ([`sheet_cad`]): its views in model space at 1:1, the
+    /// sheet a layout named by its number and title.
     #[must_use]
-    pub fn dxf(&self) -> Vec<Vec<u8>> {
+    pub fn cad(&self) -> Vec<ketchup_dwg::sheet::Sheet> {
         self.sheets
             .iter()
-            .map(|sheet| page_dxf(&sheet.lines))
+            .map(|sheet| sheet_cad(sheet, self.scale, &layout_name(sheet)))
+            .collect()
+    }
+
+    /// Each sheet as a DXF 2013 drawing ([`DrawingSet::cad`]).
+    ///
+    /// # Errors
+    /// The [`ketchup_dwg::DwgError`] of the first sheet acadrust could not write.
+    pub fn dxf(&self) -> Result<Vec<Vec<u8>>, ketchup_dwg::DwgError> {
+        self.cad()
+            .iter()
+            .map(ketchup_dwg::sheet::sheet_dxf)
+            .collect()
+    }
+
+    /// Each sheet as a DWG drawing of [`ketchup_dwg::WRITTEN_VERSION`] ([`DrawingSet::cad`]).
+    ///
+    /// # Errors
+    /// As [`DrawingSet::dxf`].
+    pub fn dwg(&self) -> Result<Vec<Vec<u8>>, ketchup_dwg::DwgError> {
+        self.cad()
+            .iter()
+            .map(ketchup_dwg::sheet::sheet_dwg)
             .collect()
     }
 
@@ -209,6 +236,27 @@ impl DrawingSet {
             .collect()
     }
 }
+
+/// The layout name of `sheet`: its number and title, without the characters AutoCAD refuses
+/// in a layout's name.
+fn layout_name(sheet: &SetSheet) -> String {
+    let title = sheet
+        .title
+        .chars()
+        .map(|c| {
+            if "<>/\\\":;?*|,=`".contains(c) || c.is_control() {
+                '-'
+            } else {
+                c
+            }
+        })
+        .take(LAYOUT_NAME_CHARS)
+        .collect::<String>();
+    format!("{:02} {}", sheet.number, title.trim())
+}
+
+/// The most characters of a sheet's title its layout's name takes (AutoCAD holds 255).
+const LAYOUT_NAME_CHARS: usize = 200;
 
 /// A sheet before it is laid out: its views with their titles.
 struct Planned {
@@ -242,17 +290,18 @@ fn lowest(annotation: &Annotation) -> f64 {
 }
 
 /// Lays the views of `sheet` out on `page` at 1:`scale`, row under row, each
-/// left to right; with `visible`, as visible lines.
+/// left to right; with `visible`, as visible lines. Returns where each view lies.
 fn draw_views(
     page: &mut Page,
     sheet: &Planned,
     format: SheetFormat,
     scale: u32,
     visible: Option<&[Vec<VisibleLine>]>,
-) {
+) -> Vec<PlacedView> {
     let scale = f64::from(scale);
     let views = &sheet.views.views;
     let [[area_left, mut top], _] = drawing_area(format);
+    let mut placed = Vec::with_capacity(views.len());
     for row in &sheet.views.rows {
         let row_height = row
             .iter()
@@ -263,18 +312,19 @@ fn draw_views(
             let view = &views[index];
             let [width, height] = extent(view);
             let origin = [left + VIEW_PAD_MM, top + VIEW_PAD_MM / 2.0 + height / scale];
-            draw_view_on_page(
+            placed.push(draw_view_on_page(
                 page,
                 view,
                 &sheet.titles[index],
                 origin,
                 scale,
                 visible.map(|lines| lines[index].as_slice()),
-            );
+            ));
             left += width / scale + 2.0 * VIEW_PAD_MM;
         }
         top += row_height;
     }
+    placed
 }
 
 /// Draws the project drawings of `solids` as a set of sheets.
@@ -553,7 +603,7 @@ pub fn drawing_set_until(
             .collect::<Vec<_>>();
         stopped()?;
         let mut lines = blank();
-        draw_views(&mut lines, &sheet, format, scale, Some(&visible));
+        let placed = draw_views(&mut lines, &sheet, format, scale, Some(&visible));
         draw_frame_and_title_block(&mut lines, format, &options.title_labels, &values)?;
         let views = sheet
             .views
@@ -588,6 +638,7 @@ pub fn drawing_set_until(
             format,
             page,
             lines,
+            placed,
             views,
             annotations,
             underlay_lines: sheet
@@ -648,6 +699,7 @@ pub fn drawing_set_until(
             format: cutting.format,
             lines: page.clone(),
             page,
+            placed: Vec::new(),
             views: Vec::new(),
             annotations: AnnotationCounts::default(),
             underlay_lines: 0,
@@ -678,6 +730,7 @@ pub fn drawing_set_until(
             format,
             lines: page.clone(),
             page,
+            placed: Vec::new(),
             views: Vec::new(),
             annotations: AnnotationCounts::default(),
             underlay_lines: 0,
@@ -766,6 +819,7 @@ fn shop_sheet(
         format: shop.format,
         page,
         lines,
+        placed: Vec::new(),
         annotations: AnnotationCounts::default(),
         underlay_lines: 0,
         openings: Vec::new(),

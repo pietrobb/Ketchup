@@ -216,8 +216,8 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "dwg_conversion_failed",
         Io,
         "path",
-        "The DXF of the drawing sheet or of the edited drawing did not convert to DWG; the cause names the step of the DWG writer that failed. Nothing was written.",
-        "Export it as .dxf instead, or report the cause.",
+        "The drawing sheet or the edited drawing did not convert to DWG, or a sheet of the project drawings could not be written as DXF or DWG; the cause names the step of the writer that failed. Nothing was written.",
+        "Export it in the other format (.dxf or .dwg), or report the cause.",
     ),
     entry(
         "entity_not_found",

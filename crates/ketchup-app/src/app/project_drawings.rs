@@ -72,7 +72,7 @@ pub(crate) enum ProjectDrawingsError {
     /// The named shown underlay's lines do not read, the plans would leave it
     /// out: `None` when the document holds no blob of them.
     UnderlayUnreadable(String, Option<ketchup_model::underlay::UnderlayLinesError>),
-    /// A sheet's DXF did not convert to DWG.
+    /// A sheet could not be written as a DXF or DWG drawing.
     Dwg(ketchup_dwg::DwgError),
     /// The set at the path, listed at `list`, is another project's, or
     /// another copy's that wrote it since; `project` names the file it was
@@ -361,12 +361,8 @@ impl ProjectDrawingsJob {
         let (set, info) = self.set(cancelled)?;
         let files = match format {
             SetFileFormat::Pdf => vec![set.pdf(&info)],
-            SetFileFormat::Dxf => set.dxf(),
-            SetFileFormat::Dwg => set
-                .dxf()
-                .iter()
-                .map(|dxf| ketchup_dwg::dxf_to_dwg(dxf).map_err(ProjectDrawingsError::Dwg))
-                .collect::<Result<_, _>>()?,
+            SetFileFormat::Dxf => set.dxf().map_err(ProjectDrawingsError::Dwg)?,
+            SetFileFormat::Dwg => set.dwg().map_err(ProjectDrawingsError::Dwg)?,
         };
         Ok((set, files))
     }
