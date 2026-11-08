@@ -905,3 +905,58 @@ fn a_sheet_names_the_letters_it_prints_as_question_marks() {
     let digest = app.action_digest();
     assert!(digest.contains("東") && digest.contains("漢"), "{digest}");
 }
+
+/// Review 2026-11-08 §5.2: north kept in the sheet settings gives each plan its
+/// north arrow and names each elevation, in the sheet language, by the side of
+/// the world it shows.
+#[test]
+fn north_in_the_sheet_settings_names_the_elevations_in_the_sheet_language() {
+    use ketchup_manufacturing::project_drawings::{CompassSide, ProjectView};
+    use ketchup_manufacturing::title_block::SheetLanguage;
+    let (mut app, mut bridge) = setup();
+    let program = Request::ApplyProgram {
+        expected: None,
+        source: "box('house', (6000, 3000, 2500))\n".into(),
+        overrides: None,
+        file_name: Some("house.star".into()),
+        replace_document: true,
+    };
+    bridge
+        .execute(&mut app, program, false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let mut settings = app.stored_sheet_settings().unwrap();
+    settings.language = Some(SheetLanguage::Slovak);
+    // North along -x: the long front, facing -y, faces west.
+    settings.north_tenths_deg = Some(900);
+    app.store_sheet_settings(settings);
+    let set = app
+        .project_drawings_job_for(crate::app::project_drawings::SheetRequest::default())
+        .unwrap()
+        .render(
+            crate::app::project_drawings::SetFileFormat::Pdf,
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        .0;
+    let views = set
+        .sheets
+        .iter()
+        .flat_map(|sheet| &sheet.views)
+        .collect::<Vec<_>>();
+    let front = views
+        .iter()
+        .find(|view| view.view == ProjectView::Front)
+        .unwrap();
+    assert_eq!(front.facing, Some(CompassSide::West));
+    assert_eq!(front.title, "Pohľad západný");
+    let plan = views
+        .iter()
+        .find(|view| view.view == ProjectView::Plan)
+        .unwrap();
+    assert!(plan.north_arrow, "{views:?}");
+    assert!(
+        set.sheets[0].page.texts().any(|text| text == "S"),
+        "the Slovak north letter"
+    );
+}

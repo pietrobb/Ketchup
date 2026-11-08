@@ -24,6 +24,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
 
 mod annotations;
+mod compass;
 mod cutting;
 mod levels;
 mod openings;
@@ -36,6 +37,7 @@ mod visible;
 
 use annotations::PlanAnnotations;
 pub use annotations::{AnnotationCounts, annotation_marks};
+pub use compass::{CompassSide, facing_side};
 pub use cutting::{CuttingPiece, CuttingSheet, CuttingStock, CuttingSummary};
 use ketchup_model::annotation::Annotation;
 pub use openings::{DrawingOpening, OpeningSchedule, ScheduleRow};
@@ -113,6 +115,12 @@ pub struct ViewSummary {
     /// The level marks of a section or an elevation, lowest first.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub levels: Vec<String>,
+    /// The side of the world an elevation shows, when north is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub facing: Option<CompassSide>,
+    /// Whether a plan draws its north arrow.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub north_arrow: bool,
 }
 
 /// Why no sheet could be drawn.
@@ -488,6 +496,10 @@ struct DrawnView {
     marks: Vec<([f64; 2], String)>,
     /// The level marks right of a section or an elevation: view height and text.
     levels: Vec<(f64, String)>,
+    /// The north arrow a plan draws right of its top, when north is set.
+    north: Option<compass::NorthArrow>,
+    /// The side of the world an elevation shows, when north is set.
+    facing: Option<CompassSide>,
     cut_at_mm: Option<f64>,
 }
 
@@ -646,6 +658,8 @@ fn draw_view(
         underlay: Vec::new(),
         marks: Vec::new(),
         levels: Vec::new(),
+        north: None,
+        facing: None,
         // `cut` is measured along the depth direction, which is ±1 on the
         // world axis the plane is normal to: divide to get that coordinate.
         cut_at_mm: frame.cut.map(|cut| {
@@ -955,6 +969,11 @@ fn draw_view_on_page(
         .map(|(height, text)| (at([view.min[0], *height])[1], text.clone()))
         .collect::<Vec<_>>();
     levels::draw_levels(page, at(view.max)[0], &levels);
+    if let Some(arrow) = &view.north {
+        // In the room right of the view's top, which a plan leaves free.
+        let [right, top] = at(view.max);
+        compass::draw_north_arrow(page, [right + VIEW_PAD_MM / 2.0, top + 7.0], arrow);
+    }
     let [outer_left, outer_bottom] = at(view.min);
     // Overall width below the view and overall height on its left, outside
     // whatever the view draws.

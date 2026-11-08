@@ -13,6 +13,7 @@
 //! Each sheet is drawn twice: painted far to near for the PDF, and as its
 //! visible lines alone for a DXF, which cannot paint faces over lines.
 
+use super::compass::{CompassSide, NorthArrow, elevation_side};
 use super::cutting::{CuttingSheet, CuttingSummary, plan_cutting};
 use super::levels::{level_heights, level_text};
 use super::openings::{OpeningSchedule, draw_schedule, opening_points, schedule_format};
@@ -21,9 +22,9 @@ use super::visible::{VisibleLine, visible_lines};
 use super::{Annotation, AnnotationCounts, PlanAnnotations};
 use super::{
     DrawingSolid, DrawnView, ProjectDrawingError, ProjectView, SheetViews, Storey, VIEW_PAD_MM,
-    ViewSummary, annotation_bounds, bounds, choose_layout_scale, draw_view, draw_view_on_page,
-    extent, finished_floors, floor_levels, format_at_scale, ground_floor_of, lerp,
-    marked_floor_levels, solid_edges, table_ground_floor, view_frames,
+    ViewFrame, ViewSummary, annotation_bounds, bounds, choose_layout_scale, draw_view,
+    draw_view_on_page, extent, finished_floors, floor_levels, format_at_scale, ground_floor_of,
+    lerp, marked_floor_levels, solid_edges, table_ground_floor, view_frames,
 };
 use crate::sheet_dxf::page_dxf;
 use crate::title_block::{
@@ -110,6 +111,16 @@ pub struct DrawingSetOptions {
     pub storeys: Vec<StoreyLevels>,
     /// Written after the ±0,000 mark, such as "= 245,300 m n. m. Bpv".
     pub zero_altitude: Option<String>,
+    /// The direction of north in the model's plan, in degrees
+    /// counter-clockwise from +y (review 2026-11-08 §5.2): each plan draws its
+    /// north arrow and each elevation is named by the side of the world it
+    /// shows ([`Self::facing_titles`]); none when not given.
+    pub north_deg: Option<f64>,
+    /// The letter at the tip of the north arrow; "N" when empty.
+    pub north_letter: String,
+    /// The title of an elevation that shows each side of the world, such as
+    /// "South elevation"; a side missing here keeps the view's title.
+    pub facing_titles: BTreeMap<CompassSide, String>,
 }
 
 /// What a sheet of the set shows.
@@ -386,6 +397,7 @@ pub fn drawing_set_until(
             .cloned()
             .collect::<Vec<_>>();
         drawn.mark_openings(&frame, &marks);
+        drawn.north = north_arrow(&frame, options);
         let (views, titles) = sheet_views(vec![(drawn, plan.view_title.clone())], 1);
         if !views.views.is_empty() {
             planned.push(Planned {
@@ -415,16 +427,11 @@ pub fn drawing_set_until(
                     if upright.counts.dimensions > 0 {
                         drawn.annotate(upright);
                     }
-                    (drawn, title_of(*view))
+                    let (facing, title) = named_elevation(*view, frame, options, title_of(*view));
+                    drawn.facing = facing;
+                    (drawn, title)
                 })
                 .collect::<Vec<_>>()
-        };
-        let named = |title: &str, fallback: &str| {
-            if title.trim().is_empty() {
-                fallback.to_owned()
-            } else {
-                title.to_owned()
-            }
         };
         for (kind, views, per_row, title) in [
             (
@@ -576,6 +583,8 @@ pub fn drawing_set_until(
                 cut_at_mm: view.cut_at_mm,
                 extent_mm: extent(view).map(|value| (value * 10.0).round() / 10.0),
                 levels: view.levels.iter().map(|(_, text)| text.clone()).collect(),
+                facing: view.facing,
+                north_arrow: view.north.is_some(),
             })
             .collect();
         let mut annotations = AnnotationCounts::default();
@@ -702,6 +711,43 @@ pub fn drawing_set_until(
     })
 }
 
+/// `title`, else `fallback` when it is blank.
+fn named(title: &str, fallback: &str) -> String {
+    if title.trim().is_empty() {
+        fallback.to_owned()
+    } else {
+        title.to_owned()
+    }
+}
+
+/// The north arrow of a plan seen along `frame`, when the options set north.
+fn north_arrow(frame: &ViewFrame, options: &DrawingSetOptions) -> Option<NorthArrow> {
+    options
+        .north_deg
+        .and_then(|north| NorthArrow::of(frame, north, &options.north_letter))
+}
+
+/// The side of the world elevation `view` seen along `frame` shows, when the
+/// options set north, and its title: the side's when the options name it,
+/// else `fallback` (review 2026-11-08 §5.2). A section has no side.
+fn named_elevation(
+    view: ProjectView,
+    frame: &ViewFrame,
+    options: &DrawingSetOptions,
+    fallback: String,
+) -> (Option<CompassSide>, String) {
+    let facing = options
+        .north_deg
+        .filter(|_| !view.is_cut())
+        .and_then(|north| elevation_side(frame, north));
+    let title = facing
+        .and_then(|side| options.facing_titles.get(&side))
+        .filter(|title| !title.trim().is_empty())
+        .cloned()
+        .unwrap_or(fallback);
+    (facing, title)
+}
+
 /// The height of ±0,000: where the options set it, else the ground floor, of
 /// the table of storeys when there is one.
 fn zero_level(solids: &[DrawingSolid], options: &DrawingSetOptions) -> f64 {
@@ -784,6 +830,8 @@ fn shop_sheet(
         cut_at_mm: None,
         extent_mm: extent(view).map(|value| (value * 10.0).round() / 10.0),
         levels: Vec::new(),
+        facing: None,
+        north_arrow: false,
     };
     let views = std::iter::once(summary(&shop.title, &shop.view))
         .chain(

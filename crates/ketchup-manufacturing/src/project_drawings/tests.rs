@@ -889,6 +889,57 @@ fn the_set_has_a_plan_a_sections_and_an_elevations_sheet_each_numbered_and_title
     );
 }
 
+/// Review 2026-11-08 §5.2: with north set, each plan draws its north arrow
+/// and each elevation is named by the side of the world it shows; without
+/// it, neither.
+#[test]
+fn with_north_the_plan_has_an_arrow_and_each_elevation_is_named_by_its_side() {
+    let facing_titles = CompassSide::ALL
+        .into_iter()
+        .map(|side| (side, format!("{side:?} elevation")))
+        .collect::<BTreeMap<_, _>>();
+    // The room runs along x; north turned 90° points along -x.
+    let north = DrawingSetOptions {
+        north_deg: Some(90.0),
+        north_letter: "S".to_owned(),
+        facing_titles: facing_titles.clone(),
+        ..options(&room(), Some(1200.0))
+    };
+    let set = drawing_set(&room(), &north).unwrap();
+    assert!(summary(&set, ProjectView::Plan).north_arrow);
+    let plan = sheet_of(&set, SheetKind::Plan { storey: 0 });
+    for page in [&plan.page, &plan.lines] {
+        assert!(texts(page).contains(&"S"), "{:?}", texts(page));
+    }
+    for (view, side) in [
+        (ProjectView::Front, CompassSide::West),
+        (ProjectView::Back, CompassSide::East),
+        (ProjectView::Left, CompassSide::North),
+        (ProjectView::Right, CompassSide::South),
+    ] {
+        let elevation = summary(&set, view);
+        assert_eq!(elevation.facing, Some(side), "{view:?}");
+        assert_eq!(elevation.title, format!("{side:?} elevation"));
+        assert!(!elevation.north_arrow);
+    }
+    let elevations = sheet_of(&set, SheetKind::Elevations);
+    assert!(texts(&elevations.page).contains(&"West elevation"));
+    // The sections keep their names.
+    assert_eq!(summary(&set, ProjectView::CrossSection).facing, None);
+
+    let without = drawing_set(
+        &room(),
+        &DrawingSetOptions {
+            facing_titles,
+            ..options(&room(), Some(1200.0))
+        },
+    )
+    .unwrap();
+    assert!(!summary(&without, ProjectView::Plan).north_arrow);
+    let front = summary(&without, ProjectView::Front);
+    assert_eq!((front.facing, front.title.as_str()), (None, "Front"));
+}
+
 #[test]
 fn plan_and_sections_fill_the_parts_the_plane_cuts() {
     let set = room_set(Some(1200.0));
