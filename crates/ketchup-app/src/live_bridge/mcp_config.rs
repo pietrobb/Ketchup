@@ -276,12 +276,19 @@ pub(crate) fn replace_file(file: &Path, text: &str) -> io::Result<()> {
 /// readable by its owner only (review 2026-11-04 r19 P3: the settings file,
 /// with the documents opened, was readable by everyone).
 pub(crate) fn write_keeping_file(file: &Path, text: &str, backup: bool) -> io::Result<()> {
+    #[cfg(unix)]
+    let named_in = owner_named_in(file);
     let target = match std::fs::canonicalize(file) {
         Ok(target) => target,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             let file = link_target(file);
             let directory = file.parent().unwrap_or(Path::new("."));
             let nearest = nearest_folder(directory);
+            #[cfg(unix)]
+            if let (Some(owner), Some((folder, like))) = (named_in, &nearest) {
+                use std::os::unix::fs::MetadataExt;
+                root_writes_for(effective_user(), owner, &[(folder, like.uid())])?;
+            }
             let written = std::fs::create_dir_all(directory)
                 .and_then(|()| write_new(directory, &file, text, nearest.as_ref()));
             // The folders made for a file not written are not left behind (review
@@ -296,14 +303,26 @@ pub(crate) fn write_keeping_file(file: &Path, text: &str, backup: bool) -> io::R
         }
         Err(error) => return Err(error),
     };
+    let metadata = std::fs::metadata(&target)?;
+    let directory = target.parent().unwrap_or(Path::new("."));
+    #[cfg(unix)]
+    if let Some(owner) = named_in {
+        use std::os::unix::fs::MetadataExt;
+        let folder = std::fs::metadata(directory)?;
+        root_writes_for(
+            effective_user(),
+            owner,
+            &[(&target, metadata.uid()), (directory, folder.uid())],
+        )?;
+    }
     let mut copy = target.as_os_str().to_owned();
     copy.push(".ketchup.bak");
     let copy = std::path::PathBuf::from(copy);
-    if backup && !copy.exists() {
-        std::fs::copy(&target, &copy)?;
+    // A symlink there, even to nothing, is not written through (review
+    // 2026-11-08 SEC-242).
+    if backup && std::fs::symlink_metadata(&copy).is_err() {
+        back_up(&target, &copy, &metadata)?;
     }
-    let metadata = std::fs::metadata(&target)?;
-    let directory = target.parent().unwrap_or(Path::new("."));
     write_staged(
         directory,
         &target,
@@ -311,6 +330,89 @@ pub(crate) fn write_keeping_file(file: &Path, text: &str, backup: bool) -> io::R
         Some(&metadata),
         Some((&metadata, true)),
     )
+}
+
+/// The owner of the nearest folder there that `file` is named in, its links
+/// not followed: the user whose configuration it is, also under `sudo`.
+#[cfg(unix)]
+fn owner_named_in(file: &Path) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    file.parent()?
+        .ancestors()
+        .find_map(|folder| std::fs::symlink_metadata(folder).ok())
+        .map(|folder| folder.uid())
+}
+
+/// The user this process writes as.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn effective_user() -> u32 {
+    // SAFETY: geteuid takes no pointers and has no preconditions.
+    unsafe { libc::geteuid() }
+}
+
+/// Whether `writer` may write where it found `found`, each path with its
+/// owner, for the configuration of `owner` (review 2026-11-08 SEC-241: under
+/// `sudo`, root followed a symlink the user had put in place of the file and
+/// made a file in a folder only root may write, or replaced root's own file
+/// in place). Root writes only into a file and a folder of the user the file
+/// is named for; any other user is held back by the system already.
+#[cfg(any(unix, test))]
+fn root_writes_for(writer: u32, owner: u32, found: &[(&Path, u32)]) -> io::Result<()> {
+    if writer != 0 || owner == 0 {
+        return Ok(());
+    }
+    match found.iter().find(|(_, uid)| *uid != owner) {
+        Some((path, uid)) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "{} belongs to user {uid}, not to user {owner} whose configuration this is; \
+                 run the setup without sudo",
+                path.display()
+            ),
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Keeps `target` as `copy`, a new file that is not there yet, nor a symlink:
+/// with its permissions and, under `sudo`, its owner, not root's (review
+/// 2026-11-08 SEC-242: the copy, with the secrets of other servers, was
+/// `root:root 0600` in the user's home, and a dangling symlink there was
+/// written through).
+fn back_up(target: &Path, copy: &Path, like: &std::fs::Metadata) -> io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut kept = options.open(copy)?;
+    let mut fill = || -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let own = kept.metadata()?;
+            keep_owner(
+                (own.uid(), own.gid()),
+                (like.uid(), like.gid()),
+                false,
+                |uid, gid| std::os::unix::fs::fchown(&kept, uid, gid),
+            )?;
+        }
+        io::Write::write_all(&mut kept, &std::fs::read(target)?)?;
+        kept.set_permissions(like.permissions())?;
+        kept.sync_all()
+    };
+    let filled = fill();
+    // A copy not whole would stand for the original from then on.
+    if filled.is_err()
+        && let Err(error) = std::fs::remove_file(copy)
+    {
+        ketchup_rejection::log!("the partial copy {} stays: {error}", copy.display());
+    }
+    filled
 }
 
 /// Writes `text` as the new `file` in `directory`, made below `nearest`, the
@@ -586,6 +688,49 @@ mod tests {
         }
         #[cfg(not(unix))]
         assert!(like.is_dir());
+    }
+
+    /// Review 2026-11-08 SEC-241: under `sudo`, root followed a symlink the
+    /// user had put in place of `~/.claude.json` and made a file in a folder
+    /// only root may write, or replaced root's own file in place.
+    #[test]
+    fn root_writes_only_where_the_user_the_file_is_named_for_owns() {
+        let home = Path::new("/home/user");
+        let root_only = Path::new("/root/secrets");
+        assert!(root_writes_for(0, 1000, &[(home, 1000)]).is_ok());
+        let refused = root_writes_for(0, 1000, &[(home, 1000), (root_only, 0)]).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied);
+        assert!(refused.to_string().contains("/root/secrets"), "{refused}");
+        // Another user's file is refused to root as well.
+        assert!(root_writes_for(0, 1000, &[(home, 1001)]).is_err());
+        // A user is held back by the system, and root's own home is root's.
+        assert!(root_writes_for(1000, 1000, &[(root_only, 0)]).is_ok());
+        assert!(root_writes_for(0, 0, &[(root_only, 0)]).is_ok());
+    }
+
+    /// Review 2026-11-08 SEC-242: a dangling symlink in place of the backup
+    /// was written through, the copy of the configuration put where it led.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_in_place_of_the_backup_is_not_written_through() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join(".claude.json");
+        std::fs::write(&file, "{}").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let elsewhere = directory.path().join("elsewhere.json");
+        let link = directory.path().join(".claude.json.ketchup.bak");
+        std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+        replace_file(&file, "{\"a\":1}").unwrap();
+        assert!(!elsewhere.exists());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "{\"a\":1}");
+
+        // With nothing there, the copy is the original with its permissions.
+        std::fs::remove_file(&link).unwrap();
+        replace_file(&file, "{\"b\":2}").unwrap();
+        assert_eq!(std::fs::read_to_string(&link).unwrap(), "{\"a\":1}");
+        let mode = std::fs::metadata(&link).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     /// Review 2026-11-06 P3: `ReplaceFileW` failing with 1176, with no backup

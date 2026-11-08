@@ -365,7 +365,9 @@ CASTS_AND_ALLOWS = {
     # (review 2026-11-04 P3: the module-wide one let new unsafe code in), so 12 -> 14.
     # ReplaceFileW of live_bridge::mcp_config (review 2026-11-04 r19 P3: an AI client's
     # configuration is swapped in one step and keeps its ACL), so 14 -> 15.
-    "ketchup-app allows": 15,
+    # geteuid of live_bridge::mcp_config (review 2026-11-08 SEC-241: under sudo root writes
+    # only where the user the file is named for owns), so 15 -> 16.
+    "ketchup-app allows": 16,
     "ketchup-app casts": 216,
     "ketchup-application allows": 9,
     "ketchup-application casts": 29,

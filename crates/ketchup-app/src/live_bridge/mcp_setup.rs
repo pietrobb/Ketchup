@@ -406,7 +406,12 @@ impl Environment {
             // file, and the installer replaced the entry); a missing folder is
             // trusted to be deleted in the client's home folder and the folders
             // programs are installed in only (review 2026-11-07 P3).
-            let trusted: Vec<&Path> = std::iter::once(self.home.as_path())
+            // A home that is relative or the root of the system, as `HOME=/`,
+            // would trust every folder (review 2026-11-08 SEC-243).
+            let home = Some(self.home.as_path())
+                .filter(|home| home.is_absolute() && home.parent().is_some());
+            let trusted: Vec<&Path> = home
+                .into_iter()
                 .chain(self.program_folders.iter().map(PathBuf::as_path))
                 .collect();
             let trusted = (!cfg!(windows)).then_some(trusted.as_slice());
