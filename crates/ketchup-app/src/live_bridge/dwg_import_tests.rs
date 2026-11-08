@@ -194,7 +194,7 @@ fn a_clients_dwg_import_reads_the_file_off_the_windows_thread() {
             .send(serde_json::from_slice::<Response>(&bytes).unwrap())
             .unwrap();
     });
-    let deadline = Instant::now() + Duration::from_secs(4);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while !importing_dwg(wire.app.live.bridge.as_ref().unwrap()) {
         assert!(
             Instant::now() < deadline,

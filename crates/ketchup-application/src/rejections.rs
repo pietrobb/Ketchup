@@ -140,7 +140,7 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         Validation,
         "underlay_id",
         "A change made to an object of the drawing does not go into its file; caused_by names the object and why (it has no handle, its handle is not in the file, its kind cannot be moved there, or its entity reads otherwise in the file than when imported: what differs, where it lay and lies now). Nothing was written.",
-        "Undo the change of the object caused_by names, or remove that object instead, then export again.",
+        "Undo the change of each object caused_by names, or ask the user to press Discard in the window's export message, which keeps the other edits; then export again. Only an object of a kind that cannot be moved there may be removed instead.",
     ),
     entry(
         "drawing_sheet_not_found",
@@ -178,18 +178,25 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Check that ketchup-program-worker is installed beside Kečup and export again; a drawing that keeps stopping it is too large to write back.",
     ),
     entry(
+        "drawings_replace_declined",
+        Validation,
+        "path",
+        "The export was sent with replace or take_over, and the user, asked in the window, did not agree to replace the file there; the reason names it. Nothing was written.",
+        "Export to another path, or ask the user again before sending it again.",
+    ),
+    entry(
         "drawings_set_of_another_project",
         Request,
         "path",
         "The DXF or DWG drawing set at the path was exported from another project, or from another copy of this one since; the reason names its list and the project file it came from.",
-        "Ask the user: export to another folder or file name, or, if they agree to take that set over for this project, export again with take_over: true.",
+        "Export to another folder or file name, or export again with take_over: true and the window asks the user whether to take that set over for this project.",
     ),
     entry(
         "drawings_target_exists",
         Request,
         "path",
         "A file already exists at the drawing path that this request may not replace (a file named like a sheet that this project's earlier export did not write, or the drawing being edited); the reason names it.",
-        "Ask the user: rename or move that file, write to another folder or file name, or, for a PDF or a drawing sheet the user agrees to replace, export again with replace: true.",
+        "Ask the user: rename or move that file, write to another folder or file name, or, for a PDF or a drawing sheet, export again with replace: true and the window asks the user whether to replace it.",
     ),
     entry(
         "drawings_target_in_use",
@@ -262,11 +269,25 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Check that the worker executable is installed beside the app, then retry.",
     ),
     entry(
+        "export_declined",
+        Validation,
+        "path",
+        "The user declined the export in the Kečup window; nothing was written.",
+        "Ask the user whether to export, then export again; do not repeat it unasked.",
+    ),
+    entry(
         "export_failed",
         Io,
         "path",
-        "The model could not be exported; caused_by names why (for example parts without an exact solid, or the user declined a lossy or replacing export).",
+        "The files could not be written or checked; caused_by names why (for example an existing file never replaced from outside the window, a full disk, or the model changed while the user was asked).",
         "Fix what caused_by names, or export to another path; nothing was written.",
+    ),
+    entry(
+        "export_refused",
+        Validation,
+        "export_format",
+        "The model holds something this format cannot carry, or nothing it writes; caused_by names the part and what it lacks (for example a blank that is not a rectangle, a piece without a production code, or nothing to machine). Nothing was written.",
+        "Change the model as caused_by says (a part whose exact result is still being made exports once it is ready), or export another format; another path does not help.",
     ),
     entry(
         "hidden_viewport",
@@ -699,7 +720,7 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "save_declined",
         Validation,
         "save",
-        "The user refused to overwrite the file or to save without the Undo history.",
+        "The user refused to overwrite the file, to save without the Undo history, or to save in a folder that is neither the document's nor one in Open Recent.",
         "Ask the user, or save as a new path; nothing was written.",
     ),
     entry(

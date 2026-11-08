@@ -700,6 +700,8 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "exact_brep_graph.rs: tool_name",
     "exact_brep_graph.rs: trim_bits",
     "exact_brep_graph.rs: up_bits",
+    // A refusal is sent to the AI and the window, never saved in the document.
+    "import/dxf/rewrite/refusal.rs: written",
     "underlay.rs: edits",
     "underlay.rs: placement",
     "underlay.rs: view",

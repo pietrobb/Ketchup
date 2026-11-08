@@ -324,9 +324,13 @@ fn the_drawings_exported_again_replace_their_files() {
 /// replaced whatever it was (a PDF the user added pages to, a surveyor's DWG).
 /// Only the file the window last wrote there is replaced, or one the client
 /// asks to replace with `replace: true`; the answer names the file and says so.
+/// The user is asked in the window then (review 2026-11-08 SEC-182).
 #[test]
 fn a_pdf_or_sheet_the_window_did_not_write_is_replaced_only_when_asked() {
-    let (mut app, mut bridge) = setup();
+    let (app, mut bridge) = setup();
+    let dialogs = crate::dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(7);
+    let probe = dialogs.clone();
+    let mut app = app.with_dialogs(Box::new(dialogs));
     let id = sheet_of_the_block(&mut app, &mut bridge);
     let directory = tempfile::tempdir().unwrap();
     let file = |name: &str| directory.path().join(name);
@@ -355,6 +359,7 @@ fn a_pdf_or_sheet_the_window_did_not_write_is_replaced_only_when_asked() {
         assert_eq!(export(&extra), Err("drawings_target_exists"), "{name}");
         assert_eq!(std::fs::read(&path).unwrap(), b"edited since");
     }
+    assert_eq!(probe.high_risk_prompts().len(), 2, "one per replace: true");
 }
 
 /// Review 2026-11-04 r19 SEC-161: which file the window wrote lived only in
@@ -368,7 +373,9 @@ fn the_documents_own_drawing_is_replaced_after_a_restart_and_however_its_path_is
     let directory = tempfile::tempdir().unwrap();
     let store = directory.path().join("drawings.txt");
     let (app, mut bridge) = setup();
-    let mut app = app.with_written_drawings(&store);
+    let mut app = app.with_written_drawings(&store).with_dialogs(Box::new(
+        crate::dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(7),
+    ));
     let id = sheet_of_the_block(&mut app, &mut bridge);
     let targets = [
         (directory.path().join("House.pdf"), json!({})),
@@ -393,7 +400,7 @@ fn the_documents_own_drawing_is_replaced_after_a_restart_and_however_its_path_is
         Err("drawings_target_exists")
     );
     let answer = take_error_details().unwrap_or_default().to_string();
-    assert!(answer.contains("Ask the user"), "{answer}");
+    assert!(answer.contains("asks the user"), "{answer}");
     export(
         &mut app,
         &mut bridge,
@@ -402,6 +409,7 @@ fn the_documents_own_drawing_is_replaced_after_a_restart_and_however_its_path_is
     );
 
     let document = directory.path().join("plan.ketchup");
+    app.remember_recent_file(&document);
     let save = Request::SaveAs {
         expected: None,
         path: document.display().to_string(),
@@ -436,6 +444,7 @@ fn an_export_leaves_the_document_saved_and_its_file_its_own_after_a_restart() {
     let (mut app, mut bridge) = with_store();
     let id = sheet_of_the_block(&mut app, &mut bridge);
     let document = directory.path().join("plan.ketchup");
+    app.remember_recent_file(&document);
     let save = Request::SaveAs {
         expected: None,
         path: document.display().to_string(),
@@ -479,6 +488,7 @@ fn a_document_saved_as_another_asks_before_replacing_the_first_ones_drawing() {
     let directory = tempfile::tempdir().unwrap();
     let save_as = |app: &mut KetchupApp, bridge: &mut LiveBridge, name: &str| {
         let path = directory.path().join(name).display().to_string();
+        app.remember_recent_file(Path::new(&path));
         let save = Request::SaveAs {
             expected: None,
             path,
@@ -495,7 +505,7 @@ fn a_document_saved_as_another_asks_before_replacing_the_first_ones_drawing() {
     save_as(&mut app, &mut bridge, "b.ketchup");
     assert_eq!(export(&mut app, &mut bridge), Err("drawings_target_exists"));
     let answer = take_error_details().unwrap_or_default().to_string();
-    assert!(answer.contains("Ask the user"), "{answer}");
+    assert!(answer.contains("asks the user"), "{answer}");
 }
 
 /// Review 2026-11-06 SEC-182 (capability review run 529): a moved document
@@ -513,6 +523,7 @@ fn a_copy_saved_as_asks_once_the_first_document_is_renamed() {
     let (mut app, mut bridge) = with_store();
     let id = sheet_of_the_block(&mut app, &mut bridge);
     let save_as = |app: &mut KetchupApp, bridge: &mut LiveBridge, path: &Path| {
+        app.remember_recent_file(path);
         let save = Request::SaveAs {
             expected: None,
             path: path.display().to_string(),
@@ -531,7 +542,7 @@ fn a_copy_saved_as_asks_once_the_first_document_is_renamed() {
     std::fs::rename(&first, &renamed).unwrap();
     assert_eq!(export(&mut app, &mut bridge), Err("drawings_target_exists"));
     let answer = take_error_details().unwrap_or_default().to_string();
-    assert!(answer.contains("Ask the user"), "{answer}");
+    assert!(answer.contains("asks the user"), "{answer}");
     drop((app, bridge));
 
     let (mut opened, mut bridge) = with_store();
@@ -570,6 +581,7 @@ fn a_copy_made_in_a_file_manager_asks_once_the_first_document_is_renamed() {
         bridge.execute(app, export_drawings(&sheet, json!({"sheet_id": id})), false)
     };
     let first = directory.path().join("a.ketchup");
+    app.remember_recent_file(&first);
     let save = Request::SaveAs {
         expected: None,
         path: first.display().to_string(),
@@ -652,6 +664,7 @@ fn a_new_document_saved_where_another_was_asks_and_a_failed_save_as_keeps_the_dr
         bridge.execute(app, export_drawings(&sheet, json!({"sheet_id": id})), false)
     };
     let save_as = |app: &mut KetchupApp, bridge: &mut LiveBridge, path: &Path| {
+        app.remember_recent_file(path);
         let save = Request::SaveAs {
             expected: None,
             path: path.display().to_string(),
@@ -700,6 +713,7 @@ fn the_list_of_written_drawings_forgets_files_that_are_gone() {
     let mut app = app.with_written_drawings(&store);
     let id = sheet_of_the_block(&mut app, &mut bridge);
     let document = directory.path().join("plan.ketchup");
+    app.remember_recent_file(&document);
     let save = Request::SaveAs {
         expected: None,
         path: document.display().to_string(),
@@ -788,6 +802,7 @@ fn the_documents_file_is_resolved_once_for_its_written_drawings() {
     let mut app = app.with_written_drawings(&store);
     let id = sheet_of_the_block(&mut app, &mut bridge);
     let document = directory.path().join("plan.ketchup");
+    app.remember_recent_file(&document);
     let save = Request::SaveAs {
         expected: None,
         path: document.display().to_string(),
@@ -815,7 +830,10 @@ fn the_documents_file_is_resolved_once_for_its_written_drawings() {
 fn a_clients_sheet_export_runs_off_the_windows_thread() {
     use crate::live_bridge::program_check::ProgramCheckJob;
     use crate::live_bridge::program_dry_run::QueuedReply;
-    let (mut app, mut bridge) = setup();
+    let (app, mut bridge) = setup();
+    let mut app = app.with_dialogs(Box::new(
+        crate::dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(7),
+    ));
     let id = sheet_of_the_block(&mut app, &mut bridge);
     let directory = tempfile::tempdir().unwrap();
     let dwg = directory.path().join("Block.dwg");
@@ -875,7 +893,10 @@ fn a_clients_sheet_export_runs_off_the_windows_thread() {
 fn a_drawing_held_open_elsewhere_is_named_and_kept() {
     use std::os::windows::fs::OpenOptionsExt as _;
     const FILE_SHARE_READ: u32 = 1;
-    let (mut app, mut bridge) = setup();
+    let (app, mut bridge) = setup();
+    let mut app = app.with_dialogs(Box::new(
+        crate::dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(7),
+    ));
     evaluate_exact(&mut app);
     let directory = tempfile::tempdir().unwrap();
     let pdf = directory.path().join("house.pdf");
@@ -969,6 +990,7 @@ fn a_moved_project_exports_its_set_again_and_another_is_told_whose_it_is() {
     let (mut app, mut bridge) = with_store();
     evaluate_exact(&mut app);
     let save_as = |path: &Path| request(json!({"method": "save_as", "path": path}));
+    app.remember_recent_file(&saved);
     bridge.execute(&mut app, save_as(&saved), false).unwrap();
     export(&mut app, &mut bridge, json!({})).unwrap();
     bridge.execute(&mut app, save_as(&saved), false).unwrap();
@@ -1012,7 +1034,7 @@ fn a_moved_project_exports_its_set_again_and_another_is_told_whose_it_is() {
     for said in [
         "house v2.ketchup",
         "take_over",
-        "Ask the user",
+        "asks the user",
         "deletes those beyond the last sheet",
         "\"sheets\":",
         // And names them, in the singular for one (r23 P3: "1 sheets").
@@ -1022,7 +1044,14 @@ fn a_moved_project_exports_its_set_again_and_another_is_told_whose_it_is() {
         assert!(answer.contains(said), "{said:?} missing: {answer}");
     }
     assert!(!answer.contains("1 sheets"), "{answer}");
+    // take_over asks the user in the window (review 2026-11-08 SEC-182).
+    let (code, _) = export(&mut other, &mut other_bridge, json!({"take_over": true})).unwrap_err();
+    assert_eq!(code, "drawings_replace_declined");
+    let dialogs = crate::dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(7);
+    let probe = dialogs.clone();
+    let mut other = other.with_dialogs(Box::new(dialogs));
     export(&mut other, &mut other_bridge, json!({"take_over": true})).unwrap();
+    assert_eq!(probe.high_risk_prompts().len(), 1);
     // Taken over, the set is no longer the moved project's.
     let (code, _) = export(&mut app, &mut bridge, json!({})).unwrap_err();
     assert_eq!(code, "drawings_set_of_another_project");
@@ -1043,6 +1072,7 @@ fn a_project_moved_with_its_drawings_folder_exports_its_set_again() {
     let (app, mut bridge) = setup();
     let mut app = app.with_written_drawings(&store);
     evaluate_exact(&mut app);
+    app.remember_recent_file(&job.join("dom.ketchup"));
     let save = request(json!({"method": "save_as", "path": job.join("dom.ketchup")}));
     bridge.execute(&mut app, save, false).unwrap();
     let set = job.join("dwg").join("dom.dxf");

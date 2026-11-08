@@ -236,9 +236,10 @@ pub(super) fn btlx_processings(
                 }
                 BtlxProfileProcessingRequest::EdgeSawCutsThenMillContour {
                     intermediate_saw_cuts,
-                } if intermediate_saw_cuts <= 32 && !has_straight_edge(machining) => {
-                    // A round opening has no edge a saw cuts; it is milled
-                    // along its arcs (review 2026-11-06 MF-181).
+                } if intermediate_saw_cuts <= 32 && has_arc(machining) => {
+                    // A contour with an arc needs a mill for the arc anyway; it
+                    // is milled whole, a round opening (review 2026-11-06
+                    // MF-181) as a rounded groove (review 2026-11-08 MF-245).
                     Ok(vec![BtlxProcessing::MillContour(contour)])
                 }
                 BtlxProfileProcessingRequest::EdgeSawCutsThenMillContour {
@@ -266,12 +267,12 @@ pub(super) fn btlx_processings(
     }
 }
 
-fn has_straight_edge(geometry: &GeneralMachiningGeometry) -> bool {
+fn has_arc(geometry: &GeneralMachiningGeometry) -> bool {
     match geometry {
         GeneralMachiningGeometry::ProfileCut { segments, .. } => segments
             .iter()
-            .any(|segment| matches!(segment, GeneralMachiningSegment::Line { .. })),
-        _ => true,
+            .any(|segment| matches!(segment, GeneralMachiningSegment::CircularArc { .. })),
+        _ => false,
     }
 }
 

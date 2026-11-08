@@ -1041,16 +1041,8 @@ fn a_joint_kind_like_one_that_fastens_nothing_is_reported() {
         )
     };
     // Review 2026-11-07 P3: and under five letters a slip of a kind but "none",
-    // as "lose" for "loose", "rest" for "rests" and "frei" for "free".
-    for misspelt in [
-        "contcat",
-        "Contacts",
-        "fricton",
-        "unfastend",
-        "lose",
-        "rest",
-        "frei",
-    ] {
+    // as "rest" for "rests" ("lose" and "frei" are German, review 2026-11-08 PG-241).
+    for misspelt in ["contcat", "Contacts", "fricton", "unfastend", "rest"] {
         let doubtful = kind(misspelt);
         assert_eq!(
             issue_parts(&doubtful, "joint_kind_doubtful"),
@@ -1062,7 +1054,7 @@ fn a_joint_kind_like_one_that_fastens_nothing_is_reported() {
     // Review 2026-11-06 r23 P3: "cone", "node", "nose" and "bone" were taken
     // for slips of "none"; a word under five letters is not looked at.
     for named in [
-        "vrut", "one", "glue", "none", "cone", "node", "nose", "bone",
+        "vrut", "one", "glue", "none", "cone", "node", "nose", "bone", "rose", "free", "nick",
     ] {
         assert_eq!(
             issue_parts(&kind(named), "joint_kind_doubtful"),
@@ -1072,7 +1064,16 @@ fn a_joint_kind_like_one_that_fastens_nothing_is_reported() {
     }
     // And "unfastened", "loose", "free" and "rests" fastened, unsaid: they
     // fasten nothing, as "none" does.
-    for unfastened in ["unfastened", "Loose", "free", "rests"] {
+    for unfastened in [
+        "unfastened",
+        "Loose",
+        "free",
+        "rests",
+        "lose",
+        "frei",
+        "voľne uložené",
+        "kontakt",
+    ] {
         let loose = kind(unfastened);
         assert_eq!(braced_by(&loose), Vec::new(), "{unfastened}");
         assert_eq!(
@@ -1126,6 +1127,54 @@ fn joints_of_a_kind_that_fastens_nothing_do_not_brace() {
         assert!(ltb_not_verified(&loose), "{kind}: {beam:?}");
         assert_eq!(braced_by(&loose), Vec::new(), "{kind}");
     }
+}
+
+/// Review 2026-11-08 PG-242: battens of mineral wool glued to the beam and the
+/// wall braced it like timber, and nothing said what a brace must take (EN
+/// 1995-1-1 9.2.5.2). A brace of a material without a timber strength class
+/// holds nothing; the force and stiffness the braces of timber must give are
+/// reported with the member.
+#[test]
+fn a_brace_without_a_strength_class_holds_nothing_and_what_a_brace_takes_is_reported() {
+    let battens = slender_beam(&[300.0, 1200.0, 2100.0, 3600.0, 4500.0, 5400.0]);
+    let wool = report(
+        &battens
+            .replace(
+                "material = \"GL24h\")\njoint(\"batten",
+                "material = \"mineral wool\")\njoint(\"batten",
+            )
+            .replace("kind = \"screw\"", "kind = \"glue\""),
+        &[],
+    );
+    let beam = member(&wool, "beam");
+    assert_eq!(beam.status, "not_verified", "{beam:?}");
+    assert!(
+        beam.missing
+            .iter()
+            .any(|reason| reason.contains("lateral torsional buckling")
+                && reason.contains("batten 0")
+                && reason.contains("no timber strength class")),
+        "{:?}",
+        beam.missing
+    );
+    assert_eq!(beam.bracing, []);
+
+    let timber = report(&battens, &[]);
+    let beam = member(&timber, "beam");
+    assert_eq!(beam.status, "pass", "{beam:?}");
+    let [bracing] = beam.bracing.as_slice() else {
+        panic!("what the braces of the top take: {:?}", beam.bracing);
+    };
+    assert_eq!(bracing.edge, "top");
+    assert_eq!(bracing.by.len(), 6, "{bracing:?}");
+    // N_d = (1 - kcrit) M_d / h of the beam unbraced, F_d = N_d / 80 (glulam),
+    // C = 4 N_d / a over the longest free stretch, 1500 mm.
+    assert!(bracing.axial_n > 0.0, "{bracing:?}");
+    close(bracing.force_n, bracing.axial_n / 80.0);
+    close(
+        bracing.stiffness_n_mm.expect("a stretch between braces"),
+        4.0 * bracing.axial_n / 1500.0,
+    );
 }
 
 /// Review 2026-11-04 r19 P3: a part of a load path's `fixed` tags counted as
@@ -1268,23 +1317,38 @@ fn battens_on_top_do_not_brace_the_bottom_a_hogging_moment_compresses() {
             .collect::<Vec<_>>()
             .join(", ")
     };
-    let ceiling = report(
-        &two_span_beam(&format!(
-            "box(\"ceiling a\", (5400, 1260, 20), at = (200, -260, 1980), material = \"OSB\")
+    let ceiling = |class: &str| {
+        report(
+            &two_span_beam(&format!(
+                "{class}box(\"ceiling a\", (5400, 1260, 20), at = (200, -260, 1980), material = \"OSB\")
 box(\"ceiling b\", (5400, 1260, 20), at = (6100, -260, 1980), material = \"OSB\")
 joint(\"ceiling a\", \"beam\", kind = \"screw\", fasteners = [{}])
 joint(\"ceiling a\", \"wall\", kind = \"screw\")
 joint(\"ceiling b\", \"beam\", kind = \"screw\", fasteners = [{}])
 joint(\"ceiling b\", \"wall\", kind = \"screw\")
 ",
-            screws(250, 5550),
-            screws(6150, 11450)
-        )),
-        &[],
+                screws(250, 5550),
+                screws(6150, 11450)
+            )),
+            &[],
+        )
+    };
+    // Review 2026-11-08 PG-242: a brace of a material without a strength class holds nothing.
+    let unknown = ceiling("");
+    assert!(ltb_not_verified(&unknown), "{:?}", member(&unknown, "beam"));
+    let osb = ceiling(
+        "timber_strength(\"OSB\", strength_class = \"OSB/3\", service_class = 1, glulam = False, product = \"osb3\", \
+         fm_k = 14.8, fv_k = 6.8, fc0_k = 15.9, fc90_k = 10, e0_mean = 4930, e0_05 = 4200, source = \"EN 12369-1\")\n",
     );
-    let beam = member(&ceiling, "beam");
+    let beam = member(&osb, "beam");
     assert_eq!(beam.missing, Vec::<String>::new(), "{beam:?}");
     assert_eq!(beam.status, "pass", "{:?}", beam.checks);
+    let edges: Vec<(&str, usize)> = beam
+        .bracing
+        .iter()
+        .map(|demand| (demand.edge.as_str(), demand.by.len()))
+        .collect();
+    assert_eq!(edges, [("top", 13), ("bottom", 2)], "{:?}", beam.bracing);
 }
 
 /// PG-105 (review 2026-11-01): loads on load-path members without
@@ -2422,15 +2486,67 @@ fn an_incomplete_load_reports_the_known_utilization_but_never_passes() {
 #[test]
 #[ignore = "large-house: runs in full suite"]
 fn large_house_every_member_of_the_house_has_a_utilization_and_passes_once_the_snow_is_given() {
+    // Review 2026-11-08 PG-243: at 30 degrees two 29 mm pieces of a gable stud
+    // over a plate pocket were checked as beams across the wall and failed in
+    // shear (1.997); PG-147: only a steep roof gives a trimmer lateral torsional
+    // buckling to check.
+    for pitch in [30.0, 50.0] {
+        let steep = report(HOUSE, &[("snow_sk", 1.5), ("roof_pitch", pitch)]);
+        assert!(steep.design.members.len() > 200);
+        every_member_passes(&steep, &format!("pitch {pitch}"));
+        if pitch == 50.0 {
+            assert!(
+                steep.design.members.iter().any(|member| member
+                    .checks
+                    .iter()
+                    .any(|check| check.name == "lateral_torsional" && check.utilization > 0.0)),
+                "no member at {pitch} degrees checks lateral torsional buckling"
+            );
+        }
+    }
     let with = report(HOUSE, &[("snow_sk", 1.5)]);
     let members = &with.design.members;
     assert_eq!(members.len(), with.loads.members.len());
     assert!(members.len() > 200, "{}", members.len());
     assert!(!with.design.basis.is_empty());
+    let spans = every_member_passes(&with, "pitch 40");
+    let columns = members.iter().filter(|m| m.role == "column").count();
+    assert!(columns > 50, "{columns}");
+    // Joists, rafters, headers and plates over gaps: fewer means checks were skipped.
+    assert!(spans >= 75, "{spans} of {}", members.len());
+    // The rafters sit on the wall plate with a birdsmouth: the notch is checked.
+    let rafter = member(&with, "konštrukcia/strecha južná/krokva 3");
+    for check in [
+        "bending",
+        "shear",
+        "deflection_fin",
+        "shear_notch",
+        "bearing",
+    ] {
+        assert!(utilization(rafter, check) > 0.0, "{check}");
+    }
+    // Without the site's snow nothing under the roof passes.
+    let without = report(HOUSE, &[]);
+    for member in &without.design.members {
+        assert!(member.utilization.is_some(), "{}", member.part);
+        if !member.missing.is_empty() {
+            assert_eq!(member.status, "not_verified", "{}", member.part);
+        }
+    }
+}
+
+/// Every member of `report` passes on every check of its role, run with a
+/// load; the number of members with a span.
+fn every_member_passes(report: &Report, case: &str) -> usize {
     let mut spans = 0;
-    for member in members {
-        assert_eq!(member.missing, Vec::<String>::new(), "{}", member.part);
-        assert_eq!(member.status, "pass", "{member:?}");
+    for member in &report.design.members {
+        assert_eq!(
+            member.missing,
+            Vec::<String>::new(),
+            "{case}: {}",
+            member.part
+        );
+        assert_eq!(member.status, "pass", "{case}: {member:?}");
         // A pass stands on every check of its role having run with a load,
         // not on checks that were skipped.
         // A plate bedded along its whole length has no span to bend; a beam
@@ -2466,29 +2582,7 @@ fn large_house_every_member_of_the_house_has_a_utilization_and_passes_once_the_s
             "{member:?}"
         );
     }
-    let columns = members.iter().filter(|m| m.role == "column").count();
-    assert!(columns > 50, "{columns}");
-    // Joists, rafters, headers and plates over gaps: fewer means checks were skipped.
-    assert!(spans >= 75, "{spans} of {}", members.len());
-    // The rafters sit on the wall plate with a birdsmouth: the notch is checked.
-    let rafter = member(&with, "konštrukcia/strecha južná/krokva 3");
-    for check in [
-        "bending",
-        "shear",
-        "deflection_fin",
-        "shear_notch",
-        "bearing",
-    ] {
-        assert!(utilization(rafter, check) > 0.0, "{check}");
-    }
-    // Without the site's snow nothing under the roof passes.
-    let without = report(HOUSE, &[]);
-    for member in &without.design.members {
-        assert!(member.utilization.is_some(), "{}", member.part);
-        if !member.missing.is_empty() {
-            assert_eq!(member.status, "not_verified", "{}", member.part);
-        }
-    }
+    spans
 }
 
 /// Review 2026-11-01 PG-106: kmod, kdef and gamma_M came from the rows of solid timber

@@ -33,6 +33,9 @@ The full example is [`examples/programs/cabinet.star`](../examples/programs/cabi
 statics, if it has any, are verified; 1 for an error-level issue or a failing member or
 joint; 3 when nothing fails but a member or joint is not verified or a load reaches no
 member (`statics_verdict` in the summary); 2 when the program cannot be evaluated.
+A `--set` name the program has no `param()` of is listed in `unused_overrides` and
+said on stderr with the parameter it likely means (`--set snowsk: the program has no
+parameter snowsk; did you mean snow_kn?`).
 
 The CLI/headless run returns the report below. MCP apply/patch returns a concise
 source diff, summary counts and bounded issue/relation previews. Retrieve complete
@@ -171,11 +174,39 @@ parts that hold the compressed edge (the top under sagging, the bottom under
 hogging), bear on a part declared `grounded=True` beside the beam (across it,
 beyond its side) and are fastened to both by `joint()`;
 `loads.members[].braced_by` lists them. A grounded part must be stiff sideways
-(a wall, not a hinged stud). Every `joint()` fastens its parts except of the kinds
-`none`, `contact`, `friction`, `unfastened`, `loose`, `free` and `rests`; a load
+(a wall, not a hinged stud). A joint's `kind` is read against a closed catalogue
+in English, Slovak, Czech and German (`ketchup-program/src/joint_kind.rs`), in any
+case, with `_` and `-` read as spaces, by its leading words, so a side, size or
+product after them counts as it does (`vrut 6x120`, `Schraube links`). Kinds such
+as `none`, `contact`, `friction`, `unfastened`, `loose`, `free`, `rests`, `volne`,
+`kontakt`, `dotyk`, `lose`, `frei` or `nichts` fasten nothing; when a kind starts
+with words of both catalogues (`lose Schraube`), it fastens nothing. Kinds such as
+`screw`, `hanger`, `glue`, `vrut`, `spojka` or `Balkenschuh` fasten. A kind of neither is
+taken to fasten and reported as `joint_kind_unknown`, and every check standing on
+it (the members it joins or braces, its joint check) is `not_verified`. A load
 path's `fixed` tag passes weight but braces nothing. A joint's `kind` may not be
 empty; one of five letters or more that reads like a slip of a kind fastening
 nothing (`contcat`, `contacts`) fastens and is reported as `joint_kind_doubtful`.
+A brace holds the beam only when its material has a timber strength class
+(`timber_design` or `timber_strength`, OSB with `product="osb3"`); one of mineral
+wool or any undeclared material holds nothing, and the not-verified reason names
+it. `design.members[].bracing` gives, for each edge something braces, what each
+brace must take after EN 1995-1-1 9.2.5.2: `axial_n` = (1 - kcrit) M_d / h with
+kcrit of the beam unbraced, `force_n` = N_d / 60 (solid timber) or / 80 (glulam)
+and `stiffness_n_mm` = 4 N_d / a over the longest free stretch. The braces, their
+anchorage and their fasteners are not checked against it, nor a bracing of
+several members (9.2.5.3); the design basis says so.
+Two declarations say what the geometry cannot. `diaphragm(sheets,
+anchored_to=[...])` makes sheets (parts or tags), such as a deck screwed only to
+its joists, one stiff plane anchored to grounded parts: when every anchor is
+declared grounded and fastened to one of the sheets, each sheet holds the members
+it is fastened to on the edge it lies on. `brace(members, by=[...], edge="top",
+spacing=None)` says which edge the parts `by` hold where they touch each member
+(a lath near mid-depth of a beam's side holds neither by itself), every `spacing`
+mm along the contact or at the joint's fasteners there. Each brace must still be
+fastened to the member and anchored: declared grounded, fastened to a grounded
+part, or a sheet of an anchored diaphragm. A declaration that holds nothing is
+reported as `declared_bracing_ignored` with the reason.
 A brace anchored to a grounded part smaller across the member than the member
 is deep is reported as `anchorage_small`. A brace holds the beam at its
 joint's `fasteners` that lie where the two parts touch, in any of their contacts

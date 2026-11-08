@@ -18,7 +18,9 @@ use crate::app::underlay_export::PublishGate;
 use crate::export_bundle::ExportTransactionError;
 use ketchup_manufacturing::dxf_annotations::MAX_PLAN_SCALE;
 use ketchup_manufacturing::project_drawings::DrawingSet;
-use ketchup_manufacturing::title_block::{SheetFormat, SheetLanguage, SheetSettings, TitleField};
+use ketchup_manufacturing::title_block::{
+    SheetFormat, SheetLanguage, SheetSettings, StoreyLevels, TitleField,
+};
 use ketchup_model::drawing::DrawingSheetId;
 use ketchup_model::drawing_export::{DxfCurves, SheetAnnotations};
 use serde_json::{Value, json};
@@ -58,7 +60,7 @@ impl LiveBridge {
     /// The export of the drawing sheet `request` names, checked; a client's
     /// runs it as a job (review 2026-11-06 P3).
     pub(super) fn sheet_export_of(
-        app: &KetchupApp,
+        app: &mut KetchupApp,
         request: Request,
         ui_busy: bool,
     ) -> Result<SheetExport, &'static str> {
@@ -74,6 +76,8 @@ impl LiveBridge {
             replace,
             take_over,
             zero_level_mm,
+            storeys,
+            zero_altitude_mm,
         } = request
         else {
             return Err(failure(
@@ -91,10 +95,12 @@ impl LiveBridge {
             || sheet_language.is_some()
             || take_over
             || zero_level_mm.is_some()
+            || storeys.is_some()
+            || zero_altitude_mm.is_some()
         {
             return Err(failure(
                 "invalid_params",
-                "format, title_block, plan_only, drawing_scale, sheet_language, zero_level_mm and take_over belong to the project sheets; a drawing sheet keeps its own page, views, scale and title block.",
+                "format, title_block, plan_only, drawing_scale, sheet_language, zero_level_mm, storeys, zero_altitude_mm and take_over belong to the project sheets; a drawing sheet keeps its own page, views, scale and title block.",
                 json!({"sheet_id": id}),
             ));
         }
@@ -114,6 +120,14 @@ impl LiveBridge {
         };
         if app.exact.task.is_some() {
             return Err(sheet_failed(&target, DrawingSheetExportError::Evaluating));
+        }
+        // Whether the file there is the document's own is told off the
+        // window, by its SHA-256; one there at all is asked about.
+        if replace
+            && std::fs::symlink_metadata(&target.path).is_ok()
+            && let Some(code) = replace_declined(app, &target.path)
+        {
+            return Err(code);
         }
         Ok(SheetExport {
             target,
@@ -170,11 +184,31 @@ fn not_its_own(path: &Path) -> &'static str {
     failure(
         "drawings_target_exists",
         format!(
-            "{} is not the file this document's last export wrote there (another program's, or changed since), so it is not replaced. Ask the user whether to replace it, and pass replace: true only when they agree; or export to another path.",
+            "{} is not the file this document's last export wrote there (another program's, or changed since), so it is not replaced. Export to another path, or export again with replace: true and the window asks the user whether to replace it.",
             path.display()
         ),
         json!({"path": path.display().to_string()}),
     )
+}
+
+/// The code refusing a client's `replace` or `take_over` of the file at
+/// `path`, which the export did not write, unless the user agrees in the
+/// window (review 2026-11-08 SEC-182). Before, the schema told the AI to ask
+/// and the flag alone replaced the file.
+fn replace_declined(app: &mut KetchupApp, path: &Path) -> Option<&'static str> {
+    app.authorize_overwrite(path, path.to_string_lossy().as_bytes())
+        .map_err(|rejection| {
+            failure(
+                "drawings_replace_declined",
+                format!(
+                    "{} {} was not replaced and nothing was written; export to another path, or ask the user again.",
+                    rejection.reason_text(),
+                    path.display()
+                ),
+                json!({"path": path.display().to_string()}),
+            )
+        })
+        .err()
 }
 
 /// The export transaction's own reason within `error`.
@@ -458,6 +492,38 @@ fn zero_level(value: &Value) -> Option<Option<i32>> {
         .map(Some)
 }
 
+/// The table of storeys a client names: a list of `{finished_floor_mm,
+/// structural_mm}` in whole millimetres, or `"auto"` (none kept) to find the
+/// storeys from the model; none for any other value.
+fn storey_table(value: &Value) -> Option<Vec<StoreyLevels>> {
+    if value == "auto" {
+        return Some(Vec::new());
+    }
+    serde_json::from_value::<Vec<StoreyLevels>>(value.clone())
+        .ok()
+        .filter(|table| !table.is_empty())
+}
+
+/// The altitude of ±0,000 a client names: whole millimetres, or `"none"`.
+fn zero_altitude(value: &Value) -> Option<Option<i32>> {
+    if value == "none" {
+        return Some(None);
+    }
+    value
+        .as_i64()
+        .and_then(|altitude| i32::try_from(altitude).ok())
+        .map(Some)
+}
+
+/// The table of storeys as an answer names it, and where its storeys came from.
+fn storeys_answer(settings: &SheetSettings) -> Value {
+    if settings.storeys.is_empty() {
+        json!("auto")
+    } else {
+        json!(settings.storeys)
+    }
+}
+
 /// Takes the project set export `request`: keeps its settings in the document
 /// and takes what the set is drawn from; [`finish_export`] writes what was
 /// drawn from it.
@@ -478,6 +544,8 @@ pub(super) fn start_export(
         replace,
         take_over,
         zero_level_mm,
+        storeys,
+        zero_altitude_mm,
     } = request
     else {
         return Err("invalid_request");
@@ -523,6 +591,30 @@ pub(super) fn start_export(
             })
         })
         .transpose()?;
+    let storeys = storeys
+        .as_ref()
+        .map(|value| {
+            storey_table(value).ok_or_else(|| {
+                failure(
+                    "invalid_params",
+                    "storeys is a list of {finished_floor_mm, structural_mm} in whole millimetres of the model, one per storey, or auto to find the storeys from the model.",
+                    json!({"storeys": value}),
+                )
+            })
+        })
+        .transpose()?;
+    let zero_altitude_mm = zero_altitude_mm
+        .as_ref()
+        .map(|value| {
+            zero_altitude(value).ok_or_else(|| {
+                failure(
+                    "invalid_params",
+                    "zero_altitude_mm is the altitude of ±0,000 above sea level in whole millimetres (245300 for 245,300 m), or none to write none.",
+                    json!({"zero_altitude_mm": value}),
+                )
+            })
+        })
+        .transpose()?;
     if app.exact.task.is_some() {
         return Err(failure(
             "drawings_unavailable",
@@ -548,11 +640,24 @@ pub(super) fn start_export(
     // this project's earlier set its list names; one saved there while the
     // set is drawn is kept (review 2026-10-18 MCP-3).
     let owner = app.drawing_set_owner();
-    let targets =
-        project_drawings_targets(target, file_format, &owner, take_over).map_err(export_failed)?;
+    let targets = match project_drawings_targets(target, file_format, &owner, false) {
+        Err(ProjectDrawingsError::SetOfAnotherProject { list, .. }) if take_over => {
+            if let Some(code) = replace_declined(app, &list) {
+                return Err(code);
+            }
+            project_drawings_targets(target, file_format, &owner, true)
+        }
+        targets => targets,
+    }
+    .map_err(export_failed)?;
     let existing = targets.get(target).map(String::as_str);
-    if file_format == SetFileFormat::Pdf && kept_unless_asked(app, target, existing, replace) {
-        return Err(not_its_own(target));
+    if file_format == SetFileFormat::Pdf && kept_unless_asked(app, target, existing, false) {
+        if !replace {
+            return Err(not_its_own(target));
+        }
+        if let Some(code) = replace_declined(app, target) {
+            return Err(code);
+        }
     }
     let previous = app.stored_sheet_settings().map_err(|reason| {
         failure(
@@ -581,6 +686,12 @@ pub(super) fn start_export(
     }
     if let Some(zero_level) = zero_level {
         settings.zero_level_mm = zero_level;
+    }
+    if let Some(storeys) = storeys {
+        settings.storeys = storeys;
+    }
+    if let Some(zero_altitude_mm) = zero_altitude_mm {
+        settings.zero_altitude_mm = zero_altitude_mm;
     }
     settings.title_block.extend(title_block);
     app.store_sheet_settings(settings);
@@ -668,6 +779,11 @@ pub(super) fn finish_export(
         "zero_level_mm": settings.zero_level_mm.map_or(json!("auto"), |height| json!(height)),
         // The height `auto` found, or the one set (review 2026-11-06 P3).
         "zero_level_used_mm": set.zero_level_mm,
+        // Given, or found from the faces of the model, which a layered floor
+        // misleads (review 2026-11-08 MF-241).
+        "storeys": storeys_answer(&settings),
+        "storeys_from": if settings.storeys.is_empty() { "model" } else { "table" },
+        "zero_altitude_mm": settings.zero_altitude_mm.map_or(json!("none"), |altitude| json!(altitude)),
         "title_block": settings.title_block,
         "basis": "visible_layers_exact_solids",
         "dirty": app.is_dirty(),
@@ -761,7 +877,7 @@ pub(super) fn export_failed(error: ProjectDrawingsError) -> &'static str {
             failure(
                 "drawings_set_of_another_project",
                 format!(
-                    "The drawing set listed in {} was exported from {}, not from this document, so none of its sheets is replaced. It has {has}. Ask the user: export to another folder or file name, or, if they agree to take that set over for this project, export again with take_over: true.",
+                    "The drawing set listed in {} was exported from {}, not from this document, so none of its sheets is replaced. It has {has}. Export to another folder or file name, or export again with take_over: true and the window asks the user whether to take that set over for this project.",
                     list.display(),
                     project.as_deref().unwrap_or("a project not saved"),
                 ),
@@ -804,6 +920,8 @@ mod tests {
                 replace: false,
                 take_over: false,
                 zero_level_mm: None,
+                storeys: None,
+                zero_altitude_mm: None,
             },
             false,
         )
@@ -843,7 +961,11 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let target = directory.path().join("sheet.pdf");
         std::fs::write(&target, b"user file").unwrap();
-        let mut app = KetchupApp::new();
+        let dialogs = crate::dialogs::ScriptedFileDialogs::new()
+            .queue_refused_high_risk()
+            .queue_high_risk_approval(9);
+        let probe = dialogs.clone();
+        let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
         let before = app.stored_sheet_settings().unwrap();
         let title = BTreeMap::from([(TitleField::Author, "AI".to_owned())]);
         // A file the window did not write is not replaced unless asked
@@ -859,7 +981,10 @@ mod tests {
             Err("drawings_target_exists")
         );
         assert_eq!(std::fs::read(&target).unwrap(), b"user file");
-        // Asked, it is still kept: the empty document has no exact solid to draw.
+        assert!(probe.high_risk_prompts().is_empty());
+        // replace: true asks the user in the window (review 2026-11-08
+        // SEC-182); declined, the file is kept. Agreed, it is still kept: the
+        // empty document has no exact solid to draw.
         let asked = Request::ExportDrawings {
             expected: None,
             path: target.display().to_string(),
@@ -872,11 +997,19 @@ mod tests {
             replace: true,
             take_over: false,
             zero_level_mm: None,
+            storeys: None,
+            zero_altitude_mm: None,
         };
+        assert_eq!(
+            LiveBridge::export_drawings(&mut app, asked.clone(), false),
+            Err("drawings_replace_declined")
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"user file");
         assert_eq!(
             LiveBridge::export_drawings(&mut app, asked, false),
             Err("drawings_unavailable")
         );
+        assert_eq!(probe.high_risk_prompts().len(), 2);
         assert_eq!(std::fs::read(&target).unwrap(), b"user file");
         assert_eq!(app.stored_sheet_settings().unwrap(), before);
         assert!(!app.drawings.unsaved);

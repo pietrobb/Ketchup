@@ -296,10 +296,10 @@ ODPORUCANY PRVY POKUS (priblizne 30-60 minut)
 7. Vyskusajte Move, Copy, Group/Component alebo pracu s viacerymi objektmi.
 8. Ulozte dokument, zavrite ho, znovu ho otvorte a skontrolujte vysledok.
 9. Ak je to pre vas relevantne, vyskusajte export do STEP alebo STL.
-10. Subor > Exportovat pre Viewer vytvori .ketchup-view. Dvojklik nanho ho otvori v programe
+10. Subor > Viewer > Exportovat balik vytvori .ketchup-view. Dvojklik nanho ho otvori v programe
     Ketchup Viewer, kde mozno pridat pripomienky a ulozit .ketchup-comments. Dvojklik na
     .ketchup-comments ho otvori vo Vieweri spolu s balikom .ketchup-view v tom istom priecinku.
-11. DWG: Subor > Importovat ohranicenu 2D podmnozinu DXF/DWG nacita aj vykres .dwg (prevedie
+11. DWG: Subor > Importovat > 2D kresba DXF/DWG nacita aj vykres .dwg (prevedie
     ho do DXF a ukaze, co sa nedalo precitat). Subor > Vykresy (PDF, DXF, DWG) zapise vykresovy
     list dokumentu ako DXF alebo DWG (AutoCAD 2018); kruhy a obluky idu ako skutocne kruznice
     a obluky, skryte hrany vo vlastnej hladine. Vykresovy list vytvorite cez Nahlad vykresu
@@ -510,7 +510,7 @@ Ketchup Viewer $Version
 Windows x64
 
 Ketchup Viewer opens a read-only .ketchup-view package exported from Ketchup
-(File > Export for Viewer). Unzip this folder anywhere and run KetchupViewer.exe,
+(File > Viewer > Export package). Unzip this folder anywhere and run KetchupViewer.exe,
 or drag a .ketchup-view onto it. It needs no installation, account or network.
 Language and the default projection are in the Settings menu.
 "@
@@ -616,16 +616,11 @@ try {
     if (Test-Path $tempRoot) { Remove-Item $tempRoot -Recurse -Force }
 }
 
-$checksums = @(
-    "$((Get-Sha256 $setupPath))  $([IO.Path]::GetFileName($setupPath))",
-    "$((Get-Sha256 $zipPath))  $([IO.Path]::GetFileName($zipPath))",
-    "$((Get-Sha256 $viewerZipPath))  $([IO.Path]::GetFileName($viewerZipPath))",
-    "$((Get-Sha256 $packageManifestPath))  payload/package-manifest.json"
-)
+$releaseAssets = @($setupPath, $zipPath, $viewerZipPath)
 if (-not [string]::IsNullOrWhiteSpace($DownloadedExamples)) {
-    $checksums += "$((Get-Sha256 $examplesPath))  $([IO.Path]::GetFileName($examplesPath))"
+    $releaseAssets += $examplesPath
 }
-Write-Utf8 (Join-Path $OutputDir "SHA256SUMS.txt") (($checksums -join "`r`n") + "`r`n")
+& (Join-Path $PSScriptRoot "write-checksums.ps1") -OutputDir $OutputDir -Assets $releaseAssets
 
 $signingResult = if ($Sign) { "AEON-signed payload and installer, " } else { "" }
 Write-Host "PASS: ${signingResult}portable archive, every DLL import shipped or part of Windows, third-party notices, exact payload hashes, worker handshake, headless build identity, document and Viewer file associations, and uninstall smoke test."

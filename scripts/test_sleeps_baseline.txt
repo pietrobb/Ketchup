@@ -34,7 +34,7 @@ crates/ketchup-app/tests/gravity_support_panel.rs 4
 crates/ketchup-app/tests/harness/mod.rs 1
 crates/ketchup-app/tests/headless_shell/move_scale_and_solid_tools.rs 3
 crates/ketchup-app/tests/headless_shell/profiles_selection_and_rotate.rs 8
-crates/ketchup-app/tests/live_bridge_bootstrap.rs 48
+crates/ketchup-app/tests/live_bridge_bootstrap.rs 17
 crates/ketchup-app/tests/live_bridge_image.rs 26
 crates/ketchup-app/tests/live_bridge_transactions.rs 1
 crates/ketchup-app/tests/performance_ai_house.rs 3

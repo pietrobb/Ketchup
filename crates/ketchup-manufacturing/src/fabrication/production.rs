@@ -62,6 +62,9 @@ pub fn instance_path_value(path: &InstancePath) -> Value {
     })
 }
 
+/// The highest code of 12 digits.
+const HIGHEST_PROGRAM_NUMBER: u64 = 999_999_999_999;
+
 impl GeneralFabricationProjection {
     /// A production code for every made piece a production job or HOMAG program
     /// names that has none a HOMAG program can be named by: 12 digits, counting on
@@ -93,8 +96,15 @@ impl GeneralFabricationProjection {
             {
                 continue;
             }
+            // Past the highest 12-digit code the count starts again from the
+            // lowest free one (review 2026-11-03 MF-142: it went on to 13
+            // digits, which name no program).
             let code = loop {
-                next += 1;
+                next = if next >= HIGHEST_PROGRAM_NUMBER {
+                    1
+                } else {
+                    next + 1
+                };
                 let code = format!("{next:012}");
                 if !used.contains(&code) {
                     break code;

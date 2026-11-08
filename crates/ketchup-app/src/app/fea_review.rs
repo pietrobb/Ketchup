@@ -78,13 +78,11 @@ impl KetchupApp {
                 ui.label(self.catalog.text("fea-review-limits"));
                 if let Some(review) = &pending.review {
                     ui.separator();
-                    ui.label(format!(
-                        "{}: {} · {}: {}",
-                        self.catalog.text("fea-review-converged"),
-                        review.converged,
-                        self.catalog.text("fea-review-within-limits"),
-                        review.all_levels_within_declared_limits
-                    ));
+                    ui.label(verdict(&self.catalog, review));
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        self.catalog.text("fea-review-isotropic"),
+                    );
                     for (index, level) in review.levels.iter().enumerate() {
                         ui.label(format!(
                             "L{}: {} nodes · {} tetra · u={:.6} mm · σvm={:.6} MPa · qmin={:.6}",
@@ -239,6 +237,19 @@ impl KetchupApp {
         }
         true
     }
+}
+
+/// Whether the review converged and stayed within its declared limits, these
+/// said to be of an isotropic material (review 2026-11-08 PG-246: a wooden
+/// member came out "within limits" against a von Mises yield of 250 MPa).
+fn verdict(catalog: &LocaleCatalog, review: &FeaReviewSummary) -> String {
+    format!(
+        "{}: {} · {}: {}",
+        catalog.text("fea-review-converged"),
+        review.converged,
+        catalog.text("fea-review-within-limits"),
+        review.all_levels_within_declared_limits
+    )
 }
 
 /// What one FEA review needs, owned so it runs on a thread.
@@ -442,7 +453,25 @@ mod tests {
             required_relative_tolerance: 0.01,
             converged: true,
             all_levels_within_declared_limits: true,
-            excluded_physics: ["", "", "", ""],
+            excluded_physics: ["", "", "", "", ""],
+        }
+    }
+
+    /// Review 2026-11-08 PG-246: a timber beam came out "within limits"
+    /// against a von Mises yield, without a word that the material is
+    /// isotropic. The verdict says so, and the warning names timber.
+    #[test]
+    fn the_fea_verdict_says_its_limits_are_of_an_isotropic_material() {
+        let app = KetchupApp::new();
+        let review = summary(&app, 1);
+        for (catalog, isotropic, timber) in [
+            (LocaleCatalog::english(), "isotropic", "timber"),
+            (LocaleCatalog::slovak(), "izotropn", "drevo"),
+        ] {
+            assert!(verdict(&catalog, &review).contains(isotropic));
+            let warning = catalog.text("fea-review-isotropic");
+            assert!(warning.contains(timber), "{warning}");
+            assert!(warning.contains("timber_design"), "{warning}");
         }
     }
 

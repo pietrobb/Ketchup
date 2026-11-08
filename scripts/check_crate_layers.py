@@ -8,7 +8,8 @@ Only normal `[dependencies]` count; tests may use any crate.
 No source module or integration-test file of any crate may exceed
 MAX_MODULE_LINES. Modules that were
 already larger are listed in OVERSIZED with their size: they may shrink but not
-grow, and an entry must be removed once its module fits the limit. Production
+grow, and an entry must be removed once its module fits the limit. A production
+module past FREEZE_AT_LINES must be listed in FROZEN_MODULES and may not grow. Production
 functions follow the same rule with MAX_FUNCTION_LINES and LONG_FUNCTIONS: a
 long function is split into named steps, never extended.
 
@@ -63,9 +64,35 @@ FROZEN_MODULES = {
     "crates/ketchup-app/src/lib.rs": 2352,
     "crates/ketchup-model/src/document.rs": 514,
     # They kept growing past 3 000 lines (review 2026-11-07 P3).
-    "crates/ketchup-manufacturing/src/fabrication.rs": 4787,
-    "crates/ketchup-model/src/import/dxf.rs": 4598,
+    "crates/ketchup-manufacturing/src/fabrication.rs": 4739,
+    "crates/ketchup-model/src/import/dxf.rs": 4500,
+    # Past FREEZE_AT_LINES when the check began to require it (review 2026-11-08 TST-253);
+    # live_bridge.rs and exact_worker.rs are the ones that review found growing.
+    "crates/ketchup-app/src/app/drawing.rs": 3798,
+    "crates/ketchup-app/src/app/structure.rs": 3390,
+    "crates/ketchup-app/src/app/transform.rs": 3876,
+    "crates/ketchup-app/src/app/viewport.rs": 4857,
+    "crates/ketchup-app/src/assembly_ui.rs": 3189,
+    "crates/ketchup-app/src/feature_history_ui.rs": 3257,
+    "crates/ketchup-app/src/live_bridge.rs": 3635,
+    "crates/ketchup-application/src/planner.rs": 4364,
+    "crates/ketchup-application/src/validation.rs": 4053,
+    "crates/ketchup-assistant/src/sidecar.rs": 4284,
+    "crates/ketchup-geometry/src/sketch.rs": 3058,
+    "crates/ketchup-headless/src/protocol.rs": 3373,
+    "crates/ketchup-model/src/drawing.rs": 4814,
+    "crates/ketchup-model/src/exact_product.rs": 4316,
+    "crates/ketchup-model/src/persistence.rs": 4330,
+    "crates/ketchup-model/src/persistence/legacy.rs": 4726,
+    "crates/ketchup-model/src/shared_change.rs": 3191,
+    "crates/ketchup-program/src/eval.rs": 3215,
+    "crates/ketchup-scheduler/src/exact_worker.rs": 4701,
+    "crates/ketchup-scheduler/src/lib.rs": 3268,
 }
+
+# A production module past this size must be listed in FROZEN_MODULES (review
+# 2026-11-08 TST-253), so it stops growing when it crosses it, not when a review finds it.
+FREEZE_AT_LINES = 3_000
 
 MAX_FUNCTION_LINES = 400
 
@@ -179,6 +206,16 @@ def oversized_modules(sizes, limit=MAX_MODULE_LINES, oversized=OVERSIZED):
         elif sizes[module] < recorded:
             problems.append(f"{module}: shrank to {sizes[module]} lines; lower OVERSIZED to it")
     return problems
+
+
+def unfrozen_large_modules(sizes, limit=FREEZE_AT_LINES, frozen=FROZEN_MODULES):
+    """Production modules past `limit` lines that FROZEN_MODULES does not list: the
+    check names one as it crosses the size, not a later review (review 2026-11-08 TST-253)."""
+    return [
+        f"{module}: {lines} lines, over {limit}; split it or add it to FROZEN_MODULES"
+        for module, lines in sorted(sizes.items())
+        if lines > limit and module not in frozen and not is_test_module(Path(module))
+    ]
 
 
 def grown_frozen_modules(sizes, frozen=FROZEN_MODULES):
@@ -365,7 +402,11 @@ CASTS_AND_ALLOWS = {
     # (review 2026-11-04 P3: the module-wide one let new unsafe code in), so 12 -> 14.
     # ReplaceFileW of live_bridge::mcp_config (review 2026-11-04 r19 P3: an AI client's
     # configuration is swapped in one step and keeps its ACL), so 14 -> 15.
-    "ketchup-app allows": 15,
+    # geteuid of live_bridge::mcp_config (review 2026-11-08 SEC-241: under sudo root writes
+    # only where the user the file is named for owns), so 15 -> 16.
+    # GetFileInformationByHandleEx(FileIdInfo) of app::written_drawings (review 2026-11-08:
+    # on ReFS the 64-bit file index does not tell one file from another), so 16 -> 17.
+    "ketchup-app allows": 17,
     "ketchup-app casts": 216,
     "ketchup-application allows": 9,
     "ketchup-application casts": 29,
@@ -591,6 +632,7 @@ def main():
     sizes = module_sizes(root)
     problems += oversized_modules(sizes)
     problems += grown_frozen_modules(sizes)
+    problems += unfrozen_large_modules(sizes)
     problems += oversized_functions(long_functions(root))
     problems += oversized_tests(long_tests(root))
     problems += milestone_named_tests(test_files(root))

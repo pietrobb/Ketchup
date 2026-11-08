@@ -90,22 +90,53 @@ fn exact_worker_path() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ketchup-performance-exact-worker"))
 }
 
+/// An open system handle, closed once when dropped.
+#[cfg(windows)]
+struct Handle(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+impl Drop for Handle {
+    fn drop(&mut self) {
+        // SAFETY: the handle was opened by the system, is valid and is closed
+        // only here, once.
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
+    }
+}
+
+/// The peak commit (`PeakPagedMemorySize64` in .NET) of process `pid`, asked
+/// of the system in this process: the PowerShell and WMI query it replaces
+/// could hang a CI job until its timeout (review 2026-11-08 CI-251). `None`
+/// once the process has exited.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn windows_memory_high_water_bytes(pid: u32) -> Option<u64> {
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    // SAFETY: takes no pointers; a null handle is checked below.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return None;
+    }
+    let process = Handle(process);
+    let size = u32::try_from(std::mem::size_of::<PROCESS_MEMORY_COUNTERS>()).ok()?;
+    let mut counters = PROCESS_MEMORY_COUNTERS {
+        cb: size,
+        ..PROCESS_MEMORY_COUNTERS::default()
+    };
+    // SAFETY: the process handle is open and `counters` is owned here with its size set.
+    let read = unsafe { GetProcessMemoryInfo(process.0, &mut counters, size) } != 0;
+    read.then(|| u64::try_from(counters.PeakPagefileUsage).ok())
+        .flatten()
+}
+
 #[cfg(windows)]
 fn process_memory_high_water_bytes() -> u64 {
-    let command = format!(
-        "[Console]::Write((Get-Process -Id {}).PeakPagedMemorySize64)",
-        std::process::id()
-    );
-    let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &command])
-        .output()
-        .expect("PowerShell must measure memory high-water");
-    assert!(output.status.success(), "memory high-water query failed");
-    String::from_utf8(output.stdout)
-        .expect("memory high-water must be UTF-8 digits")
-        .trim()
-        .parse()
-        .expect("memory high-water must be numeric")
+    windows_memory_high_water_bytes(std::process::id())
+        .expect("the system must report this process's memory high-water")
 }
 
 /// Total of [`process_tree_memory_high_waters`]; descendants of concurrent
@@ -120,59 +151,54 @@ fn process_tree_memory_high_water_bytes() -> u64 {
         })
 }
 
-/// Memory high-water of this process and of every live descendant, by PID.
+/// Memory high-water of this process and of every live descendant, by PID,
+/// from a system snapshot of the processes and their parents.
 #[cfg(windows)]
+#[allow(unsafe_code)]
 fn process_tree_memory_high_waters() -> Vec<(u32, u64)> {
-    let command = format!(
-        r#"$ErrorActionPreference = 'Stop'
-$root = [uint32]{}
-$self = [uint32]$PID
-$processes = @(Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId)
-$pending = [System.Collections.ArrayList]::new()
-[void]$pending.Add($root)
-$ids = [System.Collections.ArrayList]::new()
-while ($pending.Count -gt 0) {{
-    $id = [uint32]$pending[0]
-    $pending.RemoveAt(0)
-    if ($id -eq $self) {{ continue }}
-    [void]$ids.Add($id)
-    foreach ($child in $processes) {{
-        if ([uint32]$child.ParentProcessId -eq $id) {{
-            [void]$pending.Add([uint32]$child.ProcessId)
-        }}
-    }}
-}}
-foreach ($id in $ids) {{
-    # A descendant that exited after the listing no longer holds memory.
-    $process = Get-Process -Id $id -ErrorAction SilentlyContinue
-    if ($null -ne $process) {{
-        [Console]::WriteLine("$id $([uint64]$process.PeakPagedMemorySize64)")
-    }}
-}}
-# The exit code would otherwise be that of the last Get-Process, which fails
-# quietly for a descendant that just exited.
-exit 0"#,
-        std::process::id()
-    );
-    let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &command])
-        .output()
-        .expect("PowerShell must measure process-tree memory high-water");
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+
+    // SAFETY: takes no pointers; an invalid handle is checked below.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     assert!(
-        output.status.success(),
-        "process-tree memory high-water query failed:\n{}",
-        String::from_utf8_lossy(&output.stderr)
+        snapshot != INVALID_HANDLE_VALUE,
+        "the system must list the processes: {}",
+        std::io::Error::last_os_error()
     );
-    String::from_utf8(output.stdout)
-        .expect("process-tree memory high-water must be UTF-8 digits")
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| {
-            line.trim()
-                .split_once(' ')
-                .and_then(|(pid, bytes)| Some((pid.parse().ok()?, bytes.parse().ok()?)))
-                .unwrap_or_else(|| panic!("process-tree memory high-water line {line:?}"))
-        })
+    let snapshot = Handle(snapshot);
+    let mut entry = PROCESSENTRY32W {
+        dwSize: u32::try_from(std::mem::size_of::<PROCESSENTRY32W>()).unwrap(),
+        ..PROCESSENTRY32W::default()
+    };
+    let mut relationships = Vec::new();
+    // SAFETY: the snapshot is open and `entry` is owned here with its size set.
+    let mut more = unsafe { Process32FirstW(snapshot.0, &mut entry) } != 0;
+    while more {
+        relationships.push((entry.th32ProcessID, entry.th32ParentProcessID));
+        // SAFETY: as for Process32FirstW.
+        more = unsafe { Process32NextW(snapshot.0, &mut entry) } != 0;
+    }
+    let mut descendants = HashSet::from([std::process::id()]);
+    loop {
+        let previous_len = descendants.len();
+        for &(pid, parent) in &relationships {
+            // PID 0 lists itself as its own parent.
+            if pid != parent && descendants.contains(&parent) {
+                descendants.insert(pid);
+            }
+        }
+        if descendants.len() == previous_len {
+            break;
+        }
+    }
+    // A descendant that exited after the listing no longer holds memory.
+    descendants
+        .into_iter()
+        .filter_map(|pid| windows_memory_high_water_bytes(pid).map(|bytes| (pid, bytes)))
         .collect()
 }
 
@@ -367,8 +393,8 @@ fn memory_high_water_probe_child() {
     std::fs::write(&staged_path, high_water_before.to_string())
         .expect("stage memory probe baseline");
     std::fs::rename(&staged_path, &ready_path).expect("publish memory probe readiness");
-    // Held until the parent closes stdin after its process-tree query, however
-    // long that takes; the pipe also closes if the parent exits.
+    // Held until the parent ends this process after its process-tree query,
+    // however long that takes; the pipe also closes if the parent exits.
     std::io::Read::read_to_end(&mut std::io::stdin(), &mut Vec::new())
         .expect("wait for memory probe release");
     std::hint::black_box(&allocation);
@@ -381,6 +407,11 @@ fn memory_high_water_probe_child() {
 fn verify_memory_high_water_observes_child_allocation() {
     let directory = tempfile::tempdir().expect("memory probe directory");
     let ready_path = directory.path().join("ready");
+    // Files, not pipes: waiting for a pipe's end also waits for every process
+    // that inherited it (review 2026-11-08 CI-251).
+    let output_file = |name: &str| {
+        std::fs::File::create(directory.path().join(name)).expect("memory probe output file")
+    };
     let mut child = Command::new(std::env::current_exe().expect("test executable path"))
         .args([
             "--exact",
@@ -390,8 +421,8 @@ fn verify_memory_high_water_observes_child_allocation() {
         .env(MEMORY_PROBE_ENV, "1")
         .env(MEMORY_PROBE_READY_ENV, &ready_path)
         .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdout(output_file("stdout"))
+        .stderr(output_file("stderr"))
         .spawn()
         .expect("spawn isolated child memory high-water probe");
     // Wait for the child's answer, ready or exited, not for a fixed time: on
@@ -406,22 +437,25 @@ fn verify_memory_high_water_observes_child_allocation() {
     }
     let ready = ready_path.is_file();
     let hung = !ready && child.try_wait().expect("poll memory probe child").is_none();
-    if hung {
-        child.kill().expect("end hung memory probe child");
-    }
     let child_id = child.id();
     let child_in_tree = process_tree_memory_high_waters()
         .into_iter()
         .find_map(|(pid, bytes)| (pid == child_id).then_some(bytes));
-    drop(child.stdin.take()); // releases the child
-    let output = child
-        .wait_with_output()
+    // Ended, not released by closing its stdin: a copy of the pipe another
+    // process inherited would keep it waiting, and this test with it (review
+    // 2026-11-08 CI-251). Ready means its own check already passed.
+    child.kill().expect("end memory probe child");
+    let status = child
+        .wait()
         .expect("wait for child memory high-water probe");
+    drop(child.stdin.take());
+    let output =
+        |name: &str| std::fs::read_to_string(directory.path().join(name)).unwrap_or_default();
     assert!(
-        ready && output.status.success(),
-        "isolated child memory high-water probe failed (ready={ready}, hung={hung}):\n{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        ready,
+        "isolated child memory high-water probe failed (status={status}, hung={hung}):\n{}\n{}",
+        output("stdout"),
+        output("stderr")
     );
     let child_before: u64 = std::fs::read_to_string(&ready_path)
         .expect("read memory probe baseline")

@@ -228,6 +228,30 @@ def test_a_release_restoring_no_history_fails_while_another_restores_it(tmp_path
         assert named == (tag != "v0.3.1"), out
 
 
+def test_a_file_the_tests_saved_but_did_not_keep_fails_the_reads(tmp_path, monkeypatch, capsys):
+    # Review 2026-11-03 TST-122: a file Save could not keep was only logged, which libtest
+    # captures, so the reads lost it without a word. It leaves a `.lost` mark instead.
+    files = tmp_path / "files"
+    files.mkdir()
+    (files / "saved-108-a.ketchup").write_bytes(b"x")
+    (files / "lost-1.lost").write_text("Access is denied. (os error 5)", encoding="utf-8")
+
+    def run(command, **kwargs):
+        if "release-reader" in command:
+            history = Path(command[-1]) / "history"
+            history.mkdir(parents=True)
+            (history / "saved-108-a.ketchup").write_bytes(b"x")
+        return type("Done", (), {"returncode": 0})()
+
+    monkeypatch.setattr(checker.subprocess, "run", run)
+    monkeypatch.setattr(checker, "serde_enums", lambda tag: {})
+    monkeypatch.setattr(checker, "what_it_reads", lambda tag: ["108", "1", "0"])
+    monkeypatch.setattr(checker, "old_workspace", lambda tag, target: tmp_path)
+    monkeypatch.setattr(checker.tempfile, "TemporaryDirectory", lambda **kwargs: _Here(tmp_path))
+    assert checker.main(["--tag", "v0.3.1", "--files", str(files)]) == 1
+    assert "Access is denied. (os error 5)" in capsys.readouterr().out
+
+
 class _Here:
     def __init__(self, path):
         self.path = path

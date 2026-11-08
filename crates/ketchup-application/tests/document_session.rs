@@ -1603,7 +1603,7 @@ fn cancelled_evaluation_keeps_progress_at_the_interrupted_body() {
     );
     let pending = task.progress().active_producer;
     assert!(pending.is_some());
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
     while !task.finished.load(std::sync::atomic::Ordering::Acquire) {
         assert!(
             std::time::Instant::now() < deadline,

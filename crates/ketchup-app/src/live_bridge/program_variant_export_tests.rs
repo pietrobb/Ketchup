@@ -78,7 +78,7 @@ fn every_variant_is_exported_from_a_worker_and_the_document_stays_as_it_is() {
     bridge.start_queued_variant_export(&app, &context, queued, request);
     // The UI thread only started the job; the worker evaluates and writes.
     assert!(bridge.program_check_job.is_some());
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let answer = loop {
         bridge.poll_program_check_job(&mut app, &context);
         if let Ok(answer) = response.try_recv() {

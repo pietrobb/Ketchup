@@ -22,14 +22,15 @@ use super::{Annotation, AnnotationCounts, PlanAnnotations};
 use super::{
     DrawingSolid, DrawnView, ProjectDrawingError, ProjectView, SheetViews, Storey, VIEW_PAD_MM,
     ViewSummary, annotation_bounds, bounds, choose_layout_scale, draw_view, draw_view_on_page,
-    extent, floor_levels, format_at_scale, ground_floor_of, lerp, marked_floor_levels, solid_edges,
-    view_frames,
+    extent, finished_floors, floor_levels, format_at_scale, ground_floor_of, lerp,
+    marked_floor_levels, solid_edges, table_ground_floor, view_frames,
 };
 use crate::sheet_dxf::page_dxf;
 use crate::title_block::{
-    DEFAULT_COARSEST_SCALE, SheetFormat, TitleBlock, TitleField, draw_frame_and_title_block,
-    drawing_area,
+    DEFAULT_COARSEST_SCALE, SheetFormat, StoreyLevels, TitleBlock, TitleField,
+    draw_frame_and_title_block, drawing_area,
 };
+
 use ketchup_model::sheet_pdf::{Page, PdfInfo, pages_pdf};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -101,6 +102,14 @@ pub struct DrawingSetOptions {
     /// The height of ±0,000 the level marks are read against; the ground
     /// floor of the drawn solids when absent (see [`super::ground_floor`]).
     pub zero_level_mm: Option<f64>,
+    /// The table of storeys (review 2026-11-08 MF-241): when not empty,
+    /// ±0,000 is the ground storey's finished floor and the sections and
+    /// elevations mark each storey's finished floor and structure instead of
+    /// the floors found from the faces (the plans are the caller's, see
+    /// [`super::table_storeys`]).
+    pub storeys: Vec<StoreyLevels>,
+    /// Written after the ±0,000 mark, such as "= 245,300 m n. m. Bpv".
+    pub zero_altitude: Option<String>,
 }
 
 /// What a sheet of the set shows.
@@ -693,11 +702,16 @@ pub fn drawing_set_until(
     })
 }
 
-/// The height of ±0,000: where the options set it, else the ground floor.
+/// The height of ±0,000: where the options set it, else the ground floor, of
+/// the table of storeys when there is one.
 fn zero_level(solids: &[DrawingSolid], options: &DrawingSetOptions) -> f64 {
-    options
-        .zero_level_mm
-        .unwrap_or_else(|| ground_floor_of(&floor_levels(solids)))
+    options.zero_level_mm.unwrap_or_else(|| {
+        if options.storeys.is_empty() {
+            ground_floor_of(&floor_levels(solids))
+        } else {
+            table_ground_floor(&options.storeys)
+        }
+    })
 }
 
 /// The level marks of the sections and elevations (Měchenice MECH-6): ±0,000
@@ -715,10 +729,30 @@ fn section_levels(
     };
     let datum = zero_level(solids, options);
     let separator = options.decimal_separator;
-    let floors = marked_floor_levels(solids, stop).ok_or(ProjectDrawingError::Cancelled)?;
+    let floors = if options.storeys.is_empty() {
+        marked_floor_levels(solids, stop).ok_or(ProjectDrawingError::Cancelled)?
+    } else {
+        let mut floors = finished_floors(&options.storeys);
+        floors.extend(
+            options
+                .storeys
+                .iter()
+                .map(|storey| f64::from(storey.structural_mm)),
+        );
+        floors.sort_by(f64::total_cmp);
+        floors
+    };
     Ok(level_heights(datum, &floors, low[2], high[2])
         .into_iter()
-        .map(|height| (height, level_text(height - datum, separator)))
+        .map(|height| {
+            let mut text = level_text(height - datum, separator);
+            if let Some(altitude) = &options.zero_altitude
+                && text.starts_with('±')
+            {
+                text = format!("{text} {altitude}");
+            }
+            (height, text)
+        })
         .collect())
 }
 

@@ -318,11 +318,11 @@ fn number(value: Value, what: &str) -> anyhow::Result<f64> {
         .flatten()
         .ok_or_else(|| anyhow::anyhow!("{what} must be a number, got {}", value.get_type()))?
         .0;
-    if !number.is_finite() || number.abs() > MAX_COORDINATE_MM {
-        anyhow::bail!(
-            "{what} must be a finite number within ±{MAX_COORDINATE_MM} mm, got {number}"
-        );
-    }
+    anyhow::ensure!(
+        number.is_finite() && number.abs() <= MAX_COORDINATE_MM,
+        "{what} must be a finite number within ±{MAX_COORDINATE_MM} mm, got {}",
+        number_text(number)
+    );
     Ok(number)
 }
 
@@ -1741,6 +1741,7 @@ fn path_builtins(builder: &mut GlobalsBuilder) {
 
 mod annotations;
 mod assemblies;
+mod bracing;
 mod conditions;
 mod continuity;
 mod error_location;
@@ -1750,7 +1751,7 @@ mod face_cache;
 mod joints;
 mod machining;
 mod params;
-pub use params::{WHOLE_ONLY, is_whole_override, range_text};
+pub use params::{WHOLE_ONLY, is_whole_override, number_text, range_text};
 mod support;
 
 /// Booleans between parts and tool bodies.
@@ -2655,6 +2656,7 @@ fn globals() -> Globals {
     .with(machining::builtins)
     .with(assemblies::builtins)
     .with(conditions::builtins)
+    .with(bracing::builtins)
     .with(pricing::builtins)
     .with(continuity::builtins)
     .with(joints::builtins)
@@ -3125,6 +3127,7 @@ mod tests {
             .with(machining::builtins)
             .with(assemblies::builtins)
             .with(conditions::builtins)
+            .with(bracing::builtins)
             .with(pricing::builtins)
             .with(continuity::builtins)
             .with(joints::builtins)

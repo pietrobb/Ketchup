@@ -187,6 +187,12 @@ jobs:
       - name: clippy without features
         if: ${{ !cancelled() }}
         run: cargo clippy --locked $CRATES --all-targets -- -D warnings
+      # The panics and stderr writes clippy finds in production code may only become
+      # fewer (review 2026-11-08 TST-250), against the Linux counts. The Viewer's
+      # production targets have no winit platform on Linux, so the Windows job counts it.
+      - name: panics and stderr writes
+        if: ${{ !cancelled() && (runner.os == 'Linux') }}
+        run: python3 scripts/check_clippy_panics.py $CRATES
       # Every file the tests save also goes to KETCHUP_SAVED_FILES_DIR for the next step.
       - name: tests
         if: ${{ !cancelled() }}
@@ -257,9 +263,12 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 330 || 180 }}
     env:
+      # ketchup-mcp has Windows-only code (the ACL of its credential files,
+      # remote drives) that the job without OCCT never compiles (review
+      # 2026-11-08 CI-250).
       CRATES: >-
         -p ketchup-app -p ketchup-application -p ketchup-exact -p ketchup-headless
-        -p ketchup-scheduler -p ketchup-test-gpu
+        -p ketchup-mcp -p ketchup-scheduler -p ketchup-test-gpu
       NIGHTLY: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -298,6 +307,15 @@ jobs:
           key: ${{ steps.occt.outputs.cache-primary-key }}
       - name: clippy
         run: cargo clippy --locked $env:CRATES.Split(' ') --all-targets -- -D warnings
+      # Against the Windows counts; ketchup-mcp and ketchup-pdm, counted on Linux too,
+      # have code only Windows compiles (review 2026-11-08 CI-250).
+      # scripts/check_ci_crates.py fails on a crate with such code not counted here.
+      - name: panics and stderr writes
+        if: ${{ !cancelled() }}
+        run: >-
+          python scripts/check_clippy_panics.py -p ketchup-app -p ketchup-application
+          -p ketchup-exact -p ketchup-headless -p ketchup-mcp -p ketchup-pdm
+          -p ketchup-scheduler -p ketchup-test-gpu -p ketchup-viewer
       # The live MCP tests launch the debug application beside its worker.
       - name: workers, the headless CLI and the application for the tests
         if: ${{ !cancelled() }}
@@ -375,11 +393,14 @@ jobs:
         if: ${{ !cancelled() }}
         id: house
         run: python scripts/changes_reach_the_house.py
+      # The features of the tests step, so the step reuses its build instead of
+      # building the crates again (review 2026-11-03 CI-141); without
+      # KETCHUP_SAVED_FILES_DIR the feature keeps nothing.
       - name: large-house tests
         if: ${{ !cancelled() && (env.NIGHTLY == 'true' || steps.house.outputs.run == 'true') }}
         env:
           RUST_TEST_THREADS: 2
-        run: cargo test --locked $env:CRATES.Split(' ') --no-fail-fast -- --ignored large_house
+        run: cargo test --locked $env:CRATES.Split(' ') --features ketchup-model/saved-files --no-fail-fast -- --ignored large_house
       # The tests find the worker beside them, so it is built in release too.
       - name: release workers
         if: ${{ !cancelled() && (env.NIGHTLY == 'true') }}

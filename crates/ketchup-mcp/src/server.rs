@@ -487,7 +487,9 @@ impl<T: BorrowMut<Tools>> Session<T> {
             }
         }
         if running && let Err(error) = self.cancel.cancel() {
-            eprintln!("ketchup-mcp: the cancelled call {key} still waits for the window: {error}");
+            ketchup_rejection::log!(
+                "ketchup-mcp: the cancelled call {key} still waits for the window: {error}"
+            );
         }
     }
 }

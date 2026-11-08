@@ -44,6 +44,8 @@ fn export(path: &Path) -> Request {
         replace: false,
         take_over: false,
         zero_level_mm: None,
+        storeys: None,
+        zero_altitude_mm: None,
     }
 }
 

@@ -734,7 +734,9 @@ impl Tools {
         let failed = |error: std::io::Error| {
             let hint = if matches!(
                 error.kind(),
-                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::WouldBlock
+                std::io::ErrorKind::PermissionDenied
+                    | std::io::ErrorKind::WouldBlock
+                    | std::io::ErrorKind::ResourceBusy
             ) {
                 ""
             } else {

@@ -431,6 +431,16 @@ pub enum Request {
         /// (review 2026-11-04 r19 P3).
         #[serde(default)]
         zero_level_mm: Option<Value>,
+        /// The table of storeys, kept in the document: a list of
+        /// `{finished_floor_mm, structural_mm}`, or `"auto"` to find them from
+        /// the model; absent keeps the document's (review 2026-11-08 MF-241).
+        #[serde(default)]
+        storeys: Option<Value>,
+        /// The altitude of ±0,000 above sea level in whole millimetres, kept
+        /// in the document and written beside its level mark; `"none"`
+        /// writes none; absent keeps the document's.
+        #[serde(default)]
+        zero_altitude_mm: Option<Value>,
     },
     /// Imports a STEP, IGES, STL, DXF, GLB or SketchUp scene file as one Undo step;
     /// `as_underlay` keeps a DXF or DWG drawing under the model as an underlay instead.
@@ -960,6 +970,81 @@ fn save_failed(app: &KetchupApp, save_failure: SaveFailure) -> &'static str {
             failure(code, app.action_digest(), json!({}))
         }
     }
+}
+
+/// Where a client may save the document as (review 2026-11-08 SEC-240): a
+/// Ketchup document, `.ketchup`, never a hidden file, and in a folder of this
+/// document or of **Open Recent** unless the user agrees in the window. Before,
+/// any name in any folder was written, such as a startup folder or `~/.ssh`,
+/// and the next Ctrl+S wrote there again. A file already there is asked about
+/// as replacing it. The code refusing it, its reason recorded, or none; a path
+/// that is not local and absolute is `invalid_path`.
+fn save_as_refusal(app: &mut KetchupApp, path: &str) -> Option<&'static str> {
+    if !drawings::local_absolute_path(path) {
+        return Some("invalid_path");
+    }
+    let path = Path::new(path);
+    if path
+        .file_name()
+        .is_some_and(|name| name.to_string_lossy().starts_with('.'))
+    {
+        return Some(failure(
+            "invalid_path",
+            "save_as writes no hidden file: the name begins with a dot. Name the document like plan.ketchup.",
+            json!({"path": path}),
+        ));
+    }
+    if !path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("ketchup"))
+    {
+        return Some(failure(
+            "invalid_path",
+            "save_as writes a Ketchup document, whose name ends in .ketchup; export other formats with file action=export.",
+            json!({"path": path}),
+        ));
+    }
+    let folder = path.parent();
+    let same = |known: &Path| {
+        Some(known) == folder
+            || cfg!(windows)
+                && folder.is_some_and(|folder| {
+                    folder.to_string_lossy().to_lowercase()
+                        == known.to_string_lossy().to_lowercase()
+                })
+    };
+    let known = app
+        .file
+        .path
+        .iter()
+        .chain(app.recent_files())
+        .filter_map(|file| file.parent())
+        .any(same);
+    if known || path.exists() {
+        return None;
+    }
+    let title = app.catalog.text("dialog-save-as-new-folder-title");
+    let risk = app.catalog.text("dialog-save-as-new-folder-risk");
+    app.side_effect_receipts.clear();
+    app.authorize_path_side_effect(
+        crate::HighRiskClass::CapabilityExpansion,
+        "save-document-in-new-folder",
+        &title,
+        &risk,
+        path,
+        path.to_string_lossy().as_bytes(),
+    )
+    .map_err(|rejection| {
+        failure(
+            "save_declined",
+            format!(
+                "{} The folder is neither this document's nor one in Open Recent; ask the user to save there, or save beside the document.",
+                rejection.reason_text()
+            ),
+            json!({"path": path}),
+        )
+    })
+    .err()
 }
 
 fn program_owned(app: &KetchupApp) -> bool {
@@ -3419,8 +3504,8 @@ impl LiveBridge {
             Request::SaveAs { expected, path } => {
                 Self::guard(app, &expected)?;
                 Self::available(app, ui_busy)?;
-                if !drawings::local_absolute_path(&path) {
-                    return Err("invalid_path");
+                if let Some(refused) = save_as_refusal(app, &path) {
+                    return Err(refused);
                 }
                 app.save_document_to_while(Path::new(&path), || !cancelled.load(Ordering::Acquire))
                     .map_err(|save_failure| save_failed(app, save_failure))?;

@@ -14,6 +14,7 @@ ketchup-program = { path = "../ketchup-program" }
 ketchup-rejection = { path = "../ketchup-rejection" }
 serde_json = "1.0"
 sha2 = "0.10.9"
+unicode-normalization = "0.1.24"
 
 [dev-dependencies]
 tempfile = "3.23.0"

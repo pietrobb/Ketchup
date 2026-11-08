@@ -1,6 +1,7 @@
 //! Single integration test binary for this crate: every `tests/*.rs` file is a
 //! module here, so the crate links one test executable instead of one per file.
 
+mod bracing_edge;
 mod buildup;
 mod cnc_dxf;
 mod components;

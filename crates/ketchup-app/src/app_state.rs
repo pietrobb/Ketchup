@@ -61,6 +61,10 @@ pub(crate) struct LiveState {
     pub(crate) edits: live_bridge::window_edit::WindowEdits,
     /// What Claude Code and Codex start as `ketchup`, read when Connect AI opens.
     pub(crate) harnesses: Option<Vec<crate::live_bridge::mcp_setup::HarnessRow>>,
+    /// How the rows are read, off the window's thread.
+    pub(crate) harness_rows: fn(&std::path::Path) -> Vec<crate::live_bridge::mcp_setup::HarnessRow>,
+    /// The rows being read, or a client being set up.
+    pub(crate) harness_work: Option<crate::app::connect_ai::HarnessWork>,
     /// Why Connect could not make this the window a `connect` without an id
     /// goes to (#2687 point 16); the AI then asks which window.
     pub(crate) chosen_window_error: Option<std::io::Error>,
@@ -207,6 +211,9 @@ pub(crate) struct BtlxSaving {
     pub(crate) worker: Option<std::thread::JoinHandle<std::io::Result<()>>>,
     /// They changed while the worker kept them, so are kept again after.
     pub(crate) again: bool,
+    /// Each key and value as last read or kept by this window, so it keeps
+    /// only what it changed (review 2026-11-08).
+    pub(crate) kept: Vec<(&'static str, String)>,
 }
 
 /// Which side panes and windows are open.

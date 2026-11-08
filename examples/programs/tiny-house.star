@@ -163,21 +163,6 @@ WALLS = {
     "east": (gable("steny/štít východ", L - WALL), (L - WALL, 0, SLAB), (0, 1, 0)),
 }
 
-# Okná a dvere z knižnice: jedna definícia dáva otvor v každej skladbe tej steny, výrez
-# v stene konceptu aj rám s výplňou (spoločné pre obe reprezentácie); v kovaní je každé raz.
-# Stena, druh, názov, u (od začiatku steny), v (od SLAB), šírka, výška. Západný štít pri
-# nástupe na schody a východný štít nad posteľou okno v danom podlaží nemajú.
-OPENINGS = {side: [] for side in WALLS}
-for side, kind, name, u, v, width, height in [
-        ("south", "dvere", "dvere", 800, 0, 900, 2100),
-        ("south", "okno", "okná/obývačka juh", 3500, 750, 1800, 1350),
-        ("north", "okno", "okná/kuchyňa sever", L - 5400, 1000, 1000, 1100),
-        ("west", "okno", "okná/podkrovie západ", B - 2500, attic + 500 - SLAB, 1000, 1100),
-        ("east", "okno", "okná/prízemie východ", 1400, 750, 1200, 1350)]:
-    wall, origin, along = WALLS[side]
-    make, fill = (door, "drevo") if kind == "dvere" else (window, "izolačné sklo")
-    OPENINGS[side].append(make(name, origin, along, (0, 0, 1), WALL, u, v, width, height, material = "drevo",
-                               fill_material = fill, designation = kind + " {width} × {height}", cut = wall))
 
 # --- koncept: strop / podlaha podkrovia s otvormi pre schody a komín ---
 attic_floor = box("podkrovie/podlaha", (L - 2 * WALL, B - 2 * WALL, FLOOR), at = (WALL, WALL, ceiling),
@@ -304,6 +289,35 @@ d_ridge = B / 2.0 - RIDGE_W / 2.0     # bok väznice
 apex = roof_z(B / 2.0, G + R)         # hrebeň krokiev pod debnením
 ridge_top = roof_z(B / 2.0, G)        # vrch väznice, na ňom sú krokvy osedlané
 ridge_bottom = ridge_top - RIDGE_H
+
+# Okná a dvere z knižnice: jedna definícia dáva otvor v každej skladbe tej steny, výrez
+# v stene konceptu aj rám s výplňou (spoločné pre obe reprezentácie); v kovaní je každé raz.
+# Stena, druh, názov, u (od začiatku steny), v (od SLAB), šírka, výška. Západný štít pri
+# nástupe na schody a východný štít nad posteľou okno v danom podlaží nemajú.
+GABLE_SILL = 500                      # parapet okna v štíte nad podlahou podkrovia
+GABLE_WINDOW = (1500, 2500)           # okno v štíte od južného líca (y)
+
+def gable_window_height(wanted):
+    """Výška okna v štíte: nad prekladom ostane pod hornou pásnicou a kapsou väznice
+    stĺpik aspoň taký dlhý, ako je široký, takže pri malom sklone je okno nižšie
+    (review 2026-11-08 PG-243: pri 30° tam ostali kúsky 29 a 46 mm)."""
+    stud = WALL_LAYERS[2]["stud"]
+    edge = min(GABLE_WINDOW[0], B - GABLE_WINDOW[1])
+    under = min(roof_z(edge, G) - stud / cos_a, ridge_bottom - stud) - attic
+    return min(wanted, int((under - GABLE_SILL - HEADER - stud) // 10) * 10)
+
+OPENINGS = {side: [] for side in WALLS}
+for side, kind, name, u, v, width, height in [
+        ("south", "dvere", "dvere", 800, 0, 900, 2100),
+        ("south", "okno", "okná/obývačka juh", 3500, 750, 1800, 1350),
+        ("north", "okno", "okná/kuchyňa sever", L - 5400, 1000, 1000, 1100),
+        ("west", "okno", "okná/podkrovie západ", B - GABLE_WINDOW[1], attic + GABLE_SILL - SLAB,
+         GABLE_WINDOW[1] - GABLE_WINDOW[0], gable_window_height(1100)),
+        ("east", "okno", "okná/prízemie východ", 1400, 750, 1200, 1350)]:
+    wall, origin, along = WALLS[side]
+    make, fill = (door, "drevo") if kind == "dvere" else (window, "izolačné sklo")
+    OPENINGS[side].append(make(name, origin, along, (0, 0, 1), WALL, u, v, width, height, material = "drevo",
+                               fill_material = fill, designation = kind + " {width} × {height}", cut = wall))
 
 # Platformová drevostavba: steny prízemia končia hornou pásnicou, na nej leží strop
 # (stropnice s obvodovým vencom a OSB) a na jeho podlahe stoja nadmurovky a štíty

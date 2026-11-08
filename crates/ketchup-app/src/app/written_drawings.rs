@@ -92,12 +92,9 @@ fn identity_of(path: &Path) -> std::io::Result<String> {
     }
     #[cfg(windows)]
     {
-        let information = winapi_util::file::information(std::fs::File::open(path)?)?;
-        Ok(format!(
-            "{:x}:{:x}",
-            information.volume_serial_number(),
-            information.file_index()
-        ))
+        let file = std::fs::File::open(path)?;
+        let serial = winapi_util::file::information(&file)?.volume_serial_number();
+        Ok(windows_identity(serial, file_id_128(&file)?))
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -106,6 +103,45 @@ fn identity_of(path: &Path) -> std::io::Result<String> {
             format!("{} names no file identity on this system", path.display()),
         ))
     }
+}
+
+/// A file's identity on Windows: its volume's serial number and its 128-bit file id,
+/// which on NTFS is its 64-bit file index and reads as it did (review 2026-11-08: on
+/// ReFS the index alone does not tell one file from another).
+#[cfg(windows)]
+fn windows_identity(serial: u64, file_id: [u8; 16]) -> String {
+    format!("{serial:x}:{:x}", u128::from_le_bytes(file_id))
+}
+
+/// The 128-bit id of `file` on its volume (`FileIdInfo`).
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn file_id_128(file: &std::fs::File) -> std::io::Result<[u8; 16]> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ID_128, FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
+    };
+    let mut information = FILE_ID_INFO {
+        VolumeSerialNumber: 0,
+        FileId: FILE_ID_128 {
+            Identifier: [0; 16],
+        },
+    };
+    let size = u32::try_from(std::mem::size_of::<FILE_ID_INFO>()).map_err(std::io::Error::other)?;
+    // SAFETY: `information` is a writable FILE_ID_INFO of `size` bytes, and the handle is
+    // the open `file`'s for the whole call.
+    let read = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileIdInfo,
+            std::ptr::from_mut(&mut information).cast(),
+            size,
+        )
+    };
+    if read == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(information.FileId.Identifier)
 }
 
 /// The saved document whose drawings are kept: its file's canonical path,
@@ -244,14 +280,17 @@ impl KetchupApp {
     }
 
     fn set_token(&mut self, token: String) {
-        let entry = ketchup_model::persistence::ExtensionEntry::new(
+        // Only the two constants can be refused; the save tests write the token
+        // (review 2026-11-08 MF-247: an `.expect` here went into the baseline).
+        match ketchup_model::persistence::ExtensionEntry::new(
             SHEET_NAMESPACE,
             TOKEN_PATH,
             false,
             token.into_bytes(),
-        )
-        .expect("the drawings namespace and the token's path are valid");
-        self.file.container_data.set_extension(entry);
+        ) {
+            Ok(entry) => self.file.container_data.set_extension(entry),
+            Err(error) => ketchup_rejection::log!("the drawings token is not kept: {error}"),
+        }
     }
 
     /// Before the document is saved as `path`: saved as a file other than
@@ -630,5 +669,29 @@ mod tests {
         std::fs::remove_file(&drawing).unwrap();
         forget(&store, &owner, &gone);
         assert!(store.values(DRAWING).is_empty());
+    }
+
+    /// Review 2026-11-08 (ReFS, a weak deferral): a file was known by its 64-bit file
+    /// index, which on ReFS does not tell it from another; its 128-bit id does. On NTFS
+    /// the id reads as the index did, so a line kept before still names its file.
+    #[cfg(windows)]
+    #[test]
+    fn a_file_is_known_by_its_128_bit_id_which_on_ntfs_reads_as_its_index() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("plan.ketchup");
+        std::fs::write(&path, b"x").unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let information = winapi_util::file::information(&file).unwrap();
+        assert_eq!(
+            identity_of(&path).unwrap(),
+            format!(
+                "{:x}:{:x}",
+                information.volume_serial_number(),
+                information.file_index()
+            )
+        );
+        let id = |high: u64| (u128::from(high) << 64 | 7).to_le_bytes();
+        assert_eq!(windows_identity(0xAB, id(0)), "ab:7");
+        assert_eq!(windows_identity(0xAB, id(1)), "ab:10000000000000007");
     }
 }

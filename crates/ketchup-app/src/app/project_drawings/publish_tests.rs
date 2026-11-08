@@ -9,7 +9,7 @@ use crate::export_bundle::ExportTransactionError;
 use ketchup_model::document::DocumentId;
 use ketchup_model::graph::sha256_hex;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A failed set export put back what it had written with `let _ =`, so a
 /// sheet it could not put back was left half written while the answer said
@@ -369,4 +369,79 @@ fn a_0_3_2_list_is_the_projects_by_its_file_on_disk_not_by_the_spelling_of_its_p
     };
     publish_noted(&path, format, &[b"moved again".to_vec()], &mut moved).unwrap();
     assert_eq!(std::fs::read(&sheets[0]).unwrap(), b"moved again");
+}
+
+/// Review 2026-11-08 MF-243: a list of Kečup 0.3.2 was the project's by the
+/// name of its file alone, so a copy of the project in another folder,
+/// exporting into the original's drawings folder, replaced its drawings. The
+/// file the list names is the project's when it lies where the project lies
+/// from the list, wherever both were moved together; a copy elsewhere is
+/// another project.
+#[test]
+fn a_copy_of_a_0_3_2_project_in_another_folder_does_not_take_the_originals_set() {
+    let directory = tempfile::tempdir().unwrap();
+    let shared = directory.path().join("shared");
+    std::fs::create_dir(&shared).unwrap();
+    let path = shared.join("house.dxf");
+    let format = SetFileFormat::Dxf;
+    let sheets = set_file_paths(&path, format, 1);
+    let list_path = set_list_path(&path, format);
+    let write_list = |project: &Path| {
+        std::fs::write(&sheets[0], b"original").unwrap();
+        std::fs::write(
+            &list_path,
+            format!(
+                "Ketchup drawing set of a project file\ndocument 42\nproject {}\nhouse-01.dxf {}\n",
+                project.display(),
+                sha256_hex(b"original")
+            ),
+        )
+        .unwrap();
+    };
+    let owner = |file: PathBuf| SetOwner {
+        document: DocumentId(42),
+        file: Some(file),
+        token: None,
+        written: BTreeMap::new(),
+    };
+    let original = directory.path().join("a").join("House.ketchup");
+    // A copy in a folder above the drawings is where the original would be
+    // had both been moved together, which no file opened tells apart
+    // (2026-11-06 P3); one in a folder beside them is not.
+    for copy in [
+        directory.path().join("b").join("House.ketchup"),
+        directory.path().join("c").join("d").join("House.ketchup"),
+    ] {
+        write_list(&original);
+        assert!(
+            matches!(
+                publish_noted(&path, format, &[b"copy".to_vec()], &mut owner(copy.clone())),
+                Err(ProjectDrawingsError::SetOfAnotherProject { .. })
+            ),
+            "{} took the set of {}",
+            copy.display(),
+            original.display()
+        );
+        assert_eq!(std::fs::read(&sheets[0]).unwrap(), b"original");
+    }
+
+    // Moved with its drawings: `a\House.ketchup` with `a\..\shared` is now
+    // `moved\House.ketchup` with `moved\..\shared`, as one folder up from it.
+    let moved_shared = directory.path().join("moved").join("shared");
+    std::fs::create_dir_all(&moved_shared).unwrap();
+    let moved_path = moved_shared.join("house.dxf");
+    let moved_sheets = set_file_paths(&moved_path, format, 1);
+    std::fs::write(&moved_sheets[0], b"original").unwrap();
+    std::fs::write(
+        set_list_path(&moved_path, format),
+        format!(
+            "Ketchup drawing set of a project file\ndocument 42\nproject {}\nhouse-01.dxf {}\n",
+            directory.path().join("House.ketchup").display(),
+            sha256_hex(b"original")
+        ),
+    )
+    .unwrap();
+    let mut moved = owner(directory.path().join("moved").join("House.ketchup"));
+    publish_noted(&moved_path, format, &[b"moved".to_vec()], &mut moved).unwrap();
+    assert_eq!(std::fs::read(&moved_sheets[0]).unwrap(), b"moved");
 }

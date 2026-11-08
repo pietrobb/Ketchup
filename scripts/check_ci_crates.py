@@ -26,6 +26,10 @@ A feature a crate declares off by default is linted with it on by some `cargo
 clippy` (review 2026-11-01 TST-102: the code behind `saved-files` was never
 linted), except `testing`, which a crate's own tests turn on through its
 dev-dependencies.
+
+A crate with code only Windows compiles has its panics and stderr writes counted
+(scripts/check_clippy_panics.py) by a job on Windows, since clippy elsewhere never
+sees that code (review 2026-11-08 CI-250).
 """
 
 import re
@@ -66,6 +70,11 @@ OCCT_CRATE = "ketchup-exact"
 OCCT_SYSTEMS = {"Linux", "Windows"}
 # Crates whose code compiles for one system only.
 SYSTEM_ONLY = {"ketchup-viewer-macos": {"macOS"}, "ketchup-macos-open": {"macOS"}}
+PANICS = re.compile(r"\bcheck_clippy_panics\.py\b([^\n;|&]*)")
+# Code only Windows compiles, which clippy on another system never sees (review 2026-11-08 CI-250).
+# `cfg!(windows)` is not: both of its branches compile everywhere.
+WINDOWS_CODE = re.compile(r'#!?\[cfg(?:_attr)?\(.*(?:\bwindows\b|target_os\s*=\s*"windows")')
+TEST_FILE = re.compile(r"(?:^|_)tests?\.rs$")
 # libtest options that take the next word as their value.
 VALUE_OPTIONS = {"--skip", "--test-threads", "--format", "--color", "--logfile", "-Z", "--shuffle-seed"}
 
@@ -199,27 +208,63 @@ def step_systems(step, systems):
     return systems
 
 
-def cargo_crates(workflows, subcommand, system=None):
-    """Every crate a running `cargo <subcommand>` names, directly or through its job's CRATES list.
-
-    With a system, only the runs on that system count.
-    """
-    crates = set()
+def pull_request_runs(workflows, system=None):
+    """The job's CRATES list and the step's commands, each on one line, of every step
+    that can fail a pull request; with a system, only the steps on that system."""
     for workflow in workflows:
         nightly = nightly_variables(workflow)
         for job in jobs(workflow):
             listed = set(PACKAGE_FLAG.findall("".join(CRATE_LIST.findall(job))))
             systems = job_systems(job)
             for step in pull_request_steps(job, nightly):
-                if system is not None and system not in step_systems(step, systems):
-                    continue
-                for name, arguments, test_arguments in CARGO.findall(CONTINUATION.sub(" ", folded(step))):
-                    if name != subcommand or (name == "test" and narrowed(test_arguments)):
-                        continue
-                    crates |= set(PACKAGE_FLAG.findall(arguments))
-                    if "CRATES" in arguments:
-                        crates |= listed
+                if system is None or system in step_systems(step, systems):
+                    yield listed, CONTINUATION.sub(" ", folded(step))
+
+
+def cargo_crates(workflows, subcommand, system=None):
+    """Every crate a running `cargo <subcommand>` names, directly or through its job's CRATES list.
+
+    With a system, only the runs on that system count.
+    """
+    crates = set()
+    for listed, step in pull_request_runs(workflows, system):
+        for name, arguments, test_arguments in CARGO.findall(step):
+            if name != subcommand or (name == "test" and narrowed(test_arguments)):
+                continue
+            crates |= set(PACKAGE_FLAG.findall(arguments))
+            if "CRATES" in arguments:
+                crates |= listed
     return crates
+
+
+def panics_counted(workflows, system):
+    """Every crate whose panics and stderr writes a step on the system counts."""
+    crates = set()
+    for listed, step in pull_request_runs(workflows, system):
+        for arguments in PANICS.findall(step):
+            crates |= set(PACKAGE_FLAG.findall(arguments)) | (listed if "CRATES" in arguments else set())
+    return crates
+
+
+def crates_with_windows_code(root):
+    """The members whose sources, outside a test file, have code for Windows only."""
+    return {
+        name
+        for name, directory in workspace_members(root).items()
+        if any(
+            WINDOWS_CODE.search(path.read_text(encoding="utf-8"))
+            for path in (directory / "src").rglob("*.rs")
+            if not TEST_FILE.search(path.name)
+        )
+    }
+
+
+def windows_code_uncounted(with_windows_code, counted):
+    return [
+        f"{crate}: has code only Windows compiles, but no CI job on Windows counts its panics and"
+        " stderr writes; add it to the Windows job's scripts/check_clippy_panics.py"
+        for crate in sorted(with_windows_code - counted)
+    ]
 
 
 def crate_features(root):
@@ -324,6 +369,7 @@ def main():
         crates_with_tests(root),
     )
     problems += unlinted_features(crate_features(root), linted_features(workflows))
+    problems += windows_code_uncounted(crates_with_windows_code(root), panics_counted(workflows, "Windows"))
     for problem in problems:
         print(problem)
     if not problems:

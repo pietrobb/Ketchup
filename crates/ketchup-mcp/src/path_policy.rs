@@ -87,6 +87,9 @@ const DATA_VOLUME: [&str; 3] = ["system", "volumes", "data"];
 pub(crate) struct Mount {
     on: Vec<String>,
     local: bool,
+    /// A Linux `proc` file system, whose links to a process's root, working
+    /// directory or files lead the kernel to the object, not to their text.
+    proc: bool,
 }
 
 impl Mount {
@@ -98,8 +101,19 @@ impl Mount {
         Self {
             on: lexical_components(on),
             local,
+            proc: false,
         }
     }
+}
+
+/// The mount `components` lie on: the deepest, and of two at one point the
+/// later, on top (systemd's autofs trigger under binfmt_misc); `max_by_key`
+/// keeps the last of equals.
+fn mount_of<'a>(components: &[String], mounts: &'a [Mount]) -> Option<&'a Mount> {
+    mounts
+        .iter()
+        .filter(|mount| components.starts_with(&mount.on))
+        .max_by_key(|mount| mount.on.len())
 }
 
 fn local_mounted_path(path: &str, mounts: &[Mount], automounted: &[&str]) -> bool {
@@ -112,14 +126,7 @@ fn local_mounted_path(path: &str, mounts: &[Mount], automounted: &[&str]) -> boo
             !components
                 .first()
                 .is_some_and(|top| automounted.contains(&top.as_str()))
-                // The table lists mounts in mount order, so of two at one point the
-                // later is on top (systemd's autofs trigger under binfmt_misc);
-                // `max_by_key` keeps the last of equals.
-                && mounts
-                    .iter()
-                    .filter(|mount| components.starts_with(&mount.on))
-                    .max_by_key(|mount| mount.on.len())
-                    .is_none_or(|mount| mount.local)
+                && mount_of(components, mounts).is_none_or(|mount| mount.local)
         })
 }
 
@@ -157,6 +164,14 @@ fn physically_local_path(
                     return false;
                 }
                 let target = target.to_string_lossy();
+                // procfs's own links (`self`, `mounts`) are relative names in
+                // it; a magic one reads absolute (`root`, `cwd` of a process in
+                // another mount namespace) or names no path (`socket:[99]`).
+                if (target.starts_with('/') || target.contains(':'))
+                    && mount_of(&lexical_components(&at), mounts).is_some_and(|mount| mount.proc)
+                {
+                    return false;
+                }
                 resolved.pop();
                 if target.starts_with('/') {
                     resolved.clear();
@@ -199,12 +214,17 @@ fn read_link(path: &Path) -> std::io::Result<Option<PathBuf>> {
     }
 }
 
-/// The path's directories, lowercase, with `.` dropped and `..` applied.
+/// The path's directories, lowercase and composed (NFC), with `.` dropped and `..`
+/// applied: the default macOS file system ignores case and Unicode form alike, so
+/// `Výkresy` in NFD names the share mounted in NFC (review 2026-11-03 SEC-142).
 fn lexical_components(path: &str) -> Vec<String> {
+    use unicode_normalization::UnicodeNormalization;
     let mut components = Vec::new();
     for component in Path::new(path).components() {
         match component {
-            Component::Normal(name) => components.push(name.to_string_lossy().to_lowercase()),
+            Component::Normal(name) => {
+                components.push(name.to_string_lossy().to_lowercase().nfc().collect());
+            }
             Component::ParentDir => {
                 components.pop();
             }
@@ -235,19 +255,66 @@ fn mounts() -> std::io::Result<Vec<Mount>> {
 
 /// The mounts of a Linux mount table (`/proc/self/mounts`): `device mount-point type
 /// options ...` per line, a space, tab, newline or backslash in the mount point written
-/// as its octal escape (`\040`).
+/// as its octal escape (`\040`). An overlay is local when each of its layers lies on a
+/// local mount of those mounted before it (review 2026-11-03 SEC-141: one with a layer
+/// on a share passed).
 #[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
 fn linux_mounts(table: &str) -> Vec<Mount> {
-    table
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split(' ');
-            let (_device, on, kind) = (fields.next()?, fields.next()?, fields.next()?);
-            Some(Mount::new(
-                &unescape_mount_point(on),
-                linux_local_type(kind),
-            ))
-        })
+    let mut mounts = Vec::new();
+    for line in table.lines() {
+        let mut fields = line.split(' ');
+        let (Some(_device), Some(on), Some(kind)) = (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let options = fields.next().unwrap_or("");
+        let local = linux_local_type(kind)
+            && (kind != "overlay"
+                || overlay_layers(options)
+                    .iter()
+                    .all(|layer| local_mounted_path(layer, &mounts, &[])));
+        mounts.push(Mount {
+            proc: kind == "proc",
+            ..Mount::new(&unescape_mount_point(on), local)
+        });
+    }
+    mounts
+}
+
+/// The directories an overlay's mount options name as its layers: those of `lowerdir`
+/// (`:` between them, `\:` within a name), `upperdir`, `workdir`, and the `lowerdir+`
+/// and `datadir+` of a newer kernel.
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+fn overlay_layers(options: &str) -> Vec<String> {
+    let mut layers = Vec::new();
+    for (key, value) in options
+        .split(',')
+        .filter_map(|option| option.split_once('='))
+    {
+        match key {
+            "lowerdir" => {
+                let mut layer = String::new();
+                let mut characters = value.chars();
+                while let Some(character) = characters.next() {
+                    match character {
+                        '\\' if characters.as_str().starts_with(':') => {
+                            layer.push(':');
+                            characters.next();
+                        }
+                        ':' => layers.push(std::mem::take(&mut layer)),
+                        _ => layer.push(character),
+                    }
+                }
+                layers.push(layer);
+            }
+            "upperdir" | "workdir" | "lowerdir+" | "datadir+" => layers.push(value.to_owned()),
+            _ => {}
+        }
+    }
+    layers
+        .iter()
+        .filter(|layer| !layer.is_empty())
+        .map(|layer| unescape_mount_point(layer))
         .collect()
 }
 
@@ -428,6 +495,62 @@ mod mount_tests {
         }
     }
 
+    // Review 2026-11-03 SEC-141: an overlay is as local as its layers, and one whose
+    // lower or upper layer lies on a share passed as local.
+    #[test]
+    fn an_overlay_with_a_layer_on_a_share_is_not_local() {
+        let mounts = linux_mounts(
+            "/dev/sda2 / ext4 rw 0 0\n\
+             nas:/export /srv/export nfs4 rw 0 0\n\
+             //nas/a\\040b /mnt/a\\040b cifs rw 0 0\n\
+             overlay /var/lib/docker/overlay2/x/merged overlay \
+             rw,lowerdir=/var/lib/docker/overlay2/l/A:/var/lib/docker/overlay2/l/B,\
+             upperdir=/var/lib/docker/overlay2/x/diff,workdir=/var/lib/docker/overlay2/x/work 0 0\n\
+             overlay /mnt/lower-share overlay rw,lowerdir=/home/me/l:/srv/export/base,\
+             upperdir=/home/me/u,workdir=/home/me/w 0 0\n\
+             overlay /mnt/upper-share overlay rw,lowerdir=/home/me/l,\
+             upperdir=/srv/export/u,workdir=/srv/export/w 0 0\n\
+             overlay /mnt/escaped overlay rw,lowerdir=/home/me/c\\:d:/mnt/a\\040b/l,\
+             upperdir=/home/me/u,workdir=/home/me/w 0 0\n\
+             overlay /mnt/new overlay rw,lowerdir+=/home/me/l,datadir+=/srv/export/d,\
+             upperdir=/home/me/u,workdir=/home/me/w 0 0\n\
+             overlay /mnt/stacked overlay rw,lowerdir=/mnt/lower-share,\
+             upperdir=/home/me/u2,workdir=/home/me/w2 0 0\n",
+        );
+        assert!(local_mounted_path(
+            "/var/lib/docker/overlay2/x/merged/etc/x.pdf",
+            &mounts,
+            &[]
+        ));
+        for remote in [
+            "/mnt/lower-share/x.pdf",
+            "/mnt/upper-share/x.pdf",
+            "/mnt/escaped/x.pdf",
+            "/mnt/new/x.pdf",
+            "/mnt/stacked/x.pdf",
+        ] {
+            assert!(!local_mounted_path(remote, &mounts, &[]), "{remote:?}");
+        }
+    }
+
+    // Review 2026-11-03 SEC-142: macOS takes a name in NFC and in NFD for one, so a
+    // share mounted as `/Volumes/Výkresy` in one form was not found for a path in the
+    // other, and the path was taken as local.
+    #[test]
+    fn a_path_in_another_unicode_form_than_its_mount_is_on_it() {
+        let (composed, decomposed) = ("V\u{FD}kresy", "Vy\u{301}kresy");
+        for (on, path) in [(composed, decomposed), (decomposed, composed)] {
+            let mounts = [
+                super::Mount::new("/", true),
+                super::Mount::new(&format!("/Volumes/{on}"), false),
+            ];
+            let path = format!("/Volumes/{path}/x.pdf");
+            assert!(!local_mounted_path(&path, &mounts, &[]), "{path:?}");
+            let upper = path.to_uppercase();
+            assert!(!local_mounted_path(&upper, &mounts, &[]), "{upper:?}");
+        }
+    }
+
     // Review 2026-11-04 SEC-101: the check was lexical, so a link on a local disk
     // that leads onto a share passed.
     #[test]
@@ -482,6 +605,51 @@ mod mount_tests {
             assert!(
                 !physically_local_path(remote, &mounts, &[], read_link),
                 "{remote:?}"
+            );
+        }
+    }
+
+    /// Review 2026-11-08 P3: `/proc/<pid>/root` of a process in another mount
+    /// namespace reads `/`, but the kernel goes through that namespace's mounts,
+    /// which this table does not list; `cwd`, `exe` and `fd/N` alike lead to an
+    /// object, not to the text read.
+    #[test]
+    fn a_magic_link_of_proc_is_not_followed_as_its_text() {
+        use std::collections::HashMap;
+        use std::path::{Path, PathBuf};
+
+        let mounts = linux_mounts(
+            "/dev/sda1 / ext4 rw 0 0\n\
+             proc /proc proc rw,nosuid 0 0\n\
+             nas:/export /mnt/nfs nfs4 rw 0 0\n",
+        );
+        let links = HashMap::from([
+            ("/proc/self", "4242"),
+            ("/proc/mounts", "self/mounts"),
+            ("/proc/4242/root", "/"),
+            ("/proc/4242/cwd", "/home/me"),
+            ("/proc/4242/fd/3", "socket:[99]"),
+        ]);
+        let read_link = |path: &Path| {
+            Ok(links
+                .get(path.to_str().expect("a test path"))
+                .map(PathBuf::from))
+        };
+        assert!(physically_local_path(
+            "/proc/mounts",
+            &mounts,
+            &[],
+            read_link
+        ));
+        for magic in [
+            "/proc/4242/root/home/me/x.pdf",
+            "/proc/self/root/home/me/x.pdf",
+            "/proc/self/cwd/x.pdf",
+            "/proc/4242/fd/3",
+        ] {
+            assert!(
+                !physically_local_path(magic, &mounts, &[], read_link),
+                "{magic:?}"
             );
         }
     }

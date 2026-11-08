@@ -8,6 +8,7 @@ drawings-sheet-plan-storey = Půdorys { $storey }. podlaží
 drawings-sheet-sections = Řezy
 # Desetinný oddělovač výškových kót na řezech a pohledech (+2,850).
 drawings-sheet-decimal-separator = ,
+drawings-sheet-zero-altitude = = { $metres } m n. m. Bpv
 drawings-sheet-date = { $day }. { $month }. { $year }
 drawings-sheet-elevations = Pohledy
 drawings-sheet-openings = Okna a dveře

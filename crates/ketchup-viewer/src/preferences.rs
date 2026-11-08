@@ -132,14 +132,27 @@ impl Preferences {
             text.push_str(line);
             text.push('\n');
         }
+        // A settings file that is a link (dotfiles kept in a repository) is
+        // written where it points, so the link stays (review 2026-11-08 VW-250).
+        let target = link_target(path).map_err(failed)?;
         // This Viewer's own part file: another one saving without a lock does not
         // rename it away (review 2026-11-06 P3: one fixed `.part`).
-        let part = path.with_extension(format!(
+        let part = target.with_extension(format!(
             "{}-{}.part",
             std::process::id(),
             PARTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
-        let written = std::fs::write(&part, text).and_then(|()| std::fs::rename(&part, path));
+        // On disk before the rename, and the rename once it is done, so a power
+        // loss keeps the old settings or the new, not an empty file (VW-250).
+        let written = std::fs::File::create(&part)
+            .and_then(|mut file| {
+                std::io::Write::write_all(&mut file, text.as_bytes())?;
+                file.sync_all()
+            })
+            .and_then(|()| std::fs::rename(&part, &target))
+            .and_then(|()| {
+                crate::app::session::sync_directory(target.parent().unwrap_or(Path::new(".")))
+            });
         if written.is_err() {
             ketchup_rejection::dropped(
                 std::fs::remove_file(&part),
@@ -148,6 +161,26 @@ impl Preferences {
         }
         written.map_err(failed)
     }
+}
+
+/// The file `path` names after its links, a link that points nowhere yet
+/// included; `path` itself when it is no link.
+fn link_target(path: &Path) -> std::io::Result<PathBuf> {
+    let mut target = path.to_owned();
+    // As many links as Linux follows before ELOOP.
+    for _ in 0..40 {
+        match std::fs::symlink_metadata(&target) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                let link = std::fs::read_link(&target)?;
+                target = target.parent().unwrap_or(Path::new(".")).join(link);
+            }
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+            _ => return Ok(target),
+        }
+    }
+    Err(std::io::Error::other(
+        "the settings file is a loop of links",
+    ))
 }
 
 /// The part files this Viewer has written, each named by its number.
@@ -355,6 +388,42 @@ mod tests {
         assert!(preferences.save(&path).is_err());
         assert!(path.is_dir());
         assert!(parts_in(folder.path()).is_empty());
+    }
+
+    /// Review 2026-11-08 VW-250: a save renamed its part file over a settings
+    /// file kept as a link, so the link became a plain file and the settings
+    /// it pointed to went stale.
+    #[cfg(unix)]
+    #[test]
+    fn a_settings_file_kept_as_a_link_is_written_where_it_points() {
+        let folder = tempfile::tempdir().unwrap();
+        let dotfiles = folder.path().join("dotfiles");
+        std::fs::create_dir(&dotfiles).unwrap();
+        let kept = dotfiles.join("viewer-settings.txt");
+        std::fs::write(&kept, "language = cs\nfuture-setting = 3\n").unwrap();
+        let path = folder.path().join("viewer-settings.txt");
+        std::os::unix::fs::symlink("dotfiles/viewer-settings.txt", &path).unwrap();
+        let slovak = Preferences {
+            language: Language::from_tag("sk"),
+            projection: None,
+        };
+        slovak.save(&path).unwrap();
+        assert!(path.symlink_metadata().unwrap().file_type().is_symlink());
+        let saved = std::fs::read_to_string(&kept).unwrap();
+        assert_eq!(Preferences::parse(&saved), slovak);
+        assert!(saved.contains("future-setting = 3"), "{saved}");
+        assert!(parts_in(folder.path()).is_empty() && parts_in(&dotfiles).is_empty());
+
+        // A link to a file not written yet stays a link too.
+        let fresh = folder.path().join("fresh.txt");
+        std::os::unix::fs::symlink(dotfiles.join("fresh.txt"), &fresh).unwrap();
+        slovak.save(&fresh).unwrap();
+        assert!(fresh.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(Preferences::load(&dotfiles.join("fresh.txt")), slovak);
+
+        let looped = folder.path().join("looped.txt");
+        std::os::unix::fs::symlink("looped.txt", &looped).unwrap();
+        assert!(link_target(&looped).is_err());
     }
 
     /// The part files left in `folder`.

@@ -72,6 +72,8 @@ impl KetchupApp {
                 variants: Default::default(),
                 edits: Default::default(),
                 harnesses: None,
+                harness_rows: crate::app::connect_ai::read_harness_rows,
+                harness_work: None,
                 chosen_window_error: None,
             },
             close_guard: close_guard::CloseGuard::default(),
@@ -226,7 +228,12 @@ impl KetchupApp {
             tool_preview: None,
             gesture: Gesture::default(),
             mesh_conversion_state: mesh_conversion_ui::MeshConversionUiState::default(),
+            // A unit test never shows a native dialog on the desktop: one it
+            // did not script is declined (review 2026-11-08 SEC-240).
+            #[cfg(not(test))]
             dialogs: Box::new(NativeFileDialogs::default()),
+            #[cfg(test)]
+            dialogs: Box::new(crate::dialogs::ScriptedFileDialogs::new()),
             reviews: app_state::ReviewWorkflows {
                 cam_reviews: CamReviewWorkflow::new(None),
                 cam_export_dialog: None,
@@ -289,8 +296,7 @@ impl KetchupApp {
         }
         app.window.written_drawings = crate::app::written_drawings::of_user();
         if let Some(file) = crate::app::btlx_settings::of_user() {
-            app.window.btlx = crate::app::btlx_settings::read(&file);
-            app.window.btlx_settings = Some(file);
+            app.keep_btlx_settings_in(file);
         }
         app.window.decimal = crate::length_input::DecimalSeparator::at_startup();
         app.dialogs = Box::new(NativeFileDialogs::with_parent(

@@ -674,6 +674,42 @@ fn woodwop_vertical_pocket_requires_top_rectangular_geometry_and_explicit_tool()
     assert_eq!(woodwop_vertical_pocket_macro(&open, stock, 101), None);
 }
 
+/// Review 2026-11-08 MF-140: one program drills every copy of a part, so the
+/// copies' pin holes must lie alike in their own frames, in any order.
+#[test]
+fn copies_are_drilled_alike_only_with_the_same_pin_holes() {
+    let hole = |copy: u64, x: f64| PinHole {
+        stable_hole_id: format!("pin-1/{copy}/{x}"),
+        instance_path: InstancePath::root(OccurrenceId(copy)),
+        entry_local_mm: [x, 20.0, 19.0],
+        inward_unit_local: [0.0, 0.0, -1.0],
+        diameter_mm: 8.0,
+        depth_mm: 16.0,
+        shared_center_world_mm: [x, 20.0, 19.0],
+    };
+    let (a, b) = (
+        [hole(1, 50.0), hole(1, 80.0)],
+        [hole(2, 80.0), hole(2, 50.0)],
+    );
+    fn refs(holes: &[PinHole]) -> Vec<&PinHole> {
+        holes.iter().collect()
+    }
+    assert!(same_pin_holes(&refs(&a), &refs(&b)));
+    assert!(!same_pin_holes(&refs(&a), &refs(&b[..1])));
+    let deeper = [
+        hole(2, 50.0),
+        PinHole {
+            depth_mm: 20.0,
+            ..hole(2, 80.0)
+        },
+    ];
+    assert!(!same_pin_holes(&refs(&a), &refs(&deeper)));
+    assert!(!same_pin_holes(
+        &refs(&a),
+        &refs(&[hole(2, 50.0), hole(2, 110.0)])
+    ));
+}
+
 #[test]
 fn homag_pin_macro_and_code128_label_share_the_machine_program_identity() {
     let stock = woodwop_stock_frame(&test_stock_geometry(PieceDimensions {
@@ -794,6 +830,39 @@ fn a_round_cut_is_drilled_only_by_a_drill_as_large() {
     let rounded_tap = openings::as_tooled(&round_cut(35.0 + 1e-9), Some(40.0)).unwrap();
     assert_eq!(openings::as_tooled(&rounded_tap, Some(35.0)), None);
     assert!(drilled(&round_cut(35.1), Some(35.0)).is_none());
+    // Review 2026-11-08 MF-240: a round hole cut through all was drilled at
+    // any size, Ø40 and Ø450 alike, past the largest drill.
+    let through = |diameter_mm: f64| GeneralMachiningGeometry::CircularDrill {
+        frame: identity_machining_frame(),
+        center_mm: [300.0, 300.0],
+        diameter_mm,
+        through: true,
+        start_mm: 0.0,
+        end_mm: 38.0,
+    };
+    for diameter_mm in [40.0, 450.0] {
+        let Some(GeneralMachiningGeometry::ProfileCut {
+            segments,
+            start_mm,
+            end_mm,
+            ..
+        }) = openings::as_tooled(&through(diameter_mm), Some(35.0))
+        else {
+            panic!("a through Ø{diameter_mm} hole past a Ø35 drill is not milled");
+        };
+        assert_eq!((segments.len(), start_mm, end_mm), (2, 0.0, 38.0));
+        assert_eq!(
+            openings::round_contour(&GeneralMachiningGeometry::ProfileCut {
+                frame: identity_machining_frame(),
+                segments,
+                start_mm,
+                end_mm,
+            }),
+            Some(([300.0, 300.0], diameter_mm))
+        );
+    }
+    assert_eq!(openings::as_tooled(&through(30.0), Some(35.0)), None);
+    assert_eq!(openings::as_tooled(&through(450.0), None), None);
 }
 
 #[test]

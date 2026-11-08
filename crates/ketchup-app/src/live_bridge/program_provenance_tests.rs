@@ -153,6 +153,7 @@ fn adjacent_joins(reverse: bool) {
 
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("joins.ketchup");
+    app.remember_recent_file(&path);
     bridge
         .execute(
             &mut app,
@@ -246,6 +247,7 @@ fn generic_rotated_joint_picks_do_not_invent_solid_hardware_links() {
     );
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("linked-hardware.ketchup");
+    app.remember_recent_file(&path);
     bridge
         .execute(
             &mut app,

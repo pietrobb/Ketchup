@@ -51,7 +51,8 @@ pub(super) fn opening_cuts(
 /// a round cut, or the cut a drilling larger than that drill is milled as:
 /// its two half arcs (review 2026-11-06 MF-181). Any other machining is left
 /// as it is. A hole as large as the drill but for rounding is drilled (review
-/// 2026-11-07 P3).
+/// 2026-11-07 P3); one cut through all is milled past the drill as a blind one
+/// is, over the span it has in the stock (review 2026-11-08 MF-240).
 pub(super) fn as_tooled(
     machining: &GeneralMachiningGeometry,
     largest_drill_mm: Option<f64>,
@@ -83,9 +84,9 @@ pub(super) fn as_tooled(
             frame,
             center_mm,
             diameter_mm,
-            through: false,
             start_mm,
             end_mm,
+            ..
         } if largest_drill_mm.is_some() && !drills(diameter_mm) => {
             let radius_bits = (diameter_mm / 2.0).to_bits();
             let segments =
@@ -98,6 +99,48 @@ pub(super) fn as_tooled(
             })
         }
         _ => None,
+    }
+}
+
+impl GeneralFabricationProjection {
+    /// The support report lines that say which drill a BTLx file is written
+    /// for and which round holes it mills rather than drills, as
+    /// [`as_tooled`] makes them (review 2026-11-08 MF-240, MF-242):
+    /// `largest_drill_mm=` the drill or `not set`, `round_holes_milled=` how
+    /// many, and their parts and diameters when there are any.
+    #[must_use]
+    pub fn btlx_drill_report(&self, snapshot: &Snapshot, largest_drill_mm: Option<f64>) -> String {
+        let milled = self
+            .manufacturing
+            .operations
+            .iter()
+            .filter_map(|operation| {
+                let diameter_mm = match operation.machining {
+                    GeneralMachiningGeometry::CircularDrill { diameter_mm, .. } => diameter_mm,
+                    _ => round_contour(&operation.machining)?.1,
+                };
+                let tooled = as_tooled(&operation.machining, largest_drill_mm);
+                let drilled = matches!(
+                    tooled.as_ref().unwrap_or(&operation.machining),
+                    GeneralMachiningGeometry::CircularDrill { .. }
+                );
+                (!drilled).then(|| {
+                    let part = snapshot
+                        .definition(operation.definition_id)
+                        .map_or("", |definition| definition.name());
+                    format!("{part} Ø{}", format_number(diameter_mm))
+                })
+            })
+            .collect::<Vec<_>>();
+        let largest = largest_drill_mm.map_or_else(|| "not set".to_owned(), format_number);
+        let mut report = format!(
+            "largest_drill_mm={largest}\nround_holes_milled={}\n",
+            milled.len()
+        );
+        if !milled.is_empty() {
+            report.push_str(&format!("milled_round_holes={}\n", milled.join("; ")));
+        }
+        report
     }
 }
 

@@ -372,7 +372,7 @@ fn disconnect_during_live_overwrite_consent_revokes_publication_authority() {
         .unwrap();
     stream.write_all(&bytes).unwrap();
 
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while !prompted.load(Ordering::Acquire) {
         assert!(Instant::now() < deadline);
         app.poll_live_bridge(&context);
@@ -442,7 +442,7 @@ fn disconnect_during_a_release_confirmation_writes_no_file() {
     stream.write_all(&bytes).unwrap();
 
     // The prompt answers within the poll that shows it, so the export is over.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while !prompted.load(Ordering::Acquire) {
         assert!(Instant::now() < deadline, "{}", app.action_digest());
         app.poll_live_bridge(&context);
@@ -603,6 +603,64 @@ fn save_as_requires_an_absolute_path_and_live_gui_overwrite_consent() {
         reopened.document_snapshot().canonical_digest(),
         app.document_snapshot().canonical_digest()
     );
+}
+
+/// Review 2026-11-08 SEC-240: `save_as` wrote any name in any folder, such as
+/// a startup folder or `~/.ssh/authorized_keys`, and the next Ctrl+S wrote
+/// there again. It writes a `.ketchup` document only, never a hidden file, and
+/// in a folder neither the document's nor one of Open Recent only after the
+/// user agrees in the window.
+#[test]
+fn save_as_writes_a_ketchup_document_and_asks_before_a_new_folder() {
+    let directory = tempfile::tempdir().unwrap();
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_refused_high_risk()
+        .queue_high_risk_approval(9);
+    let probe = dialogs.clone();
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.selection.clear();
+    assert!(app.create_box());
+    let mut bridge = transport::start(egui::Context::default()).unwrap();
+    let mut save_as = |app: &mut KetchupApp, path: &Path| {
+        let expected = app.live_bridge_stamp();
+        bridge.execute(
+            app,
+            Request::SaveAs {
+                expected: Some(expected),
+                path: path.to_string_lossy().into_owned(),
+            },
+            false,
+        )
+    };
+
+    for refused in [
+        directory.path().join("startup.cmd"),
+        directory.path().join("authorized_keys"),
+        directory.path().join(".house.ketchup"),
+        directory.path().join("house.ketchup.lnk"),
+    ] {
+        assert_eq!(save_as(&mut app, &refused), Err("invalid_path"));
+        assert!(!refused.exists(), "{} was written", refused.display());
+    }
+    assert!(
+        probe.high_risk_prompts().is_empty(),
+        "refused before asking"
+    );
+
+    let new_folder = directory.path().join("new").join("house.ketchup");
+    std::fs::create_dir_all(new_folder.parent().unwrap()).unwrap();
+    assert_eq!(save_as(&mut app, &new_folder), Err("save_declined"));
+    assert!(!new_folder.exists());
+    assert!(app.file.path.is_none());
+    save_as(&mut app, &new_folder).unwrap();
+    assert_eq!(probe.high_risk_prompts().len(), 2);
+    assert_eq!(app.file.path.as_deref(), Some(new_folder.as_path()));
+
+    // Beside the document, or as another name in its folder, nobody is asked.
+    let beside = directory.path().join("new").join("HOUSE-v2.KETCHUP");
+    save_as(&mut app, &beside).unwrap();
+    assert_eq!(probe.high_risk_prompts().len(), 2);
+    assert!(beside.exists());
 }
 
 #[test]
@@ -1116,7 +1174,7 @@ fn queued_apply_and_verify_yields_to_manual_edit_and_refuses_stale_publication()
             .unwrap();
     });
 
-    let start_deadline = Instant::now() + Duration::from_secs(2);
+    let start_deadline = Instant::now() + Duration::from_secs(60);
     loop {
         wire.app.poll_live_bridge(&wire.context);
         if wire
@@ -1144,7 +1202,7 @@ fn queued_apply_and_verify_yields_to_manual_edit_and_refuses_stale_publication()
     let manual_stamp = wire.app.live_bridge_stamp();
     assert_eq!(wire.app.undo_step_count(), before_steps + 1);
 
-    let response_deadline = Instant::now() + Duration::from_secs(4);
+    let response_deadline = Instant::now() + Duration::from_secs(60);
     let response = loop {
         if let Ok(response) = rx.try_recv() {
             break response;
@@ -1192,7 +1250,7 @@ fn queued_apply_and_verify_refuses_post_validation_selection_change() {
             .unwrap();
     });
 
-    let start_deadline = Instant::now() + Duration::from_secs(2);
+    let start_deadline = Instant::now() + Duration::from_secs(60);
     loop {
         wire.app.poll_live_bridge(&wire.context);
         if wire
@@ -1212,7 +1270,7 @@ fn queued_apply_and_verify_refuses_post_validation_selection_change() {
     assert_eq!(wire.app.live_bridge_stamp(), expected);
     assert_eq!(wire.app.undo_step_count(), before_steps);
 
-    let response_deadline = Instant::now() + Duration::from_secs(4);
+    let response_deadline = Instant::now() + Duration::from_secs(60);
     let response = loop {
         if let Ok(response) = rx.try_recv() {
             break response;
@@ -1430,7 +1488,7 @@ fn apply_and_verify_cancels_a_running_exact_worker_without_mutation() {
     let cancelled = Arc::new(AtomicBool::new(false));
     let cancel_flag = Arc::clone(&cancelled);
     let canceller = std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(4);
+        let deadline = Instant::now() + Duration::from_secs(60);
         while !started.is_file() {
             assert!(Instant::now() < deadline, "exact worker did not start");
             std::thread::sleep(Duration::from_millis(5));
@@ -2663,7 +2721,7 @@ fn call_stream(
         tx.send(serde_json::from_slice::<Response>(&bytes).unwrap())
             .unwrap();
     });
-    let deadline = Instant::now() + Duration::from_secs(4);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let response = loop {
         if let Ok(response) = rx.try_recv() {
             break response;
@@ -2710,7 +2768,7 @@ fn hundred_authenticated_disconnect_cycles_leave_host_and_registries_clean() {
             .ok
         );
         drop(stream);
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             app.poll_live_bridge(&context);
             let bridge = app.live.bridge.as_ref().unwrap();

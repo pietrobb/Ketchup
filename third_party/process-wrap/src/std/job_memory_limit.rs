@@ -208,9 +208,33 @@ mod macos {
 
 	impl FootprintWatchedChild {
 		pub(super) fn start(inner: Box<dyn ChildWrapper>, limit: usize) -> Result<Self> {
-			let pid = libc::pid_t::try_from(inner.id())
-				.map_err(|error| Error::new(ErrorKind::InvalidInput, error))?;
-			let (started, _) = footprint(pid)?;
+			Self::start_sampling(inner, limit, footprint)
+		}
+
+		/// A child that `footprint` cannot be read of from the start would run without its
+		/// limit, so it is killed with its group and reaped, and the start fails (Ketchup
+		/// review 2026-11-03 PL-141: it was left running).
+		pub(super) fn start_sampling(
+			mut inner: Box<dyn ChildWrapper>,
+			limit: usize,
+			footprint: fn(libc::pid_t) -> Result<(u64, u64)>,
+		) -> Result<Self> {
+			let pid = match libc::pid_t::try_from(inner.id()) {
+				Ok(pid) => pid,
+				Err(error) => {
+					let _ = inner.start_kill();
+					let _ = inner.wait();
+					return Err(Error::new(ErrorKind::InvalidInput, error));
+				}
+			};
+			let started = match footprint(pid) {
+				Ok((started, _)) => started,
+				Err(error) => {
+					kill_group(pid);
+					let _ = inner.wait();
+					return Err(error);
+				}
+			};
 			let limit = u64::try_from(limit).unwrap_or(u64::MAX);
 			let exceeded = Arc::new(AtomicBool::new(false));
 			let stop = Arc::new(AtomicBool::new(false));
@@ -406,6 +430,25 @@ mod tests {
 		};
 		assert_eq!(status.and_then(|status| status.signal()), Some(9));
 		assert!(memory_limit_exceeded(&*child));
+	}
+
+	/// Ketchup review 2026-11-03 PL-141: a child whose footprint could not be read at once
+	/// was left running without its limit.
+	#[test]
+	fn a_child_whose_footprint_cannot_be_read_at_start_is_killed() {
+		let mut command = Command::new("/bin/sleep");
+		command.arg("60");
+		let mut command = CommandWrap::from(command);
+		command.wrap(super::super::ProcessGroup::leader());
+		let child = command.spawn().unwrap();
+		let pid = nix::unistd::Pid::from_raw(i32::try_from(child.id()).unwrap());
+		let refused = |_pid| Err(std::io::Error::from_raw_os_error(nix::libc::EPERM));
+		let started = macos::FootprintWatchedChild::start_sampling(child, 256 << 20, refused);
+		assert!(started.is_err());
+		assert_eq!(
+			nix::sys::signal::kill(pid, None),
+			Err(nix::errno::Errno::ESRCH)
+		);
 	}
 
 	#[test]

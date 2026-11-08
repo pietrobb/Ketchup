@@ -9,7 +9,7 @@ mod annotations_view_tests;
 pub(crate) mod btlx_settings;
 mod cad_program;
 mod commands;
-mod connect_ai;
+pub(crate) mod connect_ai;
 pub(crate) mod dimensions_ui;
 #[cfg(test)]
 #[path = "app/dimensions_ui_tests.rs"]
@@ -90,6 +90,7 @@ pub(crate) mod spaces_ui;
 #[path = "app/spaces_ui_tests.rs"]
 mod spaces_ui_tests;
 mod startup_arguments;
+mod storey_table;
 mod structure;
 #[cfg(test)]
 #[path = "app/tag_toggle_tests.rs"]

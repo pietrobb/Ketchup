@@ -76,7 +76,7 @@ You do not have to give up the mouse. Moving, turning, mirroring, deleting, rena
 
 [`house-project.star`](examples/programs/house-project.star) and [`tiny-house.star`](examples/programs/tiny-house.star) generate whole houses: footings, floors, stud walls with openings, rafters and roof build-ups. Ketchup checks what it builds: collisions and clearances, parts that rest on nothing, load paths with self-weight, imposed and snow loads, and timber members after EN 1995-1-1 (EC5), including lateral-torsional buckling with the bracing it can actually see. Checks list issues; they never stop you from editing.
 
-From the same model you get a numbered drawing set (**File → Export → Drawings**): a floor plan of each storey, sections, elevations, a shop drawing of each wall or floor build-up with its pieces numbered and dimensioned, and a schedule of windows and doors, as one PDF or as DXF/DWG sheets. Timber members go to Hundegger BTLx 2.3.1, and the takeoff window exports the material list, a cutting plan on the bars and sheets you buy, and a quote from your own price list.
+From the same model you get a numbered drawing set (**File → Drawings (PDF, DXF, DWG)…**): a floor plan of each storey, sections, elevations, a shop drawing of each wall or floor build-up with its pieces numbered and dimensioned, and a schedule of windows and doors, as one PDF or as DXF/DWG sheets. Timber members go to Hundegger BTLx 2.3.1, and the takeoff window exports the material list, a cutting plan on the bars and sheets you buy, and a quote from your own price list.
 
 ### Make it: cut lists and CNC files
 
@@ -89,7 +89,7 @@ From the same model you get a numbered drawing set (**File → Export → Drawin
 
 ### Work with DXF and DWG drawings
 
-**File → Import DXF/DWG as underlay…** keeps a site plan or a floor plan under the model. You can snap to it, fit it by two points, and edit it in 2D: delete, move, rotate, mirror, trim, extend, offset, and draw lines, rectangles, circles, arcs and text. **Tools → Export drawing to DXF/DWG…** writes it back with the header, layers, blocks, dimensions and hatches kept, and every unchanged object as it was; the source file is never overwritten. National grid coordinates such as S-JTSK keep their precision. **Tools → Pull drawing area up** turns a room or a parcel into a solid that follows the drawing when it changes.
+**File → Import → DXF/DWG as underlay…** keeps a site plan or a floor plan under the model. You can snap to it, fit it by two points, and edit it in 2D: delete, move, rotate, mirror, trim, extend, offset, and draw lines, rectangles, circles, arcs and text. **Tools → Export drawing to DXF…** (or **to DWG…**) writes it back with the header, layers, blocks, dimensions and hatches kept, and every unchanged object as it was; the source file is never overwritten. National grid coordinates such as S-JTSK keep their precision. **Tools → Pull drawing area up** turns a room or a parcel into a solid that follows the drawing when it changes.
 
 ### Show it to your customer with Ketchup Viewer
 
@@ -273,7 +273,7 @@ scripts/macos/build-app.sh            # Kečup.app and a .dmg in artifacts/macos
 scripts/macos/build-viewer-app.sh     # Kečup Viewer.app (arm64 + x86_64) and a .dmg
 ```
 
-Both app scripts sign ad hoc, for this Mac; `--sign "Developer ID Application: …"` signs for other Macs, and notarization is a separate step.
+Both app scripts write the third-party notices with `scripts/third_party_notices.py`, which needs Python 3 and cargo-about 0.9.2, the version CI pins (`cargo install cargo-about --version 0.9.2 --locked`); so do the Windows packages. Both sign ad hoc, for this Mac; `--sign "Developer ID Application: …"` signs for other Macs, and notarization is a separate step.
 
 `KETCHUP_OCCT_ROOT` points the build at an install elsewhere. CI builds and tests the crates with OCCT on Linux and Windows on every pull request, and on macOS builds the app bundle and runs the live tests against it.
 

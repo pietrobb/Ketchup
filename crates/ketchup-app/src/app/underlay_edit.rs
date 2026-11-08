@@ -393,8 +393,8 @@ impl KetchupApp {
             return;
         };
         let discarded =
-            self.edit_underlay_drawing(underlay, FindRegions::OffUiThread, |snapshot, _| {
-                plan_underlay_edit_discard(snapshot, underlay, &objects)
+            self.edit_underlay_drawing(underlay, FindRegions::OffUiThread, |snapshot, lines| {
+                plan_underlay_edit_discard(snapshot, underlay, lines, &objects)
             });
         let object = objects
             .iter()

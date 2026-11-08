@@ -368,6 +368,40 @@ fn one_sign_or_undefined_byte_does_not_turn_a_western_drawing_central_european()
     );
 }
 
+/// Review 2026-11-08 UL-240: „Dĺžka, Šírka, Výška“ in Windows-1250 under a 1252 header read
+/// „Dåžka“ unsaid, as „Dåžka“ passed for Finnish, which writes š and ž in loanwords only
+/// and å in Swedish names only, never both in a word. It votes for 1250, so the header is
+/// doubted; with a second such word the drawing turns.
+#[test]
+fn a_word_of_finnish_letters_no_finnish_word_combines_doubts_windows_1252() {
+    let read = |texts: &[&[u8]]| {
+        read_dxf_underlay(
+            &texts_drawing(b"", "ANSI_1252", texts),
+            DxfImportOptions::new(None),
+        )
+        .unwrap()
+    };
+    let underlay = read(&[b"D\xE5\x9Eka, \x8A\xEDrka, V\xFD\x9Aka"]);
+    assert_eq!(read_texts(&underlay), ["Dåžka, Šírka, Výška"]);
+    assert_eq!(
+        counted(&underlay, "dxf.text-code-page-doubtful", Some("ANSI_1252")),
+        Some(1),
+        "{:?}",
+        underlay.diagnostics
+    );
+    let underlay = read(&[b"D\xE5\x9Eka", b"K\xFApe\xBE"]);
+    assert_eq!(read_texts(&underlay), ["Dĺžka", "Kúpeľ"]);
+    // Finnish and Swedish words with å, and Finnish loanwords with š or ž, stay 1252.
+    let underlay = read(&[b"G\xE5rd \x9Aakki \x9Eongl\xF6\xF6ri"]);
+    assert_eq!(read_texts(&underlay), ["Gård šakki žonglööri"]);
+    assert_eq!(
+        counted(&underlay, "dxf.text-code-page-doubtful", Some("ANSI_1252")),
+        None,
+        "{:?}",
+        underlay.diagnostics
+    );
+}
+
 /// Review 2026-11-06 P3: a Czech drawing whose only words beyond ASCII are the names of
 /// one or two layers stayed in Windows-1252.
 #[test]

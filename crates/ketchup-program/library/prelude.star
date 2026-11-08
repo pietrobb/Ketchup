@@ -3019,8 +3019,15 @@ def _opening_in(name, o, origin, along, up, out, depth, length, top_v):
 #   reported, fastener_off_contact), or at the middle of each place they touch when the
 #   joint lists none, so name the fasteners of a lath along a beam. A plank screwed only
 #   to free beams, lying loose, or anchored only in line with the beam holds nothing;
-#   a deck screwed to the beams but to nothing grounded leaves them not_verified (a
-#   declared diaphragm is not yet supported). The top braces against a sagging moment, the bottom against a
+#   a deck screwed to the beams but to nothing grounded leaves them not_verified.
+#   diaphragm(sheets, anchored_to=[...]) declares sheets (parts or tags) one stiff plane
+#   anchored to grounded parts: when every anchor is grounded and fastened to one of the
+#   sheets, each sheet holds the members it is fastened to on the edge it lies on.
+#   brace(members, by=[...], edge="top"|"bottom", spacing=None) declares which edge the
+#   parts by hold where they touch each member, every spacing mm or at the joint's
+#   fasteners; each must be fastened to the member and anchored (grounded, fastened to
+#   a grounded part, or a sheet of an anchored diaphragm). A declaration that holds
+#   nothing is reported (declared_bracing_ignored). The top braces against a sagging moment, the bottom against a
 #   hogging one (lateral torsional buckling, check lateral_torsional). A beam shares its load among its
 #   supports by the lever rule, over more supports as simple spans between them; other
 #   parts share theirs by contact area. Missing inputs are listed, never guessed.

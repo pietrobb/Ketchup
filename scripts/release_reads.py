@@ -283,6 +283,12 @@ def main(arguments: list[str]) -> int:
             for tag, directory in zip(tags, resaved)
         ]
         results.append(written_by_tests)
+        # A file Save could not keep leaves a `.lost` mark naming why; the readers open only
+        # `.ketchup` files, so without this the file is missing from the reads unseen
+        # (review 2026-11-03 TST-122).
+        for mark in sorted(files.glob("*.lost")):
+            print(f"a saved file was not kept: {mark.read_text(encoding='utf-8', errors='replace')}")
+            results.append(1)
         # A release that does not restore a file's history saves none in history/, and its
         # comparison is skipped; each release read must restore one (review 2026-11-06 P3,
         # and r23 P3: one restoring it let another that stopped pass).

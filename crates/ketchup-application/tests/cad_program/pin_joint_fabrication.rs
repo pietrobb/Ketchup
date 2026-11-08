@@ -17,6 +17,11 @@ const PINS: usize = 3;
 /// Two 100×50×18 timbers butted end to end at x = 100 and joined by a row of
 /// three Ø8 dowels drilled horizontally into both end faces.
 fn doweled_timbers(holes: AssistantPinHoles) -> Snapshot {
+    doweled_timbers_with_right_as(holes, TIMBER_MEMBER_ROLE_V1)
+}
+
+/// [`doweled_timbers`] with the right timber of fabrication role `right_role`.
+fn doweled_timbers_with_right_as(holes: AssistantPinHoles, right_role: &str) -> Snapshot {
     let mut document = DocumentStore::new();
     let timber = |name: &str, x| {
         cuboid_part(
@@ -74,13 +79,22 @@ fn doweled_timbers(holes: AssistantPinHoles) -> Snapshot {
     .unwrap();
     document.apply_batch(&joint).unwrap();
     let dimension = ClassificationDimensionId(900);
-    let category = ClassificationCategoryId(901);
+    let (timber, right) = (ClassificationCategoryId(901), ClassificationCategoryId(902));
+    let mut categories = vec![(timber, TIMBER_MEMBER_ROLE_V1.into())];
+    if right_role != TIMBER_MEMBER_ROLE_V1 {
+        categories.push((right, right_role.into()));
+    }
     let mut commands = vec![CanonicalCommand::UpsertClassificationDimension {
         id: dimension,
         name: FABRICATION_ROLE_DIMENSION_V1.into(),
-        categories: vec![(category, TIMBER_MEMBER_ROLE_V1.into())],
+        categories,
     }];
     for (occurrence, code) in [(1, "000000000061"), (2, "000000000062")] {
+        let category = if occurrence == 2 && right_role != TIMBER_MEMBER_ROLE_V1 {
+            right
+        } else {
+            timber
+        };
         commands.push(CanonicalCommand::SetOccurrenceClassification {
             occurrence_id: OccurrenceId(occurrence),
             dimension_id: dimension,
@@ -199,6 +213,26 @@ fn drilled_dowel_holes_are_machined_once_in_every_shop_format() {
         2 * PINS,
         "{drawing}"
     );
+}
+
+/// Review 2026-11-08 MF-140 (R1103), MF-246: the woodWOP program of one part
+/// left out the holes of its logical dowels the production package drills
+/// (`std::iter::empty()`), and a part with nothing else to machine was refused
+/// as having nothing to machine. The left timber, the only one made (the right
+/// one is bought), gets one drilling per dowel, as in the package.
+#[test]
+fn the_woodwop_program_of_one_part_drills_its_logical_dowel_holes() {
+    let _turn = crate::integration_support::file_turn();
+    let snapshot = doweled_timbers_with_right_as(
+        AssistantPinHoles::Logical,
+        ketchup_manufacturing::fabrication::PURCHASED_ITEM_ROLE_V1,
+    );
+    let projection = fabrication(&snapshot);
+    let mpr = projection
+        .woodwop_mpr_4_0_drill_export(&snapshot)
+        .expect("the one made part is programmed");
+    let mpr = String::from_utf8(mpr).unwrap();
+    assert_eq!(mpr.matches("\\BohrHoriz\\").count(), PINS, "{mpr}");
 }
 
 #[test]

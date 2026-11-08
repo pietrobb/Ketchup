@@ -89,6 +89,44 @@ const EXPORT_FORMATS: [(&str, &[&str], Exporter); 14] = [
     ("btlx", &["btlx"], KetchupApp::export_current_model_btlx_to),
 ];
 
+/// The code of why an export was not written, whose hint repairs that cause:
+/// every refusal was `export_failed`, a model the format cannot carry as a
+/// full disk (review 2026-11-08, the class of CD-72).
+pub(super) fn export_code(error: &ExportError) -> &'static str {
+    use ketchup_manufacturing::fabrication::GeneralFabricationError;
+    use ketchup_rejection::Rejection;
+    match error {
+        ExportError::NothingToExport { .. }
+        | ExportError::Ambiguous { .. }
+        | ExportError::UnsupportedContent { .. }
+        | ExportError::OccurrenceNotExportable { .. } => "export_refused",
+        ExportError::Failed(cause) => {
+            // A projection refusal arrives inside the rejection of its step.
+            let mut causes = std::iter::successors(
+                Some(cause.as_ref() as &(dyn std::error::Error + 'static)),
+                |cause| cause.source(),
+            );
+            causes
+                .find_map(|cause| {
+                    if let Some(error) = cause.downcast_ref::<GeneralFabricationError>() {
+                        return (!matches!(error, GeneralFabricationError::Package(..)))
+                            .then_some("export_refused");
+                    }
+                    match cause.downcast_ref::<Rejection>()?.code() {
+                        "side_effect.declined" => Some("export_declined"),
+                        "fabrication.mesh_body" => Some("export_refused"),
+                        _ => None,
+                    }
+                })
+                .unwrap_or("export_failed")
+        }
+        ExportError::Destination { .. }
+        | ExportError::ChangedDuringConsent
+        | ExportError::ArtifactUnverified { .. }
+        | ExportError::Transaction(..) => "export_failed",
+    }
+}
+
 impl LiveBridge {
     /// Imports the file `request` names, from what a job's thread has `read` of
     /// it already (see [`super::dwg_import`]).
@@ -264,17 +302,18 @@ impl LiveBridge {
         Ok((path, export_format, *exporter))
     }
 
-    /// Records why the export of `path` failed for the answer.
+    /// Records why the export of `path` failed for the answer, and its code.
     pub(super) fn export_failed(
         path: &str,
         export_format: &str,
         error: ExportError,
     ) -> &'static str {
+        let code = export_code(&error);
         record_rejection(
-            &rejected("export_failed").caused_by(error),
+            &rejected(code).caused_by(error),
             json!({"path": path, "export_format": export_format}),
         );
-        "export_failed"
+        code
     }
 
     /// The answer to an export of `path` as `export_format`.

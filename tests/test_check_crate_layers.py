@@ -65,6 +65,25 @@ def test_module_over_the_limit_fails_and_oversized_ones_only_shrink():
     ]
 
 
+def test_a_production_module_past_the_freeze_size_fails_until_frozen():
+    # Review 2026-11-08 TST-253: modules were frozen only after a review found them past
+    # 3 000 lines; crossing it fails now, the module named. Test files are not frozen.
+    sizes = {
+        "crates/a/src/big.rs": 31,
+        "crates/a/src/listed.rs": 40,
+        "crates/a/src/small.rs": 30,
+        "crates/a/src/big_tests.rs": 50,
+        "crates/a/tests/flow.rs": 50,
+    }
+    assert checker.unfrozen_large_modules(sizes, 30, {"crates/a/src/listed.rs": 40}) == [
+        "crates/a/src/big.rs: 31 lines, over 30; split it or add it to FROZEN_MODULES"
+    ]
+
+
+def test_workspace_modules_past_the_freeze_size_are_frozen():
+    assert checker.unfrozen_large_modules(checker.module_sizes(ROOT)) == []
+
+
 def test_workspace_modules_fit_the_limit():
     sizes = checker.module_sizes(ROOT)
     assert checker.oversized_modules(sizes) == []

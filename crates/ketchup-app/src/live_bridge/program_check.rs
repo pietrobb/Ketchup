@@ -67,7 +67,11 @@ pub(super) fn refuse_given_overrides(
     };
     Err(RuleProgramApplyError::Program {
         code: OVERRIDE_REFUSED.to_owned(),
-        message: format!("param {} = {value} {why}", param.name),
+        message: format!(
+            "param {} = {} {why}",
+            param.name,
+            ketchup_program::eval::number_text(value)
+        ),
         location: None,
     })
 }

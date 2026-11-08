@@ -100,5 +100,5 @@ def test_another_version_or_an_existing_zip_is_refused(tmp_path):
 def test_the_installer_builds_the_examples_before_the_programs_and_lists_their_checksum():
     script = (WINDOWS / "build-installer.ps1").read_text(encoding="utf-8")
     assert script.index("build-examples-zip.ps1") < script.index("cargo build --locked")
-    checksums = script[script.index("$checksums = @("):]
+    checksums = script[script.index("$releaseAssets = @("):]
     assert "$examplesPath" in checksums

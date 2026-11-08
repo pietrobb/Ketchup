@@ -229,3 +229,49 @@ jobs:
 def test_every_feature_of_the_workspace_is_linted_in_ci():
     workflows = [path.read_text(encoding="utf-8") for path in sorted((ROOT / ".github/workflows").glob("*.yml"))]
     assert checker.unlinted_features(checker.crate_features(ROOT), checker.linted_features(workflows)) == []
+
+
+def test_a_crate_with_windows_only_code_has_its_panics_counted_on_windows(tmp_path):
+    # Review 2026-11-08 CI-250: ketchup-mcp's credential ACL compiles on Windows only, and
+    # its panics were counted on Linux only, where clippy never sees that code.
+    (tmp_path / "Cargo.toml").write_text('[workspace]\nmembers = ["a", "b", "c", "d"]\n', encoding="utf-8")
+    sources = {
+        "a": ('#[cfg(windows)]\nmod acl;\n', "lib.rs"),
+        "b": ('#[cfg(all(target_os = "windows", feature = "x"))]\nfn f() {}\n', "lib.rs"),
+        "c": ("fn f() -> bool { cfg!(windows) }\n", "lib.rs"),  # both branches compile everywhere
+        "d": ("#[cfg(windows)]\nfn only_in_tests() {}\n", "tests.rs"),
+    }
+    for name, (source, file) in sources.items():
+        (tmp_path / name / "src").mkdir(parents=True)
+        (tmp_path / name / "Cargo.toml").write_text(f'[package]\nname = "{name}"\n', encoding="utf-8")
+        (tmp_path / name / "src" / file).write_text(source, encoding="utf-8")
+    assert checker.crates_with_windows_code(tmp_path) == {"a", "b"}
+    workflow = """name: CI
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    env:
+      CRATES: >-
+        -p a -p b
+    steps:
+      - run: python3 scripts/check_clippy_panics.py $CRATES
+  windows:
+    runs-on: windows-latest
+    steps:
+      - run: >-
+          python scripts/check_clippy_panics.py
+          -p b
+"""
+    assert checker.panics_counted([workflow], "Linux") == {"a", "b"}
+    assert checker.panics_counted([workflow], "Windows") == {"b"}
+    assert checker.windows_code_uncounted({"a", "b"}, {"b"}) == [
+        "a: has code only Windows compiles, but no CI job on Windows counts its panics and"
+        " stderr writes; add it to the Windows job's scripts/check_clippy_panics.py"
+    ]
+
+
+def test_every_crate_with_windows_only_code_has_its_panics_counted_on_windows():
+    workflows = [path.read_text(encoding="utf-8") for path in sorted((ROOT / ".github/workflows").glob("*.yml"))]
+    with_windows_code = checker.crates_with_windows_code(ROOT)
+    assert {"ketchup-mcp", "ketchup-pdm"} <= with_windows_code
+    assert checker.windows_code_uncounted(with_windows_code, checker.panics_counted(workflows, "Windows")) == []

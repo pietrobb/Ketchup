@@ -434,13 +434,15 @@ pub fn plan_underlay_object_removal(
 }
 
 /// One batch, so one Undo step, that discards what was done in Kečup to the objects
-/// `objects` the drawing of underlay `id` was read with, and no other edit: each is put
-/// back where it was read, and copies of it are dropped. A drawing written back refuses an
-/// edit of an object whose entity was changed in the file since; this lets those edits
-/// alone go (review 2026-11-04 r19 CD-163), all at once (review 2026-11-06 P3).
+/// `objects` the drawing of underlay `id`, whose lines as drawn now are `lines`, was read
+/// with, and no other edit: each is put back where it was read, and copies of it are taken
+/// out. A drawing written back refuses an edit of an object whose entity was changed in
+/// the file since; this lets those edits alone go (review 2026-11-04 r19 CD-163), all at
+/// once (review 2026-11-06 P3).
 pub fn plan_underlay_edit_discard(
     snapshot: &Snapshot,
     id: super::UnderlayId,
+    lines: &UnderlayLines,
     objects: &[u32],
 ) -> Result<CommandBatch, UnderlayObjectError> {
     let underlay = snapshot
@@ -450,12 +452,30 @@ pub fn plan_underlay_edit_discard(
         return Err(UnderlayObjectError::Empty);
     }
     let mut edits = underlay.edits.clone();
+    // The first object each edit added is its id. A copy is taken out where it is, as a
+    // removed object, not out of `added`: that gave the objects added after it other ids,
+    // so a removed one came back and another went (review 2026-11-08 CD-240).
+    let mut first_of = BTreeMap::new();
+    for (index, object) in lines.objects().objects.iter().enumerate() {
+        if let (Some(added_by), Ok(index)) = (object.added_by, u32::try_from(index)) {
+            first_of.entry(added_by).or_insert(index);
+        }
+    }
     for object in objects {
         let before = edits.clone();
         edits.removed_objects.remove(object);
         edits.moved_objects.remove(object);
         edits.stretched_objects.remove(object);
-        edits.added.retain(|added| added.copy_of() != Some(*object));
+        for (added_by, added) in edits.added.iter().enumerate() {
+            let first = u32::try_from(added_by)
+                .ok()
+                .and_then(|added_by| first_of.get(&added_by));
+            if added.copy_of() == Some(*object)
+                && let Some(first) = first
+            {
+                edits.removed_objects.insert(*first);
+            }
+        }
         if edits == before {
             return Err(UnderlayObjectError::NotFound(*object));
         }

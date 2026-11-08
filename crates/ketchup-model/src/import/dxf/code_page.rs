@@ -371,6 +371,10 @@ struct WesternLanguage {
     /// Whether it accents a stressed vowel ending a word only after a consonant or i or u
     /// (Italian „città“, „più“, „può“), so that „Predsieò“ is „Predsieň“.
     stressed_end: bool,
+    /// Two sets of its accented letters no word of it has one of each of: Finnish writes
+    /// š and ž in loanwords only and å in Swedish names only, so „Dåžka“ is „Dĺžka“
+    /// (review 2026-11-08 UL-240).
+    apart: [&'static str; 2],
 }
 
 impl WesternLanguage {
@@ -379,6 +383,7 @@ impl WesternLanguage {
             accented,
             foreign: "",
             stressed_end: false,
+            apart: ["", ""],
         }
     }
 
@@ -393,7 +398,11 @@ impl WesternLanguage {
         });
         let stressed_end_after_vowel =
             matches!(word, [.., 'a' | 'e' | 'o', 'à' | 'è' | 'ì' | 'ò' | 'ù']);
-        letters && !(self.stressed_end && stressed_end_after_vowel)
+        let together = self
+            .apart
+            .iter()
+            .all(|letters| word.iter().any(|letter| letters.contains(*letter)));
+        letters && !(self.stressed_end && stressed_end_after_vowel) && !together
     }
 }
 
@@ -426,7 +435,10 @@ const WESTERN: &[WesternLanguage] = &[
         foreign: "cqwxz",
         ..WesternLanguage::new("áðíóúýæø")
     }, // Faroese
-    WesternLanguage::new("äöåšž"),            // Finnish
+    WesternLanguage {
+        apart: ["å", "šž"],
+        ..WesternLanguage::new("äöåšž")
+    }, // Finnish
     WesternLanguage::new("äöõüšž"),           // Estonian
     WesternLanguage::new("áéíóú"),            // Irish
 ];

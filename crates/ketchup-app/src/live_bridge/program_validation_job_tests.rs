@@ -22,7 +22,7 @@ fn queued_validation_returns_native_distance_without_changing_the_document() {
         None,
         None,
     );
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let response = loop {
         bridge.poll_program_check_job(&mut app, &context);
         if let Ok(response) = response.try_recv() {

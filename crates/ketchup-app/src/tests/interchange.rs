@@ -903,9 +903,22 @@ fn hundegger_btlx_file_command_exports_validated_timber_with_support_report() {
         support.contains("portable_profile_removals=pocket, through-cut, extruded boolean-cut")
     );
     assert!(support.contains("intermediate_saw_cuts=0"));
+    // Review 2026-11-08 MF-242: the report says what the strategy does since
+    // MF-181 and MF-245, not "rectangular only".
+    assert!(support.contains(
+        "\nselected_profile_contours=rectangles sawn on their edges then milled; contours with an arc milled whole\n"
+    ));
+    assert!(support.contains(
+        "\nunsupported=straight-edged non-rectangular profile with the edge-saw request;"
+    ));
+    assert!(!support.contains("rectangular only"), "{support}");
     assert!(support.contains("concrete_importer_verified=false"));
     assert!(support.contains("machine_execution_order_guaranteed=false"));
-    assert!(support.ends_with("\ntapped_drillings=0\n"), "{support}");
+    // Review 2026-11-08 MF-240: the report names the drill it is written for.
+    assert!(
+        support.contains("\ntapped_drillings=0\nlargest_drill_mm=35\nround_holes_milled="),
+        "{support}"
+    );
     assert_eq!(script.export_requests()[0].extension, "btlx");
     let receipt = harness.state().last_side_effect_receipt().unwrap();
     assert_eq!(
