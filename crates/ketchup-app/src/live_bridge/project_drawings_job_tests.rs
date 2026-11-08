@@ -5,6 +5,7 @@
 //! cancelled request writes nothing and keeps none of its settings.
 
 use super::*;
+use crate::live_bridge::drawings::ExportDrawingsRequest;
 use crate::live_bridge::program_check::ProgramCheckJob;
 use crate::live_bridge::program_dry_run::QueuedReply;
 use ketchup_manufacturing::title_block::TitleField;
@@ -32,7 +33,7 @@ fn screwed_window() -> KetchupApp {
 }
 
 fn export(path: &Path) -> Request {
-    Request::ExportDrawings {
+    Request::ExportDrawings(ExportDrawingsRequest {
         expected: None,
         path: path.display().to_string(),
         sheet_id: None,
@@ -46,7 +47,8 @@ fn export(path: &Path) -> Request {
         zero_level_mm: None,
         storeys: None,
         zero_altitude_mm: None,
-    }
+        north_deg: None,
+    })
 }
 
 fn exporting(bridge: &LiveBridge) -> bool {
@@ -334,7 +336,7 @@ fn a_waiting_export_keeps_the_clients_stamp_past_the_evaluation_only() {
         let (_, mut bridge) = setup();
         let mut app = screwed_window();
         let mut request = export(&pdf);
-        if let Request::ExportDrawings { expected, .. } = &mut request {
+        if let Request::ExportDrawings(ExportDrawingsRequest { expected, .. }) = &mut request {
             *expected = Some(app.live_bridge_stamp());
         }
         evaluating(&mut app);
@@ -386,11 +388,11 @@ fn a_sheet_exported_during_the_exact_evaluation_waits_for_it() {
     wire.call(Request::Status {});
     evaluating(&mut wire.app);
     let mut request = export(&dxf);
-    if let Request::ExportDrawings {
+    if let Request::ExportDrawings(ExportDrawingsRequest {
         sheet_id,
         title_block,
         ..
-    } = &mut request
+    }) = &mut request
     {
         *sheet_id = Some(id);
         title_block.clear();

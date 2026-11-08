@@ -394,54 +394,9 @@ pub enum Request {
         expected: Option<Stamp>,
         path: String,
     },
-    /// Writes the project drawings of the visible layers as PDF; `title_block`
-    /// fields and `format` given here are first kept in the document. With
-    /// `sheet_id` it writes that drawing sheet of the document as DXF instead.
-    ExportDrawings {
-        #[serde(default)]
-        expected: Option<Stamp>,
-        path: String,
-        #[serde(default)]
-        sheet_id: Option<u64>,
-        #[serde(default)]
-        format: Option<String>,
-        #[serde(default)]
-        title_block: BTreeMap<ketchup_manufacturing::title_block::TitleField, String>,
-        /// Only the plan, with the annotations, rather than all seven views.
-        #[serde(default)]
-        plan_only: bool,
-        /// N of the scale 1:N the sheet is drawn at; the sheet picks it when absent.
-        #[serde(default)]
-        drawing_scale: Option<f64>,
-        /// The language the sheets are titled in, kept in the document:
-        /// cs, sk or en, auto for the window's; absent keeps the document's.
-        #[serde(default)]
-        sheet_language: Option<String>,
-        /// Replaces a PDF or a drawing sheet's file at `path` that is not the
-        /// one the document last wrote there (review 2026-11-04 MCP-140), as
-        /// the user agreed when asked (r19 SEC-161).
-        #[serde(default)]
-        replace: bool,
-        /// Takes the DXF or DWG set at `path` of another project for this
-        /// one's, as the user agreed when asked (review 2026-11-04 r19 MF-162).
-        #[serde(default)]
-        take_over: bool,
-        /// The height of ±0,000 in whole millimetres, kept in the document:
-        /// `"auto"` finds it from the model; absent keeps the document's
-        /// (review 2026-11-04 r19 P3).
-        #[serde(default)]
-        zero_level_mm: Option<Value>,
-        /// The table of storeys, kept in the document: a list of
-        /// `{finished_floor_mm, structural_mm}`, or `"auto"` to find them from
-        /// the model; absent keeps the document's (review 2026-11-08 MF-241).
-        #[serde(default)]
-        storeys: Option<Value>,
-        /// The altitude of ±0,000 above sea level in whole millimetres, kept
-        /// in the document and written beside its level mark; `"none"`
-        /// writes none; absent keeps the document's.
-        #[serde(default)]
-        zero_altitude_mm: Option<Value>,
-    },
+    /// Writes the project drawings of the visible layers, or with `sheet_id`
+    /// a drawing sheet of the document as DXF or DWG.
+    ExportDrawings(drawings::ExportDrawingsRequest),
     /// Imports a STEP, IGES, STL, DXF, GLB or SketchUp scene file as one Undo step;
     /// `as_underlay` keeps a DXF or DWG drawing under the model as an underlay instead.
     Import {
@@ -3511,9 +3466,7 @@ impl LiveBridge {
                     .map_err(|save_failure| save_failed(app, save_failure))?;
                 Ok(json!({"saved":true,"same_gui_document":true,"dirty":app.is_dirty()}))
             }
-            request @ Request::ExportDrawings { .. } => {
-                Self::export_drawings(app, request, ui_busy)
-            }
+            request @ Request::ExportDrawings(_) => Self::export_drawings(app, request, ui_busy),
             request @ Request::Import { .. } => {
                 Self::import_file(app, &request, ui_busy, cancelled, ReadAlready::Nothing)
             }

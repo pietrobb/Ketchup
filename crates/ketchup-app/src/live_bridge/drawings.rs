@@ -4,7 +4,7 @@
 //! document; with `sheet_id`, a drawing sheet of the document as DXF or DWG.
 
 use super::project_drawings_job::exports_project_drawings;
-use super::{LiveBridge, Request, failed_because, failure};
+use super::{LiveBridge, Request, Stamp, failed_because, failure};
 use crate::KetchupApp;
 use crate::app::drawing_sheet_export::{
     DrawingSheetExportError, ExportedDrawingSheet, SheetFileFormat, drawing_sheet_bytes,
@@ -23,9 +23,67 @@ use ketchup_manufacturing::title_block::{
 };
 use ketchup_model::drawing::DrawingSheetId;
 use ketchup_model::drawing_export::{DxfCurves, SheetAnnotations};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
+
+/// The parameters of `file action=export_drawings`: the project set of the
+/// visible layers, its settings kept in the document first, or with
+/// `sheet_id` a drawing sheet of the document.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExportDrawingsRequest {
+    #[serde(default)]
+    pub expected: Option<Stamp>,
+    pub path: String,
+    #[serde(default)]
+    pub sheet_id: Option<u64>,
+    #[serde(default)]
+    pub format: Option<String>,
+    #[serde(default)]
+    pub title_block: BTreeMap<TitleField, String>,
+    /// Only the plan, with the annotations, rather than all seven views.
+    #[serde(default)]
+    pub plan_only: bool,
+    /// N of the scale 1:N the sheet is drawn at; the sheet picks it when absent.
+    #[serde(default)]
+    pub drawing_scale: Option<f64>,
+    /// The language the sheets are titled in, kept in the document:
+    /// cs, sk or en, auto for the window's; absent keeps the document's.
+    #[serde(default)]
+    pub sheet_language: Option<String>,
+    /// Replaces a PDF or a drawing sheet's file at `path` that is not the
+    /// one the document last wrote there (review 2026-11-04 MCP-140), as
+    /// the user agreed when asked (r19 SEC-161).
+    #[serde(default)]
+    pub replace: bool,
+    /// Takes the DXF or DWG set at `path` of another project for this
+    /// one's, as the user agreed when asked (review 2026-11-04 r19 MF-162).
+    #[serde(default)]
+    pub take_over: bool,
+    /// The height of ±0,000 in whole millimetres, kept in the document:
+    /// `"auto"` finds it from the model; absent keeps the document's
+    /// (review 2026-11-04 r19 P3).
+    #[serde(default)]
+    pub zero_level_mm: Option<Value>,
+    /// The table of storeys, kept in the document: a list of
+    /// `{finished_floor_mm, structural_mm}`, or `"auto"` to find them from
+    /// the model; absent keeps the document's (review 2026-11-08 MF-241).
+    #[serde(default)]
+    pub storeys: Option<Value>,
+    /// The altitude of ±0,000 above sea level in whole millimetres, kept
+    /// in the document and written beside its level mark; `"none"`
+    /// writes none; absent keeps the document's.
+    #[serde(default)]
+    pub zero_altitude_mm: Option<Value>,
+    /// The direction of north in degrees counter-clockwise from the model's
+    /// +y, kept in the document; `"none"` takes it away; absent keeps the
+    /// document's (review 2026-11-08 §5.2).
+    #[serde(default)]
+    pub north_deg: Option<Value>,
+}
 
 fn sheet_format(name: &str) -> Result<Option<SheetFormat>, &'static str> {
     if name.eq_ignore_ascii_case("auto") {
@@ -64,7 +122,7 @@ impl LiveBridge {
         request: Request,
         ui_busy: bool,
     ) -> Result<SheetExport, &'static str> {
-        let Request::ExportDrawings {
+        let Request::ExportDrawings(ExportDrawingsRequest {
             expected,
             path,
             sheet_id: Some(id),
@@ -78,7 +136,8 @@ impl LiveBridge {
             zero_level_mm,
             storeys,
             zero_altitude_mm,
-        } = request
+            north_deg,
+        }) = request
         else {
             return Err(failure(
                 "invalid_params",
@@ -97,10 +156,11 @@ impl LiveBridge {
             || zero_level_mm.is_some()
             || storeys.is_some()
             || zero_altitude_mm.is_some()
+            || north_deg.is_some()
         {
             return Err(failure(
                 "invalid_params",
-                "format, title_block, plan_only, drawing_scale, sheet_language, zero_level_mm, storeys, zero_altitude_mm and take_over belong to the project sheets; a drawing sheet keeps its own page, views, scale and title block.",
+                "format, title_block, plan_only, drawing_scale, sheet_language, zero_level_mm, storeys, zero_altitude_mm, north_deg and take_over belong to the project sheets; a drawing sheet keeps its own page, views, scale and title block.",
                 json!({"sheet_id": id}),
             ));
         }
@@ -515,6 +575,19 @@ fn zero_altitude(value: &Value) -> Option<Option<i32>> {
         .map(Some)
 }
 
+/// The direction of north a client names in degrees, in tenths of a degree
+/// as the document keeps it, or `"none"`.
+fn north_tenths(value: &Value) -> Option<Option<i32>> {
+    if value == "none" {
+        return Some(None);
+    }
+    // The range the drawings window's field keeps.
+    let degrees = value
+        .as_f64()
+        .filter(|degrees| (-360.0..=360.0).contains(degrees))?;
+    format!("{:.0}", degrees * 10.0).parse().ok().map(Some)
+}
+
 /// The table of storeys as an answer names it, and where its storeys came from.
 fn storeys_answer(settings: &SheetSettings) -> Value {
     if settings.storeys.is_empty() {
@@ -532,7 +605,7 @@ pub(super) fn start_export(
     request: Request,
     ui_busy: bool,
 ) -> Result<(StartedDrawings, ProjectDrawingsJob), &'static str> {
-    let Request::ExportDrawings {
+    let Request::ExportDrawings(ExportDrawingsRequest {
         expected,
         path,
         sheet_id: None,
@@ -546,7 +619,8 @@ pub(super) fn start_export(
         zero_level_mm,
         storeys,
         zero_altitude_mm,
-    } = request
+        north_deg,
+    }) = request
     else {
         return Err("invalid_request");
     };
@@ -611,6 +685,18 @@ pub(super) fn start_export(
                     "invalid_params",
                     "zero_altitude_mm is the altitude of ±0,000 above sea level in whole millimetres (245300 for 245,300 m), or none to write none.",
                     json!({"zero_altitude_mm": value}),
+                )
+            })
+        })
+        .transpose()?;
+    let north_tenths_deg = north_deg
+        .as_ref()
+        .map(|value| {
+            north_tenths(value).ok_or_else(|| {
+                failure(
+                    "invalid_params",
+                    "north_deg is the direction of north in degrees counter-clockwise from the model's +y, from -360 to 360, or none when it is not known.",
+                    json!({"north_deg": value}),
                 )
             })
         })
@@ -692,6 +778,9 @@ pub(super) fn start_export(
     }
     if let Some(zero_altitude_mm) = zero_altitude_mm {
         settings.zero_altitude_mm = zero_altitude_mm;
+    }
+    if let Some(north_tenths_deg) = north_tenths_deg {
+        settings.north_tenths_deg = north_tenths_deg;
     }
     settings.title_block.extend(title_block);
     app.store_sheet_settings(settings);
@@ -784,6 +873,7 @@ pub(super) fn finish_export(
         "storeys": storeys_answer(&settings),
         "storeys_from": if settings.storeys.is_empty() { "model" } else { "table" },
         "zero_altitude_mm": settings.zero_altitude_mm.map_or(json!("none"), |altitude| json!(altitude)),
+        "north_deg": settings.north_deg().map_or(json!("none"), |north| json!(north)),
         "title_block": settings.title_block,
         "basis": "visible_layers_exact_solids",
         "dirty": app.is_dirty(),
@@ -908,7 +998,7 @@ mod tests {
     ) -> Result<Value, &'static str> {
         LiveBridge::export_drawings(
             app,
-            Request::ExportDrawings {
+            Request::ExportDrawings(ExportDrawingsRequest {
                 expected: None,
                 path: path.to_owned(),
                 sheet_id: None,
@@ -922,7 +1012,8 @@ mod tests {
                 zero_level_mm: None,
                 storeys: None,
                 zero_altitude_mm: None,
-            },
+                north_deg: None,
+            }),
             false,
         )
     }
@@ -985,7 +1076,7 @@ mod tests {
         // replace: true asks the user in the window (review 2026-11-08
         // SEC-182); declined, the file is kept. Agreed, it is still kept: the
         // empty document has no exact solid to draw.
-        let asked = Request::ExportDrawings {
+        let asked = Request::ExportDrawings(ExportDrawingsRequest {
             expected: None,
             path: target.display().to_string(),
             sheet_id: None,
@@ -999,7 +1090,8 @@ mod tests {
             zero_level_mm: None,
             storeys: None,
             zero_altitude_mm: None,
-        };
+            north_deg: None,
+        });
         assert_eq!(
             LiveBridge::export_drawings(&mut app, asked.clone(), false),
             Err("drawings_replace_declined")
