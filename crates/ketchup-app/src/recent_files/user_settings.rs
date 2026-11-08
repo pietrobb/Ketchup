@@ -86,6 +86,10 @@ impl SettingsFile {
         Ok((lines, damaged))
     }
 
+    pub(crate) fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     /// Every value of `key`, in the order written; none when the file cannot
     /// be read.
     pub(crate) fn values(&self, key: &str) -> Vec<String> {

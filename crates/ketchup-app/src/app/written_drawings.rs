@@ -244,14 +244,17 @@ impl KetchupApp {
     }
 
     fn set_token(&mut self, token: String) {
-        let entry = ketchup_model::persistence::ExtensionEntry::new(
+        // Only the two constants can be refused; the save tests write the token
+        // (review 2026-11-08 MF-247: an `.expect` here went into the baseline).
+        match ketchup_model::persistence::ExtensionEntry::new(
             SHEET_NAMESPACE,
             TOKEN_PATH,
             false,
             token.into_bytes(),
-        )
-        .expect("the drawings namespace and the token's path are valid");
-        self.file.container_data.set_extension(entry);
+        ) {
+            Ok(entry) => self.file.container_data.set_extension(entry),
+            Err(error) => ketchup_rejection::log!("the drawings token is not kept: {error}"),
+        }
     }
 
     /// Before the document is saved as `path`: saved as a file other than

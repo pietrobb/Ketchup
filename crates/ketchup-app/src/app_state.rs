@@ -207,6 +207,9 @@ pub(crate) struct BtlxSaving {
     pub(crate) worker: Option<std::thread::JoinHandle<std::io::Result<()>>>,
     /// They changed while the worker kept them, so are kept again after.
     pub(crate) again: bool,
+    /// Each key and value as last read or kept by this window, so it keeps
+    /// only what it changed (review 2026-11-08).
+    pub(crate) kept: Vec<(&'static str, String)>,
 }
 
 /// Which side panes and windows are open.

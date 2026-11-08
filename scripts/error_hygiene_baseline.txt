@@ -84,7 +84,6 @@ crates/ketchup-app/src/app/viewer_settings.rs or_default 1
 crates/ketchup-app/src/app/viewport.rs expect 9
 crates/ketchup-app/src/app/viewport.rs let_else_error 1
 crates/ketchup-app/src/app/viewport.rs or_default 1
-crates/ketchup-app/src/app/written_drawings.rs expect 1
 crates/ketchup-app/src/assembly_ui.rs dropped_error 1
 crates/ketchup-app/src/assembly_ui.rs expect 2
 crates/ketchup-app/src/assembly_ui.rs let_else_error 2

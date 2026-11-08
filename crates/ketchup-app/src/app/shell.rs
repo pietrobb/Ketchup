@@ -289,8 +289,7 @@ impl KetchupApp {
         }
         app.window.written_drawings = crate::app::written_drawings::of_user();
         if let Some(file) = crate::app::btlx_settings::of_user() {
-            app.window.btlx = crate::app::btlx_settings::read(&file);
-            app.window.btlx_settings = Some(file);
+            app.keep_btlx_settings_in(file);
         }
         app.window.decimal = crate::length_input::DecimalSeparator::at_startup();
         app.dialogs = Box::new(NativeFileDialogs::with_parent(

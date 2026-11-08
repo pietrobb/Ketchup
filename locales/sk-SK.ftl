@@ -1790,6 +1790,7 @@ program-detached-keep = Ponechať úpravu
 digest-language-changed = Rozhranie je teraz po slovensky
 digest-language-not-remembered = Rozhranie je teraz po slovensky, ale voľbu sa nepodarilo uložiť pre ďalšie spustenie: { $error }
 digest-btlx-options-not-remembered = Voľby BTLx platia pre toto okno, ale nepodarilo sa ich uložiť pre ďalšie spustenie: { $error }
+digest-btlx-options-not-read = Niektoré voľby BTLx v { $file } sa nedali prečítať a platí ich predvolená hodnota: { $values }
 digest-wireframe-shown = Drôtové zobrazenie bolo zapnuté
 digest-wireframe-hidden = Drôtové zobrazenie bolo vypnuté
 digest-monochrome-shown = Jednofarebné zobrazenie bolo zapnuté

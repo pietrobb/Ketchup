@@ -1842,6 +1842,7 @@ program-detached-keep = Keep the edit
 digest-language-changed = The interface is now in English
 digest-language-not-remembered = The interface is now in English, but the choice could not be saved for the next start: { $error }
 digest-btlx-options-not-remembered = The BTLx options are set for this window, but could not be saved for the next start: { $error }
+digest-btlx-options-not-read = Some BTLx options in { $file } could not be read and are at their default: { $values }
 digest-wireframe-shown = Wireframe view enabled
 digest-wireframe-hidden = Wireframe view disabled
 digest-monochrome-shown = Monochrome view enabled
