@@ -415,11 +415,17 @@ fn upward_area_m2(part: &Part, projected: bool) -> f64 {
     face_area_mm2(part, axis) * M2_PER_MM2 * if projected { up } else { 1.0 }
 }
 
-/// A member's longest axis: positions from 0 at one end to `length` at the other.
+/// A member's load frame, its longest local axis as the member check takes
+/// it: positions from 0 at one end to `length` at the other. Which edge a
+/// contact holds is read in the member's own bar frame ([`Part::bar_frame`]):
+/// its true length axis and its section's two sides with their sizes.
 struct Frame {
     centre: [f64; 3],
     axis: [f64; 3],
     length: f64,
+    bar_centre: [f64; 3],
+    bar_axis: [f64; 3],
+    section: [([f64; 3], f64); 2],
 }
 
 impl Frame {
@@ -429,10 +435,19 @@ impl Frame {
             .max_by(|a, b| size[*a].total_cmp(&size[*b]))
             .unwrap_or(0);
         let (min, max) = part.local_bounds();
+        let bar = part.bar_frame();
+        let local = axes(part);
+        let world = |d: [f64; 3]| -> [f64; 3] {
+            let v = std::array::from_fn(|i| (0..3).map(|k| d[k] * local[k][i]).sum());
+            linalg::normalize(v).unwrap_or(v)
+        };
         Self {
             centre: part.to_world(std::array::from_fn(|i| (min[i] + max[i]) / 2.0)),
-            axis: axes(part)[long],
+            axis: local[long],
             length: size[long],
+            bar_centre: part.to_world(bar.centre),
+            bar_axis: world(bar.axes[0]),
+            section: [1, 2].map(|side| (world(bar.axes[side]), bar.sizes[side])),
         }
     }
 
@@ -441,7 +456,10 @@ impl Frame {
     }
 
     /// The edge `points` touch: Some(true) on top, Some(false) underneath,
-    /// None from the side.
+    /// None from the side. Their middle holds an edge only in the outer quarter
+    /// of the section's depth from that edge (review 2026-11-08 PG-240: a lath
+    /// on the side of an 80 x 400 beam 13 mm above its middle held its top,
+    /// though bracing at mid-depth does not stop it twisting).
     fn edge(&self, points: &[[f64; 3]]) -> Option<bool> {
         if points.is_empty() {
             return None;
@@ -453,12 +471,18 @@ impl Frame {
             });
             (lo + hi) / 2.0
         });
-        let offset = sub(middle, self.centre);
-        let along = dot(offset, self.axis);
-        let across: [f64; 3] = std::array::from_fn(|i| offset[i] - along * self.axis[i]);
-        // NaN (points on the axis itself) holds no edge.
-        let up = across[2] / length(across);
-        (up.abs() > 0.3).then_some(up > 0.0)
+        // Up in the section's plane; a standing member has no top or bottom.
+        let rise = self.bar_axis[2];
+        let up = linalg::normalize(std::array::from_fn(|i| {
+            f64::from(u8::from(i == 2)) - rise * self.bar_axis[i]
+        }))?;
+        let height = dot(sub(middle, self.bar_centre), up);
+        let depth: f64 = self
+            .section
+            .iter()
+            .map(|(side, size)| dot(*side, up).abs() * size)
+            .sum();
+        (height.abs() >= depth / 4.0).then_some(height > 0.0)
     }
 
     fn range(&self, points: &[[f64; 3]]) -> (f64, f64) {

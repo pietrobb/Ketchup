@@ -26,6 +26,15 @@ pub const THICKNESS_AXIS: &str = "thickness_axis";
 /// is no column of the cut list.
 pub const MATERIAL_AXIS: &str = "material:axis";
 
+/// A part as a bar in its own frame ([`Part::bar_frame`]): its centre, the
+/// unit directions of its length and of its section's two sides, and their sizes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BarFrame {
+    pub centre: [f64; 3],
+    pub axes: [[f64; 3]; 3],
+    pub sizes: [f64; 3],
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Param {
     pub name: String,
@@ -1216,6 +1225,83 @@ impl Part {
         }
         let (min, max) = self.local_bounds();
         std::array::from_fn(|axis| max[axis] - min[axis])
+    }
+
+    /// The part as a bar in its own frame: its centre, the unit direction its
+    /// length runs along and those of its section's two sides, each with its
+    /// size. The length runs along the axis [`LENGTH_AXIS`] names, else the
+    /// longest; an extrusion's sides in its profile's plane are those of the
+    /// smallest rectangle around its profile (review 2026-11-08 PG-141(b): a
+    /// rafter extruded at a slope ran along its level projection, so its top
+    /// and bottom edges were taken for each other).
+    #[must_use]
+    pub fn bar_frame(&self) -> BarFrame {
+        let named = match self.attributes.get(LENGTH_AXIS).map(String::as_str) {
+            Some("x" | "X") => Some(0),
+            Some("y" | "Y") => Some(1),
+            Some("z" | "Z") => Some(2),
+            _ => None,
+        };
+        if let ProgramPartBody::Extrusion {
+            segments,
+            distance_mm,
+            caps,
+        } = &self.body
+            && self.joined().next().is_none()
+        {
+            let (profile, span, grow) = self.pulled_profile(segments, *distance_mm, caps);
+            let (along, widths) = smallest_enclosing_rectangle(&profile);
+            let across = [-along[1], along[0]];
+            let reach = |d: [f64; 2]| {
+                profile
+                    .iter()
+                    .map(|segment| segment.support(d))
+                    .fold(f64::NEG_INFINITY, f64::max)
+            };
+            let middle = |d: [f64; 2]| (reach(d) - reach([-d[0], -d[1]])) / 2.0;
+            let (along_mid, across_mid) = (middle(along), middle(across));
+            let centre = [
+                along[0] * along_mid + across[0] * across_mid,
+                along[1] * along_mid + across[1] * across_mid,
+                (span[0] + span[1]) / 2.0,
+            ];
+            let [long, short] = if widths[0] >= widths[1] {
+                [(along, widths[0]), (across, widths[1])]
+            } else {
+                [(across, widths[1]), (along, widths[0])]
+            }
+            .map(|(d, width)| ([d[0], d[1], 0.0], width + 2.0 * grow));
+            let pulled = ([0.0, 0.0, 1.0], span[1] - span[0] + 2.0 * grow);
+            let lengthwise = match named {
+                Some(2) => true,
+                Some(_) => false,
+                None => pulled.1 > long.1,
+            };
+            let [axis, a, b] = if lengthwise {
+                [pulled, long, short]
+            } else {
+                [long, short, pulled]
+            };
+            return BarFrame {
+                centre,
+                axes: [axis.0, a.0, b.0],
+                sizes: [axis.1, a.1, b.1],
+            };
+        }
+        let (min, max) = self.local_bounds();
+        let size: [f64; 3] = std::array::from_fn(|axis| max[axis] - min[axis]);
+        let long = named.unwrap_or_else(|| {
+            (0..3)
+                .max_by(|a, b| size[*a].total_cmp(&size[*b]))
+                .unwrap_or(0)
+        });
+        let [a, b] = [(long + 1) % 3, (long + 2) % 3];
+        let unit = |axis: usize| std::array::from_fn(|i| if i == axis { 1.0 } else { 0.0 });
+        BarFrame {
+            centre: std::array::from_fn(|i| (min[i] + max[i]) / 2.0),
+            axes: [unit(long), unit(a), unit(b)],
+            sizes: [size[long], size[a], size[b]],
+        }
     }
 
     /// Whether the attribute `along` names a local axis in the profile's
