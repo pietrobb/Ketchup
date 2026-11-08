@@ -480,7 +480,10 @@ def test_the_forms_review_r26_found_count_and_a_comment_or_an_else_does_not(tmp_
         "/* parse(text).expect(\"a\") */\n"
         'let url = "http://a.expect(";\n'
         "if let Ok(()) = save(&path) {} else { refuse(); }\n"
-        "if save(&path).is_err() {} else { done(); }\n",
+        # Review 2026-11-08 TST-251: the else of `.is_err() {}` runs on success, so the
+        # error itself is still dropped.
+        "if save(&path).is_err() {} else { done(); }\n"
+        "if save(&path).is_err() { /* kept */ }\nelse { done(); }\n",
     )
     # In an entry point: two functions of one name and a helper passed as `Self::name`.
     write(
@@ -503,6 +506,7 @@ def test_the_forms_review_r26_found_count_and_a_comment_or_an_else_does_not(tmp_
     assert checker.current_counts(tmp_path) == {
         "crates/a/src/lib.rs or_default": 2,
         "crates/a/src/lib.rs dropped_error": 2,
+        "crates/a/src/lib.rs empty_is_err": 2,
         "crates/a/src/lib.rs expect": 1,
         "crates/b/src/main.rs eprintln": 3,
     }

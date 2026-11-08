@@ -205,11 +205,14 @@ FROM_DISCARD = re.compile(r"\bfn\s+from\(\s*_\w*\s*:")
 # `.is_err() {}` with nothing but comments in the block, whatever the condition holds
 # (a struct literal too, review 2026-11-06 P3).
 # An empty `if let Ok(()) = call() {}` does it too (review 2026-11-07 P3).
-# An empty block an `else` follows answers the case in the `else` (review 2026-11-07 r26 P3).
-EMPTY_BLOCK = r"\{\s*(?:(?://[^\n]*\n|/\*.*?\*/)\s*)*\}(?!\s*else\b)"
+# The `else` of an empty `if let Ok(..)` block answers the error (review 2026-11-07 r26 P3);
+# the `else` of an empty `.is_err()` block runs on success, so the error is still
+# dropped (review 2026-11-08 TST-251).
+EMPTY_BLOCK = r"\{\s*(?:(?://[^\n]*\n|/\*.*?\*/)\s*)*\}"
 EMPTY_IS_ERR = re.compile(
     r"\.is_err\(\)\s*" + EMPTY_BLOCK
-    + r"|\bif\s+let\s+Ok\(\s*(?:\(\)|_\w*)\s*\)\s*=[^;{}]*(?:\{[^{};]*\}(?=\s*[),.])[^;{}]*)*?" + EMPTY_BLOCK,
+    + r"|\bif\s+let\s+Ok\(\s*(?:\(\)|_\w*)\s*\)\s*=[^;{}]*(?:\{[^{};]*\}(?=\s*[),.])[^;{}]*)*?"
+    + EMPTY_BLOCK + r"(?!\s*else\b)",
     re.DOTALL)
 
 

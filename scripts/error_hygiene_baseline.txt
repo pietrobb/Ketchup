@@ -308,7 +308,6 @@ crates/ketchup-manufacturing/src/viewer_export/received.rs dropped_error 2
 crates/ketchup-mcp/src/discovery.rs eprintln 3
 crates/ketchup-mcp/src/discovery.rs let_else_error 1
 crates/ketchup-mcp/src/local_auth.rs dropped_arm 1
-crates/ketchup-mcp/src/server.rs eprintln 1
 crates/ketchup-mcp/src/stage.rs expect 2
 crates/ketchup-mcp/src/stage.rs formatted_cause 1
 crates/ketchup-mcp/src/stage.rs let_else_error 1
