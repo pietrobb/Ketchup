@@ -96,7 +96,8 @@ pub struct Reaction {
 pub struct MemberLoad {
     pub part: String,
     pub length_mm: f64,
-    /// Unit direction of the member's longest axis; positions run along it from one end.
+    /// Unit direction of the member's load axis ([`Part::load_axis`]: the
+    /// one its `length_axis` names, else its longest); positions run along it from one end.
     pub axis: [f64; 3],
     /// Everything on the member, by kind.
     pub loads_n: Loads,
@@ -415,7 +416,7 @@ fn upward_area_m2(part: &Part, projected: bool) -> f64 {
     face_area_mm2(part, axis) * M2_PER_MM2 * if projected { up } else { 1.0 }
 }
 
-/// A member's load frame, its longest local axis as the member check takes
+/// A member's load frame along [`Part::load_axis`], as the member check takes
 /// it: positions from 0 at one end to `length` at the other. Which edge a
 /// contact holds is read in the member's own bar frame ([`Part::bar_frame`]):
 /// its true length axis and its section's two sides with their sizes.
@@ -431,9 +432,7 @@ struct Frame {
 impl Frame {
     fn of(part: &Part) -> Self {
         let size = extents(part);
-        let long = (0..3)
-            .max_by(|a, b| size[*a].total_cmp(&size[*b]))
-            .unwrap_or(0);
+        let long = part.load_axis();
         let (min, max) = part.local_bounds();
         let bar = part.bar_frame();
         let local = axes(part);

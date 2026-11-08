@@ -2423,15 +2423,67 @@ fn an_incomplete_load_reports_the_known_utilization_but_never_passes() {
 #[test]
 #[ignore = "large-house: runs in full suite"]
 fn large_house_every_member_of_the_house_has_a_utilization_and_passes_once_the_snow_is_given() {
+    // Review 2026-11-08 PG-243: at 30 degrees two 29 mm pieces of a gable stud
+    // over a plate pocket were checked as beams across the wall and failed in
+    // shear (1.997); PG-147: only a steep roof gives a trimmer lateral torsional
+    // buckling to check.
+    for pitch in [30.0, 50.0] {
+        let steep = report(HOUSE, &[("snow_sk", 1.5), ("roof_pitch", pitch)]);
+        assert!(steep.design.members.len() > 200);
+        every_member_passes(&steep, &format!("pitch {pitch}"));
+        if pitch == 50.0 {
+            assert!(
+                steep.design.members.iter().any(|member| member
+                    .checks
+                    .iter()
+                    .any(|check| check.name == "lateral_torsional" && check.utilization > 0.0)),
+                "no member at {pitch} degrees checks lateral torsional buckling"
+            );
+        }
+    }
     let with = report(HOUSE, &[("snow_sk", 1.5)]);
     let members = &with.design.members;
     assert_eq!(members.len(), with.loads.members.len());
     assert!(members.len() > 200, "{}", members.len());
     assert!(!with.design.basis.is_empty());
+    let spans = every_member_passes(&with, "pitch 40");
+    let columns = members.iter().filter(|m| m.role == "column").count();
+    assert!(columns > 50, "{columns}");
+    // Joists, rafters, headers and plates over gaps: fewer means checks were skipped.
+    assert!(spans >= 75, "{spans} of {}", members.len());
+    // The rafters sit on the wall plate with a birdsmouth: the notch is checked.
+    let rafter = member(&with, "konštrukcia/strecha južná/krokva 3");
+    for check in [
+        "bending",
+        "shear",
+        "deflection_fin",
+        "shear_notch",
+        "bearing",
+    ] {
+        assert!(utilization(rafter, check) > 0.0, "{check}");
+    }
+    // Without the site's snow nothing under the roof passes.
+    let without = report(HOUSE, &[]);
+    for member in &without.design.members {
+        assert!(member.utilization.is_some(), "{}", member.part);
+        if !member.missing.is_empty() {
+            assert_eq!(member.status, "not_verified", "{}", member.part);
+        }
+    }
+}
+
+/// Every member of `report` passes on every check of its role, run with a
+/// load; the number of members with a span.
+fn every_member_passes(report: &Report, case: &str) -> usize {
     let mut spans = 0;
-    for member in members {
-        assert_eq!(member.missing, Vec::<String>::new(), "{}", member.part);
-        assert_eq!(member.status, "pass", "{member:?}");
+    for member in &report.design.members {
+        assert_eq!(
+            member.missing,
+            Vec::<String>::new(),
+            "{case}: {}",
+            member.part
+        );
+        assert_eq!(member.status, "pass", "{case}: {member:?}");
         // A pass stands on every check of its role having run with a load,
         // not on checks that were skipped.
         // A plate bedded along its whole length has no span to bend; a beam
@@ -2467,29 +2519,7 @@ fn large_house_every_member_of_the_house_has_a_utilization_and_passes_once_the_s
             "{member:?}"
         );
     }
-    let columns = members.iter().filter(|m| m.role == "column").count();
-    assert!(columns > 50, "{columns}");
-    // Joists, rafters, headers and plates over gaps: fewer means checks were skipped.
-    assert!(spans >= 75, "{spans} of {}", members.len());
-    // The rafters sit on the wall plate with a birdsmouth: the notch is checked.
-    let rafter = member(&with, "konštrukcia/strecha južná/krokva 3");
-    for check in [
-        "bending",
-        "shear",
-        "deflection_fin",
-        "shear_notch",
-        "bearing",
-    ] {
-        assert!(utilization(rafter, check) > 0.0, "{check}");
-    }
-    // Without the site's snow nothing under the roof passes.
-    let without = report(HOUSE, &[]);
-    for member in &without.design.members {
-        assert!(member.utilization.is_some(), "{}", member.part);
-        if !member.missing.is_empty() {
-            assert_eq!(member.status, "not_verified", "{}", member.part);
-        }
-    }
+    spans
 }
 
 /// Review 2026-11-01 PG-106: kmod, kdef and gamma_M came from the rows of solid timber

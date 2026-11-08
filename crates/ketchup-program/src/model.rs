@@ -1236,12 +1236,7 @@ impl Part {
     /// and bottom edges were taken for each other).
     #[must_use]
     pub fn bar_frame(&self) -> BarFrame {
-        let named = match self.attributes.get(LENGTH_AXIS).map(String::as_str) {
-            Some("x" | "X") => Some(0),
-            Some("y" | "Y") => Some(1),
-            Some("z" | "Z") => Some(2),
-            _ => None,
-        };
+        let named = self.named_length_axis();
         if let ProgramPartBody::Extrusion {
             segments,
             distance_mm,
@@ -1290,17 +1285,38 @@ impl Part {
         }
         let (min, max) = self.local_bounds();
         let size: [f64; 3] = std::array::from_fn(|axis| max[axis] - min[axis]);
-        let long = named.unwrap_or_else(|| {
-            (0..3)
-                .max_by(|a, b| size[*a].total_cmp(&size[*b]))
-                .unwrap_or(0)
-        });
+        let long = self.load_axis();
         let [a, b] = [(long + 1) % 3, (long + 2) % 3];
         let unit = |axis: usize| std::array::from_fn(|i| if i == axis { 1.0 } else { 0.0 });
         BarFrame {
             centre: std::array::from_fn(|i| (min[i] + max[i]) / 2.0),
             axes: [unit(long), unit(a), unit(b)],
             sizes: [size[long], size[a], size[b]],
+        }
+    }
+
+    /// The local axis a member's loads are placed along: the one
+    /// [`LENGTH_AXIS`] names, else its longest (review 2026-11-08 PG-243: a
+    /// 29 mm piece of a gable stud in a 140 mm wall was checked as a beam
+    /// across the wall).
+    #[must_use]
+    pub fn load_axis(&self) -> usize {
+        self.named_length_axis().unwrap_or_else(|| {
+            let (min, max) = self.local_bounds();
+            (0..3)
+                .max_by(|a, b| (max[*a] - min[*a]).total_cmp(&(max[*b] - min[*b])))
+                .unwrap_or(0)
+        })
+    }
+
+    /// The local axis the part's [`LENGTH_AXIS`] names, if it names one.
+    #[must_use]
+    pub fn named_length_axis(&self) -> Option<usize> {
+        match self.attributes.get(LENGTH_AXIS).map(String::as_str) {
+            Some("x" | "X") => Some(0),
+            Some("y" | "Y") => Some(1),
+            Some("z" | "Z") => Some(2),
+            _ => None,
         }
     }
 

@@ -1086,9 +1086,7 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
     let segments = &reflected_profile(segments, &mirrors(&part.operations));
     let size = extents(part);
     let world = axes(part);
-    let long = (0..3)
-        .max_by(|a, b| size[*a].total_cmp(&size[*b]))
-        .unwrap_or(0);
+    let long = part.load_axis();
     if long == 2 {
         // The profile is the cross-section; b and h along its more vertical local axis.
         let depth = usize::from(world[1][2].abs() >= world[0][2].abs());
@@ -1138,12 +1136,18 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
             underside_at: None,
         });
     }
-    // The profile is a side or plan view: the grain runs along its longest edge.
-    let edge = segments
-        .iter()
-        .map(|s| [s.end_mm[0] - s.start_mm[0], s.end_mm[1] - s.start_mm[1]])
-        .max_by(|a, b| a[0].hypot(a[1]).total_cmp(&b[0].hypot(b[1])))
-        .unwrap_or([1.0, 0.0]);
+    // The profile is a side or plan view: the grain runs along the axis its
+    // length_axis names, else along its longest edge (PG-243: a stud's piece
+    // 29 mm high under a pocket had its longest edge across its grain).
+    let edge = if part.named_length_axis().is_some() {
+        std::array::from_fn(|i| f64::from(u8::from(i == long)))
+    } else {
+        segments
+            .iter()
+            .map(|s| [s.end_mm[0] - s.start_mm[0], s.end_mm[1] - s.start_mm[1]])
+            .max_by(|a, b| a[0].hypot(a[1]).total_cmp(&b[0].hypot(b[1])))
+            .unwrap_or([1.0, 0.0])
+    };
     let norm = edge[0].hypot(edge[1]);
     let d = [edge[0] / norm, edge[1] / norm];
     let along = d[long].abs();
