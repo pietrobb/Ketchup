@@ -246,6 +246,24 @@ impl GeneralFabricationProjection {
             let stock = operations
                 .iter()
                 .find(|operation| operation.kind == GeneralManufacturingKind::Stock);
+            let pin_hole = pin_holes
+                .iter()
+                .find(|(_, hole)| row.instances.contains(&hole.instance_path));
+            // A piece with nothing to machine gets no woodWOP program, so its
+            // blank cannot refuse the package (review 2026-11-03 MF-141).
+            if matches!(format, ShopFormat::Woodwop { .. })
+                && stock.is_some()
+                && !elements.iter().any(|element| {
+                    matches!(
+                        element,
+                        ShopElement::FreeFormBlank | ShopElement::UndescribedMachining
+                    )
+                })
+                && operations.len() == 1
+                && pin_hole.is_none()
+            {
+                continue;
+            }
             let blank = stock.and_then(|stock| rectangular_stock(&stock.machining));
             if stock.is_some() && blank.is_none() && !elements.contains(&ShopElement::FreeFormBlank)
             {
@@ -265,10 +283,7 @@ impl GeneralFabricationProjection {
                     elements.push(ShopElement::Thread(thread.label()));
                 }
             }
-            if let Some((joint, _)) = pin_holes
-                .iter()
-                .find(|(_, hole)| row.instances.contains(&hole.instance_path))
-            {
+            if let Some((joint, _)) = pin_hole {
                 elements.push(ShopElement::PinHole(joint.name.clone()));
             }
             for element in elements {

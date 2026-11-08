@@ -56,3 +56,39 @@ pub(super) fn same_pin_holes(first: &[&PinHole], other: &[&PinHole]) -> bool {
             })
         })
 }
+
+impl GeneralFabricationProjection {
+    /// The production package as one stored ZIP: `<code>.mpr` and its
+    /// barcode label `<code>.svg` for every piece the package programs.
+    pub fn woodwop_mpr_4_0_production_zip(
+        &self,
+        snapshot: &Snapshot,
+        options: WoodwopMprOptions,
+    ) -> Result<Vec<u8>, GeneralFabricationError> {
+        let programs = self.woodwop_mpr_4_0_production_package(snapshot, options)?;
+        if programs.is_empty() {
+            return Err(GeneralFabricationError::NoPieceToProgram);
+        }
+        let names = programs
+            .iter()
+            .map(|program| {
+                [
+                    format!("{}.mpr", program.program_name),
+                    format!("{}.svg", program.program_name),
+                ]
+            })
+            .collect::<Vec<_>>();
+        let entries = programs
+            .iter()
+            .zip(&names)
+            .flat_map(|(program, [mpr, svg])| {
+                [
+                    (mpr.as_str(), program.mpr.as_slice()),
+                    (svg.as_str(), program.barcode_svg.as_slice()),
+                ]
+            })
+            .collect::<Vec<_>>();
+        crate::three_mf_export::encode_package(&entries, usize::MAX)
+            .map_err(GeneralFabricationError::Package)
+    }
+}

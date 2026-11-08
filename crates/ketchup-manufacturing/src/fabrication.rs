@@ -1148,40 +1148,6 @@ impl GeneralFabricationProjection {
             .collect()
     }
 
-    /// The production package as one stored ZIP: `<code>.mpr` and its
-    /// barcode label `<code>.svg` for every piece the package programs.
-    pub fn woodwop_mpr_4_0_production_zip(
-        &self,
-        snapshot: &Snapshot,
-        options: WoodwopMprOptions,
-    ) -> Result<Vec<u8>, GeneralFabricationError> {
-        let programs = self.woodwop_mpr_4_0_production_package(snapshot, options)?;
-        if programs.is_empty() {
-            return Err(GeneralFabricationError::NoPieceToProgram);
-        }
-        let names = programs
-            .iter()
-            .map(|program| {
-                [
-                    format!("{}.mpr", program.program_name),
-                    format!("{}.svg", program.program_name),
-                ]
-            })
-            .collect::<Vec<_>>();
-        let entries = programs
-            .iter()
-            .zip(&names)
-            .flat_map(|(program, [mpr, svg])| {
-                [
-                    (mpr.as_str(), program.mpr.as_slice()),
-                    (svg.as_str(), program.barcode_svg.as_slice()),
-                ]
-            })
-            .collect::<Vec<_>>();
-        crate::three_mf_export::encode_package(&entries, usize::MAX)
-            .map_err(GeneralFabricationError::Package)
-    }
-
     /// Only the existing top-face/edge setup; no inferred workpiece flip or labels.
     /// Program identifiers belong to the destination adapter, not physical identity.
     pub fn woodwop_mpr_4_0_setup_a_programs(
@@ -1246,6 +1212,15 @@ impl GeneralFabricationProjection {
                     return Err(GeneralFabricationError::ExportBlocked(
                         ExportBlock::UnsupportedMachining,
                     ));
+                }
+                // No copy gets a program, so the blank need not be one a
+                // program is set up on (review 2026-11-03 MF-141).
+                if machining.is_empty()
+                    && !holes
+                        .iter()
+                        .any(|hole| row.instances.contains(&hole.instance_path))
+                {
+                    return Ok(());
                 }
                 let stock_frame = woodwop_stock_frame(&stock.machining).ok_or(
                     GeneralFabricationError::ExportBlocked(ExportBlock::UnsupportedMachining),
