@@ -8,7 +8,7 @@ fn package() -> WorkshopPackage {
         ],
         not_made: vec![NotMade {
             output: "woodWOP".to_owned(),
-            reason: "the part Shelf has a cut no program describes".to_owned(),
+            reason: GeneralFabricationError::NoPieceToProgram,
         }],
     }
 }
@@ -28,10 +28,9 @@ fn the_workshop_accepts_the_package_and_reads_what_was_not_made() {
         accepted.files,
         ["btlx/model.btlx", "bom.txt", WORKSHOP_REPORT]
     );
+    let reason = GeneralFabricationError::NoPieceToProgram.to_string();
     assert!(
-        accepted
-            .not_made
-            .contains("woodWOP: the part Shelf has a cut no program describes"),
+        accepted.not_made.contains(&format!("woodWOP: {reason}")),
         "{}",
         accepted.not_made
     );

@@ -2,6 +2,10 @@
 //! model in one stored ZIP with a report of what could not be made and a
 //! SHA-256 list, and the acceptance check the workshop runs on what it got.
 
+use crate::fabrication::{
+    BtlxExportOptions, GeneralFabricationError, GeneralFabricationProjection, WoodwopMprOptions,
+};
+use ketchup_model::document::Snapshot;
 use ketchup_model::exact_product::ExactProductError;
 use ketchup_model::graph::sha256_hex;
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,7 +23,7 @@ pub const WORKSHOP_REPORT: &str = "not_made.txt";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NotMade {
     pub output: String,
-    pub reason: String,
+    pub reason: GeneralFabricationError,
 }
 
 /// The files to send, by their path in the package, and the outputs that
@@ -116,17 +120,84 @@ impl WorkshopPackage {
     }
 }
 
+/// How the machine files of the package are written.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WorkshopPackageOptions {
+    pub btlx: BtlxExportOptions,
+    pub woodwop: WoodwopMprOptions,
+}
+
+impl GeneralFabricationProjection {
+    /// Every shop output of the model that can be made: the parts list, the
+    /// part drawings, BTLx and the woodWOP program and label of each piece.
+    /// An output that cannot be made is named with its reason instead, and
+    /// does not stop the others.
+    pub fn workshop_package(
+        &self,
+        snapshot: &Snapshot,
+        options: WorkshopPackageOptions,
+    ) -> WorkshopPackage {
+        let mut package = WorkshopPackage::default();
+        let mut add =
+            |output: &str, made: Result<Vec<(String, Vec<u8>)>, GeneralFabricationError>| match made
+            {
+                Ok(files) => package.files.extend(files),
+                Err(error) => package.not_made.push(NotMade {
+                    output: output.to_owned(),
+                    reason: error,
+                }),
+            };
+        let one = |name: &str, bytes: Vec<u8>| vec![(name.to_owned(), bytes)];
+        add(
+            "parts list",
+            self.bom_export(snapshot)
+                .map(|bytes| one("parts.csv", bytes)),
+        );
+        add(
+            "drawings",
+            self.drawing_svg(snapshot)
+                .map(|bytes| one("drawings.svg", bytes)),
+        );
+        add(
+            "BTLx",
+            self.btlx_2_3_1_export_with_options(snapshot, options.btlx)
+                .map(|bytes| one("btlx/model.btlx", bytes)),
+        );
+        add(
+            "woodWOP",
+            self.woodwop_mpr_4_0_production_package(snapshot, options.woodwop)
+                .map(|programs| {
+                    programs
+                        .into_iter()
+                        .flat_map(|program| {
+                            [
+                                (format!("woodwop/{}.mpr", program.program_name), program.mpr),
+                                (
+                                    format!("woodwop/{}.svg", program.program_name),
+                                    program.barcode_svg,
+                                ),
+                            ]
+                        })
+                        .collect()
+                }),
+        );
+        package
+    }
+}
+
 fn report_text(not_made: &[NotMade]) -> String {
     if not_made.is_empty() {
         return "Every output was made.\n".to_owned();
     }
     let one_line = |text: &str| text.replace(['\r', '\n'], " ");
     std::iter::once("Not made:\n".to_owned())
-        .chain(
-            not_made
-                .iter()
-                .map(|item| format!("- {}: {}\n", one_line(&item.output), one_line(&item.reason))),
-        )
+        .chain(not_made.iter().map(|item| {
+            format!(
+                "- {}: {}\n",
+                one_line(&item.output),
+                one_line(&item.reason.to_string())
+            )
+        }))
         .collect()
 }
 
