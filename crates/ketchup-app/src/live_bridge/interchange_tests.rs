@@ -295,6 +295,13 @@ fn an_export_refusal_is_named_by_what_repairs_it() {
         Err("export_refused")
     );
     assert!(!target.exists());
+    // Review 2026-11-08 §5.2: nor any shop file to send to the workshop.
+    let package = directory.path().join("frame.zip");
+    assert_eq!(
+        bridge.execute(&mut app, export(&package, "workshop_package"), false),
+        Err("export_refused")
+    );
+    assert!(!package.exists());
 }
 
 /// Měchenice 2026-11-02 MECH-9: `file export dxf/dwg` failed whole on one

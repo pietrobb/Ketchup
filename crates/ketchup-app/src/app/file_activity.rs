@@ -232,6 +232,7 @@ impl KetchupApp {
                 | AppCommand::ExportSheetMetalManufacturing
                 | AppCommand::ExportHomagMpr
                 | AppCommand::ExportHundeggerBtlx
+                | AppCommand::ExportWorkshopPackage
         ) {
             return false;
         }

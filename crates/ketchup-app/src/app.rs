@@ -139,6 +139,7 @@ mod viewer_settings_tests;
 mod viewer_workflow_tests;
 mod viewport;
 mod viewport_paint;
+mod workshop_export;
 pub(crate) mod written_drawings;
 
 pub(crate) use commands::*;

@@ -958,9 +958,8 @@ enum ActiveTool {
 
 /// Every command the designed shell can dispatch.
 ///
-/// The variant is a command's stable identity; its label is a localization key resolved at
-/// paint time. Acceptance tests address widgets by variant and resolve labels through the
-/// same catalog, so no translation change or icon-only presentation can break them.
+/// The variant is a command's stable identity and its label a localization key resolved at
+/// paint time: tests address widgets by variant, so no translation or icon can break them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AppCommand {
     New,
@@ -993,6 +992,7 @@ pub enum AppCommand {
     ReviewStaticFea,
     ReviewLocalPdm,
     ExportHundeggerBtlx,
+    ExportWorkshopPackage,
     Select,
     Line,
     Rectangle,

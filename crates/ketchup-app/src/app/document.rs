@@ -1204,6 +1204,9 @@ impl KetchupApp {
             AppCommand::ExportHundeggerBtlx => {
                 self.export_from_menu("btlx", Self::export_current_model_btlx_to);
             }
+            AppCommand::ExportWorkshopPackage => {
+                self.export_from_menu("workshop-zip", Self::export_current_workshop_package_to);
+            }
             AppCommand::New | AppCommand::Open => {}
             _ => unreachable!("only file commands are routed here"),
         }

@@ -70,6 +70,12 @@ impl KetchupApp {
             ui.separator();
             self.menu_command_as(ui, AppCommand::ExportHundeggerBtlx, "file-short-btlx");
             self.btlx_options_menu(ui);
+            ui.separator();
+            self.menu_command_as(
+                ui,
+                AppCommand::ExportWorkshopPackage,
+                "file-short-workshop-package",
+            );
         });
     }
 
