@@ -747,10 +747,14 @@ impl Shell {
 
     /// Open a submenu of the open menu, identified by its localization key.
     pub fn open_submenu(&mut self, key: &str) {
+        self.open_submenu_labelled(&format!("{} ⏵", self.catalog().text(key)));
+    }
+
+    /// Open a submenu of the open menu by its accessible name, which ends in ⏵.
+    pub fn open_submenu_labelled(&mut self, label: &str) {
         self.gap();
-        let label = format!("{} ⏵", self.catalog().text(key));
         self.harness
-            .get_by_role_and_label(Role::Button, &label)
+            .get_by_role_and_label(Role::Button, label)
             .click();
         // Like a menu, a submenu is painted where it takes clicks one frame
         // after its sizing pass.
@@ -810,6 +814,46 @@ impl Shell {
                 .then(a.left().total_cmp(&b.left()))
         });
         buttons.into_iter().map(|(_, label)| label).collect()
+    }
+
+    /// What the open menus offer, as a document names it: each visible
+    /// button, check box and slider by its accessible name and by the text it
+    /// paints, with whether it opens a submenu (its accessible name, the one
+    /// to open it by, ends in ⏵) and where it is, to tell the items of a menu
+    /// just opened from those shown before.
+    pub fn menu_items(&self) -> Vec<(String, Option<String>, Rect)> {
+        fn texts(shape: &egui::Shape, into: &mut Vec<(String, Rect)>) {
+            match shape {
+                egui::Shape::Text(text) => into.push((
+                    text.galley.text().trim().to_owned(),
+                    text.galley.rect.translate(text.pos.to_vec2()),
+                )),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| texts(shape, into)),
+                _ => {}
+            }
+        }
+        let mut painted = Vec::new();
+        for clipped in self.output_shapes() {
+            texts(&clipped.shape, &mut painted);
+        }
+        let mut items = Vec::new();
+        for node in self.harness.query_all_by(|node| {
+            !node.is_hidden() && matches!(node.role(), Role::Button | Role::CheckBox | Role::Slider)
+        }) {
+            let Some(label) = node.accesskit_node().label() else {
+                continue;
+            };
+            let submenu = label.ends_with(" ⏵").then(|| label.clone());
+            let rect = node.rect();
+            for (text, _) in painted
+                .iter()
+                .filter(|(text, at)| !text.is_empty() && rect.contains(at.center()))
+            {
+                items.push((text.clone(), submenu.clone(), rect));
+            }
+            items.push((label.trim_end_matches(" ⏵").to_owned(), submenu, rect));
+        }
+        items
     }
 
     /// Click the outliner row whose accessible name is `label`.
