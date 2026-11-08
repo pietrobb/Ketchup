@@ -108,6 +108,7 @@ jobs:
       DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
       ABOUT_VERSION: 0.9.2
       ABOUT_SHA256: 9099a59e820c38a68b9d65f300662a567d56562f9a10f6aa4c7e86c17c2566af
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -116,6 +117,8 @@ jobs:
         run: |
           name="cargo-deny-$DENY_VERSION-x86_64-unknown-linux-musl"
           curl --fail --silent --show-error --location --output "$RUNNER_TEMP/deny.tar.gz" \
+            --retry 5 --retry-delay 10 --retry-all-errors --connect-timeout 30 \
+            -H "Authorization: Bearer $GH_TOKEN" \
             "https://github.com/EmbarkStudios/cargo-deny/releases/download/$DENY_VERSION/$name.tar.gz"
           echo "$DENY_SHA256  $RUNNER_TEMP/deny.tar.gz" | sha256sum --check --strict
           tar -xzf "$RUNNER_TEMP/deny.tar.gz" -C "$RUNNER_TEMP"
@@ -137,6 +140,8 @@ jobs:
         run: |
           name="cargo-about-$ABOUT_VERSION-x86_64-unknown-linux-musl"
           curl --fail --silent --show-error --location --output "$RUNNER_TEMP/about.tar.gz" \
+            --retry 5 --retry-delay 10 --retry-all-errors --connect-timeout 30 \
+            -H "Authorization: Bearer $GH_TOKEN" \
             "https://github.com/EmbarkStudios/cargo-about/releases/download/$ABOUT_VERSION/$name.tar.gz"
           echo "$ABOUT_SHA256  $RUNNER_TEMP/about.tar.gz" | sha256sum --check --strict
           tar -xzf "$RUNNER_TEMP/about.tar.gz" -C "$RUNNER_TEMP"
@@ -616,9 +621,12 @@ jobs:
         env:
           ABOUT_VERSION: 0.9.2
           ABOUT_SHA256: ae72f0df0c399a1e96336f696fa55b1b28679fd725632eba8cf8e4568467cc3e
+          GH_TOKEN: ${{ github.token }}
         run: |
           name="cargo-about-$ABOUT_VERSION-aarch64-apple-darwin"
           curl --fail --silent --show-error --location --output "$RUNNER_TEMP/about.tar.gz" \
+            --retry 5 --retry-delay 10 --retry-all-errors --connect-timeout 30 \
+            -H "Authorization: Bearer $GH_TOKEN" \
             "https://github.com/EmbarkStudios/cargo-about/releases/download/$ABOUT_VERSION/$name.tar.gz"
           echo "$ABOUT_SHA256  $RUNNER_TEMP/about.tar.gz" | shasum -a 256 --check --strict
           tar -xzf "$RUNNER_TEMP/about.tar.gz" -C "$RUNNER_TEMP"

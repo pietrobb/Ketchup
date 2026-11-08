@@ -2286,7 +2286,7 @@ fn the_production_job_stock_frame_is_right_handed_and_the_woodwop_frame() {
     });
     let mpr = job["outputs"][homag.id()][0]["content"].as_str().unwrap();
     assert!(
-        mpr.contains(&format!("XA=\"{xa}\"\nYA=\"{ya}\"\nZA=\"{za}\"")),
+        mpr.contains(&format!("XA=\"{xa}\"\r\nYA=\"{ya}\"\r\nZA=\"{za}\"")),
         "XA={xa} YA={ya} ZA={za}\n{mpr}"
     );
 }
@@ -2515,6 +2515,8 @@ fn exact_profile_cut_projects_btl_ready_timber_stock_and_circular_drilling() {
     ));
     let mpr =
         String::from_utf8(projection.woodwop_mpr_4_0_drill_export(&snapshot).unwrap()).unwrap();
+    assert_woodwop_reads_it_as_jaf_writes_it(&mpr);
+    let mpr = mpr.replace("\r\n", "\n");
     assert!(mpr.starts_with("[H\nVERSION=\"4.0\"\n"));
     assert!(
         mpr.contains("_BSX=1000\n_BSY=100\n_BSZ=50\n\\ketchup.woodwop-mpr-4.0-drill-export.v1\\\n")
@@ -2546,11 +2548,9 @@ fn exact_profile_cut_projects_btl_ready_timber_stock_and_circular_drilling() {
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit())
         );
-        assert!(
-            String::from_utf8(program.mpr.clone())
-                .unwrap()
-                .contains("\\ketchup.homag-bhx-production-package.v1\\")
-        );
+        let mpr = String::from_utf8(program.mpr.clone()).unwrap();
+        assert!(mpr.contains("\\ketchup.homag-bhx-production-package.v1\\"));
+        assert_woodwop_reads_it_as_jaf_writes_it(&mpr);
         let label = String::from_utf8(program.barcode_svg.clone()).unwrap();
         assert!(label.contains("ketchup.homag-code128-label.v1"));
         assert!(label.contains(&format!(">{}</text>", program.program_name)));
@@ -4403,6 +4403,65 @@ fn assert_btlx_golden(actual: &[u8], name: &str) {
         std::fs::write(&path, actual).unwrap();
     }
     assert_eq!(actual, std::fs::read(&path).unwrap().as_slice(), "{name}");
+}
+
+/// The first 30 lines and the closing `!` of 107b0001.mpr, a program the
+/// woodWOP of JAF Holz runs.
+const JAF_WOODWOP_HEADER: &str = include_str!("fixtures/woodwop/jaf-107b0001-header.mpr");
+
+/// woodWOP at JAF Holz opened programs with bare LF line ends as an empty
+/// 1500 x 120 x 19 part. A program must be laid out as theirs is: CRLF on every
+/// line, the `[H` header naming version 4.0, the workpiece macro with its keys
+/// in their order, and a closing `!`.
+fn assert_woodwop_reads_it_as_jaf_writes_it(mpr: &str) {
+    for program in [JAF_WOODWOP_HEADER, mpr] {
+        assert_eq!(
+            program.matches('\n').count(),
+            program.matches("\r\n").count(),
+            "a line ends in a bare LF\n{program}"
+        );
+        assert!(program.ends_with("\r\n!\r\n"), "{program}");
+    }
+    let reference = JAF_WOODWOP_HEADER.split("\r\n").collect::<Vec<_>>();
+    let program = mpr.split("\r\n").collect::<Vec<_>>();
+    for lines in [&reference, &program] {
+        assert_eq!(lines[0], "[H");
+        assert!(lines[1].starts_with("VERSION=\"4.0"), "{}", lines[1]);
+    }
+    let ours = workpiece(&program);
+    assert_eq!(
+        ours.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+        workpiece(&reference)
+            .iter()
+            .map(|(key, _)| *key)
+            .collect::<Vec<_>>()
+    );
+    // woodWOP names the workpiece size _BSX, _BSY and _BSZ (107b0001 drills
+    // at ZA="_BSZ*0.5"); the header sets them to the workpiece's LA, BR and DI.
+    let header = &program[..program
+        .iter()
+        .position(|line| line.starts_with('<'))
+        .unwrap()];
+    for (variable, key) in [("_BSX", "LA"), ("_BSY", "BR"), ("_BSZ", "DI")] {
+        let size = ours.iter().find(|(name, _)| *name == key).unwrap().1;
+        assert!(
+            header.contains(&format!("{variable}={}", size.trim_matches('"')).as_str()),
+            "{variable} is not {key}={size}\n{mpr}"
+        );
+    }
+}
+
+/// The key/value lines of a program's `<100 \WerkStck\` macro.
+fn workpiece<'a>(lines: &[&'a str]) -> Vec<(&'a str, &'a str)> {
+    let start = lines
+        .iter()
+        .position(|line| *line == "<100 \\WerkStck\\")
+        .expect("a workpiece macro");
+    lines[start + 1..]
+        .iter()
+        .take_while(|line| !line.starts_with(['<', '!', '[', '\\']))
+        .map(|line| line.split_once('=').expect("a key=value line"))
+        .collect()
 }
 
 /// A timber member, a manufactured part (placed by `third_transform`) and a
