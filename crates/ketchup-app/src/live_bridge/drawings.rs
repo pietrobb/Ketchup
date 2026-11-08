@@ -60,7 +60,7 @@ impl LiveBridge {
     /// The export of the drawing sheet `request` names, checked; a client's
     /// runs it as a job (review 2026-11-06 P3).
     pub(super) fn sheet_export_of(
-        app: &KetchupApp,
+        app: &mut KetchupApp,
         request: Request,
         ui_busy: bool,
     ) -> Result<SheetExport, &'static str> {
@@ -121,6 +121,14 @@ impl LiveBridge {
         if app.exact.task.is_some() {
             return Err(sheet_failed(&target, DrawingSheetExportError::Evaluating));
         }
+        // Whether the file there is the document's own is told off the
+        // window, by its SHA-256; one there at all is asked about.
+        if replace
+            && std::fs::symlink_metadata(&target.path).is_ok()
+            && let Some(code) = replace_declined(app, &target.path)
+        {
+            return Err(code);
+        }
         Ok(SheetExport {
             target,
             replace,
@@ -176,11 +184,31 @@ fn not_its_own(path: &Path) -> &'static str {
     failure(
         "drawings_target_exists",
         format!(
-            "{} is not the file this document's last export wrote there (another program's, or changed since), so it is not replaced. Ask the user whether to replace it, and pass replace: true only when they agree; or export to another path.",
+            "{} is not the file this document's last export wrote there (another program's, or changed since), so it is not replaced. Export to another path, or export again with replace: true and the window asks the user whether to replace it.",
             path.display()
         ),
         json!({"path": path.display().to_string()}),
     )
+}
+
+/// The code refusing a client's `replace` or `take_over` of the file at
+/// `path`, which the export did not write, unless the user agrees in the
+/// window (review 2026-11-08 SEC-182). Before, the schema told the AI to ask
+/// and the flag alone replaced the file.
+fn replace_declined(app: &mut KetchupApp, path: &Path) -> Option<&'static str> {
+    app.authorize_overwrite(path, path.to_string_lossy().as_bytes())
+        .map_err(|rejection| {
+            failure(
+                "drawings_replace_declined",
+                format!(
+                    "{} {} was not replaced and nothing was written; export to another path, or ask the user again.",
+                    rejection.reason_text(),
+                    path.display()
+                ),
+                json!({"path": path.display().to_string()}),
+            )
+        })
+        .err()
 }
 
 /// The export transaction's own reason within `error`.
@@ -612,11 +640,24 @@ pub(super) fn start_export(
     // this project's earlier set its list names; one saved there while the
     // set is drawn is kept (review 2026-10-18 MCP-3).
     let owner = app.drawing_set_owner();
-    let targets =
-        project_drawings_targets(target, file_format, &owner, take_over).map_err(export_failed)?;
+    let targets = match project_drawings_targets(target, file_format, &owner, false) {
+        Err(ProjectDrawingsError::SetOfAnotherProject { list, .. }) if take_over => {
+            if let Some(code) = replace_declined(app, &list) {
+                return Err(code);
+            }
+            project_drawings_targets(target, file_format, &owner, true)
+        }
+        targets => targets,
+    }
+    .map_err(export_failed)?;
     let existing = targets.get(target).map(String::as_str);
-    if file_format == SetFileFormat::Pdf && kept_unless_asked(app, target, existing, replace) {
-        return Err(not_its_own(target));
+    if file_format == SetFileFormat::Pdf && kept_unless_asked(app, target, existing, false) {
+        if !replace {
+            return Err(not_its_own(target));
+        }
+        if let Some(code) = replace_declined(app, target) {
+            return Err(code);
+        }
     }
     let previous = app.stored_sheet_settings().map_err(|reason| {
         failure(
@@ -836,7 +877,7 @@ pub(super) fn export_failed(error: ProjectDrawingsError) -> &'static str {
             failure(
                 "drawings_set_of_another_project",
                 format!(
-                    "The drawing set listed in {} was exported from {}, not from this document, so none of its sheets is replaced. It has {has}. Ask the user: export to another folder or file name, or, if they agree to take that set over for this project, export again with take_over: true.",
+                    "The drawing set listed in {} was exported from {}, not from this document, so none of its sheets is replaced. It has {has}. Export to another folder or file name, or export again with take_over: true and the window asks the user whether to take that set over for this project.",
                     list.display(),
                     project.as_deref().unwrap_or("a project not saved"),
                 ),
@@ -920,7 +961,11 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let target = directory.path().join("sheet.pdf");
         std::fs::write(&target, b"user file").unwrap();
-        let mut app = KetchupApp::new();
+        let dialogs = crate::dialogs::ScriptedFileDialogs::new()
+            .queue_refused_high_risk()
+            .queue_high_risk_approval(9);
+        let probe = dialogs.clone();
+        let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
         let before = app.stored_sheet_settings().unwrap();
         let title = BTreeMap::from([(TitleField::Author, "AI".to_owned())]);
         // A file the window did not write is not replaced unless asked
@@ -936,7 +981,10 @@ mod tests {
             Err("drawings_target_exists")
         );
         assert_eq!(std::fs::read(&target).unwrap(), b"user file");
-        // Asked, it is still kept: the empty document has no exact solid to draw.
+        assert!(probe.high_risk_prompts().is_empty());
+        // replace: true asks the user in the window (review 2026-11-08
+        // SEC-182); declined, the file is kept. Agreed, it is still kept: the
+        // empty document has no exact solid to draw.
         let asked = Request::ExportDrawings {
             expected: None,
             path: target.display().to_string(),
@@ -953,9 +1001,15 @@ mod tests {
             zero_altitude_mm: None,
         };
         assert_eq!(
+            LiveBridge::export_drawings(&mut app, asked.clone(), false),
+            Err("drawings_replace_declined")
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"user file");
+        assert_eq!(
             LiveBridge::export_drawings(&mut app, asked, false),
             Err("drawings_unavailable")
         );
+        assert_eq!(probe.high_risk_prompts().len(), 2);
         assert_eq!(std::fs::read(&target).unwrap(), b"user file");
         assert_eq!(app.stored_sheet_settings().unwrap(), before);
         assert!(!app.drawings.unsaved);

@@ -170,3 +170,4 @@ Files from 0.1.0 open in 0.2.0. A file saved by 0.2.0 may need 0.2.0 to open.
 ## 0.1.0 — 2026-10-14
 
 First public release: an open-source 2D/3D parametric modeler for Windows with exact geometry, rule programs, production exports, Ketchup Viewer, and AI editing over MCP that goes through the same validation and Undo as a manual edit.
+- A connected AI exporting drawings with `replace` or `take_over` replaces a file it did not write, or takes over another project's drawing set, only after you agree in the window. Before, the flag alone did it, and only the tool description asked the AI to ask you first.

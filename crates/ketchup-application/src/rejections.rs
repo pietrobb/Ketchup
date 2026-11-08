@@ -178,18 +178,25 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Check that ketchup-program-worker is installed beside Kečup and export again; a drawing that keeps stopping it is too large to write back.",
     ),
     entry(
+        "drawings_replace_declined",
+        Validation,
+        "path",
+        "The export was sent with replace or take_over, and the user, asked in the window, did not agree to replace the file there; the reason names it. Nothing was written.",
+        "Export to another path, or ask the user again before sending it again.",
+    ),
+    entry(
         "drawings_set_of_another_project",
         Request,
         "path",
         "The DXF or DWG drawing set at the path was exported from another project, or from another copy of this one since; the reason names its list and the project file it came from.",
-        "Ask the user: export to another folder or file name, or, if they agree to take that set over for this project, export again with take_over: true.",
+        "Export to another folder or file name, or export again with take_over: true and the window asks the user whether to take that set over for this project.",
     ),
     entry(
         "drawings_target_exists",
         Request,
         "path",
         "A file already exists at the drawing path that this request may not replace (a file named like a sheet that this project's earlier export did not write, or the drawing being edited); the reason names it.",
-        "Ask the user: rename or move that file, write to another folder or file name, or, for a PDF or a drawing sheet the user agrees to replace, export again with replace: true.",
+        "Ask the user: rename or move that file, write to another folder or file name, or, for a PDF or a drawing sheet, export again with replace: true and the window asks the user whether to replace it.",
     ),
     entry(
         "drawings_target_in_use",
@@ -713,7 +720,7 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "save_declined",
         Validation,
         "save",
-        "The user refused to overwrite the file or to save without the Undo history.",
+        "The user refused to overwrite the file, to save without the Undo history, or to save in a folder that is neither the document's nor one in Open Recent.",
         "Ask the user, or save as a new path; nothing was written.",
     ),
     entry(
