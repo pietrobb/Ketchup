@@ -2924,6 +2924,32 @@ fn circular_through_all_survives_reopen_but_never_exports_boolean_padding_as_mac
                 )
                 .replace("<Depth>50</Depth>", "<Depth>1000</Depth>")
         );
+        // Review 2026-11-08 MF-240: the Ø10 hole cut through all is milled
+        // through when the largest drill is Ø8, as a blind one is, and the
+        // support report says so.
+        assert!(
+            projection
+                .btlx_drill_report(&snapshot, Some(10.0))
+                .ends_with("largest_drill_mm=10\nround_holes_milled=0\n")
+        );
+        let past_drill = BtlxExportOptions {
+            largest_drill_mm: Some(8.0),
+            ..BtlxExportOptions::default()
+        };
+        let milled = String::from_utf8(
+            projection
+                .btlx_2_3_1_export_with_options(&snapshot, past_drill)
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            !milled.contains("<Drilling") && milled.contains("DepthBounded=\"no\""),
+            "{milled}"
+        );
+        assert_eq!(
+            projection.btlx_drill_report(&snapshot, Some(8.0)),
+            "largest_drill_mm=8\nround_holes_milled=1\nmilled_round_holes=Timber with circular drilling Ø10\n"
+        );
         // Review 2026-10-17 P3: the capability table names the through hole
         // the machine files refuse, rather than a generic block.
         let part = "Timber with circular drilling";

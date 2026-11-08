@@ -827,6 +827,39 @@ fn a_round_cut_is_drilled_only_by_a_drill_as_large() {
     let rounded_tap = openings::as_tooled(&round_cut(35.0 + 1e-9), Some(40.0)).unwrap();
     assert_eq!(openings::as_tooled(&rounded_tap, Some(35.0)), None);
     assert!(drilled(&round_cut(35.1), Some(35.0)).is_none());
+    // Review 2026-11-08 MF-240: a round hole cut through all was drilled at
+    // any size, Ø40 and Ø450 alike, past the largest drill.
+    let through = |diameter_mm: f64| GeneralMachiningGeometry::CircularDrill {
+        frame: identity_machining_frame(),
+        center_mm: [300.0, 300.0],
+        diameter_mm,
+        through: true,
+        start_mm: 0.0,
+        end_mm: 38.0,
+    };
+    for diameter_mm in [40.0, 450.0] {
+        let Some(GeneralMachiningGeometry::ProfileCut {
+            segments,
+            start_mm,
+            end_mm,
+            ..
+        }) = openings::as_tooled(&through(diameter_mm), Some(35.0))
+        else {
+            panic!("a through Ø{diameter_mm} hole past a Ø35 drill is not milled");
+        };
+        assert_eq!((segments.len(), start_mm, end_mm), (2, 0.0, 38.0));
+        assert_eq!(
+            openings::round_contour(&GeneralMachiningGeometry::ProfileCut {
+                frame: identity_machining_frame(),
+                segments,
+                start_mm,
+                end_mm,
+            }),
+            Some(([300.0, 300.0], diameter_mm))
+        );
+    }
+    assert_eq!(openings::as_tooled(&through(30.0), Some(35.0)), None);
+    assert_eq!(openings::as_tooled(&through(450.0), None), None);
 }
 
 #[test]
