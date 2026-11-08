@@ -1,6 +1,9 @@
 app-title = Ketchup
 live-consent-untitled = Untitled
 live-consent-failed = The AI could not connect: { $reason }
+live-takeover-title = Let another AI take over this window?
+live-takeover-description = Another AI client asks to take over this window. Connected now: { $client }. If you allow it, that one is disconnected.
+live-takeover-unnamed = an AI that did not give its name
 ai-connected = Connected AI: { $client }
 ai-connected-unnamed = AI connected
 ai-disconnect = Disconnect

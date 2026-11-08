@@ -282,12 +282,11 @@ fn call(shell: &mut Shell, stream: &mut TcpStream, token: &str, request: Request
     });
     let deadline = Instant::now() + RESPONSE_DEADLINE;
     let response = loop {
-        if let Ok(response) = rx.try_recv() {
+        shell.step();
+        if let Ok(response) = rx.recv_timeout(Duration::from_millis(5)) {
             break response;
         }
         assert!(Instant::now() < deadline);
-        shell.step();
-        std::thread::sleep(Duration::from_millis(5));
     };
     handle.join().unwrap();
     response
@@ -328,7 +327,9 @@ fn readiness_identifies_the_actual_child_window_when_broker_is_enabled() {
 #[test]
 fn a_second_client_takes_over_a_window_its_launcher_still_holds() {
     let root = private_tempdir();
-    let mut shell = Shell::new();
+    // Review 2026-11-08 MCP-240: the user lets the second client take it over.
+    let dialogs = ScriptedFileDialogs::new().queue_high_risk_approval(7);
+    let mut shell = Shell::with_dialogs(dialogs.clone());
     let context = eframe::egui::Context::default();
     // The order of the native start: broker first, then the launch bridge.
     let broker = shell
@@ -352,6 +353,7 @@ fn a_second_client_takes_over_a_window_its_launcher_still_holds() {
     let allowed = finish_attach(&mut shell, second);
     assert_eq!(allowed["status"], "allowed");
     assert_ne!(allowed["token"].as_str().unwrap(), TOKEN);
+    assert_eq!(dialogs.high_risk_prompts().len(), 1);
 
     // The launcher hears why its connection ended instead of a bare end of stream.
     launcher.set_read_timeout(Some(RESPONSE_DEADLINE)).unwrap();
@@ -878,7 +880,10 @@ fn malformed_attach_request_with_claimed_identity_is_rejected() {
 
 #[test]
 fn local_attach_is_granted_without_prompt_and_disconnect_revokes_the_credential() {
-    let mut shell = Shell::new();
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_refused_high_risk()
+        .queue_high_risk_approval(7);
+    let mut shell = Shell::with_dialogs(dialogs.clone());
     shell.enable_live_consent_broker();
     let consent_address = shell.app().live_consent_address().unwrap();
     assert!(consent_address.ip().is_loopback());
@@ -905,10 +910,13 @@ fn local_attach_is_granted_without_prompt_and_disconnect_revokes_the_credential(
     assert!(shell.app().live_consent_attached());
     assert!(shell.has_visible_label(&shell.catalog().text("ai-connected-unnamed")));
 
-    // A new attach takes the window over even though the first client never
-    // disconnected (it may be gone or forgotten); the old credential dies.
-    // A missing or wrong proof, or the bootstrap itself sent in its place,
-    // cannot revoke the active credential.
+    // The first attach was not asked about (no client held the window).
+    assert!(dialogs.high_risk_prompts().is_empty());
+
+    // A new attach while the first client is still connected takes the window
+    // over only when the user lets it (review 2026-11-08 MCP-240); the old
+    // credential then dies. A missing or wrong proof, or the bootstrap itself
+    // sent in its place, cannot revoke the active credential.
     let mut active = TcpStream::connect(address).unwrap();
     for wrong in ["", &"0".repeat(64), &bootstrap.secret] {
         let denied =
@@ -918,10 +926,21 @@ fn local_attach_is_granted_without_prompt_and_disconnect_revokes_the_credential(
         assert_eq!(shell.app().live_bridge_credentials().unwrap().token, token);
         assert!(call(&mut shell, &mut active, token, Request::Status {}).ok);
     }
+    let declined = std::thread::spawn({
+        let bootstrap = bootstrap.clone();
+        move || request_consent(consent_address, &"4".repeat(64), &bootstrap)
+    });
+    let declined = finish_attach(&mut shell, declined);
+    assert_eq!(declined["status"], "declined");
+    assert!(declined.get("token").is_none());
+    assert_eq!(shell.app().live_bridge_credentials().unwrap().token, token);
+    assert!(call(&mut shell, &mut active, token, Request::Status {}).ok);
+
     let second =
         std::thread::spawn(move || request_consent(consent_address, &"3".repeat(64), &bootstrap));
     let second = finish_attach(&mut shell, second);
     assert_eq!(second["status"], "allowed");
+    assert_eq!(dialogs.high_risk_prompts().len(), 2);
     let second_token = second["token"].as_str().unwrap();
     assert_ne!(second_token, token);
     let address = second["live_bridge_address"].as_str().unwrap();

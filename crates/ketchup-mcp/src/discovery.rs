@@ -283,6 +283,12 @@ fn attach_refusal(status: &str) -> Option<io::Error> {
             io::ErrorKind::Other,
             "the window could not open its live connection; its status line says why",
         ),
+        // Another AI holds the window and the user kept it (review 2026-11-08
+        // MCP-240): not a credential the window refused.
+        "declined" => (
+            io::ErrorKind::ResourceBusy,
+            "another AI is connected to this window and the user did not let this one take it over; ask the user, who can disconnect the other AI in the window, or open another window",
+        ),
         _ => (
             io::ErrorKind::PermissionDenied,
             "the window rejected this server's credential; the MCP server and the window are probably different Kečup builds, restart the MCP server from the same build as the window",
@@ -470,5 +476,9 @@ mod attach_refusal_tests {
         assert_eq!(rejected.kind(), std::io::ErrorKind::PermissionDenied);
         let busy = attach_refusal("busy").unwrap();
         assert_eq!(busy.kind(), std::io::ErrorKind::WouldBlock);
+        // Review 2026-11-08 MCP-240: the user kept the window with another AI.
+        let declined = attach_refusal("declined").unwrap();
+        assert_ne!(declined.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(declined.to_string().contains("another AI"), "{declined}");
     }
 }

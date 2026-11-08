@@ -1,6 +1,9 @@
 app-title = Kečup
 live-consent-untitled = Bez názvu
 live-consent-failed = AI sa nemohla pripojiť: { $reason }
+live-takeover-title = Prevezme toto okno iná AI?
+live-takeover-description = Iný klient AI žiada o prevzatie tohto okna. Teraz je pripojený: { $client }. Ak to povolíte, odpojí sa.
+live-takeover-unnamed = AI, ktorá neuviedla svoje meno
 ai-connected = Pripojená AI: { $client }
 ai-connected-unnamed = Pripojená AI
 ai-disconnect = Odpojiť
