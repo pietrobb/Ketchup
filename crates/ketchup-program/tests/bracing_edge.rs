@@ -80,6 +80,156 @@ fn laths_on_the_side_hold_the_top_only_in_its_outer_quarter() {
     assert_eq!(near_top.statics(), ketchup_program::Statics::Verified);
 }
 
+/// Review 2026-11-08 §5.1: which edge a brace holds was guessed from where it
+/// touches, so a lath 13 mm above the middle of the beam's side holds
+/// neither. `brace()` declares it: the laths hold the top every 300 mm along
+/// where they cross the beam. A declared brace still has to be fastened to the
+/// member and anchored to the ground; one that is not is reported and holds nothing.
+#[test]
+fn a_declared_brace_holds_the_edge_it_names_when_fastened_and_anchored() {
+    let laths = (0..6)
+        .map(|k| format!("\"lath {}\"", [300, 1200, 2100, 3600, 4500, 5400][k]))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let declared = report(&format!(
+        "{}brace([\"beam\"], by = [{laths}], edge = \"top\")\n",
+        side_laths(2213.0)
+    ));
+    let beam = load(&declared, "beam");
+    assert_eq!(
+        beam.braced_by
+            .iter()
+            .filter(|brace| brace.part.starts_with("lath") && brace.edge == "top")
+            .count(),
+        6,
+        "{:?}",
+        beam.braced_by
+    );
+    assert_eq!(declared.statics(), ketchup_program::Statics::Verified);
+
+    // The same laths unfastened from the wall anchor nothing.
+    let loose = report(&format!(
+        "{}brace([\"beam\"], by = [{laths}], edge = \"top\")\n",
+        side_laths(2213.0)
+            .replace("joint(\"lath", "#joint(\"lath")
+            .replacen(
+                "#joint(\"lath 300\", \"beam\"",
+                "joint(\"lath 300\", \"beam\"",
+                1
+            )
+    ));
+    assert_eq!(loose.statics(), ketchup_program::Statics::NotVerified);
+    let ignored: Vec<&str> = loose
+        .issues
+        .iter()
+        .filter(|issue| issue.kind == "declared_bracing_ignored")
+        .map(|issue| issue.message.as_str())
+        .collect();
+    assert_eq!(ignored.len(), 6, "{ignored:?}");
+    assert!(
+        ignored
+            .iter()
+            .any(|message| message.contains("lath 300") && message.contains("anchored")),
+        "{ignored:?}"
+    );
+    assert!(
+        ignored
+            .iter()
+            .any(|message| message.contains("lath 1200") && message.contains("fastened")),
+        "{ignored:?}"
+    );
+}
+
+/// The beam beside a second one on its own posts, a deck in two boards on
+/// both, either side of the load, screwed only to the beams every 300 mm,
+/// and a grounded wall past the beams' far ends that the second board butts.
+fn deck(extra: &str) -> String {
+    let screws = |from: i32, to: i32, y: i32| {
+        (from..=to)
+            .step_by(300)
+            .map(|x| format!("({x}, {y}, 2400)"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!(
+        "load_path(only = [\"frame\"], carriers = [\"pad\"])
+area_load(\"point\", kind = \"imposed\", kn_m2 = 560, on = [\"pad\"], source = \"test\")
+timber_design({{\"GL24h\": \"GL24h\"}})
+box(\"post a\", (100, 80, 2000), material = \"GL24h\", grounded = True)
+box(\"post b\", (100, 80, 2000), at = (5800, 0, 0), material = \"GL24h\", grounded = True)
+box(\"post c\", (100, 80, 2000), at = (0, 1000, 0), material = \"GL24h\", grounded = True)
+box(\"post d\", (100, 80, 2000), at = (5800, 1000, 0), material = \"GL24h\", grounded = True)
+box(\"beam\", (5900, 80, 400), at = (0, 0, 2000), material = \"GL24h\", tags = [\"frame\"])
+box(\"beam 2\", (5900, 80, 400), at = (0, 1000, 2000), material = \"GL24h\", tags = [\"frame\"])
+box(\"pad\", (300, 80, 50), at = (2800, 0, 2400), material = \"GL24h\", tags = [\"pad\"])
+box(\"end wall\", (100, 1080, 2600), at = (6000, 0, 0), material = \"GL24h\", grounded = True)
+box(\"deck a\", (2750, 1080, 22), at = (0, 0, 2400), material = \"GL24h\", tags = [\"deck\"])
+box(\"deck b\", (2850, 1080, 22), at = (3150, 0, 2400), material = \"GL24h\", tags = [\"deck\"])
+joint(\"deck a\", \"beam\", kind = \"screw\", fasteners = [{}])
+joint(\"deck b\", \"beam\", kind = \"screw\", fasteners = [{}])
+joint(\"deck a\", \"beam 2\", kind = \"screw\")
+joint(\"deck b\", \"beam 2\", kind = \"screw\")
+{extra}",
+        screws(150, 2700, 40),
+        screws(3300, 5700, 40)
+    )
+}
+
+/// Review 2026-11-08 §5.1: a deck screwed only to its joists braces nothing,
+/// as they can buckle together, so a usual floor was never verified. Declared
+/// a diaphragm anchored to the grounded wall it is fastened to, its boards
+/// hold every joist they are screwed to; without a fastening to the wall it
+/// is reported and holds nothing.
+#[test]
+fn a_deck_declared_a_diaphragm_anchored_to_a_wall_braces_the_joists() {
+    let plain = report(&deck(""));
+    assert!(
+        load(&plain, "beam")
+            .braced_by
+            .iter()
+            .all(|brace| !brace.part.starts_with("deck")),
+        "{:?}",
+        load(&plain, "beam").braced_by
+    );
+
+    let declared = "diaphragm([\"deck\"], anchored_to = [\"end wall\"])\n";
+    let unanchored = report(&deck(declared));
+    assert!(
+        unanchored
+            .issues
+            .iter()
+            .any(|issue| issue.kind == "declared_bracing_ignored"
+                && issue.message.contains("end wall")),
+        "{:?}",
+        unanchored.issues
+    );
+
+    let anchored = report(&deck(&format!(
+        "joint(\"deck b\", \"end wall\", kind = \"screw\")\n{declared}"
+    )));
+    let beam = load(&anchored, "beam");
+    let held: Vec<f64> = beam
+        .braced_by
+        .iter()
+        .filter(|brace| brace.part.starts_with("deck") && brace.edge == "top")
+        .map(|brace| brace.from_mm)
+        .collect();
+    assert!(held.len() >= 18, "{:?}", beam.braced_by);
+    for (report, status) in [
+        (&plain, "not_verified"),
+        (&unanchored, "not_verified"),
+        (&anchored, "pass"),
+    ] {
+        let checked = report
+            .design
+            .members
+            .iter()
+            .find(|member| member.part == "beam")
+            .expect("the beam is checked");
+        assert_eq!(checked.status, status, "{checked:?}");
+    }
+}
+
 /// A GL24h 80 x 400 rafter at 30 degrees from (0, 2000), drawn as an extrusion
 /// of its side or as a turned box, and a board under its upper half screwed to
 /// it and to a grounded wall past its side.

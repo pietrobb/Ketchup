@@ -190,6 +190,41 @@ pub struct LoadReport {
     /// with the kind that fastens nothing it reads like, if one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub doubtful_joint_kinds: Vec<DoubtfulJointKind>,
+    /// Declared braces and diaphragms that hold nothing, each with its parts and why.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ignored_bracing: Vec<IgnoredBracing>,
+}
+
+/// A part declared to hold members' edge sideways (`brace()`, review
+/// 2026-11-08 §5.1): it holds each member it is fastened to by a joint that
+/// fastens, on `edge`, every `spacing_mm` along where it crosses the member,
+/// or at the joint's fasteners there (the middle when it names none), when it
+/// is grounded, in an anchored diaphragm or fastened to a grounded part.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct DeclaredBrace {
+    pub members: Vec<String>,
+    pub by: Vec<String>,
+    /// `top` or `bottom`.
+    pub edge: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spacing_mm: Option<f64>,
+}
+
+/// Sheets declared to act as one stiff plane anchored to grounded parts
+/// (`diaphragm()`, review 2026-11-08 §5.1): each sheet holds the members it
+/// is fastened to as if it reached the anchorage itself, when every part of
+/// `anchored_to` is grounded and fastened to one of the sheets.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct Diaphragm {
+    pub sheets: Vec<String>,
+    pub anchored_to: Vec<String>,
+}
+
+/// A declared brace or diaphragm that holds nothing, and why.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct IgnoredBracing {
+    pub parts: Vec<String>,
+    pub reason: String,
 }
 
 /// A joint of `parts` whose `kind` the catalogue does not know (review
@@ -217,6 +252,8 @@ pub const ANCHORAGE_SMALL: &str = "anchorage_small";
 pub const JOINT_KIND_DOUBTFUL: &str = "joint_kind_doubtful";
 /// Issue kind of a joint of a kind the catalogue does not know.
 pub const JOINT_KIND_UNKNOWN: &str = "joint_kind_unknown";
+/// Issue kind of a declared brace or diaphragm that holds nothing.
+pub const DECLARED_BRACING_IGNORED: &str = "declared_bracing_ignored";
 
 impl LoadReport {
     #[must_use]
@@ -268,6 +305,16 @@ impl LoadReport {
                 }
             })
             .chain(stray)
+            .chain(self.ignored_bracing.iter().map(|ignored| Issue {
+                severity: Severity::Warning,
+                kind: DECLARED_BRACING_IGNORED,
+                parts: ignored.parts.clone(),
+                message: format!("{}; it holds nothing.", ignored.reason),
+                where_mm: None,
+                hint: "Fasten the brace to the member and to a grounded part with joint(), or anchor the diaphragm to a grounded part a sheet is fastened to."
+                    .to_owned(),
+                source_lines: Vec::new(),
+            }))
             .chain(self.edge_on.iter().map(|(part, loads)| Issue {
                 severity: Severity::Warning,
                 kind: AREA_LOAD_EDGE_ON,
@@ -1489,7 +1536,7 @@ fn braces<'a>(
     frames: &[Frame],
     joined: &BTreeSet<(&str, &str)>,
     faces: &mut ContactFaces<'a>,
-) -> (Vec<Vec<Bracing>>, Vec<StrayFastener>, Vec<[String; 2]>) {
+) -> Braces {
     let parts = &model.parts;
     let grounded = model.grounded_parts();
     let anchorage: Vec<bool> = parts
@@ -1498,7 +1545,7 @@ fn braces<'a>(
         .collect();
     let mut stray = Vec::new();
     let looked = std::cell::RefCell::new(BTreeSet::new());
-    let braced = braced_stretches(
+    let mut braced = braced_stretches(
         supports,
         member,
         &anchorage,
@@ -1514,6 +1561,7 @@ fn braces<'a>(
         &mut stray,
     );
     stray.extend(unlooked_stray_fasteners(model, &looked.into_inner(), faces));
+    let ignored = declared_bracing(model, member, frames, joined, faces, &mut braced);
     // An anchorage smaller across the member than the member is deep (a 50 mm
     // block beside a 400 mm beam) still braces it, but is reported (review
     // 2026-11-06 P3; r23 P3: so is a rod 5 900 × 10 × 10 along it, measured
@@ -1531,7 +1579,232 @@ fn braces<'a>(
         .into_iter()
         .map(|(member, anchor)| [parts[member].name.clone(), parts[anchor].name.clone()])
         .collect();
-    (braced, stray, small)
+    Braces {
+        braced,
+        stray,
+        small,
+        ignored,
+    }
+}
+
+/// What [`braces`] finds: each member's braced stretches, the fasteners
+/// holding nothing, the small anchorages and the declarations holding nothing.
+struct Braces {
+    braced: Vec<Vec<Bracing>>,
+    stray: Vec<StrayFastener>,
+    small: Vec<[String; 2]>,
+    ignored: Vec<IgnoredBracing>,
+}
+
+/// The points a brace holds at on one contact, and the contact's polygon.
+type ContactHold = (Vec<[f64; 3]>, Vec<[f64; 3]>);
+
+/// The parts `names` name: the part of each name, else the parts of that tag;
+/// with the names that are neither.
+fn named_parts<'n>(model: &ProgramModel, names: &'n [String]) -> (Vec<usize>, Vec<&'n str>) {
+    let mut found = Vec::new();
+    let mut unknown = Vec::new();
+    for name in names {
+        let before = found.len();
+        match model.parts.iter().position(|part| &part.name == name) {
+            Some(item) => found.push(item),
+            None => found.extend(
+                (0..model.parts.len()).filter(|item| model.parts[*item].tags.contains(name)),
+            ),
+        }
+        if found.len() == before {
+            unknown.push(name.as_str());
+        }
+    }
+    found.sort_unstable();
+    found.dedup();
+    (found, unknown)
+}
+
+/// The bracing a program declares (`brace()`, `diaphragm()`, review
+/// 2026-11-08 §5.1), added to `braced`, and each declaration that holds
+/// nothing. A diaphragm holds when each of its anchors is declared grounded
+/// and fastened to one of its sheets; each sheet then holds the members it is
+/// fastened to on the edge it lies on. A declared brace holds the edge it
+/// names where it touches each member it is fastened to, when it is anchored:
+/// grounded, a sheet of a diaphragm that holds, or fastened to a grounded
+/// part. Either holds at the joint's fasteners over the contact, at the middle
+/// of each contact when it names none, or every `spacing_mm` along it.
+fn declared_bracing<'a>(
+    model: &'a ProgramModel,
+    member: &[bool],
+    frames: &[Frame],
+    joined: &BTreeSet<(&str, &str)>,
+    faces: &mut ContactFaces<'a>,
+    braced: &mut [Vec<Bracing>],
+) -> Vec<IgnoredBracing> {
+    let parts = &model.parts;
+    let grounded = model.grounded_parts();
+    let is_grounded = |item: usize| grounded.contains(&parts[item].name);
+    let fastened =
+        |a: usize, b: usize| joined.contains(&(parts[a].name.as_str(), parts[b].name.as_str()));
+    let mut ignored = Vec::new();
+    let mut sheet_anchor: BTreeMap<usize, usize> = BTreeMap::new();
+    for diaphragm in &model.diaphragms {
+        let (sheets, unknown_sheets) = named_parts(model, &diaphragm.sheets);
+        let (anchors, unknown_anchors) = named_parts(model, &diaphragm.anchored_to);
+        let named = |item: &usize| parts[*item].name.as_str();
+        let reason = if let Some(name) = unknown_sheets.iter().chain(&unknown_anchors).next() {
+            Some(format!("diaphragm(): {name} names no part or tag"))
+        } else if let Some(anchor) = anchors.iter().find(|anchor| !is_grounded(**anchor)) {
+            Some(format!(
+                "diaphragm(): its anchor {} is not declared grounded",
+                named(anchor)
+            ))
+        } else {
+            anchors
+                .iter()
+                .find(|anchor| !sheets.iter().any(|sheet| fastened(*sheet, **anchor)))
+                .map(|anchor| {
+                    format!(
+                        "diaphragm(): its anchor {} is fastened to none of its sheets by a joint() that fastens",
+                        named(anchor)
+                    )
+                })
+        };
+        match reason {
+            Some(reason) => ignored.push(IgnoredBracing {
+                parts: diaphragm
+                    .sheets
+                    .iter()
+                    .chain(&diaphragm.anchored_to)
+                    .cloned()
+                    .collect(),
+                reason,
+            }),
+            None => {
+                for sheet in sheets {
+                    sheet_anchor.entry(sheet).or_insert(anchors[0]);
+                }
+            }
+        }
+    }
+    // Where `by` holds `held`, contact by contact: its points there and the
+    // contact's own.
+    let mut holds = |by: usize, held: usize, spacing: Option<f64>| -> Vec<ContactHold> {
+        let frame = &frames[held];
+        let fasteners = fasteners_between(model, &parts[by].name, &parts[held].name);
+        let thinner = |normal: [f64; 3]| reach_across([&parts[by], &parts[held]], normal);
+        faces
+            .contacts(&parts[by], &parts[held])
+            .into_iter()
+            .map(|contact| {
+                let points = &contact.points_mm;
+                let at: Vec<[f64; 3]> = if let Some(spacing) = spacing {
+                    let (lo, hi) = frame.range(points);
+                    let count = ((hi - lo) / spacing).floor();
+                    let start = lo + (hi - lo - count * spacing) / 2.0;
+                    let centre = middle(points).unwrap_or(frame.centre);
+                    let from = frame.along(centre);
+                    (0..=count as usize)
+                        .map(|k| {
+                            let shift = start + spacing * k as f64 - from;
+                            std::array::from_fn(|i| centre[i] + frame.axis[i] * shift)
+                        })
+                        .collect()
+                } else if fasteners.is_empty() {
+                    middle(points).into_iter().collect()
+                } else {
+                    fasteners
+                        .iter()
+                        .copied()
+                        .filter(|point| over_contact(*point, points, &thinner))
+                        .collect()
+                };
+                (at, contact.points_mm)
+            })
+            .collect()
+    };
+    let hold = |braced: &mut [Vec<Bracing>],
+                held: usize,
+                by: usize,
+                anchor: usize,
+                top: bool,
+                at: &[[f64; 3]]| {
+        let frame = &frames[held];
+        braced[held].extend(at.iter().map(|point| {
+            let along = frame.along(*point);
+            Bracing {
+                by,
+                anchor,
+                top,
+                from: along,
+                to: along,
+            }
+        }));
+    };
+    for (&sheet, &anchor) in &sheet_anchor {
+        for held in (0..parts.len()).filter(|held| member[*held] && fastened(sheet, *held)) {
+            for (at, points) in holds(sheet, held, None) {
+                if let Some(top) = frames[held].edge(&points) {
+                    hold(braced, held, sheet, anchor, top, &at);
+                }
+            }
+        }
+    }
+    for declared in &model.declared_braces {
+        let (members, unknown_members) = named_parts(model, &declared.members);
+        let (bys, unknown_bys) = named_parts(model, &declared.by);
+        let mut ignore = |names: Vec<String>, reason: String| {
+            ignored.push(IgnoredBracing {
+                parts: names,
+                reason: format!("brace(): {reason}"),
+            });
+        };
+        for name in unknown_members.iter().chain(&unknown_bys) {
+            ignore(
+                vec![(*name).to_owned()],
+                format!("{name} names no part or tag"),
+            );
+        }
+        for &by in &bys {
+            let anchor = if is_grounded(by) {
+                Some(by)
+            } else {
+                sheet_anchor.get(&by).copied().or_else(|| {
+                    (0..parts.len()).find(|other| is_grounded(*other) && fastened(by, *other))
+                })
+            };
+            for &held in &members {
+                let names = vec![parts[by].name.clone(), parts[held].name.clone()];
+                let (brace, target) = (&parts[by].name, &parts[held].name);
+                if !member[held] {
+                    ignore(names, format!("{target} is not a load_path() member"));
+                } else if !fastened(by, held) {
+                    ignore(
+                        names,
+                        format!("{brace} is not fastened to {target} by a joint() that fastens"),
+                    );
+                } else if let Some(anchor) = anchor {
+                    let at: Vec<[f64; 3]> = holds(by, held, declared.spacing_mm)
+                        .into_iter()
+                        .flat_map(|(at, _)| at)
+                        .collect();
+                    if at.is_empty() {
+                        ignore(
+                            names,
+                            format!("{brace} touches {target} nowhere it is fastened"),
+                        );
+                    } else {
+                        hold(braced, held, by, anchor, declared.edge == "top", &at);
+                    }
+                } else {
+                    ignore(
+                        names,
+                        format!(
+                            "{brace} is not anchored: it is not declared grounded, fastened to a grounded part or a sheet of an anchored diaphragm()"
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    ignored
 }
 
 /// The fasteners of joints between parts no bearing looked at, as a batten
@@ -1847,8 +2120,12 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
 
     let own = own_loads(model, &frames);
     let (mut patches, mut missing) = (own.patches, own.missing);
-    let (braced, stray, small_anchorages) =
-        braces(model, &supports, &member, &frames, &joined_pairs, faces);
+    let Braces {
+        braced,
+        stray,
+        small: small_anchorages,
+        ignored: ignored_bracing,
+    } = braces(model, &supports, &member, &frames, &joined_pairs, faces);
 
     // Pass the loads down, each part after everything it carries.
     let mut pending = vec![0usize; parts.len()];
@@ -2081,6 +2358,7 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
     report.stray_fasteners = stray;
     report.edge_on = own.edge_on;
     report.small_anchorages = small_anchorages;
+    report.ignored_bracing = ignored_bracing;
     let unknown: Vec<&Joint> = model
         .joints
         .iter()

@@ -2222,6 +2222,12 @@ pub struct ProgramModel {
     pub production_scope: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub area_loads: Vec<crate::loads::AreaLoad>,
+    /// Parts declared to hold members' edges sideways (`brace()`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declared_braces: Vec<crate::loads::DeclaredBrace>,
+    /// Sheets declared one plane anchored to grounded parts (`diaphragm()`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diaphragms: Vec<crate::loads::Diaphragm>,
     /// Strength classes of timber materials (`timber_strength()`), by material name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub strength_classes: BTreeMap<String, crate::member_check::TimberClass>,

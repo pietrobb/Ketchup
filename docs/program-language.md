@@ -196,6 +196,17 @@ kcrit of the beam unbraced, `force_n` = N_d / 60 (solid timber) or / 80 (glulam)
 and `stiffness_n_mm` = 4 N_d / a over the longest free stretch. The braces, their
 anchorage and their fasteners are not checked against it, nor a bracing of
 several members (9.2.5.3); the design basis says so.
+Two declarations say what the geometry cannot. `diaphragm(sheets,
+anchored_to=[...])` makes sheets (parts or tags), such as a deck screwed only to
+its joists, one stiff plane anchored to grounded parts: when every anchor is
+declared grounded and fastened to one of the sheets, each sheet holds the members
+it is fastened to on the edge it lies on. `brace(members, by=[...], edge="top",
+spacing=None)` says which edge the parts `by` hold where they touch each member
+(a lath near mid-depth of a beam's side holds neither by itself), every `spacing`
+mm along the contact or at the joint's fasteners there. Each brace must still be
+fastened to the member and anchored: declared grounded, fastened to a grounded
+part, or a sheet of an anchored diaphragm. A declaration that holds nothing is
+reported as `declared_bracing_ignored` with the reason.
 A brace anchored to a grounded part smaller across the member than the member
 is deep is reported as `anchorage_small`. A brace holds the beam at its
 joint's `fasteners` that lie where the two parts touch, in any of their contacts
