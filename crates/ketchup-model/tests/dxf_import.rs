@@ -18,6 +18,33 @@ fn dxf(insunits: Option<i16>, entities: &str) -> Vec<u8> {
     .into_bytes()
 }
 
+/// Review 2026-11-03 CD-140 / 2026-11-08 UL-241: an ARC of a whole turn, as Kečup's own
+/// writer and others write a circle, was refused as of no length, and a drawing of it
+/// alone with it. It reads as the CIRCLE it is; an arc of no span is still refused.
+#[test]
+fn an_arc_of_a_whole_turn_reads_as_its_circle() {
+    let options = DxfImportOptions::new(None);
+    let circle = inspect_dxf(
+        &dxf(Some(4), "0\nCIRCLE\n8\nholes\n10\n30\n20\n40\n40\n5\n"),
+        options,
+    )
+    .unwrap();
+    for (start, end) in [("0", "360"), ("30", "390"), ("0", "720"), ("-90", "270")] {
+        let arc = format!("0\nARC\n8\nholes\n10\n30\n20\n40\n40\n5\n50\n{start}\n51\n{end}\n");
+        let parsed = inspect_dxf(&dxf(Some(4), &arc), options)
+            .unwrap_or_else(|error| panic!("{start} / {end}: {error}"));
+        assert_eq!(parsed.profiles(), circle.profiles(), "{start} / {end}");
+    }
+    for (start, end) in [("0", "0"), ("30", "30"), ("360", "0")] {
+        let arc = format!("0\nARC\n8\nholes\n10\n30\n20\n40\n40\n5\n50\n{start}\n51\n{end}\n");
+        assert_eq!(
+            inspect_dxf(&dxf(Some(4), &arc), options),
+            Err(DxfImportError::DegenerateGeometry),
+            "{start} / {end}"
+        );
+    }
+}
+
 /// `entities` draw one profile twice on their layer: the first is kept, the second left
 /// out and counted.
 fn assert_second_copy_left_out(entities: &str) {

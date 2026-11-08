@@ -604,6 +604,67 @@ fn a_whole_turn_is_written_within_one_turn_when_turned_or_mirrored() {
     }
 }
 
+/// Review 2026-11-03 CD-140 / 2026-11-08 UL-241: an arc drawn `0..360` passed as drawable
+/// and was written `0 / 0` (`30..390` as `30 / 30`, turned as `30 / 30` too), which ezdxf
+/// and Kečup read as nothing. A whole turn drawn, turned or not, is written `0 / 360`; an
+/// arc of no span is not drawable.
+#[test]
+fn a_whole_turn_drawn_is_written_as_one_and_an_arc_of_no_span_is_not_drawable() {
+    let source = source();
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let whole = |start_deg: f64, end_deg: f64| DrawnShape::Arc {
+        center_mm: [5000.0, -2000.0],
+        radius_mm: 400.0,
+        start_deg,
+        end_deg,
+    };
+    assert!(whole(0.0, 360.0).is_valid() && whole(30.0, 390.0).is_valid());
+    assert!(!whole(30.0, 30.0).is_valid() && !whole(0.0, 0.0).is_valid());
+    let turned =
+        whole(90.0, 450.0).transformed(&similarity([500.0, 200.0], 30.0, 1.0, [0.0, 0.0], None));
+    let mirrored = whole(0.0, 360.0).transformed(&similarity(
+        [0.0, 0.0],
+        0.0,
+        1.0,
+        [0.0, 0.0],
+        Some([[0.0, 5000.0], [1.0, 5000.0]]),
+    ));
+    let mut edits = UnderlayEdits::default();
+    for shape in [whole(0.0, 360.0), whole(30.0, 390.0), turned, mirrored] {
+        assert!(shape.is_valid(), "{shape:?}");
+        edits.added.push(AddedObject::Drawn {
+            layer: "walls".to_owned(),
+            shape,
+        });
+    }
+    assert!(edits.is_valid());
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let text = String::from_utf8(written).unwrap();
+    let drawn: Vec<_> = records_of(&text, "ARC")
+        .into_iter()
+        .filter(|record| {
+            record
+                .iter()
+                .any(|(code, value)| *code == 40 && value == "400")
+        })
+        .collect();
+    assert_eq!(drawn.len(), 4, "{text}");
+    for record in &drawn {
+        let angle = |code: i32| {
+            let (_, value) = record.iter().find(|(at, _)| *at == code).unwrap();
+            value.parse::<f64>().unwrap()
+        };
+        assert_eq!([angle(50), angle(51)], [0.0, 360.0], "{record:?}");
+    }
+}
+
 fn underlay_layers(names: &[String]) -> Vec<UnderlayLayer> {
     names
         .iter()

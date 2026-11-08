@@ -2498,8 +2498,10 @@ impl<'a> Drawing<'a> {
                 point(&mut pair, 10, *center_mm);
                 pair(40, length(*radius_mm).as_bytes());
                 subclass(&mut pair, "AcDbArc");
-                pair(50, number(start_deg.rem_euclid(360.0)).as_bytes());
-                pair(51, number(end_deg.rem_euclid(360.0)).as_bytes());
+                // A whole turn is `0 / 360`, not `0 / 0` (review 2026-11-08 UL-241).
+                let (start_deg, end_deg) = arc_angles(*start_deg, *end_deg, 360.0);
+                pair(50, number(start_deg).as_bytes());
+                pair(51, number(end_deg).as_bytes());
             }
             DrawnShape::Circle {
                 center_mm,

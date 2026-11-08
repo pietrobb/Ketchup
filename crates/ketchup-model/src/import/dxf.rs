@@ -116,6 +116,7 @@ const UNDERLAY_READING: DxfReading = DxfReading {
     points: true,
 };
 
+mod arc;
 mod block;
 mod chain;
 mod code_page;
@@ -128,6 +129,7 @@ mod style;
 mod text;
 mod underlay;
 
+use arc::{parse_arc, parse_circle, whole_turn_arc};
 use block::{BlockDefinition, parse_blocks};
 use chain::{assemble_loose_segments, point_key, without_duplicate_segments};
 use code_page::{
@@ -1375,6 +1377,13 @@ fn parse_entities(
             }
             let counts = output.counts();
             match kind.as_str() {
+                // An ARC of a whole turn is how a circle is written by some (Kečup's
+                // underlay writer among them): it reads as one (review 2026-11-08 UL-241).
+                "ARC" if whole_turn_arc(record)? => {
+                    let profile = parse_circle(record, units, ordinal, diagnostics, "ARC")?;
+                    output.layers.insert(profile.layer.clone());
+                    output.explicit_profiles.push(profile);
+                }
                 "LINE" | "ARC" => {
                     let segment = if kind == "LINE" {
                         parse_line(record, units, diagnostics)?
@@ -1385,7 +1394,7 @@ fn parse_entities(
                     output.loose.push(LooseSegment { ordinal, ..segment });
                 }
                 "CIRCLE" => {
-                    let profile = parse_circle(record, units, ordinal, diagnostics)?;
+                    let profile = parse_circle(record, units, ordinal, diagnostics, "CIRCLE")?;
                     output.layers.insert(profile.layer.clone());
                     output.explicit_profiles.push(profile);
                 }
@@ -1774,58 +1783,6 @@ fn parse_point(
         arm([x - half, y], [x + half, y]),
         arm([x, y - half], [x, y + half]),
     ])
-}
-
-fn parse_circle(
-    record: &[DxfPair<'_>],
-    units: ImportUnitDecision,
-    ordinal: usize,
-    diagnostics: &mut DiagnosticCounts,
-) -> Result<OrderedProfile, DxfImportError> {
-    let layer = parse_layer(record)?;
-    let mirrored = ensure_planar_ocs(record)?;
-    report_ignored_groups(
-        "CIRCLE",
-        record,
-        &[5, 8, 10, 20, 30, 39, 40, 100, 210, 220, 230],
-        diagnostics,
-    )?;
-    let scale = units.millimetres_per_unit();
-    let center = parse_xy(record, 10, 20, scale)?;
-    let radius = scale_coordinate(parse_required_number(record, 40)?, scale)?;
-    if radius <= DXF_GEOMETRY_EPSILON_MM {
-        return Err(DxfImportError::DegenerateGeometry);
-    }
-    let right = [normalize_coordinate(center[0] + radius)?, center[1]];
-    let left = [normalize_coordinate(center[0] - radius)?, center[1]];
-    normalize_coordinate(center[1] + radius)?;
-    normalize_coordinate(center[1] - radius)?;
-    ensure_distinct(right, left)?;
-    let segments = vec![
-        ProfileSegment::CircularArc {
-            start_mm: right,
-            end_mm: left,
-            center_mm: center,
-            clockwise: false,
-        },
-        ProfileSegment::CircularArc {
-            start_mm: left,
-            end_mm: right,
-            center_mm: center,
-            clockwise: false,
-        },
-    ];
-    Ok(OrderedProfile {
-        layer,
-        ordinal,
-        style: EntityStyle::default(),
-        segments: if mirrored {
-            segments.into_iter().map(mirror_ocs).collect()
-        } else {
-            segments
-        },
-        closed: true,
-    })
 }
 
 fn parse_ellipse(
@@ -3511,61 +3468,6 @@ fn parse_3dface(
         style: EntityStyle::default(),
         segments,
         closed: true,
-    })
-}
-
-fn parse_arc(
-    record: &[DxfPair<'_>],
-    units: ImportUnitDecision,
-    diagnostics: &mut DiagnosticCounts,
-) -> Result<LooseSegment, DxfImportError> {
-    let layer = parse_layer(record)?;
-    let mirrored = ensure_planar_ocs(record)?;
-    report_ignored_groups(
-        "ARC",
-        record,
-        &[5, 8, 10, 20, 30, 40, 50, 51, 100, 210, 220, 230],
-        diagnostics,
-    )?;
-    let scale = units.millimetres_per_unit();
-    let center = parse_xy(record, 10, 20, scale)?;
-    let radius = scale_coordinate(parse_required_number(record, 40)?, scale)?;
-    if radius <= DXF_GEOMETRY_EPSILON_MM {
-        return Err(DxfImportError::DegenerateGeometry);
-    }
-    let start_angle = parse_required_number(record, 50)?.rem_euclid(360.0);
-    let end_angle = parse_required_number(record, 51)?.rem_euclid(360.0);
-    let sweep = (end_angle - start_angle).rem_euclid(360.0);
-    if sweep <= f64::EPSILON || (360.0 - sweep) <= f64::EPSILON {
-        return Err(DxfImportError::DegenerateGeometry);
-    }
-    let (start_sin, start_cos) = deterministic_sin_cos_degrees(start_angle);
-    let (end_sin, end_cos) = deterministic_sin_cos_degrees(end_angle);
-    let start = [
-        normalize_coordinate(center[0] + radius * start_cos)?,
-        normalize_coordinate(center[1] + radius * start_sin)?,
-    ];
-    let end = [
-        normalize_coordinate(center[0] + radius * end_cos)?,
-        normalize_coordinate(center[1] + radius * end_sin)?,
-    ];
-    validate_arc_sweep_envelope(start, end, center, radius, false, sweep > 180.0)?;
-    ensure_distinct(start, end)?;
-    let segment = ProfileSegment::CircularArc {
-        start_mm: start,
-        end_mm: end,
-        center_mm: center,
-        clockwise: false,
-    };
-    Ok(LooseSegment {
-        layer,
-        ordinal: 0,
-        style: EntityStyle::default(),
-        segment: if mirrored {
-            mirror_ocs(segment)
-        } else {
-            segment
-        },
     })
 }
 
