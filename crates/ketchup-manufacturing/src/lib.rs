@@ -10,3 +10,4 @@ pub mod sheet_dxf;
 pub mod three_mf_export;
 pub mod title_block;
 pub mod viewer_export;
+pub mod workshop_package;
