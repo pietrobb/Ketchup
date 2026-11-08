@@ -18,7 +18,7 @@ use ketchup_manufacturing::project_drawings::{
     CuttingPiece, CuttingSheet, CuttingStock, DrawingOpening, DrawingSet, DrawingSetOptions,
     DrawingSolid, DrawingThread, OpeningSchedule, PlanSheet, ProjectDrawingError, ProjectView,
     SCALES, SheetTitles, ShopDrawings, ShopPosition, ShopSheet, Storey, drawing_set_until,
-    ground_floor, storeys,
+    ground_floor, storeys, table_ground_floor, table_storeys,
 };
 use ketchup_manufacturing::title_block::{
     DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM, SheetFormat, SheetLanguage, SheetSettings, TitleField,
@@ -338,7 +338,7 @@ impl ProjectDrawingsJob {
         } = self;
         let zero_among = std::mem::take(&mut solids.zero_among);
         let solids = solids.drawn(executable.as_deref(), cancelled)?;
-        if options.zero_level_mm.is_none() {
+        if options.zero_level_mm.is_none() && options.storeys.is_empty() {
             // Found here, on the job's thread (review 2026-11-04 r19 MF-161).
             let hidden = zero_among
                 .iter()
@@ -556,26 +556,103 @@ enum SetList {
     NotAList,
 }
 
-/// Whether `project`, the project file a set's list names (by its absolute
-/// path in a list of Kečup 0.3.2), has the name of the file `owner` is kept
-/// in, as Windows compares names: a project moved with its drawings folder,
-/// to an archive or a colleague's synced folder, or opened by another
-/// spelling of its path, keeps its set (review 2026-11-06 MF-182, r19 MF-162,
-/// capability review run 501). No file is looked at, so an offline share
-/// does not hold the window (2026-11-06 P3).
-fn names_the_project(project: &str, owner: &SetOwner) -> bool {
+/// Whether `project`, the project file a set's list at `list_path` names (by
+/// its name in a list of this Kečup, which also names the file's token, else
+/// by its absolute path), lies where the file `owner` is kept in lies from the
+/// list, as Windows compares names: the path the list names ends with the
+/// way from the folder the project and the list share down to the project.
+/// A project moved with its drawings folder, to an archive or a colleague's
+/// synced folder, or opened by another spelling of its path, keeps its set
+/// (review 2026-11-06 MF-182, r19 MF-162, capability review run 501); a copy
+/// of it in a folder beside the drawings is another project, not the
+/// original by its file name alone (review 2026-11-08 MF-243). No file is
+/// looked at, so an offline share does not hold the window (2026-11-06 P3).
+fn names_the_project(project: &str, list_path: &Path, owner: &SetOwner) -> bool {
+    let Some(file) = owner.file.as_deref() else {
+        return false;
+    };
+    let file = path_names(file);
+    let list = match list_path.parent() {
+        Some(folder) => path_names(folder),
+        None => Vec::new(),
+    };
+    let shared = file
+        .iter()
+        .zip(&list)
+        .take_while(|(a, b)| same_name(a, b))
+        .count();
     let listed = project
-        .rsplit_once(['/', '\\'])
-        .map_or(project, |(_, name)| name);
-    let name = owner
-        .file
-        .as_deref()
-        .and_then(Path::file_name)
-        .and_then(|name| name.to_str());
-    !listed.is_empty()
-        && name.is_some_and(|name| {
-            name == listed || cfg!(windows) && name.to_lowercase() == listed.to_lowercase()
-        })
+        .split(['/', '\\'])
+        .filter(|name| !name.is_empty() && *name != ".")
+        .collect::<Vec<_>>();
+    // A list of this Kečup names the file alone; its token tells the copies.
+    let below = if listed.len() == 1 {
+        &file[file.len().saturating_sub(1)..]
+    } else {
+        &file[shared..]
+    };
+    !below.is_empty()
+        && listed.len() >= below.len()
+        && listed[listed.len() - below.len()..]
+            .iter()
+            .zip(below)
+            .all(|(a, b)| same_name(a, b))
+}
+
+/// The names of the folders down to `path` and its own, a drive or share
+/// named as a list writes it whether spelled `\\?\` or not.
+fn path_names(path: &Path) -> Vec<String> {
+    use std::path::{Component, Prefix};
+    let mut names = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => match prefix.kind() {
+                Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => {
+                    names.push(format!("{}:", char::from(drive)));
+                }
+                Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
+                    names.push(server.to_string_lossy().into_owned());
+                    names.push(share.to_string_lossy().into_owned());
+                }
+                Prefix::Verbatim(name) | Prefix::DeviceNS(name) => {
+                    names.push(name.to_string_lossy().into_owned());
+                }
+            },
+            Component::RootDir | Component::CurDir => {}
+            Component::ParentDir => {
+                names.pop();
+            }
+            Component::Normal(name) => names.push(name.to_string_lossy().into_owned()),
+        }
+    }
+    names
+}
+
+/// Whether two names of a path are one, as Windows compares them, a short
+/// 8.3 name such as `RUNNER~1` the long one it begins (no file looked at).
+fn same_name(a: &str, b: &str) -> bool {
+    a == b
+        || cfg!(windows)
+            && (a.to_lowercase() == b.to_lowercase() || short_name_of(a, b) || short_name_of(b, a))
+}
+
+/// Whether `short` is a Windows 8.3 name `long` may be given, `PROGRA~1` of
+/// `Program Files`.
+fn short_name_of(short: &str, long: &str) -> bool {
+    let Some((head, tail)) = short.split_once('~') else {
+        return false;
+    };
+    let number = tail.split_once('.').map_or(tail, |(number, _)| number);
+    let long = long
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '.'))
+        .collect::<String>()
+        .to_uppercase();
+    !head.is_empty()
+        && head.len() <= 6
+        && !number.is_empty()
+        && number.chars().all(|c| c.is_ascii_digit())
+        && long.starts_with(&head.to_uppercase())
 }
 
 /// What `list`, at `list_path`, is to `owner`: its set when the document
@@ -626,7 +703,7 @@ fn set_list_of(list: &[u8], list_path: &Path, owner: &SetOwner, take_over: bool)
         || same_document
             && by_name
             && (header == SET_LIST_HEADER
-                || project.is_some_and(|project| names_the_project(project, owner)));
+                || project.is_some_and(|project| names_the_project(project, list_path, owner)));
     let mut listed = BTreeMap::<String, BTreeSet<String>>::new();
     for (name, sha256) in lines.filter_map(|line| line.rsplit_once(' ')) {
         listed
@@ -1626,9 +1703,13 @@ impl KetchupApp {
             .filter(|annotation| snapshot.tags_visible(&annotation.tags))
             .cloned()
             .collect::<Vec<_>>();
-        // The storeys are found from the bodies as evaluated: a thread's
-        // grooves never make a floor.
-        let mut storeys = storeys(&solids.solids, settings.plan_cut_above_floor_mm());
+        // The storeys of the table, else found from the bodies as evaluated: a
+        // thread's grooves never make a floor.
+        let mut storeys = if settings.storeys.is_empty() {
+            storeys(&solids.solids, settings.plan_cut_above_floor_mm())
+        } else {
+            table_storeys(&settings.storeys, settings.plan_cut_above_floor_mm())
+        };
         // A plan of annotations alone cuts nothing; its cut is at the floor.
         if storeys.is_empty() && !annotations.is_empty() {
             storeys.push(Storey {
@@ -1672,6 +1753,16 @@ impl KetchupApp {
             subject: field(TitleField::Stage),
         };
         let zero_level_mm = settings.zero_level_mm.map(f64::from);
+        let decimal_separator = sheet_decimal_mark(&catalog);
+        let zero_altitude = settings.zero_altitude_mm.map(|altitude| {
+            catalog.format(
+                "drawings-sheet-zero-altitude",
+                &BTreeMap::from([(
+                    "metres",
+                    decimal_separator.written(&format!("{:.3}", f64::from(altitude) / 1000.0)),
+                )]),
+            )
+        });
         Ok(ProjectDrawingsJob {
             solids,
             executable: self.drawing_worker(),
@@ -1693,8 +1784,10 @@ impl KetchupApp {
                 openings,
                 shop,
                 cutting,
-                decimal_separator: sheet_decimal_mark(&catalog),
+                decimal_separator,
                 zero_level_mm,
+                storeys: settings.storeys,
+                zero_altitude,
             },
             info,
         })
@@ -2040,9 +2133,18 @@ impl KetchupApp {
                             .as_ref()
                             .and_then(|found| found.as_ref().ok())
                             .and_then(|height| format!("{height:.0}").parse::<i32>().ok());
+                        // With a table of storeys, ±0,000 is its ground floor
+                        // (review 2026-11-08 MF-241), not the one found.
+                        let table = !editing.storeys.is_empty();
+                        let (finding, found) = if table {
+                            let ground = table_ground_floor(&editing.storeys);
+                            (None, format!("{ground:.0}").parse::<i32>().ok())
+                        } else {
+                            (finding, found)
+                        };
                         ui.horizontal(|ui| {
                             let mut ground = editing.zero_level_mm.is_none();
-                            let ready = finding.is_some() || !ground;
+                            let ready = table || finding.is_some() || !ground;
                             let shown = match (&finding, found) {
                                 (_, Some(found)) => found.to_string(),
                                 (None, None) => "…".to_owned(),
@@ -2070,6 +2172,9 @@ impl KetchupApp {
                                 ui.add(egui::DragValue::new(height).suffix(" mm"));
                             }
                         });
+                        ui.end_row();
+                        ui.label(self.catalog.text("drawings-storeys"));
+                        super::storey_table::show_storey_table(ui, &self.catalog, &mut editing);
                         ui.end_row();
                         for field in TitleField::EDITABLE {
                             ui.label(self.catalog.text(&format!("title-field-{}", field.key())));
