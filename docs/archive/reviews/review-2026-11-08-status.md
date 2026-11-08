@@ -2,7 +2,8 @@
 
 Branch `r28-review1108` (from `origin/main` `40e15e55`). Every finding of `review-2026-11-08.md`
 (prefix `R1108-`) and every open finding of `review-2026-11-03.md` (prefix `R1103-`, §3.1 of the
-11-08 review) is listed here as fixed, with its commits, or as deferred or kept, with the reason.
+11-08 review) is listed here as fixed, with its commits, or as deferred or kept, with the reason;
+so is every feature proposal of §5.
 Each code fix began with a test that failed before it. Both reviews land on `main` with this file
 (§0 of the review). AGENTS.md §7 now says how findings are named, so the IDs of reviews on
 different branches no longer collide.
@@ -99,3 +100,28 @@ Those the 11-03 review lists as fixed are not repeated.
 | Storeys as data | Fixed, 7d2f09fc (R1108-MF-241) |
 | ReFS (weak deferral) | Fixed, 501014d1: a file is known by its 128-bit `FileIdInfo`; on NTFS it reads as the index did (tested on NTFS) |
 | Version 0.3.2 on `main` after the tag | Fixed, 52f82f32: `0.3.3-dev` |
+
+## Feature proposals (§5)
+
+The owner asked for everything in this review to be fixed and finished, the proposals included.
+This branch built §5.1, which the findings above needed. §5.2–§5.4 were not started here. They are
+large features (national annexes, a thermal check, a printable structural calculation), so whether
+they follow under this review or in a later milestone is the owner's call, asked on 2026-11-08
+(capability finding 596). Until then each one stays listed here as not done.
+
+| Proposal | Status |
+|---|---|
+| §5.1 Bracing and diaphragms per EC5 9.2.5.3 (`brace()`, `diaphragm()`) | Done, 5975df08; braced edges report force and stiffness, 64b83239 |
+| §5.1 Table of storeys in the drawing settings | Done, 7d2f09fc |
+| §5.1 Catalogue of joint kinds with SK, CZ and DE aliases | Done, 1882d995 |
+| §5.2 Workshop acceptance check and a "send to workshop" ZIP (BTLx, woodWOP, CNC DXF, drawings, parts list, what the machine cannot do, SHA-256) | Not started |
+| §5.2 Partial HOMAG package with a report | Partly: one part's `.mpr` shares the package's writer (5815b7dc, MF-140). A partial package with a report of what was left out is not started |
+| §5.2 North arrow and compass directions in views ("South view"), A-A section marks | Not started |
+| §5.3 `site(country, municipality, altitude)`: s_k from STN/ČSN EN 1991-1-3 snow maps, kmod, γM and ψ from the national annexes, source in `basis` | Not started |
+| §5.3 Thermal check of layer build-ups per ČSN/STN 73 0540-2 (U, condensation, inner surface temperature) | Not started |
+| §5.3 Printable SK/CZ structural calculation per member | Not started |
+| §5.3 Revisions of the drawing set and an overlay of the architect's DXF revisions by handle | Not started (R1103-CD-141 waits for the same source identity) |
+| §5.3 Room areas written back into the DXF (HATCH, TEXT) and a room table | Not started |
+| §5.4 Per-project sandbox of write targets instead of `replace:true` and `take_over` | Not started. The risk is closed by SEC-182 (a2e0c0f4): the user agrees in the window to each replacement |
+| §5.4 Audit trail in the Connect tab (files written and replaced, plugins, SHA-256, undoing the AI's last export from `.bak`) | Not started |
+| §5.4 UI to resolve the installer's Unknown state | Not started |
