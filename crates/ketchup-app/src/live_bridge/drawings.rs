@@ -18,7 +18,9 @@ use crate::app::underlay_export::PublishGate;
 use crate::export_bundle::ExportTransactionError;
 use ketchup_manufacturing::dxf_annotations::MAX_PLAN_SCALE;
 use ketchup_manufacturing::project_drawings::DrawingSet;
-use ketchup_manufacturing::title_block::{SheetFormat, SheetLanguage, SheetSettings, TitleField};
+use ketchup_manufacturing::title_block::{
+    SheetFormat, SheetLanguage, SheetSettings, StoreyLevels, TitleField,
+};
 use ketchup_model::drawing::DrawingSheetId;
 use ketchup_model::drawing_export::{DxfCurves, SheetAnnotations};
 use serde_json::{Value, json};
@@ -74,6 +76,8 @@ impl LiveBridge {
             replace,
             take_over,
             zero_level_mm,
+            storeys,
+            zero_altitude_mm,
         } = request
         else {
             return Err(failure(
@@ -91,10 +95,12 @@ impl LiveBridge {
             || sheet_language.is_some()
             || take_over
             || zero_level_mm.is_some()
+            || storeys.is_some()
+            || zero_altitude_mm.is_some()
         {
             return Err(failure(
                 "invalid_params",
-                "format, title_block, plan_only, drawing_scale, sheet_language, zero_level_mm and take_over belong to the project sheets; a drawing sheet keeps its own page, views, scale and title block.",
+                "format, title_block, plan_only, drawing_scale, sheet_language, zero_level_mm, storeys, zero_altitude_mm and take_over belong to the project sheets; a drawing sheet keeps its own page, views, scale and title block.",
                 json!({"sheet_id": id}),
             ));
         }
@@ -458,6 +464,38 @@ fn zero_level(value: &Value) -> Option<Option<i32>> {
         .map(Some)
 }
 
+/// The table of storeys a client names: a list of `{finished_floor_mm,
+/// structural_mm}` in whole millimetres, or `"auto"` (none kept) to find the
+/// storeys from the model; none for any other value.
+fn storey_table(value: &Value) -> Option<Vec<StoreyLevels>> {
+    if value == "auto" {
+        return Some(Vec::new());
+    }
+    serde_json::from_value::<Vec<StoreyLevels>>(value.clone())
+        .ok()
+        .filter(|table| !table.is_empty())
+}
+
+/// The altitude of ±0,000 a client names: whole millimetres, or `"none"`.
+fn zero_altitude(value: &Value) -> Option<Option<i32>> {
+    if value == "none" {
+        return Some(None);
+    }
+    value
+        .as_i64()
+        .and_then(|altitude| i32::try_from(altitude).ok())
+        .map(Some)
+}
+
+/// The table of storeys as an answer names it, and where its storeys came from.
+fn storeys_answer(settings: &SheetSettings) -> Value {
+    if settings.storeys.is_empty() {
+        json!("auto")
+    } else {
+        json!(settings.storeys)
+    }
+}
+
 /// Takes the project set export `request`: keeps its settings in the document
 /// and takes what the set is drawn from; [`finish_export`] writes what was
 /// drawn from it.
@@ -478,6 +516,8 @@ pub(super) fn start_export(
         replace,
         take_over,
         zero_level_mm,
+        storeys,
+        zero_altitude_mm,
     } = request
     else {
         return Err("invalid_request");
@@ -519,6 +559,30 @@ pub(super) fn start_export(
                     "invalid_params",
                     "zero_level_mm is the height of ±0,000 in whole millimetres of the model, or auto to find it from the model.",
                     json!({"zero_level_mm": value}),
+                )
+            })
+        })
+        .transpose()?;
+    let storeys = storeys
+        .as_ref()
+        .map(|value| {
+            storey_table(value).ok_or_else(|| {
+                failure(
+                    "invalid_params",
+                    "storeys is a list of {finished_floor_mm, structural_mm} in whole millimetres of the model, one per storey, or auto to find the storeys from the model.",
+                    json!({"storeys": value}),
+                )
+            })
+        })
+        .transpose()?;
+    let zero_altitude_mm = zero_altitude_mm
+        .as_ref()
+        .map(|value| {
+            zero_altitude(value).ok_or_else(|| {
+                failure(
+                    "invalid_params",
+                    "zero_altitude_mm is the altitude of ±0,000 above sea level in whole millimetres (245300 for 245,300 m), or none to write none.",
+                    json!({"zero_altitude_mm": value}),
                 )
             })
         })
@@ -581,6 +645,12 @@ pub(super) fn start_export(
     }
     if let Some(zero_level) = zero_level {
         settings.zero_level_mm = zero_level;
+    }
+    if let Some(storeys) = storeys {
+        settings.storeys = storeys;
+    }
+    if let Some(zero_altitude_mm) = zero_altitude_mm {
+        settings.zero_altitude_mm = zero_altitude_mm;
     }
     settings.title_block.extend(title_block);
     app.store_sheet_settings(settings);
@@ -668,6 +738,11 @@ pub(super) fn finish_export(
         "zero_level_mm": settings.zero_level_mm.map_or(json!("auto"), |height| json!(height)),
         // The height `auto` found, or the one set (review 2026-11-06 P3).
         "zero_level_used_mm": set.zero_level_mm,
+        // Given, or found from the faces of the model, which a layered floor
+        // misleads (review 2026-11-08 MF-241).
+        "storeys": storeys_answer(&settings),
+        "storeys_from": if settings.storeys.is_empty() { "model" } else { "table" },
+        "zero_altitude_mm": settings.zero_altitude_mm.map_or(json!("none"), |altitude| json!(altitude)),
         "title_block": settings.title_block,
         "basis": "visible_layers_exact_solids",
         "dirty": app.is_dirty(),
@@ -804,6 +879,8 @@ mod tests {
                 replace: false,
                 take_over: false,
                 zero_level_mm: None,
+                storeys: None,
+                zero_altitude_mm: None,
             },
             false,
         )
@@ -872,6 +949,8 @@ mod tests {
             replace: true,
             take_over: false,
             zero_level_mm: None,
+            storeys: None,
+            zero_altitude_mm: None,
         };
         assert_eq!(
             LiveBridge::export_drawings(&mut app, asked, false),

@@ -2160,6 +2160,7 @@ drawings-sheet-plan-storey = Floor plan of storey { $storey }
 drawings-sheet-sections = Sections
 # The decimal separator of the level marks on the sections and elevations (+2.850).
 drawings-sheet-decimal-separator = .
+drawings-sheet-zero-altitude = = { $metres } m above sea level
 drawings-sheet-date = { $year }-{ $month2 }-{ $day2 }
 drawings-sheet-elevations = Elevations
 drawings-sheet-openings = Windows and doors
@@ -2232,6 +2233,14 @@ drawings-coarsest-scale = Scale of the automatic format
 drawings-plan-cut-height = Plan cut above the floor
 drawings-zero-level = ±0.000 level
 drawings-zero-level-ground = Ground floor ({ $height } mm)
+drawings-storeys = Storeys
+drawings-storeys-found = Found from the floors of the model; add the storeys when a layered floor or a ceiling under the joists misleads the plans and level marks.
+drawings-storey-row = Storey { $storey }: finished floor
+drawings-storey-structural = structure
+drawings-storey-add = Add a storey
+drawings-storey-remove = Remove
+drawings-zero-altitude = ±0.000 above sea level
+drawings-zero-altitude-none = Not written
 drawings-export-pdf = Export PDF…
 drawings-export-set-dxf = Export DXF (a file per sheet)…
 drawings-export-set-dwg = Export DWG (a file per sheet)…

@@ -90,6 +90,7 @@ pub(crate) mod spaces_ui;
 #[path = "app/spaces_ui_tests.rs"]
 mod spaces_ui_tests;
 mod startup_arguments;
+mod storey_table;
 mod structure;
 #[cfg(test)]
 #[path = "app/tag_toggle_tests.rs"]

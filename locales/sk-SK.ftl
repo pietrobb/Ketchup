@@ -2077,6 +2077,7 @@ drawings-sheet-plan-storey = Pôdorys { $storey }. podlažia
 drawings-sheet-sections = Rezy
 # Desatinný oddeľovač výškových kót na rezoch a pohľadoch (+2,850).
 drawings-sheet-decimal-separator = ,
+drawings-sheet-zero-altitude = = { $metres } m n. m. Bpv
 drawings-sheet-date = { $day }. { $month }. { $year }
 drawings-sheet-elevations = Pohľady
 drawings-sheet-openings = Okná a dvere
@@ -2150,6 +2151,14 @@ drawings-coarsest-scale = Mierka automatického formátu
 drawings-plan-cut-height = Rez pôdorysu nad podlahou
 drawings-zero-level = Výška ±0,000
 drawings-zero-level-ground = Podlaha prízemia ({ $height } mm)
+drawings-storeys = Podlažia
+drawings-storeys-found = Nájdené z podláh modelu; zadaj podlažia, keď vrstvená podlaha alebo podhľad pod trámami zmätie pôdorysy a výškové kóty.
+drawings-storey-row = { $storey }. podlažie: čistá podlaha
+drawings-storey-structural = nosná konštrukcia
+drawings-storey-add = Pridať podlažie
+drawings-storey-remove = Odstrániť
+drawings-zero-altitude = ±0,000 nad morom
+drawings-zero-altitude-none = Neuvádzať
 drawings-export-pdf = Exportovať PDF…
 drawings-export-set-dxf = Exportovať DXF (súbor na každý list)…
 drawings-export-set-dwg = Exportovať DWG (súbor na každý list)…

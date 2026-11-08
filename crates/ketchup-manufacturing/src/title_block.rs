@@ -98,6 +98,25 @@ pub struct SheetSettings {
     /// absent (review 2026-11-04 MF-141).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zero_level_mm: Option<i32>,
+    /// The storeys, as the designer gives them (review 2026-11-08 MF-241):
+    /// when any is given, the plans, ±0,000 and the level marks are read from
+    /// them, not from the faces of the model, which a layered floor or a
+    /// ceiling lining under the floor structure misleads.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub storeys: Vec<StoreyLevels>,
+    /// The altitude of ±0,000 in whole millimetres above sea level (Bpv in
+    /// Czechia and Slovakia), written beside its level mark.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zero_altitude_mm: Option<i32>,
+}
+
+/// One storey of the table of storeys, whole millimetres of the model: the
+/// top of its finished floor, which its plan is cut above, and the top of the
+/// structure the floor lies on.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct StoreyLevels {
+    pub finished_floor_mm: i32,
+    pub structural_mm: i32,
 }
 
 /// A language the sheets can be titled in, whatever the window's: a Czech

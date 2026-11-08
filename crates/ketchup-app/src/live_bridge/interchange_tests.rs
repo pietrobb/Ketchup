@@ -646,6 +646,95 @@ fn a_client_sets_the_height_of_zero_and_the_document_keeps_it() {
     assert_eq!(stored(&app), None);
 }
 
+/// Review 2026-11-08 MF-241: the storeys were only ever found from the faces
+/// of the model. A client gives the table of storeys and the altitude of
+/// ±0,000; the document keeps them, the plans are cut above its floors and
+/// the answer says where the storeys came from.
+#[test]
+fn a_client_gives_the_table_of_storeys_and_the_document_keeps_it() {
+    let (mut app, mut bridge, directory) = window();
+    let program = Request::ApplyProgram {
+        expected: None,
+        source: "box('slab', (6000, 3000, 200))\n\
+                 box('lining', (6000, 3000, 12), at=(0, 0, 2700))\n\
+                 box('joists', (6000, 3000, 220), at=(0, 0, 2712))\n\
+                 box('osb', (6000, 3000, 22), at=(0, 0, 2932))\n\
+                 box('wall', (6000, 200, 2500), at=(0, 0, 200))\n\
+                 box('upper wall', (6000, 200, 2500), at=(0, 0, 2954))\n"
+            .into(),
+        overrides: None,
+        file_name: Some("tiny.star".into()),
+        replace_document: true,
+    };
+    bridge
+        .execute(&mut app, program, false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let drawings = |name: &str, storeys: Option<Value>, altitude: Option<Value>| {
+        let mut request = json!({
+            "method": "export_drawings",
+            "path": directory.path().join(name).display().to_string(),
+            "plan_only": true,
+            "drawing_scale": 250,
+        });
+        if let Some(storeys) = storeys {
+            request["storeys"] = storeys;
+        }
+        if let Some(altitude) = altitude {
+            request["zero_altitude_mm"] = altitude;
+        }
+        serde_json::from_value::<Request>(request).unwrap()
+    };
+    let table = json!([
+        {"finished_floor_mm": 200, "structural_mm": 200},
+        {"finished_floor_mm": 2954, "structural_mm": 2932},
+    ]);
+    let written = bridge
+        .execute(
+            &mut app,
+            drawings("set.pdf", Some(table.clone()), Some(json!(245_300))),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["storeys_from"], "table", "{written}");
+    assert_eq!(written["storeys"], table, "{written}");
+    assert_eq!(written["zero_altitude_mm"], 245_300, "{written}");
+    assert_eq!(written["zero_level_used_mm"], 200.0, "{written}");
+    assert_eq!(written["sheet_count"], 2, "{written}");
+    let settings = app.stored_sheet_settings().unwrap();
+    assert_eq!(settings.storeys.len(), 2);
+    assert_eq!(settings.zero_altitude_mm, Some(245_300));
+
+    for refused in [
+        json!([]),
+        json!([{"finished_floor_mm": 1.5, "structural_mm": 0}]),
+        json!("high"),
+    ] {
+        assert_eq!(
+            bridge.execute(
+                &mut app,
+                drawings("refused.pdf", Some(refused), None),
+                false
+            ),
+            Err("invalid_params")
+        );
+        assert!(!directory.path().join("refused.pdf").exists());
+    }
+    assert_eq!(app.stored_sheet_settings().unwrap().storeys.len(), 2);
+
+    let written = bridge
+        .execute(
+            &mut app,
+            drawings("auto.pdf", Some(json!("auto")), Some(json!("none"))),
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["storeys_from"], "model", "{written}");
+    assert_eq!(written["storeys"], "auto", "{written}");
+    assert_eq!(written["zero_altitude_mm"], "none", "{written}");
+    assert!(app.stored_sheet_settings().unwrap().storeys.is_empty());
+}
+
 /// A client writes the plan alone as a PDF at the scale it names: the sheet holds
 /// one view, the texts and the measured value of the dimension, and says what it drew.
 #[test]
@@ -678,6 +767,8 @@ fn a_plan_of_its_own_is_drawn_as_a_pdf_at_the_scale_the_client_names() {
                 replace: false,
                 take_over: false,
                 zero_level_mm: None,
+                storeys: None,
+                zero_altitude_mm: None,
             }
         };
 
@@ -790,6 +881,8 @@ fn a_sheet_names_the_letters_it_prints_as_question_marks() {
                 replace: false,
                 take_over: false,
                 zero_level_mm: None,
+                storeys: None,
+                zero_altitude_mm: None,
             },
             false,
         )

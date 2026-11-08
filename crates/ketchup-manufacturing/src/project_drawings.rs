@@ -13,7 +13,9 @@
 //! so the sheet follows whatever is visible: hiding a layer leaves it out.
 //! Lines behind nearer faces are hidden by painting faces from far to near.
 
-use crate::title_block::{SheetFormat, TITLE_BLOCK_MM, TitleValueDoesNotFit, drawing_area};
+use crate::title_block::{
+    SheetFormat, StoreyLevels, TITLE_BLOCK_MM, TitleValueDoesNotFit, drawing_area,
+};
 use ketchup_geometry::linalg::{Vec3, cross, cross2, dot, dot2, normalize_within, sub};
 use ketchup_model::sheet_pdf::{Anchor, Mark, Page, Stroke};
 use ketchup_model::tolerance::{HIDDEN_LINE_TOUCH_MM, NEGLIGIBLE, ROUNDING};
@@ -1353,6 +1355,41 @@ pub fn storeys(solids: &[DrawingSolid], above_floor_mm: f64) -> Vec<Storey> {
             cut_mm: f64::midpoint(min[2], max[2]),
         });
     }
+    storeys
+}
+
+/// The finished floors of a table of storeys, lowest first.
+fn finished_floors(table: &[StoreyLevels]) -> Vec<f64> {
+    let mut floors = table
+        .iter()
+        .map(|storey| f64::from(storey.finished_floor_mm))
+        .collect::<Vec<_>>();
+    floors.sort_by(f64::total_cmp);
+    floors
+}
+
+/// ±0,000 of a table of storeys: the finished floor of its ground storey,
+/// chosen among its floors as [`ground_floor`] chooses among those found.
+#[must_use]
+pub fn table_ground_floor(table: &[StoreyLevels]) -> f64 {
+    ground_floor_of(&finished_floors(table))
+}
+
+/// The storeys of a table of storeys, lowest first, each cut `above_floor_mm`
+/// above its finished floor (review 2026-11-08 MF-241).
+#[must_use]
+pub fn table_storeys(table: &[StoreyLevels], above_floor_mm: f64) -> Vec<Storey> {
+    let mut storeys = table
+        .iter()
+        .map(|storey| {
+            let floor = f64::from(storey.finished_floor_mm);
+            Storey {
+                floor_mm: Some(floor),
+                cut_mm: floor + above_floor_mm,
+            }
+        })
+        .collect::<Vec<_>>();
+    storeys.sort_by(|a, b| a.cut_mm.total_cmp(&b.cut_mm));
     storeys
 }
 

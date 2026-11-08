@@ -431,6 +431,16 @@ pub enum Request {
         /// (review 2026-11-04 r19 P3).
         #[serde(default)]
         zero_level_mm: Option<Value>,
+        /// The table of storeys, kept in the document: a list of
+        /// `{finished_floor_mm, structural_mm}`, or `"auto"` to find them from
+        /// the model; absent keeps the document's (review 2026-11-08 MF-241).
+        #[serde(default)]
+        storeys: Option<Value>,
+        /// The altitude of ±0,000 above sea level in whole millimetres, kept
+        /// in the document and written beside its level mark; `"none"`
+        /// writes none; absent keeps the document's.
+        #[serde(default)]
+        zero_altitude_mm: Option<Value>,
     },
     /// Imports a STEP, IGES, STL, DXF, GLB or SketchUp scene file as one Undo step;
     /// `as_underlay` keeps a DXF or DWG drawing under the model as an underlay instead.

@@ -150,7 +150,7 @@ fn room() -> Vec<DrawingSolid> {
     ]
 }
 
-use crate::title_block::{TitleBlock, TitleField};
+use crate::title_block::{StoreyLevels, TitleBlock, TitleField};
 use ketchup_model::sheet_pdf::PdfInfo;
 
 fn plans(storeys: Vec<Storey>) -> Vec<PlanSheet> {
@@ -288,6 +288,103 @@ fn zero_is_the_ground_floor_and_every_level_below_and_above_is_marked() {
             "gallery to {gallery_corner:?}"
         );
     }
+}
+
+/// Review 2026-11-08 MF-241: the layered ceiling of the tiny house (a lining
+/// 2500 – 2512, joists with insulation to 2732, OSB to 2754) made levels of
+/// +2,512 and +2,732 and an upper storey on 2512 cut at 3712. Found from the
+/// faces, that stays; given in the table of storeys, ±0,000, the plans and
+/// the level marks are the designer's.
+#[test]
+fn a_table_of_storeys_gives_the_plans_and_levels_a_layered_floor_hides() {
+    let mut house = room();
+    house.push(cuboid(
+        "lining",
+        [0.0, 0.0, 2700.0],
+        [6000.0, 3000.0, 2712.0],
+    ));
+    house.push(cuboid(
+        "joists",
+        [0.0, 0.0, 2712.0],
+        [6000.0, 3000.0, 2932.0],
+    ));
+    house.push(cuboid("osb", [0.0, 0.0, 2932.0], [6000.0, 3000.0, 2954.0]));
+    for wall in room().into_iter().skip(1) {
+        let mut upper = wall;
+        upper.name.push_str(" upper");
+        for corner in upper.triangles.iter_mut().flatten() {
+            corner[2] += 2754.0;
+        }
+        house.push(upper);
+    }
+    let comma = ketchup_model::annotation::DecimalMark::Comma;
+    let levels = |options: &DrawingSetOptions| {
+        let set = drawing_set(&house, options).unwrap();
+        summary(&set, ProjectView::LongitudinalSection)
+            .levels
+            .clone()
+    };
+    // Without a table the faces decide, as before.
+    let found = DrawingSetOptions {
+        decimal_separator: comma,
+        ..options(&house, None)
+    };
+    assert_eq!(
+        levels(&found),
+        ["-0,200", "±0,000", "+2,512", "+2,732", "+2,754", "+5,254"]
+    );
+    assert_eq!(found.plans[1].storey.cut_mm, 3912.0);
+    // The table: the ground floor on its slab at 200, the upper one on the OSB over
+    // the joists; ±0,000 at 245,300 m above sea level.
+    let table = [
+        StoreyLevels {
+            finished_floor_mm: 2954,
+            structural_mm: 2932,
+        },
+        StoreyLevels {
+            finished_floor_mm: 200,
+            structural_mm: 200,
+        },
+    ];
+    let given = DrawingSetOptions {
+        decimal_separator: comma,
+        plans: plans(table_storeys(&table, 1200.0)),
+        storeys: table.to_vec(),
+        zero_altitude: Some("= 245,300 m n. m. Bpv".to_owned()),
+        ..options(&house, None)
+    };
+    assert_eq!(
+        given
+            .plans
+            .iter()
+            .map(|plan| (plan.storey.floor_mm, plan.storey.cut_mm))
+            .collect::<Vec<_>>(),
+        [(Some(200.0), 1400.0), (Some(2954.0), 4154.0)]
+    );
+    assert_eq!(
+        levels(&given),
+        [
+            "-0,200",
+            "±0,000 = 245,300 m n. m. Bpv",
+            "+2,732",
+            "+2,754",
+            "+5,254"
+        ]
+    );
+    let set = drawing_set(&house, &given).unwrap();
+    assert_eq!(set.zero_level_mm, 200.0);
+    // A ground floor laid 50 mm over the slab is ±0,000 itself.
+    let laid = [StoreyLevels {
+        finished_floor_mm: 250,
+        structural_mm: 200,
+    }];
+    let laid = DrawingSetOptions {
+        decimal_separator: comma,
+        storeys: laid.to_vec(),
+        ..options(&house, None)
+    };
+    assert_eq!(drawing_set(&house, &laid).unwrap().zero_level_mm, 250.0);
+    assert_eq!(levels(&laid)[..3], ["-0,250", "-0,050", "±0,000"]);
 }
 
 /// Review 2026-11-04 r19 MF-161 and P3: every top 1 m wide was a level,
