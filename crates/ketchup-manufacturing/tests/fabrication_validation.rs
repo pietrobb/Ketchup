@@ -895,11 +895,33 @@ fn btlx_2_3_1_straight_timber_export_is_pinned_deterministic_and_fail_closed() {
     let (arc_cut_snapshot, arc_cut) = arc_profile_cut_fabrication_projection();
     let arc_cut_export = arc_cut.btlx_2_3_1_export(&arc_cut_snapshot).unwrap();
     assert_btlx_golden(&arc_cut_export, "arc-profile-cut-2.3.1.btlx");
+    // Review 2026-11-08 MF-245: a contour with an arc needs a mill for the
+    // arc anyway, so the default saw-then-mill strategy mills it whole, as it
+    // mills a round opening, instead of refusing the whole BTLx.
+    let arc_cut_default = String::from_utf8(
+        arc_cut
+            .btlx_2_3_1_export_with_options(&arc_cut_snapshot, BtlxExportOptions::default())
+            .unwrap_or_else(|error| panic!("{error}")),
+    )
+    .unwrap();
+    assert!(
+        !arc_cut_default.contains("<SawContour"),
+        "{arc_cut_default}"
+    );
+    assert!(
+        !arc_cut_default.contains("<FreeContour"),
+        "{arc_cut_default}"
+    );
     assert_eq!(
-        arc_cut.btlx_2_3_1_export_with_options(&arc_cut_snapshot, BtlxExportOptions::default()),
-        Err(GeneralFabricationError::BtlxProfileRequestUnsupported {
-            part: "Timber with arc profile cut".to_owned(),
-        })
+        arc_cut_default.matches("<MillContour ").count(),
+        1,
+        "{arc_cut_default}"
+    );
+    assert!(
+        arc_cut_default.contains(
+            "<Arc><EndPoint X=\"30\" Y=\"-30\" Z=\"0\"/><PointOnArc X=\"40\" Y=\"-20\" Z=\"0\"/></Arc>"
+        ),
+        "{arc_cut_default}"
     );
     let (irregular_cut_snapshot, irregular_cut) = irregular_profile_cut_fabrication_projection();
     let irregular_cut_export = irregular_cut

@@ -294,7 +294,7 @@ impl fmt::Display for GeneralFabricationError {
             }
             Self::BtlxProfileRequestUnsupported { part } => write!(
                 formatter,
-                "the requested BTLx profile strategy cannot cut a contour of part \"{part}\": edge saw cuts then milling takes only rectangular line contours with at most 32 intermediate cuts; choose the portable FreeContour strategy for this part",
+                "the requested BTLx profile strategy cannot cut a contour of part \"{part}\": edge saw cuts then milling saws only rectangles, with at most 32 intermediate cuts, and mills a contour with an arc whole; any other straight-edged contour is a saw cut it does not lay out; choose the portable FreeContour strategy for this part",
             ),
             Self::ScaledPlacement(error) => write!(formatter, "a part cannot be fabricated: {error}"),
             Self::PartExportBlocked { part, reason } => write!(
