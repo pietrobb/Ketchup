@@ -45,9 +45,9 @@ use ketchup_model::import::{
 use process_wrap::std::JobMemoryLimit;
 #[cfg(unix)]
 use process_wrap::std::ProcessGroup;
-use process_wrap::std::{ChildWrapper, CommandWrap, KillOnDrop};
+use process_wrap::std::{ChildWrapper, CommandWrap};
 #[cfg(windows)]
-use process_wrap::std::{CreationFlags, JobObject};
+use process_wrap::std::{CreationFlags, JobObject, KillOnDrop};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -964,12 +964,14 @@ fn limited_worker_command(mut command: Command, memory_limit: Option<usize>) -> 
         command.wrap(JobObject);
     }
     // Unix has no job object: the worker gets its own process group, so a kill reaches
-    // anything it started, and dies with its handle (review 2026-11-03 PL-141). The memory
-    // limit is its own RLIMIT_DATA on Linux; on macOS a watch of its footprint and the
-    // RLIMIT_AS it sets itself (child_process::keep_memory_limit).
+    // anything it started. It dies with its handle in ExactWorkerClient::drop and with
+    // this process through exit_with_parent. Not KillOnDrop: its PR_SET_PDEATHSIG fires
+    // when the thread that started the worker ends, which is long before the request.
+    // The memory limit is its own RLIMIT_DATA on Linux; on macOS a watch of its
+    // footprint and the RLIMIT_AS it sets itself (child_process::keep_memory_limit).
     #[cfg(unix)]
     {
-        command.wrap(ProcessGroup::leader()).wrap(KillOnDrop);
+        command.wrap(ProcessGroup::leader());
         if let Some(bytes) = memory_limit {
             command.wrap(JobMemoryLimit(bytes));
         }
