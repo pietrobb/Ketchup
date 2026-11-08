@@ -308,21 +308,31 @@ fn within_line_limit(
     }
 }
 
-/// `text` in pieces of [`MTEXT_PIECE_CHARS`], each cut before a backslash in the last
-/// seven bytes before the cut, so a `\U+XXXX` is never cut in two, and never inside a
-/// character of UTF-8. A longer format code (`\fArial|b0|i0;`) may be cut, as readers,
-/// this one too, join the pieces before reading them (review 2026-11-07 r26 P3: this
-/// said no format code was).
+/// `text` in pieces of [`MTEXT_PIECE_CHARS`], each cut before the format code the cut
+/// would split, `\U+XXXX` or `\fArial|b1|i0;` alike (review 2026-11-08 CD-243: only a
+/// backslash in the last seven bytes was looked for, so a font code was cut in two), and
+/// never inside a character of UTF-8. Only a code longer than a piece is cut.
 fn mtext_pieces(mut text: &[u8]) -> Vec<&[u8]> {
     let mut pieces = Vec::with_capacity(text.len() / MTEXT_PIECE_CHARS + 1);
     while text.len() > MTEXT_PIECE_CHARS {
-        let window = MTEXT_PIECE_CHARS - "\\U+XXXX".len()..MTEXT_PIECE_CHARS;
-        let mut cut = text[window.clone()]
-            .iter()
-            .rposition(|byte| *byte == b'\\')
-            .map_or(MTEXT_PIECE_CHARS, |at| window.start + at);
+        let mut cut = MTEXT_PIECE_CHARS;
+        let mut at = 0;
+        while at < MTEXT_PIECE_CHARS {
+            if text[at] != b'\\' {
+                at += 1;
+                continue;
+            }
+            let end = format_code_end(text, at);
+            if end > MTEXT_PIECE_CHARS {
+                if at > 0 {
+                    cut = at;
+                }
+                break;
+            }
+            at = end;
+        }
         // A character of UTF-8 has at most three bytes after its first.
-        let first = cut - 3;
+        let first = cut.saturating_sub(3);
         while cut > first && text[cut] & 0xC0 == 0x80 {
             cut -= 1;
         }
@@ -332,6 +342,25 @@ fn mtext_pieces(mut text: &[u8]) -> Vec<&[u8]> {
     }
     pieces.push(text);
     pieces
+}
+
+/// Where the MTEXT format code of the backslash at `at` in `text` ends: a code of
+/// arguments at its `;`, `\U+XXXX` and `\M+NXXXX` after their digits, any other (`\P`,
+/// `\\`, `\{`) after its letter.
+fn format_code_end(text: &[u8], at: usize) -> usize {
+    let code = &text[at..];
+    let length = match (code.get(1), code.get(2)) {
+        (Some(b'U'), Some(b'+')) => "\\U+XXXX".len(),
+        (Some(b'M'), Some(b'+')) => "\\M+NXXXX".len(),
+        (Some(b'f' | b'F' | b'H' | b'C' | b'c' | b'A' | b'Q' | b'T' | b'W' | b'p' | b'S'), _) => {
+            code.iter()
+                .position(|byte| *byte == b';')
+                .map_or(code.len(), |end| end + 1)
+        }
+        (Some(_), _) => 2,
+        (None, _) => 1,
+    };
+    (at + length).min(text.len())
 }
 
 /// `line`, a group code line, with its code replaced by `code`, its spaces and line end

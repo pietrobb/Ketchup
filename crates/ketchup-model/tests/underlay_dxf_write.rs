@@ -2837,6 +2837,60 @@ fn a_long_text_beyond_ascii_under_a_code_page_header_is_written_so_it_reads_back
     );
 }
 
+/// Review 2026-11-08 CD-243: an MTEXT cut into pieces was cut before a backslash in the
+/// last seven bytes only, so a font code longer than `\U+XXXX`, `\fArial|b1|i0;`, was cut
+/// in two. A piece is cut before the format code the cut would split.
+#[test]
+fn a_long_mtext_is_cut_into_pieces_between_its_format_codes() {
+    let header = HEADER.replace(
+        "9\n$INSUNITS\n",
+        "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
+    );
+    let entity = |handle: &str, kind: &str, class: &str, groups: &str| {
+        format!(
+            "0\n{kind}\n5\n{handle}\n330\n1F\n100\nAcDbEntity\n8\nnotes\n100\n{class}\n\
+             10\n0\n20\n0\n30\n0\n40\n250\n{groups}"
+        )
+    };
+    // Escaped, each unit is 21 bytes, a font code of 14 and `\U+0416`: 2 100 to a line.
+    let units = "\\fArial|b1|i0;Ж".repeat(100);
+    let mtext = entity(
+        "B0",
+        "MTEXT",
+        "AcDbMText",
+        &format!("3\n{units}\n1\n{units}\n"),
+    );
+    let short = entity("B1", "TEXT", "AcDbText", "1\nk\n100\nAcDbText\n");
+    let source =
+        format!("{header}{TABLES}0\nSECTION\n2\nENTITIES\n{mtext}{short}0\nENDSEC\n0\nEOF\n");
+    let original = read(source.as_bytes());
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(id_of(&original.lines, 0xB1));
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        &original.lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let lines = written.split(|byte| *byte == b'\n').collect::<Vec<_>>();
+    let pieces = lines
+        .windows(2)
+        .filter(|pair| matches!(pair[0], b"1" | b"3"))
+        .map(|pair| String::from_utf8_lossy(pair[1]).into_owned())
+        .filter(|piece| piece.contains("U+0416"))
+        .collect::<Vec<_>>();
+    assert!(pieces.len() > 10, "{pieces:?}");
+    for piece in &pieces {
+        assert_eq!(
+            piece.matches("\\f").count(),
+            piece.matches(';').count(),
+            "a font code cut in two: {piece}"
+        );
+    }
+    assert_eq!(pieces.concat(), "\\fArial|b1|i0;\\U+0416".repeat(200));
+}
+
 /// Review 2026-11-07 r26 P3: a text too long was said to be written "under the code page
 /// its header names" whatever the drawing named, and only the first such text was named,
 /// so N of them took N saves. A drawing naming no code page writes its texts as read; one
