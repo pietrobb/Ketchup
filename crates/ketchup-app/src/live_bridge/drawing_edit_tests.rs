@@ -152,6 +152,7 @@ fn a_client_removes_objects_of_a_drawing_in_one_undo_step_that_save_and_open_kee
 
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("plan.ketchup");
+    app.remember_recent_file(&path);
     bridge
         .execute(
             &mut app,

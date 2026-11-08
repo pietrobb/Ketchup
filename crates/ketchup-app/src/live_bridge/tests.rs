@@ -605,6 +605,64 @@ fn save_as_requires_an_absolute_path_and_live_gui_overwrite_consent() {
     );
 }
 
+/// Review 2026-11-08 SEC-240: `save_as` wrote any name in any folder, such as
+/// a startup folder or `~/.ssh/authorized_keys`, and the next Ctrl+S wrote
+/// there again. It writes a `.ketchup` document only, never a hidden file, and
+/// in a folder neither the document's nor one of Open Recent only after the
+/// user agrees in the window.
+#[test]
+fn save_as_writes_a_ketchup_document_and_asks_before_a_new_folder() {
+    let directory = tempfile::tempdir().unwrap();
+    let dialogs = ScriptedFileDialogs::new()
+        .queue_refused_high_risk()
+        .queue_high_risk_approval(9);
+    let probe = dialogs.clone();
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.selection.clear();
+    assert!(app.create_box());
+    let mut bridge = transport::start(egui::Context::default()).unwrap();
+    let mut save_as = |app: &mut KetchupApp, path: &Path| {
+        let expected = app.live_bridge_stamp();
+        bridge.execute(
+            app,
+            Request::SaveAs {
+                expected: Some(expected),
+                path: path.to_string_lossy().into_owned(),
+            },
+            false,
+        )
+    };
+
+    for refused in [
+        directory.path().join("startup.cmd"),
+        directory.path().join("authorized_keys"),
+        directory.path().join(".house.ketchup"),
+        directory.path().join("house.ketchup.lnk"),
+    ] {
+        assert_eq!(save_as(&mut app, &refused), Err("invalid_path"));
+        assert!(!refused.exists(), "{} was written", refused.display());
+    }
+    assert!(
+        probe.high_risk_prompts().is_empty(),
+        "refused before asking"
+    );
+
+    let new_folder = directory.path().join("new").join("house.ketchup");
+    std::fs::create_dir_all(new_folder.parent().unwrap()).unwrap();
+    assert_eq!(save_as(&mut app, &new_folder), Err("save_declined"));
+    assert!(!new_folder.exists());
+    assert!(app.file.path.is_none());
+    save_as(&mut app, &new_folder).unwrap();
+    assert_eq!(probe.high_risk_prompts().len(), 2);
+    assert_eq!(app.file.path.as_deref(), Some(new_folder.as_path()));
+
+    // Beside the document, or as another name in its folder, nobody is asked.
+    let beside = directory.path().join("new").join("HOUSE-v2.KETCHUP");
+    save_as(&mut app, &beside).unwrap();
+    assert_eq!(probe.high_risk_prompts().len(), 2);
+    assert!(beside.exists());
+}
+
 #[test]
 fn open_is_revision_bound_and_uses_the_live_gui_discard_consent() {
     let directory = tempfile::tempdir().unwrap();

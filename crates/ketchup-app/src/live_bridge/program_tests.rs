@@ -2074,6 +2074,9 @@ fn a_program_that_replaces_a_saved_document_saves_back_to_its_file() {
 #[test]
 fn a_refused_save_tells_the_client_why() {
     let directory = tempfile::tempdir().unwrap();
+    // A folder named as a document (review 2026-11-08 SEC-240).
+    let folder = directory.path().join("plan.ketchup");
+    std::fs::create_dir(&folder).unwrap();
     let (mut app, mut bridge) = setup();
     take_error_details();
     assert_eq!(
@@ -2081,7 +2084,7 @@ fn a_refused_save_tells_the_client_why() {
             &mut app,
             Request::SaveAs {
                 expected: None,
-                path: directory.path().to_string_lossy().into_owned(),
+                path: folder.to_string_lossy().into_owned(),
             },
             false,
         ),

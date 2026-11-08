@@ -226,7 +226,12 @@ impl KetchupApp {
             tool_preview: None,
             gesture: Gesture::default(),
             mesh_conversion_state: mesh_conversion_ui::MeshConversionUiState::default(),
+            // A unit test never shows a native dialog on the desktop: one it
+            // did not script is declined (review 2026-11-08 SEC-240).
+            #[cfg(not(test))]
             dialogs: Box::new(NativeFileDialogs::default()),
+            #[cfg(test)]
+            dialogs: Box::new(crate::dialogs::ScriptedFileDialogs::new()),
             reviews: app_state::ReviewWorkflows {
                 cam_reviews: CamReviewWorkflow::new(None),
                 cam_export_dialog: None,

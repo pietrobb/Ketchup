@@ -402,6 +402,7 @@ fn the_documents_own_drawing_is_replaced_after_a_restart_and_however_its_path_is
     );
 
     let document = directory.path().join("plan.ketchup");
+    app.remember_recent_file(&document);
     let save = Request::SaveAs {
         expected: None,
         path: document.display().to_string(),
@@ -436,6 +437,7 @@ fn an_export_leaves_the_document_saved_and_its_file_its_own_after_a_restart() {
     let (mut app, mut bridge) = with_store();
     let id = sheet_of_the_block(&mut app, &mut bridge);
     let document = directory.path().join("plan.ketchup");
+    app.remember_recent_file(&document);
     let save = Request::SaveAs {
         expected: None,
         path: document.display().to_string(),
@@ -479,6 +481,7 @@ fn a_document_saved_as_another_asks_before_replacing_the_first_ones_drawing() {
     let directory = tempfile::tempdir().unwrap();
     let save_as = |app: &mut KetchupApp, bridge: &mut LiveBridge, name: &str| {
         let path = directory.path().join(name).display().to_string();
+        app.remember_recent_file(Path::new(&path));
         let save = Request::SaveAs {
             expected: None,
             path,
@@ -513,6 +516,7 @@ fn a_copy_saved_as_asks_once_the_first_document_is_renamed() {
     let (mut app, mut bridge) = with_store();
     let id = sheet_of_the_block(&mut app, &mut bridge);
     let save_as = |app: &mut KetchupApp, bridge: &mut LiveBridge, path: &Path| {
+        app.remember_recent_file(path);
         let save = Request::SaveAs {
             expected: None,
             path: path.display().to_string(),
@@ -570,6 +574,7 @@ fn a_copy_made_in_a_file_manager_asks_once_the_first_document_is_renamed() {
         bridge.execute(app, export_drawings(&sheet, json!({"sheet_id": id})), false)
     };
     let first = directory.path().join("a.ketchup");
+    app.remember_recent_file(&first);
     let save = Request::SaveAs {
         expected: None,
         path: first.display().to_string(),
@@ -652,6 +657,7 @@ fn a_new_document_saved_where_another_was_asks_and_a_failed_save_as_keeps_the_dr
         bridge.execute(app, export_drawings(&sheet, json!({"sheet_id": id})), false)
     };
     let save_as = |app: &mut KetchupApp, bridge: &mut LiveBridge, path: &Path| {
+        app.remember_recent_file(path);
         let save = Request::SaveAs {
             expected: None,
             path: path.display().to_string(),
@@ -700,6 +706,7 @@ fn the_list_of_written_drawings_forgets_files_that_are_gone() {
     let mut app = app.with_written_drawings(&store);
     let id = sheet_of_the_block(&mut app, &mut bridge);
     let document = directory.path().join("plan.ketchup");
+    app.remember_recent_file(&document);
     let save = Request::SaveAs {
         expected: None,
         path: document.display().to_string(),
@@ -788,6 +795,7 @@ fn the_documents_file_is_resolved_once_for_its_written_drawings() {
     let mut app = app.with_written_drawings(&store);
     let id = sheet_of_the_block(&mut app, &mut bridge);
     let document = directory.path().join("plan.ketchup");
+    app.remember_recent_file(&document);
     let save = Request::SaveAs {
         expected: None,
         path: document.display().to_string(),
@@ -969,6 +977,7 @@ fn a_moved_project_exports_its_set_again_and_another_is_told_whose_it_is() {
     let (mut app, mut bridge) = with_store();
     evaluate_exact(&mut app);
     let save_as = |path: &Path| request(json!({"method": "save_as", "path": path}));
+    app.remember_recent_file(&saved);
     bridge.execute(&mut app, save_as(&saved), false).unwrap();
     export(&mut app, &mut bridge, json!({})).unwrap();
     bridge.execute(&mut app, save_as(&saved), false).unwrap();
@@ -1043,6 +1052,7 @@ fn a_project_moved_with_its_drawings_folder_exports_its_set_again() {
     let (app, mut bridge) = setup();
     let mut app = app.with_written_drawings(&store);
     evaluate_exact(&mut app);
+    app.remember_recent_file(&job.join("dom.ketchup"));
     let save = request(json!({"method": "save_as", "path": job.join("dom.ketchup")}));
     bridge.execute(&mut app, save, false).unwrap();
     let set = job.join("dwg").join("dom.dxf");
