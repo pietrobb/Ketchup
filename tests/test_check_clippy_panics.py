@@ -72,8 +72,35 @@ def test_a_count_only_shrinks_within_the_packages_of_the_run(tmp_path):
 def test_the_baseline_records_its_packages(tmp_path):
     package(tmp_path, "a")
     (tmp_path / "scripts").mkdir()
-    checker.write_baseline(tmp_path, {"crates/a/src/lib.rs panic": 1}, {"a", "b"})
-    assert checker.read_baseline(tmp_path) == ({"crates/a/src/lib.rs panic": 1}, {"a", "b"})
+    checker.write_baseline(tmp_path, "linux", {"crates/a/src/lib.rs panic": 1}, {"a", "b"})
+    assert checker.read_baseline(tmp_path, "linux") == ({"crates/a/src/lib.rs panic": 1}, {"a", "b"})
+    assert checker.read_baseline(tmp_path, "windows") == ({}, set())
+
+
+def test_a_count_on_one_system_is_compared_with_that_systems_count(tmp_path, monkeypatch, capsys):
+    # Review 2026-11-08 CI-250: ketchup-mcp's Windows-only code is seen only by clippy on
+    # Windows, so an unwrap added there must fail the Windows run, whatever Linux counts.
+    package(tmp_path, "a")
+    (tmp_path / "scripts").mkdir()
+    checker.write_baseline(tmp_path, "linux", {"crates/a/src/acl.rs unwrap_used": 3}, {"a"})
+    checker.write_baseline(tmp_path, "windows", {}, {"a"})
+    found = [message("unwrap_used", "crates/a/src/acl.rs", 7)]
+    monkeypatch.setattr(checker.subprocess, "run", lambda *_, **__: type(
+        "Run", (), {"returncode": 0, "stdout": "\n".join(found)})())
+    assert checker.check(["a"], root=tmp_path, system="linux") == 0
+    assert checker.check(["a"], root=tmp_path, system="windows") == 1
+    assert "crates/a/src/acl.rs unwrap_used: 1 (allowed 0)" in capsys.readouterr().out
+    # --update does not let it in either; the Windows count stays as it was.
+    assert checker.check(["a"], update=True, root=tmp_path, system="windows") == 1
+    assert checker.read_baseline(tmp_path, "windows") == ({}, {"a"})
+
+
+def test_the_ci_jobs_baselines_are_per_system():
+    assert checker.SYSTEMS == {"win32": "windows", "linux": "linux", "darwin": "macos"}
+    for system, needed in (("linux", "ketchup-mcp"), ("windows", "ketchup-mcp")):
+        _, recorded = checker.read_baseline(ROOT, system)
+        assert needed in recorded
+    assert not (ROOT / "scripts" / "clippy_panics_baseline.txt").exists()
 
 
 def test_the_packages_come_from_the_command_line():
