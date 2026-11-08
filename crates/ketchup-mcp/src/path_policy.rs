@@ -199,12 +199,17 @@ fn read_link(path: &Path) -> std::io::Result<Option<PathBuf>> {
     }
 }
 
-/// The path's directories, lowercase, with `.` dropped and `..` applied.
+/// The path's directories, lowercase and composed (NFC), with `.` dropped and `..`
+/// applied: the default macOS file system ignores case and Unicode form alike, so
+/// `Výkresy` in NFD names the share mounted in NFC (review 2026-11-03 SEC-142).
 fn lexical_components(path: &str) -> Vec<String> {
+    use unicode_normalization::UnicodeNormalization;
     let mut components = Vec::new();
     for component in Path::new(path).components() {
         match component {
-            Component::Normal(name) => components.push(name.to_string_lossy().to_lowercase()),
+            Component::Normal(name) => {
+                components.push(name.to_string_lossy().to_lowercase().nfc().collect());
+            }
             Component::ParentDir => {
                 components.pop();
             }
@@ -425,6 +430,24 @@ mod mount_tests {
             "/media/psf/Home/x.pdf",
         ] {
             assert!(!local_mounted_path(remote, &mounts, &[]), "{remote:?}");
+        }
+    }
+
+    // Review 2026-11-03 SEC-142: macOS takes a name in NFC and in NFD for one, so a
+    // share mounted as `/Volumes/Výkresy` in one form was not found for a path in the
+    // other, and the path was taken as local.
+    #[test]
+    fn a_path_in_another_unicode_form_than_its_mount_is_on_it() {
+        let (composed, decomposed) = ("V\u{FD}kresy", "Vy\u{301}kresy");
+        for (on, path) in [(composed, decomposed), (decomposed, composed)] {
+            let mounts = [
+                super::Mount::new("/", true),
+                super::Mount::new(&format!("/Volumes/{on}"), false),
+            ];
+            let path = format!("/Volumes/{path}/x.pdf");
+            assert!(!local_mounted_path(&path, &mounts, &[]), "{path:?}");
+            let upper = path.to_uppercase();
+            assert!(!local_mounted_path(&upper, &mounts, &[]), "{upper:?}");
         }
     }
 
