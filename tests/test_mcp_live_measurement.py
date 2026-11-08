@@ -3,15 +3,58 @@
 Set KETCHUP_APP to a fresh normal build with its matching exact worker alongside.
 Only processes descended from this test's MCP server are stopped during cleanup.
 """
+import contextlib
 import json
 import os
 from pathlib import Path
 import queue
 import subprocess
+import sys
 import threading
 import time
 
 import pytest
+
+
+@contextlib.contextmanager
+def recent_document_in(folder, env):
+    """Puts a document of `folder` first in the user's File > Open Recent while the
+    window runs, as if the user had opened one there: save_as writes in a folder of
+    Open Recent without asking (review 2026-11-08 SEC-240), and the off-screen
+    window has nobody to answer. The user's own list is put back afterwards."""
+    seed = str(folder / "recent.ketchup")
+    if sys.platform == "win32":
+        import winreg
+        key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Ketchup")
+        try:
+            before = winreg.QueryValueEx(key, "RecentFiles")[0]
+        except FileNotFoundError:
+            before = None
+        winreg.SetValueEx(key, "RecentFiles", 0, winreg.REG_MULTI_SZ, [seed] + (before or []))
+        try:
+            yield
+        finally:
+            if before is None:
+                winreg.DeleteValue(key, "RecentFiles")
+            else:
+                winreg.SetValueEx(key, "RecentFiles", 0, winreg.REG_MULTI_SZ, before)
+            winreg.CloseKey(key)
+        return
+    if sys.platform == "darwin":
+        settings = Path(env["HOME"]) / "Library" / "Application Support" / "Ketchup" / "settings.txt"
+    else:
+        env["XDG_CONFIG_HOME"] = str(folder / "config")
+        settings = folder / "config" / "Ketchup" / "settings.txt"
+    before = settings.read_bytes() if settings.exists() else None
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_bytes(f"recent={seed}\n".encode() + (before or b""))
+    try:
+        yield
+    finally:
+        if before is None:
+            settings.unlink(missing_ok=True)
+        else:
+            settings.write_bytes(before)
 
 
 @pytest.fixture
@@ -35,7 +78,7 @@ def mcp(tmp_path):
     Path(env["LOCALAPPDATA"]).mkdir()
     lines = queue.Queue()
     metrics = []
-    with (tmp_path / "mcp.stderr.log").open("w", encoding="utf-8") as errors:
+    with recent_document_in(tmp_path, env), (tmp_path / "mcp.stderr.log").open("w", encoding="utf-8") as errors:
         server = subprocess.Popen(
             [str(executable), "--mcp"], cwd=tmp_path, env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors,
