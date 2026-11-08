@@ -251,6 +251,52 @@ fn a_dxf_without_units_needs_a_unit_and_nothing_changes_until_it_has_one() {
     assert_eq!(std::fs::read(&target).unwrap(), b"user drawing");
 }
 
+/// Review 2026-11-08 (class of CD-72): a model the format cannot carry, and a
+/// declined consent, were `export_failed` like a full disk, whose hint is
+/// "export to another path". Each now has the code whose hint repairs it.
+#[test]
+fn an_export_refusal_is_named_by_what_repairs_it() {
+    use crate::export_bundle::ExportError;
+    use ketchup_manufacturing::fabrication::GeneralFabricationError;
+    use ketchup_rejection::{Rejection, RejectionPhase};
+    let code = crate::live_bridge::interchange::export_code;
+    assert_eq!(
+        code(&ExportError::NothingToExport {
+            subject: "weldment"
+        }),
+        "export_refused"
+    );
+    assert_eq!(
+        code(&ExportError::failed(
+            GeneralFabricationError::PartGeometryUnavailable { part: "top".into() }
+        )),
+        "export_refused"
+    );
+    assert_eq!(
+        code(&ExportError::from(Rejection::new(
+            "side_effect.declined",
+            RejectionPhase::Validation
+        ))),
+        "export_declined"
+    );
+    assert_eq!(
+        code(&ExportError::Destination {
+            requirement: "a .btlx path"
+        }),
+        "export_failed"
+    );
+    assert_eq!(code(&ExportError::ChangedDuringConsent), "export_failed");
+
+    // Over the bridge: an empty window has no weldment to write.
+    let (mut app, mut bridge, directory) = window();
+    let target = directory.path().join("frame.btlx");
+    assert_eq!(
+        bridge.execute(&mut app, export(&target, "btlx"), false),
+        Err("export_refused")
+    );
+    assert!(!target.exists());
+}
+
 /// Měchenice 2026-11-02 MECH-9: `file export dxf/dwg` failed whole on one
 /// upright pipe. The plan is written without it and the answer names it.
 #[test]

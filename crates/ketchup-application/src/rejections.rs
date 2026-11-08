@@ -262,11 +262,25 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Check that the worker executable is installed beside the app, then retry.",
     ),
     entry(
+        "export_declined",
+        Validation,
+        "path",
+        "The user declined the export in the Kečup window; nothing was written.",
+        "Ask the user whether to export, then export again; do not repeat it unasked.",
+    ),
+    entry(
         "export_failed",
         Io,
         "path",
-        "The model could not be exported; caused_by names why (for example parts without an exact solid, or the user declined a lossy or replacing export).",
+        "The files could not be written or checked; caused_by names why (for example an existing file never replaced from outside the window, a full disk, or the model changed while the user was asked).",
         "Fix what caused_by names, or export to another path; nothing was written.",
+    ),
+    entry(
+        "export_refused",
+        Validation,
+        "export_format",
+        "The model holds something this format cannot carry, or nothing it writes; caused_by names the part and what it lacks (for example a blank that is not a rectangle, a piece without a production code, or nothing to machine). Nothing was written.",
+        "Change the model as caused_by says (a part whose exact result is still being made exports once it is ready), or export another format; another path does not help.",
     ),
     entry(
         "hidden_viewport",

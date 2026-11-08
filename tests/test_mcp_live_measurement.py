@@ -650,7 +650,7 @@ def test_step_export_and_import_round_trip_through_public_mcp(mcp, tmp_path):
     step = tmp_path / "part.step"
     # STEP is written from the exact solids, which may still be evaluating.
     reply = ask_until(lambda: mcp("file", action="export", export_format="step", path=str(step), error=None),
-                      lambda reply: reply.get("error") != "export_failed", 300, 2)
+                      lambda reply: reply.get("error") not in ("export_failed", "export_refused"), 300, 2)
     assert reply["result"]["exported"] is True and step.is_file(), reply
     assert "ISO-10303-21" in step.read_text(encoding="utf-8", errors="replace")[:200]
     again = mcp("file", action="export", export_format="step", path=str(step), error=True)
