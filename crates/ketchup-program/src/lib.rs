@@ -44,6 +44,7 @@ pub mod site;
 pub mod source_edit;
 pub mod table;
 pub mod takeoff;
+pub mod thermal;
 pub mod validate;
 mod wire_names;
 
@@ -98,6 +99,9 @@ pub struct Report {
     /// EN 1995-1-1 check of every load-path member, when timber strength classes are declared.
     #[serde(default, skip_serializing_if = "member_check::DesignReport::is_empty")]
     pub design: member_check::DesignReport,
+    /// The thermal check of every `thermal_check()` build-up.
+    #[serde(default, skip_serializing_if = "thermal::ThermalReport::is_empty")]
+    pub thermal: thermal::ThermalReport,
     pub log: Vec<String>,
     pub unused_overrides: Vec<String>,
     /// The counts of the whole report when this one lists only its first issues
@@ -203,6 +207,7 @@ impl Report {
             joints: Vec::new(),
             loads: loads::LoadReport::default(),
             design: member_check::DesignReport::default(),
+            thermal: thermal::ThermalReport::default(),
             log: evaluated.log.clone(),
             unused_overrides: evaluated.unused_overrides.clone(),
             truncated: None,
@@ -227,7 +232,7 @@ impl Report {
     /// Takes the issues and relations [`refine`] re-derived. Refining checks
     /// collisions and relations only, so a report whose checks stopped keeps
     /// saying that joints and loads were not checked, and the issues of its
-    /// loads and cutting plans stay.
+    /// loads, cutting plans and thermal checks stay.
     pub fn apply_refined(&mut self, refined: Refined) {
         let mut issues = refined.issues;
         issues.extend(
@@ -243,6 +248,8 @@ impl Report {
                         loads::JOINT_KIND_DOUBTFUL,
                         loads::JOINT_KIND_UNKNOWN,
                         cutting::CUTTING_UNPLACED,
+                        thermal::THERMAL_FAILED,
+                        thermal::THERMAL_NOT_VERIFIED,
                     ]
                     .contains(&issue.kind)
                 })
@@ -417,6 +424,8 @@ pub fn report(evaluated: &Evaluated) -> Report {
     issues.extend(loads.issues());
     let bom = bom(&evaluated.model);
     issues.extend(cutting::issues(&bom.cutting));
+    let thermal = thermal::thermal_checks(&evaluated.model);
+    issues.extend(thermal.issues());
     locate_issues(&mut issues, &evaluated.part_sources);
     let errors = issues
         .iter()
@@ -432,6 +441,7 @@ pub fn report(evaluated: &Evaluated) -> Report {
         bom,
         joints: joint_check::joint_checks(&evaluated.model, &loads),
         design: member_check::member_checks(&evaluated.model, &loads),
+        thermal,
         loads,
         log: evaluated.log.clone(),
         unused_overrides: evaluated.unused_overrides.clone(),
@@ -459,6 +469,7 @@ pub fn report_before_exact(evaluated: &Evaluated) -> Report {
         bom: bom(&evaluated.model),
         joints: joint_check::joint_checks(&evaluated.model, &loads),
         design: member_check::member_checks(&evaluated.model, &loads),
+        thermal: thermal::thermal_checks(&evaluated.model),
         loads,
         log: evaluated.log.clone(),
         unused_overrides: evaluated.unused_overrides.clone(),
@@ -468,6 +479,7 @@ pub fn report_before_exact(evaluated: &Evaluated) -> Report {
     };
     let mut issues = validate::collisions_only(&evaluated.model);
     issues.extend(report.loads.issues());
+    issues.extend(report.thermal.issues());
     issues.extend(cutting::issues(&report.bom.cutting));
     report.set_issues(issues);
     report

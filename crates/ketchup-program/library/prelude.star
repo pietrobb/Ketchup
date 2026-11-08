@@ -3016,6 +3016,17 @@ def _opening_in(name, o, origin, along, up, out, depth, length, top_v):
 #       SITE = site("CZ", municipality = "Brno", altitude = 237, snow_zone = "II")
 #       area_load("snow", kind = "snow", kn_m2 = snow_load(SITE.sk, 35), on = ["cover"],
 #                 source = SITE.source)
+#   thermal_check(name, layers=, element=, theta_e=None, theta_i=20, phi_i=50, phi_e=84)
+#     -> struct(u, r): the thermal check of a build-up to the national standard of the
+#     site's country (STN 73 0540-2 or ČSN 73 0540-2). layers are buildup()'s, inside
+#     first, each with "lambda" (W/(m K)) or "r" (m²K/W, an air layer) and "mu" or "sd"
+#     (m, a membrane); a framed layer's "lambda"/"mu" are its studs', "infill_lambda"/
+#     "infill_mu" its bays'; a layer with "ventilated": True and those outside it are
+#     left out. element: "wall", "steep_roof", "roof", "floor_over_exterior",
+#     "ceiling_under_unheated" or "floor_on_ground". theta_e (°C) is the design outdoor
+#     temperature of the place (STN/ČSN 73 0540-3). The report's thermal section gives U
+#     against the requirement, f_Rsi of the inner surface against mould and where vapour
+#     would condense; a value not given leaves its criterion not verified, a warning.
 #   The report's loads.members lists every load_path() member: its length and axis, the
 #   loads on it by kind (newtons, characteristic, unfactored), where they act (patches
 #   along the member: own weight, area loads, parts it carries) and what it passes to

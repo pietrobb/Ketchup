@@ -42,6 +42,8 @@ STANDARD_VALIDATORS = {
     "crates/ketchup-program/src/load_path.rs",
     "crates/ketchup-program/src/loads.rs",
     "crates/ketchup-program/src/member_check.rs",
+    # STN/ČSN 73 0540-2 by the element a build-up separates (review 2026-11-08 §5.3).
+    "crates/ketchup-program/src/thermal.rs",
 }
 STANDARD_VALIDATOR_LINE = re.compile(r"^.*(?:EN 1995|timber_strength|timber_design|TimberClass).*$",
                                      re.MULTILINE)

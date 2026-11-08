@@ -1,6 +1,7 @@
 //! Bracing a program declares where the geometry cannot show it: the edge of
 //! a load-path member a brace holds, and sheets that are one anchored stiff plane
-//! (review 2026-11-08 PG-240); and the building site its snow comes from (§5.3).
+//! (review 2026-11-08 PG-240); the building site its snow comes from and the
+//! thermal check of a build-up (§5.3).
 use super::*;
 
 #[starlark_module]
@@ -116,4 +117,89 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         model.site = Some(site);
         Ok(value)
     }
+
+    /// The thermal check of a build-up (`layers` as buildup() takes them,
+    /// inside first, each with "lambda" or "r", and "mu" or "sd"; a framed
+    /// layer's "infill_lambda", "infill_mu") separating `element` from the
+    /// outside, to the national standard of the site's country. Returns
+    /// struct(u, r), None when a layer has no lambda; the report's thermal
+    /// section checks U, the inner surface and condensation.
+    fn thermal_check<'v>(
+        #[starlark(require = pos)] name: &str,
+        #[starlark(require = named)] layers: Value<'v>,
+        #[starlark(require = named)] element: &str,
+        #[starlark(require = named)] theta_e: Option<Value<'v>>,
+        #[starlark(require = named)] theta_i: Option<Value<'v>>,
+        #[starlark(require = named)] phi_i: Option<Value<'v>>,
+        #[starlark(require = named)] phi_e: Option<Value<'v>>,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> anyhow::Result<Value<'v>> {
+        let heap = eval.heap();
+        if !crate::thermal::ELEMENTS.contains(&element) {
+            anyhow::bail!(
+                "thermal_check({name:?}): element must be one of {:?}, got {element:?}",
+                crate::thermal::ELEMENTS
+            );
+        }
+        let within = |value: Option<Value<'v>>,
+                      what: &str,
+                      default: f64,
+                      range: std::ops::RangeInclusive<f64>| {
+            let value = given(value).map_or(Ok(default), |v| number(v, what))?;
+            if !range.contains(&value) {
+                anyhow::bail!("thermal_check({name:?}): {what} must lie in {range:?}, got {value}");
+            }
+            Ok(value)
+        };
+        let buildup = crate::thermal::Buildup {
+            name: name.to_owned(),
+            element: element.to_owned(),
+            layers: thermal_layers(name, layers, heap)?,
+            theta_e: given(theta_e)
+                .map(|_| within(theta_e, "theta_e", 0.0, -40.0..=10.0))
+                .transpose()?,
+            theta_i: within(theta_i, "theta_i", 20.0, 5.0..=30.0)?,
+            phi_i: within(phi_i, "phi_i", 50.0, 1.0..=95.0)?,
+            phi_e: within(phi_e, "phi_e", 84.0, 1.0..=100.0)?,
+        };
+        let value = crate::thermal::u_and_r(&buildup);
+        let state = state(eval)?;
+        let mut model = state.model.borrow_mut();
+        if model.thermal.iter().any(|b| b.name == name) {
+            anyhow::bail!("thermal_check({name:?}): a build-up of that name is checked already");
+        }
+        model.thermal.push(buildup);
+        let (u, r) = value.map_or((Value::new_none(), Value::new_none()), |(u, r)| {
+            (heap.alloc(u), heap.alloc(r))
+        });
+        Ok(heap.alloc(AllocStruct([("u", u), ("r", r)])))
+    }
+}
+
+/// The layers of `thermal_check()` from buildup()'s layer dicts.
+fn thermal_layers<'v>(
+    name: &str,
+    layers: Value<'v>,
+    heap: &'v Heap,
+) -> anyhow::Result<Vec<crate::thermal::Layer>> {
+    let layers = items(layers, heap, "thermal_check layers")?;
+    if layers.is_empty() {
+        anyhow::bail!("thermal_check({name:?}): give at least one layer");
+    }
+    layers
+        .into_iter()
+        .enumerate()
+        .map(|(index, layer)| {
+            let dict = DictRef::from_value(layer).ok_or_else(|| {
+                anyhow::anyhow!("thermal_check({name:?}): layer {index} must be a dict")
+            })?;
+            let label = dict
+                .get_str("name")
+                .and_then(|v| v.unpack_str().map(ToOwned::to_owned))
+                .unwrap_or_else(|| format!("{index}"));
+            let read = |key: &str| given(dict.get_str(key)).map(|v| number(v, key)).transpose();
+            let ventilated = given(dict.get_str("ventilated")).is_some_and(|v| v.to_bool());
+            crate::thermal::layer(name, label, ventilated, read)
+        })
+        .collect()
 }
