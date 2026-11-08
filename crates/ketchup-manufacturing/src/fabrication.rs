@@ -1065,7 +1065,25 @@ impl GeneralFabricationProjection {
         let [stock, machining @ ..] = matching.as_slice() else {
             return Err(blocked(ExportBlock::ResultMismatch));
         };
-        if stock.kind == GeneralManufacturingKind::Stock && machining.is_empty() {
+        // One program drills every copy, so each copy must be drilled for its
+        // logical pin joints where the first is (review 2026-11-08 MF-140).
+        let pin_holes = capabilities::undrilled_pin_holes(snapshot)?;
+        let copy_holes = |path: &InstancePath| {
+            pin_holes
+                .iter()
+                .map(|(_, hole)| hole)
+                .filter(|hole| hole.instance_path == *path)
+                .collect::<Vec<_>>()
+        };
+        let holes = copy_holes(&row.instances[0]);
+        if row.instances[1..]
+            .iter()
+            .any(|path| !same_pin_holes(&holes, &copy_holes(path)))
+        {
+            return Err(blocked(ExportBlock::CopiesDrilledApart));
+        }
+        if stock.kind == GeneralManufacturingKind::Stock && machining.is_empty() && holes.is_empty()
+        {
             return Err(GeneralFabricationError::NothingToMachine {
                 part: part.to_owned(),
             });
@@ -1089,29 +1107,11 @@ impl GeneralFabricationProjection {
         }
         let stock_frame = woodwop_stock_frame(&stock.machining)
             .ok_or_else(|| blocked(ExportBlock::UnsupportedMachining))?;
-        let (stock_frame, macros) = woodwop_setup(
+        let (stock_frame, macros) = woodwop_part_macros(
             stock_frame,
-            &machining_normals(machining.iter().copied(), std::iter::empty()),
-            |stock_frame| {
-                machining
-                    .iter()
-                    .map(|operation| match operation.kind {
-                        GeneralManufacturingKind::CircularDrill => {
-                            woodwop_drilling_macro(&operation.machining, stock_frame)
-                        }
-                        GeneralManufacturingKind::ProfileCut => {
-                            options.vertical_pocket_tool_number.and_then(|tool| {
-                                woodwop_vertical_pocket_macro(
-                                    &operation.machining,
-                                    stock_frame,
-                                    tool,
-                                )
-                            })
-                        }
-                        _ => None,
-                    })
-                    .collect::<Option<Vec<_>>>()
-            },
+            machining,
+            &holes,
+            options.vertical_pocket_tool_number,
         )
         .map_err(|error| error.at_part(part))?;
         let export_contract = if machining
@@ -1266,36 +1266,11 @@ impl GeneralFabricationProjection {
                     if machining.is_empty() && instance_holes.is_empty() {
                         continue;
                     }
-                    let (stock_frame, macros) = woodwop_setup(
+                    let (stock_frame, macros) = woodwop_part_macros(
                         stock_frame,
-                        &machining_normals(
-                            machining.iter().copied(),
-                            instance_holes.iter().map(|hole| hole.inward_unit_local),
-                        ),
-                        |stock_frame| {
-                            let mut macros = machining
-                                .iter()
-                                .map(|operation| match operation.kind {
-                                    GeneralManufacturingKind::CircularDrill => {
-                                        woodwop_drilling_macro(&operation.machining, stock_frame)
-                                    }
-                                    GeneralManufacturingKind::ProfileCut => {
-                                        options.vertical_pocket_tool_number.and_then(|tool| {
-                                            woodwop_vertical_pocket_macro(
-                                                &operation.machining,
-                                                stock_frame,
-                                                tool,
-                                            )
-                                        })
-                                    }
-                                    _ => None,
-                                })
-                                .collect::<Option<Vec<_>>>()?;
-                            for hole in &instance_holes {
-                                macros.push(woodwop_pin_macro(hole, stock_frame)?);
-                            }
-                            Some(macros)
-                        },
+                        machining,
+                        &instance_holes,
+                        options.vertical_pocket_tool_number,
                     )?;
                     if !program_paths.insert(instance_path.clone()) {
                         return Err(GeneralFabricationError::ExportBlocked(
@@ -1627,6 +1602,60 @@ fn woodwop_setup<T>(
     } else {
         GeneralFabricationError::ExportBlocked(ExportBlock::UnsupportedMachining)
     })
+}
+
+/// The stock frame and macros of the woodWOP program of one part: its
+/// drillings and pockets and the holes of its logical pin joints, laid as
+/// [`woodwop_setup`] lays them. The program of one part and each program of
+/// the production package are written by it alike (review 2026-11-08 MF-140:
+/// the program of one part left the pin holes out).
+fn woodwop_part_macros(
+    stock_frame: WoodwopStockFrame,
+    machining: &[&GeneralManufacturingOperation],
+    holes: &[&PinHole],
+    pocket_tool: Option<u32>,
+) -> Result<(WoodwopStockFrame, Vec<String>), GeneralFabricationError> {
+    woodwop_setup(
+        stock_frame,
+        &machining_normals(
+            machining.iter().copied(),
+            holes.iter().map(|hole| hole.inward_unit_local),
+        ),
+        |stock_frame| {
+            let mut macros = machining
+                .iter()
+                .map(|operation| match operation.kind {
+                    GeneralManufacturingKind::CircularDrill => {
+                        woodwop_drilling_macro(&operation.machining, stock_frame)
+                    }
+                    GeneralManufacturingKind::ProfileCut => pocket_tool.and_then(|tool| {
+                        woodwop_vertical_pocket_macro(&operation.machining, stock_frame, tool)
+                    }),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>()?;
+            for hole in holes {
+                macros.push(woodwop_pin_macro(hole, stock_frame)?);
+            }
+            Some(macros)
+        },
+    )
+}
+
+/// Whether two copies are drilled for pin joints alike, in their own frames.
+fn same_pin_holes(first: &[&PinHole], other: &[&PinHole]) -> bool {
+    let close = |a: &[f64], b: &[f64]| a.iter().zip(b).all(|(a, b)| (a - b).abs() <= ROUNDING);
+    first.len() == other.len()
+        && first.iter().all(|hole| {
+            other.iter().any(|copy| {
+                close(&hole.entry_local_mm, &copy.entry_local_mm)
+                    && close(&hole.inward_unit_local, &copy.inward_unit_local)
+                    && close(
+                        &[hole.diameter_mm, hole.depth_mm],
+                        &[copy.diameter_mm, copy.depth_mm],
+                    )
+            })
+        })
 }
 
 fn woodwop_stock_frame(geometry: &GeneralMachiningGeometry) -> Option<WoodwopStockFrame> {
