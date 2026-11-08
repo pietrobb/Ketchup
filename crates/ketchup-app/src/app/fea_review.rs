@@ -240,8 +240,8 @@ impl KetchupApp {
 }
 
 /// Whether the review converged and stayed within its declared limits, these
-/// said to be of an isotropic material (review 2026-11-08 PG-246: a timber
-/// beam came out "within limits" against a von Mises yield of 250 MPa).
+/// said to be of an isotropic material (review 2026-11-08 PG-246: a wooden
+/// member came out "within limits" against a von Mises yield of 250 MPa).
 fn verdict(catalog: &LocaleCatalog, review: &FeaReviewSummary) -> String {
     format!(
         "{}: {} · {}: {}",

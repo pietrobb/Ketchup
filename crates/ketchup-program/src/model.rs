@@ -1232,7 +1232,7 @@ impl Part {
     /// size. The length runs along the axis [`LENGTH_AXIS`] names, else the
     /// longest; an extrusion's sides in its profile's plane are those of the
     /// smallest rectangle around its profile (review 2026-11-08 PG-141(b): a
-    /// rafter extruded at a slope ran along its level projection, so its top
+    /// member extruded at a slope ran along its level projection, so its top
     /// and bottom edges were taken for each other).
     #[must_use]
     pub fn bar_frame(&self) -> BarFrame {
@@ -1297,7 +1297,7 @@ impl Part {
 
     /// The local axis a member's loads are placed along: the one
     /// [`LENGTH_AXIS`] names, else its longest (review 2026-11-08 PG-243: a
-    /// 29 mm piece of a gable stud in a 140 mm wall was checked as a beam
+    /// 29 mm long upright piece in a 140 mm wall was checked as bending
     /// across the wall).
     #[must_use]
     pub fn load_axis(&self) -> usize {

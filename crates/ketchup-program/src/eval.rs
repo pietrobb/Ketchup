@@ -1741,6 +1741,7 @@ fn path_builtins(builder: &mut GlobalsBuilder) {
 
 mod annotations;
 mod assemblies;
+mod bracing;
 mod conditions;
 mod continuity;
 mod error_location;
@@ -2655,6 +2656,7 @@ fn globals() -> Globals {
     .with(machining::builtins)
     .with(assemblies::builtins)
     .with(conditions::builtins)
+    .with(bracing::builtins)
     .with(pricing::builtins)
     .with(continuity::builtins)
     .with(joints::builtins)
@@ -3125,6 +3127,7 @@ mod tests {
             .with(machining::builtins)
             .with(assemblies::builtins)
             .with(conditions::builtins)
+            .with(bracing::builtins)
             .with(pricing::builtins)
             .with(continuity::builtins)
             .with(joints::builtins)

@@ -1701,12 +1701,16 @@ fn declared_bracing<'a>(
                     let start = lo + (hi - lo - count * spacing) / 2.0;
                     let centre = middle(points).unwrap_or(frame.centre);
                     let from = frame.along(centre);
-                    (0..=count as usize)
-                        .map(|k| {
-                            let shift = start + spacing * k as f64 - from;
-                            std::array::from_fn(|i| centre[i] + frame.axis[i] * shift)
-                        })
-                        .collect()
+                    let last = start + count * spacing;
+                    std::iter::successors(Some(start), |at| {
+                        Some(at + spacing).filter(|next| next > at)
+                    })
+                    .take_while(|at| *at <= last + spacing / 2.0)
+                    .map(|at| {
+                        let shift = at - from;
+                        std::array::from_fn(|i| centre[i] + frame.axis[i] * shift)
+                    })
+                    .collect()
                 } else if fasteners.is_empty() {
                     middle(points).into_iter().collect()
                 } else {
