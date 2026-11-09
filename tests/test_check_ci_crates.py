@@ -333,3 +333,35 @@ def test_every_crate_with_code_for_one_system_has_its_panics_counted_there():
     systems = (*checker.SYSTEMS.values(), "Android", "Browser")
     counted = {system: checker.panics_counted(workflows, system, ROOT) for system in systems}
     assert checker.system_code_uncounted(with_system_code, counted) == []
+
+
+def test_a_step_counting_panics_against_a_baseline_that_does_not_exist_is_found(tmp_path):
+    workflow = """name: CI
+jobs:
+  mac:
+    runs-on: macos-latest
+    steps:
+      - run: python scripts/check_clippy_panics.py --baseline macos-app -p app
+      - run: python scripts/check_clippy_panics.py -p viewer
+  phone:
+    runs-on: ubuntu-latest
+    steps:
+      - run: python3 scripts/check_clippy_panics.py --target aarch64-linux-android -p phone
+      - if: false
+        run: python3 scripts/check_clippy_panics.py --baseline never -p app
+"""
+    assert checker.panic_baselines([workflow]) == {"macos-app", "macos", "android"}
+    (tmp_path / "scripts").mkdir()
+    for name in ("macos", "android"):
+        (tmp_path / "scripts" / f"clippy_panics_baseline_{name}.txt").write_text("", encoding="utf-8")
+    assert checker.missing_panic_baselines(checker.panic_baselines([workflow]), tmp_path) == [
+        "scripts/clippy_panics_baseline_macos-app.txt: a CI step counts panics against it, but it does"
+        " not exist; record it with scripts/check_clippy_panics.py --update on that system"
+    ]
+
+
+def test_every_baseline_a_ci_step_counts_panics_against_exists():
+    workflows = [path.read_text(encoding="utf-8") for path in sorted((ROOT / ".github/workflows").glob("*.yml"))]
+    names = checker.panic_baselines(workflows)
+    assert {"linux", "linux-occt", "windows", "macos", "macos-app", "android", "browser"} <= names
+    assert checker.missing_panic_baselines(names, ROOT) == []

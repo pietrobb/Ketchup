@@ -95,6 +95,7 @@ UNIX = {"Linux", "macOS", "Android"}
 TARGET_SYSTEMS = (("android", "Android"), ("wasm32", "Browser"), ("apple", "macOS"),
                   ("windows", "Windows"), ("linux", "Linux"))
 TARGET_FLAG = re.compile(r"(?:^|\s)--target[\s=]+(\S+)")
+BASELINE_FLAG = re.compile(r"(?:^|\s)--baseline[\s=]+(\S+)")
 CONDITION_WORDS = {"Linux": ("linux", "unix"), "macOS": ("macos", "unix"), "Windows": ("windows",),
                    "Android": ("android", "unix"), "Browser": ("wasm",)}
 TEST_FILE = re.compile(r"(?:^|_)tests?\.rs$")
@@ -305,6 +306,36 @@ def panics_counted(workflows, system, root=None):
     return crates
 
 
+def panic_baselines(workflows):
+    """The baseline each running scripts/check_clippy_panics.py step compares with: its
+    `--baseline`, else the system of its `--target`, else that of each system it runs on."""
+    names = set()
+    for workflow in workflows:
+        nightly = nightly_variables(workflow)
+        for job in jobs(workflow):
+            for step in pull_request_steps(job, nightly):
+                for arguments in PANICS.findall(CONTINUATION.sub(" ", folded(step))):
+                    named, target = BASELINE_FLAG.search(arguments), TARGET_FLAG.search(arguments)
+                    if named:
+                        names.add(named.group(1))
+                    elif target:
+                        names.add(target_system(target.group(1)).lower())
+                    else:
+                        names |= {system.lower() for system in step_systems(step, job_systems(job))}
+    return names
+
+
+def missing_panic_baselines(names, root):
+    """A step whose baseline file is missing allows nothing, so it fails on the first count
+    (review 2026-11-09 R1109-TST-302: the macOS app job named one never recorded)."""
+    return [
+        f"scripts/clippy_panics_baseline_{name}.txt: a CI step counts panics against it, but it does"
+        " not exist; record it with scripts/check_clippy_panics.py --update on that system"
+        for name in sorted(names)
+        if not (root / "scripts" / f"clippy_panics_baseline_{name}.txt").exists()
+    ]
+
+
 def crates_with_system_code(root):
     """Each member whose sources, outside a test file, have code for one system only, with
     those systems (`unix` for code every unix system compiles)."""
@@ -441,6 +472,7 @@ def main():
         crates_with_system_code(root),
         {system: panics_counted(workflows, system, root) for system in (*SYSTEMS.values(), "Android", "Browser")},
     )
+    problems += missing_panic_baselines(panic_baselines(workflows), root)
     for problem in problems:
         print(problem)
     if not problems:
