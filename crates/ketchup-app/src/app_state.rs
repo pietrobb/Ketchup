@@ -194,6 +194,9 @@ pub(crate) struct WindowSettings {
     /// Where the drawing files each saved document wrote are kept between
     /// windows; `None` keeps them in memory (review 2026-11-06 SEC-182).
     pub(crate) written_drawings: Option<crate::recent_files::user_settings::SettingsFile>,
+    /// The system's temporary folder, canonical: a connected AI writes into it
+    /// unasked, as into the document's folder (review 2026-11-08 §5.4).
+    pub(crate) temporary_folder: Option<PathBuf>,
     /// How the File menu writes BTLx, a setting of the machine, not of the
     /// document.
     pub(crate) btlx: BtlxSettings,
@@ -334,6 +337,9 @@ pub(crate) struct DrawingsState {
     /// not kept with the user's settings, by canonical path, with the SHA-256
     /// of each (review 2026-11-06 SEC-182).
     pub(crate) written: BTreeMap<PathBuf, String>,
+    /// The folders the user let the AI write into for the document while they
+    /// are not kept with the user's settings, canonical (review 2026-11-08 §5.4).
+    pub(crate) write_targets: Vec<PathBuf>,
     /// The worker forgetting the document's written drawings that are gone
     /// (review 2026-11-06 r23 SEC-202).
     pub(crate) forgetting: Option<std::thread::JoinHandle<()>>,

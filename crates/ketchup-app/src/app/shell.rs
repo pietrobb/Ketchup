@@ -155,6 +155,7 @@ impl KetchupApp {
                 dock_tab: None,
                 recent: recent_files::RecentFiles::default(),
                 written_drawings: None,
+                temporary_folder: std::fs::canonicalize(std::env::temp_dir()).ok(),
                 btlx: app_state::BtlxSettings::default(),
                 btlx_settings: None,
                 btlx_saving: app_state::BtlxSaving::default(),

@@ -114,6 +114,7 @@ mod validator_catalog;
 pub(crate) mod variant_window;
 pub(crate) mod window_edit;
 pub(crate) mod window_request;
+mod write_targets;
 /// Incoming frames: large enough for whole programs, bounded so a bogus
 /// length header cannot make the window allocate gigabytes.
 pub const MAX_REQUEST_FRAME_BYTES: usize = 8 * 1024 * 1024;
@@ -932,81 +933,6 @@ fn save_failed(app: &KetchupApp, save_failure: SaveFailure) -> &'static str {
     }
 }
 
-/// Where a client may save the document as (review 2026-11-08 SEC-240): a
-/// Ketchup document, `.ketchup`, never a hidden file, and in a folder of this
-/// document or of **Open Recent** unless the user agrees in the window. Before,
-/// any name in any folder was written, such as a startup folder or `~/.ssh`,
-/// and the next Ctrl+S wrote there again. A file already there is asked about
-/// as replacing it. The code refusing it, its reason recorded, or none; a path
-/// that is not local and absolute is `invalid_path`.
-fn save_as_refusal(app: &mut KetchupApp, path: &str) -> Option<&'static str> {
-    if !drawings::local_absolute_path(path) {
-        return Some("invalid_path");
-    }
-    let path = Path::new(path);
-    if path
-        .file_name()
-        .is_some_and(|name| name.to_string_lossy().starts_with('.'))
-    {
-        return Some(failure(
-            "invalid_path",
-            "save_as writes no hidden file: the name begins with a dot. Name the document like plan.ketchup.",
-            json!({"path": path}),
-        ));
-    }
-    if !path
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("ketchup"))
-    {
-        return Some(failure(
-            "invalid_path",
-            "save_as writes a Ketchup document, whose name ends in .ketchup; export other formats with file action=export.",
-            json!({"path": path}),
-        ));
-    }
-    let folder = path.parent();
-    let same = |known: &Path| {
-        Some(known) == folder
-            || cfg!(windows)
-                && folder.is_some_and(|folder| {
-                    folder.to_string_lossy().to_lowercase()
-                        == known.to_string_lossy().to_lowercase()
-                })
-    };
-    let known = app
-        .file
-        .path
-        .iter()
-        .chain(app.recent_files())
-        .filter_map(|file| file.parent())
-        .any(same);
-    if known || path.exists() {
-        return None;
-    }
-    let title = app.catalog.text("dialog-save-as-new-folder-title");
-    let risk = app.catalog.text("dialog-save-as-new-folder-risk");
-    app.side_effect_receipts.clear();
-    app.authorize_path_side_effect(
-        crate::HighRiskClass::CapabilityExpansion,
-        "save-document-in-new-folder",
-        &title,
-        &risk,
-        path,
-        path.to_string_lossy().as_bytes(),
-    )
-    .map_err(|rejection| {
-        failure(
-            "save_declined",
-            format!(
-                "{} The folder is neither this document's nor one in Open Recent; ask the user to save there, or save beside the document.",
-                rejection.reason_text()
-            ),
-            json!({"path": path}),
-        )
-    })
-    .err()
-}
-
 fn program_owned(app: &KetchupApp) -> bool {
     app.document.current_rule_program().is_some()
 }
@@ -1699,6 +1625,10 @@ impl KetchupApp {
             if let Request::Image(image) = &queued.request {
                 let image = image.clone();
                 bridge.request_image(self, context, image, queued);
+                continue;
+            }
+            if let Some(refused) = write_targets::refusal(self, &queued.request) {
+                LiveBridge::reply(self, queued.id, &queued.reply, Err(refused));
                 continue;
             }
             let Queued {
@@ -3203,6 +3133,9 @@ impl LiveBridge {
     ) -> Result<Value, &'static str> {
         take_error_details();
         Self::require_request_authority(cancelled)?;
+        if let Some(refused) = write_targets::refusal(app, &request) {
+            return Err(refused);
+        }
         match &request {
             Request::EditContext { expected, .. }
             | Request::Query { expected, .. }
@@ -3464,8 +3397,8 @@ impl LiveBridge {
             Request::SaveAs { expected, path } => {
                 Self::guard(app, &expected)?;
                 Self::available(app, ui_busy)?;
-                if let Some(refused) = save_as_refusal(app, &path) {
-                    return Err(refused);
+                if !drawings::local_absolute_path(&path) {
+                    return Err("invalid_path");
                 }
                 app.save_document_to_while(Path::new(&path), || !cancelled.load(Ordering::Acquire))
                     .map_err(|save_failure| save_failed(app, save_failure))?;
