@@ -498,7 +498,6 @@ pub(super) fn drawing_export_code(error: &UnderlayExportError) -> &'static str {
     use ketchup_application::program_isolation::{
         UnderlayReadError, UnderlayRefusal, UnderlayWorkerError,
     };
-    use ketchup_model::import::DxfEditRefusal;
     use ketchup_scheduler::protocol::DwgRefusal;
     match error {
         UnderlayExportError::NotFound(..) => "invalid_params",
@@ -509,33 +508,12 @@ pub(super) fn drawing_export_code(error: &UnderlayExportError) -> &'static str {
             refusal,
         ))) => match refusal {
             UnderlayRefusal::DwgWrite(..) => "dwg_conversion_failed",
+            UnderlayRefusal::NotWritten(refusal) => not_written_code(refusal),
             // The source is the drawing imported; it is what cannot be written back.
-            UnderlayRefusal::NotWritten(DxfEditRefusal::Malformed | DxfEditRefusal::TooLarge)
-            | UnderlayRefusal::Dwg(
+            UnderlayRefusal::Dwg(
                 DwgRefusal::DxfTooLarge { .. } | DwgRefusal::TooManyPairs { .. },
             ) => "drawing_source_unwritable",
-            // Every text too long is named at once (review 2026-11-07 r26 P3).
-            UnderlayRefusal::NotWritten(DxfEditRefusal::Several(refusals))
-                if refusals
-                    .iter()
-                    .all(|refusal| matches!(refusal, DxfEditRefusal::TextTooLong { .. })) =>
-            {
-                "drawing_text_too_long"
-            }
-            UnderlayRefusal::NotWritten(
-                DxfEditRefusal::NoHandle { .. }
-                | DxfEditRefusal::HandleMissing { .. }
-                | DxfEditRefusal::NotMappable { .. }
-                | DxfEditRefusal::ChangedInFile { .. }
-                | DxfEditRefusal::DeletedInFile { .. }
-                | DxfEditRefusal::DrawnHatchInDxf12 { .. }
-                | DxfEditRefusal::Several(..),
-            ) => "drawing_edit_not_writable",
-            UnderlayRefusal::NotWritten(
-                DxfEditRefusal::TextTooLong { .. } | DxfEditRefusal::DrawnTextTooLong { .. },
-            ) => "drawing_text_too_long",
-            UnderlayRefusal::NotWritten(..)
-            | UnderlayRefusal::Dwg(..)
+            UnderlayRefusal::Dwg(..)
             | UnderlayRefusal::UnitsRequired
             | UnderlayRefusal::Dxf { .. }
             | UnderlayRefusal::File { .. } => "drawing_source_unavailable",
@@ -551,6 +529,39 @@ pub(super) fn drawing_export_code(error: &UnderlayExportError) -> &'static str {
         ) => "drawings_target_exists",
         UnderlayExportError::Io(..) | UnderlayExportError::Publish(..) => "drawings_write_failed",
         UnderlayExportError::Cancelled => "request_cancelled",
+    }
+}
+
+/// The host code of an edited drawing not written. Several refusals have the code each
+/// has when it is the code of all; else the one of edits Discard repairs, whose hint
+/// tells of Discard, if any is (review 2026-11-09 CD-301: texts of the file and drawn
+/// in Kečup together were `drawing_edit_not_writable`, told to press a Discard not
+/// there).
+fn not_written_code(refusal: &ketchup_model::import::DxfEditRefusal) -> &'static str {
+    use ketchup_model::import::DxfEditRefusal;
+    match refusal {
+        DxfEditRefusal::Malformed | DxfEditRefusal::TooLarge => "drawing_source_unwritable",
+        DxfEditRefusal::NoHandle { .. }
+        | DxfEditRefusal::HandleMissing { .. }
+        | DxfEditRefusal::NotMappable { .. }
+        | DxfEditRefusal::ChangedInFile { .. }
+        | DxfEditRefusal::DeletedInFile { .. }
+        | DxfEditRefusal::DrawnHatchInDxf12 { .. } => "drawing_edit_not_writable",
+        DxfEditRefusal::TextTooLong { .. } | DxfEditRefusal::DrawnTextTooLong { .. } => {
+            "drawing_text_too_long"
+        }
+        DxfEditRefusal::Several(refusals) => {
+            let codes: Vec<_> = refusals.iter().map(not_written_code).collect();
+            match codes.first() {
+                Some(first) if codes.iter().all(|code| code == first) => first,
+                _ if codes.contains(&"drawing_edit_not_writable") => "drawing_edit_not_writable",
+                _ => codes
+                    .first()
+                    .copied()
+                    .unwrap_or("drawing_source_unavailable"),
+            }
+        }
+        _ => "drawing_source_unavailable",
     }
 }
 

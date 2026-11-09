@@ -34,3 +34,11 @@ it.
 | Finding | Status |
 |---|---|
 | R1109-REL-300: the 0.3.2 release on GitHub has wrong sums and notes | Fixed 2026-11-09 on the release itself, its files unchanged: `SHA256SUMS.txt` names only the four downloads with LF line ends (the first named `payload/package-manifest.json` and had CRLF), and `sha256sum -c SHA256SUMS.txt` over the four downloaded into an empty folder answers OK for each. The notes say Cancel stops only the meshing of the FEA review, not a running solve, and carry the known issue of woodWOP programs with LF line ends with its workarounds, as `CHANGELOG.md` does. Issue #29, fixed by f23b50bb, is closed |
+
+## Underlays (§4.3, branch `r37-p3docs1109`)
+
+| Finding | Status |
+|---|---|
+| R1109-UL-300: an ARC of 360 / 0 or 180 / −180 is dropped | Fixed, bb4abe28: an arc whose end is a whole number of turns from its start reads and draws as its circle, as `ezdxf`, HATCH edges and the writer take it |
+| R1109-UL-301: `InvalidShape` does not tell what an arc needs | Fixed, bb4abe28: the refusal says an arc needs an end that is not its start (an end whole turns from it draws a circle) and a fill a first ring with an area |
+| R1109-CD-301: texts too long of the file and drawn in Kečup together are `drawing_edit_not_writable` | Fixed: the code of several refusals is the one each has when they share it, else `drawing_edit_not_writable` only when one of them is an edit Discard repairs; a text of the file and one drawn in Kečup, also nested, are `drawing_text_too_long`, whose hint tells to shorten them, not to press a Discard that is not there |

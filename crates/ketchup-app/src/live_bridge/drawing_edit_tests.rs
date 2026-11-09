@@ -682,6 +682,54 @@ fn a_drawing_export_refusal_has_the_code_of_its_cause() {
             ))),
             "drawing_text_too_long",
         ),
+        // Review 2026-11-09 CD-301: a text of the file and one drawn in Kečup together
+        // were told to press a Discard that is not there.
+        (
+            refused(UnderlayRefusal::NotWritten(DxfEditRefusal::Several(vec![
+                DxfEditRefusal::TextTooLong {
+                    kind: "TEXT".into(),
+                    handle: 0xB1,
+                    code: 1,
+                    characters: 2800,
+                    written: ketchup_model::import::TextWritten::Escaped,
+                },
+                DxfEditRefusal::DrawnTextTooLong {
+                    starts: "Poznámka".into(),
+                    characters: 2600,
+                    written: None,
+                },
+            ]))),
+            "drawing_text_too_long",
+        ),
+        (
+            refused(UnderlayRefusal::NotWritten(DxfEditRefusal::Several(vec![
+                DxfEditRefusal::DrawnTextTooLong {
+                    starts: "Poznámka".into(),
+                    characters: 2600,
+                    written: None,
+                },
+                DxfEditRefusal::Several(vec![DxfEditRefusal::TextTooLong {
+                    kind: "MTEXT".into(),
+                    handle: 0xB2,
+                    code: 3,
+                    characters: 2800,
+                    written: ketchup_model::import::TextWritten::CodePage,
+                }]),
+            ]))),
+            "drawing_text_too_long",
+        ),
+        // An edit Discard repairs among them: the code whose hint tells of Discard.
+        (
+            refused(UnderlayRefusal::NotWritten(DxfEditRefusal::Several(vec![
+                DxfEditRefusal::DrawnTextTooLong {
+                    starts: "Poznámka".into(),
+                    characters: 2600,
+                    written: None,
+                },
+                DxfEditRefusal::NoHandle { object: 4 },
+            ]))),
+            "drawing_edit_not_writable",
+        ),
         (
             Error::Worker(UnderlayWorkerError::Unavailable(
                 WorkerUnavailable::NotInstalled,
