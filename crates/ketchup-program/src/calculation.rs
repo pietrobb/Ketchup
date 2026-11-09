@@ -9,7 +9,6 @@
 use crate::Report;
 use crate::loads::{LOAD_KINDS, Loads, MemberLoad};
 use crate::member_check::{BracingDemand, Check, MemberCheck};
-use std::fmt::Write as _;
 
 /// The language of the calculation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -233,16 +232,13 @@ ol.basis { font-size: 8.5pt; }";
 pub fn document(title: &str, report: &Report, language: Language) -> String {
     let l = language;
     let mut out = String::new();
-    write!(
-        out,
+    out.push_str(&format!(
         "<!DOCTYPE html>\n<html lang=\"{}\">\n<head>\n<meta charset=\"utf-8\">\n<title>{} — {}</title>\n<style>\n{STYLE}\n</style>\n</head>\n<body>\n",
         l.code(),
         l.says("Statický výpočet", "Statický výpočet"),
         escape(title)
-    )
-    .expect("a String takes every write");
-    write!(
-        out,
+    ));
+    out.push_str(&format!(
         "<h1>{}</h1>\n<p>{}: <b>{}</b><br>{}</p>\n",
         l.says("Statický výpočet", "Statický výpočet"),
         l.says("Program", "Program"),
@@ -251,14 +247,12 @@ pub fn document(title: &str, report: &Report, language: Language) -> String {
             "Príloha k dokumentácii pre stavebné povolenie. Vypočítaná kontrola, nie autorizovaný statický návrh: platí až po overení a podpise autorizovaným stavebným inžinierom.",
             "Příloha k dokumentaci pro stavební povolení. Vypočtená kontrola, nikoli autorizovaný statický návrh: platí až po ověření a podpisu autorizovaným inženýrem."
         )
-    )
-    .expect("a String takes every write");
+    ));
     signatures(&mut out, l);
     scope(&mut out, report, l);
     let design = &report.design;
     let summary = design.summary();
-    write!(
-        out,
+    out.push_str(&format!(
         "<h2>{}</h2>\n<table>\n<tr><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr>\n<tr><td class=\"n\">{}</td><td class=\"n\">{}</td><td class=\"n\">{}</td><td class=\"n\">{}</td></tr>\n</table>\n",
         l.says("Prehľad prvkov", "Přehled prvků"),
         l.says("Prvkov", "Prvků"),
@@ -269,56 +263,48 @@ pub fn document(title: &str, report: &Report, language: Language) -> String {
         summary.pass,
         summary.fail,
         summary.not_verified
-    )
-    .expect("a String takes every write");
+    ));
     if design.members.is_empty() {
-        writeln!(
-            out,
-            "<p>{}</p>",
+        out.push_str(&format!(
+            "<p>{}</p>\n",
             l.says(
                 "Program nemá žiadny nosný prvok s triedou pevnosti dreva (load_path a timber_strength).",
                 "Program nemá žádný nosný prvek s třídou pevnosti dřeva (load_path a timber_strength)."
             )
-        )
-    .expect("a String takes every write");
+        ));
     }
     for (index, member) in design.members.iter().enumerate() {
         let load = report.loads.members.iter().find(|m| m.part == member.part);
         member_section(&mut out, index + 1, member, load, l);
     }
     joints(&mut out, report, l);
-    write!(
-        out,
+    out.push_str(&format!(
         "<h2>{}</h2>\n<p class=\"note\">{}</p>\n<ol class=\"basis\">\n",
         l.says("Podklady výpočtu", "Podklady výpočtu"),
         l.says(
             "Znenie podkladov, ako ich uvádza kontrola (v angličtine):",
             "Znění podkladů, jak je uvádí kontrola (v angličtině):"
         )
-    )
-    .expect("a String takes every write");
+    ));
     for line in &design.basis {
-        writeln!(out, "<li>{}</li>", escape(line)).expect("a String takes every write");
+        out.push_str(&format!("<li>{}</li>\n", escape(line)));
     }
     out.push_str("</ol>\n</body>\n</html>\n");
     out
 }
 
 fn signatures(out: &mut String, l: Language) {
-    write!(
-        out,
+    out.push_str(&format!(
         "<table>\n<tr><th>{}</th><td></td><th>{}</th><td></td></tr>\n<tr><th>{}</th><td></td><th>{}</th><td></td></tr>\n</table>\n",
         l.says("Stavba", "Stavba"),
         l.says("Dátum", "Datum"),
         l.says("Vypracoval", "Vypracoval"),
         l.says("Overil a podpísal", "Ověřil a podepsal")
-    )
-    .expect("a String takes every write");
+    ));
 }
 
 fn scope(out: &mut String, report: &Report, l: Language) {
-    write!(
-        out,
+    out.push_str(&format!(
         "<h2>{}</h2>\n<ul>\n<li>{}</li>\n<li>{}</li>\n<li>{}</li>\n",
         l.says("Rozsah a predpoklady", "Rozsah a předpoklady"),
         l.says(
@@ -333,21 +319,18 @@ fn scope(out: &mut String, report: &Report, l: Language) {
             "Drevené prvky sú posúdené podľa EN 1995-1-1 s k_mod, k_def a γ_M výrobku ich triedy; súčinitele sú odporúčané hodnoty EN, nie hodnoty národnej prílohy.",
             "Dřevěné prvky jsou posouzeny podle EN 1995-1-1 s k_mod, k_def a γ_M výrobku jejich třídy; součinitele jsou doporučené hodnoty EN, nikoli hodnoty národní přílohy."
         )
-    )
-    .expect("a String takes every write");
+    ));
     if let Some(site) = report
         .design
         .basis
         .iter()
         .find_map(|line| line.strip_prefix("site: "))
     {
-        writeln!(
-            out,
-            "<li>{}: {}</li>",
+        out.push_str(&format!(
+            "<li>{}: {}</li>\n",
             l.says("Miesto stavby", "Místo stavby"),
             escape(site)
-        )
-        .expect("a String takes every write");
+        ));
     }
     out.push_str("</ul>\n");
 }
@@ -364,17 +347,14 @@ fn member_section(
     } else {
         l.says("nosník", "nosník")
     };
-    write!(
-        out,
+    out.push_str(&format!(
         "<section class=\"member\">\n<h3>{number_in_list}. {} ({role}) — <span class=\"{}\">{}</span></h3>\n<table>\n",
         escape(&member.part),
         member.status,
         status(member.status, l)
-    )
-    .expect("a String takes every write");
+    ));
     let row = |out: &mut String, name: &str, value: &str| {
-        writeln!(out, "<tr><th>{name}</th><td>{value}</td></tr>")
-            .expect("a String takes every write");
+        out.push_str(&format!("<tr><th>{name}</th><td>{value}</td></tr>\n"));
     };
     row(
         out,
@@ -436,22 +416,19 @@ fn member_section(
     }
     out.push_str("</table>\n");
     if !member.checks.is_empty() {
-        write!(
-            out,
+        out.push_str(&format!(
             "<table>\n<tr><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr>\n",
             l.says("Posudok", "Posudek"),
             l.says("Články a vzorce", "Články a vzorce"),
             l.says("Rozhodujúca kombinácia", "Rozhodující kombinace"),
             l.says("Miesto", "Místo"),
             l.says("Využitie", "Využití")
-        )
-        .expect("a String takes every write");
+        ));
         for check in &member.checks {
             let (name, clauses) = check_name(check.name, l);
             let governing = member.governing.as_deref() == Some(check.name);
-            writeln!(
-                out,
-                "<tr><td>{}{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"n{}\">{}</td></tr>",
+            out.push_str(&format!(
+                "<tr><td>{}{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"n{}\">{}</td></tr>\n",
                 escape(&name),
                 if governing {
                     l.says(" (rozhoduje)", " (rozhoduje)")
@@ -463,24 +440,21 @@ fn member_section(
                 escape(&place(check, l)),
                 if check.utilization > 1.0 { " fail" } else { "" },
                 number(check.utilization, 3)
-            )
-            .expect("a String takes every write");
+            ));
         }
         out.push_str("</table>\n");
     }
     held(out, load, &member.bracing, l);
     if !member.missing.is_empty() {
-        write!(
-            out,
+        out.push_str(&format!(
             "<p><b>{}</b></p>\n<ul class=\"note\">\n",
             l.says(
                 "Neoverené, chýba (znenie kontroly, v angličtine):",
                 "Neověřeno, chybí (znění kontroly, v angličtině):"
             )
-        )
-        .expect("a String takes every write");
+        ));
         for reason in &member.missing {
-            writeln!(out, "<li>{}</li>", escape(reason)).expect("a String takes every write");
+            out.push_str(&format!("<li>{}</li>\n", escape(reason)));
         }
         out.push_str("</ul>\n");
     }
@@ -498,25 +472,21 @@ fn held(out: &mut String, load: Option<&MemberLoad>, demands: &[BracingDemand], 
         }
     };
     let braces = load.map_or(&[][..], |load| load.braced_by.as_slice());
-    write!(
-        out,
+    out.push_str(&format!(
         "<p><b>{}</b> ",
         l.says(
             "Zaistené úseky (okraj držaný do strany):",
             "Zajištěné úseky (okraj držený do strany):"
         )
-    )
-    .expect("a String takes every write");
+    ));
     if braces.is_empty() {
-        writeln!(
-            out,
-            "{}</p>",
+        out.push_str(&format!(
+            "{}</p>\n",
             l.says(
                 "žiadna časť nedrží okraj prvku do strany; klopenie sa posudzuje medzi podperami.",
                 "žádná část nedrží okraj prvku do strany; klopení se posuzuje mezi podporami."
             )
-        )
-        .expect("a String takes every write");
+        ));
     } else {
         let stretches: Vec<String> = braces
             .iter()
@@ -534,20 +504,17 @@ fn held(out: &mut String, load: Option<&MemberLoad>, demands: &[BracingDemand], 
                 )
             })
             .collect();
-        writeln!(out, "{}</p>", stretches.join("; ")).expect("a String takes every write");
+        out.push_str(&format!("{}</p>\n", stretches.join("; ")));
     }
     if !demands.is_empty() {
-        write!(
-            out,
+        out.push_str(&format!(
             "<table>\n<tr><th>{}</th><th>{}</th><th>N_d (9.2.5.2(4))</th><th>F_d (9.35, 9.36)</th><th>C (9.34)</th></tr>\n",
             l.says("Okraj", "Okraj"),
             l.says("Drží ho", "Drží ho"),
-        )
-    .expect("a String takes every write");
+        ));
         for demand in demands {
-            writeln!(
-                out,
-                "<tr><td>{}</td><td>{}</td><td class=\"n\">{} kN</td><td class=\"n\">{} kN</td><td class=\"n\">{}</td></tr>",
+            out.push_str(&format!(
+                "<tr><td>{}</td><td>{}</td><td class=\"n\">{} kN</td><td class=\"n\">{} kN</td><td class=\"n\">{}</td></tr>\n",
                 edge(&demand.edge),
                 escape(&demand.by.join(", ")),
                 kilonewtons(demand.axial_n),
@@ -555,18 +522,15 @@ fn held(out: &mut String, load: Option<&MemberLoad>, demands: &[BracingDemand], 
                 demand
                     .stiffness_n_mm
                     .map_or_else(|| "—".to_owned(), |c| format!("{} N/mm", number(c, 1)))
-            )
-    .expect("a String takes every write");
+            ));
         }
-        writeln!(
-            out,
-            "</table>\n<p class=\"note\">{}</p>",
+        out.push_str(&format!(
+            "</table>\n<p class=\"note\">{}</p>\n",
             l.says(
                 "Výstuhy, ich ukotvenie a spojovacie prostriedky na tieto sily posúdené nie sú.",
                 "Výztuhy, jejich ukotvení a spojovací prostředky na tyto síly posouzeny nejsou."
             )
-        )
-        .expect("a String takes every write");
+        ));
     }
 }
 
@@ -574,8 +538,7 @@ fn joints(out: &mut String, report: &Report, l: Language) {
     if report.joints.is_empty() {
         return;
     }
-    write!(
-        out,
+    out.push_str(&format!(
         "<h2>{}</h2>\n<table>\n<tr><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th><th>{}</th></tr>\n",
         l.says("Spoje", "Spoje"),
         l.says("Spoj", "Spoj"),
@@ -584,12 +547,10 @@ fn joints(out: &mut String, report: &Report, l: Language) {
         l.says("Kombinácia", "Kombinace"),
         l.says("Využitie", "Využití"),
         l.says("Výsledok", "Výsledek")
-    )
-    .expect("a String takes every write");
+    ));
     for joint in &report.joints {
-        writeln!(
-            out,
-            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"n\">{}</td><td class=\"{}\">{}</td></tr>",
+        out.push_str(&format!(
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"n\">{}</td><td class=\"{}\">{}</td></tr>\n",
             escape(&joint.joint),
             escape(&joint.parts.join(", ")),
             joint
@@ -605,8 +566,7 @@ fn joints(out: &mut String, report: &Report, l: Language) {
                 .map_or_else(|| "—".to_owned(), |u| number(u, 3)),
             joint.status,
             status(joint.status, l)
-        )
-    .expect("a String takes every write");
+        ));
     }
     out.push_str("</table>\n");
 }
