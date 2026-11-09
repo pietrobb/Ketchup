@@ -37,7 +37,9 @@ LINTS = ("unwrap_used", "expect_used", "panic", "print_stderr")
 
 def clippy_command(packages: list[str]) -> list[str]:
     selected = [argument for package in packages for argument in ("-p", package)]
-    warnings = [argument for lint in LINTS for argument in ("-W", f"clippy::{lint}")]
+    # Forced, so an `#[allow(clippy::unwrap_used)]` does not hide what it allows (review
+    # 2026-11-09 R1109-TST-301); scripts/check_error_hygiene.py counts the attribute too.
+    warnings = [argument for lint in LINTS for argument in ("--force-warn", f"clippy::{lint}")]
     return ["cargo", "clippy", "--locked", *selected, "--lib", "--bins",
             "--message-format=json", "--", *warnings]
 

@@ -1,6 +1,11 @@
 import importlib.util
 import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
@@ -8,6 +13,11 @@ SPEC = importlib.util.spec_from_file_location(
 )
 checker = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(checker)
+HYGIENE_SPEC = importlib.util.spec_from_file_location(
+    "check_error_hygiene", ROOT / "scripts" / "check_error_hygiene.py"
+)
+hygiene = importlib.util.module_from_spec(HYGIENE_SPEC)
+HYGIENE_SPEC.loader.exec_module(hygiene)
 
 
 def package(root, name):
@@ -101,6 +111,63 @@ def test_the_ci_jobs_baselines_are_per_system():
         _, recorded = checker.read_baseline(ROOT, system)
         assert needed in recorded
     assert not (ROOT / "scripts" / "clippy_panics_baseline.txt").exists()
+
+
+PROBE = """\
+macro_rules! take {
+    ($x:expr) => {
+        $x.unwrap()
+    };
+}
+
+macro_rules! boom {
+    () => {
+        panic!("x")
+    };
+}
+
+pub fn plain(x: Option<u8>) -> u8 {
+    x.unwrap()
+}
+
+pub fn in_macro(x: Option<u8>) -> u8 {
+    take!(x)
+}
+
+pub fn boom_in_macro() {
+    boom!();
+}
+
+pub fn by_path(x: Vec<Option<u8>>) -> Vec<u8> {
+    x.into_iter().map(Option::unwrap).collect()
+}
+
+#[allow(clippy::unwrap_used)]
+pub fn allowed(x: Option<u8>) -> u8 {
+    x.unwrap()
+}
+"""
+
+
+@pytest.mark.skipif(shutil.which("cargo") is None, reason="needs cargo clippy")
+def test_real_clippy_and_the_text_check_count_every_form_once_between_them(tmp_path):
+    # Review 2026-11-09 R1109-TST-300: the forms clippy does not report were checked
+    # against made-up JSON, not clippy's output; a panic in a `macro_rules!` and
+    # `.map(Option::unwrap)` passed both checks. TST-301: `#[allow(clippy::unwrap_used)]`
+    # hid an unwrap from the count.
+    (tmp_path / "src").mkdir()
+    (tmp_path / "Cargo.toml").write_text(
+        '[package]\nname = "probe"\nversion = "0.1.0"\nedition = "2024"\n\n[workspace]\n',
+        encoding="utf-8")
+    (tmp_path / "src" / "lib.rs").write_text(PROBE, encoding="utf-8")
+    command = [part for part in checker.clippy_command(["probe"]) if part != "--locked"]
+    run = subprocess.run(command, cwd=tmp_path, stdout=subprocess.PIPE, text=True,
+                         encoding="utf-8", env={**os.environ, "CARGO_TARGET_DIR": str(tmp_path / "target")})
+    assert run.returncode == 0
+    # clippy names the plain unwrap and the allowed one, nothing in a macro or by path.
+    assert checker.counts_of(run.stdout.splitlines(), tmp_path) == {"src/lib.rs unwrap_used": 2}
+    text_counts = {form: count for form, count in hygiene.file_counts(PROBE).items() if count}
+    assert text_counts == {"macro_panic": 2, "unwrap_path": 1, "clippy_allow": 1}
 
 
 def test_the_packages_come_from_the_command_line():
