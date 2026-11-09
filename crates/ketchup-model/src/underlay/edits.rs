@@ -345,7 +345,8 @@ pub enum UnderlayObjectError {
     /// The underlay has no layer of this name.
     UnknownLayer(String),
     /// The shape at this index of those given cannot be drawn: a number not finite, a
-    /// radius or height not above zero, too few points or a text without letters.
+    /// radius or height not above zero, an arc ending where it starts, too few points, a
+    /// fill of no area or a text without letters.
     InvalidShape(usize),
     /// The map is not a move, turn, mirror or uniform scale above zero.
     InvalidMap,
@@ -377,7 +378,7 @@ impl std::fmt::Display for UnderlayObjectError {
             Self::UnknownLayer(layer) => write!(formatter, "the drawing has no layer {layer:?}"),
             Self::InvalidShape(index) => write!(
                 formatter,
-                "shape {index} cannot be drawn: it needs finite numbers, a radius or height above zero, two points or more (three when closed) and a text with letters"
+                "shape {index} cannot be drawn: it needs finite numbers, a radius or height above zero, an arc whose end is not its start (an end whole turns from it draws a circle), two points or more (three when closed), a fill whose first ring has an area, and a text with letters"
             ),
             Self::InvalidMap => formatter.write_str(
                 "the map must move, turn, mirror or scale uniformly by more than zero",
