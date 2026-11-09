@@ -121,7 +121,8 @@ impl GeneralFabricationProjection {
     /// it is right-handed, the frame of the woodWOP programs. A piece machined from
     /// below only is turned_over: its frame is turned a half turn about its first
     /// axis, as the woodWOP program lays it. Only rectangular_prism denotes a
-    /// rectangular blank.
+    /// rectangular blank. losses names, by part, what the job leaves unmade: the
+    /// pin holes in a part the shop does not make, joined to a made one.
     /// Original profiles and machining frames remain unchanged in operations.
     /// Setup A initially groups all machining; only a chosen postprocessor can validate
     /// that it fits one fixture. No toolpath is inferred.
@@ -132,7 +133,13 @@ impl GeneralFabricationProjection {
     ) -> Result<Value, GeneralFabricationError> {
         self.bom_export(snapshot)?;
         self.manufacturing_export(snapshot)?;
-        self.admit(snapshot, ShopFormat::ProductionJob)?;
+        let losses = self
+            .admit(snapshot, ShopFormat::ProductionJob)?
+            .into_iter()
+            .map(|loss| {
+                json!({"part": loss.part, "element": loss.element.to_string(), "reason": loss.reason})
+            })
+            .collect::<Vec<_>>();
         let mut parts = Vec::new();
         let mut paths = BTreeSet::new();
         let mut codes = BTreeSet::new();
@@ -269,11 +276,6 @@ impl GeneralFabricationProjection {
                 ExportBlock::NothingToWrite,
             ));
         }
-        if !pins.is_empty() {
-            return Err(GeneralFabricationError::ExportBlocked(
-                ExportBlock::UnmadePinHole,
-            ));
-        }
         if matched_operations.len() != self.manufacturing.operations.len() {
             return Err(GeneralFabricationError::ExportBlocked(
                 ExportBlock::ResultMismatch,
@@ -293,7 +295,7 @@ impl GeneralFabricationProjection {
             "document_id": snapshot.document_id().0,
             "source_revision": snapshot.revision_id(),
             "source_digest": snapshot.canonical_digest(),
-            "parts": parts, "outputs": outputs,
+            "parts": parts, "losses": losses, "outputs": outputs,
         }))
     }
 }
