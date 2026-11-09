@@ -7,7 +7,7 @@
 //! while the job holds a DWG's conversion. A STEP or IGES file is read the same way,
 //! by the exact worker's XDE inspection (review 2026-11-01 MCP-100).
 
-use super::interchange::ReadAlready;
+use super::interchange::{ImportTarget, ReadAlready};
 use super::program_check::ProgramCheckJob;
 use super::program_dry_run::QueuedReply;
 use super::*;
@@ -95,13 +95,19 @@ impl LiveBridge {
             Self::reply(app, id, &reply, Err(busy));
             return;
         }
-        let (path, format, unit) = match Self::import_target(app, &request, ui_busy) {
-            Ok((path, format, unit)) => (PathBuf::from(path), format, unit),
+        let ImportTarget {
+            path,
+            format,
+            unit,
+            code_page,
+        } = match Self::import_target(app, &request, ui_busy) {
+            Ok(target) => target,
             Err(code) => {
                 Self::reply(app, id, &reply, Err(code));
                 return;
             }
         };
+        let path = PathBuf::from(path);
         let as_underlay = matches!(
             request,
             Request::Import {
@@ -132,6 +138,7 @@ impl LiveBridge {
                         &path,
                         unit,
                         origin,
+                        code_page,
                         &worker_cancel,
                     )))
                 } else {
@@ -294,7 +301,7 @@ impl LiveBridge {
         cancelled: &AtomicBool,
         read: crate::app::underlay::ReadUnderlay,
     ) -> Result<Value, &'static str> {
-        let (path, ..) = Self::import_target(app, request, ui_busy)?;
+        let ImportTarget { path, .. } = Self::import_target(app, request, ui_busy)?;
         Self::require_request_authority(cancelled)?;
         if let Request::Import {
             revision_of: Some(of),

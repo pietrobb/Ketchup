@@ -62,6 +62,8 @@ const NEWER_THAN_OLDEST: &[(&str, u16)] = &[
     ("format108.bin", 108),
     // A fill drawn into a drawing.
     ("format109.bin", 109),
+    // A drawing read in a code page the user chose.
+    ("format110.bin", 110),
 ];
 
 fn resaved_schema(path: &Path) -> u16 {

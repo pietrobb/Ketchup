@@ -25,8 +25,9 @@ pub(crate) fn read_underlay(input: &UnderlayInput) -> UnderlayOutcome {
 }
 
 fn read(input: &UnderlayInput) -> Result<UnderlayOutcome, UnderlayRefusal> {
-    let options =
-        DxfImportOptions::new(input.unit_if_unitless).with_geo_origin(input.geo_origin_mm);
+    let options = DxfImportOptions::new(input.unit_if_unitless)
+        .with_geo_origin(input.geo_origin_mm)
+        .with_code_page(input.code_page);
     // A DXF file is read line by line; a DWG drawing is converted whole, and its DXF text
     // read line by line from memory.
     let (underlay, dwg) = if input.dwg {
@@ -106,7 +107,9 @@ fn write(input: &UnderlayWriteInput) -> Result<UnderlayWriteOutcome, UnderlayRef
         })?;
     let written = write_edited_dxf(
         &source,
-        DxfImportOptions::new(input.unit_if_unitless).with_geo_origin(input.geo_origin_mm),
+        DxfImportOptions::new(input.unit_if_unitless)
+            .with_geo_origin(input.geo_origin_mm)
+            .with_code_page(input.code_page),
         &lines,
         &input.edits,
     )

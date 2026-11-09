@@ -114,13 +114,15 @@ pub fn stretch(from: [[f64; 2]; 2], to: [[f64; 2]; 2]) -> Option<Affine> {
 }
 
 /// Whether an arc counterclockwise from `start_deg` to `end_deg` runs a whole number of
-/// turns, one at least: a circle with no start to see (review 2026-11-08 UL-241). Back
-/// from 360 to 0 it runs none.
+/// turns: a circle with no start to see (review 2026-11-08 UL-241). Its ends a whole turn
+/// back, `360` to `0` or `180` to `-180`, are a circle too, as `ezdxf` and a HATCH's edges
+/// take them and as a drawing is written back (review 2026-11-09 UL-300); only the same
+/// angle twice is no arc.
 #[must_use]
 pub fn whole_turn(start_deg: f64, end_deg: f64) -> bool {
     let span = end_deg - start_deg;
     let turns = (span / 360.0).round();
-    turns >= 1.0 && (span - turns * 360.0).abs() <= ROUNDING * 360.0
+    turns != 0.0 && (span - turns * 360.0).abs() <= ROUNDING * 360.0
 }
 
 impl DrawnShape {

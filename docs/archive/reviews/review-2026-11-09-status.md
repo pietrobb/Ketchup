@@ -35,6 +35,16 @@ it.
 |---|---|
 | R1109-REL-300: the 0.3.2 release on GitHub has wrong sums and notes | Fixed 2026-11-09 on the release itself, its files unchanged: `SHA256SUMS.txt` names only the four downloads with LF line ends (the first named `payload/package-manifest.json` and had CRLF), and `sha256sum -c SHA256SUMS.txt` over the four downloaded into an empty folder answers OK for each. The notes say Cancel stops only the meshing of the FEA review, not a running solve, and carry the known issue of woodWOP programs with LF line ends with its workarounds, as `CHANGELOG.md` does. Issue #29, fixed by f23b50bb, is closed |
 
+## Underlays (§4.3, branch `r37-p3docs1109`)
+
+| Finding | Status |
+|---|---|
+| R1109-UL-300: an ARC of 360 / 0 or 180 / −180 is dropped | Fixed, bb4abe28: an arc whose end is a whole number of turns from its start reads and draws as its circle, as `ezdxf`, HATCH edges and the writer take it |
+| R1109-UL-301: `InvalidShape` does not tell what an arc needs | Fixed, bb4abe28: the refusal says an arc needs an end that is not its start (an end whole turns from it draws a circle) and a fill a first ring with an area |
+| R1109-UL-303: "Dĺžka steny, Hĺbka základu" stays in 1252 with only a warning; no choice of code page on import | Fixed (saved as format 110, which 0.3.2 refuses as newer): an underlay whose code page is doubtful opens a window with its layer names and texts as read, kept or read again in a chosen code page; MCP `file action=import as_underlay=true code_page=…` (the 17 `$DWGCODEPAGE` names); the underlay keeps it for `revision_of` imports and writes it into `$DWGCODEPAGE` on DXF export |
+| R1109-CD-300: the hint tells the AI to have the user press Discard, but an export by the AI sets no Discard and MCP has none | Fixed: an export by the AI that refuses edits sets the window's Discard as one from the menu does, and `drawing action=discard_refused` (object ids from the refusal's `details.object_ids`, the default) discards them, keeping the other edits, as one Undo step; the hint names it |
+| R1109-CD-301: texts too long of the file and drawn in Kečup together are `drawing_edit_not_writable` | Fixed, eb0142ef: the code of several refusals is the one each has when they share it, else `drawing_edit_not_writable` only when one of them is an edit Discard repairs; a text of the file and one drawn in Kečup, also nested, are `drawing_text_too_long`, whose hint tells to shorten them, not to press a Discard that is not there |
+
 ## P3 statics (§4.3, branch `r35-p3statics1109`)
 
 | Finding | Status |

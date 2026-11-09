@@ -14,12 +14,28 @@ use ketchup_model::underlay::line_edit::LineEdit;
 use ketchup_model::underlay::object_query::{ObjectFilter, ObjectIndex};
 use ketchup_model::underlay::objects::apply;
 
+/// `drawing_discard_refused`: discards what was done in Kečup to `object_ids` of an
+/// underlay's drawing, or to those the last export refused, keeping the other edits, one
+/// Undo step (review 2026-11-09 CD-300: the hint asked for the window's Discard, which a
+/// client could not press, and an export by a client offered none).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiscardRefused {
+    #[serde(default)]
+    expected: Option<Stamp>,
+    #[serde(default)]
+    underlay_id: Option<u64>,
+    #[serde(default)]
+    object_ids: Option<Vec<u32>>,
+}
+
 impl Request {
     /// Whether it is one of the `drawing_*` methods [`LiveBridge::drawing_request`] answers.
     pub(super) const fn is_drawing(&self) -> bool {
         matches!(
             self,
             Self::DrawingRemove { .. }
+                | Self::DrawingDiscardRefused(_)
                 | Self::DrawingDraw { .. }
                 | Self::DrawingRooms(_)
                 | Self::DrawingMove { .. }
@@ -46,6 +62,39 @@ impl LiveBridge {
         match request {
             _ if !request.is_drawing() => Err("invalid_request"),
             Request::DrawingRemove { .. } => self.drawing_remove(app, request, ui_busy, cancelled),
+            // Discards the edits of object_ids, by default those the last export of the
+            // drawing refused, keeping the others (review 2026-11-09 CD-300: the hint asked
+            // for the window's Discard, which a client could not press).
+            Request::DrawingDiscardRefused(DiscardRefused {
+                expected,
+                underlay_id,
+                object_ids,
+            }) => {
+                Self::guard(app, expected)?;
+                Self::available(app, ui_busy)?;
+                let snapshot = app.document.current();
+                let id = super::underlay_regions::one_underlay(&snapshot, *underlay_id)?.id;
+                let object_ids = match (object_ids, &app.file.activity.underlay.refused_edit) {
+                    (Some(ids), _) => ids.clone(),
+                    (None, Some((refused, ids))) if *refused == id => ids.clone(),
+                    (None, _) => Vec::new(),
+                };
+                Self::require_request_authority(cancelled)?;
+                let changes = app
+                    .discard_underlay_edits(id, &object_ids, FindRegions::Here)
+                    .map_err(edit_failure)?;
+                self.query.invalidate();
+                let discarded = object_ids.iter().collect::<BTreeSet<_>>();
+                Ok(with_followed(
+                    json!({
+                        "discarded": discarded.len(),
+                        "object_ids": discarded,
+                        "underlay_id": id.0,
+                        "dirty": app.is_dirty(),
+                    }),
+                    &changes,
+                ))
+            }
             Request::DrawingDraw { .. } => self.drawing_draw(app, request, ui_busy, cancelled),
             Request::DrawingRooms(rooms) => self
                 .drawing_rooms(app, rooms, ui_busy, cancelled)
@@ -53,10 +102,10 @@ impl LiveBridge {
             Request::DrawingMove { .. } => self.drawing_move(app, request, ui_busy, cancelled),
             Request::DrawingExport { .. } => {
                 Self::drawing_export_target(app, request, ui_busy, cancelled).and_then(|target| {
-                    target
-                        .write_here(app)
-                        .map(|written| target.written(written))
-                        .map_err(|error| target.refuse(error))
+                    match target.write_here(app) {
+                        Ok(written) => Ok(target.written(app, written)),
+                        Err(error) => Err(target.refuse(app, error)),
+                    }
                 })
             }
             Request::DrawingExtrude { .. } => {
@@ -447,21 +496,29 @@ impl DrawingExportTarget {
             })
     }
 
-    /// Why the drawing was not written, recorded with its cause for the client.
-    pub(super) fn refuse(&self, error: UnderlayExportError) -> &'static str {
+    /// Why the drawing was not written, recorded with its cause for the client and said
+    /// in the window. The objects whose edits Discard, or `discard_refused`, lets go are
+    /// in the details (review 2026-11-09 CD-300).
+    pub(super) fn refuse(&self, app: &mut KetchupApp, error: UnderlayExportError) -> &'static str {
+        app.finish_client_underlay_export(self.id, Some(&error));
         let code = drawing_export_code(&error);
-        record_rejection(
-            &rejected(code).caused_by(error),
-            json!({"path": self.path, "underlay_id": self.id.0}),
-        );
+        let mut details = json!({"path": self.path, "underlay_id": self.id.0});
+        let objects = error.refused_edits();
+        if !objects.is_empty() {
+            details["object_ids"] = json!(objects);
+        }
+        record_rejection(&rejected(code).caused_by(error), details);
         code
     }
 
-    /// The client's answer for the drawing written.
+    /// The client's answer for the drawing written; the window offers no Discard of an
+    /// earlier export then.
     pub(super) fn written(
         &self,
+        app: &mut KetchupApp,
         written: ketchup_application::program_isolation::UnderlayWritten,
     ) -> Value {
+        app.finish_client_underlay_export(self.id, None);
         let mut answer = json!({
             "path": self.path,
             "bytes": written.bytes,
@@ -498,7 +555,6 @@ pub(super) fn drawing_export_code(error: &UnderlayExportError) -> &'static str {
     use ketchup_application::program_isolation::{
         UnderlayReadError, UnderlayRefusal, UnderlayWorkerError,
     };
-    use ketchup_model::import::DxfEditRefusal;
     use ketchup_scheduler::protocol::DwgRefusal;
     match error {
         UnderlayExportError::NotFound(..) => "invalid_params",
@@ -509,33 +565,12 @@ pub(super) fn drawing_export_code(error: &UnderlayExportError) -> &'static str {
             refusal,
         ))) => match refusal {
             UnderlayRefusal::DwgWrite(..) => "dwg_conversion_failed",
+            UnderlayRefusal::NotWritten(refusal) => not_written_code(refusal),
             // The source is the drawing imported; it is what cannot be written back.
-            UnderlayRefusal::NotWritten(DxfEditRefusal::Malformed | DxfEditRefusal::TooLarge)
-            | UnderlayRefusal::Dwg(
+            UnderlayRefusal::Dwg(
                 DwgRefusal::DxfTooLarge { .. } | DwgRefusal::TooManyPairs { .. },
             ) => "drawing_source_unwritable",
-            // Every text too long is named at once (review 2026-11-07 r26 P3).
-            UnderlayRefusal::NotWritten(DxfEditRefusal::Several(refusals))
-                if refusals
-                    .iter()
-                    .all(|refusal| matches!(refusal, DxfEditRefusal::TextTooLong { .. })) =>
-            {
-                "drawing_text_too_long"
-            }
-            UnderlayRefusal::NotWritten(
-                DxfEditRefusal::NoHandle { .. }
-                | DxfEditRefusal::HandleMissing { .. }
-                | DxfEditRefusal::NotMappable { .. }
-                | DxfEditRefusal::ChangedInFile { .. }
-                | DxfEditRefusal::DeletedInFile { .. }
-                | DxfEditRefusal::DrawnHatchInDxf12 { .. }
-                | DxfEditRefusal::Several(..),
-            ) => "drawing_edit_not_writable",
-            UnderlayRefusal::NotWritten(
-                DxfEditRefusal::TextTooLong { .. } | DxfEditRefusal::DrawnTextTooLong { .. },
-            ) => "drawing_text_too_long",
-            UnderlayRefusal::NotWritten(..)
-            | UnderlayRefusal::Dwg(..)
+            UnderlayRefusal::Dwg(..)
             | UnderlayRefusal::UnitsRequired
             | UnderlayRefusal::Dxf { .. }
             | UnderlayRefusal::File { .. } => "drawing_source_unavailable",
@@ -551,6 +586,39 @@ pub(super) fn drawing_export_code(error: &UnderlayExportError) -> &'static str {
         ) => "drawings_target_exists",
         UnderlayExportError::Io(..) | UnderlayExportError::Publish(..) => "drawings_write_failed",
         UnderlayExportError::Cancelled => "request_cancelled",
+    }
+}
+
+/// The host code of an edited drawing not written. Several refusals have the code each
+/// has when it is the code of all; else the one of edits Discard repairs, whose hint
+/// tells of Discard, if any is (review 2026-11-09 CD-301: texts of the file and drawn
+/// in Kečup together were `drawing_edit_not_writable`, told to press a Discard not
+/// there).
+fn not_written_code(refusal: &ketchup_model::import::DxfEditRefusal) -> &'static str {
+    use ketchup_model::import::DxfEditRefusal;
+    match refusal {
+        DxfEditRefusal::Malformed | DxfEditRefusal::TooLarge => "drawing_source_unwritable",
+        DxfEditRefusal::NoHandle { .. }
+        | DxfEditRefusal::HandleMissing { .. }
+        | DxfEditRefusal::NotMappable { .. }
+        | DxfEditRefusal::ChangedInFile { .. }
+        | DxfEditRefusal::DeletedInFile { .. }
+        | DxfEditRefusal::DrawnHatchInDxf12 { .. } => "drawing_edit_not_writable",
+        DxfEditRefusal::TextTooLong { .. } | DxfEditRefusal::DrawnTextTooLong { .. } => {
+            "drawing_text_too_long"
+        }
+        DxfEditRefusal::Several(refusals) => {
+            let codes: Vec<_> = refusals.iter().map(not_written_code).collect();
+            match codes.first() {
+                Some(first) if codes.iter().all(|code| code == first) => first,
+                _ if codes.contains(&"drawing_edit_not_writable") => "drawing_edit_not_writable",
+                _ => codes
+                    .first()
+                    .copied()
+                    .unwrap_or("drawing_source_unavailable"),
+            }
+        }
+        _ => "drawing_source_unavailable",
     }
 }
 

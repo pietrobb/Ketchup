@@ -180,6 +180,7 @@ fn document() -> (DocumentStore, UnderlayId) {
         &[],
         [7; 32],
         [0.0, 0.0],
+        None,
     )
     .unwrap();
     document.apply_batch(&batch).unwrap();
@@ -567,6 +568,7 @@ fn a_removal_is_one_undo_step_that_names_new_lines() {
         &[],
         [7; 32],
         [0.0, 0.0],
+        None,
     )
     .unwrap();
     document.apply_batch(&batch).unwrap();
@@ -1043,6 +1045,7 @@ fn trim_and_extend_stop_only_at_shown_lines_of_the_drawing() {
         &read.hidden_layers,
         [7; 32],
         [0.0, 0.0],
+        None,
     )
     .unwrap();
     document.apply_batch(&batch).unwrap();

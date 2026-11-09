@@ -21,6 +21,8 @@ fn dxf(insunits: Option<i16>, entities: &str) -> Vec<u8> {
 /// Review 2026-11-03 CD-140 / 2026-11-08 UL-241: an ARC of a whole turn, as Kečup's own
 /// writer and others write a circle, was refused as of no length, and a drawing of it
 /// alone with it. It reads as the CIRCLE it is; an arc of no span is still refused.
+/// Review 2026-11-09 UL-300: so is one back by whole turns, `360 / 0` or `180 / -180`, which
+/// `ezdxf` and Kečup's own HATCH edges take for a circle; only the same number twice is none.
 #[test]
 fn an_arc_of_a_whole_turn_reads_as_its_circle() {
     let options = DxfImportOptions::new(None);
@@ -29,13 +31,20 @@ fn an_arc_of_a_whole_turn_reads_as_its_circle() {
         options,
     )
     .unwrap();
-    for (start, end) in [("0", "360"), ("30", "390"), ("0", "720"), ("-90", "270")] {
+    for (start, end) in [
+        ("0", "360"),
+        ("30", "390"),
+        ("0", "720"),
+        ("-90", "270"),
+        ("360", "0"),
+        ("180", "-180"),
+    ] {
         let arc = format!("0\nARC\n8\nholes\n10\n30\n20\n40\n40\n5\n50\n{start}\n51\n{end}\n");
         let parsed = inspect_dxf(&dxf(Some(4), &arc), options)
             .unwrap_or_else(|error| panic!("{start} / {end}: {error}"));
         assert_eq!(parsed.profiles(), circle.profiles(), "{start} / {end}");
     }
-    for (start, end) in [("0", "0"), ("30", "30"), ("360", "0")] {
+    for (start, end) in [("0", "0"), ("30", "30"), ("360", "360")] {
         let arc = format!("0\nARC\n8\nholes\n10\n30\n20\n40\n40\n5\n50\n{start}\n51\n{end}\n");
         assert_eq!(
             inspect_dxf(&dxf(Some(4), &arc), options),
