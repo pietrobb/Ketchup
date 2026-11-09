@@ -220,11 +220,14 @@ pub struct Diaphragm {
     pub anchored_to: Vec<String>,
 }
 
-/// A declared brace or diaphragm that holds nothing, and why.
+/// A declared brace or diaphragm that holds nothing, why, and what to do about
+/// that reason (review 2026-11-09 PG-310: one hint for every reason).
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct IgnoredBracing {
     pub parts: Vec<String>,
     pub reason: String,
+    #[serde(default)]
+    pub hint: String,
 }
 
 /// A joint of `parts` whose `kind` the catalogue does not know (review
@@ -309,10 +312,9 @@ impl LoadReport {
                 severity: Severity::Warning,
                 kind: DECLARED_BRACING_IGNORED,
                 parts: ignored.parts.clone(),
-                message: format!("{}; it holds nothing.", ignored.reason),
+                message: format!("{}.", ignored.reason),
                 where_mm: None,
-                hint: "Fasten the brace to the member and to a grounded part with joint(), or anchor the diaphragm to a grounded part a sheet is fastened to."
-                    .to_owned(),
+                hint: ignored.hint.clone(),
                 source_lines: Vec::new(),
             }))
             .chain(self.edge_on.iter().map(|(part, loads)| Issue {
@@ -1724,15 +1726,24 @@ fn declared_bracing<'a>(
                 .collect()
         };
         let mut reason = if let Some(name) = unknown_sheets.iter().chain(&unknown_anchors).next() {
-            Some(format!("diaphragm(): {name} names no part or tag"))
+            Some((
+                format!("diaphragm(): {name} names no part or tag; it holds nothing"),
+                format!("Name in diaphragm() a part or a tag of the model instead of {name}."),
+            ))
         } else {
             anchors
                 .iter()
                 .find(|anchor| !is_grounded(**anchor))
                 .map(|anchor| {
-                    format!(
-                        "diaphragm(): its anchor {} is not declared grounded",
-                        named(anchor)
+                    (
+                        format!(
+                            "diaphragm(): its anchor {} is not declared grounded; it holds nothing",
+                            named(anchor)
+                        ),
+                        format!(
+                            "Make {} with grounded = True, or anchor the diaphragm to a part that is.",
+                            named(anchor)
+                        ),
                     )
                 })
         };
@@ -1746,9 +1757,15 @@ fn declared_bracing<'a>(
                     .filter(|sheet| !tied_at(faces, *sheet, anchor).is_empty())
                     .collect();
                 if held.is_empty() {
-                    reason = Some(format!(
-                        "diaphragm(): its anchor {} is fastened to none of its sheets where they touch by a joint() that fastens",
-                        named(&anchor)
+                    reason = Some((
+                        format!(
+                            "diaphragm(): its anchor {} is fastened to none of its sheets where they touch by a joint() that fastens; it holds nothing",
+                            named(&anchor)
+                        ),
+                        format!(
+                            "Fasten a sheet to {} with joint() of a kind that fastens, its fasteners where they touch.",
+                            named(&anchor)
+                        ),
                     ));
                     break;
                 }
@@ -1757,10 +1774,11 @@ fn declared_bracing<'a>(
                 }
             }
         }
-        if let Some(reason) = reason {
+        if let Some((reason, hint)) = reason {
             ignored.push(IgnoredBracing {
                 parts: whole(),
                 reason,
+                hint,
             });
             continue;
         }
@@ -1787,7 +1805,11 @@ fn declared_bracing<'a>(
                 None => ignored.push(IgnoredBracing {
                     parts: vec![parts[sheet].name.clone()],
                     reason: format!(
-                        "diaphragm(): its sheet {} reaches none of its anchors through sheets fastened to them or touching each other",
+                        "diaphragm(): its sheet {} reaches none of its anchors through sheets fastened to them or touching each other; it holds nothing",
+                        parts[sheet].name
+                    ),
+                    hint: format!(
+                        "Lay {} against a sheet of the diaphragm that reaches an anchor, or fasten it to an anchor with joint().",
                         parts[sheet].name
                     ),
                 }),
@@ -1826,16 +1848,18 @@ fn declared_bracing<'a>(
         let (members, unknown_members) = named_parts(model, &declared.members);
         let (bys, unknown_bys) = named_parts(model, &declared.by);
         let declared_top = declared.edge == "top";
-        let mut ignore = |names: Vec<String>, reason: String| {
+        let mut ignore = |names: Vec<String>, reason: String, hint: String| {
             ignored.push(IgnoredBracing {
                 parts: names,
                 reason: format!("brace(): {reason}"),
+                hint,
             });
         };
         for name in unknown_members.iter().chain(&unknown_bys) {
             ignore(
                 vec![(*name).to_owned()],
-                format!("{name} names no part or tag"),
+                format!("{name} names no part or tag; it holds nothing"),
+                format!("Name in brace() a part or a tag of the model instead of {name}."),
             );
         }
         for &by in &bys {
@@ -1853,13 +1877,20 @@ fn declared_bracing<'a>(
                 let names = vec![parts[by].name.clone(), parts[held].name.clone()];
                 let (brace, target) = (&parts[by].name, &parts[held].name);
                 if !member[held] {
-                    ignore(names, format!("{target} is not a load_path() member"));
+                    ignore(
+                        names,
+                        format!("{target} is not a load_path() member; it holds nothing"),
+                        format!("Take {target} into load_path(), or leave it out of brace()."),
+                    );
                     continue;
                 }
                 if !fastened(by, held) {
                     ignore(
                         names,
-                        format!("{brace} is not fastened to {target} by a joint() that fastens"),
+                        format!(
+                            "{brace} is not fastened to {target} by a joint() that fastens; it holds nothing"
+                        ),
+                        format!("Join {brace} to {target} with joint() of a kind that fastens."),
                     );
                     continue;
                 }
@@ -1905,7 +1936,12 @@ fn declared_bracing<'a>(
                 if !touched {
                     ignore(
                         names,
-                        format!("{brace} touches {target} nowhere it is fastened"),
+                        format!(
+                            "{brace} touches {target} nowhere it is fastened; it holds nothing"
+                        ),
+                        format!(
+                            "Give the joint of {brace} and {target} its fasteners=[...] where they touch."
+                        ),
                     );
                     continue;
                 }
@@ -1913,23 +1949,38 @@ fn declared_bracing<'a>(
                     ignore(
                         names.clone(),
                         format!(
-                            "{brace} touches {target} on its {} edge, not the {} it declares; the edge the geometry reads holds",
+                            "{brace} touches {target} on its {} edge, not the {} it declares; the declaration holds nothing there, the edge the geometry reads holds",
+                            edge_name(!declared_top),
+                            declared.edge
+                        ),
+                        format!(
+                            "Declare edge=\"{}\" where {brace} lies, or brace the {} edge of {target} with a part touching it.",
                             edge_name(!declared_top),
                             declared.edge
                         ),
                     );
                 }
                 if anchored.is_empty() && !contradicted {
-                    let reason = if ties.is_empty() {
-                        format!(
-                            "{brace} is not anchored: it is not declared grounded, fastened to a grounded part or a sheet of an anchored diaphragm()"
+                    let (reason, hint) = if ties.is_empty() {
+                        (
+                            format!(
+                                "{brace} is not anchored: it is not declared grounded, fastened to a grounded part or a sheet of an anchored diaphragm(); it holds nothing"
+                            ),
+                            format!(
+                                "Fasten {brace} with joint() to a grounded part or a sheet of an anchored diaphragm(), or make it grounded = True."
+                            ),
                         )
                     } else {
-                        format!(
-                            "{brace} is not anchored: the grounded parts it is fastened to hold it nowhere they touch, or in line with {target} or within its width, where it sways with {target}"
+                        (
+                            format!(
+                                "{brace} is not anchored: the grounded parts it is fastened to hold it nowhere they touch, or in line with {target} or within its width, where it sways with {target}; it holds nothing"
+                            ),
+                            format!(
+                                "Fasten {brace} where it touches a grounded part beside {target}, across {target} and beyond its side."
+                            ),
                         )
                     };
-                    ignore(names, reason);
+                    ignore(names, reason, hint);
                     continue;
                 }
                 for (anchor, point) in anchored {

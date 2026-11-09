@@ -34,3 +34,12 @@ it.
 | Finding | Status |
 |---|---|
 | R1109-REL-300: the 0.3.2 release on GitHub has wrong sums and notes | Fixed 2026-11-09 on the release itself, its files unchanged: `SHA256SUMS.txt` names only the four downloads with LF line ends (the first named `payload/package-manifest.json` and had CRLF), and `sha256sum -c SHA256SUMS.txt` over the four downloaded into an empty folder answers OK for each. The notes say Cancel stops only the meshing of the FEA review, not a running solve, and carry the known issue of woodWOP programs with LF line ends with its workarounds, as `CHANGELOG.md` does. Issue #29, fixed by f23b50bb, is closed |
+
+## P3 statics (§4.3, branch `r35-p3statics1109`)
+
+| Finding | Status |
+|---|---|
+| R1109-PG-308: the tiny house returns 1 at 30° and 35°, the status says it passes | Fixed, a65b5430: the house is right to fail there, the north roof over the default 1000 mm knee wall comes down over the landing at the top of the stair. The `knee_wall` doc names 1300 mm at 30° and 1100 mm at 35°, which free the stair (test), and the R1108-PG-243 status says every member passes, not the program |
+| R1109-PG-309: the joint catalogue reads a kind by its first word | Fixed, a65b5430: a kind is read as catalogue entries, the longest first, and qualifiers of size, product or side; any other word leaves it unknown. "slide in", "angle cut" and "plate bearing" are unknown, "loose tenon" and "contact adhesive" fasten |
+| R1109-PG-310: one hint for every reason, `dedup` on an unsorted list, repeated `missing` lines | Fixed, a65b5430: each reason a declaration holds nothing carries its own hint (the edge to declare, the name to fix, the joint to add); a member's reasons and its braces without a strength class are each listed once, in the order found |
+| R1109-PG-245, the rest: `Snow_SK` has no suggestion and a mistyped `--set` keeps the exit code | Fixed, a65b5430: the suggestion ignores case, and `check` with a `--set` the program has no parameter of ends with 2, the program not evaluated as asked |
