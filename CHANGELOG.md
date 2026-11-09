@@ -5,6 +5,10 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 
 ## Unreleased
 
+- When an AI asks to take over a window another AI is connected to, the window names both, the one asking and the one connected; before, it named only the connected one.
+- A connected AI's `take_over` of another project's drawing set asks with every file it replaces listed, the sheets and their list; before, the question named only the list.
+- On Linux a path on a share is no longer taken as local because a local disk is mounted at a name that differs from the share's only in case or Unicode form (`/mnt/NAS` and `/mnt/nas`), nor a path in an overlay whose layer is a link onto a share or is named relative. A connected AI's file there is refused as on any share.
+- On Windows, a project on a drive that gives no 128-bit file id (FAT, a network share) keeps its written drawings by the file's index, so after a rename it still knows them as its own; before, such a file had no identity at all.
 - A plan of the project drawings over a finely meshed floor or slab is drawn in a fraction of the time: where one level lies over another is cut only from the pieces it overlaps, and a piece wholly on one side of a cut is kept whole. Cancel stops this work too, as it stops the rest of the drawing.
 - **File > Manufacturing > Send to workshop (ZIP)** writes one package for the workshop: the parts list, the part drawings, BTLx, a woodWOP program and a barcode label per piece, and the CNC drawings of the flat parts, each file as its own export writes it, with SHA-256 sums the workshop checks the package against. An output that cannot be made is named in `not_made.txt` with why, and the other files are still packed; a model of which nothing can be made is refused. A connected AI writes it as export format `workshop_package`.
 - The HOMAG production package programs every part the machine can take; each part it cannot take is named with why in `not_programmed.txt`, instead of one such part refusing the whole package. The strict package is unchanged.

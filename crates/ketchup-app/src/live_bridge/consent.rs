@@ -79,6 +79,8 @@ pub(crate) struct PendingConsent {
     /// Set once the requester stopped waiting. The window holds the lock from
     /// the check to the grant, so it never acts on a request nobody waits for.
     abandoned: Arc<Mutex<bool>>,
+    /// The name the asking AI gives itself, as the window shows it.
+    client: Option<String>,
 }
 
 enum ConsentDecision {
@@ -109,6 +111,10 @@ struct AttachRequest {
     /// which itself never crosses the socket.
     #[serde(default)]
     proof: String,
+    /// The name the AI gives itself (review 2026-11-09 MCP-305), shown when it
+    /// asks to take over from another; unverified, like `hello`'s.
+    #[serde(default)]
+    client: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -228,26 +234,33 @@ impl KetchupApp {
     /// another client asks to attach (review 2026-11-08 MCP-240): before, any
     /// client of the same user with the registry's bootstrap took it over
     /// silently. A window no AI holds is not asked about.
-    fn takeover_declined(&mut self) -> bool {
+    fn takeover_declined(&mut self, asking: Option<&str>) -> bool {
         if !self.live.consent_attached && !self.live.launch_attached {
             return false;
         }
-        let connected = self
-            .live
-            .client_name
-            .clone()
-            .unwrap_or_else(|| self.catalog.text("live-takeover-unnamed"));
         let title = self.catalog.text("live-takeover-title");
-        let description = self.catalog.format(
-            "live-takeover-description",
-            &std::collections::BTreeMap::from([("client", connected)]),
-        );
+        let description = self.takeover_description(asking);
         self.dialogs
             .confirm_high_risk(crate::dialogs::HighRiskConfirmationRequest::new(
                 &title,
                 [description],
             ))
             .is_none()
+    }
+
+    /// The take-over question, naming the AI that asks and the one connected
+    /// (review 2026-11-09 MCP-305: only the connected one was named).
+    fn takeover_description(&self, asking: Option<&str>) -> String {
+        let named = |name: Option<&str>| {
+            name.map_or_else(|| self.catalog.text("live-takeover-unnamed"), str::to_owned)
+        };
+        self.catalog.format(
+            "live-takeover-description",
+            &std::collections::BTreeMap::from([
+                ("asking", named(asking)),
+                ("client", named(self.live.client_name.as_deref())),
+            ]),
+        )
     }
 
     fn answer_live_consent(&mut self, context: &egui::Context, request: PendingConsent) {
@@ -259,7 +272,7 @@ impl KetchupApp {
         {
             return;
         }
-        if self.takeover_declined() {
+        if self.takeover_declined(request.client.as_deref()) {
             request.decision.deliver(ConsentDecision::Declined);
             return;
         }
@@ -679,6 +692,7 @@ fn serve(
         let pending = PendingConsent {
             decision,
             abandoned: Arc::clone(&abandoned),
+            client: request.client.as_deref().and_then(shown_client_name),
         };
         // Only a nonce the window was handed is remembered: a busy answer asks
         // nobody, so a requester answered busy again and again no longer grows
@@ -1289,6 +1303,7 @@ mod tests {
         let pending = PendingConsent {
             decision,
             abandoned: Arc::new(Mutex::new(false)),
+            client: None,
         };
         app.allow_live_consent_with(&context, pending, |_| {
             Err(io::Error::new(
@@ -1324,6 +1339,7 @@ mod tests {
             let pending = PendingConsent {
                 decision,
                 abandoned: Arc::new(Mutex::new(false)),
+                client: None,
             };
             app.answer_live_consent(&context, pending);
             receiver.try_recv().unwrap()
@@ -1437,6 +1453,46 @@ mod tests {
             (still.address, still.token),
             (current.address, current.token),
             "the current client must keep its connection and token"
+        );
+    }
+
+    /// Review 2026-11-09 MCP-305: the take-over dialog named only the AI
+    /// connected now, so the user could not tell which one was asking.
+    #[test]
+    fn the_take_over_dialog_names_the_asking_ai_and_the_connected_one() {
+        let directory = private_tempdir();
+        let context = egui::Context::default();
+        let mut app = KetchupApp::new();
+        app.enable_live_consent_broker_in(&context, directory.path())
+            .unwrap();
+        app.live.client_name = Some("Claude Code".to_owned());
+        let broker = app.live.consent_broker.as_ref().unwrap();
+        let registry: serde_json::Value = serde_json::from_slice(
+            &ketchup_mcp::local_auth::read_private(&broker.registry_path).unwrap(),
+        )
+        .unwrap();
+        let mut asking = TcpStream::connect(broker.address).unwrap();
+        let mut line = attach_line(&registry, "8".repeat(64));
+        line["client"] = serde_json::json!(" Codex\u{1b}");
+        writeln!(asking, "{line}").unwrap();
+        let request = broker
+            .requests
+            .recv_timeout(Duration::from_secs(5))
+            .expect("attach was not received");
+        assert_eq!(request.client.as_deref(), Some("Codex"));
+        let description = app.takeover_description(request.client.as_deref());
+        assert!(
+            description.contains("Asking to take over this window: Codex."),
+            "{description}"
+        );
+        assert!(
+            description.contains("Connected now: Claude Code."),
+            "{description}"
+        );
+        let unnamed = app.takeover_description(None);
+        assert!(
+            unnamed.contains("window: an AI that did not give its name."),
+            "{unnamed}"
         );
     }
 
