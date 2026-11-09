@@ -216,6 +216,7 @@ fn response_wait(request: &Request) -> Duration {
         | Request::UseProgramVariant { .. }
         | Request::ProgramFromUnderlay { .. }
         | Request::DrawingExtrude { .. }
+        | Request::DrawingRooms(_)
         | Request::DrawingView { .. }
         | Request::DrawingSolidFromViews { .. }
         | Request::SaveProgramVariant { .. }
@@ -292,6 +293,7 @@ fn has_effect(request: &Request) -> bool {
         | Request::FitUnderlay { .. }
         | Request::DrawingRemove { .. }
         | Request::DrawingDraw { .. }
+        | Request::DrawingRooms(_)
         | Request::DrawingMove { .. }
         | Request::DrawingTrim { .. }
         | Request::DrawingExtend { .. }

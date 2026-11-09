@@ -60,6 +60,8 @@ const NEWER_THAN_OLDEST: &[(&str, u16)] = &[
     ("format107.bin", 107),
     // A logical group.
     ("format108.bin", 108),
+    // A fill drawn into a drawing.
+    ("format109.bin", 109),
 ];
 
 fn resaved_schema(path: &Path) -> u16 {

@@ -98,6 +98,7 @@ mod program_validation_summary;
 mod program_variant_export;
 mod program_variants;
 mod project_drawings_job;
+mod room_areas;
 mod running_programs;
 #[cfg(test)]
 mod tests;
@@ -450,6 +451,8 @@ pub enum Request {
         layer: String,
         shapes: Vec<ketchup_model::underlay::drawn::DrawnShape>,
     },
+    /// Writes the areas of rooms back into an underlay's drawing ([`room_areas`]).
+    DrawingRooms(room_areas::RoomsRequest),
     /// Moves top-level objects of an underlay's drawing, or adds moved copies of them with
     /// `copy`, one Undo step: scaled by `scale` and turned by `rotate_deg` about
     /// `about_mm`, mirrored across the line through `mirror_line_mm`, then moved by
@@ -3220,7 +3223,7 @@ impl LiveBridge {
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
                 "limits":{"request_frame_bytes":MAX_REQUEST_FRAME_BYTES,"response_frame_bytes":MAX_RESPONSE_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":limits::BATCH_JOBS},
-                "methods":["status","summary","operations","list_validators","edit_context","query","detail","mass","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","run_plugin","program","program_context","program_piece","patch_program","set_program_params","save_program_variant","use_program_variant","delete_program_variant","export_program_variants","program_report","validate_program","check_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","import","remove_underlay","fit_underlay","drawing_remove","drawing_draw","drawing_move","drawing_trim","drawing_extend","drawing_offset","drawing_export","drawing_extrude","drawing_view","drawing_solid_from_views","underlay_snap","underlay_objects","underlay_regions","underlay_parallel","program_from_underlay","export","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
+                "methods":["status","summary","operations","list_validators","edit_context","query","detail","mass","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","run_plugin","program","program_context","program_piece","patch_program","set_program_params","save_program_variant","use_program_variant","delete_program_variant","export_program_variants","program_report","validate_program","check_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","import","remove_underlay","fit_underlay","drawing_remove","drawing_draw","drawing_rooms","drawing_move","drawing_trim","drawing_extend","drawing_offset","drawing_export","drawing_extrude","drawing_view","drawing_solid_from_views","underlay_snap","underlay_objects","underlay_regions","underlay_parallel","program_from_underlay","export","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
             Request::ListValidators {} => Ok(validator_catalog::catalog()),
@@ -3475,18 +3478,6 @@ impl LiveBridge {
             request @ (Request::RemoveUnderlay { .. } | Request::FitUnderlay { .. }) => {
                 self.underlay_request(app, &request, ui_busy, cancelled)
             }
-            request @ (Request::DrawingRemove { .. }
-            | Request::DrawingDraw { .. }
-            | Request::DrawingMove { .. }
-            | Request::DrawingTrim { .. }
-            | Request::DrawingExtend { .. }
-            | Request::DrawingOffset { .. }
-            | Request::DrawingExport { .. }
-            | Request::DrawingExtrude { .. }
-            | Request::DrawingView { .. }
-            | Request::DrawingSolidFromViews { .. }) => {
-                self.drawing_request(app, &request, ui_busy, cancelled)
-            }
             request @ Request::UnderlaySnap { .. } => Self::underlay_snap(app, &request),
             request @ Request::UnderlayObjects { .. } => Self::underlay_objects(app, &request),
             request @ Request::UnderlayRegions { .. } => Self::underlay_regions(app, &request),
@@ -3582,6 +3573,8 @@ impl LiveBridge {
                 self.query.invalidate();
                 Ok(json!({"disconnected":true}))
             }
+            // Every drawing_* method is left (Request::is_drawing).
+            request => self.drawing_request(app, &request, ui_busy, cancelled),
         }
     }
 }

@@ -309,6 +309,7 @@ impl Tools {
                     &[
                         "remove",
                         "draw",
+                        "rooms",
                         "move",
                         "trim",
                         "extend",
@@ -323,7 +324,7 @@ impl Tools {
                 // extrusion, or a view a program follows, may be planned as a program.
                 let wait = match action.as_str() {
                     "export" => OPEN_WAIT,
-                    "extrude" | "view" | "solid_from_views" => APPLY_PROGRAM_WAIT,
+                    "extrude" | "rooms" | "view" | "solid_from_views" => APPLY_PROGRAM_WAIT,
                     _ => DEFAULT_WAIT,
                 };
                 self.send(&format!("drawing_{action}"), args, wait)
