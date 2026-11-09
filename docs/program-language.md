@@ -32,10 +32,10 @@ The full example is [`examples/programs/cabinet.star`](../examples/programs/cabi
 `ketchup-program check` exits with 0 when the program has no error-level issue and its
 statics, if it has any, are verified; 1 for an error-level issue or a failing member or
 joint; 3 when nothing fails but a member or joint is not verified or a load reaches no
-member (`statics_verdict` in the summary); 2 when the program cannot be evaluated.
-A `--set` name the program has no `param()` of is listed in `unused_overrides` and
-said on stderr with the parameter it likely means (`--set snowsk: the program has no
-parameter snowsk; did you mean snow_kn?`).
+member (`statics_verdict` in the summary); 2 when the program cannot be evaluated, or
+not as asked: a `--set` name the program has no `param()` of is listed in
+`unused_overrides` and said on stderr with the parameter it likely means, in any case
+(`--set Snow_SK: the program has no parameter Snow_SK; did you mean snow_sk?`).
 
 The CLI/headless run returns the report below. MCP apply/patch returns a concise
 source diff, summary counts and bounded issue/relation previews. Retrieve complete

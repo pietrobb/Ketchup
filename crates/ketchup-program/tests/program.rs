@@ -697,6 +697,37 @@ fn parts_that_touch_nothing_supported_are_warnings() {
     assert_eq!(issues[0].severity, Severity::Warning);
 }
 
+/// Review 2026-11-09 PG-245: `check --set Snow_SK=1.5` ended as the program
+/// without it would, though it was not evaluated as asked.
+#[test]
+fn a_set_of_no_parameter_ends_with_exit_code_2_and_names_the_parameter_meant() {
+    let directory = std::env::temp_dir().join(format!("ketchup-set-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let file = directory.join("box.star");
+    std::fs::write(
+        &file,
+        "s = param(\"snow_sk\", 1.0, min = 0, max = 5)\nbox(\"a\", (10, 10, 10))\n",
+    )
+    .unwrap();
+    let check = |set: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_ketchup-program"))
+            .arg("check")
+            .arg(&file)
+            .args(["--summary", "--set", set])
+            .output()
+            .unwrap()
+    };
+    let asked = check("snow_sk=1.5");
+    let mistyped = check("Snow_SK=1.5");
+    std::fs::remove_dir_all(&directory).unwrap();
+    assert_eq!(asked.status.code(), Some(0), "{asked:?}");
+    assert_eq!(mistyped.status.code(), Some(2), "{mistyped:?}");
+    assert!(
+        String::from_utf8_lossy(&mistyped.stderr).contains("did you mean snow_sk?"),
+        "{mistyped:?}"
+    );
+}
+
 #[test]
 fn params_take_overrides_report_unknown_ones_and_check_ranges() {
     let source = "n = param(\"count\", 2, min = 1, max = 4)\nfor i in range(n):\n    box(\"p%d\" % i, (10, 10, 10), at = (20 * i, 0, 0))\n";
