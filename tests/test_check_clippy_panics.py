@@ -170,6 +170,17 @@ def test_real_clippy_and_the_text_check_count_every_form_once_between_them(tmp_p
     assert text_counts == {"macro_panic": 2, "unwrap_path": 1, "clippy_allow": 1}
 
 
+def test_without_packages_named_the_systems_recorded_ones_are_checked(tmp_path):
+    # Review 2026-11-09 R1109-TST-306: run without -p, as the pre-push hook runs it, the
+    # check ended 0 having run nothing.
+    package(tmp_path, "a")
+    (tmp_path / "scripts").mkdir()
+    checker.write_baseline(tmp_path, "linux", {}, {"b", "a"})
+    assert checker.packages_to_check([], tmp_path, "linux") == ["a", "b"]
+    assert checker.packages_to_check(["-p", "c"], tmp_path, "linux") == ["c"]
+    assert checker.packages_to_check([], tmp_path, "macos") == []
+
+
 def test_the_packages_come_from_the_command_line():
     assert checker.packages_of(["--update", "-p", "a", "-p", "b"]) == ["a", "b"]
     assert checker.clippy_command(["a"])[:8] == [

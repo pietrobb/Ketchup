@@ -169,11 +169,17 @@ def packages_of(arguments: list[str]) -> list[str]:
             if argument == "-p" and index + 1 < len(arguments)]
 
 
+def packages_to_check(arguments: list[str], root: Path = ROOT, system: str = SYSTEM) -> list[str]:
+    """The packages named with -p, or else those this system's baseline records: the
+    pre-push hook runs every check without arguments, and nothing checked is not a pass
+    (review 2026-11-09 R1109-TST-306: it ended 0 having run nothing)."""
+    return packages_of(arguments) or sorted(read_baseline(root, system)[1])
+
+
 if __name__ == "__main__":
-    selected = packages_of(sys.argv[1:])
+    selected = packages_to_check(sys.argv[1:])
     if not selected:
-        # The pre-push hook runs every check without arguments; the counts are per
-        # platform, so each CI job names the packages it builds.
-        print("No package named (-p); CI runs this check in each job for its packages")
-        sys.exit(0)
+        print(f"No package named (-p) and none recorded for {SYSTEM} in "
+              f"{baseline_path(ROOT, SYSTEM).relative_to(ROOT).as_posix()}; nothing was checked")
+        sys.exit(1)
     sys.exit(check(selected, update="--update" in sys.argv))
