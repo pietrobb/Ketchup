@@ -2502,8 +2502,24 @@ fn large_house_every_member_of_the_house_has_a_utilization_and_passes_once_the_s
                     .any(|check| check.name == "lateral_torsional" && check.utilization > 0.0)),
                 "no member at {pitch} degrees checks lateral torsional buckling"
             );
+            // Review 2026-11-09 PG-304: the sloping top plates of the gables,
+            // their length_axis "x", were 140 x 93.343, their plumb cut taken
+            // for their depth.
+            for gable in ["západ", "východ"] {
+                for k in [1, 2] {
+                    let part = format!("konštrukcia/štít {gable}/stĺpiky/top plate {k}");
+                    let section = member(&steep, &part).section_mm.expect("a section");
+                    assert!(
+                        (section[0] - 140.0).abs() < 0.5 && (section[1] - 60.0).abs() < 0.5,
+                        "{part}: {section:?}"
+                    );
+                }
+            }
         }
     }
+    // Review 2026-11-08 §5.3: the default site (Senec, snow zone 1, 150 m) gives the
+    // snow, so the default house is checked, not left not verified for want of s_k.
+    every_member_passes(&report(HOUSE, &[]), "default site");
     let with = report(HOUSE, &[("snow_sk", 1.5)]);
     let members = &with.design.members;
     assert_eq!(members.len(), with.loads.members.len());

@@ -889,6 +889,149 @@ fn the_set_has_a_plan_a_sections_and_an_elevations_sheet_each_numbered_and_title
     );
 }
 
+/// Review 2026-11-08 §5.2: with north set, each plan draws its north arrow
+/// and each elevation is named by the side of the world it shows; without
+/// it, neither.
+#[test]
+fn with_north_the_plan_has_an_arrow_and_each_elevation_is_named_by_its_side() {
+    let facing_titles = CompassSide::ALL
+        .into_iter()
+        .map(|side| (side, format!("{side:?} elevation")))
+        .collect::<BTreeMap<_, _>>();
+    // The room runs along x; north turned 90° points along -x.
+    let north = DrawingSetOptions {
+        north_deg: Some(90.0),
+        north_letter: "S".to_owned(),
+        facing_titles: facing_titles.clone(),
+        ..options(&room(), Some(1200.0))
+    };
+    let set = drawing_set(&room(), &north).unwrap();
+    assert!(summary(&set, ProjectView::Plan).north_arrow);
+    let plan = sheet_of(&set, SheetKind::Plan { storey: 0 });
+    for page in [&plan.page, &plan.lines] {
+        assert!(texts(page).contains(&"S"), "{:?}", texts(page));
+    }
+    for (view, side) in [
+        (ProjectView::Front, CompassSide::West),
+        (ProjectView::Back, CompassSide::East),
+        (ProjectView::Left, CompassSide::North),
+        (ProjectView::Right, CompassSide::South),
+    ] {
+        let elevation = summary(&set, view);
+        assert_eq!(elevation.facing, Some(side), "{view:?}");
+        assert_eq!(elevation.title, format!("{side:?} elevation"));
+        assert!(!elevation.north_arrow);
+    }
+    let elevations = sheet_of(&set, SheetKind::Elevations);
+    assert!(texts(&elevations.page).contains(&"West elevation"));
+    // The sections keep their names.
+    assert_eq!(summary(&set, ProjectView::CrossSection).facing, None);
+
+    let without = drawing_set(
+        &room(),
+        &DrawingSetOptions {
+            facing_titles,
+            ..options(&room(), Some(1200.0))
+        },
+    )
+    .unwrap();
+    assert!(!summary(&without, ProjectView::Plan).north_arrow);
+    let front = summary(&without, ProjectView::Front);
+    assert_eq!((front.facing, front.title.as_str()), (None, "Front"));
+}
+
+/// Review 2026-11-08 §5.2: the plan of a set with sections marks where they
+/// cut it, A along the model and B across it, each letter at both ends, and
+/// the sections are titled with their letters; a set of plans alone marks
+/// none.
+#[test]
+fn the_plan_marks_where_sections_a_and_b_cut_it_and_they_carry_the_letters() {
+    let set = room_set(Some(1200.0));
+    assert_eq!(summary(&set, ProjectView::Plan).section_marks, ["A", "B"]);
+    let plan = sheet_of(&set, SheetKind::Plan { storey: 0 });
+    for page in [&plan.page, &plan.lines] {
+        let texts = texts(page);
+        for letter in ["A", "B"] {
+            let count = texts.iter().filter(|&&text| text == letter).count();
+            assert_eq!(count, 2, "{letter} in {texts:?}");
+        }
+    }
+    let section = summary(&set, ProjectView::LongitudinalSection);
+    assert!(section.title.ends_with(" A-A"), "{}", section.title);
+    let cross = summary(&set, ProjectView::CrossSection);
+    assert!(cross.title.ends_with(" B-B"), "{}", cross.title);
+    assert!(summary(&set, ProjectView::Front).section_marks.is_empty());
+
+    let plans = drawing_set(
+        &room(),
+        &DrawingSetOptions {
+            plan_only: true,
+            ..options(&room(), Some(1200.0))
+        },
+    )
+    .unwrap();
+    assert!(summary(&plans, ProjectView::Plan).section_marks.is_empty());
+}
+
+/// Review 2026-11-08 §5.3: every sheet of the set, its PDF page and its DXF
+/// alike, lists the revisions of the set beside its title block; too many to
+/// list refuse the set rather than drop one.
+#[test]
+fn every_sheet_lists_the_revisions_of_the_set() {
+    use crate::revision_table::{RevisionCaptions, SheetRevision};
+    let revision = |index: &str, change: &str| SheetRevision {
+        index: index.to_owned(),
+        date: "8. 11. 2026".to_owned(),
+        change: change.to_owned(),
+    };
+    let revised = DrawingSetOptions {
+        revisions: vec![
+            revision("A", "Vydanie pre stavebné povolenie"),
+            revision("B", "Zväčšené okno v obývačke"),
+        ],
+        revision_captions: RevisionCaptions {
+            index: "Index".to_owned(),
+            date: "Dátum".to_owned(),
+            change: "Popis zmeny".to_owned(),
+        },
+        ..options(&room(), Some(1200.0))
+    };
+    let set = drawing_set(&room(), &revised).unwrap();
+    assert_eq!(set.sheets.len(), 3);
+    for (sheet, dxf) in set.sheets.iter().zip(set.dxf()) {
+        let dxf = String::from_utf8(dxf).unwrap();
+        for text in ["Popis zmeny", "A", "B", "Zväčšené okno v obývačke"] {
+            assert!(
+                texts(&sheet.page).contains(&text),
+                "{text} on {}",
+                sheet.number
+            );
+            assert!(
+                texts(&sheet.lines).contains(&text),
+                "{text} on {}",
+                sheet.number
+            );
+        }
+        for text in ["1\nPopis zmeny\n", "1\nB\n", "1\n8. 11. 2026\n"] {
+            assert!(
+                dxf.contains(text),
+                "{text:?} in the DXF of {}",
+                sheet.number
+            );
+        }
+    }
+    let crowded = DrawingSetOptions {
+        revisions: (1..=12)
+            .map(|index| revision(&index.to_string(), "Zmena"))
+            .collect(),
+        ..revised
+    };
+    assert!(matches!(
+        drawing_set(&room(), &crowded),
+        Err(ProjectDrawingError::RevisionsDoNotFit(refused)) if refused.revisions == 12
+    ));
+}
+
 #[test]
 fn plan_and_sections_fill_the_parts_the_plane_cuts() {
     let set = room_set(Some(1200.0));
@@ -1074,13 +1217,20 @@ fn every_sheet_is_a_dxf_of_its_visible_lines_with_its_title_block() {
         assert!(dxf.contains(&format!("1\n{} / 3\n", sheet.number)), "{dxf}");
         assert!(dxf.contains(&format!("1\n{}\n", sheet.title)));
         assert!(dxf.contains("0\nLINE\n8\nPEN-0_18\n"), "the edges");
-        // No face is painted: a fill is only the outline of a cut.
+        // No face is painted: a fill is the outline of a cut, or an
+        // arrowhead of a section mark, a few millimetres long.
+        let painted = |loops: &Vec<Vec<[f64; 2]>>| {
+            let points = loops.iter().flatten().collect::<Vec<_>>();
+            points.iter().any(|a| {
+                points
+                    .iter()
+                    .any(|b| (a[0] - b[0]).hypot(a[1] - b[1]) > 3.0)
+            })
+        };
         assert!(
-            sheet
-                .lines
-                .marks
-                .iter()
-                .all(|mark| !matches!(mark, Mark::Fill { outline: None, .. })),
+            sheet.lines.marks.iter().all(
+                |mark| !matches!(mark, Mark::Fill { outline: None, loops, .. } if painted(loops))
+            ),
             "sheet {}",
             sheet.number
         );

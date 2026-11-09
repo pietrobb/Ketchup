@@ -69,6 +69,40 @@ pub(crate) fn show_storey_table(
                 }
             }
         });
+        show_north(ui, catalog, settings);
+    });
+}
+
+/// The direction of north the plans draw their arrow by and the elevations
+/// are named by (review 2026-11-08 §5.2), or none.
+fn show_north(ui: &mut egui::Ui, catalog: &LocaleCatalog, settings: &mut SheetSettings) {
+    ui.horizontal(|ui| {
+        ui.label(catalog.text("drawings-north"));
+        let mut none = settings.north_tenths_deg.is_none();
+        if ui
+            .checkbox(&mut none, catalog.text("drawings-north-none"))
+            .changed()
+        {
+            settings.north_tenths_deg = (!none).then_some(0);
+        }
+        if let Some(tenths) = settings.north_tenths_deg.as_mut() {
+            let mut degrees = f64::from(*tenths) / 10.0;
+            if ui
+                .add(
+                    egui::DragValue::new(&mut degrees)
+                        .range(-360.0..=360.0)
+                        .fixed_decimals(1)
+                        .speed(0.5)
+                        .suffix(" °"),
+                )
+                .changed()
+            {
+                // Tenths of a degree, inside the range the field keeps.
+                if let Ok(value) = format!("{:.0}", degrees * 10.0).parse::<i32>() {
+                    *tenths = value;
+                }
+            }
+        }
     });
 }
 

@@ -40,7 +40,7 @@ pub(super) fn import_failed(path: &str, error: ImportError) -> &'static str {
 }
 
 /// Every export format of the File menu with the file extensions it writes.
-const EXPORT_FORMATS: [(&str, &[&str], Exporter); 14] = [
+const EXPORT_FORMATS: [(&str, &[&str], Exporter); 15] = [
     (
         "step",
         &["step", "stp"],
@@ -87,6 +87,11 @@ const EXPORT_FORMATS: [(&str, &[&str], Exporter); 14] = [
         KetchupApp::export_current_model_homag_mpr_to,
     ),
     ("btlx", &["btlx"], KetchupApp::export_current_model_btlx_to),
+    (
+        "workshop_package",
+        &["zip"],
+        KetchupApp::export_current_workshop_package_to,
+    ),
 ];
 
 /// The code of why an export was not written, whose hint repairs that cause:
@@ -177,6 +182,7 @@ impl LiveBridge {
             path,
             unit,
             as_underlay,
+            revision_of,
         } = request
         else {
             return Err("invalid_request");
@@ -205,6 +211,19 @@ impl LiveBridge {
                 "as_underlay imports a .dxf or .dwg drawing.",
                 json!({"path": path}),
             ));
+        }
+        if let Some(of) = revision_of {
+            if !*as_underlay {
+                return Err(failure(
+                    "invalid_params",
+                    "revision_of compares a drawing imported as_underlay with an underlay.",
+                    json!({"revision_of": of}),
+                ));
+            }
+            let of = ketchup_model::underlay::UnderlayId(*of);
+            if app.document.current().underlay(of).is_none() {
+                return Err("entity_not_found");
+            }
         }
         let unit = unit
             .as_deref()

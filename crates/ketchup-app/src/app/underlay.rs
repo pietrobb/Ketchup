@@ -23,6 +23,8 @@ use ketchup_model::underlay::{
 };
 use ketchup_program::CancelToken;
 
+pub(crate) mod revision;
+
 #[cfg(test)]
 thread_local! {
     /// How many times this thread decoded an underlay's blob.
@@ -217,6 +219,9 @@ pub(crate) struct UnderlayImport {
     /// The object whose edit the last export of a drawing refused, its entity changed in
     /// the file since: that edit alone can be discarded (review 2026-11-04 r19 CD-163).
     pub(crate) refused_edit: Option<(UnderlayId, Vec<u32>)>,
+    /// The underlay the drawing being read is a later revision of, to compare it with
+    /// ([`revision`]) instead of adding it.
+    pub(crate) revision_of: Option<UnderlayId>,
 }
 
 impl KetchupApp {
@@ -282,6 +287,7 @@ impl KetchupApp {
         if let Some(task) = self.file.activity.underlay.reading.take() {
             task.cancel.cancel();
         }
+        self.file.activity.underlay.revision_of = None;
     }
 
     fn finish_underlay_read(
@@ -290,13 +296,26 @@ impl KetchupApp {
         unit: Option<ImportLengthUnit>,
         result: UnderlayReadResult,
     ) {
+        if let (Ok(read), Some(of)) = (&result, self.file.activity.underlay.revision_of) {
+            self.file.activity.underlay.revision_of = None;
+            if let Err(error) = self.add_revision_overlay(&path, read, of) {
+                self.digest = self.catalog.format(
+                    "digest-underlay-revision-refused",
+                    &BTreeMap::from([("reason", error.to_string())]),
+                );
+            }
+            return;
+        }
         match result.and_then(|read| self.add_underlay(&path, read)) {
             Ok(_) => {}
             Err(error) if unit.is_none() && needs_unit(&error) => {
                 self.file.activity.underlay.unit_choice =
                     Some((path, ImportLengthUnit::Millimetre));
             }
-            Err(error) => self.report_import_failure(&path, &error),
+            Err(error) => {
+                self.file.activity.underlay.revision_of = None;
+                self.report_import_failure(&path, &error);
+            }
         }
     }
 
@@ -322,25 +341,7 @@ impl KetchupApp {
             read.read.offset_mm,
         )
         .map_err(|error| failed(error.into()))?;
-        let mut container = self.file.container_data.clone();
-        container
-            .insert_import_blob(read.bytes)
-            .map_err(|error| failed(error.into()))?;
-        let proposal = self
-            .document
-            .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
-            .map_err(|error| failed(error.into()))?;
-        self.commit_verified_proposal_with_container_work_recovery(&proposal, container)
-            .map_err(|error| failed(error.into()))?;
-        self.render.underlays.insert(key, read.geometry);
-        self.render
-            .underlay_snaps
-            .get_mut()
-            .insert(key, UnderlaySnapSlot::Ready(read.snaps));
-        self.render
-            .underlay_extents
-            .get_mut()
-            .insert(key, underlay_extent(&read.lines));
+        self.keep_underlay_lines(batch, read.bytes, &read.lines, read.snaps, read.geometry)?;
         self.frame_after_import();
         self.file
             .activity
@@ -368,6 +369,41 @@ impl KetchupApp {
             self.digest = format!("{} {note}", self.digest);
         }
         Ok(id)
+    }
+
+    /// Commits `batch`, which adds an underlay of `lines`, as one Undo step with `bytes`,
+    /// their encoding, kept in the document's container, and keeps what the window draws and
+    /// snaps to of them.
+    fn keep_underlay_lines(
+        &mut self,
+        batch: ketchup_model::document::CommandBatch,
+        bytes: Vec<u8>,
+        lines: &UnderlayLines,
+        snaps: Arc<UnderlaySnapIndex>,
+        geometry: Arc<UnderlayGeometry>,
+    ) -> Result<(), ImportError> {
+        let failed = |cause: BoxedCause| ImportError::failed(ImportFormat::Dxf, cause);
+        let key = sha256_bytes(&bytes);
+        let mut container = self.file.container_data.clone();
+        container
+            .insert_import_blob(bytes)
+            .map_err(|error| failed(error.into()))?;
+        let proposal = self
+            .document
+            .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
+            .map_err(|error| failed(error.into()))?;
+        self.commit_verified_proposal_with_container_work_recovery(&proposal, container)
+            .map_err(|error| failed(error.into()))?;
+        self.render.underlays.insert(key, geometry);
+        self.render
+            .underlay_snaps
+            .get_mut()
+            .insert(key, UnderlaySnapSlot::Ready(snaps));
+        self.render
+            .underlay_extents
+            .get_mut()
+            .insert(key, underlay_extent(lines));
+        Ok(())
     }
 
     /// Removes the underlay `id` and the tags only it held, as one Undo step.
@@ -434,6 +470,7 @@ impl KetchupApp {
         if import {
             self.start_underlay_read(path, Some(unit));
         } else if cancel {
+            self.file.activity.underlay.revision_of = None;
             self.digest = self.catalog.text("digest-cancelled");
         }
     }

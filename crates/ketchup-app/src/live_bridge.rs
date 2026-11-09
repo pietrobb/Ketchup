@@ -98,6 +98,7 @@ mod program_validation_summary;
 mod program_variant_export;
 mod program_variants;
 mod project_drawings_job;
+mod room_areas;
 mod running_programs;
 #[cfg(test)]
 mod tests;
@@ -113,6 +114,7 @@ mod validator_catalog;
 pub(crate) mod variant_window;
 pub(crate) mod window_edit;
 pub(crate) mod window_request;
+mod write_targets;
 /// Incoming frames: large enough for whole programs, bounded so a bogus
 /// length header cannot make the window allocate gigabytes.
 pub const MAX_REQUEST_FRAME_BYTES: usize = 8 * 1024 * 1024;
@@ -394,56 +396,12 @@ pub enum Request {
         expected: Option<Stamp>,
         path: String,
     },
-    /// Writes the project drawings of the visible layers as PDF; `title_block`
-    /// fields and `format` given here are first kept in the document. With
-    /// `sheet_id` it writes that drawing sheet of the document as DXF instead.
-    ExportDrawings {
-        #[serde(default)]
-        expected: Option<Stamp>,
-        path: String,
-        #[serde(default)]
-        sheet_id: Option<u64>,
-        #[serde(default)]
-        format: Option<String>,
-        #[serde(default)]
-        title_block: BTreeMap<ketchup_manufacturing::title_block::TitleField, String>,
-        /// Only the plan, with the annotations, rather than all seven views.
-        #[serde(default)]
-        plan_only: bool,
-        /// N of the scale 1:N the sheet is drawn at; the sheet picks it when absent.
-        #[serde(default)]
-        drawing_scale: Option<f64>,
-        /// The language the sheets are titled in, kept in the document:
-        /// cs, sk or en, auto for the window's; absent keeps the document's.
-        #[serde(default)]
-        sheet_language: Option<String>,
-        /// Replaces a PDF or a drawing sheet's file at `path` that is not the
-        /// one the document last wrote there (review 2026-11-04 MCP-140), as
-        /// the user agreed when asked (r19 SEC-161).
-        #[serde(default)]
-        replace: bool,
-        /// Takes the DXF or DWG set at `path` of another project for this
-        /// one's, as the user agreed when asked (review 2026-11-04 r19 MF-162).
-        #[serde(default)]
-        take_over: bool,
-        /// The height of ±0,000 in whole millimetres, kept in the document:
-        /// `"auto"` finds it from the model; absent keeps the document's
-        /// (review 2026-11-04 r19 P3).
-        #[serde(default)]
-        zero_level_mm: Option<Value>,
-        /// The table of storeys, kept in the document: a list of
-        /// `{finished_floor_mm, structural_mm}`, or `"auto"` to find them from
-        /// the model; absent keeps the document's (review 2026-11-08 MF-241).
-        #[serde(default)]
-        storeys: Option<Value>,
-        /// The altitude of ±0,000 above sea level in whole millimetres, kept
-        /// in the document and written beside its level mark; `"none"`
-        /// writes none; absent keeps the document's.
-        #[serde(default)]
-        zero_altitude_mm: Option<Value>,
-    },
+    /// Writes the project drawings of the visible layers, or with `sheet_id`
+    /// a drawing sheet of the document as DXF or DWG.
+    ExportDrawings(drawings::ExportDrawingsRequest),
     /// Imports a STEP, IGES, STL, DXF, GLB or SketchUp scene file as one Undo step;
-    /// `as_underlay` keeps a DXF or DWG drawing under the model as an underlay instead.
+    /// `as_underlay` keeps a DXF or DWG drawing under the model as an underlay instead;
+    /// with `revision_of` it adds only what changed since that underlay's drawing.
     Import {
         #[serde(default)]
         expected: Option<Stamp>,
@@ -452,6 +410,7 @@ pub enum Request {
         unit: Option<String>,
         #[serde(default)]
         as_underlay: bool,
+        revision_of: Option<u64>,
     },
     /// Removes an underlay and the tags only it held, as one Undo step.
     RemoveUnderlay {
@@ -493,6 +452,8 @@ pub enum Request {
         layer: String,
         shapes: Vec<ketchup_model::underlay::drawn::DrawnShape>,
     },
+    /// Writes the areas of rooms back into an underlay's drawing ([`room_areas`]).
+    DrawingRooms(room_areas::RoomsRequest),
     /// Moves top-level objects of an underlay's drawing, or adds moved copies of them with
     /// `copy`, one Undo step: scaled by `scale` and turned by `rotate_deg` about
     /// `about_mm`, mirrored across the line through `mirror_line_mm`, then moved by
@@ -970,81 +931,6 @@ fn save_failed(app: &KetchupApp, save_failure: SaveFailure) -> &'static str {
             failure(code, app.action_digest(), json!({}))
         }
     }
-}
-
-/// Where a client may save the document as (review 2026-11-08 SEC-240): a
-/// Ketchup document, `.ketchup`, never a hidden file, and in a folder of this
-/// document or of **Open Recent** unless the user agrees in the window. Before,
-/// any name in any folder was written, such as a startup folder or `~/.ssh`,
-/// and the next Ctrl+S wrote there again. A file already there is asked about
-/// as replacing it. The code refusing it, its reason recorded, or none; a path
-/// that is not local and absolute is `invalid_path`.
-fn save_as_refusal(app: &mut KetchupApp, path: &str) -> Option<&'static str> {
-    if !drawings::local_absolute_path(path) {
-        return Some("invalid_path");
-    }
-    let path = Path::new(path);
-    if path
-        .file_name()
-        .is_some_and(|name| name.to_string_lossy().starts_with('.'))
-    {
-        return Some(failure(
-            "invalid_path",
-            "save_as writes no hidden file: the name begins with a dot. Name the document like plan.ketchup.",
-            json!({"path": path}),
-        ));
-    }
-    if !path
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("ketchup"))
-    {
-        return Some(failure(
-            "invalid_path",
-            "save_as writes a Ketchup document, whose name ends in .ketchup; export other formats with file action=export.",
-            json!({"path": path}),
-        ));
-    }
-    let folder = path.parent();
-    let same = |known: &Path| {
-        Some(known) == folder
-            || cfg!(windows)
-                && folder.is_some_and(|folder| {
-                    folder.to_string_lossy().to_lowercase()
-                        == known.to_string_lossy().to_lowercase()
-                })
-    };
-    let known = app
-        .file
-        .path
-        .iter()
-        .chain(app.recent_files())
-        .filter_map(|file| file.parent())
-        .any(same);
-    if known || path.exists() {
-        return None;
-    }
-    let title = app.catalog.text("dialog-save-as-new-folder-title");
-    let risk = app.catalog.text("dialog-save-as-new-folder-risk");
-    app.side_effect_receipts.clear();
-    app.authorize_path_side_effect(
-        crate::HighRiskClass::CapabilityExpansion,
-        "save-document-in-new-folder",
-        &title,
-        &risk,
-        path,
-        path.to_string_lossy().as_bytes(),
-    )
-    .map_err(|rejection| {
-        failure(
-            "save_declined",
-            format!(
-                "{} The folder is neither this document's nor one in Open Recent; ask the user to save there, or save beside the document.",
-                rejection.reason_text()
-            ),
-            json!({"path": path}),
-        )
-    })
-    .err()
 }
 
 fn program_owned(app: &KetchupApp) -> bool {
@@ -1739,6 +1625,10 @@ impl KetchupApp {
             if let Request::Image(image) = &queued.request {
                 let image = image.clone();
                 bridge.request_image(self, context, image, queued);
+                continue;
+            }
+            if let Some(refused) = write_targets::refusal(self, &queued.request) {
+                LiveBridge::reply(self, queued.id, &queued.reply, Err(refused));
                 continue;
             }
             let Queued {
@@ -3243,6 +3133,9 @@ impl LiveBridge {
     ) -> Result<Value, &'static str> {
         take_error_details();
         Self::require_request_authority(cancelled)?;
+        if let Some(refused) = write_targets::refusal(app, &request) {
+            return Err(refused);
+        }
         match &request {
             Request::EditContext { expected, .. }
             | Request::Query { expected, .. }
@@ -3263,7 +3156,7 @@ impl LiveBridge {
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
                 "limits":{"request_frame_bytes":MAX_REQUEST_FRAME_BYTES,"response_frame_bytes":MAX_RESPONSE_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":limits::BATCH_JOBS},
-                "methods":["status","summary","operations","list_validators","edit_context","query","detail","mass","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","run_plugin","program","program_context","program_piece","patch_program","set_program_params","save_program_variant","use_program_variant","delete_program_variant","export_program_variants","program_report","validate_program","check_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","import","remove_underlay","fit_underlay","drawing_remove","drawing_draw","drawing_move","drawing_trim","drawing_extend","drawing_offset","drawing_export","drawing_extrude","drawing_view","drawing_solid_from_views","underlay_snap","underlay_objects","underlay_regions","underlay_parallel","program_from_underlay","export","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
+                "methods":["status","summary","operations","list_validators","edit_context","query","detail","mass","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","run_plugin","program","program_context","program_piece","patch_program","set_program_params","save_program_variant","use_program_variant","delete_program_variant","export_program_variants","program_report","validate_program","check_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","import","remove_underlay","fit_underlay","drawing_remove","drawing_draw","drawing_rooms","drawing_move","drawing_trim","drawing_extend","drawing_offset","drawing_export","drawing_extrude","drawing_view","drawing_solid_from_views","underlay_snap","underlay_objects","underlay_regions","underlay_parallel","program_from_underlay","export","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
             Request::ListValidators {} => Ok(validator_catalog::catalog()),
@@ -3504,36 +3397,19 @@ impl LiveBridge {
             Request::SaveAs { expected, path } => {
                 Self::guard(app, &expected)?;
                 Self::available(app, ui_busy)?;
-                if let Some(refused) = save_as_refusal(app, &path) {
-                    return Err(refused);
+                if !drawings::local_absolute_path(&path) {
+                    return Err("invalid_path");
                 }
                 app.save_document_to_while(Path::new(&path), || !cancelled.load(Ordering::Acquire))
                     .map_err(|save_failure| save_failed(app, save_failure))?;
                 Ok(json!({"saved":true,"same_gui_document":true,"dirty":app.is_dirty()}))
             }
-            request @ Request::ExportDrawings { .. } => {
-                Self::export_drawings(app, request, ui_busy)
-            }
+            request @ Request::ExportDrawings(_) => Self::export_drawings(app, request, ui_busy),
             request @ Request::Import { .. } => {
                 Self::import_file(app, &request, ui_busy, cancelled, ReadAlready::Nothing)
             }
-            request @ Request::RemoveUnderlay { .. } => {
-                self.remove_underlay(app, &request, ui_busy, cancelled)
-            }
-            request @ Request::FitUnderlay { .. } => {
-                self.fit_underlay(app, &request, ui_busy, cancelled)
-            }
-            request @ (Request::DrawingRemove { .. }
-            | Request::DrawingDraw { .. }
-            | Request::DrawingMove { .. }
-            | Request::DrawingTrim { .. }
-            | Request::DrawingExtend { .. }
-            | Request::DrawingOffset { .. }
-            | Request::DrawingExport { .. }
-            | Request::DrawingExtrude { .. }
-            | Request::DrawingView { .. }
-            | Request::DrawingSolidFromViews { .. }) => {
-                self.drawing_request(app, &request, ui_busy, cancelled)
+            request @ (Request::RemoveUnderlay { .. } | Request::FitUnderlay { .. }) => {
+                self.underlay_request(app, &request, ui_busy, cancelled)
             }
             request @ Request::UnderlaySnap { .. } => Self::underlay_snap(app, &request),
             request @ Request::UnderlayObjects { .. } => Self::underlay_objects(app, &request),
@@ -3630,6 +3506,8 @@ impl LiveBridge {
                 self.query.invalidate();
                 Ok(json!({"disconnected":true}))
             }
+            // Every drawing_* method is left (Request::is_drawing).
+            request => self.drawing_request(app, &request, ui_busy, cancelled),
         }
     }
 }

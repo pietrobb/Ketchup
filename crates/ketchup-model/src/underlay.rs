@@ -958,6 +958,20 @@ impl UnderlayLinesBuilder {
         self.claim(index, before);
     }
 
+    /// Adds `points`, already chorded, to `layer` as one polyline; none of fewer than two.
+    pub fn add_polyline(&mut self, layer: &str, points: &[[f64; 2]]) {
+        if points.len() < 2 {
+            return;
+        }
+        let index = self.layer_index(layer);
+        let before = self.sizes(index);
+        let lines = &mut self.layers[index];
+        lines.points_mm.extend_from_slice(points);
+        lines.ends.push(lines.points_mm.len());
+        lines.styles.push(self.style);
+        self.claim(index, before);
+    }
+
     /// Adds a fill of `layer`: what lies inside an odd number of `rings`, each closed and
     /// of at least three points.
     pub fn add_fill(&mut self, layer: &str, rings: &[Vec<[f64; 2]>]) {
@@ -1415,6 +1429,47 @@ pub fn plan_underlay(
     lines_sha256: [u8; 32],
     offset_mm: [f64; 2],
 ) -> Result<(CommandBatch, UnderlayId), UnderlayPlanError> {
+    let lines = (layer_names, hidden_layers, lines_sha256, offset_mm);
+    let placed = (
+        placement::geo_placement(snapshot, offset_mm),
+        view::UnderlayView::default(),
+    );
+    plan_placed(snapshot, name, lines, placed)
+}
+
+/// [`plan_underlay`] of lines in the coordinates of a later revision of the drawing of
+/// underlay `over`, moved by `offset_mm`: placed and standing where `over` is, so what they
+/// draw lies on it (review 2026-11-08 §5.3, a revision overlay).
+pub fn plan_underlay_over(
+    snapshot: &Snapshot,
+    over: UnderlayId,
+    name: &str,
+    layer_names: &[String],
+    lines_sha256: [u8; 32],
+    offset_mm: [f64; 2],
+) -> Result<(CommandBatch, UnderlayId), UnderlayPlanError> {
+    let under = snapshot
+        .underlay(over)
+        .ok_or(UnderlayPlanError::NotFound(over))?;
+    // A point of the later lines, moved back into the earlier's.
+    let apart = [0, 1].map(|axis| offset_mm[axis] - under.offset_mm()[axis]);
+    let placement = Transform::from_translation(apart[0], apart[1], 0.0)
+        .map_or(under.placement, |apart| under.placement.compose(apart));
+    let lines = (layer_names, &[][..], lines_sha256, offset_mm);
+    plan_placed(snapshot, name, lines, (placement, under.view))
+}
+
+fn plan_placed(
+    snapshot: &Snapshot,
+    name: &str,
+    (layer_names, hidden_layers, lines_sha256, offset_mm): (
+        &[String],
+        &[String],
+        [u8; 32],
+        [f64; 2],
+    ),
+    (placement, view): (Transform, view::UnderlayView),
+) -> Result<(CommandBatch, UnderlayId), UnderlayPlanError> {
     let next = |ids: &mut dyn Iterator<Item = u64>| {
         ids.max()
             .unwrap_or(0)
@@ -1452,9 +1507,9 @@ pub fn plan_underlay(
         layers,
         lines_sha256,
         offset_mm_bits: offset_mm.map(f64::to_bits),
-        placement: placement::geo_placement(snapshot, offset_mm),
+        placement,
         edits: edits::UnderlayEdits::default(),
-        view: view::UnderlayView::default(),
+        view,
     }));
     Ok((CommandBatch::new(commands), id))
 }

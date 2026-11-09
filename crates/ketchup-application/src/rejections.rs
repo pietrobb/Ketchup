@@ -905,6 +905,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "No workset has that handle.",
         "Use the handle returned by workset_create on this connection.",
     ),
+    entry(
+        "write_target_declined",
+        Validation,
+        "path",
+        "The folder of the file is not one this project writes into (the document's or one under it, one in Open Recent, the temporary folder, or one the user let the AI write into for this document), and the user, asked in the window, did not agree to it. Nothing was written.",
+        "Write beside the document or into a folder listed in write_targets, or ask the user to let the AI write there.",
+    ),
 ];
 
 /// The catalog entry of `code`, if the host knows it.
