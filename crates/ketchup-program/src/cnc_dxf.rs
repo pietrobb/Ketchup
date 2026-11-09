@@ -160,6 +160,8 @@ impl fmt::Display for Undrawable {
     }
 }
 
+impl std::error::Error for Undrawable {}
+
 impl Serialize for Undrawable {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_str(self)

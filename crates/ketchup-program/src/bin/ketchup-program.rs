@@ -1,5 +1,5 @@
 //! `ketchup-program check FILE.star [--set name=value]... [--model]
-//!  [--prelude PRELUDE.star] [--summary] [--diff SAVED.json]`
+//!  [--prelude PRELUDE.star] [--summary] [--diff SAVED.json] [--calculation sk|cz]`
 //!
 //! Evaluates a rule program and prints one JSON report on stdout: issues,
 //! parameters, cut list, hardware and machining. Exit code 0 when the program
@@ -13,14 +13,17 @@
 //! so an edited prelude is checked without a build. `--summary` prints only
 //! counts: parts per layer, the statics check and issues grouped by kind.
 //! `--diff` compares that summary with one saved earlier (`--summary >
-//! SAVED.json`) and lists what changed.
+//! SAVED.json`) and lists what changed. `--calculation sk` (or `cz`) prints
+//! the printable structural calculation in Slovak (Czech) as HTML instead of
+//! the JSON report, with the same exit code.
 
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 
 const USAGE: &str = "usage: ketchup-program check FILE.star [--set name=value]... [--model] \
-                     [--prelude PRELUDE.star] [--summary] [--diff SAVED.json]";
+                     [--prelude PRELUDE.star] [--summary] [--diff SAVED.json] \
+                     [--calculation sk|cz]";
 
 /// Parts named per issue group in the summary.
 const NAMED_PARTS: usize = 5;
@@ -42,6 +45,7 @@ struct Options {
     prelude: Option<String>,
     summary: bool,
     diff: Option<String>,
+    calculation: Option<ketchup_program::calculation::Language>,
 }
 
 /// Why the command line or an input file could not be used; each carries the
@@ -50,6 +54,7 @@ struct Options {
 enum CliError {
     Usage,
     MissingValue(String),
+    Language(String),
     SetWithoutEquals(String),
     SetNotNumber {
         name: String,
@@ -75,6 +80,9 @@ impl std::fmt::Display for CliError {
         match self {
             Self::Usage => f.write_str(USAGE),
             Self::MissingValue(arg) => write!(f, "{arg} needs a value"),
+            Self::Language(code) => {
+                write!(f, "--calculation {code}: expected sk or cz")
+            }
             Self::SetWithoutEquals(pair) => write!(f, "--set {pair}: expected name=value"),
             Self::SetNotNumber {
                 name,
@@ -104,6 +112,7 @@ fn parse(args: &[String]) -> Result<Options, CliError> {
         prelude: None,
         summary: false,
         diff: None,
+        calculation: None,
     };
     let mut rest = rest.iter();
     while let Some(arg) = rest.next() {
@@ -116,6 +125,13 @@ fn parse(args: &[String]) -> Result<Options, CliError> {
             "--model" => options.with_model = true,
             "--summary" => options.summary = true,
             "--prelude" => options.prelude = Some(value()?),
+            "--calculation" => {
+                let code = value()?;
+                options.calculation = Some(
+                    ketchup_program::calculation::Language::from_code(&code)
+                        .ok_or(CliError::Language(code))?,
+                );
+            }
             "--diff" => {
                 options.diff = Some(value()?);
                 options.summary = true;
@@ -200,6 +216,13 @@ fn main() -> ExitCode {
                 (true, ketchup_program::Statics::NotVerified) => ExitCode::from(3),
                 _ => ExitCode::SUCCESS,
             };
+            if let Some(language) = options.calculation {
+                print!(
+                    "{}",
+                    ketchup_program::calculation::document(&options.path, &report, language)
+                );
+                return code;
+            }
             let mut value = if options.summary {
                 summary(&evaluated.model, &report)
             } else {

@@ -40,6 +40,11 @@ pub enum DrawnShape {
         rotation_deg: f64,
         text: String,
     },
+    /// A solid fill of the area inside its first ring and outside the others (holes), as a
+    /// drawing's SOLID HATCH; each ring at least three points, not closed by a repeat.
+    Hatch {
+        rings_mm: Vec<Vec<[f64; 2]>>,
+    },
 }
 
 /// One thing added to a drawing; each becomes objects after the drawing's own, in order.
@@ -128,6 +133,19 @@ impl DrawnShape {
             Self::Arc { .. } => "ARC",
             Self::Circle { .. } => "CIRCLE",
             Self::Text { .. } => "TEXT",
+            Self::Hatch { .. } => "HATCH",
+        }
+    }
+
+    /// What the objects of the drawing know of it: a hatch its solid rings.
+    fn detail(&self) -> ObjectDetail {
+        match self {
+            Self::Hatch { rings_mm } => ObjectDetail::Hatch {
+                pattern: "SOLID".to_owned(),
+                solid: true,
+                rings: rings_mm.clone(),
+            },
+            _ => ObjectDetail::None,
         }
     }
 
@@ -171,6 +189,20 @@ impl DrawnShape {
                     && height_mm.is_finite()
                     && rotation_deg.is_finite()
                     && !text.trim().is_empty()
+            }
+            Self::Hatch { rings_mm } => {
+                let area = |ring: &Vec<[f64; 2]>| {
+                    let mut twice = 0.0;
+                    for (at, point) in ring.iter().enumerate() {
+                        twice += cross2(*point, ring[(at + 1) % ring.len()]);
+                    }
+                    twice.abs() / 2.0
+                };
+                !rings_mm.is_empty()
+                    && rings_mm
+                        .iter()
+                        .all(|ring| ring.len() >= 3 && ring.iter().all(finite))
+                    && area(&rings_mm[0]) > NEGLIGIBLE
             }
         }
     }
@@ -236,6 +268,12 @@ impl DrawnShape {
                 height_mm: height_mm * scale,
                 rotation_deg: readable_rotation(map, rotation_deg.to_radians()).to_degrees(),
                 text: text.clone(),
+            },
+            Self::Hatch { rings_mm } => Self::Hatch {
+                rings_mm: rings_mm
+                    .iter()
+                    .map(|ring| ring.iter().map(|point| apply(map, *point)).collect())
+                    .collect(),
             },
         }
     }
@@ -304,6 +342,7 @@ impl DrawnShape {
                 drawn.rotation_rad = rotation_deg.to_radians();
                 vec![Piece::Text(drawn)]
             }
+            Self::Hatch { rings_mm } => vec![Piece::Fill(UnderlayFill::new(0, rings_mm))],
         }
     }
 }
@@ -575,7 +614,7 @@ impl UnderlayLines {
             layer: object_layer,
             parent: None,
             parts: Vec::new(),
-            detail: ObjectDetail::None,
+            detail: shape.detail(),
             removed: false,
             added_by: Some(added_by),
         });

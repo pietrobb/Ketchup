@@ -1051,9 +1051,11 @@ impl KetchupApp {
             }
             AppCommand::ImportDrawingUnderlay => {
                 if let Some(path) = self.choose_dxf_import_path() {
+                    self.file.activity.underlay.revision_of = None;
                     self.start_underlay_read(path, None);
                 }
             }
+            AppCommand::CompareUnderlayRevision => self.begin_underlay_revision(),
             AppCommand::ExportDrawingDxf => {
                 self.export_from_menu("dxf", Self::export_current_profiles_dxf_to);
             }
@@ -1203,6 +1205,9 @@ impl KetchupApp {
             }
             AppCommand::ExportHundeggerBtlx => {
                 self.export_from_menu("btlx", Self::export_current_model_btlx_to);
+            }
+            AppCommand::ExportWorkshopPackage => {
+                self.export_from_menu("workshop-zip", Self::export_current_workshop_package_to);
             }
             AppCommand::New | AppCommand::Open => {}
             _ => unreachable!("only file commands are routed here"),

@@ -23,6 +23,9 @@ use super::project_drawings::SHEET_NAMESPACE;
 use crate::recent_files::presence::{Presence, presence};
 use crate::recent_files::user_settings::SettingsFile;
 use crate::*;
+use write_targets::WRITE_TARGET;
+
+mod write_targets;
 
 /// The key of a written drawing's line.
 const DRAWING: &str = "drawing";
@@ -488,6 +491,7 @@ impl KetchupApp {
         if before.is_none() {
             self.wrote_drawings(unsaved);
         }
+        self.write_targets_saved(before.is_none());
     }
 
     /// The document was saved over its own file, which had the token and
@@ -509,23 +513,29 @@ impl KetchupApp {
         if before.token == now.token && before.id == now.id {
             return;
         }
-        // Those kept by its file here: the disk is not asked.
-        if let Err(error) =
-            store.update(DRAWING, |lines| kept_again(lines, &before, &now, |_| false))
-        {
-            ketchup_rejection::log!(
-                "the drawing files the document wrote are not kept by the file saved: {error}"
-            );
-            return;
+        // Those kept by its file here: the disk is not asked. The folders the
+        // AI may write into go along with the drawings (review 2026-11-08 §5.4).
+        for key in [DRAWING, WRITE_TARGET] {
+            if let Err(error) =
+                store.update(key, |lines| kept_again(lines, &before, &now, |_| false))
+            {
+                ketchup_rejection::log!(
+                    "the {key} lines of the document are not kept by the file saved: {error}"
+                );
+                return;
+            }
         }
         // Those kept by the file where it was: asked on a worker, before the
         // lock is taken.
-        let moved: Vec<PathBuf> = store
-            .values(DRAWING)
+        let moved: Vec<PathBuf> = [DRAWING, WRITE_TARGET]
             .iter()
-            .filter_map(|line| parsed(line))
-            .filter(|line| line.document != before.file && before.kept_by(line))
-            .map(|line| line.document)
+            .flat_map(|key| store.values(key))
+            .filter_map(|line| {
+                parsed(&line).map(|line| {
+                    (line.document != before.file && before.kept_by(&line)).then_some(line.document)
+                })
+            })
+            .flatten()
             .collect();
         if moved.is_empty() {
             return;
@@ -535,14 +545,16 @@ impl KetchupApp {
             if gone.is_empty() {
                 return;
             }
-            if let Err(error) = store.update(DRAWING, |lines| {
-                kept_again(lines, &before, &now, |document| {
-                    gone.iter().any(|path| path == document)
-                })
-            }) {
-                ketchup_rejection::log!(
-                    "the drawing files of the file moved are not kept by the file saved: {error}"
-                );
+            for key in [DRAWING, WRITE_TARGET] {
+                if let Err(error) = store.update(key, |lines| {
+                    kept_again(lines, &before, &now, |document| {
+                        gone.iter().any(|path| path == document)
+                    })
+                }) {
+                    ketchup_rejection::log!(
+                        "the {key} lines of the file moved are not kept by the file saved: {error}"
+                    );
+                }
             }
         }));
     }

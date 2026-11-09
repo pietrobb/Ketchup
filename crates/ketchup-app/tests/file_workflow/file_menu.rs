@@ -276,6 +276,7 @@ fn the_file_menu_keeps_formats_in_submenus_and_analysis_moves_to_the_tools_menu(
                 AppCommand::ExportHomagMpr,
                 AppCommand::ReviewCamExport,
                 AppCommand::ExportHundeggerBtlx,
+                AppCommand::ExportWorkshopPackage,
             ],
         ),
     ] {

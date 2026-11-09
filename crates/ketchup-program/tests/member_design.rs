@@ -2517,6 +2517,9 @@ fn large_house_every_member_of_the_house_has_a_utilization_and_passes_once_the_s
             }
         }
     }
+    // Review 2026-11-08 §5.3: the default site (Senec, snow zone 1, 150 m) gives the
+    // snow, so the default house is checked, not left not verified for want of s_k.
+    every_member_passes(&report(HOUSE, &[]), "default site");
     let with = report(HOUSE, &[("snow_sk", 1.5)]);
     let members = &with.design.members;
     assert_eq!(members.len(), with.loads.members.len());

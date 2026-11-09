@@ -81,7 +81,7 @@ crates/ketchup-app/src/live_bridge/drawing_edit.rs dropped_closure 1
 crates/ketchup-app/src/live_bridge/drawing_edit.rs str_result 7
 crates/ketchup-app/src/live_bridge/drawings.rs formatted_cause 4
 crates/ketchup-app/src/live_bridge/drawings.rs str_result 6
-crates/ketchup-app/src/live_bridge/dwg_import.rs str_result 3
+crates/ketchup-app/src/live_bridge/dwg_import.rs str_result 2
 crates/ketchup-app/src/live_bridge/image.rs debug_formatted 1
 crates/ketchup-app/src/live_bridge/image.rs str_result 7
 crates/ketchup-app/src/live_bridge/image_target.rs str_result 6

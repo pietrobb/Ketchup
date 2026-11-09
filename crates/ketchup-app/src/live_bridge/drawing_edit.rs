@@ -14,6 +14,26 @@ use ketchup_model::underlay::line_edit::LineEdit;
 use ketchup_model::underlay::object_query::{ObjectFilter, ObjectIndex};
 use ketchup_model::underlay::objects::apply;
 
+impl Request {
+    /// Whether it is one of the `drawing_*` methods [`LiveBridge::drawing_request`] answers.
+    pub(super) const fn is_drawing(&self) -> bool {
+        matches!(
+            self,
+            Self::DrawingRemove { .. }
+                | Self::DrawingDraw { .. }
+                | Self::DrawingRooms(_)
+                | Self::DrawingMove { .. }
+                | Self::DrawingTrim { .. }
+                | Self::DrawingExtend { .. }
+                | Self::DrawingOffset { .. }
+                | Self::DrawingExport { .. }
+                | Self::DrawingExtrude { .. }
+                | Self::DrawingView { .. }
+                | Self::DrawingSolidFromViews { .. }
+        )
+    }
+}
+
 impl LiveBridge {
     /// The `drawing_*` methods: each changes an underlay's drawing or builds from it.
     pub(super) fn drawing_request(
@@ -24,8 +44,12 @@ impl LiveBridge {
         cancelled: &AtomicBool,
     ) -> Result<Value, &'static str> {
         match request {
+            _ if !request.is_drawing() => Err("invalid_request"),
             Request::DrawingRemove { .. } => self.drawing_remove(app, request, ui_busy, cancelled),
             Request::DrawingDraw { .. } => self.drawing_draw(app, request, ui_busy, cancelled),
+            Request::DrawingRooms(rooms) => self
+                .drawing_rooms(app, rooms, ui_busy, cancelled)
+                .map_err(refused_area),
             Request::DrawingMove { .. } => self.drawing_move(app, request, ui_busy, cancelled),
             Request::DrawingExport { .. } => {
                 Self::drawing_export_target(app, request, ui_busy, cancelled).and_then(|target| {
@@ -504,6 +528,7 @@ pub(super) fn drawing_export_code(error: &UnderlayExportError) -> &'static str {
                 | DxfEditRefusal::NotMappable { .. }
                 | DxfEditRefusal::ChangedInFile { .. }
                 | DxfEditRefusal::DeletedInFile { .. }
+                | DxfEditRefusal::DrawnHatchInDxf12 { .. }
                 | DxfEditRefusal::Several(..),
             ) => "drawing_edit_not_writable",
             UnderlayRefusal::NotWritten(
@@ -610,7 +635,10 @@ impl LiveBridge {
 
 /// `answer` with the program sections whose outline the edit changed, as
 /// `areas_changed` (review 2026-10-29 UO-64), when it changed any.
-fn with_followed(mut answer: Value, changes: &[super::underlay_binding::FollowedChange]) -> Value {
+pub(super) fn with_followed(
+    mut answer: Value,
+    changes: &[super::underlay_binding::FollowedChange],
+) -> Value {
     if !changes.is_empty() {
         answer["areas_changed"] = changes
             .iter()
@@ -626,7 +654,7 @@ fn refused_area(refusal: AreaRefusal) -> &'static str {
     refusal.code
 }
 
-fn edit_failure(error: UnderlayEditError) -> &'static str {
+pub(super) fn edit_failure(error: UnderlayEditError) -> &'static str {
     let code = match &error {
         UnderlayEditError::Commit(..) | UnderlayEditError::FindingRegions(..) => "commit_rejected",
         UnderlayEditError::Plan(UnderlayObjectError::NotFound(..)) => "entity_not_found",
