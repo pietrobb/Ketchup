@@ -5,6 +5,7 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 
 ## Unreleased
 
+- A plan of the project drawings over a finely meshed floor or slab is drawn in a fraction of the time: where one level lies over another is cut only from the pieces it overlaps, and a piece wholly on one side of a cut is kept whole. Cancel stops this work too, as it stops the rest of the drawing.
 - **File > Manufacturing > Send to workshop (ZIP)** writes one package for the workshop: the parts list, the part drawings, BTLx, a woodWOP program and a barcode label per piece, and the CNC drawings of the flat parts, each file as its own export writes it, with SHA-256 sums the workshop checks the package against. An output that cannot be made is named in `not_made.txt` with why, and the other files are still packed; a model of which nothing can be made is refused. A connected AI writes it as export format `workshop_package`.
 - The HOMAG production package programs every part the machine can take; each part it cannot take is named with why in `not_programmed.txt`, instead of one such part refusing the whole package. The strict package is unchanged.
 - The project drawings know where north is: set it beside the altitude of ±0,000 in the drawings window, or as `north_deg` from a connected AI. Each plan then draws a north arrow and each elevation is named by the side of the world it shows, in the sheet language (Pohľad južný, Pohled jižní, South elevation). Without north nothing changes.
