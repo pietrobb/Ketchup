@@ -446,6 +446,16 @@ fn a_table_of_storeys_the_model_contradicts_is_refused_by_its_row() {
         refused(&[ground, row(3500, 3500)]),
         Some((2, StoreyTableProblem::NoFloorInModel))
     );
+    // The tops of the lining and of the joists look up, but the joists and
+    // the OSB lie on them: nobody stands there; and a finished floor is not
+    // under the OSB 22 mm over it.
+    for covered in [2712, 2932] {
+        assert_eq!(
+            refused(&[ground, row(covered, covered)]),
+            Some((2, StoreyTableProblem::NoFloorInModel)),
+            "{covered}"
+        );
+    }
     // A finished floor laid on its structure, not modelled, is within
     // NEAR_FLOOR_MM of it.
     assert_eq!(refused(&[row(250, 200)]), None);
@@ -456,14 +466,17 @@ fn a_table_of_storeys_the_model_contradicts_is_refused_by_its_row() {
     };
     assert_eq!(
         error.to_string(),
-        "storey 2 of the table of storeys, its finished floor at 3500 mm, has no face of the model looking up within 50 mm of it"
+        "storey 2 of the table of storeys, its finished floor at 3500 mm, has no face of the model to stand on up to 50 mm under it"
     );
 }
 
 /// Review 2026-11-09 MF-300: "Add a storey" in an empty table made one row
 /// of 0/0, which threw away the other plans and moved ±0,000. The table is
 /// filled from the storeys found instead, each at its floor, for the designer
-/// to correct (here the lining at 2712 the faces take for the upper floor).
+/// to correct. Capability review of PR #54: it held the top of the lining at
+/// 2712, under the joists, for the upper floor on the OSB at 2954, and the
+/// check passed it, so the plans marked +2,512 for +2,754. A face a solid lies
+/// on is no floor: the table holds the OSB.
 #[test]
 fn the_table_of_storeys_filled_from_the_model_holds_the_storeys_found() {
     let house = layered_house();
@@ -478,17 +491,21 @@ fn the_table_of_storeys_filled_from_the_model_holds_the_storeys_found() {
                 structural_mm: 200
             },
             StoreyLevels {
-                finished_floor_mm: 2712,
-                structural_mm: 2712
+                finished_floor_mm: 2954,
+                structural_mm: 2954
             }
         ]
     );
     let options = DrawingSetOptions {
+        decimal_separator: ketchup_model::annotation::DecimalMark::Comma,
         plans: plans(table_storeys(&found, 1200.0)),
         storeys: found,
         ..options(&house, None)
     };
-    assert!(drawing_set(&house, &options).is_ok());
+    let set = drawing_set(&house, &options).unwrap();
+    let levels = &summary(&set, ProjectView::LongitudinalSection).levels;
+    assert!(levels.contains(&"+2,754".to_owned()), "{levels:?}");
+    assert!(!levels.contains(&"+2,512".to_owned()), "{levels:?}");
     assert_eq!(ModelFloors::of(&[]), None);
     // A model with no floor below its top fills no row.
     let block = [cuboid("block", [0.0, 0.0, 0.0], [1000.0, 1000.0, 1000.0])];

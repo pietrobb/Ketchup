@@ -22,7 +22,7 @@ it.
 
 | Finding | Status |
 |---|---|
-| R1109-MF-300: the table of storeys is not checked | Fixed, branch `r38-storeys1109`: a table the model contradicts refuses the export of the drawings (PDF, DXF, DWG; window and MCP `storey_table_contradicts_model`), naming the row and why: its structure above its finished floor, its floor another row's, its floor under the model or not under its top, or no upward face of the model within 50 mm of its floor (0/3500 against the floors at 200 and 2954). "Add a storey" in an empty table fills in the storeys found in the model, each structure at its floor, instead of one row of 0/0 |
+| R1109-MF-300: the table of storeys is not checked | Fixed, branch `r38-storeys1109`: a table the model contradicts refuses the export of the drawings (PDF, DXF, DWG; window and MCP `storey_table_contradicts_model`), naming the row and why: its structure above its finished floor, its floor another row's, its floor under the model or not under its top, or no face of the model to stand on (looking up, not wholly under a solid lying on it) up to 50 mm under its floor (0/3500 against the floors at 200 and 2954; 2712, the lining under the joists, and 2932, the joists under the OSB). "Add a storey" in an empty table fills in the storeys found in the model, each structure at its floor, instead of one row of 0/0; measured by the area no solid lies on, it fills 200/2954 on the tiny house, not the lining at 2712 (capability review of PR #54) |
 
 ## Ratchets and CI (§7 point 4, branch `r34-ratchets1109`)
 

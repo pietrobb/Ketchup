@@ -1405,6 +1405,7 @@ fn zero_is_set_from_the_floor_found_not_from_nothing() {
     floor
         .send(Ok(Some(ModelFloors {
             floors_mm: vec![650.0],
+            storey_floors_mm: vec![650.0],
             top_mm: 3000.0,
         })))
         .unwrap();
