@@ -98,6 +98,8 @@ mod program_validation_summary;
 mod program_variant_export;
 mod program_variants;
 mod project_drawings_job;
+mod rejection_records;
+use rejection_records::{failed_because, failure, planning_failure};
 mod room_areas;
 mod running_programs;
 #[cfg(test)]
@@ -442,6 +444,8 @@ pub enum Request {
         #[serde(default)]
         within_mm: Option<[[f64; 2]; 2]>,
     },
+    /// Discards edits of an underlay's drawing ([`drawing_edit::DiscardRefused`]).
+    DrawingDiscardRefused(drawing_edit::DiscardRefused),
     /// Draws `shapes`, in document millimetres, on layer `layer` of an underlay's drawing
     /// as new objects, one Undo step.
     DrawingDraw {
@@ -833,40 +837,6 @@ fn record_rejection(rejection: &Rejection, details: Value) {
         object.insert("details".to_owned(), Value::Object(details.clone()));
     }
     ERROR_DETAILS.with(|slot| *slot.borrow_mut() = Some(value));
-}
-
-/// Records that `code` failed because of `cause` (kept as the rejection's
-/// cause chain under the catalog reason) and returns the code.
-fn failed_because(
-    code: &'static str,
-    cause: impl std::error::Error + Send + Sync + 'static,
-) -> &'static str {
-    record_rejection(&rejected(code).caused_by(cause), json!({}));
-    code
-}
-
-/// Records why `code` failed for the client and returns the code.
-fn failure(code: &'static str, reason: impl Into<String>, details: Value) -> &'static str {
-    record_rejection(&rejected(code).reason(reason), details);
-    code
-}
-
-/// Records a planner diagnostic as the rejection of `code`: its target and
-/// repair hint replace the generic ones of the code.
-fn planning_failure(code: &'static str, diagnostic: &AssistantRejectionDiagnostic) -> &'static str {
-    record_rejection(
-        &rejected(code)
-            .target(diagnostic.target.clone())
-            .reason(diagnostic.failed_invariant.clone())
-            .fix_hint(diagnostic.repair_hint.clone()),
-        json!({
-            "diagnostic_code": diagnostic.code,
-            "operation": diagnostic.operation,
-            "retryable": diagnostic.retryable,
-            "published": false,
-        }),
-    );
-    code
 }
 
 /// A typed edit the program cannot take, answered as the rejection it is: a
@@ -3156,7 +3126,7 @@ impl LiveBridge {
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
                 "limits":{"request_frame_bytes":MAX_REQUEST_FRAME_BYTES,"response_frame_bytes":MAX_RESPONSE_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":limits::BATCH_JOBS},
-                "methods":["status","summary","operations","list_validators","edit_context","query","detail","mass","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","run_plugin","program","program_context","program_piece","patch_program","set_program_params","save_program_variant","use_program_variant","delete_program_variant","export_program_variants","program_report","validate_program","check_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","import","remove_underlay","fit_underlay","drawing_remove","drawing_draw","drawing_rooms","drawing_move","drawing_trim","drawing_extend","drawing_offset","drawing_export","drawing_extrude","drawing_view","drawing_solid_from_views","underlay_snap","underlay_objects","underlay_regions","underlay_parallel","program_from_underlay","export","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
+                "methods":["status","summary","operations","list_validators","edit_context","query","detail","mass","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","run_plugin","program","program_context","program_piece","patch_program","set_program_params","save_program_variant","use_program_variant","delete_program_variant","export_program_variants","program_report","validate_program","check_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","import","remove_underlay","fit_underlay","drawing_remove","drawing_discard_refused","drawing_draw","drawing_rooms","drawing_move","drawing_trim","drawing_extend","drawing_offset","drawing_export","drawing_extrude","drawing_view","drawing_solid_from_views","underlay_snap","underlay_objects","underlay_regions","underlay_parallel","program_from_underlay","export","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
             Request::ListValidators {} => Ok(validator_catalog::catalog()),

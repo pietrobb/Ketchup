@@ -385,6 +385,30 @@ impl KetchupApp {
         }
     }
 
+    /// Discards what was done in Kečup to `objects` of the drawing of `underlay`, keeping
+    /// its other edits, as one Undo step; the window's Discard offers those of them the
+    /// last export refused no more.
+    pub(crate) fn discard_underlay_edits(
+        &mut self,
+        underlay: UnderlayId,
+        objects: &[u32],
+        find: FindRegions,
+    ) -> Result<Vec<FollowedChange>, UnderlayEditError> {
+        let changes = self.edit_underlay_drawing(underlay, find, |snapshot, lines| {
+            plan_underlay_edit_discard(snapshot, underlay, lines, objects)
+        })?;
+        let refused = &mut self.file.activity.underlay.refused_edit;
+        if let Some((id, left)) = refused
+            && *id == underlay
+        {
+            left.retain(|object| !objects.contains(object));
+            if left.is_empty() {
+                *refused = None;
+            }
+        }
+        Ok(changes)
+    }
+
     /// Discards the edit of the object the last export of a drawing refused, its entity
     /// changed in the file since, as one Undo step; the other edits stay (review
     /// 2026-11-04 r19 CD-163).
@@ -392,10 +416,7 @@ impl KetchupApp {
         let Some((underlay, objects)) = self.file.activity.underlay.refused_edit.clone() else {
             return;
         };
-        let discarded =
-            self.edit_underlay_drawing(underlay, FindRegions::OffUiThread, |snapshot, lines| {
-                plan_underlay_edit_discard(snapshot, underlay, lines, &objects)
-            });
+        let discarded = self.discard_underlay_edits(underlay, &objects, FindRegions::OffUiThread);
         let object = objects
             .iter()
             .map(u32::to_string)

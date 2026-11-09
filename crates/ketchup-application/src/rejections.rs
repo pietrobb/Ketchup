@@ -140,7 +140,7 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         Validation,
         "underlay_id",
         "A change made to an object of the drawing does not go into its file; caused_by names the object and why (it has no handle, its handle is not in the file, its kind cannot be moved there, or its entity reads otherwise in the file than when imported: what differs, where it lay and lies now). Nothing was written.",
-        "Undo the change of each object caused_by names, or ask the user to press Discard in the window's export message, which keeps the other edits; then export again. Only an object of a kind that cannot be moved there may be removed instead.",
+        "Discard those edits with drawing action=discard_refused (object_ids from details, the default), which keeps the other edits, or undo the change of each object caused_by names; then export again. Only an object of a kind that cannot be moved there may be removed instead.",
     ),
     entry(
         "drawing_sheet_not_found",
