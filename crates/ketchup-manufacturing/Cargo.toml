@@ -10,6 +10,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+ketchup-dwg = { path = "../ketchup-dwg" }
 ketchup-model = { path = "../ketchup-model" }
 ketchup-view-format = { path = "../ketchup-view-format" }
 ketchup-rejection = { path = "../ketchup-rejection" }

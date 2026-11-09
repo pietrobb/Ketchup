@@ -998,7 +998,7 @@ fn every_sheet_lists_the_revisions_of_the_set() {
     };
     let set = drawing_set(&room(), &revised).unwrap();
     assert_eq!(set.sheets.len(), 3);
-    for (sheet, dxf) in set.sheets.iter().zip(set.dxf()) {
+    for (sheet, dxf) in set.sheets.iter().zip(set.dxf().unwrap()) {
         let dxf = String::from_utf8(dxf).unwrap();
         for text in ["Popis zmeny", "A", "B", "Zväčšené okno v obývačke"] {
             assert!(
@@ -1012,7 +1012,7 @@ fn every_sheet_lists_the_revisions_of_the_set() {
                 sheet.number
             );
         }
-        for text in ["1\nPopis zmeny\n", "1\nB\n", "1\n8. 11. 2026\n"] {
+        for text in ["\r\nPopis zmeny\r\n", "\r\nB\r\n", "\r\n8. 11. 2026\r\n"] {
             assert!(
                 dxf.contains(text),
                 "{text:?} in the DXF of {}",
@@ -1209,14 +1209,34 @@ fn each_storey_has_a_plan_sheet_of_its_own_with_its_annotations() {
 #[test]
 fn every_sheet_is_a_dxf_of_its_visible_lines_with_its_title_block() {
     let set = room_set(Some(1200.0));
-    let files = set.dxf();
+    let files = set.dxf().unwrap();
     assert_eq!(files.len(), 3);
-    for (sheet, dxf) in set.sheets.iter().zip(&files) {
+    let drawings = set.cad();
+    for ((sheet, dxf), drawing) in set.sheets.iter().zip(&files).zip(&drawings) {
         let dxf = String::from_utf8(dxf.clone()).unwrap();
-        assert!(dxf.starts_with("0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009"));
-        assert!(dxf.contains(&format!("1\n{} / 3\n", sheet.number)), "{dxf}");
-        assert!(dxf.contains(&format!("1\n{}\n", sheet.title)));
-        assert!(dxf.contains("0\nLINE\n8\nPEN-0_18\n"), "the edges");
+        assert!(
+            dxf.contains("$ACADVER\r\n  1\r\nAC1027\r\n"),
+            "AutoCAD 2013"
+        );
+        assert!(
+            dxf.contains(&format!("\r\n{} / 3\r\n", sheet.number)),
+            "{dxf}"
+        );
+        assert!(dxf.contains(&format!("\r\n{}\r\n", sheet.title)));
+        let on = |layer: &str| {
+            drawing
+                .model
+                .iter()
+                .filter(|entity| {
+                    matches!(entity, ketchup_dwg::sheet::SheetEntity::Polyline { layer: on, .. } if on == layer)
+                })
+                .count()
+        };
+        assert!(
+            on(crate::sheet_cad::VISIBLE) > 0,
+            "the edges, sheet {}",
+            sheet.number
+        );
         // No face is painted: a fill is the outline of a cut, or an
         // arrowhead of a section mark, a few millimetres long.
         let painted = |loops: &Vec<Vec<[f64; 2]>>| {
@@ -1234,13 +1254,14 @@ fn every_sheet_is_a_dxf_of_its_visible_lines_with_its_title_block() {
             "sheet {}",
             sheet.number
         );
+        if sheet.kind == (SheetKind::Plan { storey: 0 }) {
+            assert_eq!(
+                on(crate::sheet_cad::CUT),
+                4,
+                "the four walls the plan cuts, outlined"
+            );
+        }
     }
-    let plan = String::from_utf8(files[0].clone()).unwrap();
-    assert_eq!(
-        plan.matches("0\nLINE\n8\nCUT\n").count(),
-        16,
-        "the four walls the plan cuts, outlined"
-    );
 }
 
 /// A box behind a wall is hidden in the front elevation's lines; the part
@@ -1720,7 +1741,7 @@ fn the_plan_marks_windows_and_doors_and_the_last_sheet_lists_them() {
         assert!(texts.contains(&wanted), "{wanted}: {texts:?}");
     }
     assert_eq!(schedule.lines, schedule.page);
-    let dxf = set.dxf();
+    let dxf = set.dxf().unwrap();
     assert_eq!(dxf.len(), 4);
     assert!(String::from_utf8_lossy(&dxf[3]).contains("window 1200 x 1250"));
 
@@ -1836,7 +1857,7 @@ fn a_shop_drawing_numbers_every_piece_and_dimensions_the_studs_and_the_opening()
     }
     // Sheet and pieces at a shop scale, not the set's.
     assert!(set.scale > 25 && sheet.page.texts().any(|text| text == "1:25"));
-    assert!(String::from_utf8_lossy(&set.dxf()[3]).contains("2500 x 500 x 15"));
+    assert!(String::from_utf8_lossy(&set.dxf().unwrap()[3]).contains("2500 x 500 x 15"));
 
     // The OSB lies in front of the framing, so it gets a view of its own
     // below: the framing view shows every stud, its edges drawn from plate
