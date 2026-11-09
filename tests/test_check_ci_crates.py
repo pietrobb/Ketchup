@@ -234,18 +234,23 @@ def test_every_feature_of_the_workspace_is_linted_in_ci():
 def test_a_crate_with_windows_only_code_has_its_panics_counted_on_windows(tmp_path):
     # Review 2026-11-08 CI-250: ketchup-mcp's credential ACL compiles on Windows only, and
     # its panics were counted on Linux only, where clippy never sees that code.
-    (tmp_path / "Cargo.toml").write_text('[workspace]\nmembers = ["a", "b", "c", "d"]\n', encoding="utf-8")
+    (tmp_path / "Cargo.toml").write_text(
+        '[workspace]\nmembers = ["a", "b", "c", "d", "e", "f", "g"]\n', encoding="utf-8")
     sources = {
         "a": ('#[cfg(windows)]\nmod acl;\n', "lib.rs"),
         "b": ('#[cfg(all(target_os = "windows", feature = "x"))]\nfn f() {}\n', "lib.rs"),
         "c": ("fn f() -> bool { cfg!(windows) }\n", "lib.rs"),  # both branches compile everywhere
         "d": ("#[cfg(windows)]\nfn only_in_tests() {}\n", "tests.rs"),
+        # Review 2026-11-09 R1109-CI-300: `not(unix)` and a cfg rustfmt broke over lines.
+        "e": ("#[cfg(not(unix))]\nfn f() {}\n", "lib.rs"),
+        "f": ('#[cfg(all(\n    feature = "x",\n    target_os = "windows"\n))]\nfn f() {}\n', "lib.rs"),
+        "g": ('#[cfg(unix)]\nfn f() {}\n#[derive(Debug)]\nstruct Windows;\n', "lib.rs"),
     }
     for name, (source, file) in sources.items():
         (tmp_path / name / "src").mkdir(parents=True)
         (tmp_path / name / "Cargo.toml").write_text(f'[package]\nname = "{name}"\n', encoding="utf-8")
         (tmp_path / name / "src" / file).write_text(source, encoding="utf-8")
-    assert checker.crates_with_windows_code(tmp_path) == {"a", "b"}
+    assert checker.crates_with_windows_code(tmp_path) == {"a", "b", "e", "f"}
     workflow = """name: CI
 jobs:
   linux:

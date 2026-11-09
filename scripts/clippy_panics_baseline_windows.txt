@@ -1,5 +1,5 @@
 # Panics and stderr writes clippy still finds in production code on windows (unwrap_used, expect_used, panic, print_stderr; <file> <lint> <count>, scripts/check_clippy_panics.py); may only shrink.
-# packages: ketchup-app ketchup-application ketchup-exact ketchup-headless ketchup-mcp ketchup-pdm ketchup-scheduler ketchup-test-gpu ketchup-viewer
+# packages: ketchup-app ketchup-application ketchup-exact ketchup-headless ketchup-mcp ketchup-model ketchup-pdm ketchup-rejection ketchup-scheduler ketchup-test-gpu ketchup-viewer ketchup-viewer-android
 crates/ketchup-app/src/app/commands.rs expect_used 3
 crates/ketchup-app/src/app/dimensions_ui.rs expect_used 2
 crates/ketchup-app/src/app/document.rs expect_used 4
@@ -77,6 +77,48 @@ crates/ketchup-headless/src/protocol.rs expect_used 1
 crates/ketchup-mcp/src/discovery.rs print_stderr 3
 crates/ketchup-mcp/src/stage.rs expect_used 2
 crates/ketchup-mcp/src/tools.rs print_stderr 1
+crates/ketchup-model/src/assembly.rs expect_used 3
+crates/ketchup-model/src/assembly_joint.rs expect_used 14
+crates/ketchup-model/src/assembly_recipe.rs expect_used 3
+crates/ketchup-model/src/cam.rs expect_used 1
+crates/ketchup-model/src/document.rs expect_used 1
+crates/ketchup-model/src/document/assembly_validation.rs expect_used 2
+crates/ketchup-model/src/document/digest_v3.rs expect_used 1
+crates/ketchup-model/src/document/entities.rs expect_used 3
+crates/ketchup-model/src/document/feature_validation.rs expect_used 4
+crates/ketchup-model/src/document/product_validation.rs expect_used 15
+crates/ketchup-model/src/document/revision.rs expect_used 1
+crates/ketchup-model/src/document/snapshot.rs expect_used 3
+crates/ketchup-model/src/document/stable_digest.rs expect_used 1
+crates/ketchup-model/src/document/store.rs expect_used 5
+crates/ketchup-model/src/drawing.rs expect_used 2
+crates/ketchup-model/src/exact_brep_graph.rs expect_used 1
+crates/ketchup-model/src/exact_product.rs expect_used 8
+crates/ketchup-model/src/exact_validation.rs expect_used 5
+crates/ketchup-model/src/import.rs expect_used 10
+crates/ketchup-model/src/import/dxf.rs expect_used 1
+crates/ketchup-model/src/import/dxf/chain.rs expect_used 3
+crates/ketchup-model/src/import/dxf/polyline.rs expect_used 1
+crates/ketchup-model/src/import/dxf/underlay.rs expect_used 1
+crates/ketchup-model/src/import/glb.rs expect_used 4
+crates/ketchup-model/src/persistence.rs expect_used 5
+crates/ketchup-model/src/persistence/legacy.rs expect_used 1
+crates/ketchup-model/src/persistence/snapshot_codec.rs expect_used 4
+crates/ketchup-model/src/persistence/snapshot_encoding.rs expect_used 1
+crates/ketchup-model/src/persistence/work_recovery_steps.rs expect_used 1
+crates/ketchup-model/src/r12_text.rs expect_used 1
+crates/ketchup-model/src/shared_change.rs expect_used 1
+crates/ketchup-model/src/shared_change/replacement.rs expect_used 1
+crates/ketchup-model/src/sheet_metal.rs expect_used 3
+crates/ketchup-model/src/sheet_pdf.rs expect_used 14
+crates/ketchup-model/src/state_view.rs expect_used 1
+crates/ketchup-model/src/underlay.rs expect_used 7
+crates/ketchup-model/src/underlay/drawn.rs expect_used 2
+crates/ketchup-model/src/underlay/edits.rs expect_used 3
+crates/ketchup-model/src/underlay/objects.rs expect_used 1
+crates/ketchup-model/src/underlay/placement.rs expect_used 2
+crates/ketchup-model/src/underlay/view.rs expect_used 1
+crates/ketchup-model/src/validation.rs expect_used 2
 crates/ketchup-scheduler/src/child_process.rs print_stderr 1
 crates/ketchup-scheduler/src/exact_worker.rs expect_used 1
 crates/ketchup-scheduler/src/exact_worker.rs print_stderr 1

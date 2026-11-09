@@ -73,7 +73,10 @@ SYSTEM_ONLY = {"ketchup-viewer-macos": {"macOS"}, "ketchup-macos-open": {"macOS"
 PANICS = re.compile(r"\bcheck_clippy_panics\.py\b([^\n;|&]*)")
 # Code only Windows compiles, which clippy on another system never sees (review 2026-11-08 CI-250).
 # `cfg!(windows)` is not: both of its branches compile everywhere.
-WINDOWS_CODE = re.compile(r'#!?\[cfg(?:_attr)?\(.*(?:\bwindows\b|target_os\s*=\s*"windows")')
+# Over several lines as rustfmt breaks a long one, and `not(unix)` too (review 2026-11-09
+# R1109-CI-300: both were missed).
+WINDOWS_CODE = re.compile(
+    r'#!?\[cfg(?:_attr)?\([^\]]*?(?:\bwindows\b|target_os\s*=\s*"windows"|\bnot\s*\(\s*unix\s*\))')
 TEST_FILE = re.compile(r"(?:^|_)tests?\.rs$")
 # libtest options that take the next word as their value.
 VALUE_OPTIONS = {"--skip", "--test-threads", "--format", "--color", "--logfile", "-Z", "--shuffle-seed"}

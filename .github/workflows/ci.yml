@@ -265,10 +265,12 @@ jobs:
     env:
       # ketchup-mcp has Windows-only code (the ACL of its credential files,
       # remote drives) that the job without OCCT never compiles (review
-      # 2026-11-08 CI-250).
+      # 2026-11-08 CI-250); so do ketchup-pdm (a junction refused) and
+      # ketchup-rejection, whose tests of it ran nowhere (review 2026-11-09 R1109-CI-301).
       CRATES: >-
         -p ketchup-app -p ketchup-application -p ketchup-exact -p ketchup-headless
-        -p ketchup-mcp -p ketchup-scheduler -p ketchup-test-gpu
+        -p ketchup-mcp -p ketchup-scheduler -p ketchup-test-gpu -p ketchup-pdm
+        -p ketchup-rejection
       NIGHTLY: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -316,6 +318,7 @@ jobs:
           python scripts/check_clippy_panics.py -p ketchup-app -p ketchup-application
           -p ketchup-exact -p ketchup-headless -p ketchup-mcp -p ketchup-pdm
           -p ketchup-scheduler -p ketchup-test-gpu -p ketchup-viewer
+          -p ketchup-model -p ketchup-rejection -p ketchup-viewer-android
       # The live MCP tests launch the debug application beside its worker.
       - name: workers, the headless CLI and the application for the tests
         if: ${{ !cancelled() }}
