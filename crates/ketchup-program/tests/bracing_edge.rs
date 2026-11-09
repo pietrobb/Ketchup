@@ -204,8 +204,11 @@ fn a_deck_declared_a_diaphragm_anchored_to_a_wall_braces_the_joists() {
         unanchored.issues
     );
 
+    // A board over the gap, clear of the pad, ties the first board to the
+    // second: a board reaching no anchor holds nothing (review 2026-11-09 PG-301).
     let anchored = report(&deck(&format!(
-        "joint(\"deck b\", \"end wall\", kind = \"screw\")\n{declared}"
+        "box(\"deck tie\", (700, 880, 22), at = (2600, 200, 2422), material = \"GL24h\", tags = [\"deck\"])
+joint(\"deck b\", \"end wall\", kind = \"screw\")\n{declared}"
     )));
     let beam = load(&anchored, "beam");
     let held: Vec<f64> = beam
