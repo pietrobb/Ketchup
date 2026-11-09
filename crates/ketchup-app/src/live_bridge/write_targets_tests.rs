@@ -52,6 +52,7 @@ fn saved_window(
         unit: Some("mm".to_owned()),
         as_underlay: false,
         revision_of: None,
+        code_page: None,
     };
     bridge.execute(&mut app, import, false).unwrap();
     let request = save_as(&app, &document);

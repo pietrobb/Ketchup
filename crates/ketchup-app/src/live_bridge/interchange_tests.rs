@@ -29,6 +29,7 @@ fn import(path: &Path, unit: Option<&str>) -> Request {
         unit: unit.map(str::to_owned),
         as_underlay: false,
         revision_of: None,
+        code_page: None,
     }
 }
 

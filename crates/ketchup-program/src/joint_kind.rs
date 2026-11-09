@@ -95,6 +95,7 @@ pub const FASTENING_JOINT_KINDS: &[&str] = &[
     "glue",
     "glued",
     "adhesive",
+    "contact adhesive",
     "hanger",
     "joist hanger",
     "connector",
@@ -110,6 +111,7 @@ pub const FASTENING_JOINT_KINDS: &[&str] = &[
     "hold down",
     "holddown",
     "tenon",
+    "loose tenon",
     "mortise and tenon",
     "dovetail",
     "arunda",
@@ -197,31 +199,70 @@ pub fn normalized(kind: &str) -> String {
         .join(" ")
 }
 
-/// Whether `kind` (normalized) begins with the whole words of `entry`: programs
-/// qualify a kind by side, size or product ("krokvová spojka ľavá", "vrut 6x120",
-/// "Arunda 80 B"), and the qualifier does not change what the kind fastens.
-fn begins_with(kind: &str, entry: &str) -> bool {
-    kind.strip_prefix(entry)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+/// Words that qualify a kind by its side or place, which does not change what
+/// it fastens ("krokvová spojka ľavá", "Schraube links").
+const SIDE_WORDS: &[&str] = &[
+    "left", "right", "upper", "lower", "top", "bottom", "inner", "outer", "ľavá", "ľavý", "ľavé",
+    "lavá", "lava", "pravá", "pravý", "pravé", "prava", "horná", "horný", "dolná", "dolný", "levá",
+    "levý", "levé", "horní", "dolní", "links", "rechts", "oben", "unten", "innen", "außen",
+    "aussen",
+];
+
+/// Whether `word` qualifies a kind by size, product or side: it carries a digit
+/// ("6x120", "80"), is one letter ("B") or names a side.
+fn qualifier(word: &str) -> bool {
+    word.chars().any(|c| c.is_ascii_digit())
+        || word.chars().count() == 1
+        || SIDE_WORDS.contains(&word)
 }
 
-/// What `kind` says of how a joint's parts join: the catalogue entry its leading
-/// words are, an unfastened one over a fastening one when both are.
+/// The longest catalogue entry `words` begin with, and how it fastens.
+fn longest_entry(words: &[&str]) -> Option<(usize, JointFastening)> {
+    UNFASTENED_JOINT_KINDS
+        .iter()
+        .map(|entry| (entry, JointFastening::Unfastened))
+        .chain(
+            FASTENING_JOINT_KINDS
+                .iter()
+                .map(|entry| (entry, JointFastening::Fastens)),
+        )
+        .filter_map(|(entry, fastening)| {
+            let length = entry.split(' ').count();
+            (words.len() >= length && words[..length].join(" ") == **entry)
+                .then_some((length, fastening))
+        })
+        .max_by_key(|(length, _)| *length)
+}
+
+/// What `kind` says of how a joint's parts join. Its words are read as catalogue
+/// entries, the longest first ("loose tenon" fastens, "loose" alone does not),
+/// and qualifiers of size, product or side ("vrut 6x120", "Arunda 80 B"). It
+/// must begin with an entry, and an unfastened entry wins over a fastening one
+/// ("lose Schraube"). A word that is neither leaves the kind unknown (review
+/// 2026-11-09 PG-309: "slide in", "angle cut" and "plate bearing" fastened by
+/// their first word alone).
 #[must_use]
 pub fn fastening(kind: &str) -> JointFastening {
     let kind = normalized(kind);
-    if UNFASTENED_JOINT_KINDS
-        .iter()
-        .any(|entry| begins_with(&kind, entry))
-    {
-        JointFastening::Unfastened
-    } else if FASTENING_JOINT_KINDS
-        .iter()
-        .any(|entry| begins_with(&kind, entry))
-    {
-        JointFastening::Fastens
-    } else {
+    let words: Vec<&str> = kind.split(' ').filter(|word| !word.is_empty()).collect();
+    let mut at = 0;
+    let mut found = Vec::new();
+    while at < words.len() {
+        if let Some((length, fastening)) = longest_entry(&words[at..]) {
+            found.push(fastening);
+            at += length;
+        } else if at > 0 && qualifier(words[at]) {
+            at += 1;
+        } else {
+            return JointFastening::Unknown;
+        }
+    }
+    if found.is_empty() {
         JointFastening::Unknown
+    } else if found.contains(&JointFastening::Unfastened) {
+        JointFastening::Unfastened
+    } else {
+        JointFastening::Fastens
     }
 }
 
@@ -277,6 +318,34 @@ mod tests {
             "loosely",
         ] {
             assert_eq!(fastening(kind), JointFastening::Unknown, "{kind}");
+        }
+    }
+
+    /// Review 2026-11-09 PG-309: a kind was read by its first word alone.
+    #[test]
+    fn a_kind_is_read_by_all_its_words_not_its_first() {
+        for kind in [
+            "slide in",
+            "angle cut",
+            "plate bearing",
+            "screw or not",
+            "kontakt plocha",
+        ] {
+            assert_eq!(fastening(kind), JointFastening::Unknown, "{kind}");
+        }
+        for kind in [
+            "loose tenon",
+            "Loose_Tenon",
+            "contact adhesive",
+            "contact-adhesive 2",
+            "mortise and tenon",
+            "angle bracket left",
+            "nail plate 100x200",
+        ] {
+            assert_eq!(fastening(kind), JointFastening::Fastens, "{kind}");
+        }
+        for kind in ["loose", "contact", "lose Schraube", "voľne uložené"] {
+            assert_eq!(fastening(kind), JointFastening::Unfastened, "{kind}");
         }
     }
 }

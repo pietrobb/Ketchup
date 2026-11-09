@@ -460,3 +460,57 @@ fn a_length_axis_far_shorter_than_the_part_or_unknown_is_not_trusted() {
     };
     assert!(error.to_string().contains("length_axis"), "{error}");
 }
+
+/// R1109-PG-310: every declaration that held nothing gave the same hint, to
+/// fasten the brace and anchor the diaphragm, whatever the reason was. Each
+/// reason now says what to do about it, and a member lists a reason once.
+#[test]
+fn each_reason_a_declaration_holds_nothing_has_its_own_hint() {
+    let hints = |source: &str| -> Vec<(String, String)> {
+        let report = report(source);
+        for member in &report.design.members {
+            let mut once = member.missing.clone();
+            once.sort();
+            once.dedup();
+            assert_eq!(once.len(), member.missing.len(), "{:?}", member.missing);
+        }
+        report
+            .issues
+            .iter()
+            .filter(|issue| issue.kind == "declared_bracing_ignored")
+            .map(|issue| (issue.message.clone(), issue.hint.clone()))
+            .collect()
+    };
+    let cases = [
+        (
+            laths_under("brace([\"beam\"], by = [\"lath\"], edge = \"top\", spacing = 300)\n"),
+            "edge=\"bottom\"",
+        ),
+        (
+            format!("{BEAM}brace([\"beam\"], by = [\"ghost\"], edge = \"top\")\n"),
+            "instead of ghost",
+        ),
+        (
+            deck(
+                "joint(\"deck b\", \"end wall\", kind = \"screw\")\ndiaphragm([\"deck\"], anchored_to = [\"end wall\"])\n",
+            ),
+            "Lay deck a against",
+        ),
+        (
+            deck("diaphragm([\"deck\"], anchored_to = [\"post a\", \"end wall\"])\n"),
+            "Fasten a sheet to",
+        ),
+    ];
+    let mut seen = Vec::new();
+    for (source, hint) in &cases {
+        let found = hints(source);
+        assert!(
+            found.iter().any(|(_, given)| given.contains(hint)),
+            "{hint}: {found:#?}"
+        );
+        seen.extend(found.into_iter().map(|(_, given)| given));
+    }
+    seen.sort();
+    seen.dedup();
+    assert!(seen.len() >= cases.len(), "{seen:#?}");
+}

@@ -34,6 +34,7 @@ fn import(path: &Path) -> Request {
         unit: None,
         as_underlay: false,
         revision_of: None,
+        code_page: None,
     }
 }
 
@@ -44,6 +45,7 @@ fn import_underlay(path: &Path) -> Request {
         unit: None,
         as_underlay: true,
         revision_of: None,
+        code_page: None,
     }
 }
 

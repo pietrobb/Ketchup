@@ -112,6 +112,8 @@ pub(crate) struct UnderlayExportJob {
     edits: ketchup_model::underlay::edits::UnderlayEdits,
     /// What its lines were moved by when read.
     offset_mm: [f64; 2],
+    /// The code page the user chose to read it in.
+    code_page: Option<ketchup_model::import::DxfCodePage>,
     output: PathBuf,
     replacing: Option<String>,
 }
@@ -213,6 +215,7 @@ impl UnderlayExportJob {
                 // Read again it moves as it moved then, also not at all (review 2026-11-04
                 // r19 CD-160: points the file gained since moved it by their median).
                 geo_origin_mm: Some(self.offset_mm),
+                code_page: self.code_page,
                 lines,
                 layers: self.layers,
                 edits: self.edits,
@@ -324,6 +327,7 @@ impl KetchupApp {
             layers: underlay.layers.len(),
             edits: underlay.edits.clone(),
             offset_mm: underlay.offset_mm(),
+            code_page: underlay.code_page,
             output: output.to_owned(),
             replacing: replacing.map(str::to_owned),
         })
@@ -448,6 +452,55 @@ impl KetchupApp {
         }
     }
 
+    /// An edit refused as its object's entity changed in the file since can be discarded
+    /// alone, and the command that does it is said (review 2026-11-04 r19 CD-163).
+    fn offer_refused_edit_discard(
+        &mut self,
+        id: Option<UnderlayId>,
+        error: Option<&UnderlayExportError>,
+    ) {
+        self.file.activity.underlay.refused_edit = match (error, id) {
+            (Some(error), Some(id)) => {
+                let objects = error.refused_edits();
+                (!objects.is_empty()).then_some((id, objects))
+            }
+            _ => None,
+        };
+        if self.file.activity.underlay.refused_edit.is_some() {
+            self.digest.push(' ');
+            self.digest.push_str(
+                &self.catalog.format(
+                    "digest-underlay-export-discard-hint",
+                    &BTreeMap::from([(
+                        "command",
+                        self.catalog
+                            .text("tool-discard-refused-underlay-edit")
+                            .to_owned(),
+                    )]),
+                ),
+            );
+        }
+    }
+
+    /// How a drawing an AI client asked to write back went, said in the window as the
+    /// window's own export: a refused edit gets its Discard there too (review 2026-11-09
+    /// CD-300: the hint told the AI to have the user press a Discard the window had not).
+    pub(crate) fn finish_client_underlay_export(
+        &mut self,
+        id: UnderlayId,
+        error: Option<&UnderlayExportError>,
+    ) {
+        if let Some(error) = error
+            && !error.refused_edits().is_empty()
+        {
+            self.digest = self.catalog.format(
+                "digest-underlay-export-failed",
+                &BTreeMap::from([("reason", error.to_string())]),
+            );
+        }
+        self.offer_refused_edit_discard(Some(id), error);
+    }
+
     /// Says how writing the drawing went; `id` is the underlay's when it is of the
     /// document still open, None when the one it was written for has gone.
     fn finish_underlay_export(
@@ -483,30 +536,7 @@ impl KetchupApp {
                 &BTreeMap::from([("reason", error.to_string())]),
             ),
         };
-        // An edit refused as its object's entity changed in the file since can be
-        // discarded alone, and the command that does it is said (review 2026-11-04 r19
-        // CD-163).
-        self.file.activity.underlay.refused_edit = match (&result, id) {
-            (Err(error), Some(id)) => {
-                let objects = error.refused_edits();
-                (!objects.is_empty()).then_some((id, objects))
-            }
-            _ => None,
-        };
-        if self.file.activity.underlay.refused_edit.is_some() {
-            self.digest.push(' ');
-            self.digest.push_str(
-                &self.catalog.format(
-                    "digest-underlay-export-discard-hint",
-                    &BTreeMap::from([(
-                        "command",
-                        self.catalog
-                            .text("tool-discard-refused-underlay-edit")
-                            .to_owned(),
-                    )]),
-                ),
-            );
-        }
+        self.offer_refused_edit_discard(id, result.as_ref().err());
         // Entities changed in, or added to, the file since it was imported are written as
         // it has them, and said (review 2026-11-04 CD-140).
         if let Ok(written) = &result {
