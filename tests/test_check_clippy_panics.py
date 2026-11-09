@@ -97,12 +97,66 @@ def test_a_count_on_one_system_is_compared_with_that_systems_count(tmp_path, mon
     found = [message("unwrap_used", "crates/a/src/acl.rs", 7)]
     monkeypatch.setattr(checker.subprocess, "run", lambda *_, **__: type(
         "Run", (), {"returncode": 0, "stdout": "\n".join(found)})())
+    monkeypatch.setattr(checker, "compiled_packages", lambda packages, *_: set(packages))
     assert checker.check(["a"], root=tmp_path, system="linux") == 0
     assert checker.check(["a"], root=tmp_path, system="windows") == 1
     assert "crates/a/src/acl.rs unwrap_used: 1 (allowed 0)" in capsys.readouterr().out
     # --update does not let it in either; the Windows count stays as it was.
     assert checker.check(["a"], update=True, root=tmp_path, system="windows") == 1
     assert checker.read_baseline(tmp_path, "windows") == ({}, {"a"})
+
+
+def test_the_workspace_packages_a_run_compiles_are_counted_too(tmp_path, monkeypatch, capsys):
+    # Review 2026-11-09 R1109-TST-302: clippy reported the workspace crates the named ones
+    # depend on, and the check dropped them, so code only they compiled was counted by no run.
+    for name in ("app", "lib", "other"):
+        package(tmp_path, name)
+    (tmp_path / "scripts").mkdir()
+    checker.write_baseline(tmp_path, "linux-occt", {}, {"app"})
+    found = [message("expect_used", "crates/lib/src/unix.rs", 7),
+             message("expect_used", "crates/other/src/lib.rs", 1)]
+    monkeypatch.setattr(checker.subprocess, "run", lambda *_, **__: type(
+        "Run", (), {"returncode": 0, "stdout": "\n".join(found)})())
+    monkeypatch.setattr(checker, "compiled_packages", lambda *_: {"app", "lib"})
+    assert checker.check(["app"], root=tmp_path, system="linux-occt") == 1
+    assert capsys.readouterr().out.splitlines()[1:] == ["crates/lib/src/unix.rs expect_used: 1 (allowed 0)"]
+    # Recorded once as found, with the package; other, not compiled, stays out.
+    assert checker.check(["app"], update=True, root=tmp_path, system="linux-occt") == 0
+    assert checker.read_baseline(tmp_path, "linux-occt") == (
+        {"crates/lib/src/unix.rs expect_used": 1}, {"app", "lib"})
+
+
+def test_the_compiled_packages_follow_the_workspace_dependencies_of_the_target(monkeypatch):
+    metadata = json.dumps({
+        "workspace_members": ["app", "lib", "phone", "mac"],
+        "packages": [{"id": each, "name": each} for each in ("app", "lib", "phone", "mac", "serde")],
+        "resolve": {"nodes": [
+            {"id": "app", "deps": [{"pkg": "lib", "dep_kinds": [{"kind": None}]},
+                                   {"pkg": "serde", "dep_kinds": [{"kind": None}]},
+                                   {"pkg": "mac", "dep_kinds": [{"kind": "dev"}]}]},
+            {"id": "phone", "deps": [{"pkg": "lib", "dep_kinds": [{"kind": None}]}]},
+        ]},
+    })
+    commands = []
+
+    def run(command, **_):
+        commands.append(command)
+        return type("Run", (), {"returncode": 0, "stdout": metadata})()
+
+    monkeypatch.setattr(checker.subprocess, "run", run)
+    assert checker.compiled_packages(["app"], ROOT, "aarch64-linux-android") == {"app", "lib"}
+    assert commands[0][-2:] == ["--filter-platform", "aarch64-linux-android"]
+
+
+def test_a_target_is_compiled_for_and_compared_with_its_own_baseline():
+    assert checker.clippy_command(["a"], "wasm32-unknown-unknown")[3:7] == [
+        "-p", "a", "--target", "wasm32-unknown-unknown"]
+    assert checker.target_and_baseline(["--target", "aarch64-linux-android", "-p", "a"]) == (
+        "aarch64-linux-android", "android")
+    assert checker.target_and_baseline(["--target", "wasm32-unknown-unknown"])[1] == "browser"
+    assert checker.target_and_baseline(["--target", "aarch64-apple-darwin"])[1] == "macos"
+    assert checker.target_and_baseline(["--baseline", "linux-occt", "-p", "a"]) == (None, "linux-occt")
+    assert checker.target_and_baseline(["-p", "a"]) == (None, checker.SYSTEM)
 
 
 def test_the_ci_jobs_baselines_are_per_system():
@@ -179,6 +233,11 @@ def test_without_packages_named_the_systems_recorded_ones_are_checked(tmp_path):
     assert checker.packages_to_check([], tmp_path, "linux") == ["a", "b"]
     assert checker.packages_to_check(["-p", "c"], tmp_path, "linux") == ["c"]
     assert checker.packages_to_check([], tmp_path, "macos") == []
+    # A dependency the run compiled is recorded but not named: named, its binaries, which a
+    # dependency's run never compiles, would be counted against it.
+    checker.write_baseline(tmp_path, "windows", {}, {"a"}, {"a", "lib"})
+    assert checker.packages_to_check([], tmp_path, "windows") == ["a"]
+    assert checker.read_baseline(tmp_path, "windows") == ({}, {"a", "lib"})
 
 
 def test_the_packages_come_from_the_command_line():

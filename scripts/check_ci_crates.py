@@ -29,7 +29,9 @@ dev-dependencies.
 
 A crate with code only Windows compiles has its panics and stderr writes counted
 (scripts/check_clippy_panics.py) by a job on Windows, since clippy elsewhere never
-sees that code (review 2026-11-08 CI-250).
+sees that code (review 2026-11-08 CI-250); so does one with code only Linux, macOS,
+a unix system, Android or the browser compiles, on that system or with its `--target`
+(review 2026-11-09 R1109-TST-302). A crate is counted where a crate depending on it is.
 """
 
 import re
@@ -75,8 +77,26 @@ PANICS = re.compile(r"\bcheck_clippy_panics\.py\b([^\n;|&]*)")
 # `cfg!(windows)` is not: both of its branches compile everywhere.
 # Over several lines as rustfmt breaks a long one, and `not(unix)` too (review 2026-11-09
 # R1109-CI-300: both were missed).
-WINDOWS_CODE = re.compile(
-    r'#!?\[cfg(?:_attr)?\([^\]]*?(?:\bwindows\b|target_os\s*=\s*"windows"|\bnot\s*\(\s*unix\s*\))')
+CFG = r"#!?\[cfg(?:_attr)?\([^\]]*?"
+# Code for one system or target only, which clippy elsewhere never sees (review 2026-11-09
+# R1109-TST-302: the unix code of the crates with OCCT, and the macOS, Android and browser
+# code, were counted nowhere). `unix` code is seen on any unix system.
+SYSTEM_CODE = {
+    "Windows": re.compile(CFG + r'(?:\bwindows\b|target_os\s*=\s*"windows"|\bnot\s*\(\s*unix\s*\))'),
+    "Linux": re.compile(CFG + r'target_os\s*=\s*"linux"'),
+    "macOS": re.compile(CFG + r'target_os\s*=\s*"macos"'),
+    "Android": re.compile(CFG + r'target_os\s*=\s*"android"'),
+    "Browser": re.compile(CFG + r'(?:target_arch\s*=\s*"wasm32"|target_family\s*=\s*"wasm")'),
+    "unix": re.compile(CFG + r"(?<!not\()\bunix\b"),
+}
+UNIX = {"Linux", "macOS", "Android"}
+# The system a `--target` triple compiles for, and the words of a `[target.'cfg(..)']`
+# dependency's condition that hold on each system.
+TARGET_SYSTEMS = (("android", "Android"), ("wasm32", "Browser"), ("apple", "macOS"),
+                  ("windows", "Windows"), ("linux", "Linux"))
+TARGET_FLAG = re.compile(r"(?:^|\s)--target[\s=]+(\S+)")
+CONDITION_WORDS = {"Linux": ("linux", "unix"), "macOS": ("macos", "unix"), "Windows": ("windows",),
+                   "Android": ("android", "unix"), "Browser": ("wasm",)}
 TEST_FILE = re.compile(r"(?:^|_)tests?\.rs$")
 # libtest options that take the next word as their value.
 VALUE_OPTIONS = {"--skip", "--test-threads", "--format", "--color", "--logfile", "-Z", "--shuffle-seed"}
@@ -240,34 +260,79 @@ def cargo_crates(workflows, subcommand, system=None):
     return crates
 
 
-def panics_counted(workflows, system):
-    """Every crate whose panics and stderr writes a step on the system counts."""
+def target_system(target):
+    return next((system for part, system in TARGET_SYSTEMS if part in target), target)
+
+
+def workspace_dependencies(root, system):
+    """Each member's workspace dependencies on the system: its plain ones and those of a
+    `[target.'cfg(..)']` table whose condition holds there."""
+    members = workspace_members(root)
+    dependencies = {}
+    for name, directory in members.items():
+        manifest = tomllib.loads((directory / "Cargo.toml").read_text(encoding="utf-8"))
+        used = set(manifest.get("dependencies", {}))
+        for condition, table in manifest.get("target", {}).items():
+            if "not(" not in condition and any(word in condition for word in CONDITION_WORDS.get(system, ())):
+                used |= set(table.get("dependencies", {}))
+        dependencies[name] = used & set(members)
+    return dependencies
+
+
+def panics_counted(workflows, system, root=None):
+    """Every crate whose panics and stderr writes a step counts on the system: on its job's
+    systems, or the one of its `--target`. With the workspace root, also the workspace
+    crates they depend on there, which scripts/check_clippy_panics.py counts too."""
     crates = set()
-    for listed, step in pull_request_runs(workflows, system):
-        for arguments in PANICS.findall(step):
-            crates |= set(PACKAGE_FLAG.findall(arguments)) | (listed if "CRATES" in arguments else set())
+    for workflow in workflows:
+        nightly = nightly_variables(workflow)
+        for job in jobs(workflow):
+            listed = set(PACKAGE_FLAG.findall("".join(CRATE_LIST.findall(job))))
+            for step in pull_request_steps(job, nightly):
+                step_line = CONTINUATION.sub(" ", folded(step))
+                for arguments in PANICS.findall(step_line):
+                    target = TARGET_FLAG.search(arguments)
+                    systems = {target_system(target.group(1))} if target else step_systems(step, job_systems(job))
+                    if system in systems:
+                        crates |= set(PACKAGE_FLAG.findall(arguments)) | (listed if "CRATES" in arguments else set())
+    if root is not None:
+        dependencies = workspace_dependencies(root, system)
+        reached = list(crates)
+        while reached:
+            for dependency in dependencies.get(reached.pop(), set()) - crates:
+                crates.add(dependency)
+                reached.append(dependency)
     return crates
 
 
-def crates_with_windows_code(root):
-    """The members whose sources, outside a test file, have code for Windows only."""
-    return {
-        name
-        for name, directory in workspace_members(root).items()
-        if any(
-            WINDOWS_CODE.search(path.read_text(encoding="utf-8"))
-            for path in (directory / "src").rglob("*.rs")
-            if not TEST_FILE.search(path.name)
-        )
-    }
+def crates_with_system_code(root):
+    """Each member whose sources, outside a test file, have code for one system only, with
+    those systems (`unix` for code every unix system compiles)."""
+    found = {}
+    for name, directory in workspace_members(root).items():
+        for path in (directory / "src").rglob("*.rs"):
+            if TEST_FILE.search(path.name):
+                continue
+            text = path.read_text(encoding="utf-8")
+            found.setdefault(name, set()).update(system for system, code in SYSTEM_CODE.items() if code.search(text))
+        for system in SYSTEM_ONLY.get(name, ()):
+            found.setdefault(name, set()).add(system)
+    return {name: systems for name, systems in found.items() if systems}
 
 
-def windows_code_uncounted(with_windows_code, counted):
-    return [
-        f"{crate}: has code only Windows compiles, but no CI job on Windows counts its panics and"
-        " stderr writes; add it to the Windows job's scripts/check_clippy_panics.py"
-        for crate in sorted(with_windows_code - counted)
-    ]
+def system_code_uncounted(with_system_code, counted):
+    """counted maps a system to the crates whose panics a step there counts."""
+    problems = []
+    for crate, systems in sorted(with_system_code.items()):
+        for system in sorted(systems):
+            where = UNIX if system == "unix" else {system}
+            if not any(crate in counted.get(each, set()) for each in where):
+                problems.append(
+                    f"{crate}: has code only {system} compiles, but no CI job on {system} counts its panics"
+                    " and stderr writes; add it (or a crate depending on it) to a scripts/check_clippy_panics.py"
+                    f" step on {system}" + (" or with its --target" if system in ("Android", "Browser") else "")
+                )
+    return problems
 
 
 def crate_features(root):
@@ -372,7 +437,10 @@ def main():
         crates_with_tests(root),
     )
     problems += unlinted_features(crate_features(root), linted_features(workflows))
-    problems += windows_code_uncounted(crates_with_windows_code(root), panics_counted(workflows, "Windows"))
+    problems += system_code_uncounted(
+        crates_with_system_code(root),
+        {system: panics_counted(workflows, system, root) for system in (*SYSTEMS.values(), "Android", "Browser")},
+    )
     for problem in problems:
         print(problem)
     if not problems:

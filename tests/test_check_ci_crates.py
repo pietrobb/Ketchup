@@ -250,7 +250,8 @@ def test_a_crate_with_windows_only_code_has_its_panics_counted_on_windows(tmp_pa
         (tmp_path / name / "src").mkdir(parents=True)
         (tmp_path / name / "Cargo.toml").write_text(f'[package]\nname = "{name}"\n', encoding="utf-8")
         (tmp_path / name / "src" / file).write_text(source, encoding="utf-8")
-    assert checker.crates_with_windows_code(tmp_path) == {"a", "b", "e", "f"}
+    assert {name for name, systems in checker.crates_with_system_code(tmp_path).items()
+            if "Windows" in systems} == {"a", "b", "e", "f"}
     workflow = """name: CI
 jobs:
   linux:
@@ -269,14 +270,66 @@ jobs:
 """
     assert checker.panics_counted([workflow], "Linux") == {"a", "b"}
     assert checker.panics_counted([workflow], "Windows") == {"b"}
-    assert checker.windows_code_uncounted({"a", "b"}, {"b"}) == [
-        "a: has code only Windows compiles, but no CI job on Windows counts its panics and"
-        " stderr writes; add it to the Windows job's scripts/check_clippy_panics.py"
+    assert checker.system_code_uncounted({"a": {"Windows"}, "b": {"Windows"}}, {"Windows": {"b"}}) == [
+        "a: has code only Windows compiles, but no CI job on Windows counts its panics and stderr writes;"
+        " add it (or a crate depending on it) to a scripts/check_clippy_panics.py step on Windows"
     ]
 
 
-def test_every_crate_with_windows_only_code_has_its_panics_counted_on_windows():
+def test_code_for_one_system_or_target_is_counted_there_or_through_a_crate_depending_on_it(tmp_path):
+    # Review 2026-11-09 R1109-TST-302: the unix code of the crates with OCCT, and the macOS,
+    # Android and browser code, were counted by no job; nor were the workspace crates the
+    # counted ones depend on.
+    (tmp_path / "Cargo.toml").write_text(
+        '[workspace]\nmembers = ["app", "lib", "phone", "web", "mac"]\n', encoding="utf-8")
+    crates = {
+        "app": ('#[cfg(target_os = "linux")]\nfn f() {}\n', '[dependencies]\nlib = { path = "../lib" }\n'),
+        "lib": ("#[cfg(unix)]\nfn f() {}\n#[cfg(not(unix))]\nfn g() {}\n", ""),
+        "phone": ('#[cfg(target_os = "android")]\nfn f() {}\n',
+                  "[target.'cfg(target_os = \"android\")'.dependencies]\nlib = { path = \"../lib\" }\n"),
+        "web": ('#[cfg(target_arch = "wasm32")]\nfn f() {}\n', ""),
+        "mac": ('#[cfg(target_os = "macos")]\nfn f() {}\n', ""),
+    }
+    for name, (source, manifest) in crates.items():
+        (tmp_path / name / "src").mkdir(parents=True)
+        (tmp_path / name / "Cargo.toml").write_text(f'[package]\nname = "{name}"\n{manifest}', encoding="utf-8")
+        (tmp_path / name / "src" / "lib.rs").write_text(source, encoding="utf-8")
+    assert checker.crates_with_system_code(tmp_path) == {
+        "app": {"Linux"}, "lib": {"unix", "Windows"}, "phone": {"Android"}, "web": {"Browser"}, "mac": {"macOS"}}
+    workflow = """name: CI
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - run: python3 scripts/check_clippy_panics.py --baseline linux-occt -p app
+      - run: >-
+          python3 scripts/check_clippy_panics.py --target aarch64-linux-android
+          -p phone
+  windows:
+    runs-on: windows-latest
+    steps:
+      - run: python scripts/check_clippy_panics.py -p lib
+"""
+    systems = (*checker.SYSTEMS.values(), "Android", "Browser")
+    counted = {system: checker.panics_counted([workflow], system, tmp_path) for system in systems}
+    # lib through app on Linux and through phone on Android, not on Windows through either.
+    assert counted["Linux"] == {"app", "lib"}
+    assert counted["Android"] == {"phone", "lib"}
+    assert counted["Windows"] == {"lib"}
+    assert checker.system_code_uncounted(checker.crates_with_system_code(tmp_path), counted) == [
+        "mac: has code only macOS compiles, but no CI job on macOS counts its panics and stderr writes;"
+        " add it (or a crate depending on it) to a scripts/check_clippy_panics.py step on macOS",
+        "web: has code only Browser compiles, but no CI job on Browser counts its panics and stderr writes;"
+        " add it (or a crate depending on it) to a scripts/check_clippy_panics.py step on Browser or with its"
+        " --target",
+    ]
+
+
+def test_every_crate_with_code_for_one_system_has_its_panics_counted_there():
     workflows = [path.read_text(encoding="utf-8") for path in sorted((ROOT / ".github/workflows").glob("*.yml"))]
-    with_windows_code = checker.crates_with_windows_code(ROOT)
-    assert {"ketchup-mcp", "ketchup-pdm"} <= with_windows_code
-    assert checker.windows_code_uncounted(with_windows_code, checker.panics_counted(workflows, "Windows")) == []
+    with_system_code = checker.crates_with_system_code(ROOT)
+    assert {"ketchup-mcp", "ketchup-pdm"} <= {name for name, systems in with_system_code.items() if "Windows" in systems}
+    assert "Linux" in with_system_code["ketchup-scheduler"] and "macOS" in with_system_code["ketchup-app"]
+    systems = (*checker.SYSTEMS.values(), "Android", "Browser")
+    counted = {system: checker.panics_counted(workflows, system, ROOT) for system in systems}
+    assert checker.system_code_uncounted(with_system_code, counted) == []
