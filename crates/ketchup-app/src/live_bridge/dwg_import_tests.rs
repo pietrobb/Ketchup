@@ -33,6 +33,7 @@ fn import(path: &Path) -> Request {
         path: path.display().to_string(),
         unit: None,
         as_underlay: false,
+        revision_of: None,
     }
 }
 
@@ -42,6 +43,7 @@ fn import_underlay(path: &Path) -> Request {
         path: path.display().to_string(),
         unit: None,
         as_underlay: true,
+        revision_of: None,
     }
 }
 

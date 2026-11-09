@@ -3,6 +3,7 @@
 
 mod bracing_edge;
 mod buildup;
+mod calculation;
 mod cnc_dxf;
 mod components;
 mod connectivity;
@@ -35,9 +36,11 @@ mod report_before_exact;
 mod report_material;
 mod revolve_bounds;
 mod shop_golden;
+mod site;
 mod support;
 mod sweep_loft;
 mod takeoff_house;
+mod thermal;
 mod unverified_report;
 
 #[path = "../../ketchup-model/tests/support/integration_support.rs"]

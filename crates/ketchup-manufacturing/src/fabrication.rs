@@ -39,7 +39,8 @@ mod taps;
 mod woodwop_part;
 use btlx::*;
 use projection_bytes::*;
-use woodwop_part::{same_pin_holes, woodwop_part_macros};
+pub use woodwop_part::{HOMAG_PACKAGE_REPORT, HomagPartialPackage, NotProgrammed};
+use woodwop_part::{homag_production_program, same_pin_holes, woodwop_part_macros};
 
 pub use btlx::BtlxDrillRefusal;
 pub use capabilities::{Carriage, ShopElement, ShopFormat, ShopLoss, carriage};
@@ -1135,16 +1136,7 @@ impl GeneralFabricationProjection {
     ) -> Result<Vec<HomagProductionProgram>, GeneralFabricationError> {
         self.woodwop_mpr_4_0_setup_a_programs(snapshot, options)?
             .into_iter()
-            .map(|(instance_path, mpr)| {
-                let (program_name, barcode_svg) = homag_program_label(snapshot, &instance_path)?;
-                Ok(HomagProductionProgram {
-                    schema: HOMAG_BHX_PRODUCTION_PACKAGE_V1,
-                    program_name,
-                    instance_path,
-                    mpr,
-                    barcode_svg,
-                })
-            })
+            .map(|(instance_path, mpr)| homag_production_program(snapshot, instance_path, mpr))
             .collect()
     }
 
@@ -1155,112 +1147,9 @@ impl GeneralFabricationProjection {
         snapshot: &Snapshot,
         options: WoodwopMprOptions,
     ) -> Result<Vec<(InstancePath, Vec<u8>)>, GeneralFabricationError> {
-        self.bom_export(snapshot)?;
-        self.manufacturing_export(snapshot)?;
-        if let Some(tool) = options
-            .vertical_pocket_tool_number
-            .filter(|tool| *tool == 0 || *tool > 999_999)
-        {
-            return Err(GeneralFabricationError::PocketToolNumberInvalid { tool });
-        }
-        let format = ShopFormat::Woodwop {
-            vertical_pocket_tool: options.vertical_pocket_tool_number.is_some(),
-        };
-        self.admit(snapshot, format)?;
-        let holes = capabilities::undrilled_pin_holes(snapshot)?
-            .into_iter()
-            .map(|(_, hole)| hole)
-            .collect::<Vec<_>>();
         let mut programs = Vec::new();
-        let mut program_paths = BTreeSet::new();
-        for row in self
-            .bom
-            .rows
-            .iter()
-            .filter(|row| format.writes(row.item_kind))
-        {
-            let part = snapshot
-                .definition(row.definition_id)
-                .map_or("", |definition| definition.name());
-            let mut write_part = || -> Result<(), GeneralFabricationError> {
-                let GeneralBodySource::Exact(_) = &row.source else {
-                    return Err(GeneralFabricationError::ExportBlocked(
-                        ExportBlock::NotExactBody,
-                    ));
-                };
-                let matching = self
-                    .manufacturing
-                    .operations
-                    .iter()
-                    .filter(|operation| is_row_operation(row, operation))
-                    .collect::<Vec<_>>();
-                let [stock, machining @ ..] = matching.as_slice() else {
-                    return Err(GeneralFabricationError::ExportBlocked(
-                        ExportBlock::ResultMismatch,
-                    ));
-                };
-                if stock.kind != GeneralManufacturingKind::Stock
-                    || !stock.semantic_inputs.is_empty()
-                    || machining.iter().any(|operation| {
-                        !matches!(
-                            operation.kind,
-                            GeneralManufacturingKind::CircularDrill
-                                | GeneralManufacturingKind::ProfileCut
-                        )
-                    })
-                {
-                    return Err(GeneralFabricationError::ExportBlocked(
-                        ExportBlock::UnsupportedMachining,
-                    ));
-                }
-                // No copy gets a program, so the blank need not be one a
-                // program is set up on (review 2026-11-03 MF-141).
-                if machining.is_empty()
-                    && !holes
-                        .iter()
-                        .any(|hole| row.instances.contains(&hole.instance_path))
-                {
-                    return Ok(());
-                }
-                let stock_frame = woodwop_stock_frame(&stock.machining).ok_or(
-                    GeneralFabricationError::ExportBlocked(ExportBlock::UnsupportedMachining),
-                )?;
-                for instance_path in &row.instances {
-                    let resolved = snapshot
-                        .resolve_instance_path(instance_path)
-                        .map_err(GeneralFabricationError::UnresolvedInstance)?;
-                    if resolved.definition_id != row.definition_id
-                        || !is_production_transform(resolved.world_transform)
-                    {
-                        return Err(GeneralFabricationError::ExportBlocked(
-                            ExportBlock::UnusablePlacement,
-                        ));
-                    }
-                    let instance_holes = holes
-                        .iter()
-                        .filter(|hole| hole.instance_path == *instance_path)
-                        .collect::<Vec<_>>();
-                    if machining.is_empty() && instance_holes.is_empty() {
-                        continue;
-                    }
-                    let (stock_frame, macros) = woodwop_part_macros(
-                        stock_frame,
-                        machining,
-                        &instance_holes,
-                        options.vertical_pocket_tool_number,
-                    )?;
-                    if !program_paths.insert(instance_path.clone()) {
-                        return Err(GeneralFabricationError::ExportBlocked(
-                            ExportBlock::DuplicateName,
-                        ));
-                    }
-                    let mpr =
-                        woodwop_mpr_output(stock_frame, &macros, HOMAG_BHX_PRODUCTION_PACKAGE_V1)?;
-                    programs.push((instance_path.clone(), mpr));
-                }
-                Ok(())
-            };
-            write_part().map_err(|error| error.at_part(part))?;
+        for (_, written) in self.woodwop_programs_by_part(snapshot, options, true)? {
+            programs.extend(written?);
         }
         if programs.is_empty() {
             return Err(GeneralFabricationError::NoPieceToProgram);

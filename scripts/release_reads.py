@@ -72,20 +72,28 @@ REVIEWED = {
         # Several, every refusal of one export at once (review 2026-11-06 DXF P3), and
         # TextTooLong, a value over the DXF line limit (review 2026-11-07 UL-220), and
         # DrawnTextTooLong, a text drawn so into a DXF 12 drawing (r26 UL-240).
+        # DrawnHatchInDxf12, a filled area drawn so into a DXF 12 drawing (review 2026-11-08
+        # §5.3 room areas).
         "DxfEditRefusal": {
             "ReadDifferently", "TooLarge", "ChangedInFile", "DeletedInFile", "Several",
-            "TextTooLong", "DrawnTextTooLong",
+            "TextTooLong", "DrawnTextTooLong", "DrawnHatchInDxf12",
         },
+        # `format_of` writes a document with a drawn hatch as 109 (review 2026-11-08 §5.3).
+        "DrawnShape": {"Hatch"},
     },
     "v0.3.1": {
         "DxfEditRefusal": {
             "ChangedInFile", "DeletedInFile", "Several", "TextTooLong", "DrawnTextTooLong",
+            "DrawnHatchInDxf12",
         },
+        "DrawnShape": {"Hatch"},
     },
     "v0.3.2": {
         "DxfEditRefusal": {
             "ChangedInFile", "DeletedInFile", "Several", "TextTooLong", "DrawnTextTooLong",
+            "DrawnHatchInDxf12",
         },
+        "DrawnShape": {"Hatch"},
     },
 }
 

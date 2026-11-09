@@ -240,6 +240,97 @@ fn library_members_boards_and_fasteners_carry_their_fabrication_role() {
     assert_eq!(job["parts"].as_array().map(Vec::len), Some(2), "{job}");
 }
 
+/// Review 2026-11-08 §5.2: a part the machine cannot make (a through hole)
+/// refused the whole partial package and every program of the workshop ZIP;
+/// the other part is programmed and only this one is named, with why. The
+/// strict package still refuses on it.
+#[test]
+fn a_part_the_machine_cannot_make_leaves_the_other_programs_in_the_partial_package() {
+    use ketchup_manufacturing::fabrication::{GeneralFabricationError, ShopElement};
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    let snapshot = apply(
+        "rail = member('rail', (0, 0, 0), (1000, 0, 0), (60, 80))\n\
+         hole(rail, 'y+', at = (30, 500), diameter = 8, depth = 20)\n\
+         shelf = board('shelf', (600, 300, 18), at = (0, 300, 0))\n\
+         hole(shelf, 'z+', at = (100, 150), diameter = 8, depth = 18, through = True)\n",
+    );
+    let path = |name: &str| {
+        snapshot
+            .scene_query()
+            .into_iter()
+            .find(|occurrence| {
+                snapshot
+                    .definition(occurrence.definition_id)
+                    .is_some_and(|definition| definition.name() == name)
+            })
+            .unwrap()
+            .instance_path
+    };
+    let snapshot = {
+        use ketchup_model::document::{CanonicalCommand, CommandBatch};
+        snapshot
+            .preview_batch(&CommandBatch::new(vec![
+                CanonicalCommand::SetProductionCode {
+                    instance_path: path("rail"),
+                    code: Some("000000000001".into()),
+                },
+                CanonicalCommand::SetProductionCode {
+                    instance_path: path("shelf"),
+                    code: Some("000000000002".into()),
+                },
+            ]))
+            .unwrap()
+    };
+    let projection = fabrication(&mut worker, &snapshot).unwrap_or_else(|error| panic!("{error}"));
+    let through = |error: &GeneralFabricationError| {
+        matches!(
+            error,
+            GeneralFabricationError::CannotCarry { part, element: ShopElement::ThroughHole, .. }
+                if part == "shelf"
+        )
+    };
+    let strict = projection
+        .woodwop_mpr_4_0_production_zip(&snapshot, Default::default())
+        .unwrap_err();
+    assert!(through(&strict), "{strict:?}");
+    let partial = projection
+        .woodwop_mpr_4_0_partial_production_package(&snapshot, Default::default())
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        partial
+            .programs
+            .iter()
+            .map(|program| program.program_name.as_str())
+            .collect::<Vec<_>>(),
+        ["000000000001"]
+    );
+    let [refused] = partial.not_programmed.as_slice() else {
+        panic!("{:?}", partial.not_programmed);
+    };
+    assert_eq!(refused.part, "shelf");
+    assert!(through(&refused.reason), "{:?}", refused.reason);
+    let workshop = projection.workshop_package(&snapshot, Default::default());
+    assert!(
+        workshop
+            .files
+            .iter()
+            .any(|(name, _)| name == "woodwop/000000000001.mpr"),
+        "{:?}",
+        workshop.not_made
+    );
+    let accepted =
+        ketchup_manufacturing::workshop_package::check_workshop_package(&workshop.zip().unwrap())
+            .unwrap();
+    assert!(
+        accepted
+            .not_made
+            .contains(&format!("- woodWOP shelf: {}", refused.reason)),
+        "{}",
+        accepted.not_made
+    );
+}
+
 /// Review 2026-11-02 MF-120: a HOMAG package of pieces without a usable
 /// production code was a bare "export blocked"; it names the part and the code
 /// it needs. The codes are assigned for every made piece, the program keeps
@@ -312,6 +403,59 @@ fn a_homag_package_names_the_piece_without_a_code_and_assigned_codes_pass() {
             part: "shelf".into(),
             code: Some("TOP-A".into())
         })
+    );
+    // Review 2026-11-08 §5.2: the partial package programs the rail and names
+    // the shelf with why, in the ZIP and in the workshop package.
+    let partial = projection
+        .woodwop_mpr_4_0_partial_production_package(&snapshot, Default::default())
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        partial
+            .programs
+            .iter()
+            .map(|program| program.program_name.as_str())
+            .collect::<Vec<_>>(),
+        ["000000000007"]
+    );
+    let shelf_refusal = GeneralFabricationError::HomagProgramCodeUnusable {
+        part: "shelf".into(),
+        code: Some("TOP-A".into()),
+    };
+    assert_eq!(
+        partial.not_programmed,
+        [ketchup_manufacturing::fabrication::NotProgrammed {
+            part: "shelf".into(),
+            reason: shelf_refusal.clone(),
+        }]
+    );
+    let zip = partial.zip().unwrap_or_else(|error| panic!("{error}"));
+    let contains = |needle: &str| {
+        zip.windows(needle.len())
+            .any(|window| window == needle.as_bytes())
+    };
+    assert!(contains("000000000007.mpr"));
+    assert!(contains(
+        ketchup_manufacturing::fabrication::HOMAG_PACKAGE_REPORT
+    ));
+    assert!(contains(&format!("- shelf: {shelf_refusal}")));
+    let workshop = projection.workshop_package(&snapshot, Default::default());
+    assert!(
+        workshop
+            .files
+            .iter()
+            .any(|(name, _)| name == "woodwop/000000000007.mpr"),
+        "{:?}",
+        workshop.not_made
+    );
+    let accepted =
+        ketchup_manufacturing::workshop_package::check_workshop_package(&workshop.zip().unwrap())
+            .unwrap();
+    assert!(
+        accepted
+            .not_made
+            .contains(&format!("- woodWOP shelf: {shelf_refusal}")),
+        "{}",
+        accepted.not_made
     );
     // The rail keeps its code; the shelf's unusable one is replaced, counting on.
     let assignments = projection.production_code_assignments(&snapshot);

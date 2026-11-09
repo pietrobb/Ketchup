@@ -727,7 +727,7 @@ pub(crate) fn encode_package(
     Ok(archive)
 }
 
-fn crc32(bytes: &[u8]) -> u32 {
+pub(crate) fn crc32(bytes: &[u8]) -> u32 {
     let mut crc = u32::MAX;
     for byte in bytes {
         crc ^= u32::from(*byte);

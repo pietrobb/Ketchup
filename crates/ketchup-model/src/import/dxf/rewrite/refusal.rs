@@ -89,6 +89,9 @@ pub enum DxfEditRefusal {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         written: Option<TextWritten>,
     },
+    /// A fill drawn in Kečup on `layer` (the areas of rooms) in a DXF 12 drawing, which
+    /// has no HATCH to write it as.
+    DrawnHatchInDxf12 { layer: String },
 }
 
 /// How a drawing writes the characters of its texts, which decides what makes one too
@@ -361,6 +364,12 @@ impl fmt::Display for DxfEditRefusal {
                  several texts or take it out",
                 written.how(),
                 MAX_DXF_LINE_CHARS
+            ),
+            Self::DrawnHatchInDxf12 { layer } => write!(
+                formatter,
+                "a fill drawn in Kečup on layer {layer:?} cannot be written into this DXF 12 \
+                 drawing, which has no HATCH; save the drawing as DXF 2000 or later in the \
+                 program that made it and import that, or take the fill out"
             ),
         }
     }

@@ -4606,3 +4606,87 @@ fn a_cut_beside_its_part_is_not_machined() {
         );
     }
 }
+
+#[test]
+fn the_workshop_package_holds_every_shop_file_and_says_why_one_was_not_made() {
+    use ketchup_manufacturing::fabrication::WoodwopMprOptions;
+    use ketchup_manufacturing::workshop_package::{
+        WORKSHOP_REPORT, WORKSHOP_SUMS, WorkshopPackageError, WorkshopPackageOptions,
+        check_workshop_package,
+    };
+    let (snapshot, projection) = circular_drill_fabrication_projection();
+    let package = projection.workshop_package(&snapshot, WorkshopPackageOptions::default());
+    assert!(package.not_made.is_empty(), "{:?}", package.not_made);
+    let names = package
+        .files
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        [
+            "parts.csv",
+            "drawings.svg",
+            "btlx/model.btlx",
+            "woodwop/000000000046.mpr",
+            "woodwop/000000000046.svg",
+            "woodwop/000000000047.mpr",
+            "woodwop/000000000047.svg",
+        ]
+    );
+    // Each file is the one its own export writes.
+    assert_eq!(
+        package.files[0].1,
+        projection.bom_export(&snapshot).unwrap()
+    );
+    assert_eq!(
+        package.files[2].1,
+        projection
+            .btlx_2_3_1_export_with_options(&snapshot, BtlxExportOptions::default())
+            .unwrap()
+    );
+    let accepted = check_workshop_package(&package.zip().unwrap()).unwrap();
+    assert_eq!(accepted.files.len(), names.len() + 1);
+    assert!(!accepted.files.iter().any(|file| file == WORKSHOP_SUMS));
+    assert_eq!(accepted.not_made, "Every output was made.\n");
+
+    // One output that cannot be made does not stop the others.
+    let package = projection.workshop_package(
+        &snapshot,
+        WorkshopPackageOptions {
+            woodwop: WoodwopMprOptions {
+                vertical_pocket_tool_number: Some(0),
+            },
+            ..WorkshopPackageOptions::default()
+        },
+    );
+    assert_eq!(package.files.len(), 3);
+    assert_eq!(package.not_made.len(), 1);
+    assert_eq!(package.not_made[0].output, "woodWOP");
+    let accepted = check_workshop_package(&package.zip().unwrap()).unwrap();
+    assert!(accepted.files.iter().any(|file| file == WORKSHOP_REPORT));
+    assert!(
+        accepted.not_made.starts_with("Not made:\n- woodWOP: ")
+            && accepted
+                .not_made
+                .contains(&package.not_made[0].reason.to_string()),
+        "{}",
+        accepted.not_made
+    );
+
+    // Nothing is made from another state of the document, so there is
+    // nothing to send.
+    let (other, _) = rectangular_through_cut_fabrication_projection();
+    let package = projection.workshop_package(&other, WorkshopPackageOptions::default());
+    assert_eq!(package.files, []);
+    assert_eq!(package.not_made.len(), 4);
+    assert!(
+        package.not_made.iter().all(|item| item
+            .reason
+            .to_string()
+            .contains("another state of the document")),
+        "{:?}",
+        package.not_made
+    );
+    assert_eq!(package.zip(), Err(WorkshopPackageError::Empty));
+}
