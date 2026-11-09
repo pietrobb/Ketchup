@@ -1060,9 +1060,8 @@ impl Look {
                                 key.get_type()
                             )
                         })?;
-                        // An attribute given as None is left out.
                         let value = owned_text(Some(value), &format!("attribute {key:?}"))?;
-                        Ok(value.map(|value| (key, value)))
+                        bracing::attribute(key, value)
                     })
                     .filter_map(Result::transpose)
                     .collect::<anyhow::Result<BTreeMap<_, _>>>()
