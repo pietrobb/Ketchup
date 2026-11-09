@@ -237,83 +237,97 @@ impl GeneralFabricationProjection {
             .iter()
             .filter(|row| format.writes(row.item_kind))
         {
-            let part = snapshot
-                .definition(row.definition_id)
-                .map_or_else(String::new, |definition| definition.name().to_owned());
-            let mut elements = Vec::new();
-            if row.mirrored || copies_are_mirrored(snapshot, row)? {
-                elements.push(ShopElement::MirroredCopy);
-            }
-            if self.manufacturing.free_form_sources.contains(&row.source) {
-                elements.push(ShopElement::FreeFormBlank);
-            } else if self.manufacturing.undescribed_sources.contains(&row.source) {
-                elements.push(ShopElement::UndescribedMachining);
-            }
-            let operations = self
-                .manufacturing
-                .operations
-                .iter()
-                .filter(|operation| is_row_operation(row, operation))
-                .collect::<Vec<_>>();
-            let stock = operations
-                .iter()
-                .find(|operation| operation.kind == GeneralManufacturingKind::Stock);
-            let pin_hole = pin_holes
-                .iter()
-                .find(|(_, hole)| row.instances.contains(&hole.instance_path));
-            // A piece with nothing to machine gets no woodWOP program, so its
-            // blank cannot refuse the package (review 2026-11-03 MF-141).
-            if matches!(format, ShopFormat::Woodwop { .. })
-                && stock.is_some()
-                && !elements.iter().any(|element| {
-                    matches!(
-                        element,
-                        ShopElement::FreeFormBlank | ShopElement::UndescribedMachining
-                    )
-                })
-                && operations.len() == 1
-                && pin_hole.is_none()
+            losses.extend(self.admit_row(snapshot, format, row, &pin_holes)?);
+        }
+        Ok(losses)
+    }
+
+    /// The gate of one BOM row `format` writes: its elements written at a
+    /// loss, or the first one refused (review 2026-11-08 §5.2: the partial
+    /// HOMAG package names that part and programs the others).
+    pub(super) fn admit_row(
+        &self,
+        snapshot: &Snapshot,
+        format: ShopFormat,
+        row: &GeneralBomRow,
+        pin_holes: &[(&PinJointContract, PinHole)],
+    ) -> Result<Vec<ShopLoss>, GeneralFabricationError> {
+        let mut losses = Vec::new();
+        let part = snapshot
+            .definition(row.definition_id)
+            .map_or_else(String::new, |definition| definition.name().to_owned());
+        let mut elements = Vec::new();
+        if row.mirrored || copies_are_mirrored(snapshot, row)? {
+            elements.push(ShopElement::MirroredCopy);
+        }
+        if self.manufacturing.free_form_sources.contains(&row.source) {
+            elements.push(ShopElement::FreeFormBlank);
+        } else if self.manufacturing.undescribed_sources.contains(&row.source) {
+            elements.push(ShopElement::UndescribedMachining);
+        }
+        let operations = self
+            .manufacturing
+            .operations
+            .iter()
+            .filter(|operation| is_row_operation(row, operation))
+            .collect::<Vec<_>>();
+        let stock = operations
+            .iter()
+            .find(|operation| operation.kind == GeneralManufacturingKind::Stock);
+        let pin_hole = pin_holes
+            .iter()
+            .find(|(_, hole)| row.instances.contains(&hole.instance_path));
+        // A piece with nothing to machine gets no woodWOP program, so its
+        // blank cannot refuse the package (review 2026-11-03 MF-141).
+        if matches!(format, ShopFormat::Woodwop { .. })
+            && stock.is_some()
+            && !elements.iter().any(|element| {
+                matches!(
+                    element,
+                    ShopElement::FreeFormBlank | ShopElement::UndescribedMachining
+                )
+            })
+            && operations.len() == 1
+            && pin_hole.is_none()
+        {
+            return Ok(losses);
+        }
+        let blank = stock.and_then(|stock| rectangular_stock(&stock.machining));
+        if stock.is_some() && blank.is_none() && !elements.contains(&ShopElement::FreeFormBlank) {
+            elements.push(ShopElement::ShapedBlank);
+        }
+        for operation in operations {
+            elements.push(ShopElement::Operation(operation.kind));
+            if let GeneralMachiningGeometry::CircularDrill { through: true, .. } =
+                operation.machining
             {
-                continue;
+                elements.push(ShopElement::ThroughHole);
             }
-            let blank = stock.and_then(|stock| rectangular_stock(&stock.machining));
-            if stock.is_some() && blank.is_none() && !elements.contains(&ShopElement::FreeFormBlank)
-            {
-                elements.push(ShopElement::ShapedBlank);
+            if blank.is_some_and(|blank| reaches_far_face(blank, &operation.machining)) {
+                elements.push(ShopElement::HoleToFarFace);
             }
-            for operation in operations {
-                elements.push(ShopElement::Operation(operation.kind));
-                if let GeneralMachiningGeometry::CircularDrill { through: true, .. } =
-                    operation.machining
-                {
-                    elements.push(ShopElement::ThroughHole);
-                }
-                if blank.is_some_and(|blank| reaches_far_face(blank, &operation.machining)) {
-                    elements.push(ShopElement::HoleToFarFace);
-                }
-                if let Some(thread) = &operation.thread {
-                    elements.push(ShopElement::Thread(thread.label()));
-                }
+            if let Some(thread) = &operation.thread {
+                elements.push(ShopElement::Thread(thread.label()));
             }
-            if let Some((joint, _)) = pin_hole {
-                elements.push(ShopElement::PinHole(joint.name.clone()));
-            }
-            for element in elements {
-                match carriage(format, &element) {
-                    Carriage::Carries => {}
-                    Carriage::Loses(reason) => losses.push(ShopLoss {
-                        part: part.clone(),
+        }
+        if let Some((joint, _)) = pin_hole {
+            elements.push(ShopElement::PinHole(joint.name.clone()));
+        }
+        for element in elements {
+            match carriage(format, &element) {
+                Carriage::Carries => {}
+                Carriage::Loses(reason) => losses.push(ShopLoss {
+                    part: part.clone(),
+                    element,
+                    reason,
+                }),
+                Carriage::Refuses(reason) => {
+                    return Err(GeneralFabricationError::CannotCarry {
+                        format,
+                        part,
                         element,
                         reason,
-                    }),
-                    Carriage::Refuses(reason) => {
-                        return Err(GeneralFabricationError::CannotCarry {
-                            format,
-                            part,
-                            element,
-                            reason,
-                        });
-                    }
+                    });
                 }
             }
         }

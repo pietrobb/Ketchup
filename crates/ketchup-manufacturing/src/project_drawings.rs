@@ -13,6 +13,7 @@
 //! so the sheet follows whatever is visible: hiding a layer leaves it out.
 //! Lines behind nearer faces are hidden by painting faces from far to near.
 
+use crate::revision_table::RevisionsDoNotFit;
 use crate::title_block::{
     SheetFormat, StoreyLevels, TITLE_BLOCK_MM, TitleValueDoesNotFit, drawing_area,
 };
@@ -24,10 +25,12 @@ use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
 
 mod annotations;
+mod compass;
 mod cutting;
 mod levels;
 mod openings;
 mod plan_overlap;
+mod section_marks;
 mod set;
 mod shop;
 mod table;
@@ -36,6 +39,7 @@ mod visible;
 
 use annotations::PlanAnnotations;
 pub use annotations::{AnnotationCounts, annotation_marks};
+pub use compass::{CompassSide, facing_side};
 pub use cutting::{CuttingPiece, CuttingSheet, CuttingStock, CuttingSummary};
 use ketchup_model::annotation::Annotation;
 pub use openings::{DrawingOpening, OpeningSchedule, ScheduleRow};
@@ -113,6 +117,16 @@ pub struct ViewSummary {
     /// The level marks of a section or an elevation, lowest first.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub levels: Vec<String>,
+    /// The side of the world an elevation shows, when north is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub facing: Option<CompassSide>,
+    /// Whether a plan draws its north arrow.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub north_arrow: bool,
+    /// The letters of the sections a plan marks where they cut it, A along
+    /// the model and B across it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub section_marks: Vec<String>,
 }
 
 /// Why no sheet could be drawn.
@@ -128,6 +142,8 @@ pub enum ProjectDrawingError {
     },
     /// A title block value would be cut short.
     TitleValueDoesNotFit(TitleValueDoesNotFit),
+    /// The revision table would lose a revision.
+    RevisionsDoNotFit(RevisionsDoNotFit),
     /// The caller stopped the set before it was drawn.
     Cancelled,
 }
@@ -135,6 +151,12 @@ pub enum ProjectDrawingError {
 impl From<TitleValueDoesNotFit> for ProjectDrawingError {
     fn from(error: TitleValueDoesNotFit) -> Self {
         Self::TitleValueDoesNotFit(error)
+    }
+}
+
+impl From<RevisionsDoNotFit> for ProjectDrawingError {
+    fn from(error: RevisionsDoNotFit) -> Self {
+        Self::RevisionsDoNotFit(error)
     }
 }
 
@@ -153,6 +175,7 @@ impl std::fmt::Display for ProjectDrawingError {
                 )
             ),
             Self::TitleValueDoesNotFit(error) => error.fmt(formatter),
+            Self::RevisionsDoNotFit(error) => error.fmt(formatter),
             Self::Cancelled => formatter.write_str("the drawing was cancelled"),
         }
     }
@@ -488,6 +511,12 @@ struct DrawnView {
     marks: Vec<([f64; 2], String)>,
     /// The level marks right of a section or an elevation: view height and text.
     levels: Vec<(f64, String)>,
+    /// The north arrow a plan draws right of its top, when north is set.
+    north: Option<compass::NorthArrow>,
+    /// The side of the world an elevation shows, when north is set.
+    facing: Option<CompassSide>,
+    /// Where the sections cut a plan of the whole set.
+    sections: Vec<section_marks::SectionMark>,
     cut_at_mm: Option<f64>,
 }
 
@@ -646,6 +675,9 @@ fn draw_view(
         underlay: Vec::new(),
         marks: Vec::new(),
         levels: Vec::new(),
+        north: None,
+        facing: None,
+        sections: Vec::new(),
         // `cut` is measured along the depth direction, which is ±1 on the
         // world axis the plane is normal to: divide to get that coordinate.
         cut_at_mm: frame.cut.map(|cut| {
@@ -955,6 +987,14 @@ fn draw_view_on_page(
         .map(|(height, text)| (at([view.min[0], *height])[1], text.clone()))
         .collect::<Vec<_>>();
     levels::draw_levels(page, at(view.max)[0], &levels);
+    if let Some(arrow) = &view.north {
+        // In the room right of the view's top, which a plan leaves free.
+        let [right, top] = at(view.max);
+        compass::draw_north_arrow(page, [right + VIEW_PAD_MM / 2.0, top + 7.0], arrow);
+    }
+    for mark in &view.sections {
+        section_marks::draw_section_mark(page, mark, [view.min, view.max], at);
+    }
     let [outer_left, outer_bottom] = at(view.min);
     // Overall width below the view and overall height on its left, outside
     // whatever the view draws.

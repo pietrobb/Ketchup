@@ -13,9 +13,13 @@ use std::ops::Range;
 
 mod compare;
 mod refusal;
+mod revisions;
 
 pub use compare::Difference;
 pub use refusal::{DxfEditRefusal, EditOfObject, EditedDxfError, TextWritten};
+pub use revisions::{
+    OverlayLayers, RevisedEntity, Revision, RevisionComparison, compare_revisions, revision_overlay,
+};
 
 use super::code_page::CodePage;
 use super::text::unicode_escapes;
@@ -2575,6 +2579,45 @@ impl<'a> Drawing<'a> {
                         written: None,
                     });
                 }
+            }
+            // DXF 12 has no HATCH: the fill is refused rather than left out.
+            DrawnShape::Hatch { .. } if !self.subclassed => {
+                return Err(DxfEditRefusal::DrawnHatchInDxf12 {
+                    layer: layer.to_owned(),
+                });
+            }
+            DrawnShape::Hatch { rings_mm } => {
+                // A solid, not associative fill of polyline paths, the first outermost.
+                head(&mut pair, "HATCH", handles);
+                subclass(&mut pair, "AcDbHatch");
+                point(
+                    &mut pair,
+                    10,
+                    [0.0 - frame.offset_mm[0], 0.0 - frame.offset_mm[1]],
+                );
+                pair(210, b"0");
+                pair(220, b"0");
+                pair(230, b"1");
+                pair(2, b"SOLID");
+                pair(70, b"1");
+                pair(71, b"0");
+                pair(91, rings_mm.len().to_string().as_bytes());
+                for (at, ring) in rings_mm.iter().enumerate() {
+                    // Polyline (2), the first also external (1) and outermost (16).
+                    pair(92, if at == 0 { b"19" } else { b"2" });
+                    pair(72, b"0");
+                    pair(73, b"1");
+                    pair(93, ring.len().to_string().as_bytes());
+                    for corner in ring {
+                        let [x, y] = frame.point(*corner);
+                        pair(10, number(x).as_bytes());
+                        pair(20, number(y).as_bytes());
+                    }
+                    pair(97, b"0");
+                }
+                pair(75, b"0");
+                pair(76, b"1");
+                pair(98, b"0");
             }
         }
         Ok(out)

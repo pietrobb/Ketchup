@@ -15,11 +15,12 @@ use ketchup_application::threads::{
     CosmeticThreadBodyError, CosmeticThreadGraph, ThreadCylinder, cosmetic_thread_graph,
 };
 use ketchup_manufacturing::project_drawings::{
-    CuttingPiece, CuttingSheet, CuttingStock, DrawingOpening, DrawingSet, DrawingSetOptions,
-    DrawingSolid, DrawingThread, OpeningSchedule, PlanSheet, ProjectDrawingError, ProjectView,
-    SCALES, SheetTitles, ShopDrawings, ShopPosition, ShopSheet, Storey, drawing_set_until,
-    ground_floor, storeys, table_ground_floor, table_storeys,
+    CompassSide, CuttingPiece, CuttingSheet, CuttingStock, DrawingOpening, DrawingSet,
+    DrawingSetOptions, DrawingSolid, DrawingThread, OpeningSchedule, PlanSheet,
+    ProjectDrawingError, ProjectView, SCALES, SheetTitles, ShopDrawings, ShopPosition, ShopSheet,
+    Storey, drawing_set_until, ground_floor, storeys, table_ground_floor, table_storeys,
 };
+use ketchup_manufacturing::revision_table::RevisionCaptions;
 use ketchup_manufacturing::title_block::{
     DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM, SheetFormat, SheetLanguage, SheetSettings, TitleField,
 };
@@ -1484,6 +1485,27 @@ impl KetchupApp {
 
     /// The plan sheet of each storey, titled from `catalog`: by the height
     /// of its cut, and by its storey when there are several.
+    /// The titles of the elevations by the side of the world they show, in
+    /// the sheet language.
+    fn facing_titles(catalog: &LocaleCatalog) -> BTreeMap<CompassSide, String> {
+        CompassSide::ALL
+            .into_iter()
+            .map(|side| {
+                let key = match side {
+                    CompassSide::North => "drawings-view-facing-north",
+                    CompassSide::NorthEast => "drawings-view-facing-north-east",
+                    CompassSide::East => "drawings-view-facing-east",
+                    CompassSide::SouthEast => "drawings-view-facing-south-east",
+                    CompassSide::South => "drawings-view-facing-south",
+                    CompassSide::SouthWest => "drawings-view-facing-south-west",
+                    CompassSide::West => "drawings-view-facing-west",
+                    CompassSide::NorthWest => "drawings-view-facing-north-west",
+                };
+                (side, catalog.text(key))
+            })
+            .collect()
+    }
+
     fn plan_sheets(catalog: &LocaleCatalog, storeys: Vec<Storey>) -> Vec<PlanSheet> {
         let several = storeys.len() > 1;
         storeys
@@ -1815,6 +1837,7 @@ impl KetchupApp {
                 )]),
             )
         });
+        let north_deg = settings.north_deg();
         Ok(ProjectDrawingsJob {
             solids,
             executable: self.drawing_worker(),
@@ -1838,8 +1861,17 @@ impl KetchupApp {
                 cutting,
                 decimal_separator,
                 zero_level_mm,
+                north_deg,
+                north_letter: catalog.text("drawings-sheet-north-letter"),
+                facing_titles: Self::facing_titles(&catalog),
                 storeys: settings.storeys,
                 zero_altitude,
+                revisions: settings.revisions,
+                revision_captions: RevisionCaptions {
+                    index: catalog.text("drawings-sheet-revision-index"),
+                    date: catalog.text("drawings-sheet-revision-date"),
+                    change: catalog.text("drawings-sheet-revision-change"),
+                },
             },
             info,
         })
@@ -1888,6 +1920,15 @@ impl KetchupApp {
                         ("lines", error.lines.to_string()),
                         ("characters", error.characters.to_string()),
                         ("length", error.length.to_string()),
+                    ]),
+                )
+            }
+            ProjectDrawingsError::Drawing(ProjectDrawingError::RevisionsDoNotFit(error)) => {
+                self.catalog.format(
+                    "drawings-revisions-do-not-fit",
+                    &BTreeMap::from([
+                        ("revisions", error.revisions.to_string()),
+                        ("fit", error.fit.to_string()),
                     ]),
                 )
             }
@@ -2238,6 +2279,9 @@ impl KetchupApp {
                             );
                             ui.end_row();
                         }
+                        ui.label(self.catalog.text("drawings-revisions"));
+                        super::revision_rows::show_revisions(ui, &self.catalog, &mut editing);
+                        ui.end_row();
                     });
                 ui.separator();
                 ui.horizontal(|ui| {

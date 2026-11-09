@@ -14,6 +14,7 @@ mod digest_formats;
 mod document_revisions;
 mod dxf_import;
 mod dxf_resilience;
+mod dxf_revision_overlay;
 mod exact_brep_graph;
 mod exact_brep_graph_resources;
 mod exact_parameter_editing;

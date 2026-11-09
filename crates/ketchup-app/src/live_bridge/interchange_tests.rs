@@ -1,6 +1,7 @@
 //! An AI client brings files into the window and writes the model out over the bridge.
 
 use super::*;
+use crate::live_bridge::drawings::ExportDrawingsRequest;
 
 const TETRAHEDRON: &[u8] = b"solid tetrahedron\n\
  facet normal 0 0 -1\n  outer loop\n   vertex 0 0 0\n   vertex 0 10 0\n   vertex 10 0 0\n  endloop\n endfacet\n\
@@ -27,6 +28,7 @@ fn import(path: &Path, unit: Option<&str>) -> Request {
         path: path.display().to_string(),
         unit: unit.map(str::to_owned),
         as_underlay: false,
+        revision_of: None,
     }
 }
 
@@ -295,6 +297,13 @@ fn an_export_refusal_is_named_by_what_repairs_it() {
         Err("export_refused")
     );
     assert!(!target.exists());
+    // Review 2026-11-08 §5.2: nor any shop file to send to the workshop.
+    let package = directory.path().join("frame.zip");
+    assert_eq!(
+        bridge.execute(&mut app, export(&package, "workshop_package"), false),
+        Err("export_refused")
+    );
+    assert!(!package.exists());
 }
 
 /// Měchenice 2026-11-02 MECH-9: `file export dxf/dwg` failed whole on one
@@ -755,7 +764,7 @@ fn a_plan_of_its_own_is_drawn_as_a_pdf_at_the_scale_the_client_names() {
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
     let drawings =
         |path: &Path, plan_only: bool, drawing_scale: Option<f64>, format: Option<&str>| {
-            Request::ExportDrawings {
+            Request::ExportDrawings(ExportDrawingsRequest {
                 expected: None,
                 path: path.display().to_string(),
                 sheet_id: None,
@@ -769,7 +778,9 @@ fn a_plan_of_its_own_is_drawn_as_a_pdf_at_the_scale_the_client_names() {
                 zero_level_mm: None,
                 storeys: None,
                 zero_altitude_mm: None,
-            }
+                north_deg: None,
+                revisions: None,
+            })
         };
 
     let target = directory.path().join("plan.pdf");
@@ -837,7 +848,7 @@ fn a_plan_of_its_own_is_drawn_as_a_pdf_at_the_scale_the_client_names() {
         assert!(!target.exists());
     }
     let mut sheet = drawings(&directory.path().join("sheet.dxf"), true, None, None);
-    if let Request::ExportDrawings { sheet_id, .. } = &mut sheet {
+    if let Request::ExportDrawings(ExportDrawingsRequest { sheet_id, .. }) = &mut sheet {
         *sheet_id = Some(1);
     }
     assert_eq!(
@@ -866,7 +877,7 @@ fn a_sheet_names_the_letters_it_prints_as_question_marks() {
     let written = bridge
         .execute(
             &mut app,
-            Request::ExportDrawings {
+            Request::ExportDrawings(ExportDrawingsRequest {
                 expected: None,
                 path: target.display().to_string(),
                 sheet_id: None,
@@ -883,7 +894,9 @@ fn a_sheet_names_the_letters_it_prints_as_question_marks() {
                 zero_level_mm: None,
                 storeys: None,
                 zero_altitude_mm: None,
-            },
+                north_deg: None,
+                revisions: None,
+            }),
             false,
         )
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
@@ -897,4 +910,204 @@ fn a_sheet_names_the_letters_it_prints_as_question_marks() {
     );
     let digest = app.action_digest();
     assert!(digest.contains("東") && digest.contains("漢"), "{digest}");
+}
+
+/// Review 2026-11-08 §5.2: north kept in the sheet settings gives each plan its
+/// north arrow and names each elevation, in the sheet language, by the side of
+/// the world it shows.
+#[test]
+fn north_in_the_sheet_settings_names_the_elevations_in_the_sheet_language() {
+    use ketchup_manufacturing::project_drawings::{CompassSide, ProjectView};
+    use ketchup_manufacturing::title_block::SheetLanguage;
+    let (mut app, mut bridge) = setup();
+    let program = Request::ApplyProgram {
+        expected: None,
+        source: "box('house', (6000, 3000, 2500))\n".into(),
+        overrides: None,
+        file_name: Some("house.star".into()),
+        replace_document: true,
+    };
+    bridge
+        .execute(&mut app, program, false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let mut settings = app.stored_sheet_settings().unwrap();
+    settings.language = Some(SheetLanguage::Slovak);
+    // North along -x: the long front, facing -y, faces west.
+    settings.north_tenths_deg = Some(900);
+    app.store_sheet_settings(settings);
+    let set = app
+        .project_drawings_job_for(crate::app::project_drawings::SheetRequest::default())
+        .unwrap()
+        .render(
+            crate::app::project_drawings::SetFileFormat::Pdf,
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        .0;
+    let views = set
+        .sheets
+        .iter()
+        .flat_map(|sheet| &sheet.views)
+        .collect::<Vec<_>>();
+    let front = views
+        .iter()
+        .find(|view| view.view == ProjectView::Front)
+        .unwrap();
+    assert_eq!(front.facing, Some(CompassSide::West));
+    assert_eq!(front.title, "Pohľad západný");
+    let plan = views
+        .iter()
+        .find(|view| view.view == ProjectView::Plan)
+        .unwrap();
+    assert!(plan.north_arrow, "{views:?}");
+    assert!(
+        set.sheets[0].page.texts().any(|text| text == "S"),
+        "the Slovak north letter"
+    );
+}
+
+/// Review 2026-11-08 §5.2: north could be set in the drawings window only. A
+/// client names it in degrees counter-clockwise from the model's +y, the
+/// document keeps it, `none` takes it away, and a value that is no direction is
+/// refused and changes nothing.
+#[test]
+fn a_client_sets_north_and_the_document_keeps_it() {
+    let (mut app, mut bridge, directory) = window();
+    let program = Request::ApplyProgram {
+        expected: None,
+        source: "box('house', (6000, 3000, 2500))\n".into(),
+        overrides: None,
+        file_name: Some("house.star".into()),
+        replace_document: true,
+    };
+    bridge
+        .execute(&mut app, program, false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let drawings = |name: &str, north: Option<Value>| {
+        let mut request = json!({
+            "method": "export_drawings",
+            "path": directory.path().join(name).display().to_string(),
+            "drawing_scale": 250,
+        });
+        if let Some(north) = north {
+            request["north_deg"] = north;
+        }
+        serde_json::from_value::<Request>(request).unwrap()
+    };
+    let stored = |app: &KetchupApp| app.stored_sheet_settings().unwrap().north_tenths_deg;
+    let front_facing = |written: &Value| {
+        written["sheets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|sheet| sheet["views"].as_array().unwrap())
+            .find(|view| view["view"] == "front")
+            .map(|view| view["facing"].clone())
+    };
+
+    let written = bridge
+        .execute(&mut app, drawings("set.pdf", Some(json!(90))), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["north_deg"], 90.0, "{written}");
+    assert_eq!(stored(&app), Some(900));
+    assert_eq!(front_facing(&written), Some(json!("west")), "{written}");
+    let written = bridge
+        .execute(&mut app, drawings("again.pdf", None), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["north_deg"], 90.0, "{written}");
+
+    for refused in [json!(360.5), json!(-400), json!("up"), json!([0, 1])] {
+        assert_eq!(
+            bridge.execute(&mut app, drawings("refused.pdf", Some(refused)), false),
+            Err("invalid_params")
+        );
+        assert!(!directory.path().join("refused.pdf").exists());
+        assert_eq!(stored(&app), Some(900));
+    }
+
+    let written = bridge
+        .execute(&mut app, drawings("none.pdf", Some(json!("none"))), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["north_deg"], "none", "{written}");
+    assert_eq!(stored(&app), None);
+    assert_eq!(front_facing(&written), Some(Value::Null), "{written}");
+}
+
+/// Review 2026-11-08 §5.3: a drawing set had no revisions. A client gives
+/// them, oldest first; the document keeps them, every sheet lists them beside
+/// its title block under the sheet language's headings, and more than the
+/// table holds refuse the export and keep the document's.
+#[test]
+fn a_client_gives_the_revisions_every_sheet_lists() {
+    use ketchup_manufacturing::title_block::SheetLanguage;
+    let (mut app, mut bridge, directory) = window();
+    let program = Request::ApplyProgram {
+        expected: None,
+        source: "box('house', (6000, 3000, 2500))\n".into(),
+        overrides: None,
+        file_name: Some("house.star".into()),
+        replace_document: true,
+    };
+    bridge
+        .execute(&mut app, program, false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let drawings = |name: &str, revisions: Value| {
+        serde_json::from_value::<Request>(json!({
+            "method": "export_drawings",
+            "path": directory.path().join(name).display().to_string(),
+            "drawing_scale": 250,
+            "sheet_language": "cs",
+            "revisions": revisions,
+        }))
+        .unwrap()
+    };
+    let revision = |index: &str, change: &str| json!({"index": index, "date": "8. 11. 2026", "change": change});
+    let given = json!([
+        revision("A", "Vydání pro stavební povolení"),
+        revision("B", "Zvětšené okno v obývacím pokoji"),
+    ]);
+    let written = bridge
+        .execute(&mut app, drawings("set.pdf", given.clone()), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["revisions"], given, "{written}");
+    let stored = |app: &KetchupApp| app.stored_sheet_settings().unwrap().revisions;
+    assert_eq!(stored(&app).len(), 2);
+    assert_eq!(
+        app.stored_sheet_settings().unwrap().language,
+        Some(SheetLanguage::Czech)
+    );
+    let set = app
+        .project_drawings_job_for(crate::app::project_drawings::SheetRequest::default())
+        .unwrap()
+        .render(
+            crate::app::project_drawings::SetFileFormat::Pdf,
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        .0;
+    for sheet in &set.sheets {
+        let texts = sheet.page.texts().collect::<Vec<_>>();
+        for text in ["Popis změny", "Datum", "Zvětšené okno v obývacím pokoji"] {
+            assert!(
+                texts.contains(&text),
+                "{text} on sheet {}: {texts:?}",
+                sheet.number
+            );
+        }
+    }
+
+    let crowded = Value::Array(
+        (1..=12)
+            .map(|index| revision(&index.to_string(), "Změna"))
+            .collect(),
+    );
+    assert_eq!(
+        bridge.execute(&mut app, drawings("crowded.pdf", crowded), false),
+        Err("revisions_do_not_fit")
+    );
+    assert!(!directory.path().join("crowded.pdf").exists());
+    assert_eq!(stored(&app).len(), 2, "the document keeps its revisions");
 }

@@ -933,6 +933,85 @@ fn hundegger_btlx_file_command_exports_validated_timber_with_support_report() {
     );
 }
 
+/// Review 2026-11-08 §5.2: File > Manufacturing > Send to workshop writes one
+/// ZIP of every shop file, after the same consent as each of them, and the
+/// workshop's acceptance check takes it.
+#[test]
+fn the_workshop_package_file_command_writes_a_zip_the_workshop_accepts() {
+    use ketchup_manufacturing::workshop_package::check_workshop_package;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("single-timber.zip");
+    let dialogs = dialogs::ScriptedFileDialogs::new()
+        .queue_export(&path)
+        .always_confirm_high_risk_as(84);
+    let script = dialogs.clone();
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::UpsertClassificationDimension {
+                id: ClassificationDimensionId(100),
+                name: ketchup_manufacturing::fabrication::FABRICATION_ROLE_DIMENSION_V1.to_owned(),
+                categories: vec![(
+                    ClassificationCategoryId(101),
+                    ketchup_manufacturing::fabrication::TIMBER_MEMBER_ROLE_V1.to_owned(),
+                )],
+            },
+            CanonicalCommand::SetOccurrenceClassification {
+                occurrence_id: OccurrenceId(1),
+                dimension_id: ClassificationDimensionId(100),
+                category_id: Some(ClassificationCategoryId(101)),
+            },
+        ]))
+        .unwrap();
+    install_initial_graph_result(&mut app);
+    let digest = app.document.current().canonical_digest();
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(1600.0, 1000.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.run();
+    open_file_submenu(&mut harness, "menu-file-manufacturing");
+    let export = harness
+        .state()
+        .command_label(AppCommand::ExportWorkshopPackage);
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &export)
+        .click();
+    harness.run();
+
+    assert_eq!(
+        harness.state().document.current().canonical_digest(),
+        digest
+    );
+    let zip = std::fs::read(&path).unwrap_or_else(|_| panic!("{}", harness.state().digest));
+    let accepted = check_workshop_package(&zip).unwrap();
+    for file in ["parts.csv", "drawings.svg", "btlx/model.btlx"] {
+        assert!(
+            accepted.files.iter().any(|name| name == file),
+            "{accepted:?}"
+        );
+    }
+    assert_eq!(script.export_requests()[0].extension, "zip");
+    let receipt = harness.state().last_side_effect_receipt().unwrap();
+    assert_eq!(
+        receipt.scope().class(),
+        HighRiskClass::ReleaseManufacturingExportWithWarnings
+    );
+    assert_eq!(receipt.operation(), "release-workshop-package");
+
+    // A second export asks before it replaces the package.
+    assert!(
+        harness
+            .state_mut()
+            .export_current_workshop_package_to(&path)
+            .is_ok()
+    );
+    assert_eq!(
+        harness.state().side_effect_receipts[1].scope().class(),
+        HighRiskClass::Overwrite
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), zip);
+}
+
 #[test]
 fn hundegger_btlx_file_menu_configures_profile_strategy_and_intermediate_cuts() {
     let mut harness = Harness::builder()
