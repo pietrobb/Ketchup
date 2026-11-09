@@ -5,10 +5,14 @@
 use crate::recent_files::Presence;
 use crate::*;
 
-const IMPORTS: [(AppCommand, &str); 7] = [
+const IMPORTS: [(AppCommand, &str); 8] = [
     (AppCommand::ImportMeshStl, "file-short-stl"),
     (AppCommand::ImportDrawingDxf, "file-short-dxf-2d"),
     (AppCommand::ImportDrawingUnderlay, "file-short-dxf-underlay"),
+    (
+        AppCommand::CompareUnderlayRevision,
+        "file-short-dxf-revision",
+    ),
     (AppCommand::ImportExactStep, "file-short-step"),
     (AppCommand::ImportExactIges, "file-short-iges"),
     (AppCommand::ImportSketchupScene, "file-short-sketchup"),
@@ -70,6 +74,12 @@ impl KetchupApp {
             ui.separator();
             self.menu_command_as(ui, AppCommand::ExportHundeggerBtlx, "file-short-btlx");
             self.btlx_options_menu(ui);
+            ui.separator();
+            self.menu_command_as(
+                ui,
+                AppCommand::ExportWorkshopPackage,
+                "file-short-workshop-package",
+            );
         });
     }
 

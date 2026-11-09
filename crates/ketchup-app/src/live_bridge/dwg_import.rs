@@ -15,8 +15,10 @@ use crate::ImportFormat;
 use crate::app::dwg_import::{DwgRead, is_dwg_path, read_dwg_file};
 use crate::app::exact_import_activity::{ExactImportRead, read_exact_import};
 use crate::app::import_file::import_format;
+use crate::app::underlay::revision::RevisionOverlayError;
 use crate::app::underlay::{UnderlayReadResult, read_underlay_file};
 use crate::delivery::Deliver;
+use ketchup_model::underlay::UnderlayId;
 use ketchup_program::CancelToken;
 
 /// What the job's thread read.
@@ -221,19 +223,26 @@ impl LiveBridge {
     }
 
     /// `remove_underlay`: removes the underlay and the tags only it held, as one Undo step.
-    pub(super) fn remove_underlay(
+    /// `fit_underlay`: places the underlay so two points of its lines land on two model
+    /// points, as one Undo step; two picks at one point are refused with the reason.
+    pub(super) fn underlay_request(
         &mut self,
         app: &mut KetchupApp,
         request: &Request,
         ui_busy: bool,
         cancelled: &AtomicBool,
     ) -> Result<Value, &'static str> {
-        let Request::RemoveUnderlay {
-            expected,
-            underlay_id,
-        } = request
-        else {
-            return Err("invalid_request");
+        let (expected, underlay_id) = match request {
+            Request::RemoveUnderlay {
+                expected,
+                underlay_id,
+            }
+            | Request::FitUnderlay {
+                expected,
+                underlay_id,
+                ..
+            } => (expected, underlay_id),
+            _ => return Err("invalid_request"),
         };
         Self::guard(app, expected)?;
         Self::available(app, ui_busy)?;
@@ -242,38 +251,20 @@ impl LiveBridge {
             return Err("entity_not_found");
         }
         Self::require_request_authority(cancelled)?;
-        app.remove_underlay(id)
-            .map_err(|error| failed_because("commit_rejected", error))?;
-        self.query.invalidate();
-        Ok(json!({"removed": true, "underlay_id": underlay_id, "dirty": app.is_dirty()}))
-    }
-
-    /// `fit_underlay`: places the underlay so two points of its lines land on two model
-    /// points, as one Undo step; two picks at one point are refused with the reason.
-    pub(super) fn fit_underlay(
-        &mut self,
-        app: &mut KetchupApp,
-        request: &Request,
-        ui_busy: bool,
-        cancelled: &AtomicBool,
-    ) -> Result<Value, &'static str> {
         let Request::FitUnderlay {
-            expected,
-            underlay_id,
             from_mm,
             to_mm,
             scale,
+            ..
         } = request
         else {
-            return Err("invalid_request");
+            app.remove_underlay(id)
+                .map_err(|error| failed_because("commit_rejected", error))?;
+            self.query.invalidate();
+            return Ok(
+                json!({"removed": true, "underlay_id": underlay_id, "dirty": app.is_dirty()}),
+            );
         };
-        Self::guard(app, expected)?;
-        Self::available(app, ui_busy)?;
-        let id = ketchup_model::underlay::UnderlayId(*underlay_id);
-        if app.document.current().underlay(id).is_none() {
-            return Err("entity_not_found");
-        }
-        Self::require_request_authority(cancelled)?;
         let fit = app
             .fit_underlay(id, *from_mm, *to_mm, *scale)
             .map_err(|error| match error {
@@ -305,6 +296,28 @@ impl LiveBridge {
     ) -> Result<Value, &'static str> {
         let (path, ..) = Self::import_target(app, request, ui_busy)?;
         Self::require_request_authority(cancelled)?;
+        if let Request::Import {
+            revision_of: Some(of),
+            ..
+        } = request
+        {
+            // `import as_underlay revision_of`: the drawing read compared with the underlay
+            // as its later revision, and the overlay of what changed added on it.
+            let (overlay, comparison) = app
+                .add_revision_overlay(Path::new(&path), &read, UnderlayId(*of))
+                .map_err(|error| {
+                    let code = match &error {
+                        RevisionOverlayError::NotFound(..) => "entity_not_found",
+                        RevisionOverlayError::NoHandles
+                        | RevisionOverlayError::LinesUnreadable(..) => "invalid_params",
+                        _ => "commit_rejected",
+                    };
+                    failed_because(code, error)
+                })?;
+            return Ok(json!({"compared": true, "path": path, "revision_of": of,
+                "overlay_underlay_id": overlay.map(|id| id.0), "comparison": comparison,
+                "dirty": app.is_dirty()}));
+        }
         let mut summary = read.summary();
         let not_beside = ketchup_model::underlay::placement::geo_not_beside(
             &app.document.current(),
