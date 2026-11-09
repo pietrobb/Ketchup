@@ -360,6 +360,79 @@ fn a_sloping_member_naming_its_level_axis_keeps_its_true_depth() {
     }
 }
 
+/// A C24 top plate 140 x 60 of a gable at `degrees`, drawn from its side with
+/// plumb ends over 2 000 mm in plan as the buildup draws it, its `length_axis`
+/// named or not, on a stud at each end whose top follows its underside;
+/// `notch` mm (plumb) cut out of the underside over the low stud.
+fn sloping_plate(degrees: f64, length_axis: Option<&str>, notch: f64) -> String {
+    let slope = degrees.to_radians().tan();
+    let run = 2000.0;
+    let rise = run * slope;
+    let plumb = 60.0 / degrees.to_radians().cos();
+    let attributes = length_axis
+        .map(|axis| format!(", attributes = {{\"length_axis\": \"{axis}\"}}"))
+        .unwrap_or_default();
+    let underside = if notch > 0.0 {
+        format!(
+            "(0, {notch}), (100, {}), (100, {}), ",
+            100.0 * slope + notch,
+            100.0 * slope
+        )
+    } else {
+        "(0, 0), ".to_owned()
+    };
+    let stud = |name: &str, a: f64, raise: f64| {
+        let b = a + 60.0;
+        format!(
+            "part = extrude(\"{name}\", profile = [({a}, -500), ({b}, -500), ({b}, {}), ({a}, {})],
+               distance = 140, material = \"C24\", grounded = True)
+place(part, origin = (0, 140, 2000), z = (0, -1, 0), x = (1, 0, 0))
+",
+            b * slope + raise,
+            a * slope + raise
+        )
+    };
+    format!(
+        "load_path(only = [\"frame\"])
+self_weight([\"frame\"])
+timber_design({{\"C24\": \"C24\"}})
+part = extrude(\"plate\", profile = [{underside}({run}, {rise}), ({run}, {}), (0, {plumb})],
+               distance = 140, material = \"C24\", tags = [\"frame\"]{attributes})
+place(part, origin = (0, 140, 2000), z = (0, -1, 0), x = (1, 0, 0))
+{}{}",
+        rise + plumb,
+        stud("low stud", 0.0, notch),
+        stud("high stud", run - 60.0, 0.0)
+    )
+}
+
+/// PG-304 in the tiny house at 50 degrees: the sloping top plates of the gables
+/// were 140 x 93.343, their plumb cut taken for their depth. They are 140 x 60.
+/// A notch cut into the underside over a stud is checked (6.5.2) whether the
+/// axis is named or not; a plumb end is no notch, it has no re-entrant corner
+/// (the 0.489 of 11-08 came from a cut 1 mm deep at the tip of a plumb end).
+#[test]
+fn a_sloping_top_plate_keeps_its_depth_and_its_notch_check() {
+    let notched = |checked: &MemberCheck| checked.checks.iter().any(|c| c.name == "shear_notch");
+    for degrees in [30.0, 50.0] {
+        for axis in [Some("x"), None] {
+            let plain = report(&sloping_plate(degrees, axis, 0.0));
+            let plate = checked(&plain, "plate");
+            let section = plate.section_mm.expect("a section");
+            assert!(
+                (section[0] - 140.0).abs() < 1.0 && (section[1] - 60.0).abs() < 1.0,
+                "{degrees} {axis:?}: {section:?}"
+            );
+            assert!(!notched(plate), "{degrees} {axis:?}: {:?}", plate.checks);
+
+            let cut = report(&sloping_plate(degrees, axis, 20.0));
+            let plate = checked(&cut, "plate");
+            assert_eq!(plate.section_mm, Some(section), "{degrees} {axis:?}");
+            assert!(notched(plate), "{degrees} {axis:?}: {plate:?}");
+        }
+    }
+}
+
 /// PG-305: a 5.9 m beam whose `length_axis` named its 400 mm height became a
 /// column and passed; an unknown name was dropped silently. A named axis far
 /// shorter than the part's longest leaves it not verified, and an unknown one
