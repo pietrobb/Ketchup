@@ -9,6 +9,7 @@ mod components;
 mod connectivity;
 mod contact_review;
 mod cutting;
+mod declared_bracing_doubts;
 mod document;
 mod drill_material;
 mod exact_shapes;

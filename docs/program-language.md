@@ -201,14 +201,22 @@ several members (9.2.5.3); the design basis says so.
 Two declarations say what the geometry cannot. `diaphragm(sheets,
 anchored_to=[...])` makes sheets (parts or tags), such as a deck screwed only to
 its joists, one stiff plane anchored to grounded parts: when every anchor is
-declared grounded and fastened to one of the sheets, each sheet holds the members
-it is fastened to on the edge it lies on. `brace(members, by=[...], edge="top",
+declared grounded and fastened where it touches one of the sheets, each sheet that
+reaches an anchor through sheets touching each other holds the members it is
+fastened to on the edge it lies on. `brace(members, by=[...], edge="top",
 spacing=None)` says which edge the parts `by` hold where they touch each member
 (a lath near mid-depth of a beam's side holds neither by itself), every `spacing`
-mm along the contact or at the joint's fasteners there. Each brace must still be
-fastened to the member and anchored: declared grounded, fastened to a grounded
-part, or a sheet of an anchored diaphragm. A declaration that holds nothing is
-reported as `declared_bracing_ignored` with the reason.
+mm (at least 10) along the contact or at the joint's fasteners there. Where the
+geometry reads the other edge (a lath under the beam), that edge holds. Each
+brace must still be fastened to the member and anchored: declared grounded, a
+sheet of an anchored diaphragm, or fastened to a grounded part where they touch
+and across the member beyond its side. A declaration the geometry contradicts or
+that holds nothing is reported as `declared_bracing_ignored` with the reason; a
+joint of an unknown kind anywhere from the member through its braces to the
+ground leaves the member not verified. A part's `"length_axis"` attribute names
+the local axis its grain runs along (`"x"`, `"y"` or `"z"`, another value is
+refused); one naming an axis ten times shorter than the part's longest side
+leaves it not verified.
 A brace anchored to a grounded part smaller across the member than the member
 is deep is reported as `anchorage_small`. A brace holds the beam at its
 joint's `fasteners` that lie where the two parts touch, in any of their contacts
