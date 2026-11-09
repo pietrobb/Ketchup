@@ -43,3 +43,13 @@ it.
 | R1109-PG-309: the joint catalogue reads a kind by its first word | Fixed, a65b5430: a kind is read as catalogue entries, the longest first, and qualifiers of size, product or side; any other word leaves it unknown. "slide in", "angle cut" and "plate bearing" are unknown, "loose tenon" and "contact adhesive" fasten |
 | R1109-PG-310: one hint for every reason, `dedup` on an unsorted list, repeated `missing` lines | Fixed, a65b5430: each reason a declaration holds nothing carries its own hint (the edge to declare, the name to fix, the joint to add); a member's reasons and its braces without a strength class are each listed once, in the order found |
 | R1109-PG-245, the rest: `Snow_SK` has no suggestion and a mistyped `--set` keeps the exit code | Fixed, a65b5430: the suggestion ignores case, and `check` with a `--set` the program has no parameter of ends with 2, the program not evaluated as asked |
+
+## P3 security (§4.3, branch `r39-p3sec1109`)
+
+| Finding | Status |
+|---|---|
+| R1109-SEC-302: an overlay's layer through a link onto a share, or a relative one, is local | Fixed, 950b8b64: a layer counts only as an absolute path that stays on local mounts once its links are followed, each directory checked before its link is read (test with a layer linked onto NFS and a relative one) |
+| R1109-SEC-303: Linux mount points matched ignoring case and NFC (`/mnt/NAS` NFS against `/mnt/nas` ext4) | Fixed, 950b8b64: a Linux mount point is matched by its exact name; only macOS mount points fold case and Unicode form, as before (test with both pairs, in case and in NFC/NFD) |
+| R1109-SEC-304: the `take_over` consent shows only `sheets.txt` | Fixed, 950b8b64: the question lists every file the take-over replaces, its sheets and their list, with their count, and the approval's payload is those files |
+| R1109-MCP-305: the take-over dialog names the connected AI, not the one asking | Fixed, 950b8b64: the attach request carries the AI's name (at most 40 printable characters, unverified like `hello`'s) and the dialog names the AI asking and the one connected; a window older than the field hangs up on it and the MCP server asks it again without the name |
+| `FileIdInfo` has no fallback to the file index | Fixed, 950b8b64: where Windows gives no 128-bit id (FAT, SMB) the 64-bit file index stands for it, as NTFS's id reads, so the file keeps an identity |
