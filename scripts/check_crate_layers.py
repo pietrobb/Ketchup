@@ -406,7 +406,9 @@ CASTS_AND_ALLOWS = {
     # only where the user the file is named for owns), so 15 -> 16.
     # GetFileInformationByHandleEx(FileIdInfo) of app::written_drawings (review 2026-11-08:
     # on ReFS the 64-bit file index does not tell one file from another), so 16 -> 17.
-    "ketchup-app allows": 17,
+    # GetShortPathNameW of app::project_drawings (review 2026-11-09 R1109-MF-304: an 8.3
+    # name in a set's list is the folder the file system gives it), so 17 -> 18.
+    "ketchup-app allows": 18,
     "ketchup-app casts": 216,
     "ketchup-application allows": 9,
     "ketchup-application casts": 29,
