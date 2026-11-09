@@ -662,7 +662,6 @@ pub(super) fn btlx_free_contour(
     {
         return None;
     }
-    let depth_mm = end_mm - start_mm;
     let (low, high) = extent_along(
         [
             blank.corner_mm,
@@ -673,6 +672,11 @@ pub(super) fn btlx_free_contour(
     );
     let tolerance = blank.extents_mm.into_iter().fold(1.0_f64, f64::max) * ROUNDING;
     let through = *start_mm <= low + tolerance && *end_mm >= high - tolerance;
+    // The cutter of a Boolean cut reaches past the part; the machine cuts only
+    // the part (review 2026-11-09 R1109-MF-302: a 60 mm part milled through
+    // from Z = -1 to a depth of 62).
+    let (start_mm, end_mm) = (start_mm.max(low), end_mm.min(high));
+    let depth_mm = end_mm - start_mm;
     Some(BtlxFreeContour {
         reference_point_mm: btlx_part_coordinate(
             blank,
