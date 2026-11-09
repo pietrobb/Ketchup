@@ -24,6 +24,7 @@ use acadrust::{
     EntityType, ReadStats,
 };
 
+pub mod sheet;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 #[cfg(test)]
@@ -47,6 +48,10 @@ pub enum Stage {
     WriteDxf,
     ReadDxf,
     WriteDwg,
+    /// Building a drawing sheet ([`sheet`]).
+    BuildSheet,
+    /// Writing a drawing sheet as DXF.
+    WriteSheetDxf,
 }
 
 impl fmt::Display for Stage {
@@ -56,6 +61,8 @@ impl fmt::Display for Stage {
             Self::WriteDxf => "writing the DWG drawing as DXF",
             Self::ReadDxf => "reading the DXF drawing",
             Self::WriteDwg => "writing the DWG file",
+            Self::BuildSheet => "building the drawing sheet",
+            Self::WriteSheetDxf => "writing the drawing sheet as DXF",
         })
     }
 }
