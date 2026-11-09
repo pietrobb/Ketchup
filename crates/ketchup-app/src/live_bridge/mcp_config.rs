@@ -355,66 +355,86 @@ fn owner_named_in(file: &Path) -> Option<(u32, u32)> {
         .map(|folder| (folder.uid(), folder.gid()))
 }
 
-/// Runs `write` as `owner`, user and group, with no other group, and then as
-/// root again (review 2026-11-09 R1109-SEC-300: under `sudo` the checks went
-/// by path and the write by path again, so a user swapping a folder of theirs
-/// for a link to one of root's between them had root write its files there).
-/// The system then refuses root's folders and files to it as to that user.
+#[cfg(unix)]
+use user::{as_user, effective_user};
+
+/// The user this process writes as, and becoming another for a while: the
+/// calls into the system that take them.
 #[cfg(unix)]
 #[allow(unsafe_code)]
-fn as_user<T>(owner: (u32, u32), write: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
-    let check = |done: libc::c_int| {
-        if done == 0 {
+mod user {
+    use std::io;
+
+    /// The user this process writes as.
+    pub(super) fn effective_user() -> u32 {
+        // SAFETY: geteuid takes no pointers and has no preconditions.
+        unsafe { libc::geteuid() }
+    }
+
+    /// Runs `write` as `owner`, user and group, with no other group, and then
+    /// as root again (review 2026-11-09 R1109-SEC-300: under `sudo` the checks
+    /// went by path and the write by path again, so a user swapping a folder
+    /// of theirs for a link to one of root's between them had root write its
+    /// files there). The system then refuses root's folders and files to it
+    /// as to that user.
+    pub(super) fn as_user<T>(
+        owner: (u32, u32),
+        write: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<T> {
+        // SAFETY: getegid takes no pointers; getgroups is given no buffer to
+        // ask for the count, then a buffer of that count.
+        let (group, groups) = unsafe {
+            let mut groups: Vec<libc::gid_t> =
+                vec![0; count(libc::getgroups(0, std::ptr::null_mut()))?];
+            let filled = libc::getgroups(length(&groups)?, groups.as_mut_ptr());
+            groups.truncate(count(filled)?);
+            (libc::getegid(), groups)
+        };
+        let only: [libc::gid_t; 1] = [owner.1];
+        // SAFETY: setgroups reads one group from a live local; setegid and
+        // seteuid take no pointers. Root's real and saved user stay, so it is
+        // root again after; glibc applies each to every thread.
+        let dropped = unsafe {
+            done(libc::setgroups(1, only.as_ptr()))
+                .and_then(|()| done(libc::setegid(owner.1)))
+                .and_then(|()| done(libc::seteuid(owner.0)))
+        };
+        let written = dropped.and_then(|()| write());
+        // SAFETY: as above; `groups` is live and holds `groups.len()` groups.
+        let restored = unsafe {
+            done(libc::seteuid(0))
+                .and_then(|()| done(libc::setegid(group)))
+                .and_then(|()| done(libc::setgroups(length(&groups)?, groups.as_ptr())))
+        };
+        restored?;
+        written
+    }
+
+    /// What a call answering 0 when it is done did.
+    fn done(answer: libc::c_int) -> io::Result<()> {
+        if answer == 0 {
             Ok(())
         } else {
             Err(io::Error::last_os_error())
         }
-    };
-    // A count below zero says the call failed, and the system says why.
-    let count =
-        |count: libc::c_int| usize::try_from(count).map_err(|_failed| io::Error::last_os_error());
-    // SAFETY: getegid takes no pointers; getgroups is given no buffer to ask
-    // for the count, then a buffer of that count.
-    let (group, groups) = unsafe {
-        let mut groups: Vec<libc::gid_t> =
-            vec![0; count(libc::getgroups(0, std::ptr::null_mut()))?];
-        let filled = libc::getgroups(groups.len().try_into().unwrap_or(0), groups.as_mut_ptr());
-        groups.truncate(count(filled)?);
-        (libc::getegid(), groups)
-    };
-    let only: [libc::gid_t; 1] = [owner.1];
-    // SAFETY: setgroups reads one group from a live local; setegid and seteuid
-    // take no pointers. Root's real and saved user stay, so it is root again
-    // after; glibc applies each to every thread.
-    let dropped = unsafe {
-        check(libc::setgroups(1, only.as_ptr()))
-            .and_then(|()| check(libc::setegid(owner.1)))
-            .and_then(|()| check(libc::seteuid(owner.0)))
-    };
-    let written = dropped.and_then(|()| write());
-    // SAFETY: as above; `groups` is live and holds `groups.len()` groups.
-    let restored = unsafe {
-        check(libc::seteuid(0))
-            .and_then(|()| check(libc::setegid(group)))
-            .and_then(|()| {
-                #[allow(
-                    clippy::useless_conversion,
-                    reason = "a size_t on Linux, an int on macOS"
-                )]
-                let length = groups.len().try_into().map_err(io::Error::other)?;
-                check(libc::setgroups(length, groups.as_ptr()))
-            })
-    };
-    restored?;
-    written
-}
+    }
 
-/// The user this process writes as.
-#[cfg(unix)]
-#[allow(unsafe_code)]
-fn effective_user() -> u32 {
-    // SAFETY: geteuid takes no pointers and has no preconditions.
-    unsafe { libc::geteuid() }
+    /// The count a call answered; one below zero says it failed.
+    fn count(answer: libc::c_int) -> io::Result<usize> {
+        if answer < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        usize::try_from(answer).map_err(io::Error::other)
+    }
+
+    /// How many `groups` there are, as the system takes it: a `size_t` on
+    /// Linux, an `int` on macOS.
+    fn length<T: TryFrom<usize>>(groups: &[libc::gid_t]) -> io::Result<T>
+    where
+        T::Error: std::error::Error + Send + Sync + 'static,
+    {
+        T::try_from(groups.len()).map_err(io::Error::other)
+    }
 }
 
 /// Whether `writer` may write where it found `found`, each path with its
