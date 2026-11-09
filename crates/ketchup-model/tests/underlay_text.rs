@@ -617,6 +617,59 @@ fn utf8_letters_a_code_page_reads_as_a_letter_and_a_sign_are_utf8() {
     );
 }
 
+/// Review 2026-11-09 UL-303: „Dĺžka steny, Hĺbka základu“ in Windows-1250 under a header
+/// naming ANSI_1252 stays in 1252, „Håbka“ being a Swedish word, with only a warning; the
+/// user chooses the code page it is read in, which is said, and a drawing of DXF 2007 or
+/// later, always UTF-8, refuses a choice.
+#[test]
+fn a_drawing_is_read_in_the_code_page_the_user_chooses() {
+    use ketchup_model::import::{DxfCodePage, DxfImportError};
+    let source = |version: &str| {
+        let mut source = format!("0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\n{version}\n9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nTEXT\n8\nnotes\n10\n0\n20\n0\n40\n2\n1\n").into_bytes();
+        source.extend_from_slice(b"D\xE5\x9Eka steny, H\xE5bka z\xE1kladu");
+        source.extend_from_slice(b"\n0\nENDSEC\n0\nEOF\n");
+        source
+    };
+    let read = |options| read_dxf_underlay(&source("AC1015"), options).unwrap();
+    let text = |underlay: &DxfUnderlay| underlay.lines.layers()[0].texts()[0].text.clone();
+    let guessed = read(DxfImportOptions::new(None));
+    assert_eq!(text(&guessed), "Dåžka steny, Håbka základu");
+    assert_eq!(
+        counted(&guessed, "dxf.text-code-page-doubtful", Some("ANSI_1252")),
+        Some(1)
+    );
+    let central = DxfCodePage::parse("ansi_1250").unwrap();
+    assert_eq!(central.name(), "ANSI_1250");
+    let chosen = read(DxfImportOptions::new(None).with_code_page(Some(central)));
+    assert_eq!(text(&chosen), "Dĺžka steny, Hĺbka základu");
+    assert_eq!(
+        counted(&chosen, "dxf.text-code-page-chosen", Some("ANSI_1250")),
+        Some(1),
+        "{:?}",
+        chosen.diagnostics
+    );
+    assert_eq!(
+        counted(&chosen, "dxf.text-code-page-doubtful", Some("ANSI_1252")),
+        None
+    );
+    let dos = DxfCodePage::parse("DOS852").unwrap();
+    let chosen = read(DxfImportOptions::new(None).with_code_page(Some(dos)));
+    // In DOS852 0xE5 is ň, 0x9E × and 0xE1 ß.
+    assert_eq!(text(&chosen), "Dň×ka steny, Hňbka zßkladu");
+    assert_eq!(
+        counted(&chosen, "dxf.text-code-page-chosen", Some("DOS852")),
+        Some(1)
+    );
+    assert!(DxfCodePage::parse("ANSI_1999").is_none());
+    assert_eq!(
+        read_dxf_underlay(
+            &source("AC1021"),
+            DxfImportOptions::new(None).with_code_page(Some(central))
+        ),
+        Err(DxfImportError::CodePageOfUtf8Drawing)
+    );
+}
+
 const BLOCKS: &str = concat!(
     // A door: its leaf and its number, on layer 0, so on the layer of its insert.
     "0\nBLOCK\n8\n0\n2\ndoor\n70\n0\n10\n0\n20\n0\n",

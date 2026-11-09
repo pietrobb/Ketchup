@@ -292,6 +292,7 @@ fn has_effect(request: &Request) -> bool {
         | Request::RemoveUnderlay { .. }
         | Request::FitUnderlay { .. }
         | Request::DrawingRemove { .. }
+        | Request::DrawingDiscardRefused(_)
         | Request::DrawingDraw { .. }
         | Request::DrawingRooms(_)
         | Request::DrawingMove { .. }

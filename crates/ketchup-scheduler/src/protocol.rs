@@ -347,6 +347,9 @@ pub struct UnderlayInput {
     /// ([`ketchup_model::underlay::placement::geo_origin`]).
     #[serde(default)]
     pub geo_origin_mm: Option<[f64; 2]>,
+    /// The code page the user chose to read a drawing before DXF 2007 in.
+    #[serde(default)]
+    pub code_page: Option<ketchup_model::import::DxfCodePage>,
     pub output: PathBuf,
 }
 
@@ -384,6 +387,9 @@ pub struct UnderlayWriteInput {
     /// as they were read.
     #[serde(default)]
     pub geo_origin_mm: Option<[f64; 2]>,
+    /// The code page the drawing was read in by the user's choice.
+    #[serde(default)]
+    pub code_page: Option<ketchup_model::import::DxfCodePage>,
     /// The underlay's encoded lines, its blob.
     pub lines: PathBuf,
     /// How many layers the underlay names; lines holding more are refused.

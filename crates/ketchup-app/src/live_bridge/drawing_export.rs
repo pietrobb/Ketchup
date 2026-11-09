@@ -50,7 +50,7 @@ impl LiveBridge {
             Self::drawing_export_target(app, request, ui_busy, &cancelled).and_then(|target| {
                 match target.start(app, context) {
                     Ok(export) => Ok((target, export)),
-                    Err(error) => Err(target.refuse(error)),
+                    Err(error) => Err(target.refuse(app, error)),
                 }
             });
         match started {
@@ -103,9 +103,10 @@ impl LiveBridge {
             )),
         };
         take_error_details();
-        let result = written
-            .map(|written| job.target.written(written))
-            .map_err(|error| job.target.refuse(error));
+        let result = match written {
+            Ok(written) => Ok(job.target.written(app, written)),
+            Err(error) => Err(job.target.refuse(app, error)),
+        };
         Self::reply(app, job.id, &job.reply, result);
         context.request_repaint();
     }

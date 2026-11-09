@@ -8,7 +8,7 @@ use ketchup_model::import::{
     ImportLengthUnit, TextWritten, read_dxf_underlay, write_edited_dxf as write_reported,
 };
 use ketchup_model::underlay::drawn::{AddedObject, DrawnShape, similarity};
-use ketchup_model::underlay::edits::UnderlayEdits;
+use ketchup_model::underlay::edits::{UnderlayEdits, UnderlayObjectError};
 use ketchup_model::underlay::{UnderlayLayer, UnderlayLines};
 
 /// The text of the drawing written.
@@ -607,7 +607,8 @@ fn a_whole_turn_is_written_within_one_turn_when_turned_or_mirrored() {
 /// Review 2026-11-03 CD-140 / 2026-11-08 UL-241: an arc drawn `0..360` passed as drawable
 /// and was written `0 / 0` (`30..390` as `30 / 30`, turned as `30 / 30` too), which ezdxf
 /// and Kečup read as nothing. A whole turn drawn, turned or not, is written `0 / 360`; an
-/// arc of no span is not drawable.
+/// arc of no span is not drawable. Review 2026-11-09 UL-300: an arc back by a whole turn,
+/// `360..0` or `180..-180`, is a circle too, as read.
 #[test]
 fn a_whole_turn_drawn_is_written_as_one_and_an_arc_of_no_span_is_not_drawable() {
     let source = source();
@@ -621,6 +622,12 @@ fn a_whole_turn_drawn_is_written_as_one_and_an_arc_of_no_span_is_not_drawable() 
     };
     assert!(whole(0.0, 360.0).is_valid() && whole(30.0, 390.0).is_valid());
     assert!(!whole(30.0, 30.0).is_valid() && !whole(0.0, 0.0).is_valid());
+    // Review 2026-11-09 UL-301: the refusal says what an arc needs.
+    let refusal = UnderlayObjectError::InvalidShape(0).to_string();
+    assert!(
+        refusal.contains("an arc whose end is not its start"),
+        "{refusal}"
+    );
     let turned =
         whole(90.0, 450.0).transformed(&similarity([500.0, 200.0], 30.0, 1.0, [0.0, 0.0], None));
     let mirrored = whole(0.0, 360.0).transformed(&similarity(
@@ -631,7 +638,14 @@ fn a_whole_turn_drawn_is_written_as_one_and_an_arc_of_no_span_is_not_drawable() 
         Some([[0.0, 5000.0], [1.0, 5000.0]]),
     ));
     let mut edits = UnderlayEdits::default();
-    for shape in [whole(0.0, 360.0), whole(30.0, 390.0), turned, mirrored] {
+    for shape in [
+        whole(0.0, 360.0),
+        whole(30.0, 390.0),
+        whole(360.0, 0.0),
+        whole(180.0, -180.0),
+        turned,
+        mirrored,
+    ] {
         assert!(shape.is_valid(), "{shape:?}");
         edits.added.push(AddedObject::Drawn {
             layer: "walls".to_owned(),
@@ -655,7 +669,7 @@ fn a_whole_turn_drawn_is_written_as_one_and_an_arc_of_no_span_is_not_drawable() 
                 .any(|(code, value)| *code == 40 && value == "400")
         })
         .collect();
-    assert_eq!(drawn.len(), 4, "{text}");
+    assert_eq!(drawn.len(), 6, "{text}");
     for record in &drawn {
         let angle = |code: i32| {
             let (_, value) = record.iter().find(|(at, _)| *at == code).unwrap();
@@ -1345,6 +1359,7 @@ fn a_trimmed_extended_or_offset_line_keeps_its_entity_and_properties() {
         &[],
         [7; 32],
         [0.0, 0.0],
+        None,
     )
     .unwrap();
     document.apply_batch(&batch).unwrap();
@@ -2531,6 +2546,54 @@ fn a_drawing_read_in_another_code_page_than_its_header_names_is_written_naming_i
         String::from_utf8_lossy(&written)
     );
     assert_eq!(texts(&read(&written)), ["Kuchyně", "Chodba č. 2"]);
+}
+
+/// Review 2026-11-09 UL-303: a drawing read in the code page the user chose over its
+/// header is written in it, its header naming it, so it reads back alike with no choice.
+#[test]
+fn a_drawing_read_in_a_chosen_code_page_is_written_naming_it() {
+    use ketchup_model::import::DxfCodePage;
+    let header = HEADER.replace(
+        "9\n$INSUNITS\n",
+        "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
+    );
+    let mut source = format!("{header}{TABLES}0\nSECTION\n2\nENTITIES\n").into_bytes();
+    source.extend_from_slice(
+        b"0\nTEXT\n5\nB0\n330\n1F\n100\nAcDbEntity\n8\nnotes\n100\nAcDbText\n\
+          10\n0\n20\n0\n30\n0\n40\n250\n1\nH\xE5bka z\xE1kladu\n100\nAcDbText\n",
+    );
+    source.extend_from_slice(b"0\nENDSEC\n0\nEOF\n");
+    let options = DxfImportOptions::new(None).with_code_page(DxfCodePage::parse("ANSI_1250"));
+    let original = read_dxf_underlay(&source, options).unwrap();
+    let texts = |underlay: &DxfUnderlay| {
+        underlay
+            .lines
+            .layers()
+            .iter()
+            .flat_map(|layer| layer.texts())
+            .map(|text| text.text.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(texts(&original), ["Hĺbka základu"]);
+    let mut edits = UnderlayEdits::default();
+    edits.added.push(AddedObject::Drawn {
+        layer: "notes".to_owned(),
+        shape: DrawnShape::Text {
+            anchor_mm: [0.0, -1000.0],
+            height_mm: 100.0,
+            rotation_deg: 0.0,
+            text: "Dĺžka steny".to_owned(),
+        },
+    });
+    let written = write_edited_dxf(&source, options, &original.lines, &edits)
+        .unwrap_or_else(|error| panic!("{error}"));
+    let named = b"\n$DWGCODEPAGE\n3\nANSI_1250\n";
+    assert!(
+        written.windows(named.len()).any(|window| window == named),
+        "{}",
+        String::from_utf8_lossy(&written)
+    );
+    assert_eq!(texts(&read(&written)), ["Hĺbka základu", "Dĺžka steny"]);
 }
 
 /// Review 2026-11-06 UL-180: a drawing before DXF 2007 whose header names ANSI_1252 and

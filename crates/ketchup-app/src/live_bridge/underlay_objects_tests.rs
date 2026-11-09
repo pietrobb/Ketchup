@@ -54,6 +54,7 @@ pub(super) fn imported(source: &str) -> (KetchupApp, LiveBridge, [f64; 2]) {
         unit: None,
         as_underlay: true,
         revision_of: None,
+        code_page: None,
     };
     let answer = bridge
         .execute(&mut app, import, false)

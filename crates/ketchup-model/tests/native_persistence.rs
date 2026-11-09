@@ -2716,6 +2716,7 @@ fn a_blob_no_opened_revision_names_leaves_the_file_at_the_next_save() {
         &[],
         ketchup_model::graph::sha256_bytes(&lines),
         [0.0; 2],
+        None,
     )
     .unwrap();
     store.apply_batch(&batch).unwrap();

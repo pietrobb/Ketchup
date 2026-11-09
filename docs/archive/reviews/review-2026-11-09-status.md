@@ -44,6 +44,16 @@ it.
 | R1109-MF-304: a 0.3.2 list naming its project by an 8.3 name (`PROJEK~1`) fits every folder of the same six letters | Fixed, d6f7ca54: an 8.3 name is the folder the file system gives it; only when a name has that form are the project's file and the list's folder asked for their short names (`GetShortPathNameW`), so no file is looked at otherwise. A copy in `Projekt beta` no longer takes the set of `Projekt alpha` (test on real 8.3 names), the original still does |
 | R1109-MF-305: a pin into a bought part: the `.mpr`, the package and BTLx drill the made side without naming the loss, the production job refuses `UnmadePinHole` | Fixed, bdb0fee5: one loss in the capability gate for every format, the holes of a pin joint in a part the shop does not make joined to a made one. The production job lays the made part and lists the loss under `losses`; the BTLx support report has `unmade_pin_holes`; the `.mpr` and package exports, and BTLx, name it in the status line and in the MCP result (`lost`). Test with logical and drilled pins into a bought timber |
 
+## Underlays (§4.3, branch `r37-p3docs1109`)
+
+| Finding | Status |
+|---|---|
+| R1109-UL-300: an ARC of 360 / 0 or 180 / −180 is dropped | Fixed, bb4abe28: an arc whose end is a whole number of turns from its start reads and draws as its circle, as `ezdxf`, HATCH edges and the writer take it |
+| R1109-UL-301: `InvalidShape` does not tell what an arc needs | Fixed, bb4abe28: the refusal says an arc needs an end that is not its start (an end whole turns from it draws a circle) and a fill a first ring with an area |
+| R1109-UL-303: "Dĺžka steny, Hĺbka základu" stays in 1252 with only a warning; no choice of code page on import | Fixed (saved as format 110, which 0.3.2 refuses as newer): an underlay whose code page is doubtful opens a window with its layer names and texts as read, kept or read again in a chosen code page; MCP `file action=import as_underlay=true code_page=…` (the 17 `$DWGCODEPAGE` names); the underlay keeps it for `revision_of` imports and writes it into `$DWGCODEPAGE` on DXF export |
+| R1109-CD-300: the hint tells the AI to have the user press Discard, but an export by the AI sets no Discard and MCP has none | Fixed: an export by the AI that refuses edits sets the window's Discard as one from the menu does, and `drawing action=discard_refused` (object ids from the refusal's `details.object_ids`, the default) discards them, keeping the other edits, as one Undo step; the hint names it |
+| R1109-CD-301: texts too long of the file and drawn in Kečup together are `drawing_edit_not_writable` | Fixed, eb0142ef: the code of several refusals is the one each has when they share it, else `drawing_edit_not_writable` only when one of them is an edit Discard repairs; a text of the file and one drawn in Kečup, also nested, are `drawing_text_too_long`, whose hint tells to shorten them, not to press a Discard that is not there |
+
 ## P3 statics (§4.3, branch `r35-p3statics1109`)
 
 | Finding | Status |

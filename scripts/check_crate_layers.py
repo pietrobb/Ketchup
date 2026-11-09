@@ -65,7 +65,7 @@ FROZEN_MODULES = {
     "crates/ketchup-model/src/document.rs": 514,
     # They kept growing past 3 000 lines (review 2026-11-07 P3).
     "crates/ketchup-manufacturing/src/fabrication.rs": 4628,
-    "crates/ketchup-model/src/import/dxf.rs": 4499,
+    "crates/ketchup-model/src/import/dxf.rs": 4467,
     # Past FREEZE_AT_LINES when the check began to require it (review 2026-11-08 TST-253);
     # live_bridge.rs and exact_worker.rs are the ones that review found growing.
     "crates/ketchup-app/src/app/drawing.rs": 3798,
@@ -74,7 +74,7 @@ FROZEN_MODULES = {
     "crates/ketchup-app/src/app/viewport.rs": 4857,
     "crates/ketchup-app/src/assembly_ui.rs": 3189,
     "crates/ketchup-app/src/feature_history_ui.rs": 3257,
-    "crates/ketchup-app/src/live_bridge.rs": 3513,
+    "crates/ketchup-app/src/live_bridge.rs": 3483,
     "crates/ketchup-application/src/planner.rs": 4364,
     "crates/ketchup-application/src/validation.rs": 4053,
     "crates/ketchup-assistant/src/sidecar.rs": 4284,

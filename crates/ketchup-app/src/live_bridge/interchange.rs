@@ -11,6 +11,7 @@ use crate::export_bundle::{ExportError, Written};
 use crate::{ImportError, ImportFormat, ImportLengthUnit, KetchupApp};
 use ketchup_application::rejections::rejected;
 use ketchup_manufacturing::dxf_annotations::MAX_PLAN_SCALE;
+use ketchup_model::import::DxfCodePage;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::{Arc, atomic::AtomicBool};
@@ -28,6 +29,15 @@ pub(super) enum ReadAlready {
         Vec<u8>,
         crate::app::exact_import_activity::ExactImportEvidence,
     ),
+}
+
+/// What an import request reads: the file, its format, the unit of a unitless drawing
+/// and the code page an underlay drawing is read in.
+pub(super) struct ImportTarget {
+    pub(super) path: String,
+    pub(super) format: ImportFormat,
+    pub(super) unit: Option<ImportLengthUnit>,
+    pub(super) code_page: Option<DxfCodePage>,
 }
 
 /// Records why the import of `path` failed for the answer.
@@ -142,7 +152,12 @@ impl LiveBridge {
         cancelled: &AtomicBool,
         read: ReadAlready,
     ) -> Result<Value, &'static str> {
-        let (path, format, unit) = Self::import_target(app, request, ui_busy)?;
+        let ImportTarget {
+            path,
+            format,
+            unit,
+            code_page,
+        } = Self::import_target(app, request, ui_busy)?;
         if matches!(
             request,
             Request::Import {
@@ -154,6 +169,7 @@ impl LiveBridge {
                 Path::new(&path),
                 unit,
                 ketchup_model::underlay::placement::geo_origin(&app.document.current()),
+                code_page,
                 &ketchup_program::CancelToken::default(),
             )
             .map_err(|error| import_failed(&path, error))?;
@@ -171,18 +187,20 @@ impl LiveBridge {
         Ok(json!({"imported": true, "path": path, "review": summary, "dirty": app.is_dirty()}))
     }
 
-    /// The file, format and unit of an import request the window takes now.
+    /// The file, format, unit and code page of an import request the window takes now.
     pub(super) fn import_target(
         app: &mut KetchupApp,
         request: &Request,
         ui_busy: bool,
-    ) -> Result<(String, ImportFormat, Option<ImportLengthUnit>), &'static str> {
+    ) -> Result<ImportTarget, &'static str> {
         let Request::Import {
             expected,
             path,
             unit,
             as_underlay,
             revision_of,
+            code_page,
+            ..
         } = request
         else {
             return Err("invalid_request");
@@ -237,7 +255,39 @@ impl LiveBridge {
                 })
             })
             .transpose()?;
-        Ok((path.clone(), format, unit))
+        // The code page an underlay drawing is read in: the one the request names, else
+        // that of the underlay it is a revision of (review 2026-11-09 UL-303).
+        let code_page = match code_page {
+            None => revision_of.and_then(|of| {
+                app.document
+                    .current()
+                    .underlay(ketchup_model::underlay::UnderlayId(of))
+                    .and_then(|under| under.code_page)
+            }),
+            Some(name) if !*as_underlay => {
+                return Err(failure(
+                    "invalid_params",
+                    "code_page reads a drawing imported as_underlay.",
+                    json!({"code_page": name}),
+                ));
+            }
+            Some(name) => Some(DxfCodePage::parse(name).ok_or_else(|| {
+                failure(
+                    "invalid_params",
+                    "code_page is the $DWGCODEPAGE name of a code page, such as ANSI_1250.",
+                    json!({
+                        "code_page": name,
+                        "code_pages": DxfCodePage::ALL.map(DxfCodePage::name),
+                    }),
+                )
+            })?),
+        };
+        Ok(ImportTarget {
+            path: path.clone(),
+            format,
+            unit,
+            code_page,
+        })
     }
 
     pub(super) fn export_file(
