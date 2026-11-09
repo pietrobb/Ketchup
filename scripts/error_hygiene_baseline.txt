@@ -1,5 +1,5 @@
 # Remaining errors that drop their cause or cases the types still allow (<file> <form> <count>, forms in scripts/check_error_hygiene.py); may only shrink.
-# forms: discard string unreachable silent_unreachable string_result str_result stringified_cause debug_formatted stringified_variant formatted_variant dropped_variant dropped_error formatted_cause stringified_field let_else_error dropped_quietly dropped_arm dropped_closure let_underscore guarded_arm named_underscore ok_statement from_discard empty_is_err irrefutable_let dropped_call or_default or_unit eprintln macro_panic unwrap_path clippy_allow
+# forms: discard string unreachable silent_unreachable string_result str_result stringified_cause debug_formatted stringified_variant formatted_variant dropped_variant dropped_error formatted_cause stringified_field let_else_error dropped_quietly dropped_arm dropped_closure let_underscore guarded_arm named_underscore ok_statement from_discard empty_is_err irrefutable_let dropped_call or_default or_unit eprintln macro_panic unwrap_path clippy_allow stderr_write
 crates/ketchup-analysis/src/fea.rs dropped_error 1
 crates/ketchup-analysis/src/validator_hosting.rs formatted_variant 1
 crates/ketchup-app/src/app/commands.rs or_default 2
@@ -301,6 +301,7 @@ crates/ketchup-program/src/model.rs unreachable 2
 crates/ketchup-program/src/quote.rs or_default 4
 crates/ketchup-program/src/shop_drawing.rs or_default 3
 crates/ketchup-program/src/validate.rs or_default 1
+crates/ketchup-rejection/src/dropped.rs stderr_write 1
 crates/ketchup-scheduler/src/child_process.rs eprintln 1
 crates/ketchup-scheduler/src/exact_worker.rs eprintln 1
 crates/ketchup-scheduler/src/exact_worker.rs or_default 1

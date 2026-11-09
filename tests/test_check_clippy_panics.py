@@ -224,6 +224,73 @@ def test_real_clippy_and_the_text_check_count_every_form_once_between_them(tmp_p
     assert text_counts == {"macro_panic": 2, "unwrap_path": 1, "clippy_allow": 1}
 
 
+PROBE_1109 = """\
+use std::io::Write;
+
+pub fn later() -> u8 {
+    todo!()
+}
+
+pub fn never() -> u8 {
+    unimplemented!()
+}
+
+pub fn shown(x: u8) -> u8 {
+    dbg!(x)
+}
+
+pub fn told() -> std::io::Result<()> {
+    writeln!(std::io::stderr(), "x")
+}
+
+pub fn locked() -> std::io::Result<()> {
+    std::io::stderr().lock().write_all(b"x")
+}
+
+pub fn save() -> Result<(), u8> {
+    Err(1)
+}
+
+pub fn thrown() {
+    _ = save();
+}
+
+pub fn kept(x: u8) -> u8 {
+    match x {
+        _ => x,
+    }
+}
+"""
+
+
+@pytest.mark.skipif(shutil.which("cargo") is None, reason="needs cargo clippy")
+def test_the_forms_review_1109_tst303_found_count(tmp_path):
+    # Review 2026-11-09 R1109-TST-303: `todo!`, `unimplemented!` and `dbg!` were counted
+    # nowhere, `writeln!(stderr())` passed print_stderr and `_ = save(x);` passed the
+    # count of `let _ = save(x);`.
+    (tmp_path / "src").mkdir()
+    (tmp_path / "Cargo.toml").write_text(
+        '[package]\nname = "probe"\nversion = "0.1.0"\nedition = "2024"\n\n[workspace]\n',
+        encoding="utf-8")
+    (tmp_path / "src" / "lib.rs").write_text(PROBE_1109, encoding="utf-8")
+    command = [part for part in checker.clippy_command(["probe"]) if part != "--locked"]
+    run = subprocess.run(command, cwd=tmp_path, stdout=subprocess.PIPE, text=True,
+                         encoding="utf-8", env={**os.environ, "CARGO_TARGET_DIR": str(tmp_path / "target")})
+    assert run.returncode == 0
+    assert checker.counts_of(run.stdout.splitlines(), tmp_path) == {
+        "src/lib.rs todo": 1, "src/lib.rs unimplemented": 1, "src/lib.rs dbg_macro": 1}
+    text_counts = {form: count for form, count in hygiene.file_counts(PROBE_1109).items() if count}
+    assert text_counts == {"stderr_write": 2, "let_underscore": 1}
+    # A command line's entry point reports on stderr; a child's pipe is no write.
+    assert not hygiene.file_counts("writeln!(io::stderr(), \"usage\")?;", entry_point=True)[
+        "stderr_write"]
+    assert not hygiene.file_counts("let tail = stderr_tail(child.stderr().take());")[
+        "stderr_write"]
+    # `dbg!` in a macro's body is a write to stderr clippy does not see.
+    assert hygiene.file_counts("macro_rules! show {\n    ($x:expr) => { dbg!($x) };\n}\n")[
+        "macro_panic"] == 1
+
+
 def test_without_packages_named_the_systems_recorded_ones_are_checked(tmp_path):
     # Review 2026-11-09 R1109-TST-306: run without -p, as the pre-push hook runs it, the
     # check ended 0 having run nothing.

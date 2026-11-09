@@ -46,8 +46,9 @@ Two forms are counted in production source (crates/*/src, test modules and
   `Err(_) => { return Err(..) }` (review 2026-11-02 TST-121).
 - dropped_closure: `.unwrap_or_else(|_| ...)` and `.map_or_else(|_| ...)` answer an error
   with a value.
-- let_underscore: `let _ = call(...);` throws away what the call answers; clippy's
-  `let_underscore_must_use` sees the same where a crate holds none (TST-121).
+- let_underscore: `let _ = call(...);` and `_ = call(...);` throw away what the call
+  answers; clippy's `let_underscore_must_use` sees the first where a crate holds none
+  (TST-121), neither lint the second (review 2026-11-09 R1109-TST-303).
 - guarded_arm: `Err(_) if cond =>` drops the error the guard decides on.
 - named_underscore: `let _name = call();` keeps what the call answers unread; a
   guard held to the end of the scope (`_lock`, `_guard`, `_permit`, `_reset`,
@@ -76,11 +77,13 @@ clippy's map_err_ignore, let_underscore_must_use and let_underscore_untyped
 (review 2026-11-04 TST-140). `.unwrap()`, `.expect(..)`, `panic!` and stderr writes
 are counted by clippy itself in scripts/check_clippy_panics.py (review 2026-11-08 TST-250),
 except where clippy does not report them (review 2026-11-09 R1109-TST-300, TST-301):
-- macro_panic: `.unwrap()`, `.expect(`, `panic!`, `todo!`, `unimplemented!` and
-  `eprint!` in the body of a `macro_rules!`.
+- macro_panic: `.unwrap()`, `.expect(`, `panic!`, `todo!`, `unimplemented!`,
+  `eprint!` and `dbg!` in the body of a `macro_rules!`.
 - unwrap_path: `Result::unwrap`, `Option::expect` and the like passed by their path,
   `.map(Option::unwrap)`.
 - clippy_allow: `#[allow(clippy::unwrap_used)]` or `#[expect(..)]` of any of the four.
+- stderr_write: `stderr()` outside a command line's entry point, as in
+  `writeln!(io::stderr(), ..)`, which print_stderr does not report (R1109-TST-303).
 
 The check is a ratchet: scripts/error_hygiene_baseline.txt records what still
 exists, per file and form. A count may only go down; a new file or a higher count
@@ -170,8 +173,10 @@ COUNTED_ARM = re.compile(r"\s*(?:return\s+)?(?:Err\(|None\b)")
 # the first closure of `.map_or_else(|_| ...)` too.
 DROPPED_CLOSURE = re.compile(
     r"\.(?:unwrap_or_else|map_or_else)\(\s*(?:move\s*)?\|\s*_\w*\s*(?::[^|]*)?\|")
-# `let _ = call(...);` throws away what the call answers, an error with it.
-LET_UNDERSCORE = re.compile(r"\blet\s+_\s*=\s*[^;]*\)\s*;")
+# `let _ = call(...);` throws away what the call answers, an error with it; so does
+# `_ = call(...);` (review 2026-11-09 R1109-TST-303), not a match's `_ =>`.
+LET_UNDERSCORE = re.compile(r"(?:\blet\s+|(?:^|(?<=[;{}]))\s*)_\s*=(?![=>])\s*[^;]*\)\s*;",
+                            re.MULTILINE)
 GUARDED_ARM = re.compile(r"\bErr\(\s*_\w*\s*\)\s*if\b")
 NAMED_UNDERSCORE = re.compile(
     r"^\s*let\s+_(?!\w*(?:lock|guard|permit|reset|restore)\b)[a-z]\w*\s*(?::[^=]+)?=[^=]",
@@ -254,7 +259,10 @@ EPRINTLN = re.compile(r"\beprintln!\s*\(")
 MACRO_RULES = re.compile(r"\bmacro_rules!\s*\w+\s*\{")
 MACRO_PANIC = re.compile(
     r"\.(?:unwrap|unwrap_err)\(\s*\)|\.(?:expect|expect_err)\(|\b(?:panic|todo|unimplemented)!\s*\("
-    r"|\beprint!\s*\(")
+    r"|\b(?:eprint|dbg)!\s*\(")
+# A write to stderr print_stderr does not see, `writeln!(io::stderr(), ..)` or
+# `stderr().lock()` (review 2026-11-09 R1109-TST-303); a child's `.stderr()` pipe is none.
+STDERR_WRITE = re.compile(r"(?<![.\w])(?:(?:std\s*::\s*)?io\s*::\s*)?stderr\s*\(\s*\)")
 UNWRAP_PATH = re.compile(r"\b(?:Result|Option)\s*::\s*(?:unwrap|unwrap_err|expect|expect_err)\b")
 CLIPPY_ALLOW = re.compile(
     r"#!?\[\s*(?:allow|expect)\s*\([^\]]*\bclippy\s*::\s*(?:unwrap_used|expect_used|panic|print_stderr)\b")
@@ -337,7 +345,8 @@ def file_counts(text: str, entry_point: bool = False) -> dict[str, int]:
             "eprintln": window_eprintlns(text) if entry_point else len(EPRINTLN.findall(text)),
             "macro_panic": macro_panics(text),
             "unwrap_path": len(UNWRAP_PATH.findall(code_only(text))),
-            "clippy_allow": len(CLIPPY_ALLOW.findall(text))}
+            "clippy_allow": len(CLIPPY_ALLOW.findall(text)),
+            "stderr_write": 0 if entry_point else len(STDERR_WRITE.findall(code_only(text)))}
 
 
 def macro_panics(text: str) -> int:
