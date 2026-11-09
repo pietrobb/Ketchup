@@ -111,6 +111,45 @@ fn large_house_a_stair_under_the_low_roof_has_no_headroom_at_the_top() {
     );
 }
 
+/// R1109-PG-308: at 30° and 35° the north roof over a 1000 mm knee wall comes
+/// down into the landing at the top of the stair, which is reported, not
+/// passed; the knee wall the parameter's doc names for that pitch frees it.
+#[test]
+#[ignore = "large-house: runs in full suite"]
+fn large_house_a_low_roof_needs_the_knee_wall_its_doc_names_over_the_stair() {
+    for pitch in [30.0, 35.0] {
+        let found = occupied(&issues(HOUSE, &[("roof_pitch", pitch)]));
+        assert!(!found.is_empty(), "{pitch}°");
+        assert!(
+            found
+                .iter()
+                .all(|(part, message)| (part.starts_with("strecha/severná")
+                    || part.starts_with("konštrukcia/strecha severná")
+                    || part == "konštrukcia/hrebeňová väznica")
+                    && message.contains("schody/")),
+            "{pitch}°: {found:#?}"
+        );
+        assert!(
+            found
+                .iter()
+                .any(|(_, message)| message.contains("schody/landing at the top")),
+            "{pitch}°: {found:#?}"
+        );
+    }
+    assert!(HOUSE.contains("pri sklone 30° aspoň 1300 mm, pri 35° aspoň 1100 mm"));
+    for overrides in [
+        &[("roof_pitch", 30.0), ("knee_wall", 1300.0)][..],
+        &[("roof_pitch", 35.0), ("knee_wall", 1100.0)],
+    ] {
+        let issues = issues(HOUSE, overrides);
+        let spaces: Vec<_> = issues
+            .iter()
+            .filter(|issue| issue.kind.starts_with("free_space"))
+            .collect();
+        assert!(spaces.is_empty(), "{overrides:?}: {spaces:#?}");
+    }
+}
+
 #[test]
 #[ignore = "large-house: runs in full suite"]
 fn large_house_something_in_front_of_the_stove_door_is_reported() {
