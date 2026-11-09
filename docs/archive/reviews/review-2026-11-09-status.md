@@ -43,3 +43,12 @@ it.
 | R1109-PG-309: the joint catalogue reads a kind by its first word | Fixed, a65b5430: a kind is read as catalogue entries, the longest first, and qualifiers of size, product or side; any other word leaves it unknown. "slide in", "angle cut" and "plate bearing" are unknown, "loose tenon" and "contact adhesive" fasten |
 | R1109-PG-310: one hint for every reason, `dedup` on an unsorted list, repeated `missing` lines | Fixed, a65b5430: each reason a declaration holds nothing carries its own hint (the edge to declare, the name to fix, the joint to add); a member's reasons and its braces without a strength class are each listed once, in the order found |
 | R1109-PG-245, the rest: `Snow_SK` has no suggestion and a mistyped `--set` keeps the exit code | Fixed, a65b5430: the suggestion ignores case, and `check` with a `--set` the program has no parameter of ends with 2, the program not evaluated as asked |
+
+## P3 CI and tests (§4.3, branch `r40-p3tests1109`)
+
+| Finding | Status |
+|---|---|
+| R1109-TST-303: `_ = save(x);`, `writeln!(stderr())`, `todo!`, `unimplemented!` and `dbg!` are counted nowhere | Fixed, 06975b54: clippy's `todo`, `unimplemented` and `dbg_macro` join the forced lints of `check_clippy_panics.py`; `check_error_hygiene.py` counts `_ = call();` as `let_underscore`, `stderr()` outside an entry point as `stderr_write` (the one in `ketchup-rejection`'s logger recorded) and `dbg!` in a `macro_rules!`. A test runs the real clippy on a small crate holding each form |
+| R1109-TST-304: the deadline check is narrow, 8 s in `live_bridge_bootstrap.rs` | Fixed, 06975b54: an `if` past a deadline, either way round, whose block fails the test after other statements (a child killed first) counts; the bootstrap test waits 60 s, only against a hang |
+| R1109-TST-305: each change writes its module's new size into the frozen list | Fixed, 06975b54: `check_crate_layers.py` compares `FROZEN_MODULES` with the commit before (a PR's merge commit has `main` first): an entry may only go down, and one added may not be past 3 000 lines; the Python job checks out two commits |
+| R1109-DOC-300: `R<MMDD>` collides for two reviews of one day | Fixed, 06975b54: AGENTS.md §7, a second review of a day names its round as its file does, `R1106r23-` |
