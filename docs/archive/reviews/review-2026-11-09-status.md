@@ -23,3 +23,4 @@ it.
 | Finding | Status |
 |---|---|
 | R1109-MF-302: a hole milled through a 60 mm part has Z = −1 and a depth of 62 | Fixed, 6764559a: a BTLx free contour is clamped to the part along its cut, so one through a 60 mm part starts on its face and is 60 deep; a cut wholly beyond the part is none. The woodWOP pocket already refuses a cut not starting on the face |
+| R1109-MF-304: a 0.3.2 list naming its project by an 8.3 name (`PROJEK~1`) fits every folder of the same six letters | Fixed, d6f7ca54: an 8.3 name is the folder the file system gives it; only when a name has that form are the project's file and the list's folder asked for their short names (`GetShortPathNameW`), so no file is looked at otherwise. A copy in `Projekt beta` no longer takes the set of `Projekt alpha` (test on real 8.3 names), the original still does |
