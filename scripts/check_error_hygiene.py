@@ -74,7 +74,13 @@ Two forms are counted in production source (crates/*/src, test modules and
 clippy's map_err_ignore, let_underscore_must_use and let_underscore_untyped
 (workspace [lints]) cover the rest; these four are what clippy cannot see
 (review 2026-11-04 TST-140). `.unwrap()`, `.expect(..)`, `panic!` and stderr writes
-are counted by clippy itself in scripts/check_clippy_panics.py (review 2026-11-08 TST-250).
+are counted by clippy itself in scripts/check_clippy_panics.py (review 2026-11-08 TST-250),
+except where clippy does not report them (review 2026-11-09 R1109-TST-300, TST-301):
+- macro_panic: `.unwrap()`, `.expect(`, `panic!`, `todo!`, `unimplemented!` and
+  `eprint!` in the body of a `macro_rules!`.
+- unwrap_path: `Result::unwrap`, `Option::expect` and the like passed by their path,
+  `.map(Option::unwrap)`.
+- clippy_allow: `#[allow(clippy::unwrap_used)]` or `#[expect(..)]` of any of the four.
 
 The check is a ratchet: scripts/error_hygiene_baseline.txt records what still
 exists, per file and form. A count may only go down; a new file or a higher count
@@ -240,6 +246,18 @@ OR_DEFAULT = re.compile(
 # r23 P3: `ketchup-viewer/src/gpu.rs` threw a send's away so).
 OR_UNIT = re.compile(r"\.(?:unwrap_or|map_or)\(\s*\(\)\s*[,)]")
 EPRINTLN = re.compile(r"\beprintln!\s*\(")
+# What clippy's unwrap_used, expect_used, panic and print_stderr do not report (review
+# 2026-11-09 R1109-TST-300, found with clippy on a crate of its own): any of them in the
+# body of a `macro_rules!`, and `unwrap` or `expect` passed by its path,
+# `.map(Option::unwrap)`. A `#[allow(clippy::unwrap_used)]` or `expect` of one of
+# them is counted too (R1109-TST-301): it says the code means to panic there.
+MACRO_RULES = re.compile(r"\bmacro_rules!\s*\w+\s*\{")
+MACRO_PANIC = re.compile(
+    r"\.(?:unwrap|unwrap_err)\(\s*\)|\.(?:expect|expect_err)\(|\b(?:panic|todo|unimplemented)!\s*\("
+    r"|\beprint!\s*\(")
+UNWRAP_PATH = re.compile(r"\b(?:Result|Option)\s*::\s*(?:unwrap|unwrap_err|expect|expect_err)\b")
+CLIPPY_ALLOW = re.compile(
+    r"#!?\[\s*(?:allow|expect)\s*\([^\]]*\bclippy\s*::\s*(?:unwrap_used|expect_used|panic|print_stderr)\b")
 # A variant of an error type (`...Error::Name(_)`) matched to a bare string.
 DROPPED_VARIANT = re.compile(r"\b\w*Error::\w+\(\s*_\s*\)\s*=>\s*\"")
 # An inline test module at the top level of a Rust file: `#[cfg(test)]` or
@@ -316,7 +334,22 @@ def file_counts(text: str, entry_point: bool = False) -> dict[str, int]:
             "dropped_call": len(DROPPED_CALL.findall(text)),
             "or_default": len(OR_DEFAULT.findall(text)),
             "or_unit": len(OR_UNIT.findall(text)),
-            "eprintln": window_eprintlns(text) if entry_point else len(EPRINTLN.findall(text))}
+            "eprintln": window_eprintlns(text) if entry_point else len(EPRINTLN.findall(text)),
+            "macro_panic": macro_panics(text),
+            "unwrap_path": len(UNWRAP_PATH.findall(code_only(text))),
+            "clippy_allow": len(CLIPPY_ALLOW.findall(text))}
+
+
+def macro_panics(text: str) -> int:
+    """The panics and stderr writes in the bodies of the `macro_rules!` of `text`."""
+    return sum(len(MACRO_PANIC.findall(code_only(text[rules.end():block_end(text, rules.end())])))
+               for rules in MACRO_RULES.finditer(text))
+
+
+def code_only(text: str) -> str:
+    """`text` with its comments gone and its strings and characters emptied, so a
+    comment cannot hold a count a real call may take (review 2026-11-07 r26 P3)."""
+    return NOT_CODE.sub(lambda found: '""' if found.group().endswith('"') else " ", text)
 
 
 WINDOW_LOG = re.compile(r"\blog_window_to\s*\(")

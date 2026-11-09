@@ -9,6 +9,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 type Triangle = [[f64; 2]; 3];
 
+/// A convex piece and its box: its least and its greatest corner.
+type Piece = (Vec<[f64; 2]>, [[f64; 2]; 2]);
+
 /// The most cells along one side of the grid.
 const MOST_CELLS_ACROSS: u32 = 1024;
 
@@ -34,61 +37,165 @@ pub(super) fn area_over(mine: &[Triangle], theirs: &[Triangle], stop: &AtomicBoo
     overlap(mine, theirs, stop).map(|(area, _)| area)
 }
 
-/// The area of `mine` over `theirs`, and how many times one of theirs was
-/// looked at, in the grid and against one of mine: never more than one of
-/// theirs against each of mine and the grid, as `theirs` are passed in order
-/// where the cells near one of mine hold more than half as many (review
-/// 2026-11-07 r26 P3: a fan took 231 s, 16.5 s each against each).
+/// The area of `mine` over `theirs`, and how many times one of theirs, or a
+/// piece of mine against one of theirs, was looked at. One of mine is cut
+/// along the cells of the grid, each part against the triangles of its cell
+/// alone, so a slab of two triangles over a mesh of thousands is cut where
+/// each lies, not as a whole (review 2026-11-09 MF-303: 3 200 took 454 s),
+/// and only in the cells it reaches (review 2026-11-07 r26 P3: a fan took
+/// 231 s, 16.5 s each against each).
 fn overlap(mine: &[Triangle], theirs: &[Triangle], stop: &AtomicBool) -> Option<(f64, usize)> {
     let grid = Grid::of(theirs);
-    // The triangle of mine each of theirs was last overlapped with, so one
-    // in several cells is clipped once.
-    let mut seen = vec![usize::MAX; theirs.len()];
-    let mut looked = grid.entries;
-    let mut next_stop = 0;
+    let mut looks = Looks {
+        looked: grid.entries,
+        next_stop: 0,
+        stop,
+    };
     let mut total = 0.0;
-    for (index, triangle) in mine.iter().enumerate() {
-        if looked >= next_stop {
-            if stop.load(Ordering::Relaxed) {
+    for triangle in mine {
+        looks.count(0)?;
+        let [min, max] = boxed(triangle);
+        let ([first_column, last_column], [first_row, last_row]) = grid.span(min, max);
+        for row in first_row..=last_row {
+            // The cells of the row the triangle reaches, not all its box spans:
+            // a thin one of a fan crosses few of them.
+            let [[_, bottom], [_, top]] = grid.cell_box(first_column, row);
+            let band = clipped_to(
+                triangle,
+                [[f64::NEG_INFINITY, bottom], [f64::INFINITY, top]],
+            );
+            if band.is_empty() {
+                continue;
+            }
+            let [low, high] = boxed_points(&band);
+            let ([from, to], _) = grid.span(low, high);
+            for column in from.max(first_column)..=to.min(last_column) {
+                let part = clipped_to(&band, grid.cell_box(column, row));
+                let cell = grid.cell(column, row);
+                total += covered(&part, cell, theirs, &grid.boxes, &mut looks)?;
+            }
+        }
+    }
+    Some((total, looks.looked))
+}
+
+/// How many looks were made, and when `stop` is looked at next.
+struct Looks<'a> {
+    looked: usize,
+    next_stop: usize,
+    stop: &'a AtomicBool,
+}
+
+impl Looks<'_> {
+    /// Counts `count` more looks; None once `stop` is set, which is looked at
+    /// every [`LOOKS_BETWEEN_STOPS`].
+    fn count(&mut self, count: usize) -> Option<()> {
+        self.looked += count;
+        if self.looked >= self.next_stop {
+            if self.stop.load(Ordering::Relaxed) {
                 return None;
             }
-            next_stop = looked + LOOKS_BETWEEN_STOPS;
+            self.next_stop = self.looked + LOOKS_BETWEEN_STOPS;
         }
-        let [min, max] = boxed(triangle);
-        // What of mine none of theirs looked at so far lies over, in pieces
-        // that do not overlap (review 2026-11-08: two of theirs on one another
-        // over part of mine counted twice).
-        let mut uncovered = vec![triangle.to_vec()];
-        let mut subtract = |candidate: usize| {
-            let [other_min, other_max] = grid.boxes[candidate];
-            if !uncovered.is_empty()
-                && (0..2).all(|axis| {
-                    max[axis].min(other_max[axis]) - min[axis].max(other_min[axis]) > ROUNDING
-                })
-            {
-                uncovered = uncovered
-                    .iter()
-                    .flat_map(|piece| outside(piece, &theirs[candidate]))
-                    .collect();
-            }
-        };
-        let span = grid.span(min, max);
-        // Through the cells one of theirs costs more than passed in order.
-        if grid.entries_in(span).saturating_mul(2) > theirs.len() {
-            looked += theirs.len();
-            (0..theirs.len()).for_each(&mut subtract);
-        } else {
-            for candidate in grid.near(span) {
-                looked += 1;
-                if std::mem::replace(&mut seen[candidate], index) != index {
-                    subtract(candidate);
-                }
-            }
-        }
-        let left: f64 = uncovered.iter().map(|piece| polygon_area(piece)).sum();
-        total += (polygon_area(triangle) - left).max(0.0);
+        Some(())
     }
-    Some((total, looked))
+}
+
+/// The area of the convex `part` over the `candidates` of `theirs`, whose boxes
+/// are `boxes`: what lies under several counts once (review 2026-11-08: two of
+/// theirs on one another over part of mine counted twice). None once `stop` is
+/// set.
+fn covered(
+    part: &[[f64; 2]],
+    candidates: &[usize],
+    theirs: &[Triangle],
+    boxes: &[[[f64; 2]; 2]],
+    looks: &mut Looks<'_>,
+) -> Option<f64> {
+    let own = polygon_area(part);
+    if own <= ROUNDING * perimeter(part) {
+        return Some(0.0);
+    }
+    let part_box = boxed_points(part);
+    // What of `part` none of theirs looked at so far lies over, in pieces that
+    // do not overlap, each with its box.
+    let mut uncovered = vec![(part.to_vec(), part_box)];
+    for &candidate in candidates {
+        if uncovered.is_empty() {
+            break;
+        }
+        looks.count(1)?;
+        let within = boxes[candidate];
+        if overlapping(part_box, within) {
+            // Each piece looked at counts, so a cancel is seen while a part
+            // is cut into many (review 2026-11-09 MF-303).
+            looks.count(uncovered.len())?;
+            subtract(&mut uncovered, &theirs[candidate], within);
+        }
+    }
+    let left: f64 = uncovered.iter().map(|(piece, _)| polygon_area(piece)).sum();
+    Some((own - left).max(0.0))
+}
+
+/// The part of the convex `polygon` within the box from `min` to `max`, whose
+/// sides may be infinite.
+fn clipped_to(polygon: &[[f64; 2]], [min, max]: [[f64; 2]; 2]) -> Vec<[f64; 2]> {
+    // Each side as a line with the box on its left.
+    let sides = [
+        (min[0], [min[0], 0.0], [min[0], -1.0]),
+        (max[0], [max[0], 0.0], [max[0], 1.0]),
+        (min[1], [0.0, min[1]], [1.0, min[1]]),
+        (max[1], [0.0, max[1]], [-1.0, max[1]]),
+    ];
+    let mut points = polygon.to_vec();
+    for (at, from, to) in sides {
+        if at.is_finite() {
+            points = split(&points, from, to).0;
+            if points.is_empty() {
+                break;
+            }
+        }
+    }
+    points
+}
+
+/// Whether the boxes `a` and `b` overlap by more than [`ROUNDING`] along both axes.
+fn overlapping([min, max]: [[f64; 2]; 2], [other_min, other_max]: [[f64; 2]; 2]) -> bool {
+    (0..2).all(|axis| max[axis].min(other_max[axis]) - min[axis].max(other_min[axis]) > ROUNDING)
+}
+
+/// Whether the convex `piece` and `within`, both counter-clockwise, share no
+/// area: a side of one has all of the other on its outside or on it.
+fn apart(piece: &[[f64; 2]], within: &Triangle) -> bool {
+    let beyond = |from: [f64; 2], to: [f64; 2], points: &[[f64; 2]]| {
+        let edge = [to[0] - from[0], to[1] - from[1]];
+        // A side shorter than ROUNDING, where a cut ran through or by a corner,
+        // points nowhere it can be trusted to.
+        edge[0].hypot(edge[1]) > ROUNDING
+            && points
+                .iter()
+                .all(|point| cross2(edge, [point[0] - from[0], point[1] - from[1]]) <= 0.0)
+    };
+    (0..3).any(|index| beyond(within[index], within[(index + 1) % 3], piece))
+        || (0..piece.len())
+            .any(|index| beyond(piece[index], piece[(index + 1) % piece.len()], within))
+}
+
+/// `uncovered` less `within`, whose box is `within_box`: only a piece it
+/// overlaps is cut (review 2026-11-09 MF-303).
+fn subtract(uncovered: &mut Vec<Piece>, within: &Triangle, within_box: [[f64; 2]; 2]) {
+    let mut left = Vec::with_capacity(uncovered.len() + 3);
+    for (piece, piece_box) in uncovered.drain(..) {
+        if overlapping(piece_box, within_box) && !apart(&piece, within) {
+            left.extend(outside(&piece, within).into_iter().map(|part| {
+                let part_box = boxed_points(&part);
+                (part, part_box)
+            }));
+        } else {
+            left.push((piece, piece_box));
+        }
+    }
+    *uncovered = left;
 }
 
 /// The first and last column, and row, of cells.
@@ -99,9 +206,6 @@ struct Grid {
     /// Where each column, and each row, begins.
     starts: [Vec<f64>; 2],
     cells: Vec<Vec<usize>>,
-    /// How many triangles the cells hold before each, a column and a row
-    /// more than there are cells, so the cells near one count at once.
-    before: Vec<usize>,
     /// How many triangles all cells hold.
     entries: usize,
     boxes: Vec<[[f64; 2]; 2]>,
@@ -141,7 +245,6 @@ impl Grid {
             });
             let grid = Self {
                 cells: Vec::new(),
-                before: Vec::new(),
                 entries: 0,
                 starts,
                 boxes: Vec::new(),
@@ -166,16 +269,6 @@ impl Grid {
                 }
             }
         }
-        grid.before = vec![0; (columns + 1) * (rows + 1)];
-        for row in 0..rows {
-            for column in 0..columns {
-                grid.before[(row + 1) * (columns + 1) + column + 1] =
-                    grid.cells[row * columns + column].len()
-                        + grid.before[row * (columns + 1) + column + 1]
-                        + grid.before[(row + 1) * (columns + 1) + column]
-                        - grid.before[row * (columns + 1) + column];
-            }
-        }
         grid.boxes = boxes;
         grid
     }
@@ -194,26 +287,25 @@ impl Grid {
         )
     }
 
-    /// How many triangles the cells of `span` hold together.
-    fn entries_in(&self, ([first_column, last_column], [first_row, last_row]): Span) -> usize {
-        let stride = self.starts[0].len() + 1;
-        let at = |row: usize, column: usize| self.before[row * stride + column];
-        at(last_row + 1, last_column + 1) + at(first_row, first_column)
-            - at(first_row, last_column + 1)
-            - at(last_row + 1, first_column)
+    /// The box of the cell at `column` and `row`; the outer cells reach on
+    /// without end, as [`Grid::span`] puts what is outside the grid in them.
+    fn cell_box(&self, column: usize, row: usize) -> [[f64; 2]; 2] {
+        let bounds = |axis: usize, index: usize| {
+            let starts = &self.starts[axis];
+            let low = if index == 0 {
+                f64::NEG_INFINITY
+            } else {
+                starts[index]
+            };
+            [low, starts.get(index + 1).copied().unwrap_or(f64::INFINITY)]
+        };
+        let ([left, right], [bottom, top]) = (bounds(0, column), bounds(1, row));
+        [[left, bottom], [right, top]]
     }
 
-    /// The triangles in the cells of `span`, one in several cells as often
-    /// as it is in them.
-    fn near(&self, span: Span) -> impl Iterator<Item = usize> + '_ {
-        let ([first_column, last_column], [first_row, last_row]) = span;
-        (first_row..=last_row).flat_map(move |row| {
-            (first_column..=last_column).flat_map(move |column| {
-                self.cells[row * self.starts[0].len() + column]
-                    .iter()
-                    .copied()
-            })
-        })
+    /// The triangles whose boxes touch the cell at `column` and `row`.
+    fn cell(&self, column: usize, row: usize) -> &[usize] {
+        &self.cells[row * self.starts[0].len() + column]
     }
 }
 
@@ -244,7 +336,12 @@ fn laid(boxes: &[[[f64; 2]; 2]]) -> [[f64; 2]; 2] {
 
 /// The box around `triangle`: its least and its greatest corner.
 fn boxed(triangle: &Triangle) -> [[f64; 2]; 2] {
-    triangle.iter().fold(
+    boxed_points(triangle)
+}
+
+/// The box around `points`: their least and their greatest corner.
+fn boxed_points(points: &[[f64; 2]]) -> [[f64; 2]; 2] {
+    points.iter().fold(
         [[f64::INFINITY; 2], [f64::NEG_INFINITY; 2]],
         |[min, max], corner| {
             [
@@ -269,7 +366,9 @@ fn clipped(triangle: &Triangle, within: &Triangle) -> Vec<[f64; 2]> {
 }
 
 /// The parts of the convex `piece` outside `within`, both counter-clockwise,
-/// none on another; slivers thinner than [`ROUNDING`] are left out.
+/// none on another; slivers thinner than [`ROUNDING`] are left out. A piece
+/// `within` does not overlap is left whole, not cut along its edges carried
+/// on (review 2026-11-09 MF-303).
 fn outside(piece: &[[f64; 2]], within: &Triangle) -> Vec<Vec<[f64; 2]>> {
     let mut parts = Vec::new();
     let mut inside = piece.to_vec();
@@ -282,6 +381,9 @@ fn outside(piece: &[[f64; 2]], within: &Triangle) -> Vec<Vec<[f64; 2]>> {
         if inside.is_empty() {
             break;
         }
+    }
+    if polygon_area(&inside) <= ROUNDING * perimeter(&inside) {
+        return vec![piece.to_vec()];
     }
     parts
 }
@@ -350,6 +452,75 @@ mod tests {
         (0..count)
             .map(|index| [[0.0, 0.0], corner(index), corner(index + 1)])
             .collect()
+    }
+
+    /// A mesh of `2 × across²` triangles over the square 0 to 2 000 mm, its
+    /// inner corners moved by up to a third of a cell, as a slab meshed
+    /// unevenly is.
+    fn uneven(across: u32) -> Vec<Triangle> {
+        let cell = 2000.0 / f64::from(across);
+        let corner = |column: u32, row: u32| {
+            let mut point = [f64::from(column) * cell, f64::from(row) * cell];
+            if (1..across).contains(&column) && (1..across).contains(&row) {
+                // A fixed scatter, the same on every run.
+                let seed = f64::from(column * 7919 + row * 104_729);
+                point[0] += cell / 3.0 * (seed * 0.618_033_988_7).fract().mul_add(2.0, -1.0);
+                point[1] += cell / 3.0 * (seed * 0.414_213_562_3).fract().mul_add(2.0, -1.0);
+            }
+            point
+        };
+        let mut triangles = Vec::new();
+        for row in 0..across {
+            for column in 0..across {
+                let [a, b, c, d] = [
+                    corner(column, row),
+                    corner(column + 1, row),
+                    corner(column + 1, row + 1),
+                    corner(column, row + 1),
+                ];
+                triangles.push([a, b, c]);
+                triangles.push([a, c, d]);
+            }
+        }
+        triangles
+    }
+
+    /// Review 2026-11-09 MF-303: each of theirs cut every piece of mine still
+    /// uncovered along its edges carried on, pieces it does not touch too, so a
+    /// slab of two triangles over 3 200 took 454 s, and a cancel was not seen.
+    #[test]
+    fn a_slab_over_an_uneven_mesh_is_cut_only_where_they_overlap() {
+        let slab = rectangle([0.0, 0.0], [2000.0, 2000.0]);
+        let mesh = uneven(40);
+        assert_eq!(mesh.len(), 3200);
+        let (area, looked) = overlap(&slab, &mesh, &AtomicBool::new(false)).unwrap();
+        assert!((area - 2000.0 * 2000.0).abs() < 1.0, "{area}");
+        assert!(looked <= 64 * mesh.len(), "{looked}");
+        // Half the slab over the mesh, half beside it.
+        let beside = rectangle([1000.0, 0.0], [3000.0, 2000.0]);
+        let (area, looked) = overlap(&beside, &mesh, &AtomicBool::new(false)).unwrap();
+        assert!((area - 1000.0 * 2000.0).abs() < 1.0, "{area}");
+        assert!(looked <= 64 * mesh.len(), "{looked}");
+    }
+
+    /// Review 2026-11-09 MF-303: 3 200 triangles under a slab of two took
+    /// 454 s; now well under a second, and a cancel is seen within 100 ms.
+    #[test]
+    #[ignore = "perf: release timing budget, runs nightly"]
+    fn perf_a_slab_over_an_uneven_mesh_of_3200_takes_under_a_second() {
+        let slab = rectangle([0.0, 0.0], [2000.0, 2000.0]);
+        let mesh = uneven(40);
+        let started = std::time::Instant::now();
+        let (area, looked) = overlap(&slab, &mesh, &AtomicBool::new(false)).unwrap();
+        let took = started.elapsed();
+        println!("{} triangles: {took:?}, {looked} looks", mesh.len());
+        assert!((area - 2000.0 * 2000.0).abs() < 1.0, "{area}");
+        assert!(took < std::time::Duration::from_secs(1), "{took:?}");
+        let longest = took.mul_f64((LOOKS_BETWEEN_STOPS as f64 / looked as f64).min(1.0));
+        assert!(
+            longest < std::time::Duration::from_millis(100),
+            "{longest:?}"
+        );
     }
 
     /// A rectangle `from` to `to`, counter-clockwise, as two triangles.
