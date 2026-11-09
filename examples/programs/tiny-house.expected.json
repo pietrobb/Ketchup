@@ -415,7 +415,7 @@
     },
     {
       "default": 1000.0,
-      "doc": "nadmurovka nad podlahou podkrovia",
+      "doc": "nadmurovka nad podlahou podkrovia; pri sklone 30° aspoň 1300 mm, pri 35° aspoň 1100 mm, inak strecha zasahuje nad horné schodisko",
       "max": 1500.0,
       "min": 400.0,
       "name": "knee_wall",

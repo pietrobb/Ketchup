@@ -6,8 +6,9 @@
 //! evaluates without error-level issues and its statics, if any, are verified;
 //! 1 when it has error-level issues or a member or joint fails; 3 when nothing
 //! fails but some member or joint is not verified or some load reaches no
-//! member; 2 when it cannot be evaluated. A `--set` name the program has no
-//! parameter of is said on stderr with the parameter it is likely meant for.
+//! member; 2 when it cannot be evaluated, or not as asked: a `--set` name the
+//! program has no parameter of, said on stderr with the parameter it is likely
+//! meant for.
 //!
 //! `--prelude` evaluates with that prelude file instead of the built-in one,
 //! so an edited prelude is checked without a build. `--summary` prints only
@@ -195,7 +196,10 @@ fn main() -> ExitCode {
             for line in unused_set_lines(&report.unused_overrides, &names) {
                 eprintln!("{line}");
             }
+            // A `--set` the program has no parameter of evaluated it otherwise than
+            // asked, so its verdict is not one (review 2026-11-09 PG-245).
             let code = match (report.ok, report.statics()) {
+                _ if !report.unused_overrides.is_empty() => ExitCode::from(2),
                 (false, _) | (_, ketchup_program::Statics::Failed) => ExitCode::from(1),
                 (true, ketchup_program::Statics::NotVerified) => ExitCode::from(3),
                 _ => ExitCode::SUCCESS,
@@ -281,10 +285,12 @@ fn unused_set_lines(unused_overrides: &[String], names: &[&str]) -> Vec<String> 
     unused_overrides
         .iter()
         .map(|unused| {
+            // In any case: `Snow_SK` means snow_sk (review 2026-11-09 PG-245).
             let shared = |name: &&str| {
                 unused
                     .chars()
-                    .zip(name.chars())
+                    .flat_map(char::to_lowercase)
+                    .zip(name.chars().flat_map(char::to_lowercase))
                     .take_while(|(a, b)| a == b)
                     .count()
             };
@@ -419,6 +425,11 @@ mod tests {
                 "--set snowsk: the program has no parameter snowsk; did you mean snow_kn?"
                     .to_owned(),
             ]
+        );
+        // Review 2026-11-09 PG-245: `Snow_SK` had no suggestion.
+        assert_eq!(
+            unused_set_lines(&["Snow_SK".to_owned()], &["snow_kn", "snow_sk"]),
+            vec!["--set Snow_SK: the program has no parameter Snow_SK; did you mean snow_sk?"]
         );
     }
 

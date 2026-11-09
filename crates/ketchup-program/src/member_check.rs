@@ -14,7 +14,7 @@ use crate::model::{
 use ketchup_geometry::linalg::{cross, cross2, dot, length, normalize, scale, sub};
 use ketchup_tolerance::ROUNDING;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct TimberClass {
@@ -2533,6 +2533,17 @@ fn short_length_axis(part: &Part) -> Option<String> {
     })
 }
 
+/// `items` each once, in the order they first come (review 2026-11-09 PG-310:
+/// `dedup` on an unsorted list kept repeats apart, and a member's not-verified
+/// reasons were listed again as often as they were found).
+fn distinct(items: Vec<String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    items
+        .into_iter()
+        .filter(|item| seen.insert(item.clone()))
+        .collect()
+}
+
 /// Every load-path member checked as a timber beam or column.
 #[must_use]
 pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
@@ -2578,7 +2589,7 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
             if let Err(reason) = &shape {
                 missing.push((*reason).to_owned());
             }
-            check.missing = missing;
+            check.missing = distinct(missing);
             members.push(check);
             continue;
         };
@@ -2588,7 +2599,7 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
             missing.push(format!(
                 "timber_strength({material:?}) names no product (product=\"solid\", \"osb3\", ...), so its kmod, kdef and gamma_M are unknown"
             ));
-            check.missing = missing;
+            check.missing = distinct(missing);
             members.push(check);
             continue;
         }
@@ -2639,9 +2650,7 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
                 };
                 let (checks, spans_checked, mut unchecked, bracing) =
                     beam_checks(load, shape, &design, &uls, &sls);
-                let mut unclassed: Vec<String> =
-                    unclassed.into_iter().map(|brace| brace.part).collect();
-                unclassed.dedup();
+                let unclassed = distinct(unclassed.into_iter().map(|brace| brace.part).collect());
                 if !unclassed.is_empty()
                     && let Some(reason) = unchecked
                         .iter_mut()
@@ -2675,7 +2684,7 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
                 load.part.clone(),
             ));
         }
-        check.missing = missing;
+        check.missing = distinct(missing);
         members.push(check);
     }
     // Compression perpendicular to the grain in the beams others bear on.
@@ -2791,5 +2800,13 @@ mod tests {
         assert_eq!(over.status, "fail");
         assert_eq!(over.governing.as_deref(), Some("bending"));
         assert_eq!(settled(&[1.0, 0.5]).status, "pass");
+    }
+
+    /// Review 2026-11-09 PG-310.
+    #[test]
+    fn repeats_are_listed_once_in_the_order_they_first_come() {
+        let listed = |items: &[&str]| distinct(items.iter().map(|s| (*s).to_owned()).collect());
+        assert_eq!(listed(&["wool", "foam", "wool"]), ["wool", "foam"]);
+        assert_eq!(listed(&["b", "a", "b", "a", "c"]), ["b", "a", "c"]);
     }
 }
