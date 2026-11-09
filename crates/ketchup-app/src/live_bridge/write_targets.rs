@@ -63,12 +63,19 @@ pub(super) fn refusal(app: &mut KetchupApp, request: &Request) -> Option<&'stati
         }
     }
     let folder = match folder_of(path) {
-        Some(folder) => folder,
-        None => {
+        Ok(Some(folder)) => folder,
+        Ok(None) => {
             return Some(failure(
                 "invalid_path",
                 "The path's folder does not resolve: name a folder that exists, without `..` past it.",
                 json!({"path": path}),
+            ));
+        }
+        Err(error) => {
+            return Some(failure(
+                "invalid_path",
+                "A folder of the path is there but does not resolve, such as a link whose target is gone: name the folder it stands for.",
+                json!({"path": path, "error_kind": error.kind().to_string()}),
             ));
         }
     };
@@ -146,20 +153,31 @@ fn document_name_refusal(path: &Path) -> Option<&'static str> {
 
 /// The folder `path` is written into as the disk names it: its nearest folder
 /// that exists made canonical, the folders still to be made under it added.
-/// None when a part past it is `..` or the root does not resolve.
-pub(super) fn folder_of(path: &Path) -> Option<PathBuf> {
+/// None when a part past it is `..` or the root does not resolve; the error of
+/// a folder that is there but does not resolve, such as a link whose target is
+/// gone or cannot be read, which would be written through.
+pub(super) fn folder_of(path: &Path) -> std::io::Result<Option<PathBuf>> {
     let mut missing = Vec::new();
-    let mut existing = path.parent()?;
+    let Some(mut existing) = path.parent() else {
+        return Ok(None);
+    };
     loop {
         match std::fs::canonicalize(existing) {
             Ok(mut folder) => {
                 folder.extend(missing.iter().rev());
-                return Some(folder);
+                return Ok(Some(folder));
             }
-            Err(_) => {
-                missing.push(existing.file_name()?);
-                existing = existing.parent()?;
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && std::fs::symlink_metadata(existing).is_err() =>
+            {
+                let (Some(name), Some(parent)) = (existing.file_name(), existing.parent()) else {
+                    return Ok(None);
+                };
+                missing.push(name);
+                existing = parent;
             }
+            Err(error) => return Err(error),
         }
     }
 }

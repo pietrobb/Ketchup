@@ -165,6 +165,30 @@ fn the_folders_agreed_to_are_the_documents_after_a_restart_and_not_a_copys() {
     );
 }
 
+/// Before, a folder that did not resolve was taken as one still to be made,
+/// whatever kept it from resolving: a link in the project's folder whose
+/// target is gone stood for a folder of the project, and what was written
+/// there went to the target. Only a folder that is not there is still to be
+/// made; the link answers its error.
+#[cfg(unix)]
+#[test]
+fn a_link_whose_target_is_gone_is_no_folder_still_to_be_made() {
+    use crate::live_bridge::write_targets::folder_of;
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let canonical = std::fs::canonicalize(&project).unwrap();
+    assert_eq!(
+        folder_of(&project.join("new").join("house.dxf")).unwrap(),
+        Some(canonical.join("new"))
+    );
+    let link = project.join("link");
+    std::os::unix::fs::symlink(directory.path().join("gone"), &link).unwrap();
+    let error = folder_of(&link.join("house.dxf")).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    assert!(folder_of(&link.join("deeper").join("house.dxf")).is_err());
+}
+
 /// Review 2026-11-08 SEC-240 held for `save_as` only: `apply_and_verify` saved
 /// the document under any name in any folder. It saves a `.ketchup` document
 /// only, into the project's folders unless the user agrees.
