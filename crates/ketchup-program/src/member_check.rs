@@ -1166,18 +1166,21 @@ fn shape(part: &Part, frame_axis: [f64; 3]) -> Result<Shape, &'static str> {
             underside_at: None,
         });
     }
-    // The profile is a side or plan view: the grain runs along the axis its
-    // length_axis names, else along its longest edge (PG-243: a stud's piece
-    // 29 mm high under a pocket had its longest edge across its grain).
-    let edge = if part.named_length_axis().is_some() {
-        std::array::from_fn(|i| f64::from(u8::from(i == long)))
-    } else {
-        segments
-            .iter()
-            .map(|s| [s.end_mm[0] - s.start_mm[0], s.end_mm[1] - s.start_mm[1]])
-            .max_by(|a, b| a[0].hypot(a[1]).total_cmp(&b[0].hypot(b[1])))
-            .unwrap_or([1.0, 0.0])
+    // The profile is a side or plan view: the grain runs along its longest
+    // edge, or, when its length_axis names one, along the edge reaching
+    // farthest along that axis (PG-243: a stud's piece 29 mm high under a
+    // pocket had its longest edge across its grain). The named axis chooses
+    // only which edge: the grain taken along the axis itself made a rafter
+    // 80 x 400 at 30 degrees 80 x 461.9, its plumb cut its depth (PG-304).
+    let reach = |a: &[f64; 2]| match part.named_length_axis() {
+        Some(_) => a[long].abs(),
+        None => a[0].hypot(a[1]),
     };
+    let edge = segments
+        .iter()
+        .map(|s| [s.end_mm[0] - s.start_mm[0], s.end_mm[1] - s.start_mm[1]])
+        .max_by(|a, b| reach(a).total_cmp(&reach(b)))
+        .unwrap_or([1.0, 0.0]);
     let norm = edge[0].hypot(edge[1]);
     let d = [edge[0] / norm, edge[1] / norm];
     let along = d[long].abs();
@@ -2515,6 +2518,29 @@ fn column_check(load: &MemberLoad, shape: &Shape, design: &Design, uls: &[Combin
     best.0.expect("at least the permanent combination")
 }
 
+/// How many times shorter than the part's longest side its named length may
+/// be before the name is doubted: a stud's 29 mm piece under a 140 mm pocket is
+/// named rightly (PG-243), a 5.9 m beam named along its 400 mm height is not.
+const NAMED_LENGTH_SHORTER: f64 = 10.0;
+
+/// Why the `length_axis` of `part` is not trusted, if it is not: the axis it
+/// names is far shorter than the part's longest side (review 2026-11-09
+/// PG-305: a 5.9 m beam named along its height became a 400 mm column and
+/// passed, along its width an 80 mm cantilever).
+fn short_length_axis(part: &Part) -> Option<String> {
+    let named = part.named_length_axis()?;
+    let size = extents(part);
+    let longest = size.into_iter().fold(0.0, f64::max);
+    (size[named] * NAMED_LENGTH_SHORTER < longest).then(|| {
+        format!(
+            "its {} names an axis {} mm long, far shorter than its longest side of {} mm",
+            crate::model::LENGTH_AXIS,
+            size[named].round(),
+            longest.round()
+        )
+    })
+}
+
 /// Every load-path member checked as a timber beam or column.
 #[must_use]
 pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
@@ -2534,6 +2560,7 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
         let material = part.and_then(|p| p.material.clone()).unwrap_or_default();
         let class = model.strength_classes.get(&material);
         let mut missing = load.missing.clone();
+        missing.extend(part.and_then(short_length_axis));
         let shape = part.map_or_else(|| Err("the part is not found"), |p| shape(p, load.axis));
         let role = match &shape {
             Ok(s) if horizontal(s.grain) < COLUMN_COS => "column",

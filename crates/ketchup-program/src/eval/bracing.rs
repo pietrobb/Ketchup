@@ -4,6 +4,30 @@
 //! thermal check of a build-up (§5.3).
 use super::*;
 
+/// The least spacing `brace()` takes, in mm.
+const MIN_SPACING_MM: f64 = 10.0;
+
+/// A part's attribute `key` given as `value`, none when it is given as None,
+/// the statics' own checked: a `length_axis` naming no local axis was dropped
+/// without a word, the part's longest axis taken instead (review 2026-11-09
+/// PG-305).
+pub(super) fn attribute(
+    key: String,
+    value: Option<String>,
+) -> anyhow::Result<Option<(String, String)>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if key == crate::model::LENGTH_AXIS
+        && !matches!(value.as_str(), "x" | "y" | "z" | "X" | "Y" | "Z")
+    {
+        anyhow::bail!(
+            "attribute {key:?} must name a local axis, \"x\", \"y\" or \"z\", got {value:?}"
+        );
+    }
+    Ok(Some((key, value)))
+}
+
 #[starlark_module]
 pub(super) fn builtins(builder: &mut GlobalsBuilder) {
     /// Declares that the parts (or tags) `by` hold the `edge` ("top" or
@@ -25,8 +49,12 @@ pub(super) fn builtins(builder: &mut GlobalsBuilder) {
         let spacing_mm = given(spacing)
             .map(|value| number(value, "spacing"))
             .transpose()?;
-        if spacing_mm.is_some_and(|value| !value.is_finite() || value <= 0.0) {
-            anyhow::bail!("brace(): spacing must be positive");
+        // A spacing of 0.0001 mm placed billions of points and brought the
+        // process down (review 2026-11-09 PG-307); no fastening is that close.
+        if let Some(value) = spacing_mm
+            && !(value.is_finite() && value >= MIN_SPACING_MM)
+        {
+            anyhow::bail!("brace(): spacing must be at least {MIN_SPACING_MM} mm, got {value}");
         }
         let brace = crate::loads::DeclaredBrace {
             members: tag_names(members, heap)?.into_iter().collect(),
