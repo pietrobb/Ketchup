@@ -794,6 +794,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "Create the workset again from the current document.",
     ),
     entry(
+        "storey_table_contradicts_model",
+        Validation,
+        "storeys",
+        "A row of the table of storeys does not describe the model, so the plans and level marks drawn from it would be wrong: its structure is above its finished floor, its floor is another row's, it lies under the model or not under its top, or no face of the model looks up within 50 mm of it. The details name the row (from 1), its levels and which. Nothing was written.",
+        "Correct or remove that row of storeys, or pass storeys: auto to find the storeys from the model, then export again.",
+    ),
+    entry(
         "superseded_by_another_client",
         Io,
         "window",

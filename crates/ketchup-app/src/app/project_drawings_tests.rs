@@ -4,7 +4,7 @@
 use crate::app::project_drawings::ProjectDrawingsError;
 use crate::tests::shell::step_until;
 use crate::*;
-use ketchup_manufacturing::project_drawings::{DrawingSet, ProjectView, ViewSummary};
+use ketchup_manufacturing::project_drawings::{DrawingSet, ModelFloors, ProjectView, ViewSummary};
 use ketchup_manufacturing::title_block::{SheetFormat, SheetLanguage, TitleField};
 use ketchup_model::sheet_pdf::Mark;
 use std::time::Duration;
@@ -1402,7 +1402,12 @@ fn zero_is_set_from_the_floor_found_not_from_nothing() {
     harness.step();
     assert_eq!(harness.state().drawings.editing.zero_level_mm, None);
 
-    floor.send(Ok(650.0)).unwrap();
+    floor
+        .send(Ok(Some(ModelFloors {
+            floors_mm: vec![650.0],
+            top_mm: 3000.0,
+        })))
+        .unwrap();
     harness.step();
     harness.step();
     harness.get_by_label(&found).click_accesskit();

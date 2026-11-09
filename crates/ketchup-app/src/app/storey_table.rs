@@ -4,6 +4,9 @@
 
 use eframe::egui;
 use ketchup_interaction::LocaleCatalog;
+use ketchup_manufacturing::project_drawings::{
+    NEAR_FLOOR_MM, StoreyTableError, StoreyTableProblem,
+};
 use ketchup_manufacturing::title_block::{SheetSettings, StoreyLevels};
 use std::collections::BTreeMap;
 
@@ -11,11 +14,13 @@ use std::collections::BTreeMap;
 const ADDED_STOREY_MM: i32 = 3000;
 
 /// Shows the rows of `settings.storeys`, lowest first as entered, with a
-/// remove button each, an add button, and the altitude of ±0,000.
+/// remove button each, an add button, which fills an empty table with the
+/// storeys `found` in the model, and the altitude of ±0,000.
 pub(crate) fn show_storey_table(
     ui: &mut egui::Ui,
     catalog: &LocaleCatalog,
     settings: &mut SheetSettings,
+    found: &[StoreyLevels],
 ) {
     ui.vertical(|ui| {
         if settings.storeys.is_empty() {
@@ -40,7 +45,8 @@ pub(crate) fn show_storey_table(
             settings.storeys.remove(index);
         }
         if ui.button(catalog.text("drawings-storey-add")).clicked() {
-            settings.storeys.push(added_storey(&settings.storeys));
+            let added = added_storeys(&settings.storeys, found);
+            settings.storeys.extend(added);
         }
         ui.horizontal(|ui| {
             ui.label(catalog.text("drawings-zero-altitude"));
@@ -106,6 +112,39 @@ fn show_north(ui: &mut egui::Ui, catalog: &LocaleCatalog, settings: &mut SheetSe
     });
 }
 
+/// Why the drawings were refused for a row of the table of storeys (review
+/// 2026-11-09 MF-300), as the window says it.
+pub(crate) fn storey_table_error_text(catalog: &LocaleCatalog, error: &StoreyTableError) -> String {
+    let mut arguments = BTreeMap::from([
+        ("storey", error.storey.to_string()),
+        ("floor", error.levels.finished_floor_mm.to_string()),
+        ("structural", error.levels.structural_mm.to_string()),
+        ("near", format!("{NEAR_FLOOR_MM:.0}")),
+    ]);
+    let key = match error.problem {
+        StoreyTableProblem::StructureAboveFloor => "drawings-storey-structure-above-floor",
+        StoreyTableProblem::SameFloorAs(other) => {
+            arguments.insert("other", other.to_string());
+            "drawings-storey-same-floor"
+        }
+        StoreyTableProblem::OutsideModel => "drawings-storey-outside-model",
+        StoreyTableProblem::NoFloorInModel => "drawings-storey-no-floor-in-model",
+    };
+    catalog.format(key, &arguments)
+}
+
+/// The storeys "Add a storey" puts in an empty table: those found in the
+/// model (review 2026-11-09 MF-300: one row of 0/0 threw away the other
+/// plans and moved ±0,000), else one at 0; in a table, one storey over the
+/// highest.
+fn added_storeys(storeys: &[StoreyLevels], found: &[StoreyLevels]) -> Vec<StoreyLevels> {
+    if storeys.is_empty() && !found.is_empty() {
+        found.to_vec()
+    } else {
+        vec![added_storey(storeys)]
+    }
+}
+
 /// The storey the add button makes: the ground floor at 0 in an empty
 /// table, else one storey over the highest.
 fn added_storey(storeys: &[StoreyLevels]) -> StoreyLevels {
@@ -132,5 +171,18 @@ mod tests {
             structural_mm: 0,
         };
         assert_eq!(added_storey(&[ground]).finished_floor_mm, 3050);
+    }
+
+    /// Review 2026-11-09 MF-300: one row of 0/0 in an empty table.
+    #[test]
+    fn an_empty_table_is_filled_with_the_storeys_found() {
+        let at = |floor| StoreyLevels {
+            finished_floor_mm: floor,
+            structural_mm: floor,
+        };
+        let found = [at(200), at(2954)];
+        assert_eq!(added_storeys(&[], &found), found);
+        assert_eq!(added_storeys(&[], &[]), [at(0)]);
+        assert_eq!(added_storeys(&[at(200)], &found), [at(3200)]);
     }
 }

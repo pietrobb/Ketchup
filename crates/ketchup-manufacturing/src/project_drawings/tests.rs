@@ -290,13 +290,9 @@ fn zero_is_the_ground_floor_and_every_level_below_and_above_is_marked() {
     }
 }
 
-/// Review 2026-11-08 MF-241: the layered ceiling of the tiny house (a lining
-/// 2500 – 2512, joists with insulation to 2732, OSB to 2754) made levels of
-/// +2,512 and +2,732 and an upper storey on 2512 cut at 3712. Found from the
-/// faces, that stays; given in the table of storeys, ±0,000, the plans and
-/// the level marks are the designer's.
-#[test]
-fn a_table_of_storeys_gives_the_plans_and_levels_a_layered_floor_hides() {
+/// The room with the tiny house's layered ceiling (a lining 2700 – 2712,
+/// joists to 2932, OSB to 2954) and walls of an upper storey on it to 5454.
+fn layered_house() -> Vec<DrawingSolid> {
     let mut house = room();
     house.push(cuboid(
         "lining",
@@ -317,6 +313,17 @@ fn a_table_of_storeys_gives_the_plans_and_levels_a_layered_floor_hides() {
         }
         house.push(upper);
     }
+    house
+}
+
+/// Review 2026-11-08 MF-241: the layered ceiling of the tiny house (a lining
+/// 2500 – 2512, joists with insulation to 2732, OSB to 2754) made levels of
+/// +2,512 and +2,732 and an upper storey on 2512 cut at 3712. Found from the
+/// faces, that stays; given in the table of storeys, ±0,000, the plans and
+/// the level marks are the designer's.
+#[test]
+fn a_table_of_storeys_gives_the_plans_and_levels_a_layered_floor_hides() {
+    let house = layered_house();
     let comma = ketchup_model::annotation::DecimalMark::Comma;
     let levels = |options: &DrawingSetOptions| {
         let set = drawing_set(&house, options).unwrap();
@@ -385,6 +392,107 @@ fn a_table_of_storeys_gives_the_plans_and_levels_a_layered_floor_hides() {
     };
     assert_eq!(drawing_set(&house, &laid).unwrap().zero_level_mm, 250.0);
     assert_eq!(levels(&laid)[..3], ["-0,250", "-0,050", "±0,000"]);
+}
+
+/// Review 2026-11-09 MF-300: the table of storeys was taken as given. Its
+/// structure over its floor was marked "+2,900", two equal rows drew the same
+/// plan twice, a storey over the roof a plan cutting nothing, a basement
+/// under the model was left out and the plans numbered from 2, and a table
+/// of 0/3500 against the floors at 200 and 2954 printed +3,300 and +3,500.
+/// A table the model contradicts is refused, naming the row and why.
+#[test]
+fn a_table_of_storeys_the_model_contradicts_is_refused_by_its_row() {
+    let house = layered_house();
+    let row = |finished_floor_mm, structural_mm| StoreyLevels {
+        finished_floor_mm,
+        structural_mm,
+    };
+    let refused = |table: &[StoreyLevels]| {
+        let options = DrawingSetOptions {
+            plans: plans(table_storeys(table, 1200.0)),
+            storeys: table.to_vec(),
+            ..options(&house, None)
+        };
+        match drawing_set(&house, &options) {
+            Err(ProjectDrawingError::StoreyTable(error)) => Some((error.storey, error.problem)),
+            Ok(_) => None,
+            Err(other) => panic!("{other}"),
+        }
+    };
+    let ground = row(200, 200);
+    assert_eq!(refused(&[ground, row(2954, 2932)]), None);
+    assert_eq!(
+        refused(&[ground, row(2954, 3100)]),
+        Some((2, StoreyTableProblem::StructureAboveFloor))
+    );
+    assert_eq!(
+        refused(&[ground, row(2954, 2932), row(200, 200)]),
+        Some((3, StoreyTableProblem::SameFloorAs(1)))
+    );
+    assert_eq!(
+        refused(&[ground, row(6000, 6000)]),
+        Some((2, StoreyTableProblem::OutsideModel))
+    );
+    assert_eq!(
+        refused(&[row(-3000, -3000), ground]),
+        Some((1, StoreyTableProblem::OutsideModel))
+    );
+    // 0 is the slab's underside, 3500 is in the air over the OSB at 2954.
+    assert_eq!(
+        refused(&[row(0, 0), row(3500, 3500)]),
+        Some((1, StoreyTableProblem::NoFloorInModel))
+    );
+    assert_eq!(
+        refused(&[ground, row(3500, 3500)]),
+        Some((2, StoreyTableProblem::NoFloorInModel))
+    );
+    // A finished floor laid on its structure, not modelled, is within
+    // NEAR_FLOOR_MM of it.
+    assert_eq!(refused(&[row(250, 200)]), None);
+    let error = StoreyTableError {
+        storey: 2,
+        levels: row(3500, 3500),
+        problem: StoreyTableProblem::NoFloorInModel,
+    };
+    assert_eq!(
+        error.to_string(),
+        "storey 2 of the table of storeys, its finished floor at 3500 mm, has no face of the model looking up within 50 mm of it"
+    );
+}
+
+/// Review 2026-11-09 MF-300: "Add a storey" in an empty table made one row
+/// of 0/0, which threw away the other plans and moved ±0,000. The table is
+/// filled from the storeys found instead, each at its floor, for the designer
+/// to correct (here the lining at 2712 the faces take for the upper floor).
+#[test]
+fn the_table_of_storeys_filled_from_the_model_holds_the_storeys_found() {
+    let house = layered_house();
+    let floors = ModelFloors::of(&house).unwrap();
+    assert_eq!(floors.ground(), 200.0);
+    let found = floors.table(1200.0);
+    assert_eq!(
+        found,
+        [
+            StoreyLevels {
+                finished_floor_mm: 200,
+                structural_mm: 200
+            },
+            StoreyLevels {
+                finished_floor_mm: 2712,
+                structural_mm: 2712
+            }
+        ]
+    );
+    let options = DrawingSetOptions {
+        plans: plans(table_storeys(&found, 1200.0)),
+        storeys: found,
+        ..options(&house, None)
+    };
+    assert!(drawing_set(&house, &options).is_ok());
+    assert_eq!(ModelFloors::of(&[]), None);
+    // A model with no floor below its top fills no row.
+    let block = [cuboid("block", [0.0, 0.0, 0.0], [1000.0, 1000.0, 1000.0])];
+    assert!(ModelFloors::of(&block).unwrap().table(1200.0).is_empty());
 }
 
 /// Review 2026-11-04 r19 MF-161 and P3: every top 1 m wide was a level,

@@ -18,6 +18,12 @@ it.
 | R1109-PG-306: k_f,1 = 60 for solid timber | Kept: 60 is the recommended value of EN 1995-1-1 table 9.2, as the review notes; a national annex value belongs to `site()` data with its source (§5.3) |
 | R1109-PG-307: `spacing` has no lower bound | Fixed, d7494ea3: `brace()` refuses a spacing under 10 mm, which no fastening is that close |
 
+## Manufacturing (§7 point 2)
+
+| Finding | Status |
+|---|---|
+| R1109-MF-300: the table of storeys is not checked | Fixed, branch `r38-storeys1109`: a table the model contradicts refuses the export of the drawings (PDF, DXF, DWG; window and MCP `storey_table_contradicts_model`), naming the row and why: its structure above its finished floor, its floor another row's, its floor under the model or not under its top, or no upward face of the model within 50 mm of its floor (0/3500 against the floors at 200 and 2954). "Add a storey" in an empty table fills in the storeys found in the model, each structure at its floor, instead of one row of 0/0 |
+
 ## Ratchets and CI (§7 point 4, branch `r34-ratchets1109`)
 
 | Finding | Status |
