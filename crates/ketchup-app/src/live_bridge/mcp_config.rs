@@ -277,7 +277,18 @@ pub(crate) fn replace_file(file: &Path, text: &str) -> io::Result<()> {
 /// with the documents opened, was readable by everyone).
 pub(crate) fn write_keeping_file(file: &Path, text: &str, backup: bool) -> io::Result<()> {
     #[cfg(unix)]
-    let named_in = owner_named_in(file);
+    if effective_user() == 0
+        && let Some(owner) = owner_named_in(file).filter(|(uid, _)| *uid != 0)
+    {
+        return as_user(owner, || write_as_found(file, text, backup));
+    }
+    write_as_found(file, text, backup)
+}
+
+/// [`write_keeping_file`] as this process is.
+fn write_as_found(file: &Path, text: &str, backup: bool) -> io::Result<()> {
+    #[cfg(unix)]
+    let named_in = owner_named_in(file).map(|(uid, _)| uid);
     let target = match std::fs::canonicalize(file) {
         Ok(target) => target,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -332,15 +343,70 @@ pub(crate) fn write_keeping_file(file: &Path, text: &str, backup: bool) -> io::R
     )
 }
 
-/// The owner of the nearest folder there that `file` is named in, its links
-/// not followed: the user whose configuration it is, also under `sudo`.
+/// The owner, user and group, of the nearest folder there that `file` is named
+/// in, its links not followed: the user whose configuration it is, also under
+/// `sudo`.
 #[cfg(unix)]
-fn owner_named_in(file: &Path) -> Option<u32> {
+fn owner_named_in(file: &Path) -> Option<(u32, u32)> {
     use std::os::unix::fs::MetadataExt;
     file.parent()?
         .ancestors()
         .find_map(|folder| std::fs::symlink_metadata(folder).ok())
-        .map(|folder| folder.uid())
+        .map(|folder| (folder.uid(), folder.gid()))
+}
+
+/// Runs `write` as `owner`, user and group, with no other group, and then as
+/// root again (review 2026-11-09 R1109-SEC-300: under `sudo` the checks went
+/// by path and the write by path again, so a user swapping a folder of theirs
+/// for a link to one of root's between them had root write its files there).
+/// The system then refuses root's folders and files to it as to that user.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn as_user<T>(owner: (u32, u32), write: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+    let check = |done: libc::c_int| {
+        if done == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    };
+    // A count below zero says the call failed, and the system says why.
+    let count =
+        |count: libc::c_int| usize::try_from(count).map_err(|_failed| io::Error::last_os_error());
+    // SAFETY: getegid takes no pointers; getgroups is given no buffer to ask
+    // for the count, then a buffer of that count.
+    let (group, groups) = unsafe {
+        let mut groups: Vec<libc::gid_t> =
+            vec![0; count(libc::getgroups(0, std::ptr::null_mut()))?];
+        let filled = libc::getgroups(groups.len().try_into().unwrap_or(0), groups.as_mut_ptr());
+        groups.truncate(count(filled)?);
+        (libc::getegid(), groups)
+    };
+    let only: [libc::gid_t; 1] = [owner.1];
+    // SAFETY: setgroups reads one group from a live local; setegid and seteuid
+    // take no pointers. Root's real and saved user stay, so it is root again
+    // after; glibc applies each to every thread.
+    let dropped = unsafe {
+        check(libc::setgroups(1, only.as_ptr()))
+            .and_then(|()| check(libc::setegid(owner.1)))
+            .and_then(|()| check(libc::seteuid(owner.0)))
+    };
+    let written = dropped.and_then(|()| write());
+    // SAFETY: as above; `groups` is live and holds `groups.len()` groups.
+    let restored = unsafe {
+        check(libc::seteuid(0))
+            .and_then(|()| check(libc::setegid(group)))
+            .and_then(|()| {
+                #[allow(
+                    clippy::useless_conversion,
+                    reason = "a size_t on Linux, an int on macOS"
+                )]
+                let length = groups.len().try_into().map_err(io::Error::other)?;
+                check(libc::setgroups(length, groups.as_ptr()))
+            })
+    };
+    restored?;
+    written
 }
 
 /// The user this process writes as.
@@ -706,6 +772,45 @@ mod tests {
         // A user is held back by the system, and root's own home is root's.
         assert!(root_writes_for(1000, 1000, &[(root_only, 0)]).is_ok());
         assert!(root_writes_for(0, 0, &[(root_only, 0)]).is_ok());
+    }
+
+    /// Review 2026-11-09 R1109-SEC-300: under `sudo` the checks went by path
+    /// and the write by path again; a user swapping `~/sub` for a link to a
+    /// folder of root's between them had root's files written there. Written
+    /// as the user, the system refuses it whatever the checks saw. Root alone
+    /// can be another user; any other user is refused that, and nothing is
+    /// written.
+    #[cfg(unix)]
+    #[test]
+    fn under_sudo_the_configuration_is_written_as_its_user() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let home = tempfile::tempdir().unwrap();
+        if effective_user() != 0 {
+            let file = home.path().join("x.toml");
+            as_user((effective_user(), 0), || std::fs::write(&file, "x = 1\n")).unwrap_err();
+            assert!(!file.exists());
+            return;
+        }
+        let user = (65534, 65534);
+        let root_only = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root_only.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::os::unix::fs::lchown(home.path(), Some(user.0), Some(user.1)).unwrap();
+        let swapped = home.path().join("sub");
+        std::os::unix::fs::symlink(root_only.path(), &swapped).unwrap();
+        std::os::unix::fs::lchown(&swapped, Some(user.0), Some(user.1)).unwrap();
+        let refused = as_user(user, || {
+            write_as_found(&swapped.join("config.toml"), "x = 1\n", false)
+        })
+        .unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied, "{refused}");
+        assert_eq!(std::fs::read_dir(root_only.path()).unwrap().count(), 0);
+        assert_eq!(effective_user(), 0);
+        // The user's own file is written, and is theirs.
+        let file = home.path().join("config.toml");
+        write_keeping_file(&file, "x = 1\n", false).unwrap();
+        let own = std::fs::metadata(&file).unwrap();
+        assert_eq!((own.uid(), own.gid()), user);
+        assert_eq!(effective_user(), 0);
     }
 
     /// Review 2026-11-08 SEC-242: a dangling symlink in place of the backup
