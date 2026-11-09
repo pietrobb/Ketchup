@@ -1843,7 +1843,7 @@ fn a_plan_draws_the_visible_underlay_beneath_the_model_within_its_extent() {
         ),
     )
     .unwrap();
-    app.start_underlay_read(path, None);
+    app.start_underlay_read(path, None, None);
     let underlay = app
         .document
         .current()
@@ -1938,7 +1938,7 @@ fn a_shown_underlay_that_does_not_read_refuses_the_set_and_is_named() {
         ),
     )
     .unwrap();
-    app.start_underlay_read(path, None);
+    app.start_underlay_read(path, None, None);
     let underlay = app.document.current().underlays().next().cloned().unwrap();
     // The document lost the blob of its lines.
     app.file.container_data = ketchup_model::persistence::ContainerData::default();

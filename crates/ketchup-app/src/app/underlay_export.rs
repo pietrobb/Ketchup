@@ -112,6 +112,8 @@ pub(crate) struct UnderlayExportJob {
     edits: ketchup_model::underlay::edits::UnderlayEdits,
     /// What its lines were moved by when read.
     offset_mm: [f64; 2],
+    /// The code page the user chose to read it in.
+    code_page: Option<ketchup_model::import::DxfCodePage>,
     output: PathBuf,
     replacing: Option<String>,
 }
@@ -213,6 +215,7 @@ impl UnderlayExportJob {
                 // Read again it moves as it moved then, also not at all (review 2026-11-04
                 // r19 CD-160: points the file gained since moved it by their median).
                 geo_origin_mm: Some(self.offset_mm),
+                code_page: self.code_page,
                 lines,
                 layers: self.layers,
                 edits: self.edits,
@@ -324,6 +327,7 @@ impl KetchupApp {
             layers: underlay.layers.len(),
             edits: underlay.edits.clone(),
             offset_mm: underlay.offset_mm(),
+            code_page: underlay.code_page,
             output: output.to_owned(),
             replacing: replacing.map(str::to_owned),
         })

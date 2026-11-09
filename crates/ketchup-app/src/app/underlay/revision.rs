@@ -74,7 +74,8 @@ impl KetchupApp {
         };
         if let Some(path) = self.choose_dxf_import_path() {
             self.file.activity.underlay.revision_of = Some(of);
-            self.start_underlay_read(path, None);
+            let code_page = snapshot.underlay(of).and_then(|under| under.code_page);
+            self.start_underlay_read(path, None, code_page);
         }
     }
 

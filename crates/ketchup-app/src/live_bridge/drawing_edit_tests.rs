@@ -442,6 +442,7 @@ fn a_client_exports_the_edited_drawing_as_a_dxf_that_imports_as_edited() {
         unit: None,
         as_underlay: true,
         revision_of: None,
+        code_page: None,
     };
     bridge.execute(&mut app, import(&source), false).unwrap();
     let objects = top_level(&mut bridge, &mut app);
@@ -864,6 +865,7 @@ fn edited_beside_another_file() -> (
                 unit: None,
                 as_underlay: true,
                 revision_of: None,
+                code_page: None,
             },
             false,
         )

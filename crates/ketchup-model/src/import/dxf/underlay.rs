@@ -51,11 +51,9 @@ pub fn read_dxf_underlay_from(
     options: DxfImportOptions,
 ) -> Result<DxfUnderlay, DxfImportError> {
     let _any_coordinate_guard = AnyFiniteCoordinate::new();
-    let encoding = text_encoding(&mut source)?;
+    let encoding = text_encoding(&mut source, options.code_page())?;
     let mut diagnostics = DiagnosticCounts::new(UNDERLAY_READING);
-    if let Some(read) = encoding.read {
-        diagnostics.code_page_read(read)?;
-    }
+    diagnostics.code_page_read(&encoding)?;
     let sections = read_sections(
         PairReader::new(&mut source, encoding.code_page)?,
         &mut diagnostics,
@@ -383,9 +381,10 @@ fn read_sections(
 }
 
 /// The encoding of `source`'s text, as the profile import decides it for the whole file
-/// ([`TextSeen::decide`]).
+/// ([`TextSeen::decide`]), with `chosen` the code page the user chose.
 pub(super) fn text_encoding(
     source: &mut (impl BufRead + Seek),
+    chosen: Option<DxfCodePage>,
 ) -> Result<TextEncoding, DxfImportError> {
     source.seek(SeekFrom::Start(0)).map_err(read_error)?;
     let mut line = Vec::new();
@@ -393,7 +392,7 @@ pub(super) fn text_encoding(
     while read_line(source, &mut line)? {
         seen.see(&line);
     }
-    seen.decide()
+    seen.decide(chosen)
 }
 
 /// Reads group-code/value pairs line by line in the drawing's text encoding.

@@ -402,17 +402,17 @@ pub enum Request {
     /// a drawing sheet of the document as DXF or DWG.
     ExportDrawings(drawings::ExportDrawingsRequest),
     /// Imports a STEP, IGES, STL, DXF, GLB or SketchUp scene file as one Undo step;
-    /// `as_underlay` keeps a DXF or DWG drawing under the model as an underlay instead;
-    /// with `revision_of` it adds only what changed since that underlay's drawing.
+    /// `as_underlay` keeps a DXF or DWG drawing under the model as an underlay instead, read
+    /// in `code_page`; with `revision_of` it adds only what changed since that underlay's.
     Import {
         #[serde(default)]
         expected: Option<Stamp>,
         path: String,
-        #[serde(default)]
         unit: Option<String>,
         #[serde(default)]
         as_underlay: bool,
         revision_of: Option<u64>,
+        code_page: Option<String>,
     },
     /// Removes an underlay and the tags only it held, as one Undo step.
     RemoveUnderlay {

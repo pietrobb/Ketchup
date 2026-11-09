@@ -1359,6 +1359,7 @@ fn a_trimmed_extended_or_offset_line_keeps_its_entity_and_properties() {
         &[],
         [7; 32],
         [0.0, 0.0],
+        None,
     )
     .unwrap();
     document.apply_batch(&batch).unwrap();
@@ -2545,6 +2546,54 @@ fn a_drawing_read_in_another_code_page_than_its_header_names_is_written_naming_i
         String::from_utf8_lossy(&written)
     );
     assert_eq!(texts(&read(&written)), ["Kuchyně", "Chodba č. 2"]);
+}
+
+/// Review 2026-11-09 UL-303: a drawing read in the code page the user chose over its
+/// header is written in it, its header naming it, so it reads back alike with no choice.
+#[test]
+fn a_drawing_read_in_a_chosen_code_page_is_written_naming_it() {
+    use ketchup_model::import::DxfCodePage;
+    let header = HEADER.replace(
+        "9\n$INSUNITS\n",
+        "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
+    );
+    let mut source = format!("{header}{TABLES}0\nSECTION\n2\nENTITIES\n").into_bytes();
+    source.extend_from_slice(
+        b"0\nTEXT\n5\nB0\n330\n1F\n100\nAcDbEntity\n8\nnotes\n100\nAcDbText\n\
+          10\n0\n20\n0\n30\n0\n40\n250\n1\nH\xE5bka z\xE1kladu\n100\nAcDbText\n",
+    );
+    source.extend_from_slice(b"0\nENDSEC\n0\nEOF\n");
+    let options = DxfImportOptions::new(None).with_code_page(DxfCodePage::parse("ANSI_1250"));
+    let original = read_dxf_underlay(&source, options).unwrap();
+    let texts = |underlay: &DxfUnderlay| {
+        underlay
+            .lines
+            .layers()
+            .iter()
+            .flat_map(|layer| layer.texts())
+            .map(|text| text.text.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(texts(&original), ["Hĺbka základu"]);
+    let mut edits = UnderlayEdits::default();
+    edits.added.push(AddedObject::Drawn {
+        layer: "notes".to_owned(),
+        shape: DrawnShape::Text {
+            anchor_mm: [0.0, -1000.0],
+            height_mm: 100.0,
+            rotation_deg: 0.0,
+            text: "Dĺžka steny".to_owned(),
+        },
+    });
+    let written = write_edited_dxf(&source, options, &original.lines, &edits)
+        .unwrap_or_else(|error| panic!("{error}"));
+    let named = b"\n$DWGCODEPAGE\n3\nANSI_1250\n";
+    assert!(
+        written.windows(named.len()).any(|window| window == named),
+        "{}",
+        String::from_utf8_lossy(&written)
+    );
+    assert_eq!(texts(&read(&written)), ["Hĺbka základu", "Dĺžka steny"]);
 }
 
 /// Review 2026-11-06 UL-180: a drawing before DXF 2007 whose header names ANSI_1252 and
