@@ -17,3 +17,9 @@ it.
 | R1109-PG-305: `length_axis` is not checked for sense | Fixed, d7494ea3: a value other than `x`, `y` or `z` is refused when the part is made; one naming an axis ten times shorter than the part's longest side leaves the member not verified, the reason naming both lengths |
 | R1109-PG-306: k_f,1 = 60 for solid timber | Kept: 60 is the recommended value of EN 1995-1-1 table 9.2, as the review notes; a national annex value belongs to `site()` data with its source (§5.3) |
 | R1109-PG-307: `spacing` has no lower bound | Fixed, d7494ea3: `brace()` refuses a spacing under 10 mm, which no fastening is that close |
+
+## P3 manufacturing (§4.3, branch `r36-p3mf1109`)
+
+| Finding | Status |
+|---|---|
+| R1109-MF-302: a hole milled through a 60 mm part has Z = −1 and a depth of 62 | Fixed, 6764559a: a BTLx free contour is clamped to the part along its cut, so one through a 60 mm part starts on its face and is 60 deep; a cut wholly beyond the part is none. The woodWOP pocket already refuses a cut not starting on the face |
