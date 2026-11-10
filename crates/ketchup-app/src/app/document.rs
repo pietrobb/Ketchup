@@ -27,10 +27,7 @@ impl std::fmt::Display for SaveFailure {
 impl KetchupApp {
     #[must_use]
     pub const fn build_version() -> &'static str {
-        match option_env!("KETCHUP_BUILD_VERSION") {
-            Some(version) => version,
-            None => env!("CARGO_PKG_VERSION"),
-        }
+        ketchup_mcp::VERSION
     }
 
     #[must_use]

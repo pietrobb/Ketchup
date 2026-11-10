@@ -92,6 +92,7 @@ pub(crate) mod spaces_ui;
 #[cfg(test)]
 #[path = "app/spaces_ui_tests.rs"]
 mod spaces_ui_tests;
+pub(crate) mod stale_ai_clients;
 mod startup_arguments;
 mod storey_table;
 mod structure;
