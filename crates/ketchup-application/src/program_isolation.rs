@@ -1,7 +1,7 @@
 //! Every evaluation of a user's program in the editor, every check of its model
-//! and every DWG file it reads go through here: they run in a program worker
-//! process (see `ketchup_scheduler::program_worker`), so a program that takes
-//! all the memory or never ends, a model too large to check, or a damaged DWG
+//! and every DWG or SketchUp file it reads go through here: they run in a program
+//! worker process (see `ketchup_scheduler::program_worker`), so a program that
+//! takes all the memory or never ends, a model too large to check, or a damaged
 //! file cannot take the window down.
 use crate::evaluation::{configured_exact_worker, exact_worker_candidates};
 use ketchup_dwg::DwgDrawing;
@@ -10,11 +10,12 @@ use ketchup_program::{
 };
 use ketchup_scheduler::WorkerError;
 pub use ketchup_scheduler::program_worker::{CheckDeadline, PROGRAM_CHECK_TIME};
-use ketchup_scheduler::program_worker::{DwgConversionError, ProgramWorker};
+use ketchup_scheduler::program_worker::{DwgConversionError, ProgramWorker, SkpConversionError};
 pub use ketchup_scheduler::protocol::{
     UnderlayInput, UnderlayRead, UnderlayRefusal, UnderlayWriteInput, UnderlayWritten,
 };
 pub use ketchup_scheduler::underlay_reading::UnderlayReadError;
+use ketchup_skp::SkpModel;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Mutex;
@@ -196,6 +197,21 @@ pub fn convert_dwg(
         .map_err(DwgReadError::Conversion)
 }
 
+/// [`ketchup_skp::skp_to_glb`] in a program worker, for a GLB of at most `max_glb_bytes`.
+///
+/// # Errors
+/// The reader refused the file, its GLB is larger, or reading it was stopped at the
+/// worker's memory limit or by `cancel`.
+pub fn convert_skp(
+    skp: &[u8],
+    max_glb_bytes: usize,
+    cancel: &CancelToken,
+) -> Result<SkpModel, SkpReadError> {
+    with_worker(|worker| worker.convert_skp(skp, max_glb_bytes, cancel))
+        .map_err(SkpReadError::Unavailable)?
+        .map_err(SkpReadError::Conversion)
+}
+
 /// Reads the drawing `input` names as an underlay in a program worker, which writes its
 /// lines to `input.output`; `cancel` stops it.
 ///
@@ -299,6 +315,33 @@ impl fmt::Display for DwgReadError {
 }
 
 impl std::error::Error for DwgReadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Unavailable(error) => Some(error),
+            Self::Conversion(error) => Some(error),
+        }
+    }
+}
+
+/// Why a SketchUp file was not read.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SkpReadError {
+    Unavailable(WorkerUnavailable),
+    Conversion(SkpConversionError),
+}
+
+impl fmt::Display for SkpReadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unavailable(error) => {
+                write!(formatter, "SketchUp files cannot be read: {error}")
+            }
+            Self::Conversion(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for SkpReadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Unavailable(error) => Some(error),

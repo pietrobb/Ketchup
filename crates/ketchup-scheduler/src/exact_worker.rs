@@ -53,11 +53,13 @@ use std::time::Duration;
 
 type WorkerResult = Result<WorkerReply, WorkerFailure>;
 
+mod failure;
 mod output_cache;
 #[path = "bin/pair_query/mod.rs"]
 mod pair_query;
 mod source_document;
 
+use failure::{backend_failure, geometry_failure};
 use source_document::{SourceDocument, XdeFormat};
 
 pub fn run_stdio() {
@@ -182,6 +184,7 @@ fn handle_request(
         | WorkerRequest::ReportBeforeExact(_)
         | WorkerRequest::RefineReport(_)
         | WorkerRequest::ConvertDwg(_)
+        | WorkerRequest::ConvertSkp(_)
         | WorkerRequest::ReadUnderlay(_)
         | WorkerRequest::WriteUnderlay(_) => Err(WorkerFailure::invalid_request()),
         WorkerRequest::Exception => match backend.exception_probe() {
@@ -3972,32 +3975,6 @@ fn m21_step_assembly_response(
         result_fingerprint: reread.body.result_fingerprint.clone(),
         sha256: Some(sha256_hex(&step_bytes)),
     }))
-}
-
-fn geometry_failure(error: &ketchup_exact::GeometryError) -> WorkerFailure {
-    WorkerFailure {
-        code: error.code.as_str().to_owned(),
-        detail: Some(FailureDetail {
-            diagnostic: error.diagnostic.clone(),
-            operation: error.operation.to_owned(),
-            input_digest: error.input_digest.clone(),
-            backend: error.backend_fingerprint.to_owned(),
-        }),
-    }
-}
-
-fn backend_failure(operation: &str, diagnostic: &str) -> WorkerFailure {
-    WorkerFailure {
-        code: ketchup_exact::GeometryErrorCode::BackendException
-            .as_str()
-            .to_owned(),
-        detail: Some(FailureDetail {
-            diagnostic: diagnostic.to_owned(),
-            operation: operation.to_owned(),
-            input_digest: sha256_hex(diagnostic.as_bytes()),
-            backend: ketchup_exact::backend_fingerprint().to_owned(),
-        }),
-    }
 }
 
 #[cfg(test)]

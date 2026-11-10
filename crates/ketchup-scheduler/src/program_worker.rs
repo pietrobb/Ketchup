@@ -1,22 +1,22 @@
-//! Rule programs and DWG files are read in a worker process of their own, in a
-//! job with a memory limit. A program that takes all the memory or never ends,
-//! or a DWG file that declares a section of hundreds of gigabytes, costs that
-//! worker, not the editor window: the worker is killed on cancel and at the
-//! deadline, and a failed allocation aborts only the worker.
+//! Rule programs, DWG and SketchUp files are read in a worker process of their own,
+//! in a job with a memory limit. A program that takes all the memory or never ends,
+//! or a file that declares a section of hundreds of gigabytes, costs that worker,
+//! not the editor window: the worker is killed on cancel and at the deadline, and a
+//! failed allocation aborts only the worker.
 //!
 //! The worker stays between requests, so an edit pays no process start; a new
 //! one starts after the last was killed or died.
 //!
 //! The worker is `ketchup-program-worker`, not the exact worker, so the exact
 //! worker that every model evaluation starts carries neither the interpreter nor
-//! the DWG reader.
-pub use crate::protocol::DwgRefusal;
+//! the DWG and SketchUp readers.
 use crate::protocol::{
     ANY_FRAME_BYTES, DwgInput, DwgOutcome, Frame, MAX_REPLY_FRAME_BYTES, ProgramInput, RefineInput,
-    RefineOutcome, ReportOutcome, UnderlayInput, UnderlayOutcome, UnderlayRead, UnderlayWriteInput,
-    UnderlayWriteOutcome, UnderlayWritten, WorkerFailure, WorkerReply, WorkerRequest,
-    protocol_identity, read_frame, write_frame,
+    RefineOutcome, ReportOutcome, SkpInput, SkpOutcome, UnderlayInput, UnderlayOutcome,
+    UnderlayRead, UnderlayWriteInput, UnderlayWriteOutcome, UnderlayWritten, WorkerFailure,
+    WorkerReply, WorkerRequest, protocol_identity, read_frame, write_frame,
 };
+pub use crate::protocol::{DwgRefusal, SkpRefusal};
 use crate::underlay_reading::{UnderlayReadError, read_underlay, write_underlay};
 use crate::{ExactWorkerClient, WorkerError, exact_worker_identity, verify_exact_worker_identity};
 use ketchup_dwg::DwgDrawing;
@@ -25,6 +25,7 @@ use ketchup_program::{
     CancelToken, EVALUATION_HEAP_BYTES, EVALUATION_TIME, Evaluated, ExactShapes, ProgramError,
     ProgramModel, Refined, Report,
 };
+use ketchup_skp::SkpModel;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -159,6 +160,65 @@ impl fmt::Display for DwgConversionError {
 }
 
 impl std::error::Error for DwgConversionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Refused(refusal) => Some(refusal),
+            Self::WorkerFailed(error) | Self::Output(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+/// Why a SketchUp file was not read as GLB.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SkpConversionError {
+    /// The SketchUp reader refused the file.
+    Refused(SkpRefusal),
+    Cancelled,
+    /// Reading needed more memory than the worker may commit.
+    MemoryLimit,
+    /// The worker could not be started, or stopped otherwise: a file nested deeper than the
+    /// reader's stack ends it too.
+    WorkerFailed(WorkerError),
+    /// No directory could be made for the GLB the worker writes.
+    OutputDirectory(std::io::ErrorKind),
+    /// The GLB the worker wrote could not be read back.
+    Output(WorkerError),
+    /// The GLB read back is not the one the worker wrote.
+    OutputDigestMismatch,
+}
+
+impl fmt::Display for SkpConversionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Refused(refusal) => refusal.fmt(formatter),
+            Self::Cancelled => formatter.write_str("reading the SketchUp file was cancelled"),
+            Self::MemoryLimit => write!(
+                formatter,
+                "reading the SketchUp file needed more than {} GiB of memory and was stopped; \
+                 the file is damaged or declares sizes it does not hold",
+                PROGRAM_WORKER_MEMORY_BYTES >> 30
+            ),
+            Self::WorkerFailed(error) => write!(
+                formatter,
+                "the process that reads SketchUp files stopped: {error}"
+            ),
+            Self::Output(error) => write!(
+                formatter,
+                "the GLB of the SketchUp model could not be read back: {error}"
+            ),
+            Self::OutputDirectory(kind) => write!(
+                formatter,
+                "no directory could be made for the GLB of the SketchUp model: {kind}"
+            ),
+            Self::OutputDigestMismatch => {
+                formatter.write_str("the GLB file does not match the worker's digest")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SkpConversionError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Refused(refusal) => Some(refusal),
@@ -399,6 +459,56 @@ impl ProgramWorker {
         })
     }
 
+    /// [`ketchup_skp::skp_to_glb`] in the worker, for a GLB of at most `max_glb_bytes`: the
+    /// worker writes it to a file of its own, read back whole here.
+    ///
+    /// # Errors
+    /// The reader refused the file, the worker was stopped or died, or its GLB could not be
+    /// read back.
+    pub fn convert_skp(
+        &mut self,
+        skp: &[u8],
+        max_glb_bytes: usize,
+        cancel: &CancelToken,
+    ) -> Result<SkpModel, SkpConversionError> {
+        let directory = tempfile::tempdir()
+            .map_err(|error| SkpConversionError::OutputDirectory(error.kind()))?;
+        let output = directory.path().join("model.glb");
+        let input = SkpInput {
+            skp: skp.to_vec(),
+            output: output.clone(),
+            max_glb_bytes,
+        };
+        let outcome = self
+            .call(cancel, |client| {
+                client.convert_skp(input, cancel.flag(), UNTIL_CANCELLED)
+            })
+            .map_err(Stopped::skp_error)?;
+        let (glb_sha256, version, verified, left_out) = match outcome {
+            SkpOutcome::Converted {
+                glb_sha256,
+                version,
+                verified,
+                left_out,
+            } => (glb_sha256, version, verified, left_out),
+            SkpOutcome::Refused(refusal) => return Err(SkpConversionError::Refused(refusal)),
+        };
+        let glb = crate::read_regular_file(&output, "GLB of the SketchUp model")
+            .map_err(SkpConversionError::Output)?;
+        if sha256_hex(&glb) != glb_sha256 {
+            return Err(SkpConversionError::OutputDigestMismatch);
+        }
+        Ok(SkpModel {
+            glb,
+            version,
+            verified,
+            left_out: left_out
+                .into_iter()
+                .map(|(code, count)| ketchup_skp::LeftOut { code, count })
+                .collect(),
+        })
+    }
+
     /// Reads the drawing `input` names as an underlay in the worker, which writes its
     /// lines to `input.output`.
     ///
@@ -530,6 +640,9 @@ pub fn run_stdio() {
             }
             Frame::Message(WorkerRequest::ConvertDwg(input)) => {
                 WorkerReply::Dwg(Box::new(DwgOutcome::convert(&input)))
+            }
+            Frame::Message(WorkerRequest::ConvertSkp(input)) => {
+                WorkerReply::Skp(Box::new(SkpOutcome::convert(&input)))
             }
             Frame::Message(WorkerRequest::ReadUnderlay(input)) => {
                 WorkerReply::Underlay(Box::new(read_underlay(&input)))
@@ -700,6 +813,17 @@ impl Stopped {
             }
             Self::MemoryLimit => DwgConversionError::MemoryLimit,
             Self::Failed(error) => DwgConversionError::WorkerFailed(error),
+        }
+    }
+
+    fn skp_error(self) -> SkpConversionError {
+        match self {
+            Self::Cancelled => SkpConversionError::Cancelled,
+            Self::TimeLimit(after) => {
+                SkpConversionError::WorkerFailed(WorkerError::RequestTimedOut(after))
+            }
+            Self::MemoryLimit => SkpConversionError::MemoryLimit,
+            Self::Failed(error) => SkpConversionError::WorkerFailed(error),
         }
     }
 

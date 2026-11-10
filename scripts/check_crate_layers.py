@@ -34,8 +34,11 @@ LAYERS = {
     "ketchup-test-env": 0,
     "ketchup-test-gpu": 0,
     "ketchup-macos-open": 0,
+    # Vendored by path (third_party/openskp/PATCH.md): crates.io `openskp` is another, GPL crate.
+    "openskp": 0,
     "ketchup-geometry": 1,
     "ketchup-dwg": 1,
+    "ketchup-skp": 1,
     "ketchup-model": 2,
     "ketchup-exact": 2,
     "ketchup-interaction": 3,
@@ -89,7 +92,7 @@ FROZEN_MODULES = {
     "crates/ketchup-model/src/persistence/legacy.rs": 4726,
     "crates/ketchup-model/src/shared_change.rs": 3191,
     "crates/ketchup-program/src/eval.rs": 3214,
-    "crates/ketchup-scheduler/src/exact_worker.rs": 4701,
+    "crates/ketchup-scheduler/src/exact_worker.rs": 4678,
     "crates/ketchup-scheduler/src/lib.rs": 3268,
 }
 

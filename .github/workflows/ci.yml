@@ -163,7 +163,7 @@ jobs:
     timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 90 || 45 }}
     env:
       CRATES: >-
-        -p ketchup-analysis -p ketchup-assistant -p ketchup-dwg -p ketchup-geometry
+        -p ketchup-analysis -p ketchup-assistant -p ketchup-dwg -p ketchup-geometry -p ketchup-skp
         -p ketchup-interaction -p ketchup-manufacturing -p ketchup-mcp -p ketchup-model -p ketchup-pdm
         -p ketchup-program -p ketchup-rejection -p ketchup-test-env -p ketchup-tolerance
         -p ketchup-view-format -p ketchup-viewer-android
