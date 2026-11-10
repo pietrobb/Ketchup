@@ -1236,8 +1236,8 @@ fn btlx_admits_only_the_timber_it_writes_beside_a_mirrored_manufactured_part() {
         Ok(Vec::new())
     );
     assert_eq!(
-        projection.btlx_thread_loss_report(&snapshot),
-        Ok("tapped_drillings=0\n".to_owned())
+        projection.btlx_loss_report(&snapshot),
+        Ok("tapped_drillings=0\nunmade_pin_holes=0\n".to_owned())
     );
     let part = snapshot
         .definition(EXACT_DEFINITION)
@@ -2680,13 +2680,13 @@ fn a_tapped_hole_takes_its_thread_into_btlx_the_production_job_and_the_drawing_a
     assert!(btlx.contains("<UserAttribute Name=\"ThreadDepth\" Value=\"40\" Type=\"real\"/>"));
     assert!(btlx.contains("Name=\"Ketchup tapped drilling\" Comment=\"M12×1.75 depth 40\""));
     // BTLx has no tapping processing: its support report says the thread may be lost.
-    let loss = projection.btlx_thread_loss_report(&snapshot).unwrap();
+    let loss = projection.btlx_loss_report(&snapshot).unwrap();
     assert!(
         loss.starts_with("tapped_drillings=1\nthread_loss=BTLx 2.3.1 has no tapping processing;"),
         "{loss}"
     );
     assert!(
-        loss.ends_with(": Timber with circular drilling: M12×1.75 depth 40\n"),
+        loss.ends_with(": Timber with circular drilling: M12×1.75 depth 40\nunmade_pin_holes=0\n"),
         "{loss}"
     );
 

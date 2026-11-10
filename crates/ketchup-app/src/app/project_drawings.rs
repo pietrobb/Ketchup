@@ -570,25 +570,33 @@ enum SetList {
 /// (review 2026-11-06 MF-182, r19 MF-162, capability review run 501); a copy
 /// of it in a folder beside the drawings is another project, not the
 /// original by its file name alone (review 2026-11-08 MF-243). No file is
-/// looked at, so an offline share does not hold the window (2026-11-06 P3).
+/// looked at, so an offline share does not hold the window (2026-11-06 P3),
+/// unless a name is an 8.3 one, `PROJEK~1`: which folder that is only the file
+/// system says, so the project's file and the list's folder are asked for
+/// their short names (review 2026-11-09 MF-304).
 fn names_the_project(project: &str, list_path: &Path, owner: &SetOwner) -> bool {
     let Some(file) = owner.file.as_deref() else {
         return false;
     };
-    let file = path_names(file);
-    let list = match list_path.parent() {
-        Some(folder) => path_names(folder),
-        None => Vec::new(),
-    };
-    let shared = file
-        .iter()
-        .zip(&list)
-        .take_while(|(a, b)| same_name(a, b))
-        .count();
     let listed = project
         .split(['/', '\\'])
         .filter(|name| !name.is_empty() && *name != ".")
         .collect::<Vec<_>>();
+    let folder = list_path.parent().unwrap_or(Path::new(""));
+    let short = cfg!(windows)
+        && listed
+            .iter()
+            .copied()
+            .chain(path_names(file).iter().map(String::as_str))
+            .chain(path_names(folder).iter().map(String::as_str))
+            .any(is_short_name);
+    let file = path_names_and_short(file, short);
+    let list = path_names_and_short(folder, short);
+    let shared = file
+        .iter()
+        .zip(&list)
+        .take_while(|(a, b)| a.iter().any(|a| b.iter().any(|b| same_name(a, b))))
+        .count();
     // A list of this Kečup names the file alone; its token tells the copies.
     let below = if listed.len() == 1 {
         &file[file.len().saturating_sub(1)..]
@@ -600,7 +608,71 @@ fn names_the_project(project: &str, list_path: &Path, owner: &SetOwner) -> bool 
         && listed[listed.len() - below.len()..]
             .iter()
             .zip(below)
-            .all(|(a, b)| same_name(a, b))
+            .all(|(a, b)| b.iter().any(|b| same_name(a, b)))
+}
+
+/// The names of [`path_names`], each with its 8.3 name when `short` and the
+/// file system gives one.
+fn path_names_and_short(path: &Path, short: bool) -> Vec<Vec<String>> {
+    let long = path_names(path);
+    // Without a short name (a file system without them, a file gone) the long
+    // names are compared alone, as before.
+    let short = short
+        .then(|| short_path(path))
+        .and_then(Result::ok)
+        .map(|short| path_names(&short))
+        .filter(|short| short.len() == long.len());
+    match short {
+        Some(short) => long
+            .into_iter()
+            .zip(short)
+            .map(|(long, short)| {
+                if long == short {
+                    vec![long]
+                } else {
+                    vec![long, short]
+                }
+            })
+            .collect(),
+        None => long.into_iter().map(|name| vec![name]).collect(),
+    }
+}
+
+/// Whether `name` has the form of a Windows 8.3 name, `PROGRA~1`.
+fn is_short_name(name: &str) -> bool {
+    name.split_once('~').is_some_and(|(head, tail)| {
+        let number = tail.split_once('.').map_or(tail, |(number, _)| number);
+        !head.is_empty() && !number.is_empty() && number.chars().all(|c| c.is_ascii_digit())
+    })
+}
+
+/// `path` with every name the file system has an 8.3 name for given by it.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn short_path(path: &Path) -> std::io::Result<PathBuf> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let mut buffer = vec![0_u16; 512];
+    loop {
+        let capacity = u32::try_from(buffer.len()).map_err(std::io::Error::other)?;
+        // SAFETY: `wide` is NUL-terminated and `buffer` holds `capacity` u16s.
+        let written = unsafe { GetShortPathNameW(wide.as_ptr(), buffer.as_mut_ptr(), capacity) };
+        let written = usize::try_from(written).map_err(std::io::Error::other)?;
+        if written == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if written < buffer.len() {
+            buffer.truncate(written);
+            return Ok(PathBuf::from(std::ffi::OsString::from_wide(&buffer)));
+        }
+        buffer.resize(written, 0);
+    }
+}
+
+#[cfg(not(windows))]
+fn short_path(_path: &Path) -> std::io::Result<PathBuf> {
+    Err(std::io::ErrorKind::Unsupported.into())
 }
 
 /// The names of the folders down to `path` and its own, a drive or share
@@ -632,31 +704,11 @@ fn path_names(path: &Path) -> Vec<String> {
     names
 }
 
-/// Whether two names of a path are one, as Windows compares them, a short
-/// 8.3 name such as `RUNNER~1` the long one it begins (no file looked at).
+/// Whether two names of a path are one, as Windows compares them: in any case.
+/// An 8.3 name is one only with the name the file system gives it (see
+/// [`path_names_and_short`]), not every long name of its first letters.
 fn same_name(a: &str, b: &str) -> bool {
-    a == b
-        || cfg!(windows)
-            && (a.to_lowercase() == b.to_lowercase() || short_name_of(a, b) || short_name_of(b, a))
-}
-
-/// Whether `short` is a Windows 8.3 name `long` may be given, `PROGRA~1` of
-/// `Program Files`.
-fn short_name_of(short: &str, long: &str) -> bool {
-    let Some((head, tail)) = short.split_once('~') else {
-        return false;
-    };
-    let number = tail.split_once('.').map_or(tail, |(number, _)| number);
-    let long = long
-        .chars()
-        .filter(|c| !matches!(c, ' ' | '.'))
-        .collect::<String>()
-        .to_uppercase();
-    !head.is_empty()
-        && head.len() <= 6
-        && !number.is_empty()
-        && number.chars().all(|c| c.is_ascii_digit())
-        && long.starts_with(&head.to_uppercase())
+    a == b || cfg!(windows) && a.to_lowercase() == b.to_lowercase()
 }
 
 /// What `list`, at `list_path`, is to `owner`: its set when the document

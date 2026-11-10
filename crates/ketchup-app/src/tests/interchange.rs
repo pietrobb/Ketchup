@@ -916,7 +916,9 @@ fn hundegger_btlx_file_command_exports_validated_timber_with_support_report() {
     assert!(support.contains("machine_execution_order_guaranteed=false"));
     // Review 2026-11-08 MF-240: the report names the drill it is written for.
     assert!(
-        support.contains("\ntapped_drillings=0\nlargest_drill_mm=35\nround_holes_milled="),
+        support.contains(
+            "\ntapped_drillings=0\nunmade_pin_holes=0\nlargest_drill_mm=35\nround_holes_milled="
+        ),
         "{support}"
     );
     assert_eq!(script.export_requests()[0].extension, "btlx");

@@ -445,3 +445,73 @@ fn a_copy_of_a_0_3_2_project_in_another_folder_does_not_take_the_originals_set()
     publish_noted(&moved_path, format, &[b"moved".to_vec()], &mut moved).unwrap();
     assert_eq!(std::fs::read(&moved_sheets[0]).unwrap(), b"moved");
 }
+
+/// Review 2026-11-09 R1109-MF-304: a 0.3.2 list naming its project by an 8.3
+/// name, `PROJEK~1`, was taken by a project in any folder of the same first
+/// six letters. The name is the folder the file system gives it, no other.
+#[cfg(windows)]
+#[test]
+fn a_short_name_in_a_0_3_2_list_is_its_own_folder_not_any_of_the_same_letters() {
+    let directory = tempfile::tempdir().unwrap();
+    let alpha = directory.path().join("Projekt alpha");
+    let beta = directory.path().join("Projekt beta");
+    let shared = directory.path().join("shared");
+    for folder in [&alpha, &beta, &shared] {
+        std::fs::create_dir(folder).unwrap();
+    }
+    for project in [&alpha, &beta] {
+        std::fs::write(project.join("House.ketchup"), b"project").unwrap();
+    }
+    let short = super::short_path(&alpha).unwrap();
+    let short_name = short.file_name().unwrap().to_string_lossy().into_owned();
+    if !short_name.contains('~') {
+        eprintln!("no 8.3 names on this volume; nothing to test");
+        return;
+    }
+    let path = shared.join("house.dxf");
+    let format = SetFileFormat::Dxf;
+    let sheets = set_file_paths(&path, format, 1);
+    let list_path = set_list_path(&path, format);
+    let write_list = || {
+        std::fs::write(&sheets[0], b"original").unwrap();
+        std::fs::write(
+            &list_path,
+            format!(
+                "Ketchup drawing set of a project file\ndocument 42\nproject {}\nhouse-01.dxf {}\n",
+                short.join("House.ketchup").display(),
+                sha256_hex(b"original")
+            ),
+        )
+        .unwrap();
+    };
+    let owner = |file: PathBuf| SetOwner {
+        document: DocumentId(42),
+        file: Some(file),
+        token: None,
+        written: BTreeMap::new(),
+    };
+    write_list();
+    assert!(
+        matches!(
+            publish_noted(
+                &path,
+                format,
+                &[b"copy".to_vec()],
+                &mut owner(beta.join("House.ketchup"))
+            ),
+            Err(ProjectDrawingsError::SetOfAnotherProject { .. })
+        ),
+        "{} took the set {short_name} names",
+        beta.display()
+    );
+    assert_eq!(std::fs::read(&sheets[0]).unwrap(), b"original");
+    write_list();
+    publish_noted(
+        &path,
+        format,
+        &[b"again".to_vec()],
+        &mut owner(alpha.join("House.ketchup")),
+    )
+    .unwrap();
+    assert_eq!(std::fs::read(&sheets[0]).unwrap(), b"again");
+}

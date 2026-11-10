@@ -347,6 +347,9 @@ pub(crate) struct Written {
     /// Visible parts the export left out, by name (a plan DXF/DWG leaves out
     /// a part whose profiles are not parallel to XY, Měchenice MECH-9).
     pub(crate) omitted_parts: Vec<String>,
+    /// What a machine file leaves unmade, as `<part>: <element>`: the pin
+    /// holes in a bought part joined to a made one (review 2026-11-09 MF-305).
+    pub(crate) lost: Vec<String>,
 }
 
 impl Written {

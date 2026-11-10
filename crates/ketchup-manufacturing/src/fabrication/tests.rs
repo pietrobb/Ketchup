@@ -1075,6 +1075,41 @@ fn btlx_free_contour_requires_a_closed_simple_line_arc_profile() {
     assert_eq!(contour.start_point, ["0".to_owned(), "0".to_owned()]);
     assert_eq!(contour.depth, "20");
 
+    // Review 2026-11-09 R1109-MF-302: a hole milled through a 60 mm part began
+    // 1 mm above it and was 62 deep, the extent of the Boolean cutter.
+    let GeneralMachiningGeometry::ProfileCut {
+        frame, segments, ..
+    } = valid.clone()
+    else {
+        unreachable!()
+    };
+    let cut = |start_mm, end_mm| GeneralMachiningGeometry::ProfileCut {
+        frame,
+        segments: segments.clone(),
+        start_mm,
+        end_mm,
+    };
+    let part = blank_at_origin([1000.0, 600.0, 60.0]);
+    let through = btlx_free_contour(&cut(-1.0, 61.0), part).unwrap();
+    assert_eq!(
+        (
+            through.reference_point_mm,
+            through.depth.as_str(),
+            through.depth_bounded
+        ),
+        ([0.0, 0.0, 0.0], "60", false)
+    );
+    let entering = btlx_free_contour(&cut(-1.0, 20.0), part).unwrap();
+    assert_eq!(
+        (
+            entering.reference_point_mm,
+            entering.depth.as_str(),
+            entering.depth_bounded
+        ),
+        ([0.0, 0.0, 0.0], "20", true)
+    );
+    assert_eq!(btlx_free_contour(&cut(61.0, 70.0), part), None);
+
     let clockwise = GeneralMachiningGeometry::ProfileCut {
         frame: identity_machining_frame(),
         segments: vec![
@@ -1196,9 +1231,16 @@ fn btlx_free_contour_requires_a_closed_simple_line_arc_profile() {
     let GeneralMachiningGeometry::ProfileCut { end_mm, .. } = &mut excessive_depth else {
         unreachable!()
     };
+    // The cut is clamped to the part, so only a part deeper than the BTLx
+    // limit can carry a depth past it.
+    *end_mm = 100_009.0;
+    assert!(btlx_free_contour(&excessive_depth, blank_at_origin([200_000.0; 3])).is_some());
+    let GeneralMachiningGeometry::ProfileCut { end_mm, .. } = &mut excessive_depth else {
+        unreachable!()
+    };
     *end_mm = 100_011.0;
     assert_eq!(
-        btlx_free_contour(&excessive_depth, blank_at_origin([1000.0; 3])),
+        btlx_free_contour(&excessive_depth, blank_at_origin([200_000.0; 3])),
         None
     );
 }
