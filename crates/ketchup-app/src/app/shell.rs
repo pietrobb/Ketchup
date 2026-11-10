@@ -1613,6 +1613,7 @@ impl KetchupApp {
         self.show_rectangular_pattern_window(context);
         self.show_circular_pattern_window(context);
         self.show_cam_export_window(context);
+        self.show_presentation_window(context);
         self.show_fea_review_window(context);
         self.show_pdm_review_window(context);
         self.show_stl_import_window(context);

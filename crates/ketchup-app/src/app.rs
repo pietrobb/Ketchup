@@ -59,6 +59,8 @@ pub(crate) mod mesh_export_activity;
 mod mirror;
 mod outliner;
 mod patterns;
+pub(crate) mod presentation_dialog;
+pub(crate) mod presentation_export;
 #[cfg(test)]
 #[path = "app/production_export_tests.rs"]
 mod production_export_tests;

@@ -265,6 +265,7 @@ fn imported_sheets_export_as_meshes_and_3mf_refuses_them() {
                 path: out.display().to_string(),
                 export_format: format.to_owned(),
                 drawing_scale: None,
+                image: None,
                 overwrite: false,
             },
             false,

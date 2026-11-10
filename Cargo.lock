@@ -2375,6 +2375,7 @@ dependencies = [
  "ketchup-viewer",
  "libc",
  "objc2-foundation 0.3.2",
+ "png",
  "pollster",
  "raw-window-handle",
  "rfd",
@@ -2490,12 +2491,16 @@ dependencies = [
 name = "ketchup-manufacturing"
 version = "0.3.3-dev"
 dependencies = [
+ "ab_glyph",
+ "epaint_default_fonts",
  "ketchup-dwg",
  "ketchup-geometry",
  "ketchup-model",
  "ketchup-rejection",
  "ketchup-test-env",
+ "ketchup-tolerance",
  "ketchup-view-format",
+ "png",
  "serde",
  "serde_json",
 ]

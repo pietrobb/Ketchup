@@ -266,7 +266,7 @@ fn export_model(
 
 /// The checks every mesh scene export makes before it writes anything: a
 /// bounded, non-empty set of current bodies on current scene occurrences.
-fn validate_instances(
+pub(crate) fn validate_instances(
     snapshot: &Snapshot,
     instances: &[MeshGlbInstance<'_>],
 ) -> Result<(), ExactProductError> {

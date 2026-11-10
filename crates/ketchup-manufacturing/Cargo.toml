@@ -15,6 +15,10 @@ ketchup-model = { path = "../ketchup-model" }
 ketchup-view-format = { path = "../ketchup-view-format" }
 ketchup-rejection = { path = "../ketchup-rejection" }
 ketchup-geometry = { path = "../ketchup-geometry" }
+ketchup-tolerance = { path = "../ketchup-tolerance" }
+ab_glyph = "0.2.32"
+epaint_default_fonts = "0.32.3"
+png = "0.18"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
