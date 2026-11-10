@@ -981,6 +981,7 @@ pub enum AppCommand {
     ExportPrintThreeMf,
     ExportBlenderGlb,
     ExportSketchupDae,
+    ExportPresentationImage,
     ExportViewer,
     OpenViewerComments,
     ExportGeneralFabrication,
@@ -1170,8 +1171,7 @@ struct InteractionProjectionCache {
 }
 
 /// A value typed while the program or an exact solid was still being
-/// evaluated, with the tool, value, document revision and selection it was
-/// typed for.
+/// evaluated, with the tool, value, document revision and selection it was typed for.
 #[derive(Debug, PartialEq)]
 struct AwaitedValue {
     tool: ActiveTool,

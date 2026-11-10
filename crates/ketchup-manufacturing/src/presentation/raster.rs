@@ -8,7 +8,7 @@ use super::{
 use ketchup_geometry::linalg::Vec3;
 use std::f64::consts::FRAC_1_SQRT_2;
 
-/// tan(15°): a 30° vertical field of view, a natural lens for architecture and furniture.
+/// tan(15°): a 30° vertical field of view, a natural lens for buildings and room-sized objects.
 const TAN_HALF_FOV: f64 = 0.267_949_192_431_122_7;
 /// Share of the image the model may fill along its tighter side.
 const FRAME_FILL: f64 = 0.88;

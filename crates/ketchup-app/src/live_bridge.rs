@@ -685,8 +685,8 @@ pub enum Request {
         path: String,
         export_format: String,
         /// For dxf: N of the scale 1:N the annotations are drawn at.
-        #[serde(default)]
         drawing_scale: Option<f64>,
+        image: Option<interchange::PresentationImage>,
     },
     Selection {
         #[serde(default)]

@@ -113,10 +113,12 @@ fn the_image_matches_its_reference_within_tolerance_and_renders_identically_twic
     );
     let png_bytes = image.png().unwrap();
     assert_eq!(decode(&png_bytes), image);
-    if std::env::var_os("KETCHUP_BLESS_PRESENTATION").is_some() {
-        std::fs::create_dir_all(std::path::Path::new(REFERENCE).parent().unwrap()).unwrap();
-        std::fs::write(REFERENCE, &png_bytes).unwrap();
-    }
+    // A changed renderer is reviewed with this image beside the reference before replacing it.
+    std::fs::write(
+        std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("presentation_actual.png"),
+        &png_bytes,
+    )
+    .unwrap();
     let reference = decode(&std::fs::read(REFERENCE).unwrap());
     assert_eq!((reference.width, reference.height), (160, 120));
     let differences = image

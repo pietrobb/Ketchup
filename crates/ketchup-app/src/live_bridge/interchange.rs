@@ -7,12 +7,15 @@
 
 use super::{LiveBridge, Request, drawings::local_absolute_path, failure, record_rejection};
 use crate::app::import_file::{import_format, parse_unit};
+use crate::app::presentation_export::PresentationRequest;
 use crate::export_bundle::{ExportError, Written};
 use crate::{ImportError, ImportFormat, ImportLengthUnit, KetchupApp};
 use ketchup_application::rejections::rejected;
 use ketchup_manufacturing::dxf_annotations::MAX_PLAN_SCALE;
+use ketchup_manufacturing::presentation::Background;
 use ketchup_model::import::DxfCodePage;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, atomic::AtomicBool};
 
@@ -50,7 +53,7 @@ pub(super) fn import_failed(path: &str, error: ImportError) -> &'static str {
 }
 
 /// Every export format of the File menu with the file extensions it writes.
-const EXPORT_FORMATS: [(&str, &[&str], Exporter); 15] = [
+const EXPORT_FORMATS: [(&str, &[&str], Exporter); 16] = [
     (
         "step",
         &["step", "stp"],
@@ -102,7 +105,80 @@ const EXPORT_FORMATS: [(&str, &[&str], Exporter); 15] = [
         &["zip"],
         KetchupApp::export_current_workshop_package_to,
     ),
+    // Without `image`, the picture File > Export shows first.
+    ("presentation_png", &["png"], |app, path| {
+        app.export_presentation_image_to(path, &PresentationRequest::default())
+    }),
 ];
+
+/// How a client's presentation image looks; what it leaves out is as the window shows first.
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PresentationImage {
+    #[serde(default)]
+    width: Option<u32>,
+    #[serde(default)]
+    height: Option<u32>,
+    /// `white`, `transparent` or `#rrggbb`.
+    #[serde(default)]
+    background: Option<String>,
+    #[serde(default)]
+    shadows: Option<bool>,
+    #[serde(default)]
+    ambient_occlusion: Option<bool>,
+    #[serde(default)]
+    outlines: Option<bool>,
+    /// Percent opaque (0–100) of the parts of each named material.
+    #[serde(default)]
+    opacity_percent: BTreeMap<String, u8>,
+}
+
+/// Which `image` field a client gave a value it cannot have, and that value.
+struct InvalidImage {
+    reason: &'static str,
+    details: Value,
+}
+
+impl PresentationImage {
+    fn request(self) -> Result<PresentationRequest, InvalidImage> {
+        let mut request = PresentationRequest::default();
+        let options = &mut request.options;
+        let background = match self.background.as_deref() {
+            None => options.background,
+            Some("white") => Background::White,
+            Some("transparent") => Background::Transparent,
+            Some(color) => Background::Color(hex_color(color).ok_or_else(|| InvalidImage {
+                reason: "image.background is white, transparent or a colour #rrggbb.",
+                details: json!({"background": color}),
+            })?),
+        };
+        options.background = background;
+        options.width = self.width.unwrap_or(options.width);
+        options.height = self.height.unwrap_or(options.height);
+        options.shadows = self.shadows.unwrap_or(options.shadows);
+        options.ambient_occlusion = self.ambient_occlusion.unwrap_or(options.ambient_occlusion);
+        options.outlines = self.outlines.unwrap_or(options.outlines);
+        if let Some((name, percent)) = self
+            .opacity_percent
+            .iter()
+            .find(|(_, percent)| **percent > 100)
+        {
+            return Err(InvalidImage {
+                reason: "image.opacity_percent gives each material 0 (invisible) to 100 (opaque).",
+                details: json!({"material": name, "opacity_percent": percent}),
+            });
+        }
+        request.opacity_percent = self.opacity_percent;
+        Ok(request)
+    }
+}
+
+/// `#rrggbb` as its three channels.
+fn hex_color(text: &str) -> Option<[u8; 3]> {
+    let digits = text.strip_prefix('#').filter(|digits| digits.len() == 6)?;
+    let channel = |at: usize| u8::from_str_radix(digits.get(at..at + 2)?, 16).ok();
+    Some([channel(0)?, channel(2)?, channel(4)?])
+}
 
 /// The code of why an export was not written, whose hint repairs that cause:
 /// every refusal was `export_failed`, a model the format cannot carry as a
@@ -129,7 +205,7 @@ pub(super) fn export_code(error: &ExportError) -> &'static str {
                     }
                     match cause.downcast_ref::<Rejection>()?.code() {
                         "side_effect.declined" => Some("export_declined"),
-                        "fabrication.mesh_body" => Some("export_refused"),
+                        "fabrication.mesh_body" | "presentation.material" => Some("export_refused"),
                         _ => None,
                     }
                 })
@@ -296,16 +372,25 @@ impl LiveBridge {
         ui_busy: bool,
         cancelled: &Arc<AtomicBool>,
     ) -> Result<Value, &'static str> {
-        let drawing_scale = match &request {
-            Request::Export { drawing_scale, .. } => *drawing_scale,
-            _ => None,
+        let (drawing_scale, image) = match &request {
+            Request::Export {
+                drawing_scale,
+                image,
+                ..
+            } => (*drawing_scale, image.clone()),
+            _ => (None, None),
         };
         let (path, export_format, exporter) = Self::export_target(app, request, ui_busy)?;
+        let presentation = image
+            .map(PresentationImage::request)
+            .transpose()
+            .map_err(|invalid| failure("invalid_params", invalid.reason, invalid.details))?;
         Self::require_request_authority(cancelled)?;
         app.live.client_export = Some(Arc::clone(cancelled));
-        let exported = match drawing_scale {
-            Some(scale) => app.export_current_plan_dxf_to(Path::new(&path), scale),
-            None => exporter(app, Path::new(&path)),
+        let exported = match (drawing_scale, presentation) {
+            (Some(scale), _) => app.export_current_plan_dxf_to(Path::new(&path), scale),
+            (None, Some(request)) => app.export_presentation_image_to(Path::new(&path), &request),
+            (None, None) => exporter(app, Path::new(&path)),
         };
         app.live.client_export = None;
         Self::exported(&path, &export_format, exported)
@@ -322,10 +407,18 @@ impl LiveBridge {
             path,
             export_format,
             drawing_scale,
+            image,
         } = request
         else {
             return Err("invalid_request");
         };
+        if image.is_some() && export_format != "presentation_png" {
+            return Err(failure(
+                "invalid_params",
+                "image describes the picture of a presentation_png export.".to_owned(),
+                json!({"export_format": export_format}),
+            ));
+        }
         if let Some(scale) = drawing_scale
             && (!matches!(export_format.as_str(), "dxf" | "dwg")
                 || !(1.0..=MAX_PLAN_SCALE).contains(&scale))

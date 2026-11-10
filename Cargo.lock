@@ -2375,6 +2375,7 @@ dependencies = [
  "ketchup-viewer",
  "libc",
  "objc2-foundation 0.3.2",
+ "png",
  "pollster",
  "raw-window-handle",
  "rfd",

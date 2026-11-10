@@ -55,6 +55,7 @@ fn export_profiles(path: &Path) -> Request {
         path: path.display().to_string(),
         export_format: "dxf".to_owned(),
         drawing_scale: None,
+        image: None,
     }
 }
 

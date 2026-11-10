@@ -3,7 +3,7 @@
 use crate::*;
 
 impl CommandRegistry {
-    pub(crate) const COMMANDS: [CommandSpec; 148] = [
+    pub(crate) const COMMANDS: [CommandSpec; 149] = [
         CommandSpec {
             id: AppCommand::New,
             label_key: "file-new",
@@ -121,6 +121,12 @@ impl CommandRegistry {
         CommandSpec {
             id: AppCommand::ExportSketchupDae,
             label_key: "file-export-sketchup-dae",
+            tool: None,
+            implemented: true,
+        },
+        CommandSpec {
+            id: AppCommand::ExportPresentationImage,
+            label_key: "file-export-presentation-image",
             tool: None,
             implemented: true,
         },
