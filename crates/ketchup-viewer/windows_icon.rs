@@ -39,12 +39,21 @@ pub fn embed(file_name: &str, product: &str) -> io::Result<()> {
             format!("assets/{file_name}: {message}"),
         )
     })?;
-    let numeric = numeric_version(&version).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("version {version} is not major.minor.patch[-pre]"),
-        )
-    })?;
+    // A label that is not a release number (`production-test`) still names the
+    // product version; the numeric file version then comes from the crate.
+    let numeric = numeric_version(&version)
+        .or_else(|| {
+            env::var("CARGO_PKG_VERSION")
+                .ok()
+                .as_deref()
+                .and_then(numeric_version)
+        })
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("version {version} is not major.minor.patch[-pre]"),
+            )
+        })?;
     push_resource(
         &mut resources,
         RT_VERSION,

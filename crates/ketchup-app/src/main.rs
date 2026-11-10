@@ -1,6 +1,9 @@
-#![forbid(unsafe_code)]
+// Unsafe code only in the audited item of `console` that asks the system for one.
+#![deny(unsafe_code)]
 // No console window behind the editor; MCP and launchers still talk over inherited pipes.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod console;
 
 use ketchup_app::{
     KetchupApp, inspect_native_document, live_bridge::bootstrap::LiveStdinBootstrap,
@@ -66,11 +69,12 @@ fn bootstrap_failed(reason: impl std::fmt::Display) -> ! {
 fn main() -> eframe::Result {
     let all_arguments: Vec<_> = std::env::args_os().skip(1).collect();
     // Feedback 2026-11-10: `--version` was taken for a document to open. The
-    // editor has no console of its own: from a terminal pipe it (`| more`).
+    // released editor has no console of its own, so it borrows the terminal's.
     if all_arguments
         .first()
         .is_some_and(|argument| argument == "--version" || argument == "-V")
     {
+        console::attach_parent_console();
         if all_arguments.len() > 1 {
             eprintln!("--version accepts no arguments");
             std::process::exit(2);
