@@ -29,6 +29,8 @@ pub(super) enum ReadAlready {
     Nothing,
     /// The bytes of a `.dwg` file.
     Drawing(Vec<u8>),
+    /// The bytes of a `.skp` file.
+    Model(Vec<u8>),
     /// The bytes of a STEP or IGES file and what the exact worker read of them.
     Exact(
         Vec<u8>,
@@ -249,6 +251,15 @@ pub(super) fn export_code(error: &ExportError) -> &'static str {
     }
 }
 
+/// An export request the window takes now.
+pub(super) struct ExportTarget {
+    pub(super) path: String,
+    pub(super) export_format: String,
+    pub(super) exporter: Exporter,
+    /// Replace a file and loss report Kečup wrote at `path`, unchanged since.
+    pub(super) overwrite: bool,
+}
+
 impl LiveBridge {
     /// Imports the file `request` names, from what a job's thread has `read` of
     /// it already (see [`super::dwg_import`]).
@@ -286,6 +297,7 @@ impl LiveBridge {
         let summary = match read {
             ReadAlready::Nothing => app.import_file(format, Path::new(&path), unit),
             ReadAlready::Drawing(source) => app.import_drawing(Path::new(&path), source, unit),
+            ReadAlready::Model(source) => app.import_glb_source(Path::new(&path), source),
             ReadAlready::Exact(source, evidence) => {
                 app.import_exact_read(format, Path::new(&path), source, evidence)
             }
@@ -411,19 +423,26 @@ impl LiveBridge {
             } => (*drawing_scale, image.clone()),
             _ => (None, None),
         };
-        let (path, export_format, exporter) = Self::export_target(app, request, ui_busy)?;
+        let ExportTarget {
+            path,
+            export_format,
+            exporter,
+            overwrite,
+        } = Self::export_target(app, request, ui_busy)?;
         let presentation = image
             .map(PresentationImage::request)
             .transpose()
             .map_err(|invalid| failure("invalid_params", invalid.reason, invalid.details))?;
         Self::require_request_authority(cancelled)?;
         app.live.client_export = Some(Arc::clone(cancelled));
+        app.live.client_overwrite = overwrite;
         let exported = match (drawing_scale, presentation) {
             (Some(scale), _) => app.export_current_plan_dxf_to(Path::new(&path), scale),
             (None, Some(request)) => app.export_presentation_image_to(Path::new(&path), &request),
             (None, None) => exporter(app, Path::new(&path)),
         };
         app.live.client_export = None;
+        app.live.client_overwrite = false;
         Self::exported(&path, &export_format, exported)
     }
 
@@ -432,13 +451,14 @@ impl LiveBridge {
         app: &mut KetchupApp,
         request: Request,
         ui_busy: bool,
-    ) -> Result<(String, String, Exporter), &'static str> {
+    ) -> Result<ExportTarget, &'static str> {
         let Request::Export {
             expected,
             path,
             export_format,
             drawing_scale,
             image,
+            overwrite,
         } = request
         else {
             return Err("invalid_request");
@@ -492,7 +512,12 @@ impl LiveBridge {
                 json!({"path": path}),
             ));
         }
-        Ok((path, export_format, *exporter))
+        Ok(ExportTarget {
+            path,
+            export_format,
+            exporter: *exporter,
+            overwrite,
+        })
     }
 
     /// Records why the export of `path` failed for the answer, and its code.

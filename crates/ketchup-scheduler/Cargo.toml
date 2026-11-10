@@ -16,6 +16,7 @@ default = []
 ketchup-analysis = { path = "../ketchup-analysis" }
 ketchup-assistant = { path = "../ketchup-assistant" }
 ketchup-dwg = { path = "../ketchup-dwg" }
+ketchup-skp = { path = "../ketchup-skp" }
 ciborium = "0.2"
 ketchup-model = { path = "../ketchup-model" }
 ketchup-exact = { path = "../ketchup-exact" }

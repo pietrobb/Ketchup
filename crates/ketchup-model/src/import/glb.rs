@@ -100,6 +100,15 @@ impl ParsedGlbScene {
     pub fn diagnostics(&self) -> &[ImportDiagnostic] {
         &self.diagnostics
     }
+
+    /// The scene with the `notes` of the reader that wrote the GLB (the version of a
+    /// SketchUp file and what its conversion left out) among its diagnostics.
+    #[must_use]
+    pub fn with_notes(mut self, notes: &[ImportDiagnostic]) -> Self {
+        self.diagnostics.extend_from_slice(notes);
+        self.diagnostics.sort();
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -345,13 +354,24 @@ pub fn plan_glb_import(
     source: &[u8],
     source_name: &str,
 ) -> Result<CommandBatch, GlbImportError> {
+    plan_glb_import_noting(snapshot, source, source_name, &[])
+}
+
+/// [`plan_glb_import`] of a GLB another reader wrote, whose receipt records that
+/// reader's `notes` with the GLB import's own diagnostics.
+pub fn plan_glb_import_noting(
+    snapshot: &Snapshot,
+    source: &[u8],
+    source_name: &str,
+    notes: &[ImportDiagnostic],
+) -> Result<CommandBatch, GlbImportError> {
     validate_text(source_name)?;
     if source_name.contains(['/', '\\']) {
         return Err(GlbImportError::InvalidSourceIdentity(
             ImportContractError::InvalidSource,
         ));
     }
-    let scene = inspect_glb(source)?;
+    let scene = inspect_glb(source)?.with_notes(notes);
     let import_id = snapshot
         .next_import_id()
         .ok_or(GlbImportError::IdSpaceExhausted)?;
@@ -1408,10 +1428,10 @@ fn parse_materials(
                 .map(|value| exact_number_array(value, 4))
                 .transpose()?
                 .unwrap_or_else(|| vec![1.0; 4]);
+            // Its alpha is the transparency counted above (or, opaque, ignored by glTF).
             if factor
                 .iter()
                 .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
-                || (factor[3] - 1.0).abs() > f64::EPSILON
             {
                 return Err(GlbImportError::UnsupportedFeature);
             }
@@ -1690,6 +1710,38 @@ mod json_tests {
             inspect_glb(&packed(&read, &binary)),
             Err(GlbImportError::JsonTooLarge)
         );
+    }
+
+    /// A glass material (a base colour with alpha below 1) imports as its opaque colour with
+    /// a note, as a cut-out or blended one does; it refused the whole file before, so a
+    /// SketchUp model with one window pane did not import at all.
+    #[test]
+    fn a_translucent_material_imports_as_its_opaque_colour_with_a_note() {
+        let (json, binary) = sample();
+        let opaque = inspect_glb(&packed(&json, &binary)).unwrap();
+        let mut glass = json;
+        for material in glass["materials"].as_array_mut().unwrap() {
+            material["alphaMode"] = Value::from("BLEND");
+            if let Some(factor) = material
+                .pointer_mut("/pbrMetallicRoughness/baseColorFactor")
+                .and_then(Value::as_array_mut)
+            {
+                factor[3] = Value::from(0.4);
+            }
+        }
+        let glass = inspect_glb(&packed(&glass, &binary)).unwrap();
+        let colours = |scene: &ParsedGlbScene| {
+            scene
+                .primitives
+                .iter()
+                .map(|primitive| primitive.color)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(colours(&glass), colours(&opaque));
+        assert!(colours(&glass).iter().any(Option::is_some));
+        assert!(glass.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code() == "glb_material_transparency_ignored" && diagnostic.count() > 0
+        }));
     }
 }
 

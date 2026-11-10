@@ -68,6 +68,8 @@ mod program_edit;
 mod project_drawings_job;
 #[path = "room_areas_tests.rs"]
 mod room_areas;
+#[path = "skp_import_tests.rs"]
+mod skp_import;
 #[path = "underlay_objects_tests.rs"]
 mod underlay_objects;
 #[path = "underlay_program_tests.rs"]
@@ -442,6 +444,7 @@ fn disconnect_during_a_release_confirmation_writes_no_file() {
             export_format: "btlx".to_owned(),
             drawing_scale: None,
             image: None,
+            overwrite: false,
         },
     })
     .unwrap();

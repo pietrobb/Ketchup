@@ -40,7 +40,16 @@ fn export(path: &Path, export_format: &str) -> Request {
         export_format: export_format.to_owned(),
         drawing_scale: None,
         image: None,
+        overwrite: false,
     }
+}
+
+fn export_over(path: &Path, export_format: &str) -> Request {
+    let mut request = export(path, export_format);
+    if let Request::Export { overwrite, .. } = &mut request {
+        *overwrite = true;
+    }
+    request
 }
 
 /// The entities of the ENTITIES section of a DXF text, each as its type and its
@@ -306,6 +315,107 @@ fn an_export_refusal_is_named_by_what_repairs_it() {
         Err("export_refused")
     );
     assert!(!package.exists());
+}
+
+/// Jožinko 2026-11-10 U3: an AI that exports the model again to its GLB had to
+/// pick a new name every time. `overwrite` replaces the file and its loss report
+/// when Kečup wrote them and nobody changed the file since.
+#[test]
+fn overwrite_replaces_a_glb_kecup_wrote_and_its_loss_report_together() {
+    let (mut app, mut bridge, directory) = window();
+    crate::tests::install_initial_graph_result(&mut app);
+    let target = directory.path().join("model.glb");
+    let report = target.with_extension("glb.loss.txt");
+    bridge
+        .execute(&mut app, export(&target, "glb"), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let first = std::fs::read_to_string(&report).unwrap();
+
+    // Without the option nothing changes: an existing file is refused.
+    assert_eq!(
+        bridge.execute(&mut app, export(&target, "glb"), false),
+        Err("export_failed")
+    );
+
+    app.document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::SetFeatureDimension {
+                id: FeatureId(2),
+                dimension: ketchup_model::document::Dimension::from_decimal("55").unwrap(),
+            },
+        ]))
+        .unwrap();
+    crate::tests::install_initial_graph_result(&mut app);
+    let exported = bridge
+        .execute(&mut app, export_over(&target, "glb"), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(exported["path"], target.display().to_string());
+    let second = std::fs::read_to_string(&report).unwrap();
+    assert_ne!(second, first, "the loss report is written with the file");
+    let glb = std::fs::read(&target).unwrap();
+    assert!(
+        second.contains(&format!(
+            "artifact_sha256={}",
+            ketchup_model::graph::sha256_hex(&glb)
+        )),
+        "{second}"
+    );
+    // No temporary file or journal is left beside them.
+    let mut names = std::fs::read_dir(directory.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(names, ["model.glb", "model.glb.loss.txt"]);
+}
+
+/// U3: `overwrite` never replaces a file Kečup did not write there, nor one
+/// that was changed after Kečup wrote it.
+#[test]
+fn overwrite_refuses_a_file_kecup_did_not_write_or_that_was_changed_since() {
+    let (mut app, mut bridge, directory) = window();
+    crate::tests::install_initial_graph_result(&mut app);
+
+    // Someone else's file, without a loss report.
+    let foreign = directory.path().join("foreign.glb");
+    std::fs::write(&foreign, b"someone's model").unwrap();
+    assert_eq!(
+        bridge.execute(&mut app, export_over(&foreign, "glb"), false),
+        Err("export_failed")
+    );
+    assert_eq!(std::fs::read(&foreign).unwrap(), b"someone's model");
+    assert!(!foreign.with_extension("glb.loss.txt").exists());
+
+    // Kečup's file the user changed afterwards (e.g. saved from Blender).
+    let edited = directory.path().join("edited.glb");
+    bridge
+        .execute(&mut app, export(&edited, "glb"), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    std::fs::write(&edited, b"edited in Blender").unwrap();
+    let report = std::fs::read(edited.with_extension("glb.loss.txt")).unwrap();
+    assert_eq!(
+        bridge.execute(&mut app, export_over(&edited, "glb"), false),
+        Err("export_failed")
+    );
+    assert_eq!(std::fs::read(&edited).unwrap(), b"edited in Blender");
+    assert_eq!(
+        std::fs::read(edited.with_extension("glb.loss.txt")).unwrap(),
+        report
+    );
+
+    // A loss report of an older Kečup, which names no file, proves nothing.
+    let older = directory.path().join("older.glb");
+    std::fs::write(&older, b"older export").unwrap();
+    std::fs::write(
+        older.with_extension("glb.loss.txt"),
+        "format=glTF 2.0 binary (GLB)\n",
+    )
+    .unwrap();
+    assert_eq!(
+        bridge.execute(&mut app, export_over(&older, "glb"), false),
+        Err("export_failed")
+    );
+    assert_eq!(std::fs::read(&older).unwrap(), b"older export");
 }
 
 /// Měchenice 2026-11-02 MECH-9: `file export dxf/dwg` failed whole on one

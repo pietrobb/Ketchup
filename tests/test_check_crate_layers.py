@@ -24,6 +24,18 @@ def test_reads_only_normal_workspace_dependencies(tmp_path):
     assert checker.workspace_dependencies(tmp_path) == {"high": ["low"], "low": []}
 
 
+def test_a_vendored_path_dependency_is_not_a_workspace_crate(tmp_path):
+    manifest(tmp_path, "low")
+    path = tmp_path / "crates" / "high" / "Cargo.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        '[package]\nname = "high"\n\n[dependencies]\nlow = { path = "../low" }\n'
+        'vendored = { path = "../../third_party/vendored" }\n',
+        encoding="utf-8",
+    )
+    assert checker.workspace_dependencies(tmp_path) == {"high": ["low"], "low": []}
+
+
 def test_sideways_upward_and_unplaced_dependencies_fail():
     layers = {"low": 0, "mid": 1, "peer": 1}
     assert checker.violations({"mid": ["low"], "low": []}, layers) == []

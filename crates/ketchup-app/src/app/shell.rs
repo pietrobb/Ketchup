@@ -67,6 +67,7 @@ impl KetchupApp {
                 launch_attached: false,
                 client_name: None,
                 client_export: None,
+                client_overwrite: false,
                 plugin_consents: Vec::new(),
                 plugin_menu: live_bridge::plugin_menu::PluginMenu::new(),
                 variants: Default::default(),

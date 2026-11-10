@@ -1,0 +1,19 @@
+[package]
+name = "ketchup-skp"
+description = "SketchUp .skp files for Ketchup through a GLB bridge: the OpenSKP reader behind a byte-level API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# MIT, vendored unmodified in third_party/openskp (its PATCH.md says why).
+openskp = { path = "../../third_party/openskp" }
+
+[dev-dependencies]
+serde_json = "1.0"
+
+[lints]
+workspace = true
