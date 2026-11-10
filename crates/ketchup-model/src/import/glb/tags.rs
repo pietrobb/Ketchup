@@ -84,9 +84,11 @@ pub(super) fn plan_tags(
         }
     }
     for node in traversal {
-        let mut carried = parents[*node]
-            .map(|parent| planned.by_node[parent].clone())
-            .unwrap_or_default();
+        // A root carries no tags from above.
+        let mut carried = match parents[*node] {
+            Some(parent) => planned.by_node[parent].clone(),
+            None => BTreeSet::new(),
+        };
         if let Some(index) = tags.node_tags[*node] {
             let tag = &tags.tags[index];
             let id = match ids[index] {
