@@ -2,8 +2,7 @@
 //! 2026-10-21 P3). A whole `serde_json::Value` of the chunk took 14 to 27 times its size
 //! in the window. Keys the import never reads, `extras` among them, are skipped while
 //! parsing; keys it only checks for are kept empty; the root arrays it only counts are
-//! kept as their length; and the values it keeps are at most [`MAX_JSON_VALUES`], far
-//! more than an importable GLB, of at most 512 nodes and meshes, holds.
+//! kept as their length; and the values it keeps are at most [`MAX_JSON_VALUES`].
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -82,9 +81,10 @@ pub(super) const COUNTED_KEYS: &[&str] = &[
     "textures",
 ];
 
-/// The JSON values the import keeps at most; an importable GLB holds some tens of
-/// thousands. Kept, they take some tens of bytes each.
-pub(super) const MAX_JSON_VALUES: usize = 1 << 18;
+/// The JSON values the import keeps at most: a node takes some twenty, so a scene of
+/// [`super::MAX_NODES`] nodes fits; the SketchUp model of a hall of 3,253 nodes holds
+/// 83,480. Kept, they take some tens of bytes each.
+pub(super) const MAX_JSON_VALUES: usize = 1 << 20;
 
 /// The JSON chunk as the import reads it.
 pub(super) struct GlbJson {

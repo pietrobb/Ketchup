@@ -9,12 +9,12 @@ use serde_json::{Map, Value};
 use super::{
     ImportContractError, ImportDiagnostic, ImportDiagnosticSeverity, ImportFormat,
     ImportLengthUnit, ImportOutputRef, ImportReceipt, ImportUnitAuthority, ImportUnitDecision,
-    MAX_IMPORT_OUTPUTS,
+    MAX_IMPORT_RECEIPT_OUTPUTS,
 };
 use crate::document::{
     CanonicalCommand, CommandBatch, DefinitionId, FeatureId, FeatureKind, GroupId,
-    MESH_BODY_SCHEMA_V1, MESH_SHEET_SCHEMA_V1, MeshAuthority, MeshBodySpec, OccurrenceId, Snapshot,
-    Transform,
+    MESH_BODY_SCHEMA_V1, MESH_SHEET_SCHEMA_V1, MeshAuthority, MeshBodySpec, OccurrenceId,
+    ProposalBudget, Snapshot, Transform,
 };
 
 mod json;
@@ -62,12 +62,27 @@ const SHORT: u64 = 5_122;
 const UNSIGNED_SHORT: u64 = 5_123;
 const UNSIGNED_INT: u64 = 5_125;
 const FLOAT: u64 = 5_126;
-const MAX_MESHES: usize = 512;
-const MAX_PRIMITIVES: usize = 512;
-const MAX_NODES: usize = 512;
+// What one import may cost is its geometry and its commands, not how many groups hold
+// them: a SketchUp model of a small hall has thousands of groups and some thousands of
+// triangles. The counts of nodes and meshes only keep the parse bounded, as many as the
+// profiles one drawing import makes.
+const MAX_MESHES: usize = limits::DRAWING_PROFILES;
+const MAX_PRIMITIVES: usize = limits::DRAWING_PROFILES;
+const MAX_NODES: usize = limits::DRAWING_PROFILES;
+/// Most nodes on the path from a scene root to a node, so walking the tree stays
+/// within the stack.
+const MAX_NODE_DEPTH: usize = limits::INSTANCE_PATH_STEPS;
+/// Farthest a GLB may place a vertex or a node from the origin of its frame, in mm: a
+/// georeferenced component (an IFC element brought into SketchUp) keeps its geometry
+/// kilometres away and its placement brings it back. What the import adds stays within
+/// [`MAX_COORDINATE_MM`].
+const MAX_SOURCE_COORDINATE_MM: f64 = 1e10;
 const MAX_TOTAL_VERTICES: usize = 200_000;
 const MAX_TOTAL_TRIANGLES: usize = 400_000;
-const MAX_GLB_COMMANDS: usize = 1_024;
+/// Most triangles the placed parts show together: what an export of them writes.
+const MAX_PLACED_TRIANGLES: usize = limits::EXPORT_TRIANGLES;
+/// Commands of one import, one Undo step: the budget of a drawing import.
+const MAX_GLB_COMMANDS: usize = ProposalBudget::DRAWING_IMPORT.max_commands;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParsedGlbScene {
@@ -118,17 +133,26 @@ impl ParsedGlbScene {
 #[derive(Clone, Debug, PartialEq)]
 struct ParsedPrimitive {
     name: String,
+    /// Relative to [`Self::origin_mm`].
     vertices_mm: Vec<[f64; 3]>,
     triangles: Vec<[u32; 3]>,
     color: Option<[u8; 3]>,
     /// Closes no solid: imported as a sheet (see [`MESH_SHEET_SCHEMA_V1`]).
     sheet: bool,
+    /// Where the mesh's own origin moved to, in its frame: zero, or the centre of a mesh
+    /// lying beyond the model space there (see [`recentre`]).
+    origin_mm: [f64; 3],
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct ParsedNode {
     name: String,
+    /// The node's transform as the GLB gives it.
+    local: Affine3,
+    /// The group's transform as imported (see [`place_nodes`]).
     transform: Transform,
+    /// The transform of the part each of [`Self::primitives`] imports as.
+    placements: Vec<Transform>,
     children: Vec<usize>,
     primitives: Vec<usize>,
 }
@@ -224,8 +248,8 @@ impl fmt::Display for GlbImportError {
             Self::JsonTooLarge => {
                 return write!(
                     formatter,
-                    "GLB JSON holds more than {} values the import reads; a GLB of at most \
-                     {MAX_NODES} nodes and {MAX_MESHES} meshes holds far fewer",
+                    "GLB JSON holds more than {} values the import reads, those of some \
+                     {MAX_NODES} nodes",
                     json::MAX_JSON_VALUES
                 );
             }
@@ -292,7 +316,7 @@ pub fn inspect_glb(source: &[u8]) -> Result<ParsedGlbScene, GlbImportError> {
         &selection.meshes,
         &mut diagnostic_counts,
     )?;
-    let (nodes, traversal, instance_count) = parse_nodes(
+    let (mut nodes, traversal, instance_count) = parse_nodes(
         root,
         &mesh_primitives,
         &selection.nodes,
@@ -301,6 +325,17 @@ pub fn inspect_glb(source: &[u8]) -> Result<ParsedGlbScene, GlbImportError> {
     if instance_count == 0 {
         return Err(GlbImportError::EmptyScene);
     }
+    place_nodes(&mut nodes, &traversal, &primitives)?;
+    traversal.iter().try_fold(0_usize, |count, node_index| {
+        nodes[*node_index]
+            .primitives
+            .iter()
+            .try_fold(count, |count, primitive| {
+                count.checked_add(primitives[*primitive].triangles.len())
+            })
+            .filter(|count| *count <= MAX_PLACED_TRIANGLES)
+            .ok_or(GlbImportError::TooManyTriangles)
+    })?;
     let output_count = primitives
         .len()
         .checked_mul(2)
@@ -321,7 +356,7 @@ pub fn inspect_glb(source: &[u8]) -> Result<ParsedGlbScene, GlbImportError> {
         .checked_add(colored_instances)
         .and_then(|count| count.checked_add(1))
         .ok_or(GlbImportError::TooManyOutputs)?;
-    if output_count > MAX_IMPORT_OUTPUTS || command_count > MAX_GLB_COMMANDS {
+    if output_count > MAX_IMPORT_RECEIPT_OUTPUTS || command_count > MAX_GLB_COMMANDS {
         return Err(GlbImportError::TooManyOutputs);
     }
 
@@ -482,7 +517,7 @@ pub fn plan_glb_import_tagged(
     for node_index in &scene.traversal {
         let node = &scene.nodes[*node_index];
         let parent = group_ids[*node_index].ok_or(GlbImportError::InvalidHierarchy)?;
-        for primitive_index in &node.primitives {
+        for (primitive_index, placement) in node.primitives.iter().zip(&node.placements) {
             let occurrence_id = OccurrenceId(
                 occurrence_start
                     .checked_add(occurrence_offset)
@@ -501,7 +536,7 @@ pub fn plan_glb_import_tagged(
                 } else {
                     format!("{} / {}", node.name, primitive.name)
                 },
-                transform: Transform::identity(),
+                transform: *placement,
                 parent: Some(parent),
                 tags: planned_tags.by_node[*node_index].clone(),
                 visible: true,
@@ -813,11 +848,13 @@ fn parse_meshes(
                 triangles,
                 color,
                 sheet: false,
+                origin_mm: [0.0; 3],
             });
         }
+        let origin_mm = recentre(&mut pieces)?;
         for shell in closed_shells(&mesh_name, pieces, diagnostics)? {
             primitive_indices.push(parsed.len());
-            parsed.push(shell);
+            parsed.push(ParsedPrimitive { origin_mm, ..shell });
         }
         mesh_primitives.push(primitive_indices);
     }
@@ -864,6 +901,7 @@ fn closed_shells(
             triangles,
             color: first.color,
             sheet: false,
+            origin_mm: first.origin_mm,
         })
         .filter(is_solid);
     let count = |pieces: usize| {
@@ -902,6 +940,41 @@ fn closed_shells(
     }
     shells.extend(sheets);
     Ok(shells)
+}
+
+/// Moves the origin of a mesh lying beyond the model space to the centre of its pieces,
+/// rounded to the millimetre, and answers that origin; a mesh within it stays, at zero.
+fn recentre(pieces: &mut [ParsedPrimitive]) -> Result<[f64; 3], GlbImportError> {
+    let within = |pieces: &[ParsedPrimitive]| {
+        pieces
+            .iter()
+            .flat_map(|piece| piece.vertices_mm.iter().flatten())
+            .all(|coordinate| coordinate.abs() <= MAX_COORDINATE_MM)
+    };
+    if within(pieces) {
+        return Ok([0.0; 3]);
+    }
+    let mut low = [f64::INFINITY; 3];
+    let mut high = [f64::NEG_INFINITY; 3];
+    for point in pieces.iter().flat_map(|piece| piece.vertices_mm.iter()) {
+        for axis in 0..3 {
+            low[axis] = low[axis].min(point[axis]);
+            high[axis] = high[axis].max(point[axis]);
+        }
+    }
+    let origin: [f64; 3] = std::array::from_fn(|axis| f64::midpoint(low[axis], high[axis]).round());
+    for point in pieces
+        .iter_mut()
+        .flat_map(|piece| piece.vertices_mm.iter_mut())
+    {
+        for axis in 0..3 {
+            point[axis] -= origin[axis];
+        }
+    }
+    if !within(pieces) {
+        return Err(GlbImportError::InvalidGeometry);
+    }
+    Ok(origin)
 }
 
 fn is_solid(primitive: &ParsedPrimitive) -> bool {
@@ -1010,10 +1083,9 @@ fn decode_positions(
             -f64::from(gltf[2]) * 1_000.0,
             f64::from(gltf[1]) * 1_000.0,
         ];
-        if point
-            .iter()
-            .any(|coordinate| !coordinate.is_finite() || coordinate.abs() > MAX_COORDINATE_MM)
-        {
+        if point.iter().any(|coordinate| {
+            !coordinate.is_finite() || coordinate.abs() > MAX_SOURCE_COORDINATE_MM
+        }) {
             return Err(GlbImportError::InvalidGeometry);
         }
         vertices.push(point);
@@ -1108,7 +1180,7 @@ fn select_scene(root: &Map<String, Value>) -> Result<SceneSelection, GlbImportEr
     let mut state = vec![0_u8; nodes.len()];
     let mut selected = BTreeSet::new();
     for root in roots {
-        visit_raw_node(root, nodes, &mut state, &mut selected)?;
+        visit_raw_node(root, 1, nodes, &mut state, &mut selected)?;
     }
     let mut meshes = BTreeSet::new();
     for index in &selected {
@@ -1123,12 +1195,17 @@ fn select_scene(root: &Map<String, Value>) -> Result<SceneSelection, GlbImportEr
     })
 }
 
+/// Selects the node at `index`, `depth` nodes from its scene root, and those under it.
 fn visit_raw_node(
     index: usize,
+    depth: usize,
     nodes: &[Value],
     state: &mut [u8],
     selected: &mut BTreeSet<usize>,
 ) -> Result<(), GlbImportError> {
+    if depth > MAX_NODE_DEPTH {
+        return Err(GlbImportError::TooManyNodes);
+    }
     match state.get(index).copied() {
         Some(0) => {}
         Some(_) => return Err(GlbImportError::InvalidHierarchy),
@@ -1149,7 +1226,7 @@ fn visit_raw_node(
         return Err(GlbImportError::InvalidHierarchy);
     }
     for child in children {
-        visit_raw_node(child, nodes, state, selected)?;
+        visit_raw_node(child, depth + 1, nodes, state, selected)?;
     }
     state[index] = 2;
     Ok(())
@@ -1174,7 +1251,9 @@ fn parse_nodes(
         if !selected_nodes.contains(&index) {
             nodes.push(ParsedNode {
                 name: "Unselected GLB node".to_owned(),
+                local: Affine3::IDENTITY,
                 transform: Transform::identity(),
+                placements: Vec::new(),
                 children: Vec::new(),
                 primitives: Vec::new(),
             });
@@ -1188,7 +1267,7 @@ fn parse_nodes(
             bump(diagnostics, "glb_cameras_ignored", 1)?;
         }
         let name = optional_name(value, "name", "GLB node", index)?;
-        let transform = parse_node_transform(value)?;
+        let local = parse_node_transform(value)?;
         let children = optional_array(value, "children")?
             .iter()
             .map(value_as_usize)
@@ -1212,7 +1291,9 @@ fn parse_nodes(
             .unwrap_or_default();
         nodes.push(ParsedNode {
             name,
-            transform,
+            local,
+            transform: Transform::identity(),
+            placements: Vec::new(),
             children,
             primitives,
         });
@@ -1280,7 +1361,7 @@ fn visit_node(
     Ok(())
 }
 
-fn parse_node_transform(node: &Map<String, Value>) -> Result<Transform, GlbImportError> {
+fn parse_node_transform(node: &Map<String, Value>) -> Result<Affine3, GlbImportError> {
     let has_matrix = node.contains_key("matrix");
     let has_trs = ["translation", "rotation", "scale"]
         .iter()
@@ -1361,7 +1442,9 @@ fn trs_matrix(
     Ok(matrix)
 }
 
-fn gltf_transform_to_ketchup(gltf: [f64; 16]) -> Result<Transform, GlbImportError> {
+/// The transform in Kečup's axes and millimetres, its move within
+/// [`MAX_SOURCE_COORDINATE_MM`]; [`place_nodes`] brings it within the model space.
+fn gltf_transform_to_ketchup(gltf: [f64; 16]) -> Result<Affine3, GlbImportError> {
     if gltf.iter().any(|value| !value.is_finite())
         || gltf[12].abs() > f64::EPSILON
         || gltf[13].abs() > f64::EPSILON
@@ -1372,14 +1455,167 @@ fn gltf_transform_to_ketchup(gltf: [f64; 16]) -> Result<Transform, GlbImportErro
     }
     let affine = ketchup_transform_from_gltf(Affine3::from_row_major(gltf));
     if affine
-        .to_row_major()
+        .linear
+        .rows
         .iter()
+        .flatten()
         .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
+        || [
+            affine.translation.x,
+            affine.translation.y,
+            affine.translation.z,
+        ]
+        .iter()
+        .any(|value| !value.is_finite() || value.abs() > MAX_SOURCE_COORDINATE_MM)
         || affine.linear.is_singular()
     {
         return Err(GlbImportError::InvalidTransform);
     }
+    Ok(affine)
+}
+
+/// The document transform of `affine`, a move within the model space.
+fn document_transform(affine: Affine3) -> Result<Transform, GlbImportError> {
+    if affine
+        .to_row_major()
+        .iter()
+        .any(|value| !value.is_finite() || value.abs() > MAX_COORDINATE_MM)
+    {
+        return Err(GlbImportError::InvalidTransform);
+    }
     Transform::from_affine(affine).map_err(GlbImportError::RejectedByDocument)
+}
+
+fn translation(offset: Vec3) -> Affine3 {
+    Affine3 {
+        linear: Mat3::IDENTITY,
+        translation: offset,
+    }
+}
+
+/// Sets the transforms the groups and parts of the scene import with. A node keeps its
+/// own transform where the geometry under it, its transform and its parts' fit the
+/// model space. Otherwise its frame moves to the centre of the geometry under it, as a
+/// georeferenced component needs:
+/// its group then holds the move from its parent's centre to its own, and each part
+/// the move from there to its mesh's origin. Placed in the model, nothing moves.
+fn place_nodes(
+    nodes: &mut [ParsedNode],
+    traversal: &[usize],
+    primitives: &[ParsedPrimitive],
+) -> Result<(), GlbImportError> {
+    let primitive_bounds = primitives
+        .iter()
+        .map(|primitive| {
+            let origin = Vec3::new(
+                primitive.origin_mm[0],
+                primitive.origin_mm[1],
+                primitive.origin_mm[2],
+            );
+            bounds(
+                primitive
+                    .vertices_mm
+                    .iter()
+                    .map(|point| Vec3::new(point[0], point[1], point[2]) + origin),
+            )
+        })
+        .collect::<Vec<_>>();
+    // The box of the geometry under each node, in its frame; children come later in
+    // the traversal, so they are boxed first.
+    let mut node_bounds = vec![None; nodes.len()];
+    for index in traversal.iter().rev() {
+        let node = &nodes[*index];
+        let own = node
+            .primitives
+            .iter()
+            .filter_map(|primitive| primitive_bounds[*primitive])
+            .flat_map(corners);
+        let below = node
+            .children
+            .iter()
+            .filter_map(|child| node_bounds[*child].map(|bounds| (nodes[*child].local, bounds)))
+            .flat_map(|(local, bounds)| {
+                corners(bounds).map(|corner| local.transform_point(corner))
+            });
+        node_bounds[*index] = bounds(own.chain(below));
+    }
+    let mut parent_by_node = vec![None; nodes.len()];
+    for index in traversal {
+        for child in &nodes[*index].children {
+            parent_by_node[*child] = Some(*index);
+        }
+    }
+    let mut pivots = vec![Vec3::ZERO; nodes.len()];
+    for index in traversal {
+        let parent_pivot = parent_by_node[*index].map_or(Vec3::ZERO, |parent| pivots[parent]);
+        let node = &nodes[*index];
+        let place = |pivot: Vec3| -> Result<(Transform, Vec<Transform>), GlbImportError> {
+            let transform = document_transform(
+                translation(-parent_pivot)
+                    .compose(node.local)
+                    .compose(translation(pivot)),
+            )?;
+            let placements = node
+                .primitives
+                .iter()
+                .map(|primitive| {
+                    let origin = primitives[*primitive].origin_mm;
+                    document_transform(translation(
+                        Vec3::new(origin[0], origin[1], origin[2]) - pivot,
+                    ))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok((transform, placements))
+        };
+        let within = node_bounds[*index].is_none_or(|(low, high): (Vec3, Vec3)| {
+            [low.x, low.y, low.z, high.x, high.y, high.z]
+                .iter()
+                .all(|value| value.abs() <= MAX_COORDINATE_MM)
+        });
+        let at_origin = if within { place(Vec3::ZERO).ok() } else { None };
+        let (pivot, (transform, placements)) = match at_origin {
+            Some(placed) => (Vec3::ZERO, placed),
+            None => {
+                let pivot = node_bounds[*index].map_or(Vec3::ZERO, |(low, high)| {
+                    Vec3::new(
+                        f64::midpoint(low.x, high.x).round(),
+                        f64::midpoint(low.y, high.y).round(),
+                        f64::midpoint(low.z, high.z).round(),
+                    )
+                });
+                (pivot, place(pivot)?)
+            }
+        };
+        pivots[*index] = pivot;
+        nodes[*index].transform = transform;
+        nodes[*index].placements = placements;
+    }
+    Ok(())
+}
+
+fn bounds(points: impl Iterator<Item = Vec3>) -> Option<(Vec3, Vec3)> {
+    points.fold(None, |bounds, point| {
+        Some(bounds.map_or((point, point), |(low, high): (Vec3, Vec3)| {
+            (
+                Vec3::new(low.x.min(point.x), low.y.min(point.y), low.z.min(point.z)),
+                Vec3::new(
+                    high.x.max(point.x),
+                    high.y.max(point.y),
+                    high.z.max(point.z),
+                ),
+            )
+        }))
+    })
+}
+
+fn corners((low, high): (Vec3, Vec3)) -> [Vec3; 8] {
+    std::array::from_fn(|corner| {
+        Vec3::new(
+            if corner & 1 == 0 { low.x } else { high.x },
+            if corner & 2 == 0 { low.y } else { high.y },
+            if corner & 4 == 0 { low.z } else { high.z },
+        )
+    })
 }
 
 fn validate_asset(root: &Map<String, Value>) -> Result<(), GlbImportError> {
@@ -1775,7 +2011,7 @@ mod json_tests {
         read["materials"]
             .as_array_mut()
             .unwrap()
-            .extend(vec![serde_json::json!({}); 300_000]);
+            .extend(vec![serde_json::json!({}); json::MAX_JSON_VALUES]);
         assert_eq!(
             inspect_glb(&packed(&read, &binary)),
             Err(GlbImportError::JsonTooLarge)
@@ -1845,5 +2081,118 @@ mod gltf_axes_tests {
         // Kečup up (+Z) is glTF up (+Y), and 1 000 mm is 1 m.
         let up = gltf_point_from_ketchup(Vec3::new(0.0, 0.0, MILLIMETRES_PER_METRE));
         assert!(up.distance(Vec3::Y) < 1.0e-12);
+    }
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::json_tests::packed;
+    use super::*;
+
+    /// A GLB of one tetrahedron, its corners `offset` metres along glTF X from the
+    /// origin of its mesh, under a group whose node is `group`.
+    fn tetrahedron(offset: f32, group: Value) -> Vec<u8> {
+        let mut binary = Vec::new();
+        for corner in [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0_f32],
+        ] {
+            binary.extend((corner[0] + offset).to_le_bytes());
+            binary.extend(corner[1].to_le_bytes());
+            binary.extend(corner[2].to_le_bytes());
+        }
+        for index in [0_u16, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3] {
+            binary.extend(index.to_le_bytes());
+        }
+        let length = binary.len();
+        let mut chunk = u32::try_from(length).unwrap().to_le_bytes().to_vec();
+        chunk.extend(b"BIN\0");
+        chunk.extend(binary);
+        let mut group = group;
+        group["name"] = serde_json::json!("IFC element");
+        group["children"] = serde_json::json!([1]);
+        let json = serde_json::json!({
+            "asset": {"version": "2.0"},
+            "buffers": [{"byteLength": length}],
+            "bufferViews": [
+                {"buffer": 0, "byteOffset": 0, "byteLength": 48},
+                {"buffer": 0, "byteOffset": 48, "byteLength": 24},
+            ],
+            "accessors": [
+                {"bufferView": 0, "componentType": FLOAT, "count": 4, "type": "VEC3"},
+                {"bufferView": 1, "componentType": UNSIGNED_SHORT, "count": 12, "type": "SCALAR"},
+            ],
+            "meshes": [{"name": "Proxy", "primitives": [{"attributes": {"POSITION": 0}, "indices": 1}]}],
+            "nodes": [group, {"name": "Proxy", "mesh": 0}],
+            "scenes": [{"nodes": [0]}],
+        });
+        packed(&json, &chunk)
+    }
+
+    /// The corners of the scene's parts where they are placed, to the millimetre: a
+    /// float32 corner 4 km out holds a quarter of one.
+    fn placed_corners(source: &[u8]) -> Vec<[i64; 3]> {
+        let scene = inspect_glb(source).unwrap();
+        let mut corners = Vec::new();
+        for node in &scene.traversal {
+            let mut world = scene.nodes[*node].transform.affine();
+            let mut parent = *node;
+            while let Some(above) = scene
+                .traversal
+                .iter()
+                .find(|index| scene.nodes[**index].children.contains(&parent))
+            {
+                world = scene.nodes[*above].transform.affine().compose(world);
+                parent = *above;
+            }
+            for (primitive, placement) in scene.nodes[*node]
+                .primitives
+                .iter()
+                .zip(&scene.nodes[*node].placements)
+            {
+                let placed = world.compose(placement.affine());
+                for point in &scene.primitives[*primitive].vertices_mm {
+                    let point = placed.transform_point(Vec3::from(*point));
+                    corners.push([point.x, point.y, point.z].map(|value| value.round() as i64));
+                }
+            }
+        }
+        corners.sort_unstable();
+        corners
+    }
+
+    /// An IFC element of a SketchUp terrace keeps its geometry 4 km from its origin, and
+    /// its group moves it back by as much. Placed, it lies in the model: it imports where
+    /// it is, each part and group within the model space. It was refused as invalid
+    /// geometry.
+    #[test]
+    fn a_georeferenced_component_imports_where_it_is_placed() {
+        let far = 4_063.6_f32;
+        let near = placed_corners(&tetrahedron(0.0, serde_json::json!({})));
+        let moved_back = tetrahedron(
+            far,
+            serde_json::json!({"translation": [-f64::from(far), 0.0, 0.0]}),
+        );
+        assert_eq!(placed_corners(&moved_back), near);
+        let scaled_back = tetrahedron(
+            far,
+            serde_json::json!({
+                "translation": [-f64::from(far) * 0.1, 0.0, 0.0],
+                "scale": [0.1, 0.1, 0.1],
+            }),
+        );
+        let scaled = placed_corners(&tetrahedron(
+            0.0,
+            serde_json::json!({"scale": [0.1, 0.1, 0.1]}),
+        ));
+        assert_eq!(placed_corners(&scaled_back), scaled);
+
+        // Geometry placed beyond the model space is still refused.
+        assert_eq!(
+            inspect_glb(&tetrahedron(far, serde_json::json!({}))),
+            Err(GlbImportError::InvalidTransform)
+        );
     }
 }
