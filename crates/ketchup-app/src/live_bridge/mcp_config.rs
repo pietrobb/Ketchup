@@ -344,15 +344,38 @@ fn write_as_found(file: &Path, text: &str, backup: bool) -> io::Result<()> {
 }
 
 /// The owner, user and group, of the nearest folder there that `file` is named
-/// in, its links not followed: the user whose configuration it is, also under
-/// `sudo`.
+/// in, as [`user_of_folder`] reads a link: the user whose configuration it is,
+/// also under `sudo`.
 #[cfg(unix)]
 fn owner_named_in(file: &Path) -> Option<(u32, u32)> {
     use std::os::unix::fs::MetadataExt;
-    file.parent()?
-        .ancestors()
-        .find_map(|folder| std::fs::symlink_metadata(folder).ok())
-        .map(|folder| (folder.uid(), folder.gid()))
+    let (folder, found) = file.parent()?.ancestors().find_map(|folder| {
+        std::fs::symlink_metadata(folder)
+            .ok()
+            .map(|found| (folder, found))
+    })?;
+    let resolved = found
+        .file_type()
+        .is_symlink()
+        .then(|| std::fs::metadata(folder).ok())
+        .flatten();
+    Some(user_of_folder(
+        (found.uid(), found.gid()),
+        resolved.map(|to| (to.uid(), to.gid())),
+    ))
+}
+
+/// The owner of a folder `found` there, or of a link there to `resolved`: a
+/// link of root's (`/home/u -> /data/u`, made by the administrator) is the
+/// folder it leads to, whose owner the configuration belongs to (review
+/// 2026-11-09 R1109-SEC-301: root was the owner and the checks were off).
+/// Anyone else's link stays theirs, who could have pointed it at root's folder.
+#[cfg(any(unix, test))]
+fn user_of_folder(found: (u32, u32), resolved: Option<(u32, u32)>) -> (u32, u32) {
+    match resolved {
+        Some(folder) if found.0 == 0 => folder,
+        _ => found,
+    }
 }
 
 #[cfg(unix)]
@@ -794,6 +817,22 @@ mod tests {
         assert!(root_writes_for(0, 0, &[(root_only, 0)]).is_ok());
     }
 
+    /// Review 2026-11-09 R1109-SEC-301: a home that is a link of root's
+    /// (`/home/u -> /data/u`) made root the owner of `~/.claude.json`, so the
+    /// write stayed root's and every check was off. Root's link names the
+    /// folder it leads to; anyone else's stays theirs, who could have pointed
+    /// it at a folder of root's.
+    #[test]
+    fn a_link_of_roots_belongs_to_the_owner_of_its_folder() {
+        let user = (1000, 1000);
+        assert_eq!(user_of_folder((0, 0), Some(user)), user);
+        assert_eq!(user_of_folder(user, Some((0, 0))), user);
+        assert_eq!(user_of_folder(user, None), user);
+        // A link of root's leading nowhere, or to root's folder, is root's.
+        assert_eq!(user_of_folder((0, 0), None), (0, 0));
+        assert_eq!(user_of_folder((0, 0), Some((0, 0))), (0, 0));
+    }
+
     /// Review 2026-11-09 R1109-SEC-300: under `sudo` the checks went by path
     /// and the write by path again; a user swapping `~/sub` for a link to a
     /// folder of root's between them had root's files written there. Written
@@ -830,6 +869,22 @@ mod tests {
         write_keeping_file(&file, "x = 1\n", false).unwrap();
         let own = std::fs::metadata(&file).unwrap();
         assert_eq!((own.uid(), own.gid()), user);
+        assert_eq!(effective_user(), 0);
+        // R1109-SEC-301: a home that is root's link to the user's folder, its
+        // `.claude.json` the user's link to a file of root's, which root wrote.
+        let secret = root_only.path().join("secret.json");
+        std::fs::write(&secret, "{}").unwrap();
+        let homes = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(homes.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let linked = homes.path().join("u");
+        std::os::unix::fs::symlink(home.path(), &linked).unwrap();
+        let config = home.path().join(".claude.json");
+        std::os::unix::fs::symlink(&secret, &config).unwrap();
+        std::os::unix::fs::lchown(&config, Some(user.0), Some(user.1)).unwrap();
+        let refused =
+            write_keeping_file(&linked.join(".claude.json"), "{\"a\":1}", false).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied, "{refused}");
+        assert_eq!(std::fs::read_to_string(&secret).unwrap(), "{}");
         assert_eq!(effective_user(), 0);
     }
 

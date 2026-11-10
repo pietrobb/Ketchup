@@ -96,8 +96,11 @@ fn identity_of(path: &Path) -> std::io::Result<String> {
     #[cfg(windows)]
     {
         let file = std::fs::File::open(path)?;
-        let serial = winapi_util::file::information(&file)?.volume_serial_number();
-        Ok(windows_identity(serial, file_id_128(&file)?))
+        let information = winapi_util::file::information(&file)?;
+        Ok(windows_identity(
+            information.volume_serial_number(),
+            file_id_or_index(file_id_128(&file), information.file_index()),
+        ))
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -114,6 +117,20 @@ fn identity_of(path: &Path) -> std::io::Result<String> {
 #[cfg(windows)]
 fn windows_identity(serial: u64, file_id: [u8; 16]) -> String {
     format!("{serial:x}:{:x}", u128::from_le_bytes(file_id))
+}
+
+/// The file's 128-bit id, or where its file system gives none (FAT, an SMB share)
+/// its 64-bit file index, which is how NTFS's id reads (review 2026-11-09 P3: such a
+/// file had no identity).
+#[cfg(windows)]
+fn file_id_or_index(id: std::io::Result<[u8; 16]>, index: u64) -> [u8; 16] {
+    match id {
+        Ok(id) => id,
+        Err(error) => {
+            ketchup_rejection::log!("a file has no 128-bit id ({error}); its index stands for it");
+            u128::from(index).to_le_bytes()
+        }
+    }
 }
 
 /// The 128-bit id of `file` on its volume (`FileIdInfo`).
@@ -705,5 +722,22 @@ mod tests {
         let id = |high: u64| (u128::from(high) << 64 | 7).to_le_bytes();
         assert_eq!(windows_identity(0xAB, id(0)), "ab:7");
         assert_eq!(windows_identity(0xAB, id(1)), "ab:10000000000000007");
+    }
+
+    /// Review 2026-11-09 P3: where `FileIdInfo` fails (FAT, an SMB share) the file
+    /// had no identity at all; its 64-bit index, as NTFS's id reads, stands for it.
+    #[cfg(windows)]
+    #[test]
+    fn a_file_without_a_128_bit_id_is_known_by_its_index() {
+        let unsupported = || Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
+        assert_eq!(
+            windows_identity(0xAB, file_id_or_index(unsupported(), 7)),
+            "ab:7"
+        );
+        let id = (u128::from(1u64) << 64 | 7).to_le_bytes();
+        assert_eq!(
+            windows_identity(0xAB, file_id_or_index(Ok(id), 7)),
+            "ab:10000000000000007"
+        );
     }
 }
