@@ -258,11 +258,14 @@ impl KetchupApp {
         &mut self,
         export: ClientExchangeExport,
         cancelled: &Arc<AtomicBool>,
+        overwrite: bool,
     ) -> Result<Written, ExportError> {
         let ClientExchangeExport { job, bytes } = export;
         self.live.client_export = Some(Arc::clone(cancelled));
+        self.live.client_overwrite = overwrite;
         let result = self.publish_unless_client_gone(&job, bytes, cancelled);
         self.live.client_export = None;
+        self.live.client_overwrite = false;
         self.report_export_outcome(job.format.key(), &job.path, result)
     }
 
@@ -391,6 +394,7 @@ impl KetchupApp {
             ),
         };
         let report_path = path.with_extension(format!("{}.loss.txt", format.key()));
+        let report = crate::export_bundle::loss_report_naming(&report, &bytes);
         let evidence = super::export::export_bundle_evidence(
             domain,
             path,

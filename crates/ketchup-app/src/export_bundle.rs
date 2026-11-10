@@ -251,13 +251,20 @@ impl KetchupApp {
             // Nobody in the window asked for this file, so nobody confirms
             // replacing one; the client reads the loss report itself. A release
             // to manufacturing still waits for the user's confirmation.
-            return if precondition.primary_sha256.is_some() || precondition.report_sha256.is_some()
-            {
-                Err(ExportError::Destination {
-                    requirement: "a new file name; a client export never replaces an existing file or loss report",
-                })
-            } else {
+            let exists =
+                precondition.primary_sha256.is_some() || precondition.report_sha256.is_some();
+            return if !exists {
                 Ok(())
+            } else if !self.live.client_overwrite {
+                Err(ExportError::Destination {
+                    requirement: "a new file name; a client export replaces an existing file or loss report only with overwrite, and only one Kečup wrote",
+                })
+            } else if precondition.written_by_ketchup(report_path) {
+                Ok(())
+            } else {
+                Err(ExportError::Destination {
+                    requirement: "a new file name; overwrite replaces only a file Kečup exported there, unchanged since, whose loss report beside it names it",
+                })
             };
         }
         let title = self.catalog.text(consent.title_key);
@@ -415,6 +422,38 @@ impl ExportBundlePrecondition {
             report_sha256: export_target_sha256(report_path)?,
         })
     }
+
+    /// Whether the existing file and loss report are an export Kečup wrote and
+    /// nobody changed since: the report, as hashed, names the file's SHA-256.
+    pub(crate) fn written_by_ketchup(&self, report_path: &Path) -> bool {
+        use std::io::Read as _;
+        let (Some(primary), Some(report)) = (&self.primary_sha256, &self.report_sha256) else {
+            return false;
+        };
+        let mut bytes = Vec::new();
+        let read = std::fs::File::open(report_path)
+            .and_then(|file| file.take(MAX_LOSS_REPORT_BYTES).read_to_end(&mut bytes));
+        read.is_ok()
+            && ketchup_model::graph::sha256_hex(&bytes) == *report
+            && std::str::from_utf8(&bytes).is_ok_and(|text| {
+                text.lines()
+                    .any(|line| line.strip_prefix(ARTIFACT_SHA256_LINE) == Some(primary))
+            })
+    }
+}
+
+/// The line of a loss report that names the file it was written with.
+const ARTIFACT_SHA256_LINE: &str = "artifact_sha256=";
+/// More than any loss report Kečup writes; a larger file is not one.
+const MAX_LOSS_REPORT_BYTES: u64 = 1 << 20;
+
+/// `report` with the line naming `artifact`, so that `overwrite` later knows
+/// the pair as Kečup's own.
+pub(crate) fn loss_report_naming(report: &str, artifact: &[u8]) -> String {
+    format!(
+        "{report}{ARTIFACT_SHA256_LINE}{}\n",
+        ketchup_model::graph::sha256_hex(artifact)
+    )
 }
 
 pub(crate) fn export_target_sha256(path: &Path) -> Result<Option<String>, ExportTransactionError> {

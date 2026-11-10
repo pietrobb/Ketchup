@@ -102,6 +102,8 @@ mod rejection_records;
 use rejection_records::{failed_because, failure, planning_failure};
 mod room_areas;
 mod running_programs;
+mod saved_views;
+use saved_views::saved_views_json;
 #[cfg(test)]
 mod tests;
 mod transport;
@@ -687,6 +689,9 @@ pub enum Request {
         /// For dxf: N of the scale 1:N the annotations are drawn at.
         #[serde(default)]
         drawing_scale: Option<f64>,
+        /// Replace a file and loss report Kečup wrote at `path`, unchanged since.
+        #[serde(default)]
+        overwrite: bool,
     },
     Selection {
         #[serde(default)]
@@ -905,28 +910,6 @@ fn save_failed(app: &KetchupApp, save_failure: SaveFailure) -> &'static str {
 
 fn program_owned(app: &KetchupApp) -> bool {
     app.document.current_rule_program().is_some()
-}
-
-/// Saved views with the names of the tags each one hides, its display switches and
-/// whether it is a Viewer scene (null while the Viewer settings are unreadable).
-fn saved_views_json(app: &KetchupApp) -> Value {
-    let snapshot = app.document.current();
-    let viewer = app.stored_viewer_settings().ok();
-    let views = snapshot
-        .saved_views()
-        .map(|view| {
-            let hidden = view
-                .hidden_tags
-                .iter()
-                .filter_map(|id| snapshot.tag(*id).map(|tag| tag.name().to_owned()))
-                .collect::<Vec<_>>();
-            json!({"id":view.id().0,"name":view.name(),"hidden_tags":hidden,
-                "style":view.style,"parallel":view.camera.parallel,
-                "section":crate::app::section_json(view.section),
-                "viewer":viewer.as_ref().map(|settings| settings.scene_shared(view.id()))})
-        })
-        .collect::<Vec<_>>();
-    json!({"saved_views":views,"program_owned":program_owned(app)})
 }
 
 /// Rejects a typed edit of a program-owned document when the caller asked for strict.
