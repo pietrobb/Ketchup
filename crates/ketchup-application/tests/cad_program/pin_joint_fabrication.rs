@@ -235,6 +235,62 @@ fn the_woodwop_program_of_one_part_drills_its_logical_dowel_holes() {
     assert_eq!(mpr.matches("\\BohrHoriz\\").count(), PINS, "{mpr}");
 }
 
+/// Review 2026-11-09 MF-305: dowels into a bought part. The woodWOP program,
+/// the HOMAG package and BTLx drilled the made side only and said nothing of
+/// the other, while the production job refused `UnmadePinHole`. Every format
+/// now writes the made side and names the same loss: the bought part's holes.
+#[test]
+fn every_shop_format_names_the_dowel_holes_of_a_bought_part_as_lost() {
+    use ketchup_manufacturing::fabrication::{PURCHASED_ITEM_ROLE_V1, ShopLoss};
+    let _turn = crate::integration_support::file_turn();
+    let lost = |losses: Vec<ShopLoss>| {
+        losses
+            .into_iter()
+            .map(|loss| format!("{}: {}", loss.part, loss.element))
+            .collect::<Vec<_>>()
+    };
+    let expected =
+        ["Right timber: a pin hole of pin joint End dowels in a part the shop does not make"];
+    for holes in [
+        AssistantPinHoles::Logical,
+        AssistantPinHoles::Drill {
+            first_insertion_mm: None,
+        },
+    ] {
+        let snapshot = doweled_timbers_with_right_as(holes.clone(), PURCHASED_ITEM_ROLE_V1);
+        let projection = fabrication(&snapshot);
+        let woodwop = ShopFormat::Woodwop {
+            vertical_pocket_tool: false,
+        };
+        assert_eq!(
+            lost(projection.admit(&snapshot, woodwop).unwrap()),
+            expected,
+            "{holes:?}"
+        );
+        let mpr = projection.woodwop_mpr_4_0_drill_export(&snapshot).unwrap();
+        let mpr = String::from_utf8(mpr).unwrap();
+        assert_eq!(mpr.matches("\\BohrHoriz\\").count(), PINS, "{mpr}");
+        let job = projection
+            .production_job(&snapshot, &[])
+            .expect("the job lays the made part and names the bought part's holes");
+        assert_eq!(job["parts"].as_array().unwrap().len(), 1, "{job}");
+        assert_eq!(job["losses"][0]["part"], "Right timber", "{job}");
+        assert_eq!(job["losses"].as_array().unwrap().len(), 1, "{job}");
+        if matches!(holes, AssistantPinHoles::Drill { .. }) {
+            assert_eq!(
+                lost(projection.admit(&snapshot, ShopFormat::Btlx).unwrap()),
+                expected
+            );
+            let report = projection.btlx_loss_report(&snapshot).unwrap();
+            assert!(
+                report.contains("unmade_pin_holes=1\n")
+                    && report.contains("Right timber (End dowels)"),
+                "{report}"
+            );
+        }
+    }
+}
+
 #[test]
 fn logical_dowel_holes_are_drilled_by_the_machine_formats_and_refused_by_name_by_the_rest() {
     let _turn = crate::integration_support::file_turn();

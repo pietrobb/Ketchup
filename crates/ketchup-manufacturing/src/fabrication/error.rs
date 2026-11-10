@@ -26,8 +26,6 @@ pub enum ExportBlock {
     /// A copy is placed by a transform other than a rotation and a move, or
     /// resolves to another definition than its row.
     UnusablePlacement,
-    /// A pin joint drills a piece the export does not make.
-    UnmadePinHole,
     /// The copies of a part one program machines are drilled for pin joints
     /// at different places.
     CopiesDrilledApart,
@@ -62,9 +60,6 @@ impl fmt::Display for ExportBlock {
             }
             Self::UnusablePlacement => {
                 "a copy is not placed by a rotation and a move alone, or is no longer a copy of this part; evaluate the model again"
-            }
-            Self::UnmadePinHole => {
-                "a pin joint drills a piece this file does not make (a purchased or site-built part, or one outside the production scope); make that part or remove the pin joint"
             }
             Self::CopiesDrilledApart => {
                 "its copies are drilled for pin joints at different places, and one program machines every copy; export the HOMAG production package, which writes a program for each copy"

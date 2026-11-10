@@ -4,32 +4,41 @@ use super::*;
 use ketchup_geometry::tapping::TappedHole;
 
 impl GeneralFabricationProjection {
-    /// The support report lines that name what a BTLx file loses of the threads,
-    /// as the BTLx gate finds them: BTLx 2.3.1 has no tapping processing, so a
-    /// thread is only its drilling's comment and user attributes, which a
-    /// machine may ignore and drill the core hole alone. `tapped_drillings=0`
-    /// and nothing else when none is tapped.
+    /// The support report lines that name what a BTLx file loses, as the BTLx
+    /// gate finds it. Of the threads: BTLx 2.3.1 has no tapping processing, so
+    /// a thread is only its drilling's comment and user attributes, which a
+    /// machine may ignore and drill the core hole alone. Of the pin joints: the
+    /// holes in a part the shop does not make (review 2026-11-09 MF-305).
+    /// `tapped_drillings=0` and `unmade_pin_holes=0` alone when nothing is lost.
     ///
     /// # Errors
     /// The gate's refusal, as [`Self::btlx_2_3_1_export`] gives it.
-    pub fn btlx_thread_loss_report(
-        &self,
-        snapshot: &Snapshot,
-    ) -> Result<String, GeneralFabricationError> {
-        let tapped = self
-            .admit(snapshot, ShopFormat::Btlx)?
-            .into_iter()
-            .filter_map(|loss| match loss.element {
-                ShopElement::Thread(label) => Some(format!("{}: {label}", loss.part)),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
+    pub fn btlx_loss_report(&self, snapshot: &Snapshot) -> Result<String, GeneralFabricationError> {
+        let mut tapped = Vec::new();
+        let mut unmade = Vec::new();
+        for loss in self.admit(snapshot, ShopFormat::Btlx)? {
+            match loss.element {
+                ShopElement::Thread(label) => tapped.push(format!("{}: {label}", loss.part)),
+                ShopElement::UnmadePinHole(joint) => {
+                    unmade.push(format!("{} ({joint})", loss.part))
+                }
+                _ => {}
+            }
+        }
         let mut report = format!("tapped_drillings={}\n", tapped.len());
         if !tapped.is_empty() {
             report.push_str(&format!(
                 "thread_loss={}: {}\n",
                 super::capabilities::BTLX_THREAD_LOSS,
                 tapped.join("; ")
+            ));
+        }
+        report.push_str(&format!("unmade_pin_holes={}\n", unmade.len()));
+        if !unmade.is_empty() {
+            report.push_str(&format!(
+                "unmade_pin_hole_loss={}: {}\n",
+                super::capabilities::UNMADE_PIN_HOLE,
+                unmade.join("; ")
             ));
         }
         Ok(report)
