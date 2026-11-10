@@ -1329,10 +1329,15 @@ pub(super) fn validate_imported_exact_body(
 pub(super) const MESH_AREA_EPSILON: f64 = ROUNDING * ROUNDING;
 pub(super) const MESH_VOLUME_EPSILON: f64 = APPROXIMATION;
 
+/// A closed, consistently oriented mesh of positive volume, or a sheet: the
+/// same triangles, open (an edge of one or of several triangles) and of no volume.
 pub(crate) fn validate_mesh_body(spec: &MeshBodySpec) -> Result<(), CanonicalError> {
-    if spec.schema != MESH_BODY_SCHEMA_V1
-        || !(4..=limits::MESH_VERTICES).contains(&spec.vertices_mm.len())
-        || !(4..=limits::MESH_TRIANGLES).contains(&spec.triangles.len())
+    let sheet = spec.is_sheet();
+    // A sheet can be a single triangle; a solid has at least four.
+    let least = if sheet { (3, 1) } else { (4, 4) };
+    if !(sheet || spec.schema == MESH_BODY_SCHEMA_V1)
+        || !(least.0..=limits::MESH_VERTICES).contains(&spec.vertices_mm.len())
+        || !(least.1..=limits::MESH_TRIANGLES).contains(&spec.triangles.len())
         || spec
             .vertices_mm
             .iter()
@@ -1436,6 +1441,9 @@ pub(crate) fn validate_mesh_body(spec: &MeshBodySpec) -> Result<(), CanonicalErr
             entry.1 += if from < to { 1 } else { -1 };
             entry.2.push(triangle_index);
         }
+    }
+    if sheet {
+        return Ok(());
     }
     if edges
         .values()

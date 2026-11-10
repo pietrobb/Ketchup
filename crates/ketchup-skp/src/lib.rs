@@ -5,8 +5,8 @@
 //! newer. [`skp_to_glb`] writes the model as a GLB that keeps its components and groups as
 //! nodes, their placements and their materials' colours, which Ketchup's own GLB import then
 //! plans with its limits. Only bytes cross this API, so no other crate depends on OpenSKP's
-//! types. What the GLB cannot carry is counted in [`SkpModel::left_out`]; what the GLB import
-//! then drops (faces that do not close a solid) it reports itself.
+//! types. What the GLB cannot carry is counted in [`SkpModel::left_out`]; the GLB import
+//! brings faces that close no solid as sheets and reports what it still cannot take itself.
 //!
 //! A panic inside OpenSKP is caught and returned as [`SkpError::Panicked`] with its message.
 //! The reader trusts sizes a file declares and recurses over the file's nesting, so a damaged or

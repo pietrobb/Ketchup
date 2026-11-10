@@ -639,15 +639,20 @@ fn glb_joins_material_pieces_and_leaves_out_an_open_surface() {
             .push(serde_json::json!(node));
     });
 
+    // The box comes as one solid and the pane as an open sheet (U4c), not left out.
     let inspection = inspect_glb(&source).unwrap();
-    assert_eq!(inspection.mesh_primitive_count(), 1);
+    assert_eq!(inspection.mesh_primitive_count(), 2);
     let codes = inspection
         .diagnostics()
         .iter()
         .map(|diagnostic| diagnostic.code())
         .collect::<Vec<_>>();
     assert!(codes.contains(&"glb_material_pieces_joined"), "{codes:?}");
-    assert!(codes.contains(&"glb_non_solid_pieces_skipped"), "{codes:?}");
+    assert!(codes.contains(&"glb_open_surfaces_imported"), "{codes:?}");
+    assert!(
+        !codes.contains(&"glb_non_solid_pieces_skipped"),
+        "{codes:?}"
+    );
     let imported = DocumentStore::new();
     plan_glb_import(&imported.current(), &source, "two-materials.glb").unwrap();
 }

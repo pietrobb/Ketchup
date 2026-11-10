@@ -13,7 +13,8 @@ use super::{
 };
 use crate::document::{
     CanonicalCommand, CommandBatch, DefinitionId, FeatureId, FeatureKind, GroupId,
-    MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, OccurrenceId, Snapshot, Transform,
+    MESH_BODY_SCHEMA_V1, MESH_SHEET_SCHEMA_V1, MeshAuthority, MeshBodySpec, OccurrenceId, Snapshot,
+    Transform,
 };
 
 mod json;
@@ -120,6 +121,8 @@ struct ParsedPrimitive {
     vertices_mm: Vec<[f64; 3]>,
     triangles: Vec<[u32; 3]>,
     color: Option<[u8; 3]>,
+    /// Closes no solid: imported as a sheet (see [`MESH_SHEET_SCHEMA_V1`]).
+    sheet: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -429,7 +432,12 @@ pub fn plan_glb_import_tagged(
             definition_id,
             name: "GLB mesh".to_owned(),
             kind: FeatureKind::MeshBody(MeshBodySpec {
-                schema: MESH_BODY_SCHEMA_V1.to_owned(),
+                schema: if primitive.sheet {
+                    MESH_SHEET_SCHEMA_V1
+                } else {
+                    MESH_BODY_SCHEMA_V1
+                }
+                .to_owned(),
                 vertices_mm: primitive.vertices_mm.clone(),
                 triangles: primitive.triangles.clone(),
                 authority: MeshAuthority::ImportedGlb { import_id },
@@ -804,6 +812,7 @@ fn parse_meshes(
                 vertices_mm,
                 triangles,
                 color,
+                sheet: false,
             });
         }
         for shell in closed_shells(&mesh_name, pieces, diagnostics)? {
@@ -815,11 +824,12 @@ fn parse_meshes(
     Ok((parsed, mesh_primitives, total_triangles))
 }
 
-/// The solids of one mesh. glTF holds one primitive per material, so a closed
+/// The bodies of one mesh. glTF holds one primitive per material, so a closed
 /// Blender object with two materials arrives as open pieces, and a pane of glass
-/// is an open surface. Closed primitives stay as they are; the open ones are
-/// joined, and what is still no solid is left out with a warning instead of
-/// refusing the whole scene.
+/// or a SketchUp face is an open surface. Closed primitives stay as they are;
+/// the open ones are joined, and when that closes no solid each open piece
+/// comes as a sheet of its own material. Only a piece that is not even a valid
+/// sheet, such as one of degenerate triangles, is left out and counted.
 fn closed_shells(
     mesh_name: &str,
     primitives: Vec<ParsedPrimitive>,
@@ -853,22 +863,59 @@ fn closed_shells(
             vertices_mm,
             triangles,
             color: first.color,
+            sheet: false,
         })
         .filter(is_solid);
-    let pieces = u32::try_from(open.len())
-        .map_err(|_out_of_range: std::num::TryFromIntError| GlbImportError::TooManyMeshes)?;
+    let count = |pieces: usize| {
+        u32::try_from(pieces)
+            .map_err(|_out_of_range: std::num::TryFromIntError| GlbImportError::TooManyMeshes)
+    };
     if let Some(joined) = joined {
-        bump(diagnostics, "glb_material_pieces_joined", pieces)?;
+        bump(
+            diagnostics,
+            "glb_material_pieces_joined",
+            count(open.len())?,
+        )?;
         shells.push(joined);
-    } else {
-        bump(diagnostics, "glb_non_solid_pieces_skipped", pieces)?;
+        return Ok(shells);
     }
+    let (sheets, invalid): (Vec<_>, Vec<_>) = open
+        .into_iter()
+        .map(|piece| ParsedPrimitive {
+            sheet: true,
+            ..piece
+        })
+        .partition(is_valid);
+    if !sheets.is_empty() {
+        bump(
+            diagnostics,
+            "glb_open_surfaces_imported",
+            count(sheets.len())?,
+        )?;
+    }
+    if !invalid.is_empty() {
+        bump(
+            diagnostics,
+            "glb_non_solid_pieces_skipped",
+            count(invalid.len())?,
+        )?;
+    }
+    shells.extend(sheets);
     Ok(shells)
 }
 
 fn is_solid(primitive: &ParsedPrimitive) -> bool {
+    !primitive.sheet && is_valid(primitive)
+}
+
+fn is_valid(primitive: &ParsedPrimitive) -> bool {
     crate::document::validate_mesh_body(&MeshBodySpec {
-        schema: MESH_BODY_SCHEMA_V1.to_owned(),
+        schema: if primitive.sheet {
+            MESH_SHEET_SCHEMA_V1
+        } else {
+            MESH_BODY_SCHEMA_V1
+        }
+        .to_owned(),
         vertices_mm: primitive.vertices_mm.clone(),
         triangles: primitive.triangles.clone(),
         authority: MeshAuthority::Authored {

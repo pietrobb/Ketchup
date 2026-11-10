@@ -527,6 +527,9 @@ pub enum BooleanOperation {
 }
 
 pub const MESH_BODY_SCHEMA_V1: &str = "ketchup.mesh-body.v1";
+/// A mesh that closes no solid, such as a SketchUp face or a pane of glass:
+/// shown, selected and snapped to, with no volume (see [`MeshBodySpec::is_sheet`]).
+pub const MESH_SHEET_SCHEMA_V1: &str = "ketchup.mesh-sheet.v1";
 pub const IMPORTED_EXACT_BODY_SCHEMA_V1: &str = "ketchup.imported-exact-body.v1";
 pub const IMPORTED_EXACT_BODY_SCHEMA_V2: &str = "ketchup.imported-exact-body.v2";
 pub const IMPORTED_EXACT_BODY_SCHEMA_V3: &str = "ketchup.imported-exact-body.v3";
@@ -590,6 +593,13 @@ pub struct MeshBodySpec {
 }
 
 impl MeshBodySpec {
+    /// An open mesh, a surface: what needs a solid, as a volume, a boolean or
+    /// a made part, refuses it.
+    #[must_use]
+    pub fn is_sheet(&self) -> bool {
+        self.schema == MESH_SHEET_SCHEMA_V1
+    }
+
     #[must_use]
     pub fn exact_conversion_loss_report(&self) -> Option<String> {
         let MeshAuthority::ExactConversion(conversion) = &self.authority else {
@@ -1602,8 +1612,9 @@ impl FeatureKind {
     }
 
     #[must_use]
-    pub const fn body_kind(&self) -> Option<BodyKind> {
+    pub fn body_kind(&self) -> Option<BodyKind> {
         match self {
+            Self::MeshBody(spec) if spec.is_sheet() => Some(BodyKind::Surface),
             Self::SurfaceBody(_)
             | Self::SurfaceTrim { .. }
             | Self::SurfaceExtend { .. }
@@ -1635,7 +1646,7 @@ impl FeatureKind {
     }
 
     #[must_use]
-    pub const fn produces_body(&self) -> bool {
+    pub fn produces_body(&self) -> bool {
         self.body_kind().is_some()
     }
 

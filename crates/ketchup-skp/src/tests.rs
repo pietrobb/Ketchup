@@ -243,6 +243,49 @@ fn the_tags_of_components_and_groups_come_with_the_glb_by_node() {
     }
 }
 
+/// Geometry that closes no solid: a component "Panel" of one face, and a component "Tray",
+/// the box without its top, 50 inches beside it.
+fn open_pieces() -> Vec<u8> {
+    let mut builder = create();
+    let mut panel = builder
+        .add_component_definition("Panel", &DefinitionOptions::default())
+        .unwrap();
+    panel
+        .add_face(&BOX_FACES[0], &FaceOptions::default())
+        .unwrap();
+    let panel = panel.close().unwrap();
+    let mut tray = builder
+        .add_component_definition("Tray", &DefinitionOptions::default())
+        .unwrap();
+    for (index, face) in BOX_FACES.iter().enumerate() {
+        if index != 1 {
+            tray.add_face(face, &FaceOptions::default()).unwrap();
+        }
+    }
+    let tray = tray.close().unwrap();
+    builder
+        .add_instance(panel, &InstanceOptions::default())
+        .unwrap();
+    let beside = InstanceOptions {
+        translation: [50.0, 0.0, 0.0],
+        ..InstanceOptions::default()
+    };
+    builder.add_instance(tray, &beside).unwrap();
+    builder.to_bytes().unwrap()
+}
+
+/// Faces that close no solid are geometry like any other: both open pieces come with the
+/// GLB, placed, and nothing is left out.
+#[test]
+fn faces_that_close_no_solid_come_with_the_glb() {
+    let model = skp_to_glb(&open_pieces(), LIMIT).unwrap();
+    assert!(model.left_out.is_empty(), "{:?}", model.left_out);
+    let mut placements = mesh_placements(&gltf(&model.glb));
+    placements.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    assert_eq!(placements.len(), 2, "{placements:?}");
+    assert!(close(placements[1], [50.0 * METRES_PER_INCH, 0.0, 0.0]));
+}
+
 #[test]
 fn files_saved_by_sketchup_2013_2017_2020_and_2025_are_read() {
     for (name, major) in [

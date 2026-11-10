@@ -10,3 +10,5 @@ Written by Ketchup's own tests:
 
 - `tagged_boxes.skp`: `tagged_boxes(true)` of `src/tests.rs` (OpenSKP's writer, classic format):
   a box component placed twice on the tag "Walls", hidden in the file, one face on the tag "Roof".
+- `open_pieces.skp`: `open_pieces()` of `src/tests.rs` (classic format): geometry that closes no
+  solid, a component "Panel" of one face and a component "Tray", the box without its top.
