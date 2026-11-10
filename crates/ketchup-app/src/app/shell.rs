@@ -67,6 +67,7 @@ impl KetchupApp {
                 launch_attached: false,
                 client_name: None,
                 client_export: None,
+                client_overwrite: false,
                 plugin_consents: Vec::new(),
                 plugin_menu: live_bridge::plugin_menu::PluginMenu::new(),
                 variants: Default::default(),
@@ -75,6 +76,7 @@ impl KetchupApp {
                 harness_rows: crate::app::connect_ai::read_harness_rows,
                 harness_work: None,
                 chosen_window_error: None,
+                stale_clients: crate::app::stale_ai_clients::StaleClientCheck::Off,
             },
             close_guard: close_guard::CloseGuard::default(),
             file: app_state::FileState {
@@ -300,6 +302,7 @@ impl KetchupApp {
             app.keep_btlx_settings_in(file);
         }
         app.window.decimal = crate::length_input::DecimalSeparator::at_startup();
+        app.live.stale_clients = crate::app::stale_ai_clients::StaleClientCheck::Due;
         app.dialogs = Box::new(NativeFileDialogs::with_parent(
             DialogParentWindow::from_creation_context(context),
         ));
@@ -1625,6 +1628,7 @@ impl KetchupApp {
         self.show_about_window(context);
         self.show_plugin_window(context);
         self.show_program_detach_notice(context);
+        self.show_stale_ai_clients(context);
         self.show_material_takeoff_window(context);
         self.show_project_drawings_window(context);
         self.finish_live_image_frame(context);

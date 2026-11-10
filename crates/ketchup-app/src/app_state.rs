@@ -49,9 +49,11 @@ pub(crate) struct LiveState {
     /// status line; cleared on each new attach.
     pub(crate) client_name: Option<String>,
     /// An export a client asked for is running: its loss report goes back to the
-    /// client instead of a lossy-conversion prompt, and it never replaces a file.
+    /// client instead of a lossy-conversion prompt, and it never replaces a file
+    /// but, with `client_overwrite`, one Kečup wrote there and nobody changed since.
     /// Holds the request's cancel flag, set once the client's connection ends.
     pub(crate) client_export: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    pub(crate) client_overwrite: bool,
     /// Plugins the user allowed in this window, each bound to its files' hashes
     /// and the permissions shown; nothing is kept after the window closes.
     pub(crate) plugin_consents: Vec<live_bridge::plugin_consent::PluginConsent>,
@@ -68,6 +70,8 @@ pub(crate) struct LiveState {
     /// Why Connect could not make this the window a `connect` without an id
     /// goes to (#2687 point 16); the AI then asks which window.
     pub(crate) chosen_window_error: Option<std::io::Error>,
+    /// The start-up check for a client that starts a deleted Kečup.
+    pub(crate) stale_clients: crate::app::stale_ai_clients::StaleClientCheck,
 }
 
 /// Push/Pull input, its exact face-offset evaluation and the last committed

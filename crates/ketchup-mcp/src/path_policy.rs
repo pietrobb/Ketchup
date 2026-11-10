@@ -82,27 +82,54 @@ fn linux_local_type(kind: &str) -> bool {
 /// directory as `/Volumes`, and so for every top-level directory.
 const DATA_VOLUME: [&str; 3] = ["system", "volumes", "data"];
 
-/// A mount point as lowercase components (the default macOS file system ignores
-/// case), and whether it is a local file system.
+/// A mount point as components, and whether it is a local file system.
 pub(crate) struct Mount {
     on: Vec<String>,
     local: bool,
     /// A Linux `proc` file system, whose links to a process's root, working
     /// directory or files lead the kernel to the object, not to their text.
     proc: bool,
+    /// Whether a name is matched ignoring case and Unicode form, as the default
+    /// macOS file system does; `on` is then kept [`folded`]. A Linux name is
+    /// matched exactly (review 2026-11-09 SEC-303).
+    folds: bool,
 }
 
 impl Mount {
-    #[cfg_attr(
-        not(any(target_os = "macos", target_os = "linux", test)),
-        allow(dead_code)
-    )]
+    /// A macOS mount point, matched ignoring case and Unicode form.
+    #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
     pub(crate) fn new(on: &str, local: bool) -> Self {
+        Self {
+            on: lexical_components(on)
+                .iter()
+                .map(|name| folded(name))
+                .collect(),
+            local,
+            proc: false,
+            folds: true,
+        }
+    }
+
+    /// A Linux mount point, matched by its exact name.
+    #[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+    fn exact(on: &str, local: bool, proc: bool) -> Self {
         Self {
             on: lexical_components(on),
             local,
-            proc: false,
+            proc,
+            folds: false,
         }
+    }
+
+    fn holds(&self, components: &[String]) -> bool {
+        components.len() >= self.on.len()
+            && self.on.iter().zip(components).all(|(on, name)| {
+                if self.folds {
+                    *on == folded(name)
+                } else {
+                    on == name
+                }
+            })
     }
 }
 
@@ -112,20 +139,25 @@ impl Mount {
 fn mount_of<'a>(components: &[String], mounts: &'a [Mount]) -> Option<&'a Mount> {
     mounts
         .iter()
-        .filter(|mount| components.starts_with(&mount.on))
+        .filter(|mount| mount.holds(components))
         .max_by_key(|mount| mount.on.len())
 }
 
 fn local_mounted_path(path: &str, mounts: &[Mount], automounted: &[&str]) -> bool {
     let components = lexical_components(path);
-    let through_data_volume = components.strip_prefix(&DATA_VOLUME.map(str::to_owned)[..]);
+    let through_data_volume = (components.len() >= DATA_VOLUME.len()
+        && DATA_VOLUME
+            .iter()
+            .zip(&components)
+            .all(|(volume, name)| *volume == folded(name)))
+    .then(|| &components[DATA_VOLUME.len()..]);
     [Some(&components[..]), through_data_volume]
         .into_iter()
         .flatten()
         .all(|components| {
             !components
                 .first()
-                .is_some_and(|top| automounted.contains(&top.as_str()))
+                .is_some_and(|top| automounted.contains(&folded(top).as_str()))
                 && mount_of(components, mounts).is_none_or(|mount| mount.local)
         })
 }
@@ -214,16 +246,13 @@ fn read_link(path: &Path) -> std::io::Result<Option<PathBuf>> {
     }
 }
 
-/// The path's directories, lowercase and composed (NFC), with `.` dropped and `..`
-/// applied: the default macOS file system ignores case and Unicode form alike, so
-/// `Výkresy` in NFD names the share mounted in NFC (review 2026-11-03 SEC-142).
+/// The path's directories, with `.` dropped and `..` applied.
 fn lexical_components(path: &str) -> Vec<String> {
-    use unicode_normalization::UnicodeNormalization;
     let mut components = Vec::new();
     for component in Path::new(path).components() {
         match component {
             Component::Normal(name) => {
-                components.push(name.to_string_lossy().to_lowercase().nfc().collect());
+                components.push(name.to_string_lossy().into_owned());
             }
             Component::ParentDir => {
                 components.pop();
@@ -232,6 +261,14 @@ fn lexical_components(path: &str) -> Vec<String> {
         }
     }
     components
+}
+
+/// A name lowercase and composed (NFC): the default macOS file system ignores case
+/// and Unicode form alike, so `Výkresy` in NFD names the share mounted in NFC
+/// (review 2026-11-03 SEC-142).
+fn folded(name: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    name.to_lowercase().nfc().collect()
 }
 
 #[cfg(target_os = "macos")]
@@ -245,7 +282,10 @@ fn mounts() -> std::io::Result<Vec<Mount>> {
 
 #[cfg(target_os = "linux")]
 fn mounts() -> std::io::Result<Vec<Mount>> {
-    Ok(linux_mounts(&std::fs::read_to_string("/proc/self/mounts")?))
+    Ok(linux_mounts(
+        &std::fs::read_to_string("/proc/self/mounts")?,
+        read_link,
+    ))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -255,11 +295,16 @@ fn mounts() -> std::io::Result<Vec<Mount>> {
 
 /// The mounts of a Linux mount table (`/proc/self/mounts`): `device mount-point type
 /// options ...` per line, a space, tab, newline or backslash in the mount point written
-/// as its octal escape (`\040`). An overlay is local when each of its layers lies on a
-/// local mount of those mounted before it (review 2026-11-03 SEC-141: one with a layer
-/// on a share passed).
+/// as its octal escape (`\040`). An overlay is local when each of its layers is an
+/// absolute path that stays on local mounts of those mounted before it, its links
+/// followed (review 2026-11-03 SEC-141: one with a layer on a share passed; 2026-11-09
+/// SEC-302: so did one through a link onto a share, or a relative one, whose working
+/// directory the table does not show).
 #[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
-fn linux_mounts(table: &str) -> Vec<Mount> {
+fn linux_mounts(
+    table: &str,
+    read_link: impl Fn(&Path) -> std::io::Result<Option<PathBuf>>,
+) -> Vec<Mount> {
     let mut mounts = Vec::new();
     for line in table.lines() {
         let mut fields = line.split(' ');
@@ -270,13 +315,14 @@ fn linux_mounts(table: &str) -> Vec<Mount> {
         let options = fields.next().unwrap_or("");
         let local = linux_local_type(kind)
             && (kind != "overlay"
-                || overlay_layers(options)
-                    .iter()
-                    .all(|layer| local_mounted_path(layer, &mounts, &[])));
-        mounts.push(Mount {
-            proc: kind == "proc",
-            ..Mount::new(&unescape_mount_point(on), local)
-        });
+                || overlay_layers(options).iter().all(|layer| {
+                    layer.starts_with('/') && physically_local_path(layer, &mounts, &[], &read_link)
+                }));
+        mounts.push(Mount::exact(
+            &unescape_mount_point(on),
+            local,
+            kind == "proc",
+        ));
     }
     mounts
 }
@@ -431,7 +477,71 @@ mod tests {
 
 #[cfg(test)]
 mod mount_tests {
-    use super::{linux_mounts, local_mounted_path, physically_local_path};
+    use super::{local_mounted_path, physically_local_path};
+    use std::path::Path;
+
+    /// A mount table read where no layer of an overlay is a link.
+    fn linux_mounts(table: &str) -> Vec<super::Mount> {
+        super::linux_mounts(table, |_: &Path| Ok(None))
+    }
+
+    // Review 2026-11-09 SEC-302: an overlay's layer reached through a link onto a
+    // share, or named relative to a working directory this table does not show,
+    // passed as local.
+    #[test]
+    fn an_overlay_layer_through_a_link_onto_a_share_or_relative_is_not_local() {
+        use std::path::PathBuf;
+        let table = "/dev/sda1 / ext4 rw 0 0\n\
+                     nas:/export /mnt/nfs nfs4 rw 0 0\n\
+                     overlay /mnt/linked overlay rw,lowerdir=/home/me/nas/base,\
+                     upperdir=/home/me/u,workdir=/home/me/w 0 0\n\
+                     overlay /mnt/relative overlay rw,lowerdir=base,\
+                     upperdir=/home/me/u,workdir=/home/me/w 0 0\n\
+                     overlay /mnt/local overlay rw,lowerdir=/home/me/disk/base,\
+                     upperdir=/home/me/u,workdir=/home/me/w 0 0\n";
+        let mounts = super::linux_mounts(table, |path: &Path| {
+            Ok(match path.to_str() {
+                Some("/home/me/nas") => Some(PathBuf::from("/mnt/nfs")),
+                Some("/home/me/disk") => Some(PathBuf::from("/srv/disk")),
+                Some(other) if other.starts_with("/mnt/nfs") => {
+                    panic!("read a link on the share: {other}")
+                }
+                _ => None,
+            })
+        });
+        assert!(local_mounted_path("/mnt/local/x.pdf", &mounts, &[]));
+        for remote in ["/mnt/linked/x.pdf", "/mnt/relative/x.pdf"] {
+            assert!(!local_mounted_path(remote, &mounts, &[]), "{remote:?}");
+        }
+    }
+
+    // Review 2026-11-09 SEC-303: Linux names differ by case and Unicode form, so a
+    // share at `/mnt/NAS` was found as the local disk mounted later at `/mnt/nas`.
+    #[test]
+    fn a_linux_mount_point_is_matched_by_its_exact_name() {
+        let (composed, decomposed) = ("V\u{FD}kresy", "Vy\u{301}kresy");
+        for table in [
+            "/dev/sda1 / ext4 rw 0 0\n\
+             nas:/export /mnt/NAS nfs4 rw 0 0\n\
+             /dev/sdb1 /mnt/nas ext4 rw 0 0\n"
+                .to_owned(),
+            format!(
+                "/dev/sda1 / ext4 rw 0 0\n\
+                 nas:/export /mnt/{composed} nfs4 rw 0 0\n\
+                 /dev/sdb1 /mnt/{decomposed} ext4 rw 0 0\n"
+            ),
+        ] {
+            let mounts = linux_mounts(&table);
+            let share = table.lines().nth(1).and_then(|l| l.split(' ').nth(1));
+            let disk = table.lines().nth(2).and_then(|l| l.split(' ').nth(1));
+            let (share, disk) = (share.expect("share"), disk.expect("disk"));
+            assert!(
+                !local_mounted_path(&format!("{share}/x.pdf"), &mounts, &[]),
+                "{share}"
+            );
+            assert!(local_mounted_path(&format!("{disk}/x.pdf"), &mounts, &[]));
+        }
+    }
 
     // Review 2026-11-02 SEC-101: on Linux a share and an automounted directory passed.
     #[test]

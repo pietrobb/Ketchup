@@ -569,7 +569,7 @@ fn initialize(params: &Value) -> Value {
     json!({
         "protocolVersion": version,
         "capabilities": {"tools": {"listChanged": false}},
-        "serverInfo": {"name": "ketchup", "title": "Kečup", "version": env!("CARGO_PKG_VERSION")},
+        "serverInfo": {"name": "ketchup", "title": "Kečup", "version": crate::VERSION},
         "instructions": schema::INSTRUCTIONS,
     })
 }

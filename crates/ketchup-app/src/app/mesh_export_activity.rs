@@ -281,12 +281,13 @@ impl KetchupApp {
     ) -> Result<Written, ExportError> {
         let report_path = path.with_extension(format!("{}.loss.txt", format.key()));
         let precondition = ExportBundlePrecondition::capture(path, &report_path)?;
+        let report = crate::export_bundle::loss_report_naming(&made.loss_report, &made.bytes);
         let evidence = super::export::export_bundle_evidence(
             format.evidence_domain(),
             path,
             &made.bytes,
             &report_path,
-            made.loss_report.as_bytes(),
+            report.as_bytes(),
         );
         self.authorize_export_bundle(
             format.consent(),
@@ -299,7 +300,7 @@ impl KetchupApp {
             path,
             &made.bytes,
             &report_path,
-            made.loss_report.as_bytes(),
+            report.as_bytes(),
             &precondition,
         )?;
         Ok(Written::with_loss_report(path, &report_path))

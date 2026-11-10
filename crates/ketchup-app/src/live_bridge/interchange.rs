@@ -144,6 +144,15 @@ pub(super) fn export_code(error: &ExportError) -> &'static str {
     }
 }
 
+/// An export request the window takes now.
+pub(super) struct ExportTarget {
+    pub(super) path: String,
+    pub(super) export_format: String,
+    pub(super) exporter: Exporter,
+    /// Replace a file and loss report Kečup wrote at `path`, unchanged since.
+    pub(super) overwrite: bool,
+}
+
 impl LiveBridge {
     /// Imports the file `request` names, from what a job's thread has `read` of
     /// it already (see [`super::dwg_import`]).
@@ -303,14 +312,21 @@ impl LiveBridge {
             Request::Export { drawing_scale, .. } => *drawing_scale,
             _ => None,
         };
-        let (path, export_format, exporter) = Self::export_target(app, request, ui_busy)?;
+        let ExportTarget {
+            path,
+            export_format,
+            exporter,
+            overwrite,
+        } = Self::export_target(app, request, ui_busy)?;
         Self::require_request_authority(cancelled)?;
         app.live.client_export = Some(Arc::clone(cancelled));
+        app.live.client_overwrite = overwrite;
         let exported = match drawing_scale {
             Some(scale) => app.export_current_plan_dxf_to(Path::new(&path), scale),
             None => exporter(app, Path::new(&path)),
         };
         app.live.client_export = None;
+        app.live.client_overwrite = false;
         Self::exported(&path, &export_format, exported)
     }
 
@@ -319,12 +335,13 @@ impl LiveBridge {
         app: &mut KetchupApp,
         request: Request,
         ui_busy: bool,
-    ) -> Result<(String, String, Exporter), &'static str> {
+    ) -> Result<ExportTarget, &'static str> {
         let Request::Export {
             expected,
             path,
             export_format,
             drawing_scale,
+            overwrite,
         } = request
         else {
             return Err("invalid_request");
@@ -371,7 +388,12 @@ impl LiveBridge {
                 json!({"path": path}),
             ));
         }
-        Ok((path, export_format, *exporter))
+        Ok(ExportTarget {
+            path,
+            export_format,
+            exporter: *exporter,
+            overwrite,
+        })
     }
 
     /// Records why the export of `path` failed for the answer, and its code.
