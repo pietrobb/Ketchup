@@ -10,7 +10,9 @@
 
 use crate::*;
 use ketchup_application::program_isolation::SkpModel;
-use ketchup_model::import::{ImportContractError, ImportDiagnostic, ImportDiagnosticSeverity};
+use ketchup_model::import::{
+    GlbNodeTags, GlbTag, ImportContractError, ImportDiagnostic, ImportDiagnosticSeverity,
+};
 use ketchup_program::CancelToken;
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
@@ -104,6 +106,19 @@ impl SkpConversion {
             )?);
         }
         Ok(notes)
+    }
+
+    /// The SketchUp tags of the GLB's nodes, which its parts import with.
+    pub(crate) fn node_tags(&self) -> GlbNodeTags {
+        GlbNodeTags {
+            tags: (self.0.tags.iter())
+                .map(|tag| GlbTag {
+                    name: tag.name.clone(),
+                    visible: tag.visible,
+                })
+                .collect(),
+            node_tags: self.0.node_tags.clone(),
+        }
     }
 }
 

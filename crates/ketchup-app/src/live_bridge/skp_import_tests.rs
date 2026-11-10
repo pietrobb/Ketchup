@@ -73,6 +73,39 @@ fn a_sketchup_file_imports_as_its_glb_in_one_undo_step_noting_its_version() {
     );
 }
 
+/// The boxes on the tag "Walls", hidden in the file, import on a hidden tag "Walls": showing
+/// the tag shows them. Before, every part imported untagged and the tag was only a note.
+#[test]
+fn the_parts_of_a_tagged_component_import_on_that_tag_hidden_as_in_the_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("tagged.skp");
+    std::fs::write(&path, fixture("tagged_boxes.skp")).unwrap();
+    let (mut app, mut bridge) = setup();
+    let before = app.document_snapshot();
+    let answer = bridge
+        .execute(&mut app, import(&path), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(answer["imported"], true, "{answer}");
+
+    let snapshot = app.document_snapshot();
+    let walls = snapshot
+        .tags()
+        .find(|tag| tag.name() == "Walls")
+        .unwrap_or_else(|| panic!("no tag Walls after {answer}"));
+    assert!(!walls.visible(), "hidden as in the file");
+    let imported: Vec<_> = snapshot
+        .occurrences()
+        .filter(|occurrence| before.occurrence(occurrence.id()).is_none())
+        .collect();
+    assert_eq!(imported.len(), 2, "both boxes");
+    for occurrence in imported {
+        assert_eq!(
+            occurrence.tags(),
+            &std::collections::BTreeSet::from([walls.id()])
+        );
+    }
+}
+
 #[test]
 fn a_damaged_sketchup_file_is_refused_and_changes_nothing() {
     let directory = tempfile::tempdir().unwrap();

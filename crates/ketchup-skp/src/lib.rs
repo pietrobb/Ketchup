@@ -21,7 +21,8 @@ use std::fmt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use openskp::{
-    Definition, GlbError, InstancedGlbOptions, ParseOptions, SkpModel as ParsedModel, SkpParseError,
+    Definition, GlbError, InstancedGlbOptions, InstancedNode, InstancedScene, ParseOptions,
+    SkpModel as ParsedModel, SkpParseError,
 };
 
 #[cfg(test)]
@@ -109,7 +110,23 @@ pub struct SkpModel {
     pub verified: bool,
     /// What the GLB does not carry, most frequent first; empty when it carries everything.
     pub left_out: Vec<LeftOut>,
+    /// The tags some component or group carries, in the file's order. glTF has no place
+    /// for them, so they come beside the GLB.
+    pub tags: Vec<SkpTag>,
+    /// The index in `tags` of each GLB node's tag, by glTF node index; `None` for a node on
+    /// the default tag.
+    pub node_tags: Vec<Option<usize>>,
 }
+
+/// A SketchUp tag (a layer before SketchUp 2020) with its visibility in the file.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SkpTag {
+    pub name: String,
+    pub visible: bool,
+}
+
+/// SketchUp's default tag, shown as "Untagged": it is no tag the user made.
+const DEFAULT_TAG: &str = "Layer0";
 
 /// Reads a SketchUp file and writes its model as GLB of at most `max_glb_bytes` bytes. Textures
 /// are not written: the GLB carries each material's colour.
@@ -139,13 +156,51 @@ pub fn skp_to_glb(skp: &[u8], max_glb_bytes: usize) -> Result<SkpModel, SkpError
             size: glb.len(),
         });
     }
+    let (tags, node_tags) = node_tags(&scene);
     Ok(SkpModel {
         glb,
         verified: major_version(&model.version)
             .is_some_and(|major| VERIFIED_MAJOR_VERSIONS.contains(&major)),
         left_out: left_out(&model),
         version: model.version,
+        tags,
+        node_tags,
     })
+}
+
+/// The tags of the scene's nodes, by glTF node index: OpenSKP writes the nodes depth first,
+/// each before its children, from the scene's root.
+fn node_tags(scene: &InstancedScene) -> (Vec<SkpTag>, Vec<Option<usize>>) {
+    fn visit(
+        node: &InstancedNode,
+        scene: &InstancedScene,
+        tags: &mut Vec<SkpTag>,
+        node_tags: &mut Vec<Option<usize>>,
+    ) {
+        let tag = (!node.layer.is_empty() && node.layer != DEFAULT_TAG).then(|| {
+            tags.iter()
+                .position(|tag| tag.name == node.layer)
+                .unwrap_or_else(|| {
+                    tags.push(SkpTag {
+                        name: node.layer.clone(),
+                        visible: !scene
+                            .layer_hidden
+                            .get(&node.layer)
+                            .copied()
+                            .unwrap_or(false),
+                    });
+                    tags.len() - 1
+                })
+        });
+        node_tags.push(tag);
+        for child in &node.children {
+            visit(child, scene, tags, node_tags);
+        }
+    }
+    let mut tags = Vec::new();
+    let mut node_tags = Vec::new();
+    visit(&scene.scene_hierarchy, scene, &mut tags, &mut node_tags);
+    (tags, node_tags)
 }
 
 /// The major version of a SketchUp version string such as `{25.0.575}`.
@@ -162,8 +217,6 @@ fn major_version(version: &str) -> Option<u32> {
 fn left_out(model: &ParsedModel) -> Vec<LeftOut> {
     let definitions = || std::iter::once(model.root()).chain(model.definitions.values());
     let sum = |count: fn(&Definition) -> usize| definitions().map(count).sum::<usize>();
-    // The default tag ("Layer0", shown as "Untagged") is not one the user made.
-    let tags = model.layers.len().saturating_sub(1);
     let mut left_out: Vec<LeftOut> = [
         (
             "skp_textures_dropped",
@@ -173,7 +226,20 @@ fn left_out(model: &ParsedModel) -> Vec<LeftOut> {
                 .filter(|material| material.texture.is_some())
                 .count(),
         ),
-        ("skp_tags_flattened", tags),
+        // A part takes the tags of its component or group; a face's own tag has no part.
+        (
+            "skp_face_tags_dropped",
+            sum(|d| {
+                d.faces
+                    .values()
+                    // A classic-format face names no tag, only its id: 0 for the default.
+                    .filter(|face| match face.layer.as_str() {
+                        "" => face.layer_id.is_some_and(|id| id != 0),
+                        name => name != DEFAULT_TAG,
+                    })
+                    .count()
+            }),
+        ),
         ("skp_scenes_dropped", model.pages.len()),
         (
             "skp_dimensions_and_text_dropped",
