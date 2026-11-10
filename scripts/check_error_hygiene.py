@@ -121,6 +121,8 @@ CONTENT_FREE = {
     "StripPrefixError",
     # wgpu reports a failed buffer map as a unit struct.
     "wgpu::BufferAsyncError",
+    # ab_glyph reports an unreadable font as a unit struct.
+    "ab_glyph::InvalidFont",
     # Opaque by design: a failed signature check must not reveal why it failed.
     "ed25519_dalek::SignatureError",
 }
