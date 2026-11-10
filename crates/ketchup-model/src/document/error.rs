@@ -546,7 +546,7 @@ impl fmt::Display for CanonicalError {
                 "topological feature references must be valid, kind-correct, unique, and strictly sorted",
             ),
             Self::InvalidMeshBody => formatter.write_str(
-                "mesh body must be finite, closed, consistently oriented, non-degenerate, and carry valid authority provenance",
+                "mesh body must be finite, non-degenerate, closed and consistently oriented unless it is a sheet, and carry valid authority provenance",
             ),
             Self::DefinitionAlreadyExists(id) => {
                 write!(formatter, "definition {} already exists", id.0)

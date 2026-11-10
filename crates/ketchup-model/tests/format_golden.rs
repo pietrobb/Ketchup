@@ -10,7 +10,8 @@
 //! `KETCHUP_UPDATE_GOLDEN=1`.
 use ketchup_model::annotation::{Annotation, AnnotationMark};
 use ketchup_model::document::{
-    CanonicalCommand, CommandBatch, DocumentStore, GroupId, TagId, Transform,
+    CanonicalCommand, CommandBatch, DefinitionId, DocumentStore, FeatureId, FeatureKind, GroupId,
+    MESH_SHEET_SCHEMA_V1, MeshAuthority, MeshBodySpec, OccurrenceId, TagId, Transform,
 };
 use ketchup_model::import::DxfCodePage;
 use ketchup_model::persistence::{self, ContainerData, LoadNotice, LoadOutcome};
@@ -83,10 +84,17 @@ const SAVED_109: &str = concat!(
     "/tests/fixtures/persistence/format109.bin"
 );
 
+/// Format 110 as Save wrote it: the format 109 file with its drawing read in a code
+/// page the user chose.
+const SAVED_110: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/persistence/format110.bin"
+);
+
 /// The current format as Save writes it: the current revision alone.
 const GOLDEN: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/persistence/format110.bin"
+    "/tests/fixtures/persistence/format111.bin"
 );
 
 /// Canonical digest of the current revision each fixture was written with.
@@ -99,6 +107,7 @@ const DIGEST_107: &str = "294cafaafcee8159";
 const DIGEST_108: &str = "e83d7833a1941e55";
 const DIGEST_109: &str = "64387e679e6cc938";
 const DIGEST_110: &str = "78f4d25425866c66";
+const DIGEST_111: &str = "fd8ea7b25e0aaff5";
 const DIGEST_RELEASE_0_3_0: &str = "3e767c0ebaf2d5b1";
 
 /// The document of a fixture, checked to open at `digest` with no Undo steps.
@@ -203,7 +212,7 @@ fn a_file_saved_by_kecup_0_3_0_opens_with_its_text_and_view_and_saves_the_same()
 /// the very snapshot bytes 0.2.0 itself saved, with an underlay as format 104; with
 /// annotations 105; with an edited underlay 106; with a stretched line 107; with a
 /// logical group 108; with a fill drawn into a drawing 109; with a drawing read in a code
-/// page the user chose 110 (the golden).
+/// page the user chose 110; with a mesh sheet 111 (the golden).
 #[test]
 fn a_document_is_saved_in_the_oldest_format_that_holds_it() {
     for (path, schema, digest) in [
@@ -215,6 +224,7 @@ fn a_document_is_saved_in_the_oldest_format_that_holds_it() {
         (SAVED_107, 107, DIGEST_107),
         (SAVED_108, 108, DIGEST_108),
         (SAVED_109, 109, DIGEST_109),
+        (SAVED_110, 110, DIGEST_110),
     ] {
         let (document, _) = opened(path, schema, digest);
         let snapshot = persistence::save(&document.current());
@@ -384,11 +394,12 @@ fn files_for_released_versions_are_in_the_format_their_document_needs() {
         ("stretched-line", SAVED_107, 107, DIGEST_107),
         ("logical-group", SAVED_108, 108, DIGEST_108),
         ("drawn-fill", SAVED_109, 109, DIGEST_109),
+        ("chosen-code-page", SAVED_110, 110, DIGEST_110),
         (
-            "chosen-code-page",
+            "mesh-sheet",
             GOLDEN,
             persistence::CURRENT_SCHEMA,
-            DIGEST_110,
+            DIGEST_111,
         ),
     ] {
         let (document, container) = opened(path, schema, digest);
@@ -649,7 +660,7 @@ fn a_format_108_document_with_a_drawn_fill_saves_the_format_109_file() {
 /// read and written back in the code page its header names again. The format 109 file
 /// with its drawing read in Central European.
 #[test]
-fn a_format_109_document_with_a_chosen_code_page_saves_the_golden() {
+fn a_format_109_document_with_a_chosen_code_page_saves_the_format_110_file() {
     let (mut document, container) = opened(SAVED_109, 109, DIGEST_109);
     let mut underlay = document.current().underlays().next().unwrap().clone();
     underlay.code_page = DxfCodePage::parse("ANSI_1250");
@@ -659,23 +670,91 @@ fn a_format_109_document_with_a_chosen_code_page_saves_the_golden() {
         )]))
         .unwrap();
     let saved = persistence::save_document_store_current_snapshot(&document, &container).unwrap();
+    assert_eq!(document.current().canonical_digest(), DIGEST_110);
+    assert_eq!(saved, std::fs::read(SAVED_110).unwrap());
+    let (reopened, _) = opened(SAVED_110, 110, DIGEST_110);
+    assert_eq!(reopened.current().underlays().next(), Some(&underlay));
+    assert!(reopened.current().group(LOGICAL_GROUP).unwrap().logical());
+}
+
+/// The commands placing one mesh sheet, a single open triangle, in a document.
+fn sheet_commands() -> Vec<CanonicalCommand> {
+    let definition_id = DefinitionId(9_001);
+    vec![
+        CanonicalCommand::CreateDefinition {
+            id: definition_id,
+            name: "Pane".to_owned(),
+        },
+        CanonicalCommand::CreateFeature {
+            id: FeatureId(9_001),
+            definition_id,
+            name: "Pane".to_owned(),
+            kind: FeatureKind::MeshBody(MeshBodySpec {
+                schema: MESH_SHEET_SCHEMA_V1.to_owned(),
+                vertices_mm: vec![[0.0, 0.0, 0.0], [600.0, 0.0, 0.0], [0.0, 400.0, 0.0]],
+                triangles: vec![[0, 1, 2]],
+                authority: MeshAuthority::Authored {
+                    provenance: "format golden".to_owned(),
+                },
+            }),
+        },
+        CanonicalCommand::CreateOccurrence {
+            id: OccurrenceId(9_001),
+            definition_id,
+            name: "Pane".to_owned(),
+            transform: Transform::identity(),
+            parent: None,
+            tags: BTreeSet::new(),
+            visible: true,
+        },
+    ]
+}
+
+/// Format 111 adds the mesh sheet, an open mesh such as an imported SketchUp face (U4c):
+/// Kečup 0.3.2 reads 110 and refuses the whole file as an invalid mesh body. The format
+/// 110 file with one sheet placed.
+#[test]
+fn a_format_110_document_with_a_mesh_sheet_saves_the_golden() {
+    let (mut document, container) = opened(SAVED_110, 110, DIGEST_110);
+    document
+        .apply_batch(&CommandBatch::new(sheet_commands()))
+        .unwrap();
+    let saved = persistence::save_document_store_current_snapshot(&document, &container).unwrap();
     if ketchup_test_env::update_golden() {
         std::fs::write(GOLDEN, saved).unwrap();
         panic!("wrote {GOLDEN}");
     }
-    assert_eq!(document.current().canonical_digest(), DIGEST_110);
+    assert_eq!(document.current().canonical_digest(), DIGEST_111);
     let golden = std::fs::read(GOLDEN).unwrap();
     assert_eq!(
         saved, golden,
         "the saved form changed; see the module comment"
     );
-    let (reopened, container) = opened(GOLDEN, persistence::CURRENT_SCHEMA, DIGEST_110);
-    assert_eq!(reopened.current().underlays().next(), Some(&underlay));
+    let (reopened, container) = opened(GOLDEN, persistence::CURRENT_SCHEMA, DIGEST_111);
+    assert!(matches!(
+        reopened.current().feature(FeatureId(9_001)).unwrap().kind(),
+        FeatureKind::MeshBody(mesh) if mesh.is_sheet()
+    ));
     assert!(reopened.current().group(LOGICAL_GROUP).unwrap().logical());
     assert_eq!(
         persistence::save_document_store_current_snapshot(&reopened, &container).unwrap(),
         golden
     );
+}
+
+/// Only a mesh sheet needs format 111: the format 110 file stays 110 until one is placed.
+#[test]
+fn a_mesh_sheet_needs_format_111() {
+    let (mut document, _) = opened(SAVED_110, 110, DIGEST_110);
+    let format = |document: &DocumentStore| {
+        let snapshot = persistence::save(&document.current());
+        u16::from_le_bytes([snapshot[10], snapshot[11]])
+    };
+    assert_eq!(format(&document), 110);
+    document
+        .apply_batch(&CommandBatch::new(sheet_commands()))
+        .unwrap();
+    assert_eq!(format(&document), 111);
 }
 
 /// Only a chosen code page needs format 110: the format 109 file stays 109 until one is.
