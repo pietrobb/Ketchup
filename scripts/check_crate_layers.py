@@ -34,8 +34,6 @@ LAYERS = {
     "ketchup-test-env": 0,
     "ketchup-test-gpu": 0,
     "ketchup-macos-open": 0,
-    # Vendored by path (third_party/openskp/PATCH.md): crates.io `openskp` is another, GPL crate.
-    "openskp": 0,
     "ketchup-geometry": 1,
     "ketchup-dwg": 1,
     "ketchup-skp": 1,
@@ -160,7 +158,11 @@ MILESTONE_WORD = re.compile(r"(?:^|_)(?:gate(?:_[a-z]?\d+[a-z]?|_[a-z])?|[ms]\d+
 
 
 def workspace_dependencies(root):
-    """{crate: [workspace crates it depends on]} from every crates/*/Cargo.toml."""
+    """{crate: [workspace crates it depends on]} from every crates/*/Cargo.toml.
+
+    A path dependency outside crates/ (a vendored third_party library) is not a workspace layer.
+    """
+    crates = (root / "crates").resolve()
     graph = {}
     for manifest in sorted((root / "crates").glob("*/Cargo.toml")):
         data = tomllib.loads(manifest.read_text(encoding="utf-8"))
@@ -168,7 +170,9 @@ def workspace_dependencies(root):
         graph[data["package"]["name"]] = sorted(
             name
             for name, spec in dependencies.items()
-            if isinstance(spec, dict) and "path" in spec
+            if isinstance(spec, dict)
+            and "path" in spec
+            and (manifest.parent / spec["path"]).resolve().parent == crates
         )
     return graph
 
