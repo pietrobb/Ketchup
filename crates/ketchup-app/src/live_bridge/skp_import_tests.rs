@@ -106,6 +106,49 @@ fn the_parts_of_a_tagged_component_import_on_that_tag_hidden_as_in_the_file() {
     }
 }
 
+/// The occurrences `file` adds to a new document, after its import answered `imported`.
+fn imported_occurrences(file: &str) -> Vec<ketchup_model::document::Occurrence> {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join(file);
+    std::fs::write(&path, fixture(file)).unwrap();
+    let (mut app, mut bridge) = setup();
+    let before = app.document_snapshot();
+    let answer = bridge
+        .execute(&mut app, import(&path), false)
+        .unwrap_or_else(|code| panic!("{file}: {code}: {}", app.action_digest()));
+    assert_eq!(answer["imported"], true, "{file}: {answer}");
+    app.document_snapshot()
+        .occurrences()
+        .filter(|occurrence| before.occurrence(occurrence.id()).is_none())
+        .cloned()
+        .collect()
+}
+
+/// A face on its own and a box without its top close no solid, and are SketchUp content
+/// like any other: both come into the document. Before, the file was refused as having
+/// nothing to import.
+#[test]
+fn faces_that_close_no_solid_come_into_the_document() {
+    let imported = imported_occurrences("open_pieces.skp");
+    let mut names: Vec<_> = imported
+        .iter()
+        .map(|occurrence| occurrence.name())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(names, ["Panel", "Tray"]);
+}
+
+/// The groups nested in each other in files of SketchUp 2013 and 2020 come in as that
+/// assembly: each group's geometry under the group that holds it. Before, both files were
+/// refused.
+#[test]
+fn the_nested_groups_of_classic_files_come_in_as_an_assembly() {
+    for file in ["nesting_2013.skp", "nesting_2020.skp"] {
+        let imported = imported_occurrences(file);
+        assert_eq!(imported.len(), 3, "{file}: Outer, Shelf and Inner");
+    }
+}
+
 #[test]
 fn a_damaged_sketchup_file_is_refused_and_changes_nothing() {
     let directory = tempfile::tempdir().unwrap();
