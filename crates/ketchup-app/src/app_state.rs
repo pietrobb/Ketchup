@@ -70,6 +70,8 @@ pub(crate) struct LiveState {
     /// Why Connect could not make this the window a `connect` without an id
     /// goes to (#2687 point 16); the AI then asks which window.
     pub(crate) chosen_window_error: Option<std::io::Error>,
+    /// The start-up check for a client that starts a deleted Kečup.
+    pub(crate) stale_clients: crate::app::stale_ai_clients::StaleClientCheck,
 }
 
 /// Push/Pull input, its exact face-offset evaluation and the last committed

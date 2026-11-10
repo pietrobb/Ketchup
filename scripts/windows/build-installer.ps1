@@ -444,6 +444,14 @@ Name: "{group}\Ketchup"; Filename: "{app}\Ketchup.exe"; WorkingDir: "{app}"
 Name: "{autodesktop}\Ketchup"; Filename: "{app}\Ketchup.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 Name: "{group}\Ketchup Viewer"; Filename: "{app}\KetchupViewer.exe"; WorkingDir: "{app}"
 
+[InstallDelete]
+; Manual Alpha's shortcuts start a Ketchup.exe its uninstaller removed (feedback
+; 2026-11-10: one was left on the desktop); the uninstall above may also not run.
+Type: files; Name: "{userdesktop}\Ketchup Manual Alpha.lnk"
+Type: files; Name: "{commondesktop}\Ketchup Manual Alpha.lnk"
+Type: filesandordirs; Name: "{userprograms}\Ketchup Manual Alpha"
+Type: filesandordirs; Name: "{commonprograms}\Ketchup Manual Alpha"
+
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 

@@ -1053,8 +1053,28 @@ fn a_moved_project_exports_its_set_again_and_another_is_told_whose_it_is() {
     let dialogs = crate::dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(7);
     let probe = dialogs.clone();
     let mut other = other.with_dialogs(Box::new(dialogs));
+    let sheets: Vec<String> = std::fs::read_dir(set.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("house-") && name.ends_with(".dxf"))
+        .collect();
+    assert!(!sheets.is_empty());
     export(&mut other, &mut other_bridge, json!({"take_over": true})).unwrap();
     assert_eq!(probe.high_risk_prompts().len(), 1);
+    // The user is shown every sheet the take-over replaces, not only the list
+    // (review 2026-11-09 SEC-304).
+    let prompt = &probe.high_risk_prompts()[0];
+    for named in sheets
+        .iter()
+        .map(String::as_str)
+        .chain(["house.dxf.sheets.txt"])
+    {
+        assert!(prompt.contains(named), "{named} missing: {prompt}");
+    }
+    assert!(
+        prompt.contains(&format!("Replaces {} files", sheets.len() + 1)),
+        "{prompt}"
+    );
     // Taken over, the set is no longer the moved project's.
     let (code, _) = export(&mut app, &mut bridge, json!({})).unwrap_err();
     assert_eq!(code, "drawings_set_of_another_project");

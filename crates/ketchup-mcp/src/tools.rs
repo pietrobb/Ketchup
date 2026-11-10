@@ -469,6 +469,16 @@ impl Tools {
                     .collect();
                 args.insert("query".into(), Value::Object(query));
             }
+            "status" => {
+                // The program serving MCP beside the window's own version: an
+                // AI client may start an older Kečup from a stale path.
+                return Ok(match self.request(&action, args, DEFAULT_WAIT)? {
+                    Reply::Done { stamp, result } => ToolOutput::text(
+                        &json!({"stamp": stamp, "result": result, "server_version": crate::VERSION}),
+                    ),
+                    rejected => self.output(rejected),
+                });
+            }
             _ => {}
         }
         self.send(&action, args, DEFAULT_WAIT)
@@ -749,7 +759,12 @@ impl Tools {
                 format!("Cannot attach to the Kečup window ({error}){hint}"),
             )
         };
-        let grant = discovery::attach(&window).map_err(failed)?;
+        let client = self
+            .client
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let grant = discovery::attach(&window, client.as_deref()).map_err(failed)?;
         let connection = Connection::open(grant.address, grant.token).map_err(failed)?;
         self.window_id = Some(window.instance_id.clone());
         self.taken_over = false;

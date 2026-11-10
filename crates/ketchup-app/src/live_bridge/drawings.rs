@@ -278,6 +278,29 @@ fn replace_declined(app: &mut KetchupApp, path: &Path) -> Option<&'static str> {
         .err()
 }
 
+/// The code refusing a client's `take_over` of the set listed at `list` unless
+/// the user, shown every file of it the export replaces, agrees in the window.
+fn take_over_declined(
+    app: &mut KetchupApp,
+    list: &Path,
+    taken: &SetTargets,
+) -> Option<&'static str> {
+    let replaced: Vec<&Path> = taken.keys().map(PathBuf::as_path).collect();
+    app.authorize_set_take_over(list, &replaced)
+        .map_err(|rejection| {
+            failure(
+                "drawings_replace_declined",
+                format!(
+                    "{} The set listed in {} was not taken over and nothing was written; export to another path, or ask the user again.",
+                    rejection.reason_text(),
+                    list.display()
+                ),
+                json!({"path": list.display().to_string(), "files": replaced.len()}),
+            )
+        })
+        .err()
+}
+
 /// The export transaction's own reason within `error`.
 fn transaction_error<'a>(
     error: &'a (dyn std::error::Error + 'static),
@@ -746,10 +769,12 @@ pub(super) fn start_export(
     let owner = app.drawing_set_owner();
     let targets = match project_drawings_targets(target, file_format, &owner, false) {
         Err(ProjectDrawingsError::SetOfAnotherProject { list, .. }) if take_over => {
-            if let Some(code) = replace_declined(app, &list) {
+            let taken = project_drawings_targets(target, file_format, &owner, true)
+                .map_err(export_failed)?;
+            if let Some(code) = take_over_declined(app, &list, &taken) {
                 return Err(code);
             }
-            project_drawings_targets(target, file_format, &owner, true)
+            Ok(taken)
         }
         targets => targets,
     }
