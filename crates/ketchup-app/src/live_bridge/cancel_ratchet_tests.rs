@@ -59,6 +59,8 @@ const NOT_WAITED_ON: &[(&str, &str, &str)] = &[
     ),
     // The job that read the DWG holds its conversion, so this finds it cached.
     ("app/dwg_import.rs", "drawing_dxf", "held conversion"),
+    // Likewise the job or the menu's thread that read a SketchUp file.
+    ("app/skp_import.rs", "model_glb", "held conversion"),
     // Window dialogs the bridge never reaches; they run in the frame of their button.
     ("app/document.rs", "show_pdm_review_window", "window dialog"),
     ("app/export.rs", "show_cam_export_window", "window dialog"),

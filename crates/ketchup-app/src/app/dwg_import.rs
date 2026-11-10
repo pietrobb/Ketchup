@@ -70,12 +70,42 @@ pub(crate) fn read_dwg_file(path: &Path, cancel: &CancelToken) -> DwgRead {
     Ok((source, drawing))
 }
 
-/// A DWG file being read for the import review, off the window's thread.
+/// What a thread read of a file that converts in the program worker: a DWG drawing
+/// or a SketchUp model ([`super::skp_import`]).
+pub(crate) enum ConvertedRead {
+    Dwg(DwgRead),
+    Skp(super::skp_import::SkpRead),
+}
+
+impl From<DwgRead> for ConvertedRead {
+    fn from(read: DwgRead) -> Self {
+        Self::Dwg(read)
+    }
+}
+
+impl From<super::skp_import::SkpRead> for ConvertedRead {
+    fn from(read: super::skp_import::SkpRead) -> Self {
+        Self::Skp(read)
+    }
+}
+
+/// A DWG or SketchUp file being read for the import review, off the window's thread.
 pub(crate) struct DwgReadTask {
     path: PathBuf,
     cancel: CancelToken,
-    receiver: std::sync::mpsc::Receiver<DwgRead>,
+    receiver: std::sync::mpsc::Receiver<ConvertedRead>,
     pub(crate) progress: super::file_activity::ReadProgress,
+}
+
+impl DwgReadTask {
+    /// The command whose import the file is read for.
+    pub(crate) fn command(&self) -> AppCommand {
+        if super::skp_import::is_skp_path(&self.path) {
+            AppCommand::ImportBlenderGlb
+        } else {
+            AppCommand::ImportDrawingDxf
+        }
+    }
 }
 
 impl KetchupApp {
@@ -85,6 +115,15 @@ impl KetchupApp {
         self.queue_dwg_read(path, context, read_dwg_file);
     }
 
+    /// Reads the DWG or SketchUp file at `path` on a thread, like [`Self::start_dwg_read`].
+    pub(crate) fn start_converted_read(&mut self, path: PathBuf, context: &egui::Context) {
+        if super::skp_import::is_skp_path(&path) {
+            self.queue_converted_read(path, context, super::skp_import::read_skp_file);
+        } else {
+            self.start_dwg_read(path, context);
+        }
+    }
+
     /// [`Self::start_dwg_read`] with the reader the thread runs.
     pub(crate) fn queue_dwg_read(
         &mut self,
@@ -92,11 +131,23 @@ impl KetchupApp {
         context: &egui::Context,
         read: impl FnOnce(&Path, &CancelToken) -> DwgRead + Send + 'static,
     ) {
+        self.queue_converted_read(path, context, read);
+    }
+
+    fn queue_converted_read<R: Into<ConvertedRead>>(
+        &mut self,
+        path: PathBuf,
+        context: &egui::Context,
+        read: impl FnOnce(&Path, &CancelToken) -> R + Send + 'static,
+    ) {
         let (sender, receiver) = std::sync::mpsc::channel();
         let cancel = CancelToken::default();
         let (thread_path, thread_cancel, repaint) = (path.clone(), cancel.clone(), context.clone());
         std::thread::spawn(move || {
-            if sender.send(read(&thread_path, &thread_cancel)).is_ok() {
+            if sender
+                .send(read(&thread_path, &thread_cancel).into())
+                .is_ok()
+            {
                 repaint.request_repaint();
             }
         });
@@ -115,16 +166,18 @@ impl KetchupApp {
         let result = match task.receiver.try_recv() {
             Ok(result) => result,
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(ImportError::failed(
-                ImportFormat::Dxf,
-                "the thread that reads the DWG file stopped",
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => ConvertedRead::Dwg(Err(
+                ImportError::failed(ImportFormat::Dxf, "the thread that reads the file stopped"),
             )),
         };
         let task = self.file.activity.dwg_reading.take().expect("polled task");
         match result {
             // Held until the review's plan holds it.
-            Ok((source, _held)) => self.open_drawing_import(task.path, source),
-            Err(error) => self.report_import_failure(&task.path, &error),
+            ConvertedRead::Dwg(Ok((source, _held))) => self.open_drawing_import(task.path, source),
+            ConvertedRead::Skp(Ok((source, _held))) => self.open_glb_import(task.path, source),
+            ConvertedRead::Dwg(Err(error)) | ConvertedRead::Skp(Err(error)) => {
+                self.report_import_failure(&task.path, &error);
+            }
         }
         context.request_repaint();
     }

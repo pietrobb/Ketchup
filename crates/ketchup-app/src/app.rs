@@ -86,6 +86,7 @@ mod scene_tabs_tests;
 mod section;
 mod selection;
 mod shell;
+pub(crate) mod skp_import;
 pub(crate) mod spaces_ui;
 #[cfg(test)]
 #[path = "app/spaces_ui_tests.rs"]

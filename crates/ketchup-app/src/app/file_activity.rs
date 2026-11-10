@@ -269,8 +269,8 @@ impl KetchupApp {
         }
         let command = if self.file.activity.opening.is_some() {
             AppCommand::Open
-        } else if self.file.activity.dwg_reading.is_some() {
-            AppCommand::ImportDrawingDxf
+        } else if let Some(task) = &self.file.activity.dwg_reading {
+            task.command()
         } else if let Some(task) = &self.file.activity.exact_import_reading {
             task.command()
         } else if self.file.activity.underlay.reading.is_some() {

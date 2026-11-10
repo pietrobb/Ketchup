@@ -66,6 +66,8 @@ mod program_edit;
 mod project_drawings_job;
 #[path = "room_areas_tests.rs"]
 mod room_areas;
+#[path = "skp_import_tests.rs"]
+mod skp_import;
 #[path = "underlay_objects_tests.rs"]
 mod underlay_objects;
 #[path = "underlay_program_tests.rs"]
