@@ -1046,6 +1046,7 @@ fn an_underlay_is_added_and_removed_with_its_tags_in_one_undo_step_each() {
         &underlay.hidden_layers,
         lines,
         offset,
+        None,
     )
     .unwrap();
     document.apply_batch(&batch).unwrap();
@@ -1090,6 +1091,7 @@ fn underlays_in_one_national_grid_share_the_documents_origin() {
             &underlay.hidden_layers,
             lines,
             offset,
+            None,
         )
         .unwrap();
         document.apply_batch(&batch).unwrap();
@@ -1154,6 +1156,7 @@ fn a_two_point_fit_places_the_underlay_on_the_model_in_one_undo_step() {
         &underlay.hidden_layers,
         sha256_bytes(&bytes),
         [0.0; 2],
+        None,
     )
     .unwrap();
     document.apply_batch(&batch).unwrap();
@@ -1271,6 +1274,7 @@ fn a_placement_past_the_bounds_is_refused_by_the_document_not_only_by_the_fit() 
         &underlay.hidden_layers,
         sha256_bytes(&underlay.lines.encode()),
         [0.0; 2],
+        None,
     )
     .unwrap();
     document.apply_batch(&batch).unwrap();
@@ -1326,6 +1330,7 @@ fn a_file_with_an_underlay_out_of_range_opens_with_it_reset_and_says_so() {
         &underlay.hidden_layers,
         sha256_bytes(&underlay.lines.encode()),
         [0.0; 2],
+        None,
     )
     .unwrap();
     document.apply_batch(&batch).unwrap();

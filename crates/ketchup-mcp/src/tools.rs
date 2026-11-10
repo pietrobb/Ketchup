@@ -308,6 +308,7 @@ impl Tools {
                     &mut args,
                     &[
                         "remove",
+                        "discard_refused",
                         "draw",
                         "rooms",
                         "move",

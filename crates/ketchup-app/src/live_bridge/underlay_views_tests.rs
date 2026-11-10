@@ -60,6 +60,7 @@ fn plan_and_aligned() -> (KetchupApp, LiveBridge, [f64; 2]) {
         unit: None,
         as_underlay: true,
         revision_of: None,
+        code_page: None,
     };
     bridge.execute(&mut app, import, false).unwrap();
     let ids = app
@@ -325,6 +326,7 @@ fn imported_copies(sheet: &str, copies: usize) -> (KetchupApp, LiveBridge, [f64;
             unit: None,
             as_underlay: true,
             revision_of: None,
+            code_page: None,
         };
         bridge.execute(&mut app, import, false).unwrap();
     }

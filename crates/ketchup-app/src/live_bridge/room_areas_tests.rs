@@ -60,6 +60,7 @@ fn import(path: &std::path::Path) -> Request {
         unit: None,
         as_underlay: true,
         revision_of: None,
+        code_page: None,
     }
 }
 

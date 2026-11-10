@@ -360,7 +360,8 @@ fn draw_views(
 /// to draw, or no plan is asked for; [`ProjectDrawingError::DoesNotFit`] when
 /// a sheet does not fit its format at the scale the options fix;
 /// [`ProjectDrawingError::TitleValueDoesNotFit`] when a title block value
-/// does not fit its cell.
+/// does not fit its cell; [`ProjectDrawingError::StoreyTable`] when the
+/// model contradicts a row of the table of storeys.
 pub fn drawing_set(
     solids: &[DrawingSolid],
     options: &DrawingSetOptions,
@@ -394,6 +395,8 @@ pub fn drawing_set_until(
         (Some(bounds), None) | (None, Some(bounds)) => bounds,
         (None, None) => return Err(ProjectDrawingError::Empty),
     };
+    super::storey_table::check(&options.storeys, solids)?;
+    stopped()?;
     let first_cut = options
         .plans
         .first()

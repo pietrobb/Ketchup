@@ -140,7 +140,7 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         Validation,
         "underlay_id",
         "A change made to an object of the drawing does not go into its file; caused_by names the object and why (it has no handle, its handle is not in the file, its kind cannot be moved there, or its entity reads otherwise in the file than when imported: what differs, where it lay and lies now). Nothing was written.",
-        "Undo the change of each object caused_by names, or ask the user to press Discard in the window's export message, which keeps the other edits; then export again. Only an object of a kind that cannot be moved there may be removed instead.",
+        "Discard those edits with drawing action=discard_refused (object_ids from details, the default), which keeps the other edits, or undo the change of each object caused_by names; then export again. Only an object of a kind that cannot be moved there may be removed instead.",
     ),
     entry(
         "drawing_sheet_not_found",
@@ -792,6 +792,13 @@ pub const HOST_REJECTIONS: &[HostRejection] = &[
         "workset_handle",
         "The document changed since the workset was created.",
         "Create the workset again from the current document.",
+    ),
+    entry(
+        "storey_table_contradicts_model",
+        Validation,
+        "storeys",
+        "A row of the table of storeys does not describe the model, so the plans and level marks drawn from it would be wrong: its structure is above its finished floor, its floor is another row's, it lies under the model or not under its top, or the model has no face to stand on (looking up, with no solid lying on it) up to 50 mm under it. The details name the row (from 1), its levels and which. Nothing was written.",
+        "Correct or remove that row of storeys, or pass storeys: auto to find the storeys from the model, then export again.",
     ),
     entry(
         "superseded_by_another_client",

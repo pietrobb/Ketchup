@@ -490,6 +490,10 @@ pub(super) struct TextEncoding {
     /// in: UTF-8 is read in its place, or the code page read was doubted, as the text is
     /// valid UTF-8 too.
     against_header: bool,
+    /// Whether the code page was the user's choice ([`DxfCodePage`]).
+    pub(super) chosen: bool,
+    /// Whether the user chose another code page than the header names.
+    chosen_over_header: bool,
 }
 
 impl TextEncoding {
@@ -498,6 +502,7 @@ impl TextEncoding {
     pub(super) fn code_page_over_header(&self) -> Option<&str> {
         match (&self.code_page, &self.read) {
             (Some(_), Some((read, Some(named)))) if read != named => Some(read),
+            (Some(_), Some((read, None))) if self.chosen_over_header => Some(read),
             _ => None,
         }
     }
@@ -622,22 +627,43 @@ impl TextSeen {
     /// is doubted; a file read in the code page that is valid UTF-8 beyond ASCII is always
     /// doubted, as both readings are possible (review 2026-11-04 UL-141: one character sent
     /// a whole UTF-8 file through the code page, unsaid; r19 UL-160: „Δh“ read „Î”h“ and
-    /// „ε“ read „Îµ“, unsaid).
-    pub(super) fn decide(self) -> Result<TextEncoding, DxfImportError> {
+    /// „ε“ read „Îµ“, unsaid). A code page `chosen` by the user is obeyed instead; a
+    /// drawing of DXF 2007 or later, always UTF-8, refuses it.
+    pub(super) fn decide(
+        self,
+        chosen: Option<DxfCodePage>,
+    ) -> Result<TextEncoding, DxfImportError> {
         if self.lines == 0 {
             return Err(DxfImportError::Empty);
         }
-        let name = self
+        let before_2007 = self
             .acadver
             .value
-            .is_none_or(|version| version.as_slice() < b"AC1021".as_slice())
-            .then_some(self.code_page.value)
-            .flatten();
+            .as_ref()
+            .is_none_or(|version| version.as_slice() < b"AC1021".as_slice());
+        let name = before_2007.then_some(self.code_page.value).flatten();
+        if let Some(chosen) = chosen {
+            if !before_2007 {
+                return Err(DxfImportError::CodePageOfUtf8Drawing);
+            }
+            let header = name.as_deref().map(code_page_name);
+            // A drawing whose header names no code page is written back escaped, as no
+            // header names the one chosen.
+            return Ok(TextEncoding {
+                code_page: Some(chosen.code_page().ok_or(DxfImportError::NonAscii)?),
+                read: Some((chosen.name().to_owned(), None)),
+                against_header: header.is_none() || (self.utf8 && !self.beyond_ascii.is_empty()),
+                chosen: true,
+                chosen_over_header: header.is_some_and(|header| header != chosen.name()),
+            });
+        }
         let named = name.as_deref().and_then(code_page_encoding);
         let utf8 = |read| TextEncoding {
             code_page: None,
             read,
             against_header: named.is_some(),
+            chosen: false,
+            chosen_over_header: false,
         };
         if self.utf8 {
             let Some(named) = named else {
@@ -683,14 +709,18 @@ impl TextSeen {
             code_page: Some(code_page),
             read: Some((read, doubted)),
             against_header: both_readings,
+            chosen: false,
+            chosen_over_header: false,
         })
     }
 }
 
-/// The text of a DXF file as [`TextSeen::decide`] reads it, and what is said of that.
+/// The text of a DXF file as [`TextSeen::decide`] reads it, with `chosen` the code page
+/// the user chose, and how it was read.
 pub(super) fn dxf_source_text(
     source: &[u8],
-) -> Result<(Cow<'_, str>, Option<CodePageRead>), DxfImportError> {
+    chosen: Option<DxfCodePage>,
+) -> Result<(Cow<'_, str>, TextEncoding), DxfImportError> {
     if source.is_empty() {
         return Err(DxfImportError::Empty);
     }
@@ -698,20 +728,20 @@ pub(super) fn dxf_source_text(
     for line in source.split(|byte| *byte == b'\n') {
         seen.see(line);
     }
-    let encoding = seen.decide()?;
+    let encoding = seen.decide(chosen)?;
     let source = source
         .strip_prefix(super::BYTE_ORDER_MARK)
         .unwrap_or(source);
     if encoding.code_page.is_none()
         && let Ok(text) = std::str::from_utf8(source)
     {
-        return Ok((Cow::Borrowed(text), encoding.read));
+        return Ok((Cow::Borrowed(text), encoding));
     }
     let text = encoding
         .code_page
         .and_then(|code_page| code_page.decode(source))
         .ok_or(DxfImportError::NonAscii)?;
-    Ok((text, encoding.read))
+    Ok((text, encoding))
 }
 
 /// The value of the first header variable of a name, seen line by line.
@@ -767,6 +797,67 @@ pub(super) fn code_page_encoding(name: &[u8]) -> Option<CodePage> {
         _ => return None,
     };
     Some(CodePage::Standard(encoding))
+}
+
+/// A code page the user chose to read a drawing before DXF 2007 in, over the one its
+/// header names (review 2026-11-09 UL-303: the guess can stay wrong): one of those
+/// [`code_page_encoding`] reads, by its `$DWGCODEPAGE` name.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct DxfCodePage(&'static str);
+
+impl DxfCodePage {
+    /// Every code page a drawing may be read in, Central European first.
+    pub const ALL: [Self; 17] = [
+        Self("ANSI_1250"),
+        Self("ANSI_1252"),
+        Self("DOS852"),
+        Self("DOS850"),
+        Self("ANSI_1251"),
+        Self("DOS866"),
+        Self("ANSI_1253"),
+        Self("ANSI_1254"),
+        Self("ANSI_1255"),
+        Self("ANSI_1256"),
+        Self("ANSI_1257"),
+        Self("ANSI_1258"),
+        Self("ANSI_874"),
+        Self("ANSI_932"),
+        Self("ANSI_936"),
+        Self("ANSI_949"),
+        Self("ANSI_950"),
+    ];
+
+    /// The code page of the `$DWGCODEPAGE` name `name`, in any case.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|page| page.0.eq_ignore_ascii_case(name.trim()))
+    }
+
+    /// Its `$DWGCODEPAGE` name, as AutoCAD writes it: `ANSI_1250`.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        self.0
+    }
+
+    fn code_page(self) -> Option<CodePage> {
+        code_page_encoding(self.0.as_bytes())
+    }
+}
+
+impl serde::Serialize for DxfCodePage {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for DxfCodePage {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        Self::parse(&name)
+            .ok_or_else(|| serde::de::Error::custom(format_args!("no code page named {name}")))
+    }
 }
 
 /// Bytes 128 to 255 of DOS code page 850 (Western Europe).

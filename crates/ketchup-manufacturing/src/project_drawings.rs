@@ -33,6 +33,7 @@ mod plan_overlap;
 mod section_marks;
 mod set;
 mod shop;
+mod storey_table;
 mod table;
 mod threads;
 mod view_page;
@@ -49,6 +50,7 @@ pub use set::{
     drawing_set_until,
 };
 pub use shop::{ShopDrawings, ShopPosition, ShopSheet, ShopSummary};
+pub use storey_table::{ModelFloors, NEAR_FLOOR_MM, StoreyTableError, StoreyTableProblem};
 pub use threads::DrawingThread;
 use threads::ThreadMarks;
 use view_page::draw_view_on_page;
@@ -147,6 +149,8 @@ pub enum ProjectDrawingError {
     TitleValueDoesNotFit(TitleValueDoesNotFit),
     /// The revision table would lose a revision.
     RevisionsDoNotFit(RevisionsDoNotFit),
+    /// A row of the table of storeys the model contradicts.
+    StoreyTable(StoreyTableError),
     /// The caller stopped the set before it was drawn.
     Cancelled,
 }
@@ -179,6 +183,7 @@ impl std::fmt::Display for ProjectDrawingError {
             ),
             Self::TitleValueDoesNotFit(error) => error.fmt(formatter),
             Self::RevisionsDoNotFit(error) => error.fmt(formatter),
+            Self::StoreyTable(error) => error.fmt(formatter),
             Self::Cancelled => formatter.write_str("the drawing was cancelled"),
         }
     }
@@ -1264,21 +1269,28 @@ pub fn storeys(solids: &[DrawingSolid], above_floor_mm: f64) -> Vec<Storey> {
     let Some((min, max)) = bounds(solids) else {
         return Vec::new();
     };
-    let mut storeys: Vec<Storey> = Vec::new();
-    for floor in floor_levels(solids) {
-        let cut = floor + above_floor_mm;
-        if cut < max[2] && storeys.last().is_none_or(|below| floor > below.cut_mm) {
-            storeys.push(Storey {
-                floor_mm: Some(floor),
-                cut_mm: cut,
-            });
-        }
-    }
+    let mut storeys = storeys_on(&floor_levels(solids), max[2], above_floor_mm);
     if storeys.is_empty() {
         storeys.push(Storey {
             floor_mm: None,
             cut_mm: f64::midpoint(min[2], max[2]),
         });
+    }
+    storeys
+}
+
+/// The storeys on `floors`, lowest first, of a model up to `top_mm`, as
+/// [`storeys`] finds them; none when no floor is that far below the top.
+fn storeys_on(floors: &[f64], top_mm: f64, above_floor_mm: f64) -> Vec<Storey> {
+    let mut storeys: Vec<Storey> = Vec::new();
+    for &floor in floors {
+        let cut = floor + above_floor_mm;
+        if cut < top_mm && storeys.last().is_none_or(|below| floor > below.cut_mm) {
+            storeys.push(Storey {
+                floor_mm: Some(floor),
+                cut_mm: cut,
+            });
+        }
     }
     storeys
 }

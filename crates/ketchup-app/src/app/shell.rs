@@ -1615,6 +1615,7 @@ impl KetchupApp {
         self.show_stl_import_window(context);
         self.show_dxf_import_window(context);
         self.show_underlay_unit_window(context);
+        self.show_underlay_code_page_window(context);
         self.show_step_import_window(context);
         self.show_iges_import_window(context);
         self.show_sketchup_scene_import_window(context);

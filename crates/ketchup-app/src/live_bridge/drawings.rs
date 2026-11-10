@@ -17,7 +17,7 @@ use crate::app::project_drawings::{
 use crate::app::underlay_export::PublishGate;
 use crate::export_bundle::ExportTransactionError;
 use ketchup_manufacturing::dxf_annotations::MAX_PLAN_SCALE;
-use ketchup_manufacturing::project_drawings::DrawingSet;
+use ketchup_manufacturing::project_drawings::{DrawingSet, StoreyTableProblem};
 use ketchup_manufacturing::revision_table::SheetRevision;
 use ketchup_manufacturing::title_block::{
     SheetFormat, SheetLanguage, SheetSettings, StoreyLevels, TitleField,
@@ -618,6 +618,16 @@ fn north_tenths(value: &Value) -> Option<Option<i32>> {
     format!("{:.0}", degrees * 10.0).parse().ok().map(Some)
 }
 
+/// Why a row of the table of storeys was refused, as the details name it.
+fn storey_problem(problem: StoreyTableProblem) -> Value {
+    match problem {
+        StoreyTableProblem::StructureAboveFloor => json!("structure_above_floor"),
+        StoreyTableProblem::SameFloorAs(other) => json!({"same_floor_as": other}),
+        StoreyTableProblem::OutsideModel => json!("outside_model"),
+        StoreyTableProblem::NoFloorInModel => json!("no_floor_in_model"),
+    }
+}
+
 /// The table of storeys as an answer names it, and where its storeys came from.
 fn storeys_answer(settings: &SheetSettings) -> Value {
     if settings.storeys.is_empty() {
@@ -953,6 +963,22 @@ pub(super) fn export_failed(error: ProjectDrawingsError) -> &'static str {
                 details,
             );
             "revisions_do_not_fit"
+        }
+        ProjectDrawingsError::Drawing(
+            ketchup_manufacturing::project_drawings::ProjectDrawingError::StoreyTable(error),
+        ) => {
+            // Review 2026-11-09 MF-300: a table the model contradicts.
+            let details = json!({
+                "storey": error.storey,
+                "finished_floor_mm": error.levels.finished_floor_mm,
+                "structural_mm": error.levels.structural_mm,
+                "problem": storey_problem(error.problem),
+            });
+            super::record_rejection(
+                &super::rejected("storey_table_contradicts_model").caused_by(error),
+                details,
+            );
+            "storey_table_contradicts_model"
         }
         ProjectDrawingsError::Drawing(error) => failed_because("drawings_unavailable", error),
         ProjectDrawingsError::NotEvaluated(parts) => failure(

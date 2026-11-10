@@ -23,6 +23,7 @@ it.
 | Finding | Status |
 |---|---|
 | R1109-MF-303: the overlap of plan areas is about cubic and Cancel does not stop it | Fixed, 0549d3c8 (PR #48): a piece wholly outside the half-plane is kept whole instead of split, the subtraction runs only against pieces whose bounding box overlaps, and every clip operation counts toward Cancel. Test first: a slab over an uneven mesh is cut only where they overlap; an ignored release perf test of 3200 triangles |
+| R1109-MF-300: the table of storeys is not checked | Fixed, branch `r38-storeys1109`: a table the model contradicts refuses the export of the drawings (PDF, DXF, DWG; window and MCP `storey_table_contradicts_model`), naming the row and why: its structure above its finished floor, its floor another row's, its floor under the model or not under its top, or no face of the model to stand on (looking up, not wholly under a solid lying on it) up to 50 mm under its floor (0/3500 against the floors at 200 and 2954; 2712, the lining under the joists, and 2932, the joists under the OSB). "Add a storey" in an empty table fills in the storeys found in the model, each structure at its floor, instead of one row of 0/0; measured by the area no solid lies on, it fills 200/2954 on the tiny house, not the lining at 2712 (capability review of PR #54) |
 
 ## Security (§7 point 3, branch `r33-sec1109`)
 
@@ -47,6 +48,16 @@ it.
 |---|---|
 | R1109-REL-300: the 0.3.2 release on GitHub has wrong sums and notes | Fixed 2026-11-09 on the release itself, its files unchanged: `SHA256SUMS.txt` names only the four downloads with LF line ends (the first named `payload/package-manifest.json` and had CRLF), and `sha256sum -c SHA256SUMS.txt` over the four downloaded into an empty folder answers OK for each. The notes say Cancel stops only the meshing of the FEA review, not a running solve, and carry the known issue of woodWOP programs with LF line ends with its workarounds, as `CHANGELOG.md` does. Issue #29, fixed by f23b50bb, is closed |
 
+## Underlays (§4.3, branch `r37-p3docs1109`)
+
+| Finding | Status |
+|---|---|
+| R1109-UL-300: an ARC of 360 / 0 or 180 / −180 is dropped | Fixed, bb4abe28: an arc whose end is a whole number of turns from its start reads and draws as its circle, as `ezdxf`, HATCH edges and the writer take it |
+| R1109-UL-301: `InvalidShape` does not tell what an arc needs | Fixed, bb4abe28: the refusal says an arc needs an end that is not its start (an end whole turns from it draws a circle) and a fill a first ring with an area |
+| R1109-UL-303: "Dĺžka steny, Hĺbka základu" stays in 1252 with only a warning; no choice of code page on import | Fixed (saved as format 110, which 0.3.2 refuses as newer): an underlay whose code page is doubtful opens a window with its layer names and texts as read, kept or read again in a chosen code page; MCP `file action=import as_underlay=true code_page=…` (the 17 `$DWGCODEPAGE` names); the underlay keeps it for `revision_of` imports and writes it into `$DWGCODEPAGE` on DXF export |
+| R1109-CD-300: the hint tells the AI to have the user press Discard, but an export by the AI sets no Discard and MCP has none | Fixed: an export by the AI that refuses edits sets the window's Discard as one from the menu does, and `drawing action=discard_refused` (object ids from the refusal's `details.object_ids`, the default) discards them, keeping the other edits, as one Undo step; the hint names it |
+| R1109-CD-301: texts too long of the file and drawn in Kečup together are `drawing_edit_not_writable` | Fixed, eb0142ef: the code of several refusals is the one each has when they share it, else `drawing_edit_not_writable` only when one of them is an edit Discard repairs; a text of the file and one drawn in Kečup, also nested, are `drawing_text_too_long`, whose hint tells to shorten them, not to press a Discard that is not there |
+
 ## P3 statics (§4.3, branch `r35-p3statics1109`)
 
 | Finding | Status |
@@ -66,3 +77,12 @@ it.
 | R1109-MCP-305: the take-over dialog names the connected AI, not the one asking | Fixed, 950b8b64: the attach request carries the AI's name (at most 40 printable characters, unverified like `hello`'s) and the dialog names the AI asking and the one connected; a window older than the field hangs up on it and the MCP server asks it again without the name |
 | R1109-SEC-301: a home that is a link of root's turns off the owner check | Fixed, branch `r39-p3sec1109`; SEC-300 alone did not remove it, as the review's §7 expected: the owner of the folder a file is named in was read without following links, so `~/.claude.json` under a home linked by root (`/home/u -> /data/u`) was root's, written as root with every check off. A link of root's now stands for the folder it leads to, and the write runs as that folder's owner; anyone else's link stays theirs (test of the rule; as root in WSL, with the home root's link to the user's folder and `.claude.json` the user's link to a file of root's, the write is refused and root's file kept, where without the fix root wrote it) |
 | `FileIdInfo` has no fallback to the file index | Fixed, 950b8b64: where Windows gives no 128-bit id (FAT, SMB) the 64-bit file index stands for it, as NTFS's id reads, so the file keeps an identity |
+
+## P3 CI and tests (§4.3, branch `r40-p3tests1109`)
+
+| Finding | Status |
+|---|---|
+| R1109-TST-303: `_ = save(x);`, `writeln!(stderr())`, `todo!`, `unimplemented!` and `dbg!` are counted nowhere | Fixed, 06975b54: clippy's `todo`, `unimplemented` and `dbg_macro` join the forced lints of `check_clippy_panics.py`; `check_error_hygiene.py` counts `_ = call();` as `let_underscore`, `stderr()` outside an entry point as `stderr_write` (the one in `ketchup-rejection`'s logger recorded) and `dbg!` in a `macro_rules!`. A test runs the real clippy on a small crate holding each form |
+| R1109-TST-304: the deadline check is narrow, 8 s in `live_bridge_bootstrap.rs` | Fixed, 06975b54: an `if` past a deadline, either way round, whose block fails the test after other statements (a child killed first) counts; the bootstrap test waits 60 s, only against a hang |
+| R1109-TST-305: each change writes its module's new size into the frozen list | Fixed, 06975b54: `check_crate_layers.py` compares `FROZEN_MODULES` with the commit before (a PR's merge commit has `main` first): an entry may only go down, and one added may not be past 3 000 lines; the Python job checks out two commits |
+| R1109-DOC-300: `R<MMDD>` collides for two reviews of one day | Fixed, 06975b54: AGENTS.md §7, a second review of a day names its round as its file does, `R1106r23-` |

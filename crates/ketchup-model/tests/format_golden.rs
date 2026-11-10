@@ -12,6 +12,7 @@ use ketchup_model::annotation::{Annotation, AnnotationMark};
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DocumentStore, GroupId, TagId, Transform,
 };
+use ketchup_model::import::DxfCodePage;
 use ketchup_model::persistence::{self, ContainerData, LoadNotice, LoadOutcome};
 use ketchup_model::underlay::drawn::{AddedObject, DrawnShape};
 use std::collections::BTreeSet;
@@ -76,10 +77,16 @@ const SAVED_108: &str = concat!(
     "/tests/fixtures/persistence/format108.bin"
 );
 
+/// Format 109 as Save wrote it: the format 108 file with a room's fill drawn.
+const SAVED_109: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/persistence/format109.bin"
+);
+
 /// The current format as Save writes it: the current revision alone.
 const GOLDEN: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/persistence/format109.bin"
+    "/tests/fixtures/persistence/format110.bin"
 );
 
 /// Canonical digest of the current revision each fixture was written with.
@@ -91,6 +98,7 @@ const DIGEST_106: &str = "29680d90129178f6";
 const DIGEST_107: &str = "294cafaafcee8159";
 const DIGEST_108: &str = "e83d7833a1941e55";
 const DIGEST_109: &str = "64387e679e6cc938";
+const DIGEST_110: &str = "78f4d25425866c66";
 const DIGEST_RELEASE_0_3_0: &str = "3e767c0ebaf2d5b1";
 
 /// The document of a fixture, checked to open at `digest` with no Undo steps.
@@ -194,7 +202,8 @@ fn a_file_saved_by_kecup_0_3_0_opens_with_its_text_and_view_and_saves_the_same()
 /// in the oldest format that holds it: without underlays and annotations as format 103,
 /// the very snapshot bytes 0.2.0 itself saved, with an underlay as format 104; with
 /// annotations 105; with an edited underlay 106; with a stretched line 107; with a
-/// logical group 108; with a fill drawn into a drawing 109 (the golden).
+/// logical group 108; with a fill drawn into a drawing 109; with a drawing read in a code
+/// page the user chose 110 (the golden).
 #[test]
 fn a_document_is_saved_in_the_oldest_format_that_holds_it() {
     for (path, schema, digest) in [
@@ -205,6 +214,7 @@ fn a_document_is_saved_in_the_oldest_format_that_holds_it() {
         (SAVED_106, 106, DIGEST_106),
         (SAVED_107, 107, DIGEST_107),
         (SAVED_108, 108, DIGEST_108),
+        (SAVED_109, 109, DIGEST_109),
     ] {
         let (document, _) = opened(path, schema, digest);
         let snapshot = persistence::save(&document.current());
@@ -373,11 +383,12 @@ fn files_for_released_versions_are_in_the_format_their_document_needs() {
         ("release-0.3.0", RELEASE_0_3_0, 106, DIGEST_RELEASE_0_3_0),
         ("stretched-line", SAVED_107, 107, DIGEST_107),
         ("logical-group", SAVED_108, 108, DIGEST_108),
+        ("drawn-fill", SAVED_109, 109, DIGEST_109),
         (
-            "drawn-fill",
+            "chosen-code-page",
             GOLDEN,
             persistence::CURRENT_SCHEMA,
-            DIGEST_109,
+            DIGEST_110,
         ),
     ] {
         let (document, container) = opened(path, schema, digest);
@@ -613,7 +624,7 @@ fn drawn_fill(layer: &str) -> AddedObject {
 /// 2026-11-08 §5.3): Kečup 0.3.2 reads 108 and does not know the shape. The format 108
 /// file with a room's fill drawn, a column left out of it.
 #[test]
-fn a_format_108_document_with_a_drawn_fill_saves_the_golden() {
+fn a_format_108_document_with_a_drawn_fill_saves_the_format_109_file() {
     let (mut document, container) = opened(SAVED_108, 108, DIGEST_108);
     let mut underlay = document.current().underlays().next().unwrap().clone();
     underlay
@@ -626,23 +637,64 @@ fn a_format_108_document_with_a_drawn_fill_saves_the_golden() {
         )]))
         .unwrap();
     let saved = persistence::save_document_store_current_snapshot(&document, &container).unwrap();
+    assert_eq!(document.current().canonical_digest(), DIGEST_109);
+    assert_eq!(saved, std::fs::read(SAVED_109).unwrap());
+    let (reopened, _) = opened(SAVED_109, 109, DIGEST_109);
+    assert_eq!(reopened.current().underlays().next(), Some(&underlay));
+    assert!(reopened.current().group(LOGICAL_GROUP).unwrap().logical());
+}
+
+/// Format 110 adds the code page the user chose to read an underlay's drawing in (review
+/// 2026-11-09 UL-303): Kečup 0.3.2 reads 109 and would drop it, so the drawing would be
+/// read and written back in the code page its header names again. The format 109 file
+/// with its drawing read in Central European.
+#[test]
+fn a_format_109_document_with_a_chosen_code_page_saves_the_golden() {
+    let (mut document, container) = opened(SAVED_109, 109, DIGEST_109);
+    let mut underlay = document.current().underlays().next().unwrap().clone();
+    underlay.code_page = DxfCodePage::parse("ANSI_1250");
+    document
+        .apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertUnderlay(
+            underlay.clone(),
+        )]))
+        .unwrap();
+    let saved = persistence::save_document_store_current_snapshot(&document, &container).unwrap();
     if ketchup_test_env::update_golden() {
         std::fs::write(GOLDEN, saved).unwrap();
         panic!("wrote {GOLDEN}");
     }
-    assert_eq!(document.current().canonical_digest(), DIGEST_109);
+    assert_eq!(document.current().canonical_digest(), DIGEST_110);
     let golden = std::fs::read(GOLDEN).unwrap();
     assert_eq!(
         saved, golden,
         "the saved form changed; see the module comment"
     );
-    let (reopened, container) = opened(GOLDEN, persistence::CURRENT_SCHEMA, DIGEST_109);
+    let (reopened, container) = opened(GOLDEN, persistence::CURRENT_SCHEMA, DIGEST_110);
     assert_eq!(reopened.current().underlays().next(), Some(&underlay));
     assert!(reopened.current().group(LOGICAL_GROUP).unwrap().logical());
     assert_eq!(
         persistence::save_document_store_current_snapshot(&reopened, &container).unwrap(),
         golden
     );
+}
+
+/// Only a chosen code page needs format 110: the format 109 file stays 109 until one is.
+#[test]
+fn a_chosen_code_page_needs_format_110() {
+    let (mut document, _) = opened(SAVED_109, 109, DIGEST_109);
+    let mut underlay = document.current().underlays().next().unwrap().clone();
+    let mut saved_format = |code_page: Option<DxfCodePage>| {
+        underlay.code_page = code_page;
+        document
+            .apply_batch(&CommandBatch::new(vec![CanonicalCommand::UpsertUnderlay(
+                underlay.clone(),
+            )]))
+            .unwrap();
+        let snapshot = persistence::save(&document.current());
+        u16::from_le_bytes([snapshot[10], snapshot[11]])
+    };
+    assert_eq!(saved_format(DxfCodePage::parse("DOS852")), 110);
+    assert_eq!(saved_format(None), 109);
 }
 
 /// Only a drawn fill needs format 109: a drawn line keeps the format 108 file at 108.
@@ -744,7 +796,8 @@ fn a_drawing_standing_as_a_view_is_saved_as_format_106() {
 /// document needs a new format number like any other new field (PS-4): `underlays` and an
 /// underlay's `placement` came with format 104, `annotations` with 105, an underlay's
 /// `edits` and `view` with 106, its `stretched_objects` with 107, a group's `logical`
-/// with 108; a drawn fill is a new shape, not a field, and came with 109.
+/// with 108; a drawn fill is a new shape, not a field, and came with 109; an underlay's
+/// `code_page` with 110.
 const OPTIONAL_FIELDS: &[&str] = &[
     "document.rs: annotations",
     "document.rs: contact_joints",
@@ -782,6 +835,7 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "import/dxf/rewrite/refusal.rs: written",
     // The comparison of two revisions answers the AI; it is never saved.
     "import/dxf/rewrite/revisions.rs: difference",
+    "underlay.rs: code_page",
     "underlay.rs: edits",
     "underlay.rs: placement",
     "underlay.rs: view",

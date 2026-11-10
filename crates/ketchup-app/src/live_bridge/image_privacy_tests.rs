@@ -1036,6 +1036,7 @@ fn the_image_paints_an_underlay_fill_under_its_line_beside_the_model() {
                 unit: None,
                 as_underlay: true,
                 revision_of: None,
+                code_page: None,
             },
             false,
         )

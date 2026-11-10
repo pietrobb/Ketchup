@@ -442,6 +442,7 @@ fn a_client_exports_the_edited_drawing_as_a_dxf_that_imports_as_edited() {
         unit: None,
         as_underlay: true,
         revision_of: None,
+        code_page: None,
     };
     bridge.execute(&mut app, import(&source), false).unwrap();
     let objects = top_level(&mut bridge, &mut app);
@@ -576,6 +577,84 @@ fn a_client_exports_the_edited_drawing_as_a_dxf_that_imports_as_edited() {
             .unwrap()
             .contains("1.01 Kitchen")
     );
+
+    // Review 2026-11-09 CD-300: the hint told the AI to have the user press Discard, but
+    // an export by the AI left the window none, and the AI had no Discard of its own. The
+    // refusal names the objects in its details, the window offers Discard for them, and
+    // `discard_refused` lets them go, keeping the other edits.
+    std::fs::remove_file(&refused).unwrap();
+    assert_eq!(
+        export_from(&DRAWING.replace("5\n2A\n", "5\n2B\n")).unwrap_err(),
+        "drawing_edit_not_writable"
+    );
+    let details = take_error_details().unwrap_or_default();
+    assert_eq!(details["details"]["object_ids"], json!([wall]), "{details}");
+    assert_eq!(
+        app.file.activity.underlay.refused_edit,
+        Some((
+            ketchup_model::underlay::UnderlayId(1),
+            vec![u32::try_from(wall).unwrap()]
+        ))
+    );
+    assert!(app.digest.contains("Discard"), "{}", app.digest);
+    let answer = bridge
+        .execute(
+            &mut app,
+            ask("drawing_discard_refused", json!({"underlay_id": 1})),
+            false,
+        )
+        .unwrap();
+    assert_eq!(answer["object_ids"], json!([wall]), "{answer}");
+    assert_eq!(app.file.activity.underlay.refused_edit, None);
+    let objects = bridge
+        .execute(
+            &mut app,
+            ask("underlay_objects", json!({"underlay_id": 1})),
+            false,
+        )
+        .unwrap();
+    assert_eq!(objects["kinds"], edited["kinds"], "{objects}\n{edited}");
+    std::fs::write(&other, DRAWING.replace("5\n2A\n", "5\n2B\n")).unwrap();
+    let answer = bridge
+        .execute(
+            &mut app,
+            ask(
+                "drawing_export",
+                json!({"underlay_id": 1, "path": refused.display().to_string(), "source": other.display().to_string()}),
+            ),
+            false,
+        )
+        .unwrap();
+    // The removed door and the line drawn are still written; only the move went.
+    assert_eq!(
+        answer["changes"],
+        json!({"removed": 1, "moved": 0, "stretched": 0, "added": 1}),
+        "{answer}"
+    );
+    // Named by id, without an export refused before; an object with no edit is refused.
+    assert_eq!(
+        bridge
+            .execute(
+                &mut app,
+                ask(
+                    "drawing_discard_refused",
+                    json!({"underlay_id": 1, "object_ids": [wall]}),
+                ),
+                false,
+            )
+            .unwrap_err(),
+        "entity_not_found"
+    );
+    assert_eq!(
+        bridge
+            .execute(
+                &mut app,
+                ask("drawing_discard_refused", json!({"underlay_id": 1})),
+                false,
+            )
+            .unwrap_err(),
+        "invalid_params"
+    );
 }
 
 /// Each reason a drawing is not written back has a code of its own whose hint repairs
@@ -682,6 +761,54 @@ fn a_drawing_export_refusal_has_the_code_of_its_cause() {
             ))),
             "drawing_text_too_long",
         ),
+        // Review 2026-11-09 CD-301: a text of the file and one drawn in Kečup together
+        // were told to press a Discard that is not there.
+        (
+            refused(UnderlayRefusal::NotWritten(DxfEditRefusal::Several(vec![
+                DxfEditRefusal::TextTooLong {
+                    kind: "TEXT".into(),
+                    handle: 0xB1,
+                    code: 1,
+                    characters: 2800,
+                    written: ketchup_model::import::TextWritten::Escaped,
+                },
+                DxfEditRefusal::DrawnTextTooLong {
+                    starts: "Poznámka".into(),
+                    characters: 2600,
+                    written: None,
+                },
+            ]))),
+            "drawing_text_too_long",
+        ),
+        (
+            refused(UnderlayRefusal::NotWritten(DxfEditRefusal::Several(vec![
+                DxfEditRefusal::DrawnTextTooLong {
+                    starts: "Poznámka".into(),
+                    characters: 2600,
+                    written: None,
+                },
+                DxfEditRefusal::Several(vec![DxfEditRefusal::TextTooLong {
+                    kind: "MTEXT".into(),
+                    handle: 0xB2,
+                    code: 3,
+                    characters: 2800,
+                    written: ketchup_model::import::TextWritten::CodePage,
+                }]),
+            ]))),
+            "drawing_text_too_long",
+        ),
+        // An edit Discard repairs among them: the code whose hint tells of Discard.
+        (
+            refused(UnderlayRefusal::NotWritten(DxfEditRefusal::Several(vec![
+                DxfEditRefusal::DrawnTextTooLong {
+                    starts: "Poznámka".into(),
+                    characters: 2600,
+                    written: None,
+                },
+                DxfEditRefusal::NoHandle { object: 4 },
+            ]))),
+            "drawing_edit_not_writable",
+        ),
         (
             Error::Worker(UnderlayWorkerError::Unavailable(
                 WorkerUnavailable::NotInstalled,
@@ -738,6 +865,7 @@ fn edited_beside_another_file() -> (
                 unit: None,
                 as_underlay: true,
                 revision_of: None,
+                code_page: None,
             },
             false,
         )
