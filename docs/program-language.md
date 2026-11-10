@@ -24,7 +24,7 @@ The full example is [`examples/programs/cabinet.star`](../examples/programs/cabi
 | Way | Command |
 |---|---|
 | Command line, no OCCT or GUI needed | `ketchup-program check cabinet.star --set width=700` |
-| Quick check of a large program or an edited prelude, no build | `ketchup-program check house.star --summary --prelude crates/ketchup-program/library/prelude.star` (parts per layer, statics, issues grouped by kind); `--diff saved.json` lists what changed against a summary saved earlier |
+| Quick check of a large program or an edited prelude, no build | `ketchup-program check house.star --summary --prelude crates/ketchup-program/library/prelude.star` (parts per layer, statics, issues grouped by kind); `--diff saved.json` lists what changed against a summary saved earlier; `--calculation sk` (or `cz`) prints the printable structural calculation as A4 HTML instead |
 | Headless protocol | `program_check` (report only), `program_apply` (replace the document, one undo step) |
 | Python SDK | `session.check_program(source, params={...})`, `session.program_document(source, ...)` |
 | AI agent (MCP, `ketchup-app --mcp`) | `program` with `action=apply` in the open window; `action=docs` lists the library topics, `name=<topic>` returns one |
@@ -32,7 +32,10 @@ The full example is [`examples/programs/cabinet.star`](../examples/programs/cabi
 `ketchup-program check` exits with 0 when the program has no error-level issue and its
 statics, if it has any, are verified; 1 for an error-level issue or a failing member or
 joint; 3 when nothing fails but a member or joint is not verified or a load reaches no
-member (`statics_verdict` in the summary); 2 when the program cannot be evaluated.
+member (`statics_verdict` in the summary); 2 when the program cannot be evaluated, or
+not as asked: a `--set` name the program has no `param()` of is listed in
+`unused_overrides` and said on stderr with the parameter it likely means, in any case
+(`--set Snow_SK: the program has no parameter Snow_SK; did you mean snow_sk?`).
 
 The CLI/headless run returns the report below. MCP apply/patch returns a concise
 source diff, summary counts and bounded issue/relation previews. Retrieve complete
@@ -130,6 +133,8 @@ point and outward normal in the part's frame and in the world. An edge gives
 | `slide(axis, min, max)`, `rotate_motion(axis, min, max, pivot=)`, `assembly_step(motion, start=, end=)`, `tool_access(name, envelope=, motion=, start=, end=)` | a motion for `joint(kind="motion")` in mm or degrees; an insertion in source order; a tool envelope's approach, checked by the `assembly_path` and `tool_access` validators |
 | `keep_clear(zone, name=, only=, ignore=[], hint=)`, `load_path(only=, carriers=[], fixed=[], name=, ignore=[], hint=)` | a zone no part may reach into; members that must pass their weight down (a part leaning on or hanging from them needs a `joint()` or a `fixed` tag) |
 | `material_weight(material, source=, kg_m3=, kg_m2=)`, `weight_scope(tags)`, `area_load(name, kind=, kn_m2=, on=[tags], projected=True, source=)` | self weight and area loads in kN/m² on the load-path members |
+| `site(country, municipality=, altitude=, snow_zone=, sk=, source=)` | the building site, "SK" or "CZ": `.sk` the snow load on the ground from the national annex map (a Czech `snow_zone`, a Slovak `snow_zone` 1–5 with `altitude` by STN EN 1991-1-3/NA1 table NA.1, else `sk=` with `source=`), `.source`; altitude above 1000 m gives snow psi0 0.7; the design basis names it |
+| `thermal_check(name, layers=, element=, theta_e=, theta_i=20, phi_i=50, phi_e=84)` | the thermal check of a build-up (`buildup()` layers, inside first, with `lambda` or `r` and `mu` or `sd`, a framed layer's `infill_lambda`, `infill_mu`; layers from a `ventilated` one outward left out) as `element` (wall, steep_roof, roof, floor_over_exterior, ceiling_under_unheated, floor_on_ground) to the Slovak STN 73 0540-2 or the Czech CSN 73 0540-2 by `site()`: report section `thermal` with U (EN ISO 6946) against the requirement, the inner surface's f_Rsi against mould and condensation in the design winter state at `theta_e`; returns `.u`, `.r` |
 | `text(name, value, at=, height_mm=2.5, tags=)`, `dim(name, a, b, offset_mm=0, height_mm=2.5, tags=)`, `leader(name, value, point=, at=, height_mm=2.5, tags=)`, `polyline(name, points, closed=False, tags=)` | drawing annotations, no parts (never in the cut list, collisions, mass or takeoff): a text at a point, a dimension whose value Kečup measures between two points, an arrow from a point to a text, drawn lines; text height in mm on paper, the dimension offset in model mm; the library's `chain_dim(name, points, offset_mm=)` dimensions neighbouring points |
 | `timber_strength(material, strength_class=, service_class=, glulam=, fm_k=, fv_k=, fc0_k=, fc90_k=, e0_mean=, e0_05=, source=, rho_k=, product=)` | the EC5 characteristic values in N/mm² of one material, behind the library's `timber_design`; `product` (solid, glulam, lvl, plywood, osb2, osb3, osb4, particleboard_p5/p6/p7) picks its kmod, kdef and gamma_M; without it (and not `glulam`) the material's members are not verified |
 | `stock(material, lengths=None, sheets=None, kerf=0, trim=0, along=None)` | the stock lengths (bars) or sheets the made parts of a material are cut from, behind the library's `bar_stock` and `sheet_stock` and report section `cutting`. `along` declares which part attribute names the local axis (`"x"`, `"y"`) that runs along a sheet's length, e.g. the library's `"grain"`; for parts of that material only that attribute keeps the blank square to the axis, so name a direction attribute, never one such as `grid` |
@@ -171,11 +176,47 @@ parts that hold the compressed edge (the top under sagging, the bottom under
 hogging), bear on a part declared `grounded=True` beside the beam (across it,
 beyond its side) and are fastened to both by `joint()`;
 `loads.members[].braced_by` lists them. A grounded part must be stiff sideways
-(a wall, not a hinged stud). Every `joint()` fastens its parts except of the kinds
-`none`, `contact`, `friction`, `unfastened`, `loose`, `free` and `rests`; a load
+(a wall, not a hinged stud). A joint's `kind` is read against a closed catalogue
+in English, Slovak, Czech and German (`ketchup-program/src/joint_kind.rs`), in any
+case, with `_` and `-` read as spaces, by its leading words, so a side, size or
+product after them counts as it does (`vrut 6x120`, `Schraube links`). Kinds such
+as `none`, `contact`, `friction`, `unfastened`, `loose`, `free`, `rests`, `volne`,
+`kontakt`, `dotyk`, `lose`, `frei` or `nichts` fasten nothing; when a kind starts
+with words of both catalogues (`lose Schraube`), it fastens nothing. Kinds such as
+`screw`, `hanger`, `glue`, `vrut`, `spojka` or `Balkenschuh` fasten. A kind of neither is
+taken to fasten and reported as `joint_kind_unknown`, and every check standing on
+it (the members it joins or braces, its joint check) is `not_verified`. A load
 path's `fixed` tag passes weight but braces nothing. A joint's `kind` may not be
 empty; one of five letters or more that reads like a slip of a kind fastening
 nothing (`contcat`, `contacts`) fastens and is reported as `joint_kind_doubtful`.
+A brace holds the beam only when its material has a timber strength class
+(`timber_design` or `timber_strength`, OSB with `product="osb3"`); one of mineral
+wool or any undeclared material holds nothing, and the not-verified reason names
+it. `design.members[].bracing` gives, for each edge something braces, what each
+brace must take after EN 1995-1-1 9.2.5.2: `axial_n` = (1 - kcrit) M_d / h with
+kcrit of the beam unbraced, `force_n` = N_d / 60 (solid timber) or / 80 (glulam)
+and `stiffness_n_mm` = 4 N_d / a over the longest free stretch. The braces, their
+anchorage and their fasteners are not checked against it, nor a bracing of
+several members (9.2.5.3); the design basis says so.
+Two declarations say what the geometry cannot. `diaphragm(sheets,
+anchored_to=[...])` makes sheets (parts or tags), such as a deck screwed only to
+its joists, one stiff plane anchored to grounded parts: when every anchor is
+declared grounded and fastened where it touches one of the sheets, each sheet that
+reaches an anchor through sheets touching each other holds the members it is
+fastened to on the edge it lies on. `brace(members, by=[...], edge="top",
+spacing=None)` says which edge the parts `by` hold where they touch each member
+(a lath near mid-depth of a beam's side holds neither by itself), every `spacing`
+mm (at least 10) along the contact or at the joint's fasteners there. Where the
+geometry reads the other edge (a lath under the beam), that edge holds. Each
+brace must still be fastened to the member and anchored: declared grounded, a
+sheet of an anchored diaphragm, or fastened to a grounded part where they touch
+and across the member beyond its side. A declaration the geometry contradicts or
+that holds nothing is reported as `declared_bracing_ignored` with the reason; a
+joint of an unknown kind anywhere from the member through its braces to the
+ground leaves the member not verified. A part's `"length_axis"` attribute names
+the local axis its grain runs along (`"x"`, `"y"` or `"z"`, another value is
+refused); one naming an axis ten times shorter than the part's longest side
+leaves it not verified.
 A brace anchored to a grounded part smaller across the member than the member
 is deep is reported as `anchorage_small`. A brace holds the beam at its
 joint's `fasteners` that lie where the two parts touch, in any of their contacts

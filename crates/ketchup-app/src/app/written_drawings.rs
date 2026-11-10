@@ -23,6 +23,9 @@ use super::project_drawings::SHEET_NAMESPACE;
 use crate::recent_files::presence::{Presence, presence};
 use crate::recent_files::user_settings::SettingsFile;
 use crate::*;
+use write_targets::WRITE_TARGET;
+
+mod write_targets;
 
 /// The key of a written drawing's line.
 const DRAWING: &str = "drawing";
@@ -92,11 +95,11 @@ fn identity_of(path: &Path) -> std::io::Result<String> {
     }
     #[cfg(windows)]
     {
-        let information = winapi_util::file::information(std::fs::File::open(path)?)?;
-        Ok(format!(
-            "{:x}:{:x}",
+        let file = std::fs::File::open(path)?;
+        let information = winapi_util::file::information(&file)?;
+        Ok(windows_identity(
             information.volume_serial_number(),
-            information.file_index()
+            file_id_or_index(file_id_128(&file), information.file_index()),
         ))
     }
     #[cfg(not(any(unix, windows)))]
@@ -106,6 +109,59 @@ fn identity_of(path: &Path) -> std::io::Result<String> {
             format!("{} names no file identity on this system", path.display()),
         ))
     }
+}
+
+/// A file's identity on Windows: its volume's serial number and its 128-bit file id,
+/// which on NTFS is its 64-bit file index and reads as it did (review 2026-11-08: on
+/// ReFS the index alone does not tell one file from another).
+#[cfg(windows)]
+fn windows_identity(serial: u64, file_id: [u8; 16]) -> String {
+    format!("{serial:x}:{:x}", u128::from_le_bytes(file_id))
+}
+
+/// The file's 128-bit id, or where its file system gives none (FAT, an SMB share)
+/// its 64-bit file index, which is how NTFS's id reads (review 2026-11-09 P3: such a
+/// file had no identity).
+#[cfg(windows)]
+fn file_id_or_index(id: std::io::Result<[u8; 16]>, index: u64) -> [u8; 16] {
+    match id {
+        Ok(id) => id,
+        Err(error) => {
+            ketchup_rejection::log!("a file has no 128-bit id ({error}); its index stands for it");
+            u128::from(index).to_le_bytes()
+        }
+    }
+}
+
+/// The 128-bit id of `file` on its volume (`FileIdInfo`).
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn file_id_128(file: &std::fs::File) -> std::io::Result<[u8; 16]> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ID_128, FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
+    };
+    let mut information = FILE_ID_INFO {
+        VolumeSerialNumber: 0,
+        FileId: FILE_ID_128 {
+            Identifier: [0; 16],
+        },
+    };
+    let size = u32::try_from(std::mem::size_of::<FILE_ID_INFO>()).map_err(std::io::Error::other)?;
+    // SAFETY: `information` is a writable FILE_ID_INFO of `size` bytes, and the handle is
+    // the open `file`'s for the whole call.
+    let read = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileIdInfo,
+            std::ptr::from_mut(&mut information).cast(),
+            size,
+        )
+    };
+    if read == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(information.FileId.Identifier)
 }
 
 /// The saved document whose drawings are kept: its file's canonical path,
@@ -244,14 +300,17 @@ impl KetchupApp {
     }
 
     fn set_token(&mut self, token: String) {
-        let entry = ketchup_model::persistence::ExtensionEntry::new(
+        // Only the two constants can be refused; the save tests write the token
+        // (review 2026-11-08 MF-247: an `.expect` here went into the baseline).
+        match ketchup_model::persistence::ExtensionEntry::new(
             SHEET_NAMESPACE,
             TOKEN_PATH,
             false,
             token.into_bytes(),
-        )
-        .expect("the drawings namespace and the token's path are valid");
-        self.file.container_data.set_extension(entry);
+        ) {
+            Ok(entry) => self.file.container_data.set_extension(entry),
+            Err(error) => ketchup_rejection::log!("the drawings token is not kept: {error}"),
+        }
     }
 
     /// Before the document is saved as `path`: saved as a file other than
@@ -449,6 +508,7 @@ impl KetchupApp {
         if before.is_none() {
             self.wrote_drawings(unsaved);
         }
+        self.write_targets_saved(before.is_none());
     }
 
     /// The document was saved over its own file, which had the token and
@@ -470,23 +530,29 @@ impl KetchupApp {
         if before.token == now.token && before.id == now.id {
             return;
         }
-        // Those kept by its file here: the disk is not asked.
-        if let Err(error) =
-            store.update(DRAWING, |lines| kept_again(lines, &before, &now, |_| false))
-        {
-            ketchup_rejection::log!(
-                "the drawing files the document wrote are not kept by the file saved: {error}"
-            );
-            return;
+        // Those kept by its file here: the disk is not asked. The folders the
+        // AI may write into go along with the drawings (review 2026-11-08 §5.4).
+        for key in [DRAWING, WRITE_TARGET] {
+            if let Err(error) =
+                store.update(key, |lines| kept_again(lines, &before, &now, |_| false))
+            {
+                ketchup_rejection::log!(
+                    "the {key} lines of the document are not kept by the file saved: {error}"
+                );
+                return;
+            }
         }
         // Those kept by the file where it was: asked on a worker, before the
         // lock is taken.
-        let moved: Vec<PathBuf> = store
-            .values(DRAWING)
+        let moved: Vec<PathBuf> = [DRAWING, WRITE_TARGET]
             .iter()
-            .filter_map(|line| parsed(line))
-            .filter(|line| line.document != before.file && before.kept_by(line))
-            .map(|line| line.document)
+            .flat_map(|key| store.values(key))
+            .filter_map(|line| {
+                parsed(&line).map(|line| {
+                    (line.document != before.file && before.kept_by(&line)).then_some(line.document)
+                })
+            })
+            .flatten()
             .collect();
         if moved.is_empty() {
             return;
@@ -496,14 +562,16 @@ impl KetchupApp {
             if gone.is_empty() {
                 return;
             }
-            if let Err(error) = store.update(DRAWING, |lines| {
-                kept_again(lines, &before, &now, |document| {
-                    gone.iter().any(|path| path == document)
-                })
-            }) {
-                ketchup_rejection::log!(
-                    "the drawing files of the file moved are not kept by the file saved: {error}"
-                );
+            for key in [DRAWING, WRITE_TARGET] {
+                if let Err(error) = store.update(key, |lines| {
+                    kept_again(lines, &before, &now, |document| {
+                        gone.iter().any(|path| path == document)
+                    })
+                }) {
+                    ketchup_rejection::log!(
+                        "the {key} lines of the file moved are not kept by the file saved: {error}"
+                    );
+                }
             }
         }));
     }
@@ -557,20 +625,35 @@ fn forget_gone(store: &SettingsFile, owner: &Owner) {
         .filter(|line| is_gone(&line.drawing))
         .map(|line| (line.document, line.drawing))
         .collect();
+    forget(store, owner, &gone);
+}
+
+/// Forgets the lines of `gone`, each a document and its drawing found gone
+/// before the lock was taken, whose drawing is still not there under it: one
+/// another window wrote again meanwhile keeps its line (review 2026-11-07 r26
+/// P3). Only those drawings are asked for, and as they were gone, their
+/// folders answer.
+fn forget(store: &SettingsFile, owner: &Owner, gone: &[(PathBuf, PathBuf)]) {
     if gone.is_empty() {
         return;
     }
     // A line of a document deleted goes with its drawing too: no document
     // forgot them otherwise (review 2026-11-07 P3 `drawings.txt`).
     let forgotten = store.update(DRAWING, |lines| {
+        let back: Vec<&Path> = gone
+            .iter()
+            .map(|(_, drawing)| drawing.as_path())
+            .filter(|drawing| std::fs::symlink_metadata(drawing).is_ok())
+            .collect();
         lines
             .into_iter()
             .filter(|line| {
                 parsed(line).is_none_or(|line| {
-                    !gone.iter().any(|(document, drawing)| {
-                        *drawing == line.drawing
-                            && (owner.kept_by(&line) || *document == line.document)
-                    })
+                    back.contains(&line.drawing.as_path())
+                        || !gone.iter().any(|(document, drawing)| {
+                            *drawing == line.drawing
+                                && (owner.kept_by(&line) || *document == line.document)
+                        })
                 })
             })
             .collect()
@@ -584,4 +667,77 @@ fn forget_gone(store: &SettingsFile, owner: &Owner) {
 /// has the file at `path` with SHA-256 `sha256`, however the path is spelled.
 pub(crate) fn listed(written: &BTreeMap<String, String>, path: &Path, sha256: &str) -> bool {
     written_key(path).is_ok_and(|key| written.get(&key).is_some_and(|kept| kept == sha256))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review 2026-11-07 r26 P3: the drawings gone were found before the lock
+    /// was taken, so one another window wrote again meanwhile lost its line.
+    #[test]
+    fn a_drawing_written_again_before_the_lock_keeps_its_line() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SettingsFile::at(directory.path().join(FILE_NAME));
+        let document = directory.path().join("plan.ketchup");
+        let owner = Owner {
+            field: document.display().to_string(),
+            file: document.clone(),
+            token: Some("t".to_owned()),
+            id: None,
+        };
+        let drawing = directory.path().join("plan.dxf");
+        let line = owner.line(&drawing.display().to_string(), "abc");
+        store.replace(DRAWING, std::slice::from_ref(&line)).unwrap();
+        let gone = [(document, drawing.clone())];
+
+        std::fs::write(&drawing, b"written again").unwrap();
+        forget(&store, &owner, &gone);
+        assert_eq!(store.values(DRAWING), [line]);
+
+        std::fs::remove_file(&drawing).unwrap();
+        forget(&store, &owner, &gone);
+        assert!(store.values(DRAWING).is_empty());
+    }
+
+    /// Review 2026-11-08 (ReFS, a weak deferral): a file was known by its 64-bit file
+    /// index, which on ReFS does not tell it from another; its 128-bit id does. On NTFS
+    /// the id reads as the index did, so a line kept before still names its file.
+    #[cfg(windows)]
+    #[test]
+    fn a_file_is_known_by_its_128_bit_id_which_on_ntfs_reads_as_its_index() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("plan.ketchup");
+        std::fs::write(&path, b"x").unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let information = winapi_util::file::information(&file).unwrap();
+        assert_eq!(
+            identity_of(&path).unwrap(),
+            format!(
+                "{:x}:{:x}",
+                information.volume_serial_number(),
+                information.file_index()
+            )
+        );
+        let id = |high: u64| (u128::from(high) << 64 | 7).to_le_bytes();
+        assert_eq!(windows_identity(0xAB, id(0)), "ab:7");
+        assert_eq!(windows_identity(0xAB, id(1)), "ab:10000000000000007");
+    }
+
+    /// Review 2026-11-09 P3: where `FileIdInfo` fails (FAT, an SMB share) the file
+    /// had no identity at all; its 64-bit index, as NTFS's id reads, stands for it.
+    #[cfg(windows)]
+    #[test]
+    fn a_file_without_a_128_bit_id_is_known_by_its_index() {
+        let unsupported = || Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
+        assert_eq!(
+            windows_identity(0xAB, file_id_or_index(unsupported(), 7)),
+            "ab:7"
+        );
+        let id = (u128::from(1u64) << 64 | 7).to_le_bytes();
+        assert_eq!(
+            windows_identity(0xAB, file_id_or_index(Ok(id), 7)),
+            "ab:10000000000000007"
+        );
+    }
 }

@@ -17,6 +17,11 @@ const PINS: usize = 3;
 /// Two 100×50×18 timbers butted end to end at x = 100 and joined by a row of
 /// three Ø8 dowels drilled horizontally into both end faces.
 fn doweled_timbers(holes: AssistantPinHoles) -> Snapshot {
+    doweled_timbers_with_right_as(holes, TIMBER_MEMBER_ROLE_V1)
+}
+
+/// [`doweled_timbers`] with the right timber of fabrication role `right_role`.
+fn doweled_timbers_with_right_as(holes: AssistantPinHoles, right_role: &str) -> Snapshot {
     let mut document = DocumentStore::new();
     let timber = |name: &str, x| {
         cuboid_part(
@@ -74,13 +79,22 @@ fn doweled_timbers(holes: AssistantPinHoles) -> Snapshot {
     .unwrap();
     document.apply_batch(&joint).unwrap();
     let dimension = ClassificationDimensionId(900);
-    let category = ClassificationCategoryId(901);
+    let (timber, right) = (ClassificationCategoryId(901), ClassificationCategoryId(902));
+    let mut categories = vec![(timber, TIMBER_MEMBER_ROLE_V1.into())];
+    if right_role != TIMBER_MEMBER_ROLE_V1 {
+        categories.push((right, right_role.into()));
+    }
     let mut commands = vec![CanonicalCommand::UpsertClassificationDimension {
         id: dimension,
         name: FABRICATION_ROLE_DIMENSION_V1.into(),
-        categories: vec![(category, TIMBER_MEMBER_ROLE_V1.into())],
+        categories,
     }];
     for (occurrence, code) in [(1, "000000000061"), (2, "000000000062")] {
+        let category = if occurrence == 2 && right_role != TIMBER_MEMBER_ROLE_V1 {
+            right
+        } else {
+            timber
+        };
         commands.push(CanonicalCommand::SetOccurrenceClassification {
             occurrence_id: OccurrenceId(occurrence),
             dimension_id: dimension,
@@ -199,6 +213,82 @@ fn drilled_dowel_holes_are_machined_once_in_every_shop_format() {
         2 * PINS,
         "{drawing}"
     );
+}
+
+/// Review 2026-11-08 MF-140 (R1103), MF-246: the woodWOP program of one part
+/// left out the holes of its logical dowels the production package drills
+/// (`std::iter::empty()`), and a part with nothing else to machine was refused
+/// as having nothing to machine. The left timber, the only one made (the right
+/// one is bought), gets one drilling per dowel, as in the package.
+#[test]
+fn the_woodwop_program_of_one_part_drills_its_logical_dowel_holes() {
+    let _turn = crate::integration_support::file_turn();
+    let snapshot = doweled_timbers_with_right_as(
+        AssistantPinHoles::Logical,
+        ketchup_manufacturing::fabrication::PURCHASED_ITEM_ROLE_V1,
+    );
+    let projection = fabrication(&snapshot);
+    let mpr = projection
+        .woodwop_mpr_4_0_drill_export(&snapshot)
+        .expect("the one made part is programmed");
+    let mpr = String::from_utf8(mpr).unwrap();
+    assert_eq!(mpr.matches("\\BohrHoriz\\").count(), PINS, "{mpr}");
+}
+
+/// Review 2026-11-09 MF-305: dowels into a bought part. The woodWOP program,
+/// the HOMAG package and BTLx drilled the made side only and said nothing of
+/// the other, while the production job refused `UnmadePinHole`. Every format
+/// now writes the made side and names the same loss: the bought part's holes.
+#[test]
+fn every_shop_format_names_the_dowel_holes_of_a_bought_part_as_lost() {
+    use ketchup_manufacturing::fabrication::{PURCHASED_ITEM_ROLE_V1, ShopLoss};
+    let _turn = crate::integration_support::file_turn();
+    let lost = |losses: Vec<ShopLoss>| {
+        losses
+            .into_iter()
+            .map(|loss| format!("{}: {}", loss.part, loss.element))
+            .collect::<Vec<_>>()
+    };
+    let expected =
+        ["Right timber: a pin hole of pin joint End dowels in a part the shop does not make"];
+    for holes in [
+        AssistantPinHoles::Logical,
+        AssistantPinHoles::Drill {
+            first_insertion_mm: None,
+        },
+    ] {
+        let snapshot = doweled_timbers_with_right_as(holes.clone(), PURCHASED_ITEM_ROLE_V1);
+        let projection = fabrication(&snapshot);
+        let woodwop = ShopFormat::Woodwop {
+            vertical_pocket_tool: false,
+        };
+        assert_eq!(
+            lost(projection.admit(&snapshot, woodwop).unwrap()),
+            expected,
+            "{holes:?}"
+        );
+        let mpr = projection.woodwop_mpr_4_0_drill_export(&snapshot).unwrap();
+        let mpr = String::from_utf8(mpr).unwrap();
+        assert_eq!(mpr.matches("\\BohrHoriz\\").count(), PINS, "{mpr}");
+        let job = projection
+            .production_job(&snapshot, &[])
+            .expect("the job lays the made part and names the bought part's holes");
+        assert_eq!(job["parts"].as_array().unwrap().len(), 1, "{job}");
+        assert_eq!(job["losses"][0]["part"], "Right timber", "{job}");
+        assert_eq!(job["losses"].as_array().unwrap().len(), 1, "{job}");
+        if matches!(holes, AssistantPinHoles::Drill { .. }) {
+            assert_eq!(
+                lost(projection.admit(&snapshot, ShopFormat::Btlx).unwrap()),
+                expected
+            );
+            let report = projection.btlx_loss_report(&snapshot).unwrap();
+            assert!(
+                report.contains("unmade_pin_holes=1\n")
+                    && report.contains("Right timber (End dowels)"),
+                "{report}"
+            );
+        }
+    }
 }
 
 #[test]

@@ -51,7 +51,7 @@ pub struct FeaReviewSummary {
     pub required_relative_tolerance: f64,
     pub converged: bool,
     pub all_levels_within_declared_limits: bool,
-    pub excluded_physics: [&'static str; 4],
+    pub excluded_physics: [&'static str; 5],
 }
 
 #[derive(Debug, PartialEq)]

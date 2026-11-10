@@ -85,13 +85,14 @@
     "basis": [
       "scope: vertical (gravity) loads only, permanent, imposed, roof and snow; wind, horizontal stability (bracing, racking) and bending combined with axial force (EN 1995-1-1 6.2.3, 6.2.4, 6.3.2 (6.23, 6.24)) are not checked",
       "EN 1990 6.4.3.2 (6.10): 1.35 G + 1.5 Q1 + 1.5 psi0 Qi; SLS characteristic, w_fin with kdef and psi2 (recommended values, the national annex may differ)",
-      "psi0/psi2 (EN 1990 table A1.1): imposed category A 0.7/0.3, roof category H 0/0 and never with snow (EN 1991-1-1 3.3.2), snow below 1000 m 0.5/0",
+      "psi0/psi2 (EN 1990 table A1.1): imposed category A 0.7/0.3, roof category H 0/0 and never with snow (EN 1991-1-1 3.3.2), snow 0.5/0, on a site() above 1000 m 0.7/0.2",
       "load duration (EN 1995-1-1 2.3.1.2): permanent G, medium-term imposed, short-term roof and snow; kmod table 3.1, kdef table 3.2 and gamma_M table 2.3 of the product each class names (solid timber 1.3, glulam 1.25, LVL, plywood and OSB 1.2, particleboard 1.3)",
-      "bending with kh (3.2, 3.3); lateral torsional buckling (6.3.3) between the places that hold its compressed edge sideways (its bearings, and the fasteners where the parts touch, or the middle of each contact when a joint lists none, of parts bearing on that edge and on a part declared grounded across the member, fastened to both by a joint() of a kind that fastens: decking, battens, a ceiling; the top under sagging, the bottom under hogging; a deck fastened only to the members holds nothing, so a usual floor is not verified until a diaphragm can be declared), with kcrit (6.34) of sigma_m,crit (6.32) over lef at the upper bound of table 6.1 (the stretch, plus 2h where the top is compressed): bending over kcrit is the check lateral_torsional, and a member where it exceeds the strength is not verified",
+      "bending with kh (3.2, 3.3); lateral torsional buckling (6.3.3) between the places that hold its compressed edge sideways (its bearings, and the fasteners where the parts touch, or the middle of each contact when a joint lists none, of parts bearing on that edge and on a part declared grounded across the member, fastened to both by a joint() of a kind that fastens: decking, battens, a ceiling; the top under sagging, the bottom under hogging; a deck fastened only to the members holds nothing, so a usual floor is not verified until a diaphragm can be declared), with kcrit (6.34) of sigma_m,crit (6.32) over lef at the upper bound of table 6.1 (the stretch, plus 2h where the top is compressed): bending over kcrit is the check lateral_torsional, and a member where it exceeds the strength is not verified; a brace holds only when its material has a timber strength class, and bracing gives what the braces of the compressed edge must take (9.2.5.2: N_d = (1 - kcrit) M_d / h with kcrit of the member unbraced, F_d = N_d / k_f,1 = 60 or k_f,2 = 80 for glulam, C = k_s N_d / a with k_s = 4), which the braces, their anchorage and their fasteners are not checked against, nor a bracing of several members (9.2.5.3)",
       "shear with kcr = 0.67 (6.1.7); notches at bearings with kv (6.5.2), right-angled, x from the middle of the reaction to the corner of the notch, kv = 1 for a notch in the top over a bearing under the member (fig. 6.11(b)); elsewhere a change in depth steeper than 1:10 on the side in tension is not verified (6.5.1(2))",
       "compression perpendicular to the grain with kc90 = 1 on the contact area (6.1.5, without the 30 mm extension); compression with kc (6.3.2) on the full member length about both axes, sheathing not counted, and without kc on the net section at notches in a side (6.1.4) more than twice the member width from its ends; axial force in sloped beams neglected",
       "moments, shear and deflection: bending stress, shear stress and curvature on the section at each place along the member (a notch drawn in its side profile included), taken in the vertical plane across its grain so that a vertical load bends a turned section about both its axes, and its deflection is the resultant of the vertical and the sideways part, each at its own worst load pattern; spans continuous over the supports (three-moment equation, constant section) and cantilevers clamped at their support, as the loads are passed down; variable loads laid span by span and overhang by overhang where they add to the effect (load patterns), permanent load with 1.35 or, where it relieves the effect, 1.0 (EN 1990 table A1.2(B)); w_inst <= l/300 and w_fin <= l/250, cantilevers l/150 and l/125 (EN 1995-1-1 table 7.2, the lenient ends of the ranges)",
-      "a computed check, not an authorized structural design"
+      "a computed check, not an authorized structural design",
+      "site: SK, Senec, 150 m above sea level; s_k = 0.609 kN/m² (STN EN 1991-1-3/NA1:2012 NA 2.8 table NA.1, snow zone 1: s_k = 0.454 + 150/970); snow psi0/psi2 0.5/0 (EN 1990 table A1.1, at most 1000 m); the partial factors and the other psi are the EN recommended values above, not read from the SK national annexes"
     ],
     "members": {
       "count": 230
@@ -116,56 +117,48 @@
       "hanger:konštrukcia/strecha južná/výmena dolná+konštrukcia/strecha južná/krokva 5": {
         "loads_n": {
           "permanent": 246.1,
-          "roof": 146.4
+          "roof": 146.4,
+          "snow": 118.9
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       },
       "hanger:konštrukcia/strecha južná/výmena dolná+konštrukcia/strecha južná/krokva 6": {
         "loads_n": {
           "permanent": 338.0,
-          "roof": 208.6
+          "roof": 208.6,
+          "snow": 169.4
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       },
       "hanger:konštrukcia/strecha južná/výmena horná+konštrukcia/strecha južná/krokva 5": {
         "loads_n": {
           "permanent": 178.7,
-          "roof": 98.2
+          "roof": 98.2,
+          "snow": 79.7
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       },
       "hanger:konštrukcia/strecha južná/výmena horná+konštrukcia/strecha južná/krokva 6": {
         "loads_n": {
           "permanent": 176.9,
-          "roof": 89.3
+          "roof": 89.3,
+          "snow": 72.5
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/header 1+konštrukcia/strop/stropnice/stud 19": {
         "loads_n": {
           "imposed": 874.6,
           "permanent": 229.7
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/header 1+konštrukcia/strop/stropnice/stud 3": {
         "loads_n": {
           "imposed": 898.1,
           "permanent": 221.7
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/header 2+konštrukcia/strop/stropnice/stud 10": {
         "loads_n": {
@@ -186,66 +179,55 @@
           "imposed": 1260.6,
           "permanent": 319.5
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/sill 1+konštrukcia/strop/stropnice/stud 3": {
         "loads_n": {
           "imposed": 1323.5,
           "permanent": 305.5
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/sill 2+konštrukcia/strop/stropnice/stud 10": {
         "loads_n": {
           "imposed": 258.8,
           "permanent": 69.8
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/sill 2+konštrukcia/strop/stropnice/stud 15": {
         "loads_n": {
           "imposed": 103.4,
           "permanent": 30.7
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/stud 10+konštrukcia/strop/stropnice/sill 1": {
         "loads_n": {
           "imposed": 656.9,
           "permanent": 176.6,
-          "roof": 0.0
+          "roof": 0.0,
+          "snow": 0.0
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/stud 11+konštrukcia/strop/stropnice/header 1": {
         "loads_n": {
           "imposed": 253.6,
           "permanent": 70.9,
-          "roof": -0.1
+          "roof": -0.1,
+          "snow": -0.1
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/stud 12+konštrukcia/strop/stropnice/sill 2": {
         "loads_n": {
           "imposed": 253.0,
           "permanent": 63.7,
-          "roof": -0.5
+          "roof": -0.5,
+          "snow": -0.4
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/stud 13+konštrukcia/strop/stropnice/header 2": {
         "loads_n": {
@@ -265,111 +247,100 @@
         "loads_n": {
           "imposed": 305.2,
           "permanent": 75.0,
-          "roof": -0.4
+          "roof": -0.4,
+          "snow": -0.3
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/stud 15+konštrukcia/strop/stropnice/sill 1": {
         "loads_n": {
           "imposed": 412.9,
           "permanent": 130.2,
-          "roof": -0.1
+          "roof": -0.1,
+          "snow": -0.1
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/stud 16+konštrukcia/strop/stropnice/header 1": {
         "loads_n": {
           "imposed": 187.9,
           "permanent": 59.8,
-          "roof": -0.2
+          "roof": -0.2,
+          "snow": -0.2
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/stud 17+konštrukcia/strop/stropnice/sill 1": {
         "loads_n": {
           "imposed": 654.2,
           "permanent": 134.2,
-          "roof": -0.1
+          "roof": -0.1,
+          "snow": -0.1
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/stud 18+konštrukcia/strop/stropnice/header 1": {
         "loads_n": {
           "imposed": 385.3,
           "permanent": 82.9,
-          "roof": -0.2
+          "roof": -0.2,
+          "snow": -0.2
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/stud 4+konštrukcia/strop/stropnice/sill 1": {
         "loads_n": {
           "imposed": 712.7,
           "permanent": 142.9,
-          "roof": 0.0
+          "roof": 0.0,
+          "snow": 0.0
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/stud 5+konštrukcia/strop/stropnice/header 1": {
         "loads_n": {
           "imposed": 415.6,
           "permanent": 88.6,
-          "roof": -0.1
+          "roof": -0.1,
+          "snow": -0.1
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/stud 6+konštrukcia/strop/stropnice/sill 1": {
         "loads_n": {
           "imposed": 853.6,
           "permanent": 167.4,
-          "roof": 0.0
+          "roof": 0.0,
+          "snow": 0.0
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/stud 7+konštrukcia/strop/stropnice/header 1": {
         "loads_n": {
           "imposed": 482.8,
           "permanent": 102.1,
-          "roof": -0.1
+          "roof": -0.1,
+          "snow": -0.1
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/stud 8+konštrukcia/strop/stropnice/sill 1": {
         "loads_n": {
           "imposed": 798.0,
           "permanent": 159.5,
-          "roof": 0.0
+          "roof": 0.0,
+          "snow": 0.0
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       },
       "hanger:konštrukcia/strop/stropnice/stud 9+konštrukcia/strop/stropnice/header 1": {
         "loads_n": {
           "imposed": 456.6,
           "permanent": 97.9,
-          "roof": -0.1
+          "roof": -0.1,
+          "snow": -0.1
         },
-        "missing": [
-          "sneh (snow) has no value"
-        ]
+        "missing": []
       }
     },
     "members": {
@@ -415,7 +386,7 @@
     },
     {
       "default": 1000.0,
-      "doc": "nadmurovka nad podlahou podkrovia",
+      "doc": "nadmurovka nad podlahou podkrovia; pri sklone 30° aspoň 1300 mm, pri 35° aspoň 1100 mm, inak strecha zasahuje nad horné schodisko",
       "max": 1500.0,
       "min": 400.0,
       "name": "knee_wall",
@@ -433,7 +404,7 @@
     },
     {
       "default": 0.0,
-      "doc": "sneh na zemi sk v kN/m² podľa miesta stavby (0 = nezadané)",
+      "doc": "sneh na zemi sk v kN/m², ak nie z oblasti miesta stavby (0 = z oblasti)",
       "max": 10.0,
       "min": 0.0,
       "name": "snow_sk",

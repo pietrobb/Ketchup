@@ -12,6 +12,7 @@ use ketchup_application::program_isolation::{
     UnderlayInput, UnderlayRead, UnderlayReadError, UnderlayRefusal, UnderlayWorkerError,
     read_underlay,
 };
+use ketchup_model::import::DxfCodePage;
 use ketchup_model::underlay::object_query::ObjectTree;
 use ketchup_model::underlay::placement::{
     UnderlayFit, UnderlayFitError, geo_not_beside, geo_origin, plan_underlay_fit,
@@ -22,6 +23,9 @@ use ketchup_model::underlay::{
     plan_underlay, plan_underlay_removal,
 };
 use ketchup_program::CancelToken;
+
+pub(crate) mod code_page;
+pub(crate) mod revision;
 
 #[cfg(test)]
 thread_local! {
@@ -86,6 +90,8 @@ fn underlay_extent(lines: &UnderlayLines) -> UnderlayExtent {
 /// A drawing read as an underlay, not yet added to the document.
 pub(crate) struct ReadUnderlay {
     pub(crate) read: UnderlayRead,
+    /// The code page the user chose to read the drawing in, kept with the underlay.
+    pub(crate) code_page: Option<DxfCodePage>,
     /// The encoded lines, the blob the document keeps.
     bytes: Vec<u8>,
     lines: UnderlayLines,
@@ -119,11 +125,13 @@ impl ReadUnderlay {
 
 /// Reads the drawing at `path` in the program worker; `unit` is the length unit of a
 /// drawing that declares none, `geo_origin_mm` the document's
-/// ([`ketchup_model::underlay::placement::geo_origin`]).
+/// ([`ketchup_model::underlay::placement::geo_origin`]) and `code_page` the one the user
+/// chose to read it in.
 pub(crate) fn read_underlay_file(
     path: &Path,
     unit: Option<ImportLengthUnit>,
     geo_origin_mm: Option<[f64; 2]>,
+    code_page: Option<DxfCodePage>,
     cancel: &CancelToken,
 ) -> Result<ReadUnderlay, ImportError> {
     let failed = |cause: BoxedCause| ImportError::failed(ImportFormat::Dxf, cause);
@@ -135,6 +143,7 @@ pub(crate) fn read_underlay_file(
             dwg: crate::app::dwg_import::is_dwg_path(path),
             unit_if_unitless: unit,
             geo_origin_mm,
+            code_page,
             output: output.clone(),
         },
         cancel,
@@ -147,6 +156,7 @@ pub(crate) fn read_underlay_file(
     let geometry = Arc::new(UnderlayGeometry::new(sha256_bytes(&bytes), &lines));
     Ok(ReadUnderlay {
         read,
+        code_page,
         bytes,
         lines,
         snaps,
@@ -198,6 +208,7 @@ impl std::error::Error for UnderlayEditError {
 pub(crate) struct UnderlayReadTask {
     path: PathBuf,
     unit: Option<ImportLengthUnit>,
+    code_page: Option<DxfCodePage>,
     cancel: CancelToken,
     receiver: mpsc::Receiver<UnderlayReadResult>,
     pub(crate) progress: super::file_activity::ReadProgress,
@@ -210,23 +221,35 @@ pub(crate) struct UnderlayImport {
     pub(crate) reading: Option<UnderlayReadTask>,
     /// A drawing being written back with its changes.
     pub(crate) exporting: Option<super::underlay_export::UnderlayExportTask>,
-    unit_choice: Option<(PathBuf, ImportLengthUnit)>,
+    unit_choice: Option<(PathBuf, ImportLengthUnit, Option<DxfCodePage>)>,
+    /// A drawing read whose code page is doubtful, waiting for the user to keep it or read it
+    /// again in another (review 2026-11-09 UL-303).
+    pub(crate) code_page_choice: Option<code_page::CodePageChoice>,
     /// The file each underlay imported in this window was read from, so its drawing can
     /// be written back with its changes.
     pub(crate) sources: std::collections::HashMap<UnderlayId, PathBuf>,
     /// The object whose edit the last export of a drawing refused, its entity changed in
     /// the file since: that edit alone can be discarded (review 2026-11-04 r19 CD-163).
     pub(crate) refused_edit: Option<(UnderlayId, Vec<u32>)>,
+    /// The underlay the drawing being read is a later revision of, to compare it with
+    /// ([`revision`]) instead of adding it.
+    pub(crate) revision_of: Option<UnderlayId>,
 }
 
 impl KetchupApp {
-    /// Reads `path` as an underlay: on a thread while a frame shows it, or here in a
-    /// harness without one.
-    pub(crate) fn start_underlay_read(&mut self, path: PathBuf, unit: Option<ImportLengthUnit>) {
+    /// Reads `path` as an underlay, in `code_page` when the user chose one: on a thread
+    /// while a frame shows it, or here in a harness without one.
+    pub(crate) fn start_underlay_read(
+        &mut self,
+        path: PathBuf,
+        unit: Option<ImportLengthUnit>,
+        code_page: Option<DxfCodePage>,
+    ) {
         let origin = geo_origin(&self.document.current());
         let Some(context) = self.file.activity.context.clone() else {
-            let result = read_underlay_file(&path, unit, origin, &CancelToken::default());
-            self.finish_underlay_read(path, unit, result);
+            let cancel = CancelToken::default();
+            let result = read_underlay_file(&path, unit, origin, code_page, &cancel);
+            self.finish_underlay_read(path, (unit, code_page), result);
             return;
         };
         let (sender, receiver) = mpsc::channel();
@@ -238,6 +261,7 @@ impl KetchupApp {
                     &thread_path,
                     unit,
                     origin,
+                    code_page,
                     &thread_cancel,
                 ))
                 .is_ok()
@@ -249,6 +273,7 @@ impl KetchupApp {
             progress: super::file_activity::ReadProgress::start(&path),
             path,
             unit,
+            code_page,
             cancel,
             receiver,
         });
@@ -273,7 +298,7 @@ impl KetchupApp {
             .reading
             .take()
             .expect("polled task");
-        self.finish_underlay_read(task.path, task.unit, result);
+        self.finish_underlay_read(task.path, (task.unit, task.code_page), result);
         context.request_repaint();
     }
 
@@ -282,21 +307,46 @@ impl KetchupApp {
         if let Some(task) = self.file.activity.underlay.reading.take() {
             task.cancel.cancel();
         }
+        self.file.activity.underlay.revision_of = None;
     }
 
     fn finish_underlay_read(
         &mut self,
         path: PathBuf,
-        unit: Option<ImportLengthUnit>,
+        (unit, code_page): (Option<ImportLengthUnit>, Option<DxfCodePage>),
         result: UnderlayReadResult,
     ) {
+        if let (Ok(read), Some(of)) = (&result, self.file.activity.underlay.revision_of) {
+            self.file.activity.underlay.revision_of = None;
+            if let Err(error) = self.add_revision_overlay(&path, read, of) {
+                self.digest = self.catalog.format(
+                    "digest-underlay-revision-refused",
+                    &BTreeMap::from([("reason", error.to_string())]),
+                );
+            }
+            return;
+        }
+        let result = match result {
+            Ok(read) if code_page.is_none() => match code_page::doubted(&read) {
+                Some(doubted) => {
+                    self.file.activity.underlay.code_page_choice =
+                        Some(code_page::CodePageChoice::new(path, unit, read, doubted));
+                    return;
+                }
+                None => Ok(read),
+            },
+            result => result,
+        };
         match result.and_then(|read| self.add_underlay(&path, read)) {
             Ok(_) => {}
             Err(error) if unit.is_none() && needs_unit(&error) => {
                 self.file.activity.underlay.unit_choice =
-                    Some((path, ImportLengthUnit::Millimetre));
+                    Some((path, ImportLengthUnit::Millimetre, code_page));
             }
-            Err(error) => self.report_import_failure(&path, &error),
+            Err(error) => {
+                self.file.activity.underlay.revision_of = None;
+                self.report_import_failure(&path, &error);
+            }
         }
     }
 
@@ -320,27 +370,10 @@ impl KetchupApp {
             &read.read.hidden_layers,
             key,
             read.read.offset_mm,
+            read.code_page,
         )
         .map_err(|error| failed(error.into()))?;
-        let mut container = self.file.container_data.clone();
-        container
-            .insert_import_blob(read.bytes)
-            .map_err(|error| failed(error.into()))?;
-        let proposal = self
-            .document
-            .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
-            .map_err(|error| failed(error.into()))?;
-        self.commit_verified_proposal_with_container_work_recovery(&proposal, container)
-            .map_err(|error| failed(error.into()))?;
-        self.render.underlays.insert(key, read.geometry);
-        self.render
-            .underlay_snaps
-            .get_mut()
-            .insert(key, UnderlaySnapSlot::Ready(read.snaps));
-        self.render
-            .underlay_extents
-            .get_mut()
-            .insert(key, underlay_extent(&read.lines));
+        self.keep_underlay_lines(batch, read.bytes, &read.lines, read.snaps, read.geometry)?;
         self.frame_after_import();
         self.file
             .activity
@@ -370,6 +403,41 @@ impl KetchupApp {
         Ok(id)
     }
 
+    /// Commits `batch`, which adds an underlay of `lines`, as one Undo step with `bytes`,
+    /// their encoding, kept in the document's container, and keeps what the window draws and
+    /// snaps to of them.
+    fn keep_underlay_lines(
+        &mut self,
+        batch: ketchup_model::document::CommandBatch,
+        bytes: Vec<u8>,
+        lines: &UnderlayLines,
+        snaps: Arc<UnderlaySnapIndex>,
+        geometry: Arc<UnderlayGeometry>,
+    ) -> Result<(), ImportError> {
+        let failed = |cause: BoxedCause| ImportError::failed(ImportFormat::Dxf, cause);
+        let key = sha256_bytes(&bytes);
+        let mut container = self.file.container_data.clone();
+        container
+            .insert_import_blob(bytes)
+            .map_err(|error| failed(error.into()))?;
+        let proposal = self
+            .document
+            .prepare_proposal_with_context(batch, ProposalContext::canonical_preview())
+            .map_err(|error| failed(error.into()))?;
+        self.commit_verified_proposal_with_container_work_recovery(&proposal, container)
+            .map_err(|error| failed(error.into()))?;
+        self.render.underlays.insert(key, geometry);
+        self.render
+            .underlay_snaps
+            .get_mut()
+            .insert(key, UnderlaySnapSlot::Ready(snaps));
+        self.render
+            .underlay_extents
+            .get_mut()
+            .insert(key, underlay_extent(lines));
+        Ok(())
+    }
+
     /// Removes the underlay `id` and the tags only it held, as one Undo step.
     pub(crate) fn remove_underlay(&mut self, id: UnderlayId) -> Result<(), UnderlayEditError> {
         let batch =
@@ -397,7 +465,8 @@ impl KetchupApp {
 
     /// Asks for the unit of a drawing that declares none, then reads it again.
     pub(crate) fn show_underlay_unit_window(&mut self, context: &egui::Context) {
-        let Some((path, mut unit)) = self.file.activity.underlay.unit_choice.clone() else {
+        let Some((path, mut unit, code_page)) = self.file.activity.underlay.unit_choice.clone()
+        else {
             return;
         };
         let (mut import, mut cancel) = (false, false);
@@ -429,11 +498,12 @@ impl KetchupApp {
         self.file.activity.underlay.unit_choice = if import || cancel {
             None
         } else {
-            Some((path.clone(), unit))
+            Some((path.clone(), unit, code_page))
         };
         if import {
-            self.start_underlay_read(path, Some(unit));
+            self.start_underlay_read(path, Some(unit), code_page);
         } else if cancel {
+            self.file.activity.underlay.revision_of = None;
             self.digest = self.catalog.text("digest-cancelled");
         }
     }

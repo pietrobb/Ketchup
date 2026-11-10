@@ -3006,6 +3006,29 @@ def _opening_in(name, o, origin, along, up, out, depth, length, top_v):
 #   snow_load(sk, pitch, exposure=1.0, thermal=1.0) -> mu1 * Ce * Ct * sk in kN/m², or None
 #     when sk is None or 0 (the site's characteristic snow load on the ground, from the
 #     national annex map, is not given).
+#   site(country, municipality=None, altitude=None, snow_zone=None, sk=None, source=None)
+#     -> struct(country, sk, source, altitude): the one building site, "SK" or "CZ".
+#     CZ: snow_zone "I"-"VII" (or 1-7) gives sk from the ČSN EN 1991-1-3 national annex
+#     map; SK: snow_zone 1-5 (or "I"-"V") of the STN EN 1991-1-3/NA1 map with altitude
+#     gives sk = a + altitude/b (table NA.1), up to 1500 m. Czech zone VIII, a site above
+#     1500 m, or any other source take sk= with source=; else sk is None and source says
+#     what to read.
+#     altitude (m) above 1000 combines snow with psi0 0.7, psi2 0.2 (EN 1990 table A1.1).
+#     The design basis names the site. Example:
+#       SITE = site("CZ", municipality = "Brno", altitude = 237, snow_zone = "II")
+#       area_load("snow", kind = "snow", kn_m2 = snow_load(SITE.sk, 35), on = ["cover"],
+#                 source = SITE.source)
+#   thermal_check(name, layers=, element=, theta_e=None, theta_i=20, phi_i=50, phi_e=84)
+#     -> struct(u, r): the thermal check of a build-up to the national standard of the
+#     site's country (STN 73 0540-2 or ČSN 73 0540-2). layers are buildup()'s, inside
+#     first, each with "lambda" (W/(m K)) or "r" (m²K/W, an air layer) and "mu" or "sd"
+#     (m, a membrane); a framed layer's "lambda"/"mu" are its studs', "infill_lambda"/
+#     "infill_mu" its bays'; a layer with "ventilated": True and those outside it are
+#     left out. element: "wall", "steep_roof", "roof", "floor_over_exterior",
+#     "ceiling_under_unheated" or "floor_on_ground". theta_e (°C) is the design outdoor
+#     temperature of the place (STN/ČSN 73 0540-3). The report's thermal section gives U
+#     against the requirement, f_Rsi of the inner surface against mould and where vapour
+#     would condense; a value not given leaves its criterion not verified, a warning.
 #   The report's loads.members lists every load_path() member: its length and axis, the
 #   loads on it by kind (newtons, characteristic, unfactored), where they act (patches
 #   along the member: own weight, area loads, parts it carries) and what it passes to
@@ -3019,8 +3042,15 @@ def _opening_in(name, o, origin, along, up, out, depth, length, top_v):
 #   reported, fastener_off_contact), or at the middle of each place they touch when the
 #   joint lists none, so name the fasteners of a lath along a beam. A plank screwed only
 #   to free beams, lying loose, or anchored only in line with the beam holds nothing;
-#   a deck screwed to the beams but to nothing grounded leaves them not_verified (a
-#   declared diaphragm is not yet supported). The top braces against a sagging moment, the bottom against a
+#   a deck screwed to the beams but to nothing grounded leaves them not_verified.
+#   diaphragm(sheets, anchored_to=[...]) declares sheets (parts or tags) one stiff plane
+#   anchored to grounded parts: when every anchor is grounded and fastened to one of the
+#   sheets, each sheet holds the members it is fastened to on the edge it lies on.
+#   brace(members, by=[...], edge="top"|"bottom", spacing=None) declares which edge the
+#   parts by hold where they touch each member, every spacing mm or at the joint's
+#   fasteners; each must be fastened to the member and anchored (grounded, fastened to
+#   a grounded part, or a sheet of an anchored diaphragm). A declaration that holds
+#   nothing is reported (declared_bracing_ignored). The top braces against a sagging moment, the bottom against a
 #   hogging one (lateral torsional buckling, check lateral_torsional). A beam shares its load among its
 #   supports by the lever rule, over more supports as simple spans between them; other
 #   parts share theirs by contact area. Missing inputs are listed, never guessed.

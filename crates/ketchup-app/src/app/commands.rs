@@ -345,6 +345,7 @@ impl KetchupApp {
             | AppCommand::ImportMeshStl
             | AppCommand::ImportDrawingDxf
             | AppCommand::ImportDrawingUnderlay
+            | AppCommand::CompareUnderlayRevision
             | AppCommand::ImportExactStep
             | AppCommand::ImportExactIges
             | AppCommand::ImportSketchupScene
@@ -365,7 +366,8 @@ impl KetchupApp {
             | AppCommand::ReviewCamExport
             | AppCommand::ReviewStaticFea
             | AppCommand::ReviewLocalPdm
-            | AppCommand::ExportHundeggerBtlx => {
+            | AppCommand::ExportHundeggerBtlx
+            | AppCommand::ExportWorkshopPackage => {
                 self.dispatch_file_command(id);
             }
             AppCommand::OpenViewerComments => self.open_viewer_comments(),

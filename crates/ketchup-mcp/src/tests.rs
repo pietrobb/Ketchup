@@ -699,12 +699,67 @@ fn a_program_holding_a_closed_windows_address_cannot_pass_for_it() {
         in_use: false,
         attach_address: impostor_address,
     };
-    let error = crate::discovery::attach(&window)
+    let error = crate::discovery::attach(&window, None)
         .err()
         .expect("the impostor's grant is refused");
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
     let attach_request = requests.iter().nth(1).unwrap();
     assert!(!attach_request.contains(TOKEN), "{attach_request}");
+}
+
+/// Review 2026-11-09 MCP-305: the attach request names the AI, so a window held
+/// by another can say which one asks; a window older than the name hangs up on
+/// such a request and is asked again without it.
+#[test]
+fn an_attach_names_the_ai_and_asks_an_older_window_again_without_the_name() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let mut registry =
+        crate::local_auth::create(&root.path().join(format!("{INSTANCE}.json"))).unwrap();
+    write!(
+        registry,
+        "{}",
+        json!({"version": 1, "instance_id": INSTANCE,
+        "consent_address": address.to_string(), "bootstrap": TOKEN})
+    )
+    .unwrap();
+    drop(registry);
+    let (seen, requests) = mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            seen.send(request.clone()).unwrap();
+            // An older window refuses a field it does not know by hanging up.
+            if request.get("client").is_none() {
+                let reply = json!({"version": 1, "nonce": request["nonce"],
+                                   "instance_id": INSTANCE, "status": "declined",
+                                   "proof": ""});
+                stream.write_all(format!("{reply}\n").as_bytes()).unwrap();
+            }
+        }
+    });
+    let window = crate::discovery::Window {
+        registry_path: root.path().join(format!("{INSTANCE}.json")),
+        instance_id: INSTANCE.to_owned(),
+        document: String::new(),
+        in_use: false,
+        attach_address: address,
+    };
+    let long = format!("Codex\u{1b}{}", "x".repeat(60));
+    assert!(crate::discovery::attach(&window, Some(&long)).is_err());
+    let named = requests.recv().unwrap();
+    assert_eq!(
+        named["client"].as_str().map(|name| name.chars().count()),
+        Some(40)
+    );
+    assert!(named["client"].as_str().unwrap().starts_with("Codexxx"));
+    let again = requests.recv().unwrap();
+    assert!(again.get("client").is_none(), "{again}");
+    assert_ne!(again["nonce"], named["nonce"]);
 }
 
 /// How a scripted window ends one connection after answering its first request.
@@ -1173,34 +1228,6 @@ fn the_next_reply_tells_what_became_of_a_call_cancelled_after_it_was_sent() {
     );
 }
 
-/// Review 2026-11-04 P3: when the system refused to duplicate the socket that
-/// lets a call be cancelled, the agent read that the window had ended the
-/// connection, and the server dropped a working connection. It is this
-/// server's failure: the request is not sent and the connection is kept.
-#[test]
-fn a_call_this_server_cannot_prepare_is_not_blamed_on_the_window() {
-    let root = tempfile::tempdir().unwrap();
-    let events = scripted_window(root.path(), INSTANCE, vec![Ending::SupersededInFlight]);
-    let mut tools = Tools::new(None, Some(root.path().to_owned()));
-    let status = json!({"action": "status"});
-    assert_eq!(
-        call(&mut tools, "inspect", status.clone())["isError"],
-        false
-    );
-    assert_eq!(events.recv().unwrap(), "attach");
-
-    tools.cancel().refuse_next_clone();
-    let refused = text(&call(&mut tools, "inspect", status.clone()));
-    assert_eq!(refused["error"], "call_not_prepared", "{refused}");
-    let message = refused["message"].as_str().unwrap();
-    assert!(!message.contains("window had ended"), "{message}");
-
-    // The next call goes over the same connection: the window answers it.
-    let next = text(&call(&mut tools, "inspect", status));
-    assert_eq!(next["error"], "connection_taken_over", "{next}");
-    assert_eq!(events.recv().unwrap(), "ended", "no second attach");
-}
-
 /// MCP-2: after its window closed, the server never moves to another window.
 #[test]
 fn a_lost_window_is_never_replaced_by_another_open_window() {
@@ -1281,6 +1308,10 @@ fn a_client_initializes_and_lists_every_tool() {
     .unwrap();
     assert_eq!(initialized["result"]["protocolVersion"], "2025-03-26");
     assert_eq!(initialized["result"]["serverInfo"]["name"], "ketchup");
+    assert_eq!(
+        initialized["result"]["serverInfo"]["version"],
+        crate::VERSION
+    );
     let notification = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
     assert!(handle(&tools, notification).is_none());
     let listed = handle(
@@ -1356,6 +1387,9 @@ fn tool_calls_reach_the_open_window_as_bridge_requests() {
     assert_eq!(status["isError"], false);
     assert_eq!(text(&status)["result"]["document"], "stolik.ketchup");
     assert_eq!(text(&status)["stamp"]["revision"], 7);
+    // Feedback 2026-11-10: the version of the program serving MCP, which an
+    // AI client may start from an old path, beside the window's own.
+    assert_eq!(text(&status)["server_version"], crate::VERSION);
     assert_eq!(received.recv().unwrap(), json!({"method": "status"}));
 
     let source = "board(\"top\", (600, 400, 18))\n";

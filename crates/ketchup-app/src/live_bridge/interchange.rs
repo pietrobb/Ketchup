@@ -11,6 +11,7 @@ use crate::export_bundle::{ExportError, Written};
 use crate::{ImportError, ImportFormat, ImportLengthUnit, KetchupApp};
 use ketchup_application::rejections::rejected;
 use ketchup_manufacturing::dxf_annotations::MAX_PLAN_SCALE;
+use ketchup_model::import::DxfCodePage;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::{Arc, atomic::AtomicBool};
@@ -23,11 +24,22 @@ pub(super) enum ReadAlready {
     Nothing,
     /// The bytes of a `.dwg` file.
     Drawing(Vec<u8>),
+    /// The bytes of a `.skp` file.
+    Model(Vec<u8>),
     /// The bytes of a STEP or IGES file and what the exact worker read of them.
     Exact(
         Vec<u8>,
         crate::app::exact_import_activity::ExactImportEvidence,
     ),
+}
+
+/// What an import request reads: the file, its format, the unit of a unitless drawing
+/// and the code page an underlay drawing is read in.
+pub(super) struct ImportTarget {
+    pub(super) path: String,
+    pub(super) format: ImportFormat,
+    pub(super) unit: Option<ImportLengthUnit>,
+    pub(super) code_page: Option<DxfCodePage>,
 }
 
 /// Records why the import of `path` failed for the answer.
@@ -40,7 +52,7 @@ pub(super) fn import_failed(path: &str, error: ImportError) -> &'static str {
 }
 
 /// Every export format of the File menu with the file extensions it writes.
-const EXPORT_FORMATS: [(&str, &[&str], Exporter); 14] = [
+const EXPORT_FORMATS: [(&str, &[&str], Exporter); 15] = [
     (
         "step",
         &["step", "stp"],
@@ -87,7 +99,59 @@ const EXPORT_FORMATS: [(&str, &[&str], Exporter); 14] = [
         KetchupApp::export_current_model_homag_mpr_to,
     ),
     ("btlx", &["btlx"], KetchupApp::export_current_model_btlx_to),
+    (
+        "workshop_package",
+        &["zip"],
+        KetchupApp::export_current_workshop_package_to,
+    ),
 ];
+
+/// The code of why an export was not written, whose hint repairs that cause:
+/// every refusal was `export_failed`, a model the format cannot carry as a
+/// full disk (review 2026-11-08, the class of CD-72).
+pub(super) fn export_code(error: &ExportError) -> &'static str {
+    use ketchup_manufacturing::fabrication::GeneralFabricationError;
+    use ketchup_rejection::Rejection;
+    match error {
+        ExportError::NothingToExport { .. }
+        | ExportError::Ambiguous { .. }
+        | ExportError::UnsupportedContent { .. }
+        | ExportError::OccurrenceNotExportable { .. } => "export_refused",
+        ExportError::Failed(cause) => {
+            // A projection refusal arrives inside the rejection of its step.
+            let mut causes = std::iter::successors(
+                Some(cause.as_ref() as &(dyn std::error::Error + 'static)),
+                |cause| cause.source(),
+            );
+            causes
+                .find_map(|cause| {
+                    if let Some(error) = cause.downcast_ref::<GeneralFabricationError>() {
+                        return (!matches!(error, GeneralFabricationError::Package(..)))
+                            .then_some("export_refused");
+                    }
+                    match cause.downcast_ref::<Rejection>()?.code() {
+                        "side_effect.declined" => Some("export_declined"),
+                        "fabrication.mesh_body" => Some("export_refused"),
+                        _ => None,
+                    }
+                })
+                .unwrap_or("export_failed")
+        }
+        ExportError::Destination { .. }
+        | ExportError::ChangedDuringConsent
+        | ExportError::ArtifactUnverified { .. }
+        | ExportError::Transaction(..) => "export_failed",
+    }
+}
+
+/// An export request the window takes now.
+pub(super) struct ExportTarget {
+    pub(super) path: String,
+    pub(super) export_format: String,
+    pub(super) exporter: Exporter,
+    /// Replace a file and loss report Kečup wrote at `path`, unchanged since.
+    pub(super) overwrite: bool,
+}
 
 impl LiveBridge {
     /// Imports the file `request` names, from what a job's thread has `read` of
@@ -99,7 +163,12 @@ impl LiveBridge {
         cancelled: &AtomicBool,
         read: ReadAlready,
     ) -> Result<Value, &'static str> {
-        let (path, format, unit) = Self::import_target(app, request, ui_busy)?;
+        let ImportTarget {
+            path,
+            format,
+            unit,
+            code_page,
+        } = Self::import_target(app, request, ui_busy)?;
         if matches!(
             request,
             Request::Import {
@@ -111,6 +180,7 @@ impl LiveBridge {
                 Path::new(&path),
                 unit,
                 ketchup_model::underlay::placement::geo_origin(&app.document.current()),
+                code_page,
                 &ketchup_program::CancelToken::default(),
             )
             .map_err(|error| import_failed(&path, error))?;
@@ -120,6 +190,7 @@ impl LiveBridge {
         let summary = match read {
             ReadAlready::Nothing => app.import_file(format, Path::new(&path), unit),
             ReadAlready::Drawing(source) => app.import_drawing(Path::new(&path), source, unit),
+            ReadAlready::Model(source) => app.import_glb_source(Path::new(&path), source),
             ReadAlready::Exact(source, evidence) => {
                 app.import_exact_read(format, Path::new(&path), source, evidence)
             }
@@ -128,17 +199,20 @@ impl LiveBridge {
         Ok(json!({"imported": true, "path": path, "review": summary, "dirty": app.is_dirty()}))
     }
 
-    /// The file, format and unit of an import request the window takes now.
+    /// The file, format, unit and code page of an import request the window takes now.
     pub(super) fn import_target(
         app: &mut KetchupApp,
         request: &Request,
         ui_busy: bool,
-    ) -> Result<(String, ImportFormat, Option<ImportLengthUnit>), &'static str> {
+    ) -> Result<ImportTarget, &'static str> {
         let Request::Import {
             expected,
             path,
             unit,
             as_underlay,
+            revision_of,
+            code_page,
+            ..
         } = request
         else {
             return Err("invalid_request");
@@ -168,6 +242,19 @@ impl LiveBridge {
                 json!({"path": path}),
             ));
         }
+        if let Some(of) = revision_of {
+            if !*as_underlay {
+                return Err(failure(
+                    "invalid_params",
+                    "revision_of compares a drawing imported as_underlay with an underlay.",
+                    json!({"revision_of": of}),
+                ));
+            }
+            let of = ketchup_model::underlay::UnderlayId(*of);
+            if app.document.current().underlay(of).is_none() {
+                return Err("entity_not_found");
+            }
+        }
         let unit = unit
             .as_deref()
             .map(|name| {
@@ -180,7 +267,39 @@ impl LiveBridge {
                 })
             })
             .transpose()?;
-        Ok((path.clone(), format, unit))
+        // The code page an underlay drawing is read in: the one the request names, else
+        // that of the underlay it is a revision of (review 2026-11-09 UL-303).
+        let code_page = match code_page {
+            None => revision_of.and_then(|of| {
+                app.document
+                    .current()
+                    .underlay(ketchup_model::underlay::UnderlayId(of))
+                    .and_then(|under| under.code_page)
+            }),
+            Some(name) if !*as_underlay => {
+                return Err(failure(
+                    "invalid_params",
+                    "code_page reads a drawing imported as_underlay.",
+                    json!({"code_page": name}),
+                ));
+            }
+            Some(name) => Some(DxfCodePage::parse(name).ok_or_else(|| {
+                failure(
+                    "invalid_params",
+                    "code_page is the $DWGCODEPAGE name of a code page, such as ANSI_1250.",
+                    json!({
+                        "code_page": name,
+                        "code_pages": DxfCodePage::ALL.map(DxfCodePage::name),
+                    }),
+                )
+            })?),
+        };
+        Ok(ImportTarget {
+            path: path.clone(),
+            format,
+            unit,
+            code_page,
+        })
     }
 
     pub(super) fn export_file(
@@ -193,14 +312,21 @@ impl LiveBridge {
             Request::Export { drawing_scale, .. } => *drawing_scale,
             _ => None,
         };
-        let (path, export_format, exporter) = Self::export_target(app, request, ui_busy)?;
+        let ExportTarget {
+            path,
+            export_format,
+            exporter,
+            overwrite,
+        } = Self::export_target(app, request, ui_busy)?;
         Self::require_request_authority(cancelled)?;
         app.live.client_export = Some(Arc::clone(cancelled));
+        app.live.client_overwrite = overwrite;
         let exported = match drawing_scale {
             Some(scale) => app.export_current_plan_dxf_to(Path::new(&path), scale),
             None => exporter(app, Path::new(&path)),
         };
         app.live.client_export = None;
+        app.live.client_overwrite = false;
         Self::exported(&path, &export_format, exported)
     }
 
@@ -209,12 +335,13 @@ impl LiveBridge {
         app: &mut KetchupApp,
         request: Request,
         ui_busy: bool,
-    ) -> Result<(String, String, Exporter), &'static str> {
+    ) -> Result<ExportTarget, &'static str> {
         let Request::Export {
             expected,
             path,
             export_format,
             drawing_scale,
+            overwrite,
         } = request
         else {
             return Err("invalid_request");
@@ -261,20 +388,26 @@ impl LiveBridge {
                 json!({"path": path}),
             ));
         }
-        Ok((path, export_format, *exporter))
+        Ok(ExportTarget {
+            path,
+            export_format,
+            exporter: *exporter,
+            overwrite,
+        })
     }
 
-    /// Records why the export of `path` failed for the answer.
+    /// Records why the export of `path` failed for the answer, and its code.
     pub(super) fn export_failed(
         path: &str,
         export_format: &str,
         error: ExportError,
     ) -> &'static str {
+        let code = export_code(&error);
         record_rejection(
-            &rejected("export_failed").caused_by(error),
+            &rejected(code).caused_by(error),
             json!({"path": path, "export_format": export_format}),
         );
-        "export_failed"
+        code
     }
 
     /// The answer to an export of `path` as `export_format`.
@@ -297,6 +430,9 @@ impl LiveBridge {
             "companions": written.companions.iter().map(|path| shown(path)).collect::<Vec<_>>(),
             // A plan DXF/DWG draws the rest and names the parts it could not.
             "omitted_parts": written.omitted_parts,
+            // A machine file names what it leaves unmade, such as the pin
+            // holes in a bought part.
+            "lost": written.lost,
             "basis": "visible_parts",
         }))
     }

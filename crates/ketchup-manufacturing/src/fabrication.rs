@@ -36,8 +36,11 @@ mod openings;
 pub mod production;
 mod projection_bytes;
 mod taps;
+mod woodwop_part;
 use btlx::*;
 use projection_bytes::*;
+pub use woodwop_part::{HOMAG_PACKAGE_REPORT, HomagPartialPackage, NotProgrammed};
+use woodwop_part::{homag_production_program, same_pin_holes, woodwop_part_macros};
 
 pub use btlx::BtlxDrillRefusal;
 pub use capabilities::{Carriage, ShopElement, ShopFormat, ShopLoss, carriage};
@@ -1065,7 +1068,25 @@ impl GeneralFabricationProjection {
         let [stock, machining @ ..] = matching.as_slice() else {
             return Err(blocked(ExportBlock::ResultMismatch));
         };
-        if stock.kind == GeneralManufacturingKind::Stock && machining.is_empty() {
+        // One program drills every copy, so each copy must be drilled for its
+        // logical pin joints where the first is (review 2026-11-08 MF-140).
+        let pin_holes = capabilities::undrilled_pin_holes(snapshot)?;
+        let copy_holes = |path: &InstancePath| {
+            pin_holes
+                .iter()
+                .map(|(_, hole)| hole)
+                .filter(|hole| hole.instance_path == *path)
+                .collect::<Vec<_>>()
+        };
+        let holes = copy_holes(&row.instances[0]);
+        if row.instances[1..]
+            .iter()
+            .any(|path| !same_pin_holes(&holes, &copy_holes(path)))
+        {
+            return Err(blocked(ExportBlock::CopiesDrilledApart));
+        }
+        if stock.kind == GeneralManufacturingKind::Stock && machining.is_empty() && holes.is_empty()
+        {
             return Err(GeneralFabricationError::NothingToMachine {
                 part: part.to_owned(),
             });
@@ -1089,29 +1110,11 @@ impl GeneralFabricationProjection {
         }
         let stock_frame = woodwop_stock_frame(&stock.machining)
             .ok_or_else(|| blocked(ExportBlock::UnsupportedMachining))?;
-        let (stock_frame, macros) = woodwop_setup(
+        let (stock_frame, macros) = woodwop_part_macros(
             stock_frame,
-            &machining_normals(machining.iter().copied(), std::iter::empty()),
-            |stock_frame| {
-                machining
-                    .iter()
-                    .map(|operation| match operation.kind {
-                        GeneralManufacturingKind::CircularDrill => {
-                            woodwop_drilling_macro(&operation.machining, stock_frame)
-                        }
-                        GeneralManufacturingKind::ProfileCut => {
-                            options.vertical_pocket_tool_number.and_then(|tool| {
-                                woodwop_vertical_pocket_macro(
-                                    &operation.machining,
-                                    stock_frame,
-                                    tool,
-                                )
-                            })
-                        }
-                        _ => None,
-                    })
-                    .collect::<Option<Vec<_>>>()
-            },
+            machining,
+            &holes,
+            options.vertical_pocket_tool_number,
         )
         .map_err(|error| error.at_part(part))?;
         let export_contract = if machining
@@ -1133,51 +1136,8 @@ impl GeneralFabricationProjection {
     ) -> Result<Vec<HomagProductionProgram>, GeneralFabricationError> {
         self.woodwop_mpr_4_0_setup_a_programs(snapshot, options)?
             .into_iter()
-            .map(|(instance_path, mpr)| {
-                let (program_name, barcode_svg) = homag_program_label(snapshot, &instance_path)?;
-                Ok(HomagProductionProgram {
-                    schema: HOMAG_BHX_PRODUCTION_PACKAGE_V1,
-                    program_name,
-                    instance_path,
-                    mpr,
-                    barcode_svg,
-                })
-            })
+            .map(|(instance_path, mpr)| homag_production_program(snapshot, instance_path, mpr))
             .collect()
-    }
-
-    /// The production package as one stored ZIP: `<code>.mpr` and its
-    /// barcode label `<code>.svg` for every piece the package programs.
-    pub fn woodwop_mpr_4_0_production_zip(
-        &self,
-        snapshot: &Snapshot,
-        options: WoodwopMprOptions,
-    ) -> Result<Vec<u8>, GeneralFabricationError> {
-        let programs = self.woodwop_mpr_4_0_production_package(snapshot, options)?;
-        if programs.is_empty() {
-            return Err(GeneralFabricationError::NoPieceToProgram);
-        }
-        let names = programs
-            .iter()
-            .map(|program| {
-                [
-                    format!("{}.mpr", program.program_name),
-                    format!("{}.svg", program.program_name),
-                ]
-            })
-            .collect::<Vec<_>>();
-        let entries = programs
-            .iter()
-            .zip(&names)
-            .flat_map(|(program, [mpr, svg])| {
-                [
-                    (mpr.as_str(), program.mpr.as_slice()),
-                    (svg.as_str(), program.barcode_svg.as_slice()),
-                ]
-            })
-            .collect::<Vec<_>>();
-        crate::three_mf_export::encode_package(&entries, usize::MAX)
-            .map_err(GeneralFabricationError::Package)
     }
 
     /// Only the existing top-face/edge setup; no inferred workpiece flip or labels.
@@ -1187,128 +1147,9 @@ impl GeneralFabricationProjection {
         snapshot: &Snapshot,
         options: WoodwopMprOptions,
     ) -> Result<Vec<(InstancePath, Vec<u8>)>, GeneralFabricationError> {
-        self.bom_export(snapshot)?;
-        self.manufacturing_export(snapshot)?;
-        if let Some(tool) = options
-            .vertical_pocket_tool_number
-            .filter(|tool| *tool == 0 || *tool > 999_999)
-        {
-            return Err(GeneralFabricationError::PocketToolNumberInvalid { tool });
-        }
-        let format = ShopFormat::Woodwop {
-            vertical_pocket_tool: options.vertical_pocket_tool_number.is_some(),
-        };
-        self.admit(snapshot, format)?;
-        let holes = capabilities::undrilled_pin_holes(snapshot)?
-            .into_iter()
-            .map(|(_, hole)| hole)
-            .collect::<Vec<_>>();
         let mut programs = Vec::new();
-        let mut program_paths = BTreeSet::new();
-        for row in self
-            .bom
-            .rows
-            .iter()
-            .filter(|row| format.writes(row.item_kind))
-        {
-            let part = snapshot
-                .definition(row.definition_id)
-                .map_or("", |definition| definition.name());
-            let mut write_part = || -> Result<(), GeneralFabricationError> {
-                let GeneralBodySource::Exact(_) = &row.source else {
-                    return Err(GeneralFabricationError::ExportBlocked(
-                        ExportBlock::NotExactBody,
-                    ));
-                };
-                let matching = self
-                    .manufacturing
-                    .operations
-                    .iter()
-                    .filter(|operation| is_row_operation(row, operation))
-                    .collect::<Vec<_>>();
-                let [stock, machining @ ..] = matching.as_slice() else {
-                    return Err(GeneralFabricationError::ExportBlocked(
-                        ExportBlock::ResultMismatch,
-                    ));
-                };
-                if stock.kind != GeneralManufacturingKind::Stock
-                    || !stock.semantic_inputs.is_empty()
-                    || machining.iter().any(|operation| {
-                        !matches!(
-                            operation.kind,
-                            GeneralManufacturingKind::CircularDrill
-                                | GeneralManufacturingKind::ProfileCut
-                        )
-                    })
-                {
-                    return Err(GeneralFabricationError::ExportBlocked(
-                        ExportBlock::UnsupportedMachining,
-                    ));
-                }
-                let stock_frame = woodwop_stock_frame(&stock.machining).ok_or(
-                    GeneralFabricationError::ExportBlocked(ExportBlock::UnsupportedMachining),
-                )?;
-                for instance_path in &row.instances {
-                    let resolved = snapshot
-                        .resolve_instance_path(instance_path)
-                        .map_err(GeneralFabricationError::UnresolvedInstance)?;
-                    if resolved.definition_id != row.definition_id
-                        || !is_production_transform(resolved.world_transform)
-                    {
-                        return Err(GeneralFabricationError::ExportBlocked(
-                            ExportBlock::UnusablePlacement,
-                        ));
-                    }
-                    let instance_holes = holes
-                        .iter()
-                        .filter(|hole| hole.instance_path == *instance_path)
-                        .collect::<Vec<_>>();
-                    if machining.is_empty() && instance_holes.is_empty() {
-                        continue;
-                    }
-                    let (stock_frame, macros) = woodwop_setup(
-                        stock_frame,
-                        &machining_normals(
-                            machining.iter().copied(),
-                            instance_holes.iter().map(|hole| hole.inward_unit_local),
-                        ),
-                        |stock_frame| {
-                            let mut macros = machining
-                                .iter()
-                                .map(|operation| match operation.kind {
-                                    GeneralManufacturingKind::CircularDrill => {
-                                        woodwop_drilling_macro(&operation.machining, stock_frame)
-                                    }
-                                    GeneralManufacturingKind::ProfileCut => {
-                                        options.vertical_pocket_tool_number.and_then(|tool| {
-                                            woodwop_vertical_pocket_macro(
-                                                &operation.machining,
-                                                stock_frame,
-                                                tool,
-                                            )
-                                        })
-                                    }
-                                    _ => None,
-                                })
-                                .collect::<Option<Vec<_>>>()?;
-                            for hole in &instance_holes {
-                                macros.push(woodwop_pin_macro(hole, stock_frame)?);
-                            }
-                            Some(macros)
-                        },
-                    )?;
-                    if !program_paths.insert(instance_path.clone()) {
-                        return Err(GeneralFabricationError::ExportBlocked(
-                            ExportBlock::DuplicateName,
-                        ));
-                    }
-                    let mpr =
-                        woodwop_mpr_output(stock_frame, &macros, HOMAG_BHX_PRODUCTION_PACKAGE_V1)?;
-                    programs.push((instance_path.clone(), mpr));
-                }
-                Ok(())
-            };
-            write_part().map_err(|error| error.at_part(part))?;
+        for (_, written) in self.woodwop_programs_by_part(snapshot, options, true)? {
+            programs.extend(written?);
         }
         if programs.is_empty() {
             return Err(GeneralFabricationError::NoPieceToProgram);
@@ -1717,8 +1558,7 @@ fn woodwop_mpr_output(
     let width = GeneralFabricationError::positive_length("the width of a part", width_mm)?;
     let thickness =
         GeneralFabricationError::positive_length("the thickness of a part", thickness_mm)?;
-    // A part machined from below is laid its underside (as drawn) up; the
-    // operator needs to be told which face goes up.
+    // A part machined from below lies underside (as drawn) up; tell the operator.
     let face_up = if stock_frame.turned_over {
         WOODWOP_UNDERSIDE_UP_NOTE
     } else {
@@ -1739,7 +1579,8 @@ fn woodwop_mpr_output(
             part: None,
         });
     }
-    Ok(output.into_bytes())
+    // woodWOP expects CRLF; with bare LF it reads an empty part, no machining.
+    Ok(output.replace('\n', "\r\n").into_bytes())
 }
 
 fn woodwop_pin_macro(hole: &PinHole, stock_frame: WoodwopStockFrame) -> Option<String> {

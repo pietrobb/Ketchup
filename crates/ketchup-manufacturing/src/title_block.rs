@@ -98,6 +98,43 @@ pub struct SheetSettings {
     /// absent (review 2026-11-04 MF-141).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zero_level_mm: Option<i32>,
+    /// The storeys, as the designer gives them (review 2026-11-08 MF-241):
+    /// when any is given, the plans, ±0,000 and the level marks are read from
+    /// them, not from the faces of the model, which a layered floor or a
+    /// ceiling lining under the floor structure misleads.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub storeys: Vec<StoreyLevels>,
+    /// The altitude of ±0,000 in whole millimetres above sea level (Bpv in
+    /// Czechia and Slovakia), written beside its level mark.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zero_altitude_mm: Option<i32>,
+    /// The direction of north in the plan, in tenths of a degree
+    /// counter-clockwise from the model's +y (review 2026-11-08 §5.2): the
+    /// plans draw a north arrow and the elevations are named by the side of
+    /// the world they show; none when not given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub north_tenths_deg: Option<i32>,
+    /// The revisions of the set, oldest first (review 2026-11-08 §5.3):
+    /// every sheet lists them beside its title block.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub revisions: Vec<crate::revision_table::SheetRevision>,
+}
+
+impl SheetSettings {
+    /// [`Self::north_tenths_deg`] in degrees.
+    #[must_use]
+    pub fn north_deg(&self) -> Option<f64> {
+        self.north_tenths_deg.map(|tenths| f64::from(tenths) / 10.0)
+    }
+}
+
+/// One storey of the table of storeys, whole millimetres of the model: the
+/// top of its finished floor, which its plan is cut above, and the top of the
+/// structure the floor lies on.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct StoreyLevels {
+    pub finished_floor_mm: i32,
+    pub structural_mm: i32,
 }
 
 /// A language the sheets can be titled in, whatever the window's: a Czech
@@ -299,7 +336,7 @@ fn lines_in_cell(cell_height: f64, height: f64) -> usize {
 
 /// `text` broken at spaces into lines no wider than `room`; a word wider than
 /// `room` on its own is broken between its characters.
-fn wrap(font: &SheetFont, text: &str, height: f64, room: f64) -> Vec<String> {
+pub(crate) fn wrap(font: &SheetFont, text: &str, height: f64, room: f64) -> Vec<String> {
     let mut lines = Vec::new();
     let mut line = String::new();
     for word in text.split_whitespace() {

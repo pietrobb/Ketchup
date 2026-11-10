@@ -8,6 +8,7 @@ drawings-sheet-plan-storey = Půdorys { $storey }. podlaží
 drawings-sheet-sections = Řezy
 # Desetinný oddělovač výškových kót na řezech a pohledech (+2,850).
 drawings-sheet-decimal-separator = ,
+drawings-sheet-zero-altitude = = { $metres } m n. m. Bpv
 drawings-sheet-date = { $day }. { $month }. { $year }
 drawings-sheet-elevations = Pohledy
 drawings-sheet-openings = Okna a dveře
@@ -30,6 +31,18 @@ drawings-view-front = Pohled zepředu
 drawings-view-back = Pohled zezadu
 drawings-view-left = Pohled zleva
 drawings-view-right = Pohled zprava
+drawings-view-facing-north = Pohled severní
+drawings-view-facing-north-east = Pohled severovýchodní
+drawings-view-facing-east = Pohled východní
+drawings-view-facing-south-east = Pohled jihovýchodní
+drawings-view-facing-south = Pohled jižní
+drawings-view-facing-south-west = Pohled jihozápadní
+drawings-view-facing-west = Pohled západní
+drawings-view-facing-north-west = Pohled severozápadní
+drawings-sheet-north-letter = S
+drawings-sheet-revision-index = Index
+drawings-sheet-revision-date = Datum
+drawings-sheet-revision-change = Popis změny
 drawings-default-sheet = Projektová dokumentace
 title-field-office = Zpracovatel
 title-field-designer = Zodpovědný projektant

@@ -67,12 +67,16 @@ impl KetchupApp {
                 launch_attached: false,
                 client_name: None,
                 client_export: None,
+                client_overwrite: false,
                 plugin_consents: Vec::new(),
                 plugin_menu: live_bridge::plugin_menu::PluginMenu::new(),
                 variants: Default::default(),
                 edits: Default::default(),
                 harnesses: None,
+                harness_rows: crate::app::connect_ai::read_harness_rows,
+                harness_work: None,
                 chosen_window_error: None,
+                stale_clients: crate::app::stale_ai_clients::StaleClientCheck::Off,
             },
             close_guard: close_guard::CloseGuard::default(),
             file: app_state::FileState {
@@ -153,8 +157,10 @@ impl KetchupApp {
                 dock_tab: None,
                 recent: recent_files::RecentFiles::default(),
                 written_drawings: None,
+                temporary_folder: std::fs::canonicalize(std::env::temp_dir()).ok(),
                 btlx: app_state::BtlxSettings::default(),
                 btlx_settings: None,
+                btlx_saving: app_state::BtlxSaving::default(),
             },
             camera: app_state::CameraState {
                 projection_mode: ProjectionMode::Parallel,
@@ -225,7 +231,12 @@ impl KetchupApp {
             tool_preview: None,
             gesture: Gesture::default(),
             mesh_conversion_state: mesh_conversion_ui::MeshConversionUiState::default(),
+            // A unit test never shows a native dialog on the desktop: one it
+            // did not script is declined (review 2026-11-08 SEC-240).
+            #[cfg(not(test))]
             dialogs: Box::new(NativeFileDialogs::default()),
+            #[cfg(test)]
+            dialogs: Box::new(crate::dialogs::ScriptedFileDialogs::new()),
             reviews: app_state::ReviewWorkflows {
                 cam_reviews: CamReviewWorkflow::new(None),
                 cam_export_dialog: None,
@@ -288,10 +299,10 @@ impl KetchupApp {
         }
         app.window.written_drawings = crate::app::written_drawings::of_user();
         if let Some(file) = crate::app::btlx_settings::of_user() {
-            app.window.btlx = crate::app::btlx_settings::read(&file);
-            app.window.btlx_settings = Some(file);
+            app.keep_btlx_settings_in(file);
         }
         app.window.decimal = crate::length_input::DecimalSeparator::at_startup();
+        app.live.stale_clients = crate::app::stale_ai_clients::StaleClientCheck::Due;
         app.dialogs = Box::new(NativeFileDialogs::with_parent(
             DialogParentWindow::from_creation_context(context),
         ));
@@ -1512,6 +1523,7 @@ impl KetchupApp {
         self.poll_mesh_conversion(context);
         self.poll_feature_history_exact(context);
         self.poll_recent_pick();
+        self.poll_btlx_saving();
         if let Some(program) = self.document.current_rule_program() {
             self.program_evaluations.warm(program, context);
         } else {
@@ -1606,6 +1618,7 @@ impl KetchupApp {
         self.show_stl_import_window(context);
         self.show_dxf_import_window(context);
         self.show_underlay_unit_window(context);
+        self.show_underlay_code_page_window(context);
         self.show_step_import_window(context);
         self.show_iges_import_window(context);
         self.show_sketchup_scene_import_window(context);
@@ -1615,6 +1628,7 @@ impl KetchupApp {
         self.show_about_window(context);
         self.show_plugin_window(context);
         self.show_program_detach_notice(context);
+        self.show_stale_ai_clients(context);
         self.show_material_takeoff_window(context);
         self.show_project_drawings_window(context);
         self.finish_live_image_frame(context);

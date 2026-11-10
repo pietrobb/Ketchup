@@ -328,12 +328,21 @@ impl Shell {
     /// preview being evaluated on a loaded machine) gets until [`WAIT_DEADLINE`] instead
     /// of a fixed frame count. A value waiting for an exact solid or the program is
     /// waited for too: the window applies it when the worker's result wakes it, a wake-up
-    /// the harness only sees by running frames.
+    /// the harness only sees by running frames. So is a history change whose bodies are
+    /// being evaluated: the window asks for no frame while it waits, so an idle window
+    /// does not mean the change has its answer (review 2026-11-07 r26 TST-240).
     fn run_idle(&mut self) {
         let mut last_error = String::new();
         let idle = self.wait_until(|shell| match shell.harness.try_run() {
             Ok(_) if shell.app().value_awaits_evaluation() => {
                 last_error = "a typed or dragged value still waits for evaluation".to_owned();
+                false
+            }
+            Ok(_) if shell.app().feature_history_exact_running() => {
+                last_error = format!(
+                    "a history change is still being evaluated: {}",
+                    shell.app().action_digest()
+                );
                 false
             }
             Ok(_) => true,
@@ -738,10 +747,14 @@ impl Shell {
 
     /// Open a submenu of the open menu, identified by its localization key.
     pub fn open_submenu(&mut self, key: &str) {
+        self.open_submenu_labelled(&format!("{} ⏵", self.catalog().text(key)));
+    }
+
+    /// Open a submenu of the open menu by its accessible name, which ends in ⏵.
+    pub fn open_submenu_labelled(&mut self, label: &str) {
         self.gap();
-        let label = format!("{} ⏵", self.catalog().text(key));
         self.harness
-            .get_by_role_and_label(Role::Button, &label)
+            .get_by_role_and_label(Role::Button, label)
             .click();
         // Like a menu, a submenu is painted where it takes clicks one frame
         // after its sizing pass.
@@ -801,6 +814,46 @@ impl Shell {
                 .then(a.left().total_cmp(&b.left()))
         });
         buttons.into_iter().map(|(_, label)| label).collect()
+    }
+
+    /// What the open menus offer, as a document names it: each visible
+    /// button, check box and slider by its accessible name and by the text it
+    /// paints, with whether it opens a submenu (its accessible name, the one
+    /// to open it by, ends in ⏵) and where it is, to tell the items of a menu
+    /// just opened from those shown before.
+    pub fn menu_items(&self) -> Vec<(String, Option<String>, Rect)> {
+        fn texts(shape: &egui::Shape, into: &mut Vec<(String, Rect)>) {
+            match shape {
+                egui::Shape::Text(text) => into.push((
+                    text.galley.text().trim().to_owned(),
+                    text.galley.rect.translate(text.pos.to_vec2()),
+                )),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| texts(shape, into)),
+                _ => {}
+            }
+        }
+        let mut painted = Vec::new();
+        for clipped in self.output_shapes() {
+            texts(&clipped.shape, &mut painted);
+        }
+        let mut items = Vec::new();
+        for node in self.harness.query_all_by(|node| {
+            !node.is_hidden() && matches!(node.role(), Role::Button | Role::CheckBox | Role::Slider)
+        }) {
+            let Some(label) = node.accesskit_node().label() else {
+                continue;
+            };
+            let submenu = label.ends_with(" ⏵").then(|| label.clone());
+            let rect = node.rect();
+            for (text, _) in painted
+                .iter()
+                .filter(|(text, at)| !text.is_empty() && rect.contains(at.center()))
+            {
+                items.push((text.clone(), submenu.clone(), rect));
+            }
+            items.push((label.trim_end_matches(" ⏵").to_owned(), submenu, rect));
+        }
+        items
     }
 
     /// Click the outliner row whose accessible name is `label`.

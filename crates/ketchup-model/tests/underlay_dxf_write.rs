@@ -5,10 +5,10 @@
 use ketchup_model::document::TagId;
 use ketchup_model::import::{
     Difference, DxfEditRefusal, DxfImportOptions, DxfUnderlay, EditOfObject, EditedDxfError,
-    ImportLengthUnit, read_dxf_underlay, write_edited_dxf as write_reported,
+    ImportLengthUnit, TextWritten, read_dxf_underlay, write_edited_dxf as write_reported,
 };
 use ketchup_model::underlay::drawn::{AddedObject, DrawnShape, similarity};
-use ketchup_model::underlay::edits::UnderlayEdits;
+use ketchup_model::underlay::edits::{UnderlayEdits, UnderlayObjectError};
 use ketchup_model::underlay::{UnderlayLayer, UnderlayLines};
 
 /// The text of the drawing written.
@@ -596,6 +596,81 @@ fn a_whole_turn_is_written_within_one_turn_when_turned_or_mirrored() {
     let records = [records_of(&text, "ARC"), records_of(&text, "HATCH")].concat();
     assert_eq!(records.len(), 4);
     for record in &records {
+        let angle = |code: i32| {
+            let (_, value) = record.iter().find(|(at, _)| *at == code).unwrap();
+            value.parse::<f64>().unwrap()
+        };
+        assert_eq!([angle(50), angle(51)], [0.0, 360.0], "{record:?}");
+    }
+}
+
+/// Review 2026-11-03 CD-140 / 2026-11-08 UL-241: an arc drawn `0..360` passed as drawable
+/// and was written `0 / 0` (`30..390` as `30 / 30`, turned as `30 / 30` too), which ezdxf
+/// and Kečup read as nothing. A whole turn drawn, turned or not, is written `0 / 360`; an
+/// arc of no span is not drawable. Review 2026-11-09 UL-300: an arc back by a whole turn,
+/// `360..0` or `180..-180`, is a circle too, as read.
+#[test]
+fn a_whole_turn_drawn_is_written_as_one_and_an_arc_of_no_span_is_not_drawable() {
+    let source = source();
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let whole = |start_deg: f64, end_deg: f64| DrawnShape::Arc {
+        center_mm: [5000.0, -2000.0],
+        radius_mm: 400.0,
+        start_deg,
+        end_deg,
+    };
+    assert!(whole(0.0, 360.0).is_valid() && whole(30.0, 390.0).is_valid());
+    assert!(!whole(30.0, 30.0).is_valid() && !whole(0.0, 0.0).is_valid());
+    // Review 2026-11-09 UL-301: the refusal says what an arc needs.
+    let refusal = UnderlayObjectError::InvalidShape(0).to_string();
+    assert!(
+        refusal.contains("an arc whose end is not its start"),
+        "{refusal}"
+    );
+    let turned =
+        whole(90.0, 450.0).transformed(&similarity([500.0, 200.0], 30.0, 1.0, [0.0, 0.0], None));
+    let mirrored = whole(0.0, 360.0).transformed(&similarity(
+        [0.0, 0.0],
+        0.0,
+        1.0,
+        [0.0, 0.0],
+        Some([[0.0, 5000.0], [1.0, 5000.0]]),
+    ));
+    let mut edits = UnderlayEdits::default();
+    for shape in [
+        whole(0.0, 360.0),
+        whole(30.0, 390.0),
+        whole(360.0, 0.0),
+        whole(180.0, -180.0),
+        turned,
+        mirrored,
+    ] {
+        assert!(shape.is_valid(), "{shape:?}");
+        edits.added.push(AddedObject::Drawn {
+            layer: "walls".to_owned(),
+            shape,
+        });
+    }
+    assert!(edits.is_valid());
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let text = String::from_utf8(written).unwrap();
+    let drawn: Vec<_> = records_of(&text, "ARC")
+        .into_iter()
+        .filter(|record| {
+            record
+                .iter()
+                .any(|(code, value)| *code == 40 && value == "400")
+        })
+        .collect();
+    assert_eq!(drawn.len(), 6, "{text}");
+    for record in &drawn {
         let angle = |code: i32| {
             let (_, value) = record.iter().find(|(at, _)| *at == code).unwrap();
             value.parse::<f64>().unwrap()
@@ -1284,6 +1359,7 @@ fn a_trimmed_extended_or_offset_line_keeps_its_entity_and_properties() {
         &[],
         [7; 32],
         [0.0, 0.0],
+        None,
     )
     .unwrap();
     document.apply_batch(&batch).unwrap();
@@ -2472,6 +2548,54 @@ fn a_drawing_read_in_another_code_page_than_its_header_names_is_written_naming_i
     assert_eq!(texts(&read(&written)), ["Kuchyně", "Chodba č. 2"]);
 }
 
+/// Review 2026-11-09 UL-303: a drawing read in the code page the user chose over its
+/// header is written in it, its header naming it, so it reads back alike with no choice.
+#[test]
+fn a_drawing_read_in_a_chosen_code_page_is_written_naming_it() {
+    use ketchup_model::import::DxfCodePage;
+    let header = HEADER.replace(
+        "9\n$INSUNITS\n",
+        "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
+    );
+    let mut source = format!("{header}{TABLES}0\nSECTION\n2\nENTITIES\n").into_bytes();
+    source.extend_from_slice(
+        b"0\nTEXT\n5\nB0\n330\n1F\n100\nAcDbEntity\n8\nnotes\n100\nAcDbText\n\
+          10\n0\n20\n0\n30\n0\n40\n250\n1\nH\xE5bka z\xE1kladu\n100\nAcDbText\n",
+    );
+    source.extend_from_slice(b"0\nENDSEC\n0\nEOF\n");
+    let options = DxfImportOptions::new(None).with_code_page(DxfCodePage::parse("ANSI_1250"));
+    let original = read_dxf_underlay(&source, options).unwrap();
+    let texts = |underlay: &DxfUnderlay| {
+        underlay
+            .lines
+            .layers()
+            .iter()
+            .flat_map(|layer| layer.texts())
+            .map(|text| text.text.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(texts(&original), ["Hĺbka základu"]);
+    let mut edits = UnderlayEdits::default();
+    edits.added.push(AddedObject::Drawn {
+        layer: "notes".to_owned(),
+        shape: DrawnShape::Text {
+            anchor_mm: [0.0, -1000.0],
+            height_mm: 100.0,
+            rotation_deg: 0.0,
+            text: "Dĺžka steny".to_owned(),
+        },
+    });
+    let written = write_edited_dxf(&source, options, &original.lines, &edits)
+        .unwrap_or_else(|error| panic!("{error}"));
+    let named = b"\n$DWGCODEPAGE\n3\nANSI_1250\n";
+    assert!(
+        written.windows(named.len()).any(|window| window == named),
+        "{}",
+        String::from_utf8_lossy(&written)
+    );
+    assert_eq!(texts(&read(&written)), ["Hĺbka základu", "Dĺžka steny"]);
+}
+
 /// Review 2026-11-06 UL-180: a drawing before DXF 2007 whose header names ANSI_1252 and
 /// whose texts are UTF-8 was read in UTF-8, but its header cannot name UTF-8; with texts
 /// taken out the few left were read in 1252 again, „Δh = 5“ as „Î”h = 5“. What is not
@@ -2642,6 +2766,63 @@ fn names_survive_two_saves(block: &str, value: &str, tag: &str) {
     assert_eq!(details(&read(&twice.dxf)), before);
 }
 
+/// Review 2026-11-07 r26 P3: a drawing Kečup read could not be written at all when a name
+/// escaped grew past what a DXF line holds: a layer of 150 „𝔸“ (2 100 escaped), a block
+/// of 300 Cyrillic characters the reader passes over. Such a name keeps its line as read.
+#[test]
+fn a_name_too_long_to_escape_keeps_its_line_through_two_saves() {
+    let header = HEADER.replace(
+        "9\n$INSUNITS\n",
+        "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
+    );
+    let layer = "𝔸".repeat(150);
+    let block = "Ж".repeat(300);
+    let named = |part: &str| {
+        part.replace("2\nwalls\n", &format!("2\n{layer}\n"))
+            .replace("8\nwalls\n", &format!("8\n{layer}\n"))
+            .replace("2\nleaf\n", &format!("2\n{block}\n"))
+    };
+    let source = format!(
+        "{header}{}{}{}0\nEOF\n",
+        named(TABLES),
+        named(BLOCKS),
+        named(ENTITIES)
+    );
+    let original = read(source.as_bytes());
+    let layers = |underlay: &DxfUnderlay| {
+        let objects = underlay.lines.objects();
+        objects
+            .objects
+            .iter()
+            .map(|object| objects.layer_name(object).to_owned())
+            .collect::<Vec<_>>()
+    };
+    let before = layers(&original);
+    assert!(before.contains(&layer), "{before:?}");
+
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(id_of(&original.lines, 0xA3));
+    let once = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        &original.lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let mut kept = before.clone();
+    kept.remove(id_of(&original.lines, 0xA3) as usize);
+    assert_eq!(layers(&read(&once)), kept);
+
+    let twice = write_edited_dxf(
+        &once,
+        DxfImportOptions::new(None),
+        &read(&once).lines,
+        &UnderlayEdits::default(),
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(layers(&read(&twice)), kept);
+}
+
 /// Review 2026-11-07 UL-220: escaped, a character beyond ASCII takes seven (one beyond
 /// U+FFFF fourteen), so a long Cyrillic note made a line longer than a DXF line holds,
 /// and Kečup could not read the drawing it had written. An MTEXT is written in pieces of
@@ -2712,18 +2893,213 @@ fn a_long_text_beyond_ascii_under_a_code_page_header_is_written_so_it_reads_back
                 handle: 0xB1,
                 code: 1,
                 characters: 2800,
+                written: TextWritten::Escaped,
             })) if kind == "TEXT"
         ),
         "{refused:?}"
     );
 }
 
+/// Review 2026-11-08 CD-243: an MTEXT cut into pieces was cut before a backslash in the
+/// last seven bytes only, so a font code longer than `\U+XXXX`, `\fArial|b1|i0;`, was cut
+/// in two. A piece is cut before the format code the cut would split.
+#[test]
+fn a_long_mtext_is_cut_into_pieces_between_its_format_codes() {
+    let header = HEADER.replace(
+        "9\n$INSUNITS\n",
+        "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
+    );
+    let entity = |handle: &str, kind: &str, class: &str, groups: &str| {
+        format!(
+            "0\n{kind}\n5\n{handle}\n330\n1F\n100\nAcDbEntity\n8\nnotes\n100\n{class}\n\
+             10\n0\n20\n0\n30\n0\n40\n250\n{groups}"
+        )
+    };
+    // Escaped, each unit is 21 bytes, a font code of 14 and `\U+0416`: 2 100 to a line.
+    let units = "\\fArial|b1|i0;Ж".repeat(100);
+    let mtext = entity(
+        "B0",
+        "MTEXT",
+        "AcDbMText",
+        &format!("3\n{units}\n1\n{units}\n"),
+    );
+    let short = entity("B1", "TEXT", "AcDbText", "1\nk\n100\nAcDbText\n");
+    let source =
+        format!("{header}{TABLES}0\nSECTION\n2\nENTITIES\n{mtext}{short}0\nENDSEC\n0\nEOF\n");
+    let original = read(source.as_bytes());
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(id_of(&original.lines, 0xB1));
+    let written = write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        &original.lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    let lines = written.split(|byte| *byte == b'\n').collect::<Vec<_>>();
+    let pieces = lines
+        .windows(2)
+        .filter(|pair| matches!(pair[0], b"1" | b"3"))
+        .map(|pair| String::from_utf8_lossy(pair[1]).into_owned())
+        .filter(|piece| piece.contains("U+0416"))
+        .collect::<Vec<_>>();
+    assert!(pieces.len() > 10, "{pieces:?}");
+    for piece in &pieces {
+        assert_eq!(
+            piece.matches("\\f").count(),
+            piece.matches(';').count(),
+            "a font code cut in two: {piece}"
+        );
+    }
+    assert_eq!(pieces.concat(), "\\fArial|b1|i0;\\U+0416".repeat(200));
+}
+
+/// Review 2026-11-07 r26 P3: a text too long was said to be written "under the code page
+/// its header names" whatever the drawing named, and only the first such text was named,
+/// so N of them took N saves. A drawing naming no code page writes its texts as read; one
+/// whose header names a code page its texts are not in is told of `\U+XXXX` and DXF 2007,
+/// each text at once; a text as read is not told to save as DXF 2007.
+#[test]
+fn texts_too_long_are_refused_together_by_their_cause() {
+    let text = |handle: &str| {
+        format!(
+            "0\nTEXT\n5\n{handle}\n330\n1F\n100\nAcDbEntity\n8\nnotes\n100\nAcDbText\n\
+             10\n0\n20\n0\n30\n0\n40\n250\n1\n{}\n100\nAcDbText\n",
+            "Ж".repeat(400)
+        )
+    };
+    let written = |header: &str| {
+        let source = format!(
+            "{header}{TABLES}0\nSECTION\n2\nENTITIES\n{}{}{}0\nENDSEC\n0\nEOF\n",
+            text("B0"),
+            text("B1"),
+            text("B2")
+        );
+        let original = read(source.as_bytes());
+        let mut edits = UnderlayEdits::default();
+        edits.removed_objects.insert(id_of(&original.lines, 0xB0));
+        write_edited_dxf(
+            source.as_bytes(),
+            DxfImportOptions::new(None),
+            &original.lines,
+            &edits,
+        )
+    };
+    let as_read = written(HEADER).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        read(&as_read)
+            .lines
+            .layers()
+            .iter()
+            .map(|layer| layer.texts().len())
+            .sum::<usize>(),
+        2
+    );
+
+    let header = HEADER.replace(
+        "9\n$INSUNITS\n",
+        "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
+    );
+    let refusal = match written(&header) {
+        Err(EditedDxfError::Refused(refusal)) => refusal,
+        other => panic!("{other:?}"),
+    };
+    let too_long = |handle, written| DxfEditRefusal::TextTooLong {
+        kind: "TEXT".to_owned(),
+        handle,
+        code: 1,
+        characters: 2800,
+        written,
+    };
+    assert_eq!(
+        refusal,
+        DxfEditRefusal::Several(vec![
+            too_long(0xB1, TextWritten::Escaped),
+            too_long(0xB2, TextWritten::Escaped)
+        ])
+    );
+    let message = refusal.to_string();
+    assert!(
+        message.contains("written as \\U+XXXX")
+            && !message.contains("code page its header names")
+            && message.contains("save the drawing as DXF 2007"),
+        "{message}"
+    );
+
+    let as_read = too_long(0xB1, TextWritten::AsRead).to_string();
+    assert!(
+        !as_read.contains("code page")
+            && !as_read.contains("DXF 2007")
+            && !as_read.contains("\\U+"),
+        "{as_read}"
+    );
+}
+
+/// Review 2026-11-08 CD-241: a long note drawn in Czech into a drawing read in Windows-1250
+/// Review 2026-11-08 CD-241: a text Kečup made, too long for a line as the drawing writes
+/// it, was refused by the handle Kečup had given it, found in no file of the user's, and
+/// told to save the source as DXF 2007 and import that, which starts every edit over. It
+/// is named by its text.
+#[test]
+fn a_text_copied_too_long_for_its_line_is_named_by_its_text() {
+    let header = HEADER.replace(
+        "9\n$INSUNITS\n",
+        "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
+    );
+    let source = format!(
+        "{header}{TABLES}0\nSECTION\n2\nENTITIES\n0\nTEXT\n5\nB1\n330\n1F\n100\nAcDbEntity\n\
+         8\nnotes\n100\nAcDbText\n10\n0\n20\n0\n30\n0\n40\n250\n1\n{}\n100\nAcDbText\n\
+         0\nENDSEC\n0\nEOF\n",
+        "Ж".repeat(400)
+    );
+    let original = read(source.as_bytes());
+    let text = id_of(&original.lines, 0xB1);
+    let mut edits = UnderlayEdits::default();
+    edits.removed_objects.insert(text);
+    edits.added.push(AddedObject::Copy {
+        of: text,
+        map: [[1.0, 0.0, 0.0], [0.0, 1.0, 700.0]],
+    });
+    let refusal = match write_edited_dxf(
+        source.as_bytes(),
+        DxfImportOptions::new(None),
+        &original.lines,
+        &edits,
+    ) {
+        Err(EditedDxfError::Refused(refusal)) => refusal,
+        other => panic!("{other:?}"),
+    };
+    assert!(
+        matches!(
+            refusal,
+            DxfEditRefusal::DrawnTextTooLong {
+                ref starts,
+                characters: 2800,
+                written: Some(TextWritten::Escaped),
+            } if *starts == "Ж".repeat(20)
+        ),
+        "{refusal:?}"
+    );
+    let message = refusal.to_string();
+    assert!(
+        message.contains("copied in Kečup")
+            && message.contains("\\U+XXXX")
+            && !message.contains("handle")
+            && !message.contains("DXF 2007"),
+        "{message}"
+    );
+}
+
 /// Review 2026-11-07 UL-220 (capability review): a text drawn into a drawing read in its
 /// code page escapes what the page has not as well, and that writer checked no length, so
-/// 300 Cyrillic characters made a line of 2 100 Kečup could not read back. It is refused,
-/// named; a long text in a DXF 2007, whose line holds characters not bytes, is not.
+/// 300 Cyrillic characters made a line of 2 100 Kečup could not read back. Review r26
+/// UL-240: it was then refused, naming a handle Kečup had given it, so a note written in
+/// Kečup could not be exported. A text drawn too long for a TEXT is an MTEXT, cut into
+/// pieces, and reads back the same through two saves; a DXF 12 drawing, which has no
+/// MTEXT, refuses it naming the text; a long text in a DXF 2007, whose line holds
+/// characters not bytes, stays a TEXT.
 #[test]
-fn a_text_drawn_too_long_for_a_dxf_line_is_refused_in_every_encoding() {
+fn a_text_drawn_too_long_for_a_text_line_is_written_as_an_mtext() {
     let drawn = |text: String| {
         let mut edits = UnderlayEdits::default();
         edits.added.push(AddedObject::Drawn {
@@ -2741,10 +3117,62 @@ fn a_text_drawn_too_long_for_a_dxf_line_is_refused_in_every_encoding() {
         "9\n$INSUNITS\n",
         "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
     );
-    let source = format!("{header}{TABLES}{BLOCKS}{ENTITIES}0\nEOF\n");
-    let original = read(source.as_bytes());
+    let texts = |dxf: &[u8]| {
+        read(dxf)
+            .lines
+            .layers()
+            .iter()
+            .flat_map(|layer| layer.texts())
+            .map(|text| (text.text.clone(), text.rotation_rad))
+            .collect::<Vec<_>>()
+    };
+    // A note with what an MTEXT reads as format codes, turned as drawn.
+    let note = format!("{{\\P}} {}", "Ж".repeat(400));
+    let mut turned = drawn(note.clone());
+    if let Some(AddedObject::Drawn {
+        shape: DrawnShape::Text { rotation_deg, .. },
+        ..
+    }) = turned.added.first_mut()
+    {
+        *rotation_deg = 30.0;
+    }
+    let plain = format!("{HEADER}{TABLES}{BLOCKS}{ENTITIES}0\nEOF\n");
+    let coded = format!("{header}{TABLES}{BLOCKS}{ENTITIES}0\nEOF\n");
+    for source in [&coded, &plain] {
+        let original = read(source.as_bytes());
+        let once = write_edited_dxf(
+            source.as_bytes(),
+            DxfImportOptions::new(None),
+            &original.lines,
+            &turned,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        let longest = once.split(|byte| *byte == b'\n').map(<[u8]>::len).max();
+        assert!(longest <= Some(2049), "{longest:?}");
+        let read_once = texts(&once);
+        let (_, turn) = read_once
+            .iter()
+            .find(|(text, _)| *text == note)
+            .unwrap_or_else(|| panic!("{read_once:?}"));
+        assert!((turn - 30_f64.to_radians()).abs() < 1e-9, "{turn}");
+        // Saved again over the file just written, the note as it was.
+        let twice = write_edited_dxf(
+            &once,
+            DxfImportOptions::new(None),
+            &read(&once).lines,
+            &UnderlayEdits::default(),
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(texts(&twice), read_once);
+    }
+
+    let r12 = R12.replace(
+        "9\n$INSUNITS\n",
+        "9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n",
+    );
+    let original = read(r12.as_bytes());
     let refused = write_edited_dxf(
-        source.as_bytes(),
+        r12.as_bytes(),
         DxfImportOptions::new(None),
         &original.lines,
         &drawn("Ж".repeat(300)),
@@ -2752,18 +3180,17 @@ fn a_text_drawn_too_long_for_a_dxf_line_is_refused_in_every_encoding() {
     assert!(
         matches!(
             refused,
-            Err(EditedDxfError::Refused(DxfEditRefusal::TextTooLong {
-                ref kind,
-                code: 1,
+            Err(EditedDxfError::Refused(DxfEditRefusal::DrawnTextTooLong {
+                ref starts,
                 characters: 2100,
-                ..
-            })) if kind == "TEXT"
+                written: None,
+            })) if starts.starts_with("ЖЖЖ")
         ),
         "{:?}",
         refused.map(|written| written.split(|byte| *byte == b'\n').map(<[u8]>::len).max())
     );
 
-    let source = source.replace("AC1015", "AC1021");
+    let source = coded.replace("AC1015", "AC1021");
     let original = read(source.as_bytes());
     let long = "Ж".repeat(1500);
     let written = write_edited_dxf(
@@ -2773,14 +3200,14 @@ fn a_text_drawn_too_long_for_a_dxf_line_is_refused_in_every_encoding() {
         &drawn(long.clone()),
     )
     .unwrap_or_else(|error| panic!("{error}"));
-    let texts = read(&written)
-        .lines
-        .layers()
-        .iter()
-        .flat_map(|layer| layer.texts())
-        .map(|text| text.text.clone())
-        .collect::<Vec<_>>();
-    assert!(texts.contains(&long), "{}", texts.len());
+    let mtexts = |dxf: &[u8]| dxf.windows(7).filter(|kind| kind == b"\nMTEXT").count();
+    assert_eq!(mtexts(&written), mtexts(source.as_bytes()));
+    let read_back = texts(&written);
+    assert!(
+        read_back.iter().any(|(text, _)| *text == long),
+        "{}",
+        read_back.len()
+    );
 }
 
 /// Review 2026-10-31 P3: a polyline drawn into an R13 drawing was written as LWPOLYLINE,
@@ -2854,6 +3281,46 @@ fn a_polyline_drawn_into_an_r13_drawing_is_one_r13_knows() {
         &drawn(&again.lines, &again.layers),
         &drawn(&lines.clone().edited(&edits, &layers), &original.layers),
     );
+}
+
+/// Review 2026-11-08 CD-240: a discarded edit takes the copies of its object out where
+/// they are, so the objects added after them keep their ids; a copy taken out needs no
+/// entity, so the drawing is written though the file changed the object copied. CD-242:
+/// an edit refused for an object without a handle can be discarded too.
+#[test]
+fn a_copy_taken_out_needs_no_entity_of_the_file() {
+    let source = source();
+    let original = read(source.as_bytes());
+    let lines = &original.lines;
+    let line = id_of(lines, 0xA0);
+    let copy = u32::try_from(lines.objects().objects.len()).unwrap();
+    let mut edits = UnderlayEdits::default();
+    edits.added.push(AddedObject::Copy {
+        of: line,
+        map: [[1.0, 0.0, 0.0], [0.0, 1.0, 700.0]],
+    });
+    let changed = source.replace("11\n4000\n21\n0\n", "11\n4100\n21\n0\n");
+    let refusal = match write_edited_dxf(
+        changed.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    ) {
+        Err(EditedDxfError::Refused(refusal)) => refusal,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(refusal.refused_edits(), [line], "{refusal:?}");
+    edits.removed_objects.insert(copy);
+    let written = write_edited_dxf(
+        changed.as_bytes(),
+        DxfImportOptions::new(None),
+        lines,
+        &edits,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(read(&written).lines, read(changed.as_bytes()).lines);
+
+    assert_eq!(DxfEditRefusal::NoHandle { object: 4 }.refused_edits(), [4]);
 }
 
 /// Review 2026-11-06 P3: of the edits refused as their entities changed in the file, only

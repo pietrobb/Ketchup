@@ -141,6 +141,9 @@ pub enum WorkerRequest {
     /// Reads a DWG file as DXF. Only the program worker gets it, for the same
     /// reason: the reader allocates what a damaged file declares.
     ConvertDwg(DwgInput),
+    /// Reads a SketchUp file as GLB, in the program worker for the same reason: the
+    /// reader allocates what a damaged file declares and recurses over its nesting.
+    ConvertSkp(SkpInput),
     /// Reads a DXF or DWG drawing as underlay lines. Only the program worker gets it: an
     /// underlay keeps every line it reads, bounded by the worker's limits alone.
     ReadUnderlay(UnderlayInput),
@@ -191,6 +194,7 @@ pub enum WorkerReply {
     Report(Box<ReportOutcome>),
     Refined(Box<RefineOutcome>),
     Dwg(Box<DwgOutcome>),
+    Skp(Box<SkpOutcome>),
     Underlay(Box<UnderlayOutcome>),
     UnderlayWritten(Box<UnderlayWriteOutcome>),
     Failure(WorkerFailure),
@@ -334,6 +338,118 @@ impl DwgOutcome {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct SkpInput {
+    #[serde(with = "cbor_bytes")]
+    pub skp: Vec<u8>,
+    /// The GLB goes to this file, not into the reply: a large model's GLB is more than one
+    /// reply frame holds.
+    pub output: PathBuf,
+    /// A larger GLB is refused instead of written.
+    pub max_glb_bytes: usize,
+}
+
+/// [`ketchup_skp::skp_to_glb`] on the wire, its GLB being in the request's `output`.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub enum SkpOutcome {
+    Converted {
+        glb_sha256: String,
+        version: String,
+        verified: bool,
+        /// Diagnostic code and count of every kind of thing the GLB does not carry.
+        left_out: Vec<(String, usize)>,
+        /// Name and visibility of each tag a GLB node carries.
+        tags: Vec<(String, bool)>,
+        /// The index in `tags` of each GLB node's tag, by glTF node index.
+        node_tags: Vec<Option<usize>>,
+    },
+    Refused(SkpRefusal),
+}
+
+/// A [`ketchup_skp::SkpError`] on the wire, with its facts as fields.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub enum SkpRefusal {
+    GlbTooLarge {
+        limit: usize,
+        size: usize,
+    },
+    /// OpenSKP refused the file or panicked reading it, or its GLB was not written: the
+    /// error crosses the process boundary as the messages of its whole cause chain.
+    Reader(ketchup_rejection::Rejection),
+}
+
+impl From<ketchup_skp::SkpError> for SkpRefusal {
+    fn from(error: ketchup_skp::SkpError) -> Self {
+        use ketchup_rejection::{Rejection, RejectionPhase};
+        match error {
+            ketchup_skp::SkpError::GlbTooLarge { limit, size } => Self::GlbTooLarge { limit, size },
+            _ => Self::Reader(
+                Rejection::new("skp.unreadable", RejectionPhase::Request)
+                    .reason("the SketchUp file could not be read")
+                    .caused_by(error),
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for SkpRefusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::GlbTooLarge { limit, size } => ketchup_skp::SkpError::GlbTooLarge {
+                limit: *limit,
+                size: *size,
+            }
+            .fmt(formatter),
+            Self::Reader(rejection) => rejection.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for SkpRefusal {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::GlbTooLarge { .. } => None,
+            Self::Reader(rejection) => Some(rejection),
+        }
+    }
+}
+
+impl SkpOutcome {
+    /// Converts `input.skp` and writes its GLB to `input.output`.
+    pub(crate) fn convert(input: &SkpInput) -> Self {
+        let model = match ketchup_skp::skp_to_glb(&input.skp, input.max_glb_bytes) {
+            Ok(model) => model,
+            Err(error) => return Self::Refused(error.into()),
+        };
+        if let Err(error) = std::fs::write(&input.output, &model.glb) {
+            return Self::Refused(SkpRefusal::Reader(
+                ketchup_rejection::Rejection::new(
+                    "skp.glb_not_written",
+                    ketchup_rejection::RejectionPhase::Io,
+                )
+                .target(input.output.display().to_string())
+                .caused_by(error),
+            ));
+        }
+        Self::Converted {
+            glb_sha256: sha256_hex(&model.glb),
+            version: model.version,
+            verified: model.verified,
+            left_out: model
+                .left_out
+                .into_iter()
+                .map(|left_out| (left_out.code, left_out.count))
+                .collect(),
+            tags: model
+                .tags
+                .into_iter()
+                .map(|tag| (tag.name, tag.visible))
+                .collect(),
+            node_tags: model.node_tags,
+        }
+    }
+}
+
 /// A drawing file to read as an underlay. Its lines go to `output`, not into the reply:
 /// a large drawing's lines are more than one reply frame holds.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -347,6 +463,9 @@ pub struct UnderlayInput {
     /// ([`ketchup_model::underlay::placement::geo_origin`]).
     #[serde(default)]
     pub geo_origin_mm: Option<[f64; 2]>,
+    /// The code page the user chose to read a drawing before DXF 2007 in.
+    #[serde(default)]
+    pub code_page: Option<ketchup_model::import::DxfCodePage>,
     pub output: PathBuf,
 }
 
@@ -384,6 +503,9 @@ pub struct UnderlayWriteInput {
     /// as they were read.
     #[serde(default)]
     pub geo_origin_mm: Option<[f64; 2]>,
+    /// The code page the drawing was read in by the user's choice.
+    #[serde(default)]
+    pub code_page: Option<ketchup_model::import::DxfCodePage>,
     /// The underlay's encoded lines, its blob.
     pub lines: PathBuf,
     /// How many layers the underlay names; lines holding more are refused.

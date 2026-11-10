@@ -232,6 +232,7 @@ impl KetchupApp {
                 | AppCommand::ExportSheetMetalManufacturing
                 | AppCommand::ExportHomagMpr
                 | AppCommand::ExportHundeggerBtlx
+                | AppCommand::ExportWorkshopPackage
         ) {
             return false;
         }
@@ -268,12 +269,16 @@ impl KetchupApp {
         }
         let command = if self.file.activity.opening.is_some() {
             AppCommand::Open
-        } else if self.file.activity.dwg_reading.is_some() {
-            AppCommand::ImportDrawingDxf
+        } else if let Some(task) = &self.file.activity.dwg_reading {
+            task.command()
         } else if let Some(task) = &self.file.activity.exact_import_reading {
             task.command()
         } else if self.file.activity.underlay.reading.is_some() {
-            AppCommand::ImportDrawingUnderlay
+            if self.file.activity.underlay.revision_of.is_some() {
+                AppCommand::CompareUnderlayRevision
+            } else {
+                AppCommand::ImportDrawingUnderlay
+            }
         } else if let Some(task) = &self.file.activity.underlay.exporting {
             if task.dwg {
                 AppCommand::ExportUnderlayDwg

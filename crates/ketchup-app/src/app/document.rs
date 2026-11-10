@@ -27,10 +27,7 @@ impl std::fmt::Display for SaveFailure {
 impl KetchupApp {
     #[must_use]
     pub const fn build_version() -> &'static str {
-        match option_env!("KETCHUP_BUILD_VERSION") {
-            Some(version) => version,
-            None => env!("CARGO_PKG_VERSION"),
-        }
+        ketchup_mcp::VERSION
     }
 
     #[must_use]
@@ -478,6 +475,21 @@ impl KetchupApp {
         path: &Path,
         payload: &[u8],
     ) -> Result<(), Rejection> {
+        let asked = Asked { risk, listed: &[] };
+        self.authorize_path_side_effect_listing(class, operation, title, asked, path, payload)
+    }
+
+    /// [`Self::authorize_path_side_effect`] with the lines `asked` lists shown
+    /// after the path.
+    fn authorize_path_side_effect_listing(
+        &mut self,
+        class: HighRiskClass,
+        operation: &str,
+        title: &str,
+        Asked { risk, listed }: Asked<'_>,
+        path: &Path,
+        payload: &[u8],
+    ) -> Result<(), Rejection> {
         let scope = HighRiskScope::new(class, None, None, Some(path.display().to_string()))
             .map_err(|error| failed("side_effect.scope", error))?;
         let proposal = self
@@ -489,13 +501,14 @@ impl KetchupApp {
                 payload,
             )
             .map_err(|error| failed("side_effect.prepare", error))?;
-        let lines = [
-            format!("Risk: {risk}"),
-            format!("Path: {}", path.display()),
-            format!("Document revision: {}", proposal.provenance_revision()),
-            format!("Payload SHA-256: {}", proposal.payload_digest()),
-            format!("Operation digest: {}", proposal.operation_digest()),
-        ];
+        let lines = [format!("Risk: {risk}"), format!("Path: {}", path.display())]
+            .into_iter()
+            .chain(listed.iter().cloned())
+            .chain([
+                format!("Document revision: {}", proposal.provenance_revision()),
+                format!("Payload SHA-256: {}", proposal.payload_digest()),
+                format!("Operation digest: {}", proposal.operation_digest()),
+            ]);
         let Some(approving_human) = self
             .dialogs
             .confirm_high_risk(HighRiskConfirmationRequest::new(title, lines))
@@ -554,6 +567,39 @@ impl KetchupApp {
             "overwrite existing file",
             path,
             payload,
+        )
+    }
+
+    /// Asks the user before a client takes over another project's drawing set
+    /// listed at `list`, naming every file of it that is replaced (review
+    /// 2026-11-09 SEC-304: only the list was named, not its sheets). The
+    /// approval is bound to those files.
+    pub(crate) fn authorize_set_take_over(
+        &mut self,
+        list: &Path,
+        replaced: &[&Path],
+    ) -> Result<(), Rejection> {
+        self.side_effect_receipts.clear();
+        let names: Vec<String> = replaced
+            .iter()
+            .map(|path| format!("  {}", path.display()))
+            .collect();
+        let listed: Vec<String> = std::iter::once(format!(
+            "Replaces {} files of the other project's set:",
+            replaced.len()
+        ))
+        .chain(names.iter().cloned())
+        .collect();
+        self.authorize_path_side_effect_listing(
+            HighRiskClass::Overwrite,
+            "overwrite-native-document",
+            "Confirm high-risk overwrite",
+            Asked {
+                risk: "take over another project's drawing set",
+                listed: &listed,
+            },
+            list,
+            names.join("\n").as_bytes(),
         )
     }
 
@@ -1051,9 +1097,11 @@ impl KetchupApp {
             }
             AppCommand::ImportDrawingUnderlay => {
                 if let Some(path) = self.choose_dxf_import_path() {
-                    self.start_underlay_read(path, None);
+                    self.file.activity.underlay.revision_of = None;
+                    self.start_underlay_read(path, None, None);
                 }
             }
+            AppCommand::CompareUnderlayRevision => self.begin_underlay_revision(),
             AppCommand::ExportDrawingDxf => {
                 self.export_from_menu("dxf", Self::export_current_profiles_dxf_to);
             }
@@ -1203,6 +1251,9 @@ impl KetchupApp {
             }
             AppCommand::ExportHundeggerBtlx => {
                 self.export_from_menu("btlx", Self::export_current_model_btlx_to);
+            }
+            AppCommand::ExportWorkshopPackage => {
+                self.export_from_menu("workshop-zip", Self::export_current_workshop_package_to);
             }
             AppCommand::New | AppCommand::Open => {}
             _ => unreachable!("only file commands are routed here"),
@@ -1838,6 +1889,13 @@ impl KetchupApp {
             self.reviews.pdm_review_dialog = Some(pending);
         }
     }
+}
+
+/// What the user is asked to confirm: the risk in a few words, and lines listing
+/// what it touches beyond its path.
+struct Asked<'a> {
+    risk: &'a str,
+    listed: &'a [String],
 }
 
 fn current_unix_time_ms() -> Result<u64, Rejection> {

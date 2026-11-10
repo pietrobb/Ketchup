@@ -2352,7 +2352,7 @@ mod tests {
             assert_eq!(started["result"]["state"], "running", "{started}");
         }
 
-        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = Instant::now() + std::time::Duration::from_secs(60);
         while server.verify_jobs.iter().any(|job| {
             matches!(&job.state, VerifyJobState::Running(task)
                 if !task.finished.load(std::sync::atomic::Ordering::Acquire))

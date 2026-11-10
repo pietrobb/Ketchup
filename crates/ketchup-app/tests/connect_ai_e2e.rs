@@ -206,6 +206,8 @@ struct TwoClients {
     consent: egui::Context,
     /// The stamp the first client read after it connected.
     stamp: Value,
+    /// The window's prompts; the user lets the second client take it over.
+    dialogs: ketchup_app::dialogs::ScriptedFileDialogs,
     profile: tempfile::TempDir,
 }
 
@@ -228,7 +230,8 @@ fn two_clients() -> TwoClients {
     assert_eq!(row.registration, Registration::ThisKetchup);
     let settings = environment.config_file(Harness::ClaudeCode).unwrap();
 
-    let mut shell = Shell::new();
+    let dialogs = ketchup_app::dialogs::ScriptedFileDialogs::new().always_confirm_high_risk_as(7);
+    let mut shell = Shell::with_dialogs(dialogs.clone());
     let consent = egui::Context::default();
     shell
         .app_mut()
@@ -260,6 +263,7 @@ fn two_clients() -> TwoClients {
         shell,
         consent,
         stamp: status["stamp"].clone(),
+        dialogs,
         profile,
     }
 }
@@ -273,8 +277,10 @@ fn take_over(clients: &mut TwoClients) {
         second,
         shell,
         consent,
+        dialogs,
         ..
     } = clients;
+    assert!(dialogs.high_risk_prompts().is_empty());
     settle(consent);
     let connect_queued = frame_requests(consent);
     let connect = second.send("tools/call", json!({"name": "connect", "arguments": {}}));
@@ -284,6 +290,10 @@ fn take_over(clients: &mut TwoClients) {
     let taken = second.answer(shell, connect, "connect");
     let (failed, taken) = tool_result(&taken);
     assert!(!failed, "the window is taken over, not refused: {taken}");
+    // Only after the user let it (review 2026-11-08 MCP-240).
+    let prompts = dialogs.high_risk_prompts();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(prompts[0].contains("Claude Code"), "{prompts:?}");
     assert!(shell.has_visible_label(&connected_label(shell, "Codex")));
     assert!(!shell.has_visible_label(&connected_label(shell, "Claude Code")));
 }

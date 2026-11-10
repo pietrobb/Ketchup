@@ -308,7 +308,9 @@ impl Tools {
                     &mut args,
                     &[
                         "remove",
+                        "discard_refused",
                         "draw",
+                        "rooms",
                         "move",
                         "trim",
                         "extend",
@@ -323,7 +325,7 @@ impl Tools {
                 // extrusion, or a view a program follows, may be planned as a program.
                 let wait = match action.as_str() {
                     "export" => OPEN_WAIT,
-                    "extrude" | "view" | "solid_from_views" => APPLY_PROGRAM_WAIT,
+                    "extrude" | "rooms" | "view" | "solid_from_views" => APPLY_PROGRAM_WAIT,
                     _ => DEFAULT_WAIT,
                 };
                 self.send(&format!("drawing_{action}"), args, wait)
@@ -466,6 +468,16 @@ impl Tools {
                     .filter_map(|field| args.remove_entry(*field))
                     .collect();
                 args.insert("query".into(), Value::Object(query));
+            }
+            "status" => {
+                // The program serving MCP beside the window's own version: an
+                // AI client may start an older Kečup from a stale path.
+                return Ok(match self.request(&action, args, DEFAULT_WAIT)? {
+                    Reply::Done { stamp, result } => ToolOutput::text(
+                        &json!({"stamp": stamp, "result": result, "server_version": crate::VERSION}),
+                    ),
+                    rejected => self.output(rejected),
+                });
             }
             _ => {}
         }
@@ -734,7 +746,9 @@ impl Tools {
         let failed = |error: std::io::Error| {
             let hint = if matches!(
                 error.kind(),
-                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::WouldBlock
+                std::io::ErrorKind::PermissionDenied
+                    | std::io::ErrorKind::WouldBlock
+                    | std::io::ErrorKind::ResourceBusy
             ) {
                 ""
             } else {
@@ -745,7 +759,12 @@ impl Tools {
                 format!("Cannot attach to the Kečup window ({error}){hint}"),
             )
         };
-        let grant = discovery::attach(&window).map_err(failed)?;
+        let client = self
+            .client
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let grant = discovery::attach(&window, client.as_deref()).map_err(failed)?;
         let connection = Connection::open(grant.address, grant.token).map_err(failed)?;
         self.window_id = Some(window.instance_id.clone());
         self.taken_over = false;
@@ -824,29 +843,13 @@ impl Tools {
             ));
         };
         args.insert("method".into(), method.into());
-        let armed = self.cancel.arm(&attached.connection);
-        let sent = match armed {
-            Ok(true) => attached.connection.request(Value::Object(args), wait),
-            Ok(false) => {
-                return Err(ToolError::new(
-                    "cancelled",
-                    "The client cancelled this call; it was not sent to the window.",
-                ));
-            }
-            // This server's own failure, not the window's: the connection
-            // stays (review 2026-11-04 P3).
-            Err(error) => {
-                return Err(ToolError::new(
-                    "call_not_prepared",
-                    "This MCP server could not make the call cancellable (details.cause), so it \
-                     did not send it; the connection to the Kečup window is kept. Call again.",
-                )
-                .with_details(json!({"cause": {
-                    "kind": error.kind().to_string(),
-                    "os_error": error.raw_os_error(),
-                }})));
-            }
-        };
+        if !self.cancel.arm(&attached.connection) {
+            return Err(ToolError::new(
+                "cancelled",
+                "The client cancelled this call; it was not sent to the window.",
+            ));
+        }
+        let sent = attached.connection.request(Value::Object(args), wait);
         self.cancel.disarm();
         match sent {
             Ok(reply) => Ok(reply),

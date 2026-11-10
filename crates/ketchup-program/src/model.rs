@@ -7,6 +7,8 @@
 //! program writes them.
 
 use crate::frame::{self, Mat3, Obb};
+use crate::joint_kind::normalized;
+pub use crate::joint_kind::{JointFastening, UNFASTENED_JOINT_KINDS};
 use ketchup_geometry::linalg::{CubicBezier, dot};
 use ketchup_model::tolerance::ROUNDING;
 use serde::{Deserialize, Serialize};
@@ -23,6 +25,15 @@ pub const THICKNESS_AXIS: &str = "thickness_axis";
 /// library sets it beside its own attribute for the workshop; namespaced, it
 /// is no column of the cut list.
 pub const MATERIAL_AXIS: &str = "material:axis";
+
+/// A part as a bar in its own frame ([`Part::bar_frame`]): its centre, the
+/// unit directions of its length and of its section's two sides, and their sizes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BarFrame {
+    pub centre: [f64; 3],
+    pub axes: [[f64; 3]; 3],
+    pub sizes: [f64; 3],
+}
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct Param {
@@ -1216,6 +1227,134 @@ impl Part {
         std::array::from_fn(|axis| max[axis] - min[axis])
     }
 
+    /// The part as a bar in its own frame: its centre, the unit direction its
+    /// length runs along and those of its section's two sides, each with its
+    /// size. The length runs along the axis [`LENGTH_AXIS`] names, else the
+    /// longest; an extrusion's sides in its profile's plane are those of the
+    /// smallest rectangle around its profile (review 2026-11-08 PG-141(b): a
+    /// member extruded at a slope ran along its level projection, so its top
+    /// and bottom edges were taken for each other).
+    #[must_use]
+    pub fn bar_frame(&self) -> BarFrame {
+        if let Some(bar) = self.extruded_bar() {
+            return bar;
+        }
+        let (min, max) = self.local_bounds();
+        let size: [f64; 3] = std::array::from_fn(|axis| max[axis] - min[axis]);
+        let long = self.load_axis();
+        let [a, b] = [(long + 1) % 3, (long + 2) % 3];
+        let unit = |axis: usize| std::array::from_fn(|i| if i == axis { 1.0 } else { 0.0 });
+        BarFrame {
+            centre: std::array::from_fn(|i| (min[i] + max[i]) / 2.0),
+            axes: [unit(long), unit(a), unit(b)],
+            sizes: [size[long], size[a], size[b]],
+        }
+    }
+
+    /// [`Part::bar_frame`] of an extrusion no boolean changed, from its profile.
+    fn extruded_bar(&self) -> Option<BarFrame> {
+        let named = self.named_length_axis();
+        let ProgramPartBody::Extrusion {
+            segments,
+            distance_mm,
+            caps,
+        } = &self.body
+        else {
+            return None;
+        };
+        if self.joined().next().is_some() {
+            return None;
+        }
+        let (profile, span, grow) = self.pulled_profile(segments, *distance_mm, caps);
+        let (along, widths) = smallest_enclosing_rectangle(&profile);
+        let across = [-along[1], along[0]];
+        let reach = |d: [f64; 2]| {
+            profile
+                .iter()
+                .map(|segment| segment.support(d))
+                .fold(f64::NEG_INFINITY, f64::max)
+        };
+        let middle = |d: [f64; 2]| (reach(d) - reach([-d[0], -d[1]])) / 2.0;
+        let (along_mid, across_mid) = (middle(along), middle(across));
+        let centre = [
+            along[0] * along_mid + across[0] * across_mid,
+            along[1] * along_mid + across[1] * across_mid,
+            (span[0] + span[1]) / 2.0,
+        ];
+        let [long, short] = if widths[0] >= widths[1] {
+            [(along, widths[0]), (across, widths[1])]
+        } else {
+            [(across, widths[1]), (along, widths[0])]
+        }
+        .map(|(d, width)| ([d[0], d[1], 0.0], width + 2.0 * grow));
+        let pulled = ([0.0, 0.0, 1.0], span[1] - span[0] + 2.0 * grow);
+        let lengthwise = match named {
+            Some(2) => true,
+            Some(_) => false,
+            None => pulled.1 > long.1,
+        };
+        let [axis, a, b] = if lengthwise {
+            [pulled, long, short]
+        } else {
+            [long, short, pulled]
+        };
+        Some(BarFrame {
+            centre,
+            axes: [axis.0, a.0, b.0],
+            sizes: [axis.1, a.1, b.1],
+        })
+    }
+
+    /// The local axis a member's loads are placed along: the one
+    /// [`LENGTH_AXIS`] names (review 2026-11-08 PG-243: a 29 mm long upright
+    /// piece in a 140 mm wall was checked as bending across the wall). An
+    /// extrusion drawn from its side, its length in its profile's plane, runs
+    /// along the axis of that plane its length follows most nearly level while
+    /// it lies (bends), most nearly plumb while it stands: a bar extruded at
+    /// 40 degrees or more, its rise and plumb cut taller than its run, ran up
+    /// its vertical axis, so nothing braced it (review 2026-11-03 PG-141(b)).
+    /// Else the longest.
+    #[must_use]
+    pub fn load_axis(&self) -> usize {
+        if let Some(named) = self.named_length_axis() {
+            return named;
+        }
+        let side_view = self.extruded_bar().filter(|bar| bar.axes[0][2] == 0.0);
+        let Some(bar) = side_view else {
+            let (min, max) = self.local_bounds();
+            return (0..3)
+                .max_by(|a, b| (max[*a] - min[*a]).total_cmp(&(max[*b] - min[*b])))
+                .unwrap_or(0);
+        };
+        let world = |local: [f64; 3]| {
+            let v = frame::apply(&self.rotation, local);
+            ketchup_geometry::linalg::normalize(v).unwrap_or(v)
+        };
+        let level = |v: [f64; 3]| v[0].hypot(v[1]);
+        let lies = level(world(bar.axes[0])) >= crate::member_check::COLUMN_COS;
+        let follows = |axis: usize| {
+            let direction = world(std::array::from_fn(|i| f64::from(u8::from(i == axis))));
+            let lie = if lies {
+                level(direction)
+            } else {
+                direction[2].abs()
+            };
+            bar.axes[0][axis].abs() * lie
+        };
+        usize::from(follows(1) > follows(0))
+    }
+
+    /// The local axis the part's [`LENGTH_AXIS`] names, if it names one.
+    #[must_use]
+    pub fn named_length_axis(&self) -> Option<usize> {
+        match self.attributes.get(LENGTH_AXIS).map(String::as_str) {
+            Some("x" | "X") => Some(0),
+            Some("y" | "Y") => Some(1),
+            Some("z" | "Z") => Some(2),
+            _ => None,
+        }
+    }
+
     /// Whether the attribute `along` names a local axis in the profile's
     /// plane: it ties a direction of the material to that axis, which the cut
     /// list writes as a side of the blank, so the blank stays square to it
@@ -1946,43 +2085,39 @@ pub struct Joint {
     pub hardware: BTreeMap<String, usize>,
 }
 
-/// Joint kinds that only record how two parts meet and fasten nothing
-/// (review 2026-11-04 r19 PG-162): they neither hold a part down nor brace;
-/// "unfastened", "loose", "free" and "rests" say so too (review 2026-11-06
-/// r23 P3: they fastened, unsaid).
-pub const UNFASTENED_JOINT_KINDS: [&str; 7] = [
-    "none",
-    "contact",
-    "friction",
-    "unfastened",
-    "loose",
-    "free",
-    "rests",
-];
-
 /// The fewest letters a kind has before it is taken for a slip of "none":
 /// "cone", "node", "bone" and "one" are words (review 2026-11-06 r23 P3), but
-/// "lose", "rest" and "frei" are slips of "loose", "rests" and "free", which
-/// fastened unsaid (review 2026-11-07 P3).
+/// "rest" is a slip of "rests", which fastened unsaid (review 2026-11-07 P3).
 const NONE_SLIP_LETTERS: usize = 5;
 
 impl Joint {
-    /// Whether the joint fastens its parts to each other; every kind does
-    /// but those of [`UNFASTENED_JOINT_KINDS`].
+    /// What the joint's kind says of how its parts join ([`crate::joint_kind`]).
     #[must_use]
-    pub fn fastens(&self) -> bool {
-        !UNFASTENED_JOINT_KINDS.contains(&self.kind.trim().to_lowercase().as_str())
+    pub fn fastening(&self) -> JointFastening {
+        crate::joint_kind::fastening(&self.kind)
     }
 
-    /// The kind of [`UNFASTENED_JOINT_KINDS`] this joint's kind is likely a
-    /// misspelling of ("contcat", "contacts"), though it fastens (review
-    /// 2026-11-06 P3); "none" not of fewer than [`NONE_SLIP_LETTERS`].
+    /// Whether the checks take the joint to fasten its parts to each other: a
+    /// fastening of the catalogue, or a kind it does not know, which also
+    /// leaves every check standing on it not verified (review 2026-11-08 PG-241).
+    #[must_use]
+    pub fn fastens(&self) -> bool {
+        self.fastening() != JointFastening::Unfastened
+    }
+
+    /// The kind of [`UNFASTENED_JOINT_KINDS`] this joint's kind, one the catalogue
+    /// does not know, is likely a misspelling of ("contcat", "contacts") (review
+    /// 2026-11-06 P3); a kind of fewer than [`NONE_SLIP_LETTERS`] not of a word as
+    /// short ("none", "lose", "nic"), as "nose" is no slip of "lose".
     #[must_use]
     pub fn misspelt_unfastened_kind(&self) -> Option<&'static str> {
-        let kind: Vec<char> = self.kind.trim().to_lowercase().chars().collect();
-        UNFASTENED_JOINT_KINDS.into_iter().find(|unfastened| {
+        if self.fastening() != JointFastening::Unknown {
+            return None;
+        }
+        let kind: Vec<char> = normalized(&self.kind).chars().collect();
+        UNFASTENED_JOINT_KINDS.iter().copied().find(|unfastened| {
             let base: Vec<char> = unfastened.chars().collect();
-            (*unfastened != "none" || kind.len() >= NONE_SLIP_LETTERS)
+            (base.len() >= NONE_SLIP_LETTERS || kind.len() >= NONE_SLIP_LETTERS)
                 && kind != base
                 && one_slip(&kind, &base)
         })
@@ -2122,6 +2257,12 @@ pub struct ProgramModel {
     pub production_scope: BTreeSet<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub area_loads: Vec<crate::loads::AreaLoad>,
+    /// Parts declared to hold members' edges sideways (`brace()`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declared_braces: Vec<crate::loads::DeclaredBrace>,
+    /// Sheets declared one plane anchored to grounded parts (`diaphragm()`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diaphragms: Vec<crate::loads::Diaphragm>,
     /// Strength classes of timber materials (`timber_strength()`), by material name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub strength_classes: BTreeMap<String, crate::member_check::TimberClass>,
@@ -2135,6 +2276,12 @@ pub struct ProgramModel {
     /// The one currency of the prices, when a `price()` names it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currency: Option<String>,
+    /// The building site (`site()`): its snow load and the altitude snow's psi depend on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<crate::site::Site>,
+    /// The build-ups `thermal_check()` checks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thermal: Vec<crate::thermal::Buildup>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub declared_issues: Vec<crate::validate::Issue>,
     /// Sets of tags that are alternative representations (`alternatives()`).

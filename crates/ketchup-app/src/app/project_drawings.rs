@@ -15,13 +15,15 @@ use ketchup_application::threads::{
     CosmeticThreadBodyError, CosmeticThreadGraph, ThreadCylinder, cosmetic_thread_graph,
 };
 use ketchup_manufacturing::project_drawings::{
-    CuttingPiece, CuttingSheet, CuttingStock, DrawingOpening, DrawingSet, DrawingSetOptions,
-    DrawingSolid, DrawingThread, OpeningSchedule, PlanSheet, ProjectDrawingError, ProjectView,
-    SCALES, SheetTitles, ShopDrawings, ShopPosition, ShopSheet, Storey, drawing_set_until,
-    ground_floor, storeys,
+    CompassSide, CuttingPiece, CuttingSheet, CuttingStock, DrawingOpening, DrawingSet,
+    DrawingSetOptions, DrawingSolid, DrawingThread, ModelFloors, OpeningSchedule, PlanSheet,
+    ProjectDrawingError, ProjectView, SCALES, SheetTitles, ShopDrawings, ShopPosition, ShopSheet,
+    Storey, drawing_set_until, ground_floor, storeys, table_ground_floor, table_storeys,
 };
+use ketchup_manufacturing::revision_table::RevisionCaptions;
 use ketchup_manufacturing::title_block::{
-    DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM, SheetFormat, SheetLanguage, SheetSettings, TitleField,
+    DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM, SheetFormat, SheetLanguage, SheetSettings, StoreyLevels,
+    TitleField,
 };
 use ketchup_model::annotation::{DecimalMark, dimension_text_with};
 use ketchup_model::exact_product::ExactResultRegistry;
@@ -72,7 +74,7 @@ pub(crate) enum ProjectDrawingsError {
     /// The named shown underlay's lines do not read, the plans would leave it
     /// out: `None` when the document holds no blob of them.
     UnderlayUnreadable(String, Option<ketchup_model::underlay::UnderlayLinesError>),
-    /// A sheet's DXF did not convert to DWG.
+    /// A sheet could not be written as a DXF or DWG drawing.
     Dwg(ketchup_dwg::DwgError),
     /// The set at the path, listed at `list`, is another project's, or
     /// another copy's that wrote it since; `project` names the file it was
@@ -237,15 +239,21 @@ pub(crate) enum FoundZeroError {
     WorkerStopped,
 }
 
-/// The ground floor the drawings window shows for ±0,000 (review 2026-11-04
-/// r19 MF-161): being found on a worker, or found, or why it cannot be.
+/// The floors of the model, none without a solid, as the drawings window
+/// shows them: the ground floor for ±0,000 (review 2026-11-04 r19 MF-161)
+/// and the storeys "Add a storey" fills an empty table with (review
+/// 2026-11-09 MF-300).
+pub(crate) type FoundFloors = Option<ModelFloors>;
+
+/// The floors of the model for the drawings window: being found on a worker,
+/// or found, or why they cannot be.
 pub(crate) enum FoundZero {
-    Finding(std::sync::mpsc::Receiver<Result<f64, FoundZeroError>>),
-    Found(Result<f64, Arc<FoundZeroError>>),
+    Finding(std::sync::mpsc::Receiver<Result<FoundFloors, FoundZeroError>>),
+    Found(Result<FoundFloors, Arc<FoundZeroError>>),
 }
 
 impl FoundZero {
-    /// Finds the ground floor among the bodies of `snapshot` (see
+    /// Finds the floors among the bodies of `snapshot` (see
     /// [`KetchupApp::job_bodies`]), placed, on a worker thread: which bodies
     /// those are is found there too (review 2026-11-06 P3).
     fn find(snapshot: Snapshot, results: ExactResultRegistry) -> Self {
@@ -263,7 +271,7 @@ impl FoundZero {
                                     .map(|(package, _)| level_solid(package, &occurrence.transform))
                             })
                             .collect::<Vec<_>>();
-                        ground_floor(&solids)
+                        ModelFloors::of(&solids)
                     })
                     .map_err(FoundZeroError::Bodies);
                 // Sending fails only when the window has gone: nobody to tell.
@@ -275,8 +283,8 @@ impl FoundZero {
         }
     }
 
-    /// The ground floor once found; `None` while the worker is at it.
-    fn poll(&mut self) -> Option<Result<f64, Arc<FoundZeroError>>> {
+    /// The floors once found; `None` while the worker is at it.
+    fn poll(&mut self) -> Option<Result<FoundFloors, Arc<FoundZeroError>>> {
         if let Self::Finding(receiver) = self {
             *self = match receiver.try_recv() {
                 Ok(found) => Self::Found(found.map_err(Arc::new)),
@@ -338,7 +346,7 @@ impl ProjectDrawingsJob {
         } = self;
         let zero_among = std::mem::take(&mut solids.zero_among);
         let solids = solids.drawn(executable.as_deref(), cancelled)?;
-        if options.zero_level_mm.is_none() {
+        if options.zero_level_mm.is_none() && options.storeys.is_empty() {
             // Found here, on the job's thread (review 2026-11-04 r19 MF-161).
             let hidden = zero_among
                 .iter()
@@ -361,12 +369,8 @@ impl ProjectDrawingsJob {
         let (set, info) = self.set(cancelled)?;
         let files = match format {
             SetFileFormat::Pdf => vec![set.pdf(&info)],
-            SetFileFormat::Dxf => set.dxf(),
-            SetFileFormat::Dwg => set
-                .dxf()
-                .iter()
-                .map(|dxf| ketchup_dwg::dxf_to_dwg(dxf).map_err(ProjectDrawingsError::Dwg))
-                .collect::<Result<_, _>>()?,
+            SetFileFormat::Dxf => set.dxf().map_err(ProjectDrawingsError::Dwg)?,
+            SetFileFormat::Dwg => set.dwg().map_err(ProjectDrawingsError::Dwg)?,
         };
         Ok((set, files))
     }
@@ -556,26 +560,155 @@ enum SetList {
     NotAList,
 }
 
-/// Whether `project`, the project file a set's list names (by its absolute
-/// path in a list of Kečup 0.3.2), has the name of the file `owner` is kept
-/// in, as Windows compares names: a project moved with its drawings folder,
-/// to an archive or a colleague's synced folder, or opened by another
-/// spelling of its path, keeps its set (review 2026-11-06 MF-182, r19 MF-162,
-/// capability review run 501). No file is looked at, so an offline share
-/// does not hold the window (2026-11-06 P3).
-fn names_the_project(project: &str, owner: &SetOwner) -> bool {
+/// Whether `project`, the project file a set's list at `list_path` names (by
+/// its name in a list of this Kečup, which also names the file's token, else
+/// by its absolute path), lies where the file `owner` is kept in lies from the
+/// list, as Windows compares names: the path the list names ends with the
+/// way from the folder the project and the list share down to the project.
+/// A project moved with its drawings folder, to an archive or a colleague's
+/// synced folder, or opened by another spelling of its path, keeps its set
+/// (review 2026-11-06 MF-182, r19 MF-162, capability review run 501); a copy
+/// of it in a folder beside the drawings is another project, not the
+/// original by its file name alone (review 2026-11-08 MF-243). No file is
+/// looked at, so an offline share does not hold the window (2026-11-06 P3),
+/// unless a name is an 8.3 one, `PROJEK~1`: which folder that is only the file
+/// system says, so the project's file and the list's folder are asked for
+/// their short names (review 2026-11-09 MF-304).
+fn names_the_project(project: &str, list_path: &Path, owner: &SetOwner) -> bool {
+    let Some(file) = owner.file.as_deref() else {
+        return false;
+    };
     let listed = project
-        .rsplit_once(['/', '\\'])
-        .map_or(project, |(_, name)| name);
-    let name = owner
-        .file
-        .as_deref()
-        .and_then(Path::file_name)
-        .and_then(|name| name.to_str());
-    !listed.is_empty()
-        && name.is_some_and(|name| {
-            name == listed || cfg!(windows) && name.to_lowercase() == listed.to_lowercase()
-        })
+        .split(['/', '\\'])
+        .filter(|name| !name.is_empty() && *name != ".")
+        .collect::<Vec<_>>();
+    let folder = list_path.parent().unwrap_or(Path::new(""));
+    let short = cfg!(windows)
+        && listed
+            .iter()
+            .copied()
+            .chain(path_names(file).iter().map(String::as_str))
+            .chain(path_names(folder).iter().map(String::as_str))
+            .any(is_short_name);
+    let file = path_names_and_short(file, short);
+    let list = path_names_and_short(folder, short);
+    let shared = file
+        .iter()
+        .zip(&list)
+        .take_while(|(a, b)| a.iter().any(|a| b.iter().any(|b| same_name(a, b))))
+        .count();
+    // A list of this Kečup names the file alone; its token tells the copies.
+    let below = if listed.len() == 1 {
+        &file[file.len().saturating_sub(1)..]
+    } else {
+        &file[shared..]
+    };
+    !below.is_empty()
+        && listed.len() >= below.len()
+        && listed[listed.len() - below.len()..]
+            .iter()
+            .zip(below)
+            .all(|(a, b)| b.iter().any(|b| same_name(a, b)))
+}
+
+/// The names of [`path_names`], each with its 8.3 name when `short` and the
+/// file system gives one.
+fn path_names_and_short(path: &Path, short: bool) -> Vec<Vec<String>> {
+    let long = path_names(path);
+    // Without a short name (a file system without them, a file gone) the long
+    // names are compared alone, as before.
+    let short = short
+        .then(|| short_path(path))
+        .and_then(Result::ok)
+        .map(|short| path_names(&short))
+        .filter(|short| short.len() == long.len());
+    match short {
+        Some(short) => long
+            .into_iter()
+            .zip(short)
+            .map(|(long, short)| {
+                if long == short {
+                    vec![long]
+                } else {
+                    vec![long, short]
+                }
+            })
+            .collect(),
+        None => long.into_iter().map(|name| vec![name]).collect(),
+    }
+}
+
+/// Whether `name` has the form of a Windows 8.3 name, `PROGRA~1`.
+fn is_short_name(name: &str) -> bool {
+    name.split_once('~').is_some_and(|(head, tail)| {
+        let number = tail.split_once('.').map_or(tail, |(number, _)| number);
+        !head.is_empty() && !number.is_empty() && number.chars().all(|c| c.is_ascii_digit())
+    })
+}
+
+/// `path` with every name the file system has an 8.3 name for given by it.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn short_path(path: &Path) -> std::io::Result<PathBuf> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    let mut buffer = vec![0_u16; 512];
+    loop {
+        let capacity = u32::try_from(buffer.len()).map_err(std::io::Error::other)?;
+        // SAFETY: `wide` is NUL-terminated and `buffer` holds `capacity` u16s.
+        let written = unsafe { GetShortPathNameW(wide.as_ptr(), buffer.as_mut_ptr(), capacity) };
+        let written = usize::try_from(written).map_err(std::io::Error::other)?;
+        if written == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if written < buffer.len() {
+            buffer.truncate(written);
+            return Ok(PathBuf::from(std::ffi::OsString::from_wide(&buffer)));
+        }
+        buffer.resize(written, 0);
+    }
+}
+
+#[cfg(not(windows))]
+fn short_path(_path: &Path) -> std::io::Result<PathBuf> {
+    Err(std::io::ErrorKind::Unsupported.into())
+}
+
+/// The names of the folders down to `path` and its own, a drive or share
+/// named as a list writes it whether spelled `\\?\` or not.
+fn path_names(path: &Path) -> Vec<String> {
+    use std::path::{Component, Prefix};
+    let mut names = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => match prefix.kind() {
+                Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => {
+                    names.push(format!("{}:", char::from(drive)));
+                }
+                Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
+                    names.push(server.to_string_lossy().into_owned());
+                    names.push(share.to_string_lossy().into_owned());
+                }
+                Prefix::Verbatim(name) | Prefix::DeviceNS(name) => {
+                    names.push(name.to_string_lossy().into_owned());
+                }
+            },
+            Component::RootDir | Component::CurDir => {}
+            Component::ParentDir => {
+                names.pop();
+            }
+            Component::Normal(name) => names.push(name.to_string_lossy().into_owned()),
+        }
+    }
+    names
+}
+
+/// Whether two names of a path are one, as Windows compares them: in any case.
+/// An 8.3 name is one only with the name the file system gives it (see
+/// [`path_names_and_short`]), not every long name of its first letters.
+fn same_name(a: &str, b: &str) -> bool {
+    a == b || cfg!(windows) && a.to_lowercase() == b.to_lowercase()
 }
 
 /// What `list`, at `list_path`, is to `owner`: its set when the document
@@ -626,7 +759,7 @@ fn set_list_of(list: &[u8], list_path: &Path, owner: &SetOwner, take_over: bool)
         || same_document
             && by_name
             && (header == SET_LIST_HEADER
-                || project.is_some_and(|project| names_the_project(project, owner)));
+                || project.is_some_and(|project| names_the_project(project, list_path, owner)));
     let mut listed = BTreeMap::<String, BTreeSet<String>>::new();
     for (name, sha256) in lines.filter_map(|line| line.rsplit_once(' ')) {
         listed
@@ -1197,6 +1330,30 @@ impl KetchupApp {
         &self,
         snapshot: &Snapshot,
     ) -> Option<Result<f64, Arc<FoundZeroError>>> {
+        self.found_floors(snapshot)
+            .map(|found| found.map(|floors| floors.as_ref().map_or(0.0, ModelFloors::ground)))
+    }
+
+    /// The storeys found in the model, cut `above_floor_mm` above their
+    /// floors, as rows of a table of storeys; none while they are being
+    /// found or when they cannot be (see [`Self::found_zero`]).
+    pub(crate) fn found_storey_table(
+        &self,
+        snapshot: &Snapshot,
+        above_floor_mm: f64,
+    ) -> Vec<StoreyLevels> {
+        match self.found_floors(snapshot) {
+            Some(Ok(Some(floors))) => floors.table(above_floor_mm),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The floors of the model, found on a worker and kept while the
+    /// document and its solids are unchanged (see [`Self::found_zero`]).
+    fn found_floors(
+        &self,
+        snapshot: &Snapshot,
+    ) -> Option<Result<FoundFloors, Arc<FoundZeroError>>> {
         let key = (
             snapshot.document_id(),
             snapshot.revision_id(),
@@ -1355,6 +1512,27 @@ impl KetchupApp {
 
     /// The plan sheet of each storey, titled from `catalog`: by the height
     /// of its cut, and by its storey when there are several.
+    /// The titles of the elevations by the side of the world they show, in
+    /// the sheet language.
+    fn facing_titles(catalog: &LocaleCatalog) -> BTreeMap<CompassSide, String> {
+        CompassSide::ALL
+            .into_iter()
+            .map(|side| {
+                let key = match side {
+                    CompassSide::North => "drawings-view-facing-north",
+                    CompassSide::NorthEast => "drawings-view-facing-north-east",
+                    CompassSide::East => "drawings-view-facing-east",
+                    CompassSide::SouthEast => "drawings-view-facing-south-east",
+                    CompassSide::South => "drawings-view-facing-south",
+                    CompassSide::SouthWest => "drawings-view-facing-south-west",
+                    CompassSide::West => "drawings-view-facing-west",
+                    CompassSide::NorthWest => "drawings-view-facing-north-west",
+                };
+                (side, catalog.text(key))
+            })
+            .collect()
+    }
+
     fn plan_sheets(catalog: &LocaleCatalog, storeys: Vec<Storey>) -> Vec<PlanSheet> {
         let several = storeys.len() > 1;
         storeys
@@ -1626,9 +1804,13 @@ impl KetchupApp {
             .filter(|annotation| snapshot.tags_visible(&annotation.tags))
             .cloned()
             .collect::<Vec<_>>();
-        // The storeys are found from the bodies as evaluated: a thread's
-        // grooves never make a floor.
-        let mut storeys = storeys(&solids.solids, settings.plan_cut_above_floor_mm());
+        // The storeys of the table, else found from the bodies as evaluated: a
+        // thread's grooves never make a floor.
+        let mut storeys = if settings.storeys.is_empty() {
+            storeys(&solids.solids, settings.plan_cut_above_floor_mm())
+        } else {
+            table_storeys(&settings.storeys, settings.plan_cut_above_floor_mm())
+        };
         // A plan of annotations alone cuts nothing; its cut is at the floor.
         if storeys.is_empty() && !annotations.is_empty() {
             storeys.push(Storey {
@@ -1672,6 +1854,17 @@ impl KetchupApp {
             subject: field(TitleField::Stage),
         };
         let zero_level_mm = settings.zero_level_mm.map(f64::from);
+        let decimal_separator = sheet_decimal_mark(&catalog);
+        let zero_altitude = settings.zero_altitude_mm.map(|altitude| {
+            catalog.format(
+                "drawings-sheet-zero-altitude",
+                &BTreeMap::from([(
+                    "metres",
+                    decimal_separator.written(&format!("{:.3}", f64::from(altitude) / 1000.0)),
+                )]),
+            )
+        });
+        let north_deg = settings.north_deg();
         Ok(ProjectDrawingsJob {
             solids,
             executable: self.drawing_worker(),
@@ -1693,8 +1886,19 @@ impl KetchupApp {
                 openings,
                 shop,
                 cutting,
-                decimal_separator: sheet_decimal_mark(&catalog),
+                decimal_separator,
                 zero_level_mm,
+                north_deg,
+                north_letter: catalog.text("drawings-sheet-north-letter"),
+                facing_titles: Self::facing_titles(&catalog),
+                storeys: settings.storeys,
+                zero_altitude,
+                revisions: settings.revisions,
+                revision_captions: RevisionCaptions {
+                    index: catalog.text("drawings-sheet-revision-index"),
+                    date: catalog.text("drawings-sheet-revision-date"),
+                    change: catalog.text("drawings-sheet-revision-change"),
+                },
             },
             info,
         })
@@ -1745,6 +1949,18 @@ impl KetchupApp {
                         ("length", error.length.to_string()),
                     ]),
                 )
+            }
+            ProjectDrawingsError::Drawing(ProjectDrawingError::RevisionsDoNotFit(error)) => {
+                self.catalog.format(
+                    "drawings-revisions-do-not-fit",
+                    &BTreeMap::from([
+                        ("revisions", error.revisions.to_string()),
+                        ("fit", error.fit.to_string()),
+                    ]),
+                )
+            }
+            ProjectDrawingsError::Drawing(ProjectDrawingError::StoreyTable(error)) => {
+                super::storey_table::storey_table_error_text(&self.catalog, error)
             }
             ProjectDrawingsError::NotEvaluated(parts) => self.catalog.format(
                 "drawings-parts-not-evaluated",
@@ -2040,9 +2256,18 @@ impl KetchupApp {
                             .as_ref()
                             .and_then(|found| found.as_ref().ok())
                             .and_then(|height| format!("{height:.0}").parse::<i32>().ok());
+                        // With a table of storeys, ±0,000 is its ground floor
+                        // (review 2026-11-08 MF-241), not the one found.
+                        let table = !editing.storeys.is_empty();
+                        let (finding, found) = if table {
+                            let ground = table_ground_floor(&editing.storeys);
+                            (None, format!("{ground:.0}").parse::<i32>().ok())
+                        } else {
+                            (finding, found)
+                        };
                         ui.horizontal(|ui| {
                             let mut ground = editing.zero_level_mm.is_none();
-                            let ready = finding.is_some() || !ground;
+                            let ready = table || finding.is_some() || !ground;
                             let shown = match (&finding, found) {
                                 (_, Some(found)) => found.to_string(),
                                 (None, None) => "…".to_owned(),
@@ -2071,6 +2296,18 @@ impl KetchupApp {
                             }
                         });
                         ui.end_row();
+                        ui.label(self.catalog.text("drawings-storeys"));
+                        let found = self.found_storey_table(
+                            &self.document.current(),
+                            editing.plan_cut_above_floor_mm(),
+                        );
+                        super::storey_table::show_storey_table(
+                            ui,
+                            &self.catalog,
+                            &mut editing,
+                            &found,
+                        );
+                        ui.end_row();
                         for field in TitleField::EDITABLE {
                             ui.label(self.catalog.text(&format!("title-field-{}", field.key())));
                             ui.add(
@@ -2081,6 +2318,9 @@ impl KetchupApp {
                             );
                             ui.end_row();
                         }
+                        ui.label(self.catalog.text("drawings-revisions"));
+                        super::revision_rows::show_revisions(ui, &self.catalog, &mut editing);
+                        ui.end_row();
                     });
                 ui.separator();
                 ui.horizontal(|ui| {

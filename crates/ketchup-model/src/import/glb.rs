@@ -13,10 +13,14 @@ use super::{
 };
 use crate::document::{
     CanonicalCommand, CommandBatch, DefinitionId, FeatureId, FeatureKind, GroupId,
-    MESH_BODY_SCHEMA_V1, MeshAuthority, MeshBodySpec, OccurrenceId, Snapshot, Transform,
+    MESH_BODY_SCHEMA_V1, MESH_SHEET_SCHEMA_V1, MeshAuthority, MeshBodySpec, OccurrenceId, Snapshot,
+    Transform,
 };
 
 mod json;
+mod tags;
+
+pub use tags::{GlbNodeTags, GlbTag, MAX_GLB_TAGS};
 
 pub const GLB_PARSER_ID: &str = "ketchup-glb";
 pub const GLB_PARSER_VERSION: &str = "1";
@@ -100,6 +104,15 @@ impl ParsedGlbScene {
     pub fn diagnostics(&self) -> &[ImportDiagnostic] {
         &self.diagnostics
     }
+
+    /// The scene with the `notes` of the reader that wrote the GLB (the version of a
+    /// SketchUp file and what its conversion left out) among its diagnostics.
+    #[must_use]
+    pub fn with_notes(mut self, notes: &[ImportDiagnostic]) -> Self {
+        self.diagnostics.extend_from_slice(notes);
+        self.diagnostics.sort();
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -108,6 +121,8 @@ struct ParsedPrimitive {
     vertices_mm: Vec<[f64; 3]>,
     triangles: Vec<[u32; 3]>,
     color: Option<[u8; 3]>,
+    /// Closes no solid: imported as a sheet (see [`MESH_SHEET_SCHEMA_V1`]).
+    sheet: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -345,13 +360,42 @@ pub fn plan_glb_import(
     source: &[u8],
     source_name: &str,
 ) -> Result<CommandBatch, GlbImportError> {
+    plan_glb_import_noting(snapshot, source, source_name, &[])
+}
+
+/// [`plan_glb_import`] of a GLB another reader wrote, whose receipt records that
+/// reader's `notes` with the GLB import's own diagnostics.
+pub fn plan_glb_import_noting(
+    snapshot: &Snapshot,
+    source: &[u8],
+    source_name: &str,
+    notes: &[ImportDiagnostic],
+) -> Result<CommandBatch, GlbImportError> {
+    plan_glb_import_tagged(
+        snapshot,
+        source,
+        source_name,
+        notes,
+        &GlbNodeTags::default(),
+    )
+}
+
+/// [`plan_glb_import_noting`] whose parts carry the `tags` of their node and of every node
+/// above it; a tag the document already names is that tag, any other is created.
+pub fn plan_glb_import_tagged(
+    snapshot: &Snapshot,
+    source: &[u8],
+    source_name: &str,
+    notes: &[ImportDiagnostic],
+    tags: &GlbNodeTags,
+) -> Result<CommandBatch, GlbImportError> {
     validate_text(source_name)?;
     if source_name.contains(['/', '\\']) {
         return Err(GlbImportError::InvalidSourceIdentity(
             ImportContractError::InvalidSource,
         ));
     }
-    let scene = inspect_glb(source)?;
+    let scene = inspect_glb(source)?.with_notes(notes);
     let import_id = snapshot
         .next_import_id()
         .ok_or(GlbImportError::IdSpaceExhausted)?;
@@ -388,7 +432,12 @@ pub fn plan_glb_import(
             definition_id,
             name: "GLB mesh".to_owned(),
             kind: FeatureKind::MeshBody(MeshBodySpec {
-                schema: MESH_BODY_SCHEMA_V1.to_owned(),
+                schema: if primitive.sheet {
+                    MESH_SHEET_SCHEMA_V1
+                } else {
+                    MESH_BODY_SCHEMA_V1
+                }
+                .to_owned(),
                 vertices_mm: primitive.vertices_mm.clone(),
                 triangles: primitive.triangles.clone(),
                 authority: MeshAuthority::ImportedGlb { import_id },
@@ -427,6 +476,8 @@ pub fn plan_glb_import(
         });
     }
 
+    let planned_tags = tags::plan_tags(snapshot, tags, &scene.nodes, &scene.traversal)?;
+    commands.extend(planned_tags.commands);
     let mut occurrence_offset = 0_u64;
     for node_index in &scene.traversal {
         let node = &scene.nodes[*node_index];
@@ -452,7 +503,7 @@ pub fn plan_glb_import(
                 },
                 transform: Transform::identity(),
                 parent: Some(parent),
-                tags: Default::default(),
+                tags: planned_tags.by_node[*node_index].clone(),
                 visible: true,
             });
             if let Some(color) = primitive.color {
@@ -761,6 +812,7 @@ fn parse_meshes(
                 vertices_mm,
                 triangles,
                 color,
+                sheet: false,
             });
         }
         for shell in closed_shells(&mesh_name, pieces, diagnostics)? {
@@ -772,11 +824,12 @@ fn parse_meshes(
     Ok((parsed, mesh_primitives, total_triangles))
 }
 
-/// The solids of one mesh. glTF holds one primitive per material, so a closed
+/// The bodies of one mesh. glTF holds one primitive per material, so a closed
 /// Blender object with two materials arrives as open pieces, and a pane of glass
-/// is an open surface. Closed primitives stay as they are; the open ones are
-/// joined, and what is still no solid is left out with a warning instead of
-/// refusing the whole scene.
+/// or a SketchUp face is an open surface. Closed primitives stay as they are;
+/// the open ones are joined, and when that closes no solid each open piece
+/// comes as a sheet of its own material. Only a piece that is not even a valid
+/// sheet, such as one of degenerate triangles, is left out and counted.
 fn closed_shells(
     mesh_name: &str,
     primitives: Vec<ParsedPrimitive>,
@@ -810,22 +863,59 @@ fn closed_shells(
             vertices_mm,
             triangles,
             color: first.color,
+            sheet: false,
         })
         .filter(is_solid);
-    let pieces = u32::try_from(open.len())
-        .map_err(|_out_of_range: std::num::TryFromIntError| GlbImportError::TooManyMeshes)?;
+    let count = |pieces: usize| {
+        u32::try_from(pieces)
+            .map_err(|_out_of_range: std::num::TryFromIntError| GlbImportError::TooManyMeshes)
+    };
     if let Some(joined) = joined {
-        bump(diagnostics, "glb_material_pieces_joined", pieces)?;
+        bump(
+            diagnostics,
+            "glb_material_pieces_joined",
+            count(open.len())?,
+        )?;
         shells.push(joined);
-    } else {
-        bump(diagnostics, "glb_non_solid_pieces_skipped", pieces)?;
+        return Ok(shells);
     }
+    let (sheets, invalid): (Vec<_>, Vec<_>) = open
+        .into_iter()
+        .map(|piece| ParsedPrimitive {
+            sheet: true,
+            ..piece
+        })
+        .partition(is_valid);
+    if !sheets.is_empty() {
+        bump(
+            diagnostics,
+            "glb_open_surfaces_imported",
+            count(sheets.len())?,
+        )?;
+    }
+    if !invalid.is_empty() {
+        bump(
+            diagnostics,
+            "glb_non_solid_pieces_skipped",
+            count(invalid.len())?,
+        )?;
+    }
+    shells.extend(sheets);
     Ok(shells)
 }
 
 fn is_solid(primitive: &ParsedPrimitive) -> bool {
+    !primitive.sheet && is_valid(primitive)
+}
+
+fn is_valid(primitive: &ParsedPrimitive) -> bool {
     crate::document::validate_mesh_body(&MeshBodySpec {
-        schema: MESH_BODY_SCHEMA_V1.to_owned(),
+        schema: if primitive.sheet {
+            MESH_SHEET_SCHEMA_V1
+        } else {
+            MESH_BODY_SCHEMA_V1
+        }
+        .to_owned(),
         vertices_mm: primitive.vertices_mm.clone(),
         triangles: primitive.triangles.clone(),
         authority: MeshAuthority::Authored {
@@ -1408,10 +1498,10 @@ fn parse_materials(
                 .map(|value| exact_number_array(value, 4))
                 .transpose()?
                 .unwrap_or_else(|| vec![1.0; 4]);
+            // Its alpha is the transparency counted above (or, opaque, ignored by glTF).
             if factor
                 .iter()
                 .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
-                || (factor[3] - 1.0).abs() > f64::EPSILON
             {
                 return Err(GlbImportError::UnsupportedFeature);
             }
@@ -1629,7 +1719,7 @@ mod json_tests {
     use super::*;
 
     /// The JSON and the binary chunk of the committed Blender GLB.
-    fn sample() -> (Value, Vec<u8>) {
+    pub(super) fn sample() -> (Value, Vec<u8>) {
         let seed = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../artifacts/blender/garden-studio-colored.glb"
@@ -1640,7 +1730,7 @@ mod json_tests {
         (json, seed[20 + length..].to_vec())
     }
 
-    fn packed(json: &Value, binary: &[u8]) -> Vec<u8> {
+    pub(super) fn packed(json: &Value, binary: &[u8]) -> Vec<u8> {
         let mut json = serde_json::to_vec(json).unwrap();
         while !json.len().is_multiple_of(4) {
             json.push(b' ');
@@ -1690,6 +1780,38 @@ mod json_tests {
             inspect_glb(&packed(&read, &binary)),
             Err(GlbImportError::JsonTooLarge)
         );
+    }
+
+    /// A glass material (a base colour with alpha below 1) imports as its opaque colour with
+    /// a note, as a cut-out or blended one does; it refused the whole file before, so a
+    /// SketchUp model with one window pane did not import at all.
+    #[test]
+    fn a_translucent_material_imports_as_its_opaque_colour_with_a_note() {
+        let (json, binary) = sample();
+        let opaque = inspect_glb(&packed(&json, &binary)).unwrap();
+        let mut glass = json;
+        for material in glass["materials"].as_array_mut().unwrap() {
+            material["alphaMode"] = Value::from("BLEND");
+            if let Some(factor) = material
+                .pointer_mut("/pbrMetallicRoughness/baseColorFactor")
+                .and_then(Value::as_array_mut)
+            {
+                factor[3] = Value::from(0.4);
+            }
+        }
+        let glass = inspect_glb(&packed(&glass, &binary)).unwrap();
+        let colours = |scene: &ParsedGlbScene| {
+            scene
+                .primitives
+                .iter()
+                .map(|primitive| primitive.color)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(colours(&glass), colours(&opaque));
+        assert!(colours(&glass).iter().any(Option::is_some));
+        assert!(glass.diagnostics().iter().any(|diagnostic| {
+            diagnostic.code() == "glb_material_transparency_ignored" && diagnostic.count() > 0
+        }));
     }
 }
 

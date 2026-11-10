@@ -267,7 +267,11 @@ impl LiveBridge {
             let range = ketchup_program::eval::range_text(param.min, param.max);
             return Err(invalid(
                 "params",
-                format!("param {} = {value} is outside {range}", param.name),
+                format!(
+                    "param {} = {} is outside {range}",
+                    param.name,
+                    ketchup_program::eval::number_text(*value)
+                ),
                 &format!("Choose a value of {} inside {range}.", param.name),
             ));
         }

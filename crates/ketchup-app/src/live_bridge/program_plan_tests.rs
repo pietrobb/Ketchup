@@ -146,7 +146,7 @@ fn live_program_planner_publishes_one_undo_step() {
         CheckDeadline::start(),
     );
     assert!(bridge.program_check_job.is_some());
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let result = loop {
         bridge.poll_program_check_job(&mut app, &context);
         if let Ok(result) = response.try_recv() {

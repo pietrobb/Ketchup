@@ -368,6 +368,40 @@ fn one_sign_or_undefined_byte_does_not_turn_a_western_drawing_central_european()
     );
 }
 
+/// Review 2026-11-08 UL-240: „Dĺžka, Šírka, Výška“ in Windows-1250 under a 1252 header read
+/// „Dåžka“ unsaid, as „Dåžka“ passed for Finnish, which writes š and ž in loanwords only
+/// and å in Swedish names only, never both in a word. It votes for 1250, so the header is
+/// doubted; with a second such word the drawing turns.
+#[test]
+fn a_word_of_finnish_letters_no_finnish_word_combines_doubts_windows_1252() {
+    let read = |texts: &[&[u8]]| {
+        read_dxf_underlay(
+            &texts_drawing(b"", "ANSI_1252", texts),
+            DxfImportOptions::new(None),
+        )
+        .unwrap()
+    };
+    let underlay = read(&[b"D\xE5\x9Eka, \x8A\xEDrka, V\xFD\x9Aka"]);
+    assert_eq!(read_texts(&underlay), ["Dåžka, Šírka, Výška"]);
+    assert_eq!(
+        counted(&underlay, "dxf.text-code-page-doubtful", Some("ANSI_1252")),
+        Some(1),
+        "{:?}",
+        underlay.diagnostics
+    );
+    let underlay = read(&[b"D\xE5\x9Eka", b"K\xFApe\xBE"]);
+    assert_eq!(read_texts(&underlay), ["Dĺžka", "Kúpeľ"]);
+    // Finnish and Swedish words with å, and Finnish loanwords with š or ž, stay 1252.
+    let underlay = read(&[b"G\xE5rd \x9Aakki \x9Eongl\xF6\xF6ri"]);
+    assert_eq!(read_texts(&underlay), ["Gård šakki žonglööri"]);
+    assert_eq!(
+        counted(&underlay, "dxf.text-code-page-doubtful", Some("ANSI_1252")),
+        None,
+        "{:?}",
+        underlay.diagnostics
+    );
+}
+
 /// Review 2026-11-06 P3: a Czech drawing whose only words beyond ASCII are the names of
 /// one or two layers stayed in Windows-1252.
 #[test]
@@ -580,6 +614,59 @@ fn utf8_letters_a_code_page_reads_as_a_letter_and_a_sign_are_utf8() {
     assert_eq!(
         counted(&underlay, "dxf.text-code-page-doubtful", Some("ANSI_1250")),
         Some(1)
+    );
+}
+
+/// Review 2026-11-09 UL-303: „Dĺžka steny, Hĺbka základu“ in Windows-1250 under a header
+/// naming ANSI_1252 stays in 1252, „Håbka“ being a Swedish word, with only a warning; the
+/// user chooses the code page it is read in, which is said, and a drawing of DXF 2007 or
+/// later, always UTF-8, refuses a choice.
+#[test]
+fn a_drawing_is_read_in_the_code_page_the_user_chooses() {
+    use ketchup_model::import::{DxfCodePage, DxfImportError};
+    let source = |version: &str| {
+        let mut source = format!("0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\n{version}\n9\n$DWGCODEPAGE\n3\nANSI_1252\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nTEXT\n8\nnotes\n10\n0\n20\n0\n40\n2\n1\n").into_bytes();
+        source.extend_from_slice(b"D\xE5\x9Eka steny, H\xE5bka z\xE1kladu");
+        source.extend_from_slice(b"\n0\nENDSEC\n0\nEOF\n");
+        source
+    };
+    let read = |options| read_dxf_underlay(&source("AC1015"), options).unwrap();
+    let text = |underlay: &DxfUnderlay| underlay.lines.layers()[0].texts()[0].text.clone();
+    let guessed = read(DxfImportOptions::new(None));
+    assert_eq!(text(&guessed), "Dåžka steny, Håbka základu");
+    assert_eq!(
+        counted(&guessed, "dxf.text-code-page-doubtful", Some("ANSI_1252")),
+        Some(1)
+    );
+    let central = DxfCodePage::parse("ansi_1250").unwrap();
+    assert_eq!(central.name(), "ANSI_1250");
+    let chosen = read(DxfImportOptions::new(None).with_code_page(Some(central)));
+    assert_eq!(text(&chosen), "Dĺžka steny, Hĺbka základu");
+    assert_eq!(
+        counted(&chosen, "dxf.text-code-page-chosen", Some("ANSI_1250")),
+        Some(1),
+        "{:?}",
+        chosen.diagnostics
+    );
+    assert_eq!(
+        counted(&chosen, "dxf.text-code-page-doubtful", Some("ANSI_1252")),
+        None
+    );
+    let dos = DxfCodePage::parse("DOS852").unwrap();
+    let chosen = read(DxfImportOptions::new(None).with_code_page(Some(dos)));
+    // In DOS852 0xE5 is ň, 0x9E × and 0xE1 ß.
+    assert_eq!(text(&chosen), "Dň×ka steny, Hňbka zßkladu");
+    assert_eq!(
+        counted(&chosen, "dxf.text-code-page-chosen", Some("DOS852")),
+        Some(1)
+    );
+    assert!(DxfCodePage::parse("ANSI_1999").is_none());
+    assert_eq!(
+        read_dxf_underlay(
+            &source("AC1021"),
+            DxfImportOptions::new(None).with_code_page(Some(central))
+        ),
+        Err(DxfImportError::CodePageOfUtf8Drawing)
     );
 }
 

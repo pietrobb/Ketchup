@@ -9,7 +9,7 @@ mod annotations_view_tests;
 pub(crate) mod btlx_settings;
 mod cad_program;
 mod commands;
-mod connect_ai;
+pub(crate) mod connect_ai;
 pub(crate) mod dimensions_ui;
 #[cfg(test)]
 #[path = "app/dimensions_ui_tests.rs"]
@@ -76,6 +76,7 @@ mod project_drawings_tests;
 #[path = "app/push_pull_house_tests.rs"]
 mod push_pull_house_tests;
 pub(crate) mod received_comments;
+mod revision_rows;
 mod save_activity;
 pub(crate) mod saved_views;
 mod scale_grips;
@@ -85,11 +86,14 @@ mod scene_tabs_tests;
 mod section;
 mod selection;
 mod shell;
+pub(crate) mod skp_import;
 pub(crate) mod spaces_ui;
 #[cfg(test)]
 #[path = "app/spaces_ui_tests.rs"]
 mod spaces_ui_tests;
+pub(crate) mod stale_ai_clients;
 mod startup_arguments;
+mod storey_table;
 mod structure;
 #[cfg(test)]
 #[path = "app/tag_toggle_tests.rs"]
@@ -138,6 +142,7 @@ mod viewer_settings_tests;
 mod viewer_workflow_tests;
 mod viewport;
 mod viewport_paint;
+mod workshop_export;
 pub(crate) mod written_drawings;
 
 pub(crate) use commands::*;

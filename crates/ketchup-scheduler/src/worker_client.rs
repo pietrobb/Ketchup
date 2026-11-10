@@ -4,9 +4,9 @@ use super::*;
 use crate::protocol::{
     ANY_FRAME_BYTES, DwgInput, DwgOutcome, EvaluatedProgram, ExportReceipt, Frame, GraphInput,
     MAX_REPLY_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, MeshReceipt, ProgramInput, ProgramOutcome,
-    RefineInput, RefineOutcome, ReportOutcome, SourceFile, UnderlayInput, UnderlayOutcome,
-    UnderlayWriteInput, UnderlayWriteOutcome, WorkerFailure, WorkerImportPart, WorkerReply,
-    WorkerRequest, encode_frame, protocol_identity, read_frame,
+    RefineInput, RefineOutcome, ReportOutcome, SkpInput, SkpOutcome, SourceFile, UnderlayInput,
+    UnderlayOutcome, UnderlayWriteInput, UnderlayWriteOutcome, WorkerFailure, WorkerImportPart,
+    WorkerReply, WorkerRequest, encode_frame, protocol_identity, read_frame,
 };
 use ketchup_rejection::{Reason, dropped};
 
@@ -727,6 +727,18 @@ impl ExactWorkerClient {
         }
     }
 
+    pub(crate) fn convert_skp(
+        &mut self,
+        input: SkpInput,
+        cancelled: &AtomicBool,
+        timeout: Duration,
+    ) -> Result<SkpOutcome, WorkerError> {
+        match self.call(&WorkerRequest::ConvertSkp(input), cancelled, timeout)? {
+            WorkerReply::Skp(outcome) => Ok(*outcome),
+            reply => self.unexpected(reply),
+        }
+    }
+
     pub(crate) fn read_underlay(
         &mut self,
         input: UnderlayInput,
@@ -904,10 +916,11 @@ impl ExactWorkerClient {
         timeout: Duration,
     ) -> Result<(), WorkerError> {
         self.ensure_not_cancelled(cancelled)?;
-        // A DWG file, a program or a model of any size goes to the program worker, which
-        // reads any frame: the job's memory limit bounds what it holds.
+        // A DWG or SketchUp file, a program or a model of any size goes to the program
+        // worker, which reads any frame: the job's memory limit bounds what it holds.
         let max_bytes = match request {
             WorkerRequest::ConvertDwg(_)
+            | WorkerRequest::ConvertSkp(_)
             | WorkerRequest::EvaluateProgram(_)
             | WorkerRequest::ReportProgram(_)
             | WorkerRequest::ReportBeforeExact(_)

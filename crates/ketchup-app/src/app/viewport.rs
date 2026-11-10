@@ -1,5 +1,6 @@
 //! The 3D viewport: drawing, picking at screen positions, projection, inference and measurement.
 
+use super::viewport_paint::facing;
 use crate::*;
 
 impl KetchupApp {
@@ -3343,8 +3344,7 @@ impl KetchupApp {
             }
             for triangle in &mesh.triangles {
                 let corners = triangle.map(|index| points_mm[index as usize]);
-                let normal = triangle_normal(corners);
-                let front = point_depth(normal, forward) < -ROUNDING;
+                let (front, normal) = facing(triangle_normal(corners), forward, mesh.is_sheet());
                 if !front && !self.paints_back_faces() {
                     continue;
                 }

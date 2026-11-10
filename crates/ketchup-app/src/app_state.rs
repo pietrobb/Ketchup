@@ -49,9 +49,11 @@ pub(crate) struct LiveState {
     /// status line; cleared on each new attach.
     pub(crate) client_name: Option<String>,
     /// An export a client asked for is running: its loss report goes back to the
-    /// client instead of a lossy-conversion prompt, and it never replaces a file.
+    /// client instead of a lossy-conversion prompt, and it never replaces a file
+    /// but, with `client_overwrite`, one Kečup wrote there and nobody changed since.
     /// Holds the request's cancel flag, set once the client's connection ends.
     pub(crate) client_export: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    pub(crate) client_overwrite: bool,
     /// Plugins the user allowed in this window, each bound to its files' hashes
     /// and the permissions shown; nothing is kept after the window closes.
     pub(crate) plugin_consents: Vec<live_bridge::plugin_consent::PluginConsent>,
@@ -61,9 +63,15 @@ pub(crate) struct LiveState {
     pub(crate) edits: live_bridge::window_edit::WindowEdits,
     /// What Claude Code and Codex start as `ketchup`, read when Connect AI opens.
     pub(crate) harnesses: Option<Vec<crate::live_bridge::mcp_setup::HarnessRow>>,
+    /// How the rows are read, off the window's thread.
+    pub(crate) harness_rows: fn(&std::path::Path) -> Vec<crate::live_bridge::mcp_setup::HarnessRow>,
+    /// The rows being read, or a client being set up.
+    pub(crate) harness_work: Option<crate::app::connect_ai::HarnessWork>,
     /// Why Connect could not make this the window a `connect` without an id
     /// goes to (#2687 point 16); the AI then asks which window.
     pub(crate) chosen_window_error: Option<std::io::Error>,
+    /// The start-up check for a client that starts a deleted Kečup.
+    pub(crate) stale_clients: crate::app::stale_ai_clients::StaleClientCheck,
 }
 
 /// Push/Pull input, its exact face-offset evaluation and the last committed
@@ -190,12 +198,29 @@ pub(crate) struct WindowSettings {
     /// Where the drawing files each saved document wrote are kept between
     /// windows; `None` keeps them in memory (review 2026-11-06 SEC-182).
     pub(crate) written_drawings: Option<crate::recent_files::user_settings::SettingsFile>,
+    /// The system's temporary folder, canonical: a connected AI writes into it
+    /// unasked, as into the document's folder (review 2026-11-08 §5.4).
+    pub(crate) temporary_folder: Option<PathBuf>,
     /// How the File menu writes BTLx, a setting of the machine, not of the
     /// document.
     pub(crate) btlx: BtlxSettings,
     /// Where the BTLx options are kept between starts; `None` keeps them for
     /// this window only.
     pub(crate) btlx_settings: Option<crate::recent_files::user_settings::SettingsFile>,
+    /// The BTLx options being kept on a worker.
+    pub(crate) btlx_saving: BtlxSaving,
+}
+
+/// The BTLx options being kept on a worker, as the settings' lock may be
+/// waited for (review 2026-11-07 r26 P3: three times on the window).
+#[derive(Default)]
+pub(crate) struct BtlxSaving {
+    pub(crate) worker: Option<std::thread::JoinHandle<std::io::Result<()>>>,
+    /// They changed while the worker kept them, so are kept again after.
+    pub(crate) again: bool,
+    /// Each key and value as last read or kept by this window, so it keeps
+    /// only what it changed (review 2026-11-08).
+    pub(crate) kept: Vec<(&'static str, String)>,
 }
 
 /// Which side panes and windows are open.
@@ -316,6 +341,9 @@ pub(crate) struct DrawingsState {
     /// not kept with the user's settings, by canonical path, with the SHA-256
     /// of each (review 2026-11-06 SEC-182).
     pub(crate) written: BTreeMap<PathBuf, String>,
+    /// The folders the user let the AI write into for the document while they
+    /// are not kept with the user's settings, canonical (review 2026-11-08 §5.4).
+    pub(crate) write_targets: Vec<PathBuf>,
     /// The worker forgetting the document's written drawings that are gone
     /// (review 2026-11-06 r23 SEC-202).
     pub(crate) forgetting: Option<std::thread::JoinHandle<()>>,

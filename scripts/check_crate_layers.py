@@ -8,7 +8,9 @@ Only normal `[dependencies]` count; tests may use any crate.
 No source module or integration-test file of any crate may exceed
 MAX_MODULE_LINES. Modules that were
 already larger are listed in OVERSIZED with their size: they may shrink but not
-grow, and an entry must be removed once its module fits the limit. Production
+grow, and an entry must be removed once its module fits the limit. A production
+module past FREEZE_AT_LINES must be listed in FROZEN_MODULES and may not grow; nor may
+its entry, against the commit before (FREEZE_BASE). Production
 functions follow the same rule with MAX_FUNCTION_LINES and LONG_FUNCTIONS: a
 long function is split into named steps, never extended.
 
@@ -16,7 +18,9 @@ Test files are named after the behavior they check (push_pull, save_reopen),
 never after a milestone, gate or slice (gate_d, m120_, assistant_m7, live_bridge_s4).
 """
 
+import ast
 import re
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -32,6 +36,7 @@ LAYERS = {
     "ketchup-macos-open": 0,
     "ketchup-geometry": 1,
     "ketchup-dwg": 1,
+    "ketchup-skp": 1,
     "ketchup-model": 2,
     "ketchup-exact": 2,
     "ketchup-interaction": 3,
@@ -63,9 +68,35 @@ FROZEN_MODULES = {
     "crates/ketchup-app/src/lib.rs": 2352,
     "crates/ketchup-model/src/document.rs": 514,
     # They kept growing past 3 000 lines (review 2026-11-07 P3).
-    "crates/ketchup-manufacturing/src/fabrication.rs": 4787,
-    "crates/ketchup-model/src/import/dxf.rs": 4599,
+    "crates/ketchup-manufacturing/src/fabrication.rs": 4628,
+    "crates/ketchup-model/src/import/dxf.rs": 4467,
+    # Past FREEZE_AT_LINES when the check began to require it (review 2026-11-08 TST-253);
+    # live_bridge.rs and exact_worker.rs are the ones that review found growing.
+    "crates/ketchup-app/src/app/drawing.rs": 3798,
+    "crates/ketchup-app/src/app/structure.rs": 3390,
+    "crates/ketchup-app/src/app/transform.rs": 3876,
+    "crates/ketchup-app/src/app/viewport.rs": 4857,
+    "crates/ketchup-app/src/assembly_ui.rs": 3189,
+    "crates/ketchup-app/src/feature_history_ui.rs": 3257,
+    "crates/ketchup-app/src/live_bridge.rs": 3466,
+    "crates/ketchup-application/src/planner.rs": 4364,
+    "crates/ketchup-application/src/validation.rs": 4053,
+    "crates/ketchup-assistant/src/sidecar.rs": 4284,
+    "crates/ketchup-geometry/src/sketch.rs": 3058,
+    "crates/ketchup-headless/src/protocol.rs": 3373,
+    "crates/ketchup-model/src/drawing.rs": 4814,
+    "crates/ketchup-model/src/exact_product.rs": 4316,
+    "crates/ketchup-model/src/persistence.rs": 4330,
+    "crates/ketchup-model/src/persistence/legacy.rs": 4726,
+    "crates/ketchup-model/src/shared_change.rs": 3191,
+    "crates/ketchup-program/src/eval.rs": 3214,
+    "crates/ketchup-scheduler/src/exact_worker.rs": 4678,
+    "crates/ketchup-scheduler/src/lib.rs": 3268,
 }
+
+# A production module past this size must be listed in FROZEN_MODULES (review
+# 2026-11-08 TST-253), so it stops growing when it crosses it, not when a review finds it.
+FREEZE_AT_LINES = 3_000
 
 MAX_FUNCTION_LINES = 400
 
@@ -127,7 +158,11 @@ MILESTONE_WORD = re.compile(r"(?:^|_)(?:gate(?:_[a-z]?\d+[a-z]?|_[a-z])?|[ms]\d+
 
 
 def workspace_dependencies(root):
-    """{crate: [workspace crates it depends on]} from every crates/*/Cargo.toml."""
+    """{crate: [workspace crates it depends on]} from every crates/*/Cargo.toml.
+
+    A path dependency outside crates/ (a vendored third_party library) is not a workspace layer.
+    """
+    crates = (root / "crates").resolve()
     graph = {}
     for manifest in sorted((root / "crates").glob("*/Cargo.toml")):
         data = tomllib.loads(manifest.read_text(encoding="utf-8"))
@@ -135,7 +170,9 @@ def workspace_dependencies(root):
         graph[data["package"]["name"]] = sorted(
             name
             for name, spec in dependencies.items()
-            if isinstance(spec, dict) and "path" in spec
+            if isinstance(spec, dict)
+            and "path" in spec
+            and (manifest.parent / spec["path"]).resolve().parent == crates
         )
     return graph
 
@@ -179,6 +216,65 @@ def oversized_modules(sizes, limit=MAX_MODULE_LINES, oversized=OVERSIZED):
         elif sizes[module] < recorded:
             problems.append(f"{module}: shrank to {sizes[module]} lines; lower OVERSIZED to it")
     return problems
+
+
+def unfrozen_large_modules(sizes, limit=FREEZE_AT_LINES, frozen=FROZEN_MODULES):
+    """Production modules past `limit` lines that FROZEN_MODULES does not list: the
+    check names one as it crosses the size, not a later review (review 2026-11-08 TST-253)."""
+    return [
+        f"{module}: {lines} lines, over {limit}; split it or add it to FROZEN_MODULES"
+        for module, lines in sorted(sizes.items())
+        if lines > limit and module not in frozen and not is_test_module(Path(module))
+    ]
+
+
+def raised_frozen_entries(frozen, base_frozen, base_sizes, limit=FREEZE_AT_LINES):
+    """Entries of FROZEN_MODULES higher than in the commit before, or added past
+    `limit`: the list is a ratchet, not a record each change writes its own size into
+    (review 2026-11-09 R1109-TST-305)."""
+    problems = []
+    for module, recorded in sorted(frozen.items()):
+        if module in base_frozen:
+            if recorded > base_frozen[module]:
+                problems.append(
+                    f"{module}: frozen at {base_frozen[module]} before this change, {recorded}"
+                    " now; FROZEN_MODULES may only go down, put new code in a new module")
+        elif recorded > max(limit, base_sizes.get(module, 0)):
+            problems.append(
+                f"{module}: added to FROZEN_MODULES at {recorded}, past {limit}; "
+                f"split it so it stays under {limit} lines")
+    return problems
+
+
+def frozen_modules_of(text):
+    """FROZEN_MODULES as `text`, a version of this file, sets it."""
+    for node in ast.parse(text).body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "FROZEN_MODULES"
+                for target in node.targets):
+            return ast.literal_eval(node.value)
+    return {}
+
+
+# The commit FROZEN_MODULES is compared with: a pull request's merge commit has the
+# target branch as its first parent, so CI checks out two commits.
+FREEZE_BASE = "HEAD^1"
+
+
+def frozen_list_problems(root, base=FREEZE_BASE):
+    def at_base(path):
+        shown = subprocess.run(["git", "show", f"{base}:{path}"], cwd=root,
+                               capture_output=True, text=True, encoding="utf-8")
+        return shown.stdout if shown.returncode == 0 else None
+
+    base_text = at_base("scripts/check_crate_layers.py")
+    if base_text is None:
+        return [f"scripts/check_crate_layers.py: not readable at {base}; FROZEN_MODULES "
+                "needs the commit before to compare with (fetch-depth: 2)"]
+    base_frozen = frozen_modules_of(base_text)
+    base_sizes = {module: len((at_base(module) or "").splitlines())
+                  for module in FROZEN_MODULES if module not in base_frozen}
+    return raised_frozen_entries(FROZEN_MODULES, base_frozen, base_sizes)
 
 
 def grown_frozen_modules(sizes, frozen=FROZEN_MODULES):
@@ -365,7 +461,15 @@ CASTS_AND_ALLOWS = {
     # (review 2026-11-04 P3: the module-wide one let new unsafe code in), so 12 -> 14.
     # ReplaceFileW of live_bridge::mcp_config (review 2026-11-04 r19 P3: an AI client's
     # configuration is swapped in one step and keeps its ACL), so 14 -> 15.
-    "ketchup-app allows": 15,
+    # geteuid of live_bridge::mcp_config (review 2026-11-08 SEC-241: under sudo root writes
+    # only where the user the file is named for owns), so 15 -> 16.
+    # GetFileInformationByHandleEx(FileIdInfo) of app::written_drawings (review 2026-11-08:
+    # on ReFS the 64-bit file index does not tell one file from another), so 16 -> 17.
+    # GetShortPathNameW of app::project_drawings (review 2026-11-09 R1109-MF-304: an 8.3
+    # name in a set's list is the folder the file system gives it), so 17 -> 18.
+    # GetStdHandle/AttachConsole of the binary's console::attach_parent_console (feedback
+    # 2026-11-10: the windowed release printed `--version` to no console), so 18 -> 19.
+    "ketchup-app allows": 19,
     "ketchup-app casts": 216,
     "ketchup-application allows": 9,
     "ketchup-application casts": 29,
@@ -591,6 +695,8 @@ def main():
     sizes = module_sizes(root)
     problems += oversized_modules(sizes)
     problems += grown_frozen_modules(sizes)
+    problems += unfrozen_large_modules(sizes)
+    problems += frozen_list_problems(root)
     problems += oversized_functions(long_functions(root))
     problems += oversized_tests(long_tests(root))
     problems += milestone_named_tests(test_files(root))

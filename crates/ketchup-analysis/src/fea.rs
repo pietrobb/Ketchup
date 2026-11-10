@@ -150,7 +150,7 @@ pub struct FeaValidityEvidence {
     pub all_yield_strengths_supplied: bool,
     pub maximum_yield_utilization: Option<f64>,
     pub within_linear_elastic_stress_limit: Option<bool>,
-    pub excluded_physics: [&'static str; 4],
+    pub excluded_physics: [&'static str; 5],
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -333,11 +333,15 @@ impl FeaModel {
                 maximum_yield_utilization,
                 within_linear_elastic_stress_limit: maximum_yield_utilization
                     .map(|utilization| utilization <= 1.0),
+                // Review 2026-11-08 PG-246: one isotropic material with von
+                // Mises against a yield strength, which says nothing of a
+                // material whose strength depends on the direction.
                 excluded_physics: [
                     "geometric nonlinearity",
                     "plasticity",
                     "contact",
                     "buckling and dynamics",
+                    "anisotropic materials (timber, wood panels; checked by timber_design): the material is isotropic and its von Mises stress is compared with one yield strength",
                 ],
             },
         })

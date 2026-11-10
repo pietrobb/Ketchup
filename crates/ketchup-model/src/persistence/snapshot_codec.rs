@@ -15,7 +15,11 @@
 //! ([`crate::underlay::view`]) as Kečup 0.3.0 saves them, its drawn text and view
 //! included (they came on `main` after 106 did, before 0.3.0 shipped it; review
 //! 2026-10-29 CD-73), 107 the stretched lines of a drawing (trimmed, extended,
-//! offset; review 2026-10-29 CD-61), 108 logical groups (Měchenice MECH-8); an older
+//! offset; review 2026-10-29 CD-61), 108 logical groups (Měchenice MECH-8), 109 the solid
+//! fills drawn into a drawing (`DrawnShape::Hatch`, the areas of rooms; review 2026-11-08
+//! §5.3), 110 the code page the user chose to read an underlay's drawing in (review
+//! 2026-11-09 UL-303), 111 a mesh sheet, an open mesh such as a SketchUp face (U4c,
+//! [`crate::document::MESH_SHEET_SCHEMA_V1`]); an older
 //! file has none, so it reads
 //! without a conversion, and a document without them is still written as 103 when
 //! Kečup 0.2.0 reads all of it ([`fits_format_103`]). The
@@ -28,11 +32,11 @@
 use super::sheet_metal_v1::{SheetMetalV1, bend_path, flange_path};
 use super::{MAGIC, PayloadError, PayloadSection, PersistenceError};
 use crate::document::{FeatureId, ProductModel, Snapshot};
-use crate::underlay::drawn::AddedObject;
+use crate::underlay::drawn::{AddedObject, DrawnShape};
 use std::collections::BTreeMap;
 
 /// The newest format number written after the magic.
-pub(super) const SNAPSHOT_FORMAT: u16 = 108;
+pub(super) const SNAPSHOT_FORMAT: u16 = 111;
 
 /// The oldest format this version writes. A snapshot is written in the oldest format
 /// that holds it ([`format_of`]), so Kečup 0.2.0, which reads 103, opens a document
@@ -41,7 +45,10 @@ pub(super) const SNAPSHOT_FORMAT: u16 = 108;
 /// 103 document with a `program.json`, for damage (review 2026-11-01 DOC-100).
 pub(super) const OLDEST_WRITTEN_FORMAT: u16 = 103;
 
-/// 108 with a logical group, else 107 with a line of an underlay's drawing stretched,
+/// 111 with a mesh sheet, which Kečup 0.3.2 refuses as an invalid mesh body, else 110
+/// with an underlay read in a code page the user chose, else 109 with a fill drawn
+/// into an underlay's drawing, else 108 with a logical group, else
+/// 107 with a line of an underlay's drawing stretched,
 /// else 106 with an underlay whose drawing was edited or that stands as a view, else 105
 /// with annotations, else 104 with underlays or with what Kečup 0.2.0 refuses to read,
 /// else 103.
@@ -53,8 +60,35 @@ fn format_of(product: &ProductModel) -> u16 {
                 .iter()
                 .any(|added| matches!(added, AddedObject::Stretched { .. }))
     };
-    if product.groups.values().any(|group| group.logical) {
+    let filled = |edits: &crate::underlay::edits::UnderlayEdits| {
+        edits.added.iter().any(|added| {
+            matches!(
+                added,
+                AddedObject::Drawn {
+                    shape: DrawnShape::Hatch { .. },
+                    ..
+                }
+            )
+        })
+    };
+    if product.features.values().any(|feature| {
+        matches!(feature.kind(), crate::document::FeatureKind::MeshBody(mesh) if mesh.is_sheet())
+    }) {
         SNAPSHOT_FORMAT
+    } else if product
+        .underlays
+        .values()
+        .any(|underlay| underlay.code_page.is_some())
+    {
+        110
+    } else if product
+        .underlays
+        .values()
+        .any(|underlay| filled(&underlay.edits))
+    {
+        109
+    } else if product.groups.values().any(|group| group.logical) {
+        108
     } else if product
         .underlays
         .values()

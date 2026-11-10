@@ -36,8 +36,10 @@ normative English documents and ADRs; dated reviews, status files and notes go t
   fields, no bare `unreachable!()` or `.unwrap()`, no
   rewriting of messages in the SDK or skills, no collapsing many causes into one code.
   `.expect("…")` panics as `.unwrap()` does: new production code has neither. Shape the type
-  so the case cannot exist, or return a `Rejection`; the older ones are counted per file and
-  may only go down.
+  so the case cannot exist, or return a `Rejection`; the older ones, `panic!` and stderr
+  writes are counted per file by clippy (`scripts/check_clippy_panics.py -p <crate>`, run by
+  CI in each job against the counts of its system, `scripts/clippy_panics_baseline_<system>.txt`)
+  and may only go down.
   Only an error type that carries nothing but its type (`TryFromIntError`, `PoisonError`, …; the
   list is `CONTENT_FREE` in `scripts/check_error_hygiene.py`) may be dropped, and the closure names
   it: `map_err(|_: std::num::TryFromIntError| …)`. The script is a CI ratchet: counts per file may
@@ -86,9 +88,10 @@ reproduced failure that they catch, or explicit approval by the owner.
 
 - When a new path replaces an old one, remove the old one in the same change. No parallel
   "legacy" paths.
-- Do not grow `crates/ketchup-app/src/lib.rs`, `crates/ketchup-model/src/document.rs`,
-  `crates/ketchup-manufacturing/src/fabrication.rs` or `crates/ketchup-model/src/import/dxf.rs`
-  (`FROZEN_MODULES` in `scripts/check_crate_layers.py`). Put new code in new modules.
+- Do not grow `crates/ketchup-app/src/lib.rs`, `crates/ketchup-model/src/document.rs` or any
+  module past 3000 lines (`FROZEN_MODULES` in `scripts/check_crate_layers.py`; a production
+  module that crosses 3000 lines fails the check until it is split or listed there). Put new
+  code in new modules.
 - New code: functions under ~150 lines, files under ~3000 lines. No crate source module may
   exceed 5000 lines; `scripts/check_crate_layers.py` enforces it and only lets the listed
   older modules shrink.
@@ -129,6 +132,11 @@ reproduced failure that they catch, or explicit approval by the owner.
 - Commit messages and PR descriptions are short, plain prose: what changed and why.
 - No walls of hashes, nonces, test counts or "evidence" paragraphs.
 - Code, identifiers, schemas and error codes are in English (ADR 0001).
+- A review finding is named with the date of its review, `R<MMDD>-<ID>` (`R1108-PG-244`), in
+  commits, status files and later reviews, since the bare IDs of reviews on different branches
+  collide. A second review of the same day adds its round as its file name does
+  (`review-2026-11-06-r23.md` names `R1106r23-SEC-170`), so two reviews of one day do not
+  collide either. A review lands on `main` with its status file; a later review reads both.
 
 ## 8. Definition of done
 

@@ -697,6 +697,37 @@ fn parts_that_touch_nothing_supported_are_warnings() {
     assert_eq!(issues[0].severity, Severity::Warning);
 }
 
+/// Review 2026-11-09 PG-245: `check --set Snow_SK=1.5` ended as the program
+/// without it would, though it was not evaluated as asked.
+#[test]
+fn a_set_of_no_parameter_ends_with_exit_code_2_and_names_the_parameter_meant() {
+    let directory = std::env::temp_dir().join(format!("ketchup-set-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let file = directory.join("box.star");
+    std::fs::write(
+        &file,
+        "s = param(\"snow_sk\", 1.0, min = 0, max = 5)\nbox(\"a\", (10, 10, 10))\n",
+    )
+    .unwrap();
+    let check = |set: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_ketchup-program"))
+            .arg("check")
+            .arg(&file)
+            .args(["--summary", "--set", set])
+            .output()
+            .unwrap()
+    };
+    let asked = check("snow_sk=1.5");
+    let mistyped = check("Snow_SK=1.5");
+    std::fs::remove_dir_all(&directory).unwrap();
+    assert_eq!(asked.status.code(), Some(0), "{asked:?}");
+    assert_eq!(mistyped.status.code(), Some(2), "{mistyped:?}");
+    assert!(
+        String::from_utf8_lossy(&mistyped.stderr).contains("did you mean snow_sk?"),
+        "{mistyped:?}"
+    );
+}
+
 #[test]
 fn params_take_overrides_report_unknown_ones_and_check_ranges() {
     let source = "n = param(\"count\", 2, min = 1, max = 4)\nfor i in range(n):\n    box(\"p%d\" % i, (10, 10, 10), at = (20 * i, 0, 0))\n";
@@ -860,8 +891,10 @@ fn a_whole_param_refuses_a_fraction() {
         assert_eq!(evaluated.model.parts.len(), 2);
     }
     // Review 2026-11-07 P3: one outside the range too was told of whole numbers
-    // only, and to drop whole = True, which takes it no more.
-    for (value, written) in [(-0.5, "-0.5"), (1e9, "1000000000")] {
+    // only, and to drop whole = True, which takes it no more. Review r26 P3:
+    // then to widen the range, which takes no fraction either; it is told the
+    // whole number of the range nearest it.
+    for (value, written, nearest) in [(-0.5, "-0.5", 1), (4.5, "4.5", 4), (1e9, "1000000000", 4)] {
         let overrides = BTreeMap::from([("count".to_owned(), value)]);
         let (_, report) = run("t.star", source, &overrides).unwrap();
         let issue = report
@@ -878,7 +911,7 @@ fn a_whole_param_refuses_a_fraction() {
         );
         assert_eq!(
             issue.hint,
-            "Set a whole number inside the declared range, or widen the range."
+            format!("Set a whole number inside [1, 4], as {nearest}.")
         );
     }
     // Review 2026-11-04 (rest of WB-42): 1e300 is whole but no int, so range()
@@ -908,6 +941,39 @@ fn a_whole_param_refuses_a_fraction() {
             .to_string()
             .contains("whole = True needs a whole default")
     );
+}
+
+/// Review 2026-11-08 P3 nit: `--set width=1e-320` was told back as a decimal
+/// of 378 characters. A number in a message too small or too large to read
+/// as a decimal is written with an exponent, as the value given.
+#[test]
+fn a_tiny_or_huge_param_value_is_written_with_an_exponent_in_its_message() {
+    let messages = |source: &str, overrides: BTreeMap<String, f64>| -> Vec<String> {
+        let (_, report) = run("t.star", source, &overrides).unwrap();
+        report
+            .issues
+            .into_iter()
+            .filter(|issue| issue.kind == "param_out_of_range")
+            .map(|issue| issue.message)
+            .collect()
+    };
+    let width = "w = param(\"width\", 1200, min = 600, max = 2400)\nbox(\"a\", (w, 100, 18))\n";
+    for (value, written) in [(1e-320, "1e-320"), (-2.5e-12, "-2.5e-12"), (0.25, "0.25")] {
+        let found = messages(width, BTreeMap::from([("width".to_owned(), value)]));
+        assert!(
+            found.iter().any(|message| message
+                == &format!(
+                    "param width = {written} is outside [600, 2400]; the default 1200 is used"
+                )),
+            "{found:?}"
+        );
+    }
+    let tiny = "t = param(\"tiny\", 1e-320, min = 1e-9, max = 1000)\nbox(\"a\", (100, 100, 18))\n";
+    let found = messages(tiny, BTreeMap::new());
+    assert_eq!(found, ["param tiny = 1e-320 is outside [1e-9, 1000]"]);
+    let huge = "t = param(\"huge\", 10, max = 1e20)\nbox(\"a\", (100, 100, 18))\n";
+    let error = run("t.star", huge, &BTreeMap::new()).unwrap_err();
+    assert!(error.message.contains("got 1e20\n"), "{}", error.message);
 }
 
 /// PRG-3 (review 2026-10-15): a boolean records a copy of its tool with the

@@ -116,69 +116,33 @@ const UNDERLAY_READING: DxfReading = DxfReading {
     points: true,
 };
 
+mod arc;
 mod block;
 mod chain;
 mod code_page;
 mod extrusion;
 mod hatch;
 mod objects;
+mod options;
 mod polyline;
 mod rewrite;
 mod style;
 mod text;
 mod underlay;
 
+use arc::{parse_arc, parse_circle, whole_turn_arc};
 use block::{BlockDefinition, parse_blocks};
 use chain::{assemble_loose_segments, point_key, without_duplicate_segments};
-use code_page::{
-    CodePage, CodePageRead, TextEncoding, TextSeen, code_page_encoding, dxf_source_text,
-};
+pub use code_page::DxfCodePage;
+use code_page::{CodePage, TextEncoding, TextSeen, code_page_encoding, dxf_source_text};
 use extrusion::{ensure_planar, ensure_planar_ocs, ensure_planar_wcs, extrusion_sign, mirror_ocs};
 use hatch::OrderedFill;
+pub use options::DxfImportOptions;
 use polyline::{PolylineVertex, build_polyline_profile, parse_lwpolyline, parse_polyline};
-pub use rewrite::{
-    Difference, DxfEditRefusal, EditOfObject, EditedDxf, EditedDxfError, write_edited_dxf,
-};
+pub use rewrite::*;
 use style::EntityStyle;
 use text::OrderedText;
 pub use underlay::{DxfUnderlay, read_dxf_underlay, read_dxf_underlay_from};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DxfImportOptions {
-    unit_if_unitless: Option<ImportLengthUnit>,
-    /// The bits of the document's geo origin an underlay moves by when it can.
-    geo_origin_mm_bits: Option<[u64; 2]>,
-}
-
-impl DxfImportOptions {
-    #[must_use]
-    pub const fn new(unit_if_unitless: Option<ImportLengthUnit>) -> Self {
-        Self {
-            unit_if_unitless,
-            geo_origin_mm_bits: None,
-        }
-    }
-
-    /// Read as an underlay, the drawing moves by `origin_mm` when that leaves out no more
-    /// of it than its own median ([`crate::underlay::placement::geo_origin`]).
-    #[must_use]
-    pub fn with_geo_origin(self, origin_mm: Option<[f64; 2]>) -> Self {
-        Self {
-            geo_origin_mm_bits: origin_mm.map(|origin| origin.map(f64::to_bits)),
-            ..self
-        }
-    }
-
-    #[must_use]
-    pub const fn unit_if_unitless(self) -> Option<ImportLengthUnit> {
-        self.unit_if_unitless
-    }
-
-    #[must_use]
-    pub fn geo_origin_mm(self) -> Option<[f64; 2]> {
-        self.geo_origin_mm_bits.map(|bits| bits.map(f64::from_bits))
-    }
-}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParsedDxfProfile {
@@ -246,6 +210,8 @@ pub enum DxfImportError {
     /// The drawing could not be read on (an underlay is read from its file as it goes).
     Read(ReadFailure),
     NonAscii,
+    /// A code page was chosen for a drawing of DXF 2007 or later, which is UTF-8.
+    CodePageOfUtf8Drawing,
     LineTooLong,
     TooManyPairs,
     MalformedPairs,
@@ -358,6 +324,7 @@ impl fmt::Display for DxfImportError {
             }
             Self::Empty => "DXF source is empty",
             Self::NonAscii => "DXF must be UTF-8 text, or older than DXF 2007 and in the Windows code page its $DWGCODEPAGE names; binary DXF is unsupported",
+            Self::CodePageOfUtf8Drawing => "a drawing of DXF 2007 or later is UTF-8 text; it is read in no code page chosen for it",
             Self::LineTooLong => "DXF contains a line longer than 2049 characters",
             Self::MalformedPairs => "DXF group-code/value pairs are malformed",
             Self::MalformedSections => "DXF SECTION/ENDSEC/EOF structure is malformed",
@@ -635,24 +602,27 @@ impl DiagnosticCounts {
         Ok(())
     }
 
-    /// Reports the code page the text was read in, and warns, naming it, when the one its
-    /// header names is [doubtful](CodePage::doubtful): read in that one, or in the one read
-    /// in its place, the texts may read wrong.
-    fn code_page_read(&mut self, (name, doubted): CodePageRead) -> Result<(), DxfImportError> {
+    /// Reports the code page the text was read in, or that the user chose, and warns,
+    /// naming it, when the one its header names is [doubtful](CodePage::doubtful): read in
+    /// that one, or in the one read in its place, the texts may read wrong.
+    fn code_page_read(&mut self, encoding: &TextEncoding) -> Result<(), DxfImportError> {
+        let Some((name, doubted)) = &encoding.read else {
+            return Ok(());
+        };
         if let Some(doubted) = doubted {
             self.add(
                 ImportDiagnosticSeverity::Warning,
                 "dxf.text-code-page-doubtful",
-                Some(doubted),
+                Some(doubted.clone()),
                 1,
             )?;
         }
-        self.add(
-            ImportDiagnosticSeverity::Info,
-            "dxf.text-code-page",
-            Some(name),
-            1,
-        )
+        let code = if encoding.chosen {
+            "dxf.text-code-page-chosen"
+        } else {
+            "dxf.text-code-page"
+        };
+        self.add(ImportDiagnosticSeverity::Info, code, Some(name.clone()), 1)
     }
 
     fn add(
@@ -943,12 +913,10 @@ fn read_dxf(
     options: DxfImportOptions,
     reading: DxfReading,
 ) -> Result<ReadDxf, DxfImportError> {
-    let (text, code_page) = dxf_source_text(source)?;
+    let (text, encoding) = dxf_source_text(source, options.code_page())?;
     let pairs = parse_pairs(&text, reading.max_pairs)?;
     let (sections, mut diagnostics) = parse_sections(&pairs, reading)?;
-    if let Some(read) = code_page {
-        diagnostics.code_page_read(read)?;
-    }
+    diagnostics.code_page_read(&encoding)?;
     let header = sections.get("HEADER").map(Vec::as_slice).unwrap_or(&[]);
     let (units, insbase_mm) = parse_header(header, options, &mut diagnostics)?;
     let tables = sections.get("TABLES").map(Vec::as_slice).unwrap_or(&[]);
@@ -1376,6 +1344,13 @@ fn parse_entities(
             }
             let counts = output.counts();
             match kind.as_str() {
+                // An ARC of a whole turn is how a circle is written by some (Kečup's
+                // underlay writer among them): it reads as one (review 2026-11-08 UL-241).
+                "ARC" if whole_turn_arc(record)? => {
+                    let profile = parse_circle(record, units, ordinal, diagnostics, "ARC")?;
+                    output.layers.insert(profile.layer.clone());
+                    output.explicit_profiles.push(profile);
+                }
                 "LINE" | "ARC" => {
                     let segment = if kind == "LINE" {
                         parse_line(record, units, diagnostics)?
@@ -1386,7 +1361,7 @@ fn parse_entities(
                     output.loose.push(LooseSegment { ordinal, ..segment });
                 }
                 "CIRCLE" => {
-                    let profile = parse_circle(record, units, ordinal, diagnostics)?;
+                    let profile = parse_circle(record, units, ordinal, diagnostics, "CIRCLE")?;
                     output.layers.insert(profile.layer.clone());
                     output.explicit_profiles.push(profile);
                 }
@@ -1775,58 +1750,6 @@ fn parse_point(
         arm([x - half, y], [x + half, y]),
         arm([x, y - half], [x, y + half]),
     ])
-}
-
-fn parse_circle(
-    record: &[DxfPair<'_>],
-    units: ImportUnitDecision,
-    ordinal: usize,
-    diagnostics: &mut DiagnosticCounts,
-) -> Result<OrderedProfile, DxfImportError> {
-    let layer = parse_layer(record)?;
-    let mirrored = ensure_planar_ocs(record)?;
-    report_ignored_groups(
-        "CIRCLE",
-        record,
-        &[5, 8, 10, 20, 30, 39, 40, 100, 210, 220, 230],
-        diagnostics,
-    )?;
-    let scale = units.millimetres_per_unit();
-    let center = parse_xy(record, 10, 20, scale)?;
-    let radius = scale_coordinate(parse_required_number(record, 40)?, scale)?;
-    if radius <= DXF_GEOMETRY_EPSILON_MM {
-        return Err(DxfImportError::DegenerateGeometry);
-    }
-    let right = [normalize_coordinate(center[0] + radius)?, center[1]];
-    let left = [normalize_coordinate(center[0] - radius)?, center[1]];
-    normalize_coordinate(center[1] + radius)?;
-    normalize_coordinate(center[1] - radius)?;
-    ensure_distinct(right, left)?;
-    let segments = vec![
-        ProfileSegment::CircularArc {
-            start_mm: right,
-            end_mm: left,
-            center_mm: center,
-            clockwise: false,
-        },
-        ProfileSegment::CircularArc {
-            start_mm: left,
-            end_mm: right,
-            center_mm: center,
-            clockwise: false,
-        },
-    ];
-    Ok(OrderedProfile {
-        layer,
-        ordinal,
-        style: EntityStyle::default(),
-        segments: if mirrored {
-            segments.into_iter().map(mirror_ocs).collect()
-        } else {
-            segments
-        },
-        closed: true,
-    })
 }
 
 fn parse_ellipse(
@@ -3512,61 +3435,6 @@ fn parse_3dface(
         style: EntityStyle::default(),
         segments,
         closed: true,
-    })
-}
-
-fn parse_arc(
-    record: &[DxfPair<'_>],
-    units: ImportUnitDecision,
-    diagnostics: &mut DiagnosticCounts,
-) -> Result<LooseSegment, DxfImportError> {
-    let layer = parse_layer(record)?;
-    let mirrored = ensure_planar_ocs(record)?;
-    report_ignored_groups(
-        "ARC",
-        record,
-        &[5, 8, 10, 20, 30, 40, 50, 51, 100, 210, 220, 230],
-        diagnostics,
-    )?;
-    let scale = units.millimetres_per_unit();
-    let center = parse_xy(record, 10, 20, scale)?;
-    let radius = scale_coordinate(parse_required_number(record, 40)?, scale)?;
-    if radius <= DXF_GEOMETRY_EPSILON_MM {
-        return Err(DxfImportError::DegenerateGeometry);
-    }
-    let start_angle = parse_required_number(record, 50)?.rem_euclid(360.0);
-    let end_angle = parse_required_number(record, 51)?.rem_euclid(360.0);
-    let sweep = (end_angle - start_angle).rem_euclid(360.0);
-    if sweep <= f64::EPSILON || (360.0 - sweep) <= f64::EPSILON {
-        return Err(DxfImportError::DegenerateGeometry);
-    }
-    let (start_sin, start_cos) = deterministic_sin_cos_degrees(start_angle);
-    let (end_sin, end_cos) = deterministic_sin_cos_degrees(end_angle);
-    let start = [
-        normalize_coordinate(center[0] + radius * start_cos)?,
-        normalize_coordinate(center[1] + radius * start_sin)?,
-    ];
-    let end = [
-        normalize_coordinate(center[0] + radius * end_cos)?,
-        normalize_coordinate(center[1] + radius * end_sin)?,
-    ];
-    validate_arc_sweep_envelope(start, end, center, radius, false, sweep > 180.0)?;
-    ensure_distinct(start, end)?;
-    let segment = ProfileSegment::CircularArc {
-        start_mm: start,
-        end_mm: end,
-        center_mm: center,
-        clockwise: false,
-    };
-    Ok(LooseSegment {
-        layer,
-        ordinal: 0,
-        style: EntityStyle::default(),
-        segment: if mirrored {
-            mirror_ocs(segment)
-        } else {
-            segment
-        },
     })
 }
 

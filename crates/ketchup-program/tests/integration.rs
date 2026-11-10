@@ -1,12 +1,15 @@
 //! Single integration test binary for this crate: every `tests/*.rs` file is a
 //! module here, so the crate links one test executable instead of one per file.
 
+mod bracing_edge;
 mod buildup;
+mod calculation;
 mod cnc_dxf;
 mod components;
 mod connectivity;
 mod contact_review;
 mod cutting;
+mod declared_bracing_doubts;
 mod document;
 mod drill_material;
 mod exact_shapes;
@@ -33,9 +36,11 @@ mod report_before_exact;
 mod report_material;
 mod revolve_bounds;
 mod shop_golden;
+mod site;
 mod support;
 mod sweep_loft;
 mod takeoff_house;
+mod thermal;
 mod unverified_report;
 
 #[path = "../../ketchup-model/tests/support/integration_support.rs"]

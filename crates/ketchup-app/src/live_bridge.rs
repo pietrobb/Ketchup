@@ -98,7 +98,12 @@ mod program_validation_summary;
 mod program_variant_export;
 mod program_variants;
 mod project_drawings_job;
+mod rejection_records;
+use rejection_records::{failed_because, failure, planning_failure};
+mod room_areas;
 mod running_programs;
+mod saved_views;
+use saved_views::saved_views_json;
 #[cfg(test)]
 mod tests;
 mod transport;
@@ -113,6 +118,7 @@ mod validator_catalog;
 pub(crate) mod variant_window;
 pub(crate) mod window_edit;
 pub(crate) mod window_request;
+mod write_targets;
 /// Incoming frames: large enough for whole programs, bounded so a bogus
 /// length header cannot make the window allocate gigabytes.
 pub const MAX_REQUEST_FRAME_BYTES: usize = 8 * 1024 * 1024;
@@ -394,54 +400,21 @@ pub enum Request {
         expected: Option<Stamp>,
         path: String,
     },
-    /// Writes the project drawings of the visible layers as PDF; `title_block`
-    /// fields and `format` given here are first kept in the document. With
-    /// `sheet_id` it writes that drawing sheet of the document as DXF instead.
-    ExportDrawings {
-        #[serde(default)]
-        expected: Option<Stamp>,
-        path: String,
-        #[serde(default)]
-        sheet_id: Option<u64>,
-        #[serde(default)]
-        format: Option<String>,
-        #[serde(default)]
-        title_block: BTreeMap<ketchup_manufacturing::title_block::TitleField, String>,
-        /// Only the plan, with the annotations, rather than all seven views.
-        #[serde(default)]
-        plan_only: bool,
-        /// N of the scale 1:N the sheet is drawn at; the sheet picks it when absent.
-        #[serde(default)]
-        drawing_scale: Option<f64>,
-        /// The language the sheets are titled in, kept in the document:
-        /// cs, sk or en, auto for the window's; absent keeps the document's.
-        #[serde(default)]
-        sheet_language: Option<String>,
-        /// Replaces a PDF or a drawing sheet's file at `path` that is not the
-        /// one the document last wrote there (review 2026-11-04 MCP-140), as
-        /// the user agreed when asked (r19 SEC-161).
-        #[serde(default)]
-        replace: bool,
-        /// Takes the DXF or DWG set at `path` of another project for this
-        /// one's, as the user agreed when asked (review 2026-11-04 r19 MF-162).
-        #[serde(default)]
-        take_over: bool,
-        /// The height of ±0,000 in whole millimetres, kept in the document:
-        /// `"auto"` finds it from the model; absent keeps the document's
-        /// (review 2026-11-04 r19 P3).
-        #[serde(default)]
-        zero_level_mm: Option<Value>,
-    },
+    /// Writes the project drawings of the visible layers, or with `sheet_id`
+    /// a drawing sheet of the document as DXF or DWG.
+    ExportDrawings(drawings::ExportDrawingsRequest),
     /// Imports a STEP, IGES, STL, DXF, GLB or SketchUp scene file as one Undo step;
-    /// `as_underlay` keeps a DXF or DWG drawing under the model as an underlay instead.
+    /// `as_underlay` keeps a DXF or DWG drawing under the model as an underlay instead, read
+    /// in `code_page`; with `revision_of` it adds only what changed since that underlay's.
     Import {
         #[serde(default)]
         expected: Option<Stamp>,
         path: String,
-        #[serde(default)]
         unit: Option<String>,
         #[serde(default)]
         as_underlay: bool,
+        revision_of: Option<u64>,
+        code_page: Option<String>,
     },
     /// Removes an underlay and the tags only it held, as one Undo step.
     RemoveUnderlay {
@@ -473,6 +446,8 @@ pub enum Request {
         #[serde(default)]
         within_mm: Option<[[f64; 2]; 2]>,
     },
+    /// Discards edits of an underlay's drawing ([`drawing_edit::DiscardRefused`]).
+    DrawingDiscardRefused(drawing_edit::DiscardRefused),
     /// Draws `shapes`, in document millimetres, on layer `layer` of an underlay's drawing
     /// as new objects, one Undo step.
     DrawingDraw {
@@ -483,6 +458,8 @@ pub enum Request {
         layer: String,
         shapes: Vec<ketchup_model::underlay::drawn::DrawnShape>,
     },
+    /// Writes the areas of rooms back into an underlay's drawing ([`room_areas`]).
+    DrawingRooms(room_areas::RoomsRequest),
     /// Moves top-level objects of an underlay's drawing, or adds moved copies of them with
     /// `copy`, one Undo step: scaled by `scale` and turned by `rotate_deg` about
     /// `about_mm`, mirrored across the line through `mirror_line_mm`, then moved by
@@ -712,6 +689,9 @@ pub enum Request {
         /// For dxf: N of the scale 1:N the annotations are drawn at.
         #[serde(default)]
         drawing_scale: Option<f64>,
+        /// Replace a file and loss report Kečup wrote at `path`, unchanged since.
+        #[serde(default)]
+        overwrite: bool,
     },
     Selection {
         #[serde(default)]
@@ -864,40 +844,6 @@ fn record_rejection(rejection: &Rejection, details: Value) {
     ERROR_DETAILS.with(|slot| *slot.borrow_mut() = Some(value));
 }
 
-/// Records that `code` failed because of `cause` (kept as the rejection's
-/// cause chain under the catalog reason) and returns the code.
-fn failed_because(
-    code: &'static str,
-    cause: impl std::error::Error + Send + Sync + 'static,
-) -> &'static str {
-    record_rejection(&rejected(code).caused_by(cause), json!({}));
-    code
-}
-
-/// Records why `code` failed for the client and returns the code.
-fn failure(code: &'static str, reason: impl Into<String>, details: Value) -> &'static str {
-    record_rejection(&rejected(code).reason(reason), details);
-    code
-}
-
-/// Records a planner diagnostic as the rejection of `code`: its target and
-/// repair hint replace the generic ones of the code.
-fn planning_failure(code: &'static str, diagnostic: &AssistantRejectionDiagnostic) -> &'static str {
-    record_rejection(
-        &rejected(code)
-            .target(diagnostic.target.clone())
-            .reason(diagnostic.failed_invariant.clone())
-            .fix_hint(diagnostic.repair_hint.clone()),
-        json!({
-            "diagnostic_code": diagnostic.code,
-            "operation": diagnostic.operation,
-            "retryable": diagnostic.retryable,
-            "published": false,
-        }),
-    );
-    code
-}
-
 /// A typed edit the program cannot take, answered as the rejection it is: a
 /// code of the catalog (a part made in a loop, say) is the answer with its
 /// program line and fix; any other is `planning_rejected` with the same
@@ -964,28 +910,6 @@ fn save_failed(app: &KetchupApp, save_failure: SaveFailure) -> &'static str {
 
 fn program_owned(app: &KetchupApp) -> bool {
     app.document.current_rule_program().is_some()
-}
-
-/// Saved views with the names of the tags each one hides, its display switches and
-/// whether it is a Viewer scene (null while the Viewer settings are unreadable).
-fn saved_views_json(app: &KetchupApp) -> Value {
-    let snapshot = app.document.current();
-    let viewer = app.stored_viewer_settings().ok();
-    let views = snapshot
-        .saved_views()
-        .map(|view| {
-            let hidden = view
-                .hidden_tags
-                .iter()
-                .filter_map(|id| snapshot.tag(*id).map(|tag| tag.name().to_owned()))
-                .collect::<Vec<_>>();
-            json!({"id":view.id().0,"name":view.name(),"hidden_tags":hidden,
-                "style":view.style,"parallel":view.camera.parallel,
-                "section":crate::app::section_json(view.section),
-                "viewer":viewer.as_ref().map(|settings| settings.scene_shared(view.id()))})
-        })
-        .collect::<Vec<_>>();
-    json!({"saved_views":views,"program_owned":program_owned(app)})
 }
 
 /// Rejects a typed edit of a program-owned document when the caller asked for strict.
@@ -1654,6 +1578,10 @@ impl KetchupApp {
             if let Request::Image(image) = &queued.request {
                 let image = image.clone();
                 bridge.request_image(self, context, image, queued);
+                continue;
+            }
+            if let Some(refused) = write_targets::refusal(self, &queued.request) {
+                LiveBridge::reply(self, queued.id, &queued.reply, Err(refused));
                 continue;
             }
             let Queued {
@@ -3158,6 +3086,9 @@ impl LiveBridge {
     ) -> Result<Value, &'static str> {
         take_error_details();
         Self::require_request_authority(cancelled)?;
+        if let Some(refused) = write_targets::refusal(app, &request) {
+            return Err(refused);
+        }
         match &request {
             Request::EditContext { expected, .. }
             | Request::Query { expected, .. }
@@ -3169,7 +3100,7 @@ impl LiveBridge {
         }
         match request {
             Request::Status {} => Ok(
-                json!({"connected":true,"protocol":1,"image":"cad_viewport_png_thumbnail",
+                json!({"connected":true,"protocol":1,"version":KetchupApp::build_version(),"image":"cad_viewport_png_thumbnail",
                 "image_protocol":{"version":IMAGE_PROTOCOL_VERSION,"capabilities":["capture_mode","capture_metadata","render_metadata","variable_size","selection_framing","detail_selection_framing"],"capture_modes":["offscreen","visible_viewport"],"default_capture_mode":"offscreen","framing_modes":["viewport","selection","detail_selection"],"default_framing":"viewport","min_side_px":MIN_IMAGE_SIDE_PX,"max_side_px":MAX_IMAGE_SIDE_PX,"default_side_px":512},
                 "busy":!self.busy_diagnostics(app, ui_busy).is_empty(),"busy_reasons":self.busy_diagnostics(app, ui_busy),"read_only":app.file.review_candidate.is_some(),
                 "selection":Self::viewed_selection(app).ok(),"selection_scope":"root_occurrences_only",
@@ -3178,7 +3109,7 @@ impl LiveBridge {
                 "undo_steps":app.undo_step_count(),"redo_steps":app.redo_step_count(),
                 "pending_proposal_id":self.pending.as_ref().map(|p|p.id),
                 "limits":{"request_frame_bytes":MAX_REQUEST_FRAME_BYTES,"response_frame_bytes":MAX_RESPONSE_FRAME_BYTES,"image_frame_bytes":MAX_IMAGE_FRAME_BYTES,"queue":QUEUE_CAPACITY,"selection":MAX_SELECTION,"apply_verify_timeout_ms":MAX_APPLY_VERIFY_TIMEOUT_MS,"batch_jobs":limits::BATCH_JOBS},
-                "methods":["status","summary","operations","list_validators","edit_context","query","detail","mass","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","run_plugin","program","program_context","program_piece","patch_program","set_program_params","save_program_variant","use_program_variant","delete_program_variant","export_program_variants","program_report","validate_program","check_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","import","remove_underlay","fit_underlay","drawing_remove","drawing_draw","drawing_move","drawing_trim","drawing_extend","drawing_offset","drawing_export","drawing_extrude","drawing_view","drawing_solid_from_views","underlay_snap","underlay_objects","underlay_regions","underlay_parallel","program_from_underlay","export","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
+                "methods":["status","summary","operations","list_validators","edit_context","query","detail","mass","workset_create","workset_status","batch_job_start","batch_job_status","batch_job_step","batch_job_cancel","propose","commit","apply_and_verify","run_plugin","program","program_context","program_piece","patch_program","set_program_params","save_program_variant","use_program_variant","delete_program_variant","export_program_variants","program_report","validate_program","check_program","measure_faces","apply_program","undo","redo","save","save_as","open","export_drawings","import","remove_underlay","fit_underlay","drawing_remove","drawing_discard_refused","drawing_draw","drawing_rooms","drawing_move","drawing_trim","drawing_extend","drawing_offset","drawing_export","drawing_extrude","drawing_view","drawing_solid_from_views","underlay_snap","underlay_objects","underlay_regions","underlay_parallel","program_from_underlay","export","selection","view","saved_views","save_view","show_view","tag_visibility","section","image","disconnect"]}),
             ),
             Request::Summary {} => Ok(self.query.summary(&app.document.current())),
             Request::ListValidators {} => Ok(validator_catalog::catalog()),
@@ -3426,29 +3357,12 @@ impl LiveBridge {
                     .map_err(|save_failure| save_failed(app, save_failure))?;
                 Ok(json!({"saved":true,"same_gui_document":true,"dirty":app.is_dirty()}))
             }
-            request @ Request::ExportDrawings { .. } => {
-                Self::export_drawings(app, request, ui_busy)
-            }
+            request @ Request::ExportDrawings(_) => Self::export_drawings(app, request, ui_busy),
             request @ Request::Import { .. } => {
                 Self::import_file(app, &request, ui_busy, cancelled, ReadAlready::Nothing)
             }
-            request @ Request::RemoveUnderlay { .. } => {
-                self.remove_underlay(app, &request, ui_busy, cancelled)
-            }
-            request @ Request::FitUnderlay { .. } => {
-                self.fit_underlay(app, &request, ui_busy, cancelled)
-            }
-            request @ (Request::DrawingRemove { .. }
-            | Request::DrawingDraw { .. }
-            | Request::DrawingMove { .. }
-            | Request::DrawingTrim { .. }
-            | Request::DrawingExtend { .. }
-            | Request::DrawingOffset { .. }
-            | Request::DrawingExport { .. }
-            | Request::DrawingExtrude { .. }
-            | Request::DrawingView { .. }
-            | Request::DrawingSolidFromViews { .. }) => {
-                self.drawing_request(app, &request, ui_busy, cancelled)
+            request @ (Request::RemoveUnderlay { .. } | Request::FitUnderlay { .. }) => {
+                self.underlay_request(app, &request, ui_busy, cancelled)
             }
             request @ Request::UnderlaySnap { .. } => Self::underlay_snap(app, &request),
             request @ Request::UnderlayObjects { .. } => Self::underlay_objects(app, &request),
@@ -3545,6 +3459,8 @@ impl LiveBridge {
                 self.query.invalidate();
                 Ok(json!({"disconnected":true}))
             }
+            // Every drawing_* method is left (Request::is_drawing).
+            request => self.drawing_request(app, &request, ui_busy, cancelled),
         }
     }
 }

@@ -53,6 +53,10 @@ pub enum ShopElement {
     Thread(String),
     /// A pin hole only the pin joint of this name holds, not drilled into the part.
     PinHole(String),
+    /// A hole of the pin joint of this name in a part the shop does not make
+    /// (bought, built on site or outside the production scope), where the
+    /// joint's other part is made (review 2026-11-09 MF-305).
+    UnmadePinHole(String),
     /// A hole drilled through all: its interval is the padded Boolean cutter,
     /// not a depth a machine may drill.
     ThroughHole,
@@ -82,6 +86,10 @@ impl fmt::Display for ShopElement {
             Self::Operation(kind) => write!(formatter, "a {} operation", kind.token()),
             Self::Thread(label) => write!(formatter, "a tapped hole ({label})"),
             Self::PinHole(joint) => write!(formatter, "a pin hole of pin joint {joint}"),
+            Self::UnmadePinHole(joint) => write!(
+                formatter,
+                "a pin hole of pin joint {joint} in a part the shop does not make"
+            ),
             Self::ThroughHole => formatter.write_str("a hole drilled through all"),
             Self::HoleToFarFace => formatter.write_str("a blind hole as deep as the part"),
             Self::UndescribedMachining => formatter.write_str("machining that is not described"),
@@ -112,6 +120,9 @@ const WOODWOP_THREAD: &str = "its drilling macro drills the core hole only, so t
 const UNDRILLED_PIN_HOLE: &str = "it takes only the machining modelled in the part, and the \
      joint's holes are not drilled into it; drill them into the parts (pin joint holes: drill), \
      or export a woodWOP program or the production job, which drill the joint's holes";
+pub(super) const UNMADE_PIN_HOLE: &str = "the joint's holes are drilled into its made part only; \
+     this part is bought, built on site or outside the production scope, so no file drills its \
+     holes; drill them before assembly, or make the part";
 const THROUGH_HOLE: &str = "it drills only holes with a depth that stops inside the part, and a \
      through-all hole has no machine depth, only the Boolean cutter that runs past the part; export \
      BTLx, which drills it through the stock, or the production job or the drawing, which carry \
@@ -148,6 +159,7 @@ const WOODWOP_THROUGH_CUT: &str = "this part has an opening cut through it, roun
 pub fn carriage(format: ShopFormat, element: &ShopElement) -> Carriage {
     use GeneralManufacturingKind as Kind;
     match (format, element) {
+        (_, ShopElement::UnmadePinHole(_)) => Carriage::Loses(UNMADE_PIN_HOLE),
         (ShopFormat::Drawing, ShopElement::UndescribedMachining | ShopElement::FreeFormBlank) => {
             Carriage::Loses(DRAWING_UNDESCRIBED)
         }
@@ -225,72 +237,137 @@ impl GeneralFabricationProjection {
             .iter()
             .filter(|row| format.writes(row.item_kind))
         {
-            let part = snapshot
-                .definition(row.definition_id)
-                .map_or_else(String::new, |definition| definition.name().to_owned());
-            let mut elements = Vec::new();
-            if row.mirrored || copies_are_mirrored(snapshot, row)? {
-                elements.push(ShopElement::MirroredCopy);
-            }
-            if self.manufacturing.free_form_sources.contains(&row.source) {
-                elements.push(ShopElement::FreeFormBlank);
-            } else if self.manufacturing.undescribed_sources.contains(&row.source) {
-                elements.push(ShopElement::UndescribedMachining);
-            }
-            let operations = self
-                .manufacturing
-                .operations
-                .iter()
-                .filter(|operation| is_row_operation(row, operation))
-                .collect::<Vec<_>>();
-            let stock = operations
-                .iter()
-                .find(|operation| operation.kind == GeneralManufacturingKind::Stock);
-            let blank = stock.and_then(|stock| rectangular_stock(&stock.machining));
-            if stock.is_some() && blank.is_none() && !elements.contains(&ShopElement::FreeFormBlank)
+            losses.extend(self.admit_row(snapshot, format, row, &pin_holes)?);
+        }
+        Ok(losses)
+    }
+
+    /// The gate of one BOM row `format` writes: its elements written at a
+    /// loss, or the first one refused (review 2026-11-08 §5.2: the partial
+    /// HOMAG package names that part and programs the others).
+    pub(super) fn admit_row(
+        &self,
+        snapshot: &Snapshot,
+        format: ShopFormat,
+        row: &GeneralBomRow,
+        pin_holes: &[(&PinJointContract, PinHole)],
+    ) -> Result<Vec<ShopLoss>, GeneralFabricationError> {
+        let mut losses = Vec::new();
+        let part = snapshot
+            .definition(row.definition_id)
+            .map_or_else(String::new, |definition| definition.name().to_owned());
+        let mut elements = Vec::new();
+        if row.mirrored || copies_are_mirrored(snapshot, row)? {
+            elements.push(ShopElement::MirroredCopy);
+        }
+        if self.manufacturing.free_form_sources.contains(&row.source) {
+            elements.push(ShopElement::FreeFormBlank);
+        } else if self.manufacturing.undescribed_sources.contains(&row.source) {
+            elements.push(ShopElement::UndescribedMachining);
+        }
+        let operations = self
+            .manufacturing
+            .operations
+            .iter()
+            .filter(|operation| is_row_operation(row, operation))
+            .collect::<Vec<_>>();
+        let stock = operations
+            .iter()
+            .find(|operation| operation.kind == GeneralManufacturingKind::Stock);
+        let pin_hole = pin_holes
+            .iter()
+            .find(|(_, hole)| row.instances.contains(&hole.instance_path));
+        // A piece with nothing to machine gets no woodWOP program, so its
+        // blank cannot refuse the package (review 2026-11-03 MF-141).
+        if matches!(format, ShopFormat::Woodwop { .. })
+            && stock.is_some()
+            && !elements.iter().any(|element| {
+                matches!(
+                    element,
+                    ShopElement::FreeFormBlank | ShopElement::UndescribedMachining
+                )
+            })
+            && operations.len() == 1
+            && pin_hole.is_none()
+        {
+            return Ok(losses);
+        }
+        let blank = stock.and_then(|stock| rectangular_stock(&stock.machining));
+        if stock.is_some() && blank.is_none() && !elements.contains(&ShopElement::FreeFormBlank) {
+            elements.push(ShopElement::ShapedBlank);
+        }
+        for operation in operations {
+            elements.push(ShopElement::Operation(operation.kind));
+            if let GeneralMachiningGeometry::CircularDrill { through: true, .. } =
+                operation.machining
             {
-                elements.push(ShopElement::ShapedBlank);
+                elements.push(ShopElement::ThroughHole);
             }
-            for operation in operations {
-                elements.push(ShopElement::Operation(operation.kind));
-                if let GeneralMachiningGeometry::CircularDrill { through: true, .. } =
-                    operation.machining
-                {
-                    elements.push(ShopElement::ThroughHole);
-                }
-                if blank.is_some_and(|blank| reaches_far_face(blank, &operation.machining)) {
-                    elements.push(ShopElement::HoleToFarFace);
-                }
-                if let Some(thread) = &operation.thread {
-                    elements.push(ShopElement::Thread(thread.label()));
-                }
+            if blank.is_some_and(|blank| reaches_far_face(blank, &operation.machining)) {
+                elements.push(ShopElement::HoleToFarFace);
             }
-            if let Some((joint, _)) = pin_holes
-                .iter()
-                .find(|(_, hole)| row.instances.contains(&hole.instance_path))
-            {
-                elements.push(ShopElement::PinHole(joint.name.clone()));
+            if let Some(thread) = &operation.thread {
+                elements.push(ShopElement::Thread(thread.label()));
             }
-            for element in elements {
-                match carriage(format, &element) {
-                    Carriage::Carries => {}
-                    Carriage::Loses(reason) => losses.push(ShopLoss {
-                        part: part.clone(),
+        }
+        if let Some((joint, _)) = pin_hole {
+            elements.push(ShopElement::PinHole(joint.name.clone()));
+        }
+        for element in elements {
+            match carriage(format, &element) {
+                Carriage::Carries => {}
+                Carriage::Loses(reason) => losses.push(ShopLoss {
+                    part: part.clone(),
+                    element,
+                    reason,
+                }),
+                Carriage::Refuses(reason) => {
+                    return Err(GeneralFabricationError::CannotCarry {
+                        format,
+                        part,
                         element,
                         reason,
-                    }),
-                    Carriage::Refuses(reason) => {
-                        return Err(GeneralFabricationError::CannotCarry {
-                            format,
-                            part,
-                            element,
-                            reason,
-                        });
-                    }
+                    });
                 }
             }
         }
+        losses.extend(self.unmade_pin_holes(snapshot, format));
         Ok(losses)
+    }
+
+    /// The pin joints that join a part `format` writes to one the shop does
+    /// not make and `format` does not write: the made side is drilled, the
+    /// other part's holes are lost (review 2026-11-09 MF-305).
+    fn unmade_pin_holes(&self, snapshot: &Snapshot, format: ShopFormat) -> Vec<ShopLoss> {
+        let in_row = |path: &InstancePath, kind: &dyn Fn(GeneralBomItemKind) -> bool| {
+            self.bom
+                .rows
+                .iter()
+                .any(|row| kind(row.item_kind) && row.instances.contains(path))
+        };
+        let written = |path: &InstancePath| in_row(path, &|kind| format.writes(kind));
+        let unmade = |path: &InstancePath| {
+            !written(path) && !in_row(path, &GeneralBomItemKind::is_shop_made)
+        };
+        let mut losses = Vec::new();
+        for joint in snapshot.pin_joints() {
+            let sides = [&joint.first.instance_path, &joint.second.instance_path];
+            for (side, other) in [(sides[0], sides[1]), (sides[1], sides[0])] {
+                if unmade(side) && written(other) {
+                    let part = snapshot
+                        .resolve_instance_path(side)
+                        .ok()
+                        .and_then(|resolved| snapshot.definition(resolved.definition_id))
+                        .map_or_else(String::new, |definition| definition.name().to_owned());
+                    losses.push(ShopLoss {
+                        part,
+                        element: ShopElement::UnmadePinHole(joint.name.clone()),
+                        reason: UNMADE_PIN_HOLE,
+                    });
+                }
+            }
+        }
+        losses
     }
 }
 

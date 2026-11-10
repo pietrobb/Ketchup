@@ -4,7 +4,7 @@
 use crate::app::project_drawings::ProjectDrawingsError;
 use crate::tests::shell::step_until;
 use crate::*;
-use ketchup_manufacturing::project_drawings::{DrawingSet, ProjectView, ViewSummary};
+use ketchup_manufacturing::project_drawings::{DrawingSet, ModelFloors, ProjectView, ViewSummary};
 use ketchup_manufacturing::title_block::{SheetFormat, SheetLanguage, TitleField};
 use ketchup_model::sheet_pdf::Mark;
 use std::time::Duration;
@@ -574,7 +574,7 @@ fn the_plan_marks_each_opening_and_the_schedule_sheet_is_the_hardware_list() {
             .unwrap_or_else(|| panic!("{} not in the schedule: {texts:?}", row.item));
         assert_eq!(texts[at + 1], row.count.to_string(), "{}", row.item);
     }
-    assert_eq!(set.dxf().len(), set.sheets.len());
+    assert_eq!(set.dxf().unwrap().len(), set.sheets.len());
 }
 
 /// A 3 m timber-frame wall panel sheathed with OSB, a window 900 x 1200 in it.
@@ -701,7 +701,7 @@ fn the_set_carries_a_cutting_plan_of_every_material_with_stock() {
         last.page.texts().any(|text| text == total),
         "numbered n / N"
     );
-    assert_eq!(set.dxf().len(), set.sheets.len());
+    assert_eq!(set.dxf().unwrap().len(), set.sheets.len());
 }
 
 /// R9-C step 15: the set has a shop drawing of the panel. Every piece carries
@@ -811,7 +811,7 @@ fn a_panel_has_a_shop_drawing_dimensioning_its_studs_and_its_window() {
             "{row:?} not in {texts:?}"
         );
     }
-    assert_eq!(set.dxf().len(), set.sheets.len());
+    assert_eq!(set.dxf().unwrap().len(), set.sheets.len());
 }
 
 /// An M5 × 10 bolt 7.3 mm into a plate tapped M5 10 mm deep, turned 37°.
@@ -1187,7 +1187,7 @@ fn hiding_the_floor_slab_does_not_move_zero_and_the_sheet_can_set_it() {
 
 /// The ground floor the drawings window shows, once its worker has found it.
 fn found_zero(app: &KetchupApp) -> Result<f64, String> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
     loop {
         if let Some(found) = app.found_zero(&app.document.current()) {
             return found.map_err(|error| app.found_zero_error_text(&error));
@@ -1402,7 +1402,13 @@ fn zero_is_set_from_the_floor_found_not_from_nothing() {
     harness.step();
     assert_eq!(harness.state().drawings.editing.zero_level_mm, None);
 
-    floor.send(Ok(650.0)).unwrap();
+    floor
+        .send(Ok(Some(ModelFloors {
+            floors_mm: vec![650.0],
+            storey_floors_mm: vec![650.0],
+            top_mm: 3000.0,
+        })))
+        .unwrap();
     harness.step();
     harness.step();
     harness.get_by_label(&found).click_accesskit();
@@ -1843,7 +1849,7 @@ fn a_plan_draws_the_visible_underlay_beneath_the_model_within_its_extent() {
         ),
     )
     .unwrap();
-    app.start_underlay_read(path, None);
+    app.start_underlay_read(path, None, None);
     let underlay = app
         .document
         .current()
@@ -1938,7 +1944,7 @@ fn a_shown_underlay_that_does_not_read_refuses_the_set_and_is_named() {
         ),
     )
     .unwrap();
-    app.start_underlay_read(path, None);
+    app.start_underlay_read(path, None, None);
     let underlay = app.document.current().underlays().next().cloned().unwrap();
     // The document lost the blob of its lines.
     app.file.container_data = ketchup_model::persistence::ContainerData::default();

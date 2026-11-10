@@ -40,6 +40,11 @@ pub enum DrawnShape {
         rotation_deg: f64,
         text: String,
     },
+    /// A solid fill of the area inside its first ring and outside the others (holes), as a
+    /// drawing's SOLID HATCH; each ring at least three points, not closed by a repeat.
+    Hatch {
+        rings_mm: Vec<Vec<[f64; 2]>>,
+    },
 }
 
 /// One thing added to a drawing; each becomes objects after the drawing's own, in order.
@@ -108,6 +113,18 @@ pub fn stretch(from: [[f64; 2]; 2], to: [[f64; 2]; 2]) -> Option<Affine> {
     is_similarity(&map).then_some(map)
 }
 
+/// Whether an arc counterclockwise from `start_deg` to `end_deg` runs a whole number of
+/// turns: a circle with no start to see (review 2026-11-08 UL-241). Its ends a whole turn
+/// back, `360` to `0` or `180` to `-180`, are a circle too, as `ezdxf` and a HATCH's edges
+/// take them and as a drawing is written back (review 2026-11-09 UL-300); only the same
+/// angle twice is no arc.
+#[must_use]
+pub fn whole_turn(start_deg: f64, end_deg: f64) -> bool {
+    let span = end_deg - start_deg;
+    let turns = (span / 360.0).round();
+    turns != 0.0 && (span - turns * 360.0).abs() <= ROUNDING * 360.0
+}
+
 impl DrawnShape {
     /// The kind of object it is.
     #[must_use]
@@ -118,11 +135,24 @@ impl DrawnShape {
             Self::Arc { .. } => "ARC",
             Self::Circle { .. } => "CIRCLE",
             Self::Text { .. } => "TEXT",
+            Self::Hatch { .. } => "HATCH",
         }
     }
 
-    /// Whether it is drawable: finite numbers, a radius and height above zero, a polyline of
-    /// two points or more and a text with letters.
+    /// What the objects of the drawing know of it: a hatch its solid rings.
+    fn detail(&self) -> ObjectDetail {
+        match self {
+            Self::Hatch { rings_mm } => ObjectDetail::Hatch {
+                pattern: "SOLID".to_owned(),
+                solid: true,
+                rings: rings_mm.clone(),
+            },
+            _ => ObjectDetail::None,
+        }
+    }
+
+    /// Whether it is drawable: finite numbers, a radius and height above zero, an arc of some
+    /// span, a polyline of two points or more and a text with letters.
     #[must_use]
     pub fn is_valid(&self) -> bool {
         let finite = |point: &[f64; 2]| point.iter().all(|value| value.is_finite());
@@ -136,11 +166,15 @@ impl DrawnShape {
                 start_deg,
                 end_deg,
             } => {
+                // Within a turn the span is short of 0 and 360; else it is whole turns.
+                let span = (end_deg - start_deg).rem_euclid(360.0);
                 finite(center_mm)
                     && *radius_mm > 0.0
                     && radius_mm.is_finite()
                     && start_deg.is_finite()
                     && end_deg.is_finite()
+                    && (whole_turn(*start_deg, *end_deg)
+                        || span.min(360.0 - span) > ROUNDING * 360.0)
             }
             Self::Circle {
                 center_mm,
@@ -157,6 +191,20 @@ impl DrawnShape {
                     && height_mm.is_finite()
                     && rotation_deg.is_finite()
                     && !text.trim().is_empty()
+            }
+            Self::Hatch { rings_mm } => {
+                let area = |ring: &Vec<[f64; 2]>| {
+                    let mut twice = 0.0;
+                    for (at, point) in ring.iter().enumerate() {
+                        twice += cross2(*point, ring[(at + 1) % ring.len()]);
+                    }
+                    twice.abs() / 2.0
+                };
+                !rings_mm.is_empty()
+                    && rings_mm
+                        .iter()
+                        .all(|ring| ring.len() >= 3 && ring.iter().all(finite))
+                    && area(&rings_mm[0]) > NEGLIGIBLE
             }
         }
     }
@@ -190,8 +238,14 @@ impl DrawnShape {
                 let [start, end] =
                     [*start_deg, *end_deg].map(|angle| angle_of(*center_mm, *radius_mm, angle));
                 // A mirror runs the arc the other way: counterclockwise it starts at the
-                // image of its end.
-                let (start_deg, end_deg) = if mirrored { (end, start) } else { (start, end) };
+                // image of its end. A whole turn stays one; its ends map to one direction.
+                let (start_deg, end_deg) = if whole_turn(*start_deg, *end_deg) {
+                    (start, start + 360.0)
+                } else if mirrored {
+                    (end, start)
+                } else {
+                    (start, end)
+                };
                 Self::Arc {
                     center_mm: apply(map, *center_mm),
                     radius_mm: radius_mm * scale,
@@ -216,6 +270,12 @@ impl DrawnShape {
                 height_mm: height_mm * scale,
                 rotation_deg: readable_rotation(map, rotation_deg.to_radians()).to_degrees(),
                 text: text.clone(),
+            },
+            Self::Hatch { rings_mm } => Self::Hatch {
+                rings_mm: rings_mm
+                    .iter()
+                    .map(|ring| ring.iter().map(|point| apply(map, *point)).collect())
+                    .collect(),
             },
         }
     }
@@ -254,10 +314,15 @@ impl DrawnShape {
                 radius_mm,
                 start_deg,
                 end_deg,
-            } => vec![Piece::Line(arc(
+            } if !whole_turn(*start_deg, *end_deg) => vec![Piece::Line(arc(
                 *center_mm, *radius_mm, *start_deg, *end_deg,
             ))],
-            Self::Circle {
+            Self::Arc {
+                center_mm,
+                radius_mm,
+                ..
+            }
+            | Self::Circle {
                 center_mm,
                 radius_mm,
             } => {
@@ -279,6 +344,7 @@ impl DrawnShape {
                 drawn.rotation_rad = rotation_deg.to_radians();
                 vec![Piece::Text(drawn)]
             }
+            Self::Hatch { rings_mm } => vec![Piece::Fill(UnderlayFill::new(0, rings_mm))],
         }
     }
 }
@@ -550,7 +616,7 @@ impl UnderlayLines {
             layer: object_layer,
             parent: None,
             parts: Vec::new(),
-            detail: ObjectDetail::None,
+            detail: shape.detail(),
             removed: false,
             added_by: Some(added_by),
         });

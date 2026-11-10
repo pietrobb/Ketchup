@@ -231,7 +231,9 @@ pub(crate) fn launched_window(
     ))
 }
 
-pub fn attach(window: &Window) -> io::Result<Grant> {
+/// Asks `window` for a connection, naming this AI as `client` so a window held
+/// by another AI can tell the user which one asks (review 2026-11-09 MCP-305).
+pub fn attach(window: &Window, client: Option<&str>) -> io::Result<Grant> {
     let entry: Value =
         serde_json::from_slice(&crate::local_auth::read_private(&window.registry_path)?)?;
     if entry["version"] != 1
@@ -247,13 +249,21 @@ pub fn attach(window: &Window) -> io::Result<Grant> {
         .as_str()
         .filter(|value| is_lower_hex(value, 64))
         .ok_or_else(|| invalid("private registry has no bootstrap credential"))?;
-    let reply = exchange(
-        window.attach_address,
-        "attach",
-        &window.instance_id,
-        ATTACH_TIMEOUT,
-        bootstrap,
-    )?;
+    let ask = |client| {
+        exchange(
+            window.attach_address,
+            "attach",
+            &window.instance_id,
+            ATTACH_TIMEOUT,
+            bootstrap,
+            client,
+        )
+    };
+    let reply = match ask(client) {
+        // A window older than the name hangs up on a request with one.
+        Err(error) if client.is_some() && error.kind() == io::ErrorKind::InvalidData => ask(None)?,
+        reply => reply?,
+    };
     if let Some(refusal) = attach_refusal(reply["status"].as_str().unwrap_or("")) {
         return Err(refusal);
     }
@@ -282,6 +292,12 @@ fn attach_refusal(status: &str) -> Option<io::Error> {
         "failed" => (
             io::ErrorKind::Other,
             "the window could not open its live connection; its status line says why",
+        ),
+        // Another AI holds the window and the user kept it (review 2026-11-08
+        // MCP-240): not a credential the window refused.
+        "declined" => (
+            io::ErrorKind::ResourceBusy,
+            "another AI is connected to this window and the user did not let this one take it over; ask the user, who can disconnect the other AI in the window, or open another window",
         ),
         _ => (
             io::ErrorKind::PermissionDenied,
@@ -340,6 +356,7 @@ fn probe(
         instance_id,
         PROBE_TIMEOUT,
         bootstrap,
+        None,
     )?;
     let document = reply["document"]
         .as_str()
@@ -360,6 +377,7 @@ fn exchange(
     instance_id: &str,
     timeout: Duration,
     bootstrap: &str,
+    client: Option<&str>,
 ) -> io::Result<Value> {
     let nonce = nonce()?;
     let mut stream = TcpStream::connect_timeout(&address, PROBE_TIMEOUT)?;
@@ -371,7 +389,17 @@ fn exchange(
     } else {
         client_list_proof(bootstrap, instance_id, &nonce)
     };
-    let request = json!({"version": 1, "action": action, "nonce": nonce, "proof": proof});
+    let mut request = json!({"version": 1, "action": action, "nonce": nonce, "proof": proof});
+    if let Some(client) = client {
+        // The window reads at most 512 bytes and shows 40 characters.
+        request["client"] = Value::from(
+            client
+                .chars()
+                .filter(|character| !character.is_control())
+                .take(40)
+                .collect::<String>(),
+        );
+    }
     let mut line = request.to_string();
     line.push('\n');
     stream.write_all(line.as_bytes())?;
@@ -470,5 +498,9 @@ mod attach_refusal_tests {
         assert_eq!(rejected.kind(), std::io::ErrorKind::PermissionDenied);
         let busy = attach_refusal("busy").unwrap();
         assert_eq!(busy.kind(), std::io::ErrorKind::WouldBlock);
+        // Review 2026-11-08 MCP-240: the user kept the window with another AI.
+        let declined = attach_refusal("declined").unwrap();
+        assert_ne!(declined.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(declined.to_string().contains("another AI"), "{declined}");
     }
 }

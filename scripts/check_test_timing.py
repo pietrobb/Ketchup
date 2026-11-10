@@ -25,10 +25,14 @@ Counted as a budget:
   number of seconds or milliseconds) says and fails the test when it runs out, or hands
   that time on to such a helper; the helper may be in any test file, a harness module
   included (review 2026-11-04 P3, r19 P3);
+- a deadline under `HANG_FLOOR` whose passing fails the test (`assert!(Instant::now() <
+  deadline)`, or an `if` past it, either way round, whose block fails the test after
+  anything else it does), for the same reason (review 2026-11-08 TST-252, 2026-11-09
+  R1109-TST-304);
 - a call to a `perf_*` function from a function not named `perf_*`.
 
-Not counted: a deadline that only stops a wait on a hung condition (`Instant::now() <
-deadline`), a wait of at least `PATIENCE_FLOOR`, and any comparison in a file that never
+Not counted: a deadline that only ends a poll (`while Instant::now() < deadline`) or
+fails the test only past `HANG_FLOOR`, a wait of at least `PATIENCE_FLOOR`, and any comparison in a file that never
 reads the clock (a computed retry delay). A wait that returns as soon as its message arrives
 costs a passing test nothing, so its patience can always be generous.
 """
@@ -81,6 +85,8 @@ WAIT = re.compile(r"\.(?:recv_timeout|wait_timeout\w*|wait|next_event)\(\s*([^()
 DURATION = re.compile(
     r"^(?:std::time::)?Duration::from_(secs|millis|micros|nanos)\((\d[\d_]*)\)$")
 DURATION_CONST = re.compile(r"\bconst\s+(\w+)\s*:\s*(?:std::time::)?Duration\s*=\s*([^;]+);")
+NOW_CALL = r"(?:std::time::)?Instant::now\(\)"
+DEADLINE = re.compile(rf"\blet\s+(?:mut\s+)?(\w+)\s*=\s*{NOW_CALL}\s*\+\s*([^;]+);")
 BRACE = re.compile(r"[{}]")
 UNIT_MS = {"secs": 1_000, "millis": 1, "micros": 1e-3, "nanos": 1e-6}
 SIGNATURE = re.compile(r"\bfn\s+(\w+)\s*(?:<[^>{]*>)?\s*\(")
@@ -330,6 +336,37 @@ def short_needed_waits(text: str) -> list[int]:
     return found
 
 
+def failing_deadlines(text: str, constants: dict[str, float]) -> list[int]:
+    """Lines of a deadline under `HANG_FLOOR_MS` that fails the test when it passes
+    (`assert!(Instant::now() < deadline)`, `if Instant::now() > deadline { panic!(..) }`):
+    like a matched wait, it limits the work it waits for (review 2026-11-08 TST-252).
+    A deadline that only ends a poll does not fail the test."""
+    constants = {**constants, **duration_constants(text)}
+    found = []
+    for deadline in DEADLINE.finditer(text):
+        value = milliseconds(deadline.group(2), constants)
+        if value is None or value >= HANG_FLOOR_MS:
+            continue
+        name = re.escape(deadline.group(1))
+        fails = re.compile(
+            rf"\bassert!\(\s*{NOW_CALL}\s*<=?\s*{name}\b"
+            rf"|\bassert!\(\s*{name}\s*>=?\s*{NOW_CALL}")
+        # An `if` past the deadline, either way round, whose block fails the test also
+        # after other statements, a child killed first (review 2026-11-09 R1109-TST-304).
+        passed = re.compile(rf"\bif\s+(?:{NOW_CALL}\s*>=?\s*{name}|{name}\s*<=?\s*{NOW_CALL})\s*\{{")
+        # Within its own function: another one may fail on a deadline of the same name.
+        following = FUNCTION.search(text, deadline.end())
+        end = following.start() if following else len(text)
+        if fails.search(text, deadline.end(), end) or any(
+                FAILS_IN_BLOCK.search(arms(text, branch.end() - 1))
+                for branch in passed.finditer(text, deadline.end(), end)):
+            found.append(text.count("\n", 0, deadline.start()) + 1)
+    return found
+
+
+FAILS_IN_BLOCK = re.compile(r"\b(?:panic|unreachable)!|\bassert\w*!")
+
+
 def budgets(text: str, helpers: dict[str, Helper], constants: dict[str, float]) -> list[int]:
     """Lines of `text` with a budget, or a `perf_*` call, outside functions named `perf_*`."""
     found = []
@@ -350,7 +387,8 @@ def budgets(text: str, helpers: dict[str, Helper], constants: dict[str, float]) 
             continue
         if PERF_CALL.search(line) or (clock and compares_a_budget(compared, stored)):
             found.append(number)
-    return sorted({*found, *short_needed_waits(text), *failing_helper_waits(text, helpers, constants)})
+    return sorted({*found, *short_needed_waits(text), *failing_helper_waits(text, helpers, constants),
+                   *failing_deadlines(text, constants)})
 
 
 def unignored_perf_tests(text: str) -> list[int]:

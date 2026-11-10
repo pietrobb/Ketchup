@@ -204,6 +204,56 @@ fn workers_and_plugins_start_without_a_console_window_inside_their_job() {
     }
 }
 
+/// Review 2026-11-03 PL-141: a plugin had no memory cap on any platform.
+#[test]
+fn workers_and_plugins_have_a_memory_cap() {
+    use process_wrap::std::JobMemoryLimit;
+    let worker = limited_worker_command(Command::new("ketchup-exact-worker"), Some(1 << 30));
+    let plugin = crate::plugin::plugin_command(Path::new("python3"), &[], None);
+    for command in [worker, plugin] {
+        assert!(command.has_wrap::<JobMemoryLimit>());
+    }
+}
+
+/// Linux sends PR_SET_PDEATHSIG when the thread that started the child ends, not
+/// the process. Exact workers are started on threads that end long before them, so
+/// KillOnDrop there killed them mid-request ("worker exited before replying"). The
+/// worker dies with its handle through ExactWorkerClient::drop and with the host
+/// through exit_with_parent instead. The worker reads its own parent-death signal,
+/// so the test does not guess how long the starting thread takes to end.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "subprocess used by request timeout tests"]
+fn worker_reporting_its_parent_death_signal() {
+    println!("PDEATHSIG {:?}", nix::sys::prctl::get_pdeathsig().unwrap());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_worker_outlives_the_thread_that_started_it() {
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "request_timeout_tests::worker_reporting_its_parent_death_signal",
+            "--ignored",
+            "--nocapture",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = spawn_limited_worker_command(command, None).unwrap();
+    let signal = BufReader::new(child.stdout().take().unwrap())
+        .lines()
+        .map(Result::unwrap)
+        .find(|line| line.starts_with("PDEATHSIG "));
+    child.wait().unwrap();
+    assert_eq!(
+        signal.as_deref(),
+        Some("PDEATHSIG None"),
+        "the worker would die with the thread that started it"
+    );
+}
+
 // The worker compares its parent with this pid, not with the parent it finds
 // when it starts watching: by then a dead parent has been replaced.
 #[test]

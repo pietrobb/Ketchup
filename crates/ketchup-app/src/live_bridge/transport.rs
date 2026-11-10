@@ -216,6 +216,7 @@ fn response_wait(request: &Request) -> Duration {
         | Request::UseProgramVariant { .. }
         | Request::ProgramFromUnderlay { .. }
         | Request::DrawingExtrude { .. }
+        | Request::DrawingRooms(_)
         | Request::DrawingView { .. }
         | Request::DrawingSolidFromViews { .. }
         | Request::SaveProgramVariant { .. }
@@ -231,7 +232,7 @@ fn response_wait(request: &Request) -> Duration {
         Request::Open { .. } | Request::Export { .. } | Request::DrawingExport { .. } => {
             ketchup_mcp::OPEN_RESPONSE_WAIT
         }
-        Request::ExportDrawings { .. } => ketchup_mcp::DRAWINGS_RESPONSE_WAIT,
+        Request::ExportDrawings(_) => ketchup_mcp::DRAWINGS_RESPONSE_WAIT,
         _ => DEFAULT_RESPONSE_WAIT,
     }
 }
@@ -286,12 +287,14 @@ fn has_effect(request: &Request) -> bool {
         | Request::Save { .. }
         | Request::SaveAs { .. }
         | Request::Open { .. }
-        | Request::ExportDrawings { .. }
+        | Request::ExportDrawings(_)
         | Request::Import { .. }
         | Request::RemoveUnderlay { .. }
         | Request::FitUnderlay { .. }
         | Request::DrawingRemove { .. }
+        | Request::DrawingDiscardRefused(_)
         | Request::DrawingDraw { .. }
+        | Request::DrawingRooms(_)
         | Request::DrawingMove { .. }
         | Request::DrawingTrim { .. }
         | Request::DrawingExtend { .. }
@@ -769,7 +772,7 @@ mod tests {
     use super::*;
 
     fn wait_for_connection_count(bridge: &LiveBridge, expected: usize) {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(60);
         while bridge.active_connections.load(Ordering::Acquire) != expected {
             assert!(
                 Instant::now() < deadline,

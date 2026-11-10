@@ -13,7 +13,7 @@ before that.
 | Instanced house (`examples/house-project.ketchup`) | 5.4 MB | 1854 | a large instanced model |
 
 The kitchen package is committed. The other two are exported the way
-File > Export for Viewer does it, by
+File > Viewer > Export package does it, by
 [viewer_reference_packages.rs](../../crates/ketchup-app/tests/viewer_reference_packages.rs),
 which the nightly build runs so both stay exportable:
 

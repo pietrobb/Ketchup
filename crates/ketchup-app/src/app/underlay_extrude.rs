@@ -46,7 +46,7 @@ pub(crate) struct AreaRefusal {
 
 impl AreaRefusal {
     /// The refusal `code` with the rejection recorded for it.
-    fn taken(code: &'static str) -> Self {
+    pub(crate) fn taken(code: &'static str) -> Self {
         Self {
             code,
             recorded: take_error_details(),

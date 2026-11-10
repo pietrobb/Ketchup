@@ -487,7 +487,9 @@ impl<T: BorrowMut<Tools>> Session<T> {
             }
         }
         if running && let Err(error) = self.cancel.cancel() {
-            eprintln!("ketchup-mcp: the cancelled call {key} still waits for the window: {error}");
+            ketchup_rejection::log!(
+                "ketchup-mcp: the cancelled call {key} still waits for the window: {error}"
+            );
         }
     }
 }
@@ -567,7 +569,7 @@ fn initialize(params: &Value) -> Value {
     json!({
         "protocolVersion": version,
         "capabilities": {"tools": {"listChanged": false}},
-        "serverInfo": {"name": "ketchup", "title": "Kečup", "version": env!("CARGO_PKG_VERSION")},
+        "serverInfo": {"name": "ketchup", "title": "Kečup", "version": crate::VERSION},
         "instructions": schema::INSTRUCTIONS,
     })
 }
@@ -876,7 +878,7 @@ mod tests {
                                     .expect("the window accepts");
                             let (mut accepted, _) = window.accept().expect("connected");
                             cancel.clear();
-                            assert!(cancel.arm(&connection).expect("armed"));
+                            assert!(cancel.arm(&connection));
                             started.send(()).expect("the test waits");
                             accepted
                                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
@@ -1257,6 +1259,11 @@ mod tests {
             "params": {"requestId": 7}});
         assert!(matches!(route(&session, cancel), Routed::Now(None)));
         assert!(!waits());
-        assert!(session.calls().known.is_empty());
+        // It reaches no call sent under the id after it.
+        let Routed::InTurn(again, _, waits_again) = route(&session, tool_call(7)) else {
+            panic!("a tool call waits for its turn");
+        };
+        assert!(waits_again(), "a call sent after the cancellation waits");
+        assert!(again().is_some(), "and is answered");
     }
 }

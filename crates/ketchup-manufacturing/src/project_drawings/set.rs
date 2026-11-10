@@ -13,23 +13,27 @@
 //! Each sheet is drawn twice: painted far to near for the PDF, and as its
 //! visible lines alone for a DXF, which cannot paint faces over lines.
 
+use super::compass::{CompassSide, NorthArrow, elevation_side};
 use super::cutting::{CuttingSheet, CuttingSummary, plan_cutting};
 use super::levels::{level_heights, level_text};
 use super::openings::{OpeningSchedule, draw_schedule, opening_points, schedule_format};
+use super::section_marks::{lettered, section_marks};
 use super::shop::{PlannedShop, ShopDrawings, ShopSummary, plan_shop};
 use super::visible::{VisibleLine, visible_lines};
 use super::{Annotation, AnnotationCounts, PlanAnnotations};
 use super::{
-    DrawingSolid, DrawnView, ProjectDrawingError, ProjectView, SheetViews, Storey, VIEW_PAD_MM,
-    ViewSummary, annotation_bounds, bounds, choose_layout_scale, draw_view, draw_view_on_page,
-    extent, floor_levels, format_at_scale, ground_floor_of, lerp, marked_floor_levels, solid_edges,
-    view_frames,
+    DrawingSolid, DrawnView, PlacedView, ProjectDrawingError, ProjectView, SheetViews, Storey,
+    VIEW_PAD_MM, ViewFrame, ViewSummary, annotation_bounds, bounds, choose_layout_scale, draw_view,
+    draw_view_on_page, extent, finished_floors, floor_levels, format_at_scale, ground_floor_of,
+    lerp, marked_floor_levels, solid_edges, table_ground_floor, view_frames,
 };
-use crate::sheet_dxf::page_dxf;
+use crate::revision_table::{RevisionCaptions, SheetRevision, draw_revisions};
+use crate::sheet_cad::sheet_cad;
 use crate::title_block::{
-    DEFAULT_COARSEST_SCALE, SheetFormat, TitleBlock, TitleField, draw_frame_and_title_block,
-    drawing_area,
+    DEFAULT_COARSEST_SCALE, SheetFormat, StoreyLevels, TitleBlock, TitleField,
+    draw_frame_and_title_block, drawing_area,
 };
+
 use ketchup_model::sheet_pdf::{Page, PdfInfo, pages_pdf};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -101,6 +105,28 @@ pub struct DrawingSetOptions {
     /// The height of ±0,000 the level marks are read against; the ground
     /// floor of the drawn solids when absent (see [`super::ground_floor`]).
     pub zero_level_mm: Option<f64>,
+    /// The table of storeys (review 2026-11-08 MF-241): when not empty,
+    /// ±0,000 is the ground storey's finished floor and the sections and
+    /// elevations mark each storey's finished floor and structure instead of
+    /// the floors found from the faces (the plans are the caller's, see
+    /// [`super::table_storeys`]).
+    pub storeys: Vec<StoreyLevels>,
+    /// Written after the ±0,000 mark, such as "= 245,300 m n. m. Bpv".
+    pub zero_altitude: Option<String>,
+    /// The direction of north in the model's plan, in degrees
+    /// counter-clockwise from +y (review 2026-11-08 §5.2): each plan draws its
+    /// north arrow and each elevation is named by the side of the world it
+    /// shows ([`Self::facing_titles`]); none when not given.
+    pub north_deg: Option<f64>,
+    /// The letter at the tip of the north arrow; "N" when empty.
+    pub north_letter: String,
+    /// The title of an elevation that shows each side of the world, such as
+    /// "South elevation"; a side missing here keeps the view's title.
+    pub facing_titles: BTreeMap<CompassSide, String>,
+    /// The revisions of the set, oldest first, which every sheet lists
+    /// beside its title block (review 2026-11-08 §5.3).
+    pub revisions: Vec<SheetRevision>,
+    pub revision_captions: RevisionCaptions,
 }
 
 /// What a sheet of the set shows.
@@ -140,6 +166,10 @@ pub struct SetSheet {
     pub page: Page,
     /// The sheet with its views as visible lines alone, as its DXF carries it.
     pub lines: Page,
+    /// Where the views of `lines` lie and which of its marks are theirs, at the set's
+    /// scale; empty on a sheet without views of the set (shop drawings, cutting plans,
+    /// the schedule), which a CAD drawing keeps on paper alone.
+    pub placed: Vec<PlacedView>,
     pub views: Vec<ViewSummary>,
     /// The annotations its plan draws (none on the other sheets).
     pub annotations: AnnotationCounts,
@@ -175,12 +205,35 @@ impl DrawingSet {
         pages_pdf(&pages, info)
     }
 
-    /// Each sheet as an R12 DXF of its visible lines, in paper millimetres.
+    /// Each sheet as a CAD drawing ([`sheet_cad`]): its views in model space at 1:1, the
+    /// sheet a layout named by its number and title.
     #[must_use]
-    pub fn dxf(&self) -> Vec<Vec<u8>> {
+    pub fn cad(&self) -> Vec<ketchup_dwg::sheet::Sheet> {
         self.sheets
             .iter()
-            .map(|sheet| page_dxf(&sheet.lines))
+            .map(|sheet| sheet_cad(sheet, self.scale, &layout_name(sheet)))
+            .collect()
+    }
+
+    /// Each sheet as a DXF 2013 drawing ([`DrawingSet::cad`]).
+    ///
+    /// # Errors
+    /// The [`ketchup_dwg::DwgError`] of the first sheet acadrust could not write.
+    pub fn dxf(&self) -> Result<Vec<Vec<u8>>, ketchup_dwg::DwgError> {
+        self.cad()
+            .iter()
+            .map(ketchup_dwg::sheet::sheet_dxf)
+            .collect()
+    }
+
+    /// Each sheet as a DWG drawing of [`ketchup_dwg::WRITTEN_VERSION`] ([`DrawingSet::cad`]).
+    ///
+    /// # Errors
+    /// As [`DrawingSet::dxf`].
+    pub fn dwg(&self) -> Result<Vec<Vec<u8>>, ketchup_dwg::DwgError> {
+        self.cad()
+            .iter()
+            .map(ketchup_dwg::sheet::sheet_dwg)
             .collect()
     }
 
@@ -209,6 +262,27 @@ impl DrawingSet {
             .collect()
     }
 }
+
+/// The layout name of `sheet`: its number and title, without the characters AutoCAD refuses
+/// in a layout's name.
+fn layout_name(sheet: &SetSheet) -> String {
+    let title = sheet
+        .title
+        .chars()
+        .map(|c| {
+            if "<>/\\\":;?*|,=`".contains(c) || c.is_control() {
+                '-'
+            } else {
+                c
+            }
+        })
+        .take(LAYOUT_NAME_CHARS)
+        .collect::<String>();
+    format!("{:02} {}", sheet.number, title.trim())
+}
+
+/// The most characters of a sheet's title its layout's name takes (AutoCAD holds 255).
+const LAYOUT_NAME_CHARS: usize = 200;
 
 /// A sheet before it is laid out: its views with their titles.
 struct Planned {
@@ -242,17 +316,18 @@ fn lowest(annotation: &Annotation) -> f64 {
 }
 
 /// Lays the views of `sheet` out on `page` at 1:`scale`, row under row, each
-/// left to right; with `visible`, as visible lines.
+/// left to right; with `visible`, as visible lines. Returns where each view lies.
 fn draw_views(
     page: &mut Page,
     sheet: &Planned,
     format: SheetFormat,
     scale: u32,
     visible: Option<&[Vec<VisibleLine>]>,
-) {
+) -> Vec<PlacedView> {
     let scale = f64::from(scale);
     let views = &sheet.views.views;
     let [[area_left, mut top], _] = drawing_area(format);
+    let mut placed = Vec::with_capacity(views.len());
     for row in &sheet.views.rows {
         let row_height = row
             .iter()
@@ -263,18 +338,19 @@ fn draw_views(
             let view = &views[index];
             let [width, height] = extent(view);
             let origin = [left + VIEW_PAD_MM, top + VIEW_PAD_MM / 2.0 + height / scale];
-            draw_view_on_page(
+            placed.push(draw_view_on_page(
                 page,
                 view,
                 &sheet.titles[index],
                 origin,
                 scale,
                 visible.map(|lines| lines[index].as_slice()),
-            );
+            ));
             left += width / scale + 2.0 * VIEW_PAD_MM;
         }
         top += row_height;
     }
+    placed
 }
 
 /// Draws the project drawings of `solids` as a set of sheets.
@@ -284,7 +360,8 @@ fn draw_views(
 /// to draw, or no plan is asked for; [`ProjectDrawingError::DoesNotFit`] when
 /// a sheet does not fit its format at the scale the options fix;
 /// [`ProjectDrawingError::TitleValueDoesNotFit`] when a title block value
-/// does not fit its cell.
+/// does not fit its cell; [`ProjectDrawingError::StoreyTable`] when the
+/// model contradicts a row of the table of storeys.
 pub fn drawing_set(
     solids: &[DrawingSolid],
     options: &DrawingSetOptions,
@@ -318,6 +395,8 @@ pub fn drawing_set_until(
         (Some(bounds), None) | (None, Some(bounds)) => bounds,
         (None, None) => return Err(ProjectDrawingError::Empty),
     };
+    super::storey_table::check(&options.storeys, solids)?;
+    stopped()?;
     let first_cut = options
         .plans
         .first()
@@ -325,13 +404,7 @@ pub fn drawing_set_until(
         .storey
         .cut_mm;
     let edges = solids.iter().map(solid_edges).collect::<Vec<_>>();
-    let title_of = |view: ProjectView| {
-        options
-            .view_titles
-            .get(&view)
-            .cloned()
-            .unwrap_or_else(|| format!("{view:?}"))
-    };
+    let title_of = |view: ProjectView| view_title(options, view);
 
     let opening_points = opening_points(&options.openings.openings, solids);
     let mut planned = Vec::new();
@@ -377,6 +450,10 @@ pub fn drawing_set_until(
             .cloned()
             .collect::<Vec<_>>();
         drawn.mark_openings(&frame, &marks);
+        drawn.north = north_arrow(&frame, options);
+        if !options.plan_only {
+            drawn.sections = section_marks(&frame, &view_frames(min, max, first_cut, false));
+        }
         let (views, titles) = sheet_views(vec![(drawn, plan.view_title.clone())], 1);
         if !views.views.is_empty() {
             planned.push(Planned {
@@ -406,16 +483,11 @@ pub fn drawing_set_until(
                     if upright.counts.dimensions > 0 {
                         drawn.annotate(upright);
                     }
-                    (drawn, title_of(*view))
+                    let (facing, title) = named_elevation(*view, frame, options, title_of(*view));
+                    drawn.facing = facing;
+                    (drawn, title)
                 })
                 .collect::<Vec<_>>()
-        };
-        let named = |title: &str, fallback: &str| {
-            if title.trim().is_empty() {
-                fallback.to_owned()
-            } else {
-                title.to_owned()
-            }
         };
         for (kind, views, per_row, title) in [
             (
@@ -544,7 +616,7 @@ pub fn drawing_set_until(
         };
         let mut page = blank();
         draw_views(&mut page, &sheet, format, scale, None);
-        draw_frame_and_title_block(&mut page, format, &options.title_labels, &values)?;
+        draw_frame(&mut page, format, options, &values)?;
         let visible = sheet
             .views
             .views
@@ -553,8 +625,8 @@ pub fn drawing_set_until(
             .collect::<Vec<_>>();
         stopped()?;
         let mut lines = blank();
-        draw_views(&mut lines, &sheet, format, scale, Some(&visible));
-        draw_frame_and_title_block(&mut lines, format, &options.title_labels, &values)?;
+        let placed = draw_views(&mut lines, &sheet, format, scale, Some(&visible));
+        draw_frame(&mut lines, format, options, &values)?;
         let views = sheet
             .views
             .views
@@ -567,6 +639,13 @@ pub fn drawing_set_until(
                 cut_at_mm: view.cut_at_mm,
                 extent_mm: extent(view).map(|value| (value * 10.0).round() / 10.0),
                 levels: view.levels.iter().map(|(_, text)| text.clone()).collect(),
+                facing: view.facing,
+                north_arrow: view.north.is_some(),
+                section_marks: view
+                    .sections
+                    .iter()
+                    .map(|mark| mark.letter.to_owned())
+                    .collect(),
             })
             .collect();
         let mut annotations = AnnotationCounts::default();
@@ -588,6 +667,7 @@ pub fn drawing_set_until(
             format,
             page,
             lines,
+            placed,
             views,
             annotations,
             underlay_lines: sheet
@@ -614,7 +694,7 @@ pub fn drawing_set_until(
             shop,
             number,
             &options.shop.columns,
-            &options.title_labels,
+            options,
             &values,
             stop,
         )?);
@@ -637,7 +717,7 @@ pub fn drawing_set_until(
             marks: Vec::new(),
         };
         let summary = cutting.draw(&mut page);
-        draw_frame_and_title_block(&mut page, cutting.format, &options.title_labels, &values)?;
+        draw_frame(&mut page, cutting.format, options, &values)?;
         sheets.push(SetSheet {
             kind: SheetKind::Cutting {
                 plan: cutting.plan,
@@ -648,6 +728,7 @@ pub fn drawing_set_until(
             format: cutting.format,
             lines: page.clone(),
             page,
+            placed: Vec::new(),
             views: Vec::new(),
             annotations: AnnotationCounts::default(),
             underlay_lines: 0,
@@ -670,7 +751,7 @@ pub fn drawing_set_until(
             marks: Vec::new(),
         };
         draw_schedule(&mut page, format, &options.openings.columns, &schedule);
-        draw_frame_and_title_block(&mut page, format, &options.title_labels, &values)?;
+        draw_frame(&mut page, format, options, &values)?;
         sheets.push(SetSheet {
             kind: SheetKind::Openings,
             number: count,
@@ -678,6 +759,7 @@ pub fn drawing_set_until(
             format,
             lines: page.clone(),
             page,
+            placed: Vec::new(),
             views: Vec::new(),
             annotations: AnnotationCounts::default(),
             underlay_lines: 0,
@@ -693,11 +775,64 @@ pub fn drawing_set_until(
     })
 }
 
-/// The height of ±0,000: where the options set it, else the ground floor.
-fn zero_level(solids: &[DrawingSolid], options: &DrawingSetOptions) -> f64 {
+/// `title`, else `fallback` when it is blank.
+fn named(title: &str, fallback: &str) -> String {
+    if title.trim().is_empty() {
+        fallback.to_owned()
+    } else {
+        title.to_owned()
+    }
+}
+
+/// The title under `view`, a section's with its letters (A-A, B-B), which
+/// the plans mark.
+fn view_title(options: &DrawingSetOptions, view: ProjectView) -> String {
+    let title = options
+        .view_titles
+        .get(&view)
+        .cloned()
+        .unwrap_or_else(|| format!("{view:?}"));
+    lettered(view, title)
+}
+
+/// The north arrow of a plan seen along `frame`, when the options set north.
+fn north_arrow(frame: &ViewFrame, options: &DrawingSetOptions) -> Option<NorthArrow> {
     options
-        .zero_level_mm
-        .unwrap_or_else(|| ground_floor_of(&floor_levels(solids)))
+        .north_deg
+        .and_then(|north| NorthArrow::of(frame, north, &options.north_letter))
+}
+
+/// The side of the world elevation `view` seen along `frame` shows, when the
+/// options set north, and its title: the side's when the options name it,
+/// else `fallback` (review 2026-11-08 §5.2). A section has no side.
+fn named_elevation(
+    view: ProjectView,
+    frame: &ViewFrame,
+    options: &DrawingSetOptions,
+    fallback: String,
+) -> (Option<CompassSide>, String) {
+    let facing = options
+        .north_deg
+        .filter(|_| !view.is_cut())
+        .and_then(|north| elevation_side(frame, north));
+    let title = facing
+        .and_then(|side| options.facing_titles.get(&side))
+        .filter(|title| !title.trim().is_empty())
+        .cloned()
+        .unwrap_or(fallback);
+    (facing, title)
+}
+
+/// The height of ±0,000: where the options set it, else the ground floor, of
+/// the table of storeys when there is one.
+fn zero_level(solids: &[DrawingSolid], options: &DrawingSetOptions) -> f64 {
+    options.zero_level_mm.unwrap_or_else(|| {
+        if options.storeys.is_empty() {
+            ground_floor_of(&floor_levels(solids))
+        } else {
+            table_ground_floor(&options.storeys)
+        }
+    })
 }
 
 /// The level marks of the sections and elevations (Měchenice MECH-6): ±0,000
@@ -715,11 +850,44 @@ fn section_levels(
     };
     let datum = zero_level(solids, options);
     let separator = options.decimal_separator;
-    let floors = marked_floor_levels(solids, stop).ok_or(ProjectDrawingError::Cancelled)?;
+    let floors = if options.storeys.is_empty() {
+        marked_floor_levels(solids, stop).ok_or(ProjectDrawingError::Cancelled)?
+    } else {
+        let mut floors = finished_floors(&options.storeys);
+        floors.extend(
+            options
+                .storeys
+                .iter()
+                .map(|storey| f64::from(storey.structural_mm)),
+        );
+        floors.sort_by(f64::total_cmp);
+        floors
+    };
     Ok(level_heights(datum, &floors, low[2], high[2])
         .into_iter()
-        .map(|height| (height, level_text(height - datum, separator)))
+        .map(|height| {
+            let mut text = level_text(height - datum, separator);
+            if let Some(altitude) = &options.zero_altitude
+                && text.starts_with('±')
+            {
+                text = format!("{text} {altitude}");
+            }
+            (height, text)
+        })
         .collect())
+}
+
+/// The frame of a `format` sheet, its title block filled with `values` and
+/// the set's revisions beside it.
+fn draw_frame(
+    page: &mut Page,
+    format: SheetFormat,
+    options: &DrawingSetOptions,
+    values: &TitleBlock,
+) -> Result<(), ProjectDrawingError> {
+    draw_frame_and_title_block(page, format, &options.title_labels, values)?;
+    draw_revisions(page, format, &options.revision_captions, &options.revisions)?;
+    Ok(())
 }
 
 /// Shop drawing `drawing` as sheet `number`, its title block filled with `values`.
@@ -728,7 +896,7 @@ fn shop_sheet(
     shop: PlannedShop,
     number: usize,
     columns: &[String; 4],
-    labels: &BTreeMap<TitleField, String>,
+    options: &DrawingSetOptions,
     values: &TitleBlock,
     stop: &AtomicBool,
 ) -> Result<SetSheet, ProjectDrawingError> {
@@ -738,11 +906,11 @@ fn shop_sheet(
     };
     let mut page = blank();
     shop.draw(&mut page, columns, None);
-    draw_frame_and_title_block(&mut page, shop.format, labels, values)?;
+    draw_frame(&mut page, shop.format, options, values)?;
     let visible = shop.visible_lines(stop);
     let mut lines = blank();
     shop.draw(&mut lines, columns, Some(&visible));
-    draw_frame_and_title_block(&mut lines, shop.format, labels, values)?;
+    draw_frame(&mut lines, shop.format, options, values)?;
     let summary = |title: &str, view: &DrawnView| ViewSummary {
         view: ProjectView::Shop,
         title: title.to_owned(),
@@ -750,6 +918,9 @@ fn shop_sheet(
         cut_at_mm: None,
         extent_mm: extent(view).map(|value| (value * 10.0).round() / 10.0),
         levels: Vec::new(),
+        facing: None,
+        north_arrow: false,
+        section_marks: Vec::new(),
     };
     let views = std::iter::once(summary(&shop.title, &shop.view))
         .chain(
@@ -766,6 +937,7 @@ fn shop_sheet(
         format: shop.format,
         page,
         lines,
+        placed: Vec::new(),
         annotations: AnnotationCounts::default(),
         underlay_lines: 0,
         openings: Vec::new(),

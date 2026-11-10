@@ -293,10 +293,86 @@ def test_the_viewer_crates_are_checked_too(tmp_path):
     assert checker.violations(tmp_path) == ["viewer/web/tests/smoke.rs:3"]
 
 
+def test_a_deadline_that_fails_the_test_is_a_budget_under_the_hang_floor(tmp_path):
+    # Review 2026-11-08 TST-252: `live_bridge/tests.rs` waited for a prompt or a job's
+    # start with `assert!(Instant::now() < deadline)` 2 s or 4 s away, which fails on a
+    # loaded machine as a matched wait does; a deadline that only ends a poll passes.
+    write(tmp_path, "crates/a/tests/poll.rs", (
+        "const QUICK: Duration = Duration::from_secs(4);\n"
+        "fn poll() {\n"
+        "    let deadline = Instant::now() + Duration::from_secs(2);\n"
+        "    while !prompted() { assert!(Instant::now() < deadline); }\n"
+        "    let start_deadline = std::time::Instant::now() + QUICK;\n"
+        "    loop {\n"
+        "        if started() { break; }\n"
+        "        assert!(\n"
+        "            Instant::now() < start_deadline,\n"
+        "            \"job did not start\"\n"
+        "        );\n"
+        "    }\n"
+        "    let late = Instant::now() + Duration::from_millis(2500);\n"
+        "    while !done() {\n"
+        "        if Instant::now() > late {\n"
+        "            panic!(\"not done\");\n"
+        "        }\n"
+        "    }\n"
+        "    let polled = Instant::now() + Duration::from_secs(2);\n"
+        "    while Instant::now() < polled && !done() {}\n"
+        "    let hung = Instant::now() + Duration::from_secs(120);\n"
+        "    while !done() { assert!(Instant::now() < hung); }\n"
+        "    let deadline = Instant::now() + Duration::from_secs(2);\n"
+        "    while Instant::now() < deadline && !done() {}\n"
+        "}\n"
+        "fn other() {\n"
+        "    let deadline = Instant::now() + Duration::from_secs(90);\n"
+        "    while !done() { assert!(Instant::now() < deadline); }\n"
+        "}\n"
+    ))
+    assert checker.violations(tmp_path) == [
+        "crates/a/tests/poll.rs:3",
+        "crates/a/tests/poll.rs:5",
+        "crates/a/tests/poll.rs:13",
+    ]
+
+
+def test_a_deadline_that_fails_after_other_statements_or_either_way_round_counts(tmp_path):
+    # Review 2026-11-09 R1109-TST-304: `live_bridge_bootstrap.rs` killed its child before
+    # `panic!` 8 s on, and `deadline <= Instant::now()` was not read at all.
+    write(tmp_path, "crates/a/tests/child.rs", (
+        "fn hung() {\n"
+        "    let deadline = Instant::now() + Duration::from_secs(8);\n"
+        "    while child.try_wait().unwrap().is_none() {\n"
+        "        if Instant::now() >= deadline {\n"
+        "            child.kill().unwrap();\n"
+        "            panic!(\"hung\");\n"
+        "        }\n"
+        "    }\n"
+        "    let late = Instant::now() + Duration::from_secs(3);\n"
+        "    while !done() {\n"
+        "        if late <= Instant::now() { unreachable!(\"late\") }\n"
+        "    }\n"
+        "    let polled = Instant::now() + Duration::from_secs(3);\n"
+        "    while !done() {\n"
+        "        if Instant::now() > polled {\n"
+        "            break;\n"
+        "        }\n"
+        "    }\n"
+        "    let patient = Instant::now() + Duration::from_secs(60);\n"
+        "    while !done() {\n"
+        "        if Instant::now() > patient { child.kill().unwrap(); panic!(\"hung\"); }\n"
+        "    }\n"
+        "}\n"
+    ))
+    assert checker.violations(tmp_path) == [
+        "crates/a/tests/child.rs:2",
+        "crates/a/tests/child.rs:9",
+    ]
+
+
 def test_deadlines_of_waits_and_computed_durations_pass(tmp_path):
     write(tmp_path, "crates/a/tests/wait.rs", (
         "fn wait() {\n"
-        "    let deadline = Instant::now() + Duration::from_secs(30);\n"
+        "    let deadline = Instant::now() + Duration::from_secs(60);\n"
         "    while !done() { assert!(Instant::now() < deadline); }\n"
         "    receiver.recv_timeout(Duration::from_secs(5)).unwrap();\n"
         "}\n"

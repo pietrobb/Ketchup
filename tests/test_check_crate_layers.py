@@ -24,6 +24,18 @@ def test_reads_only_normal_workspace_dependencies(tmp_path):
     assert checker.workspace_dependencies(tmp_path) == {"high": ["low"], "low": []}
 
 
+def test_a_vendored_path_dependency_is_not_a_workspace_crate(tmp_path):
+    manifest(tmp_path, "low")
+    path = tmp_path / "crates" / "high" / "Cargo.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        '[package]\nname = "high"\n\n[dependencies]\nlow = { path = "../low" }\n'
+        'vendored = { path = "../../third_party/vendored" }\n',
+        encoding="utf-8",
+    )
+    assert checker.workspace_dependencies(tmp_path) == {"high": ["low"], "low": []}
+
+
 def test_sideways_upward_and_unplaced_dependencies_fail():
     layers = {"low": 0, "mid": 1, "peer": 1}
     assert checker.violations({"mid": ["low"], "low": []}, layers) == []
@@ -63,6 +75,50 @@ def test_module_over_the_limit_fails_and_oversized_ones_only_shrink():
     assert checker.oversized_modules({"big.rs": 10}, 10, oversized) == [
         "big.rs: fits 10 lines now; remove it from OVERSIZED"
     ]
+
+
+def test_a_production_module_past_the_freeze_size_fails_until_frozen():
+    # Review 2026-11-08 TST-253: modules were frozen only after a review found them past
+    # 3 000 lines; crossing it fails now, the module named. Test files are not frozen.
+    sizes = {
+        "crates/a/src/big.rs": 31,
+        "crates/a/src/listed.rs": 40,
+        "crates/a/src/small.rs": 30,
+        "crates/a/src/big_tests.rs": 50,
+        "crates/a/tests/flow.rs": 50,
+    }
+    assert checker.unfrozen_large_modules(sizes, 30, {"crates/a/src/listed.rs": 40}) == [
+        "crates/a/src/big.rs: 31 lines, over 30; split it or add it to FROZEN_MODULES"
+    ]
+
+
+def test_the_frozen_list_may_only_go_down_from_the_commit_before(tmp_path):
+    # Review 2026-11-09 R1109-TST-305: each change wrote its own module's new size into
+    # FROZEN_MODULES (`live_bridge.rs` 3550 to 3635 in the change that grew it).
+    base = {"crates/a/src/frozen.rs": 3550, "crates/a/src/kept.rs": 3200}
+    base_sizes = {"crates/a/src/crossed.rs": 2900, "crates/a/src/grown.rs": 2990}
+    frozen = {
+        "crates/a/src/frozen.rs": 3635,
+        "crates/a/src/kept.rs": 3100,
+        "crates/a/src/crossed.rs": 3000,
+        "crates/a/src/grown.rs": 3200,
+    }
+    assert checker.raised_frozen_entries(frozen, base, base_sizes, 3000) == [
+        "crates/a/src/frozen.rs: frozen at 3550 before this change, 3635 now; "
+        "FROZEN_MODULES may only go down, put new code in a new module",
+        "crates/a/src/grown.rs: added to FROZEN_MODULES at 3200, past 3000; "
+        "split it so it stays under 3000 lines",
+    ]
+    text = 'FREEZE = 1\nFROZEN_MODULES = {\n    # A comment.\n    "a.rs": 3,\n}\n'
+    assert checker.frozen_modules_of(text) == {"a.rs": 3}
+
+
+def test_workspace_frozen_list_did_not_grow_since_the_commit_before():
+    assert checker.frozen_list_problems(ROOT) == []
+
+
+def test_workspace_modules_past_the_freeze_size_are_frozen():
+    assert checker.unfrozen_large_modules(checker.module_sizes(ROOT)) == []
 
 
 def test_workspace_modules_fit_the_limit():

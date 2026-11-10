@@ -5,7 +5,7 @@ use ketchup_assistant::extension::{
 use ketchup_model::document::Snapshot;
 #[cfg(unix)]
 use process_wrap::std::ProcessGroup;
-use process_wrap::std::{ChildWrapper, CommandWrap, KillOnDrop};
+use process_wrap::std::{ChildWrapper, CommandWrap, JobMemoryLimit, KillOnDrop};
 #[cfg(windows)]
 use process_wrap::std::{CreationFlags, JobObject};
 use std::ffi::OsString;
@@ -62,13 +62,18 @@ pub(crate) fn plugin_command(
     #[cfg(windows)]
     command
         .wrap(CreationFlags(CREATE_NO_WINDOW))
-        .wrap(KillOnDrop)
-        .wrap(JobObject);
+        .wrap(KillOnDrop);
     // Its own process group: stopping the plugin signals the group, so a
     // process the plugin started does not outlive it (SEC-6). On Linux it is
     // also killed when the host dies (EX-7); the thread that spawns it waits for it.
     #[cfg(unix)]
     command.wrap(ProcessGroup::leader()).wrap(KillOnDrop);
+    // It may commit what an exact worker may, so a plugin that allocates without end
+    // stops itself, not the window (review 2026-11-03 PL-141: it had no cap). On Windows
+    // the job takes the limit, so it comes before the job.
+    command.wrap(JobMemoryLimit(crate::exact_worker_memory_bytes()));
+    #[cfg(windows)]
+    command.wrap(JobObject);
     command
 }
 

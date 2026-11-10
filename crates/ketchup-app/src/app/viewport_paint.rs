@@ -2,6 +2,17 @@
 
 use crate::*;
 
+/// Whether a mesh triangle faces the viewer, and the normal to shade it by. A sheet is
+/// seen from both sides, shaded as from the side in view.
+pub(crate) fn facing(normal: Vec3, forward: Vec3, sheet: bool) -> (bool, Vec3) {
+    let front = point_depth(normal, forward) < -ROUNDING;
+    if sheet && !front {
+        (true, -normal)
+    } else {
+        (front, normal)
+    }
+}
+
 impl KetchupApp {
     /// Paint the Rotate protractor: the coloured axis through the body, the
     /// ring it turns in, its snap ticks, and the swept angle once a gesture has
