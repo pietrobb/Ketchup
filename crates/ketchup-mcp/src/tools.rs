@@ -469,6 +469,16 @@ impl Tools {
                     .collect();
                 args.insert("query".into(), Value::Object(query));
             }
+            "status" => {
+                // The program serving MCP beside the window's own version: an
+                // AI client may start an older Kečup from a stale path.
+                return Ok(match self.request(&action, args, DEFAULT_WAIT)? {
+                    Reply::Done { stamp, result } => ToolOutput::text(
+                        &json!({"stamp": stamp, "result": result, "server_version": crate::VERSION}),
+                    ),
+                    rejected => self.output(rejected),
+                });
+            }
             _ => {}
         }
         self.send(&action, args, DEFAULT_WAIT)

@@ -65,6 +65,19 @@ fn bootstrap_failed(reason: impl std::fmt::Display) -> ! {
 
 fn main() -> eframe::Result {
     let all_arguments: Vec<_> = std::env::args_os().skip(1).collect();
+    // Feedback 2026-11-10: `--version` was taken for a document to open. The
+    // editor has no console of its own: from a terminal pipe it (`| more`).
+    if all_arguments
+        .first()
+        .is_some_and(|argument| argument == "--version" || argument == "-V")
+    {
+        if all_arguments.len() > 1 {
+            eprintln!("--version accepts no arguments");
+            std::process::exit(2);
+        }
+        println!("Ketchup {}", KetchupApp::build_version());
+        return Ok(());
+    }
     if all_arguments
         .first()
         .map(|argument| argument == "--mcp-setup")

@@ -320,6 +320,11 @@ fn readiness_identifies_the_actual_child_window_when_broker_is_enabled() {
     let response = call(&mut shell, &mut client, TOKEN, Request::Status {});
     assert!(response.ok);
     assert_eq!(response.stamp, Some(shell.app().live_bridge_stamp()));
+    // Feedback 2026-11-10: the status gave no version of the window.
+    assert_eq!(
+        response.result.unwrap()["version"],
+        ketchup_app::KetchupApp::build_version()
+    );
 }
 
 /// Review 2026-10-11 MCP-1: a window started by `open_window` was listed as

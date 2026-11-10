@@ -1253,6 +1253,10 @@ fn a_client_initializes_and_lists_every_tool() {
     .unwrap();
     assert_eq!(initialized["result"]["protocolVersion"], "2025-03-26");
     assert_eq!(initialized["result"]["serverInfo"]["name"], "ketchup");
+    assert_eq!(
+        initialized["result"]["serverInfo"]["version"],
+        crate::VERSION
+    );
     let notification = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
     assert!(handle(&tools, notification).is_none());
     let listed = handle(
@@ -1328,6 +1332,9 @@ fn tool_calls_reach_the_open_window_as_bridge_requests() {
     assert_eq!(status["isError"], false);
     assert_eq!(text(&status)["result"]["document"], "stolik.ketchup");
     assert_eq!(text(&status)["stamp"]["revision"], 7);
+    // Feedback 2026-11-10: the version of the program serving MCP, which an
+    // AI client may start from an old path, beside the window's own.
+    assert_eq!(text(&status)["server_version"], crate::VERSION);
     assert_eq!(received.recv().unwrap(), json!({"method": "status"}));
 
     let source = "board(\"top\", (600, 400, 18))\n";
