@@ -2495,6 +2495,7 @@ dependencies = [
  "ketchup-rejection",
  "ketchup-test-env",
  "ketchup-view-format",
+ "png",
  "serde",
  "serde_json",
 ]

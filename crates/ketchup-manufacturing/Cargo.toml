@@ -15,6 +15,7 @@ ketchup-model = { path = "../ketchup-model" }
 ketchup-view-format = { path = "../ketchup-view-format" }
 ketchup-rejection = { path = "../ketchup-rejection" }
 ketchup-geometry = { path = "../ketchup-geometry" }
+png = "0.18"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 

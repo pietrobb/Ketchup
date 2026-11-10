@@ -5,6 +5,7 @@ pub mod blender_export;
 pub mod dxf_annotations;
 pub mod dxf_export;
 pub mod fabrication;
+pub mod presentation;
 pub mod project_drawings;
 pub mod revision_table;
 pub mod sheet_cad;

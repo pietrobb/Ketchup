@@ -1,0 +1,275 @@
+//! A presentation image of any model: a still picture for a client or a quotation, separate from
+//! the modelling viewport, which it leaves unchanged.
+//!
+//! The renderer runs on the CPU in `f64` so every machine and CI runner produces the same pixels:
+//! smoothed edges (supersampling), soft sun shadows (on the parts and on an implied ground under
+//! the model), shading in corners (screen-space ambient occlusion), outlines at the model's edges,
+//! see-through parts by their opacity, and a white, transparent or coloured background.
+
+use crate::blender_export::{MeshGlbInstance, validate_instances};
+use ketchup_model::document::{SceneOccurrence, Snapshot};
+use ketchup_model::exact_product::ExactProductError;
+use ketchup_model::tolerance::limits;
+use std::fmt;
+
+mod raster;
+
+/// The longest side of a presentation image, in pixels.
+pub const MAX_PRESENTATION_SIDE: u32 = 8192;
+/// Supersampled pixels a render may hold (width × height × supersample²): 24 bytes each, about
+/// 580 MB at the limit. 1920 × 1080 with 3 × 3 smoothing or 3840 × 2160 without fit.
+pub const MAX_PRESENTATION_SAMPLES: u64 = 24_000_000;
+/// Colour of a part with no colour of its own.
+pub const DEFAULT_PART_RGB: [u8; 3] = [206, 201, 192];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Background {
+    White,
+    /// The model and its ground shadow over full transparency (PNG alpha).
+    Transparent,
+    Color([u8; 3]),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PresentationOptions {
+    pub width: u32,
+    pub height: u32,
+    pub background: Background,
+    /// Direction from the model towards the eye, Kečup axes (Z up). The camera frames the model.
+    pub view_from: [f64; 3],
+    /// Samples per pixel along each axis, 1–4: how smooth the edges are.
+    pub supersample: u32,
+    pub shadows: bool,
+    pub ambient_occlusion: bool,
+    pub outlines: bool,
+}
+
+impl Default for PresentationOptions {
+    fn default() -> Self {
+        Self {
+            width: 1920,
+            height: 1080,
+            background: Background::White,
+            view_from: [-1.0, -1.6, 1.1],
+            supersample: 3,
+            shadows: true,
+            ambient_occlusion: true,
+            outlines: true,
+        }
+    }
+}
+
+/// One triangle in Kečup world millimetres with its sRGB colour and opacity (255 = opaque).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PresentationTriangle {
+    pub corners_mm: [[f64; 3]; 3],
+    pub rgba: [u8; 4],
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PresentationScene {
+    pub triangles: Vec<PresentationTriangle>,
+}
+
+/// Straight (not premultiplied) sRGB RGBA pixels, rows from the top.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PresentationImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+#[derive(Debug)]
+pub enum PresentationError {
+    Size {
+        width: u32,
+        height: u32,
+        max_side: u32,
+    },
+    Supersample {
+        supersample: u32,
+    },
+    TooManySamples {
+        samples: u64,
+        limit: u64,
+    },
+    /// `view_from` is zero or not finite.
+    ViewDirection,
+    /// No visible triangle with an area.
+    EmptyModel,
+    /// A corner coordinate is not finite.
+    NonFiniteGeometry {
+        triangle: usize,
+    },
+    TooManyTriangles {
+        triangles: usize,
+        limit: usize,
+    },
+    Source(ExactProductError),
+    Png(png::EncodingError),
+}
+
+impl fmt::Display for PresentationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Size {
+                width,
+                height,
+                max_side,
+            } => write!(
+                formatter,
+                "a presentation image of {width} × {height} px is outside 1–{max_side} px per side"
+            ),
+            Self::Supersample { supersample } => write!(
+                formatter,
+                "edge smoothing {supersample} is outside 1–4 samples per pixel side"
+            ),
+            Self::TooManySamples { samples, limit } => write!(
+                formatter,
+                "the image needs {samples} samples, more than the limit of {limit}; lower the size or the edge smoothing"
+            ),
+            Self::ViewDirection => write!(
+                formatter,
+                "the view direction is zero or not a finite number"
+            ),
+            Self::EmptyModel => write!(formatter, "the model has no visible surface to show"),
+            Self::NonFiniteGeometry { triangle } => write!(
+                formatter,
+                "triangle {triangle} of the model has a corner that is not a finite number"
+            ),
+            Self::TooManyTriangles { triangles, limit } => write!(
+                formatter,
+                "the model has {triangles} triangles, more than the limit of {limit}"
+            ),
+            Self::Source(error) => write!(formatter, "the model cannot be read: {error}"),
+            Self::Png(error) => write!(formatter, "the PNG cannot be written: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for PresentationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Source(error) => Some(error),
+            Self::Png(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+/// World triangles of the visible instances, each coloured by its occurrence and given the
+/// opacity `opacity` returns for it (255 = opaque, e.g. lower for a membrane).
+pub fn presentation_scene(
+    snapshot: &Snapshot,
+    instances: &[MeshGlbInstance<'_>],
+    opacity: impl Fn(&SceneOccurrence) -> u8,
+) -> Result<PresentationScene, PresentationError> {
+    let visible = instances
+        .iter()
+        .filter(|instance| instance.occurrence.visible)
+        .copied()
+        .collect::<Vec<_>>();
+    validate_instances(snapshot, &visible).map_err(PresentationError::Source)?;
+    let total = visible
+        .iter()
+        .map(|instance| instance.source.triangle_count())
+        .sum::<usize>();
+    if total > limits::EXPORT_TRIANGLES {
+        return Err(PresentationError::TooManyTriangles {
+            triangles: total,
+            limit: limits::EXPORT_TRIANGLES,
+        });
+    }
+    let mut triangles = Vec::with_capacity(total);
+    for instance in visible {
+        let [r, g, b] = instance.occurrence.color.unwrap_or(DEFAULT_PART_RGB);
+        let rgba = [r, g, b, opacity(instance.occurrence)];
+        let transform = instance.occurrence.transform;
+        for index in 0..instance.source.triangle_count() {
+            let indices =
+                instance
+                    .source
+                    .triangle_indices(index)
+                    .ok_or(PresentationError::Source(
+                        ExactProductError::InvalidMeshExport,
+                    ))?;
+            let mut corners_mm = [[0.0; 3]; 3];
+            for (corner, vertex) in corners_mm.iter_mut().zip(indices) {
+                let point = usize::try_from(vertex)
+                    .ok()
+                    .and_then(|vertex| instance.source.vertex_position_mm(vertex))
+                    .ok_or(PresentationError::Source(
+                        ExactProductError::InvalidMeshExport,
+                    ))?;
+                *corner = transform.transform_point(point);
+            }
+            triangles.push(PresentationTriangle { corners_mm, rgba });
+        }
+    }
+    Ok(PresentationScene { triangles })
+}
+
+/// Renders `scene` as `options` say.
+pub fn render_presentation(
+    scene: &PresentationScene,
+    options: &PresentationOptions,
+) -> Result<PresentationImage, PresentationError> {
+    let PresentationOptions {
+        width,
+        height,
+        supersample,
+        ..
+    } = *options;
+    if !(1..=MAX_PRESENTATION_SIDE).contains(&width)
+        || !(1..=MAX_PRESENTATION_SIDE).contains(&height)
+    {
+        return Err(PresentationError::Size {
+            width,
+            height,
+            max_side: MAX_PRESENTATION_SIDE,
+        });
+    }
+    if !(1..=4).contains(&supersample) {
+        return Err(PresentationError::Supersample { supersample });
+    }
+    let samples = u64::from(width * supersample) * u64::from(height * supersample);
+    if samples > MAX_PRESENTATION_SAMPLES {
+        return Err(PresentationError::TooManySamples {
+            samples,
+            limit: MAX_PRESENTATION_SAMPLES,
+        });
+    }
+    if scene.triangles.len() > limits::EXPORT_TRIANGLES {
+        return Err(PresentationError::TooManyTriangles {
+            triangles: scene.triangles.len(),
+            limit: limits::EXPORT_TRIANGLES,
+        });
+    }
+    if let Some(triangle) = scene.triangles.iter().position(|triangle| {
+        triangle
+            .corners_mm
+            .iter()
+            .flatten()
+            .any(|value| !value.is_finite())
+    }) {
+        return Err(PresentationError::NonFiniteGeometry { triangle });
+    }
+    raster::render(scene, options)
+}
+
+impl PresentationImage {
+    /// The image as a PNG (RGBA, 8 bits per channel).
+    pub fn png(&self) -> Result<Vec<u8>, PresentationError> {
+        let mut bytes = Vec::new();
+        let mut encoder = png::Encoder::new(&mut bytes, self.width, self.height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
+        let mut writer = encoder.write_header().map_err(PresentationError::Png)?;
+        writer
+            .write_image_data(&self.rgba)
+            .map_err(PresentationError::Png)?;
+        writer.finish().map_err(PresentationError::Png)?;
+        Ok(bytes)
+    }
+}

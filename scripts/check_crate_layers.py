@@ -475,7 +475,9 @@ CASTS_AND_ALLOWS = {
     # Objective-C callback for Finder open-file events (application:openURLs:).
     "ketchup-macos-open allows": 1,
     "ketchup-manufacturing allows": 9,
-    "ketchup-manufacturing casts": 41,
+    # presentation::raster's named conversions (#2806 presentation image): a clamped sample
+    # coordinate to its index, a depth/colour to f32, a share to an 8-bit channel, so 41 -> 44.
+    "ketchup-manufacturing casts": 44,
     "ketchup-mcp allows": 2,
     "ketchup-mcp casts": 10,
     "ketchup-model allows": 16,
