@@ -233,11 +233,15 @@ mod tests {
         }
     }
 
+    /// Frames run after each step: a fixed count, not `run()`'s "until no repaint", which
+    /// fails when the model's exact evaluation keeps waking the window for its progress.
+    const FRAMES: usize = 4;
+
     fn window(app: KetchupApp) -> Kittest<'static, KetchupApp> {
         let mut harness = Kittest::builder()
             .with_size(egui::Vec2::new(1600.0, 1000.0))
             .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
-        harness.run();
+        harness.run_steps(FRAMES);
         harness
     }
 
@@ -253,9 +257,9 @@ mod tests {
             let (sender, receiver) = std::sync::mpsc::sync_channel(1);
             sender.send(answer).unwrap();
             harness.state_mut().live.harness_work = Some(HarnessWork { answer: receiver });
-            harness.run();
+            harness.run_steps(FRAMES);
         }
-        harness.run();
+        harness.run_steps(FRAMES);
     }
 
     fn starting_a_deleted_kecup(_: &std::path::Path) -> Vec<HarnessRow> {
@@ -297,7 +301,7 @@ mod tests {
         harness
             .get_by_label(&catalog.text("stale-ai-later"))
             .click();
-        harness.run();
+        harness.run_steps(FRAMES);
         assert_eq!(harness.state().live.stale_clients, StaleClientCheck::Done);
         assert!(
             harness
@@ -328,7 +332,7 @@ mod tests {
         let mut app = KetchupApp::new();
         app.live.harness_rows = starting_a_deleted_kecup;
         let mut harness = window(app);
-        harness.run();
+        harness.run_steps(FRAMES);
         assert!(harness.state().live.harness_work.is_none());
         assert!(harness.state().live.harnesses.is_none());
         let catalog = harness.state().catalog.clone();
@@ -363,7 +367,7 @@ mod tests {
         harness
             .get_by_label(&catalog.text("connect-ai-replace"))
             .click();
-        harness.run();
+        harness.run_steps(FRAMES);
         settle(&mut harness);
         let written: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
@@ -385,7 +389,7 @@ mod tests {
         harness
             .get_by_label(&catalog.text("stale-ai-close"))
             .click();
-        harness.run();
+        harness.run_steps(FRAMES);
         assert_eq!(harness.state().live.stale_clients, StaleClientCheck::Done);
     }
 }
