@@ -41,6 +41,15 @@ it.
 |---|---|
 | R1109-REL-300: the 0.3.2 release on GitHub has wrong sums and notes | Fixed 2026-11-09 on the release itself, its files unchanged: `SHA256SUMS.txt` names only the four downloads with LF line ends (the first named `payload/package-manifest.json` and had CRLF), and `sha256sum -c SHA256SUMS.txt` over the four downloaded into an empty folder answers OK for each. The notes say Cancel stops only the meshing of the FEA review, not a running solve, and carry the known issue of woodWOP programs with LF line ends with its workarounds, as `CHANGELOG.md` does. Issue #29, fixed by f23b50bb, is closed |
 
+## P3 manufacturing (§4.3, branch `r36-p3mf1109`)
+
+| Finding | Status |
+|---|---|
+| R1109-MF-301: the table of storeys cannot say which storey is ±0 (a basement at the origin), and numbers its rows as entered while the sheets go by height | Fixed, bdb0fee5: each row is numbered as its plan sheet, by finished floor, and has a ±0,000 choice marking the storey at ±0,000 (the height set, else the ground floor found); choosing another storey sets ±0,000 to its floor |
+| R1109-MF-302: a hole milled through a 60 mm part has Z = −1 and a depth of 62 | Fixed, 6764559a: a BTLx free contour is clamped to the part along its cut, so one through a 60 mm part starts on its face and is 60 deep; a cut wholly beyond the part is none. The woodWOP pocket already refuses a cut not starting on the face |
+| R1109-MF-304: a 0.3.2 list naming its project by an 8.3 name (`PROJEK~1`) fits every folder of the same six letters | Fixed, d6f7ca54: an 8.3 name is the folder the file system gives it; only when a name has that form are the project's file and the list's folder asked for their short names (`GetShortPathNameW`), so no file is looked at otherwise. A copy in `Projekt beta` no longer takes the set of `Projekt alpha` (test on real 8.3 names), the original still does |
+| R1109-MF-305: a pin into a bought part: the `.mpr`, the package and BTLx drill the made side without naming the loss, the production job refuses `UnmadePinHole` | Fixed, bdb0fee5: one loss in the capability gate for every format, the holes of a pin joint in a part the shop does not make joined to a made one. The production job lays the made part and lists the loss under `losses`; the BTLx support report has `unmade_pin_holes`; the `.mpr` and package exports, and BTLx, name it in the status line and in the MCP result (`lost`). Test with logical and drilled pins into a bought timber |
+
 ## Underlays (§4.3, branch `r37-p3docs1109`)
 
 | Finding | Status |
