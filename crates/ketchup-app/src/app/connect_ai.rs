@@ -81,7 +81,7 @@ impl KetchupApp {
 
     /// The answer of the rows' work, once it came: the rows read, or the row
     /// of a client just set up.
-    fn take_harness_answer(&mut self) {
+    pub(crate) fn take_harness_answer(&mut self) {
         let Some(work) = &self.live.harness_work else {
             return;
         };
@@ -96,14 +96,16 @@ impl KetchupApp {
         self.live.harness_work = None;
         match answer {
             HarnessAnswer::Rows(rows) => self.live.harnesses = Some(rows),
-            HarnessAnswer::SetUp(index, row) => {
-                if let Some(slot) = self
-                    .live
-                    .harnesses
-                    .as_mut()
-                    .and_then(|rows| rows.get_mut(index))
-                {
-                    *slot = row;
+            HarnessAnswer::SetUp(rows) => {
+                for (index, row) in rows {
+                    if let Some(slot) = self
+                        .live
+                        .harnesses
+                        .as_mut()
+                        .and_then(|rows| rows.get_mut(index))
+                    {
+                        *slot = row;
+                    }
                 }
             }
         }
@@ -183,17 +185,41 @@ impl KetchupApp {
         if let Some(index) = set_up
             && self.live.harness_work.is_none()
         {
-            let row = &rows[index];
-            let (harness, file, executable) =
-                (row.harness, row.file.clone(), executable.to_owned());
-            let unchanged = row.clone();
-            self.live.harness_work = HarnessWork::start(ui.ctx(), move || {
-                let row = Environment::current().map_or(unchanged, |environment| {
-                    environment.set_up_in(harness, file, &executable)
-                });
-                HarnessAnswer::SetUp(index, row)
-            });
+            self.set_up_harnesses(ui.ctx(), &[index], executable);
         }
+    }
+
+    /// Set up the clients at `indices` of the rows to start `executable`, off
+    /// the window's thread; a row stays as it was when the environment is unknown.
+    pub(crate) fn set_up_harnesses(
+        &mut self,
+        context: &egui::Context,
+        indices: &[usize],
+        executable: &Path,
+    ) {
+        let Some(rows) = &self.live.harnesses else {
+            return;
+        };
+        let chosen: Vec<(usize, HarnessRow)> = indices
+            .iter()
+            .filter_map(|&index| Some((index, rows.get(index)?.clone())))
+            .collect();
+        let executable = executable.to_owned();
+        self.live.harness_work = HarnessWork::start(context, move || {
+            let environment = Environment::current();
+            HarnessAnswer::SetUp(
+                chosen
+                    .into_iter()
+                    .map(|(index, row)| match &environment {
+                        Some(environment) => (
+                            index,
+                            environment.set_up_in(row.harness, row.file, &executable),
+                        ),
+                        None => (index, row),
+                    })
+                    .collect(),
+            )
+        });
     }
 
     /// One numbered step, marked done or not from what the window sees.
@@ -240,7 +266,7 @@ impl KetchupApp {
         }
     }
 
-    fn harness_state(&self, row: &HarnessRow) -> String {
+    pub(crate) fn harness_state(&self, row: &HarnessRow) -> String {
         match &row.registration {
             Registration::NotInstalled => self.catalog.text("connect-ai-not-installed"),
             Registration::NotSetUp => self.catalog.text("connect-ai-not-set-up"),
@@ -279,18 +305,19 @@ pub(crate) fn read_harness_rows(executable: &Path) -> Vec<HarnessRow> {
 /// each command's file, one on `\\nas\` too, held the window as long as the
 /// share took to answer.
 pub(crate) struct HarnessWork {
-    answer: std::sync::mpsc::Receiver<HarnessAnswer>,
+    pub(crate) answer: std::sync::mpsc::Receiver<HarnessAnswer>,
 }
 
-enum HarnessAnswer {
+pub(crate) enum HarnessAnswer {
     Rows(Vec<HarnessRow>),
-    SetUp(usize, HarnessRow),
+    /// The rows of the clients just set up, by their index.
+    SetUp(Vec<(usize, HarnessRow)>),
 }
 
 impl HarnessWork {
     /// `work` on its own thread, the window repainted when it ends; none,
     /// logged, when no thread starts.
-    fn start(
+    pub(crate) fn start(
         context: &egui::Context,
         work: impl FnOnce() -> HarnessAnswer + Send + 'static,
     ) -> Option<Self> {
@@ -316,7 +343,7 @@ impl HarnessWork {
 /// The program an MCP client starts: this executable in server mode, or in a
 /// development checkout its server script. The error says why it is unknown
 /// (review 2026-11-04 P3: the window said only that it was).
-fn mcp_server_command() -> std::io::Result<String> {
+pub(crate) fn mcp_server_command() -> std::io::Result<String> {
     let program = entry_point(&std::env::current_exe()?);
     program.into_os_string().into_string().map_err(|program| {
         std::io::Error::new(
