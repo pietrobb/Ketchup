@@ -26,7 +26,9 @@ Counted as a budget:
   that time on to such a helper; the helper may be in any test file, a harness module
   included (review 2026-11-04 P3, r19 P3);
 - a deadline under `HANG_FLOOR` whose passing fails the test (`assert!(Instant::now() <
-  deadline)`), for the same reason (review 2026-11-08 TST-252);
+  deadline)`, or an `if` past it, either way round, whose block fails the test after
+  anything else it does), for the same reason (review 2026-11-08 TST-252, 2026-11-09
+  R1109-TST-304);
 - a call to a `perf_*` function from a function not named `perf_*`.
 
 Not counted: a deadline that only ends a poll (`while Instant::now() < deadline`) or
@@ -348,13 +350,21 @@ def failing_deadlines(text: str, constants: dict[str, float]) -> list[int]:
         name = re.escape(deadline.group(1))
         fails = re.compile(
             rf"\bassert!\(\s*{NOW_CALL}\s*<=?\s*{name}\b"
-            rf"|\bassert!\(\s*{name}\s*>=?\s*{NOW_CALL}"
-            rf"|\bif\s+{NOW_CALL}\s*>=?\s*{name}\s*\{{\s*(?:panic!|unreachable!|assert)")
+            rf"|\bassert!\(\s*{name}\s*>=?\s*{NOW_CALL}")
+        # An `if` past the deadline, either way round, whose block fails the test also
+        # after other statements, a child killed first (review 2026-11-09 R1109-TST-304).
+        passed = re.compile(rf"\bif\s+(?:{NOW_CALL}\s*>=?\s*{name}|{name}\s*<=?\s*{NOW_CALL})\s*\{{")
         # Within its own function: another one may fail on a deadline of the same name.
         following = FUNCTION.search(text, deadline.end())
-        if fails.search(text, deadline.end(), following.start() if following else len(text)):
+        end = following.start() if following else len(text)
+        if fails.search(text, deadline.end(), end) or any(
+                FAILS_IN_BLOCK.search(arms(text, branch.end() - 1))
+                for branch in passed.finditer(text, deadline.end(), end)):
             found.append(text.count("\n", 0, deadline.start()) + 1)
     return found
+
+
+FAILS_IN_BLOCK = re.compile(r"\b(?:panic|unreachable)!|\bassert\w*!")
 
 
 def budgets(text: str, helpers: dict[str, Helper], constants: dict[str, float]) -> list[int]:
