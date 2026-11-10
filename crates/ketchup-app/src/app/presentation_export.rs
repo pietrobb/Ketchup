@@ -172,20 +172,17 @@ impl KetchupApp {
     }
 
     pub(super) fn poll_presentation_export(&mut self, context: &egui::Context) {
-        let Some(task) = self.file.activity.presentation_export.as_ref() else {
+        let Some(task) = self.file.activity.presentation_export.take() else {
             return;
         };
         let made = match task.receiver.try_recv() {
             Ok(made) => made,
-            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Empty) => {
+                self.file.activity.presentation_export = Some(task);
+                return;
+            }
             Err(error @ TryRecvError::Disconnected) => Err(ExportError::failed(error)),
         };
-        let task = self
-            .file
-            .activity
-            .presentation_export
-            .take()
-            .expect("polled presentation image");
         let result = made.and_then(|png| self.publish_presentation(&task.path, &png));
         self.show_export_outcome("presentation", &task.path, result.as_ref());
         context.request_repaint();
