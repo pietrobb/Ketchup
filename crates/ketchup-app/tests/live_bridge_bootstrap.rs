@@ -1425,7 +1425,9 @@ fn native_invalid_bootstrap_exits_without_window_or_credential_output() {
         .unwrap()
         .write_all(format!("{{\"version\":2,\"token\":\"{TOKEN}\"}}\n").as_bytes())
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(8);
+    // Only a guard against a hang: a loaded machine may start the app slowly (review
+    // 2026-11-09 R1109-TST-304).
+    let deadline = Instant::now() + RESPONSE_DEADLINE;
     while child.try_wait().unwrap().is_none() {
         if Instant::now() >= deadline {
             child.kill().unwrap();

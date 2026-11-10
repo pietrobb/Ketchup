@@ -80,6 +80,31 @@ def test_a_production_module_past_the_freeze_size_fails_until_frozen():
     ]
 
 
+def test_the_frozen_list_may_only_go_down_from_the_commit_before(tmp_path):
+    # Review 2026-11-09 R1109-TST-305: each change wrote its own module's new size into
+    # FROZEN_MODULES (`live_bridge.rs` 3550 to 3635 in the change that grew it).
+    base = {"crates/a/src/frozen.rs": 3550, "crates/a/src/kept.rs": 3200}
+    base_sizes = {"crates/a/src/crossed.rs": 2900, "crates/a/src/grown.rs": 2990}
+    frozen = {
+        "crates/a/src/frozen.rs": 3635,
+        "crates/a/src/kept.rs": 3100,
+        "crates/a/src/crossed.rs": 3000,
+        "crates/a/src/grown.rs": 3200,
+    }
+    assert checker.raised_frozen_entries(frozen, base, base_sizes, 3000) == [
+        "crates/a/src/frozen.rs: frozen at 3550 before this change, 3635 now; "
+        "FROZEN_MODULES may only go down, put new code in a new module",
+        "crates/a/src/grown.rs: added to FROZEN_MODULES at 3200, past 3000; "
+        "split it so it stays under 3000 lines",
+    ]
+    text = 'FREEZE = 1\nFROZEN_MODULES = {\n    # A comment.\n    "a.rs": 3,\n}\n'
+    assert checker.frozen_modules_of(text) == {"a.rs": 3}
+
+
+def test_workspace_frozen_list_did_not_grow_since_the_commit_before():
+    assert checker.frozen_list_problems(ROOT) == []
+
+
 def test_workspace_modules_past_the_freeze_size_are_frozen():
     assert checker.unfrozen_large_modules(checker.module_sizes(ROOT)) == []
 

@@ -134,7 +134,9 @@ reproduced failure that they catch, or explicit approval by the owner.
 - Code, identifiers, schemas and error codes are in English (ADR 0001).
 - A review finding is named with the date of its review, `R<MMDD>-<ID>` (`R1108-PG-244`), in
   commits, status files and later reviews, since the bare IDs of reviews on different branches
-  collide. A review lands on `main` with its status file; a later review reads both.
+  collide. A second review of the same day adds its round as its file name does
+  (`review-2026-11-06-r23.md` names `R1106r23-SEC-170`), so two reviews of one day do not
+  collide either. A review lands on `main` with its status file; a later review reads both.
 
 ## 8. Definition of done
 

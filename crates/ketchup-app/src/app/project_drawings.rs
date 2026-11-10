@@ -16,13 +16,14 @@ use ketchup_application::threads::{
 };
 use ketchup_manufacturing::project_drawings::{
     CompassSide, CuttingPiece, CuttingSheet, CuttingStock, DrawingOpening, DrawingSet,
-    DrawingSetOptions, DrawingSolid, DrawingThread, OpeningSchedule, PlanSheet,
+    DrawingSetOptions, DrawingSolid, DrawingThread, ModelFloors, OpeningSchedule, PlanSheet,
     ProjectDrawingError, ProjectView, SCALES, SheetTitles, ShopDrawings, ShopPosition, ShopSheet,
     Storey, drawing_set_until, ground_floor, storeys, table_ground_floor, table_storeys,
 };
 use ketchup_manufacturing::revision_table::RevisionCaptions;
 use ketchup_manufacturing::title_block::{
-    DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM, SheetFormat, SheetLanguage, SheetSettings, TitleField,
+    DEFAULT_PLAN_CUT_ABOVE_FLOOR_MM, SheetFormat, SheetLanguage, SheetSettings, StoreyLevels,
+    TitleField,
 };
 use ketchup_model::annotation::{DecimalMark, dimension_text_with};
 use ketchup_model::exact_product::ExactResultRegistry;
@@ -238,15 +239,21 @@ pub(crate) enum FoundZeroError {
     WorkerStopped,
 }
 
-/// The ground floor the drawings window shows for ±0,000 (review 2026-11-04
-/// r19 MF-161): being found on a worker, or found, or why it cannot be.
+/// The floors of the model, none without a solid, as the drawings window
+/// shows them: the ground floor for ±0,000 (review 2026-11-04 r19 MF-161)
+/// and the storeys "Add a storey" fills an empty table with (review
+/// 2026-11-09 MF-300).
+pub(crate) type FoundFloors = Option<ModelFloors>;
+
+/// The floors of the model for the drawings window: being found on a worker,
+/// or found, or why they cannot be.
 pub(crate) enum FoundZero {
-    Finding(std::sync::mpsc::Receiver<Result<f64, FoundZeroError>>),
-    Found(Result<f64, Arc<FoundZeroError>>),
+    Finding(std::sync::mpsc::Receiver<Result<FoundFloors, FoundZeroError>>),
+    Found(Result<FoundFloors, Arc<FoundZeroError>>),
 }
 
 impl FoundZero {
-    /// Finds the ground floor among the bodies of `snapshot` (see
+    /// Finds the floors among the bodies of `snapshot` (see
     /// [`KetchupApp::job_bodies`]), placed, on a worker thread: which bodies
     /// those are is found there too (review 2026-11-06 P3).
     fn find(snapshot: Snapshot, results: ExactResultRegistry) -> Self {
@@ -264,7 +271,7 @@ impl FoundZero {
                                     .map(|(package, _)| level_solid(package, &occurrence.transform))
                             })
                             .collect::<Vec<_>>();
-                        ground_floor(&solids)
+                        ModelFloors::of(&solids)
                     })
                     .map_err(FoundZeroError::Bodies);
                 // Sending fails only when the window has gone: nobody to tell.
@@ -276,8 +283,8 @@ impl FoundZero {
         }
     }
 
-    /// The ground floor once found; `None` while the worker is at it.
-    fn poll(&mut self) -> Option<Result<f64, Arc<FoundZeroError>>> {
+    /// The floors once found; `None` while the worker is at it.
+    fn poll(&mut self) -> Option<Result<FoundFloors, Arc<FoundZeroError>>> {
         if let Self::Finding(receiver) = self {
             *self = match receiver.try_recv() {
                 Ok(found) => Self::Found(found.map_err(Arc::new)),
@@ -1323,6 +1330,30 @@ impl KetchupApp {
         &self,
         snapshot: &Snapshot,
     ) -> Option<Result<f64, Arc<FoundZeroError>>> {
+        self.found_floors(snapshot)
+            .map(|found| found.map(|floors| floors.as_ref().map_or(0.0, ModelFloors::ground)))
+    }
+
+    /// The storeys found in the model, cut `above_floor_mm` above their
+    /// floors, as rows of a table of storeys; none while they are being
+    /// found or when they cannot be (see [`Self::found_zero`]).
+    pub(crate) fn found_storey_table(
+        &self,
+        snapshot: &Snapshot,
+        above_floor_mm: f64,
+    ) -> Vec<StoreyLevels> {
+        match self.found_floors(snapshot) {
+            Some(Ok(Some(floors))) => floors.table(above_floor_mm),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The floors of the model, found on a worker and kept while the
+    /// document and its solids are unchanged (see [`Self::found_zero`]).
+    fn found_floors(
+        &self,
+        snapshot: &Snapshot,
+    ) -> Option<Result<FoundFloors, Arc<FoundZeroError>>> {
         let key = (
             snapshot.document_id(),
             snapshot.revision_id(),
@@ -1928,6 +1959,9 @@ impl KetchupApp {
                     ]),
                 )
             }
+            ProjectDrawingsError::Drawing(ProjectDrawingError::StoreyTable(error)) => {
+                super::storey_table::storey_table_error_text(&self.catalog, error)
+            }
             ProjectDrawingsError::NotEvaluated(parts) => self.catalog.format(
                 "drawings-parts-not-evaluated",
                 &BTreeMap::from([
@@ -2263,7 +2297,16 @@ impl KetchupApp {
                         });
                         ui.end_row();
                         ui.label(self.catalog.text("drawings-storeys"));
-                        super::storey_table::show_storey_table(ui, &self.catalog, &mut editing);
+                        let found = self.found_storey_table(
+                            &self.document.current(),
+                            editing.plan_cut_above_floor_mm(),
+                        );
+                        super::storey_table::show_storey_table(
+                            ui,
+                            &self.catalog,
+                            &mut editing,
+                            &found,
+                        );
                         ui.end_row();
                         for field in TitleField::EDITABLE {
                             ui.label(self.catalog.text(&format!("title-field-{}", field.key())));

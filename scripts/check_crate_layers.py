@@ -9,7 +9,8 @@ No source module or integration-test file of any crate may exceed
 MAX_MODULE_LINES. Modules that were
 already larger are listed in OVERSIZED with their size: they may shrink but not
 grow, and an entry must be removed once its module fits the limit. A production
-module past FREEZE_AT_LINES must be listed in FROZEN_MODULES and may not grow. Production
+module past FREEZE_AT_LINES must be listed in FROZEN_MODULES and may not grow; nor may
+its entry, against the commit before (FREEZE_BASE). Production
 functions follow the same rule with MAX_FUNCTION_LINES and LONG_FUNCTIONS: a
 long function is split into named steps, never extended.
 
@@ -17,7 +18,9 @@ Test files are named after the behavior they check (push_pull, save_reopen),
 never after a milestone, gate or slice (gate_d, m120_, assistant_m7, live_bridge_s4).
 """
 
+import ast
 import re
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -216,6 +219,55 @@ def unfrozen_large_modules(sizes, limit=FREEZE_AT_LINES, frozen=FROZEN_MODULES):
         for module, lines in sorted(sizes.items())
         if lines > limit and module not in frozen and not is_test_module(Path(module))
     ]
+
+
+def raised_frozen_entries(frozen, base_frozen, base_sizes, limit=FREEZE_AT_LINES):
+    """Entries of FROZEN_MODULES higher than in the commit before, or added past
+    `limit`: the list is a ratchet, not a record each change writes its own size into
+    (review 2026-11-09 R1109-TST-305)."""
+    problems = []
+    for module, recorded in sorted(frozen.items()):
+        if module in base_frozen:
+            if recorded > base_frozen[module]:
+                problems.append(
+                    f"{module}: frozen at {base_frozen[module]} before this change, {recorded}"
+                    " now; FROZEN_MODULES may only go down, put new code in a new module")
+        elif recorded > max(limit, base_sizes.get(module, 0)):
+            problems.append(
+                f"{module}: added to FROZEN_MODULES at {recorded}, past {limit}; "
+                f"split it so it stays under {limit} lines")
+    return problems
+
+
+def frozen_modules_of(text):
+    """FROZEN_MODULES as `text`, a version of this file, sets it."""
+    for node in ast.parse(text).body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "FROZEN_MODULES"
+                for target in node.targets):
+            return ast.literal_eval(node.value)
+    return {}
+
+
+# The commit FROZEN_MODULES is compared with: a pull request's merge commit has the
+# target branch as its first parent, so CI checks out two commits.
+FREEZE_BASE = "HEAD^1"
+
+
+def frozen_list_problems(root, base=FREEZE_BASE):
+    def at_base(path):
+        shown = subprocess.run(["git", "show", f"{base}:{path}"], cwd=root,
+                               capture_output=True, text=True, encoding="utf-8")
+        return shown.stdout if shown.returncode == 0 else None
+
+    base_text = at_base("scripts/check_crate_layers.py")
+    if base_text is None:
+        return [f"scripts/check_crate_layers.py: not readable at {base}; FROZEN_MODULES "
+                "needs the commit before to compare with (fetch-depth: 2)"]
+    base_frozen = frozen_modules_of(base_text)
+    base_sizes = {module: len((at_base(module) or "").splitlines())
+                  for module in FROZEN_MODULES if module not in base_frozen}
+    return raised_frozen_entries(FROZEN_MODULES, base_frozen, base_sizes)
 
 
 def grown_frozen_modules(sizes, frozen=FROZEN_MODULES):
@@ -635,6 +687,7 @@ def main():
     problems += oversized_modules(sizes)
     problems += grown_frozen_modules(sizes)
     problems += unfrozen_large_modules(sizes)
+    problems += frozen_list_problems(root)
     problems += oversized_functions(long_functions(root))
     problems += oversized_tests(long_tests(root))
     problems += milestone_named_tests(test_files(root))

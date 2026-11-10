@@ -732,6 +732,27 @@ fn a_client_gives_the_table_of_storeys_and_the_document_keeps_it() {
     }
     assert_eq!(app.stored_sheet_settings().unwrap().storeys.len(), 2);
 
+    // Review 2026-11-09 MF-300: 0/3500 against the floors at 200 and 2954
+    // printed +3,300 and +3,500; the row the model contradicts is named.
+    let contradicted = json!([
+        {"finished_floor_mm": 200, "structural_mm": 200},
+        {"finished_floor_mm": 3500, "structural_mm": 3500},
+    ]);
+    assert_eq!(
+        bridge.execute(
+            &mut app,
+            drawings("contradicted.pdf", Some(contradicted), None),
+            false
+        ),
+        Err("storey_table_contradicts_model")
+    );
+    assert!(!directory.path().join("contradicted.pdf").exists());
+    assert_eq!(
+        app.stored_sheet_settings().unwrap().storeys[1].finished_floor_mm,
+        2954,
+        "the document keeps its table"
+    );
+
     let written = bridge
         .execute(
             &mut app,

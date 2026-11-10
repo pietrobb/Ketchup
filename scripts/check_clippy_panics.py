@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Fail when production code gains a panic or a write to stderr that clippy sees.
 
-clippy's `unwrap_used`, `expect_used`, `panic` and `print_stderr` find what a text check
+clippy's `unwrap_used`, `expect_used`, `panic` and `print_stderr` (with `todo`,
+`unimplemented` and `dbg_macro`) find what a text check
 missed (review 2026-11-08 TST-250): `.map(Result::unwrap)`, `Err(e) => panic!(..)`,
 `eprint!`, and `eprintln!` inside a `macro_rules!` or a closure. They cannot be denied
 outright while the code still holds them, so this check runs clippy with them as
@@ -37,7 +38,9 @@ from source_roots import package_of  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEMS = {"win32": "windows", "linux": "linux", "darwin": "macos"}
 SYSTEM = SYSTEMS.get(sys.platform, sys.platform)
-LINTS = ("unwrap_used", "expect_used", "panic", "print_stderr")
+# `todo!`, `unimplemented!` and `dbg!` too (review 2026-11-09 R1109-TST-303).
+LINTS = ("unwrap_used", "expect_used", "panic", "print_stderr", "todo", "unimplemented",
+         "dbg_macro")
 
 
 def clippy_command(packages: list[str], target: str | None = None) -> list[str]:
