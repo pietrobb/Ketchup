@@ -405,6 +405,9 @@ impl LiveBridge {
             "companions": written.companions.iter().map(|path| shown(path)).collect::<Vec<_>>(),
             // A plan DXF/DWG draws the rest and names the parts it could not.
             "omitted_parts": written.omitted_parts,
+            // A machine file names what it leaves unmade, such as the pin
+            // holes in a bought part.
+            "lost": written.lost,
             "basis": "visible_parts",
         }))
     }
