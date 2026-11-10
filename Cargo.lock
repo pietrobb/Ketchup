@@ -2497,6 +2497,7 @@ dependencies = [
  "ketchup-model",
  "ketchup-rejection",
  "ketchup-test-env",
+ "ketchup-tolerance",
  "ketchup-view-format",
  "png",
  "serde",

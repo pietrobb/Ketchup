@@ -74,7 +74,7 @@ pub(super) fn dimensions(low: Vec3, high: Vec3, view_from: Vec3) -> Vec<Dimensio
         ),
     ]
     .into_iter()
-    .filter(|dimension| dimension.length_mm > gap * 1e-6)
+    .filter(|dimension| dimension.length_mm > gap * ketchup_tolerance::APPROXIMATION)
     .collect()
 }
 

@@ -6,6 +6,7 @@ use super::{
     Background, PresentationError, PresentationImage, PresentationOptions, PresentationScene,
 };
 use ketchup_geometry::linalg::Vec3;
+use ketchup_tolerance::{APPROXIMATION, NEGLIGIBLE, ROUNDING};
 use std::f64::consts::FRAC_1_SQRT_2;
 
 mod annotate;
@@ -108,7 +109,7 @@ impl Camera {
         let (right, up) = basis(forward)?;
         let (low, high) = bounds(corners)?;
         let centre = (low + high) * 0.5;
-        let diagonal = low.distance(high).max(1e-6);
+        let diagonal = low.distance(high).max(APPROXIMATION);
         let (width, height) = (real(width), real(height));
         let tan_y = TAN_HALF_FOV;
         let tan_x = tan_y * width / height;
@@ -139,7 +140,7 @@ impl Camera {
     fn project(&self, point: Vec3) -> Option<Vec3> {
         let offset = point - self.eye;
         let depth = offset.dot(self.forward);
-        (depth > 1e-9).then(|| {
+        (depth > ROUNDING).then(|| {
             Vec3::new(
                 (offset.dot(self.right) / (depth * self.tan_x) + 1.0) * 0.5 * self.width,
                 (1.0 - offset.dot(self.up) / (depth * self.tan_y)) * 0.5 * self.height,
@@ -181,7 +182,7 @@ fn raster(
     };
     let [a, b, c] = corners;
     let area = edge(a, b, c.x, c.y);
-    if !area.is_finite() || area.abs() < 1e-12 {
+    if !area.is_finite() || area.abs() < NEGLIGIBLE {
         return;
     }
     let min_x = index(a.x.min(b.x).min(c.x).floor().max(0.0));
@@ -231,7 +232,7 @@ impl ShadowMap {
                 .map(|point| Vec3::new(point.dot(u_axis), point.dot(v_axis), 0.0))
                 .collect::<Vec<_>>(),
         )?;
-        let span = (high.x - low.x).max(high.y - low.y).max(1e-6) * 1.04;
+        let span = (high.x - low.x).max(high.y - low.y).max(APPROXIMATION) * 1.04;
         let mut map = Self {
             sun,
             u_axis,
@@ -331,7 +332,7 @@ impl Frame<'_> {
             }
             let towards = self.point(other) - point;
             let distance = towards.length();
-            if distance < 1e-9 || distance > radius {
+            if distance < ROUNDING || distance > radius {
                 continue;
             }
             let share = distance / radius;
