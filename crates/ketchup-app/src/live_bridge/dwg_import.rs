@@ -15,6 +15,7 @@ use crate::ImportFormat;
 use crate::app::dwg_import::{DwgRead, is_dwg_path, read_dwg_file};
 use crate::app::exact_import_activity::{ExactImportRead, read_exact_import};
 use crate::app::import_file::import_format;
+use crate::app::skp_import::{SkpRead, is_skp_path, read_skp_file};
 use crate::app::underlay::revision::RevisionOverlayError;
 use crate::app::underlay::{UnderlayReadResult, read_underlay_file};
 use crate::delivery::Deliver;
@@ -24,6 +25,7 @@ use ketchup_program::CancelToken;
 /// What the job's thread read.
 enum JobRead {
     Dwg(DwgRead),
+    Skp(SkpRead),
     Underlay(Box<UnderlayReadResult>),
     Exact(ExactImportRead),
 }
@@ -56,15 +58,18 @@ pub(super) fn import_job_names(
     match format {
         ImportFormat::Step => ("ketchup-step-import", "A STEP file is being imported."),
         ImportFormat::Iges => ("ketchup-iges-import", "An IGES file is being imported."),
+        ImportFormat::Glb => ("ketchup-skp-import", "A SketchUp file is being imported."),
         _ => ("ketchup-dwg-import", "A DWG file is being imported."),
     }
 }
 
-/// Whether `request` imports a DWG, STEP or IGES file or an underlay, which run as a job.
+/// Whether `request` imports a DWG, SketchUp, STEP or IGES file or an underlay, which run
+/// as a job.
 pub(super) fn imports_as_job(request: &Request) -> bool {
     matches!(request, Request::Import { path, as_underlay, .. }
     if *as_underlay
         || is_dwg_path(Path::new(path))
+        || is_skp_path(Path::new(path))
         || matches!(
             import_format(Path::new(path)),
             Some(ImportFormat::Step | ImportFormat::Iges)
@@ -141,6 +146,8 @@ impl LiveBridge {
                         code_page,
                         &worker_cancel,
                     )))
+                } else if is_skp_path(&path) {
+                    JobRead::Skp(read_skp_file(&path, &worker_cancel))
                 } else {
                     JobRead::Dwg(read_dwg_file(&path, &worker_cancel))
                 };
@@ -209,7 +216,16 @@ impl LiveBridge {
                 &job.cancelled,
                 ReadAlready::Drawing(source),
             ),
-            JobRead::Dwg(Err(error)) => Err(interchange::import_failed(path, error)),
+            JobRead::Skp(Ok((source, _held))) => Self::import_file(
+                app,
+                &job.request,
+                ui_busy(context),
+                &job.cancelled,
+                ReadAlready::Model(source),
+            ),
+            JobRead::Dwg(Err(error)) | JobRead::Skp(Err(error)) => {
+                Err(interchange::import_failed(path, error))
+            }
             JobRead::Exact(Ok((source, evidence))) => Self::import_file(
                 app,
                 &job.request,

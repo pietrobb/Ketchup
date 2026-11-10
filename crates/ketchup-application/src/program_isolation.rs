@@ -15,7 +15,7 @@ pub use ketchup_scheduler::protocol::{
     UnderlayInput, UnderlayRead, UnderlayRefusal, UnderlayWriteInput, UnderlayWritten,
 };
 pub use ketchup_scheduler::underlay_reading::UnderlayReadError;
-use ketchup_skp::SkpModel;
+pub use ketchup_skp::SkpModel;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Mutex;

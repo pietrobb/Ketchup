@@ -2696,8 +2696,8 @@ fn file_import_blender_glb_reviews_and_commits_one_mesh_scene_offscreen() {
         script.import_requests(),
         vec![ketchup_app::dialogs::ImportDialogRequestRecord {
             format: ImportFormat::Glb,
-            filter_label: shell.catalog().text("file-filter-glb"),
-            extensions: vec!["glb".to_owned()],
+            filter_label: shell.catalog().text("file-filter-glb-skp"),
+            extensions: vec!["glb".to_owned(), "skp".to_owned()],
         }]
     );
 

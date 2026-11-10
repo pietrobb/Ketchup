@@ -100,6 +100,15 @@ impl ParsedGlbScene {
     pub fn diagnostics(&self) -> &[ImportDiagnostic] {
         &self.diagnostics
     }
+
+    /// The scene with the `notes` of the reader that wrote the GLB (the version of a
+    /// SketchUp file and what its conversion left out) among its diagnostics.
+    #[must_use]
+    pub fn with_notes(mut self, notes: &[ImportDiagnostic]) -> Self {
+        self.diagnostics.extend_from_slice(notes);
+        self.diagnostics.sort();
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -345,13 +354,24 @@ pub fn plan_glb_import(
     source: &[u8],
     source_name: &str,
 ) -> Result<CommandBatch, GlbImportError> {
+    plan_glb_import_noting(snapshot, source, source_name, &[])
+}
+
+/// [`plan_glb_import`] of a GLB another reader wrote, whose receipt records that
+/// reader's `notes` with the GLB import's own diagnostics.
+pub fn plan_glb_import_noting(
+    snapshot: &Snapshot,
+    source: &[u8],
+    source_name: &str,
+    notes: &[ImportDiagnostic],
+) -> Result<CommandBatch, GlbImportError> {
     validate_text(source_name)?;
     if source_name.contains(['/', '\\']) {
         return Err(GlbImportError::InvalidSourceIdentity(
             ImportContractError::InvalidSource,
         ));
     }
-    let scene = inspect_glb(source)?;
+    let scene = inspect_glb(source)?.with_notes(notes);
     let import_id = snapshot
         .next_import_id()
         .ok_or(GlbImportError::IdSpaceExhausted)?;

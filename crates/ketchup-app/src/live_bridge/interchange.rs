@@ -24,6 +24,8 @@ pub(super) enum ReadAlready {
     Nothing,
     /// The bytes of a `.dwg` file.
     Drawing(Vec<u8>),
+    /// The bytes of a `.skp` file.
+    Model(Vec<u8>),
     /// The bytes of a STEP or IGES file and what the exact worker read of them.
     Exact(
         Vec<u8>,
@@ -179,6 +181,7 @@ impl LiveBridge {
         let summary = match read {
             ReadAlready::Nothing => app.import_file(format, Path::new(&path), unit),
             ReadAlready::Drawing(source) => app.import_drawing(Path::new(&path), source, unit),
+            ReadAlready::Model(source) => app.import_glb_source(Path::new(&path), source),
             ReadAlready::Exact(source, evidence) => {
                 app.import_exact_read(format, Path::new(&path), source, evidence)
             }
