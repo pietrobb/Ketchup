@@ -17,6 +17,9 @@ use crate::document::{
 };
 
 mod json;
+mod tags;
+
+pub use tags::{GlbNodeTags, GlbTag, MAX_GLB_TAGS};
 
 pub const GLB_PARSER_ID: &str = "ketchup-glb";
 pub const GLB_PARSER_VERSION: &str = "1";
@@ -365,6 +368,24 @@ pub fn plan_glb_import_noting(
     source_name: &str,
     notes: &[ImportDiagnostic],
 ) -> Result<CommandBatch, GlbImportError> {
+    plan_glb_import_tagged(
+        snapshot,
+        source,
+        source_name,
+        notes,
+        &GlbNodeTags::default(),
+    )
+}
+
+/// [`plan_glb_import_noting`] whose parts carry the `tags` of their node and of every node
+/// above it; a tag the document already names is that tag, any other is created.
+pub fn plan_glb_import_tagged(
+    snapshot: &Snapshot,
+    source: &[u8],
+    source_name: &str,
+    notes: &[ImportDiagnostic],
+    tags: &GlbNodeTags,
+) -> Result<CommandBatch, GlbImportError> {
     validate_text(source_name)?;
     if source_name.contains(['/', '\\']) {
         return Err(GlbImportError::InvalidSourceIdentity(
@@ -447,6 +468,8 @@ pub fn plan_glb_import_noting(
         });
     }
 
+    let planned_tags = tags::plan_tags(snapshot, tags, &scene.nodes, &scene.traversal)?;
+    commands.extend(planned_tags.commands);
     let mut occurrence_offset = 0_u64;
     for node_index in &scene.traversal {
         let node = &scene.nodes[*node_index];
@@ -472,7 +495,7 @@ pub fn plan_glb_import_noting(
                 },
                 transform: Transform::identity(),
                 parent: Some(parent),
-                tags: Default::default(),
+                tags: planned_tags.by_node[*node_index].clone(),
                 visible: true,
             });
             if let Some(color) = primitive.color {
@@ -1649,7 +1672,7 @@ mod json_tests {
     use super::*;
 
     /// The JSON and the binary chunk of the committed Blender GLB.
-    fn sample() -> (Value, Vec<u8>) {
+    pub(super) fn sample() -> (Value, Vec<u8>) {
         let seed = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../artifacts/blender/garden-studio-colored.glb"
@@ -1660,7 +1683,7 @@ mod json_tests {
         (json, seed[20 + length..].to_vec())
     }
 
-    fn packed(json: &Value, binary: &[u8]) -> Vec<u8> {
+    pub(super) fn packed(json: &Value, binary: &[u8]) -> Vec<u8> {
         let mut json = serde_json::to_vec(json).unwrap();
         while !json.len().is_multiple_of(4) {
             json.push(b' ');

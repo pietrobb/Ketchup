@@ -1,6 +1,6 @@
 use super::*;
 use crate::app::skp_import::{SkpConversion, model_glb};
-use ketchup_model::import::{ParsedGlbScene, inspect_glb, plan_glb_import_noting};
+use ketchup_model::import::{GlbNodeTags, ParsedGlbScene, inspect_glb, plan_glb_import_tagged};
 
 #[derive(Clone, Debug, PartialEq)]
 struct GlbImportPreviewPlan {
@@ -34,16 +34,19 @@ impl KetchupApp {
         let snapshot = self.document.current();
         let source_name = source.verify_seal(&snapshot)?;
         let (glb, skp) = model_glb(&source.path, &source.source)?;
-        let notes = match &skp {
-            Some(conversion) => conversion.notes().map_err(|error| source.failed(error))?,
-            None => Vec::new(),
+        let (notes, tags) = match &skp {
+            Some(conversion) => (
+                conversion.notes().map_err(|error| source.failed(error))?,
+                conversion.node_tags(),
+            ),
+            None => (Vec::new(), GlbNodeTags::default()),
         };
         let review = crate::bounded_parser::run_bounded_parser(source.format, || inspect_glb(&glb))
             .map_err(|error| source.failed(error))?
             .map_err(|error| source.failed(error))?
             .with_notes(&notes);
         let batch = crate::bounded_parser::run_bounded_parser(source.format, || {
-            plan_glb_import_noting(&snapshot, &glb, source_name, &notes)
+            plan_glb_import_tagged(&snapshot, &glb, source_name, &notes, &tags)
         })
         .map_err(|error| source.failed(error))?
         .map_err(|error| source.failed(error))?;

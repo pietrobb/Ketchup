@@ -167,10 +167,80 @@ fn what_a_glb_cannot_carry_is_counted_not_dropped_silently() {
             .find(|left_out| left_out.code == code)
             .map(|left_out| left_out.count)
     };
-    assert_eq!(count("skp_tags_flattened"), Some(1), "{:?}", model.left_out);
+    assert_eq!(count("skp_face_tags_dropped"), None, "{:?}", model.left_out);
     assert_eq!(count("skp_dimensions_and_text_dropped"), Some(1));
     assert_eq!(count("skp_guides_dropped"), Some(1));
     assert_eq!(count("skp_textures_dropped"), None);
+}
+
+/// A box component placed twice on the tag "Walls" (hidden in the file when `walls_hidden`),
+/// one of its faces on the tag "Roof".
+fn tagged_boxes(walls_hidden: bool) -> Vec<u8> {
+    let mut builder = create();
+    let walls = builder
+        .add_layer(
+            "Walls",
+            &LayerOptions {
+                hidden: walls_hidden,
+                ..LayerOptions::default()
+            },
+        )
+        .unwrap();
+    let roof = builder.add_layer("Roof", &LayerOptions::default()).unwrap();
+    let mut definition = builder
+        .add_component_definition("Box", &DefinitionOptions::default())
+        .unwrap();
+    for (index, face) in BOX_FACES.iter().enumerate() {
+        let options = FaceOptions {
+            layer: (index == 1).then_some(roof),
+            ..FaceOptions::default()
+        };
+        definition.add_face(face, &options).unwrap();
+    }
+    let definition = definition.close().unwrap();
+    for x in [0.0, 100.0] {
+        let options = InstanceOptions {
+            translation: [x, 0.0, 0.0],
+            layer: Some(walls),
+            ..InstanceOptions::default()
+        };
+        builder.add_instance(definition, &options).unwrap();
+    }
+    builder.to_bytes().unwrap()
+}
+
+/// The tags of the components and groups come with the GLB, by node, with the file's own
+/// visibility; a tag on a face inside a component is counted as left out. Before, every tag
+/// was flattened.
+#[test]
+fn the_tags_of_components_and_groups_come_with_the_glb_by_node() {
+    for hidden in [false, true] {
+        let model = skp_to_glb(&tagged_boxes(hidden), LIMIT).unwrap();
+        assert_eq!(
+            model.tags,
+            [SkpTag {
+                name: "Walls".into(),
+                visible: !hidden,
+            }],
+            "only a tag some component or group carries comes"
+        );
+        let document = gltf(&model.glb);
+        let nodes = document["nodes"].as_array().unwrap();
+        assert_eq!(model.node_tags.len(), nodes.len());
+        for (node, tag) in nodes.iter().zip(&model.node_tags) {
+            assert_eq!(
+                *tag,
+                node.get("mesh").map(|_| 0),
+                "each placed box is on Walls, the model's root on no tag"
+            );
+        }
+        let face_tags = model
+            .left_out
+            .iter()
+            .find(|left_out| left_out.code == "skp_face_tags_dropped")
+            .map(|left_out| left_out.count);
+        assert_eq!(face_tags, Some(1), "{:?}", model.left_out);
+    }
 }
 
 #[test]
