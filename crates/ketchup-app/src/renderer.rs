@@ -442,14 +442,19 @@ fn geometry_sources(
                 .iter()
                 .map(|vertex| vertex.map(|value| value as f32))
                 .collect::<Vec<_>>();
-            return vec![build_render_geometry(
+            let geometry = build_render_geometry(
                 "canonical-mesh",
                 &positions,
                 &mesh.triangles,
                 &vec![None::<u8>; mesh.triangles.len()],
                 &[],
                 lines,
-            )];
+            );
+            return vec![if mesh.is_sheet() {
+                two_sided(geometry, "canonical-sheet")
+            } else {
+                geometry
+            }];
         }
     }
     if let Some((positions, triangles)) =
@@ -685,6 +690,31 @@ fn build_render_geometry<G: Copy + Ord>(
         indices,
         edge_vertices,
     }
+}
+
+/// A sheet seen from behind too: each triangle again, turned the other way, so
+/// that leaving out back faces, the inside of a solid, still shows it. Its edges
+/// stay those of the sheet.
+fn two_sided(mut geometry: GeometrySource, kind: &str) -> GeometrySource {
+    let back = geometry
+        .vertices
+        .chunks_exact(3)
+        .flat_map(|triangle| {
+            [triangle[0], triangle[2], triangle[1]].map(|vertex| RenderVertex {
+                normal: vertex.normal.map(|value| -value),
+                ..vertex
+            })
+        })
+        .collect::<Vec<_>>();
+    geometry.vertices.extend(back);
+    geometry.indices = (0..).take(geometry.vertices.len()).collect();
+    geometry.fingerprint = geometry_fingerprint(
+        kind,
+        &geometry.vertices,
+        &geometry.indices,
+        &geometry.edge_vertices,
+    );
+    geometry
 }
 
 /// Each feature edge as its own screen-space quad (two triangles). Edges are drawn
@@ -1637,6 +1667,41 @@ mod tests {
         assert_eq!(floats[36], 0.0);
         assert!((floats[37] - 0.2158605).abs() < 0.000001);
         assert_eq!(&floats[38..40], &[1.0, 1.0]);
+    }
+
+    /// A sheet's back side is its triangles again, wound and facing the other way, with
+    /// the edges of the sheet unchanged, so leaving out back faces still shows it.
+    #[test]
+    fn a_sheet_is_drawn_from_both_sides_with_its_own_edges() {
+        let geometry = || {
+            super::build_render_geometry(
+                "canonical-mesh",
+                &POSITIONS,
+                &TRIANGLES,
+                &[None::<u8>; 2],
+                &[],
+                &[],
+            )
+        };
+        let front = geometry();
+        let sheet = super::two_sided(geometry(), "canonical-sheet");
+        assert_eq!(sheet.vertices.len(), 2 * front.vertices.len());
+        assert_eq!(sheet.indices, (0..12).collect::<Vec<u32>>());
+        assert_eq!(sheet.edge_vertices, front.edge_vertices);
+        assert_ne!(sheet.fingerprint, front.fingerprint);
+        for (face, back) in front
+            .vertices
+            .chunks_exact(3)
+            .zip(sheet.vertices[6..].chunks_exact(3))
+        {
+            assert_eq!(
+                [back[0].position, back[1].position, back[2].position],
+                [face[0].position, face[2].position, face[1].position]
+            );
+            for (vertex, turned) in face.iter().zip(back) {
+                assert_eq!(turned.normal, vertex.normal.map(|value| -value));
+            }
+        }
     }
 
     #[test]

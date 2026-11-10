@@ -64,6 +64,8 @@ const NEWER_THAN_OLDEST: &[(&str, u16)] = &[
     ("format109.bin", 109),
     // A drawing read in a code page the user chose.
     ("format110.bin", 110),
+    // A mesh sheet, an open mesh such as a SketchUp face.
+    ("format111.bin", 111),
 ];
 
 fn resaved_schema(path: &Path) -> u16 {
