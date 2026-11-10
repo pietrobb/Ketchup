@@ -1,26 +1,32 @@
 //! What Kečup answers on its command line without opening a window.
 use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-/// Runs Kečup with `arguments`, killed after 30 s: a window opened instead of
-/// an answer never ends by itself.
+/// Runs Kečup with `arguments`. A window opened instead of an answer never
+/// ends by itself, so a hang is ended after two minutes, only a guard: a
+/// loaded machine may start the program slowly.
 fn run(arguments: &[&str]) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ketchup-app"))
+    let child = Command::new(env!("CARGO_BIN_EXE_ketchup-app"))
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while child.try_wait().unwrap().is_none() {
-        if Instant::now() > deadline {
-            child.kill().unwrap();
-            panic!("Kečup {arguments:?} did not end within 30 s");
-        }
-        std::thread::sleep(Duration::from_millis(50));
+    let id = child.id();
+    let (sender, ended) = std::sync::mpsc::channel();
+    std::thread::spawn(move || sender.send(child.wait_with_output()));
+    if let Ok(output) = ended.recv_timeout(Duration::from_secs(120)) {
+        return output.unwrap();
     }
-    child.wait_with_output().unwrap()
+    let kill = if cfg!(windows) {
+        Command::new("taskkill")
+            .args(["/F", "/PID", &id.to_string()])
+            .status()
+    } else {
+        Command::new("kill").args(["-9", &id.to_string()]).status()
+    };
+    panic!("Kečup {arguments:?} did not end, so it was killed: {kill:?}");
 }
 
 /// Feedback 2026-11-10: `Ketchup.exe --version` took the flag for a document
