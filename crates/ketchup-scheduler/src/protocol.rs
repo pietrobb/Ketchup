@@ -358,6 +358,10 @@ pub enum SkpOutcome {
         verified: bool,
         /// Diagnostic code and count of every kind of thing the GLB does not carry.
         left_out: Vec<(String, usize)>,
+        /// Name and visibility of each tag a GLB node carries.
+        tags: Vec<(String, bool)>,
+        /// The index in `tags` of each GLB node's tag, by glTF node index.
+        node_tags: Vec<Option<usize>>,
     },
     Refused(SkpRefusal),
 }
@@ -436,6 +440,12 @@ impl SkpOutcome {
                 .into_iter()
                 .map(|left_out| (left_out.code, left_out.count))
                 .collect(),
+            tags: model
+                .tags
+                .into_iter()
+                .map(|tag| (tag.name, tag.visible))
+                .collect(),
+            node_tags: model.node_tags,
         }
     }
 }
