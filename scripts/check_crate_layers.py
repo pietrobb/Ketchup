@@ -460,7 +460,9 @@ CASTS_AND_ALLOWS = {
     # on ReFS the 64-bit file index does not tell one file from another), so 16 -> 17.
     # GetShortPathNameW of app::project_drawings (review 2026-11-09 R1109-MF-304: an 8.3
     # name in a set's list is the folder the file system gives it), so 17 -> 18.
-    "ketchup-app allows": 18,
+    # GetStdHandle/AttachConsole of the binary's console::attach_parent_console (feedback
+    # 2026-11-10: the windowed release printed `--version` to no console), so 18 -> 19.
+    "ketchup-app allows": 19,
     "ketchup-app casts": 216,
     "ketchup-application allows": 9,
     "ketchup-application casts": 29,
