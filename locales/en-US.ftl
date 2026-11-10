@@ -2200,6 +2200,8 @@ presentation-size = Size
 presentation-shadows = Soft shadows
 presentation-corners = Shading in corners
 presentation-outlines = Outlines of edges
+presentation-dimensions = Overall dimensions
+presentation-part-labels = Label parts with their names
 presentation-opacity = Opacity of materials (100 % = opaque)
 file-filter-dwg = DWG drawing (AutoCAD 2018)
 file-filter-cnc-dxf-zip = CNC DXF drawings (ZIP)

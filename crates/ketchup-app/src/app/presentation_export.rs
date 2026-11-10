@@ -6,17 +6,20 @@
 use crate::*;
 use ketchup_manufacturing::blender_export::MeshGlbInstance;
 use ketchup_manufacturing::presentation::{
-    PresentationOptions, presentation_scene, render_presentation,
+    PresentationLabel, PresentationOptions, part_labels, presentation_scene, render_presentation,
 };
 use ketchup_model::drawing::BomItems;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
-/// How a presentation image looks: the render options and how opaque the parts of each named
-/// material are, in percent (100 = opaque); parts of other materials are opaque.
+/// How a presentation image looks: the render options, how opaque the parts of each named
+/// material are, in percent (100 = opaque; parts of other materials are opaque), and its labels:
+/// each component's name when `part_labels`, and the texts a client places.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct PresentationRequest {
     pub(crate) options: PresentationOptions,
     pub(crate) opacity_percent: BTreeMap<String, u8>,
+    pub(crate) part_labels: bool,
+    pub(crate) labels: Vec<PresentationLabel>,
 }
 
 /// A presentation image being made on its own thread.
@@ -33,8 +36,8 @@ pub(crate) struct PresentationParts {
 }
 
 impl PresentationParts {
-    /// The PNG of these parts as `options` say.
-    fn make(&self, options: &PresentationOptions) -> Result<Vec<u8>, ExportError> {
+    /// The PNG of these parts as `request` says.
+    fn make(&self, request: &PresentationRequest) -> Result<Vec<u8>, ExportError> {
         let instances = self
             .scene
             .iter()
@@ -49,14 +52,18 @@ impl PresentationParts {
             .zip(&self.opacity)
             .map(|(body, opacity)| (&body.occurrence.instance_path, *opacity))
             .collect::<BTreeMap<_, _>>();
-        let scene = presentation_scene(&self.snapshot, &instances, |occurrence| {
+        let mut scene = presentation_scene(&self.snapshot, &instances, |occurrence| {
             opacity
                 .get(&occurrence.instance_path)
                 .copied()
                 .unwrap_or(u8::MAX)
         })
         .map_err(ExportError::failed)?;
-        render_presentation(&scene, options)
+        if request.part_labels {
+            scene.labels = part_labels(&instances);
+        }
+        scene.labels.extend(request.labels.iter().cloned());
+        render_presentation(&scene, &request.options)
             .and_then(|image| image.png())
             .map_err(ExportError::failed)
     }
@@ -124,7 +131,7 @@ impl KetchupApp {
         self.side_effect_receipts.clear();
         let result = presentation_destination(path)
             .and_then(|()| self.presentation_parts(request))
-            .and_then(|parts| parts.make(&request.options))
+            .and_then(|parts| parts.make(request))
             .and_then(|png| self.publish_presentation(path, &png));
         self.report_export_outcome("presentation", path, result)
     }
@@ -145,11 +152,11 @@ impl KetchupApp {
                 return;
             }
         };
-        let options = request.options;
+        let request = request.clone();
         let (sender, receiver) = mpsc::channel();
         let repaint = context.clone();
         std::thread::spawn(move || {
-            if sender.send(parts.make(&options)).is_ok() {
+            if sender.send(parts.make(&request)).is_ok() {
                 repaint.request_repaint();
             }
         });

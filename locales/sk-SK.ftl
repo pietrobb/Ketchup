@@ -2117,6 +2117,8 @@ presentation-size = Veľkosť
 presentation-shadows = Mäkké tiene
 presentation-corners = Tieňovanie v kútoch
 presentation-outlines = Obrysy hrán
+presentation-dimensions = Celkové rozmery (kóty)
+presentation-part-labels = Popisy dielov s ich názvami
 presentation-opacity = Nepriehľadnosť materiálov (100 % = nepriehľadný)
 file-filter-dwg = DWG výkres (AutoCAD 2018)
 file-filter-cnc-dxf-zip = CNC výkresy DXF (ZIP)

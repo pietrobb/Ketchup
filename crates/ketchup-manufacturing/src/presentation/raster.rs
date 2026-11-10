@@ -8,6 +8,8 @@ use super::{
 use ketchup_geometry::linalg::Vec3;
 use std::f64::consts::FRAC_1_SQRT_2;
 
+mod annotate;
+
 /// tan(15°): a 30° vertical field of view, a natural lens for buildings and room-sized objects.
 const TAN_HALF_FOV: f64 = 0.267_949_192_431_122_7;
 /// Share of the image the model may fill along its tighter side.
@@ -422,7 +424,7 @@ pub(super) fn render(
     let width = usize::try_from(options.width).map_err(size_error)? * factor;
     let height = usize::try_from(options.height).map_err(size_error)? * factor;
     let surfaces = Surfaces::new(scene);
-    let corners = surfaces
+    let mut corners = surfaces
         .corners
         .iter()
         .flatten()
@@ -433,6 +435,19 @@ pub(super) fn render(
     if !view_from.is_finite() {
         return Err(PresentationError::ViewDirection);
     }
+    let diagonal = low.distance(high);
+    let dimensions = if options.dimensions {
+        annotate::dimensions(low, high, view_from)
+    } else {
+        Vec::new()
+    };
+    // The camera frames the dimension lines and labelled points with the model.
+    corners.extend(
+        dimensions
+            .iter()
+            .flat_map(|dimension| dimension.reach(diagonal)),
+    );
+    corners.extend(scene.labels.iter().map(|label| Vec3::from(label.at_mm)));
     let camera =
         Camera::fit(&corners, view_from, width, height).ok_or(PresentationError::ViewDirection)?;
     // The sun shines from above, behind the viewer's left shoulder.
@@ -489,6 +504,21 @@ pub(super) fn render(
     };
     let mut colour = shading.opaque();
     shading.see_through(&mut colour);
+    if !dimensions.is_empty() || !scene.labels.is_empty() {
+        let mut sheet = annotate::Sheet {
+            colour: &mut colour,
+            width,
+            height,
+            factor,
+        };
+        let annotator = annotate::Annotator::new(&frame.camera, &sheet)?;
+        for dimension in &dimensions {
+            annotator.dimension(&mut sheet, dimension, diagonal);
+        }
+        for label in &scene.labels {
+            annotator.label(&mut sheet, label);
+        }
+    }
     Ok(downsample(options, factor, width, &colour))
 }
 

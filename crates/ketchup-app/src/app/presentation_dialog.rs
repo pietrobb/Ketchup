@@ -1,5 +1,6 @@
-//! The options of File > Export > Presentation image: background, size and how see-through the
-//! parts of each material of the visible model are. Save image… asks where and makes it.
+//! The options of File > Export > Presentation image: background, size, dimensions, part labels
+//! and how see-through the parts of each material of the visible model are. Save image… asks
+//! where and makes it.
 
 use super::presentation_export::PresentationRequest;
 use crate::*;
@@ -139,6 +140,14 @@ impl KetchupApp {
         ui.checkbox(
             &mut options.outlines,
             self.catalog.text("presentation-outlines"),
+        );
+        ui.checkbox(
+            &mut options.dimensions,
+            self.catalog.text("presentation-dimensions"),
+        );
+        ui.checkbox(
+            &mut dialog.request.part_labels,
+            self.catalog.text("presentation-part-labels"),
         );
         if !dialog.materials.is_empty() {
             ui.separator();

@@ -105,6 +105,52 @@ fn a_client_saves_a_presentation_image_with_its_background_size_and_see_through_
 }
 
 #[test]
+fn a_client_adds_dimensions_part_names_and_its_own_labels_to_the_image() {
+    let (mut app, mut bridge, directory) = window();
+    let base = json!({"width": 320, "height": 240, "shadows": false, "ambient_occlusion": false});
+    let save = |app: &mut KetchupApp, bridge: &mut LiveBridge, name: &str, extra: Value| {
+        let mut image = base.clone();
+        for (key, value) in extra.as_object().unwrap() {
+            image[key] = value.clone();
+        }
+        let path = directory.path().join(name);
+        bridge
+            .execute(app, presentation(&path, image), false)
+            .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+        pixels(&path).2
+    };
+    let plain = save(&mut app, &mut bridge, "plain.png", json!({}));
+    let dimensioned = save(
+        &mut app,
+        &mut bridge,
+        "dimensions.png",
+        json!({"dimensions": true}),
+    );
+    let named = save(
+        &mut app,
+        &mut bridge,
+        "names.png",
+        json!({"part_labels": true}),
+    );
+    let labelled = save(
+        &mut app,
+        &mut bridge,
+        "label.png",
+        json!({"labels": [{"text": "PVC membrane 0.8 mm", "at_mm": [60, 0, 0]}]}),
+    );
+    // Dark grey ink the plain image does not have.
+    let ink = |rgba: &[u8]| {
+        rgba.chunks(4)
+            .filter(|p| p[0] < 90 && p[1] < 90 && p[2] < 90 && p[0].abs_diff(p[2]) < 12)
+            .count()
+    };
+    assert!(ink(&dimensioned) > ink(&plain) + 100, "dimensions drawn");
+    assert_ne!(named, plain, "part names drawn");
+    assert_ne!(labelled, plain, "the client's label drawn");
+    assert_ne!(labelled, named);
+}
+
+#[test]
 fn a_client_presentation_never_replaces_a_file_and_names_what_it_cannot_draw() {
     let (mut app, mut bridge, directory) = window();
     let small = json!({"width": 32, "height": 24});
@@ -134,6 +180,8 @@ fn a_client_presentation_never_replaces_a_file_and_names_what_it_cannot_draw() {
     for wrong in [
         json!({"background": "#12345"}),
         json!({"opacity_percent": {MEMBRANE: 101}}),
+        json!({"labels": [{"text": " ", "at_mm": [0, 0, 0]}]}),
+        json!({"labels": [{"text": "two\nlines", "at_mm": [0, 0, 0]}]}),
     ] {
         let target = directory.path().join("wrong.png");
         assert_eq!(

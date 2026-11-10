@@ -1,8 +1,9 @@
 use super::blender_glb_export::{current_package, seeded_document};
 use ketchup_manufacturing::blender_export::MeshGlbInstance;
 use ketchup_manufacturing::presentation::{
-    Background, PresentationError, PresentationImage, PresentationOptions, PresentationScene,
-    PresentationTriangle, presentation_scene, render_presentation,
+    Background, MAX_LABEL_CHARS, MAX_PRESENTATION_LABELS, PresentationError, PresentationImage,
+    PresentationLabel, PresentationOptions, PresentationScene, PresentationTriangle, part_labels,
+    presentation_scene, render_presentation,
 };
 use ketchup_model::exact_product::MeshExportSource;
 
@@ -56,7 +57,10 @@ fn box_on_slab() -> PresentationScene {
         [50.0, 50.0, 140.0],
         [200, 60, 50, 255],
     ));
-    PresentationScene { triangles }
+    PresentationScene {
+        triangles,
+        labels: Vec::new(),
+    }
 }
 
 fn small(background: Background) -> PresentationOptions {
@@ -158,6 +162,7 @@ fn the_model_casts_a_soft_shadow_on_the_ground_under_it() {
     };
     let standing = PresentationScene {
         triangles: cuboid([-50.0, -50.0, 0.0], [50.0, 50.0, 120.0], [200, 60, 50, 255]),
+        labels: Vec::new(),
     };
     let shadowed = render_presentation(&standing, &options).unwrap();
     let partial =
@@ -375,4 +380,172 @@ fn a_model_renders_with_its_part_colours_and_chosen_opacity() {
     assert!(scene.triangles.iter().any(|t| t.rgba[3] == 120));
     let image = render_presentation(&scene, &small(Background::White)).unwrap();
     assert!(pixels(&image).any(|p| p[0] > 120 && p[1] < 60 && p[2] < 60));
+}
+
+/// Plain shading at a size where text has room.
+fn annotated(background: Background) -> PresentationOptions {
+    PresentationOptions {
+        width: 320,
+        height: 240,
+        shadows: false,
+        ambient_occlusion: false,
+        outlines: false,
+        ..small(background)
+    }
+}
+
+/// Dark grey pixels: the ink of dimensions and labels, not a shaded part.
+fn ink(image: &PresentationImage) -> usize {
+    pixels(image)
+        .filter(|p| {
+            let (low, high) = (p[0].min(p[1]).min(p[2]), p[0].max(p[1]).max(p[2]));
+            p[3] > 0 && high < 70 && high - low < 12
+        })
+        .count()
+}
+
+fn changed(a: &PresentationImage, b: &PresentationImage) -> usize {
+    a.rgba
+        .chunks_exact(4)
+        .zip(b.rgba.chunks_exact(4))
+        .filter(|(a, b)| a != b)
+        .count()
+}
+
+#[test]
+fn dimensions_draw_the_model_extents_and_the_drawing_stays_in_frame() {
+    let plain = annotated(Background::White);
+    let options = PresentationOptions {
+        dimensions: true,
+        ..plain
+    };
+    let without = render_presentation(&box_on_slab(), &plain).unwrap();
+    let with = render_presentation(&box_on_slab(), &options).unwrap();
+    assert_eq!(with, render_presentation(&box_on_slab(), &options).unwrap());
+    assert!(
+        ink(&with) > ink(&without) + 150,
+        "{} ink pixels with dimensions, {} without",
+        ink(&with),
+        ink(&without)
+    );
+    // The camera frames the dimensions with the model, so nothing touches the image edge.
+    let (width, height) = (with.width, with.height);
+    for x in 0..width {
+        assert_eq!(pixel(&with, x, 0), [255; 4]);
+        assert_eq!(pixel(&with, x, height - 1), [255; 4]);
+    }
+    for y in 0..height {
+        assert_eq!(pixel(&with, 0, y), [255; 4]);
+        assert_eq!(pixel(&with, width - 1, y), [255; 4]);
+    }
+    // Over a transparent background the ink is opaque where it is drawn.
+    let clear = render_presentation(
+        &box_on_slab(),
+        &PresentationOptions {
+            background: Background::Transparent,
+            ..options
+        },
+    )
+    .unwrap();
+    assert!(ink(&clear) > 150);
+}
+
+#[test]
+fn a_label_names_a_point_with_a_leader_line_and_its_text() {
+    let options = annotated(Background::White);
+    let labelled = |text: &str| {
+        let mut scene = box_on_slab();
+        scene.labels.push(PresentationLabel {
+            text: text.into(),
+            at_mm: [50.0, -50.0, 140.0],
+        });
+        scene
+    };
+    let plain = render_presentation(&box_on_slab(), &options).unwrap();
+    let short = render_presentation(&labelled("A"), &options).unwrap();
+    let long = render_presentation(&labelled("Membrána 2 mm"), &options).unwrap();
+    assert_eq!(
+        long,
+        render_presentation(&labelled("Membrána 2 mm"), &options).unwrap()
+    );
+    assert!(changed(&plain, &short) > 20);
+    assert!(
+        changed(&plain, &long) > changed(&plain, &short) + 50,
+        "longer text covers more: {} against {}",
+        changed(&plain, &long),
+        changed(&plain, &short)
+    );
+    // Thin letters at this size are mostly smoothed grey: count what the label made darker.
+    let darkened = plain
+        .rgba
+        .chunks_exact(4)
+        .zip(long.rgba.chunks_exact(4))
+        .filter(|(before, after)| {
+            (0..3)
+                .map(|c| i32::from(before[c]) - i32::from(after[c]))
+                .sum::<i32>()
+                > 150
+        })
+        .count();
+    assert!(darkened > 40, "{darkened} pixels darkened by the label");
+}
+
+#[test]
+fn labels_without_text_or_a_finite_point_or_too_many_are_refused() {
+    let refuse = |labels: Vec<PresentationLabel>| {
+        let mut scene = box_on_slab();
+        scene.labels = labels;
+        render_presentation(&scene, &annotated(Background::White)).unwrap_err()
+    };
+    let label = |text: &str| PresentationLabel {
+        text: text.into(),
+        at_mm: [0.0, 0.0, 0.0],
+    };
+    for text in [
+        "  ".to_owned(),
+        "a\nb".to_owned(),
+        "x".repeat(MAX_LABEL_CHARS + 1),
+    ] {
+        assert!(
+            matches!(
+                refuse(vec![label("fine"), label(&text)]),
+                PresentationError::LabelText { label: 1, .. }
+            ),
+            "{text:?}"
+        );
+    }
+    assert!(matches!(
+        refuse(vec![PresentationLabel {
+            text: "far".into(),
+            at_mm: [0.0, f64::INFINITY, 0.0],
+        }]),
+        PresentationError::LabelPoint { label: 0 }
+    ));
+    assert!(matches!(
+        refuse(vec![label("many"); MAX_PRESENTATION_LABELS + 1]),
+        PresentationError::TooManyLabels { .. }
+    ));
+}
+
+#[test]
+fn part_labels_name_each_component_once_on_top_of_its_first_part() {
+    let document = seeded_document(None, None);
+    let snapshot = document.current();
+    let package = current_package(&snapshot);
+    let occurrences = snapshot.scene_query();
+    let instances = occurrences
+        .iter()
+        .map(|occurrence| MeshGlbInstance {
+            source: MeshExportSource::Exact(&package),
+            occurrence,
+        })
+        .collect::<Vec<_>>();
+    let labels = part_labels(&instances);
+    assert_eq!(
+        labels,
+        vec![PresentationLabel {
+            text: "Reusable beam".into(),
+            at_mm: [5.0, 5.0, 10.0],
+        }]
+    );
 }

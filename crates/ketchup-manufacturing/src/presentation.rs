@@ -21,6 +21,10 @@ pub const MAX_PRESENTATION_SIDE: u32 = 8192;
 pub const MAX_PRESENTATION_SAMPLES: u64 = 24_000_000;
 /// Colour of a part with no colour of its own.
 pub const DEFAULT_PART_RGB: [u8; 3] = [206, 201, 192];
+/// Labels one image may carry.
+pub const MAX_PRESENTATION_LABELS: usize = 200;
+/// Characters of one label.
+pub const MAX_LABEL_CHARS: usize = 120;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Background {
@@ -42,6 +46,8 @@ pub struct PresentationOptions {
     pub shadows: bool,
     pub ambient_occlusion: bool,
     pub outlines: bool,
+    /// The model's overall width, depth and height as dimension lines beside it.
+    pub dimensions: bool,
 }
 
 impl Default for PresentationOptions {
@@ -55,6 +61,7 @@ impl Default for PresentationOptions {
             shadows: true,
             ambient_occlusion: true,
             outlines: true,
+            dimensions: false,
         }
     }
 }
@@ -66,9 +73,17 @@ pub struct PresentationTriangle {
     pub rgba: [u8; 4],
 }
 
+/// Text beside a point of the model, joined to it by a leader line.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PresentationLabel {
+    pub text: String,
+    pub at_mm: [f64; 3],
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PresentationScene {
     pub triangles: Vec<PresentationTriangle>,
+    pub labels: Vec<PresentationLabel>,
 }
 
 /// Straight (not premultiplied) sRGB RGBA pixels, rows from the top.
@@ -105,6 +120,21 @@ pub enum PresentationError {
         triangles: usize,
         limit: usize,
     },
+    /// Label `label` is blank, has a line break or is longer than `limit` characters.
+    LabelText {
+        label: usize,
+        limit: usize,
+    },
+    /// The point of label `label` is not finite.
+    LabelPoint {
+        label: usize,
+    },
+    TooManyLabels {
+        labels: usize,
+        limit: usize,
+    },
+    /// The built-in typeface of labels and dimensions cannot be read.
+    Font,
     Source(ExactProductError),
     Png(png::EncodingError),
 }
@@ -141,6 +171,19 @@ impl fmt::Display for PresentationError {
                 formatter,
                 "the model has {triangles} triangles, more than the limit of {limit}"
             ),
+            Self::LabelText { label, limit } => write!(
+                formatter,
+                "label {label} is blank, has a line break or is longer than {limit} characters"
+            ),
+            Self::LabelPoint { label } => write!(
+                formatter,
+                "label {label} points at a coordinate that is not a finite number"
+            ),
+            Self::TooManyLabels { labels, limit } => write!(
+                formatter,
+                "the image has {labels} labels, more than the limit of {limit}"
+            ),
+            Self::Font => write!(formatter, "the built-in label typeface cannot be read"),
             Self::Source(error) => write!(formatter, "the model cannot be read: {error}"),
             Self::Png(error) => write!(formatter, "the PNG cannot be written: {error}"),
         }
@@ -206,7 +249,57 @@ pub fn presentation_scene(
             triangles.push(PresentationTriangle { corners_mm, rgba });
         }
     }
-    Ok(PresentationScene { triangles })
+    Ok(PresentationScene {
+        triangles,
+        labels: Vec::new(),
+    })
+}
+
+/// A label for each component name among the visible instances (the occurrence name when the
+/// component has none), at the top centre of the first instance of that name.
+pub fn part_labels(instances: &[MeshGlbInstance<'_>]) -> Vec<PresentationLabel> {
+    let mut named = std::collections::BTreeSet::new();
+    let mut labels = Vec::new();
+    for instance in instances
+        .iter()
+        .filter(|instance| instance.occurrence.visible)
+    {
+        let occurrence = instance.occurrence;
+        let name = [&occurrence.definition_name, &occurrence.occurrence_name]
+            .into_iter()
+            .map(|name| name.trim())
+            .find(|name| !name.is_empty());
+        let Some(name) = name else {
+            continue;
+        };
+        let text = name
+            .chars()
+            .map(|letter| if letter.is_control() { ' ' } else { letter })
+            .take(MAX_LABEL_CHARS)
+            .collect::<String>();
+        if labels.len() == MAX_PRESENTATION_LABELS || named.contains(&text) {
+            continue;
+        }
+        let source = instance.source;
+        let points = (0..source.vertex_count())
+            .filter_map(|vertex| source.vertex_position_mm(vertex))
+            .map(|point| occurrence.transform.transform_point(point));
+        let Some((low, high)) = points.fold(None, |bounds: Option<([f64; 3], [f64; 3])>, point| {
+            let (low, high) = bounds.unwrap_or((point, point));
+            Some((
+                [0, 1, 2].map(|axis| low[axis].min(point[axis])),
+                [0, 1, 2].map(|axis| high[axis].max(point[axis])),
+            ))
+        }) else {
+            continue;
+        };
+        named.insert(text.clone());
+        labels.push(PresentationLabel {
+            text,
+            at_mm: [(low[0] + high[0]) * 0.5, (low[1] + high[1]) * 0.5, high[2]],
+        });
+    }
+    labels
 }
 
 /// Renders `scene` as `options` say.
@@ -254,7 +347,34 @@ pub fn render_presentation(
     }) {
         return Err(PresentationError::NonFiniteGeometry { triangle });
     }
+    check_labels(&scene.labels)?;
     raster::render(scene, options)
+}
+
+/// Refuses more than [`MAX_PRESENTATION_LABELS`] labels, a blank, multi-line or overlong text
+/// and a point that is not finite.
+pub fn check_labels(labels: &[PresentationLabel]) -> Result<(), PresentationError> {
+    if labels.len() > MAX_PRESENTATION_LABELS {
+        return Err(PresentationError::TooManyLabels {
+            labels: labels.len(),
+            limit: MAX_PRESENTATION_LABELS,
+        });
+    }
+    for (label, PresentationLabel { text, at_mm }) in labels.iter().enumerate() {
+        if text.trim().is_empty()
+            || text.chars().any(char::is_control)
+            || text.chars().count() > MAX_LABEL_CHARS
+        {
+            return Err(PresentationError::LabelText {
+                label,
+                limit: MAX_LABEL_CHARS,
+            });
+        }
+        if !at_mm.iter().all(|value| value.is_finite()) {
+            return Err(PresentationError::LabelPoint { label });
+        }
+    }
+    Ok(())
 }
 
 impl PresentationImage {

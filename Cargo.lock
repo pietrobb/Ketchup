@@ -2490,6 +2490,8 @@ dependencies = [
 name = "ketchup-manufacturing"
 version = "0.3.3-dev"
 dependencies = [
+ "ab_glyph",
+ "epaint_default_fonts",
  "ketchup-dwg",
  "ketchup-geometry",
  "ketchup-model",
