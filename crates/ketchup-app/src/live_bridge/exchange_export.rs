@@ -15,6 +15,7 @@ pub(super) struct ExchangeExportJob {
     pub(super) cancelled: Arc<AtomicBool>,
     path: String,
     export_format: String,
+    overwrite: bool,
     receiver: mpsc::Receiver<ClientExchangeExport>,
 }
 
@@ -59,27 +60,27 @@ impl LiveBridge {
             Self::reply(app, id, &reply, Err("invalid_request"));
             return;
         };
-        let started =
-            Self::export_target(app, request, ui_busy).and_then(|(path, export_format, _)| {
-                Self::require_request_authority(&cancelled)?;
-                let receiver = app
-                    .start_client_exchange_export(
-                        format,
-                        Path::new(&path),
-                        Arc::clone(&cancelled),
-                        context,
-                    )
-                    .map_err(|error| Self::export_failed(&path, &export_format, error))?;
-                Ok((path, export_format, receiver))
-            });
+        let started = Self::export_target(app, request, ui_busy).and_then(|target| {
+            Self::require_request_authority(&cancelled)?;
+            let receiver = app
+                .start_client_exchange_export(
+                    format,
+                    Path::new(&target.path),
+                    Arc::clone(&cancelled),
+                    context,
+                )
+                .map_err(|error| Self::export_failed(&target.path, &target.export_format, error))?;
+            Ok((target, receiver))
+        });
         match started {
-            Ok((path, export_format, receiver)) => {
+            Ok((target, receiver)) => {
                 self.program_check_job = Some(ProgramCheckJob::ExchangeExport(ExchangeExportJob {
                     id,
                     reply,
                     cancelled,
-                    path,
-                    export_format,
+                    path: target.path,
+                    export_format: target.export_format,
+                    overwrite: target.overwrite,
                     receiver,
                 }));
                 context.request_repaint_after(Duration::from_millis(10));
@@ -116,7 +117,7 @@ impl LiveBridge {
             }
         };
         take_error_details();
-        let written = app.finish_client_exchange_export(export, &job.cancelled);
+        let written = app.finish_client_exchange_export(export, &job.cancelled, job.overwrite);
         let result = Self::exported(&job.path, &job.export_format, written);
         Self::reply(app, job.id, &job.reply, result);
         context.request_repaint();
