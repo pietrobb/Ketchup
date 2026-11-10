@@ -759,7 +759,12 @@ impl Tools {
                 format!("Cannot attach to the Kečup window ({error}){hint}"),
             )
         };
-        let grant = discovery::attach(&window).map_err(failed)?;
+        let client = self
+            .client
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let grant = discovery::attach(&window, client.as_deref()).map_err(failed)?;
         let connection = Connection::open(grant.address, grant.token).map_err(failed)?;
         self.window_id = Some(window.instance_id.clone());
         self.taken_over = false;

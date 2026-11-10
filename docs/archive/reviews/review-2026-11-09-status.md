@@ -18,11 +18,18 @@ it.
 | R1109-PG-306: k_f,1 = 60 for solid timber | Kept: 60 is the recommended value of EN 1995-1-1 table 9.2, as the review notes; a national annex value belongs to `site()` data with its source (§5.3) |
 | R1109-PG-307: `spacing` has no lower bound | Fixed, d7494ea3: `brace()` refuses a spacing under 10 mm, which no fastening is that close |
 
-## Manufacturing (§7 point 2)
+## Manufacturing (§7 point 2, branch `r32-manuf1109`)
 
 | Finding | Status |
 |---|---|
+| R1109-MF-303: the overlap of plan areas is about cubic and Cancel does not stop it | Fixed, 0549d3c8 (PR #48): a piece wholly outside the half-plane is kept whole instead of split, the subtraction runs only against pieces whose bounding box overlaps, and every clip operation counts toward Cancel. Test first: a slab over an uneven mesh is cut only where they overlap; an ignored release perf test of 3200 triangles |
 | R1109-MF-300: the table of storeys is not checked | Fixed, branch `r38-storeys1109`: a table the model contradicts refuses the export of the drawings (PDF, DXF, DWG; window and MCP `storey_table_contradicts_model`), naming the row and why: its structure above its finished floor, its floor another row's, its floor under the model or not under its top, or no face of the model to stand on (looking up, not wholly under a solid lying on it) up to 50 mm under its floor (0/3500 against the floors at 200 and 2954; 2712, the lining under the joists, and 2932, the joists under the OSB). "Add a storey" in an empty table fills in the storeys found in the model, each structure at its floor, instead of one row of 0/0; measured by the area no solid lies on, it fills 200/2954 on the tiny house, not the lining at 2712 (capability review of PR #54) |
+
+## Security (§7 point 3, branch `r33-sec1109`)
+
+| Finding | Status |
+|---|---|
+| R1109-SEC-300: under `sudo`, `--mcp-setup` checks by path and writes by path | Fixed, 3d687611 and 463d6fbd (PR #49): the write runs with the effective user, group and groups of the owner of the folder the file is named in, then root again, so the system refuses root's folders whatever the checks saw. Probe as root in WSL: 3000 writes against a racing swap of the folder for a link leave 0 files in root's 0700 folder (the review found 14) |
 
 ## Ratchets and CI (§7 point 4, branch `r34-ratchets1109`)
 
@@ -68,6 +75,17 @@ it.
 | R1109-PG-309: the joint catalogue reads a kind by its first word | Fixed, a65b5430: a kind is read as catalogue entries, the longest first, and qualifiers of size, product or side; any other word leaves it unknown. "slide in", "angle cut" and "plate bearing" are unknown, "loose tenon" and "contact adhesive" fasten |
 | R1109-PG-310: one hint for every reason, `dedup` on an unsorted list, repeated `missing` lines | Fixed, a65b5430: each reason a declaration holds nothing carries its own hint (the edge to declare, the name to fix, the joint to add); a member's reasons and its braces without a strength class are each listed once, in the order found |
 | R1109-PG-245, the rest: `Snow_SK` has no suggestion and a mistyped `--set` keeps the exit code | Fixed, a65b5430: the suggestion ignores case, and `check` with a `--set` the program has no parameter of ends with 2, the program not evaluated as asked |
+
+## P3 security (§4.3, branch `r39-p3sec1109`)
+
+| Finding | Status |
+|---|---|
+| R1109-SEC-302: an overlay's layer through a link onto a share, or a relative one, is local | Fixed, 950b8b64: a layer counts only as an absolute path that stays on local mounts once its links are followed, each directory checked before its link is read (test with a layer linked onto NFS and a relative one) |
+| R1109-SEC-303: Linux mount points matched ignoring case and NFC (`/mnt/NAS` NFS against `/mnt/nas` ext4) | Fixed, 950b8b64: a Linux mount point is matched by its exact name; only macOS mount points fold case and Unicode form, as before (test with both pairs, in case and in NFC/NFD) |
+| R1109-SEC-304: the `take_over` consent shows only `sheets.txt` | Fixed, 950b8b64: the question lists every file the take-over replaces, its sheets and their list, with their count, and the approval's payload is those files |
+| R1109-MCP-305: the take-over dialog names the connected AI, not the one asking | Fixed, 950b8b64: the attach request carries the AI's name (at most 40 printable characters, unverified like `hello`'s) and the dialog names the AI asking and the one connected; a window older than the field hangs up on it and the MCP server asks it again without the name |
+| R1109-SEC-301: a home that is a link of root's turns off the owner check | Fixed, branch `r39-p3sec1109`; SEC-300 alone did not remove it, as the review's §7 expected: the owner of the folder a file is named in was read without following links, so `~/.claude.json` under a home linked by root (`/home/u -> /data/u`) was root's, written as root with every check off. A link of root's now stands for the folder it leads to, and the write runs as that folder's owner; anyone else's link stays theirs (test of the rule; as root in WSL, with the home root's link to the user's folder and `.claude.json` the user's link to a file of root's, the write is refused and root's file kept, where without the fix root wrote it) |
+| `FileIdInfo` has no fallback to the file index | Fixed, 950b8b64: where Windows gives no 128-bit id (FAT, SMB) the 64-bit file index stands for it, as NTFS's id reads, so the file keeps an identity |
 
 ## P3 CI and tests (§4.3, branch `r40-p3tests1109`)
 
