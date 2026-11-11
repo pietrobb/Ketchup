@@ -466,6 +466,10 @@ pub struct UnderlayInput {
     /// The code page the user chose to read a drawing before DXF 2007 in.
     #[serde(default)]
     pub code_page: Option<ketchup_model::import::DxfCodePage>,
+    /// `code_page` is that of the underlay the drawing is a revision of, which a drawing
+    /// of DXF 2007 or later ignores (review 2026-11-10 UL-400).
+    #[serde(default)]
+    pub code_page_inherited: bool,
     pub output: PathBuf,
 }
 

@@ -668,6 +668,27 @@ fn a_drawing_is_read_in_the_code_page_the_user_chooses() {
         ),
         Err(DxfImportError::CodePageOfUtf8Drawing)
     );
+    // Review 2026-11-10 UL-400: the code page of the drawing a revision revises is that
+    // of a revision before DXF 2007; a later one, UTF-8, ignores it.
+    let inherited = read(DxfImportOptions::new(None).with_inherited_code_page(Some(central)));
+    assert_eq!(text(&inherited), "Dĺžka steny, Hĺbka základu");
+    let mut utf8 = source("AC1027");
+    let at = utf8
+        .windows(4)
+        .position(|window| window == b"D\xE5\x9Ek")
+        .unwrap();
+    let end = at + utf8[at..].iter().position(|byte| *byte == b'\n').unwrap();
+    utf8.splice(at..end, "Dĺžka steny".bytes());
+    let later = read_dxf_underlay(
+        &utf8,
+        DxfImportOptions::new(None).with_inherited_code_page(Some(central)),
+    )
+    .unwrap();
+    assert_eq!(text(&later), "Dĺžka steny");
+    assert_eq!(
+        counted(&later, "dxf.text-code-page-chosen", Some("ANSI_1250")),
+        None
+    );
 }
 
 const BLOCKS: &str = concat!(

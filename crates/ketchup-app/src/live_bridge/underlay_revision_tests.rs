@@ -191,3 +191,92 @@ fn a_revision_without_changes_adds_nothing_and_a_wrong_request_is_refused() {
     assert_eq!(as_model, Err("invalid_params"));
     assert_eq!(app.document.current().underlays().count(), 1);
 }
+
+/// A drawing of DXF `version` whose header names `code_page`: the room of revision A or B
+/// and a note, `note` being its bytes in the file.
+fn note_drawing(version: &str, code_page: &str, revision: &str, note: &[u8]) -> Vec<u8> {
+    // Each revision's note is another entity, of a handle of its own.
+    let (walls, note_handle) = if revision == "a" {
+        (revision_a(), "C1")
+    } else {
+        (revision_b(), "C2")
+    };
+    let entities = walls
+        .split_once("ENTITIES\n")
+        .and_then(|(_, rest)| rest.split_once("0\nENDSEC\n0\nEOF"))
+        .map(|(entities, _)| entities.to_owned())
+        .unwrap();
+    let mut source = format!(
+        "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\n{version}\n9\n$DWGCODEPAGE\n3\n{code_page}\n\
+         9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n{entities}\
+         0\nTEXT\n5\n{note_handle}\n8\nnotes\n10\n{EAST_MM}\n20\n0\n40\n200\n1\n"
+    )
+    .into_bytes();
+    source.extend_from_slice(note);
+    source.extend_from_slice(b"\n0\nENDSEC\n0\nEOF\n");
+    source
+}
+
+/// Review 2026-11-10 UL-400: the code page the plan was read in is that of its revision
+/// only while the revision is a drawing before DXF 2007. One saved as DXF 2013, UTF-8
+/// whatever code page its header names, was refused it, so no revision of a plan read in
+/// a chosen code page could be compared once the architect saved it anew.
+#[test]
+fn a_revision_saved_as_dxf_2013_is_compared_with_a_plan_read_in_a_chosen_code_page() {
+    // „Dĺžka steny“ in Windows-1250, under a header naming Windows-1252.
+    let central = b"D\xE5\x9Eka steny";
+    let directory = tempfile::tempdir().unwrap();
+    let plan = directory.path().join("plan.dxf");
+    std::fs::write(&plan, note_drawing("AC1015", "ANSI_1252", "a", central)).unwrap();
+    let (_, mut bridge) = setup();
+    let mut app = KetchupApp::with_catalog_and_initial_box(crate::LocaleCatalog::english(), false);
+    app.selection.clear();
+    call(
+        &mut app,
+        &mut bridge,
+        "import",
+        json!({"path": plan.display().to_string(), "as_underlay": true, "code_page": "ANSI_1250"}),
+    );
+    let added_note = |app: &KetchupApp, answer: &Value| {
+        let id = answer["overlay_underlay_id"].as_u64().unwrap();
+        let snapshot = app.document.current();
+        let overlay = snapshot
+            .underlay(ketchup_model::underlay::UnderlayId(id))
+            .unwrap();
+        let lines = app.cached_underlay_lines(overlay).unwrap();
+        // Changed, Added, Removed: the note added is on the second.
+        lines.layers()[1]
+            .texts()
+            .iter()
+            .map(|text| text.text.clone())
+            .collect::<Vec<_>>()
+    };
+
+    for (version, code_page) in [("AC1027", "ANSI_1252"), ("AC1021", "ANSI_1250")] {
+        let source = note_drawing(version, code_page, "b", "Dĺžka steny".as_bytes());
+        let path = directory.path().join(format!("plan-{version}.dxf"));
+        std::fs::write(&path, source).unwrap();
+        let answer = call(
+            &mut app,
+            &mut bridge,
+            "import",
+            json!({"path": path.display().to_string(), "as_underlay": true, "revision_of": 1}),
+        );
+        assert_eq!(
+            answer["comparison"]["added"].as_array().unwrap().len(),
+            2,
+            "{answer}"
+        );
+        assert_eq!(added_note(&app, &answer), ["Dĺžka steny"], "{version}");
+    }
+    // A revision before DXF 2007 is still read in the plan's code page, not its header's.
+    let path = directory.path().join("plan-AC1015.dxf");
+    std::fs::write(&path, note_drawing("AC1015", "ANSI_1252", "b", central)).unwrap();
+    let answer = call(
+        &mut app,
+        &mut bridge,
+        "import",
+        json!({"path": path.display().to_string(), "as_underlay": true, "revision_of": 1}),
+    );
+    assert_eq!(added_note(&app, &answer), ["Dĺžka steny"]);
+}
