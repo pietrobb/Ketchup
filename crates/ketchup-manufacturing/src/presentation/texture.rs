@@ -77,6 +77,21 @@ impl PresentationTexture {
         Self::reduced(width, height, &rgb)
     }
 
+    /// Width and height in pixels, at most [`MAX_TEXTURE_SIDE`] each.
+    #[must_use]
+    pub fn size(&self) -> [usize; 2] {
+        [self.width, self.height]
+    }
+
+    /// The pixels as opaque sRGB RGBA bytes, rows from the top.
+    #[must_use]
+    pub fn rgba(&self) -> Vec<u8> {
+        self.rgb
+            .iter()
+            .flat_map(|[r, g, b]| [*r, *g, *b, u8::MAX])
+            .collect()
+    }
+
     /// `rgb` of `width` × `height`, averaged down by a whole factor to fit
     /// [`MAX_TEXTURE_SIDE`].
     fn reduced(width: usize, height: usize, rgb: &[[u8; 3]]) -> Result<Self, TextureError> {

@@ -1,10 +1,13 @@
 use eframe::egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use ketchup_geometry::linalg;
 use ketchup_interaction::projection::CanonicalInteractionProjection;
+use ketchup_manufacturing::presentation::{PresentationTexture, TextureError};
 use ketchup_model::document::{
     DefinitionId, DocumentId, FeatureId, FeatureKind, InstancePath, Snapshot, Transform,
 };
+use ketchup_model::document::{MeshImage, MeshLook};
 use ketchup_model::exact_product::{ExactBodyPackage, ExactResultRegistry};
+use ketchup_model::persistence::Blobs;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use wgpu::util::DeviceExt as _;
@@ -25,6 +28,8 @@ pub struct RenderCacheStats {
 #[derive(Default)]
 pub struct DerivedRenderCache {
     geometries: BTreeMap<String, Arc<RenderGeometry>>,
+    /// Decoded pictures by blob; `None` when the blob cannot be read as one.
+    pictures: BTreeMap<String, Option<Arc<RenderPicture>>>,
     hits: u64,
     misses: u64,
 }
@@ -39,17 +44,33 @@ impl DerivedRenderCache {
         }
     }
 
-    fn geometry(&mut self, source: GeometrySource) -> Arc<RenderGeometry> {
+    fn geometry(&mut self, source: GeometrySource, blobs: &Blobs) -> Arc<RenderGeometry> {
         if let Some(geometry) = self.geometries.get(&source.fingerprint) {
             self.hits += 1;
             return Arc::clone(geometry);
         }
         let fingerprint = source.fingerprint.clone();
+        let mut vertices = source.vertices;
+        let picture = source.picture.and_then(|image| {
+            let picture = self
+                .pictures
+                .entry(image.blob.clone())
+                .or_insert_with(|| RenderPicture::decode(&image, blobs))
+                .clone();
+            if picture.is_none() {
+                // Shown in the face's own colour instead.
+                for vertex in &mut vertices {
+                    vertex.picture[2] = 0.0;
+                }
+            }
+            picture
+        });
         let geometry = Arc::new(RenderGeometry {
             fingerprint: source.fingerprint,
-            vertices: source.vertices,
+            vertices,
             indices: source.indices,
             edge_vertices: source.edge_vertices,
+            picture,
         });
         self.geometries.insert(fingerprint, Arc::clone(&geometry));
         self.misses += 1;
@@ -70,6 +91,49 @@ struct RenderVertex {
     normal: [f32; 3],
     /// Linear RGBA painted over the part's own color; alpha 0 paints none.
     color: [f32; 4],
+    /// The point of the geometry's picture here (glTF `u`, `v`), 1 when the triangle
+    /// shows it (else 0), and 1 on the turned copy [`two_sided`] makes of a sheet's
+    /// triangle (else 0).
+    picture: [f32; 4],
+}
+
+/// A picture an imported mesh shows, decoded for the GPU: opaque sRGB RGBA rows from the
+/// top, at most [`ketchup_manufacturing::presentation::MAX_TEXTURE_SIDE`] pixels a side.
+#[derive(Debug)]
+pub struct RenderPicture {
+    blob: String,
+    size: [u32; 2],
+    rgba: Vec<u8>,
+}
+
+impl RenderPicture {
+    /// The picture `image` names in `blobs`; `None`, said in the log, when it cannot be read.
+    fn decode(image: &MeshImage, blobs: &Blobs) -> Option<Arc<Self>> {
+        let decoded = blobs
+            .get(&image.blob)
+            .ok_or(TextureError::Missing)
+            .and_then(|bytes| PresentationTexture::decode(bytes, &image.mime_type));
+        let picture = match decoded {
+            Ok(picture) => picture,
+            Err(error) => {
+                ketchup_rejection::log!(
+                    "the picture {} is shown as a plain face: {error}",
+                    image.blob
+                );
+                return None;
+            }
+        };
+        // Both sides are at most `MAX_TEXTURE_SIDE`.
+        let [Ok(width), Ok(height)] = picture.size().map(u32::try_from) else {
+            ketchup_rejection::log!("the picture {} is too large to show", image.blob);
+            return None;
+        };
+        Some(Arc::new(Self {
+            blob: image.blob.clone(),
+            size: [width, height],
+            rgba: picture.rgba(),
+        }))
+    }
 }
 
 /// One corner of the screen-space quad that draws a feature edge: both segment
@@ -87,6 +151,8 @@ pub struct RenderGeometry {
     vertices: Vec<RenderVertex>,
     indices: Vec<u32>,
     edge_vertices: Vec<EdgeVertex>,
+    /// The picture the triangles with a picture weight show.
+    picture: Option<Arc<RenderPicture>>,
 }
 
 impl RenderGeometry {
@@ -103,6 +169,12 @@ impl RenderGeometry {
     #[must_use]
     pub fn index_count(&self) -> usize {
         self.indices.len()
+    }
+
+    /// The blob of the picture its textured triangles show.
+    #[must_use]
+    pub fn picture_blob(&self) -> Option<&str> {
+        self.picture.as_ref().map(|picture| picture.blob.as_str())
     }
 
     /// The color each triangle paints over its part's own, in linear RGBA.
@@ -169,17 +241,20 @@ impl InstancedRenderPlan {
             exact_results,
             &DefinitionLines::new(),
             None,
+            &Blobs::new(),
             cache,
         )
     }
 
-    /// The plan of `snapshot` whose definitions also draw their `lines` and
-    /// whose exact faces are painted by `face_colors`.
+    /// The plan of `snapshot` whose definitions also draw their `lines`, whose
+    /// exact faces are painted by `face_colors` and whose imported meshes show
+    /// their pictures, read from the document's `blobs`.
     pub fn from_snapshot_with_lines(
         snapshot: &Snapshot,
         exact_results: &ExactResultRegistry,
         lines: &DefinitionLines,
         face_colors: Option<FaceColors>,
+        blobs: &Blobs,
         cache: &mut DerivedRenderCache,
     ) -> Self {
         let projection = CanonicalInteractionProjection::from_snapshot(snapshot);
@@ -229,7 +304,7 @@ impl InstancedRenderPlan {
                         .into_iter()
                         .map(|source| {
                             let fingerprint = source.fingerprint.clone();
-                            let geometry = cache.geometry(source);
+                            let geometry = cache.geometry(source, blobs);
                             (fingerprint, geometry)
                         })
                         .collect(),
@@ -264,6 +339,17 @@ impl InstancedRenderPlan {
                 .iter()
                 .any(|batch| batch.geometry.fingerprint() == fingerprint)
         });
+        let shown = cache
+            .geometries
+            .values()
+            .filter_map(|geometry| {
+                geometry
+                    .picture
+                    .as_ref()
+                    .map(|picture| picture.blob.clone())
+            })
+            .collect::<BTreeSet<_>>();
+        cache.pictures.retain(|blob, _| shown.contains(blob));
         Self {
             id: next_plan_id(),
             document_id: snapshot.document_id(),
@@ -365,6 +451,8 @@ struct GeometrySource {
     vertices: Vec<RenderVertex>,
     indices: Vec<u32>,
     edge_vertices: Vec<EdgeVertex>,
+    /// The picture its triangles show, decoded only when the geometry is not cached.
+    picture: Option<MeshImage>,
 }
 
 pub(crate) type PlanarProfileMesh = (Vec<[f64; 3]>, Vec<[u32; 3]>);
@@ -442,7 +530,7 @@ fn geometry_sources(
                 .iter()
                 .map(|vertex| vertex.map(|value| value as f32))
                 .collect::<Vec<_>>();
-            let geometry = build_render_geometry(
+            let mut geometry = build_render_geometry(
                 "canonical-mesh",
                 &positions,
                 &mesh.triangles,
@@ -450,11 +538,18 @@ fn geometry_sources(
                 &[],
                 lines,
             );
-            return vec![if mesh.is_sheet() {
-                two_sided(geometry, "canonical-sheet")
+            if let Some(look) = &mesh.look {
+                geometry = with_pictures(geometry, look);
+            }
+            let (geometry, kind) = if mesh.is_sheet() {
+                (two_sided(geometry, "canonical-sheet"), "canonical-sheet")
             } else {
-                geometry
-            }];
+                (geometry, "canonical-mesh")
+            };
+            return match &mesh.look {
+                Some(look) => split_by_picture(geometry, look, kind),
+                None => vec![geometry],
+            };
         }
     }
     if let Some((positions, triangles)) =
@@ -679,6 +774,7 @@ fn build_render_geometry<G: Copy + Ord>(
                 position: positions[*index as usize],
                 normal,
                 color,
+                picture: [0.0; 4],
             });
         }
     }
@@ -689,20 +785,81 @@ fn build_render_geometry<G: Copy + Ord>(
         vertices,
         indices,
         edge_vertices,
+        picture: None,
     }
+}
+
+/// `geometry`, one triangle after another as [`build_render_geometry`] makes them, with
+/// the picture `look` gives each: where its corners lie on it.
+fn with_pictures(mut geometry: GeometrySource, look: &MeshLook) -> GeometrySource {
+    for (triangle, textured) in geometry.vertices.chunks_exact_mut(3).zip(&look.triangles) {
+        let Some(textured) = textured.filter(|textured| textured.image_index() < look.images.len())
+        else {
+            continue;
+        };
+        for (vertex, [u, v]) in triangle.iter_mut().zip(textured.uv) {
+            vertex.picture = [u, v, 1.0, vertex.picture[3]];
+        }
+    }
+    geometry
+}
+
+/// `geometry` split by the picture each triangle shows (`images`, one per front triangle;
+/// a sheet's back triangles follow its front ones and show the same): first the
+/// triangles without one, with every edge, then one geometry per picture. The picture of
+/// each is named in its fingerprint.
+fn split_by_picture(geometry: GeometrySource, look: &MeshLook, kind: &str) -> Vec<GeometrySource> {
+    let front = look.triangles.len().max(1);
+    let mut groups = BTreeMap::<Option<usize>, Vec<RenderVertex>>::new();
+    for (index, triangle) in geometry.vertices.chunks_exact(3).enumerate() {
+        let image = look
+            .triangles
+            .get(index % front)
+            .copied()
+            .flatten()
+            .map(|textured| textured.image_index())
+            .filter(|image| *image < look.images.len() && triangle[0].picture[2] > 0.0);
+        groups.entry(image).or_default().extend_from_slice(triangle);
+    }
+    let mut edge_vertices = geometry.edge_vertices;
+    groups
+        .into_iter()
+        .map(|(image, vertices)| {
+            let picture = image.and_then(|image| look.images.get(image)).cloned();
+            let kind = picture.as_ref().map_or_else(
+                || kind.to_owned(),
+                |picture| format!("{kind}:{}", picture.blob),
+            );
+            let indices = (0..).take(vertices.len()).collect::<Vec<_>>();
+            let edge_vertices = std::mem::take(&mut edge_vertices);
+            GeometrySource {
+                fingerprint: geometry_fingerprint(&kind, &vertices, &indices, &edge_vertices),
+                vertices,
+                indices,
+                edge_vertices,
+                picture,
+            }
+        })
+        .collect()
 }
 
 /// A sheet seen from behind too: each triangle again, turned the other way, so
 /// that leaving out back faces, the inside of a solid, still shows it. Its edges
-/// stay those of the sheet.
+/// stay those of the sheet. A turned copy gives way to any surface that faces the
+/// eye where it lies: a SketchUp face's back side comes as a sheet of its own, and
+/// from in front the face's own side shows, as in SketchUp.
 fn two_sided(mut geometry: GeometrySource, kind: &str) -> GeometrySource {
     let back = geometry
         .vertices
         .chunks_exact(3)
         .flat_map(|triangle| {
-            [triangle[0], triangle[2], triangle[1]].map(|vertex| RenderVertex {
-                normal: vertex.normal.map(|value| -value),
-                ..vertex
+            [triangle[0], triangle[2], triangle[1]].map(|vertex| {
+                let [u, v, shown, _] = vertex.picture;
+                RenderVertex {
+                    normal: vertex.normal.map(|value| -value),
+                    picture: [u, v, shown, 1.0],
+                    ..vertex
+                }
             })
         })
         .collect::<Vec<_>>();
@@ -807,6 +964,14 @@ fn geometry_fingerprint(
     for index in indices {
         write!(fingerprint, ":{index:08x}").expect("a String takes every write");
     }
+    if vertices.iter().any(|vertex| vertex.picture[2] > 0.0) {
+        fingerprint.push_str(":pictures");
+        for vertex in vertices {
+            for value in vertex.picture {
+                fingerprint.push_str(&format!(":{:08x}", value.to_bits()));
+            }
+        }
+    }
     if vertices.iter().any(|vertex| vertex.color[3] > 0.0) {
         fingerprint.push_str(":colors");
         for vertex in vertices.iter().step_by(3) {
@@ -845,6 +1010,8 @@ struct GpuGeometry {
     index_count: u32,
     edge_buffer: Option<wgpu::Buffer>,
     edge_vertex_count: u32,
+    /// The blob of the picture it shows, a key of `GpuInstancedRenderer::pictures`.
+    picture: Option<String>,
 }
 
 struct PreparedBatch {
@@ -875,6 +1042,12 @@ pub struct GpuInstancedRenderer {
     depth_target: wgpu::TextureView,
     depth_target_size: [u32; 2],
     target_format: wgpu::TextureFormat,
+    picture_bind_group_layout: wgpu::BindGroupLayout,
+    picture_sampler: wgpu::Sampler,
+    /// What a geometry without a picture binds: one white pixel it never shows.
+    no_picture: wgpu::BindGroup,
+    /// The pictures of the prepared plan by blob.
+    pictures: BTreeMap<String, wgpu::BindGroup>,
     geometries: BTreeMap<String, GpuGeometry>,
     prepared: Vec<PreparedBatch>,
     /// All instances of the prepared plan, one range per batch.
@@ -915,6 +1088,63 @@ fn create_depth_target(
         .create_view(&wgpu::TextureViewDescriptor::default())
 }
 
+/// The bind group of a picture of `size` pixels, opaque sRGB RGBA rows from the top. A
+/// picture comes averaged down to at most `MAX_TEXTURE_SIDE`, so one level is drawn.
+fn create_picture_bind_group(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    size: [u32; 2],
+    rgba: &[u8],
+) -> wgpu::BindGroup {
+    let extent = wgpu::Extent3d {
+        width: size[0],
+        height: size[1],
+        depth_or_array_layers: 1,
+    };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Ketchup mesh picture"),
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        rgba,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(size[0] * 4),
+            rows_per_image: Some(size[1]),
+        },
+        extent,
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Ketchup mesh picture bind group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    })
+}
+
 fn create_scene_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
@@ -939,7 +1169,11 @@ fn create_scene_bind_group(
 
 impl GpuInstancedRenderer {
     #[must_use]
-    pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target_format: wgpu::TextureFormat,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Ketchup instanced scene shader"),
             source: wgpu::ShaderSource::Wgsl(INSTANCED_SHADER.into()),
@@ -983,18 +1217,56 @@ impl GpuInstancedRenderer {
             &camera_buffer,
             &depth_buffer,
         );
+        let picture_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Ketchup mesh picture bind group layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        // A picture repeats beyond one tile, as glTF and SketchUp lay it.
+        let picture_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("Ketchup mesh picture sampler"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let no_picture = create_picture_bind_group(
+            device,
+            queue,
+            &picture_bind_group_layout,
+            &picture_sampler,
+            [1, 1],
+            &[u8::MAX; 4],
+        );
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Ketchup instanced scene pipeline layout"),
-            bind_group_layouts: &[&scene_bind_group_layout],
+            bind_group_layouts: &[&scene_bind_group_layout, &picture_bind_group_layout],
             push_constant_ranges: &[],
         });
-        let vertex_attributes =
-            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4];
+        let vertex_attributes = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32x4];
         let edge_attributes =
             wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2];
         let instance_attributes = wgpu::vertex_attr_array![4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4];
         let surface_layout = wgpu::VertexBufferLayout {
-            array_stride: 40,
+            array_stride: 56,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &vertex_attributes,
         };
@@ -1077,6 +1349,10 @@ impl GpuInstancedRenderer {
             depth_target,
             depth_target_size,
             target_format,
+            picture_bind_group_layout,
+            picture_sampler,
+            no_picture,
+            pictures: BTreeMap::new(),
             geometries: BTreeMap::new(),
             prepared: Vec::new(),
             instance_buffer: None,
@@ -1125,7 +1401,7 @@ impl GpuInstancedRenderer {
         ]));
         queue.write_buffer(&self.camera_buffer, 0, &camera_uniform);
         if self.prepared_plan != Some(plan.id) {
-            self.upload_plan(device, plan);
+            self.upload_plan(device, queue, plan);
         }
         if viewport[2] > 0 && viewport[3] > 0 {
             let mut depth_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1159,10 +1435,28 @@ impl GpuInstancedRenderer {
 
     /// Upload what a newly built plan needs: geometry not yet on the GPU and
     /// one buffer with every instance. Camera-only frames reuse both.
-    fn upload_plan(&mut self, device: &wgpu::Device, plan: &InstancedRenderPlan) {
+    fn upload_plan(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        plan: &InstancedRenderPlan,
+    ) {
         self.prepared.clear();
         let mut instances = Vec::new();
         for batch in plan.batches() {
+            if let Some(picture) = &batch.geometry.picture
+                && !self.pictures.contains_key(&picture.blob)
+            {
+                let bind_group = create_picture_bind_group(
+                    device,
+                    queue,
+                    &self.picture_bind_group_layout,
+                    &self.picture_sampler,
+                    picture.size,
+                    &picture.rgba,
+                );
+                self.pictures.insert(picture.blob.clone(), bind_group);
+            }
             let fingerprint = batch.geometry.fingerprint().to_owned();
             if self.geometries.contains_key(&fingerprint) {
                 self.stats.geometry_cache_hits += 1;
@@ -1193,6 +1487,11 @@ impl GpuInstancedRenderer {
                         index_count: batch.geometry.indices.len() as u32,
                         edge_buffer,
                         edge_vertex_count: edges.len() as u32,
+                        picture: batch
+                            .geometry
+                            .picture
+                            .as_ref()
+                            .map(|picture| picture.blob.clone()),
                     },
                 );
                 self.stats.geometry_uploads += 1;
@@ -1212,6 +1511,13 @@ impl GpuInstancedRenderer {
             .collect::<std::collections::BTreeSet<_>>();
         self.geometries
             .retain(|fingerprint, _| used.contains(fingerprint.as_str()));
+        let shown = self
+            .geometries
+            .values()
+            .filter_map(|geometry| geometry.picture.as_deref())
+            .collect::<std::collections::BTreeSet<_>>();
+        self.pictures
+            .retain(|blob, _| shown.contains(blob.as_str()));
         self.stats.gpu_geometry_entries = self.geometries.len();
         self.instance_buffer = (!instances.is_empty()).then(|| {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1230,6 +1536,12 @@ impl GpuInstancedRenderer {
         pass.set_vertex_buffer(1, instance_buffer.slice(..));
         for prepared in &self.prepared {
             let geometry = &self.geometries[&prepared.fingerprint];
+            let picture = geometry
+                .picture
+                .as_ref()
+                .and_then(|blob| self.pictures.get(blob))
+                .unwrap_or(&self.no_picture);
+            pass.set_bind_group(1, picture, &[]);
             pass.set_vertex_buffer(0, geometry.vertex_buffer.slice(..));
             pass.set_index_buffer(geometry.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..geometry.index_count, 0, prepared.instances.clone());
@@ -1365,6 +1677,7 @@ fn vertex_bytes(vertices: &[RenderVertex]) -> Vec<u8> {
                 .into_iter()
                 .chain(vertex.normal)
                 .chain(vertex.color)
+                .chain(vertex.picture)
         })
         .flat_map(f32::to_ne_bytes)
         .collect()
@@ -1450,11 +1763,20 @@ var<uniform> camera: Camera;
 @group(0) @binding(1)
 var<storage, read_write> pixel_depths: array<atomic<u32>>;
 
+// The picture an imported mesh shows; one white pixel for a geometry without one.
+@group(1) @binding(0)
+var picture: texture_2d<f32>;
+@group(1) @binding(1)
+var picture_sampler: sampler;
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     // A face color over the part's own (draft analysis); alpha 0 is none.
     @location(2) face_color: vec4<f32>,
+    // The point of the picture (u, v), 1 where the triangle shows it, and 1 on the
+    // turned copy of a sheet's triangle.
+    @location(3) picture: vec4<f32>,
     @location(4) model_0: vec4<f32>,
     @location(5) model_1: vec4<f32>,
     @location(6) model_2: vec4<f32>,
@@ -1468,6 +1790,7 @@ struct VertexOutput {
     @location(1) view_depth: f32,
     @location(2) @interpolate(flat) color: vec4<f32>,
     @location(3) world_position: vec3<f32>,
+    @location(4) picture: vec4<f32>,
 };
 
 @vertex
@@ -1480,6 +1803,7 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     output.color = select(input.color, input.face_color, input.face_color.a > 0.0);
     output.view_depth = dot(camera.view_depth, world_position);
     output.world_position = world_position.xyz;
+    output.picture = input.picture;
     return output;
 }
 
@@ -1514,19 +1838,28 @@ fn depth_priority(view_depth: f32) -> u32 {
     return ~ordered;
 }
 
+// The depth a surface takes part with: a sheet's turned copy counts as just behind
+// where it lies, so a surface that faces the eye there shows instead.
+fn surface_depth(input: VertexOutput) -> f32 {
+    // not a tolerance: f32 depth rounding margin between coincident surfaces.
+    let margin = max(abs(input.view_depth) * 4e-6, 1e-3);
+    return input.view_depth + input.picture.w * margin;
+}
+
 @fragment
 fn fs_depth(input: VertexOutput, @builtin(front_facing) front_facing: bool) -> @location(0) vec4<f32> {
     if hidden(input, front_facing) {
         discard;
     }
     let index = pixel_depth_index(input.clip_position);
-    atomicMax(&pixel_depths[index], depth_priority(input.view_depth));
+    let view_depth = surface_depth(input);
+    atomicMax(&pixel_depths[index], depth_priority(view_depth));
     // An edge line is up to 1.5 px from the edge it draws, where an adjacent face
     // already lies deeper by its depth slope; two pixels of slope plus a rounding
     // margin keep the edge in front of its own faces but behind any other surface.
     // not a tolerance: f32 depth rounding margin of the edge pass.
-    let slack = 2.0 * fwidth(input.view_depth) + max(abs(input.view_depth) * 4e-6, 1e-3);
-    atomicMax(&pixel_depths[index + 1u], depth_priority(input.view_depth + slack));
+    let slack = 2.0 * fwidth(input.view_depth) + max(abs(view_depth) * 4e-6, 1e-3);
+    atomicMax(&pixel_depths[index + 1u], depth_priority(view_depth + slack));
     return vec4<f32>(0.0);
 }
 
@@ -1536,7 +1869,7 @@ fn fs_main(input: VertexOutput, @builtin(front_facing) front_facing: bool) -> @l
         discard;
     }
     let depth = atomicLoad(&pixel_depths[pixel_depth_index(input.clip_position)]);
-    if depth_priority(input.view_depth) != depth {
+    if depth_priority(surface_depth(input)) != depth {
         discard;
     }
     if !front_facing {
@@ -1545,7 +1878,9 @@ fn fs_main(input: VertexOutput, @builtin(front_facing) front_facing: bool) -> @l
     }
     let light_direction = normalize(vec3<f32>(-0.35, -0.45, 0.82));
     let diffuse = 0.62 + 0.38 * max(dot(normalize(input.world_normal), light_direction), 0.0);
-    let face_color = mix(vec3<f32>(0.36, 0.42, 0.50) * diffuse, input.color.rgb, input.color.a);
+    let own_color = mix(vec3<f32>(0.36, 0.42, 0.50) * diffuse, input.color.rgb, input.color.a);
+    let texel = textureSampleLevel(picture, picture_sampler, input.picture.xy, 0.0).rgb;
+    let face_color = mix(own_color, texel * diffuse, input.picture.z);
     return vec4<f32>(face_color, 1.0);
 }
 
