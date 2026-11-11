@@ -382,6 +382,14 @@ fn a_damaged_sketchup_file_is_refused_and_changes_nothing() {
         bridge.execute(&mut app, import(&path), false),
         Err("import_failed")
     );
+    // R1110-SKP-403: the client learns the file is damaged and what to do.
+    let details = take_error_details().map(|details| details.to_string());
+    assert!(
+        details.as_deref().is_some_and(
+            |details| details.contains("skp.damaged") && details.contains("Fix Problems")
+        ),
+        "{details:?}"
+    );
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo);
 }

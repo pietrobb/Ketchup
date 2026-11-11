@@ -38,9 +38,28 @@ fn a_skp_reads_in_the_worker_as_it_reads_in_process() {
     let SkpConversionError::Refused(SkpRefusal::Reader(rejection)) = &error else {
         panic!("{error:?}");
     };
-    assert_eq!(rejection.code(), "skp.unreadable");
+    assert_eq!(rejection.code(), "skp.not_sketchup");
+    assert!(
+        rejection.fix_hint_text().contains("opens in SketchUp"),
+        "{rejection}"
+    );
     let local = ketchup_skp::skp_to_glb(b"not a SketchUp file", usize::MAX).unwrap_err();
     assert_eq!(rejection.causes()[0], local.to_string(), "{error:?}");
+    assert_eq!(worker.process_id(), Some(first));
+
+    // R1110-SKP-403: a damaged SketchUp file is told apart from one that is none, and
+    // says what to do.
+    let error = worker
+        .convert_skp(&skp[..skp.len() / 2], usize::MAX, &CancelToken::default())
+        .unwrap_err();
+    let SkpConversionError::Refused(SkpRefusal::Reader(rejection)) = &error else {
+        panic!("{error:?}");
+    };
+    assert_eq!(rejection.code(), "skp.damaged", "{rejection}");
+    assert!(
+        rejection.fix_hint_text().contains("Fix Problems"),
+        "{rejection}"
+    );
     assert_eq!(worker.process_id(), Some(first));
 
     let error = worker
@@ -52,5 +71,23 @@ fn a_skp_reads_in_the_worker_as_it_reads_in_process() {
             SkpConversionError::Refused(SkpRefusal::GlbTooLarge { limit: 100, .. })
         ),
         "{error:?}"
+    );
+    assert!(error.to_string().contains("Purge Unused"), "{error}");
+}
+
+#[test]
+fn a_reader_that_stops_on_a_file_says_to_save_it_again() {
+    let refusal = SkpRefusal::from(ketchup_skp::SkpError::Panicked {
+        stage: ketchup_skp::Stage::ReadSkp,
+        message: "index out of bounds".to_owned(),
+    });
+    let SkpRefusal::Reader(rejection) = &refusal else {
+        panic!("{refusal:?}");
+    };
+    assert_eq!(rejection.code(), "skp.reader_failed");
+    assert!(rejection.fix_hint_text().contains("Save As"), "{rejection}");
+    assert!(
+        rejection.causes()[0].contains("index out of bounds"),
+        "{rejection}"
     );
 }
