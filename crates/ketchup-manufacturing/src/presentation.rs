@@ -17,7 +17,7 @@ use std::fmt;
 mod raster;
 mod texture;
 
-pub use texture::{MAX_SOURCE_SIDE, MAX_TEXTURE_SIDE, PresentationTexture};
+pub use texture::{MAX_SOURCE_SIDE, MAX_TEXTURE_SIDE, PresentationTexture, TextureError};
 
 /// The longest side of a presentation image, in pixels.
 pub const MAX_PRESENTATION_SIDE: u32 = 8192;
@@ -155,6 +155,7 @@ pub enum PresentationError {
     /// The picture `blob` of the document a textured face shows cannot be read.
     Texture {
         blob: String,
+        source: TextureError,
     },
     /// Triangle `triangle` names a picture the scene does not have or a texture coordinate
     /// that is not finite.
@@ -210,9 +211,9 @@ impl fmt::Display for PresentationError {
                 "the image has {labels} labels, more than the limit of {limit}"
             ),
             Self::Font => write!(formatter, "the built-in label typeface cannot be read"),
-            Self::Texture { blob } => write!(
+            Self::Texture { blob, .. } => write!(
                 formatter,
-                "the picture {blob} on a textured face is not a PNG or JPEG of at most {MAX_SOURCE_SIDE} px per side that can be read"
+                "the picture {blob} on a textured face cannot be read"
             ),
             Self::TextureReference { triangle } => write!(
                 formatter,
@@ -229,6 +230,7 @@ impl std::error::Error for PresentationError {
         match self {
             Self::Source(error) => Some(error),
             Self::Png(error) => Some(error),
+            Self::Texture { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -277,9 +279,11 @@ pub fn presentation_scene(
                 None => {
                     let texture = blobs
                         .get(&image.blob)
+                        .ok_or(TextureError::Missing)
                         .and_then(|bytes| PresentationTexture::decode(bytes, &image.mime_type))
-                        .ok_or_else(|| PresentationError::Texture {
+                        .map_err(|source| PresentationError::Texture {
                             blob: image.blob.clone(),
+                            source,
                         })?;
                     textures.push(texture);
                     texture_of_blob.insert(image.blob.clone(), textures.len() - 1);

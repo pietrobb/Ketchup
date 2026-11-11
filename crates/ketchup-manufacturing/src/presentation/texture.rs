@@ -2,6 +2,8 @@
 //! decoded once, averaged down to at most [`MAX_TEXTURE_SIDE`] pixels a side and read with
 //! repetition and bilinear smoothing.
 
+use std::fmt;
+
 use super::raster::{index, real};
 
 /// Longest side of a picture as the renderer keeps it; a larger one is averaged down.
@@ -17,24 +19,69 @@ pub struct PresentationTexture {
     rgb: Vec<[u8; 3]>,
 }
 
+/// Why a picture cannot be read.
+#[derive(Debug)]
+pub enum TextureError {
+    /// The document has no picture under the name a face gives.
+    Missing,
+    /// The picture is neither `image/png` nor `image/jpeg`.
+    MediaType(String),
+    /// The picture is more than [`MAX_SOURCE_SIDE`] pixels on a side.
+    TooLarge {
+        width: u64,
+        height: u64,
+    },
+    /// The picture has no pixels or fewer than its size says.
+    Empty,
+    Png(png::DecodingError),
+    Jpeg(zune_jpeg::errors::DecodeErrors),
+}
+
+impl fmt::Display for TextureError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Missing => write!(formatter, "the document has no such picture"),
+            Self::MediaType(mime_type) => {
+                write!(formatter, "{mime_type} is not image/png or image/jpeg")
+            }
+            Self::TooLarge { width, height } => write!(
+                formatter,
+                "{width} × {height} px is more than {MAX_SOURCE_SIDE} px per side"
+            ),
+            Self::Empty => write!(formatter, "the picture has no pixels"),
+            Self::Png(_) => write!(formatter, "the PNG cannot be read"),
+            Self::Jpeg(_) => write!(formatter, "the JPEG cannot be read"),
+        }
+    }
+}
+
+impl std::error::Error for TextureError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Png(error) => Some(error),
+            Self::Jpeg(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
 impl PresentationTexture {
-    /// The PNG or JPEG `bytes` as `mime_type` names them; `None` when they cannot be read or
-    /// are more than [`MAX_SOURCE_SIDE`] pixels on a side.
-    #[must_use]
-    pub fn decode(bytes: &[u8], mime_type: &str) -> Option<Self> {
+    /// The PNG or JPEG `bytes` as `mime_type` names them, unless they cannot be read or are
+    /// more than [`MAX_SOURCE_SIDE`] pixels on a side.
+    pub fn decode(bytes: &[u8], mime_type: &str) -> Result<Self, TextureError> {
         let (width, height, rgb) = match mime_type {
             "image/png" => decode_png(bytes)?,
             "image/jpeg" => decode_jpeg(bytes)?,
-            _ => return None,
+            _ => return Err(TextureError::MediaType(mime_type.to_owned())),
         };
         Self::reduced(width, height, &rgb)
     }
 
     /// `rgb` of `width` × `height`, averaged down by a whole factor to fit
     /// [`MAX_TEXTURE_SIDE`].
-    fn reduced(width: usize, height: usize, rgb: &[[u8; 3]]) -> Option<Self> {
-        if width == 0 || height == 0 || rgb.len() != width.checked_mul(height)? {
-            return None;
+    fn reduced(width: usize, height: usize, rgb: &[[u8; 3]]) -> Result<Self, TextureError> {
+        if width == 0 || height == 0 || Some(rgb.len()) != width.checked_mul(height) {
+            return Err(TextureError::Empty);
         }
         let factor = width.max(height).div_ceil(MAX_TEXTURE_SIDE);
         let (small_width, small_height) = (width.div_ceil(factor), height.div_ceil(factor));
@@ -45,7 +92,7 @@ impl PresentationTexture {
                 for row in y * factor..((y + 1) * factor).min(height) {
                     let columns = x * factor..((x + 1) * factor).min(width);
                     let pixels = rgb.get(row * width + columns.start..row * width + columns.end);
-                    for pixel in pixels.unwrap_or_default() {
+                    for pixel in pixels.into_iter().flatten() {
                         for (total, value) in sum.iter_mut().zip(pixel) {
                             *total += u32::from(*value);
                         }
@@ -55,7 +102,7 @@ impl PresentationTexture {
                 small.push(sum.map(|total| u8::try_from(total / count.max(1)).unwrap_or(u8::MAX)));
             }
         }
-        Some(Self {
+        Ok(Self {
             width: small_width,
             height: small_height,
             rgb: small,
@@ -80,9 +127,7 @@ impl PresentationTexture {
         let pixel = |x: usize, y: usize| {
             self.rgb
                 .get(y * self.width + x)
-                .copied()
-                .unwrap_or_default()
-                .map(f64::from)
+                .map_or([0.0; 3], |pixel| pixel.map(f64::from))
         };
         let [a, b, c, d] = [pixel(x0, y0), pixel(x1, y0), pixel(x0, y1), pixel(x1, y1)];
         [0, 1, 2].map(|channel| {
@@ -93,20 +138,29 @@ impl PresentationTexture {
     }
 }
 
-fn decode_png(bytes: &[u8]) -> Option<(usize, usize, Vec<[u8; 3]>)> {
+type Decoded = (usize, usize, Vec<[u8; 3]>);
+
+fn decode_png(bytes: &[u8]) -> Result<Decoded, TextureError> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::normalize_to_color8());
-    let mut reader = decoder.read_info().ok()?;
+    let mut reader = decoder.read_info().map_err(TextureError::Png)?;
     let (width, height) = reader.info().size();
-    let (width, height) = (usize::try_from(width).ok()?, usize::try_from(height).ok()?);
+    let too_large = TextureError::TooLarge {
+        width: u64::from(width),
+        height: u64::from(height),
+    };
+    let (Ok(width), Ok(height)) = (usize::try_from(width), usize::try_from(height)) else {
+        return Err(too_large);
+    };
     if width > MAX_SOURCE_SIDE || height > MAX_SOURCE_SIDE {
-        return None;
+        return Err(too_large);
     }
-    let mut buffer = vec![0; reader.output_buffer_size()?];
-    let frame = reader.next_frame(&mut buffer).ok()?;
+    let mut buffer = vec![0; reader.output_buffer_size().ok_or(too_large)?];
+    let frame = reader.next_frame(&mut buffer).map_err(TextureError::Png)?;
     let channels = frame.color_type.samples();
     let rgb = buffer
-        .get(..frame.buffer_size())?
+        .get(..frame.buffer_size())
+        .ok_or(TextureError::Empty)?
         .chunks_exact(channels)
         .map(|pixel| match pixel {
             [grey] | [grey, _] => [*grey; 3],
@@ -114,10 +168,10 @@ fn decode_png(bytes: &[u8]) -> Option<(usize, usize, Vec<[u8; 3]>)> {
             [] => [0; 3],
         })
         .collect();
-    Some((width, height, rgb))
+    Ok((width, height, rgb))
 }
 
-fn decode_jpeg(bytes: &[u8]) -> Option<(usize, usize, Vec<[u8; 3]>)> {
+fn decode_jpeg(bytes: &[u8]) -> Result<Decoded, TextureError> {
     use zune_jpeg::zune_core::{
         bytestream::ZCursor, colorspace::ColorSpace, options::DecoderOptions,
     };
@@ -128,8 +182,8 @@ fn decode_jpeg(bytes: &[u8]) -> Option<(usize, usize, Vec<[u8; 3]>)> {
         .set_max_height(MAX_SOURCE_SIDE)
         .jpeg_set_out_colorspace(ColorSpace::RGB);
     let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(bytes), options);
-    let pixels = decoder.decode().ok()?;
-    let (width, height) = decoder.dimensions()?;
+    let pixels = decoder.decode().map_err(TextureError::Jpeg)?;
+    let (width, height) = decoder.dimensions().ok_or(TextureError::Empty)?;
     let rgb = pixels
         .chunks_exact(3)
         .map(|pixel| match pixel {
@@ -137,5 +191,5 @@ fn decode_jpeg(bytes: &[u8]) -> Option<(usize, usize, Vec<[u8; 3]>)> {
             _ => [0; 3],
         })
         .collect();
-    Some((width, height, rgb))
+    Ok((width, height, rgb))
 }

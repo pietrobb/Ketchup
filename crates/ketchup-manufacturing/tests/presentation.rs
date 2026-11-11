@@ -3,7 +3,8 @@ use ketchup_manufacturing::blender_export::MeshGlbInstance;
 use ketchup_manufacturing::presentation::{
     Background, MAX_LABEL_CHARS, MAX_PRESENTATION_LABELS, PresentationError, PresentationImage,
     PresentationLabel, PresentationOptions, PresentationScene, PresentationTexture,
-    PresentationTriangle, TriangleTexture, part_labels, presentation_scene, render_presentation,
+    PresentationTriangle, TextureError, TriangleTexture, part_labels, presentation_scene,
+    render_presentation,
 };
 use ketchup_model::exact_product::MeshExportSource;
 
@@ -654,7 +655,13 @@ fn a_textured_face_shows_its_picture_repeating() {
         render_presentation(&broken, &options),
         Err(PresentationError::TextureReference { triangle: 0 })
     ));
-    assert!(PresentationTexture::decode(b"not a picture", "image/png").is_none());
+    let not_png = PresentationTexture::decode(b"not a picture", "image/png");
+    assert!(matches!(&not_png, Err(TextureError::Png(_))), "{not_png:?}");
+    assert!(std::error::Error::source(&not_png.unwrap_err()).is_some());
+    assert!(matches!(
+        PresentationTexture::decode(&checker_png(), "image/gif"),
+        Err(TextureError::MediaType(_))
+    ));
 }
 
 /// A picture stands the right way up: texture coordinates follow glTF, the top row at v = 0.
