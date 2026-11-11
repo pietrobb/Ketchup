@@ -218,6 +218,85 @@ fn what_needs_a_solid_refuses_an_imported_sheet_by_name() {
     }
 }
 
+/// A textured SketchUp face comes into the document with its picture: every triangle of
+/// the box says which image it shows and where its corners lie on it, and the image is the
+/// file's PNG, kept in the document. Before, the texture was dropped and only counted.
+#[test]
+fn a_textured_face_comes_into_the_document_with_its_image() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("textured.skp");
+    std::fs::write(&path, fixture("textured_box.skp")).unwrap();
+    let (mut app, mut bridge) = setup();
+    let before = app.document_snapshot();
+    let answer = bridge
+        .execute(&mut app, import(&path), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let codes: Vec<_> = answer["review"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|diagnostic| diagnostic["code"].as_str().unwrap().to_owned())
+        .collect();
+    for dropped in [
+        "skp_textures_dropped",
+        "glb_material_textures_ignored",
+        "glb_images_ignored",
+        "glb_textures_ignored",
+    ] {
+        assert!(!codes.iter().any(|code| code == dropped), "{answer}");
+    }
+    let snapshot = app.document_snapshot();
+    let box_body = snapshot
+        .occurrences()
+        .filter(|occurrence| before.occurrence(occurrence.id()).is_none())
+        .find_map(|occurrence| {
+            let definition = snapshot.definition(occurrence.definition_id())?;
+            definition
+                .feature_ids()
+                .iter()
+                .find_map(|id| match snapshot.feature(*id)?.kind() {
+                    ketchup_model::document::FeatureKind::MeshBody(mesh) => Some(mesh.clone()),
+                    _ => None,
+                })
+        })
+        .unwrap_or_else(|| panic!("no mesh body after {answer}"));
+    let look = box_body
+        .look
+        .as_ref()
+        .unwrap_or_else(|| panic!("the box carries no texture: {answer}"));
+    assert_eq!(look.images.len(), 1);
+    assert_eq!(look.images[0].mime_type, "image/png");
+    assert_eq!(look.triangles.len(), box_body.triangles.len());
+    // One tile covers 5 × 5 inches, unstretched: along every edge of every triangle the
+    // picture moves one tile per 127 mm.
+    for (corners, textured) in box_body.triangles.iter().zip(&look.triangles) {
+        let textured = textured.expect("every face of the box is textured");
+        assert_eq!(textured.image, 0);
+        for (a, b) in [(0, 1), (1, 2), (2, 0)] {
+            let [p, q] = [corners[a], corners[b]].map(|index| box_body.vertices_mm[index as usize]);
+            let length_mm = (0..3)
+                .map(|axis| (p[axis] - q[axis]).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            let tiles = f64::from(
+                (textured.uv[a][0] - textured.uv[b][0])
+                    .hypot(textured.uv[a][1] - textured.uv[b][1]),
+            );
+            assert!(
+                (tiles * 127.0 - length_mm).abs() < 0.01,
+                "{length_mm} mm, {tiles} tiles"
+            );
+        }
+    }
+    let image = app
+        .file
+        .container_data
+        .blobs()
+        .get(&look.images[0].blob)
+        .unwrap_or_else(|| panic!("the document holds no image {}", look.images[0].blob));
+    assert_eq!(&image[..8], b"\x89PNG\r\n\x1a\n");
+}
+
 /// The groups nested in each other in files of SketchUp 2013 and 2020 come in as that
 /// assembly: each group's geometry under the group that holds it. Before, both files were
 /// refused.

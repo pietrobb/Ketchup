@@ -263,6 +263,7 @@ fn camera_clearance_keeps_every_mesh_bound_in_front_during_orbit() {
                 definition_id,
                 name: "Large mesh body".to_owned(),
                 kind: FeatureKind::MeshBody(MeshBodySpec {
+                    look: None,
                     schema: MESH_BODY_SCHEMA_V1.to_owned(),
                     vertices_mm: vec![
                         [-1_000.0, -800.0, -600.0],
@@ -439,6 +440,7 @@ fn picking_chooses_the_frontmost_body_across_mesh_and_box_geometry() {
                 definition_id,
                 name: "Mesh behind body".to_owned(),
                 kind: FeatureKind::MeshBody(MeshBodySpec {
+                    look: None,
                     schema: MESH_BODY_SCHEMA_V1.to_owned(),
                     vertices_mm,
                     triangles,
@@ -691,6 +693,7 @@ fn crossing_selection_uses_projected_geometry_instead_of_its_empty_bounds() {
                 definition_id,
                 name: "Triangular mesh body".to_owned(),
                 kind: FeatureKind::MeshBody(MeshBodySpec {
+                    look: None,
                     schema: MESH_BODY_SCHEMA_V1.to_owned(),
                     vertices_mm: vec![
                         [0.0, 0.0, 0.0],

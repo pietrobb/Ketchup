@@ -555,19 +555,12 @@ fn encoded_snapshot(snapshot: &Snapshot) -> Arc<crate::document::EncodedSnapshot
     encoded
 }
 
-/// The blobs `snapshot` reads: the sources of imported bodies and the lines of underlays.
+/// The blobs `snapshot` reads: the sources of imported bodies, the pictures of meshes
+/// and the lines of underlays.
 fn imported_source_blob_hashes(snapshot: &Snapshot) -> BTreeSet<String> {
     snapshot
         .features()
-        .filter_map(|feature| match feature.kind() {
-            FeatureKind::ImportedExactBody(spec) => Some(
-                spec.source_sha256
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect(),
-            ),
-            _ => None,
-        })
+        .flat_map(|feature| feature.kind().blobs())
         .chain(
             snapshot
                 .underlays()
