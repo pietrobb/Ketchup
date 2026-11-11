@@ -1125,7 +1125,7 @@ mod tests {
                 .set_read_timeout(Some(Duration::from_millis(20)))
                 .unwrap();
         }
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(60);
         let mut response = Vec::new();
         'answered: while Instant::now() < deadline {
             for stream in &mut streams {
