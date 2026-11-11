@@ -20,6 +20,14 @@ must cost a worker process, not the editor.
   and their first 16 bytes, which every PNG of one pixel size often shares, so two different
   pictures became one. Images are now told apart by their bytes, compared once per image
   buffer. Test: `two_different_pictures_of_the_same_file_size_stay_two` in `ketchup-skp`.
+- `src/face_groups.rs`, `build_local_face_groups`: upstream writes a face whose two sides are
+  painted differently twice, the back as a reversed copy. A solid painted on its outside only
+  (SketchUp's paint bucket) then came with a second, inside-out shell, which Ketchup's GLB
+  import took as sheets (review 2026-11-10 SKP-400). Every face is now written once, on its
+  front, drawn from both sides, in its front's material, or its back's when only the back is
+  painted; `ketchup-skp` counts a back painted unlike its front as
+  `skp_back_materials_dropped`. Tests: `a_box_painted_on_its_outside_only_comes_as_one_surface`
+  and `a_face_painted_on_its_back_only_keeps_that_colour` in `ketchup-skp`.
 
 To update: copy the same files of a newer upstream commit over this directory, record the commit
 here, keep or drop each change above (drop one only when upstream fixed it), and run the tests
