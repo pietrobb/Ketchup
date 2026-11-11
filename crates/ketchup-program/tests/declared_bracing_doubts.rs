@@ -92,29 +92,55 @@ fn a_brace_declared_on_the_top_but_lying_under_the_beam_holds_only_the_bottom() 
     assert_ne!(checked(&declared, "beam").status, "pass");
 }
 
-/// A brace touching the beam's side at mid-depth, where the geometry cannot
-/// tell the edge, still holds the edge it declares (review 2026-11-08 §5.1).
-#[test]
-fn a_brace_on_the_side_at_mid_depth_holds_the_edge_it_declares() {
+/// [`BEAM`] with laths on its side at `z`, screwed to it and to the wall,
+/// declared to hold its top.
+fn laths_on_the_side(z: i32) -> Report {
     let mut source = BEAM.to_owned();
     for x in [300, 1200, 2100, 3600, 4500, 5400] {
         source.push_str(&format!(
-            "box(\"lath {x}\", (50, 920, 50), at = ({x}, 80, 2188), material = \"GL24h\", tags = [\"lath\"])
+            "box(\"lath {x}\", (50, 920, 50), at = ({x}, 80, {z}), material = \"GL24h\", tags = [\"lath\"])
 joint(\"lath {x}\", \"beam\", kind = \"screw\")
 joint(\"lath {x}\", \"wall\", kind = \"screw\")
 "
         ));
     }
     source.push_str("brace([\"beam\"], by = [\"lath\"], edge = \"top\")\n");
-    let declared = report(&source);
-    assert_eq!(ignored(&declared), Vec::<&str>::new());
+    report(&source)
+}
+
+/// R1110-PG-403: laths on the beam's side 13 mm above its middle, declared on
+/// its top, held it and the beam passed, though bracing at mid-depth does not
+/// stop it twisting (PG-240). A declaration holds an edge only from the half of
+/// the side nearer that edge; nearer the top, it still holds.
+#[test]
+fn a_brace_on_the_side_at_mid_depth_holds_no_edge_it_declares() {
+    let middle = laths_on_the_side(2188);
     assert!(
-        load(&declared, "beam")
+        load(&middle, "beam")
+            .braced_by
+            .iter()
+            .all(|brace| !brace.part.starts_with("lath")),
+        "{:?}",
+        load(&middle, "beam").braced_by
+    );
+    let messages = ignored(&middle);
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("lath 300") && message.contains("middle")),
+        "{messages:?}"
+    );
+    assert_ne!(checked(&middle, "beam").status, "pass");
+
+    let high = laths_on_the_side(2330);
+    assert_eq!(ignored(&high), Vec::<&str>::new());
+    assert!(
+        load(&high, "beam")
             .braced_by
             .iter()
             .any(|brace| brace.edge == "top")
     );
-    assert_eq!(declared.statics(), Statics::Verified);
+    assert_eq!(high.statics(), Statics::Verified);
 }
 
 /// PG-307: a spacing of 0.0001 mm took 55 s and 3.7 GB before the process
@@ -199,6 +225,7 @@ fn an_unknown_kind_in_the_diaphragm_chain_leaves_the_braced_member_not_verified(
     let unknown = report(&deck(
         "box(\"strip\", (200, 1080, 22), at = (5800, 0, 2422), material = \"GL24h\", tags = [\"deck\"])
 joint(\"strip\", \"end wall\", kind = \"spoj\")
+joint(\"strip\", \"deck b\", kind = \"screw\")
 joint(\"deck a\", \"start wall\", kind = \"screw\")
 diaphragm([\"deck\"], anchored_to = [\"end wall\", \"start wall\"])
 ",
@@ -224,7 +251,7 @@ diaphragm([\"deck\"], anchored_to = [\"end wall\", \"start wall\"])
 
 /// PG-301: a diaphragm held when one of its boards was fastened to its anchor,
 /// though the others touched neither it nor the anchor. A board holds only
-/// when it reaches an anchor through boards fastened to or touching each other.
+/// when it reaches an anchor through boards fastened to it and to each other.
 #[test]
 fn a_board_that_reaches_no_anchor_braces_nothing() {
     let one_end = report(&deck(
@@ -251,6 +278,41 @@ diaphragm([\"deck\"], anchored_to = [\"end wall\"])
     assert!(
         messages.iter().any(|message| message.contains("deck a")),
         "{messages:?}"
+    );
+}
+
+/// R1110-PG-404: deck a, fastened to no anchor, reached the anchored deck b
+/// through a loose board over the butt joint, touching both and fastened to
+/// neither, and braced the beam. Sheets chain only where they are fastened.
+#[test]
+fn boards_that_only_touch_chain_no_diaphragm() {
+    let splice = "box(\"splice\", (900, 1080, 22), at = (2450, 0, 2422), material = \"GL24h\", tags = [\"deck\"])
+joint(\"deck b\", \"end wall\", kind = \"screw\")
+diaphragm([\"deck\"], anchored_to = [\"end wall\"])
+";
+    let loose = report(&deck(splice));
+    let beam = load(&loose, "beam");
+    assert!(
+        beam.braced_by.iter().all(|brace| brace.part != "deck a"),
+        "{:?}",
+        beam.braced_by
+    );
+    let messages = ignored(&loose);
+    assert!(
+        messages.iter().any(|message| message.contains("deck a")),
+        "{messages:?}"
+    );
+
+    let screwed = report(&deck(&format!(
+        "{splice}joint(\"splice\", \"deck a\", kind = \"screw\")\njoint(\"splice\", \"deck b\", kind = \"screw\")\n"
+    )));
+    assert!(
+        load(&screwed, "beam")
+            .braced_by
+            .iter()
+            .any(|brace| brace.part == "deck a"),
+        "{:?}",
+        load(&screwed, "beam").braced_by
     );
 }
 
@@ -311,6 +373,20 @@ brace([\"beam\"], by = [\"lath\"], edge = \"top\", spacing = 300)
     );
     let in_line = report(&in_line);
     assert_ne!(checked(&in_line, "beam").status, "pass");
+}
+
+/// R1110-PG-405: laths joined to their anchor by a joint of kind "slide" or
+/// "motion", which lets the parts move, held the beam and it passed.
+#[test]
+fn a_joint_whose_parts_move_anchors_no_brace() {
+    let wall_top = "box(\"wall top\", (5900, 100, 50), at = (0, 1000, 2400), material = \"GL24h\", grounded = True)\n";
+    for kind in ["slide", "motion"] {
+        let moving = report(&laths_over(
+            wall_top,
+            &format!("joint(\"lath {{x}}\", \"wall top\", kind = \"{kind}\")"),
+        ));
+        assert_ne!(checked(&moving, "beam").status, "pass", "{kind}");
+    }
 }
 
 /// A GL24h 80 x 400 rafter at `degrees` extruded from its side, 3 000 mm in
@@ -494,7 +570,7 @@ fn each_reason_a_declaration_holds_nothing_has_its_own_hint() {
             deck(
                 "joint(\"deck b\", \"end wall\", kind = \"screw\")\ndiaphragm([\"deck\"], anchored_to = [\"end wall\"])\n",
             ),
-            "Lay deck a against",
+            "Fasten deck a with joint() where it touches",
         ),
         (
             deck("diaphragm([\"deck\"], anchored_to = [\"post a\", \"end wall\"])\n"),
