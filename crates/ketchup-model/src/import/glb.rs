@@ -17,12 +17,15 @@ use crate::document::{
     OccurrenceId, ProposalBudget, Snapshot, TexturedTriangle, Transform,
 };
 
+mod excess;
 mod json;
 mod tags;
 mod textures;
 
 use textures::{GlbImage, MaterialLook};
 
+use excess::too_large;
+pub use excess::{GlbExcess, GlbMeasure};
 pub use tags::{GlbNodeTags, GlbTag, MAX_GLB_TAGS};
 
 pub const GLB_PARSER_ID: &str = "ketchup-glb";
@@ -224,11 +227,8 @@ pub enum GlbImportError {
     UnsupportedVersion,
     UnsupportedFeature,
     EmptyScene,
-    TooManyMeshes,
-    TooManyNodes,
-    TooManyVertices,
-    TooManyTriangles,
-    TooManyOutputs,
+    /// The model holds more of something than one import takes.
+    TooLarge(GlbExcess),
     InvalidReference,
     InvalidAccessor,
     InvalidGeometry,
@@ -253,11 +253,7 @@ impl fmt::Display for GlbImportError {
             Self::UnsupportedVersion => "GLB must contain a glTF 2.0 document",
             Self::UnsupportedFeature => "GLB uses a feature outside the safe mesh import subset",
             Self::EmptyScene => "GLB selected scene contains no importable mesh instances",
-            Self::TooManyMeshes => "GLB exceeds the bounded mesh primitive envelope",
-            Self::TooManyNodes => "GLB exceeds the bounded scene-node envelope",
-            Self::TooManyVertices => "GLB exceeds the bounded vertex envelope",
-            Self::TooManyTriangles => "GLB exceeds the bounded triangle envelope",
-            Self::TooManyOutputs => "GLB expands beyond the bounded canonical output envelope",
+            Self::TooLarge(excess) => return excess.fmt(formatter),
             Self::InvalidReference => "GLB contains an out-of-range object reference",
             Self::InvalidAccessor => "GLB contains an invalid or unsupported accessor",
             Self::InvalidGeometry => "GLB contains invalid solid mesh geometry",
@@ -356,45 +352,59 @@ pub fn inspect_glb(source: &[u8]) -> Result<ParsedGlbScene, GlbImportError> {
         return Err(GlbImportError::EmptyScene);
     }
     place_nodes(&mut nodes, &traversal, &primitives)?;
-    traversal.iter().try_fold(0_usize, |count, node_index| {
+    let placed_triangles = traversal.iter().fold(0_usize, |count, node_index| {
         nodes[*node_index]
             .primitives
             .iter()
-            .try_fold(count, |count, primitive| {
-                count.checked_add(primitives[*primitive].triangles.len())
+            .fold(count, |count, primitive| {
+                count.saturating_add(primitives[*primitive].triangles.len())
             })
-            .filter(|count| *count <= MAX_PLACED_TRIANGLES)
-            .ok_or(GlbImportError::TooManyTriangles)
-    })?;
+    });
+    if placed_triangles > MAX_PLACED_TRIANGLES {
+        return Err(too_large(
+            GlbMeasure::PlacedTriangles,
+            placed_triangles,
+            MAX_PLACED_TRIANGLES,
+        ));
+    }
     let output_count = primitives
         .len()
-        .checked_mul(2)
-        .and_then(|count| count.checked_add(traversal.len()))
-        .and_then(|count| count.checked_add(instance_count))
-        .ok_or(GlbImportError::TooManyOutputs)?;
-    let colored_instances = traversal.iter().try_fold(0_usize, |count, node_index| {
-        let colored = nodes[*node_index]
-            .primitives
-            .iter()
-            .filter(|primitive| primitives[**primitive].color.is_some())
-            .count();
-        count
-            .checked_add(colored)
-            .ok_or(GlbImportError::TooManyOutputs)
-    })?;
+        .saturating_mul(2)
+        .saturating_add(traversal.len())
+        .saturating_add(instance_count);
+    if output_count > MAX_IMPORT_RECEIPT_OUTPUTS {
+        return Err(too_large(
+            GlbMeasure::Outputs,
+            output_count,
+            MAX_IMPORT_RECEIPT_OUTPUTS,
+        ));
+    }
+    let colored_instances = traversal.iter().fold(0_usize, |count, node_index| {
+        count.saturating_add(
+            nodes[*node_index]
+                .primitives
+                .iter()
+                .filter(|primitive| primitives[**primitive].color.is_some())
+                .count(),
+        )
+    });
     let command_count = output_count
-        .checked_add(colored_instances)
-        .and_then(|count| count.checked_add(1))
-        .ok_or(GlbImportError::TooManyOutputs)?;
-    if output_count > MAX_IMPORT_RECEIPT_OUTPUTS || command_count > MAX_GLB_COMMANDS {
-        return Err(GlbImportError::TooManyOutputs);
+        .saturating_add(colored_instances)
+        .saturating_add(1);
+    if command_count > MAX_GLB_COMMANDS {
+        return Err(too_large(
+            GlbMeasure::Commands,
+            command_count,
+            MAX_GLB_COMMANDS,
+        ));
     }
 
     bump(
         &mut diagnostic_counts,
         "glb_mesh_hierarchy_transforms_and_instances_preserved",
-        u32::try_from(instance_count)
-            .map_err(|_out_of_range: std::num::TryFromIntError| GlbImportError::TooManyNodes)?,
+        u32::try_from(instance_count).map_err(|_out_of_range: std::num::TryFromIntError| {
+            too_large(GlbMeasure::Nodes, instance_count, MAX_NODES)
+        })?,
     )?;
     let mut diagnostics = diagnostic_counts
         .into_iter()
@@ -668,7 +678,11 @@ fn parse_buffer_views(
 ) -> Result<Vec<BufferView>, GlbImportError> {
     let values = array_required(root, "bufferViews")?;
     if values.len() > MAX_PRIMITIVES * 4 {
-        return Err(GlbImportError::TooManyMeshes);
+        return Err(too_large(
+            GlbMeasure::BufferViews,
+            values.len(),
+            MAX_PRIMITIVES * 4,
+        ));
     }
     values
         .iter()
@@ -704,7 +718,11 @@ fn parse_accessors(
 ) -> Result<Vec<Accessor>, GlbImportError> {
     let values = array_required(root, "accessors")?;
     if values.len() > MAX_PRIMITIVES * 2 {
-        return Err(GlbImportError::TooManyMeshes);
+        return Err(too_large(
+            GlbMeasure::Accessors,
+            values.len(),
+            MAX_PRIMITIVES * 2,
+        ));
     }
     values
         .iter()
@@ -792,7 +810,7 @@ fn parse_meshes(
         return Err(GlbImportError::EmptyScene);
     }
     if meshes.len() > MAX_MESHES {
-        return Err(GlbImportError::TooManyMeshes);
+        return Err(too_large(GlbMeasure::Meshes, meshes.len(), MAX_MESHES));
     }
     if selected_meshes.iter().any(|index| *index >= meshes.len()) {
         return Err(GlbImportError::InvalidReference);
@@ -802,7 +820,9 @@ fn parse_meshes(
             diagnostics,
             "glb_unselected_meshes_ignored",
             u32::try_from(meshes.len() - selected_meshes.len()).map_err(
-                |_out_of_range: std::num::TryFromIntError| GlbImportError::TooManyMeshes,
+                |_out_of_range: std::num::TryFromIntError| {
+                    too_large(GlbMeasure::Meshes, meshes.len(), MAX_MESHES)
+                },
             )?,
         )?;
     }
@@ -818,13 +838,13 @@ fn parse_meshes(
         let mesh = object(mesh)?;
         let mesh_name = optional_name(mesh, "name", "GLB mesh", mesh_index)?;
         let primitives = array_required(mesh, "primitives")?;
-        if primitives.is_empty()
-            || parsed
-                .len()
-                .checked_add(primitives.len())
-                .is_none_or(|count| count > MAX_PRIMITIVES)
-        {
-            return Err(GlbImportError::TooManyMeshes);
+        // glTF requires a mesh to hold a primitive.
+        if primitives.is_empty() {
+            return Err(GlbImportError::InvalidJson);
+        }
+        let parts = parsed.len().saturating_add(primitives.len());
+        if parts > MAX_PRIMITIVES {
+            return Err(too_large(GlbMeasure::MeshParts, parts, MAX_PRIMITIVES));
         }
         let mut primitive_indices = Vec::with_capacity(primitives.len());
         let mut pieces = Vec::with_capacity(primitives.len());
@@ -885,17 +905,21 @@ fn parse_meshes(
                 bump(diagnostics, "glb_vertex_attributes_ignored", 1)?;
             }
             let (vertices_mm, triangles) = weld_indexed_geometry(vertices_mm, triangles)?;
-            total_vertices = total_vertices
-                .checked_add(vertices_mm.len())
-                .ok_or(GlbImportError::TooManyVertices)?;
-            total_triangles = total_triangles
-                .checked_add(triangles.len())
-                .ok_or(GlbImportError::TooManyTriangles)?;
+            total_vertices = total_vertices.saturating_add(vertices_mm.len());
+            total_triangles = total_triangles.saturating_add(triangles.len());
             if total_vertices > MAX_TOTAL_VERTICES {
-                return Err(GlbImportError::TooManyVertices);
+                return Err(too_large(
+                    GlbMeasure::Vertices,
+                    total_vertices,
+                    MAX_TOTAL_VERTICES,
+                ));
             }
             if total_triangles > MAX_TOTAL_TRIANGLES {
-                return Err(GlbImportError::TooManyTriangles);
+                return Err(too_large(
+                    GlbMeasure::Triangles,
+                    total_triangles,
+                    MAX_TOTAL_TRIANGLES,
+                ));
             }
             let name = if primitives.len() == 1 {
                 mesh_name.clone()
@@ -942,8 +966,10 @@ fn closed_shells(
     let mut vertices = Vec::new();
     let mut triangles = Vec::new();
     for piece in &open {
-        let offset = u32::try_from(vertices.len())
-            .map_err(|_out_of_range: std::num::TryFromIntError| GlbImportError::TooManyVertices)?;
+        let offset =
+            u32::try_from(vertices.len()).map_err(|_out_of_range: std::num::TryFromIntError| {
+                too_large(GlbMeasure::Vertices, vertices.len(), MAX_TOTAL_VERTICES)
+            })?;
         vertices.extend_from_slice(&piece.vertices_mm);
         triangles.extend(
             piece
@@ -977,8 +1003,9 @@ fn closed_shells(
         })
         .filter(is_solid);
     let count = |pieces: usize| {
-        u32::try_from(pieces)
-            .map_err(|_out_of_range: std::num::TryFromIntError| GlbImportError::TooManyMeshes)
+        u32::try_from(pieces).map_err(|_out_of_range: std::num::TryFromIntError| {
+            too_large(GlbMeasure::MeshParts, pieces, MAX_PRIMITIVES)
+        })
     };
     if let Some(joined) = joined {
         bump(
@@ -1140,7 +1167,13 @@ fn weld_indexed_geometry(
                 *index
             } else {
                 let index = u32::try_from(welded_vertices.len()).map_err(
-                    |_out_of_range: std::num::TryFromIntError| GlbImportError::TooManyVertices,
+                    |_out_of_range: std::num::TryFromIntError| {
+                        too_large(
+                            GlbMeasure::Vertices,
+                            welded_vertices.len(),
+                            MAX_TOTAL_VERTICES,
+                        )
+                    },
                 )?;
                 welded_vertices.push(point);
                 index_by_position.insert(key, index);
@@ -1268,12 +1301,11 @@ fn decode_triangles(
 
 fn select_scene(root: &Map<String, Value>) -> Result<SceneSelection, GlbImportError> {
     let nodes = array_required(root, "nodes")?;
-    if nodes.is_empty() || nodes.len() > MAX_NODES {
-        return Err(if nodes.is_empty() {
-            GlbImportError::EmptyScene
-        } else {
-            GlbImportError::TooManyNodes
-        });
+    if nodes.is_empty() {
+        return Err(GlbImportError::EmptyScene);
+    }
+    if nodes.len() > MAX_NODES {
+        return Err(too_large(GlbMeasure::Nodes, nodes.len(), MAX_NODES));
     }
     let scenes = array_required(root, "scenes")?;
     if scenes.is_empty() {
@@ -1322,7 +1354,7 @@ fn visit_raw_node(
     selected: &mut BTreeSet<usize>,
 ) -> Result<(), GlbImportError> {
     if depth > MAX_NODE_DEPTH {
-        return Err(GlbImportError::TooManyNodes);
+        return Err(too_large(GlbMeasure::Nesting, depth, MAX_NODE_DEPTH));
     }
     match state.get(index).copied() {
         Some(0) => {}
@@ -1357,12 +1389,11 @@ fn parse_nodes(
     diagnostics: &mut BTreeMap<&'static str, u32>,
 ) -> Result<(Vec<ParsedNode>, Vec<usize>, usize), GlbImportError> {
     let values = array_required(root, "nodes")?;
-    if values.is_empty() || values.len() > MAX_NODES {
-        return Err(if values.is_empty() {
-            GlbImportError::EmptyScene
-        } else {
-            GlbImportError::TooManyNodes
-        });
+    if values.is_empty() {
+        return Err(GlbImportError::EmptyScene);
+    }
+    if values.len() > MAX_NODES {
+        return Err(too_large(GlbMeasure::Nodes, values.len(), MAX_NODES));
     }
     let mut nodes = Vec::with_capacity(values.len());
     for (index, value) in values.iter().enumerate() {
@@ -1447,15 +1478,14 @@ fn parse_nodes(
         bump(
             diagnostics,
             "glb_unselected_nodes_ignored",
-            u32::try_from(ignored)
-                .map_err(|_out_of_range: std::num::TryFromIntError| GlbImportError::TooManyNodes)?,
+            u32::try_from(ignored).map_err(|_out_of_range: std::num::TryFromIntError| {
+                too_large(GlbMeasure::Nodes, nodes.len(), MAX_NODES)
+            })?,
         )?;
     }
-    let instance_count = traversal.iter().try_fold(0_usize, |count, index| {
-        count
-            .checked_add(nodes[*index].primitives.len())
-            .ok_or(GlbImportError::TooManyNodes)
-    })?;
+    let instance_count = traversal.iter().fold(0_usize, |count, index| {
+        count.saturating_add(nodes[*index].primitives.len())
+    });
     Ok((nodes, traversal, instance_count))
 }
 
