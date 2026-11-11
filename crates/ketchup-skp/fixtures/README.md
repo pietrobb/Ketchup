@@ -14,3 +14,5 @@ Written by Ketchup's own tests:
   solid, a component "Panel" of one face and a component "Tray", the box without its top.
 - `textured_box.skp`: `textured_box()` of `src/tests.rs` (classic format): a box component whose
   faces carry a 2 × 2 PNG checker texture, one tile covering 5 × 5 inches.
+- `hidden_boxes.skp`: `hidden_boxes()` of `src/tests.rs` (classic format): a box component placed
+  twice, at x = 0 shown and at x = 100 hidden with SketchUp's Hide.

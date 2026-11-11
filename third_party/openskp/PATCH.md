@@ -20,6 +20,9 @@ must cost a worker process, not the editor.
   and their first 16 bytes, which every PNG of one pixel size often shares, so two different
   pictures became one. Images are now told apart by their bytes, compared once per image
   buffer. Test: `two_different_pictures_of_the_same_file_size_stay_two` in `ketchup-skp`.
+- `src/instanced_scene.rs`, `src/instanced_scene_build.rs`: `InstancedNode::hidden` carries a
+  placement's own hidden flag (SketchUp's Hide), which upstream read into `RawInstance` but
+  dropped from the scene. Test: `a_hidden_placement_comes_hidden_by_node` in `ketchup-skp`.
 
 To update: copy the same files of a newer upstream commit over this directory, record the commit
 here, keep or drop each change above (drop one only when upstream fixed it), and run the tests

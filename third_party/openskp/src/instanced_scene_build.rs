@@ -326,6 +326,7 @@ impl<'a> Instancer<'a> {
                 name_is_generated,
                 guid: i.ref_guid.clone(),
                 layer: l_name.clone(),
+                hidden: i.hidden,
                 matrix: to_gltf_matrix(&i.matrix),
                 position_mm: [
                     if new_matrix.len() > 9 {
