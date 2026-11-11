@@ -25,14 +25,16 @@ Counted as a budget:
   number of seconds or milliseconds) says and fails the test when it runs out, or hands
   that time on to such a helper; the helper may be in any test file, a harness module
   included (review 2026-11-04 P3, r19 P3);
-- a deadline under `HANG_FLOOR` whose passing fails the test (`assert!(Instant::now() <
-  deadline)`, or an `if` past it, either way round, whose block fails the test after
-  anything else it does), for the same reason (review 2026-11-08 TST-252, 2026-11-09
-  R1109-TST-304);
+- a deadline under `HANG_FLOOR` after which the test can fail (`assert!(Instant::now() <
+  deadline)`, an `if` past it that panics or returns `Err`, or a poll it ends followed
+  by an assert or `expect`), however it is taken (`Instant::now() + X`, `start + X`,
+  `.checked_add(X)`), for the same reason (review 2026-11-08 TST-252, 2026-11-09
+  R1109-TST-304, 2026-11-10 R1110-TST-401);
 - a call to a `perf_*` function from a function not named `perf_*`.
 
-Not counted: a deadline that only ends a poll (`while Instant::now() < deadline`) or
-fails the test only past `HANG_FLOOR`, a wait of at least `PATIENCE_FLOOR`, and any comparison in a file that never
+Not counted: a deadline that only ends a poll (`while Instant::now() < deadline`), is
+followed only by an assert that the wait timed out, or fails the test only past
+`HANG_FLOOR`, a wait of at least `PATIENCE_FLOOR`, and any comparison in a file that never
 reads the clock (a computed retry delay). A wait that returns as soon as its message arrives
 costs a passing test nothing, so its patience can always be generous.
 """
@@ -86,7 +88,6 @@ DURATION = re.compile(
     r"^(?:std::time::)?Duration::from_(secs|millis|micros|nanos)\((\d[\d_]*)\)$")
 DURATION_CONST = re.compile(r"\bconst\s+(\w+)\s*:\s*(?:std::time::)?Duration\s*=\s*([^;]+);")
 NOW_CALL = r"(?:std::time::)?Instant::now\(\)"
-DEADLINE = re.compile(rf"\blet\s+(?:mut\s+)?(\w+)\s*=\s*{NOW_CALL}\s*\+\s*([^;]+);")
 BRACE = re.compile(r"[{}]")
 UNIT_MS = {"secs": 1_000, "millis": 1, "micros": 1e-3, "nanos": 1e-6}
 SIGNATURE = re.compile(r"\bfn\s+(\w+)\s*(?:<[^>{]*>)?\s*\(")
@@ -336,35 +337,47 @@ def short_needed_waits(text: str) -> list[int]:
     return found
 
 
+def deadlines(text: str) -> list[re.Match]:
+    """Each `let deadline = Instant::now() + X;` of `text`, also from an instant taken
+    before (`let start = Instant::now(); … start + X`) and by `.checked_add(X)` (review
+    2026-11-10 R1110-TST-401). Group 1 is its name, group 2 or 3 its time."""
+    starts = sorted({start.group(1) for start in START.finditer(text)})
+    base = rf"(?:{NOW_CALL}|{'|'.join(map(re.escape, starts))})" if starts else NOW_CALL
+    return list(re.finditer(
+        rf"\blet\s+(?:mut\s+)?(\w+)\s*(?::\s*[\w:]+)?\s*=\s*{base}\s*(?:\+\s*([^;]+)"
+        rf"|\.checked_add\(([^;]+?)\)\s*\.(?:unwrap|expect)\([^;]*\))\s*;", text))
+
+
 def failing_deadlines(text: str, constants: dict[str, float]) -> list[int]:
-    """Lines of a deadline under `HANG_FLOOR_MS` that fails the test when it passes
-    (`assert!(Instant::now() < deadline)`, `if Instant::now() > deadline { panic!(..) }`):
-    like a matched wait, it limits the work it waits for (review 2026-11-08 TST-252).
-    A deadline that only ends a poll does not fail the test."""
+    """Lines of a deadline under `HANG_FLOOR_MS` after which the test can fail: like a
+    matched wait, it limits the work it waits for (review 2026-11-08 TST-252). It fails
+    the test however it is read (`assert!(Instant::now() < deadline)`, an `if` past it
+    that panics or returns `Err`, `.lt(&deadline)`), and also when a poll it ends is
+    followed by an assert or `expect` on what was polled: `break false` and then
+    `assert!(ok)` (review 2026-11-10 R1110-TST-401). A deadline owns the statements up
+    to the next deadline or function; one that only ends a poll, or after which the test
+    asserts only that the wait timed out, does not fail the test."""
     constants = {**constants, **duration_constants(text)}
     found = []
-    for deadline in DEADLINE.finditer(text):
-        value = milliseconds(deadline.group(2), constants)
+    all_deadlines = deadlines(text)
+    for index, deadline in enumerate(all_deadlines):
+        value = milliseconds(deadline.group(2) or deadline.group(3), constants)
         if value is None or value >= HANG_FLOOR_MS:
             continue
-        name = re.escape(deadline.group(1))
-        fails = re.compile(
-            rf"\bassert!\(\s*{NOW_CALL}\s*<=?\s*{name}\b"
-            rf"|\bassert!\(\s*{name}\s*>=?\s*{NOW_CALL}")
-        # An `if` past the deadline, either way round, whose block fails the test also
-        # after other statements, a child killed first (review 2026-11-09 R1109-TST-304).
-        passed = re.compile(rf"\bif\s+(?:{NOW_CALL}\s*>=?\s*{name}|{name}\s*<=?\s*{NOW_CALL})\s*\{{")
-        # Within its own function: another one may fail on a deadline of the same name.
         following = FUNCTION.search(text, deadline.end())
         end = following.start() if following else len(text)
-        if fails.search(text, deadline.end(), end) or any(
-                FAILS_IN_BLOCK.search(arms(text, branch.end() - 1))
-                for branch in passed.finditer(text, deadline.end(), end)):
+        if index + 1 < len(all_deadlines):
+            end = min(end, all_deadlines[index + 1].start())
+        if any(FAILS_AFTER.search(statement) and not TIMED_OUT.search(statement)
+               for statement in text[deadline.end():end].split(";")):
             found.append(text.count("\n", 0, deadline.start()) + 1)
     return found
 
 
-FAILS_IN_BLOCK = re.compile(r"\b(?:panic|unreachable)!|\bassert\w*!")
+START = re.compile(rf"\blet\s+(?:mut\s+)?(\w+)\s*(?::\s*[\w:]+)?\s*=\s*{NOW_CALL}\s*;")
+FAILS_AFTER = re.compile(r"\b(?:assert\w*|panic|unreachable)!|\.expect\(|\bErr\(")
+# A statement asserting that the wait ran out: the deadline is then the point of the test.
+TIMED_OUT = re.compile(r"Timeout|TimedOut|timed_out|\.is_err\(\)|\.is_none\(\)")
 
 
 def budgets(text: str, helpers: dict[str, Helper], constants: dict[str, float]) -> list[int]:

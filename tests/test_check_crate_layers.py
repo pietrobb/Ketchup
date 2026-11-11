@@ -1,4 +1,5 @@
 import importlib.util
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -111,6 +112,45 @@ def test_the_frozen_list_may_only_go_down_from_the_commit_before(tmp_path):
     ]
     text = 'FREEZE = 1\nFROZEN_MODULES = {\n    # A comment.\n    "a.rs": 3,\n}\n'
     assert checker.frozen_modules_of(text) == {"a.rs": 3}
+
+
+def git(root, *arguments):
+    return subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+         *arguments],
+        cwd=root, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def commit_frozen(root, frozen, message):
+    script = root / "scripts" / "check_crate_layers.py"
+    script.parent.mkdir(exist_ok=True)
+    script.write_text(f"FROZEN_MODULES = {frozen!r}\n", encoding="utf-8")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", message)
+    return git(root, "rev-parse", "HEAD")
+
+
+def test_an_entry_raised_in_an_earlier_commit_of_the_branch_still_fails(tmp_path):
+    # Review 2026-11-10 R1110-TST-400: compared with HEAD^1 only, commit A raising
+    # `viewport.rs` from 4857 to 4950 failed, and passed once commit B followed it or
+    # main was merged into the branch.
+    git(tmp_path, "init", "-q")
+    main = commit_frozen(tmp_path, {"viewport.rs": 4857}, "main")
+    git(tmp_path, "update-ref", "refs/remotes/origin/main", main)
+    commit_frozen(tmp_path, {"viewport.rs": 4950}, "A")
+    (tmp_path / "other.txt").write_text("B\n", encoding="utf-8")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "B")
+    raised = ["viewport.rs: frozen at 4857 before this change, 4950 now; "
+              "FROZEN_MODULES may only go down, put new code in a new module"]
+    frozen = {"viewport.rs": 4950}
+    assert checker.frozen_list_problems(tmp_path, frozen=frozen, environ={}) == raised
+    # A push to main is compared with main before it, which CI names.
+    git(tmp_path, "update-ref", "refs/remotes/origin/main", "HEAD")
+    assert checker.frozen_list_problems(tmp_path, frozen=frozen, environ={}) == []
+    pushed = {"KETCHUP_FREEZE_BASE": main}
+    assert checker.frozen_list_problems(tmp_path, frozen=frozen, environ=pushed) == raised
 
 
 def test_workspace_frozen_list_did_not_grow_since_the_commit_before():

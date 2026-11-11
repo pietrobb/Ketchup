@@ -369,6 +369,43 @@ def test_a_deadline_that_fails_after_other_statements_or_either_way_round_counts
     ]
 
 
+def test_a_short_poll_the_test_relies_on_counts_however_it_is_written(tmp_path):
+    # Review 2026-11-10 R1110-TST-401: `return Err` past the deadline, `break false` and
+    # `assert!(ok)`, `else { panic! }`, `checked_add`, `start + d`, `.lt(&deadline)` and a
+    # short poll followed by an assert all passed (`consent.rs` and `transport.rs` 2 s,
+    # `exact_modeling.rs` 10 s on an OCCT worker).
+    write(tmp_path, "crates/a/tests/shapes.rs", (
+        "fn waited() -> Result<(), String> {\n"
+        "    let deadline = Instant::now() + Duration::from_secs(2);\n"
+        "    while !done() { if Instant::now() > deadline { return Err(\"late\".into()); } }\n"
+        "    Ok(())\n"
+        "}\n"
+        "fn shapes() {\n"
+        "    let deadline = Instant::now() + Duration::from_secs(2);\n"
+        "    let ok = loop { if done() { break true; } if Instant::now() > deadline { break false; } };\n"
+        "    assert!(ok);\n"
+        "    let late = Instant::now().checked_add(Duration::from_secs(3)).unwrap();\n"
+        "    if Instant::now().lt(&late) { wait(); } else { panic!(\"late\") }\n"
+        "    let start = Instant::now();\n"
+        "    let until = start + Duration::from_secs(10);\n"
+        "    while results.len() != 1 && Instant::now() < until { refresh(); }\n"
+        "    let package = results.get().expect(\"one exact body\");\n"
+        "    // A deadline that the test expects to run out is the point of the test.\n"
+        "    let deadline = Instant::now() + Duration::from_millis(50);\n"
+        "    assert!(matches!(await_response(deadline), Awaited::TimedOut));\n"
+        "    let deadline = Instant::now() + Duration::from_millis(200);\n"
+        "    while Instant::now() < deadline {}\n"
+        "    assert!(receiver.try_recv().is_err());\n"
+        "    let patient = start + Duration::from_secs(60);\n"
+        "    while !done() && Instant::now() < patient {}\n"
+        "    assert!(done());\n"
+        "}\n"
+    ))
+    assert checker.violations(tmp_path) == [
+        f"crates/a/tests/shapes.rs:{line}" for line in (2, 7, 10, 13)
+    ]
+
+
 def test_deadlines_of_waits_and_computed_durations_pass(tmp_path):
     write(tmp_path, "crates/a/tests/wait.rs", (
         "fn wait() {\n"

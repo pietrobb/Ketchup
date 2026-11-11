@@ -202,14 +202,14 @@ Two declarations say what the geometry cannot. `diaphragm(sheets,
 anchored_to=[...])` makes sheets (parts or tags), such as a deck screwed only to
 its joists, one stiff plane anchored to grounded parts: when every anchor is
 declared grounded and fastened where it touches one of the sheets, each sheet that
-reaches an anchor through sheets touching each other holds the members it is
+reaches an anchor through sheets fastened to each other where they touch (sheets that only touch, as a loose board over a butt joint, hold nothing) holds the members it is
 fastened to on the edge it lies on. It holds a member only where an anchor holds
 it across the member beyond its side, at places farther apart than the member is
 deep (a joint naming no fasteners holds along its whole contact); a diaphragm
 anchored in line with a member, on its own posts or at one small pin holds
 nothing of it, nor of a member named among its own sheets. `brace(members, by=[...], edge="top",
 spacing=None)` says which edge the parts `by` hold where they touch each member
-(a lath near mid-depth of a beam's side holds neither by itself), every `spacing`
+(a lath on a beam's side nearer its middle than that edge holds no edge, declared or not), every `spacing`
 mm (at least 10) along the contact or at the joint's fasteners there. Where the
 geometry reads the other edge (a lath under the beam), that edge holds. Each
 brace must still be fastened to the member and anchored: declared grounded and

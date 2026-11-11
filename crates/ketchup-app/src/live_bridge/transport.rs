@@ -834,7 +834,7 @@ mod tests {
                 .send(unsafe { libc::pthread_self() } as usize)
                 .unwrap();
             let mut buffer = [0; 4];
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline = Instant::now() + Duration::from_secs(60);
             read_sender
                 .send(read_some(&mut server, &mut buffer, Some(deadline), || {
                     false
@@ -1232,7 +1232,7 @@ mod tests {
         ));
 
         reply.try_send(Response::error(3, "busy")).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(60);
         assert!(matches!(
             await_response(&server, &receiver, deadline, &stop).unwrap(),
             Awaited::Answer(Response { id: 3, .. })
