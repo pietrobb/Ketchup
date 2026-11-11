@@ -1,6 +1,6 @@
 # openskp 1.5.0 (MIT), vendored for Ketchup
 
-Unmodified copy of the Rust package of OpenSKP (`packages/rust` of
+Copy of the Rust package of OpenSKP (`packages/rust` of
 https://github.com/iamahsanmehmood/openskp, commit `c98561147ea502c6d4d53a257fa4581d0c6cde1d`,
 9 November 2026; MIT, see `LICENSE`). Only `src/`, `Cargo.toml`, `LICENSE`, `README.md` and
 `.gitattributes` are copied; the upstream `tests/` directory and its fixtures are left out.
@@ -14,5 +14,13 @@ Ketchup reads `.skp` files through `crates/ketchup-skp`, which calls only the re
 worker: the reader trusts sizes a file declares and recurses over its nesting, so a hostile file
 must cost a worker process, not the editor.
 
+## Ketchup changes
+
+- `src/face_groups.rs`, `TextureRegistry::index_for`: upstream tells images apart by length
+  and their first 16 bytes, which every PNG of one pixel size often shares, so two different
+  pictures became one. Images are now told apart by their bytes, compared once per image
+  buffer. Test: `two_different_pictures_of_the_same_file_size_stay_two` in `ketchup-skp`.
+
 To update: copy the same files of a newer upstream commit over this directory, record the commit
-here, and run the tests of `ketchup-skp`.
+here, keep or drop each change above (drop one only when upstream fixed it), and run the tests
+of `ketchup-skp`.

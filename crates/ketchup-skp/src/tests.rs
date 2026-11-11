@@ -258,6 +258,55 @@ fn a_texture_comes_with_the_glb_with_its_image_and_where_it_lies_on_each_face() 
     assert_textured(&model.glb);
 }
 
+/// Two pictures of the same size in bytes, as PNG files of the same pixel size usually
+/// are, stay two pictures: before, only their length and first 16 bytes told them apart,
+/// and those are the same in every such PNG.
+#[test]
+fn two_different_pictures_of_the_same_file_size_stay_two() {
+    let checker = checker_png();
+    let mut inverse = Vec::new();
+    let mut encoder = png::Encoder::new(&mut inverse, 2, 2);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    writer
+        .write_image_data(&[255, 255, 255, 30, 30, 200, 30, 30, 200, 255, 255, 255])
+        .unwrap();
+    writer.finish().unwrap();
+    assert_eq!(checker.len(), inverse.len());
+    assert_ne!(checker, inverse);
+
+    let folder = tempfile::tempdir().unwrap();
+    let mut builder = create();
+    let mut materials = Vec::new();
+    for (name, bytes) in [("Red", &checker), ("Blue", &inverse)] {
+        let image = folder.path().join(format!("{name}.png"));
+        std::fs::write(&image, bytes).unwrap();
+        materials.push(
+            builder
+                .add_texture_material(name, &image, Some(5.0), Some(5.0), None)
+                .unwrap(),
+        );
+    }
+    let mut definition = builder
+        .add_component_definition("Box", &DefinitionOptions::default())
+        .unwrap();
+    for (index, face) in BOX_FACES.iter().enumerate() {
+        let options = FaceOptions {
+            material: Some(materials[index % 2]),
+            ..FaceOptions::default()
+        };
+        definition.add_face(face, &options).unwrap();
+    }
+    let definition = definition.close().unwrap();
+    builder
+        .add_instance(definition, &InstanceOptions::default())
+        .unwrap();
+    let model = skp_to_glb(&builder.to_bytes().unwrap(), LIMIT).unwrap();
+    let images = gltf(&model.glb)["images"].as_array().unwrap().len();
+    assert_eq!(images, 2);
+}
+
 #[test]
 fn a_placed_image_comes_as_a_textured_rectangle_not_as_left_out() {
     let folder = tempfile::tempdir().unwrap();
