@@ -661,12 +661,13 @@ fn a_textured_face_shows_its_picture_repeating() {
 #[test]
 fn a_picture_on_a_face_stands_the_right_way_up() {
     let mut png_bytes = Vec::new();
-    let mut encoder = png::Encoder::new(&mut png_bytes, 1, 2);
+    // Red top left, green top right, blue bottom left, white bottom right.
+    let mut encoder = png::Encoder::new(&mut png_bytes, 2, 2);
     encoder.set_color(png::ColorType::Rgb);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().unwrap();
     writer
-        .write_image_data(&[200, 30, 30, 255, 255, 255])
+        .write_image_data(&[200, 30, 30, 30, 200, 30, 30, 30, 200, 255, 255, 255])
         .unwrap();
     writer.finish().unwrap();
     // A 400 × 400 mm wall facing the viewer, v = 0 along its top edge.
@@ -701,18 +702,41 @@ fn a_picture_on_a_face_stands_the_right_way_up() {
     let rows = (0..image.height)
         .filter(|y| (0..image.width).any(|x| pixel(&image, x, *y)[3] == 255))
         .collect::<Vec<_>>();
-    let centre = |y| {
+    // The centre of each texel: a quarter and three quarters across and down the face.
+    let at = |y: u32, across: usize| {
         let xs = (0..image.width)
             .filter(|x| pixel(&image, *x, y)[3] == 255)
             .collect::<Vec<_>>();
-        pixel(&image, xs[xs.len() / 2], y)
-    };
-    // Shading scales the colour, so compare green to red through the centre of each texel row.
-    let ratio = |y| {
-        let p = centre(y);
-        f64::from(p[1]) / f64::from(p[0])
+        pixel(&image, xs[xs.len() * across / 4], y)
     };
     let (top, bottom) = (rows[rows.len() / 4], rows[rows.len() * 3 / 4]);
-    assert!(ratio(top) < 0.6, "top {:?}", centre(top));
-    assert!(ratio(bottom) > 0.9, "bottom {:?}", centre(bottom));
+    // Shading scales the colour, so name each by its strongest channel, or white when even.
+    let colour = |p: [u8; 4]| {
+        let [r, g, b] = [p[0], p[1], p[2]].map(f64::from);
+        if r.min(g).min(b) > 0.8 * r.max(g).max(b) {
+            "white"
+        } else if r > g && r > b {
+            "red"
+        } else if g > b {
+            "green"
+        } else {
+            "blue"
+        }
+    };
+    let seen = [(top, 1), (top, 3), (bottom, 1), (bottom, 3)].map(|(y, x)| colour(at(y, x)));
+    assert_eq!(seen, ["red", "green", "blue", "white"]);
+    // From behind the picture shows through mirrored, as SketchUp shows it.
+    let behind = PresentationOptions {
+        view_from: [0.0, 1.0, 0.0],
+        ..options
+    };
+    let image = render_presentation(&scene, &behind).unwrap();
+    let at = |y: u32, across: usize| {
+        let xs = (0..image.width)
+            .filter(|x| pixel(&image, *x, y)[3] == 255)
+            .collect::<Vec<_>>();
+        pixel(&image, xs[xs.len() * across / 4], y)
+    };
+    let seen = [(top, 1), (top, 3), (bottom, 1), (bottom, 3)].map(|(y, x)| colour(at(y, x)));
+    assert_eq!(seen, ["green", "red", "white", "blue"]);
 }

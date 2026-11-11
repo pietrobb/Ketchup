@@ -311,14 +311,14 @@ fn accessor_floats(glb: &[u8], document: &Value, index: usize) -> Vec<f32> {
 /// upside down.
 #[test]
 fn a_picture_comes_the_right_way_up() {
-    // One pixel wide, two high: red on top, white below.
+    // Four colours: red top left, green top right, blue bottom left, white bottom right.
     let mut png = Vec::new();
-    let mut encoder = png::Encoder::new(&mut png, 1, 2);
+    let mut encoder = png::Encoder::new(&mut png, 2, 2);
     encoder.set_color(png::ColorType::Rgb);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().unwrap();
     writer
-        .write_image_data(&[200, 30, 30, 255, 255, 255])
+        .write_image_data(&[200, 30, 30, 30, 200, 30, 30, 30, 200, 255, 255, 255])
         .unwrap();
     writer.finish().unwrap();
     let folder = tempfile::tempdir().unwrap();
@@ -347,11 +347,15 @@ fn a_picture_comes_the_right_way_up() {
         let attribute = |name: &str| primitive["attributes"][name].as_u64().unwrap() as usize;
         let positions = accessor_floats(&model.glb, &document, attribute("POSITION"));
         let uvs = accessor_floats(&model.glb, &document, attribute("TEXCOORD_0"));
-        // SketchUp's far edge (+Y) is glTF's −Z.
+        // SketchUp's far edge (+Y) is glTF's −Z; seen from above, the picture's left column
+        // is at SketchUp's smaller X, glTF's too.
         for (position, uv) in positions.chunks_exact(3).zip(uvs.chunks_exact(2)) {
             let far = position[2] < -15.0 * METRES_PER_INCH as f32;
             let expected = if far { 0.0 } else { 1.0 };
             assert!((uv[1] - expected).abs() < 1e-4, "{position:?} {uv:?}");
+            let right = position[0] > 20.0 * METRES_PER_INCH as f32;
+            let expected = if right { 1.0 } else { 0.0 };
+            assert!((uv[0] - expected).abs() < 1e-4, "{position:?} {uv:?}");
         }
     }
 }
