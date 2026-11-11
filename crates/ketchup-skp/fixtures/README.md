@@ -12,3 +12,5 @@ Written by Ketchup's own tests:
   a box component placed twice on the tag "Walls", hidden in the file, one face on the tag "Roof".
 - `open_pieces.skp`: `open_pieces()` of `src/tests.rs` (classic format): geometry that closes no
   solid, a component "Panel" of one face and a component "Tray", the box without its top.
+- `textured_box.skp`: `textured_box()` of `src/tests.rs` (classic format): a box component whose
+  faces carry a 2 × 2 PNG checker texture, one tile covering 5 × 5 inches.

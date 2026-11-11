@@ -13,7 +13,9 @@ publish.workspace = true
 openskp = { path = "../../third_party/openskp" }
 
 [dev-dependencies]
+png = "0.18"
 serde_json = "1.0"
+tempfile = "3.23.0"
 
 [lints]
 workspace = true

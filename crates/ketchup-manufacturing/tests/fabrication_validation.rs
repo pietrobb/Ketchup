@@ -4310,6 +4310,7 @@ fn exact_only_document() -> DocumentStore {
 
 fn mixed_document() -> DocumentStore {
     let mesh = MeshBodySpec {
+        look: None,
         schema: MESH_BODY_SCHEMA_V1.to_owned(),
         vertices_mm: vec![
             [0.0, 0.0, 0.0],

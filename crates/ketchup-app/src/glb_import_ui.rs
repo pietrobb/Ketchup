@@ -68,7 +68,15 @@ impl KetchupApp {
             if self.prepare_glb_import_preview_plan(source.clone())? != pending.plan {
                 return Err(source.error(ImportFailure::ReviewChanged));
             }
-            self.apply_batch_with_work_recovery(&pending.plan.batch)
+            // The pictures the meshes show are blobs of the document, as an imported
+            // drawing's lines are.
+            let mut staged_container = self.file.container_data.clone();
+            for image in pending.plan.review.shown_images() {
+                staged_container
+                    .insert_import_blob(image.to_vec())
+                    .map_err(|error| source.failed(error))?;
+            }
+            self.apply_batch_with_container_work_recovery(&pending.plan.batch, staged_container)
                 .map_err(|error| source.failed(error))?;
             Ok(())
         })();

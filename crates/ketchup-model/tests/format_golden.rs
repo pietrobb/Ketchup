@@ -11,7 +11,8 @@
 use ketchup_model::annotation::{Annotation, AnnotationMark};
 use ketchup_model::document::{
     CanonicalCommand, CommandBatch, DefinitionId, DocumentStore, FeatureId, FeatureKind, GroupId,
-    MESH_SHEET_SCHEMA_V1, MeshAuthority, MeshBodySpec, OccurrenceId, TagId, Transform,
+    MESH_SHEET_SCHEMA_V1, MeshAuthority, MeshBodySpec, MeshImage, MeshLook, OccurrenceId, TagId,
+    TexturedTriangle, Transform,
 };
 use ketchup_model::import::DxfCodePage;
 use ketchup_model::persistence::{self, ContainerData, LoadNotice, LoadOutcome};
@@ -91,10 +92,16 @@ const SAVED_110: &str = concat!(
     "/tests/fixtures/persistence/format110.bin"
 );
 
+/// Format 111 as Save wrote it: the format 110 file with one mesh sheet placed.
+const SAVED_111: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/persistence/format111.bin"
+);
+
 /// The current format as Save writes it: the current revision alone.
 const GOLDEN: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/persistence/format111.bin"
+    "/tests/fixtures/persistence/format112.bin"
 );
 
 /// Canonical digest of the current revision each fixture was written with.
@@ -108,6 +115,7 @@ const DIGEST_108: &str = "e83d7833a1941e55";
 const DIGEST_109: &str = "64387e679e6cc938";
 const DIGEST_110: &str = "78f4d25425866c66";
 const DIGEST_111: &str = "fd8ea7b25e0aaff5";
+const DIGEST_112: &str = "a14ed23015b00aba";
 const DIGEST_RELEASE_0_3_0: &str = "3e767c0ebaf2d5b1";
 
 /// The document of a fixture, checked to open at `digest` with no Undo steps.
@@ -212,7 +220,8 @@ fn a_file_saved_by_kecup_0_3_0_opens_with_its_text_and_view_and_saves_the_same()
 /// the very snapshot bytes 0.2.0 itself saved, with an underlay as format 104; with
 /// annotations 105; with an edited underlay 106; with a stretched line 107; with a
 /// logical group 108; with a fill drawn into a drawing 109; with a drawing read in a code
-/// page the user chose 110; with a mesh sheet 111 (the golden).
+/// page the user chose 110; with a mesh sheet 111; with a mesh that shows a picture 112
+/// (the golden).
 #[test]
 fn a_document_is_saved_in_the_oldest_format_that_holds_it() {
     for (path, schema, digest) in [
@@ -225,6 +234,7 @@ fn a_document_is_saved_in_the_oldest_format_that_holds_it() {
         (SAVED_108, 108, DIGEST_108),
         (SAVED_109, 109, DIGEST_109),
         (SAVED_110, 110, DIGEST_110),
+        (SAVED_111, 111, DIGEST_111),
     ] {
         let (document, _) = opened(path, schema, digest);
         let snapshot = persistence::save(&document.current());
@@ -395,11 +405,12 @@ fn files_for_released_versions_are_in_the_format_their_document_needs() {
         ("logical-group", SAVED_108, 108, DIGEST_108),
         ("drawn-fill", SAVED_109, 109, DIGEST_109),
         ("chosen-code-page", SAVED_110, 110, DIGEST_110),
+        ("mesh-sheet", SAVED_111, 111, DIGEST_111),
         (
-            "mesh-sheet",
+            "textured-mesh",
             GOLDEN,
             persistence::CURRENT_SCHEMA,
-            DIGEST_111,
+            DIGEST_112,
         ),
     ] {
         let (document, container) = opened(path, schema, digest);
@@ -690,6 +701,7 @@ fn sheet_commands() -> Vec<CanonicalCommand> {
             definition_id,
             name: "Pane".to_owned(),
             kind: FeatureKind::MeshBody(MeshBodySpec {
+                look: None,
                 schema: MESH_SHEET_SCHEMA_V1.to_owned(),
                 vertices_mm: vec![[0.0, 0.0, 0.0], [600.0, 0.0, 0.0], [0.0, 400.0, 0.0]],
                 triangles: vec![[0, 1, 2]],
@@ -714,32 +726,128 @@ fn sheet_commands() -> Vec<CanonicalCommand> {
 /// Kečup 0.3.2 reads 110 and refuses the whole file as an invalid mesh body. The format
 /// 110 file with one sheet placed.
 #[test]
-fn a_format_110_document_with_a_mesh_sheet_saves_the_golden() {
+fn a_format_110_document_with_a_mesh_sheet_saves_the_format_111_file() {
     let (mut document, container) = opened(SAVED_110, 110, DIGEST_110);
     document
         .apply_batch(&CommandBatch::new(sheet_commands()))
+        .unwrap();
+    let saved = persistence::save_document_store_current_snapshot(&document, &container).unwrap();
+    assert_eq!(document.current().canonical_digest(), DIGEST_111);
+    assert_eq!(saved, std::fs::read(SAVED_111).unwrap());
+    let (reopened, _) = opened(SAVED_111, 111, DIGEST_111);
+    assert!(matches!(
+        reopened.current().feature(FeatureId(9_001)).unwrap().kind(),
+        FeatureKind::MeshBody(mesh) if mesh.is_sheet()
+    ));
+    assert!(reopened.current().group(LOGICAL_GROUP).unwrap().logical());
+}
+
+/// A 1 × 1 PNG, the picture of the textured golden.
+const PICTURE_PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+    0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+    0x42, 0x60, 0x82,
+];
+
+/// The commands placing one mesh sheet that shows the picture of blob `blob`.
+fn textured_commands(blob: String) -> Vec<CanonicalCommand> {
+    let definition_id = DefinitionId(9_002);
+    vec![
+        CanonicalCommand::CreateDefinition {
+            id: definition_id,
+            name: "Painted pane".to_owned(),
+        },
+        CanonicalCommand::CreateFeature {
+            id: FeatureId(9_002),
+            definition_id,
+            name: "Painted pane".to_owned(),
+            kind: FeatureKind::MeshBody(MeshBodySpec {
+                look: Some(MeshLook {
+                    images: vec![MeshImage {
+                        blob,
+                        mime_type: "image/png".to_owned(),
+                    }],
+                    triangles: vec![Some(TexturedTriangle {
+                        image: 0,
+                        uv: [[0.0, 0.0], [2.0, 0.0], [0.0, 1.5]],
+                    })],
+                }),
+                schema: MESH_SHEET_SCHEMA_V1.to_owned(),
+                vertices_mm: vec![[0.0, 0.0, 0.0], [600.0, 0.0, 0.0], [0.0, 400.0, 0.0]],
+                triangles: vec![[0, 1, 2]],
+                authority: MeshAuthority::Authored {
+                    provenance: "format golden".to_owned(),
+                },
+            }),
+        },
+        CanonicalCommand::CreateOccurrence {
+            id: OccurrenceId(9_002),
+            definition_id,
+            name: "Painted pane".to_owned(),
+            transform: Transform::identity(),
+            parent: None,
+            tags: BTreeSet::new(),
+            visible: true,
+        },
+    ]
+}
+
+/// Format 112 adds the picture a mesh shows, an imported SketchUp texture (U4e): Kečup
+/// writing 111 would drop it. The format 111 file with one textured sheet placed, its
+/// picture saved with it.
+#[test]
+fn a_format_111_document_with_a_textured_mesh_saves_the_golden() {
+    let (mut document, mut container) = opened(SAVED_111, 111, DIGEST_111);
+    let blob = container.insert_blob(PICTURE_PNG.to_vec()).unwrap();
+    document
+        .apply_batch(&CommandBatch::new(textured_commands(blob.clone())))
         .unwrap();
     let saved = persistence::save_document_store_current_snapshot(&document, &container).unwrap();
     if ketchup_test_env::update_golden() {
         std::fs::write(GOLDEN, saved).unwrap();
         panic!("wrote {GOLDEN}");
     }
-    assert_eq!(document.current().canonical_digest(), DIGEST_111);
+    assert_eq!(document.current().canonical_digest(), DIGEST_112);
     let golden = std::fs::read(GOLDEN).unwrap();
     assert_eq!(
         saved, golden,
         "the saved form changed; see the module comment"
     );
-    let (reopened, container) = opened(GOLDEN, persistence::CURRENT_SCHEMA, DIGEST_111);
-    assert!(matches!(
-        reopened.current().feature(FeatureId(9_001)).unwrap().kind(),
-        FeatureKind::MeshBody(mesh) if mesh.is_sheet()
-    ));
-    assert!(reopened.current().group(LOGICAL_GROUP).unwrap().logical());
+    let (reopened, container) = opened(GOLDEN, persistence::CURRENT_SCHEMA, DIGEST_112);
+    let current = reopened.current();
+    let FeatureKind::MeshBody(mesh) = current.feature(FeatureId(9_002)).unwrap().kind() else {
+        panic!("the textured sheet is a mesh body")
+    };
+    let look = mesh.look.as_ref().expect("the sheet keeps its picture");
+    assert_eq!(look.images[0].blob, blob);
+    assert_eq!(look.triangles[0].unwrap().uv[1], [2.0, 0.0]);
+    assert_eq!(
+        container.blobs().get(&blob).map(|bytes| bytes.as_slice()),
+        Some(PICTURE_PNG)
+    );
     assert_eq!(
         persistence::save_document_store_current_snapshot(&reopened, &container).unwrap(),
         golden
     );
+}
+
+/// Only a mesh that shows a picture needs format 112: the format 111 file stays 111
+/// until one is placed.
+#[test]
+fn a_textured_mesh_needs_format_112() {
+    let (mut document, mut container) = opened(SAVED_111, 111, DIGEST_111);
+    let format = |document: &DocumentStore| {
+        let snapshot = persistence::save(&document.current());
+        u16::from_le_bytes([snapshot[10], snapshot[11]])
+    };
+    assert_eq!(format(&document), 111);
+    let blob = container.insert_blob(PICTURE_PNG.to_vec()).unwrap();
+    document
+        .apply_batch(&CommandBatch::new(textured_commands(blob)))
+        .unwrap();
+    assert_eq!(format(&document), 112);
 }
 
 /// Only a mesh sheet needs format 111: the format 110 file stays 110 until one is placed.
@@ -889,6 +997,7 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "document.rs: tolerance",
     "document.rs: underlays",
     "document/entities.rs: logical",
+    "document/entities.rs: look",
     "document/entities.rs: modeled",
     "document/entities.rs: section",
     "document/entities.rs: up",

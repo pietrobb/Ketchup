@@ -66,6 +66,8 @@ const NEWER_THAN_OLDEST: &[(&str, u16)] = &[
     ("format110.bin", 110),
     // A mesh sheet, an open mesh such as a SketchUp face.
     ("format111.bin", 111),
+    // A mesh sheet showing a picture, such as a textured SketchUp face.
+    ("format112.bin", 112),
 ];
 
 fn resaved_schema(path: &Path) -> u16 {

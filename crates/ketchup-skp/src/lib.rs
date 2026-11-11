@@ -128,19 +128,21 @@ pub struct SkpTag {
 /// SketchUp's default tag, shown as "Untagged": it is no tag the user made.
 const DEFAULT_TAG: &str = "Layer0";
 
-/// Reads a SketchUp file and writes its model as GLB of at most `max_glb_bytes` bytes. Textures
-/// are not written: the GLB carries each material's colour.
+/// Reads a SketchUp file and writes its model as GLB of at most `max_glb_bytes` bytes. A PNG or
+/// JPEG texture comes with its image and where it lies on each face; glTF carries no other image
+/// format, so a material textured with one keeps its colour and is counted.
 ///
 /// # Errors
 /// OpenSKP refused the file or the model, panicked, or the GLB is larger than the limit.
 pub fn skp_to_glb(skp: &[u8], max_glb_bytes: usize) -> Result<SkpModel, SkpError> {
     let options = ParseOptions::default();
     let model = guarded(Stage::ReadSkp, || openskp::parse_skp(skp, &options))?;
-    let scene = guarded(Stage::BuildScene, || {
+    let mut scene = guarded(Stage::BuildScene, || {
         openskp::build_instanced_scene(skp, &options)
     })?;
+    flip_texture_rows(&mut scene);
     let glb = match catch_unwind(AssertUnwindSafe(|| {
-        openskp::to_instanced_glb(&scene, &InstancedGlbOptions { textures: false })
+        openskp::to_instanced_glb(&scene, &InstancedGlbOptions { textures: true })
     })) {
         Ok(written) => written.map_err(|cause| SkpError::Write { cause })?,
         Err(payload) => {
@@ -166,6 +168,20 @@ pub fn skp_to_glb(skp: &[u8], max_glb_bytes: usize) -> Result<SkpModel, SkpError
         tags,
         node_tags,
     })
+}
+
+/// SketchUp's texture `v` runs up the picture from its bottom row, glTF's down from its top
+/// row; OpenSKP writes SketchUp's as is, which shows every picture upside down.
+fn flip_texture_rows(scene: &mut InstancedScene) {
+    let primitives = scene
+        .mesh_resources
+        .iter_mut()
+        .flat_map(|resource| &mut resource.primitives);
+    for primitive in primitives {
+        for v in primitive.uvs.iter_mut().skip(1).step_by(2) {
+            *v = 1.0 - *v;
+        }
+    }
 }
 
 /// The tags of the scene's nodes, by glTF node index: OpenSKP writes the nodes depth first,
@@ -223,7 +239,14 @@ fn left_out(model: &ParsedModel) -> Vec<LeftOut> {
             model
                 .materials
                 .iter()
-                .filter(|material| material.texture.is_some())
+                .filter_map(|material| material.texture.as_ref())
+                .filter(|texture| {
+                    texture
+                        .data
+                        .as_deref()
+                        .and_then(openskp::face_groups::sniff_image_mime)
+                        .is_none()
+                })
                 .count(),
         ),
         // A part takes the tags of its component or group; a face's own tag has no part.
@@ -257,10 +280,8 @@ fn left_out(model: &ParsedModel) -> Vec<LeftOut> {
             "skp_loose_edges_dropped",
             sum(|d| d.loose_edge_runs().len()),
         ),
-        (
-            "skp_images_dropped",
-            model.definitions.values().filter(|d| d.is_image).count(),
-        ),
+        // A placed image is a component of one textured face: it comes as one, and an image
+        // glTF cannot carry is counted with the textures above.
     ]
     .into_iter()
     .filter(|(_, count)| *count > 0)

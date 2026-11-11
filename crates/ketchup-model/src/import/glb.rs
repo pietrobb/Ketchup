@@ -13,12 +13,15 @@ use super::{
 };
 use crate::document::{
     CanonicalCommand, CommandBatch, DefinitionId, FeatureId, FeatureKind, GroupId,
-    MESH_BODY_SCHEMA_V1, MESH_SHEET_SCHEMA_V1, MeshAuthority, MeshBodySpec, OccurrenceId,
-    ProposalBudget, Snapshot, Transform,
+    MESH_BODY_SCHEMA_V1, MESH_SHEET_SCHEMA_V1, MeshAuthority, MeshBodySpec, MeshImage, MeshLook,
+    OccurrenceId, ProposalBudget, Snapshot, TexturedTriangle, Transform,
 };
 
 mod json;
 mod tags;
+mod textures;
+
+use textures::{GlbImage, MaterialLook};
 
 pub use tags::{GlbNodeTags, GlbTag, MAX_GLB_TAGS};
 
@@ -92,9 +95,32 @@ pub struct ParsedGlbScene {
     diagnostics: Vec<ImportDiagnostic>,
     instance_count: usize,
     triangle_count: usize,
+    /// The GLB's images; those its meshes show come into the document as blobs.
+    images: Vec<Option<GlbImage>>,
 }
 
 impl ParsedGlbScene {
+    /// The bytes of each picture the imported meshes show, once: the blobs the document
+    /// needs beside the import's commands ([`crate::document::MeshImage::blob`]).
+    #[must_use]
+    pub fn shown_images(&self) -> Vec<std::sync::Arc<Vec<u8>>> {
+        self.shown_image_indices()
+            .into_iter()
+            .filter_map(|index| self.images[index].as_ref())
+            .map(|image| std::sync::Arc::clone(&image.bytes))
+            .collect()
+    }
+
+    fn shown_image_indices(&self) -> BTreeSet<usize> {
+        self.primitives
+            .iter()
+            .filter_map(|primitive| primitive.look.as_ref())
+            .flatten()
+            .flatten()
+            .map(TexturedTriangle::image_index)
+            .collect()
+    }
+
     #[must_use]
     pub fn mesh_primitive_count(&self) -> usize {
         self.primitives.len()
@@ -137,6 +163,8 @@ struct ParsedPrimitive {
     vertices_mm: Vec<[f64; 3]>,
     triangles: Vec<[u32; 3]>,
     color: Option<[u8; 3]>,
+    /// The picture each triangle shows, by the index of the GLB's image.
+    look: Option<Vec<Option<TexturedTriangle>>>,
     /// Closes no solid: imported as a sheet (see [`MESH_SHEET_SCHEMA_V1`]).
     sheet: bool,
     /// Where the mesh's own origin moved to, in its frame: zero, or the centre of a mesh
@@ -306,13 +334,15 @@ pub fn inspect_glb(source: &[u8]) -> Result<ParsedGlbScene, GlbImportError> {
     let materials = optional_array(root, "materials")?;
     let mut diagnostic_counts = BTreeMap::<&'static str, u32>::new();
     record_document_losses(&counts, &mut diagnostic_counts)?;
-    let material_colors = parse_materials(materials, &mut diagnostic_counts)?;
+    let images = textures::parse_images(root, binary, &buffer_views)?;
+    let material_looks = parse_materials(root, materials, &images, &mut diagnostic_counts)?;
+    textures::record_unshown(root, &material_looks, &mut diagnostic_counts)?;
     let (primitives, mesh_primitives, total_triangles) = parse_meshes(
         root,
         binary,
         &buffer_views,
         &accessors,
-        &material_colors,
+        &material_looks,
         &selection.meshes,
         &mut diagnostic_counts,
     )?;
@@ -387,6 +417,7 @@ pub fn inspect_glb(source: &[u8]) -> Result<ParsedGlbScene, GlbImportError> {
         diagnostics,
         instance_count,
         triangle_count: total_triangles,
+        images,
     })
 }
 
@@ -467,6 +498,11 @@ pub fn plan_glb_import_tagged(
             definition_id,
             name: "GLB mesh".to_owned(),
             kind: FeatureKind::MeshBody(MeshBodySpec {
+                look: primitive
+                    .look
+                    .as_deref()
+                    .map(|look| mesh_look(look, &scene.images))
+                    .transpose()?,
                 schema: if primitive.sheet {
                     MESH_SHEET_SCHEMA_V1
                 } else {
@@ -747,7 +783,7 @@ fn parse_meshes(
     binary: &[u8],
     views: &[BufferView],
     accessors: &[Accessor],
-    material_colors: &[Option<[u8; 3]>],
+    material_looks: &[MaterialLook],
     selected_meshes: &BTreeSet<usize>,
     diagnostics: &mut BTreeMap<&'static str, u32>,
 ) -> Result<ParsedMeshes, GlbImportError> {
@@ -806,13 +842,48 @@ fn parse_meshes(
                     .ok_or(GlbImportError::InvalidReference)?,
             )?;
             let position_accessor = usize_value(attributes, "POSITION")?;
-            if attributes.keys().any(|name| name != "POSITION") {
-                bump(diagnostics, "glb_vertex_attributes_ignored", 1)?;
-            }
+            let material = optional_usize(primitive, "material")?
+                .map(|index| {
+                    material_looks
+                        .get(index)
+                        .copied()
+                        .ok_or(GlbImportError::InvalidReference)
+                })
+                .transpose()?;
             let index_accessor = usize_value(primitive, "indices")?;
             let vertices_mm = decode_positions(position_accessor, binary, views, accessors)?;
             let triangles =
                 decode_triangles(index_accessor, vertices_mm.len(), binary, views, accessors)?;
+            let (look, uv_attribute) = match material.and_then(|material| material.texture) {
+                Some(texture) => {
+                    let name = format!("TEXCOORD_{}", texture.set);
+                    match optional_usize(attributes, &name)? {
+                        Some(accessor) => {
+                            let uvs = textures::decode_uvs(
+                                accessor,
+                                vertices_mm.len(),
+                                binary,
+                                views,
+                                accessors,
+                            )?;
+                            let look =
+                                textures::textured_triangles(texture.image, &uvs, &triangles)?;
+                            (Some(look), Some(name))
+                        }
+                        None => {
+                            bump(diagnostics, "glb_material_textures_ignored", 1)?;
+                            (None, None)
+                        }
+                    }
+                }
+                None => (None, None),
+            };
+            if attributes
+                .keys()
+                .any(|name| name != "POSITION" && Some(name) != uv_attribute.as_ref())
+            {
+                bump(diagnostics, "glb_vertex_attributes_ignored", 1)?;
+            }
             let (vertices_mm, triangles) = weld_indexed_geometry(vertices_mm, triangles)?;
             total_vertices = total_vertices
                 .checked_add(vertices_mm.len())
@@ -826,15 +897,6 @@ fn parse_meshes(
             if total_triangles > MAX_TOTAL_TRIANGLES {
                 return Err(GlbImportError::TooManyTriangles);
             }
-            let color = optional_usize(primitive, "material")?
-                .map(|index| {
-                    material_colors
-                        .get(index)
-                        .copied()
-                        .ok_or(GlbImportError::InvalidReference)
-                })
-                .transpose()?
-                .flatten();
             let name = if primitives.len() == 1 {
                 mesh_name.clone()
             } else {
@@ -846,7 +908,8 @@ fn parse_meshes(
                 name,
                 vertices_mm,
                 triangles,
-                color,
+                color: material.and_then(|material| material.color),
+                look,
                 sheet: false,
                 origin_mm: [0.0; 3],
             });
@@ -900,6 +963,15 @@ fn closed_shells(
             vertices_mm,
             triangles,
             color: first.color,
+            // The pieces keep their pictures: the triangles stay in the pieces' order.
+            look: open.iter().any(|piece| piece.look.is_some()).then(|| {
+                open.iter()
+                    .flat_map(|piece| match &piece.look {
+                        Some(look) => look.clone(),
+                        None => vec![None; piece.triangles.len()],
+                    })
+                    .collect()
+            }),
             sheet: false,
             origin_mm: first.origin_mm,
         })
@@ -977,12 +1049,58 @@ fn recentre(pieces: &mut [ParsedPrimitive]) -> Result<[f64; 3], GlbImportError> 
     Ok(origin)
 }
 
+/// The [`MeshLook`] of triangles that show the GLB's `images` by their index: each
+/// picture once, by its blob, and the triangles by their place in that list.
+fn mesh_look(
+    triangles: &[Option<TexturedTriangle>],
+    images: &[Option<GlbImage>],
+) -> Result<MeshLook, GlbImportError> {
+    let shown: Vec<u32> = triangles
+        .iter()
+        .flatten()
+        .map(|triangle| triangle.image)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let images = shown
+        .iter()
+        .map(|index| {
+            let image = images
+                .get(usize::try_from(*index).unwrap_or(usize::MAX))
+                .and_then(Option::as_ref)
+                .ok_or(GlbImportError::InvalidReference)?;
+            Ok(MeshImage {
+                blob: crate::graph::sha256_hex(&image.bytes),
+                mime_type: image.mime_type.to_owned(),
+            })
+        })
+        .collect::<Result<_, GlbImportError>>()?;
+    let places: BTreeMap<u32, u32> = shown.iter().copied().zip(0..).collect();
+    let triangles = triangles
+        .iter()
+        .map(|triangle| {
+            triangle
+                .map(|triangle| {
+                    Ok(TexturedTriangle {
+                        image: *places
+                            .get(&triangle.image)
+                            .ok_or(GlbImportError::InvalidReference)?,
+                        ..triangle
+                    })
+                })
+                .transpose()
+        })
+        .collect::<Result<_, GlbImportError>>()?;
+    Ok(MeshLook { images, triangles })
+}
+
 fn is_solid(primitive: &ParsedPrimitive) -> bool {
     !primitive.sheet && is_valid(primitive)
 }
 
 fn is_valid(primitive: &ParsedPrimitive) -> bool {
     crate::document::validate_mesh_body(&MeshBodySpec {
+        look: None,
         schema: if primitive.sheet {
             MESH_SHEET_SCHEMA_V1
         } else {
@@ -1669,9 +1787,6 @@ fn record_document_losses(
     for (name, code) in [
         ("animations", "glb_animations_ignored"),
         ("cameras", "glb_camera_definitions_ignored"),
-        ("images", "glb_images_ignored"),
-        ("textures", "glb_textures_ignored"),
-        ("samplers", "glb_samplers_ignored"),
         ("extensionsUsed", "glb_optional_extensions_ignored"),
     ] {
         let count = counts.get(name).copied().unwrap_or(0);
@@ -1689,9 +1804,11 @@ fn record_document_losses(
 }
 
 fn parse_materials(
+    root: &Map<String, Value>,
     materials: &[Value],
+    images: &[Option<GlbImage>],
     diagnostics: &mut BTreeMap<&'static str, u32>,
-) -> Result<Vec<Option<[u8; 3]>>, GlbImportError> {
+) -> Result<Vec<MaterialLook>, GlbImportError> {
     materials
         .iter()
         .map(|material| {
@@ -1726,9 +1843,16 @@ fn parse_materials(
                 .get("pbrMetallicRoughness")
                 .map(object)
                 .transpose()?;
-            if pbr.is_some_and(|pbr| pbr.contains_key("baseColorTexture")) {
-                bump(diagnostics, "glb_material_textures_ignored", 1)?;
-            }
+            let texture = match pbr.and_then(|pbr| pbr.get("baseColorTexture")) {
+                Some(info) => {
+                    let texture = textures::base_color_texture(root, info, images, diagnostics)?;
+                    if texture.is_none() {
+                        bump(diagnostics, "glb_material_textures_ignored", 1)?;
+                    }
+                    texture
+                }
+                None => None,
+            };
             let factor = pbr
                 .and_then(|pbr| pbr.get("baseColorFactor"))
                 .map(|value| exact_number_array(value, 4))
@@ -1741,11 +1865,14 @@ fn parse_materials(
             {
                 return Err(GlbImportError::UnsupportedFeature);
             }
-            Ok(Some([
-                linear_to_srgb_byte(factor[0]),
-                linear_to_srgb_byte(factor[1]),
-                linear_to_srgb_byte(factor[2]),
-            ]))
+            Ok(MaterialLook {
+                color: Some([
+                    linear_to_srgb_byte(factor[0]),
+                    linear_to_srgb_byte(factor[1]),
+                    linear_to_srgb_byte(factor[2]),
+                ]),
+                texture,
+            })
         })
         .collect()
 }

@@ -1,6 +1,9 @@
 use super::*;
 use ketchup_geometry::linalg::Affine3;
 
+mod mesh_look;
+pub use mesh_look::*;
+
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
@@ -590,6 +593,9 @@ pub struct MeshBodySpec {
     pub vertices_mm: Vec<[f64; 3]>,
     pub triangles: Vec<[u32; 3]>,
     pub authority: MeshAuthority,
+    /// The pictures it shows, as an imported SketchUp texture. Format 112.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub look: Option<MeshLook>,
 }
 
 impl MeshBodySpec {

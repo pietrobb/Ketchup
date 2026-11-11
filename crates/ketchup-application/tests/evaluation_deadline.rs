@@ -761,6 +761,7 @@ fn incremental_unsupported_producer_is_incomplete_and_cannot_establish_baseline(
                 definition_id: DefinitionId(100),
                 name: "Mesh".into(),
                 kind: FeatureKind::MeshBody(MeshBodySpec {
+                    look: None,
                     schema: MESH_BODY_SCHEMA_V1.into(),
                     vertices_mm: vec![
                         [0.0, 0.0, 0.0],

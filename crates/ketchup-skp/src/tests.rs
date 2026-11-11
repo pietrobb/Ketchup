@@ -1,6 +1,7 @@
 use super::*;
 use openskp::create::{
-    DefinitionOptions, FaceOptions, GuideOptions, InstanceOptions, LayerOptions, Point3, create,
+    DefinitionOptions, FaceOptions, GuideOptions, ImageOptions, InstanceOptions, LayerOptions,
+    Point3, create,
 };
 use serde_json::Value;
 
@@ -171,6 +172,241 @@ fn what_a_glb_cannot_carry_is_counted_not_dropped_silently() {
     assert_eq!(count("skp_dimensions_and_text_dropped"), Some(1));
     assert_eq!(count("skp_guides_dropped"), Some(1));
     assert_eq!(count("skp_textures_dropped"), None);
+}
+
+/// A 2 × 2 PNG: red and white squares.
+fn checker_png() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut encoder = png::Encoder::new(&mut bytes, 2, 2);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    writer
+        .write_image_data(&[200, 30, 30, 255, 255, 255, 255, 255, 255, 200, 30, 30])
+        .unwrap();
+    writer.finish().unwrap();
+    bytes
+}
+
+/// A classic-format box component whose faces are textured with [`checker_png`], one tile
+/// covering 5 × 5 inches.
+fn textured_box() -> Vec<u8> {
+    let folder = tempfile::tempdir().unwrap();
+    let image = folder.path().join("checker.png");
+    std::fs::write(&image, checker_png()).unwrap();
+    let mut builder = create();
+    let checker = builder
+        .add_texture_material("Checker", &image, Some(5.0), Some(5.0), None)
+        .unwrap();
+    let mut definition = builder
+        .add_component_definition("Box", &DefinitionOptions::default())
+        .unwrap();
+    for face in &BOX_FACES {
+        let options = FaceOptions {
+            material: Some(checker),
+            ..FaceOptions::default()
+        };
+        definition.add_face(face, &options).unwrap();
+    }
+    let definition = definition.close().unwrap();
+    builder
+        .add_instance(definition, &InstanceOptions::default())
+        .unwrap();
+    builder.to_bytes().unwrap()
+}
+
+/// Asserts that `glb` holds a PNG base-colour texture and that every mesh says where it lies.
+fn assert_textured(glb: &[u8]) {
+    let document = gltf(glb);
+    let materials = &document["materials"];
+    let texture = materials
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|material| material["pbrMetallicRoughness"]["baseColorTexture"]["index"].as_u64())
+        .unwrap_or_else(|| {
+            panic!(
+                "no base colour texture: {materials} {}",
+                document["textures"]
+            )
+        });
+    let image = &document["textures"][texture as usize]["source"];
+    let image = &document["images"][image.as_u64().unwrap() as usize];
+    assert_eq!(image["mimeType"], "image/png", "{image}");
+    assert!(image["bufferView"].is_u64(), "{image}");
+    for mesh in document["meshes"].as_array().unwrap() {
+        for primitive in mesh["primitives"].as_array().unwrap() {
+            assert!(
+                primitive["attributes"]["TEXCOORD_0"].is_u64(),
+                "{primitive}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_texture_comes_with_the_glb_with_its_image_and_where_it_lies_on_each_face() {
+    let model = skp_to_glb(&textured_box(), LIMIT).unwrap();
+    assert!(
+        model
+            .left_out
+            .iter()
+            .all(|left_out| left_out.code != "skp_textures_dropped"),
+        "{:?}",
+        model.left_out
+    );
+    assert_textured(&model.glb);
+}
+
+/// Two pictures of the same size in bytes, as PNG files of the same pixel size usually
+/// are, stay two pictures: before, only their length and first 16 bytes told them apart,
+/// and those are the same in every such PNG.
+#[test]
+fn two_different_pictures_of_the_same_file_size_stay_two() {
+    let checker = checker_png();
+    let mut inverse = Vec::new();
+    let mut encoder = png::Encoder::new(&mut inverse, 2, 2);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    writer
+        .write_image_data(&[255, 255, 255, 30, 30, 200, 30, 30, 200, 255, 255, 255])
+        .unwrap();
+    writer.finish().unwrap();
+    assert_eq!(checker.len(), inverse.len());
+    assert_ne!(checker, inverse);
+
+    let folder = tempfile::tempdir().unwrap();
+    let mut builder = create();
+    let mut materials = Vec::new();
+    for (name, bytes) in [("Red", &checker), ("Blue", &inverse)] {
+        let image = folder.path().join(format!("{name}.png"));
+        std::fs::write(&image, bytes).unwrap();
+        materials.push(
+            builder
+                .add_texture_material(name, &image, Some(5.0), Some(5.0), None)
+                .unwrap(),
+        );
+    }
+    let mut definition = builder
+        .add_component_definition("Box", &DefinitionOptions::default())
+        .unwrap();
+    for (index, face) in BOX_FACES.iter().enumerate() {
+        let options = FaceOptions {
+            material: Some(materials[index % 2]),
+            ..FaceOptions::default()
+        };
+        definition.add_face(face, &options).unwrap();
+    }
+    let definition = definition.close().unwrap();
+    builder
+        .add_instance(definition, &InstanceOptions::default())
+        .unwrap();
+    let model = skp_to_glb(&builder.to_bytes().unwrap(), LIMIT).unwrap();
+    let images = gltf(&model.glb)["images"].as_array().unwrap().len();
+    assert_eq!(images, 2);
+}
+
+#[test]
+fn a_placed_image_comes_as_a_textured_rectangle_not_as_left_out() {
+    let folder = tempfile::tempdir().unwrap();
+    let image = folder.path().join("photo.png");
+    std::fs::write(&image, checker_png()).unwrap();
+    let mut builder = create();
+    builder
+        .add_image(&image, 40.0, 30.0, &ImageOptions::default())
+        .unwrap();
+    let model = skp_to_glb(&builder.to_bytes().unwrap(), LIMIT).unwrap();
+    assert!(model.left_out.is_empty(), "{:?}", model.left_out);
+    assert_textured(&model.glb);
+    let extents = mesh_extents(&gltf(&model.glb));
+    // 40 × 30 inches in the SketchUp XY plane: glTF x and −z; the front and back side of the
+    // face may each be a primitive.
+    assert!(!extents.is_empty());
+    for extent in &extents {
+        assert!(
+            close(
+                *extent,
+                [40.0 * METRES_PER_INCH, 0.0, 30.0 * METRES_PER_INCH]
+            ),
+            "{extents:?}"
+        );
+    }
+}
+
+/// The floats of accessor `index` of a GLB with one buffer, its BIN chunk.
+fn accessor_floats(glb: &[u8], document: &Value, index: usize) -> Vec<f32> {
+    let json_length = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+    let bin = &glb[20 + json_length + 8..];
+    let accessor = &document["accessors"][index];
+    let view = &document["bufferViews"][accessor["bufferView"].as_u64().unwrap() as usize];
+    let start = view["byteOffset"].as_u64().unwrap_or(0) as usize
+        + accessor["byteOffset"].as_u64().unwrap_or(0) as usize;
+    let components = match accessor["type"].as_str().unwrap() {
+        "VEC2" => 2,
+        "VEC3" => 3,
+        other => panic!("{other}"),
+    };
+    let count = accessor["count"].as_u64().unwrap() as usize * components;
+    bin[start..start + count * 4]
+        .chunks_exact(4)
+        .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+        .collect()
+}
+
+/// glTF texture coordinates run down the picture from its top row, SketchUp's up from its
+/// bottom row: a picture placed in SketchUp shows its top row at its far edge, so the GLB
+/// gives that edge `v` 0. Before, OpenSKP's SketchUp `v` came as is and every picture was
+/// upside down.
+#[test]
+fn a_picture_comes_the_right_way_up() {
+    // Four colours: red top left, green top right, blue bottom left, white bottom right.
+    let mut png = Vec::new();
+    let mut encoder = png::Encoder::new(&mut png, 2, 2);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    writer
+        .write_image_data(&[200, 30, 30, 30, 200, 30, 30, 30, 200, 255, 255, 255])
+        .unwrap();
+    writer.finish().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let image = folder.path().join("two_rows.png");
+    std::fs::write(&image, png).unwrap();
+    let mut builder = create();
+    builder
+        .add_image(&image, 40.0, 30.0, &ImageOptions::default())
+        .unwrap();
+    let model = skp_to_glb(&builder.to_bytes().unwrap(), LIMIT).unwrap();
+    let document = gltf(&model.glb);
+    // The picture's side; its back side is a plain colour.
+    let textured = |primitive: &Value| {
+        let material = &document["materials"][primitive["material"].as_u64().unwrap() as usize];
+        material["pbrMetallicRoughness"]["baseColorTexture"].is_object()
+    };
+    let primitives = document["meshes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|mesh| mesh["primitives"].as_array().unwrap().clone())
+        .filter(|primitive| textured(primitive))
+        .collect::<Vec<_>>();
+    assert!(!primitives.is_empty());
+    for primitive in primitives {
+        let attribute = |name: &str| primitive["attributes"][name].as_u64().unwrap() as usize;
+        let positions = accessor_floats(&model.glb, &document, attribute("POSITION"));
+        let uvs = accessor_floats(&model.glb, &document, attribute("TEXCOORD_0"));
+        // SketchUp's far edge (+Y) is glTF's −Z; seen from above, the picture's left column
+        // is at SketchUp's smaller X, glTF's too.
+        for (position, uv) in positions.chunks_exact(3).zip(uvs.chunks_exact(2)) {
+            let far = position[2] < -15.0 * METRES_PER_INCH as f32;
+            let expected = if far { 0.0 } else { 1.0 };
+            assert!((uv[1] - expected).abs() < 1e-4, "{position:?} {uv:?}");
+            let right = position[0] > 20.0 * METRES_PER_INCH as f32;
+            let expected = if right { 1.0 } else { 0.0 };
+            assert!((uv[0] - expected).abs() < 1e-4, "{position:?} {uv:?}");
+        }
+    }
 }
 
 /// A box component placed twice on the tag "Walls" (hidden in the file when `walls_hidden`),

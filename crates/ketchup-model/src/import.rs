@@ -1687,6 +1687,7 @@ pub fn plan_stl_import(
             definition_id,
             name: "STL mesh".to_owned(),
             kind: FeatureKind::MeshBody(MeshBodySpec {
+                look: None,
                 schema: MESH_BODY_SCHEMA_V1.to_owned(),
                 vertices_mm: mesh.vertices_mm,
                 triangles: mesh.triangles,

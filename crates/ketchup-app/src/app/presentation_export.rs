@@ -31,6 +31,8 @@ pub(crate) struct PresentationTask {
 /// The visible meshes of a snapshot with the opacity (0–255) of each.
 pub(crate) struct PresentationParts {
     snapshot: Snapshot,
+    /// The document's blobs, for the pictures textured faces show.
+    blobs: ketchup_model::persistence::Blobs,
     scene: Vec<CurrentVisibleMesh>,
     opacity: Vec<u8>,
 }
@@ -52,7 +54,7 @@ impl PresentationParts {
             .zip(&self.opacity)
             .map(|(body, opacity)| (&body.occurrence.instance_path, *opacity))
             .collect::<BTreeMap<_, _>>();
-        let mut scene = presentation_scene(&self.snapshot, &instances, |occurrence| {
+        let mut scene = presentation_scene(&self.snapshot, &instances, &self.blobs, |occurrence| {
             opacity
                 .get(&occurrence.instance_path)
                 .copied()
@@ -117,6 +119,7 @@ impl KetchupApp {
         }
         Ok(PresentationParts {
             snapshot,
+            blobs: self.file.container_data.blobs().clone(),
             scene,
             opacity,
         })

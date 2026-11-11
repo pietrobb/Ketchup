@@ -115,7 +115,9 @@ pub fn sniff_image_mime(data: &[u8]) -> Option<&'static str> {
 #[derive(Debug, Clone, Default)]
 pub struct TextureRegistry {
     pub textures: Vec<SceneTexture>,
-    index_by_key: HashMap<String, usize>,
+    /// Image buffer address → texture index: a material's image seen again, without
+    /// comparing its bytes on every face (Ketchup patch, see PATCH.md).
+    index_by_buffer: HashMap<usize, usize>,
 }
 
 impl TextureRegistry {
@@ -128,22 +130,25 @@ impl TextureRegistry {
             return None;
         }
         let mime_type = sniff_image_mime(data)?;
-        // Length plus a short byte prefix (C++ `std::hex`, unpadded) tells
-        // real images apart without hashing megabytes on every face.
-        let mut key = format!("{}:", data.len());
-        for b in data.iter().take(16) {
-            key.push_str(&format!("{b:x}"));
-        }
-        if let Some(&found) = self.index_by_key.get(&key) {
+        let buffer = data.as_ptr().addr();
+        if let Some(&found) = self.index_by_buffer.get(&buffer) {
             return Some(found);
         }
-        let idx = self.textures.len();
-        self.textures.push(SceneTexture {
-            data: data.clone(),
-            mime_type: mime_type.to_owned(),
-            filename: texture.filename.clone(),
-        });
-        self.index_by_key.insert(key, idx);
+        // A buffer not seen yet: the same image may back another material, so its
+        // bytes decide. Length and a byte prefix do not: PNG files of one pixel size
+        // often share both (Ketchup patch, see PATCH.md).
+        let idx = match self.textures.iter().position(|known| known.data == *data) {
+            Some(found) => found,
+            None => {
+                self.textures.push(SceneTexture {
+                    data: data.clone(),
+                    mime_type: mime_type.to_owned(),
+                    filename: texture.filename.clone(),
+                });
+                self.textures.len() - 1
+            }
+        };
+        self.index_by_buffer.insert(buffer, idx);
         Some(idx)
     }
 }

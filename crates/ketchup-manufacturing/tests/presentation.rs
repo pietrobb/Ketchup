@@ -2,8 +2,9 @@ use super::blender_glb_export::{current_package, seeded_document};
 use ketchup_manufacturing::blender_export::MeshGlbInstance;
 use ketchup_manufacturing::presentation::{
     Background, MAX_LABEL_CHARS, MAX_PRESENTATION_LABELS, PresentationError, PresentationImage,
-    PresentationLabel, PresentationOptions, PresentationScene, PresentationTriangle, part_labels,
-    presentation_scene, render_presentation,
+    PresentationLabel, PresentationOptions, PresentationScene, PresentationTexture,
+    PresentationTriangle, TextureError, TriangleTexture, part_labels, presentation_scene,
+    render_presentation,
 };
 use ketchup_model::exact_product::MeshExportSource;
 
@@ -35,10 +36,12 @@ fn cuboid(low: [f64; 3], high: [f64; 3], rgba: [u8; 4]) -> Vec<PresentationTrian
                 PresentationTriangle {
                     corners_mm: [corner(*a), corner(*b), corner(*c)],
                     rgba,
+                    texture: None,
                 },
                 PresentationTriangle {
                     corners_mm: [corner(*a), corner(*c), corner(*d)],
                     rgba,
+                    texture: None,
                 },
             ]
         })
@@ -60,6 +63,7 @@ fn box_on_slab() -> PresentationScene {
     PresentationScene {
         triangles,
         labels: Vec::new(),
+        textures: Vec::new(),
     }
 }
 
@@ -163,6 +167,7 @@ fn the_model_casts_a_soft_shadow_on_the_ground_under_it() {
     let standing = PresentationScene {
         triangles: cuboid([-50.0, -50.0, 0.0], [50.0, 50.0, 120.0], [200, 60, 50, 255]),
         labels: Vec::new(),
+        textures: Vec::new(),
     };
     let shadowed = render_presentation(&standing, &options).unwrap();
     let partial =
@@ -247,10 +252,12 @@ fn a_see_through_part_shows_what_is_behind_it() {
                 PresentationTriangle {
                     corners_mm: [a, b, c],
                     rgba,
+                    texture: None,
                 },
                 PresentationTriangle {
                     corners_mm: [a, c, d],
                     rgba,
+                    texture: None,
                 },
             ]);
         }
@@ -368,7 +375,7 @@ fn a_model_renders_with_its_part_colours_and_chosen_opacity() {
             occurrence,
         })
         .collect::<Vec<_>>();
-    let scene = presentation_scene(&snapshot, &instances, |occurrence| {
+    let scene = presentation_scene(&snapshot, &instances, &Default::default(), |occurrence| {
         if occurrence.color.is_some() { 255 } else { 120 }
     })
     .unwrap();
@@ -548,4 +555,195 @@ fn part_labels_name_each_component_once_on_top_of_its_first_part() {
             at_mm: [5.0, 5.0, 10.0],
         }]
     );
+}
+
+/// A 2 × 2 PNG: red and white squares.
+fn checker_png() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut encoder = png::Encoder::new(&mut bytes, 2, 2);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    writer
+        .write_image_data(&[200, 30, 30, 255, 255, 255, 255, 255, 255, 200, 30, 30])
+        .unwrap();
+    writer.finish().unwrap();
+    bytes
+}
+
+/// A textured face shows its picture, repeating as its texture coordinates say, where an
+/// untextured one shows a single colour (U4e).
+#[test]
+fn a_textured_face_shows_its_picture_repeating() {
+    // A 400 × 400 mm wall facing the viewer, the picture four times along each side.
+    let [a, b, c, d] = [
+        [-200.0, 0.0, 0.0],
+        [200.0, 0.0, 0.0],
+        [200.0, 0.0, 400.0],
+        [-200.0, 0.0, 400.0],
+    ];
+    let [ua, ub, uc, ud] = [[0.0, 4.0], [4.0, 4.0], [4.0, 0.0], [0.0, 0.0]];
+    let wall = |textured: bool| {
+        let texture = |uv| textured.then_some(TriangleTexture { texture: 0, uv });
+        PresentationScene {
+            triangles: vec![
+                PresentationTriangle {
+                    corners_mm: [a, b, c],
+                    rgba: [150, 150, 150, 255],
+                    texture: texture([ua, ub, uc]),
+                },
+                PresentationTriangle {
+                    corners_mm: [a, c, d],
+                    rgba: [150, 150, 150, 255],
+                    texture: texture([ua, uc, ud]),
+                },
+            ],
+            labels: Vec::new(),
+            textures: vec![PresentationTexture::decode(&checker_png(), "image/png").unwrap()],
+        }
+    };
+    let options = PresentationOptions {
+        view_from: [0.0, -1.0, 0.0],
+        shadows: false,
+        ambient_occlusion: false,
+        outlines: false,
+        ..small(Background::Transparent)
+    };
+    let plain = render_presentation(&wall(false), &options).unwrap();
+    let textured = render_presentation(&wall(true), &options).unwrap();
+    assert_eq!(
+        textured,
+        render_presentation(&wall(true), &options).unwrap()
+    );
+    let ratios = |image: &PresentationImage| {
+        pixels(image)
+            .filter(|p| p[3] == 255)
+            .map(|p| f64::from(p[1]) / f64::from(p[0]))
+            .collect::<Vec<_>>()
+    };
+    let flat = ratios(&plain);
+    assert!(
+        flat.iter().all(|ratio| (ratio - 1.0).abs() < 0.02),
+        "one grey"
+    );
+    let shown = ratios(&textured);
+    let red = shown.iter().filter(|ratio| **ratio < 0.6).count();
+    let white = shown.iter().filter(|ratio| **ratio > 0.8).count();
+    assert!(
+        red * 20 > shown.len() && white * 20 > shown.len(),
+        "{red} red and {white} white of {}",
+        shown.len()
+    );
+    // Along a row through the centres of a row of squares (5/16 down the wall) the colour
+    // turns twice per 100 mm repeat: 7 or 8 times across the 4 repeats.
+    let rows = (0..textured.height)
+        .filter(|y| (0..textured.width).any(|x| pixel(&textured, x, *y)[3] == 255))
+        .collect::<Vec<_>>();
+    let (top, bottom) = (rows[0], rows[rows.len() - 1]);
+    let row = top + (bottom - top) * 5 / 16;
+    let reds = (0..textured.width)
+        .map(|x| pixel(&textured, x, row))
+        .filter(|p| p[3] == 255)
+        .map(|p| p[1] < 120)
+        .collect::<Vec<_>>();
+    let turns = reds.windows(2).filter(|pair| pair[0] != pair[1]).count();
+    assert!((7..=9).contains(&turns), "{turns} turns along {reds:?}");
+
+    let mut broken = wall(true);
+    broken.textures.clear();
+    assert!(matches!(
+        render_presentation(&broken, &options),
+        Err(PresentationError::TextureReference { triangle: 0 })
+    ));
+    let not_png = PresentationTexture::decode(b"not a picture", "image/png");
+    assert!(matches!(&not_png, Err(TextureError::Png(_))), "{not_png:?}");
+    assert!(std::error::Error::source(&not_png.unwrap_err()).is_some());
+    assert!(matches!(
+        PresentationTexture::decode(&checker_png(), "image/gif"),
+        Err(TextureError::MediaType(_))
+    ));
+}
+
+/// A picture stands the right way up: texture coordinates follow glTF, the top row at v = 0.
+#[test]
+fn a_picture_on_a_face_stands_the_right_way_up() {
+    let mut png_bytes = Vec::new();
+    // Red top left, green top right, blue bottom left, white bottom right.
+    let mut encoder = png::Encoder::new(&mut png_bytes, 2, 2);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    writer
+        .write_image_data(&[200, 30, 30, 30, 200, 30, 30, 30, 200, 255, 255, 255])
+        .unwrap();
+    writer.finish().unwrap();
+    // A 400 × 400 mm wall facing the viewer, v = 0 along its top edge.
+    let [a, b, c, d] = [
+        [-200.0, 0.0, 0.0],
+        [200.0, 0.0, 0.0],
+        [200.0, 0.0, 400.0],
+        [-200.0, 0.0, 400.0],
+    ];
+    let [ua, ub, uc, ud] = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
+    let triangle = |corners_mm, uv| PresentationTriangle {
+        corners_mm,
+        rgba: [150, 150, 150, 255],
+        texture: Some(TriangleTexture { texture: 0, uv }),
+    };
+    let scene = PresentationScene {
+        triangles: vec![
+            triangle([a, b, c], [ua, ub, uc]),
+            triangle([a, c, d], [ua, uc, ud]),
+        ],
+        labels: Vec::new(),
+        textures: vec![PresentationTexture::decode(&png_bytes, "image/png").unwrap()],
+    };
+    let options = PresentationOptions {
+        view_from: [0.0, -1.0, 0.0],
+        shadows: false,
+        ambient_occlusion: false,
+        outlines: false,
+        ..small(Background::Transparent)
+    };
+    let image = render_presentation(&scene, &options).unwrap();
+    let rows = (0..image.height)
+        .filter(|y| (0..image.width).any(|x| pixel(&image, x, *y)[3] == 255))
+        .collect::<Vec<_>>();
+    // The centre of each texel: a quarter and three quarters across and down the face.
+    let at = |y: u32, across: usize| {
+        let xs = (0..image.width)
+            .filter(|x| pixel(&image, *x, y)[3] == 255)
+            .collect::<Vec<_>>();
+        pixel(&image, xs[xs.len() * across / 4], y)
+    };
+    let (top, bottom) = (rows[rows.len() / 4], rows[rows.len() * 3 / 4]);
+    // Shading scales the colour, so name each by its strongest channel, or white when even.
+    let colour = |p: [u8; 4]| {
+        let [r, g, b] = [p[0], p[1], p[2]].map(f64::from);
+        if r.min(g).min(b) > 0.8 * r.max(g).max(b) {
+            "white"
+        } else if r > g && r > b {
+            "red"
+        } else if g > b {
+            "green"
+        } else {
+            "blue"
+        }
+    };
+    let seen = [(top, 1), (top, 3), (bottom, 1), (bottom, 3)].map(|(y, x)| colour(at(y, x)));
+    assert_eq!(seen, ["red", "green", "blue", "white"]);
+    // From behind the picture shows through mirrored, as SketchUp shows it.
+    let behind = PresentationOptions {
+        view_from: [0.0, 1.0, 0.0],
+        ..options
+    };
+    let image = render_presentation(&scene, &behind).unwrap();
+    let at = |y: u32, across: usize| {
+        let xs = (0..image.width)
+            .filter(|x| pixel(&image, *x, y)[3] == 255)
+            .collect::<Vec<_>>();
+        pixel(&image, xs[xs.len() * across / 4], y)
+    };
+    let seen = [(top, 1), (top, 3), (bottom, 1), (bottom, 3)].map(|(y, x)| colour(at(y, x)));
+    assert_eq!(seen, ["green", "red", "white", "blue"]);
 }

@@ -2503,6 +2503,7 @@ dependencies = [
  "png",
  "serde",
  "serde_json",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2609,7 +2610,9 @@ name = "ketchup-skp"
 version = "0.3.3-dev"
 dependencies = [
  "openskp",
+ "png",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

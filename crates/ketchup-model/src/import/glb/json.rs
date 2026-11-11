@@ -18,6 +18,7 @@ const READ_KEYS: &[&str] = &[
     "asset",
     "attributes",
     "baseColorFactor",
+    "baseColorTexture",
     "buffer",
     "bufferView",
     "bufferViews",
@@ -31,6 +32,8 @@ const READ_KEYS: &[&str] = &[
     "doubleSided",
     "emissiveFactor",
     "extensionsRequired",
+    "images",
+    "index",
     "indices",
     "material",
     "materials",
@@ -45,18 +48,24 @@ const READ_KEYS: &[&str] = &[
     "pbrMetallicRoughness",
     "primitives",
     "rotation",
+    "sampler",
+    "samplers",
     "scale",
     "scene",
     "scenes",
+    "source",
+    "texCoord",
+    "textures",
     "translation",
     "type",
     "uri",
     "version",
+    "wrapS",
+    "wrapT",
 ];
 
 /// Keys the import only checks are there: kept as an empty object.
 const PRESENCE_KEYS: &[&str] = &[
-    "baseColorTexture",
     "camera",
     "emissiveTexture",
     "extensions",
@@ -72,14 +81,7 @@ const PRESENCE_KEYS: &[&str] = &[
 const NAMED_KEYS: &[&str] = &["attributes"];
 
 /// Root arrays the import only counts, to name what it leaves out.
-pub(super) const COUNTED_KEYS: &[&str] = &[
-    "animations",
-    "cameras",
-    "extensionsUsed",
-    "images",
-    "samplers",
-    "textures",
-];
+pub(super) const COUNTED_KEYS: &[&str] = &["animations", "cameras", "extensionsUsed"];
 
 /// The JSON values the import keeps at most: a node takes some twenty, so a scene of
 /// [`super::MAX_NODES`] nodes fits; the SketchUp model of a hall of 3,253 nodes holds
@@ -319,13 +321,14 @@ mod tests {
         found
     }
 
-    /// A key `glb.rs` starts to read must be one this reader keeps, or the reader would
-    /// drop it and the import would take it for missing.
+    /// A key `glb.rs` or `textures.rs` starts to read must be one this reader keeps, or the
+    /// reader would drop it and the import would take it for missing.
     #[test]
     fn every_key_the_import_reads_is_kept() {
         let import = include_str!("../glb.rs");
-        let import = import.split("#[cfg(test)]").next().unwrap();
-        let unknown: Vec<_> = identifier_literals(import)
+        let import =
+            import.split("#[cfg(test)]").next().unwrap().to_owned() + include_str!("textures.rs");
+        let unknown: Vec<_> = identifier_literals(&import)
             .into_iter()
             .filter(|literal| {
                 !(READ_KEYS.contains(literal)
@@ -340,6 +343,6 @@ mod tests {
             "glb.rs names {unknown:?}: add each key it reads to READ_KEYS, PRESENCE_KEYS or \
              COUNTED_KEYS, or a value to VALUES"
         );
-        assert!(identifier_literals(import).contains("bufferViews"));
+        assert!(identifier_literals(&import).contains("bufferViews"));
     }
 }

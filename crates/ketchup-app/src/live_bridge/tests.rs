@@ -70,6 +70,8 @@ mod project_drawings_job;
 mod room_areas;
 #[path = "skp_import_tests.rs"]
 mod skp_import;
+#[path = "skp_viewport_tests.rs"]
+mod skp_viewport;
 #[path = "underlay_objects_tests.rs"]
 mod underlay_objects;
 #[path = "underlay_program_tests.rs"]

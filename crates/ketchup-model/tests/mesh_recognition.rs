@@ -32,6 +32,7 @@ fn prism(profile: &[[f64; 2]], height: f64) -> MeshBodySpec {
         ]);
     }
     MeshBodySpec {
+        look: None,
         schema: MESH_BODY_SCHEMA_V1.to_owned(),
         vertices_mm,
         triangles,
@@ -56,6 +57,7 @@ fn reindexed(mesh: &MeshBodySpec, order: &[usize]) -> MeshBodySpec {
         inverse[old] = new as u32;
     }
     MeshBodySpec {
+        look: None,
         schema: mesh.schema.clone(),
         vertices_mm: order.iter().map(|old| mesh.vertices_mm[*old]).collect(),
         triangles: mesh
@@ -360,6 +362,7 @@ fn disconnected_closed_shell_is_not_silently_dropped() {
 #[test]
 fn non_prismatic_closed_mesh_has_no_match() {
     let mesh = MeshBodySpec {
+        look: None,
         schema: MESH_BODY_SCHEMA_V1.to_owned(),
         vertices_mm: vec![
             [0.0, 0.0, 0.0],

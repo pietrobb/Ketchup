@@ -311,6 +311,7 @@ impl KetchupApp {
             let resources = &mut renderer.callback_resources;
             resources.insert(GpuInstancedRenderer::new(
                 &render_state.device,
+                &render_state.queue,
                 render_state.target_format,
             ));
             resources.insert(crate::renderer::underlay::GpuUnderlayRenderer::new(

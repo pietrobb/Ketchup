@@ -3728,12 +3728,7 @@ fn read_product(
                         )));
                     }
                 };
-                FeatureKind::MeshBody(MeshBodySpec {
-                    schema,
-                    vertices_mm,
-                    triangles,
-                    authority,
-                })
+                FeatureKind::MeshBody(MeshBodySpec::new(schema, vertices_mm, triangles, authority))
             }
             kind => {
                 return Err(PersistenceError::Legacy(LegacyError::InvalidFeatureKind(
