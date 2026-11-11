@@ -2541,6 +2541,51 @@ fn short_length_axis(part: &Part) -> Option<String> {
     })
 }
 
+/// Why the `length_axis` of `part` is not trusted though it is not far shorter
+/// than its longest side: the places it bears on lie farther apart across the
+/// axis it names than the part is long along it, so it spans another way
+/// (review 2026-11-10 R1110-PG-402: a 3 900 x 80 x 400 beam named along its
+/// height, 9.75 times shorter, became a 400 mm column on two posts 3.8 m apart
+/// and passed at 0.011, where it fails in bending at 1.444).
+fn bearings_across_length_axis(
+    part: &Part,
+    load: &MemberLoad,
+    parts: &BTreeMap<&str, &Part>,
+) -> Option<String> {
+    let named = part.named_length_axis()?;
+    let axis = normalize(axes(part)[named])?;
+    let (low, high) = part.world_bounds();
+    // Where each bearing meets the part: its bounds clipped to the part's.
+    let places: Vec<[f64; 3]> = load
+        .reactions
+        .iter()
+        .filter_map(|reaction| {
+            let (a, b) = parts.get(reaction.part.as_str())?.world_bounds();
+            Some(std::array::from_fn(|i| {
+                (a[i].max(low[i]) + b[i].min(high[i])) / 2.0
+            }))
+        })
+        .collect();
+    let across = |p: [f64; 3]| -> [f64; 3] { sub(p, scale(axis, dot(p, axis))) };
+    let apart = places
+        .iter()
+        .flat_map(|a| {
+            places
+                .iter()
+                .map(move |b| length(sub(across(*a), across(*b))))
+        })
+        .fold(0.0, f64::max);
+    let long = extents(part)[named];
+    (apart > long).then(|| {
+        format!(
+            "its {} names an axis {} mm long, but it bears on places {} mm apart across it, so it spans another way",
+            crate::model::LENGTH_AXIS,
+            long.round(),
+            apart.round()
+        )
+    })
+}
+
 /// `items` each once, in the order they first come (review 2026-11-09 PG-310:
 /// `dedup` on an unsorted list kept repeats apart, and a member's not-verified
 /// reasons were listed again as often as they were found).
@@ -2571,7 +2616,9 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
         let material = part.and_then(|p| p.material.clone()).unwrap_or_default();
         let class = model.strength_classes.get(&material);
         let mut missing = load.missing.clone();
-        missing.extend(part.and_then(short_length_axis));
+        missing.extend(part.and_then(|p| {
+            short_length_axis(p).or_else(|| bearings_across_length_axis(p, load, &parts))
+        }));
         let shape = part.map_or_else(|| Err("the part is not found"), |p| shape(p, load.axis));
         let role = match &shape {
             Ok(s) if horizontal(s.grain) < COLUMN_COS => "column",
