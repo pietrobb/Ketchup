@@ -169,6 +169,41 @@ fn faces_that_close_no_solid_come_into_the_document() {
     assert_eq!(open["count"], 2, "{open}");
 }
 
+/// A box painted on its outside only, in two colours, as SketchUp's paint bucket leaves it,
+/// comes in as one solid with nothing beside it, and the back painted unlike its front is
+/// counted. Before (review 2026-11-10 SKP-400), its unpainted backs came as a second,
+/// inside-out shell: the box imported as three sheets and no solid, its volume lost.
+#[test]
+fn a_box_painted_on_its_outside_only_comes_in_as_one_solid() {
+    let (answer, snapshot, imported) = import_fixture("outside_painted_box.skp");
+    assert_eq!(imported.len(), 1, "{answer}");
+    let kinds: Vec<_> = snapshot
+        .definition(imported[0].definition_id())
+        .unwrap()
+        .feature_ids()
+        .iter()
+        .filter_map(|id| snapshot.feature(*id))
+        .map(|feature| feature.kind().body_kind())
+        .collect();
+    assert_eq!(
+        kinds,
+        [Some(ketchup_model::document::BodyKind::Solid)],
+        "{answer}"
+    );
+    let diagnostics = answer["review"]["diagnostics"].as_array().unwrap();
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic["code"] != "glb_open_surfaces_imported"),
+        "{answer}"
+    );
+    let back = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "skp_back_materials_dropped")
+        .unwrap_or_else(|| panic!("the painted back is not counted in {answer}"));
+    assert_eq!(back["count"], 1, "{back}");
+}
+
 /// What needs a solid refuses an imported sheet by name: it is not made exact, and a
 /// check of made parts (collision, fabrication, mass) does not take it as a body.
 #[test]

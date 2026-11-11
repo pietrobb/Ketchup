@@ -276,6 +276,20 @@ fn left_out(model: &ParsedModel) -> Vec<LeftOut> {
                     .count()
             }),
         ),
+        // A face is one surface, painted as its front: a back painted otherwise is lost.
+        (
+            "skp_back_materials_dropped",
+            sum(|d| {
+                d.faces
+                    .values()
+                    .filter(|face| {
+                        face.material_id.is_some()
+                            && face.back_material_id.is_some()
+                            && face.back_material_id != face.material_id
+                    })
+                    .count()
+            }),
+        ),
         ("skp_scenes_dropped", model.pages.len()),
         (
             "skp_dimensions_and_text_dropped",
