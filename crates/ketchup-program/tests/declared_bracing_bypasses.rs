@@ -188,6 +188,8 @@ box(\"beam 2\", (5900, 80, 400), at = (0, 1000, 2000), material = \"GL24h\", tag
 box(\"deck a\", (2750, 1080, 22), at = (0, 0, 2400), material = \"GL24h\", tags = [\"deck\"])
 box(\"deck b\", (2850, 1080, 22), at = (3150, 0, 2400), material = \"GL24h\", tags = [\"deck\"])
 box(\"deck tie\", (700, 880, 22), at = (2600, 200, 2422), material = \"GL24h\", tags = [\"deck\"])
+joint(\"deck tie\", \"deck a\", kind = \"screw\")
+joint(\"deck tie\", \"deck b\", kind = \"screw\")
 joint(\"deck a\", \"beam\", kind = \"screw\", fasteners = [{}])
 joint(\"deck b\", \"beam\", kind = \"screw\", fasteners = [{}])
 joint(\"deck a\", \"beam 2\", kind = \"screw\")
