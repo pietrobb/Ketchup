@@ -39,7 +39,7 @@ fn a_running_export_keeps_the_window_painting_and_cancel_stops_its_worker_before
     let (stopped, observed) = mpsc::channel();
     queue(&mut harness, &path, move |_, cancelled| {
         // A slow worker: it runs until the user cancels it.
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(60);
         while !cancelled.load(Ordering::Acquire) && Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }

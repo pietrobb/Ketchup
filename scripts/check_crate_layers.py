@@ -10,7 +10,7 @@ MAX_MODULE_LINES. Modules that were
 already larger are listed in OVERSIZED with their size: they may shrink but not
 grow, and an entry must be removed once its module fits the limit. A production
 module past FREEZE_AT_LINES must be listed in FROZEN_MODULES and may not grow; nor may
-its entry, against the commit before (FREEZE_BASE). Production
+its entry, against where the branch left main (freeze_base). Production
 functions follow the same rule with MAX_FUNCTION_LINES and LONG_FUNCTIONS: a
 long function is split into named steps, never extended.
 
@@ -19,6 +19,7 @@ never after a milestone, gate or slice (gate_d, m120_, assistant_m7, live_bridge
 """
 
 import ast
+import os
 import re
 import subprocess
 import sys
@@ -256,12 +257,26 @@ def frozen_modules_of(text):
     return {}
 
 
-# The commit FROZEN_MODULES is compared with: a pull request's merge commit has the
-# target branch as its first parent, so CI checks out two commits.
+# What FROZEN_MODULES is compared with when nothing else is known: a pull request's
+# merge commit has the target branch as its first parent, so CI checks out two commits.
 FREEZE_BASE = "HEAD^1"
 
 
-def frozen_list_problems(root, base=FREEZE_BASE):
+def freeze_base(root, environ=os.environ):
+    """The commit FROZEN_MODULES is compared with: the one KETCHUP_FREEZE_BASE names (CI
+    names main before a push to it), else where the branch left origin/main, so an entry
+    raised in any commit of the branch fails, not only in its last (review 2026-11-10
+    R1110-TST-400), else FREEZE_BASE."""
+    if environ.get("KETCHUP_FREEZE_BASE"):
+        return environ["KETCHUP_FREEZE_BASE"]
+    merge_base = subprocess.run(["git", "merge-base", "HEAD", "origin/main"], cwd=root,
+                                capture_output=True, text=True)
+    return merge_base.stdout.strip() if merge_base.returncode == 0 else FREEZE_BASE
+
+
+def frozen_list_problems(root, frozen=FROZEN_MODULES, environ=os.environ):
+    base = freeze_base(root, environ)
+
     def at_base(path):
         shown = subprocess.run(["git", "show", f"{base}:{path}"], cwd=root,
                                capture_output=True, text=True, encoding="utf-8")
@@ -270,11 +285,11 @@ def frozen_list_problems(root, base=FREEZE_BASE):
     base_text = at_base("scripts/check_crate_layers.py")
     if base_text is None:
         return [f"scripts/check_crate_layers.py: not readable at {base}; FROZEN_MODULES "
-                "needs the commit before to compare with (fetch-depth: 2)"]
+                "needs the commit it is compared with fetched"]
     base_frozen = frozen_modules_of(base_text)
     base_sizes = {module: len((at_base(module) or "").splitlines())
-                  for module in FROZEN_MODULES if module not in base_frozen}
-    return raised_frozen_entries(FROZEN_MODULES, base_frozen, base_sizes)
+                  for module in frozen if module not in base_frozen}
+    return raised_frozen_entries(frozen, base_frozen, base_sizes)
 
 
 def grown_frozen_modules(sizes, frozen=FROZEN_MODULES):

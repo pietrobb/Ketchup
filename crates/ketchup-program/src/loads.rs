@@ -509,6 +509,13 @@ impl Frame {
     /// on the side of an 80 x 400 beam 13 mm above its middle held its top,
     /// though bracing at mid-depth does not stop it twisting).
     fn edge(&self, points: &[[f64; 3]]) -> Option<bool> {
+        let (height, depth) = self.height(points)?;
+        (height.abs() >= depth / 4.0).then_some(height > 0.0)
+    }
+
+    /// How high the middle of `points` lies above the section's middle, and the
+    /// section's depth; None for none or a standing member, which has no top.
+    fn height(&self, points: &[[f64; 3]]) -> Option<(f64, f64)> {
         if points.is_empty() {
             return None;
         }
@@ -530,7 +537,7 @@ impl Frame {
             .iter()
             .map(|(side, size)| dot(*side, up).abs() * size)
             .sum();
-        (height.abs() >= depth / 4.0).then_some(height > 0.0)
+        Some((height, depth))
     }
 
     fn range(&self, points: &[[f64; 3]]) -> (f64, f64) {
@@ -1769,7 +1776,7 @@ impl Diaphragms {
 /// that hold, with each one that holds nothing and why. A diaphragm holds when
 /// each of its anchors is declared grounded and holds one of its sheets,
 /// fastened where they touch; a sheet holds only when it reaches an anchor
-/// through sheets touching each other (PG-301).
+/// through sheets fastened to each other where they touch (PG-301, R1110-PG-404).
 fn anchored_diaphragms<'a>(
     model: &'a ProgramModel,
     frames: &[Frame],
@@ -1861,14 +1868,14 @@ fn anchored_diaphragms<'a>(
             });
             continue;
         }
-        // From the anchored sheets on, through sheets touching each other.
+        // From the anchored sheets on, through sheets fastened to each other
+        // where they touch: sheets that only touch, as a loose board over a
+        // butt joint, slide apart and hold nothing (R1110-PG-404).
         let mut queue: Vec<usize> = reached.keys().copied().collect();
         while let Some(sheet) = queue.pop() {
             let anchor = reached[&sheet];
             for &other in &sheets {
-                if !reached.contains_key(&other)
-                    && !faces.contacts(&parts[sheet], &parts[other]).is_empty()
-                {
+                if !reached.contains_key(&other) && !tied_at(faces, sheet, other).is_empty() {
                     reached.insert(other, anchor);
                     queue.push(other);
                 }
@@ -1905,11 +1912,11 @@ fn anchored_diaphragms<'a>(
                 None => ignored.push(IgnoredBracing {
                     parts: vec![parts[sheet].name.clone()],
                     reason: format!(
-                        "diaphragm(): its sheet {} reaches none of its anchors through sheets fastened to them or touching each other; it holds nothing",
+                        "diaphragm(): its sheet {} reaches none of its anchors through sheets fastened to them and to each other where they touch; it holds nothing",
                         parts[sheet].name
                     ),
                     hint: format!(
-                        "Lay {} against a sheet of the diaphragm that reaches an anchor, or fasten it to an anchor with joint().",
+                        "Fasten {} with joint() where it touches a sheet of the diaphragm that reaches an anchor, or to an anchor.",
                         parts[sheet].name
                     ),
                 }),
@@ -1930,7 +1937,7 @@ fn anchored_diaphragms<'a>(
 /// belongs to. A declaration holds only what the geometry does not refute
 /// (review 2026-11-09). A diaphragm holds when each of its anchors is declared
 /// grounded and holds one of its sheets, fastened where they touch; a sheet
-/// holds only when it reaches an anchor through sheets touching each other
+/// holds only when it reaches an anchor through sheets fastened to each other
 /// (PG-301), and then the members it is fastened to, on the edge it lies on. A
 /// declared brace holds the edge it names where it touches each member it is
 /// fastened to, unless the geometry reads the other edge there (PG-300), when
@@ -2076,6 +2083,7 @@ fn declared_bracing<'a>(
                         .map(|(other, _)| *other)
                 };
                 let mut contradicted = false;
+                let mut mid_depth = false;
                 let mut anchored = Vec::new();
                 let mut touched = false;
                 for (at, points) in holds(faces, by, held, declared.spacing_mm) {
@@ -2088,6 +2096,13 @@ fn declared_bracing<'a>(
                     // on its top held both its edges).
                     if frame.edge(&points).is_some_and(|top| top != declared_top) {
                         contradicted = true;
+                        continue;
+                    }
+                    // Nor hold an edge from mid-depth, where bracing does not
+                    // stop the member twisting (R1110-PG-403: laths on the side
+                    // 13 mm above the middle declared on the top held it).
+                    if frame.edge(&points).is_none() && frame.height(&points).is_some() {
+                        mid_depth = true;
                         continue;
                     }
                     for point in at {
@@ -2123,7 +2138,20 @@ fn declared_bracing<'a>(
                         ),
                     );
                 }
-                if anchored.is_empty() && !contradicted {
+                if mid_depth {
+                    ignore(
+                        names.clone(),
+                        format!(
+                            "{brace} touches the side of {target} nearer its middle height than the {} edge it declares, where bracing does not stop it twisting; it holds nothing there",
+                            declared.edge
+                        ),
+                        format!(
+                            "Move {brace} up or down so it touches {target} nearer its {} edge than its middle, or lay it on that edge.",
+                            declared.edge
+                        ),
+                    );
+                }
+                if anchored.is_empty() && !contradicted && !mid_depth {
                     let (reason, hint) = if let Some((why, hint)) = sheet_refusal {
                         (
                             format!(
