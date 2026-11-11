@@ -522,6 +522,115 @@ fn faces_that_close_no_solid_come_with_the_glb() {
     assert!(close(placements[1], [50.0 * METRES_PER_INCH, 0.0, 0.0]));
 }
 
+/// A box component painted on its outside only, as SketchUp's paint bucket leaves it: red
+/// and blue fronts in turn, every back unpainted, and one face, the bottom, also painted
+/// green on its back.
+fn outside_painted_box() -> Vec<u8> {
+    let mut builder = create();
+    let red = builder.add_material("Red", [200, 30, 30], None).unwrap();
+    let blue = builder.add_material("Blue", [30, 30, 200], None).unwrap();
+    let green = builder.add_material("Green", [30, 200, 30], None).unwrap();
+    let mut definition = builder
+        .add_component_definition("Box", &DefinitionOptions::default())
+        .unwrap();
+    for (index, face) in BOX_FACES.iter().enumerate() {
+        let options = FaceOptions {
+            material: Some(if index % 2 == 0 { red } else { blue }),
+            back_material: (index == 0).then_some(green),
+            ..FaceOptions::default()
+        };
+        definition.add_face(face, &options).unwrap();
+    }
+    let definition = definition.close().unwrap();
+    builder
+        .add_instance(definition, &InstanceOptions::default())
+        .unwrap();
+    builder.to_bytes().unwrap()
+}
+
+/// The triangles of every mesh primitive, by mesh.
+fn triangles_by_mesh(document: &Value) -> Vec<u64> {
+    let accessors = document["accessors"].as_array().unwrap();
+    document["meshes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|mesh| {
+            mesh["primitives"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|primitive| {
+                    accessors[primitive["indices"].as_u64().unwrap() as usize]["count"]
+                        .as_u64()
+                        .unwrap()
+                        / 3
+                })
+                .sum()
+        })
+        .collect()
+}
+
+/// A box painted on its outside only comes as one surface, each face once, wound and painted
+/// as its front: its 6 faces are 12 triangles, and each colour is drawn from both sides.
+/// Before (review 2026-11-10 SKP-400), every unpainted back came as a second, inside-out
+/// copy, which the GLB import took as a sheet beside the solid, or, with two colours, as
+/// sheets only, losing the solid. A back painted unlike its front is counted.
+#[test]
+fn a_box_painted_on_its_outside_only_comes_as_one_surface() {
+    let model = skp_to_glb(&outside_painted_box(), LIMIT).unwrap();
+    let document = gltf(&model.glb);
+    assert_eq!(triangles_by_mesh(&document), [12], "{}", document["meshes"]);
+    for material in document["materials"].as_array().unwrap() {
+        assert_eq!(material["doubleSided"], true, "{material}");
+    }
+    assert_eq!(
+        model.left_out,
+        [LeftOut {
+            code: "skp_back_materials_dropped".into(),
+            count: 1,
+        }]
+    );
+}
+
+/// A face unpainted on its front and painted on its back, as a face SketchUp shows reversed,
+/// keeps the back's colour.
+#[test]
+fn a_face_painted_on_its_back_only_keeps_that_colour() {
+    let mut builder = create();
+    let green = builder.add_material("Green", [30, 200, 30], None).unwrap();
+    let mut definition = builder
+        .add_component_definition("Panel", &DefinitionOptions::default())
+        .unwrap();
+    let options = FaceOptions {
+        back_material: Some(green),
+        ..FaceOptions::default()
+    };
+    definition.add_face(&BOX_FACES[0], &options).unwrap();
+    let definition = definition.close().unwrap();
+    builder
+        .add_instance(definition, &InstanceOptions::default())
+        .unwrap();
+    let model = skp_to_glb(&builder.to_bytes().unwrap(), LIMIT).unwrap();
+    assert!(model.left_out.is_empty(), "{:?}", model.left_out);
+    let document = gltf(&model.glb);
+    assert_eq!(triangles_by_mesh(&document), [2]);
+    let colours: Vec<_> = document["materials"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|material| material["pbrMetallicRoughness"]["baseColorFactor"].clone())
+        .collect();
+    let green = [30.0, 200.0, 30.0].map(|channel| channel / 255.0);
+    assert_eq!(colours.len(), 1, "{colours:?}");
+    for (channel, expected) in colours[0].as_array().unwrap().iter().zip(green) {
+        assert!(
+            (channel.as_f64().unwrap() - expected).abs() < 1e-6,
+            "{colours:?}"
+        );
+    }
+}
+
 #[test]
 fn files_saved_by_sketchup_2013_2017_2020_and_2025_are_read() {
     for (name, major) in [
