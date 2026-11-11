@@ -2134,7 +2134,7 @@ fn declared_bracing<'a>(
                     } else if is_grounded(by) && ties.is_empty() {
                         (
                             format!(
-                                "{brace} is grounded, but lies on {target} or within its width and reaches nowhere across it beyond its side, where it sways with {target}; it holds nothing"
+                                "{brace} is grounded, but lies on {target}, mostly within its width, or reaches nowhere across it beyond its side, where it sways with {target}; it holds nothing"
                             ),
                             format!(
                                 "Let {brace} reach across {target} beyond its side, or fasten it to a grounded part beside {target}."
@@ -2204,15 +2204,24 @@ fn beyond_side(frame: &Frame, member: &Part, spot: [f64; 3]) -> bool {
 }
 
 /// Whether the grounded `by` itself reaches across `member` beyond its side,
-/// level with `point` (review 2026-11-10 R1110-PG-400: grounded blocks or
-/// laths on the member's top, within its width, sway with it).
+/// level with `point`, and lies mostly beside the member's width (review
+/// 2026-11-10 R1110-PG-400: grounded blocks or laths on the member's top,
+/// within its width or a millimetre wider, rest on it and sway with it).
 fn reaches_beyond(frame: &Frame, member: &Part, by: &Part, point: [f64; 3]) -> bool {
     let Some((sideways, side)) = sideways_of(frame, member) else {
         return false;
     };
+    let obb = by.obb();
+    let middle = dot(sub(obb.centre, member.obb().centre), sideways);
+    let width: f64 = (0..3)
+        .map(|axis| dot(obb.axes[axis], sideways).abs() * obb.half[axis])
+        .sum();
+    let within = ((middle + width).min(side) - (middle - width).max(-side)).max(0.0);
+    if within > width {
+        return false;
+    }
     let off = dot(sub(point, member.obb().centre), sideways);
     let reach = side + 2.0 * CONTACT_FIT_MM;
-    let obb = by.obb();
     [reach - off, -reach - off].into_iter().any(|shift| {
         obb.contains(
             std::array::from_fn(|i| point[i] + sideways[i] * shift),

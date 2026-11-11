@@ -68,6 +68,27 @@ joint(\"block {x}\", \"beam\", kind = \"screw\")
         ignored(&blocks)
     );
 
+    // The same blocks a millimetre wider than the beam either side still rest
+    // on it, held up by nothing but the beam.
+    let mut wider = BEAM.to_owned();
+    for x in PLACES {
+        wider.push_str(&format!(
+            "box(\"block {x}\", (50, 82, 50), at = ({x}, -1, 2400), material = \"GL24h\", grounded = True, tags = [\"block\"])
+joint(\"block {x}\", \"beam\", kind = \"screw\")
+"
+        ));
+    }
+    wider.push_str("brace([\"beam\"], by = [\"block\"], edge = \"top\")\n");
+    let wider = report(&wider);
+    assert_ne!(checked(&wider, "beam").status, "pass");
+    assert!(
+        ignored(&wider)
+            .iter()
+            .any(|message| message.contains("block 300")),
+        "{:?}",
+        ignored(&wider)
+    );
+
     // Two grounded laths along its top, held every 10 mm: 562 points.
     let mut laths = BEAM.to_owned();
     laths.push_str(

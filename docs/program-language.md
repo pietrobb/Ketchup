@@ -213,8 +213,8 @@ spacing=None)` says which edge the parts `by` hold where they touch each member
 mm (at least 10) along the contact or at the joint's fasteners there. Where the
 geometry reads the other edge (a lath under the beam), that edge holds. Each
 brace must still be fastened to the member and anchored: declared grounded and
-reaching across the member beyond its side (a grounded block on its top sways
-with it), a sheet of a diaphragm that holds the member, or fastened to a grounded
+reaching across the member beyond its side, mostly beside its width (a grounded
+block on its top, even a little wider than it, sways with it), a sheet of a diaphragm that holds the member, or fastened to a grounded
 part where they touch and across the member beyond its side. A declaration the geometry contradicts or
 that holds nothing is reported as `declared_bracing_ignored` with the reason; a
 joint of an unknown kind anywhere from the member through its braces to the
