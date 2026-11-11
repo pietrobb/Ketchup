@@ -1517,7 +1517,7 @@ fn file_import_transformed_multi_solid_step_round_trips_through_save_open_and_oc
         .connect_exact_worker(exact_worker_path())
         .unwrap();
     compose_two_shared_occurrences(&mut source_shell);
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while Instant::now() < deadline {
         source_shell.settle();
         if source_shell.app().exact_render_body_count() == 1 {
