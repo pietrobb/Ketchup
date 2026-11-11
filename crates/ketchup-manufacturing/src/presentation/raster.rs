@@ -4,6 +4,7 @@
 
 use super::{
     Background, PresentationError, PresentationImage, PresentationOptions, PresentationScene,
+    PresentationTexture, TriangleTexture,
 };
 use ketchup_geometry::linalg::Vec3;
 use ketchup_tolerance::{APPROXIMATION, NEGLIGIBLE, ROUNDING};
@@ -50,11 +51,11 @@ const AO_RADIUS: f64 = 0.05;
 const AO_STRENGTH: f64 = 0.8;
 
 /// A count or index as a coordinate; sample counts stay far below 2³².
-fn real(value: usize) -> f64 {
+pub(super) fn real(value: usize) -> f64 {
     u32::try_from(value).map_or(f64::from(u32::MAX), f64::from)
 }
 /// A coordinate already clamped to the buffer as its index (towards zero).
-fn index(value: f64) -> usize {
+pub(super) fn index(value: f64) -> usize {
     value as usize
 }
 /// A depth or colour stored in single precision.
@@ -372,25 +373,30 @@ impl Frame<'_> {
     }
 }
 
-fn shade(base: [u8; 4], normal: Vec3, sun: Vec3, lit: f64, occlusion: f64) -> [f64; 3] {
+/// `base` (0–1 per channel) in the light a surface with `normal` receives.
+fn shade(base: [f64; 3], normal: Vec3, sun: Vec3, lit: f64, occlusion: f64) -> [f64; 3] {
     let light =
         (AMBIENT + SKY * (normal.z * 0.5 + 0.5)) * occlusion + SUN * normal.dot(sun).max(0.0) * lit;
-    [0, 1, 2].map(|c| (f64::from(base[c]) / 255.0 * light).min(1.0))
+    base.map(|channel| (channel * light).min(1.0))
 }
 
 /// The triangles that have an area and are not fully transparent, with their unit normals.
-struct Surfaces {
+struct Surfaces<'a> {
     corners: Vec<[Vec3; 3]>,
     normals: Vec<Vec3>,
     colours: Vec<[u8; 4]>,
+    looks: Vec<Option<TriangleTexture>>,
+    textures: &'a [PresentationTexture],
 }
 
-impl Surfaces {
-    fn new(scene: &PresentationScene) -> Self {
+impl<'a> Surfaces<'a> {
+    fn new(scene: &'a PresentationScene) -> Self {
         let mut surfaces = Self {
             corners: Vec::with_capacity(scene.triangles.len()),
             normals: Vec::with_capacity(scene.triangles.len()),
             colours: Vec::with_capacity(scene.triangles.len()),
+            looks: Vec::with_capacity(scene.triangles.len()),
+            textures: &scene.textures,
         };
         for triangle in &scene.triangles {
             let corners = triangle.corners_mm.map(Vec3::from);
@@ -402,9 +408,41 @@ impl Surfaces {
                 surfaces.corners.push(corners);
                 surfaces.normals.push(normal);
                 surfaces.colours.push(triangle.rgba);
+                surfaces.looks.push(triangle.texture);
             }
         }
         surfaces
+    }
+
+    /// The colour, 0–1 per channel, of surface `at` at the world point `point` on it: its
+    /// picture there or its own colour.
+    fn base(&self, at: usize, point: Vec3) -> [f64; 3] {
+        let [r, g, b, _] = self.colours[at];
+        let own = [r, g, b].map(|channel| f64::from(channel) / 255.0);
+        let Some(look) = self.looks[at] else {
+            return own;
+        };
+        let Some(texture) = self.textures.get(look.texture) else {
+            return own;
+        };
+        // The point's share of each corner, from the areas it cuts the triangle into.
+        let [a, b, c] = self.corners[at];
+        let normal = (b - a).cross(c - a);
+        let area = normal.dot(normal);
+        if area < NEGLIGIBLE {
+            return own;
+        }
+        let first = (c - b).cross(point - b).dot(normal) / area;
+        let second = (a - c).cross(point - c).dot(normal) / area;
+        let weights = [first, second, 1.0 - first - second];
+        let uv = look
+            .uv
+            .iter()
+            .zip(weights)
+            .fold([0.0, 0.0], |[u, v], ([corner_u, corner_v], weight)| {
+                [u + corner_u * weight, v + corner_v * weight]
+            });
+        texture.sample(uv)
     }
 
     fn with_opacity(&self, opaque: bool) -> impl Iterator<Item = usize> + '_ {
@@ -525,7 +563,7 @@ pub(super) fn render(
 
 struct Shading<'a> {
     frame: &'a Frame<'a>,
-    surfaces: &'a Surfaces,
+    surfaces: &'a Surfaces<'a>,
     shadow_map: Option<&'a ShadowMap>,
     sun: Vec3,
     ground: f64,
@@ -600,7 +638,7 @@ impl Shading<'_> {
             1.0
         };
         let mut rgb = shade(
-            self.surfaces.colours[owner],
+            self.surfaces.base(owner, frame.point(at)),
             normal,
             self.sun,
             lit,
@@ -640,7 +678,7 @@ impl Shading<'_> {
                     let normal = frame.facing_normal(at, sample);
                     let point = camera.eye + camera.ray(sample) * depth;
                     let lit = self.shadow_map.map_or(1.0, |map| map.lit(point, normal));
-                    let rgb = shade(self.surfaces.colours[at], normal, self.sun, lit, 1.0);
+                    let rgb = shade(self.surfaces.base(at, point), normal, self.sun, lit, 1.0);
                     let front = [rgb[0], rgb[1], rgb[2], 1.0];
                     let below = colour[sample];
                     colour[sample] = [0, 1, 2, 3]

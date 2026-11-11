@@ -137,9 +137,10 @@ const DEFAULT_TAG: &str = "Layer0";
 pub fn skp_to_glb(skp: &[u8], max_glb_bytes: usize) -> Result<SkpModel, SkpError> {
     let options = ParseOptions::default();
     let model = guarded(Stage::ReadSkp, || openskp::parse_skp(skp, &options))?;
-    let scene = guarded(Stage::BuildScene, || {
+    let mut scene = guarded(Stage::BuildScene, || {
         openskp::build_instanced_scene(skp, &options)
     })?;
+    flip_texture_rows(&mut scene);
     let glb = match catch_unwind(AssertUnwindSafe(|| {
         openskp::to_instanced_glb(&scene, &InstancedGlbOptions { textures: true })
     })) {
@@ -167,6 +168,20 @@ pub fn skp_to_glb(skp: &[u8], max_glb_bytes: usize) -> Result<SkpModel, SkpError
         tags,
         node_tags,
     })
+}
+
+/// SketchUp's texture `v` runs up the picture from its bottom row, glTF's down from its top
+/// row; OpenSKP writes SketchUp's as is, which shows every picture upside down.
+fn flip_texture_rows(scene: &mut InstancedScene) {
+    let primitives = scene
+        .mesh_resources
+        .iter_mut()
+        .flat_map(|resource| &mut resource.primitives);
+    for primitive in primitives {
+        for v in primitive.uvs.iter_mut().skip(1).step_by(2) {
+            *v = 1.0 - *v;
+        }
+    }
 }
 
 /// The tags of the scene's nodes, by glTF node index: OpenSKP writes the nodes depth first,

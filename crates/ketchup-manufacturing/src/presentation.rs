@@ -8,11 +8,16 @@
 
 use crate::blender_export::{MeshGlbInstance, validate_instances};
 use ketchup_model::document::{SceneOccurrence, Snapshot};
-use ketchup_model::exact_product::ExactProductError;
+use ketchup_model::exact_product::{ExactProductError, MeshExportSource};
+use ketchup_model::persistence::Blobs;
 use ketchup_model::tolerance::limits;
+use std::collections::BTreeMap;
 use std::fmt;
 
 mod raster;
+mod texture;
+
+pub use texture::{MAX_SOURCE_SIDE, MAX_TEXTURE_SIDE, PresentationTexture};
 
 /// The longest side of a presentation image, in pixels.
 pub const MAX_PRESENTATION_SIDE: u32 = 8192;
@@ -67,10 +72,21 @@ impl Default for PresentationOptions {
 }
 
 /// One triangle in Kečup world millimetres with its sRGB colour and opacity (255 = opaque).
+/// A textured triangle shows its picture instead of the colour, with the same opacity.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PresentationTriangle {
     pub corners_mm: [[f64; 3]; 3],
     pub rgba: [u8; 4],
+    pub texture: Option<TriangleTexture>,
+}
+
+/// The picture of the scene a triangle shows, by its index in
+/// [`PresentationScene::textures`], and the point of the picture at each corner (glTF texture
+/// coordinates: `u` right, `v` down, one picture per unit, repeating).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TriangleTexture {
+    pub texture: usize,
+    pub uv: [[f64; 2]; 3],
 }
 
 /// Text beside a point of the model, joined to it by a leader line.
@@ -84,6 +100,7 @@ pub struct PresentationLabel {
 pub struct PresentationScene {
     pub triangles: Vec<PresentationTriangle>,
     pub labels: Vec<PresentationLabel>,
+    pub textures: Vec<PresentationTexture>,
 }
 
 /// Straight (not premultiplied) sRGB RGBA pixels, rows from the top.
@@ -135,6 +152,15 @@ pub enum PresentationError {
     },
     /// The built-in typeface of labels and dimensions cannot be read.
     Font,
+    /// The picture `blob` of the document a textured face shows cannot be read.
+    Texture {
+        blob: String,
+    },
+    /// Triangle `triangle` names a picture the scene does not have or a texture coordinate
+    /// that is not finite.
+    TextureReference {
+        triangle: usize,
+    },
     Source(ExactProductError),
     Png(png::EncodingError),
 }
@@ -184,6 +210,14 @@ impl fmt::Display for PresentationError {
                 "the image has {labels} labels, more than the limit of {limit}"
             ),
             Self::Font => write!(formatter, "the built-in label typeface cannot be read"),
+            Self::Texture { blob } => write!(
+                formatter,
+                "the picture {blob} on a textured face is not a PNG or JPEG of at most {MAX_SOURCE_SIDE} px per side that can be read"
+            ),
+            Self::TextureReference { triangle } => write!(
+                formatter,
+                "triangle {triangle} of the model names a picture it does not have or a texture coordinate that is not a finite number"
+            ),
             Self::Source(error) => write!(formatter, "the model cannot be read: {error}"),
             Self::Png(error) => write!(formatter, "the PNG cannot be written: {error}"),
         }
@@ -201,10 +235,12 @@ impl std::error::Error for PresentationError {
 }
 
 /// World triangles of the visible instances, each coloured by its occurrence and given the
-/// opacity `opacity` returns for it (255 = opaque, e.g. lower for a membrane).
+/// opacity `opacity` returns for it (255 = opaque, e.g. lower for a membrane). A triangle of
+/// an imported mesh with a picture shows that picture, read from the document's `blobs`.
 pub fn presentation_scene(
     snapshot: &Snapshot,
     instances: &[MeshGlbInstance<'_>],
+    blobs: &Blobs,
     opacity: impl Fn(&SceneOccurrence) -> u8,
 ) -> Result<PresentationScene, PresentationError> {
     let visible = instances
@@ -224,10 +260,34 @@ pub fn presentation_scene(
         });
     }
     let mut triangles = Vec::with_capacity(total);
+    let mut textures = Vec::new();
+    let mut texture_of_blob = BTreeMap::new();
     for instance in visible {
         let [r, g, b] = instance.occurrence.color.unwrap_or(DEFAULT_PART_RGB);
         let rgba = [r, g, b, opacity(instance.occurrence)];
         let transform = instance.occurrence.transform;
+        let look = match instance.source {
+            MeshExportSource::Canonical { mesh, .. } => mesh.look.as_ref(),
+            MeshExportSource::Exact(_) => None,
+        };
+        let mut scene_texture = Vec::new();
+        for image in look.map_or(&[][..], |look| &look.images) {
+            let at = match texture_of_blob.get(&image.blob) {
+                Some(at) => *at,
+                None => {
+                    let texture = blobs
+                        .get(&image.blob)
+                        .and_then(|bytes| PresentationTexture::decode(bytes, &image.mime_type))
+                        .ok_or_else(|| PresentationError::Texture {
+                            blob: image.blob.clone(),
+                        })?;
+                    textures.push(texture);
+                    texture_of_blob.insert(image.blob.clone(), textures.len() - 1);
+                    textures.len() - 1
+                }
+            };
+            scene_texture.push(at);
+        }
         for index in 0..instance.source.triangle_count() {
             let indices =
                 instance
@@ -246,12 +306,31 @@ pub fn presentation_scene(
                     ))?;
                 *corner = transform.transform_point(point);
             }
-            triangles.push(PresentationTriangle { corners_mm, rgba });
+            let texture = look
+                .and_then(|look| *look.triangles.get(index)?)
+                .map(|textured| {
+                    Some(TriangleTexture {
+                        texture: *scene_texture.get(textured.image_index())?,
+                        uv: textured.uv.map(|[u, v]| [f64::from(u), f64::from(v)]),
+                    })
+                })
+                .map(|texture| {
+                    texture.ok_or(PresentationError::Source(
+                        ExactProductError::InvalidMeshExport,
+                    ))
+                })
+                .transpose()?;
+            triangles.push(PresentationTriangle {
+                corners_mm,
+                rgba,
+                texture,
+            });
         }
     }
     Ok(PresentationScene {
         triangles,
         labels: Vec::new(),
+        textures,
     })
 }
 
@@ -346,6 +425,14 @@ pub fn render_presentation(
             .any(|value| !value.is_finite())
     }) {
         return Err(PresentationError::NonFiniteGeometry { triangle });
+    }
+    if let Some(triangle) = scene.triangles.iter().position(|triangle| {
+        triangle.texture.is_some_and(|texture| {
+            texture.texture >= scene.textures.len()
+                || !texture.uv.iter().flatten().all(|value| value.is_finite())
+        })
+    }) {
+        return Err(PresentationError::TextureReference { triangle });
     }
     check_labels(&scene.labels)?;
     raster::render(scene, options)

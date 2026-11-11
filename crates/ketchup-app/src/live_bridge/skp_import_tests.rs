@@ -297,6 +297,67 @@ fn a_textured_face_comes_into_the_document_with_its_image() {
     assert_eq!(&image[..8], b"\x89PNG\r\n\x1a\n");
 }
 
+/// The presentation image shows a SketchUp texture where it lies: the textured box comes
+/// out in the picture's red and white squares. Before, each face showed one flat colour.
+#[test]
+fn a_texture_shows_in_the_presentation_image() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("textured.skp");
+    std::fs::write(&path, fixture("textured_box.skp")).unwrap();
+    let (mut app, mut bridge) = setup();
+    let hide = app
+        .document_snapshot()
+        .occurrences()
+        .map(|occurrence| CanonicalCommand::SetOccurrenceVisibility {
+            id: occurrence.id(),
+            visible: false,
+        })
+        .collect();
+    app.document.apply_batch(&CommandBatch::new(hide)).unwrap();
+    bridge
+        .execute(&mut app, import(&path), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let image = directory.path().join("textured.png");
+    let options = json!({
+        "width": 240, "height": 160, "background": "transparent",
+        "shadows": false, "ambient_occlusion": false, "outlines": false,
+    });
+    let answer = bridge
+        .execute(
+            &mut app,
+            Request::Export {
+                expected: None,
+                path: image.display().to_string(),
+                export_format: "presentation_png".to_owned(),
+                drawing_scale: None,
+                image: Some(serde_json::from_value(options).unwrap()),
+                overwrite: false,
+            },
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(answer["exported"], true, "{answer}");
+    let decoder = png::Decoder::new(std::io::BufReader::new(
+        std::fs::File::open(&image).unwrap(),
+    ));
+    let mut reader = decoder.read_info().unwrap();
+    let mut rgba = vec![0; reader.output_buffer_size().unwrap()];
+    reader.next_frame(&mut rgba).unwrap();
+    // Shading scales a face's colour, so a flat colour keeps one green-to-red ratio.
+    let ratios = rgba
+        .chunks(4)
+        .filter(|pixel| pixel[3] == u8::MAX && pixel[0] > 60)
+        .map(|pixel| f64::from(pixel[1]) / f64::from(pixel[0]))
+        .collect::<Vec<_>>();
+    let red = ratios.iter().filter(|ratio| **ratio < 0.6).count();
+    let white = ratios.iter().filter(|ratio| **ratio > 0.8).count();
+    assert!(
+        red * 20 > ratios.len() && white * 20 > ratios.len(),
+        "{red} red and {white} white of {} model pixels",
+        ratios.len()
+    );
+}
+
 /// The groups nested in each other in files of SketchUp 2013 and 2020 come in as that
 /// assembly: each group's geometry under the group that holds it. Before, both files were
 /// refused.
