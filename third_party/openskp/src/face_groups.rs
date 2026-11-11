@@ -272,10 +272,9 @@ fn loop_vertices(lp: &[CoEdge], b: &GeometryBuilder) -> Vec<EntityId> {
 
 /// Groups a definition's faces by resolved material identity, in local space.
 ///
-/// A face whose front and back resolve to the SAME color is emitted once with
-/// `double_sided` set; a face whose sides differ is emitted as two
-/// single-sided triangle sets (one normal-wound front, one reverse-wound back)
-/// so each side keeps its own color.
+/// Every face is emitted once, normal-wound, with `double_sided` set, in its
+/// front's material, or in its back's when only the back is painted (Ketchup
+/// change, see PATCH.md).
 ///
 /// Fails (`OutOfRange`, the C++ `map::at`) when a triangle references a
 /// vertex the builder does not have.
@@ -339,30 +338,23 @@ pub fn build_local_face_groups(
             }
             Ok(())
         };
-        if front == back {
-            let (tw, th) = tile_size(front_mat);
-            let key = GroupKey {
-                color: front,
-                double_sided: true,
-                texture_index: (ctx.texture_index_for)(front_mat),
-            };
-            add_side(key, false, &f.uv_transform, tw, th)?;
+        // Ketchup change (see PATCH.md): a face is one surface, written once on its front
+        // and drawn from both sides. Upstream writes a face whose sides differ twice, the
+        // back as a reversed copy, so a solid painted on its outside only (SketchUp's paint
+        // bucket) came with an inside-out second shell. The front's paint wins; a face
+        // painted on its back only keeps the back's.
+        let (side_mat, color, uv_transform) = if front_mat.is_none() && back_mat.is_some() {
+            (back_mat, back, &f.uv_transform_back)
         } else {
-            let (ftw, fth) = tile_size(front_mat);
-            let key = GroupKey {
-                color: front,
-                double_sided: false,
-                texture_index: (ctx.texture_index_for)(front_mat),
-            };
-            add_side(key, false, &f.uv_transform, ftw, fth)?;
-            let (btw, bth) = tile_size(back_mat);
-            let key = GroupKey {
-                color: back,
-                double_sided: false,
-                texture_index: (ctx.texture_index_for)(back_mat),
-            };
-            add_side(key, true, &f.uv_transform_back, btw, bth)?;
-        }
+            (front_mat, front, &f.uv_transform)
+        };
+        let (tw, th) = tile_size(side_mat);
+        let key = GroupKey {
+            color,
+            double_sided: true,
+            texture_index: (ctx.texture_index_for)(side_mat),
+        };
+        add_side(key, false, uv_transform, tw, th)?;
     }
 
     Ok(groups)
