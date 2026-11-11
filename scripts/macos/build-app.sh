@@ -176,7 +176,7 @@ ln -s /Applications "$work/dmg/Applications"
 for notice in "${notices[@]}"; do
     cp "$resources/$notice" "$work/dmg/"
 done
-hdiutil create -quiet -volname "$name" -srcfolder "$work/dmg" -format UDZO "$dmg"
+scripts/macos/create-dmg.sh "$name" "$work/dmg" "$dmg"
 scripts/macos/check-notices.sh "$dmg" "$name.app" "${notices[@]}"
 if [ "$identity" != "-" ]; then
     codesign --force --timestamp --sign "$identity" "$dmg"
