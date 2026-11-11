@@ -23,6 +23,14 @@ must cost a worker process, not the editor.
 - `src/instanced_scene.rs`, `src/instanced_scene_build.rs`: `InstancedNode::hidden` carries a
   placement's own hidden flag (SketchUp's Hide), which upstream read into `RawInstance` but
   dropped from the scene. Test: `a_hidden_placement_comes_hidden_by_node` in `ketchup-skp`.
+- `src/face_groups.rs`, `build_local_face_groups`: upstream writes a face whose two sides are
+  painted differently twice, the back as a reversed copy. A solid painted on its outside only
+  (SketchUp's paint bucket) then came with a second, inside-out shell, which Ketchup's GLB
+  import took as sheets (review 2026-11-10 SKP-400). Every face is now written once, on its
+  front, drawn from both sides, in its front's material, or its back's when only the back is
+  painted; `ketchup-skp` counts a back painted unlike its front as
+  `skp_back_materials_dropped`. Tests: `a_box_painted_on_its_outside_only_comes_as_one_surface`
+  and `a_face_painted_on_its_back_only_keeps_that_colour` in `ketchup-skp`.
 
 To update: copy the same files of a newer upstream commit over this directory, record the commit
 here, keep or drop each change above (drop one only when upstream fixed it), and run the tests
