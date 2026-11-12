@@ -362,6 +362,8 @@ pub enum SkpOutcome {
         tags: Vec<(String, bool)>,
         /// The index in `tags` of each GLB node's tag, by glTF node index.
         node_tags: Vec<Option<usize>>,
+        /// Whether each GLB node is hidden in the file itself, by glTF node index.
+        node_hidden: Vec<bool>,
     },
     Refused(SkpRefusal),
 }
@@ -446,6 +448,7 @@ impl SkpOutcome {
                 .map(|tag| (tag.name, tag.visible))
                 .collect(),
             node_tags: model.node_tags,
+            node_hidden: model.node_hidden,
         }
     }
 }
