@@ -317,6 +317,26 @@ fn supersampling_smooths_the_outline_against_the_background() {
     assert!(partial(3) > 50);
 }
 
+/// R1112-IMG-500: an image only a few samples high still renders its corner shading instead of
+/// panicking on an empty clamp range.
+#[test]
+fn a_tiny_image_with_ambient_occlusion_renders() {
+    for (width, height, supersample) in [(1, 1, 1), (1, 5, 1), (20, 4, 1), (8, 4, 3), (20, 14, 1)] {
+        let image = render_presentation(
+            &box_on_slab(),
+            &PresentationOptions {
+                width,
+                height,
+                supersample,
+                ambient_occlusion: true,
+                ..PresentationOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!((image.width, image.height), (width, height));
+    }
+}
+
 #[test]
 fn invalid_requests_are_refused_with_their_reason() {
     let scene = box_on_slab();
