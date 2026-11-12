@@ -27,7 +27,7 @@ use super::{
     draw_view_on_page, extent, finished_floors, floor_levels, format_at_scale, ground_floor_of,
     lerp, marked_floor_levels, solid_edges, table_ground_floor, view_frames,
 };
-use super::{Point, SolidEdges};
+use super::{Point, SolidEdges, StoreyTableError};
 use crate::revision_table::{RevisionCaptions, SheetRevision, draw_revisions};
 use crate::sheet_cad::sheet_cad;
 use crate::title_block::{
@@ -192,6 +192,9 @@ pub struct DrawingSet {
     /// The height of ±0,000 the level marks were read against: the one the
     /// options set, else the ground floor found (review 2026-11-06 P3).
     pub zero_level_mm: f64,
+    /// The rows of the table of storeys the model does not bear out, which
+    /// do not refuse the drawings (review 2026-11-10 R1110-MF-400).
+    pub storey_table_issues: Vec<StoreyTableError>,
 }
 
 impl DrawingSet {
@@ -361,8 +364,9 @@ fn draw_views(
 /// to draw, or no plan is asked for; [`ProjectDrawingError::DoesNotFit`] when
 /// a sheet does not fit its format at the scale the options fix;
 /// [`ProjectDrawingError::TitleValueDoesNotFit`] when a title block value
-/// does not fit its cell; [`ProjectDrawingError::StoreyTable`] when the
-/// model contradicts a row of the table of storeys.
+/// does not fit its cell; [`ProjectDrawingError::StoreyTable`] when a row of
+/// the table of storeys would draw wrong or empty plans (one the model only
+/// does not bear out is in [`DrawingSet::storey_table_issues`]).
 pub fn drawing_set(
     solids: &[DrawingSolid],
     options: &DrawingSetOptions,
@@ -396,7 +400,7 @@ pub fn drawing_set_until(
         (Some(bounds), None) | (None, Some(bounds)) => bounds,
         (None, None) => return Err(ProjectDrawingError::Empty),
     };
-    super::storey_table::check(&options.storeys, solids)?;
+    let storey_table_issues = super::storey_table::check(&options.storeys, solids)?;
     stopped()?;
     let first_cut = options
         .plans
@@ -669,6 +673,7 @@ pub fn drawing_set_until(
         sheets,
         scale,
         zero_level_mm: zero_level(solids, options),
+        storey_table_issues,
     })
 }
 

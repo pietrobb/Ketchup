@@ -618,7 +618,8 @@ fn north_tenths(value: &Value) -> Option<Option<i32>> {
     format!("{:.0}", degrees * 10.0).parse().ok().map(Some)
 }
 
-/// Why a row of the table of storeys was refused, as the details name it.
+/// Why a row of the table of storeys was refused or reported, as the answer
+/// names it.
 fn storey_problem(problem: StoreyTableProblem) -> Value {
     match problem {
         StoreyTableProblem::StructureAboveFloor => json!("structure_above_floor"),
@@ -918,6 +919,15 @@ pub(super) fn finish_export(
         // misleads (review 2026-11-08 MF-241).
         "storeys": storeys_answer(&settings),
         "storeys_from": if settings.storeys.is_empty() { "model" } else { "table" },
+        // Rows the model does not bear out, reported, not refused (review
+        // 2026-11-10 R1110-MF-400).
+        "storey_table_issues": set.storey_table_issues.iter().map(|issue| json!({
+            "storey": issue.storey,
+            "finished_floor_mm": issue.levels.finished_floor_mm,
+            "structural_mm": issue.levels.structural_mm,
+            "problem": storey_problem(issue.problem),
+            "message": format!("{issue}; the sheets mark the table's levels. Correct the row if the model is right."),
+        })).collect::<Vec<_>>(),
         "zero_altitude_mm": settings.zero_altitude_mm.map_or(json!("none"), |altitude| json!(altitude)),
         "north_deg": settings.north_deg().map_or(json!("none"), |north| json!(north)),
         "revisions": settings.revisions,
