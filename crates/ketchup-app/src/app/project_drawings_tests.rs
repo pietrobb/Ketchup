@@ -203,6 +203,37 @@ fn a_title_value_too_long_for_its_cell_stops_the_export_and_says_what_fits() {
     );
 }
 
+/// Review 2026-11-10 R1110-MF-400: a row of the table of storeys with no
+/// face of the model under it refused the drawings (§3: drawings are no
+/// production export). They are written, and the message after the export
+/// names the row.
+#[test]
+fn a_storey_the_model_does_not_bear_out_is_written_and_named_after_the_export() {
+    let mut app = KetchupApp::new();
+    add_box(&mut app, 903, "wall", 0.0);
+    crate::drawn_shape::tests::evaluate_exact(&mut app);
+    let mut settings = app.sheet_settings();
+    settings.storeys = vec![ketchup_manufacturing::title_block::StoreyLevels {
+        finished_floor_mm: 1000,
+        structural_mm: 1000,
+    }];
+    app.store_sheet_settings(settings);
+    let path = std::env::temp_dir().join(format!(
+        "ketchup-drawings-storey-in-the-air-{}.pdf",
+        std::process::id()
+    ));
+    assert!(app.export_project_drawings_to(&path), "{}", app.digest);
+    assert!(path.exists());
+    std::fs::remove_file(&path).unwrap();
+    for wanted in ["Storey 1 of the table", "at 1000 mm", "Correct the row"] {
+        assert!(
+            app.digest.contains(wanted),
+            "{wanted:?} not in {:?}",
+            app.digest
+        );
+    }
+}
+
 /// P3-V: a visible part whose bodies cannot be told apart (two independent
 /// extrusions both ending in its one body) stops the sheet, naming the part;
 /// it was left off the sheet without a word.

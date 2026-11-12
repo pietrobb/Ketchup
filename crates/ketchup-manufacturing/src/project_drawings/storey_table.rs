@@ -1,7 +1,9 @@
 //! The table of storeys against the model (review 2026-11-09 MF-300): a table
-//! the model contradicts printed convincing but wrong level marks for the
-//! building office, so it is refused; and the storeys found, which fill a new
-//! table for the designer to correct.
+//! whose plans would be nonsense (a structure over its floor, one plan twice,
+//! a plan cutting nothing) is refused; a row the model does not bear out is
+//! reported with the drawings, which are written (review 2026-11-10
+//! R1110-MF-400, §3); and the storeys found fill a new table for the designer
+//! to correct.
 
 use super::{
     DrawingSolid, FLOOR_SHARE_OF_LARGEST_LEVEL, Storey, bounds, floor_levels, ground_floor_of,
@@ -12,9 +14,9 @@ use ketchup_geometry::linalg::{cross, sub};
 use ketchup_model::tolerance::ROUNDING;
 use std::sync::atomic::AtomicBool;
 
-/// How far from a finished floor the model has an upward face at least: a
-/// floor finish not modelled lies on its structure, a thicker gap is a table
-/// that does not describe the model (not a tolerance: a floor build-up).
+/// How far under the structure of a row the face it stands on may lie: a
+/// layer under the structure the table names, not modelled (not a tolerance:
+/// a floor build-up). The finish over the structure is the table's own.
 pub const NEAR_FLOOR_MM: f64 = 50.0;
 
 /// Why a row of the table of storeys does not describe the model.
@@ -28,13 +30,24 @@ pub enum StoreyTableProblem {
     /// would cut nothing.
     OutsideModel,
     /// No face of the model to stand on, one looking up with no solid lying
-    /// on all of it, is under its finished floor by [`NEAR_FLOOR_MM`] at most
-    /// (a finish lies on its face, not under it).
+    /// on all of it, lies from [`NEAR_FLOOR_MM`] under its structure up to
+    /// its finished floor (a finish lies on its face, not under it). Only
+    /// reported: the plans and levels are the table's.
     NoFloorInModel,
 }
 
+impl StoreyTableProblem {
+    /// Whether the drawings are refused for it: their plans would be wrong or
+    /// empty. The others are reported with the drawings written.
+    #[must_use]
+    pub const fn refuses(self) -> bool {
+        !matches!(self, Self::NoFloorInModel)
+    }
+}
+
 /// A row of the table of storeys the model contradicts: the export of the
-/// drawings is refused rather than print its levels.
+/// drawings is refused when its [`StoreyTableProblem::refuses`], else it is
+/// reported with them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StoreyTableError {
     /// The row, from 1 as the table lists it.
@@ -69,7 +82,8 @@ impl std::fmt::Display for StoreyTableError {
             }
             StoreyTableProblem::NoFloorInModel => write!(
                 formatter,
-                "has no face of the model to stand on up to {NEAR_FLOOR_MM} mm under it"
+                "has no face of the model to stand on from {NEAR_FLOOR_MM} mm under its structure at {} mm up to it",
+                levels.structural_mm
             ),
         }
     }
@@ -83,24 +97,41 @@ impl From<StoreyTableError> for super::ProjectDrawingError {
     }
 }
 
-/// Refuses the first row of `table`, in its order, that `solids` contradict;
-/// passes any table with no solid to check against (annotations alone).
+/// The rows of `table` the model does not bear out, to report with the
+/// drawings; passes any table with no solid to check against (annotations
+/// alone).
+///
+/// # Errors
+/// The first row, in the table's order, whose problem
+/// [`StoreyTableProblem::refuses`] the drawings.
 pub(super) fn check(
     table: &[StoreyLevels],
     solids: &[DrawingSolid],
-) -> Result<(), StoreyTableError> {
-    contradicted(table, solids).map_or(Ok(()), Err)
+) -> Result<Vec<StoreyTableError>, StoreyTableError> {
+    let mut reported = Vec::new();
+    for error in contradicted(table, solids) {
+        if error.problem.refuses() {
+            return Err(error);
+        }
+        reported.push(error);
+    }
+    Ok(reported)
 }
 
-fn contradicted(table: &[StoreyLevels], solids: &[DrawingSolid]) -> Option<StoreyTableError> {
-    let (low, high) = bounds(solids)?;
+/// Every row of `table` that `solids` contradict, in its order.
+fn contradicted(table: &[StoreyLevels], solids: &[DrawingSolid]) -> Vec<StoreyTableError> {
+    let Some((low, high)) = bounds(solids) else {
+        return Vec::new();
+    };
     let faces = standing_levels(solids)
         .into_iter()
         .filter(|level| level.free_area > level.area * ROUNDING)
         .map(|level| level.height_mm)
         .collect::<Vec<_>>();
-    table.iter().enumerate().find_map(|(index, levels)| {
+    let mut found = Vec::new();
+    for (index, levels) in table.iter().enumerate() {
         let floor = f64::from(levels.finished_floor_mm);
+        let under = f64::from(levels.structural_mm) - NEAR_FLOOR_MM;
         let problem = if levels.structural_mm > levels.finished_floor_mm {
             Some(StoreyTableProblem::StructureAboveFloor)
         } else if let Some(other) = table[..index]
@@ -110,20 +141,18 @@ fn contradicted(table: &[StoreyLevels], solids: &[DrawingSolid]) -> Option<Store
             Some(StoreyTableProblem::SameFloorAs(other + 1))
         } else if floor < low[2] - NEAR_FLOOR_MM || floor >= high[2] {
             Some(StoreyTableProblem::OutsideModel)
-        } else if !faces
-            .iter()
-            .any(|face| (0.0..=NEAR_FLOOR_MM).contains(&(floor - face)))
-        {
+        } else if !faces.iter().any(|face| (under..=floor).contains(face)) {
             Some(StoreyTableProblem::NoFloorInModel)
         } else {
             None
         };
-        problem.map(|problem| StoreyTableError {
+        found.extend(problem.map(|problem| StoreyTableError {
             storey: index + 1,
             levels: *levels,
             problem,
-        })
-    })
+        }));
+    }
+    found
 }
 
 /// The floors of a model as found from its faces, kept to find its ground

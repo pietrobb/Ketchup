@@ -2091,7 +2091,17 @@ impl KetchupApp {
                     arguments.insert("characters", missing.iter().collect());
                     "digest-exported-project-drawings-question-marks"
                 };
-                self.catalog.format(key, &arguments)
+                // Review 2026-11-10 R1110-MF-400: written, with what of the
+                // table of storeys the model does not bear out.
+                let mut digest = self.catalog.format(key, &arguments);
+                for issue in &set.storey_table_issues {
+                    digest.push(' ');
+                    digest.push_str(&super::storey_table::storey_table_error_text(
+                        &self.catalog,
+                        issue,
+                    ));
+                }
+                digest
             }
             Err(error) => self.catalog.format(
                 "error-export-project-drawings",

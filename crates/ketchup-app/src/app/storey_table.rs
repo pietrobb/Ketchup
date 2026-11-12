@@ -152,7 +152,8 @@ fn zero_storey(settings: &SheetSettings) -> Option<usize> {
 }
 
 /// Why the drawings were refused for a row of the table of storeys (review
-/// 2026-11-09 MF-300), as the window says it.
+/// 2026-11-09 MF-300), or what they report of it (review 2026-11-10
+/// R1110-MF-400), as the window says it.
 pub(crate) fn storey_table_error_text(catalog: &LocaleCatalog, error: &StoreyTableError) -> String {
     let mut arguments = BTreeMap::from([
         ("storey", error.storey.to_string()),
