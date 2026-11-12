@@ -129,6 +129,9 @@ pub struct SkpModel {
     /// The index in `tags` of each GLB node's tag, by glTF node index; `None` for a node on
     /// the default tag.
     pub node_tags: Vec<Option<usize>>,
+    /// Whether each GLB node is hidden in the file itself (SketchUp's Hide), by glTF node
+    /// index. glTF has no place for it either.
+    pub node_hidden: Vec<bool>,
 }
 
 /// A SketchUp tag (a layer before SketchUp 2020) with its visibility in the file.
@@ -180,7 +183,22 @@ pub fn skp_to_glb(skp: &[u8], max_glb_bytes: usize) -> Result<SkpModel, SkpError
         version: model.version,
         tags,
         node_tags,
+        node_hidden: node_hidden(&scene),
     })
+}
+
+/// Whether each node of the scene is hidden, by glTF node index, in the order of
+/// [`node_tags`].
+fn node_hidden(scene: &InstancedScene) -> Vec<bool> {
+    fn visit(node: &InstancedNode, hidden: &mut Vec<bool>) {
+        hidden.push(node.hidden);
+        for child in &node.children {
+            visit(child, hidden);
+        }
+    }
+    let mut hidden = Vec::new();
+    visit(&scene.scene_hierarchy, &mut hidden);
+    hidden
 }
 
 /// SketchUp's texture `v` runs up the picture from its bottom row, glTF's down from its top

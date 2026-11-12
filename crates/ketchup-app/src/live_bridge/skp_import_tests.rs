@@ -106,6 +106,34 @@ fn the_parts_of_a_tagged_component_import_on_that_tag_hidden_as_in_the_file() {
     }
 }
 
+/// A box placed hidden in SketchUp (Edit > Hide) imports hidden, the other shown (review
+/// 2026-11-10 SKP-402). Before, both imported visible.
+#[test]
+fn a_component_hidden_in_the_file_imports_hidden() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("hidden.skp");
+    std::fs::write(&path, fixture("hidden_boxes.skp")).unwrap();
+    let (mut app, mut bridge) = setup();
+    let before = app.document_snapshot();
+    let answer = bridge
+        .execute(&mut app, import(&path), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(answer["imported"], true, "{answer}");
+
+    let snapshot = app.document_snapshot();
+    let mut visible: Vec<bool> = snapshot
+        .occurrences()
+        .filter(|occurrence| before.occurrence(occurrence.id()).is_none())
+        .map(|occurrence| occurrence.visible())
+        .collect();
+    visible.sort_unstable();
+    assert_eq!(
+        visible,
+        [false, true],
+        "one box hidden, one shown: {answer}"
+    );
+}
+
 /// The answer to importing `file` into a new document, which answered `imported`, the
 /// document after it and the occurrences it added.
 fn import_fixture(

@@ -575,7 +575,7 @@ pub fn plan_glb_import_tagged(
                 transform: *placement,
                 parent: Some(parent),
                 tags: planned_tags.by_node[*node_index].clone(),
-                visible: true,
+                visible: !planned_tags.hidden_by_node[*node_index],
             });
             if let Some(color) = primitive.color {
                 commands.push(CanonicalCommand::SetOccurrenceColor {
