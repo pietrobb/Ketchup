@@ -11,7 +11,8 @@ param(
 # of the downloads checks each one. A file not directly in the release folder is
 # no file of the release and is refused: the 0.3.2 sums named
 # payload/package-manifest.json, which no one could download (review 2026-11-08
-# REL-251).
+# REL-251). Lines end with LF: GNU sha256sum takes a CR as part of the file name,
+# so the CRLF sums the 0.3.3 build wrote failed on every file.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -30,5 +31,5 @@ $lines = foreach ($asset in $Assets) {
 }
 [IO.File]::WriteAllText(
     (Join-Path $folder "SHA256SUMS.txt"),
-    (($lines -join "`r`n") + "`r`n"),
+    (($lines -join "`n") + "`n"),
     [Text.UTF8Encoding]::new($false))

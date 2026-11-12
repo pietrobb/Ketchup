@@ -33,7 +33,8 @@ def test_each_line_names_a_file_beside_the_sums_with_its_hash(tmp_path):
     result = write(output, assets)
     assert result.returncode == 0, result.stderr
     sums = (output / "SHA256SUMS.txt").read_bytes().decode("utf-8")
-    lines = re.findall(r"^([0-9a-f]{64})  (\S+)\r?$", sums, re.M)
+    assert "\r" not in sums, "GNU sha256sum -c reads a CR as part of the file name"
+    lines = re.findall(r"^([0-9a-f]{64})  (\S+)$", sums, re.M)
     assert [name for _, name in lines] == [asset.name for asset in assets], sums
     for digest, name in lines:
         assert digest == hashlib.sha256((output / name).read_bytes()).hexdigest(), name
