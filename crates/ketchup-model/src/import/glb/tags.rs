@@ -67,7 +67,11 @@ pub(super) fn plan_tags(
         return Ok(planned);
     }
     if tags.tags.len() > MAX_GLB_TAGS {
-        return Err(GlbImportError::TooManyOutputs);
+        return Err(super::excess::too_large(
+            super::GlbMeasure::Tags,
+            tags.tags.len(),
+            MAX_GLB_TAGS,
+        ));
     }
     if tags.node_tags.len() != nodes.len()
         || tags

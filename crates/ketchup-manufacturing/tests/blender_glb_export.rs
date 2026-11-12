@@ -7,7 +7,8 @@ use ketchup_model::exact_product::{
     ExactBodyPackage, ExactFaceRole, ExactProductError, exact_model_stl_export,
 };
 use ketchup_model::import::{
-    GlbImportError, ImportFormat, ImportLengthUnit, inspect_glb, plan_glb_import,
+    GlbExcess, GlbImportError, GlbMeasure, ImportFormat, ImportLengthUnit,
+    MAX_IMPORT_RECEIPT_OUTPUTS, inspect_glb, plan_glb_import,
 };
 use ketchup_model::mesh_recognition::{
     MeshRecognition, MeshRecognitionCandidate, RecognizedMeshKind, recognize_mesh_body,
@@ -787,9 +788,22 @@ fn glb_placing_more_triangles_than_an_export_writes_is_refused() {
     let primitives = 64;
     let placed_per_group = primitives * inspect_glb(&sample_glb()).unwrap().triangle_count();
     let groups = limits::EXPORT_TRIANGLES / placed_per_group + 1;
+    let error = inspect_glb(&grouped_scene(groups, primitives)).unwrap_err();
     assert_eq!(
-        inspect_glb(&grouped_scene(groups, primitives)),
-        Err(GlbImportError::TooManyTriangles)
+        error,
+        GlbImportError::TooLarge(GlbExcess {
+            measure: GlbMeasure::PlacedTriangles,
+            at_least: groups * placed_per_group,
+            limit: limits::EXPORT_TRIANGLES,
+        })
+    );
+    // R1110-SKP-401: the refusal names what is too many, how many and the most, and
+    // what to do (§2).
+    assert_names_count_limit_and_advice(
+        &error,
+        "placed triangles",
+        groups * placed_per_group,
+        limits::EXPORT_TRIANGLES,
     );
 }
 
@@ -797,18 +811,75 @@ fn glb_placing_more_triangles_than_an_export_writes_is_refused() {
 fn glb_expanding_beyond_the_commands_of_one_import_is_refused() {
     let primitives = 64;
     let groups = ProposalBudget::DRAWING_IMPORT.max_commands / primitives + 1;
+    let error = inspect_glb(&grouped_scene(groups, primitives)).unwrap_err();
+    // Each mesh part makes a mesh and a body, each node a group, each placed part an
+    // occurrence.
+    let outputs = 2 * primitives + (2 * groups + 1) + groups * primitives;
     assert_eq!(
-        inspect_glb(&grouped_scene(groups, primitives)),
-        Err(GlbImportError::TooManyOutputs)
+        error,
+        GlbImportError::TooLarge(GlbExcess {
+            measure: GlbMeasure::Outputs,
+            at_least: outputs,
+            limit: MAX_IMPORT_RECEIPT_OUTPUTS,
+        })
+    );
+    assert_names_count_limit_and_advice(
+        &error,
+        "objects to create",
+        outputs,
+        MAX_IMPORT_RECEIPT_OUTPUTS,
     );
 }
 
 #[test]
 fn glb_nested_deeper_than_an_instance_path_is_refused() {
     assert!(inspect_glb(&nested_scene(limits::INSTANCE_PATH_STEPS)).is_ok());
+    let error = inspect_glb(&nested_scene(limits::INSTANCE_PATH_STEPS + 1)).unwrap_err();
     assert_eq!(
-        inspect_glb(&nested_scene(limits::INSTANCE_PATH_STEPS + 1)),
-        Err(GlbImportError::TooManyNodes)
+        error,
+        GlbImportError::TooLarge(GlbExcess {
+            measure: GlbMeasure::Nesting,
+            at_least: limits::INSTANCE_PATH_STEPS + 1,
+            limit: limits::INSTANCE_PATH_STEPS,
+        })
+    );
+    assert_names_count_limit_and_advice(
+        &error,
+        "levels of nested groups",
+        limits::INSTANCE_PATH_STEPS + 1,
+        limits::INSTANCE_PATH_STEPS,
+    );
+}
+
+#[test]
+fn three_hundred_coloured_components_import() {
+    // R1110-SKP-401: 300 painted cubes, each a node placing a coloured mesh, were
+    // refused as beyond the output envelope.
+    let source = rewrite_glb_json(&grouped_scene(300, 1), |document| {
+        document["materials"] = serde_json::json!([{
+            "pbrMetallicRoughness": { "baseColorFactor": [0.8, 0.2, 0.1, 1.0] }
+        }]);
+        document["meshes"][0]["primitives"][0]["material"] = serde_json::json!(0);
+    });
+    let mut document = DocumentStore::new();
+    let batch = plan_glb_import(&document.current(), &source, "cubes.glb").unwrap();
+    document.apply_batch(&batch).unwrap();
+    assert_eq!(document.current().occurrences().count(), 300);
+}
+
+fn assert_names_count_limit_and_advice(
+    error: &GlbImportError,
+    measure: &str,
+    found: usize,
+    limit: usize,
+) {
+    let message = error.to_string();
+    for part in [measure, &found.to_string(), &limit.to_string()] {
+        assert!(message.contains(part), "{message:?} does not name {part:?}");
+    }
+    assert!(
+        message.contains(" then import "),
+        "{message:?} gives no advice"
     );
 }
 
