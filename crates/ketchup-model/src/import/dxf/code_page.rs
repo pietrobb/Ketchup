@@ -627,11 +627,12 @@ impl TextSeen {
     /// is doubted; a file read in the code page that is valid UTF-8 beyond ASCII is always
     /// doubted, as both readings are possible (review 2026-11-04 UL-141: one character sent
     /// a whole UTF-8 file through the code page, unsaid; r19 UL-160: „Δh“ read „Î”h“ and
-    /// „ε“ read „Îµ“, unsaid). A code page `chosen` by the user is obeyed instead; a
-    /// drawing of DXF 2007 or later, always UTF-8, refuses it.
+    /// „ε“ read „Îµ“, unsaid). A code page the user chose in `options` is obeyed instead;
+    /// a drawing of DXF 2007 or later, always UTF-8, refuses it, and ignores one it
+    /// inherits from the drawing it revises (review 2026-11-10 UL-400).
     pub(super) fn decide(
         self,
-        chosen: Option<DxfCodePage>,
+        options: super::DxfImportOptions,
     ) -> Result<TextEncoding, DxfImportError> {
         if self.lines == 0 {
             return Err(DxfImportError::Empty);
@@ -642,6 +643,9 @@ impl TextSeen {
             .as_ref()
             .is_none_or(|version| version.as_slice() < b"AC1021".as_slice());
         let name = before_2007.then_some(self.code_page.value).flatten();
+        let chosen = options
+            .code_page()
+            .filter(|_| before_2007 || !options.code_page_inherited());
         if let Some(chosen) = chosen {
             if !before_2007 {
                 return Err(DxfImportError::CodePageOfUtf8Drawing);
@@ -715,11 +719,11 @@ impl TextSeen {
     }
 }
 
-/// The text of a DXF file as [`TextSeen::decide`] reads it, with `chosen` the code page
-/// the user chose, and how it was read.
+/// The text of a DXF file as [`TextSeen::decide`] reads it in the code page `options`
+/// name, and how it was read.
 pub(super) fn dxf_source_text(
     source: &[u8],
-    chosen: Option<DxfCodePage>,
+    options: super::DxfImportOptions,
 ) -> Result<(Cow<'_, str>, TextEncoding), DxfImportError> {
     if source.is_empty() {
         return Err(DxfImportError::Empty);
@@ -728,7 +732,7 @@ pub(super) fn dxf_source_text(
     for line in source.split(|byte| *byte == b'\n') {
         seen.see(line);
     }
-    let encoding = seen.decide(chosen)?;
+    let encoding = seen.decide(options)?;
     let source = source
         .strip_prefix(super::BYTE_ORDER_MARK)
         .unwrap_or(source);
