@@ -31,7 +31,7 @@ from happening:
    file at least (review 2026-11-06 P3 and r23 P3).
 
 `--tag vX` checks one release instead of all. Needs the tags (`git fetch --no-tags
---depth=1 origin tag v0.2.0 tag v0.3.0 tag v0.3.1 tag v0.3.2` in a shallow clone). The old crates and their
+--depth=1 origin tag v0.2.0 tag v0.3.0 tag v0.3.1 tag v0.3.2 tag v0.3.3` in a shallow clone). The old crates and their
 build go to `<target>/release-<version>`; `--variants-only` skips the build.
 """
 
@@ -52,7 +52,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # Not v0.1.0: it takes every newer format and a document with a program for damage,
 # so no file Save writes can be kept safe from it; the README warns against it
 # (review 2026-11-01 DOC-100: 46 of 148 saved files opened its `.recovery`).
-RELEASES = ("v0.2.0", "v0.3.0", "v0.3.1", "v0.3.2")
+RELEASES = ("v0.2.0", "v0.3.0", "v0.3.1", "v0.3.2", "v0.3.3")
 SAVED_CRATES = ("crates/ketchup-model", "crates/ketchup-geometry", "crates/ketchup-tolerance")
 # `ketchup-test-env` is a dev-dependency of the model: the workspace needs its manifest.
 OLD_CRATES = (*SAVED_CRATES, "crates/ketchup-test-env")
@@ -95,6 +95,7 @@ REVIEWED = {
         },
         "DrawnShape": {"Hatch"},
     },
+    "v0.3.3": {},
 }
 
 ENUM = re.compile(
@@ -193,23 +194,42 @@ def what_it_reads(tag: str) -> list[str]:
     return [newest.group(1), ",".join(schemas), str(product(limit.group(1))) if limit else "0"]
 
 
+PATH_DEPENDENCY = re.compile(r'path\s*=\s*"\.\./([\w-]+)"')
+
+
+def old_crates(tag: str) -> tuple[str, ...]:
+    """OLD_CRATES and every crate they depend on by path in the tag: 0.3.3's model
+    depends on `ketchup-rejection`, which 0.3.2's did not."""
+    crates, pending = [], list(OLD_CRATES)
+    while pending:
+        crate = pending.pop(0)
+        if crate in crates:
+            continue
+        crates.append(crate)
+        manifest = git("show", f"{tag}:{crate}/Cargo.toml")
+        pending += (f"crates/{name}" for name in PATH_DEPENDENCY.findall(manifest))
+    return tuple(crates)
+
+
 def old_workspace(tag: str, target: Path) -> Path:
     """The crates of the tag under `target`, in a workspace of their own and the reader."""
     source = target / f"release-{version(tag)}"
     commit = git("rev-parse", f"{tag}^{{commit}}").strip()
+    crates = old_crates(tag)
     marker = source / "commit"
-    if not (marker.is_file() and marker.read_text().strip() == commit):
+    stamp = "\n".join((commit, *crates))
+    if not (marker.is_file() and marker.read_text().strip() == stamp):
         shutil.rmtree(source, ignore_errors=True)
-        archive = git("archive", tag, "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", *OLD_CRATES, binary=True)
+        archive = git("archive", tag, "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", *crates, binary=True)
         with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
             tar.extractall(source, filter="data")
         manifest = (source / "Cargo.toml").read_text(encoding="utf-8")
-        members = ", ".join(f'"{crate}"' for crate in (*OLD_CRATES, "reader"))
+        members = ", ".join(f'"{crate}"' for crate in (*crates, "reader"))
         manifest = re.sub(r"^members = \[.*?\]$", f"members = [{members}]", manifest, flags=re.M | re.S)
         manifest = re.sub(r"^exclude = .*?$\n", "", manifest, flags=re.M)
         manifest = re.sub(r"^\[patch\.crates-io\]\n(?:[^\[\n].*\n)*", "", manifest, flags=re.M)
         (source / "Cargo.toml").write_text(manifest, encoding="utf-8")
-        marker.write_text(commit)
+        marker.write_text(stamp)
     reader = source / "reader"
     (reader / "src").mkdir(parents=True, exist_ok=True)
     (reader / "Cargo.toml").write_text(
