@@ -277,12 +277,66 @@ pub(crate) fn replace_file(file: &Path, text: &str) -> io::Result<()> {
 /// with the documents opened, was readable by everyone).
 pub(crate) fn write_keeping_file(file: &Path, text: &str, backup: bool) -> io::Result<()> {
     #[cfg(unix)]
-    if effective_user() == 0
-        && let Some(owner) = owner_named_in(file).filter(|(uid, _)| *uid != 0)
     {
-        return as_user(owner, || write_as_found(file, text, backup));
+        let user = if effective_user() == 0 {
+            configuration_user()?
+        } else {
+            None
+        };
+        write_keeping_file_for(user, file, text, backup)
+    }
+    #[cfg(not(unix))]
+    {
+        write_as_found(file, text, backup)
+    }
+}
+
+/// [`write_keeping_file`] of the configuration of `user`: root writes it as that user
+/// unless it is root's own.
+#[cfg(unix)]
+fn write_keeping_file_for(
+    user: Option<(u32, u32)>,
+    file: &Path,
+    text: &str,
+    backup: bool,
+) -> io::Result<()> {
+    if effective_user() == 0
+        && let Some(user) = user.filter(|(uid, _)| *uid != 0)
+    {
+        return as_user(user, || write_as_found(file, text, backup));
     }
     write_as_found(file, text, backup)
+}
+
+/// The user, and group, whose configuration this process writes: the owner of its
+/// home, where the files are found, else the user `sudo` names. Under root the file is
+/// written as that user, so the system refuses whatever folders of others a link on
+/// the way leads to (review 2026-11-10 R1110-SEC-400: the user was the owner of the
+/// nearest folder the file is named in, read through every link above it; `~/.config`
+/// made a link to a folder of root's had root write with every check off, and one to
+/// `/home/v/.config` wrote into v's configuration as v).
+#[cfg(unix)]
+fn configuration_user() -> io::Result<Option<(u32, u32)>> {
+    if let Some(home) = std::env::var_os("HOME") {
+        return user_of_home(Path::new(&home)).map(Some);
+    }
+    let named = |name| match std::env::var(name) {
+        Ok(value) => value
+            .parse::<u32>()
+            .map(Some)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(io::Error::new(io::ErrorKind::InvalidData, error)),
+    };
+    Ok(named("SUDO_UID")?.zip(named("SUDO_GID")?))
+}
+
+/// The owner of `home`, through a link of root's in its place (`/home/u -> /data/u`).
+#[cfg(unix)]
+fn user_of_home(home: &Path) -> io::Result<(u32, u32)> {
+    use std::os::unix::fs::MetadataExt;
+    let home = std::fs::metadata(home)?;
+    Ok((home.uid(), home.gid()))
 }
 
 /// [`write_keeping_file`] as this process is.
@@ -344,8 +398,9 @@ fn write_as_found(file: &Path, text: &str, backup: bool) -> io::Result<()> {
 }
 
 /// The owner, user and group, of the nearest folder there that `file` is named
-/// in, as [`user_of_folder`] reads a link: the user whose configuration it is,
-/// also under `sudo`.
+/// in, as [`user_of_folder`] reads a link: whom root, writing as itself, holds
+/// the file and its folder to ([`root_writes_for`]). Which user writes is
+/// [`configuration_user`]'s, not this: it reads through links above the folder.
 #[cfg(unix)]
 fn owner_named_in(file: &Path) -> Option<(u32, u32)> {
     use std::os::unix::fs::MetadataExt;
@@ -387,11 +442,19 @@ use user::{as_user, effective_user};
 #[allow(unsafe_code)]
 mod user {
     use std::io;
+    use std::sync::{Mutex, PoisonError};
 
     /// The user this process writes as.
     pub(super) fn effective_user() -> u32 {
         // SAFETY: geteuid takes no pointers and has no preconditions.
         unsafe { libc::geteuid() }
+    }
+
+    /// The group this process writes as.
+    #[cfg(test)]
+    pub(super) fn effective_group() -> u32 {
+        // SAFETY: getegid takes no pointers and has no preconditions.
+        unsafe { libc::getegid() }
     }
 
     /// Runs `write` as `owner`, user and group, with no other group, and then
@@ -404,6 +467,13 @@ mod user {
         owner: (u32, u32),
         write: impl FnOnce() -> io::Result<T>,
     ) -> io::Result<T> {
+        // The user is the whole process's (glibc applies each call to every thread):
+        // one write at a time is another user, and the next starts from root's own
+        // (review 2026-11-10 R1110-SEC-401: a settings save beside Connect AI in a
+        // window run as root turned the process back to root in the middle of the
+        // other's write, or left root with the user's group for good).
+        static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+        let _lock = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
         // SAFETY: getegid takes no pointers; getgroups is given no buffer to
         // ask for the count, then a buffer of that count.
         let (group, groups) = unsafe {
@@ -413,24 +483,62 @@ mod user {
             groups.truncate(count(filled)?);
             (libc::getegid(), groups)
         };
+        // Root again also when `write` panics (R1110-SEC-401).
+        let root = Root {
+            group,
+            groups,
+            restored: false,
+        };
         let only: [libc::gid_t; 1] = [owner.1];
         // SAFETY: setgroups reads one group from a live local; setegid and
         // seteuid take no pointers. Root's real and saved user stay, so it is
-        // root again after; glibc applies each to every thread.
+        // root again after.
         let dropped = unsafe {
             done(libc::setgroups(1, only.as_ptr()))
                 .and_then(|()| done(libc::setegid(owner.1)))
                 .and_then(|()| done(libc::seteuid(owner.0)))
         };
         let written = dropped.and_then(|()| write());
-        // SAFETY: as above; `groups` is live and holds `groups.len()` groups.
-        let restored = unsafe {
-            done(libc::seteuid(0))
-                .and_then(|()| done(libc::setegid(group)))
-                .and_then(|()| done(libc::setgroups(length(&groups)?, groups.as_ptr())))
-        };
-        restored?;
+        root.restore()?;
         written
+    }
+
+    /// Root's group and groups, which this process takes again when dropped.
+    struct Root {
+        group: libc::gid_t,
+        groups: Vec<libc::gid_t>,
+        restored: bool,
+    }
+
+    impl Root {
+        fn restore(mut self) -> io::Result<()> {
+            self.restored = true;
+            self.take_back()
+        }
+
+        fn take_back(&self) -> io::Result<()> {
+            // SAFETY: seteuid and setegid take no pointers; `groups` is live and
+            // holds `groups.len()` groups.
+            unsafe {
+                done(libc::seteuid(0))
+                    .and_then(|()| done(libc::setegid(self.group)))
+                    .and_then(|()| {
+                        done(libc::setgroups(length(&self.groups)?, self.groups.as_ptr()))
+                    })
+            }
+        }
+    }
+
+    impl Drop for Root {
+        fn drop(&mut self) {
+            // Unwinding from a panic, with no caller to answer. Failing, the process
+            // stays the user, with less than root may do.
+            if !self.restored
+                && let Err(error) = self.take_back()
+            {
+                ketchup_rejection::log!("root again after a write as another user: {error}");
+            }
+        }
     }
 
     /// What a call answering 0 when it is done did.
@@ -866,7 +974,9 @@ mod tests {
         assert_eq!(effective_user(), 0);
         // The user's own file is written, and is theirs.
         let file = home.path().join("config.toml");
-        write_keeping_file(&file, "x = 1\n", false).unwrap();
+        let of_home = user_of_home(home.path()).unwrap();
+        assert_eq!(of_home, user);
+        write_keeping_file_for(Some(of_home), &file, "x = 1\n", false).unwrap();
         let own = std::fs::metadata(&file).unwrap();
         assert_eq!((own.uid(), own.gid()), user);
         assert_eq!(effective_user(), 0);
@@ -881,11 +991,114 @@ mod tests {
         let config = home.path().join(".claude.json");
         std::os::unix::fs::symlink(&secret, &config).unwrap();
         std::os::unix::fs::lchown(&config, Some(user.0), Some(user.1)).unwrap();
-        let refused =
-            write_keeping_file(&linked.join(".claude.json"), "{\"a\":1}", false).unwrap_err();
+        assert_eq!(user_of_home(&linked).unwrap(), user);
+        let refused = write_keeping_file_for(
+            Some(user_of_home(&linked).unwrap()),
+            &linked.join(".claude.json"),
+            "{\"a\":1}",
+            false,
+        )
+        .unwrap_err();
         assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied, "{refused}");
         assert_eq!(std::fs::read_to_string(&secret).unwrap(), "{}");
         assert_eq!(effective_user(), 0);
+    }
+
+    /// Review 2026-11-10 R1110-SEC-400: the user was the owner of the nearest
+    /// folder the file is named in, read through the links above it. With
+    /// `~/.config` the user's link to a folder of root's holding `Claude`, root
+    /// wrote there as root, every check off; with it a link to another user's
+    /// `.config`, it wrote that user's configuration as them. Written as the
+    /// owner of the home, the system refuses both.
+    #[cfg(unix)]
+    #[test]
+    fn under_sudo_a_link_above_the_folder_leads_the_write_nowhere_else() {
+        use std::os::unix::fs::PermissionsExt;
+        if effective_user() != 0 {
+            return;
+        }
+        let user = (65534, 65534);
+        let other = (65533, 65533);
+        let home = tempfile::tempdir().unwrap();
+        std::os::unix::fs::lchown(home.path(), Some(user.0), Some(user.1)).unwrap();
+        let mode = |path: &Path, mode| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap()
+        };
+        let roots = tempfile::tempdir().unwrap();
+        mode(roots.path(), 0o755);
+        std::fs::create_dir(roots.path().join("Claude")).unwrap();
+        let others = tempfile::tempdir().unwrap();
+        mode(others.path(), 0o755);
+        std::fs::create_dir(others.path().join("Claude")).unwrap();
+        std::os::unix::fs::chown(others.path(), Some(other.0), Some(other.1)).unwrap();
+        std::os::unix::fs::chown(others.path().join("Claude"), Some(other.0), Some(other.1))
+            .unwrap();
+        let config = home.path().join(".config");
+        for (to, owner) in [(roots.path(), (0, 0)), (others.path(), other)] {
+            std::os::unix::fs::symlink(to, &config).unwrap();
+            std::os::unix::fs::lchown(&config, Some(user.0), Some(user.1)).unwrap();
+            let file = config.join("Claude").join("claude_desktop_config.json");
+            let refused = write_keeping_file_for(
+                Some(user_of_home(home.path()).unwrap()),
+                &file,
+                "{}",
+                false,
+            )
+            .unwrap_err();
+            assert_eq!(
+                refused.kind(),
+                io::ErrorKind::PermissionDenied,
+                "{to:?}: {refused}"
+            );
+            assert!(
+                !to.join("Claude")
+                    .join("claude_desktop_config.json")
+                    .exists(),
+                "{owner:?}"
+            );
+            assert_eq!(effective_user(), 0);
+            std::fs::remove_file(&config).unwrap();
+        }
+    }
+
+    /// Review 2026-11-10 R1110-SEC-401: becoming another user is the whole
+    /// process's, with no lock and no way back from a panic. Two writes at once
+    /// turned the process back to root in the middle of the other's, or left
+    /// root with the user's group; a panic left the process that user.
+    #[cfg(unix)]
+    #[test]
+    fn becoming_another_user_is_one_write_at_a_time_and_ends_root_again() {
+        use user::effective_group;
+        if effective_user() != 0 {
+            return;
+        }
+        let before = effective_group();
+        let panicked = std::panic::catch_unwind(|| {
+            as_user((65534, 65534), || -> io::Result<()> {
+                panic!("write broke")
+            })
+        });
+        assert!(panicked.is_err());
+        assert_eq!((effective_user(), effective_group()), (0, before));
+        let writers: Vec<_> = [(65534, 65534), (65533, 65533)]
+            .into_iter()
+            .map(|owner| {
+                std::thread::spawn(move || {
+                    for _ in 0..500 {
+                        as_user(owner, || {
+                            assert_eq!((effective_user(), effective_group()), owner);
+                            assert_eq!((effective_user(), effective_group()), owner);
+                            Ok(())
+                        })
+                        .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        assert_eq!((effective_user(), effective_group()), (0, before));
     }
 
     /// Review 2026-11-08 SEC-242: a dangling symlink in place of the backup
