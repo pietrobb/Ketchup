@@ -194,23 +194,42 @@ def what_it_reads(tag: str) -> list[str]:
     return [newest.group(1), ",".join(schemas), str(product(limit.group(1))) if limit else "0"]
 
 
+PATH_DEPENDENCY = re.compile(r'path\s*=\s*"\.\./([\w-]+)"')
+
+
+def old_crates(tag: str) -> tuple[str, ...]:
+    """OLD_CRATES and every crate they depend on by path in the tag: 0.3.3's model
+    depends on `ketchup-rejection`, which 0.3.2's did not."""
+    crates, pending = [], list(OLD_CRATES)
+    while pending:
+        crate = pending.pop(0)
+        if crate in crates:
+            continue
+        crates.append(crate)
+        manifest = git("show", f"{tag}:{crate}/Cargo.toml")
+        pending += (f"crates/{name}" for name in PATH_DEPENDENCY.findall(manifest))
+    return tuple(crates)
+
+
 def old_workspace(tag: str, target: Path) -> Path:
     """The crates of the tag under `target`, in a workspace of their own and the reader."""
     source = target / f"release-{version(tag)}"
     commit = git("rev-parse", f"{tag}^{{commit}}").strip()
+    crates = old_crates(tag)
     marker = source / "commit"
-    if not (marker.is_file() and marker.read_text().strip() == commit):
+    stamp = "\n".join((commit, *crates))
+    if not (marker.is_file() and marker.read_text().strip() == stamp):
         shutil.rmtree(source, ignore_errors=True)
-        archive = git("archive", tag, "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", *OLD_CRATES, binary=True)
+        archive = git("archive", tag, "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", *crates, binary=True)
         with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
             tar.extractall(source, filter="data")
         manifest = (source / "Cargo.toml").read_text(encoding="utf-8")
-        members = ", ".join(f'"{crate}"' for crate in (*OLD_CRATES, "reader"))
+        members = ", ".join(f'"{crate}"' for crate in (*crates, "reader"))
         manifest = re.sub(r"^members = \[.*?\]$", f"members = [{members}]", manifest, flags=re.M | re.S)
         manifest = re.sub(r"^exclude = .*?$\n", "", manifest, flags=re.M)
         manifest = re.sub(r"^\[patch\.crates-io\]\n(?:[^\[\n].*\n)*", "", manifest, flags=re.M)
         (source / "Cargo.toml").write_text(manifest, encoding="utf-8")
-        marker.write_text(commit)
+        marker.write_text(stamp)
     reader = source / "reader"
     (reader / "src").mkdir(parents=True, exist_ok=True)
     (reader / "Cargo.toml").write_text(
