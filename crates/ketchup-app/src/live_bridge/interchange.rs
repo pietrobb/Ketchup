@@ -45,6 +45,8 @@ pub(super) struct ImportTarget {
     pub(super) format: ImportFormat,
     pub(super) unit: Option<ImportLengthUnit>,
     pub(super) code_page: Option<DxfCodePage>,
+    /// `code_page` is that of the underlay the drawing is a revision of.
+    pub(super) code_page_inherited: bool,
 }
 
 /// Records why the import of `path` failed for the answer.
@@ -275,6 +277,7 @@ impl LiveBridge {
             format,
             unit,
             code_page,
+            code_page_inherited,
         } = Self::import_target(app, request, ui_busy)?;
         if matches!(
             request,
@@ -288,6 +291,7 @@ impl LiveBridge {
                 unit,
                 ketchup_model::underlay::placement::geo_origin(&app.document.current()),
                 code_page,
+                code_page_inherited,
                 &ketchup_program::CancelToken::default(),
             )
             .map_err(|error| import_failed(&path, error))?;
@@ -375,7 +379,9 @@ impl LiveBridge {
             })
             .transpose()?;
         // The code page an underlay drawing is read in: the one the request names, else
-        // that of the underlay it is a revision of (review 2026-11-09 UL-303).
+        // that of the underlay it is a revision of (review 2026-11-09 UL-303), which one of
+        // DXF 2007 or later ignores (review 2026-11-10 UL-400).
+        let code_page_inherited = code_page.is_none();
         let code_page = match code_page {
             None => revision_of.and_then(|of| {
                 app.document
@@ -406,6 +412,7 @@ impl LiveBridge {
             format,
             unit,
             code_page,
+            code_page_inherited,
         })
     }
 

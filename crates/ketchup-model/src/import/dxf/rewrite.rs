@@ -84,8 +84,8 @@ pub fn write_edited_dxf(
     // The read is let go before the drawing is parsed, so the two are not held at once
     // (review 2026-10-29 CD-63).
     let frame = frame_of(source, options, lines, edits)?;
-    let encoding = text_encoding(&mut Cursor::new(source), options.code_page())
-        .map_err(EditedDxfError::Read)?;
+    let encoding =
+        text_encoding(&mut Cursor::new(source), options).map_err(EditedDxfError::Read)?;
     let mut drawing = Drawing::parse(source, encoding.code_page)?;
     // The header names the code page the texts are read and written in, so the drawing
     // reads so again, however few of its texts are left (review 2026-11-04 r19 UL-161).
