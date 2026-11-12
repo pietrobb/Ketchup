@@ -63,13 +63,26 @@ pub enum SkpError {
     Panicked { stage: Stage, message: String },
 }
 
+impl SkpError {
+    /// Whether the bytes are no SketchUp file at all: they do not begin as one.
+    #[must_use]
+    pub fn is_not_sketchup(&self) -> bool {
+        matches!(
+            self,
+            Self::Read { cause, .. } if cause.stage() == Some(openskp::ParseStage::Header)
+        )
+    }
+}
+
 impl fmt::Display for SkpError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::GlbTooLarge { limit, size } => write!(
                 formatter,
                 "the SketchUp model is {size} bytes as GLB, more than the {limit} bytes an \
-                 import reads"
+                 import reads. Purge what the model does not use (Window > Model Info > \
+                 Statistics > Purge Unused) or save parts of it as separate files, then \
+                 import them one by one."
             ),
             Self::Read { stage, cause } => write!(formatter, "OpenSKP failed {stage}: {cause}"),
             Self::Write { cause } => {
