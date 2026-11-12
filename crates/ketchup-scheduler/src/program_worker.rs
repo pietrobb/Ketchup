@@ -195,8 +195,11 @@ impl fmt::Display for SkpConversionError {
             Self::Cancelled => formatter.write_str("reading the SketchUp file was cancelled"),
             Self::MemoryLimit => write!(
                 formatter,
-                "reading the SketchUp file needed more than {} GiB of memory and was stopped; \
-                 the file is damaged or declares sizes it does not hold",
+                "reading the SketchUp file needed more than {} GiB of memory and was stopped: \
+                 the file is damaged or declares sizes it does not hold, or its model is \
+                 larger than one import reads. Open it in SketchUp; if it opens, purge what \
+                 it does not use (Window > Model Info > Statistics > Purge Unused) or save \
+                 parts of it as separate files, then import them one by one",
                 PROGRAM_WORKER_MEMORY_BYTES >> 30
             ),
             Self::WorkerFailed(error) => write!(
