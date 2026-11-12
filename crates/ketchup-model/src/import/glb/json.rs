@@ -2,8 +2,7 @@
 //! 2026-10-21 P3). A whole `serde_json::Value` of the chunk took 14 to 27 times its size
 //! in the window. Keys the import never reads, `extras` among them, are skipped while
 //! parsing; keys it only checks for are kept empty; the root arrays it only counts are
-//! kept as their length; and the values it keeps are at most [`MAX_JSON_VALUES`], far
-//! more than an importable GLB, of at most 512 nodes and meshes, holds.
+//! kept as their length; and the values it keeps are at most [`MAX_JSON_VALUES`].
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -19,6 +18,7 @@ const READ_KEYS: &[&str] = &[
     "asset",
     "attributes",
     "baseColorFactor",
+    "baseColorTexture",
     "buffer",
     "bufferView",
     "bufferViews",
@@ -32,6 +32,8 @@ const READ_KEYS: &[&str] = &[
     "doubleSided",
     "emissiveFactor",
     "extensionsRequired",
+    "images",
+    "index",
     "indices",
     "material",
     "materials",
@@ -46,18 +48,24 @@ const READ_KEYS: &[&str] = &[
     "pbrMetallicRoughness",
     "primitives",
     "rotation",
+    "sampler",
+    "samplers",
     "scale",
     "scene",
     "scenes",
+    "source",
+    "texCoord",
+    "textures",
     "translation",
     "type",
     "uri",
     "version",
+    "wrapS",
+    "wrapT",
 ];
 
 /// Keys the import only checks are there: kept as an empty object.
 const PRESENCE_KEYS: &[&str] = &[
-    "baseColorTexture",
     "camera",
     "emissiveTexture",
     "extensions",
@@ -73,18 +81,12 @@ const PRESENCE_KEYS: &[&str] = &[
 const NAMED_KEYS: &[&str] = &["attributes"];
 
 /// Root arrays the import only counts, to name what it leaves out.
-pub(super) const COUNTED_KEYS: &[&str] = &[
-    "animations",
-    "cameras",
-    "extensionsUsed",
-    "images",
-    "samplers",
-    "textures",
-];
+pub(super) const COUNTED_KEYS: &[&str] = &["animations", "cameras", "extensionsUsed"];
 
-/// The JSON values the import keeps at most; an importable GLB holds some tens of
-/// thousands. Kept, they take some tens of bytes each.
-pub(super) const MAX_JSON_VALUES: usize = 1 << 18;
+/// The JSON values the import keeps at most: a node takes some twenty, so a scene of
+/// [`super::MAX_NODES`] nodes fits; the SketchUp model of a hall of 3,253 nodes holds
+/// 83,480. Kept, they take some tens of bytes each.
+pub(super) const MAX_JSON_VALUES: usize = 1 << 20;
 
 /// The JSON chunk as the import reads it.
 pub(super) struct GlbJson {
@@ -319,13 +321,14 @@ mod tests {
         found
     }
 
-    /// A key `glb.rs` starts to read must be one this reader keeps, or the reader would
-    /// drop it and the import would take it for missing.
+    /// A key `glb.rs` or `textures.rs` starts to read must be one this reader keeps, or the
+    /// reader would drop it and the import would take it for missing.
     #[test]
     fn every_key_the_import_reads_is_kept() {
         let import = include_str!("../glb.rs");
-        let import = import.split("#[cfg(test)]").next().unwrap();
-        let unknown: Vec<_> = identifier_literals(import)
+        let import =
+            import.split("#[cfg(test)]").next().unwrap().to_owned() + include_str!("textures.rs");
+        let unknown: Vec<_> = identifier_literals(&import)
             .into_iter()
             .filter(|literal| {
                 !(READ_KEYS.contains(literal)
@@ -340,6 +343,6 @@ mod tests {
             "glb.rs names {unknown:?}: add each key it reads to READ_KEYS, PRESENCE_KEYS or \
              COUNTED_KEYS, or a value to VALUES"
         );
-        assert!(identifier_literals(import).contains("bufferViews"));
+        assert!(identifier_literals(&import).contains("bufferViews"));
     }
 }

@@ -19,18 +19,23 @@ pub struct GlbTag {
 }
 
 /// The tags of a GLB's nodes: `node_tags[n]` is the index in `tags` of glTF node `n`'s own
-/// tag, if it has one. Empty `node_tags` tags nothing.
+/// tag, if it has one. Empty `node_tags` tags nothing. `hidden[n]` is whether node `n`
+/// itself is hidden in the source file; empty `hidden` hides nothing.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct GlbNodeTags {
     pub tags: Vec<GlbTag>,
     pub node_tags: Vec<Option<usize>>,
+    pub hidden: Vec<bool>,
 }
 
 /// The commands that create the tags no tag of the document already names, and the tags of
-/// each node's parts, by glTF node index.
+/// each node's parts and whether they are hidden, by glTF node index.
 pub(super) struct PlannedTags {
     pub(super) commands: Vec<CanonicalCommand>,
     pub(super) by_node: Vec<BTreeSet<TagId>>,
+    /// The node or one above it is hidden, so its parts import hidden, as the source shows
+    /// them (review 2026-11-10 SKP-402).
+    pub(super) hidden_by_node: Vec<bool>,
 }
 
 pub(super) fn plan_tags(
@@ -39,15 +44,34 @@ pub(super) fn plan_tags(
     nodes: &[ParsedNode],
     traversal: &[usize],
 ) -> Result<PlannedTags, GlbImportError> {
+    let mut parents = vec![None; nodes.len()];
+    for node in traversal {
+        for child in &nodes[*node].children {
+            parents[*child] = Some(*node);
+        }
+    }
+    if !tags.hidden.is_empty() && tags.hidden.len() != nodes.len() {
+        return Err(GlbImportError::InvalidReference);
+    }
+    let mut hidden_by_node = vec![false; nodes.len()];
+    for node in traversal {
+        hidden_by_node[*node] = tags.hidden.get(*node).copied().unwrap_or(false)
+            || parents[*node].is_some_and(|parent| hidden_by_node[parent]);
+    }
     let mut planned = PlannedTags {
         commands: Vec::new(),
         by_node: vec![BTreeSet::new(); nodes.len()],
+        hidden_by_node,
     };
     if tags.node_tags.is_empty() {
         return Ok(planned);
     }
     if tags.tags.len() > MAX_GLB_TAGS {
-        return Err(GlbImportError::TooManyOutputs);
+        return Err(super::excess::too_large(
+            super::GlbMeasure::Tags,
+            tags.tags.len(),
+            MAX_GLB_TAGS,
+        ));
     }
     if tags.node_tags.len() != nodes.len()
         || tags
@@ -77,12 +101,6 @@ pub(super) fn plan_tags(
         .checked_add(1)
         .ok_or(GlbImportError::IdSpaceExhausted)?;
     let mut ids: Vec<Option<TagId>> = vec![None; tags.tags.len()];
-    let mut parents = vec![None; nodes.len()];
-    for node in traversal {
-        for child in &nodes[*node].children {
-            parents[*child] = Some(*node);
-        }
-    }
     for node in traversal {
         // A root carries no tags from above.
         let mut carried = match parents[*node] {
@@ -231,6 +249,7 @@ mod tests {
                 },
             ],
             node_tags,
+            hidden: Vec::new(),
         };
 
         let mut document = DocumentStore::new();
@@ -300,6 +319,7 @@ mod tests {
             plan(&GlbNodeTags {
                 tags: one.clone(),
                 node_tags: beyond,
+                ..GlbNodeTags::default()
             }),
             Some(GlbImportError::InvalidReference)
         );
@@ -307,6 +327,7 @@ mod tests {
             plan(&GlbNodeTags {
                 tags: one.clone(),
                 node_tags: vec![Some(0)],
+                ..GlbNodeTags::default()
             }),
             Some(GlbImportError::InvalidReference)
         );
@@ -319,9 +340,73 @@ mod tests {
                     visible: true,
                 }],
                 node_tags: blank,
+                ..GlbNodeTags::default()
             }),
             Some(GlbImportError::InvalidText)
         );
         assert_eq!(plan(&GlbNodeTags::default()), None);
+    }
+
+    /// A node hidden in the source file (SketchUp's Hide on a component) imports its parts
+    /// and those of every node below it hidden; the rest stay shown (review 2026-11-10
+    /// SKP-402). Before, every part imported visible.
+    #[test]
+    fn parts_under_a_hidden_node_import_hidden() {
+        let (json, binary) = super::super::json_tests::sample();
+        let source = super::super::json_tests::packed(&json, &binary);
+        let scene = inspect_glb(&source).unwrap();
+        let root = scene.traversal[0];
+        let mut under = Vec::new();
+        let mut stack = vec![root];
+        while let Some(node) = stack.pop() {
+            under.push(node);
+            stack.extend(&scene.nodes[node].children);
+        }
+        let mut hidden = vec![false; scene.nodes.len()];
+        hidden[root] = true;
+        let tags = GlbNodeTags {
+            hidden,
+            ..GlbNodeTags::default()
+        };
+        let snapshot = DocumentStore::new().current();
+        let batch = plan_glb_import_tagged(&snapshot, &source, "garden.glb", &[], &tags).unwrap();
+        let groups: Vec<GroupId> = batch
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                CanonicalCommand::CreateGroup { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        let (mut shown, mut hid) = (0, 0);
+        for command in batch.commands() {
+            if let CanonicalCommand::CreateOccurrence {
+                parent: Some(parent),
+                visible,
+                ..
+            } = command
+            {
+                let offset = groups.iter().position(|group| group == parent).unwrap();
+                let node = scene.traversal[offset];
+                assert_eq!(*visible, !under.contains(&node), "node {node}");
+                if *visible { shown += 1 } else { hid += 1 }
+            }
+        }
+        assert!(hid > 0 && shown > 0, "hidden {hid}, shown {shown}");
+        assert_eq!(
+            plan_glb_import_tagged(
+                &snapshot,
+                &source,
+                "garden.glb",
+                &[],
+                &GlbNodeTags {
+                    hidden: vec![true],
+                    ..GlbNodeTags::default()
+                },
+            )
+            .err(),
+            Some(GlbImportError::InvalidReference),
+            "hidden flags that do not fit the GLB's nodes are refused"
+        );
     }
 }

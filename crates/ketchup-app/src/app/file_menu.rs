@@ -19,7 +19,7 @@ const IMPORTS: [(AppCommand, &str); 8] = [
     (AppCommand::ImportBlenderGlb, "file-short-glb"),
 ];
 
-const EXPORTS: [(AppCommand, &str); 7] = [
+const EXPORTS: [(AppCommand, &str); 8] = [
     (AppCommand::ExportExactStep, "file-short-step"),
     (AppCommand::ExportExactIges, "file-short-iges"),
     (AppCommand::ExportMeshStl, "file-short-stl"),
@@ -27,6 +27,10 @@ const EXPORTS: [(AppCommand, &str); 7] = [
     (AppCommand::ExportBlenderGlb, "file-short-glb"),
     (AppCommand::ExportSketchupDae, "file-short-dae"),
     (AppCommand::ExportDrawingDxf, "file-short-dxf-profiles"),
+    (
+        AppCommand::ExportPresentationImage,
+        "file-short-presentation-image",
+    ),
 ];
 
 const VIEWER: [(AppCommand, &str); 2] = [

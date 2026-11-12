@@ -28,6 +28,9 @@ pub const UNFASTENED_JOINT_KINDS: &[&str] = &[
     "rests",
     "resting",
     "bearing only",
+    // Kinds of joints whose parts move (R1110-PG-405)
+    "slide",
+    "motion",
     // Slovak
     "žiadny",
     "žiadne",
@@ -119,8 +122,6 @@ pub const FASTENING_JOINT_KINDS: &[&str] = &[
     "cam",
     "cam lock",
     "hinge",
-    "slide",
-    "motion",
     "fixed",
     "clamped",
     "welded",
@@ -209,10 +210,12 @@ const SIDE_WORDS: &[&str] = &[
 ];
 
 /// Whether `word` qualifies a kind by size, product or side: it carries a digit
-/// ("6x120", "80"), is one letter ("B") or names a side.
+/// other than 0 ("6x120", "80"), is one letter but "x" ("B") or names a side. A
+/// size of only zeros or a lone "x" says nothing of the fastener: "screw 0",
+/// "nail x" and "pin 0 x 0" fastened (R1110-PG-405).
 fn qualifier(word: &str) -> bool {
-    word.chars().any(|c| c.is_ascii_digit())
-        || word.chars().count() == 1
+    word.chars().any(|c| matches!(c, '1'..='9'))
+        || (word.chars().count() == 1 && !matches!(word, "x" | "0"))
         || SIDE_WORDS.contains(&word)
 }
 
@@ -346,6 +349,27 @@ mod tests {
         }
         for kind in ["loose", "contact", "lose Schraube", "voľne uložené"] {
             assert_eq!(fastening(kind), JointFastening::Unfastened, "{kind}");
+        }
+    }
+
+    /// R1110-PG-405: a kind that says its parts move fastened them, and so did
+    /// any word with a digit or of one letter: "screw 0", "nail x".
+    #[test]
+    fn a_kind_that_moves_fastens_nothing_and_a_bare_zero_qualifies_nothing() {
+        for kind in ["slide", "motion", "Slide", "slide 500"] {
+            assert_eq!(fastening(kind), JointFastening::Unfastened, "{kind}");
+        }
+        for kind in ["screw 0", "nail x", "pin 0 x 0", "vrut 000", "screw 0x0"] {
+            assert_eq!(fastening(kind), JointFastening::Unknown, "{kind}");
+        }
+        for kind in [
+            "screw 6x0",
+            "Arunda 80 B",
+            "vrut 6x120",
+            "bolt M12",
+            "dowel 8",
+        ] {
+            assert_eq!(fastening(kind), JointFastening::Fastens, "{kind}");
         }
     }
 }

@@ -63,13 +63,26 @@ pub enum SkpError {
     Panicked { stage: Stage, message: String },
 }
 
+impl SkpError {
+    /// Whether the bytes are no SketchUp file at all: they do not begin as one.
+    #[must_use]
+    pub fn is_not_sketchup(&self) -> bool {
+        matches!(
+            self,
+            Self::Read { cause, .. } if cause.stage() == Some(openskp::ParseStage::Header)
+        )
+    }
+}
+
 impl fmt::Display for SkpError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::GlbTooLarge { limit, size } => write!(
                 formatter,
                 "the SketchUp model is {size} bytes as GLB, more than the {limit} bytes an \
-                 import reads"
+                 import reads. Purge what the model does not use (Window > Model Info > \
+                 Statistics > Purge Unused) or save parts of it as separate files, then \
+                 import them one by one."
             ),
             Self::Read { stage, cause } => write!(formatter, "OpenSKP failed {stage}: {cause}"),
             Self::Write { cause } => {
@@ -116,6 +129,9 @@ pub struct SkpModel {
     /// The index in `tags` of each GLB node's tag, by glTF node index; `None` for a node on
     /// the default tag.
     pub node_tags: Vec<Option<usize>>,
+    /// Whether each GLB node is hidden in the file itself (SketchUp's Hide), by glTF node
+    /// index. glTF has no place for it either.
+    pub node_hidden: Vec<bool>,
 }
 
 /// A SketchUp tag (a layer before SketchUp 2020) with its visibility in the file.
@@ -128,19 +144,21 @@ pub struct SkpTag {
 /// SketchUp's default tag, shown as "Untagged": it is no tag the user made.
 const DEFAULT_TAG: &str = "Layer0";
 
-/// Reads a SketchUp file and writes its model as GLB of at most `max_glb_bytes` bytes. Textures
-/// are not written: the GLB carries each material's colour.
+/// Reads a SketchUp file and writes its model as GLB of at most `max_glb_bytes` bytes. A PNG or
+/// JPEG texture comes with its image and where it lies on each face; glTF carries no other image
+/// format, so a material textured with one keeps its colour and is counted.
 ///
 /// # Errors
 /// OpenSKP refused the file or the model, panicked, or the GLB is larger than the limit.
 pub fn skp_to_glb(skp: &[u8], max_glb_bytes: usize) -> Result<SkpModel, SkpError> {
     let options = ParseOptions::default();
     let model = guarded(Stage::ReadSkp, || openskp::parse_skp(skp, &options))?;
-    let scene = guarded(Stage::BuildScene, || {
+    let mut scene = guarded(Stage::BuildScene, || {
         openskp::build_instanced_scene(skp, &options)
     })?;
+    flip_texture_rows(&mut scene);
     let glb = match catch_unwind(AssertUnwindSafe(|| {
-        openskp::to_instanced_glb(&scene, &InstancedGlbOptions { textures: false })
+        openskp::to_instanced_glb(&scene, &InstancedGlbOptions { textures: true })
     })) {
         Ok(written) => written.map_err(|cause| SkpError::Write { cause })?,
         Err(payload) => {
@@ -165,7 +183,36 @@ pub fn skp_to_glb(skp: &[u8], max_glb_bytes: usize) -> Result<SkpModel, SkpError
         version: model.version,
         tags,
         node_tags,
+        node_hidden: node_hidden(&scene),
     })
+}
+
+/// Whether each node of the scene is hidden, by glTF node index, in the order of
+/// [`node_tags`].
+fn node_hidden(scene: &InstancedScene) -> Vec<bool> {
+    fn visit(node: &InstancedNode, hidden: &mut Vec<bool>) {
+        hidden.push(node.hidden);
+        for child in &node.children {
+            visit(child, hidden);
+        }
+    }
+    let mut hidden = Vec::new();
+    visit(&scene.scene_hierarchy, &mut hidden);
+    hidden
+}
+
+/// SketchUp's texture `v` runs up the picture from its bottom row, glTF's down from its top
+/// row; OpenSKP writes SketchUp's as is, which shows every picture upside down.
+fn flip_texture_rows(scene: &mut InstancedScene) {
+    let primitives = scene
+        .mesh_resources
+        .iter_mut()
+        .flat_map(|resource| &mut resource.primitives);
+    for primitive in primitives {
+        for v in primitive.uvs.iter_mut().skip(1).step_by(2) {
+            *v = 1.0 - *v;
+        }
+    }
 }
 
 /// The tags of the scene's nodes, by glTF node index: OpenSKP writes the nodes depth first,
@@ -223,7 +270,14 @@ fn left_out(model: &ParsedModel) -> Vec<LeftOut> {
             model
                 .materials
                 .iter()
-                .filter(|material| material.texture.is_some())
+                .filter_map(|material| material.texture.as_ref())
+                .filter(|texture| {
+                    texture
+                        .data
+                        .as_deref()
+                        .and_then(openskp::face_groups::sniff_image_mime)
+                        .is_none()
+                })
                 .count(),
         ),
         // A part takes the tags of its component or group; a face's own tag has no part.
@@ -236,6 +290,20 @@ fn left_out(model: &ParsedModel) -> Vec<LeftOut> {
                     .filter(|face| match face.layer.as_str() {
                         "" => face.layer_id.is_some_and(|id| id != 0),
                         name => name != DEFAULT_TAG,
+                    })
+                    .count()
+            }),
+        ),
+        // A face is one surface, painted as its front: a back painted otherwise is lost.
+        (
+            "skp_back_materials_dropped",
+            sum(|d| {
+                d.faces
+                    .values()
+                    .filter(|face| {
+                        face.material_id.is_some()
+                            && face.back_material_id.is_some()
+                            && face.back_material_id != face.material_id
                     })
                     .count()
             }),
@@ -257,10 +325,8 @@ fn left_out(model: &ParsedModel) -> Vec<LeftOut> {
             "skp_loose_edges_dropped",
             sum(|d| d.loose_edge_runs().len()),
         ),
-        (
-            "skp_images_dropped",
-            model.definitions.values().filter(|d| d.is_image).count(),
-        ),
+        // A placed image is a component of one textured face: it comes as one, and an image
+        // glTF cannot carry is counted with the textures above.
     ]
     .into_iter()
     .filter(|(_, count)| *count > 0)

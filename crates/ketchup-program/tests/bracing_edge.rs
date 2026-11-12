@@ -80,20 +80,35 @@ fn laths_on_the_side_hold_the_top_only_in_its_outer_quarter() {
     assert_eq!(near_top.statics(), ketchup_program::Statics::Verified);
 }
 
-/// Review 2026-11-08 §5.1: which edge a brace holds was guessed from where it
-/// touches, so a lath 13 mm above the middle of the beam's side holds
-/// neither. `brace()` declares it: the laths hold the top every 300 mm along
-/// where they cross the beam. A declared brace still has to be fastened to the
-/// member and anchored to the ground; one that is not is reported and holds nothing.
+/// Review 2026-11-08 §5.1: `brace()` declares the edge laths on the beam's side
+/// hold, every 300 mm along where they cross it, where they touch it nearer
+/// that edge than its middle; 13 mm above the middle it holds nothing, as
+/// bracing there does not stop the beam twisting (R1110-PG-403). A declared
+/// brace still has to be fastened to the member and anchored to the ground;
+/// one that is not is reported and holds nothing.
 #[test]
 fn a_declared_brace_holds_the_edge_it_names_when_fastened_and_anchored() {
     let laths = (0..6)
         .map(|k| format!("\"lath {}\"", [300, 1200, 2100, 3600, 4500, 5400][k]))
         .collect::<Vec<_>>()
         .join(", ");
-    let declared = report(&format!(
+    let middle = report(&format!(
         "{}brace([\"beam\"], by = [{laths}], edge = \"top\")\n",
         side_laths(2213.0)
+    ));
+    assert!(
+        load(&middle, "beam")
+            .braced_by
+            .iter()
+            .all(|brace| !brace.part.starts_with("lath")),
+        "{:?}",
+        load(&middle, "beam").braced_by
+    );
+    assert_eq!(middle.statics(), ketchup_program::Statics::NotVerified);
+
+    let declared = report(&format!(
+        "{}brace([\"beam\"], by = [{laths}], edge = \"top\")\n",
+        side_laths(2375.0)
     ));
     let beam = load(&declared, "beam");
     assert_eq!(
@@ -110,7 +125,7 @@ fn a_declared_brace_holds_the_edge_it_names_when_fastened_and_anchored() {
     // The same laths unfastened from the wall anchor nothing.
     let loose = report(&format!(
         "{}brace([\"beam\"], by = [{laths}], edge = \"top\")\n",
-        side_laths(2213.0)
+        side_laths(2375.0)
             .replace("joint(\"lath", "#joint(\"lath")
             .replacen(
                 "#joint(\"lath 300\", \"beam\"",
@@ -208,6 +223,8 @@ fn a_deck_declared_a_diaphragm_anchored_to_a_wall_braces_the_joists() {
     // second: a board reaching no anchor holds nothing (review 2026-11-09 PG-301).
     let anchored = report(&deck(&format!(
         "box(\"deck tie\", (700, 880, 22), at = (2600, 200, 2422), material = \"GL24h\", tags = [\"deck\"])
+joint(\"deck tie\", \"deck a\", kind = \"screw\")
+joint(\"deck tie\", \"deck b\", kind = \"screw\")
 joint(\"deck b\", \"end wall\", kind = \"screw\")\n{declared}"
     )));
     let beam = load(&anchored, "beam");

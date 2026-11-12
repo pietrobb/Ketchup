@@ -195,8 +195,11 @@ impl fmt::Display for SkpConversionError {
             Self::Cancelled => formatter.write_str("reading the SketchUp file was cancelled"),
             Self::MemoryLimit => write!(
                 formatter,
-                "reading the SketchUp file needed more than {} GiB of memory and was stopped; \
-                 the file is damaged or declares sizes it does not hold",
+                "reading the SketchUp file needed more than {} GiB of memory and was stopped: \
+                 the file is damaged or declares sizes it does not hold, or its model is \
+                 larger than one import reads. Open it in SketchUp; if it opens, purge what \
+                 it does not use (Window > Model Info > Statistics > Purge Unused) or save \
+                 parts of it as separate files, then import them one by one",
                 PROGRAM_WORKER_MEMORY_BYTES >> 30
             ),
             Self::WorkerFailed(error) => write!(
@@ -484,7 +487,8 @@ impl ProgramWorker {
                 client.convert_skp(input, cancel.flag(), UNTIL_CANCELLED)
             })
             .map_err(Stopped::skp_error)?;
-        let (glb_sha256, version, verified, left_out, tags, node_tags) = match outcome {
+        let (glb_sha256, version, verified, left_out, tags, node_tags, node_hidden) = match outcome
+        {
             SkpOutcome::Converted {
                 glb_sha256,
                 version,
@@ -492,7 +496,16 @@ impl ProgramWorker {
                 left_out,
                 tags,
                 node_tags,
-            } => (glb_sha256, version, verified, left_out, tags, node_tags),
+                node_hidden,
+            } => (
+                glb_sha256,
+                version,
+                verified,
+                left_out,
+                tags,
+                node_tags,
+                node_hidden,
+            ),
             SkpOutcome::Refused(refusal) => return Err(SkpConversionError::Refused(refusal)),
         };
         let glb = crate::read_regular_file(&output, "GLB of the SketchUp model")
@@ -513,6 +526,7 @@ impl ProgramWorker {
                 .map(|(name, visible)| ketchup_skp::SkpTag { name, visible })
                 .collect(),
             node_tags,
+            node_hidden,
         })
     }
 

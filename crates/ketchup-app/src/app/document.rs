@@ -1587,8 +1587,32 @@ impl KetchupApp {
         ketchup_model::document::VerifiedProposalCommit,
         WorkRecoveryMutationError<ProposalCommitError>,
     > {
+        self.with_staged_container(staged_container, |app| {
+            app.commit_verified_proposal_with_work_recovery(proposal)
+        })
+    }
+
+    /// [`Self::apply_batch_with_work_recovery`] of a batch that reads blobs of
+    /// `staged_container`, the document's container with them added.
+    pub(crate) fn apply_batch_with_container_work_recovery(
+        &mut self,
+        batch: &CommandBatch,
+        staged_container: ContainerData,
+    ) -> Result<(), WorkRecoveryMutationError<CanonicalError>> {
+        self.with_staged_container(staged_container, |app| {
+            app.apply_batch_with_work_recovery(batch)
+        })
+    }
+
+    /// `mutate` with `staged_container` as the document's container, which stays unless
+    /// the mutation fails before it is published.
+    fn with_staged_container<T, E>(
+        &mut self,
+        staged_container: ContainerData,
+        mutate: impl FnOnce(&mut Self) -> Result<T, WorkRecoveryMutationError<E>>,
+    ) -> Result<T, WorkRecoveryMutationError<E>> {
         let previous_container = std::mem::replace(&mut self.file.container_data, staged_container);
-        let result = self.commit_verified_proposal_with_work_recovery(proposal);
+        let result = mutate(self);
         if result.as_ref().is_err_and(|error| {
             let published = match error {
                 WorkRecoveryMutationError::Recovery(error) => matches!(

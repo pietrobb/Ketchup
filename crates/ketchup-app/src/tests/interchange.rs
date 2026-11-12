@@ -227,6 +227,76 @@ fn a_mesh_export_is_made_while_the_window_paints_and_cancel_writes_nothing() {
     }
 }
 
+/// Jožinko feedback U5: File > Export > Presentation image asks how the picture looks, then
+/// where to save it, and makes it while the window paints. The model is unchanged, and a new
+/// file is written without asking, as a picture loses nothing of the model.
+#[test]
+fn the_file_menu_saves_a_presentation_image_as_the_options_say() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("presentation.png");
+    let dialogs = dialogs::ScriptedFileDialogs::new().queue_export(&path);
+    let script = dialogs.clone();
+    let mut app = KetchupApp::new().with_dialogs(Box::new(dialogs));
+    install_initial_graph_result(&mut app);
+    let digest = app.document.current().canonical_digest();
+    let mut harness = Harness::builder()
+        .with_size(Vec2::new(1600.0, 1000.0))
+        .build_state(|context, app: &mut KetchupApp| app.ui(context), app);
+    harness.run();
+    open_file_submenu(&mut harness, "menu-file-export");
+    let export = harness
+        .state()
+        .command_label(AppCommand::ExportPresentationImage);
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &export)
+        .click();
+    harness.run();
+    let transparent = harness
+        .state()
+        .catalog
+        .text("presentation-background-transparent");
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::RadioButton, &transparent)
+        .click();
+    harness.run();
+    let options = &mut harness
+        .state_mut()
+        .file
+        .activity
+        .presentation_dialog
+        .as_mut()
+        .expect("the options window is open")
+        .request
+        .options;
+    (options.width, options.height) = (160, 90);
+    let save = harness.state().catalog.text("presentation-save");
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &save)
+        .click();
+    step_until(
+        &mut harness,
+        Duration::from_secs(30),
+        "the presentation image was not saved",
+        |app| app.file_activity_label().is_none() && path.exists(),
+    );
+
+    assert_eq!(script.export_requests()[0].extension, "png");
+    assert!(script.high_risk_prompts().is_empty());
+    assert!(harness.state().file.activity.presentation_dialog.is_none());
+    let mut reader =
+        png::Decoder::new(std::io::BufReader::new(std::fs::File::open(&path).unwrap()))
+            .read_info()
+            .unwrap();
+    let mut rgba = vec![0; reader.output_buffer_size().unwrap()];
+    let info = reader.next_frame(&mut rgba).unwrap();
+    assert_eq!((info.width, info.height), (160, 90));
+    assert_eq!(rgba[3], 0, "the chosen transparent background");
+    assert_eq!(
+        harness.state().document.current().canonical_digest(),
+        digest
+    );
+}
+
 #[test]
 fn viewer_menu_exports_saved_scenes_and_package_without_editing_cad() {
     let directory = tempfile::tempdir().unwrap();

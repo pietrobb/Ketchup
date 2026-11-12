@@ -29,7 +29,7 @@ it.
 
 | Finding | Status |
 |---|---|
-| R1109-SEC-300: under `sudo`, `--mcp-setup` checks by path and writes by path | Fixed, 3d687611 and 463d6fbd (PR #49): the write runs with the effective user, group and groups of the owner of the folder the file is named in, then root again, so the system refuses root's folders whatever the checks saw. Probe as root in WSL: 3000 writes against a racing swap of the folder for a link leave 0 files in root's 0700 folder (the review found 14) |
+| R1109-SEC-300: under `sudo`, `--mcp-setup` checks by path and writes by path | Fixed, 3d687611 and 463d6fbd (PR #49): the write runs with the effective user, group and groups of the owner of the folder the file is named in, then root again, so the system refuses root's folders whatever the checks saw. Probe as root in WSL: 3000 writes against a racing swap of the folder for a link leave 0 files in root's 0700 folder (the review found 14). Not whatever the checks saw, as written here: the owner of that folder was read through the links above it, so `~/.config` made a link to a folder of root's had root write as root with the checks off, and one to another user's `.config` wrote as that user (review 2026-11-10 R1110-SEC-400); and the user was switched for the whole process with no lock and no way back from a panic (R1110-SEC-401). Since branch `r50-sudo-owner` the write runs as the owner of `$HOME`, where the files are found (else `SUDO_UID`/`SUDO_GID`), one switch at a time, and root again also after a panic |
 
 ## Ratchets and CI (§7 point 4, branch `r34-ratchets1109`)
 

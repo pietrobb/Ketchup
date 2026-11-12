@@ -687,8 +687,8 @@ pub enum Request {
         path: String,
         export_format: String,
         /// For dxf: N of the scale 1:N the annotations are drawn at.
-        #[serde(default)]
         drawing_scale: Option<f64>,
+        image: Option<interchange::PresentationImage>,
         /// Replace a file and loss report Kečup wrote at `path`, unchanged since.
         #[serde(default)]
         overwrite: bool,

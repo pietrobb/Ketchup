@@ -399,7 +399,9 @@ fn a_table_of_storeys_gives_the_plans_and_levels_a_layered_floor_hides() {
 /// plan twice, a storey over the roof a plan cutting nothing, a basement
 /// under the model was left out and the plans numbered from 2, and a table
 /// of 0/3500 against the floors at 200 and 2954 printed +3,300 and +3,500.
-/// A table the model contradicts is refused, naming the row and why.
+/// A table the model contradicts is refused, naming the row and why; one
+/// whose floors the model only does not bear out is reported with the
+/// drawings (review 2026-11-10 R1110-MF-400).
 #[test]
 fn a_table_of_storeys_the_model_contradicts_is_refused_by_its_row() {
     let house = layered_house();
@@ -415,7 +417,10 @@ fn a_table_of_storeys_the_model_contradicts_is_refused_by_its_row() {
         };
         match drawing_set(&house, &options) {
             Err(ProjectDrawingError::StoreyTable(error)) => Some((error.storey, error.problem)),
-            Ok(_) => None,
+            Ok(set) => set
+                .storey_table_issues
+                .first()
+                .map(|issue| (issue.storey, issue.problem)),
             Err(other) => panic!("{other}"),
         }
     };
@@ -466,7 +471,55 @@ fn a_table_of_storeys_the_model_contradicts_is_refused_by_its_row() {
     };
     assert_eq!(
         error.to_string(),
-        "storey 2 of the table of storeys, its finished floor at 3500 mm, has no face of the model to stand on up to 50 mm under it"
+        "storey 2 of the table of storeys, its finished floor at 3500 mm, has no face of the model to stand on from 50 mm under its structure at 3500 mm up to it"
+    );
+    assert!(!StoreyTableProblem::NoFloorInModel.refuses());
+    assert!(StoreyTableProblem::OutsideModel.refuses());
+}
+
+/// Review 2026-11-10 R1110-MF-400: a row was taken only with a face of the
+/// model up to 50 mm under its finished floor, its structure ignored, so a
+/// right table of a model of slabs alone (a screed of 80 – 180 mm not
+/// modelled) refused the drawings, and so did a row under a modelled finish.
+/// A row stands on a face from 50 mm under its structure up to its finished
+/// floor; one the model does not bear out is reported with the drawings,
+/// which are written (§3: drawings are no production export).
+#[test]
+fn a_floor_build_up_the_model_leaves_out_is_taken_and_one_it_contradicts_reported() {
+    let house = layered_house();
+    let row = |finished_floor_mm, structural_mm| StoreyLevels {
+        finished_floor_mm,
+        structural_mm,
+    };
+    let issues = |table: &[StoreyLevels]| {
+        let options = DrawingSetOptions {
+            plans: plans(table_storeys(table, 1200.0)),
+            storeys: table.to_vec(),
+            ..options(&house, None)
+        };
+        drawing_set(&house, &options)
+            .unwrap()
+            .storey_table_issues
+            .iter()
+            .map(|issue| (issue.storey, issue.problem))
+            .collect::<Vec<_>>()
+    };
+    // A screed of 100 or 60 mm on the slab at 200, and on the OSB at 2954.
+    for screed in [row(300, 200), row(260, 200)] {
+        assert_eq!(issues(&[screed, row(3054, 2954)]), [], "{screed:?}");
+    }
+    // A finished floor at 2932 under the OSB laid to 2954, and one in the air.
+    assert_eq!(
+        issues(&[row(200, 200), row(2932, 2932), row(3500, 3500)]),
+        [
+            (2, StoreyTableProblem::NoFloorInModel),
+            (3, StoreyTableProblem::NoFloorInModel)
+        ]
+    );
+    // The structure named more than 50 mm over the face it lies on.
+    assert_eq!(
+        issues(&[row(300, 260)]),
+        [(1, StoreyTableProblem::NoFloorInModel)]
     );
 }
 

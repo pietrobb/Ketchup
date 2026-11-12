@@ -1343,6 +1343,10 @@ pub(crate) fn validate_mesh_body(spec: &MeshBodySpec) -> Result<(), CanonicalErr
             .iter()
             .flatten()
             .any(|coordinate| !coordinate.is_finite() || coordinate.abs() > MAX_COORDINATE_MM)
+        || spec
+            .look
+            .as_ref()
+            .is_some_and(|look| look.validate(spec.triangles.len()).is_err())
     {
         return Err(CanonicalError::InvalidMeshBody);
     }

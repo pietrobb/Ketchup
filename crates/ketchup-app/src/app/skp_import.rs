@@ -17,9 +17,10 @@ use ketchup_program::CancelToken;
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 
-/// The largest GLB a SketchUp file converts to: more than the GLB import's vertex and
-/// triangle limits ever let through.
-const MAX_SKP_GLB_BYTES: usize = 64 * 1024 * 1024;
+/// The largest GLB a SketchUp file converts to: the geometry the GLB import's vertex and
+/// triangle limits let through, in at most 64 MiB, and the pictures of its textures (a
+/// customer's model with 36 textured materials converts to 68 MB).
+const MAX_SKP_GLB_BYTES: usize = 256 * 1024 * 1024;
 
 /// The SketchUp files read, by the SHA-256 of their bytes, kept like the DWG files read.
 static READ: Mutex<Vec<([u8; 32], Arc<SkpModel>)>> = Mutex::new(Vec::new());
@@ -108,7 +109,8 @@ impl SkpConversion {
         Ok(notes)
     }
 
-    /// The SketchUp tags of the GLB's nodes, which its parts import with.
+    /// The SketchUp tags of the GLB's nodes, which its parts import with, and the nodes
+    /// hidden in the file, whose parts import hidden.
     pub(crate) fn node_tags(&self) -> GlbNodeTags {
         GlbNodeTags {
             tags: (self.0.tags.iter())
@@ -118,6 +120,7 @@ impl SkpConversion {
                 })
                 .collect(),
             node_tags: self.0.node_tags.clone(),
+            hidden: self.0.node_hidden.clone(),
         }
     }
 }

@@ -27,6 +27,7 @@ use super::{
     draw_view_on_page, extent, finished_floors, floor_levels, format_at_scale, ground_floor_of,
     lerp, marked_floor_levels, solid_edges, table_ground_floor, view_frames,
 };
+use super::{Point, SolidEdges, StoreyTableError};
 use crate::revision_table::{RevisionCaptions, SheetRevision, draw_revisions};
 use crate::sheet_cad::sheet_cad;
 use crate::title_block::{
@@ -191,6 +192,9 @@ pub struct DrawingSet {
     /// The height of ±0,000 the level marks were read against: the one the
     /// options set, else the ground floor found (review 2026-11-06 P3).
     pub zero_level_mm: f64,
+    /// The rows of the table of storeys the model does not bear out, which
+    /// do not refuse the drawings (review 2026-11-10 R1110-MF-400).
+    pub storey_table_issues: Vec<StoreyTableError>,
 }
 
 impl DrawingSet {
@@ -360,8 +364,9 @@ fn draw_views(
 /// to draw, or no plan is asked for; [`ProjectDrawingError::DoesNotFit`] when
 /// a sheet does not fit its format at the scale the options fix;
 /// [`ProjectDrawingError::TitleValueDoesNotFit`] when a title block value
-/// does not fit its cell; [`ProjectDrawingError::StoreyTable`] when the
-/// model contradicts a row of the table of storeys.
+/// does not fit its cell; [`ProjectDrawingError::StoreyTable`] when a row of
+/// the table of storeys would draw wrong or empty plans (one the model only
+/// does not bear out is in [`DrawingSet::storey_table_issues`]).
 pub fn drawing_set(
     solids: &[DrawingSolid],
     options: &DrawingSetOptions,
@@ -395,7 +400,7 @@ pub fn drawing_set_until(
         (Some(bounds), None) | (None, Some(bounds)) => bounds,
         (None, None) => return Err(ProjectDrawingError::Empty),
     };
-    super::storey_table::check(&options.storeys, solids)?;
+    let storey_table_issues = super::storey_table::check(&options.storeys, solids)?;
     stopped()?;
     let first_cut = options
         .plans
@@ -404,120 +409,16 @@ pub fn drawing_set_until(
         .storey
         .cut_mm;
     let edges = solids.iter().map(solid_edges).collect::<Vec<_>>();
-    let title_of = |view: ProjectView| view_title(options, view);
-
-    let opening_points = opening_points(&options.openings.openings, solids);
-    let mut planned = Vec::new();
-    for (index, plan) in options.plans.iter().enumerate() {
-        let (view, frame) = view_frames(min, max, plan.storey.cut_mm, options.plan_only)[0];
-        let mut drawn = draw_view(view, frame, solids, &edges);
-        // A plan draws the annotations from its floor up to the next plan's;
-        // without a floor, two plans part at the lower one's cut (review
-        // 2026-10-24 MF-29: they parted nowhere, so each drew them all).
-        let parting = |lower: &PlanSheet, upper: &PlanSheet| {
-            upper.storey.floor_mm.unwrap_or(lower.storey.cut_mm)
-        };
-        let below = index.checked_sub(1).map_or(f64::NEG_INFINITY, |lower| {
-            parting(&options.plans[lower], plan)
-        });
-        let above = options
-            .plans
-            .get(index + 1)
-            .map_or(f64::INFINITY, |upper| parting(plan, upper));
-        let annotations = options
-            .annotations
-            .iter()
-            .filter(|annotation| (below..above).contains(&lowest(annotation)))
-            .cloned()
-            .collect::<Vec<_>>();
-        if !annotations.is_empty() {
-            drawn.annotate(PlanAnnotations::project(
-                &frame,
-                &annotations,
-                options.decimal_separator,
-            ));
-        }
-        let underlay = options
-            .underlay
-            .iter()
-            .filter(|[a, b]| (below..above).contains(&a[2].min(b[2])))
-            .copied()
-            .collect::<Vec<_>>();
-        drawn.lay_underlay(&frame, &underlay);
-        let marks = opening_points
-            .iter()
-            .filter(|(_, point)| (below..above).contains(&point[2]))
-            .cloned()
-            .collect::<Vec<_>>();
-        drawn.mark_openings(&frame, &marks);
-        drawn.north = north_arrow(&frame, options);
-        if !options.plan_only {
-            drawn.sections = section_marks(&frame, &view_frames(min, max, first_cut, false));
-        }
-        let (views, titles) = sheet_views(vec![(drawn, plan.view_title.clone())], 1);
-        if !views.views.is_empty() {
-            planned.push(Planned {
-                kind: SheetKind::Plan { storey: index },
-                title: plan.sheet_title.clone(),
-                views,
-                titles,
-            });
-        }
-    }
+    let mut planned = plan_sheets(solids, &edges, options, (min, max), first_cut);
     if !options.plan_only {
-        let frames = view_frames(min, max, first_cut, false);
-        let levels = section_levels(solids, options, stop)?;
-        let drawn = |wanted: &[ProjectView]| {
-            frames
-                .iter()
-                .filter(|(view, _)| wanted.contains(view))
-                .map(|(view, frame)| {
-                    let mut drawn = draw_view(*view, *frame, solids, &edges);
-                    drawn.levels.clone_from(&levels);
-                    let upright = PlanAnnotations::project_upright(
-                        frame,
-                        &options.annotations,
-                        lerp(min, max, 0.5),
-                        options.decimal_separator,
-                    );
-                    if upright.counts.dimensions > 0 {
-                        drawn.annotate(upright);
-                    }
-                    let (facing, title) = named_elevation(*view, frame, options, title_of(*view));
-                    drawn.facing = facing;
-                    (drawn, title)
-                })
-                .collect::<Vec<_>>()
-        };
-        for (kind, views, per_row, title) in [
-            (
-                SheetKind::Sections,
-                drawn(&[ProjectView::LongitudinalSection, ProjectView::CrossSection]),
-                2,
-                named(&options.sheet_titles.sections, "Sections"),
-            ),
-            (
-                SheetKind::Elevations,
-                drawn(&[
-                    ProjectView::Front,
-                    ProjectView::Back,
-                    ProjectView::Left,
-                    ProjectView::Right,
-                ]),
-                2,
-                named(&options.sheet_titles.elevations, "Elevations"),
-            ),
-        ] {
-            let (views, titles) = sheet_views(views, per_row);
-            if !views.views.is_empty() {
-                planned.push(Planned {
-                    kind,
-                    title,
-                    views,
-                    titles,
-                });
-            }
-        }
+        planned.extend(section_and_elevation_sheets(
+            solids,
+            &edges,
+            options,
+            (min, max),
+            first_cut,
+            stop,
+        )?);
     }
     if planned.is_empty() {
         return Err(ProjectDrawingError::Empty);
@@ -772,7 +673,146 @@ pub fn drawing_set_until(
         sheets,
         scale,
         zero_level_mm: zero_level(solids, options),
+        storey_table_issues,
     })
+}
+
+/// The plan of each storey in `options`, a sheet each, those that draw
+/// anything, `min` to `max` holding the solids and annotations together.
+fn plan_sheets(
+    solids: &[DrawingSolid],
+    edges: &[SolidEdges],
+    options: &DrawingSetOptions,
+    (min, max): (Point, Point),
+    first_cut: f64,
+) -> Vec<Planned> {
+    let opening_points = opening_points(&options.openings.openings, solids);
+    let mut planned = Vec::new();
+    for (index, plan) in options.plans.iter().enumerate() {
+        let (view, frame) = view_frames(min, max, plan.storey.cut_mm, options.plan_only)[0];
+        let mut drawn = draw_view(view, frame, solids, edges);
+        // A plan draws the annotations from its floor up to the next plan's;
+        // without a floor, two plans part at the lower one's cut (review
+        // 2026-10-24 MF-29: they parted nowhere, so each drew them all).
+        let parting = |lower: &PlanSheet, upper: &PlanSheet| {
+            upper.storey.floor_mm.unwrap_or(lower.storey.cut_mm)
+        };
+        let below = index.checked_sub(1).map_or(f64::NEG_INFINITY, |lower| {
+            parting(&options.plans[lower], plan)
+        });
+        let above = options
+            .plans
+            .get(index + 1)
+            .map_or(f64::INFINITY, |upper| parting(plan, upper));
+        let annotations = options
+            .annotations
+            .iter()
+            .filter(|annotation| (below..above).contains(&lowest(annotation)))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !annotations.is_empty() {
+            drawn.annotate(PlanAnnotations::project(
+                &frame,
+                &annotations,
+                options.decimal_separator,
+            ));
+        }
+        let underlay = options
+            .underlay
+            .iter()
+            .filter(|[a, b]| (below..above).contains(&a[2].min(b[2])))
+            .copied()
+            .collect::<Vec<_>>();
+        drawn.lay_underlay(&frame, &underlay);
+        let marks = opening_points
+            .iter()
+            .filter(|(_, point)| (below..above).contains(&point[2]))
+            .cloned()
+            .collect::<Vec<_>>();
+        drawn.mark_openings(&frame, &marks);
+        drawn.north = north_arrow(&frame, options);
+        if !options.plan_only {
+            drawn.sections = section_marks(&frame, &view_frames(min, max, first_cut, false));
+        }
+        let (views, titles) = sheet_views(vec![(drawn, plan.view_title.clone())], 1);
+        if !views.views.is_empty() {
+            planned.push(Planned {
+                kind: SheetKind::Plan { storey: index },
+                title: plan.sheet_title.clone(),
+                views,
+                titles,
+            });
+        }
+    }
+    planned
+}
+
+/// The sheet of the sections and that of the elevations, those that draw
+/// anything, `min` and `max` as for [`plan_sheets`].
+fn section_and_elevation_sheets(
+    solids: &[DrawingSolid],
+    edges: &[SolidEdges],
+    options: &DrawingSetOptions,
+    (min, max): (Point, Point),
+    first_cut: f64,
+    stop: &AtomicBool,
+) -> Result<Vec<Planned>, ProjectDrawingError> {
+    let mut sheets = Vec::new();
+    let title_of = |view: ProjectView| view_title(options, view);
+    let frames = view_frames(min, max, first_cut, false);
+    let levels = section_levels(solids, options, stop)?;
+    let drawn = |wanted: &[ProjectView]| {
+        frames
+            .iter()
+            .filter(|(view, _)| wanted.contains(view))
+            .map(|(view, frame)| {
+                let mut drawn = draw_view(*view, *frame, solids, edges);
+                drawn.levels.clone_from(&levels);
+                let upright = PlanAnnotations::project_upright(
+                    frame,
+                    &options.annotations,
+                    lerp(min, max, 0.5),
+                    options.decimal_separator,
+                );
+                if upright.counts.dimensions > 0 {
+                    drawn.annotate(upright);
+                }
+                let (facing, title) = named_elevation(*view, frame, options, title_of(*view));
+                drawn.facing = facing;
+                (drawn, title)
+            })
+            .collect::<Vec<_>>()
+    };
+    for (kind, views, per_row, title) in [
+        (
+            SheetKind::Sections,
+            drawn(&[ProjectView::LongitudinalSection, ProjectView::CrossSection]),
+            2,
+            named(&options.sheet_titles.sections, "Sections"),
+        ),
+        (
+            SheetKind::Elevations,
+            drawn(&[
+                ProjectView::Front,
+                ProjectView::Back,
+                ProjectView::Left,
+                ProjectView::Right,
+            ]),
+            2,
+            named(&options.sheet_titles.elevations, "Elevations"),
+        ),
+    ] {
+        let (views, titles) = sheet_views(views, per_row);
+        if !views.views.is_empty() {
+            sheets.push(Planned {
+                kind,
+                title,
+                views,
+                titles,
+            });
+        }
+    }
+    Ok(sheets)
 }
 
 /// `title`, else `fallback` when it is blank.

@@ -56,6 +56,8 @@ mod drill_holes;
 mod dwg_import;
 #[path = "exchange_export_tests.rs"]
 mod exchange_export;
+#[path = "presentation_tests.rs"]
+mod presentation;
 #[path = "product_integration_tests.rs"]
 mod product_integration;
 #[path = "program_access_tests.rs"]
@@ -68,6 +70,8 @@ mod project_drawings_job;
 mod room_areas;
 #[path = "skp_import_tests.rs"]
 mod skp_import;
+#[path = "skp_viewport_tests.rs"]
+mod skp_viewport;
 #[path = "underlay_objects_tests.rs"]
 mod underlay_objects;
 #[path = "underlay_program_tests.rs"]
@@ -441,6 +445,7 @@ fn disconnect_during_a_release_confirmation_writes_no_file() {
             path: path.to_string_lossy().into_owned(),
             export_format: "btlx".to_owned(),
             drawing_scale: None,
+            image: None,
             overwrite: false,
         },
     })

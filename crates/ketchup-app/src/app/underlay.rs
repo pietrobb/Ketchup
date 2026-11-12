@@ -126,12 +126,13 @@ impl ReadUnderlay {
 /// Reads the drawing at `path` in the program worker; `unit` is the length unit of a
 /// drawing that declares none, `geo_origin_mm` the document's
 /// ([`ketchup_model::underlay::placement::geo_origin`]) and `code_page` the one the user
-/// chose to read it in.
+/// chose to read it in, or, `code_page_inherited`, that of the underlay it is a revision of.
 pub(crate) fn read_underlay_file(
     path: &Path,
     unit: Option<ImportLengthUnit>,
     geo_origin_mm: Option<[f64; 2]>,
     code_page: Option<DxfCodePage>,
+    code_page_inherited: bool,
     cancel: &CancelToken,
 ) -> Result<ReadUnderlay, ImportError> {
     let failed = |cause: BoxedCause| ImportError::failed(ImportFormat::Dxf, cause);
@@ -144,6 +145,7 @@ pub(crate) fn read_underlay_file(
             unit_if_unitless: unit,
             geo_origin_mm,
             code_page,
+            code_page_inherited,
             output: output.clone(),
         },
         cancel,
@@ -246,9 +248,12 @@ impl KetchupApp {
         code_page: Option<DxfCodePage>,
     ) {
         let origin = geo_origin(&self.document.current());
+        // A revision is read in the code page of the underlay it revises, never in one the
+        // user chose for it (review 2026-11-10 UL-400).
+        let inherited = self.file.activity.underlay.revision_of.is_some();
         let Some(context) = self.file.activity.context.clone() else {
             let cancel = CancelToken::default();
-            let result = read_underlay_file(&path, unit, origin, code_page, &cancel);
+            let result = read_underlay_file(&path, unit, origin, code_page, inherited, &cancel);
             self.finish_underlay_read(path, (unit, code_page), result);
             return;
         };
@@ -262,6 +267,7 @@ impl KetchupApp {
                     unit,
                     origin,
                     code_page,
+                    inherited,
                     &thread_cancel,
                 ))
                 .is_ok()

@@ -10,6 +10,8 @@ pub struct DxfImportOptions {
     geo_origin_mm_bits: Option<[u64; 2]>,
     /// The code page the user chose to read a drawing before DXF 2007 in.
     code_page: Option<DxfCodePage>,
+    /// `code_page` is that of the drawing this one revises, not one chosen for this one.
+    code_page_inherited: bool,
 }
 
 impl DxfImportOptions {
@@ -19,6 +21,7 @@ impl DxfImportOptions {
             unit_if_unitless,
             geo_origin_mm_bits: None,
             code_page: None,
+            code_page_inherited: false,
         }
     }
 
@@ -26,12 +29,33 @@ impl DxfImportOptions {
     /// DXF 2007 or later is refused it ([`super::DxfImportError::CodePageOfUtf8Drawing`]).
     #[must_use]
     pub const fn with_code_page(self, code_page: Option<DxfCodePage>) -> Self {
-        Self { code_page, ..self }
+        Self {
+            code_page,
+            code_page_inherited: false,
+            ..self
+        }
+    }
+
+    /// The drawing is a revision of one read in `code_page`: a drawing before DXF 2007 is
+    /// read in it as if chosen, a later one, UTF-8 whatever its header names, as if none
+    /// were (review 2026-11-10 UL-400).
+    #[must_use]
+    pub const fn with_inherited_code_page(self, code_page: Option<DxfCodePage>) -> Self {
+        Self {
+            code_page,
+            code_page_inherited: true,
+            ..self
+        }
     }
 
     #[must_use]
     pub const fn code_page(self) -> Option<DxfCodePage> {
         self.code_page
+    }
+
+    #[must_use]
+    pub const fn code_page_inherited(self) -> bool {
+        self.code_page_inherited
     }
 
     /// Read as an underlay, the drawing moves by `origin_mm` when that leaves out no more

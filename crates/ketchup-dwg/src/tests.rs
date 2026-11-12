@@ -341,3 +341,34 @@ fn a_panic_inside_acadrust_becomes_a_named_error_with_its_message() {
         "acadrust panicked writing the DWG file: record 7 has no owner"
     );
 }
+
+/// Review 2026-11-10 UL-400 (capability review 733): a DWG before 2007 is converted to DXF
+/// text of its own version in its own code page, not UTF-8, so an underlay revision saved
+/// as DWG 2004 reads in the code page it inherits exactly as a DXF 2000 revision does.
+#[test]
+fn a_dwg_before_2007_converts_to_dxf_text_of_its_version_in_its_code_page() {
+    let mut document = CadDocument::new();
+    document.version = DxfVersion::AC1018;
+    document.header.code_page = String::from("ANSI_1250");
+    document
+        .add_entity(EntityType::Text(acadrust::Text::with_value(
+            "Šachta š",
+            Vector3::new(0.0, 0.0, 0.0),
+        )))
+        .expect("the text is added");
+    let dwg = DwgWriter::write_to_vec(&document).expect("a DWG 2004 is written");
+
+    let drawing = dwg_to_dxf(&dwg, usize::MAX).expect("the DWG converts");
+    assert_eq!(drawing.version, "AC1018");
+    // acadrust ends its lines with CR LF.
+    let text = String::from_utf8_lossy(&drawing.dxf).replace('\r', "");
+    assert!(text.contains("$ACADVER\n  1\nAC1018"), "{text}");
+    assert!(text.contains("$DWGCODEPAGE\n  3\nANSI_1250"), "{text}");
+    // Windows-1250: Š 0x8A, š 0x9A; the UTF-8 reading would be C5 A0 and C5 A1.
+    let note = b"\x8Aachta \x9A";
+    assert!(
+        drawing.dxf.windows(note.len()).any(|bytes| bytes == note),
+        "{text}"
+    );
+    assert!(std::str::from_utf8(&drawing.dxf).is_err());
+}

@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  Open source · Exact geometry (Open CASCADE) · Rule programs · Safe, undoable AI over MCP · Windows, with macOS and Linux builds · Apache-2.0
+  Open source · Exact geometry (Open CASCADE) · Rule programs · Safe, undoable AI over MCP · Windows and macOS, Linux from source · Apache-2.0
 </p>
 
 Ketchup is a 2D/3D modeler for anyone who designs things to be made: furniture, cabinets, a garden studio, a timber-frame house, a machine part. You can draw by hand, describe the model in a few lines of a rule program, or let the AI assistant you already use build it for you. Every change, by hand or by AI, goes through the same checks and the same Undo. When the design is ready, Ketchup gives you drawing sets, cut lists, material takeoffs, quotes and files for CNC machines, and a Viewer package you can send to a customer.
@@ -95,7 +95,7 @@ From the same model you get a numbered drawing set (**File → Drawings (PDF, DX
 
 Export a `.ketchup-view` package and send it. **Ketchup Viewer** opens it read-only: your customer can orbit the model, switch your saved scenes, pick a part to see its name, material, size and notes, show your dimensions, measure between points, and add comments with arrows and the camera position, then save them in a small file to send back to you, all without being able to change the geometry. The package carries geometry, materials and notes, not your design history or programs.
 
-The Windows Viewer is installed with Ketchup. A macOS app, an Android app and a static web version that runs entirely in the browser ([hosting guide](viewer/web/HOSTING.md)) share its code in `viewer/`.
+On Windows the Viewer is installed with Ketchup; on a Mac it is its own download, `Ketchup-Viewer-0.3.3-macOS.dmg`. An Android app and a static web version that runs entirely in the browser ([hosting guide](viewer/web/HOSTING.md)) share its code in `viewer/`.
 
 ### Let your AI assistant model it
 
@@ -114,15 +114,17 @@ See [Connect your AI harness](#connect-your-ai-harness-mcp) below for the one-cl
 
 ## Download and try it
 
-1. Download **`Ketchup-0.3.2-Setup.exe`** from the [latest release](https://github.com/pietrobb/Ketchup/releases/latest) and run it. It installs for the current user only, without administrator rights, into `%LOCALAPPDATA%\Programs\Ketchup` and adds **Ketchup** and **Ketchup Viewer** to the Start menu. If you prefer not to install anything, use `Ketchup-0.3.2-Portable.zip` from the same release.
-2. Download **`Ketchup-0.3.2-Examples.zip`** from the release, unpack it, and double-click any `.ketchup` file to open it in Ketchup. Double-click `kitchen.ketchup-view` to open it in Ketchup Viewer.
+1. Download **`Ketchup-0.3.3-Setup.exe`** from the [latest release](https://github.com/pietrobb/Ketchup/releases/latest) and run it. It installs for the current user only, without administrator rights, into `%LOCALAPPDATA%\Programs\Ketchup` and adds **Ketchup** and **Ketchup Viewer** to the Start menu. If you prefer not to install anything, use `Ketchup-0.3.3-Portable.zip` from the same release.
+2. Download **`Ketchup-0.3.3-Examples.zip`** from the release, unpack it, and double-click any `.ketchup` file to open it in Ketchup. Double-click `kitchen.ketchup-view` to open it in Ketchup Viewer.
 3. Optional: connect your AI harness (below) and ask it to *"model a 120 × 60 cm desk with two drawers"*.
 
 Requires Windows 10 or 11 x64. The Visual C++ runtime comes with the programs (only the older 0.3.1 also needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) for x64, 14.29 or later). The installer and the programs are signed by AEON GROUP spol. s r.o. No account, API key or Python is needed. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
 
+**On a Mac** (since 0.3.3): download **`Ketchup-0.3.3-macOS.dmg`** from the same release, open it and drag **Kečup** into Applications. **`Ketchup-Viewer-0.3.3-macOS.dmg`** holds **Kečup Viewer** the same way. Ketchup needs a Mac with Apple Silicon (M1 or newer) and macOS 11 or later; the Viewer also runs on Intel Macs. Both are signed by CENTAURY Plus s.r.o. and notarized by Apple, so they open without a warning. The examples are the same `Ketchup-0.3.3-Examples.zip`.
+
 ## Examples you can open right away
 
-The examples are in `Ketchup-0.3.2-Examples.zip` on the [release page](https://github.com/pietrobb/Ketchup/releases/latest) and in the [`examples`](examples) folder. Double-click a file or use **File → Open**.
+The examples are in `Ketchup-0.3.3-Examples.zip` on the [release page](https://github.com/pietrobb/Ketchup/releases/latest) and in the [`examples`](examples) folder. Double-click a file or use **File → Open**.
 
 | Example | Try it for |
 |---|---|
@@ -164,6 +166,12 @@ Other harnesses take the same command in their MCP configuration. Replace `<you>
 
 ```json
 { "mcpServers": { "ketchup": { "command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\Ketchup\\Ketchup.exe", "args": ["--mcp"] } } }
+```
+
+On a Mac, with Kečup in Applications, the command is the program inside the app:
+
+```sh
+claude mcp add --scope user ketchup -- "/Applications/Kečup.app/Contents/MacOS/ketchup-app" --mcp
 ```
 
 Then start a new session of the harness and ask, for example, to *"open tiny-house.ketchup in Ketchup and make the house 1 m longer"*.
@@ -213,7 +221,7 @@ Honest limits, so you know where it stands next to a mature mechanical CAD such 
 - **Exact operations are bounded.** Fillet, shell, sweep, loft and Booleans cover tested cases and fail with an explanation rather than produce doubtful geometry. Freeform surfacing is not there.
 - **Undo history lives in memory** for the session and reaches back 30 edits; Save writes only the current revision. A work-recovery copy keeps your edits and their Undo steps through a crash.
 - **One memory limit per kind of background job**, not for the whole window: several large imports and exports at once can use more memory than the computer has.
-- **Windows is the supported desktop platform.** macOS and Linux builds work from source (below); the installer and signed release are Windows-only.
+- **Windows and macOS are the supported desktop platforms.** Ketchup on macOS needs Apple Silicon. Linux builds work from source (below) and have no release package.
 - **No stable public API or long-term file-format promise yet.** A newer Ketchup opens older files. A document without underlays and annotations whose imports stay within the limits of 0.2.0 (at most 1 024 objects made by one import, a DXF source of at most 8 MiB, other sources of at most 32 MiB) is saved so that 0.2.0 opens it too. Ketchup 0.2.0 and later refuse a file a newer version saved and change nothing. **Do not open files saved by a later version in 0.1.0:** it takes them for damaged files and may open an older `.recovery` copy instead, and saving there can overwrite the newer file.
 
 ## Where it goes next

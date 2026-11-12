@@ -371,6 +371,7 @@ impl KetchupApp {
                 self.dispatch_file_command(id);
             }
             AppCommand::OpenViewerComments => self.open_viewer_comments(),
+            AppCommand::ExportPresentationImage => self.open_presentation_dialog(),
             AppCommand::Undo => {
                 if self.undo() {
                     self.digest = self.catalog.text("digest-undo");

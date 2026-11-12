@@ -106,6 +106,34 @@ fn the_parts_of_a_tagged_component_import_on_that_tag_hidden_as_in_the_file() {
     }
 }
 
+/// A box placed hidden in SketchUp (Edit > Hide) imports hidden, the other shown (review
+/// 2026-11-10 SKP-402). Before, both imported visible.
+#[test]
+fn a_component_hidden_in_the_file_imports_hidden() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("hidden.skp");
+    std::fs::write(&path, fixture("hidden_boxes.skp")).unwrap();
+    let (mut app, mut bridge) = setup();
+    let before = app.document_snapshot();
+    let answer = bridge
+        .execute(&mut app, import(&path), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(answer["imported"], true, "{answer}");
+
+    let snapshot = app.document_snapshot();
+    let mut visible: Vec<bool> = snapshot
+        .occurrences()
+        .filter(|occurrence| before.occurrence(occurrence.id()).is_none())
+        .map(|occurrence| occurrence.visible())
+        .collect();
+    visible.sort_unstable();
+    assert_eq!(
+        visible,
+        [false, true],
+        "one box hidden, one shown: {answer}"
+    );
+}
+
 /// The answer to importing `file` into a new document, which answered `imported`, the
 /// document after it and the occurrences it added.
 fn import_fixture(
@@ -169,6 +197,41 @@ fn faces_that_close_no_solid_come_into_the_document() {
     assert_eq!(open["count"], 2, "{open}");
 }
 
+/// A box painted on its outside only, in two colours, as SketchUp's paint bucket leaves it,
+/// comes in as one solid with nothing beside it, and the back painted unlike its front is
+/// counted. Before (review 2026-11-10 SKP-400), its unpainted backs came as a second,
+/// inside-out shell: the box imported as three sheets and no solid, its volume lost.
+#[test]
+fn a_box_painted_on_its_outside_only_comes_in_as_one_solid() {
+    let (answer, snapshot, imported) = import_fixture("outside_painted_box.skp");
+    assert_eq!(imported.len(), 1, "{answer}");
+    let kinds: Vec<_> = snapshot
+        .definition(imported[0].definition_id())
+        .unwrap()
+        .feature_ids()
+        .iter()
+        .filter_map(|id| snapshot.feature(*id))
+        .map(|feature| feature.kind().body_kind())
+        .collect();
+    assert_eq!(
+        kinds,
+        [Some(ketchup_model::document::BodyKind::Solid)],
+        "{answer}"
+    );
+    let diagnostics = answer["review"]["diagnostics"].as_array().unwrap();
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic["code"] != "glb_open_surfaces_imported"),
+        "{answer}"
+    );
+    let back = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "skp_back_materials_dropped")
+        .unwrap_or_else(|| panic!("the painted back is not counted in {answer}"));
+    assert_eq!(back["count"], 1, "{back}");
+}
+
 /// What needs a solid refuses an imported sheet by name: it is not made exact, and a
 /// check of made parts (collision, fabrication, mass) does not take it as a body.
 #[test]
@@ -218,6 +281,146 @@ fn what_needs_a_solid_refuses_an_imported_sheet_by_name() {
     }
 }
 
+/// A textured SketchUp face comes into the document with its picture: every triangle of
+/// the box says which image it shows and where its corners lie on it, and the image is the
+/// file's PNG, kept in the document. Before, the texture was dropped and only counted.
+#[test]
+fn a_textured_face_comes_into_the_document_with_its_image() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("textured.skp");
+    std::fs::write(&path, fixture("textured_box.skp")).unwrap();
+    let (mut app, mut bridge) = setup();
+    let before = app.document_snapshot();
+    let answer = bridge
+        .execute(&mut app, import(&path), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let codes: Vec<_> = answer["review"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|diagnostic| diagnostic["code"].as_str().unwrap().to_owned())
+        .collect();
+    for dropped in [
+        "skp_textures_dropped",
+        "glb_material_textures_ignored",
+        "glb_images_ignored",
+        "glb_textures_ignored",
+    ] {
+        assert!(!codes.iter().any(|code| code == dropped), "{answer}");
+    }
+    let snapshot = app.document_snapshot();
+    let box_body = snapshot
+        .occurrences()
+        .filter(|occurrence| before.occurrence(occurrence.id()).is_none())
+        .find_map(|occurrence| {
+            let definition = snapshot.definition(occurrence.definition_id())?;
+            definition
+                .feature_ids()
+                .iter()
+                .find_map(|id| match snapshot.feature(*id)?.kind() {
+                    ketchup_model::document::FeatureKind::MeshBody(mesh) => Some(mesh.clone()),
+                    _ => None,
+                })
+        })
+        .unwrap_or_else(|| panic!("no mesh body after {answer}"));
+    let look = box_body
+        .look
+        .as_ref()
+        .unwrap_or_else(|| panic!("the box carries no texture: {answer}"));
+    assert_eq!(look.images.len(), 1);
+    assert_eq!(look.images[0].mime_type, "image/png");
+    assert_eq!(look.triangles.len(), box_body.triangles.len());
+    // One tile covers 5 × 5 inches, unstretched: along every edge of every triangle the
+    // picture moves one tile per 127 mm.
+    for (corners, textured) in box_body.triangles.iter().zip(&look.triangles) {
+        let textured = textured.expect("every face of the box is textured");
+        assert_eq!(textured.image, 0);
+        for (a, b) in [(0, 1), (1, 2), (2, 0)] {
+            let [p, q] = [corners[a], corners[b]].map(|index| box_body.vertices_mm[index as usize]);
+            let length_mm = (0..3)
+                .map(|axis| (p[axis] - q[axis]).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            let tiles = f64::from(
+                (textured.uv[a][0] - textured.uv[b][0])
+                    .hypot(textured.uv[a][1] - textured.uv[b][1]),
+            );
+            assert!(
+                (tiles * 127.0 - length_mm).abs() < 0.01,
+                "{length_mm} mm, {tiles} tiles"
+            );
+        }
+    }
+    let image = app
+        .file
+        .container_data
+        .blobs()
+        .get(&look.images[0].blob)
+        .unwrap_or_else(|| panic!("the document holds no image {}", look.images[0].blob));
+    assert_eq!(&image[..8], b"\x89PNG\r\n\x1a\n");
+}
+
+/// The presentation image shows a SketchUp texture where it lies: the textured box comes
+/// out in the picture's red and white squares. Before, each face showed one flat colour.
+#[test]
+fn a_texture_shows_in_the_presentation_image() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("textured.skp");
+    std::fs::write(&path, fixture("textured_box.skp")).unwrap();
+    let (mut app, mut bridge) = setup();
+    let hide = app
+        .document_snapshot()
+        .occurrences()
+        .map(|occurrence| CanonicalCommand::SetOccurrenceVisibility {
+            id: occurrence.id(),
+            visible: false,
+        })
+        .collect();
+    app.document.apply_batch(&CommandBatch::new(hide)).unwrap();
+    bridge
+        .execute(&mut app, import(&path), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    let image = directory.path().join("textured.png");
+    let options = json!({
+        "width": 240, "height": 160, "background": "transparent",
+        "shadows": false, "ambient_occlusion": false, "outlines": false,
+    });
+    let answer = bridge
+        .execute(
+            &mut app,
+            Request::Export {
+                expected: None,
+                path: image.display().to_string(),
+                export_format: "presentation_png".to_owned(),
+                drawing_scale: None,
+                image: Some(serde_json::from_value(options).unwrap()),
+                overwrite: false,
+            },
+            false,
+        )
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(answer["exported"], true, "{answer}");
+    let decoder = png::Decoder::new(std::io::BufReader::new(
+        std::fs::File::open(&image).unwrap(),
+    ));
+    let mut reader = decoder.read_info().unwrap();
+    let mut rgba = vec![0; reader.output_buffer_size().unwrap()];
+    reader.next_frame(&mut rgba).unwrap();
+    // Shading scales a face's colour, so a flat colour keeps one green-to-red ratio.
+    let ratios = rgba
+        .chunks(4)
+        .filter(|pixel| pixel[3] == u8::MAX && pixel[0] > 60)
+        .map(|pixel| f64::from(pixel[1]) / f64::from(pixel[0]))
+        .collect::<Vec<_>>();
+    let red = ratios.iter().filter(|ratio| **ratio < 0.6).count();
+    let white = ratios.iter().filter(|ratio| **ratio > 0.8).count();
+    assert!(
+        red * 20 > ratios.len() && white * 20 > ratios.len(),
+        "{red} red and {white} white of {} model pixels",
+        ratios.len()
+    );
+}
+
 /// The groups nested in each other in files of SketchUp 2013 and 2020 come in as that
 /// assembly: each group's geometry under the group that holds it. Before, both files were
 /// refused.
@@ -242,6 +445,14 @@ fn a_damaged_sketchup_file_is_refused_and_changes_nothing() {
         bridge.execute(&mut app, import(&path), false),
         Err("import_failed")
     );
+    // R1110-SKP-403: the client learns the file is damaged and what to do.
+    let details = take_error_details().map(|details| details.to_string());
+    assert!(
+        details.as_deref().is_some_and(
+            |details| details.contains("skp.damaged") && details.contains("Fix Problems")
+        ),
+        "{details:?}"
+    );
     assert_eq!(app.canonical_digest(), digest);
     assert_eq!(app.undo_step_count(), undo);
 }
@@ -265,6 +476,7 @@ fn imported_sheets_export_as_meshes_and_3mf_refuses_them() {
                 path: out.display().to_string(),
                 export_format: format.to_owned(),
                 drawing_scale: None,
+                image: None,
                 overwrite: false,
             },
             false,

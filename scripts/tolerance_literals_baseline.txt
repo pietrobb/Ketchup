@@ -34,7 +34,6 @@ crates/ketchup-model/src/drawing_export.rs limit 1
 crates/ketchup-model/src/exact_brep_graph/validation.rs limit 4
 crates/ketchup-model/src/exact_product.rs limit 2
 crates/ketchup-model/src/import.rs limit 1
-crates/ketchup-model/src/import/dxf.rs limit 3
 crates/ketchup-model/src/import/glb.rs limit 1
 crates/ketchup-model/src/import/iges.rs limit 2
 crates/ketchup-model/src/mechanical_contract.rs 1

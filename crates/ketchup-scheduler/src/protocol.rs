@@ -362,6 +362,8 @@ pub enum SkpOutcome {
         tags: Vec<(String, bool)>,
         /// The index in `tags` of each GLB node's tag, by glTF node index.
         node_tags: Vec<Option<usize>>,
+        /// Whether each GLB node is hidden in the file itself, by glTF node index.
+        node_hidden: Vec<bool>,
     },
     Refused(SkpRefusal),
 }
@@ -381,14 +383,66 @@ pub enum SkpRefusal {
 impl From<ketchup_skp::SkpError> for SkpRefusal {
     fn from(error: ketchup_skp::SkpError) -> Self {
         use ketchup_rejection::{Rejection, RejectionPhase};
-        match error {
-            ketchup_skp::SkpError::GlbTooLarge { limit, size } => Self::GlbTooLarge { limit, size },
-            _ => Self::Reader(
-                Rejection::new("skp.unreadable", RejectionPhase::Request)
-                    .reason("the SketchUp file could not be read")
-                    .caused_by(error),
+        use ketchup_skp::SkpError;
+        // Each failure has its own code and says what to do (R1110-SKP-403).
+        let (code, reason, fix_hint) = match &error {
+            SkpError::GlbTooLarge { limit, size } => {
+                return Self::GlbTooLarge {
+                    limit: *limit,
+                    size: *size,
+                };
+            }
+            SkpError::Read { .. } if error.is_not_sketchup() => (
+                "skp.not_sketchup",
+                "the file is not a SketchUp model",
+                "Choose a .skp file SketchUp saved, and check that it opens in SketchUp.",
             ),
-        }
+            SkpError::Read { .. } => (
+                "skp.damaged",
+                "the SketchUp file is damaged or holds what the reader does not know",
+                SKP_REPAIR,
+            ),
+            SkpError::Write { .. } => (
+                "skp.not_converted",
+                "the SketchUp model's geometry could not be written as meshes",
+                SKP_REPAIR,
+            ),
+            SkpError::Panicked { .. } => (
+                "skp.reader_failed",
+                "the SketchUp reader stopped on this file",
+                "Save the file again in SketchUp (File > Save As) and import that copy; if \
+                 that fails too, report the file.",
+            ),
+        };
+        Self::Reader(
+            Rejection::new(code, RejectionPhase::Request)
+                .reason(reason)
+                .fix_hint(fix_hint)
+                .caused_by(error),
+        )
+    }
+}
+
+/// What to do about a SketchUp file the reader takes for damaged.
+const SKP_REPAIR: &str = "Open the file in SketchUp, run Window > Model Info > Statistics > \
+                          Fix Problems, save it again (File > Save As) and import that copy.";
+
+impl SkpRefusal {
+    /// The refusal of a GLB the worker converted but could not write to `output`.
+    fn glb_not_written(output: &std::path::Path, error: std::io::Error) -> Self {
+        Self::Reader(
+            ketchup_rejection::Rejection::new(
+                "skp.glb_not_written",
+                ketchup_rejection::RejectionPhase::Io,
+            )
+            .target(output.display().to_string())
+            .reason("the converted model could not be written")
+            .fix_hint(
+                "Free space on the disk of the temporary folder, or check it may be written \
+                 to, then import again.",
+            )
+            .caused_by(error),
+        )
     }
 }
 
@@ -422,14 +476,7 @@ impl SkpOutcome {
             Err(error) => return Self::Refused(error.into()),
         };
         if let Err(error) = std::fs::write(&input.output, &model.glb) {
-            return Self::Refused(SkpRefusal::Reader(
-                ketchup_rejection::Rejection::new(
-                    "skp.glb_not_written",
-                    ketchup_rejection::RejectionPhase::Io,
-                )
-                .target(input.output.display().to_string())
-                .caused_by(error),
-            ));
+            return Self::Refused(SkpRefusal::glb_not_written(&input.output, error));
         }
         Self::Converted {
             glb_sha256: sha256_hex(&model.glb),
@@ -446,6 +493,7 @@ impl SkpOutcome {
                 .map(|tag| (tag.name, tag.visible))
                 .collect(),
             node_tags: model.node_tags,
+            node_hidden: model.node_hidden,
         }
     }
 }
@@ -466,6 +514,10 @@ pub struct UnderlayInput {
     /// The code page the user chose to read a drawing before DXF 2007 in.
     #[serde(default)]
     pub code_page: Option<ketchup_model::import::DxfCodePage>,
+    /// `code_page` is that of the underlay the drawing is a revision of, which a drawing
+    /// of DXF 2007 or later ignores (review 2026-11-10 UL-400).
+    #[serde(default)]
+    pub code_page_inherited: bool,
     pub output: PathBuf,
 }
 

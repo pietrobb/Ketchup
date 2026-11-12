@@ -13,6 +13,9 @@ pub(crate) struct FileActivity {
     pub(super) exchange_export: Option<super::exchange_export::ExchangeExportTask>,
     pub(super) drawing_export: Option<super::drawing_export_activity::DrawingExportTask>,
     pub(super) mesh_export: Option<super::mesh_export_activity::MeshExportTask>,
+    pub(super) presentation_export: Option<super::presentation_export::PresentationTask>,
+    /// File > Export > Presentation image: the options being chosen.
+    pub(crate) presentation_dialog: Option<super::presentation_dialog::PresentationDialog>,
     pub(super) dwg_reading: Option<super::dwg_import::DwgReadTask>,
     pub(super) exact_import_reading: Option<super::exact_import_activity::ExactImportReadTask>,
     pub(crate) underlay: super::underlay::UnderlayImport,
@@ -204,6 +207,7 @@ impl KetchupApp {
             || self.file.activity.exchange_export.is_some()
             || self.file.activity.drawing_export.is_some()
             || self.file.activity.mesh_export.is_some()
+            || self.file.activity.presentation_export.is_some()
             || self.file.activity.dwg_reading.is_some()
             || self.file.activity.exact_import_reading.is_some()
             || self.file.activity.underlay.reading.is_some()
@@ -291,6 +295,8 @@ impl KetchupApp {
             task.format().command()
         } else if let Some(task) = &self.file.activity.mesh_export {
             task.format().command()
+        } else if self.file.activity.presentation_export.is_some() {
+            AppCommand::ExportPresentationImage
         } else if self.file.activity.saving.is_some() {
             AppCommand::Save
         } else {
@@ -349,6 +355,7 @@ impl KetchupApp {
             self.cancel_exchange_export();
             self.cancel_drawing_export();
             self.cancel_mesh_export();
+            self.cancel_presentation_export();
         }
         let Some(label) = self.file_activity_label() else {
             return;
@@ -383,6 +390,7 @@ impl KetchupApp {
             self.cancel_exchange_export();
             self.cancel_drawing_export();
             self.cancel_mesh_export();
+            self.cancel_presentation_export();
             context.request_repaint();
             return;
         }
@@ -392,6 +400,10 @@ impl KetchupApp {
         }
         if self.file.activity.mesh_export.is_some() {
             self.poll_mesh_export(context);
+            return;
+        }
+        if self.file.activity.presentation_export.is_some() {
+            self.poll_presentation_export(context);
             return;
         }
         if self.file.activity.exchange_export.is_some() {
