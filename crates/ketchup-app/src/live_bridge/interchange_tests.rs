@@ -843,25 +843,53 @@ fn a_client_gives_the_table_of_storeys_and_the_document_keeps_it() {
     }
     assert_eq!(app.stored_sheet_settings().unwrap().storeys.len(), 2);
 
-    // Review 2026-11-09 MF-300: 0/3500 against the floors at 200 and 2954
-    // printed +3,300 and +3,500; the row the model contradicts is named.
-    let contradicted = json!([
+    // Review 2026-11-09 MF-300: a row whose plan would be wrong is refused
+    // and named.
+    let refused = json!([
         {"finished_floor_mm": 200, "structural_mm": 200},
-        {"finished_floor_mm": 3500, "structural_mm": 3500},
+        {"finished_floor_mm": 2954, "structural_mm": 3100},
     ]);
     assert_eq!(
         bridge.execute(
             &mut app,
-            drawings("contradicted.pdf", Some(contradicted), None),
+            drawings("contradicted.pdf", Some(refused), None),
             false
         ),
         Err("storey_table_contradicts_model")
     );
     assert!(!directory.path().join("contradicted.pdf").exists());
     assert_eq!(
-        app.stored_sheet_settings().unwrap().storeys[1].finished_floor_mm,
-        2954,
+        app.stored_sheet_settings().unwrap().storeys[1].structural_mm,
+        2932,
         "the document keeps its table"
+    );
+    // Review 2026-11-10 R1110-MF-400: a screed of 100 mm on the slab at 200,
+    // not modelled, is written as given and reported nothing; a floor in
+    // the air at 3500 (MF-300 printed +3,300 for it) is written and reported.
+    let screed = json!([
+        {"finished_floor_mm": 300, "structural_mm": 200},
+        {"finished_floor_mm": 3054, "structural_mm": 2954},
+    ]);
+    let written = bridge
+        .execute(&mut app, drawings("screed.pdf", Some(screed), None), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(written["storey_table_issues"], json!([]), "{written}");
+    assert_eq!(written["zero_level_used_mm"], 300.0, "{written}");
+    let in_the_air = json!([
+        {"finished_floor_mm": 200, "structural_mm": 200},
+        {"finished_floor_mm": 3500, "structural_mm": 3500},
+    ]);
+    let written = bridge
+        .execute(&mut app, drawings("air.pdf", Some(in_the_air), None), false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert!(directory.path().join("air.pdf").exists());
+    let issues = written["storey_table_issues"].as_array().unwrap();
+    assert_eq!(issues.len(), 1, "{written}");
+    assert_eq!(issues[0]["storey"], 2, "{written}");
+    assert_eq!(issues[0]["problem"], "no_floor_in_model", "{written}");
+    assert!(
+        issues[0]["message"].as_str().unwrap().contains("3500 mm"),
+        "{written}"
     );
 
     let written = bridge
