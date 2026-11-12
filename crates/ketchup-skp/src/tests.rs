@@ -479,6 +479,54 @@ fn the_tags_of_components_and_groups_come_with_the_glb_by_node() {
     }
 }
 
+/// A box component placed twice, at x = 0 shown and at x = 100 hidden (SketchUp's Hide).
+fn hidden_boxes() -> Vec<u8> {
+    let mut builder = create();
+    let mut definition = builder
+        .add_component_definition("Box", &DefinitionOptions::default())
+        .unwrap();
+    for face in &BOX_FACES {
+        definition.add_face(face, &FaceOptions::default()).unwrap();
+    }
+    let definition = definition.close().unwrap();
+    for (x, hidden) in [(0.0, false), (100.0, true)] {
+        let options = InstanceOptions {
+            translation: [x, 0.0, 0.0],
+            hidden,
+            ..InstanceOptions::default()
+        };
+        builder.add_instance(definition, &options).unwrap();
+    }
+    builder.to_bytes().unwrap()
+}
+
+/// A component or group hidden in SketchUp (Edit > Hide) comes hidden with the GLB, by
+/// node (review 2026-11-10 SKP-402). Before, `Instance.hidden` was dropped and the hidden
+/// placement imported visible.
+#[test]
+fn a_hidden_placement_comes_hidden_by_node() {
+    let source = hidden_boxes();
+    let model = skp_to_glb(&source, LIMIT).unwrap();
+    let document = gltf(&model.glb);
+    let nodes = document["nodes"].as_array().unwrap();
+    assert_eq!(model.node_hidden.len(), nodes.len());
+    let placed = nodes
+        .iter()
+        .zip(&model.node_hidden)
+        .filter(|(node, _)| node.get("mesh").is_some())
+        // An omitted matrix is the identity; a column-major matrix's x offset is its 13th.
+        .map(|(node, hidden)| (node["matrix"][12].as_f64().unwrap_or(0.0) > 0.0, *hidden))
+        .collect::<Vec<_>>();
+    assert_eq!(placed.len(), 2, "{nodes:?}");
+    for (far, hidden) in placed {
+        assert_eq!(
+            hidden, far,
+            "only the box placed hidden at x = 100 is hidden"
+        );
+    }
+    assert!(!model.node_hidden[0], "the model's root is shown");
+}
+
 /// Geometry that closes no solid: a component "Panel" of one face, and a component "Tray",
 /// the box without its top, 50 inches beside it.
 fn open_pieces() -> Vec<u8> {
