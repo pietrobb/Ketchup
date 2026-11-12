@@ -913,7 +913,7 @@ fn read_dxf(
     options: DxfImportOptions,
     reading: DxfReading,
 ) -> Result<ReadDxf, DxfImportError> {
-    let (text, encoding) = dxf_source_text(source, options.code_page())?;
+    let (text, encoding) = dxf_source_text(source, options)?;
     let pairs = parse_pairs(&text, reading.max_pairs)?;
     let (sections, mut diagnostics) = parse_sections(&pairs, reading)?;
     diagnostics.code_page_read(&encoding)?;

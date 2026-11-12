@@ -105,6 +105,7 @@ impl LiveBridge {
             format,
             unit,
             code_page,
+            code_page_inherited,
         } = match Self::import_target(app, &request, ui_busy) {
             Ok(target) => target,
             Err(code) => {
@@ -144,6 +145,7 @@ impl LiveBridge {
                         unit,
                         origin,
                         code_page,
+                        code_page_inherited,
                         &worker_cancel,
                     )))
                 } else if is_skp_path(&path) {
