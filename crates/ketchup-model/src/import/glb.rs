@@ -2323,3 +2323,6 @@ mod placement_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod open_surface_tests;
