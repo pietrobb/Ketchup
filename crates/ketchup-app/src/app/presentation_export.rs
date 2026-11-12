@@ -38,8 +38,19 @@ pub(crate) struct PresentationParts {
 }
 
 impl PresentationParts {
-    /// The PNG of these parts as `request` says.
+    /// The PNG of these parts as `request` says. A panic in the renderer fails this image
+    /// instead of the window (R1112-IMG-500).
     fn make(&self, request: &PresentationRequest) -> Result<Vec<u8>, ExportError> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.render(request)))
+            .unwrap_or_else(|payload| {
+                Err(ExportError::failed(format!(
+                    "the presentation renderer stopped: {}",
+                    crate::bounded_parser::panic_message(payload.as_ref())
+                )))
+            })
+    }
+
+    fn render(&self, request: &PresentationRequest) -> Result<Vec<u8>, ExportError> {
         let instances = self
             .scene
             .iter()

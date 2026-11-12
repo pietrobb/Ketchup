@@ -151,6 +151,23 @@ fn a_client_adds_dimensions_part_names_and_its_own_labels_to_the_image() {
     assert_ne!(labelled, named);
 }
 
+/// R1112-IMG-500: `{"image":{"height":4}}` with the default corner shading closed the window.
+#[test]
+fn a_client_saves_an_image_only_a_few_pixels_high() {
+    let (mut app, mut bridge, directory) = window();
+    for (name, size) in [
+        ("four.png", json!({"height": 4})),
+        ("one.png", json!({"width": 1, "height": 1})),
+    ] {
+        let path = directory.path().join(name);
+        let answer = bridge
+            .execute(&mut app, presentation(&path, size), false)
+            .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+        assert_eq!(answer["exported"], true, "{answer}");
+        assert!(path.exists());
+    }
+}
+
 #[test]
 fn a_client_presentation_never_replaces_a_file_and_names_what_it_cannot_draw() {
     let (mut app, mut bridge, directory) = window();

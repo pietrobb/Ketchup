@@ -319,7 +319,8 @@ impl Frame<'_> {
         let point = self.point(at);
         let height = real(self.height);
         let pixels_per_mm = height * 0.5 / (f64::from(self.depth[at]) * self.camera.tan_y);
-        let reach = (radius * pixels_per_mm).clamp(1.5, height * 0.1);
+        // Not `clamp`: under 15 samples high its upper bound is below 1.5 and it would panic.
+        let reach = (radius * pixels_per_mm).min(height * 0.1).max(1.5);
         let (x, y) = (real(at % self.width), real(at / self.width));
         let mut occlusion = 0.0;
         for [dx, dy] in AO_OFFSETS {
