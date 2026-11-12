@@ -3,7 +3,7 @@
 What changed for users in each Ketchup release. The full notes, downloads, and checksums are on the
 [GitHub releases page](https://github.com/pietrobb/Ketchup/releases).
 
-## Unreleased
+## 0.3.3 — 2026-11-12
 
 - A SketchUp or GLB model too large for one import says what it has too many of, how many and the most one import takes, and what to do, for example "the model has at least 4000128 placed triangles; one import takes at most 4000000. Lower the segments of arcs and circles, or delete detailed parts such as plants and 3D text, then import again." Before, it said only that the GLB exceeds a "bounded envelope". A mesh without a primitive is refused as malformed glTF, not as too many meshes.
 - `--mcp-setup` under `sudo`, and the window run as root, write the configuration as the owner of the home it is found in. A link above its folder no longer leads the write elsewhere: `~/.config` made a link to a folder of root's was written as root, unchecked, and a link to another user's `.config` wrote that user's configuration. A settings save and Connect AI at the same moment no longer turn the window back to root in the middle of the other's write, and a write that fails midway leaves the window root again.
@@ -117,6 +117,8 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 - A plugin can use at most half of the computer's memory, as the exact worker can, so a plugin that allocates without end stops itself instead of the window. On macOS and Linux the exact worker no longer outlives a request that dropped it, and on macOS a worker whose memory cannot be watched is stopped instead of running without its limit.
 - On a ReFS volume, the drawings an AI exported for a document are recognized by the file's full 128-bit identity, so another file can no longer pass for the document; on NTFS nothing changes.
 - `SHA256SUMS.txt` of a release names only the files you download, so `sha256sum -c SHA256SUMS.txt` in their folder checks each one; the one of 0.3.2 also named `payload/package-manifest.json`, which is inside the packages, and the check failed on it.
+
+Files from 0.3.2 open in 0.3.3. A file with a fill drawn into a drawing, an underlay read in a code page you chose, a sheet or a SketchUp texture needs 0.3.3.
 
 ## 0.3.2 — 2026-11-04
 
