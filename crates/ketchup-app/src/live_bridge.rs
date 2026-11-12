@@ -1734,7 +1734,7 @@ impl KetchupApp {
                     bridge.start_project_drawings_export(self, context, queued, request, ui_busy);
                     continue;
                 }
-                request if exchange_export::exchange_format(&request).is_some() => {
+                request if exchange_export::runs_as_job(&request) => {
                     let queued = program_dry_run::QueuedReply {
                         id,
                         reply,
