@@ -114,15 +114,15 @@ See [Connect your AI harness](#connect-your-ai-harness-mcp) below for the one-cl
 
 ## Download and try it
 
-1. Download **`Ketchup-0.3.2-Setup.exe`** from the [latest release](https://github.com/pietrobb/Ketchup/releases/latest) and run it. It installs for the current user only, without administrator rights, into `%LOCALAPPDATA%\Programs\Ketchup` and adds **Ketchup** and **Ketchup Viewer** to the Start menu. If you prefer not to install anything, use `Ketchup-0.3.2-Portable.zip` from the same release.
-2. Download **`Ketchup-0.3.2-Examples.zip`** from the release, unpack it, and double-click any `.ketchup` file to open it in Ketchup. Double-click `kitchen.ketchup-view` to open it in Ketchup Viewer.
+1. Download **`Ketchup-0.3.3-Setup.exe`** from the [latest release](https://github.com/pietrobb/Ketchup/releases/latest) and run it. It installs for the current user only, without administrator rights, into `%LOCALAPPDATA%\Programs\Ketchup` and adds **Ketchup** and **Ketchup Viewer** to the Start menu. If you prefer not to install anything, use `Ketchup-0.3.3-Portable.zip` from the same release.
+2. Download **`Ketchup-0.3.3-Examples.zip`** from the release, unpack it, and double-click any `.ketchup` file to open it in Ketchup. Double-click `kitchen.ketchup-view` to open it in Ketchup Viewer.
 3. Optional: connect your AI harness (below) and ask it to *"model a 120 × 60 cm desk with two drawers"*.
 
 Requires Windows 10 or 11 x64. The Visual C++ runtime comes with the programs (only the older 0.3.1 also needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) for x64, 14.29 or later). The installer and the programs are signed by AEON GROUP spol. s r.o. No account, API key or Python is needed. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Examples you can open right away
 
-The examples are in `Ketchup-0.3.2-Examples.zip` on the [release page](https://github.com/pietrobb/Ketchup/releases/latest) and in the [`examples`](examples) folder. Double-click a file or use **File → Open**.
+The examples are in `Ketchup-0.3.3-Examples.zip` on the [release page](https://github.com/pietrobb/Ketchup/releases/latest) and in the [`examples`](examples) folder. Double-click a file or use **File → Open**.
 
 | Example | Try it for |
 |---|---|
