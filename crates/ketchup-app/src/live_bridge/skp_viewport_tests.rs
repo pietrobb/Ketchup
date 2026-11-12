@@ -21,6 +21,8 @@ fn viewport_pixels(app: &mut KetchupApp, side: [u16; 2]) -> Vec<u8> {
     app.camera.viewport_rect = Some(rect);
     app.zoom_fit();
     let snapshot = app.document_snapshot();
+    app.rebuild_render_plan(&snapshot);
+    app.render.cache.wait_for_pictures();
     let plan = app.rebuild_render_plan(&snapshot);
     let (_, _, forward) = app.camera_basis();
     let (device, queue) = ketchup_test_gpu::gpu_device();
@@ -142,6 +144,18 @@ fn a_texture_shows_in_the_3d_view() {
             false,
         )
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+
+    // The window does not wait for the picture: the first plan shows the faces plain while a
+    // thread of its own decodes it (review 2026-11-12 R1112-SKP-500).
+    let snapshot = app.document_snapshot();
+    let first = app.rebuild_render_plan(&snapshot);
+    assert!(
+        first
+            .batches()
+            .iter()
+            .all(|batch| batch.geometry.picture_blob().is_none())
+    );
+    assert!(app.render.cache.decoding_pictures());
 
     // The box also brings the back side of its faces, in SketchUp's pink (255, 155, 155),
     // as a sheet on the same faces: from outside the picture shows, as in SketchUp.

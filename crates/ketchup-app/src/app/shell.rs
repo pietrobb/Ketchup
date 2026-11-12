@@ -1537,7 +1537,12 @@ impl KetchupApp {
             // The next frame starts the exact evaluation of what it changed.
             context.request_repaint();
         }
-        if self.poll_area_click() | self.poll_drawing_edit() {
+        // A picture decoded since on its own thread needs a new plan to be shown.
+        if self.render.cache.receive_pictures() {
+            self.render.plan = None;
+        }
+        if self.poll_area_click() | self.poll_drawing_edit() | self.render.cache.decoding_pictures()
+        {
             context.request_repaint_after(std::time::Duration::from_millis(30));
         }
         let palette = self.palette();
