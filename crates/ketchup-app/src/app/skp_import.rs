@@ -109,7 +109,8 @@ impl SkpConversion {
         Ok(notes)
     }
 
-    /// The SketchUp tags of the GLB's nodes, which its parts import with.
+    /// The SketchUp tags of the GLB's nodes, which its parts import with, and the nodes
+    /// hidden in the file, whose parts import hidden.
     pub(crate) fn node_tags(&self) -> GlbNodeTags {
         GlbNodeTags {
             tags: (self.0.tags.iter())
@@ -119,6 +120,7 @@ impl SkpConversion {
                 })
                 .collect(),
             node_tags: self.0.node_tags.clone(),
+            hidden: self.0.node_hidden.clone(),
         }
     }
 }
