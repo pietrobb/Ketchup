@@ -55,12 +55,13 @@ impl<'a> Footing<'a> {
     }
 
     /// Whether `anchor` stands on something besides `member` and the parts
-    /// `apart` (the brace it holds, the sheets of its diaphragm): on the
-    /// floor, or touching, through other parts than those, one that reaches
-    /// lower than it does. Held up by the member (on it, or on one of `apart`
-    /// reaching lower) and nothing else it sways with the member, however far
-    /// it reaches beyond its side; one resting on neither is taken as declared
-    /// (review 2026-11-06 P3: a grounded part under a brace beside the member).
+    /// `apart` (the brace it holds, the sheets of its diaphragm): touching,
+    /// through other parts than those, the floor or a grounded part resting on
+    /// none of them. Held up by the member (on it, or on one of `apart`
+    /// reaching lower) and parts hanging from it, it sways with the member,
+    /// however far it reaches beyond its side; one resting on neither is taken
+    /// as declared (review 2026-11-06 P3: a grounded part under a brace beside
+    /// the member).
     pub(super) fn stands_clear(&self, anchor: usize, member: usize, apart: &[usize]) -> bool {
         let mut apart = apart.to_vec();
         apart.sort_unstable();
@@ -70,23 +71,27 @@ impl<'a> Footing<'a> {
             return *known;
         }
         let bottom = |item: usize| self.parts[item].world_bounds().0[2];
-        let lower = bottom(anchor) - CONTACT_FIT_MM;
         let mut seen = BTreeSet::from([anchor]);
         let mut queue = vec![anchor];
         let mut clear = false;
         let mut rests = false;
         while let Some(item) = queue.pop() {
-            if on_floor(&self.parts[item], self.floor) || bottom(item) < lower {
-                clear = true;
-                break;
-            }
+            let mut held = false;
             for &next in &self.touching[item] {
                 let kept = next == member || key.2.binary_search(&next).is_ok();
                 if kept {
-                    rests |= next == member || bottom(next) < bottom(item) - CONTACT_FIT_MM;
+                    held |= next == member || bottom(next) < bottom(item) - CONTACT_FIT_MM;
                 } else if seen.insert(next) {
                     queue.push(next);
                 }
+            }
+            rests |= held;
+            // A part merely reaching lower, hanging from the anchor, carries
+            // it no more than the member does (capability review 751).
+            let part = &self.parts[item];
+            if on_floor(part, self.floor) || (item != anchor && part.grounded && !held) {
+                clear = true;
+                break;
             }
         }
         let clear = clear || !rests;

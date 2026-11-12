@@ -144,7 +144,7 @@ joint(\"block {x}\", \"beam\", kind = \"screw\")
 /// width or wider (160 mm, 420 mm) or set off to one side (25 mm on it, 25 mm
 /// beyond), and laths set 40 mm aside: nothing but the beam holds them up. A
 /// grounded part anchors only where it stands on something besides the
-/// member: the floor, or a part reaching lower than it does.
+/// member: the floor, or a grounded part not resting on the member.
 #[test]
 fn a_grounded_brace_held_up_by_the_member_alone_holds_nothing_however_wide() {
     for (size, y) in [
@@ -172,6 +172,25 @@ brace([\"beam\"], by = [\"lath\"], edge = \"top\", spacing = 10)
 "
     ));
     assert_ne!(checked(&laths, "beam").status, "pass");
+
+    // A part hanging under each 420 mm block beside the beam, reaching lower
+    // but resting on nothing, holds it up no more than the beam does
+    // (capability review 751 of R1112-PG-500).
+    let mut hangers = String::new();
+    for x in PLACES {
+        hangers.push_str(&format!(
+            "box(\"hanger {x}\", (50, 50, 300), at = ({x}, 150, 2100), material = \"GL24h\")\n"
+        ));
+    }
+    let hung = blocks([50, 420, 50], -170, &hangers);
+    assert_ne!(checked(&hung, "beam").status, "pass");
+    assert!(
+        ignored(&hung)
+            .iter()
+            .any(|message| message.contains("block 300")),
+        "{:?}",
+        ignored(&hung)
+    );
 
     // The same 420 mm blocks a grounded post stands under, on the floor
     // beside the beam, hold it.
@@ -244,6 +263,23 @@ fn a_diaphragm_anchored_to_boards_on_the_member_holds_nothing() {
             .any(|message| message.ends_with("of beam.") && message.contains("plate")),
         "{:?}",
         ignored(&on_beam)
+    );
+
+    // A part hanging under each board beside the beam, resting on nothing,
+    // holds them up no more than the beam does (capability review 751).
+    let hung = gapped_deck(
+        1000,
+        "box(\"hanger 1\", (50, 50, 300), at = (1300, 200, 2100), material = \"GL24h\")
+box(\"hanger 2\", (50, 50, 300), at = (4400, 200, 2100), material = \"GL24h\")
+",
+    );
+    assert_ne!(checked(&hung, "beam").status, "pass");
+    assert!(
+        ignored(&hung)
+            .iter()
+            .any(|message| message.ends_with("of beam.") && message.contains("plate")),
+        "{:?}",
+        ignored(&hung)
     );
 
     let on_wall = gapped_deck(1560, WALL);
