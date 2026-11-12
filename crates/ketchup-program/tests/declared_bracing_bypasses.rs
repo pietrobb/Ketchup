@@ -102,11 +102,13 @@ brace([\"beam\"], by = [\"lath\"], edge = \"top\", spacing = 10)
     let laths = report(&laths);
     assert_ne!(checked(&laths, "beam").status, "pass");
 
-    // Grounded boards across its top, reaching a metre past its side, hold it.
+    // Grounded boards across its top, reaching a metre past its side onto a
+    // wall standing on the floor, hold it.
     let mut across = BEAM.to_owned();
+    across.push_str(WALL);
     for x in PLACES {
         across.push_str(&format!(
-            "box(\"board {x}\", (50, 1000, 50), at = ({x}, 0, 2400), material = \"GL24h\", grounded = True, tags = [\"board\"])
+            "box(\"board {x}\", (50, 1100, 50), at = ({x}, 0, 2400), material = \"GL24h\", grounded = True, tags = [\"board\"])
 joint(\"board {x}\", \"beam\", kind = \"screw\")
 "
         ));
@@ -115,6 +117,138 @@ joint(\"board {x}\", \"beam\", kind = \"screw\")
     let across = report(&across);
     assert_eq!(ignored(&across), Vec::<&str>::new());
     assert_eq!(checked(&across, "beam").status, "pass");
+}
+
+/// A grounded wall beside [`BEAM`], a metre off it, standing on the floor up to
+/// the beam's top.
+const WALL: &str =
+    "box(\"wall\", (5900, 100, 2400), at = (0, 1000, 0), material = \"GL24h\", grounded = True)\n";
+
+/// Six grounded blocks of `size` at y = `y` screwed on the beam's top and
+/// named in brace(), with `extra`.
+fn blocks(size: [i32; 3], y: i32, extra: &str) -> Report {
+    let [dx, dy, dz] = size;
+    let mut source = format!("{BEAM}{extra}");
+    for x in PLACES {
+        source.push_str(&format!(
+            "box(\"block {x}\", ({dx}, {dy}, {dz}), at = ({x}, {y}, 2400), material = \"GL24h\", grounded = True, tags = [\"block\"])
+joint(\"block {x}\", \"beam\", kind = \"screw\")
+"
+        ));
+    }
+    source.push_str("brace([\"beam\"], by = [\"block\"], edge = \"top\")\n");
+    report(&source)
+}
+
+/// R1112-PG-500: grounded blocks resting on the beam held it when twice its
+/// width or wider (160 mm, 420 mm) or set off to one side (25 mm on it, 25 mm
+/// beyond), and laths set 40 mm aside: nothing but the beam holds them up. A
+/// grounded part anchors only where it stands on something besides the
+/// member: the floor, or a part reaching lower than it does.
+#[test]
+fn a_grounded_brace_held_up_by_the_member_alone_holds_nothing_however_wide() {
+    for (size, y) in [
+        ([50, 160, 50], -40),
+        ([50, 420, 50], -170),
+        ([50, 50, 50], 55),
+    ] {
+        let wide = blocks(size, y, "");
+        assert_ne!(checked(&wide, "beam").status, "pass", "{size:?} at {y}");
+        assert!(
+            ignored(&wide)
+                .iter()
+                .any(|message| message.contains("block 300")),
+            "{size:?} at {y}: {:?}",
+            ignored(&wide)
+        );
+    }
+
+    let laths = report(&format!(
+        "{BEAM}box(\"lath a\", (2750, 80, 50), at = (0, 40, 2400), material = \"GL24h\", grounded = True, tags = [\"lath\"])
+box(\"lath b\", (2750, 80, 50), at = (3150, 40, 2400), material = \"GL24h\", grounded = True, tags = [\"lath\"])
+joint(\"lath a\", \"beam\", kind = \"screw\")
+joint(\"lath b\", \"beam\", kind = \"screw\")
+brace([\"beam\"], by = [\"lath\"], edge = \"top\", spacing = 10)
+"
+    ));
+    assert_ne!(checked(&laths, "beam").status, "pass");
+
+    // The same 420 mm blocks a grounded post stands under, on the floor
+    // beside the beam, hold it.
+    let mut posts = String::new();
+    for x in PLACES {
+        posts.push_str(&format!(
+            "box(\"under {x}\", (50, 100, 2400), at = ({x}, 150, 0), material = \"GL24h\", grounded = True)\n"
+        ));
+    }
+    let held = blocks([50, 420, 50], -170, &posts);
+    assert_eq!(ignored(&held), Vec::<&str>::new());
+    assert_eq!(checked(&held, "beam").status, "pass");
+}
+
+/// Deck strips 600 mm wide on [`BEAM`], screwed to it every 300 mm, butting
+/// two grounded boards 400 x `across` x 22 across its top in the gaps between
+/// them, which anchor the diaphragm; with `extra`.
+fn gapped_deck(across: i32, extra: &str) -> Report {
+    let screws = |from: i32, to: i32| {
+        (from..=to)
+            .step_by(300)
+            .map(|x| format!("({x}, 40, 2400)"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut source = format!("{BEAM}{extra}");
+    for (name, from, to) in [
+        ("a", 0, 1200),
+        ("b", 1600, 2750),
+        ("c", 3150, 4300),
+        ("d", 4700, 5900),
+    ] {
+        source.push_str(&format!(
+            "box(\"strip {name}\", ({}, 600, 22), at = ({from}, -260, 2400), material = \"GL24h\", tags = [\"deck\"])
+joint(\"strip {name}\", \"beam\", kind = \"screw\", fasteners = [{}])
+",
+            to - from,
+            screws(from + 150, to - 150)
+        ));
+    }
+    for (name, x) in [("plate 1", 1200), ("plate 2", 4300)] {
+        source.push_str(&format!(
+            "box(\"{name}\", (400, {across}, 22), at = ({x}, -460, 2400), material = \"GL24h\", grounded = True, tags = [\"plate\"])
+joint(\"{name}\", \"beam\", kind = \"screw\")
+"
+        ));
+    }
+    source.push_str(
+        "joint(\"strip a\", \"plate 1\", kind = \"screw\")
+joint(\"strip b\", \"plate 1\", kind = \"screw\")
+joint(\"strip c\", \"plate 2\", kind = \"screw\")
+joint(\"strip d\", \"plate 2\", kind = \"screw\")
+diaphragm([\"deck\"], anchored_to = [\"plate\"])
+",
+    );
+    report(&source)
+}
+
+/// R1112-PG-501: a diaphragm anchored to grounded boards lying across the
+/// beam's top, held up by the beam and the diaphragm's own strips, passed
+/// without a warning. Anchored to the same boards reaching onto a wall on the
+/// floor, it holds.
+#[test]
+fn a_diaphragm_anchored_to_boards_on_the_member_holds_nothing() {
+    let on_beam = gapped_deck(1000, "");
+    assert_ne!(checked(&on_beam, "beam").status, "pass");
+    assert!(
+        ignored(&on_beam)
+            .iter()
+            .any(|message| message.ends_with("of beam.") && message.contains("plate")),
+        "{:?}",
+        ignored(&on_beam)
+    );
+
+    let on_wall = gapped_deck(1560, WALL);
+    assert_eq!(ignored(&on_wall), Vec::<&str>::new());
+    assert_eq!(checked(&on_wall, "beam").status, "pass");
 }
 
 /// Two 80 mm strips on the beam's top, screwed to it every 300 mm, either side
@@ -278,4 +412,36 @@ fn a_named_length_axis_its_bearings_lie_across_is_not_trusted() {
 
     let along = report(&short_beam(Some("x")));
     assert_eq!(checked(&along, "beam").status, "fail");
+}
+
+/// R1112-PG-502: the beam of [`short_beam`] on one grounded U-shaped support
+/// instead of two posts (uprights x 0 - 100 and 3 800 - 3 900, joined at the
+/// floor) bore on one place, the middle of the support's box, and named along
+/// its height passed at 0.011. The places it bears on are where it touches.
+#[test]
+fn a_named_length_axis_on_one_support_touching_it_far_apart_is_not_trusted() {
+    let u_support = |axis: &str| {
+        format!(
+            "load_path(only = [\"frame\"], carriers = [\"pad\"])
+area_load(\"point\", kind = \"imposed\", kn_m2 = 1500, on = [\"pad\"], source = \"test\")
+timber_design({{\"GL24h\": \"GL24h\"}})
+rotate(extrude(\"support\", profile = [(0, 0), (3900, 0), (3900, 2000), (3800, 2000), (3800, 100), (100, 100), (100, 2000), (0, 2000)], distance = 80, material = \"GL24h\", grounded = True), axis = (1, 0, 0), angle = 90)
+box(\"beam\", (3900, 80, 400), at = (0, -80, 2000), material = \"GL24h\", tags = [\"frame\"]{axis})
+box(\"pad\", (300, 80, 50), at = (1800, -80, 2400), material = \"GL24h\", tags = [\"pad\"])
+"
+        )
+    };
+    let plain = report(&u_support(""));
+    assert_eq!(checked(&plain, "beam").status, "fail");
+
+    let named = report(&u_support(", attributes = {\"length_axis\": \"z\"}"));
+    let beam = checked(&named, "beam");
+    assert_eq!(beam.status, "not_verified", "{beam:?}");
+    assert!(
+        beam.missing
+            .iter()
+            .any(|reason| reason.contains("length_axis")),
+        "{:?}",
+        beam.missing
+    );
 }

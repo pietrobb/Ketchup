@@ -2555,15 +2555,28 @@ fn bearings_across_length_axis(
     let named = part.named_length_axis()?;
     let axis = normalize(axes(part)[named])?;
     let (low, high) = part.world_bounds();
-    // Where each bearing meets the part: its bounds clipped to the part's.
+    // Where each bearing meets the part: the middle of each face they share,
+    // as one support touching it at both ends (R1112-PG-502: a U-shaped one
+    // bore at the middle of its box); its bounds clipped to the part's where
+    // they share none.
+    let mut faces = crate::contact::ContactFaces::default();
     let places: Vec<[f64; 3]> = load
         .reactions
         .iter()
-        .filter_map(|reaction| {
-            let (a, b) = parts.get(reaction.part.as_str())?.world_bounds();
-            Some(std::array::from_fn(|i| {
+        .filter_map(|reaction| parts.get(reaction.part.as_str()))
+        .flat_map(|support| {
+            let touching: Vec<[f64; 3]> = faces
+                .contacts(part, support)
+                .iter()
+                .filter_map(|contact| crate::loads::middle(&contact.points_mm))
+                .collect();
+            if !touching.is_empty() {
+                return touching;
+            }
+            let (a, b) = support.world_bounds();
+            vec![std::array::from_fn(|i| {
                 (a[i].max(low[i]) + b[i].min(high[i])) / 2.0
-            }))
+            })]
         })
         .collect();
     let across = |p: [f64; 3]| -> [f64; 3] { sub(p, scale(axis, dot(p, axis))) };
