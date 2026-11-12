@@ -68,6 +68,8 @@ pub struct InstancedNode {
     pub name_is_generated: bool,
     pub definition_name: String,
     pub layer: String,
+    /// The instance itself is hidden (SketchUp's Hide), not only its layer. Ketchup patch.
+    pub hidden: bool,
     /// This instance's own persistent GUID (VFF), or `""`.
     pub guid: String,
     /// Transform RELATIVE TO THE PARENT, column-major glTF (metres, Y-up).
@@ -90,6 +92,7 @@ impl Default for InstancedNode {
             name_is_generated: false,
             definition_name: String::new(),
             layer: String::new(),
+            hidden: false,
             guid: String::new(),
             matrix: IDENTITY_GLTF,
             position_mm: [0.0; 3],
