@@ -484,7 +484,8 @@ impl ProgramWorker {
                 client.convert_skp(input, cancel.flag(), UNTIL_CANCELLED)
             })
             .map_err(Stopped::skp_error)?;
-        let (glb_sha256, version, verified, left_out, tags, node_tags) = match outcome {
+        let (glb_sha256, version, verified, left_out, tags, node_tags, node_hidden) = match outcome
+        {
             SkpOutcome::Converted {
                 glb_sha256,
                 version,
@@ -492,7 +493,16 @@ impl ProgramWorker {
                 left_out,
                 tags,
                 node_tags,
-            } => (glb_sha256, version, verified, left_out, tags, node_tags),
+                node_hidden,
+            } => (
+                glb_sha256,
+                version,
+                verified,
+                left_out,
+                tags,
+                node_tags,
+                node_hidden,
+            ),
             SkpOutcome::Refused(refusal) => return Err(SkpConversionError::Refused(refusal)),
         };
         let glb = crate::read_regular_file(&output, "GLB of the SketchUp model")
@@ -513,6 +523,7 @@ impl ProgramWorker {
                 .map(|(name, visible)| ketchup_skp::SkpTag { name, visible })
                 .collect(),
             node_tags,
+            node_hidden,
         })
     }
 
