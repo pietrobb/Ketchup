@@ -351,6 +351,11 @@ diaphragm([\"deck\"], anchored_to = [\"end wall\"])
     let butted = bridged("2750, 0, 2400", "");
     assert!(deck_a(&butted), "{:?}", load(&butted, "beam").braced_by);
 
+    // Review 2026-11-13 P3: one contact 22 x 11 mm, room for one screw, tied them, but one
+    // screw is a hinge. Sheets tie without named fasteners only where two fit.
+    let hinged = bridged("2750, 1069, 2400", "");
+    assert!(!deck_a(&hinged), "{:?}", load(&hinged, "beam").braced_by);
+
     // A screw the joint names over the sliver ties it.
     let screwed = bridged(
         "2750, 1079, 2421.9",

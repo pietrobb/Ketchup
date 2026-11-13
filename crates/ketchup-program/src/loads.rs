@@ -1846,9 +1846,11 @@ fn anchored_diaphragms<'a>(
         fastened_at(model, frames, joined, faces, [a, b])
     };
     // Two sheets are tied where a fastener the joint names lies over their
-    // contact, or, when it names none, over a contact a fastener fits in: as
-    // long as the thinner sheet is thick, and half as wide (R1112-PG-504: two
-    // boards touching on 1 × 0.1 mm made a chain).
+    // contact, or, when it names none, where two fasteners fit: a fastener fits
+    // in a contact as long as the thinner sheet is thick, and half as wide
+    // (R1112-PG-504: two boards touching on 1 × 0.1 mm made a chain), and two
+    // in two such contacts or in one three times as long. One fastener is a
+    // hinge (review 2026-11-13 P3: one contact 22 × 11 mm made a chain).
     let sheets_tied = |faces: &mut ContactFaces<'a>, a: usize, b: usize| {
         if !fastened(a, b) {
             return false;
@@ -1861,16 +1863,21 @@ fn anchored_diaphragms<'a>(
             .flat_map(|part| part.obb().half)
             .fold(f64::INFINITY, f64::min)
             * 2.0;
-        faces.contacts(pair[0], pair[1]).into_iter().any(|contact| {
-            if fasteners.is_empty() {
-                let [u, v] = contact.size_mm;
-                u.max(v) >= thinnest && u.min(v) >= thinnest / 2.0
-            } else {
+        let contacts = faces.contacts(pair[0], pair[1]);
+        if fasteners.is_empty() {
+            let fits = contacts
+                .iter()
+                .map(|contact| contact.size_mm)
+                .filter(|[u, v]| u.max(*v) >= thinnest && u.min(*v) >= thinnest / 2.0)
+                .collect::<Vec<_>>();
+            fits.len() >= 2 || fits.iter().any(|[u, v]| u.max(*v) >= 3.0 * thinnest)
+        } else {
+            contacts.iter().any(|contact| {
                 fasteners
                     .iter()
                     .any(|point| over_contact(*point, &contact.points_mm, &across))
-            }
-        })
+            })
+        }
     };
     let mut ignored = Vec::new();
     let mut sheet_anchor: BTreeMap<usize, usize> = BTreeMap::new();

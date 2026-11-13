@@ -208,9 +208,27 @@ const SIDE_WORDS: &[&str] = &[
     "aussen",
 ];
 
-/// Whether a word carries a size: a digit other than 0 ("6x120", "80", "M12").
+/// Whether a word is a size with a digit other than 0: numbers apart by "x" or "×" ("6x120",
+/// "4,5×60", "80"), at most one letter but "x" before them ("M12", "d8") and "mm" or "cm" after
+/// them ("80mm"). Other letters around a digit are no size: "screw no1" and "screw tbd1"
+/// fastened (review 2026-11-13 P3).
 fn sized(word: &str) -> bool {
-    word.chars().any(|c| matches!(c, '1'..='9'))
+    let word = word
+        .strip_suffix("mm")
+        .or_else(|| word.strip_suffix("cm"))
+        .unwrap_or(word);
+    let numbers = match word.chars().next() {
+        Some(first) if first.is_alphabetic() && first != 'x' => &word[first.len_utf8()..],
+        _ => word,
+    };
+    !numbers.is_empty()
+        && numbers.split(['x', '×']).all(|number| {
+            !number.is_empty()
+                && number
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c == '.' || c == ',')
+        })
+        && numbers.chars().any(|c| matches!(c, '1'..='9'))
 }
 
 /// Whether `word` qualifies a kind by size, product or side: it carries a size,
@@ -408,6 +426,32 @@ mod tests {
             "Konstruktionsklebstoff",
             "Arunda 80 B",
             "screw 1",
+        ] {
+            assert_eq!(fastening(kind), JointFastening::Fastens, "{kind}");
+        }
+    }
+
+    /// Review 2026-11-13 P3: any word with a digit 1–9 was a size, so "screw no1" and
+    /// "screw tbd1" fastened.
+    #[test]
+    fn a_word_is_a_size_only_as_a_number_with_one_letter_before_it_or_a_unit_after_it() {
+        for kind in [
+            "screw no1",
+            "screw tbd1",
+            "nail a1b",
+            "bolt 1st",
+            "screw x1",
+            "dowel 8x",
+        ] {
+            assert_eq!(fastening(kind), JointFastening::Unknown, "{kind}");
+        }
+        for kind in [
+            "screw 4,5x60",
+            "vrut 6×120",
+            "nail 3.1x90",
+            "bolt M12x1.5",
+            "dowel d8",
+            "screw 80mm",
         ] {
             assert_eq!(fastening(kind), JointFastening::Fastens, "{kind}");
         }
