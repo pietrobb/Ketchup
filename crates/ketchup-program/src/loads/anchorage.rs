@@ -56,8 +56,8 @@ impl<'a> Footing<'a> {
 
     /// Whether `anchor` stands on something besides `member` and the parts
     /// `apart` (the brace it holds, the sheets of its diaphragm): touching,
-    /// through other parts than those, the floor or a grounded part resting on
-    /// none of them. Held up by the member (on it, or on one of `apart`
+    /// through other parts than those, the floor or a grounded part touching
+    /// none of them and resting on nothing. Held up by the member (on it, or on one of `apart`
     /// reaching lower) and parts hanging from it, it sways with the member,
     /// however far it reaches beyond its side; one resting on neither is taken
     /// as declared (review 2026-11-06 P3: a grounded part under a brace beside
@@ -77,19 +77,25 @@ impl<'a> Footing<'a> {
         let mut rests = false;
         while let Some(item) = queue.pop() {
             let mut held = false;
+            let mut lower = false;
             for &next in &self.touching[item] {
+                let below = bottom(next) < bottom(item) - CONTACT_FIT_MM;
+                lower |= below;
                 let kept = next == member || key.2.binary_search(&next).is_ok();
                 if kept {
-                    held |= next == member || bottom(next) < bottom(item) - CONTACT_FIT_MM;
+                    held |= next == member || below;
                 } else if seen.insert(next) {
                     queue.push(next);
                 }
             }
             rests |= held;
             // A part merely reaching lower, hanging from the anchor, carries
-            // it no more than the member does (capability review 751).
+            // it no more than the member does (capability review 751); a
+            // grounded one is ground only resting on nothing, held up by no
+            // part reaching lower, the anchor itself or one on it either
+            // (capability review 758: a grounded cap on the anchor).
             let part = &self.parts[item];
-            if on_floor(part, self.floor) || (item != anchor && part.grounded && !held) {
+            if on_floor(part, self.floor) || (item != anchor && part.grounded && !held && !lower) {
                 clear = true;
                 break;
             }
