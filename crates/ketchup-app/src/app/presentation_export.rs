@@ -102,7 +102,7 @@ impl PresentationParts {
                 .copied()
                 .unwrap_or(u8::MAX)
         })
-        .map_err(ExportError::failed)?;
+        .map_err(presentation_refused)?;
         if request.part_labels {
             scene.labels = part_labels(&instances);
         }
@@ -130,7 +130,29 @@ fn presentation_refused(error: PresentationError) -> ExportError {
             "Move the model near the origin; a presentation image draws coordinates within a million kilometres of it."
         }
         PresentationError::Cancelled => "Export the image again.",
-        _ => return ExportError::failed(error),
+        PresentationError::Supersample { .. } => "Smooth edges with 1 to 4 samples per pixel side.",
+        PresentationError::ViewDirection => "View the model from a direction, not from its centre.",
+        PresentationError::EmptyModel => {
+            "Show at least one part with a surface; hidden parts and tags are left out."
+        }
+        PresentationError::TooManyTriangles { .. } => {
+            "Hide some parts, or show fewer detailed imported meshes, and export again."
+        }
+        PresentationError::LabelText { .. } => {
+            "Give each label text on one line, within the limit of characters."
+        }
+        PresentationError::TooManyLabels { .. } => {
+            "Turn off the part labels or name fewer labels; part labels count with yours."
+        }
+        PresentationError::TextureReference { .. } => {
+            "Import the textured mesh again; it names a picture or texture coordinate it does not have."
+        }
+        // Not the user's to change: the built-in font, a stored picture, the model's data
+        // or the PNG writer failed.
+        PresentationError::Font
+        | PresentationError::Texture { .. }
+        | PresentationError::Source(_)
+        | PresentationError::Png(_) => return ExportError::failed(error),
     };
     Rejection::new("presentation.image", RejectionPhase::Validation)
         .reason(error.to_string())
@@ -372,5 +394,40 @@ mod tests {
         let refused = made.expect_err("a cancelled image is not made").to_string();
         assert!(refused.contains("cancelled"), "{refused}");
         assert!(!path.exists());
+    }
+
+    /// R1113 P3: too many labels, an empty model, too many triangles or a broken texture
+    /// reference all fell to a general `export_failed` that says nothing of what to change.
+    #[test]
+    fn every_refusal_the_user_can_act_on_says_what_to_change() {
+        for error in [
+            PresentationError::TooManyLabels {
+                labels: 400,
+                limit: 200,
+            },
+            PresentationError::EmptyModel,
+            PresentationError::TooManyTriangles {
+                triangles: 5_000_000,
+                limit: 4_000_000,
+            },
+            PresentationError::TextureReference { triangle: 3 },
+            PresentationError::LabelText {
+                label: 2,
+                limit: 200,
+            },
+            PresentationError::ViewDirection,
+            PresentationError::Supersample { supersample: 9 },
+        ] {
+            let shown = error.to_string();
+            let ExportError::Failed(cause) = presentation_refused(error) else {
+                panic!("{shown} is not refused with its cause");
+            };
+            let rejection = cause
+                .downcast_ref::<Rejection>()
+                .unwrap_or_else(|| panic!("{shown} fell to a general failure"));
+            assert_eq!(rejection.code(), "presentation.image", "{shown}");
+            assert_eq!(rejection.reason_text(), shown);
+            assert!(!rejection.fix_hint_text().is_empty(), "{shown}");
+        }
     }
 }
