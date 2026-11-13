@@ -794,11 +794,16 @@ fn a_picture_on_a_face_stands_the_right_way_up() {
 /// An image too large for its edge smoothing within the sample limit is smoothed less, so every
 /// size up to the limit in pixels can be made (review 2026-11-12 R1112-IMG-501: 2 560 × 1 440
 /// and 4 000 × 3 000 were refused, asking to lower a smoothing no one could set).
+///
+/// Review 2026-11-13 P3: 4K and larger had no smoothing at all, since the whole smoothed image
+/// had to fit at once; it is now made in bands of rows.
 #[test]
 fn a_large_image_is_smoothed_less_to_fit_the_sample_limit() {
     assert_eq!(presentation_supersample(1920, 1080, 3).unwrap(), 3);
-    assert_eq!(presentation_supersample(2560, 1440, 3).unwrap(), 2);
-    assert_eq!(presentation_supersample(4000, 3000, 3).unwrap(), 1);
+    assert_eq!(presentation_supersample(2560, 1440, 3).unwrap(), 3);
+    assert_eq!(presentation_supersample(3840, 2160, 3).unwrap(), 3);
+    assert_eq!(presentation_supersample(5120, 2880, 3).unwrap(), 2);
+    assert_eq!(presentation_supersample(4000, 3000, 3).unwrap(), 2);
     assert_eq!(presentation_supersample(8192, 2929, 3).unwrap(), 1);
     assert_eq!(presentation_supersample(2560, 1440, 1).unwrap(), 1);
     assert!(matches!(

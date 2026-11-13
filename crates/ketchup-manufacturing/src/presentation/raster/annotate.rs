@@ -93,11 +93,13 @@ pub(super) fn dimension_text(length_mm: f64, mark: DecimalMark) -> String {
     format!("{} mm", dimension_text_with(length_mm, mark))
 }
 
-/// Premultiplied RGBA samples the annotations are drawn into.
+/// Premultiplied RGBA samples the annotations are drawn into: the rows `own` of an image
+/// `width` × `height` samples.
 pub(super) struct Sheet<'a> {
     pub(super) colour: &'a mut [[f32; 4]],
     pub(super) width: usize,
     pub(super) height: usize,
+    pub(super) own: std::ops::Range<usize>,
     /// Samples per output pixel along each axis.
     pub(super) factor: usize,
 }
@@ -105,7 +107,10 @@ pub(super) struct Sheet<'a> {
 impl Sheet<'_> {
     /// Covers sample `(x, y)` by `cover` (0–1) of the opaque colour `rgb`.
     fn over(&mut self, x: usize, y: usize, rgb: [f64; 3], cover: f64) {
-        let Some(sample) = self.colour.get_mut(y * self.width + x) else {
+        let Some(row) = y.checked_sub(self.own.start) else {
+            return;
+        };
+        let Some(sample) = self.colour.get_mut(row * self.width + x) else {
             return;
         };
         let keep = 1.0 - cover;
@@ -125,12 +130,22 @@ impl Sheet<'_> {
         (from <= to).then(|| index(from)..=index(to))
     }
 
+    /// Rows `from`–`to` (sample space) of the sheet's own.
+    fn rows(&self, from: f64, to: f64) -> Option<std::ops::RangeInclusive<usize>> {
+        let rows = Self::span(from, to, self.height)?;
+        let (first, last) = (
+            (*rows.start()).max(self.own.start),
+            (*rows.end()).min(self.own.end.checked_sub(1)?),
+        );
+        (first <= last).then_some(first..=last)
+    }
+
     /// A line from `a` to `b` (sample space) `half_width` samples either side, with round ends.
     fn line(&mut self, a: Vec3, b: Vec3, half_width: f64, rgb: [f64; 3]) {
         let reach = half_width + 1.0;
         let (Some(columns), Some(rows)) = (
             Self::span(a.x.min(b.x) - reach, a.x.max(b.x) + reach, self.width),
-            Self::span(a.y.min(b.y) - reach, a.y.max(b.y) + reach, self.height),
+            self.rows(a.y.min(b.y) - reach, a.y.max(b.y) + reach),
         ) else {
             return;
         };
@@ -156,7 +171,7 @@ impl Sheet<'_> {
     fn rectangle(&mut self, low: Vec3, high: Vec3, rgb: [f64; 3], alpha: f64) {
         let (Some(columns), Some(rows)) = (
             Self::span(low.x, high.x - 1.0, self.width),
-            Self::span(low.y, high.y - 1.0, self.height),
+            self.rows(low.y, high.y - 1.0),
         ) else {
             return;
         };

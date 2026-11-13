@@ -9,6 +9,7 @@ use super::{
 use ketchup_geometry::linalg::Vec3;
 use ketchup_tolerance::{APPROXIMATION, NEGLIGIBLE, ROUNDING};
 use std::f64::consts::FRAC_1_SQRT_2;
+use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 mod annotate;
@@ -168,12 +169,12 @@ impl Camera {
     }
 }
 
-/// Calls `visit(sample index, depth)` for each sample centre inside the triangle `corners`
-/// (x, y, depth). Depth is interpolated perspective-correctly or, for an orthographic map,
-/// linearly.
+/// Calls `visit(sample index from the first of `rows`, depth)` for each sample centre of `rows`
+/// inside the triangle `corners` (x, y, depth). Depth is interpolated perspective-correctly or,
+/// for an orthographic map, linearly.
 fn raster(
     width: usize,
-    height: usize,
+    rows: Range<usize>,
     corners: [Vec3; 3],
     perspective: bool,
     mut visit: impl FnMut(usize, f64),
@@ -189,8 +190,8 @@ fn raster(
     }
     let min_x = index(a.x.min(b.x).min(c.x).floor().max(0.0));
     let max_x = index(a.x.max(b.x).max(c.x).ceil().clamp(0.0, real(width)));
-    let min_y = index(a.y.min(b.y).min(c.y).floor().max(0.0));
-    let max_y = index(a.y.max(b.y).max(c.y).ceil().clamp(0.0, real(height)));
+    let min_y = index(a.y.min(b.y).min(c.y).floor().max(0.0)).max(rows.start);
+    let max_y = index(a.y.max(b.y).max(c.y).ceil().clamp(0.0, real(rows.end)));
     let inverse = [1.0 / a.z, 1.0 / b.z, 1.0 / c.z];
     for y in min_y..max_y {
         let sample_y = real(y) + 0.5;
@@ -209,7 +210,7 @@ fn raster(
             } else {
                 weights[0] * a.z + weights[1] * b.z + weights[2] * c.z
             };
-            visit(y * width + x, depth);
+            visit((y - rows.start) * width + x, depth);
         }
     }
 }
@@ -260,7 +261,7 @@ impl ShadowMap {
             let nearest = &mut map.nearest;
             raster(
                 SHADOW_MAP_SIDE,
-                SHADOW_MAP_SIDE,
+                0..SHADOW_MAP_SIDE,
                 corners,
                 false,
                 |at, depth| {
@@ -302,25 +303,56 @@ impl ShadowMap {
     }
 }
 
-/// The opaque parts as seen from the camera: nearest depth and triangle per sample.
+/// Sample rows past a band's own that ambient occlusion (at most a tenth of the image's
+/// `height`, rounded) and outlines (one) look at.
+fn margin(height: usize) -> usize {
+    index((real(height) * 0.1).max(1.5).ceil()) + 1
+}
+
+/// Sample rows of its own each band of a `width` × `height` render with `factor` samples per
+/// pixel side shades within `budget` samples (depth, triangle and colour: 24 bytes each),
+/// counting the rows around it that it looks at: the whole height when it fits at once, else a
+/// multiple of `factor` at least as many as those rows. `None` when no band that large fits.
+pub(super) fn band_rows(width: usize, height: usize, factor: usize, budget: u64) -> Option<usize> {
+    let fitting = budget / u64::try_from(width).unwrap_or(u64::MAX).max(1);
+    let fitting = usize::try_from(fitting).unwrap_or(usize::MAX);
+    if fitting >= height {
+        return Some(height);
+    }
+    let margin = margin(height);
+    let own = fitting.checked_sub(2 * margin)? / factor * factor;
+    (own >= margin.max(factor)).then_some(own)
+}
+
+/// The opaque parts as seen from the camera over the sample rows `top`… of a band: nearest
+/// depth and triangle per sample.
 struct Frame<'a> {
-    camera: Camera,
+    camera: &'a Camera,
     width: usize,
+    /// Sample rows of the whole image.
     height: usize,
+    /// First row held, and the rows the band shades, of the whole image.
+    top: usize,
+    own: Range<usize>,
     normals: &'a [Vec3],
     depth: Vec<f32>,
     triangle: Vec<u32>,
 }
 
 impl Frame<'_> {
+    /// Direction through the centre of the held sample `at`.
+    fn ray(&self, at: usize) -> Vec3 {
+        self.camera.ray(at + self.top * self.width)
+    }
+
     fn point(&self, at: usize) -> Vec3 {
-        self.camera.eye + self.camera.ray(at) * f64::from(self.depth[at])
+        self.camera.eye + self.ray(at) * f64::from(self.depth[at])
     }
 
     /// Normal of the side of a triangle that faces the eye at a sample.
     fn facing_normal(&self, triangle: usize, at: usize) -> Vec3 {
         let normal = self.normals[triangle];
-        if normal.dot(self.camera.ray(at)) > 0.0 {
+        if normal.dot(self.ray(at)) > 0.0 {
             -normal
         } else {
             normal
@@ -334,15 +366,23 @@ impl Frame<'_> {
         let pixels_per_mm = height * 0.5 / (f64::from(self.depth[at]) * self.camera.tan_y);
         // Not `clamp`: under 15 samples high its upper bound is below 1.5 and it would panic.
         let reach = (radius * pixels_per_mm).min(height * 0.1).max(1.5);
-        let (x, y) = (real(at % self.width), real(at / self.width));
+        let (x, y) = (real(at % self.width), real(self.top + at / self.width));
         let mut occlusion = 0.0;
         for [dx, dy] in AO_OFFSETS {
             let (sx, sy) = ((x + dx * reach).round(), (y + dy * reach).round());
             if sx < 0.0 || sy < 0.0 || sx >= real(self.width) || sy >= height {
                 continue;
             }
-            let other = index(sy) * self.width + index(sx);
-            if self.triangle[other] == NO_TRIANGLE {
+            // Within the band: its margin is as tall as the reach.
+            let Some(row) = index(sy).checked_sub(self.top) else {
+                continue;
+            };
+            let other = row * self.width + index(sx);
+            if self
+                .triangle
+                .get(other)
+                .is_none_or(|owner| *owner == NO_TRIANGLE)
+            {
                 continue;
             }
             let towards = self.point(other) - point;
@@ -362,7 +402,7 @@ impl Frame<'_> {
         if own == NO_TRIANGLE {
             return false;
         }
-        let (x, y) = (at % self.width, at / self.width);
+        let (x, y) = (at % self.width, self.top + at / self.width);
         let neighbours = [
             (x + 1 < self.width).then_some(at + 1),
             (x > 0).then_some(at.wrapping_sub(1)),
@@ -370,7 +410,9 @@ impl Frame<'_> {
             (y > 0).then_some(at.wrapping_sub(self.width)),
         ];
         neighbours.into_iter().flatten().any(|other| {
-            let theirs = self.triangle[other];
+            let Some(&theirs) = self.triangle.get(other) else {
+                return false;
+            };
             if theirs == own {
                 return false;
             }
@@ -473,10 +515,12 @@ fn going_on(cancelled: &AtomicBool) -> Result<(), PresentationError> {
     }
 }
 
+/// Renders `scene` holding at most `budget` samples at once.
 pub(super) fn render(
     scene: &PresentationScene,
     options: &PresentationOptions,
     cancelled: &AtomicBool,
+    budget: u64,
 ) -> Result<PresentationImage, PresentationError> {
     let size_error = |_out_of_range: std::num::TryFromIntError| PresentationError::Size {
         width: options.width,
@@ -545,64 +589,89 @@ pub(super) fn render(
     } else {
         None
     };
-    let mut frame = Frame {
-        camera,
-        width,
-        height,
-        normals: &surfaces.normals,
-        depth: vec![f32::INFINITY; width * height],
-        triangle: vec![NO_TRIANGLE; width * height],
-    };
-    for &at in &opaque {
-        going_on(cancelled)?;
-        let Some(projected) = frame.camera.triangle(surfaces.corners[at]) else {
-            continue;
-        };
-        let id = u32::try_from(at).map_err(|_out_of_range: std::num::TryFromIntError| {
-            PresentationError::TooManyTriangles {
-                triangles: surfaces.corners.len(),
-                limit: super::limits::EXPORT_TRIANGLES,
-            }
-        })?;
-        let (depth, owner) = (&mut frame.depth, &mut frame.triangle);
-        raster(width, height, projected, true, |sample, value| {
-            let value = narrow(value);
-            if value < depth[sample] {
-                depth[sample] = value;
-                owner[sample] = id;
-            }
-        });
-    }
-    let shading = Shading {
-        frame: &frame,
-        surfaces: &surfaces,
-        shadow_map: shadow_map.as_ref(),
-        sun,
-        ground: low.z,
-        ao_radius: low.distance(high) * AO_RADIUS,
-        options,
-        cancelled,
-    };
-    let mut colour = shading.opaque()?;
-    shading.see_through(&mut colour)?;
-    if !dimensions.is_empty() || !scene.labels.is_empty() {
-        let mut sheet = annotate::Sheet {
-            colour: &mut colour,
+    let own_rows = band_rows(width, height, factor, budget).ok_or_else(|| {
+        PresentationError::TooManyPixels {
+            pixels: u64::from(options.width) * u64::from(options.height),
+            limit: budget,
+        }
+    })?;
+    let margin = margin(height);
+    let mut rgba = Vec::with_capacity(width / factor * (height / factor) * 4);
+    let mut first = 0;
+    // Review 2026-11-13 P3: the whole smoothed image was held at once, so 4K and larger had no
+    // smoothing. Each band of rows is drawn with the rows around it its shading looks at.
+    while first < height {
+        let own = first..(first + own_rows).min(height);
+        let top = own.start.saturating_sub(margin);
+        let held = top..(own.end + margin).min(height);
+        let mut frame = Frame {
+            camera: &camera,
             width,
             height,
-            factor,
+            top,
+            own: own.clone(),
+            normals: &surfaces.normals,
+            depth: vec![f32::INFINITY; width * held.len()],
+            triangle: vec![NO_TRIANGLE; width * held.len()],
         };
-        let annotator = annotate::Annotator::new(&frame.camera, &sheet)?;
-        for dimension in &dimensions {
-            annotator.dimension(&mut sheet, dimension, diagonal, options.decimal_mark);
+        for &at in &opaque {
+            going_on(cancelled)?;
+            let Some(projected) = camera.triangle(surfaces.corners[at]) else {
+                continue;
+            };
+            let id = u32::try_from(at).map_err(|_out_of_range: std::num::TryFromIntError| {
+                PresentationError::TooManyTriangles {
+                    triangles: surfaces.corners.len(),
+                    limit: super::limits::EXPORT_TRIANGLES,
+                }
+            })?;
+            let (depth, owner) = (&mut frame.depth, &mut frame.triangle);
+            raster(width, held.clone(), projected, true, |sample, value| {
+                let value = narrow(value);
+                if value < depth[sample] {
+                    depth[sample] = value;
+                    owner[sample] = id;
+                }
+            });
         }
-        let mut placed = Vec::with_capacity(scene.labels.len());
-        for label in &scene.labels {
-            annotator.label(&mut sheet, label, &mut placed);
+        let shading = Shading {
+            frame: &frame,
+            surfaces: &surfaces,
+            shadow_map: shadow_map.as_ref(),
+            sun,
+            ground: low.z,
+            ao_radius: low.distance(high) * AO_RADIUS,
+            options,
+            cancelled,
+        };
+        let mut colour = shading.opaque()?;
+        shading.see_through(&mut colour)?;
+        if !dimensions.is_empty() || !scene.labels.is_empty() {
+            let mut sheet = annotate::Sheet {
+                colour: &mut colour,
+                width,
+                height,
+                own: own.clone(),
+                factor,
+            };
+            let annotator = annotate::Annotator::new(&camera, &sheet)?;
+            for dimension in &dimensions {
+                annotator.dimension(&mut sheet, dimension, diagonal, options.decimal_mark);
+            }
+            let mut placed = Vec::with_capacity(scene.labels.len());
+            for label in &scene.labels {
+                annotator.label(&mut sheet, label, &mut placed);
+            }
         }
+        downsample(factor, width, &colour, &mut rgba);
+        first = own.end;
     }
     going_on(cancelled)?;
-    Ok(downsample(options, factor, width, &colour))
+    Ok(PresentationImage {
+        width: options.width,
+        height: options.height,
+        rgba,
+    })
 }
 
 struct Shading<'a> {
@@ -631,9 +700,10 @@ impl Shading<'_> {
             ],
         };
         let frame = self.frame;
-        let mut colour = Vec::with_capacity(frame.depth.len());
-        for row in 0..frame.height {
+        let mut colour = Vec::with_capacity(frame.own.len() * frame.width);
+        for row in frame.own.clone() {
             going_on(self.cancelled)?;
+            let row = row - frame.top;
             colour.extend((row * frame.width..(row + 1) * frame.width).map(|at| {
                 let owner = frame.triangle[at];
                 let part = (owner != NO_TRIANGLE)
@@ -663,8 +733,8 @@ impl Shading<'_> {
     }
 
     fn ground_shadow(&self, at: usize) -> f64 {
-        let camera = &self.frame.camera;
-        let ray = camera.ray(at);
+        let camera = self.frame.camera;
+        let ray = self.frame.ray(at);
         match self.shadow_map {
             Some(map) if ray.z < 0.0 && camera.eye.z > self.ground => {
                 let point = camera.eye + ray * ((self.ground - camera.eye.z) / ray.z);
@@ -701,7 +771,9 @@ impl Shading<'_> {
     /// Blends the see-through parts, farthest first, over the samples they are in front of.
     fn see_through(&self, colour: &mut [[f32; 4]]) -> Result<(), PresentationError> {
         let frame = self.frame;
-        let camera = &frame.camera;
+        let camera = frame.camera;
+        // `raster` counts the band's own samples, as `colour` holds them.
+        let held = (frame.own.start - frame.top) * frame.width;
         let mut layers = self
             .surfaces
             .with_opacity(false)
@@ -717,15 +789,15 @@ impl Shading<'_> {
             let alpha = f64::from(self.surfaces.colours[at][3]) / 255.0;
             raster(
                 frame.width,
-                frame.height,
+                frame.own.clone(),
                 projected,
                 true,
                 |sample, depth| {
-                    if narrow(depth) >= frame.depth[sample] {
+                    if narrow(depth) >= frame.depth[held + sample] {
                         return;
                     }
-                    let normal = frame.facing_normal(at, sample);
-                    let point = camera.eye + camera.ray(sample) * depth;
+                    let normal = frame.facing_normal(at, held + sample);
+                    let point = camera.eye + frame.ray(held + sample) * depth;
                     let lit = self.shadow_map.map_or(1.0, |map| map.lit(point, normal));
                     let rgb = shade(self.surfaces.base(at, point), normal, self.sun, lit, 1.0);
                     let front = [rgb[0], rgb[1], rgb[2], 1.0];
@@ -739,15 +811,10 @@ impl Shading<'_> {
     }
 }
 
-fn downsample(
-    options: &PresentationOptions,
-    factor: usize,
-    sample_width: usize,
-    colour: &[[f32; 4]],
-) -> PresentationImage {
+/// Appends to `rgba` the pixels of the samples `colour`, `sample_width` a row.
+fn downsample(factor: usize, sample_width: usize, colour: &[[f32; 4]], rgba: &mut Vec<u8>) {
     let (width, height) = (sample_width / factor, colour.len() / sample_width / factor);
     let count = real(factor * factor);
-    let mut rgba = Vec::with_capacity(width * height * 4);
     for y in 0..height {
         for x in 0..width {
             let mut sum = [0.0_f64; 4];
@@ -770,16 +837,114 @@ fn downsample(
             }
         }
     }
-    PresentationImage {
-        width: options.width,
-        height: options.height,
-        rgba,
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presentation::{PresentationLabel, PresentationTriangle};
+
+    fn cuboid(low: [f64; 3], high: [f64; 3], rgba: [u8; 4]) -> Vec<PresentationTriangle> {
+        let corner = |i: usize| {
+            [0, 1, 2].map(|axis| {
+                if i >> axis & 1 == 0 {
+                    low[axis]
+                } else {
+                    high[axis]
+                }
+            })
+        };
+        let faces = [
+            [0, 2, 3, 1],
+            [4, 5, 7, 6],
+            [0, 1, 5, 4],
+            [2, 6, 7, 3],
+            [0, 4, 6, 2],
+            [1, 3, 7, 5],
+        ];
+        faces
+            .iter()
+            .flat_map(|[a, b, c, d]| {
+                [[*a, *b, *c], [*a, *c, *d]].map(|corners| PresentationTriangle {
+                    corners_mm: corners.map(corner),
+                    rgba,
+                    texture: None,
+                })
+            })
+            .collect()
+    }
+
+    /// Review 2026-11-13 P3: 4K and larger had no smoothing, as the whole smoothed image was
+    /// held at once. Made in bands of rows, the image is the same to the last bit: shadows,
+    /// corner shading and outlines look past a band's rows, see-through parts and annotations
+    /// are drawn into each band.
+    #[test]
+    fn an_image_made_in_bands_is_the_image_made_at_once() {
+        let mut triangles = cuboid(
+            [-200.0, -150.0, 0.0],
+            [200.0, 150.0, 20.0],
+            [190, 190, 185, 255],
+        );
+        triangles.extend(cuboid(
+            [-50.0, -50.0, 20.0],
+            [50.0, 50.0, 140.0],
+            [200, 60, 50, 255],
+        ));
+        triangles.extend(cuboid(
+            [60.0, -40.0, 20.0],
+            [150.0, 40.0, 90.0],
+            [40, 90, 200, 120],
+        ));
+        let scene = PresentationScene {
+            triangles,
+            labels: vec![PresentationLabel {
+                text: "Box".into(),
+                at_mm: [0.0, 0.0, 140.0],
+            }],
+            textures: Vec::new(),
+        };
+        let options = PresentationOptions {
+            width: 160,
+            height: 120,
+            supersample: 2,
+            shadows: true,
+            ambient_occlusion: true,
+            outlines: true,
+            dimensions: true,
+            ..PresentationOptions::default()
+        };
+        let going = AtomicBool::new(false);
+        let whole = render(
+            &scene,
+            &options,
+            &going,
+            super::super::MAX_PRESENTATION_SAMPLES,
+        )
+        .unwrap();
+        // 320 samples a row; 80 rows hold a band of 30 own rows and 25 either side.
+        let budget = 320 * 80;
+        assert_eq!(band_rows(320, 240, 2, budget), Some(30));
+        let banded = render(&scene, &options, &going, budget).unwrap();
+        assert_eq!((banded.width, banded.height), (160, 120));
+        let differing = whole
+            .rgba
+            .chunks_exact(4)
+            .zip(banded.rgba.chunks_exact(4))
+            .filter(|(left, right)| left != right)
+            .count();
+        assert_eq!(
+            differing, 0,
+            "pixels differ between the whole and the banded image"
+        );
+        assert!(
+            whole
+                .rgba
+                .chunks_exact(4)
+                .any(|pixel| u16::from(pixel[2]) > u16::from(pixel[0]) + 40)
+        );
+        // Too few samples for even one band and the rows it looks at.
+        assert!(band_rows(320, 240, 2, 320 * 60).is_none());
+    }
 
     /// R1113-IMG-600: the shadow map drew every triangle before anyone looked at the flag.
     #[test]
