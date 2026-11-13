@@ -468,6 +468,21 @@ fn publish_registry_entry_before_publish(
     bootstrap: &str,
     before_publish: impl FnOnce(),
 ) -> io::Result<(PathBuf, ketchup_model::persistence::FileIdentity)> {
+    // Under `sudo`, as the user whose runtime folder it is (review 2026-11-13
+    // r95 P3: root made and wrote the register there through the path).
+    let base = root.ancestors().nth(2).unwrap_or(root).to_owned();
+    ketchup_user_files::UserFolder::at(base, root.to_owned())
+        .as_owner(|| publish_as_found(root, instance_id, address, bootstrap, before_publish))
+}
+
+/// [`publish_registry_entry_before_publish`] as this process is.
+fn publish_as_found(
+    root: &Path,
+    instance_id: &str,
+    address: SocketAddr,
+    bootstrap: &str,
+    before_publish: impl FnOnce(),
+) -> io::Result<(PathBuf, ketchup_model::persistence::FileIdentity)> {
     prepare_discovery_root(root)?;
     let path = root.join(format!("{instance_id}.json"));
     let bytes = serde_json::to_vec(&RegistryEntry {

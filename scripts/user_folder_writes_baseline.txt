@@ -1,0 +1,8 @@
+# Direct writes into the user's folders outside ketchup-user-files; may only shrink.
+crates/ketchup-app/src/live_bridge/consent.rs 3
+crates/ketchup-app/src/live_bridge/plugin_files.rs 4
+crates/ketchup-app/src/live_bridge/plugin_menu.rs 1
+crates/ketchup-app/src/recent_files/user_settings.rs 1
+crates/ketchup-mcp/src/discovery.rs 1
+crates/ketchup-rejection/src/dropped.rs 1
+crates/ketchup-viewer/src/preferences.rs 1

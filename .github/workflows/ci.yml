@@ -70,6 +70,9 @@ jobs:
       - name: Tests gain no sleep calls
         if: ${{ !cancelled() }}
         run: python scripts/check_test_sleeps.py
+      - name: No new writes into the user's folders outside ketchup-user-files
+        if: ${{ !cancelled() }}
+        run: python scripts/check_user_folder_writes.py
       - name: Time budgets only in perf tests
         if: ${{ !cancelled() }}
         run: python scripts/check_test_timing.py
@@ -219,7 +222,7 @@ jobs:
       - name: tests of the user's files as root
         if: ${{ !cancelled() }}
         run: |
-          for test in $(cargo test --locked -p ketchup-user-files -p ketchup-rejection --no-run \
+          for test in $(cargo test --locked -p ketchup-user-files -p ketchup-rejection -p ketchup-mcp --no-run \
               --message-format=json | jq -r 'select(.profile.test == true) | .executable'); do
             sudo "$test"
           done

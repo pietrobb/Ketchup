@@ -2514,6 +2514,7 @@ dependencies = [
  "getrandom 0.3.4",
  "ketchup-program",
  "ketchup-rejection",
+ "ketchup-user-files",
  "libc",
  "serde_json",
  "sha2",
