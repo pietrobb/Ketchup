@@ -8,10 +8,11 @@ use super::{Frame, depth};
 use crate::frame::{Obb, intersection_vertices};
 use crate::load_path::on_floor;
 use crate::model::{Part, ProgramModel, convex_hull};
-use ketchup_geometry::linalg::{self, cross, dot, sub};
+use ketchup_geometry::linalg::{self, cross, dot, length, sub};
 use ketchup_model::tolerance::{CONTACT_FIT_MM, ROUNDING};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 /// What each part touches face to face and where the floor lies: whether an
 /// anchorage reaches the ground by a path of its own.
@@ -90,14 +91,35 @@ impl Standing {
         }
     }
 
-    /// Whether, holding at level `top` sideways (where the anchorage meets
-    /// the member, its top or the anchorage's bottom), the part reaches from there
-    /// to its farther end over [`SPAN_PER_THICKNESS`] times its least width:
-    /// standing at the foot of a stack or chain, it bends under the height of
-    /// all of it, however short itself (R1113r95-PG-700).
-    fn too_far_from(self, top: f64) -> bool {
-        (top - self.low).max(self.high - top) > SPAN_PER_THICKNESS * self.width
+    /// Whether, held at level `top` sideways after a path `along` long
+    /// through the parts before it, the part reaches from there to its farther
+    /// end over [`SPAN_PER_THICKNESS`] times its least width: standing at the
+    /// foot of a stack or chain, it bends under the length of all of it,
+    /// however short itself (R1113r95-PG-700).
+    fn too_far_from(self, top: f64, along: f64) -> bool {
+        along + (top - self.low).max(self.high - top) > self.too_far()
     }
+
+    /// How far a path may run before this part's end: [`SPAN_PER_THICKNESS`]
+    /// times its least width.
+    fn too_far(self) -> f64 {
+        SPAN_PER_THICKNESS * self.width
+    }
+}
+
+/// Where boxes `a` and `b`, touching, meet: the middle of the corners of the
+/// region they share within the fit.
+fn meeting(a: &Obb, b: &Obb) -> Option<[f64; 3]> {
+    let grown = Obb {
+        half: a.half.map(|half| half + CONTACT_FIT_MM),
+        ..*a
+    };
+    let (sum, count) = intersection_vertices(&[grown, *b], ROUNDING)
+        .into_iter()
+        .fold(([0.0; 3], 0.0), |(sum, count), corner| {
+            (std::array::from_fn(|i| sum[i] + corner[i]), count + 1.0)
+        });
+    (count > 0.0).then(|| sum.map(|sum| sum / count))
 }
 
 type Asked = (usize, usize, Vec<usize>);
@@ -157,9 +179,10 @@ impl<'a> Footing<'a> {
     /// diaphragm): a path of parts touching face to face, each pair fastened
     /// or both grounded ([`Self::holds`]), to a grounded part standing on the
     /// floor, through no load-path member, no part on it slender, on its own
-    /// or as the foot of a stack ([`Standing::too_far_from`]), and each but
-    /// the anchor as deep across `member` as the member
-    /// (review 2026-11-13
+    /// or by the length of the path from the anchor to its farther end
+    /// ([`Standing::too_far_from`]; capability review 776: measured level by
+    /// level, a chain laid sideways was not), and each but the anchor as deep
+    /// across `member` as the member (review 2026-11-13
     /// R1113-PG-600: a 1 mm grounded nub, or a free rod on the floor, made an
     /// anchorage ground; PG-601: so did a second free member on its posts;
     /// PG-602: so did a grounded part standing on nothing modelled). Held up
@@ -179,28 +202,57 @@ impl<'a> Footing<'a> {
         // resting on it.
         let (held, by) = (self.standing[member], self.standing[anchor]);
         let top = held.high.min(by.high).max(by.low);
-        let mut seen = BTreeSet::from([anchor]);
-        let mut queue = vec![anchor];
+        // The shortest path found to each part from the anchor's side and
+        // where it enters the part; the anchor holds where it meets the member.
+        let mut along = vec![f64::INFINITY; self.parts.len()];
+        let mut entry = vec![None; self.parts.len()];
+        along[anchor] = 0.0;
+        let mut queue = BinaryHeap::from([Reverse((0_u64, anchor))]);
         let mut met = BTreeSet::new();
         let mut clear = false;
-        while let Some(item) = queue.pop() {
-            if self.slender[item] || self.standing[item].too_far_from(top) {
+        while let Some(Reverse((bits, item))) = queue.pop() {
+            let so_far = f64::from_bits(bits);
+            if so_far > along[item] {
+                continue;
+            }
+            if self.slender[item] {
                 met.insert(item);
                 continue;
             }
-            if self.grounded[item] && on_floor(&self.parts[item], self.floor) {
-                clear = true;
-                break;
+            // The anchor, and a grounded part on the floor ending the path,
+            // reach from where they are held to their farther end.
+            let standing = self.standing[item];
+            let ends = self.grounded[item] && on_floor(&self.parts[item], self.floor);
+            if item == anchor || ends {
+                let level = entry[item].map_or(top, |at: [f64; 3]| at[2]);
+                if standing.too_far_from(level, so_far) {
+                    met.insert(item);
+                    if item == anchor {
+                        continue;
+                    }
+                } else if ends {
+                    clear = true;
+                    break;
+                }
             }
             for &next in &self.touching[item] {
                 let kept =
                     next == member || self.member[next] || key.2.binary_search(&next).is_ok();
-                if !kept
-                    && self.holds(item, next)
-                    && depth(&self.parts[next], frame) >= deep
-                    && seen.insert(next)
-                {
-                    queue.push(next);
+                if kept || !self.holds(item, next) || depth(&self.parts[next], frame) < deep {
+                    continue;
+                }
+                let Some(at) = meeting(&self.parts[item].obb(), &self.parts[next].obb()) else {
+                    continue;
+                };
+                // Through the anchor the path starts; through any other part
+                // it runs from where it entered to where it leaves.
+                let further = entry[item].map_or(0.0, |from| so_far + length(sub(at, from)));
+                if further > standing.too_far() && item != anchor {
+                    met.insert(item);
+                } else if further < along[next] {
+                    along[next] = further;
+                    entry[next] = Some(at);
+                    queue.push(Reverse((further.to_bits(), next)));
                 }
             }
         }

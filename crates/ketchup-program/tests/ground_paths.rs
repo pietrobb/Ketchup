@@ -337,6 +337,45 @@ fn stacked_short_pieces_are_as_slender_as_one_rod() {
     }
 }
 
+/// Capability review 776 of R1113r95-PG-700: measured level by level, six
+/// grounded pieces 7 x 400 x 7 laid end to end sideways from the block's end
+/// to a grounded post held the beam while one rod 7 x 2 400 x 7 did not. A
+/// chain is as slender as the length of its path over each piece's width,
+/// whichever way it runs; a chain of pieces 50 x 400 x 50 holds.
+#[test]
+fn a_sideways_chain_is_as_slender_as_one_rod() {
+    let chain = |side: i32, pieces: i32| {
+        blocks(|x| {
+            let length = 2400 / pieces;
+            let mut source = format!(
+                "box(\"post {x}\", (100, 100, 2450), at = ({}, 2650, 0), material = \"GL24h\", grounded = True)\n",
+                x - 25
+            );
+            for k in 0..pieces {
+                source.push_str(&format!(
+                    "box(\"piece {x} {k}\", ({side}, {length}, {side}), at = ({x}, {}, 2400), material = \"GL24h\", grounded = True)\n",
+                    250 + length * k
+                ));
+            }
+            source
+        })
+    };
+    for (case, pieces) in [("one rod", 1), ("six pieces", 6)] {
+        let held = chain(7, pieces);
+        assert_ne!(checked(&held, "beam").status, "pass", "{case}");
+        assert!(
+            ignored(&held)
+                .iter()
+                .any(|message| message.contains("piece 300") && message.contains("too slender")),
+            "{case}: {:?}",
+            ignored(&held)
+        );
+    }
+    let posts = chain(50, 6);
+    assert_eq!(ignored(&posts), Vec::<&str>::new());
+    assert_eq!(checked(&posts, "beam").status, "pass");
+}
+
 /// R1113r95-PG-701: a grounded post 50 x 100 x 2 400 touching the block on a
 /// patch 2 x 2 or 0.05 x 0.05 mm, or with its corner sunk 0.05 mm into it,
 /// held the beam. Touching is meeting over a patch at least half the square
