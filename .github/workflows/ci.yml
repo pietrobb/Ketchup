@@ -222,9 +222,15 @@ jobs:
       - name: tests of the user's files as root
         if: ${{ !cancelled() }}
         run: |
-          for test in $(cargo test --locked -p ketchup-user-files -p ketchup-rejection -p ketchup-mcp --no-run \
+          for test in $(cargo test --locked -p ketchup-user-files -p ketchup-rejection --no-run \
               --message-format=json | jq -r 'select(.profile.test == true) | .executable'); do
             sudo "$test"
+          done
+          # Of the MCP server only its tests under sudo: the others take the
+          # runner's folders, which sudo's HOME and TMPDIR rightly refuse.
+          for test in $(cargo test --locked -p ketchup-mcp --no-run \
+              --message-format=json | jq -r 'select(.profile.test == true) | .executable'); do
+            sudo "$test" under_sudo
           done
       # Every released Kečup opens each file the tests saved in a format it reads and
       # refuses the others without opening their .recovery; the serde enums it knows
