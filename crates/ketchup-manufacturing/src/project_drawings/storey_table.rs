@@ -183,9 +183,10 @@ fn contradicted(
             .find(|(below, _)| below.finished_floor_mm == levels.finished_floor_mm)
         {
             Some(StoreyTableProblem::SameFloorAs(*other))
-        } else if floor < low[2] - NEAR_FLOOR_MM || floor > high[2] {
+        } else if floor < low[2] - NEAR_FLOOR_MM || f64::from(levels.structural_mm) > high[2] {
             // A floor at the top is walked on, its plan the model's top seen from above
-            // (review 2026-11-10 R1110-MF-401: it was refused).
+            // (review 2026-11-10 R1110-MF-401: it was refused); its structure is in the
+            // model, a build-up over it may not be (review 2026-11-13 P3).
             Some(StoreyTableProblem::OutsideModel)
         } else if build_up > i64::from(MAX_BUILD_UP_MM) {
             Some(StoreyTableProblem::ThickBuildUp)
