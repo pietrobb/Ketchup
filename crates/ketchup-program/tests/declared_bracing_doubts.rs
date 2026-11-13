@@ -316,6 +316,86 @@ diaphragm([\"deck\"], anchored_to = [\"end wall\"])
     );
 }
 
+/// R1112-PG-504: two boards touching on 1 x 0.1 mm, joined by a "screw", made
+/// a chain and the beam passed. Sheets tie where a fastener fits: over a
+/// contact as long as the thinner is thick and half as wide, or under a
+/// fastener the joint names.
+#[test]
+fn boards_touching_on_a_sliver_chain_no_diaphragm() {
+    let bridged = |at: &str, fasteners: &str| {
+        report(&deck(&format!(
+            "box(\"bridge\", (400, 1080, 22), at = ({at}), material = \"GL24h\", tags = [\"deck\"])
+joint(\"bridge\", \"deck a\", kind = \"screw\"{fasteners})
+joint(\"bridge\", \"deck b\", kind = \"screw\"{fasteners})
+joint(\"deck b\", \"end wall\", kind = \"screw\")
+diaphragm([\"deck\"], anchored_to = [\"end wall\"])
+"
+        )))
+    };
+    let deck_a = |report: &Report| {
+        load(report, "beam")
+            .braced_by
+            .iter()
+            .any(|brace| brace.part == "deck a")
+    };
+    let sliver = bridged("2750, 1079, 2421.9", "");
+    assert!(!deck_a(&sliver), "{:?}", load(&sliver, "beam").braced_by);
+    assert!(
+        ignored(&sliver)
+            .iter()
+            .any(|message| message.contains("deck a")),
+        "{:?}",
+        ignored(&sliver)
+    );
+
+    let butted = bridged("2750, 0, 2400", "");
+    assert!(deck_a(&butted), "{:?}", load(&butted, "beam").braced_by);
+
+    // A screw the joint names over the sliver ties it.
+    let screwed = bridged(
+        "2750, 1079, 2421.9",
+        ", fasteners = [(2750, 1079.5, 2421.95), (3150, 1079.5, 2421.95)]",
+    );
+    assert!(deck_a(&screwed), "{:?}", load(&screwed, "beam").braced_by);
+}
+
+/// R1112-PG-503: a deck anchored to two grounded knobs 10 x 10 x 10, or to one
+/// lath 401 x 10 x 10, each on a grounded pillar, passed with only
+/// `anchorage_small` (R1110 P3 through a diaphragm). It is not verified.
+#[test]
+fn a_diaphragm_anchored_to_small_parts_leaves_the_beam_not_verified() {
+    let knobs = [(1500, "deck a"), (3500, "deck b")];
+    let lath = [(2340, "deck a")];
+    for (size, at) in [("10, 10, 10", &knobs[..]), ("401, 10, 10", &lath[..])] {
+        let mut extra = String::new();
+        let mut anchors = Vec::new();
+        for (x, deck) in at {
+            extra.push_str(&format!(
+                "box(\"pillar {x}\", (100, 100, 2390), at = ({x}, 300, 0), material = \"GL24h\", grounded = True)
+box(\"anchor {x}\", ({size}), at = ({x}, 345, 2390), material = \"GL24h\", grounded = True)
+joint(\"anchor {x}\", \"{deck}\", kind = \"screw\")
+"
+            ));
+            anchors.push(format!("\"anchor {x}\""));
+        }
+        extra.push_str(&format!(
+            "diaphragm([\"deck\"], anchored_to = [{}])\n",
+            anchors.join(", ")
+        ));
+        let small = report(&deck(&extra));
+        let beam = checked(&small, "beam");
+        assert_eq!(beam.status, "not_verified", "{size}: {beam:?}");
+        assert!(
+            beam.missing
+                .iter()
+                .any(|reason| reason.contains("smaller across it than it is deep")),
+            "{size}: {:?} {:?}",
+            beam.missing,
+            ignored(&small)
+        );
+    }
+}
+
 /// [`BEAM`] with laths over its top, declared to hold it, each anchored through
 /// `anchor` (a grounded part's source) and screwed to it as `joint`.
 fn laths_over(anchor: &str, joint: &str) -> String {
@@ -340,7 +420,8 @@ joint(\"lath {x}\", \"beam\", kind = \"screw\")
 /// of a brace the geometry finds: fastened where they touch, across the member.
 #[test]
 fn a_declared_brace_is_anchored_by_the_rules_of_a_found_one() {
-    let wall_top = "box(\"wall top\", (5900, 100, 50), at = (0, 1000, 2400), material = \"GL24h\", grounded = True)\n";
+    // As deep as the beam: one smaller across it leaves it not verified (R1112 P3).
+    let wall_top = "box(\"wall top\", (5900, 100, 400), at = (0, 1000, 2400), material = \"GL24h\", grounded = True)\n";
     let good = report(&laths_over(
         wall_top,
         "joint(\"lath {x}\", \"wall top\", kind = \"screw\")",
@@ -379,7 +460,7 @@ brace([\"beam\"], by = [\"lath\"], edge = \"top\", spacing = 300)
 /// "motion", which lets the parts move, held the beam and it passed.
 #[test]
 fn a_joint_whose_parts_move_anchors_no_brace() {
-    let wall_top = "box(\"wall top\", (5900, 100, 50), at = (0, 1000, 2400), material = \"GL24h\", grounded = True)\n";
+    let wall_top = "box(\"wall top\", (5900, 100, 400), at = (0, 1000, 2400), material = \"GL24h\", grounded = True)\n";
     for kind in ["slide", "motion"] {
         let moving = report(&laths_over(
             wall_top,

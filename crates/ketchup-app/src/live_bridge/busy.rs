@@ -198,6 +198,7 @@ impl LiveBridge {
             }
             Some(Job::DwgImport(job)) => ("import", job.reason),
             Some(Job::ExchangeExport(_)) => ("export", "An export file is being written."),
+            Some(Job::Presentation(_)) => ("export", "A presentation image is being made."),
             Some(Job::DrawingExport(_)) => (
                 "drawing_export",
                 "An underlay drawing is being written to its file.",

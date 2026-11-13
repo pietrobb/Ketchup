@@ -257,8 +257,8 @@ def frozen_modules_of(text):
     return {}
 
 
-# What FROZEN_MODULES is compared with when nothing else is known: a pull request's
-# merge commit has the target branch as its first parent, so CI checks out two commits.
+# What FROZEN_MODULES is compared with in a pull request's merge commit, which has the
+# target branch as its first parent, so CI checks out two commits.
 FREEZE_BASE = "HEAD^1"
 
 
@@ -266,16 +266,26 @@ def freeze_base(root, environ=os.environ):
     """The commit FROZEN_MODULES is compared with: the one KETCHUP_FREEZE_BASE names (CI
     names main before a push to it), else where the branch left origin/main, so an entry
     raised in any commit of the branch fails, not only in its last (review 2026-11-10
-    R1110-TST-400), else FREEZE_BASE."""
+    R1110-TST-400), else FREEZE_BASE when HEAD is a merge commit. Else None: compared
+    with HEAD^1, a branch without origin/main checked its last commit alone, silently
+    (review 2026-11-12 P3)."""
     if environ.get("KETCHUP_FREEZE_BASE"):
         return environ["KETCHUP_FREEZE_BASE"]
     merge_base = subprocess.run(["git", "merge-base", "HEAD", "origin/main"], cwd=root,
                                 capture_output=True, text=True)
-    return merge_base.stdout.strip() if merge_base.returncode == 0 else FREEZE_BASE
+    if merge_base.returncode == 0:
+        return merge_base.stdout.strip()
+    parents = subprocess.run(["git", "rev-list", "--parents", "-n", "1", "HEAD"], cwd=root,
+                             capture_output=True, text=True)
+    return FREEZE_BASE if len(parents.stdout.split()) > 2 else None
 
 
 def frozen_list_problems(root, frozen=FROZEN_MODULES, environ=os.environ):
     base = freeze_base(root, environ)
+    if base is None:
+        return ["scripts/check_crate_layers.py: no origin/main to compare FROZEN_MODULES "
+                "with, and HEAD is no merge commit; fetch origin main or set "
+                "KETCHUP_FREEZE_BASE to the commit the change starts from"]
 
     def at_base(path):
         shown = subprocess.run(["git", "show", f"{base}:{path}"], cwd=root,

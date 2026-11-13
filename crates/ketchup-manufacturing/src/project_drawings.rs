@@ -50,7 +50,10 @@ pub use set::{
     drawing_set_until,
 };
 pub use shop::{ShopDrawings, ShopPosition, ShopSheet, ShopSummary};
-pub use storey_table::{ModelFloors, NEAR_FLOOR_MM, StoreyTableError, StoreyTableProblem};
+pub use storey_table::{
+    MAX_BUILD_UP_MM, ModelFloors, NEAR_FLOOR_MM, StoreyTableError, StoreyTableProblem,
+    sheet_numbers,
+};
 pub use threads::DrawingThread;
 use threads::ThreadMarks;
 use view_page::draw_view_on_page;

@@ -179,11 +179,14 @@ beyond its side) and are fastened to both by `joint()`;
 (a wall, not a hinged stud). A joint's `kind` is read against a closed catalogue
 in English, Slovak, Czech and German (`ketchup-program/src/joint_kind.rs`), in any
 case, with `_` and `-` read as spaces, by its leading words, so a side, size or
-product after them counts as it does (`vrut 6x120`, `Schraube links`). Kinds such
+product after them counts as it does (`vrut 6x120`, `Schraube links`, `Arunda 80 B`;
+one character alone after a kind, as `screw y` or `screw ½`, is no size). Kinds such
 as `none`, `contact`, `friction`, `unfastened`, `loose`, `free`, `rests`, `volne`,
-`kontakt`, `dotyk`, `lose`, `frei` or `nichts` fasten nothing; when a kind starts
-with words of both catalogues (`lose Schraube`), it fastens nothing. Kinds such as
-`screw`, `hanger`, `glue`, `vrut`, `spojka` or `Balkenschuh` fasten. A kind of neither is
+`kontakt`, `dotyk`, `lose`, `frei`, `nichts` or `contact adhesive` fasten nothing;
+when a kind starts with words of both catalogues (`lose Schraube`), it fastens
+nothing. Kinds such as `screw`, `hanger`, `structural adhesive`, `vrut`, `spojka` or
+`Balkenschuh` fasten; `glue`, `adhesive` or `lepidlo` alone say no structural
+adhesive (EN 1995-1-1 3.6) and are unknown. A kind of neither is
 taken to fasten and reported as `joint_kind_unknown`, and every check standing on
 it (the members it joins or braces, its joint check) is `not_verified`. A load
 path's `fixed` tag passes weight but braces nothing. A joint's `kind` may not be
@@ -202,7 +205,7 @@ Two declarations say what the geometry cannot. `diaphragm(sheets,
 anchored_to=[...])` makes sheets (parts or tags), such as a deck screwed only to
 its joists, one stiff plane anchored to grounded parts: when every anchor is
 declared grounded and fastened where it touches one of the sheets, each sheet that
-reaches an anchor through sheets fastened to each other where they touch (sheets that only touch, as a loose board over a butt joint, hold nothing) holds the members it is
+reaches an anchor through sheets fastened to each other where they touch (sheets that only touch, as a loose board over a butt joint, hold nothing; a contact ties them only under a fastener the joint names or, when it names none, as long as the thinner sheet is thick and half as wide) holds the members it is
 fastened to on the edge it lies on. It holds a member only where an anchor holds
 it across the member beyond its side, at places farther apart than the member is
 deep (a joint naming no fasteners holds along its whole contact); a diaphragm
@@ -224,7 +227,8 @@ refused); one naming an axis ten times shorter than the part's longest side, or
 one across which the part's bearings lie farther apart than the part is long
 along it, leaves it not verified.
 A brace anchored to a grounded part smaller across the member than the member
-is deep is reported as `anchorage_small`. A brace holds the beam at its
+is deep, through a diaphragm too, is reported as `anchorage_small` and leaves the
+member not verified. A brace holds the beam at its
 joint's `fasteners` that lie where the two parts touch, in any of their contacts
 and no deeper from it than the thinner part is thick (others are reported as
 `fastener_off_contact` and hold nothing), or at the middle of each place they

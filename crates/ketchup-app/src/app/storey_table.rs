@@ -5,7 +5,8 @@
 use eframe::egui;
 use ketchup_interaction::LocaleCatalog;
 use ketchup_manufacturing::project_drawings::{
-    NEAR_FLOOR_MM, StoreyTableError, StoreyTableProblem, table_ground_floor,
+    MAX_BUILD_UP_MM, NEAR_FLOOR_MM, StoreyTableError, StoreyTableProblem, sheet_numbers,
+    table_ground_floor,
 };
 use ketchup_manufacturing::title_block::{SheetSettings, StoreyLevels};
 use std::collections::BTreeMap;
@@ -125,19 +126,6 @@ fn show_north(ui: &mut egui::Ui, catalog: &LocaleCatalog, settings: &mut SheetSe
     });
 }
 
-/// The number of each storey's plan sheet, by row: the plans go up from the
-/// lowest finished floor, whatever order the rows were entered in (review
-/// 2026-11-09 MF-301).
-fn sheet_numbers(storeys: &[StoreyLevels]) -> Vec<usize> {
-    let mut order = (0..storeys.len()).collect::<Vec<_>>();
-    order.sort_by_key(|&index| storeys[index].finished_floor_mm);
-    let mut numbers = vec![0; storeys.len()];
-    for (number, index) in order.into_iter().enumerate() {
-        numbers[index] = number + 1;
-    }
-    numbers
-}
-
 /// The row whose finished floor is ±0,000: the height set, else the ground
 /// floor the drawings choose (review 2026-11-09 MF-301: a basement at the
 /// model's origin is ±0,000 unless the ground floor is chosen).
@@ -160,6 +148,7 @@ pub(crate) fn storey_table_error_text(catalog: &LocaleCatalog, error: &StoreyTab
         ("floor", error.levels.finished_floor_mm.to_string()),
         ("structural", error.levels.structural_mm.to_string()),
         ("near", format!("{NEAR_FLOOR_MM:.0}")),
+        ("most", MAX_BUILD_UP_MM.to_string()),
     ]);
     let key = match error.problem {
         StoreyTableProblem::StructureAboveFloor => "drawings-storey-structure-above-floor",
@@ -168,6 +157,7 @@ pub(crate) fn storey_table_error_text(catalog: &LocaleCatalog, error: &StoreyTab
             "drawings-storey-same-floor"
         }
         StoreyTableProblem::OutsideModel => "drawings-storey-outside-model",
+        StoreyTableProblem::ThickBuildUp => "drawings-storey-thick-build-up",
         StoreyTableProblem::NoFloorInModel => "drawings-storey-no-floor-in-model",
     };
     catalog.format(key, &arguments)

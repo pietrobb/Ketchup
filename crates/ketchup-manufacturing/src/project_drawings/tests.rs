@@ -430,9 +430,15 @@ fn a_table_of_storeys_the_model_contradicts_is_refused_by_its_row() {
         refused(&[ground, row(2954, 3100)]),
         Some((2, StoreyTableProblem::StructureAboveFloor))
     );
+    // Named by its plan sheet, as the window numbers the rows: the third row
+    // entered is the second floor up (review 2026-11-10 R1110-MF-401).
     assert_eq!(
         refused(&[ground, row(2954, 2932), row(200, 200)]),
-        Some((3, StoreyTableProblem::SameFloorAs(1)))
+        Some((2, StoreyTableProblem::SameFloorAs(1)))
+    );
+    assert_eq!(
+        refused(&[row(2954, 3100), ground]),
+        Some((2, StoreyTableProblem::StructureAboveFloor))
     );
     assert_eq!(
         refused(&[ground, row(6000, 6000)]),
@@ -521,6 +527,77 @@ fn a_floor_build_up_the_model_leaves_out_is_taken_and_one_it_contradicts_reporte
         issues(&[row(300, 260)]),
         [(1, StoreyTableProblem::NoFloorInModel)]
     );
+}
+
+/// Review 2026-11-12 P3: since R1110-MF-400 rows of 2 900 over 200 and 3 054
+/// over 200, a storey's height typed as the build-up, stood on the slab at 200
+/// and passed unreported. Review 2026-11-10 R1110-MF-401: a roof terrace, its
+/// floor the top of the model, was refused, and Cancel did not stop the check.
+#[test]
+fn a_storey_height_as_build_up_is_reported_a_roof_terrace_taken_and_the_check_stops() {
+    let row = |finished_floor_mm, structural_mm| StoreyLevels {
+        finished_floor_mm,
+        structural_mm,
+    };
+    let set = |house: &[DrawingSolid], table: &[StoreyLevels], stop: &AtomicBool| {
+        let options = DrawingSetOptions {
+            plans: plans(table_storeys(table, 1200.0)),
+            storeys: table.to_vec(),
+            ..options(house, None)
+        };
+        drawing_set_until(house, &options, stop)
+    };
+    let never = AtomicBool::new(false);
+    let issues = |house: &[DrawingSolid], table: &[StoreyLevels]| {
+        set(house, table, &never)
+            .unwrap()
+            .storey_table_issues
+            .iter()
+            .map(|issue| (issue.storey, issue.problem))
+            .collect::<Vec<_>>()
+    };
+    let house = layered_house();
+    for absurd in [row(2900, 200), row(3054, 200)] {
+        assert_eq!(
+            issues(&house, &[absurd]),
+            [(1, StoreyTableProblem::ThickBuildUp)],
+            "{absurd:?}"
+        );
+    }
+    // A raised floor of a metre is a build-up still.
+    assert_eq!(issues(&house, &[row(1200, 200)]), []);
+    let error = StoreyTableError {
+        storey: 1,
+        levels: row(2900, 200),
+        problem: StoreyTableProblem::ThickBuildUp,
+    };
+    assert_eq!(
+        error.to_string(),
+        "storey 1 of the table of storeys, its finished floor at 2900 mm, lies more than 1000 mm over its structure at 200 mm"
+    );
+    assert!(!StoreyTableProblem::ThickBuildUp.refuses());
+
+    // A roof slab over the upper walls, walked on: its top is the model's.
+    let mut terrace = house.clone();
+    terrace.push(cuboid("roof", [0.0, 0.0, 5454.0], [6000.0, 3000.0, 5654.0]));
+    let table = [row(200, 200), row(2954, 2954), row(5654, 5654)];
+    assert_eq!(issues(&terrace, &table), []);
+    assert!(matches!(
+        set(&terrace, &[row(200, 200), row(5655, 5655)], &never),
+        Err(ProjectDrawingError::StoreyTable(StoreyTableError {
+            storey: 2,
+            problem: StoreyTableProblem::OutsideModel,
+            ..
+        }))
+    ));
+
+    // The check itself stops, not only the drawing after it.
+    let stopped = AtomicBool::new(true);
+    assert!(matches!(
+        super::storey_table::check(&[row(200, 200)], &house, &stopped),
+        Err(ProjectDrawingError::Cancelled)
+    ));
+    assert!(super::storey_table::check(&[row(200, 200)], &house, &never).is_ok());
 }
 
 /// Review 2026-11-09 MF-300: "Add a storey" in an empty table made one row

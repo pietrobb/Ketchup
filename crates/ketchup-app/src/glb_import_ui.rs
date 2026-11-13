@@ -65,9 +65,11 @@ impl KetchupApp {
                 return Err(source.error(ImportFailure::ReviewStale));
             }
             source.reread_unchanged()?;
-            if self.prepare_glb_import_preview_plan(source.clone())? != pending.plan {
-                return Err(source.error(ImportFailure::ReviewChanged));
-            }
+            // The plan is made from the document and the bytes alone: the seal still the
+            // document's and the bytes the reviewed ones, planning again gives the same
+            // plan at the cost of the first (review 2026-11-12 R1112-SKP-501: a SketchUp
+            // file sharing one picture across its meshes froze the window twice).
+            source.verify_seal(&self.document.current())?;
             // The pictures the meshes show are blobs of the document, as an imported
             // drawing's lines are.
             let mut staged_container = self.file.container_data.clone();

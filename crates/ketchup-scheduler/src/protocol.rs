@@ -407,6 +407,18 @@ impl From<ketchup_skp::SkpError> for SkpRefusal {
                 "the SketchUp model's geometry could not be written as meshes",
                 SKP_REPAIR,
             ),
+            SkpError::NoFaces => (
+                "skp.no_faces",
+                "the SketchUp model holds no faces to import",
+                "Draw or select faces in SketchUp (an import takes faces, not edges, guides, \
+                 dimensions or text), save the file and import it again.",
+            ),
+            SkpError::Placement { .. } => (
+                "skp.damaged",
+                "a component or group of the SketchUp file has a placement that is not a \
+                 finite transform",
+                SKP_REPAIR,
+            ),
             SkpError::Panicked { .. } => (
                 "skp.reader_failed",
                 "the SketchUp reader stopped on this file",

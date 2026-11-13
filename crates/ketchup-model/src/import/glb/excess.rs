@@ -19,6 +19,9 @@ pub enum GlbMeasure {
     Outputs,
     Commands,
     Tags,
+    /// Values of the glTF JSON the import reads: past about 60 000 placements they run
+    /// out before the count of any one thing does (review 2026-11-12 P3).
+    Description,
 }
 
 impl GlbMeasure {
@@ -36,6 +39,9 @@ impl GlbMeasure {
             Self::Outputs => "objects to create",
             Self::Commands => "edits to make in one Undo step",
             Self::Tags => "tags",
+            Self::Description => {
+                "values describing its groups, component placements, meshes and materials"
+            }
         }
     }
 

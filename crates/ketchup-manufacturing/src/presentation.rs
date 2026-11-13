@@ -7,23 +7,32 @@
 //! see-through parts by their opacity, and a white, transparent or coloured background.
 
 use crate::blender_export::{MeshGlbInstance, validate_instances};
+use ketchup_model::annotation::DecimalMark;
 use ketchup_model::document::{SceneOccurrence, Snapshot};
 use ketchup_model::exact_product::{ExactProductError, MeshExportSource};
 use ketchup_model::persistence::Blobs;
 use ketchup_model::tolerance::limits;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::atomic::AtomicBool;
 
 mod raster;
 mod texture;
 
-pub use texture::{MAX_SOURCE_SIDE, MAX_TEXTURE_SIDE, PresentationTexture, TextureError};
+pub use texture::{
+    MAX_SOURCE_PIXELS, MAX_SOURCE_SIDE, MAX_TEXTURE_SIDE, PresentationTexture, TextureError,
+};
 
 /// The longest side of a presentation image, in pixels.
 pub const MAX_PRESENTATION_SIDE: u32 = 8192;
 /// Supersampled pixels a render may hold (width × height × supersample²): 24 bytes each, about
-/// 580 MB at the limit. 1920 × 1080 with 3 × 3 smoothing or 3840 × 2160 without fit.
+/// 580 MB at the limit. 1920 × 1080 with 3 × 3 smoothing or 3840 × 2160 without fit; a larger
+/// image is smoothed less to fit (review 2026-11-12 R1112-IMG-501), so this is also the most
+/// pixels an image has.
 pub const MAX_PRESENTATION_SAMPLES: u64 = 24_000_000;
+/// Farthest a point of the model may lie from the origin along an axis, in millimetres (a
+/// million kilometres): past it the renderer's arithmetic overflows (review 2026-11-12 P3).
+pub const MAX_PRESENTATION_COORDINATE_MM: f64 = 1e12;
 /// Colour of a part with no colour of its own.
 pub const DEFAULT_PART_RGB: [u8; 3] = [206, 201, 192];
 /// Labels one image may carry.
@@ -46,13 +55,16 @@ pub struct PresentationOptions {
     pub background: Background,
     /// Direction from the model towards the eye, Kečup axes (Z up). The camera frames the model.
     pub view_from: [f64; 3],
-    /// Samples per pixel along each axis, 1–4: how smooth the edges are.
+    /// Most samples per pixel along each axis, 1–4: how smooth the edges are. An image too
+    /// large for them within [`MAX_PRESENTATION_SAMPLES`] is smoothed less.
     pub supersample: u32,
     pub shadows: bool,
     pub ambient_occlusion: bool,
     pub outlines: bool,
     /// The model's overall width, depth and height as dimension lines beside it.
     pub dimensions: bool,
+    /// What the dimensions write before a decimal, as the drawings do.
+    pub decimal_mark: DecimalMark,
 }
 
 impl Default for PresentationOptions {
@@ -67,6 +79,7 @@ impl Default for PresentationOptions {
             ambient_occlusion: true,
             outlines: true,
             dimensions: false,
+            decimal_mark: DecimalMark::Point,
         }
     }
 }
@@ -121,15 +134,18 @@ pub enum PresentationError {
     Supersample {
         supersample: u32,
     },
-    TooManySamples {
-        samples: u64,
+    /// The image has more pixels than [`MAX_PRESENTATION_SAMPLES`].
+    TooManyPixels {
+        pixels: u64,
         limit: u64,
     },
+    /// Whoever wanted the image stopped waiting for it.
+    Cancelled,
     /// `view_from` is zero or not finite.
     ViewDirection,
     /// No visible triangle with an area.
     EmptyModel,
-    /// A corner coordinate is not finite.
+    /// A corner coordinate is not finite or past [`MAX_PRESENTATION_COORDINATE_MM`].
     NonFiniteGeometry {
         triangle: usize,
     },
@@ -144,6 +160,11 @@ pub enum PresentationError {
     },
     /// The point of label `label` is not finite.
     LabelPoint {
+        label: usize,
+    },
+    /// The point of label `label` is farther from the model than the model is large, where
+    /// framing it would leave the model a speck (review 2026-11-12 R1112-IMG-503).
+    LabelAway {
         label: usize,
     },
     TooManyLabels {
@@ -181,10 +202,11 @@ impl fmt::Display for PresentationError {
                 formatter,
                 "edge smoothing {supersample} is outside 1–4 samples per pixel side"
             ),
-            Self::TooManySamples { samples, limit } => write!(
+            Self::TooManyPixels { pixels, limit } => write!(
                 formatter,
-                "the image needs {samples} samples, more than the limit of {limit}; lower the size or the edge smoothing"
+                "a presentation image of {pixels} pixels is more than the limit of {limit}"
             ),
+            Self::Cancelled => write!(formatter, "the presentation image was cancelled"),
             Self::ViewDirection => write!(
                 formatter,
                 "the view direction is zero or not a finite number"
@@ -192,7 +214,7 @@ impl fmt::Display for PresentationError {
             Self::EmptyModel => write!(formatter, "the model has no visible surface to show"),
             Self::NonFiniteGeometry { triangle } => write!(
                 formatter,
-                "triangle {triangle} of the model has a corner that is not a finite number"
+                "triangle {triangle} of the model has a corner that is not a finite number or is more than {MAX_PRESENTATION_COORDINATE_MM} mm from the origin"
             ),
             Self::TooManyTriangles { triangles, limit } => write!(
                 formatter,
@@ -206,14 +228,18 @@ impl fmt::Display for PresentationError {
                 formatter,
                 "label {label} points at a coordinate that is not a finite number"
             ),
+            Self::LabelAway { label } => write!(
+                formatter,
+                "label {label} points farther from the model than the model is large"
+            ),
             Self::TooManyLabels { labels, limit } => write!(
                 formatter,
                 "the image has {labels} labels, more than the limit of {limit}"
             ),
             Self::Font => write!(formatter, "the built-in label typeface cannot be read"),
-            Self::Texture { blob, .. } => write!(
+            Self::Texture { blob, source } => write!(
                 formatter,
-                "the picture {blob} on a textured face cannot be read"
+                "the picture {blob} on a textured face cannot be read: {source}"
             ),
             Self::TextureReference { triangle } => write!(
                 formatter,
@@ -385,17 +411,14 @@ pub fn part_labels(instances: &[MeshGlbInstance<'_>]) -> Vec<PresentationLabel> 
     labels
 }
 
-/// Renders `scene` as `options` say.
-pub fn render_presentation(
-    scene: &PresentationScene,
-    options: &PresentationOptions,
-) -> Result<PresentationImage, PresentationError> {
-    let PresentationOptions {
-        width,
-        height,
-        supersample,
-        ..
-    } = *options;
+/// Samples per pixel side an image of `width` × `height` is rendered with: `supersample` when
+/// the image fits [`MAX_PRESENTATION_SAMPLES`] with them, else the most that fit. Refuses a size
+/// or smoothing out of range and an image of more pixels than the limit.
+pub fn presentation_supersample(
+    width: u32,
+    height: u32,
+    supersample: u32,
+) -> Result<u32, PresentationError> {
     if !(1..=MAX_PRESENTATION_SIDE).contains(&width)
         || !(1..=MAX_PRESENTATION_SIDE).contains(&height)
     {
@@ -408,13 +431,39 @@ pub fn render_presentation(
     if !(1..=4).contains(&supersample) {
         return Err(PresentationError::Supersample { supersample });
     }
-    let samples = u64::from(width * supersample) * u64::from(height * supersample);
-    if samples > MAX_PRESENTATION_SAMPLES {
-        return Err(PresentationError::TooManySamples {
-            samples,
+    let pixels = u64::from(width) * u64::from(height);
+    if pixels > MAX_PRESENTATION_SAMPLES {
+        return Err(PresentationError::TooManyPixels {
+            pixels,
             limit: MAX_PRESENTATION_SAMPLES,
         });
     }
+    Ok((1..=supersample)
+        .rev()
+        .find(|factor| pixels * u64::from(factor * factor) <= MAX_PRESENTATION_SAMPLES)
+        .unwrap_or(1))
+}
+
+/// Renders `scene` as `options` say.
+pub fn render_presentation(
+    scene: &PresentationScene,
+    options: &PresentationOptions,
+) -> Result<PresentationImage, PresentationError> {
+    render_presentation_until(scene, options, &AtomicBool::new(false))
+}
+
+/// Renders `scene` as `options` say unless `cancelled` is set first; it is looked at once a
+/// row of samples (review 2026-11-12 R1112-IMG-502).
+pub fn render_presentation_until(
+    scene: &PresentationScene,
+    options: &PresentationOptions,
+    cancelled: &AtomicBool,
+) -> Result<PresentationImage, PresentationError> {
+    let supersample = presentation_supersample(options.width, options.height, options.supersample)?;
+    let options = PresentationOptions {
+        supersample,
+        ..*options
+    };
     if scene.triangles.len() > limits::EXPORT_TRIANGLES {
         return Err(PresentationError::TooManyTriangles {
             triangles: scene.triangles.len(),
@@ -426,7 +475,7 @@ pub fn render_presentation(
             .corners_mm
             .iter()
             .flatten()
-            .any(|value| !value.is_finite())
+            .any(|value| !value.is_finite() || value.abs() > MAX_PRESENTATION_COORDINATE_MM)
     }) {
         return Err(PresentationError::NonFiniteGeometry { triangle });
     }
@@ -439,7 +488,7 @@ pub fn render_presentation(
         return Err(PresentationError::TextureReference { triangle });
     }
     check_labels(&scene.labels)?;
-    raster::render(scene, options)
+    raster::render(scene, &options, cancelled)
 }
 
 /// Refuses more than [`MAX_PRESENTATION_LABELS`] labels, a blank, multi-line or overlong text

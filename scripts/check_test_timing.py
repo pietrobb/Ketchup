@@ -23,8 +23,9 @@ Counted as a budget:
   limits the work it waits for (review 2026-10-24 TST-23), and so does a call giving
   a helper that time, when the helper waits as long as its `Duration` parameter (or
   number of seconds or milliseconds) says and fails the test when it runs out, or hands
-  that time on to such a helper; the helper may be in any test file, a harness module
-  included (review 2026-11-04 P3, r19 P3);
+  that time on to such a helper, or sets from it a deadline after which it can fail
+  (R1112-TST-500); the helper may be in any test file, a harness module included
+  (review 2026-11-04 P3, r19 P3);
 - a deadline under `HANG_FLOOR` after which the test can fail (`assert!(Instant::now() <
   deadline)`, an `if` past it that panics or returns `Err`, or a poll it ends followed
   by an assert or `expect`), however it is taken (`Instant::now() + X`, `start + X`,
@@ -33,7 +34,9 @@ Counted as a budget:
 - a call to a `perf_*` function from a function not named `perf_*`.
 
 Not counted: a deadline that only ends a poll (`while Instant::now() < deadline`), is
-followed only by an assert that the wait timed out, or fails the test only past
+followed only by an assert that the wait timed out (read from the code, not from the
+words of a message: `panic!("Timeout …")` fails the test), ends a quiet wait followed
+only by an assert that nothing came (`assert_eq!(count, 0)`), or fails the test only past
 `HANG_FLOOR`, a wait of at least `PATIENCE_FLOOR`, and any comparison in a file that never
 reads the clock (a computed retry delay). A wait that returns as soon as its message arrives
 costs a passing test nothing, so its patience can always be generous.
@@ -258,6 +261,14 @@ def waits_on(parameter: str, body: str, helpers: dict[str, Helper]) -> float | N
     if re.search(rf"\b(?:poll_until|recv_timeout|wait_timeout\w*|wait)\(\s*{time}", body) \
             and FAILS.search(body):
         return unit
+    # A deadline it sets from its time, after which it can fail the test (review
+    # 2026-11-12 R1112-TST-500: `call_within(…, 4 s)` with `assert!(Instant::now() <
+    # deadline)`).
+    all_deadlines = deadlines(body)
+    for index, deadline in enumerate(all_deadlines):
+        if re.fullmatch(time + r"\)?", (deadline.group(2) or deadline.group(3)).strip()) \
+                and fails_after(body, all_deadlines, index):
+            return unit
     # Its time handed on to a helper that fails when it runs out.
     for callee, helper in helpers.items():
         for _, argument in calls(body, callee, helper):
@@ -364,20 +375,49 @@ def failing_deadlines(text: str, constants: dict[str, float]) -> list[int]:
         value = milliseconds(deadline.group(2) or deadline.group(3), constants)
         if value is None or value >= HANG_FLOOR_MS:
             continue
-        following = FUNCTION.search(text, deadline.end())
-        end = following.start() if following else len(text)
-        if index + 1 < len(all_deadlines):
-            end = min(end, all_deadlines[index + 1].start())
-        if any(FAILS_AFTER.search(statement) and not TIMED_OUT.search(statement)
-               for statement in text[deadline.end():end].split(";")):
+        if fails_after(text, all_deadlines, index):
             found.append(text.count("\n", 0, deadline.start()) + 1)
     return found
 
 
+def fails_after(text: str, all_deadlines: list[re.Match], index: int) -> bool:
+    """Whether the test can fail after deadline `index` of `all_deadlines`, in the
+    statements it owns: up to the next deadline or function. An assert that the wait
+    timed out does not count, nor, after a wait the deadline alone ends, one that
+    nothing came: then the deadline is the point of the test, and a slow machine only
+    waits longer (review 2026-11-12 P3: `assert_eq!(count, 0)` after a quiet wait
+    counted, and the words of a message, `panic!("Timeout …")`, did not)."""
+    deadline = all_deadlines[index]
+    following = FUNCTION.search(text, deadline.end())
+    end = following.start() if following else len(text)
+    if index + 1 < len(all_deadlines):
+        end = min(end, all_deadlines[index + 1].start())
+    owned = text[deadline.end():end]
+    quiet = re.search(rf"\bwhile\s+{NOW_CALL}\s*<\s*{re.escape(deadline.group(1))}\s*\{{", owned)
+    quiet = bool(quiet) and not re.search(r"\b(?:break|return)\b", arms(owned, quiet.end() - 1))
+    for statement in owned.split(";"):
+        if not FAILS_AFTER.search(statement):
+            continue
+        words = STRING.sub('""', statement)
+        if PANICS.search(words):
+            return True
+        if TIMED_OUT.search(words) or (quiet and NOTHING.search(words)):
+            continue
+        return True
+    return False
+
+
 START = re.compile(rf"\blet\s+(?:mut\s+)?(\w+)\s*(?::\s*[\w:]+)?\s*=\s*{NOW_CALL}\s*;")
 FAILS_AFTER = re.compile(r"\b(?:assert\w*|panic|unreachable)!|\.expect\(|\bErr\(")
+PANICS = re.compile(r"\b(?:panic|unreachable)!")
+# A string literal, whose words say nothing of what a statement checks.
+STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
 # A statement asserting that the wait ran out: the deadline is then the point of the test.
 TIMED_OUT = re.compile(r"Timeout|TimedOut|timed_out|\.is_err\(\)|\.is_none\(\)")
+# A statement asserting that nothing came: none, zero or empty.
+NOTHING = re.compile(
+    r"\bassert_eq!\([^;]*,\s*(?:0|None|\[\]|vec!\[\]|Vec::new\(\))\s*(?:,[^;]*)?\)\s*$"
+    r"|\bassert!\(\s*[\w.()]*\.is_empty\(\)")
 
 
 def budgets(text: str, helpers: dict[str, Helper], constants: dict[str, float]) -> list[int]:

@@ -153,6 +153,27 @@ def test_an_entry_raised_in_an_earlier_commit_of_the_branch_still_fails(tmp_path
     assert checker.frozen_list_problems(tmp_path, frozen=frozen, environ=pushed) == raised
 
 
+def test_without_origin_main_only_a_merge_commit_is_compared_with_its_first_parent(tmp_path):
+    # Review 2026-11-12 P3: without origin/main the check fell back to HEAD^1 silently,
+    # so commit A raising an entry passed once commit B followed it.
+    git(tmp_path, "init", "-q", "-b", "main")
+    commit_frozen(tmp_path, {"viewport.rs": 4857}, "main")
+    git(tmp_path, "checkout", "-q", "-b", "branch")
+    commit_frozen(tmp_path, {"viewport.rs": 4950}, "A")
+    (tmp_path / "other.txt").write_text("B\n", encoding="utf-8")
+    git(tmp_path, "add", "-A")
+    git(tmp_path, "commit", "-q", "-m", "B")
+    frozen = {"viewport.rs": 4950}
+    problems = checker.frozen_list_problems(tmp_path, frozen=frozen, environ={})
+    assert len(problems) == 1 and "KETCHUP_FREEZE_BASE" in problems[0], problems
+    # A pull request's merge commit has the target branch as its first parent.
+    git(tmp_path, "checkout", "-q", "main")
+    git(tmp_path, "-c", "core.editor=true", "merge", "-q", "--no-ff", "branch")
+    assert checker.frozen_list_problems(tmp_path, frozen=frozen, environ={}) == [
+        "viewport.rs: frozen at 4857 before this change, 4950 now; "
+        "FROZEN_MODULES may only go down, put new code in a new module"]
+
+
 def test_workspace_frozen_list_did_not_grow_since_the_commit_before():
     assert checker.frozen_list_problems(ROOT) == []
 

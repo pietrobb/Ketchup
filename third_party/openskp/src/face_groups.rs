@@ -251,6 +251,19 @@ fn compute_face_uv(
     ((u / q) / tile_w, (v / q) / tile_h)
 }
 
+/// Tiles past which a texture coordinate written as `f32` starts losing the picture's detail.
+const FAR_TILES: f64 = 1024.0;
+
+/// The whole tiles to take off every texture coordinate of a face whose first one is `uv`, so
+/// a face far from the origin keeps its picture in `f32` (Ketchup change, see PATCH.md): the
+/// texture repeats, so whole tiles off change nothing drawn. None for a face near the origin.
+fn whole_tiles_away((u, v): (f64, f64)) -> (f64, f64) {
+    if u.abs().max(v.abs()) <= FAR_TILES || !u.is_finite() || !v.is_finite() {
+        return (0.0, 0.0);
+    }
+    (u.floor(), v.floor())
+}
+
 fn loop_vertices(lp: &[CoEdge], b: &GeometryBuilder) -> Vec<EntityId> {
     let mut v: Vec<EntityId> = Vec::new();
     for c in lp {
@@ -311,6 +324,15 @@ pub fn build_local_face_groups(
                             tile_h: f64|
          -> Result<(), Error> {
             let inv = uv_transform.as_ref().map(invert_3x3);
+            let uv_at = |id: EntityId| {
+                b.vertices
+                    .get(&id)
+                    .map(|pos| compute_face_uv(pos, &xr, &yr, inv.as_ref(), tile_w, tile_h))
+            };
+            let tiles = triangles
+                .first()
+                .and_then(|triangle| uv_at(triangle[0]))
+                .map_or((0.0, 0.0), whole_tiles_away);
             let group = groups.entry(key).or_default();
             for &triangle in &triangles {
                 let mut triangle = triangle;
@@ -323,6 +345,7 @@ pub fn build_local_face_groups(
                         Error::out_of_range(format!("map::at: vertex {id} not found"))
                     })?;
                     let (u, v) = compute_face_uv(&pos, &xr, &yr, inv.as_ref(), tile_w, tile_h);
+                    let (u, v) = (u - tiles.0, v - tiles.1);
                     let index = *group.map.entry(vkey(id, u, v)).or_insert_with(|| {
                         group.verts.push(pos);
                         group.uvs.push([u as f32, v as f32]);
@@ -342,11 +365,15 @@ pub fn build_local_face_groups(
         // and drawn from both sides. Upstream writes a face whose sides differ twice, the
         // back as a reversed copy, so a solid painted on its outside only (SketchUp's paint
         // bucket) came with an inside-out second shell. The front's paint wins; a face
-        // painted on its back only keeps the back's.
-        let (side_mat, color, uv_transform) = if front_mat.is_none() && back_mat.is_some() {
-            (back_mat, back, &f.uv_transform_back)
+        // painted on its back only keeps the back's and is written as seen from it, so a
+        // face of a box that SketchUp shows reversed, painted from outside, faces out
+        // (review 2026-11-12 P3: written as its front, it turned the box inside out at
+        // that face and the box came as no solid).
+        let (side_mat, color, uv_transform, reverse) = if front_mat.is_none() && back_mat.is_some()
+        {
+            (back_mat, back, &f.uv_transform_back, true)
         } else {
-            (front_mat, front, &f.uv_transform)
+            (front_mat, front, &f.uv_transform, false)
         };
         let (tw, th) = tile_size(side_mat);
         let key = GroupKey {
@@ -354,7 +381,7 @@ pub fn build_local_face_groups(
             double_sided: true,
             texture_index: (ctx.texture_index_for)(side_mat),
         };
-        add_side(key, false, uv_transform, tw, th)?;
+        add_side(key, reverse, uv_transform, tw, th)?;
     }
 
     Ok(groups)

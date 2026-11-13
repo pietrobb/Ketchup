@@ -291,6 +291,21 @@ pub(crate) fn write_keeping_file(file: &Path, text: &str, backup: bool) -> io::R
     }
 }
 
+/// Runs `work` on files of the user's configuration as the user it belongs to
+/// ([`configuration_user`]) when this process is root, so every file it makes,
+/// locks or writes there is as that user may (review 2026-11-12 R1112-SEC-500:
+/// the settings' folder, lock, turn and damaged copy were made as root through
+/// the user's links, one written over root's `authorized_keys`).
+pub(crate) fn as_configuration_user<T>(work: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+    #[cfg(unix)]
+    if effective_user() == 0
+        && let Some(user) = configuration_user()?.filter(|(uid, _)| *uid != 0)
+    {
+        return as_user(user, work);
+    }
+    work()
+}
+
 /// [`write_keeping_file`] of the configuration of `user`: root writes it as that user
 /// unless it is root's own.
 #[cfg(unix)]
@@ -332,11 +347,76 @@ fn configuration_user() -> io::Result<Option<(u32, u32)>> {
 }
 
 /// The owner of `home`, through a link of root's in its place (`/home/u -> /data/u`).
+/// A home of root's that other users may write into (`HOME=/tmp`) is no one's
+/// configuration: they could put links there for root to follow (review
+/// 2026-11-12 P3). One not there says which (P3: a bare `NotFound`).
 #[cfg(unix)]
 fn user_of_home(home: &Path) -> io::Result<(u32, u32)> {
     use std::os::unix::fs::MetadataExt;
-    let home = std::fs::metadata(home)?;
-    Ok((home.uid(), home.gid()))
+    let found = std::fs::metadata(home).map_err(|error| HomeError::Unreadable {
+        home: home.to_owned(),
+        error,
+    })?;
+    if found.uid() == 0 && found.mode() & 0o022 != 0 {
+        return Err(HomeError::SharedWithOthers {
+            home: home.to_owned(),
+        }
+        .into());
+    }
+    Ok((found.uid(), found.gid()))
+}
+
+/// Why the home named by `HOME` holds no configuration to write.
+#[cfg(unix)]
+#[derive(Debug)]
+enum HomeError {
+    Unreadable {
+        home: std::path::PathBuf,
+        error: io::Error,
+    },
+    SharedWithOthers {
+        home: std::path::PathBuf,
+    },
+}
+
+#[cfg(unix)]
+impl std::fmt::Display for HomeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unreadable { home, .. } => write!(
+                f,
+                "the home {} that HOME names cannot be read; set HOME to your home folder",
+                home.display()
+            ),
+            Self::SharedWithOthers { home } => write!(
+                f,
+                "the home {} that HOME names is root's and other users may write into it; \
+                 set HOME to root's own home or run without sudo",
+                home.display()
+            ),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl std::error::Error for HomeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Unreadable { error, .. } => Some(error),
+            Self::SharedWithOthers { .. } => None,
+        }
+    }
+}
+
+#[cfg(unix)]
+impl From<HomeError> for io::Error {
+    fn from(error: HomeError) -> Self {
+        let kind = match &error {
+            HomeError::Unreadable { error, .. } => error.kind(),
+            HomeError::SharedWithOthers { .. } => io::ErrorKind::PermissionDenied,
+        };
+        Self::new(kind, error)
+    }
 }
 
 /// [`write_keeping_file`] as this process is.
@@ -442,7 +522,6 @@ use user::{as_user, effective_user};
 #[allow(unsafe_code)]
 mod user {
     use std::io;
-    use std::sync::{Mutex, PoisonError};
 
     /// The user this process writes as.
     pub(super) fn effective_user() -> u32 {
@@ -467,13 +546,11 @@ mod user {
         owner: (u32, u32),
         write: impl FnOnce() -> io::Result<T>,
     ) -> io::Result<T> {
-        // The user is the whole process's (glibc applies each call to every thread):
-        // one write at a time is another user, and the next starts from root's own
-        // (review 2026-11-10 R1110-SEC-401: a settings save beside Connect AI in a
-        // window run as root turned the process back to root in the middle of the
-        // other's write, or left root with the user's group for good).
-        static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
-        let _lock = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+        // Only the calling thread becomes the user (review 2026-11-12
+        // R1112-SEC-501: glibc's seteuid changes every thread, so the window's
+        // autosave, document saves and log, written as root meanwhile, were
+        // refused root's folders). Root's own groups and group are read from
+        // this thread and taken back by it.
         // SAFETY: getegid takes no pointers; getgroups is given no buffer to
         // ask for the count, then a buffer of that count.
         let (group, groups) = unsafe {
@@ -489,18 +566,115 @@ mod user {
             groups,
             restored: false,
         };
-        let only: [libc::gid_t; 1] = [owner.1];
-        // SAFETY: setgroups reads one group from a live local; setegid and
-        // seteuid take no pointers. Root's real and saved user stay, so it is
-        // root again after.
-        let dropped = unsafe {
-            done(libc::setgroups(1, only.as_ptr()))
-                .and_then(|()| done(libc::setegid(owner.1)))
-                .and_then(|()| done(libc::seteuid(owner.0)))
-        };
-        let written = dropped.and_then(|()| write());
+        let written = thread::become_user(owner).and_then(|()| write());
         root.restore()?;
         written
+    }
+
+    /// Becoming a user and root again, for the calling thread alone: the system
+    /// calls themselves, not glibc's wrappers, which repeat them on every thread.
+    /// Root's real and saved user stay, so it is root again after.
+    #[cfg(target_os = "linux")]
+    mod thread {
+        use super::done;
+        use std::io;
+
+        /// Leaves a user, group or groups as they are.
+        const UNCHANGED: libc::c_long = -1;
+
+        /// What a raw system call answering 0 when it is done did.
+        fn called(answer: libc::c_long) -> io::Result<()> {
+            done(if answer == 0 { 0 } else { -1 })
+        }
+
+        pub(super) fn become_user(owner: (u32, u32)) -> io::Result<()> {
+            let only: [libc::gid_t; 1] = [owner.1];
+            let one: libc::c_long = 1;
+            // SAFETY: setgroups reads one group from a live local; setresgid and
+            // setresuid take no pointers.
+            unsafe {
+                called(libc::syscall(libc::SYS_setgroups, one, only.as_ptr()))?;
+                called(libc::syscall(
+                    libc::SYS_setresgid,
+                    UNCHANGED,
+                    libc::c_long::from(owner.1),
+                    UNCHANGED,
+                ))?;
+                called(libc::syscall(
+                    libc::SYS_setresuid,
+                    UNCHANGED,
+                    libc::c_long::from(owner.0),
+                    UNCHANGED,
+                ))
+            }
+        }
+
+        pub(super) fn become_root(group: libc::gid_t, groups: &[libc::gid_t]) -> io::Result<()> {
+            let count = libc::c_long::try_from(groups.len()).map_err(io::Error::other)?;
+            let root: libc::c_long = 0;
+            // SAFETY: setresuid and setresgid take no pointers; `groups` is live
+            // and holds `count` groups.
+            unsafe {
+                called(libc::syscall(
+                    libc::SYS_setresuid,
+                    UNCHANGED,
+                    root,
+                    UNCHANGED,
+                ))?;
+                called(libc::syscall(
+                    libc::SYS_setresgid,
+                    UNCHANGED,
+                    libc::c_long::from(group),
+                    UNCHANGED,
+                ))?;
+                called(libc::syscall(libc::SYS_setgroups, count, groups.as_ptr()))
+            }
+        }
+    }
+
+    /// Becoming a user and root again, for the calling thread alone, as macOS
+    /// offers it: the thread takes the user's identity, groups included, and
+    /// gives it back.
+    #[cfg(target_os = "macos")]
+    mod thread {
+        use super::done;
+        use std::io;
+
+        /// Gives a thread back the process's user and group.
+        const KAUTH_UID_NONE: libc::uid_t = libc::uid_t::MAX - 100;
+        const KAUTH_GID_NONE: libc::gid_t = libc::gid_t::MAX - 100;
+
+        unsafe extern "C" {
+            fn pthread_setugid_np(uid: libc::uid_t, gid: libc::gid_t) -> libc::c_int;
+        }
+
+        pub(super) fn become_user(owner: (u32, u32)) -> io::Result<()> {
+            // SAFETY: pthread_setugid_np takes no pointers.
+            done(unsafe { pthread_setugid_np(owner.0, owner.1) })
+        }
+
+        pub(super) fn become_root(_group: libc::gid_t, _groups: &[libc::gid_t]) -> io::Result<()> {
+            // SAFETY: pthread_setugid_np takes no pointers.
+            done(unsafe { pthread_setugid_np(KAUTH_UID_NONE, KAUTH_GID_NONE) })
+        }
+    }
+
+    /// No way to become a user for one thread alone: root writes nothing as
+    /// another user rather than every thread being them.
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    mod thread {
+        use std::io;
+
+        pub(super) fn become_user(_owner: (u32, u32)) -> io::Result<()> {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this system cannot write as another user for one thread; run without sudo",
+            ))
+        }
+
+        pub(super) fn become_root(_group: libc::gid_t, _groups: &[libc::gid_t]) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     /// Root's group and groups, which this process takes again when dropped.
@@ -517,15 +691,7 @@ mod user {
         }
 
         fn take_back(&self) -> io::Result<()> {
-            // SAFETY: seteuid and setegid take no pointers; `groups` is live and
-            // holds `groups.len()` groups.
-            unsafe {
-                done(libc::seteuid(0))
-                    .and_then(|()| done(libc::setegid(self.group)))
-                    .and_then(|()| {
-                        done(libc::setgroups(length(&self.groups)?, self.groups.as_ptr()))
-                    })
-            }
+            thread::become_root(self.group, &self.groups)
         }
     }
 
@@ -1099,6 +1265,60 @@ mod tests {
             writer.join().unwrap();
         }
         assert_eq!((effective_user(), effective_group()), (0, before));
+    }
+
+    /// Review 2026-11-12 P3: a home of root's that everyone may write into
+    /// (`HOME=/tmp`) had root write there with the checks that read through
+    /// links; a home not there answered a bare `NotFound`.
+    #[cfg(unix)]
+    #[test]
+    fn a_home_shared_with_others_or_not_there_holds_no_configuration() {
+        let shared = user_of_home(Path::new("/tmp")).unwrap_err();
+        assert_eq!(shared.kind(), io::ErrorKind::PermissionDenied, "{shared}");
+        assert!(shared.to_string().contains("/tmp"), "{shared}");
+        let gone = tempfile::tempdir().unwrap().path().join("gone");
+        let missing = user_of_home(&gone).unwrap_err();
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound, "{missing}");
+        assert!(
+            missing.to_string().contains(&*gone.to_string_lossy()),
+            "{missing}"
+        );
+    }
+
+    /// Review 2026-11-12 R1112-SEC-501: becoming the user changed every thread,
+    /// so another thread writing into a folder of root's meanwhile was refused.
+    /// Only the thread writing as the user is that user.
+    #[cfg(unix)]
+    #[test]
+    fn becoming_another_user_is_the_calling_threads_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::{Arc, Barrier};
+        if effective_user() != 0 {
+            return;
+        }
+        let root_only = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(root_only.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let (inside, done) = (Arc::new(Barrier::new(2)), Arc::new(Barrier::new(2)));
+        let writer = {
+            let (inside, done) = (Arc::clone(&inside), Arc::clone(&done));
+            std::thread::spawn(move || {
+                as_user((65534, 65534), || {
+                    assert_eq!(effective_user(), 65534);
+                    inside.wait();
+                    done.wait();
+                    Ok(())
+                })
+            })
+        };
+        inside.wait();
+        let roots = (
+            effective_user(),
+            std::fs::write(root_only.path().join("autosave"), "x"),
+        );
+        done.wait();
+        writer.join().unwrap().unwrap();
+        assert_eq!(roots.0, 0);
+        roots.1.unwrap();
     }
 
     /// Review 2026-11-08 SEC-242: a dangling symlink in place of the backup
