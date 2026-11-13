@@ -30,6 +30,25 @@ pub(crate) struct PresentationRequest {
     pub(crate) labels: Vec<PresentationLabel>,
 }
 
+/// The one presentation image a window makes at a time, for itself or for a client. It is free
+/// only once the thread of the last image has ended, not as soon as that image is cancelled, so
+/// asking and cancelling again does not pile threads up (review 2026-11-13 R1113-IMG-600).
+#[derive(Default)]
+pub(crate) struct PresentationSlot(Arc<()>);
+
+impl PresentationSlot {
+    /// A presentation thread is still running.
+    pub(crate) fn busy(&self) -> bool {
+        Arc::strong_count(&self.0) > 1
+    }
+
+    /// Holds the slot as a running thread would, until the result is dropped.
+    #[cfg(test)]
+    pub(crate) fn clone_held(&self) -> Arc<()> {
+        Arc::clone(&self.0)
+    }
+}
+
 /// A presentation image being made on its own thread.
 pub(crate) struct PresentationTask {
     path: PathBuf,
@@ -51,20 +70,28 @@ pub(crate) struct PresentationParts {
 
 impl PresentationParts {
     /// Makes the PNG of these parts as `request` says on a thread of its own, which stops once
-    /// `cancelled` is set; what it made comes on the receiver, and `repaint` is asked to paint.
+    /// `cancelled` is set and holds `slot` until it ends; what it made comes on the receiver,
+    /// and `repaint` is asked to paint. Refused while `slot` is held.
     pub(crate) fn spawn(
         self,
         request: PresentationRequest,
         cancelled: Arc<AtomicBool>,
         repaint: egui::Context,
-    ) -> Receiver<MadePresentation> {
+        slot: &PresentationSlot,
+    ) -> Result<Receiver<MadePresentation>, ExportError> {
+        if slot.busy() {
+            return Err(presentation_busy());
+        }
+        let held = Arc::clone(&slot.0);
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            if sender.send(self.make(&request, &cancelled)).is_ok() {
+            let made = self.make(&request, &cancelled);
+            drop(held);
+            if sender.send(made).is_ok() {
                 repaint.request_repaint();
             }
         });
-        receiver
+        Ok(receiver)
     }
 
     /// The PNG of these parts as `request` says. A panic in the renderer fails this image
@@ -118,7 +145,7 @@ impl PresentationParts {
 }
 
 /// Why the renderer made no image, as a refusal that says how to get one.
-fn presentation_refused(error: PresentationError) -> ExportError {
+pub(super) fn presentation_refused(error: PresentationError) -> ExportError {
     let hint = match &error {
         PresentationError::Size { .. } | PresentationError::TooManyPixels { .. } => {
             "Make the image smaller; its longest side and its pixels are limited."
@@ -157,6 +184,14 @@ fn presentation_refused(error: PresentationError) -> ExportError {
     Rejection::new("presentation.image", RejectionPhase::Validation)
         .reason(error.to_string())
         .fix_hint(hint)
+        .into()
+}
+
+/// Another presentation image's thread has not ended yet.
+pub(crate) fn presentation_busy() -> ExportError {
+    Rejection::new("presentation.busy", RejectionPhase::Validation)
+        .reason("another presentation image is still being made or stopping")
+        .fix_hint("Export the image again once the other one has finished or stopped.")
         .into()
 }
 
@@ -224,7 +259,12 @@ impl KetchupApp {
     ) -> Result<Written, ExportError> {
         self.side_effect_receipts.clear();
         let result = presentation_destination(path)
-            .and_then(|()| self.presentation_parts(request))
+            .and_then(|()| {
+                if self.file.activity.presentation_slot.busy() {
+                    return Err(presentation_busy());
+                }
+                self.presentation_parts(request)
+            })
             .and_then(|parts| parts.make(request, cancelled))
             .and_then(|png| self.publish_presentation(path, &png));
         self.report_export_outcome("presentation", path, result)
@@ -242,7 +282,12 @@ impl KetchupApp {
         self.side_effect_receipts.clear();
         presentation_destination(path)?;
         let parts = self.presentation_parts(request)?;
-        Ok(parts.spawn(request.clone(), cancelled, context.clone()))
+        parts.spawn(
+            request.clone(),
+            cancelled,
+            context.clone(),
+            &self.file.activity.presentation_slot,
+        )
     }
 
     /// Writes the image a client's thread `made` as that client's export; with `overwrite` it
@@ -262,30 +307,40 @@ impl KetchupApp {
         self.report_export_outcome("presentation", path, result)
     }
 
-    /// Starts making the image on a thread; [`Self::poll_presentation_export`] writes it.
+    /// Starts making the image on a thread; [`Self::poll_presentation_export`] writes it. A
+    /// refusal before the thread starts is shown and returned.
     pub(crate) fn start_presentation_export(
         &mut self,
         path: PathBuf,
         request: &PresentationRequest,
         context: &egui::Context,
-    ) {
+    ) -> Result<(), ExportError> {
         self.side_effect_receipts.clear();
-        let parts = presentation_destination(&path).and_then(|()| self.presentation_parts(request));
-        let parts = match parts {
-            Ok(parts) => parts,
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let receiver = presentation_destination(&path)
+            .and_then(|()| self.presentation_parts(request))
+            .and_then(|parts| {
+                parts.spawn(
+                    request.clone(),
+                    Arc::clone(&cancelled),
+                    context.clone(),
+                    &self.file.activity.presentation_slot,
+                )
+            });
+        let receiver = match receiver {
+            Ok(receiver) => receiver,
             Err(error) => {
                 self.show_export_outcome("presentation", &path, Err(&error));
-                return;
+                return Err(error);
             }
         };
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let receiver = parts.spawn(request.clone(), Arc::clone(&cancelled), context.clone());
         self.file.activity.presentation_export = Some(PresentationTask {
             path,
             cancelled,
             receiver,
         });
         context.request_repaint();
+        Ok(())
     }
 
     /// Stops the image's thread at its next row; nothing is written.
@@ -367,7 +422,8 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("cancelled.png");
         let context = egui::Context::default();
-        app.start_presentation_export(path.clone(), &PresentationRequest::default(), &context);
+        app.start_presentation_export(path.clone(), &PresentationRequest::default(), &context)
+            .unwrap();
         let cancelled = Arc::clone(
             &app.file
                 .activity
@@ -388,7 +444,9 @@ mod tests {
                 PresentationRequest::default(),
                 Arc::new(AtomicBool::new(true)),
                 context,
+                &PresentationSlot::default(),
             )
+            .unwrap()
             .recv()
             .unwrap();
         let refused = made.expect_err("a cancelled image is not made").to_string();
@@ -429,5 +487,55 @@ mod tests {
             assert_eq!(rejection.reason_text(), shown);
             assert!(!rejection.fix_hint_text().is_empty(), "{shown}");
         }
+    }
+
+    /// R1113-IMG-600: a cancelled image freed its place at once while its thread ran on, so
+    /// asking again started a second thread. Now a second image waits for the first thread.
+    #[test]
+    fn a_second_image_waits_until_the_first_ones_thread_has_ended() {
+        let mut app = KetchupApp::new();
+        crate::tests::install_initial_graph_result(&mut app);
+        let slot = PresentationSlot::default();
+        let running = Arc::clone(&slot.0);
+        assert!(slot.busy());
+        let parts = |app: &KetchupApp| {
+            app.presentation_parts(&PresentationRequest::default())
+                .unwrap()
+        };
+        let spawn = |app: &KetchupApp| {
+            parts(app).spawn(
+                PresentationRequest::default(),
+                Arc::new(AtomicBool::new(false)),
+                egui::Context::default(),
+                &slot,
+            )
+        };
+        let refused = spawn(&app).expect_err("refused while a thread runs");
+        assert!(
+            refused.to_string().contains("still being made"),
+            "{refused}"
+        );
+        drop(running);
+        let made = spawn(&app).unwrap().recv().unwrap();
+        assert!(made.is_ok(), "{:?}", made.err());
+        assert!(!slot.busy(), "the ended thread let its place go");
+
+        // The window's image waits for a thread still running, and says why.
+        let directory = tempfile::tempdir().unwrap();
+        let context = egui::Context::default();
+        let held = app.file.activity.presentation_slot.clone_held();
+        let start = |app: &mut KetchupApp, name: &str| {
+            app.start_presentation_export(
+                directory.path().join(name),
+                &PresentationRequest::default(),
+                &context,
+            )
+        };
+        assert!(start(&mut app, "second.png").is_err());
+        assert!(app.file.activity.presentation_export.is_none());
+        assert!(app.digest.contains("still being made"), "{}", app.digest);
+        drop(held);
+        start(&mut app, "free.png").unwrap();
+        assert!(app.file.activity.presentation_export.is_some());
     }
 }

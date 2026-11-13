@@ -239,8 +239,51 @@ fn a_clients_image_is_made_off_the_windows_thread_and_a_cancelled_one_writes_not
     bridge.poll_program_check_job(&mut app, &context);
     let answer = answers.try_recv().expect("answered in the same poll");
     assert_eq!(answer.error.as_deref(), Some("request_cancelled"));
-    assert!(bridge.program_check_job.is_none());
+    // R1113-IMG-600: the job gave its place up at once while its thread rendered on. Now it
+    // keeps it, answering nothing more, until the thread has ended.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while bridge.program_check_job.is_some() {
+        bridge.poll_program_check_job(&mut app, &context);
+        assert!(
+            answers.recv_timeout(Duration::from_millis(2)).is_err(),
+            "the client is answered once"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "the cancelled thread never ended"
+        );
+    }
+    assert!(!app.file.activity.presentation_slot.busy());
     assert!(!given_up.exists());
+}
+
+/// R1113-IMG-600: an image asked for while another one's thread still runs, the window's or a
+/// client's, is busy instead of a second thread rendering beside it.
+#[test]
+fn a_client_image_is_busy_while_another_presentation_thread_runs() {
+    use crate::live_bridge::program_dry_run::QueuedReply;
+    let (mut app, mut bridge, directory) = window();
+    let context = egui::Context::default();
+    let running = app.file.activity.presentation_slot.clone_held();
+    let path = directory.path().join("second.png");
+    let (reply, answers) = mpsc::sync_channel(1);
+    let queued = QueuedReply {
+        id: 1,
+        reply,
+        cancelled: Arc::new(AtomicBool::new(false)),
+    };
+    let image = presentation(&path, json!({"width": 32, "height": 24}));
+    bridge.start_exchange_export(&mut app, &context, queued, image.clone(), false);
+    let answer = answers.try_recv().expect("answered at once");
+    assert_eq!(answer.error.as_deref(), Some("busy"), "{answer:?}");
+    assert!(bridge.program_check_job.is_none());
+    assert!(bridge.execute(&mut app, image.clone(), false).is_err());
+    assert!(!path.exists());
+    drop(running);
+    let answer = bridge
+        .execute(&mut app, image, false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(answer["exported"], true, "{answer}");
 }
 
 /// Review 2026-11-12 P3: `overwrite` was ignored for an image. With it the window asks the
@@ -308,6 +351,25 @@ fn a_client_presentation_never_replaces_a_file_and_names_what_it_cannot_draw() {
         Err("export_refused")
     );
     assert!(!away.exists());
+
+    // Review 2026-11-13 P3: the part names and the client's labels past the limit together
+    // were a general export_failed.
+    let crowded = directory.path().join("crowded.png");
+    let mut image = small.clone();
+    image["part_labels"] = json!(true);
+    image["labels"] = (0..ketchup_manufacturing::presentation::MAX_PRESENTATION_LABELS)
+        .map(|n| json!({"text": format!("label {n}"), "at_mm": [0, 0, 0]}))
+        .collect();
+    assert_eq!(
+        bridge.execute(&mut app, presentation(&crowded, image), false),
+        Err("export_refused")
+    );
+    assert!(
+        app.action_digest().contains("fewer labels"),
+        "{}",
+        app.action_digest()
+    );
+    assert!(!crowded.exists());
 
     for wrong in [
         json!({"background": "#12345"}),

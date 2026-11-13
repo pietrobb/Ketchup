@@ -498,6 +498,7 @@ dependencies = [
 name = "ketchup-rejection"
 version = "0.3.4-dev"
 dependencies = [
+ "ketchup-user-files",
  "serde",
 ]
 
@@ -506,6 +507,13 @@ name = "ketchup-tolerance"
 version = "0.3.4-dev"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "ketchup-user-files"
+version = "0.3.4-dev"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

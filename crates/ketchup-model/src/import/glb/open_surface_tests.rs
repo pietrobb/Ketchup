@@ -90,3 +90,22 @@ fn a_closed_mesh_stays_a_solid() {
     assert!(!scene.primitives[0].sheet);
     assert!(!codes(&scene).contains(&"glb_open_surfaces_imported"));
 }
+
+/// A closed tetrahedron wound any way, a face or all of them inside out, imports as a solid
+/// facing out, turned by its geometry (review 2026-11-13 R1113-SKP-600: a SketchUp box
+/// with a face wound against the others came as no solid).
+#[test]
+fn a_shell_wound_any_way_imports_as_a_solid_facing_out() {
+    for triangles in [
+        [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 3, 2]],
+        [[0, 1, 2], [0, 3, 1], [0, 2, 3], [1, 3, 2]],
+        [[0, 1, 2], [0, 1, 3], [0, 3, 2], [1, 2, 3]],
+    ] {
+        let scene = inspect_glb(&mesh_of(&triangles)).unwrap();
+        assert_eq!(scene.mesh_primitive_count(), 1, "{triangles:?}");
+        assert!(!scene.primitives[0].sheet, "{triangles:?}");
+        assert!(is_solid(&scene.primitives[0]), "{triangles:?}");
+        let codes = codes(&scene);
+        assert!(!codes.contains(&"glb_open_surfaces_imported"), "{codes:?}");
+    }
+}

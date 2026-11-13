@@ -347,6 +347,24 @@ def test_numeric_casts_and_lint_allows_are_counted_per_crate_and_only_fall(tmp_p
     assert "lower CASTS_AND_ALLOWS" in checker.grown_casts_and_allows(counts, {"a casts": 4, "a allows": 1})[0]
 
 
+def test_unsafe_under_an_allow_already_counted_is_counted_itself(tmp_path):
+    # Review 2026-11-13 P3: four unsafe blocks under one module-wide allow left the
+    # counts as they were.
+    source = tmp_path / "crates" / "a" / "src" / "lib.rs"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "#![allow(unsafe_code)]\n"
+        "fn f() { unsafe { g() }; let x = unsafe { h() }; } // unsafe { i() }\n"
+        "unsafe fn g() {}\nstruct S; unsafe impl Send for S {}\n"
+        'fn m() -> &\'static str { "a path is unsafe \\" unsafe" }\n'
+        "#[cfg(test)]\nmod tests {\n    fn t() { unsafe { j() } }\n}\n",
+        encoding="utf-8",
+    )
+    counts = checker.cast_and_allow_counts(tmp_path)
+    assert counts == {"a allows": 1, "a unsafe": 4}
+    assert "limit 3" in checker.grown_casts_and_allows(counts, {"a allows": 1, "a unsafe": 3})[0]
+
+
 def test_workspace_casts_and_allows_only_fall():
     assert checker.grown_casts_and_allows(checker.cast_and_allow_counts(ROOT)) == []
 

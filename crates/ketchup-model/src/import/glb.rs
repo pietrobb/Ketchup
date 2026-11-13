@@ -19,6 +19,7 @@ use crate::document::{
 
 mod excess;
 mod json;
+mod orient;
 mod tags;
 mod textures;
 
@@ -981,10 +982,13 @@ fn parse_meshes(
 /// sheet, such as one of degenerate triangles, is left out and counted.
 fn closed_shells(
     mesh_name: &str,
-    primitives: Vec<ParsedPrimitive>,
+    mut primitives: Vec<ParsedPrimitive>,
     images: &mut Vec<Option<GlbImage>>,
     diagnostics: &mut BTreeMap<&'static str, u32>,
 ) -> Result<Vec<ParsedPrimitive>, GlbImportError> {
+    for piece in primitives.iter_mut().filter(|piece| !piece.sheet) {
+        orient::face_out(piece);
+    }
     let (mut shells, open): (Vec<_>, Vec<_>) = primitives.into_iter().partition(is_solid);
     let Some(first) = open.first() else {
         return Ok(shells);
@@ -1019,12 +1023,17 @@ fn closed_shells(
             sheet: false,
             origin_mm: first.origin_mm,
         })
-        .filter(is_solid)
-        .map(|joined| {
-            Ok::<_, GlbImportError>(ParsedPrimitive {
-                look: joined_look(&open, first.color, images)?,
-                ..joined
-            })
+        .map(|mut joined| {
+            let turned = orient::face_out(&mut joined);
+            (joined, turned)
+        })
+        .filter(|(joined, _)| is_solid(joined))
+        .map(|(joined, turned)| {
+            let mut look = joined_look(&open, first.color, images)?;
+            if let Some(look) = look.as_mut() {
+                orient::turn_look(look, &turned);
+            }
+            Ok::<_, GlbImportError>(ParsedPrimitive { look, ..joined })
         })
         .transpose()?;
     let count = |pieces: usize| {
