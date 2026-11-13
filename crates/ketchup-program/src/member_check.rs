@@ -2546,14 +2546,17 @@ fn short_length_axis(part: &Part) -> Option<String> {
 /// axis it names than the part is long along it, so it spans another way
 /// (review 2026-11-10 R1110-PG-402: a 3 900 x 80 x 400 beam named along its
 /// height, 9.75 times shorter, became a 400 mm column on two posts 3.8 m apart
-/// and passed at 0.011, where it fails in bending at 1.444).
+/// and passed at 0.011, where it fails in bending at 1.444). Across its
+/// `grain` where the section found one along the named axis: a sloping top
+/// plate named along its run bears along its slope, not across it.
 fn bearings_across_length_axis(
     part: &Part,
+    grain: Option<[f64; 3]>,
     load: &MemberLoad,
     parts: &BTreeMap<&str, &Part>,
 ) -> Option<String> {
     let named = part.named_length_axis()?;
-    let axis = normalize(axes(part)[named])?;
+    let axis = normalize(grain.unwrap_or(axes(part)[named]))?;
     let (low, high) = part.world_bounds();
     // Where each bearing meets the part: the middle of each face they share,
     // as one support touching it at both ends (R1112-PG-502: a U-shaped one
@@ -2628,11 +2631,12 @@ pub fn member_checks(model: &ProgramModel, loads: &LoadReport) -> DesignReport {
         let part = parts.get(load.part.as_str()).copied();
         let material = part.and_then(|p| p.material.clone()).unwrap_or_default();
         let class = model.strength_classes.get(&material);
+        let shape = part.map_or_else(|| Err("the part is not found"), |p| shape(p, load.axis));
+        let grain = shape.as_ref().ok().map(|s| s.grain);
         let mut missing = load.missing.clone();
         missing.extend(part.and_then(|p| {
-            short_length_axis(p).or_else(|| bearings_across_length_axis(p, load, &parts))
+            short_length_axis(p).or_else(|| bearings_across_length_axis(p, grain, load, &parts))
         }));
-        let shape = part.map_or_else(|| Err("the part is not found"), |p| shape(p, load.axis));
         let role = match &shape {
             Ok(s) if horizontal(s.grain) < COLUMN_COS => "column",
             _ => "beam",
