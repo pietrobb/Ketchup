@@ -233,6 +233,10 @@ pub enum GlbImportError {
     InvalidAccessor,
     InvalidGeometry,
     InvalidTransform,
+    /// The scene reaches `reach_mm` from its centre, farther than the model space.
+    BeyondModelSpace {
+        reach_mm: usize,
+    },
     InvalidHierarchy,
     InvalidText,
     InvalidSourceIdentity(ImportContractError),
@@ -256,6 +260,14 @@ impl fmt::Display for GlbImportError {
             Self::InvalidAccessor => "GLB contains an invalid or unsupported accessor",
             Self::InvalidGeometry => "GLB contains invalid solid mesh geometry",
             Self::InvalidTransform => "GLB contains a non-finite or degenerate node transform",
+            Self::BeyondModelSpace { reach_mm } => {
+                return write!(
+                    formatter,
+                    "GLB scene reaches {} m from its centre; the model holds {} m around its origin",
+                    reach_mm.div_ceil(1_000),
+                    MAX_COORDINATE_MM / 1_000.0
+                );
+            }
             Self::InvalidHierarchy => "GLB selected scene is not a finite single-parent tree",
             Self::InvalidText => "GLB contains invalid identity text",
             Self::InvalidSourceIdentity(error) => {
@@ -346,7 +358,7 @@ pub fn inspect_glb(source: &[u8]) -> Result<ParsedGlbScene, GlbImportError> {
     if instance_count == 0 {
         return Err(GlbImportError::EmptyScene);
     }
-    place_nodes(&mut nodes, &traversal, &primitives)?;
+    let shift = place_nodes(&mut nodes, &traversal, &primitives)?;
     let placed_triangles = traversal.iter().fold(0_usize, |count, node_index| {
         nodes[*node_index]
             .primitives
@@ -413,6 +425,23 @@ pub fn inspect_glb(source: &[u8]) -> Result<ParsedGlbScene, GlbImportError> {
                 .map_err(GlbImportError::InvalidReport)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    if shift != Vec3::ZERO {
+        let metres = |mm: f64| format!("{:.3}", mm / 1_000.0);
+        diagnostics.push(
+            ImportDiagnostic::new(
+                ImportDiagnosticSeverity::Warning,
+                "glb_scene_moved_to_model_origin",
+                Some(format!(
+                    "scene centre ({}, {}, {}) m moved to the origin",
+                    metres(shift.x),
+                    metres(shift.y),
+                    metres(shift.z)
+                )),
+                1,
+            )
+            .map_err(GlbImportError::InvalidReport)?,
+        );
+    }
     diagnostics.sort();
 
     Ok(ParsedGlbScene {
@@ -1681,11 +1710,12 @@ fn translation(offset: Vec3) -> Affine3 {
 /// georeferenced component needs:
 /// its group then holds the move from its parent's centre to its own, and each part
 /// the move from there to its mesh's origin. Placed in the model, nothing moves.
+/// The whole scene moves by the returned shift (see [`scene_shift`]).
 fn place_nodes(
     nodes: &mut [ParsedNode],
     traversal: &[usize],
     primitives: &[ParsedPrimitive],
-) -> Result<(), GlbImportError> {
+) -> Result<Vec3, GlbImportError> {
     let primitive_bounds = primitives
         .iter()
         .map(|primitive| {
@@ -1727,9 +1757,10 @@ fn place_nodes(
             parent_by_node[*child] = Some(*index);
         }
     }
+    let shift = scene_shift(nodes, traversal, &parent_by_node, &node_bounds)?;
     let mut pivots = vec![Vec3::ZERO; nodes.len()];
     for index in traversal {
-        let parent_pivot = parent_by_node[*index].map_or(Vec3::ZERO, |parent| pivots[parent]);
+        let parent_pivot = parent_by_node[*index].map_or(shift, |parent| pivots[parent]);
         let node = &nodes[*index];
         let place = |pivot: Vec3| -> Result<(Transform, Vec<Transform>), GlbImportError> {
             let transform = document_transform(
@@ -1772,7 +1803,49 @@ fn place_nodes(
         nodes[*index].transform = transform;
         nodes[*index].placements = placements;
     }
-    Ok(())
+    Ok(shift)
+}
+
+/// How far the whole scene moves so it lies in the model space: nowhere if it already
+/// does, else by its centre, to the millimetre, as a model drawn at its site needs.
+fn scene_shift(
+    nodes: &[ParsedNode],
+    traversal: &[usize],
+    parent_by_node: &[Option<usize>],
+    node_bounds: &[Option<(Vec3, Vec3)>],
+) -> Result<Vec3, GlbImportError> {
+    let Some((low, high)) = bounds(
+        traversal
+            .iter()
+            .filter(|index| parent_by_node[**index].is_none())
+            .filter_map(|index| node_bounds[*index].map(|bounds| (nodes[*index].local, bounds)))
+            .flat_map(|(local, bounds)| {
+                corners(bounds).map(|corner| local.transform_point(corner))
+            }),
+    ) else {
+        return Ok(Vec3::ZERO);
+    };
+    let reach = |centre: Vec3| {
+        [low - centre, high - centre]
+            .iter()
+            .flat_map(|corner| [corner.x.abs(), corner.y.abs(), corner.z.abs()])
+            .fold(0.0_f64, f64::max)
+    };
+    if reach(Vec3::ZERO) <= MAX_COORDINATE_MM {
+        return Ok(Vec3::ZERO);
+    }
+    let centre = Vec3::new(
+        f64::midpoint(low.x, high.x).round(),
+        f64::midpoint(low.y, high.y).round(),
+        f64::midpoint(low.z, high.z).round(),
+    );
+    let reach_mm = reach(centre);
+    if reach_mm > MAX_COORDINATE_MM {
+        return Err(GlbImportError::BeyondModelSpace {
+            reach_mm: crate::whole_count(reach_mm.ceil()),
+        });
+    }
+    Ok(centre)
 }
 
 fn bounds(points: impl Iterator<Item = Vec3>) -> Option<(Vec3, Vec3)> {
@@ -2423,12 +2496,69 @@ mod placement_tests {
             serde_json::json!({"scale": [0.1, 0.1, 0.1]}),
         ));
         assert_eq!(placed_corners(&scaled_back), scaled);
+    }
 
-        // Geometry placed beyond the model space is still refused.
-        assert_eq!(
-            inspect_glb(&tetrahedron(far, serde_json::json!({}))),
-            Err(GlbImportError::InvalidTransform)
+    /// R1113 P3 (R1112-SKP-502): a scene drawn 4 km from its origin, as a SketchUp model
+    /// at its site, was refused as "a non-finite or degenerate node transform". It
+    /// imports moved as a whole to the origin, the same shape, with a note of the move.
+    #[test]
+    fn a_scene_far_from_its_origin_imports_moved_to_the_origin_with_a_note() {
+        let extent = |corners: &[[i64; 3]]| -> [i64; 3] {
+            std::array::from_fn(|axis| {
+                let values = corners.iter().map(|corner| corner[axis]);
+                values.clone().max().unwrap() - values.min().unwrap()
+            })
+        };
+        let near = placed_corners(&tetrahedron(0.0, serde_json::json!({})));
+        for group in [
+            serde_json::json!({}),
+            serde_json::json!({"translation": [0.0, 0.0, -2_500.0]}),
+        ] {
+            let source = tetrahedron(4_063.6, group.clone());
+            let far = placed_corners(&source);
+            for (far, near) in extent(&far).iter().zip(extent(&near)) {
+                assert!((far - near).abs() <= 1, "{group}: {far} {near}");
+            }
+            assert!(
+                far.iter().flatten().all(|value| value.abs() <= 1_000),
+                "{group}: {far:?}"
+            );
+            let scene = inspect_glb(&source).unwrap();
+            let moved = scene
+                .diagnostics()
+                .iter()
+                .find(|diagnostic| diagnostic.code() == "glb_scene_moved_to_model_origin")
+                .unwrap_or_else(|| panic!("{group}: {:?}", scene.diagnostics()));
+            assert!(
+                moved
+                    .subject()
+                    .is_some_and(|subject| subject.contains("4064")),
+                "{group}: {moved:?}"
+            );
+        }
+        // A scene near its origin moves nowhere and notes nothing.
+        let scene = inspect_glb(&tetrahedron(0.0, serde_json::json!({}))).unwrap();
+        assert!(
+            scene
+                .diagnostics()
+                .iter()
+                .all(|diagnostic| diagnostic.code() != "glb_scene_moved_to_model_origin")
         );
+    }
+
+    /// A scene wider than the model space cannot move within it: it is refused with how
+    /// far it reaches, not as a broken transform.
+    #[test]
+    fn a_scene_wider_than_the_model_space_is_refused_with_its_reach() {
+        let wide = tetrahedron(0.0, serde_json::json!({"scale": [3_000.0, 1.0, 1.0]}));
+        let error = inspect_glb(&wide).unwrap_err();
+        assert_eq!(
+            error,
+            GlbImportError::BeyondModelSpace {
+                reach_mm: 1_500_000
+            }
+        );
+        assert!(error.to_string().contains("1500 m"), "{error}");
     }
 }
 
