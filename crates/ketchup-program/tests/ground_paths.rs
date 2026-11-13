@@ -167,6 +167,48 @@ joint(\"board {x}\", \"block {x}\", kind = \"screw\")\n"
     assert_eq!(checked(&walled, "beam").status, "pass");
 }
 
+/// Capability review 766: a grounded strip 1 x 40 x 2 400 standing on the floor
+/// under each block was ground, its height measured against its width and not
+/// its thickness. Whatever its width, a part standing on its end more than 60
+/// times as tall as it is thick holds nothing sideways; one no more than that
+/// holds the beam.
+#[test]
+fn a_standing_part_is_slender_by_its_height_over_its_thickness() {
+    let standing = |(dx, dy): (i32, i32)| {
+        blocks(|x| {
+            format!(
+                "box(\"strip {x}\", ({dx}, {dy}, 2400), at = ({}, 200, 0), material = \"GL24h\", grounded = True)\n",
+                x + 20
+            )
+        })
+    };
+    for section in [
+        (1, 40),
+        (40, 1),
+        (1, 59),
+        (1, 61),
+        (10, 39),
+        (10, 40),
+        (10, 100),
+        (39, 100),
+    ] {
+        let held = standing(section);
+        assert_ne!(checked(&held, "beam").status, "pass", "{section:?}");
+        assert!(
+            ignored(&held)
+                .iter()
+                .any(|message| message.contains("strip 300") && message.contains("too slender")),
+            "{section:?}: {:?}",
+            ignored(&held)
+        );
+    }
+    for section in [(40, 100), (100, 40)] {
+        let held = standing(section);
+        assert_eq!(ignored(&held), Vec::<&str>::new(), "{section:?}");
+        assert_eq!(checked(&held, "beam").status, "pass", "{section:?}");
+    }
+}
+
 /// A grounded wall beside [`BEAM`], a metre off it, standing on the floor up to
 /// the top of the blocks on the beam.
 const WALL: &str =

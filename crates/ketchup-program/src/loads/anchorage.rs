@@ -34,18 +34,27 @@ pub(super) struct Footing<'a> {
 /// about the slenderness 200 bracing members are kept under.
 const SPAN_PER_THICKNESS: f64 = 60.0;
 
-/// Whether `part` is too slender to hold anything sideways (capability review
-/// 761 of R1113-PG-600: a grounded rod 1 × 1 × 2 400 on the floor was ground,
-/// measured by its height across the member). A bar spans its length; a flat
-/// part, at least four times as wide as it is thick, is stiff in its own plane
-/// and spans its width, but only while its length spans no more than that many
-/// widths (capability review 763: a grounded strip 1 × 4 × 2 400 was ground).
-fn slender(part: &Part) -> bool {
-    let mut sides = part.obb().half.map(|half| 2.0 * half);
-    sides.sort_by(f64::total_cmp);
-    let [thin, middle, long] = sides;
-    let span = if middle >= 4.0 * thin { middle } else { long };
-    span > SPAN_PER_THICKNESS * thin || long > SPAN_PER_THICKNESS * middle
+/// Whether `part` is too slender to hold anything sideways, in the horizontal.
+/// A part lying flat, its thinnest side the more upright, holds in its own
+/// plane, spanning its width in thicknesses and its length in widths; so does
+/// one standing on the floor along its whole length, a wall, held by it there
+/// and swaying over its height. Any other part holds across its thickness and
+/// spans its length in thicknesses, however wide (capability reviews 761, 763,
+/// 766 of R1113-PG-600: grounded rods and strips 1 × 1, 1 × 4 and 1 × 40 ×
+/// 2 400 standing on the floor were ground). Both measures agree on a square
+/// bar.
+fn slender(part: &Part, floor: f64) -> bool {
+    let upright = |axis: [f64; 3]| axis[2].abs() >= std::f64::consts::FRAC_1_SQRT_2;
+    let obb = part.obb();
+    let mut order = [0, 1, 2];
+    order.sort_by(|a, b| obb.half[*a].total_cmp(&obb.half[*b]));
+    let [thin, middle, long] = order.map(|axis| 2.0 * obb.half[axis]);
+    let walled = !upright(obb.axes[order[2]]) && on_floor(part, floor);
+    if upright(obb.axes[order[0]]) || walled {
+        middle > SPAN_PER_THICKNESS * thin || long > SPAN_PER_THICKNESS * middle
+    } else {
+        long > SPAN_PER_THICKNESS * thin
+    }
 }
 
 type Asked = (usize, usize, Vec<usize>);
@@ -90,6 +99,7 @@ impl<'a> Footing<'a> {
             }
         }
         let names = model.grounded_parts();
+        let floor = model.floor_z_mm.unwrap_or(0.0);
         Self {
             parts,
             frames,
@@ -98,8 +108,8 @@ impl<'a> Footing<'a> {
                 .iter()
                 .map(|part| names.contains(&part.name))
                 .collect(),
-            slender: parts.iter().map(slender).collect(),
-            floor: model.floor_z_mm.unwrap_or(0.0),
+            slender: parts.iter().map(|part| slender(part, floor)).collect(),
+            floor,
             touching,
             known: RefCell::default(),
             met_slender: RefCell::default(),
