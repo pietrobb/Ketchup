@@ -213,7 +213,10 @@ impl<'a> Footing<'a> {
 
 /// Whether `axis` runs along a world axis.
 fn on_axis(axis: &[f64; 3]) -> bool {
-    axis.iter().filter(|value| value.abs() > 1e-9).count() == 1
+    axis.iter()
+        .filter(|value| value.abs() > ketchup_tolerance::ROUNDING)
+        .count()
+        == 1
 }
 
 /// Whether an anchorage at `anchor` holds `point` of `member`, of `frame`,
