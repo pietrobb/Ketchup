@@ -473,7 +473,8 @@ fn a_box_far_from_the_origin_keeps_its_size_place_and_picture() {
             .collect();
         let placed = mesh_placements(&document);
         assert_eq!(placed.len(), 2, "{offset:?}: {placed:?}");
-        let corner = [offset[0], offset[2], -offset[1] - 20.0].map(|inches| inches * METRES_PER_INCH);
+        let corner =
+            [offset[0], offset[2], -offset[1] - 20.0].map(|inches| inches * METRES_PER_INCH);
         let meshes = document["nodes"]
             .as_array()
             .unwrap()
