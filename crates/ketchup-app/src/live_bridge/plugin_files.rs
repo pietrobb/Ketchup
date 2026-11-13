@@ -6,6 +6,7 @@
 //! hash until the plugin process has ended; on Windows without write or delete
 //! sharing, so nobody can change, replace or rename it meanwhile. Elsewhere the
 //! files are hashed again before the process starts.
+use ketchup_user_files::UserFolder;
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io;
@@ -235,21 +236,28 @@ impl HeldFiles {
 
 /// Where plugin stages are made: `%LOCALAPPDATA%\Ketchup\plugin-stages` on
 /// Windows, `$XDG_RUNTIME_DIR` (or `~/.cache`) `/ketchup/plugin-stages`
-/// elsewhere. Without such a directory no plugin runs.
+/// elsewhere. Under `sudo` only a directory of root's is taken: in the user's
+/// root made the stage's folders through the user's links, and the user could
+/// change the files staged (review 2026-11-13 P3). Without such a directory no
+/// plugin runs.
 fn stage_root() -> io::Result<PathBuf> {
     #[cfg(windows)]
-    let base = std::env::var_os("LOCALAPPDATA").map(|path| PathBuf::from(path).join("Ketchup"));
+    let bases: [(&str, &[&str]); 1] = [("LOCALAPPDATA", &["Ketchup"])];
     #[cfg(not(windows))]
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-        .map(|path| path.join("ketchup"));
-    base.filter(|path| path.is_absolute())
-        .map(|path| path.join("plugin-stages"))
+    let bases: [(&str, &[&str]); 2] = [
+        ("XDG_RUNTIME_DIR", &["ketchup"]),
+        ("HOME", &[".cache", "ketchup"]),
+    ];
+    bases
+        .iter()
+        .filter_map(|base| UserFolder::find(std::slice::from_ref(base), "plugin-stages"))
+        .find(UserFolder::is_running_users)
+        .map(|folder| folder.path().to_owned())
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                "no per-user directory for a plugin stage",
+                "no directory of the running user's for a plugin stage; under sudo, \
+                 set HOME to root's home",
             )
         })
 }

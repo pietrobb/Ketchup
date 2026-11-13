@@ -34,6 +34,7 @@ ketchup-pdm = { path = "../ketchup-pdm" }
 ketchup-program = { path = "../ketchup-program" }
 ketchup-rejection = { path = "../ketchup-rejection" }
 ketchup-scheduler = { path = "../ketchup-scheduler" }
+ketchup-user-files = { path = "../ketchup-user-files" }
 raw-window-handle = "0.6.2"
 rfd = "0.15.4"
 # The identity of a locked export lock file (already in the tree via walkdir).

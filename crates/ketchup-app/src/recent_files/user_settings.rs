@@ -13,6 +13,7 @@
 //! is not stored.
 
 use super::RecentFilesStore;
+use ketchup_user_files::{UserFolder, side_file};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -22,10 +23,11 @@ const FILE_NAME: &str = "settings.txt";
 const LANGUAGE: &str = "language";
 const RECENT_FILE: &str = "recent";
 
-/// The settings file at one path.
+/// The settings file at one path, and the user's folder it was found in.
 #[derive(Clone, Debug)]
 pub(crate) struct SettingsFile {
     path: PathBuf,
+    folder: Option<UserFolder>,
 }
 
 impl SettingsFile {
@@ -40,22 +42,16 @@ impl SettingsFile {
     /// these settings; on Windows, which keeps them in the registry,
     /// `%LOCALAPPDATA%\Ketchup`.
     pub(crate) fn of_user_named(name: &str) -> Option<Self> {
-        let var = |name| std::env::var_os(name).map(PathBuf::from);
-        let base = if cfg!(windows) {
-            var("LOCALAPPDATA")
-        } else if cfg!(target_os = "macos") {
-            var("HOME").map(|home| home.join("Library").join("Application Support"))
-        } else {
-            var("XDG_CONFIG_HOME")
-                .filter(|base| base.is_absolute())
-                .or_else(|| var("HOME").map(|home| home.join(".config")))
-        };
-        base.filter(|base| base.is_absolute())
-            .map(|base| Self::at(base.join("Ketchup").join(name)))
+        UserFolder::settings("LOCALAPPDATA", "Ketchup").map(|folder| Self {
+            path: folder.path().join(name),
+            folder: Some(folder),
+        })
     }
 
+    /// The file at `path`, in no user's folder: written as this process is.
+    #[cfg(test)]
     pub(crate) const fn at(path: PathBuf) -> Self {
-        Self { path }
+        Self { path, folder: None }
     }
 
     /// The lines of the file, none when there is no file. A line that is not
@@ -155,9 +151,14 @@ impl SettingsFile {
     /// The lines of the file made by `change` from those in it, while it
     /// waits for no other window. Under root all of it, the folder and the
     /// files beside the settings too, is done as the user they belong to
-    /// (review 2026-11-12 R1112-SEC-500).
+    /// (review 2026-11-12 R1112-SEC-500), the owner of the folder they were
+    /// found in (review 2026-11-13 R1113-SEC-602: the owner of `HOME`, root
+    /// under `sudo -E` with the user's `XDG_CONFIG_HOME`).
     fn rewrite(&self, change: impl FnOnce(Vec<String>) -> Vec<String>) -> io::Result<()> {
-        crate::live_bridge::as_configuration_user(|| self.rewrite_as_found(change))
+        match &self.folder {
+            Some(folder) => folder.as_owner(|| self.rewrite_as_found(change)),
+            None => self.rewrite_as_found(change),
+        }
     }
 
     /// [`Self::rewrite`] as this thread is.
@@ -207,20 +208,6 @@ impl SettingsFile {
     pub(crate) fn save_language(&self, tag: &str) -> io::Result<()> {
         self.replace(LANGUAGE, &[tag.to_owned()])
     }
-}
-
-/// Opens a file beside the settings (the lock, the turn, the damaged copy) to
-/// write, made its owner's only, and not through a symlink in its place (review
-/// 2026-11-12 R1112-SEC-500: one there was followed wherever it led).
-fn side_file(path: &Path, truncate: bool) -> io::Result<std::fs::File> {
-    let mut options = std::fs::OpenOptions::new();
-    options.create(true).write(true).truncate(truncate);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    options.open(path)
 }
 
 /// How long a save waits for another window saving the settings.
