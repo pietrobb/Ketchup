@@ -2084,13 +2084,34 @@ fn optional_name(
     index: usize,
 ) -> Result<String, GlbImportError> {
     let value = match object.get(name) {
-        None => format!("{fallback} {}", index + 1),
-        Some(Value::String(value)) if value.is_empty() => format!("{fallback} {}", index + 1),
-        Some(Value::String(value)) => value.clone(),
+        None => String::new(),
+        Some(Value::String(value)) => display_name(value),
         Some(_) => return Err(GlbImportError::InvalidJson),
+    };
+    let value = if value.is_empty() {
+        format!("{fallback} {}", index + 1)
+    } else {
+        value
     };
     validate_text(&value)?;
     Ok(value)
+}
+
+/// A name the file gives a node, a mesh or a tag, as the document shows it: each control
+/// character a space, trimmed. Review 2026-11-13 P3: a SketchUp tag "Walls\u{7f}" refused
+/// the whole file as "invalid identity text".
+pub(super) fn display_name(value: &str) -> String {
+    let shown: String = value
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect();
+    shown.trim().to_owned()
 }
 
 fn validate_text(value: &str) -> Result<(), GlbImportError> {
