@@ -176,7 +176,7 @@ jobs:
         -p ketchup-analysis -p ketchup-assistant -p ketchup-dwg -p ketchup-geometry -p ketchup-skp
         -p ketchup-interaction -p ketchup-manufacturing -p ketchup-mcp -p ketchup-model -p ketchup-pdm
         -p ketchup-program -p ketchup-rejection -p ketchup-test-env -p ketchup-tolerance
-        -p ketchup-view-format -p ketchup-viewer-android
+        -p ketchup-user-files -p ketchup-view-format -p ketchup-viewer-android
       # The MCP discovery directory lives in the per-user runtime directory.
       XDG_RUNTIME_DIR: /tmp/xdg-runtime
     steps:
@@ -213,6 +213,16 @@ jobs:
         run: |
           mkdir -p "$KETCHUP_SAVED_FILES_DIR"
           cargo test --locked $CRATES --features ketchup-model/saved-files --no-fail-fast
+      # The tests of writing the user's files under sudo run only as root (review
+      # 2026-11-13: they were skipped in CI). Built as the runner, so nothing in
+      # target/ or the cargo home becomes root's; run as root.
+      - name: tests of the user's files as root
+        if: ${{ !cancelled() }}
+        run: |
+          for test in $(cargo test --locked -p ketchup-user-files -p ketchup-rejection --no-run \
+              --message-format=json | jq -r 'select(.profile.test == true) | .executable'); do
+            sudo "$test"
+          done
       # Every released Kečup opens each file the tests saved in a format it reads and
       # refuses the others without opening their .recovery; the serde enums it knows
       # gain only reviewed variants (review 2026-10-29 proposal 5.4, MD-60; 2026-10-31 CI-80).

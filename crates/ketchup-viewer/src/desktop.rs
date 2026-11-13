@@ -6,7 +6,7 @@
 //! Viewer runs (macOS Finder, "Open with") arrive through [`OpenRequests`].
 
 use crate::app::ViewerApp;
-use crate::preferences::{Preferences, desktop_settings_path};
+use crate::preferences::{DESKTOP_FILE, Preferences, desktop_settings_folder};
 use eframe::egui;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -61,10 +61,10 @@ pub fn main(requests: OpenRequests) -> ExitCode {
     }
     // Started without a console, the window logs to a file (review 2026-11-04 r19 TST-160).
     ketchup_rejection::dropped::log_window_to("Ketchup Viewer", "viewer.log");
-    let settings = desktop_settings_path();
+    let settings = desktop_settings_folder();
     let preferences = settings
-        .as_deref()
-        .map(Preferences::load)
+        .as_ref()
+        .map(|folder| Preferences::load(&folder.path().join(DESKTOP_FILE)))
         .unwrap_or_default();
     let result = eframe::run_native(
         "Kečup Viewer",
@@ -113,7 +113,7 @@ struct DesktopViewer {
     app: ViewerApp,
     requests: OpenRequests,
     /// `None` without a per-user settings folder: settings last until the Viewer closes.
-    settings: Option<PathBuf>,
+    settings: Option<ketchup_user_files::UserFolder>,
 }
 
 impl eframe::App for DesktopViewer {
@@ -130,9 +130,9 @@ impl eframe::App for DesktopViewer {
             }
         }
         self.app.update(ctx, frame);
-        if let (Some(preferences), Some(path)) =
+        if let (Some(preferences), Some(folder)) =
             (self.app.take_changed_preferences(), &self.settings)
-            && let Err(error) = preferences.save(path)
+            && let Err(error) = preferences.save_in(folder)
         {
             ketchup_rejection::log!("{error}");
             self.app.report(error);

@@ -30,6 +30,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from source_roots import package_files, package_of  # noqa: E402
 
 LAYERS = {
+    # Below the log of ketchup-rejection, which opens its file in the user's folder
+    # through it (review 2026-11-13 R1113-SEC-601).
+    "ketchup-user-files": -1,
     "ketchup-tolerance": 0,
     "ketchup-rejection": 0,
     "ketchup-test-env": 0,
@@ -494,7 +497,9 @@ CASTS_AND_ALLOWS = {
     # name in a set's list is the folder the file system gives it), so 17 -> 18.
     # GetStdHandle/AttachConsole of the binary's console::attach_parent_console (feedback
     # 2026-11-10: the windowed release printed `--version` to no console), so 18 -> 19.
-    "ketchup-app allows": 19,
+    # Becoming another user under sudo moved to ketchup-user-files with its one module-wide
+    # allowance (review 2026-11-13 R1113-SEC-600..602, P3: it hid 4 unsafe blocks), so 19 -> 18.
+    "ketchup-app allows": 18,
     "ketchup-app casts": 216,
     "ketchup-application allows": 9,
     "ketchup-application casts": 29,
@@ -521,6 +526,9 @@ CASTS_AND_ALLOWS = {
     "ketchup-program casts": 50,
     "ketchup-scheduler allows": 3,
     "ketchup-scheduler casts": 73,
+    # One on each item calling the system to read or change this thread's user and
+    # groups, on Linux and macOS (review 2026-11-13 P3: one on the module hid them).
+    "ketchup-user-files allows": 8,
     # The Viewer apps, counted since review 2026-10-31 TST-80; the allows are the
     # unsafe FFI entry points of Android.
     "ketchup-viewer-android allows": 3,

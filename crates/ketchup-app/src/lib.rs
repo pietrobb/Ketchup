@@ -1,6 +1,6 @@
-// Unsafe code is denied, not forbidden, for exactly one audited reason: the
-// native file dialogs must borrow the raw main-window handle to be owned by,
-// and modal to, the Ketchup window. See `dialogs::DialogParentWindow`.
+// Unsafe code is denied, not forbidden: each item calling the system allows it itself
+// (`dialogs::DialogParentWindow`, the Windows calls of `live_bridge` and `app`), counted
+// and explained in scripts/check_crate_layers.py (review 2026-11-13 P3: "one reason").
 #![deny(unsafe_code)]
 
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, Vec2};

@@ -2371,6 +2371,7 @@ dependencies = [
  "ketchup-scheduler",
  "ketchup-test-env",
  "ketchup-test-gpu",
+ "ketchup-user-files",
  "ketchup-view-format",
  "ketchup-viewer",
  "libc",
@@ -2574,8 +2575,10 @@ dependencies = [
 name = "ketchup-rejection"
 version = "0.3.4-dev"
 dependencies = [
+ "ketchup-user-files",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -2638,6 +2641,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ketchup-user-files"
+version = "0.3.4-dev"
+dependencies = [
+ "libc",
+ "tempfile",
+]
+
+[[package]]
 name = "ketchup-view-format"
 version = "0.3.4-dev"
 dependencies = [
@@ -2660,6 +2671,7 @@ dependencies = [
  "ketchup-rejection",
  "ketchup-test-gpu",
  "ketchup-tolerance",
+ "ketchup-user-files",
  "ketchup-view-format",
  "libc",
  "num-traits",
