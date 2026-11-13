@@ -17,7 +17,7 @@ use crate::instanced_scene::{
 use crate::internal::{
     emit_log, emit_progress, fold_scale, multiply_matrices, GeometryBuilder, RawParsed,
 };
-use crate::model::EntityId;
+use crate::model::{EntityId, Vec3};
 use crate::observability::{LogLevel, ParseOptions, ParseStage, PROGRESS_INTERVAL};
 use crate::scene::GltfMaterial;
 use crate::scene_build::{
@@ -27,6 +27,53 @@ use crate::scene_build::{
 };
 
 const INCHES_TO_MM: f64 = 25.4;
+
+/// Metres from its origin past which a definition's geometry is written from its own centre.
+const FAR_FROM_ORIGIN_M: f64 = 100.0;
+
+/// A SketchUp point (inches, Z-up) in glTF axes (metres, Y-up).
+fn gltf_point(v: &Vec3) -> [f64; 3] {
+    [v[0] * INCHES_TO_M, v[2] * INCHES_TO_M, -v[1] * INCHES_TO_M]
+}
+
+/// Where a definition's geometry is written from, in its glTF frame (Ketchup change, see
+/// PATCH.md): the centre of its vertices' box in whole metres when that lies farther than
+/// [`FAR_FROM_ORIGIN_M`] from the definition's origin, the origin otherwise. Positions are
+/// `f32`: a box 254 mm wide 3 000 km away came as 250 mm, and at a UTM northing (~5.4e6 m) a
+/// position moves in steps of 0.5 m. Taken off in `f64` before the cast, the offset goes into
+/// the node's matrix and its children's, which stay `f64`.
+fn local_origin(builder: &GeometryBuilder) -> [f64; 3] {
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for point in builder.vertices.values().map(gltf_point) {
+        if point.iter().all(|c| c.is_finite()) {
+            for k in 0..3 {
+                lo[k] = lo[k].min(point[k]);
+                hi[k] = hi[k].max(point[k]);
+            }
+        }
+    }
+    let centre = [0, 1, 2].map(|k| lo[k] / 2.0 + hi[k] / 2.0);
+    if !centre.iter().all(|c| c.is_finite()) || centre.iter().all(|c| c.abs() <= FAR_FROM_ORIGIN_M)
+    {
+        return [0.0; 3];
+    }
+    centre.map(f64::round)
+}
+
+/// `m * T(offset)`: `m` placing a frame moved by `offset` within it.
+fn place_moved_frame(m: &mut [f64; 16], offset: [f64; 3]) {
+    for row in 0..3 {
+        m[12 + row] += m[row] * offset[0] + m[4 + row] * offset[1] + m[8 + row] * offset[2];
+    }
+}
+
+/// `T(-offset) * m`: `m` relative to its parent's frame moved by `offset`.
+fn from_moved_frame(m: &mut [f64; 16], offset: [f64; 3]) {
+    for axis in 0..3 {
+        m[12 + axis] -= offset[axis];
+    }
+}
 
 /// One instance's 13-value SketchUp matrix (inches, Z-up) as a 16-value
 /// column-major glTF matrix (metres, Y-up).
@@ -137,7 +184,8 @@ impl<'a> Instancer<'a> {
     /// The local-space mesh resource for a definition in one rendering
     /// context, built once per (definition, effective fallback color): the
     /// only inputs that change what the face grouping produces. `None` when
-    /// the definition has no faces.
+    /// the definition has no faces. Positions are relative to `origin`, the definition's
+    /// [`local_origin`].
     fn mesh_resource_for_builder(
         &mut self,
         builder: &GeometryBuilder,
@@ -145,6 +193,7 @@ impl<'a> Instancer<'a> {
         defid: Option<EntityId>,
         inherited: Option<FaceColorKey>,
         layer: &str,
+        origin: [f64; 3],
     ) -> Result<Option<String>, SkpParseError> {
         if builder.faces.is_empty() {
             return Ok(None);
@@ -180,11 +229,11 @@ impl<'a> Instancer<'a> {
             };
             for i in 0..count {
                 // Local space: only the inches -> metres scale and the Z-up ->
-                // Y-up axis swap; the node carries the placement.
-                let v = g.verts[i];
-                prim.positions[i * 3] = (v[0] * INCHES_TO_M) as f32;
-                prim.positions[i * 3 + 1] = (v[2] * INCHES_TO_M) as f32;
-                prim.positions[i * 3 + 2] = (-v[1] * INCHES_TO_M) as f32;
+                // Y-up axis swap; the node carries the placement and `origin`.
+                let v = gltf_point(&g.verts[i]);
+                for k in 0..3 {
+                    prim.positions[i * 3 + k] = (v[k] - origin[k]) as f32;
+                }
                 prim.uvs[i * 2] = g.uvs[i][0];
                 prim.uvs[i * 2 + 1] = g.uvs[i][1];
 
@@ -227,13 +276,15 @@ impl<'a> Instancer<'a> {
 
     /// The local-space loose-edge resource for a definition in one inherited
     /// layer context (Python port's `curve_resource_for`), built once per
-    /// (definition, layer). `None` when the definition has no loose edges.
+    /// (definition, layer). `None` when the definition has no loose edges. Points are relative
+    /// to `origin`, as the definition's mesh.
     fn curve_resource_for(
         &mut self,
         builder: &GeometryBuilder,
         defname: &str,
         defid: Option<EntityId>,
         layer: &str,
+        origin: [f64; 3],
     ) -> Option<String> {
         let runs = chain_loose_edges(builder);
         if runs.is_empty() {
@@ -269,7 +320,17 @@ impl<'a> Instancer<'a> {
                 continue;
             }
             let layer = run_layer(p, builder, &run.edge_ids, &effective_layer);
-            let arc = solve_run_arc(builder, &run.edge_ids, None, &pts, run.closed);
+            let mut arc = solve_run_arc(builder, &run.edge_ids, None, &pts, run.closed);
+            if origin != [0.0; 3] {
+                let points = pts
+                    .iter_mut()
+                    .chain(arc.iter_mut().flat_map(|arc| &mut arc.points));
+                for point in points {
+                    for k in 0..3 {
+                        point[k] = round6(point[k] - origin[k]);
+                    }
+                }
+            }
             curves.push(LocalCurve {
                 points_m: pts,
                 closed: run.closed,
@@ -362,6 +423,7 @@ impl<'a> Instancer<'a> {
                 }
                 if let Some(d) = p.definitions.get(&r) {
                     self.active.insert(r);
+                    let origin = local_origin(&d.builder);
                     node.definition_name = d.name.clone();
                     node.mesh_resource_id = self.mesh_resource_for_builder(
                         &d.builder,
@@ -369,12 +431,17 @@ impl<'a> Instancer<'a> {
                         Some(r),
                         inst_color,
                         &l_name,
+                        origin,
                     )?;
                     node.children = self.walk(&d.builder, &new_matrix, &l_name, inst_color)?;
                     // After the children, as in the Python reference, so curve
                     // resource ids number the same there and here.
                     node.curve_resource_id =
-                        self.curve_resource_for(&d.builder, &d.name, Some(r), &l_name);
+                        self.curve_resource_for(&d.builder, &d.name, Some(r), &l_name, origin);
+                    place_moved_frame(&mut node.matrix, origin);
+                    for child in &mut node.children {
+                        from_moved_frame(&mut child.matrix, origin);
+                    }
                     self.active.remove(&r);
                 }
             }
@@ -422,20 +489,32 @@ pub fn build_instanced_scene_raw(
         instance_counter: 0,
         active: BTreeSet::new(),
     };
-    let root_children = inst.walk(&p.root.builder, &IDENTITY, "Layer0", None)?;
+    let mut root_children = inst.walk(&p.root.builder, &IDENTITY, "Layer0", None)?;
 
     // Loose geometry drawn straight into the model becomes the root node's
     // own mesh (and curve) resource.
-    let root_mesh_resource_id =
-        inst.mesh_resource_for_builder(&p.root.builder, "ROOT_MODEL", None, None, "Layer0")?;
+    let root_origin = local_origin(&p.root.builder);
+    let root_mesh_resource_id = inst.mesh_resource_for_builder(
+        &p.root.builder,
+        "ROOT_MODEL",
+        None,
+        None,
+        "Layer0",
+        root_origin,
+    )?;
     let root_curve_resource_id =
-        inst.curve_resource_for(&p.root.builder, "ROOT_MODEL", None, "Layer0");
+        inst.curve_resource_for(&p.root.builder, "ROOT_MODEL", None, "Layer0", root_origin);
+    let mut root_matrix = IDENTITY_GLTF;
+    place_moved_frame(&mut root_matrix, root_origin);
+    for child in &mut root_children {
+        from_moved_frame(&mut child.matrix, root_origin);
+    }
 
     let scene_hierarchy = InstancedNode {
         name: "ROOT".into(),
         definition_name: "ROOT_MODEL".into(),
         layer: "Layer0".into(),
-        matrix: IDENTITY_GLTF,
+        matrix: root_matrix,
         mesh_resource_id: root_mesh_resource_id,
         curve_resource_id: root_curve_resource_id,
         children: root_children,

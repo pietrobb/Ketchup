@@ -409,6 +409,94 @@ fn a_picture_comes_the_right_way_up() {
     }
 }
 
+/// A [`checker_png`] textured box, one tile per 5 inches, drawn `offset` inches from the origin
+/// twice: in a component placed at the origin and straight into the model.
+fn far_boxes(offset: Point3) -> Vec<u8> {
+    let folder = tempfile::tempdir().unwrap();
+    let image = folder.path().join("checker.png");
+    std::fs::write(&image, checker_png()).unwrap();
+    let mut builder = create();
+    let checker = builder
+        .add_texture_material("Checker", &image, Some(5.0), Some(5.0), None)
+        .unwrap();
+    let options = FaceOptions {
+        material: Some(checker),
+        ..FaceOptions::default()
+    };
+    let moved = |face: &[Point3; 4]| face.map(|point| [0, 1, 2].map(|k| point[k] + offset[k]));
+    let mut definition = builder
+        .add_component_definition("Box", &DefinitionOptions::default())
+        .unwrap();
+    for face in &BOX_FACES {
+        definition.add_face(&moved(face), &options).unwrap();
+    }
+    let definition = definition.close().unwrap();
+    builder
+        .add_instance(definition, &InstanceOptions::default())
+        .unwrap();
+    for face in &BOX_FACES {
+        builder.add_face(&moved(face), &options).unwrap();
+    }
+    builder.to_bytes().unwrap()
+}
+
+/// R1112-SKP-502: positions and texture coordinates are `f32`, written in the frame of their
+/// definition. A 254 × 508 mm box 10 km away came as 253.906 × 507.81 mm, 3 000 km away as
+/// 250 × 500 mm, and at a UTM northing (~5.4e6 m) positions moved in steps of 0.5 m.
+#[test]
+fn a_box_far_from_the_origin_keeps_its_size_place_and_picture() {
+    // 10 km and 3 000 km east, 5.4e6 m north: whole multiples of the box and of a tile.
+    for offset in [
+        [393_700.0, 0.0, 0.0],
+        [118_110_000.0, 0.0, 0.0],
+        [0.0, 212_598_000.0, 0.0],
+    ] {
+        let model = skp_to_glb(&far_boxes(offset), LIMIT).unwrap();
+        let document = gltf(&model.glb);
+        let size = [10.0, 30.0, 20.0].map(|inches| inches * METRES_PER_INCH);
+        let extents = mesh_extents(&document);
+        assert!(!extents.is_empty());
+        for extent in &extents {
+            assert!(close(*extent, size), "{offset:?}: {extent:?}");
+        }
+        // Where each box lies: its node's place plus its mesh's own least corner.
+        let accessors = &document["accessors"];
+        let least: Vec<[f64; 3]> = document["meshes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|mesh| {
+                let position = mesh["primitives"][0]["attributes"]["POSITION"].as_u64();
+                let min = &accessors[position.unwrap() as usize]["min"];
+                [0, 1, 2].map(|axis| min[axis].as_f64().unwrap())
+            })
+            .collect();
+        let placed = mesh_placements(&document);
+        assert_eq!(placed.len(), 2, "{offset:?}: {placed:?}");
+        let corner =
+            [offset[0], offset[2], -offset[1] - 20.0].map(|inches| inches * METRES_PER_INCH);
+        let meshes = document["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|node| node["mesh"].as_u64());
+        for (place, mesh) in placed.iter().zip(meshes) {
+            let at = [0, 1, 2].map(|axis| place[axis] + least[mesh as usize][axis]);
+            assert!(close(at, corner), "{offset:?}: {at:?} not {corner:?}");
+        }
+        // Every corner lies on a tile's corner: the coordinates stay whole and small.
+        for mesh in document["meshes"].as_array().unwrap() {
+            for primitive in mesh["primitives"].as_array().unwrap() {
+                let uvs = primitive["attributes"]["TEXCOORD_0"].as_u64().unwrap() as usize;
+                for uv in accessor_floats(&model.glb, &document, uvs) {
+                    assert!(uv.abs() <= 8.0, "{offset:?}: {uv}");
+                    assert!((uv - uv.round()).abs() < 1e-4, "{offset:?}: {uv}");
+                }
+            }
+        }
+    }
+}
+
 /// A box component placed twice on the tag "Walls" (hidden in the file when `walls_hidden`),
 /// one of its faces on the tag "Roof".
 fn tagged_boxes(walls_hidden: bool) -> Vec<u8> {
