@@ -250,28 +250,9 @@ impl KetchupApp {
         })
     }
 
-    /// Makes the image and writes it, waiting until it is made or `cancelled` is set.
-    pub(crate) fn export_presentation_image_to(
-        &mut self,
-        path: &Path,
-        request: &PresentationRequest,
-        cancelled: &AtomicBool,
-    ) -> Result<Written, ExportError> {
-        self.side_effect_receipts.clear();
-        let result = presentation_destination(path)
-            .and_then(|()| {
-                if self.file.activity.presentation_slot.busy() {
-                    return Err(presentation_busy());
-                }
-                self.presentation_parts(request)
-            })
-            .and_then(|parts| parts.make(request, cancelled))
-            .and_then(|png| self.publish_presentation(path, &png));
-        self.report_export_outcome("presentation", path, result)
-    }
-
     /// Starts a client's image on a thread that stops once `cancelled` is set; the live bridge
-    /// hands what it made to [`Self::finish_client_presentation`].
+    /// hands what it made to [`Self::finish_client_presentation`]. A refusal before the thread
+    /// starts is shown in the window too, as one after it is.
     pub(crate) fn start_client_presentation(
         &mut self,
         path: &Path,
@@ -280,14 +261,20 @@ impl KetchupApp {
         context: &egui::Context,
     ) -> Result<Receiver<MadePresentation>, ExportError> {
         self.side_effect_receipts.clear();
-        presentation_destination(path)?;
-        let parts = self.presentation_parts(request)?;
-        parts.spawn(
-            request.clone(),
-            cancelled,
-            context.clone(),
-            &self.file.activity.presentation_slot,
-        )
+        let started = presentation_destination(path)
+            .and_then(|()| self.presentation_parts(request))
+            .and_then(|parts| {
+                parts.spawn(
+                    request.clone(),
+                    cancelled,
+                    context.clone(),
+                    &self.file.activity.presentation_slot,
+                )
+            });
+        if let Err(error) = &started {
+            self.show_export_outcome("presentation", path, Err(error));
+        }
+        started
     }
 
     /// Writes the image a client's thread `made` as that client's export; with `overwrite` it

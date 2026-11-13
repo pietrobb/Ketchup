@@ -2907,7 +2907,7 @@ impl LiveBridge {
         request: Request,
         ui_busy: bool,
     ) -> Result<Value, &'static str> {
-        self.execute_authorized(app, request, ui_busy, &Arc::new(AtomicBool::new(false)))
+        tests::presentation::execute(self, app, request, ui_busy)
     }
 
     /// List, save or show saved views; none of them detaches the document's program.

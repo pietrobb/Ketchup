@@ -6,6 +6,42 @@ use ketchup_model::document::{ClassificationCategoryId, ClassificationDimensionI
 
 const MEMBRANE: &str = "Membrane";
 
+/// The tests' `LiveBridge::execute`: a presentation image runs as the job the window runs it
+/// as, polled until it is answered (review 2026-11-13 P3: the tests took a synchronous copy the
+/// window never did); any other request is executed at once.
+pub(in crate::live_bridge) fn execute(
+    bridge: &mut LiveBridge,
+    app: &mut KetchupApp,
+    request: Request,
+    ui_busy: bool,
+) -> Result<Value, &'static str> {
+    use crate::live_bridge::program_dry_run::QueuedReply;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    if !crate::live_bridge::exchange_export::presents(&request) {
+        return bridge.execute_authorized(app, request, ui_busy, &cancelled);
+    }
+    let context = egui::Context::default();
+    let (reply, answers) = mpsc::sync_channel(1);
+    let queued = QueuedReply {
+        id: 1,
+        reply,
+        cancelled,
+    };
+    bridge.start_exchange_export(app, &context, queued, request, ui_busy);
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let answer = loop {
+        if let Ok(answer) = answers.recv_timeout(Duration::from_millis(2)) {
+            break answer;
+        }
+        assert!(Instant::now() < deadline, "the image was never answered");
+        bridge.poll_program_check_job(app, &context);
+    };
+    match answer.error {
+        None => Ok(answer.result.unwrap_or(Value::Null)),
+        Some(code) => Err(code.leak()),
+    }
+}
+
 /// A window with the first box and a second one beside it of the material "Membrane".
 fn window() -> (KetchupApp, LiveBridge, tempfile::TempDir) {
     let (mut app, bridge) = setup();
@@ -255,6 +291,21 @@ fn a_clients_image_is_made_off_the_windows_thread_and_a_cancelled_one_writes_not
     }
     assert!(!app.file.activity.presentation_slot.busy());
     assert!(!given_up.exists());
+}
+
+/// Review 2026-11-13 P3: the window makes a client's image only as a job; two synchronous copies
+/// beside it were taken by the tests alone. The window's own dispatch now refuses an image, and
+/// the tests' `execute` runs it as the job the window runs.
+#[test]
+fn a_presentation_image_is_never_made_on_the_windows_thread() {
+    let (mut app, mut bridge, directory) = window();
+    let path = directory.path().join("inline.png");
+    let image = presentation(&path, json!({"width": 32, "height": 24}));
+    assert!(crate::live_bridge::exchange_export::runs_as_job(&image));
+    let inline =
+        bridge.execute_authorized(&mut app, image, false, &Arc::new(AtomicBool::new(false)));
+    assert!(inline.is_err(), "{inline:?}");
+    assert!(!path.exists(), "no image made on the window's thread");
 }
 
 /// R1113-IMG-600: an image asked for while another one's thread still runs, the window's or a
