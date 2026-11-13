@@ -225,15 +225,26 @@ struct ShadowMap {
 }
 
 impl ShadowMap {
-    fn new(sun: Vec3, triangles: &[[Vec3; 3]]) -> Option<Self> {
-        let (u_axis, v_axis) = basis(sun)?;
-        let (low, high) = bounds(
+    /// The map of `triangles`, `None` when they cast no shadow. A cancel is seen before each
+    /// triangle: one can cover the whole map, so thousands took a minute (review 2026-11-13
+    /// R1113-IMG-600).
+    fn new(
+        sun: Vec3,
+        triangles: &[[Vec3; 3]],
+        cancelled: &AtomicBool,
+    ) -> Result<Option<Self>, PresentationError> {
+        let Some((u_axis, v_axis)) = basis(sun) else {
+            return Ok(None);
+        };
+        let Some((low, high)) = bounds(
             &triangles
                 .iter()
                 .flatten()
                 .map(|point| Vec3::new(point.dot(u_axis), point.dot(v_axis), 0.0))
                 .collect::<Vec<_>>(),
-        )?;
+        ) else {
+            return Ok(None);
+        };
         let span = (high.x - low.x).max(high.y - low.y).max(APPROXIMATION) * 1.04;
         let mut map = Self {
             sun,
@@ -244,6 +255,7 @@ impl ShadowMap {
             nearest: vec![f64::NEG_INFINITY; SHADOW_MAP_SIDE * SHADOW_MAP_SIDE],
         };
         for triangle in triangles {
+            going_on(cancelled)?;
             let corners = triangle.map(|point| map.map_point(point));
             let nearest = &mut map.nearest;
             raster(
@@ -258,7 +270,7 @@ impl ShadowMap {
                 },
             );
         }
-        Some(map)
+        Ok(Some(map))
     }
 
     fn map_point(&self, point: Vec3) -> Vec3 {
@@ -528,7 +540,8 @@ pub(super) fn render(
                 .iter()
                 .map(|at| surfaces.corners[*at])
                 .collect::<Vec<_>>(),
-        )
+            cancelled,
+        )?
     } else {
         None
     };
@@ -761,5 +774,27 @@ fn downsample(
         width: options.width,
         height: options.height,
         rgba,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// R1113-IMG-600: the shadow map drew every triangle before anyone looked at the flag.
+    #[test]
+    fn a_cancelled_shadow_map_draws_no_triangle() {
+        let triangle = [
+            Vec3::ZERO,
+            Vec3::new(1_000.0, 0.0, 0.0),
+            Vec3::new(0.0, 1_000.0, 0.0),
+        ];
+        let sun = Vec3::new(0.3, 0.2, 1.0).normalized().unwrap();
+        assert!(matches!(
+            ShadowMap::new(sun, &[triangle], &AtomicBool::new(true)),
+            Err(PresentationError::Cancelled)
+        ));
+        let map = ShadowMap::new(sun, &[triangle], &AtomicBool::new(false)).unwrap();
+        assert!(map.is_some_and(|map| map.nearest.iter().any(|depth| depth.is_finite())));
     }
 }
