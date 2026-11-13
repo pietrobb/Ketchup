@@ -9,7 +9,7 @@ use crate::frame::{Obb, intersection_vertices};
 use crate::load_path::on_floor;
 use crate::model::{Part, ProgramModel, convex_hull};
 use ketchup_geometry::linalg::{self, cross, dot, sub};
-use ketchup_model::tolerance::CONTACT_FIT_MM;
+use ketchup_model::tolerance::{CONTACT_FIT_MM, ROUNDING};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -293,7 +293,7 @@ fn face_to_face(a: &Obb, b: &Obb) -> bool {
         half: a.half.map(|half| half + CONTACT_FIT_MM),
         ..*a
     };
-    let shared = intersection_vertices(&[grown, *b], 1e-9);
+    let shared = intersection_vertices(&[grown, *b], ROUNDING);
     let thinnest = a
         .half
         .into_iter()
