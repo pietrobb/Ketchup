@@ -14,6 +14,7 @@ use serde_json::{Map, Number, Value};
 /// Keys of glTF objects whose values the import reads; any other key is skipped.
 const READ_KEYS: &[&str] = &[
     "accessors",
+    "alphaCutoff",
     "alphaMode",
     "asset",
     "attributes",
@@ -283,11 +284,12 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    /// Literals of `glb.rs` that are values, not keys: alpha modes, accessor types and
-    /// the attribute it reads inside `attributes`, an object kept whole (NAMED_KEYS).
+    /// Literals of `glb.rs` that are values, not keys: alpha modes, accessor types, the
+    /// attribute it reads inside `attributes`, an object kept whole (NAMED_KEYS), and the
+    /// PNG chunks of a picture.
     const VALUES: &[&str] = &[
         "BLEND", "MASK", "OPAQUE", "MAT2", "MAT3", "MAT4", "SCALAR", "VEC2", "VEC3", "VEC4",
-        "POSITION",
+        "POSITION", "IHDR", "IDAT", "IEND", "tRNS",
     ];
 
     /// The string literals of `source` that could be a JSON key.
@@ -326,8 +328,9 @@ mod tests {
     #[test]
     fn every_key_the_import_reads_is_kept() {
         let import = include_str!("../glb.rs");
-        let import =
-            import.split("#[cfg(test)]").next().unwrap().to_owned() + include_str!("textures.rs");
+        let textures = include_str!("textures.rs");
+        let import = import.split("#[cfg(test)]").next().unwrap().to_owned()
+            + textures.split("#[cfg(test)]").next().unwrap();
         let unknown: Vec<_> = identifier_literals(&import)
             .into_iter()
             .filter(|literal| {

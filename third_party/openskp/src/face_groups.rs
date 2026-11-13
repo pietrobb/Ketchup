@@ -365,19 +365,23 @@ pub fn build_local_face_groups(
         // and drawn from both sides. Upstream writes a face whose sides differ twice, the
         // back as a reversed copy, so a solid painted on its outside only (SketchUp's paint
         // bucket) came with an inside-out second shell. The front's paint wins; a face
-        // painted on its back only keeps the back's.
-        let (side_mat, color, uv_transform) = if front_mat.is_none() && back_mat.is_some() {
-            (back_mat, back, &f.uv_transform_back)
-        } else {
-            (front_mat, front, &f.uv_transform)
-        };
+        // painted on its back only keeps the back's and is written as seen from it, so a
+        // face of a box that SketchUp shows reversed, painted from outside, faces out
+        // (review 2026-11-12 P3: written as its front, it turned the box inside out at
+        // that face and the box came as no solid).
+        let (side_mat, color, uv_transform, reverse) =
+            if front_mat.is_none() && back_mat.is_some() {
+                (back_mat, back, &f.uv_transform_back, true)
+            } else {
+                (front_mat, front, &f.uv_transform, false)
+            };
         let (tw, th) = tile_size(side_mat);
         let key = GroupKey {
             color,
             double_sided: true,
             texture_index: (ctx.texture_index_for)(side_mat),
         };
-        add_side(key, false, uv_transform, tw, th)?;
+        add_side(key, reverse, uv_transform, tw, th)?;
     }
 
     Ok(groups)

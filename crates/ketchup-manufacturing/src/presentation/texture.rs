@@ -55,8 +55,8 @@ impl fmt::Display for TextureError {
                 MAX_SOURCE_PIXELS >> 20
             ),
             Self::Empty => write!(formatter, "the picture has no pixels"),
-            Self::Png(_) => write!(formatter, "the PNG cannot be read"),
-            Self::Jpeg(_) => write!(formatter, "the JPEG cannot be read"),
+            Self::Png(error) => write!(formatter, "the PNG cannot be read: {error}"),
+            Self::Jpeg(error) => write!(formatter, "the JPEG cannot be read: {error}"),
         }
     }
 }

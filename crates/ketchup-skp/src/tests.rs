@@ -1,4 +1,5 @@
 use super::*;
+use ketchup_geometry::linalg::Mat3;
 use openskp::create::{
     DefinitionOptions, FaceOptions, GuideOptions, ImageOptions, InstanceOptions, LayerOptions,
     Point3, create,
@@ -765,6 +766,149 @@ fn a_face_painted_on_its_back_only_keeps_that_colour() {
             "{colours:?}"
         );
     }
+}
+
+/// The signed volume of every mesh primitive of a GLB, in cubic metres: positive for a
+/// solid that faces out.
+fn signed_volume(glb: &[u8]) -> f64 {
+    let document = gltf(glb);
+    let json_length = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+    let bin = &glb[20 + json_length + 8..];
+    let mut volume = 0.0;
+    for mesh in document["meshes"].as_array().unwrap() {
+        for primitive in mesh["primitives"].as_array().unwrap() {
+            let positions = accessor_floats(
+                glb,
+                &document,
+                primitive["attributes"]["POSITION"].as_u64().unwrap() as usize,
+            );
+            let accessor = &document["accessors"][primitive["indices"].as_u64().unwrap() as usize];
+            let view = &document["bufferViews"][accessor["bufferView"].as_u64().unwrap() as usize];
+            let start = view["byteOffset"].as_u64().unwrap_or(0) as usize
+                + accessor["byteOffset"].as_u64().unwrap_or(0) as usize;
+            let count = accessor["count"].as_u64().unwrap() as usize;
+            let indices: Vec<usize> = match accessor["componentType"].as_u64().unwrap() {
+                5123 => bin[start..start + count * 2]
+                    .chunks_exact(2)
+                    .map(|bytes| u16::from_le_bytes(bytes.try_into().unwrap()) as usize)
+                    .collect(),
+                5125 => bin[start..start + count * 4]
+                    .chunks_exact(4)
+                    .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()) as usize)
+                    .collect(),
+                other => panic!("{other}"),
+            };
+            // About a point off every face's plane, so that a face wound the wrong way
+            // counts, as it would not about a corner of the box.
+            let off = [7.0, -5.0, 3.0];
+            let point = |index: usize| {
+                [0, 1, 2].map(|axis| f64::from(positions[index * 3 + axis]) - off[axis])
+            };
+            for triangle in indices.chunks_exact(3) {
+                let [a, b, c] = [point(triangle[0]), point(triangle[1]), point(triangle[2])];
+                volume += Mat3::from_rows([a, b, c]).determinant() / 6.0;
+            }
+        }
+    }
+    volume
+}
+
+/// A box with one face SketchUp shows reversed (its back outside), painted from outside
+/// like the others: that face is painted on its back, and comes as seen from it, so the box
+/// faces out. Before (review 2026-11-12 P3) it was written as its front, inside out, and
+/// the box came as no solid and one loose surface.
+#[test]
+fn a_reversed_face_painted_from_outside_faces_out() {
+    let mut builder = create();
+    let red = builder.add_material("Red", [200, 30, 30], None).unwrap();
+    let blue = builder.add_material("Blue", [30, 30, 200], None).unwrap();
+    let mut definition = builder
+        .add_component_definition("Box", &DefinitionOptions::default())
+        .unwrap();
+    for (index, face) in BOX_FACES.iter().enumerate() {
+        let mut face = *face;
+        let options = if index == 0 {
+            face.reverse();
+            FaceOptions {
+                back_material: Some(blue),
+                ..FaceOptions::default()
+            }
+        } else {
+            FaceOptions {
+                material: Some(red),
+                ..FaceOptions::default()
+            }
+        };
+        definition.add_face(&face, &options).unwrap();
+    }
+    let definition = definition.close().unwrap();
+    builder
+        .add_instance(definition, &InstanceOptions::default())
+        .unwrap();
+    let model = skp_to_glb(&builder.to_bytes().unwrap(), LIMIT).unwrap();
+    assert!(model.left_out.is_empty(), "{:?}", model.left_out);
+    let box_volume = 10.0 * 20.0 * 30.0 * METRES_PER_INCH.powi(3);
+    let volume = signed_volume(&model.glb);
+    assert!(
+        (volume - box_volume).abs() < box_volume * 1e-4,
+        "{volume} m³, the box is {box_volume} m³"
+    );
+}
+
+/// A box component named `name` placed at `translation`.
+fn named_box(name: &str, translation: [f64; 3]) -> Vec<u8> {
+    let mut builder = create();
+    let mut definition = builder
+        .add_component_definition(name, &DefinitionOptions::default())
+        .unwrap();
+    for face in &BOX_FACES {
+        definition.add_face(face, &FaceOptions::default()).unwrap();
+    }
+    let definition = definition.close().unwrap();
+    let placement = InstanceOptions {
+        translation,
+        ..InstanceOptions::default()
+    };
+    builder.add_instance(definition, &placement).unwrap();
+    builder.to_bytes().unwrap()
+}
+
+/// What the GLB import would refuse in GLB terms is refused here in SketchUp's, or made
+/// importable: a model of edges alone, a placement that is no transform, a name with a
+/// control character. Before (review 2026-11-12 P3), the first came as a "malformed GLB
+/// container", the second as malformed GLB JSON and the third as invalid GLB text.
+#[test]
+fn what_the_glb_import_would_refuse_is_told_in_sketchups_terms() {
+    let mut builder = create();
+    builder
+        .add_polyline(
+            &[[0., 0., 0.], [10., 0., 0.], [10., 10., 0.]],
+            &Default::default(),
+        )
+        .unwrap();
+    let edges = skp_to_glb(&builder.to_bytes().unwrap(), LIMIT).unwrap_err();
+    assert!(matches!(edges, SkpError::NoFaces), "{edges}");
+
+    let lost = skp_to_glb(&named_box("Lost", [f64::NAN, 0.0, 0.0]), LIMIT).unwrap_err();
+    assert!(
+        matches!(&lost, SkpError::Placement { name } if name == "Lost"),
+        "{lost}"
+    );
+
+    let model = skp_to_glb(&named_box("Kitchen\u{7f}Unit", [0.0; 3]), LIMIT).unwrap();
+    let document = gltf(&model.glb);
+    let names: Vec<_> = document["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(document["meshes"].as_array().unwrap())
+        .filter_map(|object| object["name"].as_str())
+        .collect();
+    assert!(names.contains(&"Kitchen Unit"), "{names:?}");
+    assert!(
+        names.iter().all(|name| !name.chars().any(char::is_control)),
+        "{names:?}"
+    );
 }
 
 #[test]

@@ -61,6 +61,13 @@ pub enum SkpError {
     Write { cause: GlbError },
     /// OpenSKP panicked; `message` is the panic's own text.
     Panicked { stage: Stage, message: String },
+    /// The model holds no face, only edges, guides, dimensions or text, which no import
+    /// takes. Before (review 2026-11-12 P3), its GLB came with no geometry and the GLB
+    /// import called it a malformed GLB container.
+    NoFaces,
+    /// The placement of a component or group, `name`, is no finite transform: the GLB
+    /// would hold `null` for it, which the GLB import called malformed GLB JSON.
+    Placement { name: String },
 }
 
 impl SkpError {
@@ -91,6 +98,13 @@ impl fmt::Display for SkpError {
             Self::Panicked { stage, message } => {
                 write!(formatter, "OpenSKP panicked {stage}: {message}")
             }
+            Self::NoFaces => formatter.write_str(
+                "the SketchUp model holds no faces, only edges, guides, dimensions or text",
+            ),
+            Self::Placement { name } => write!(
+                formatter,
+                "the placement of \"{name}\" in the SketchUp file is not a finite transform"
+            ),
         }
     }
 }
@@ -157,6 +171,8 @@ pub fn skp_to_glb(skp: &[u8], max_glb_bytes: usize) -> Result<SkpModel, SkpError
         openskp::build_instanced_scene(skp, &options)
     })?;
     flip_texture_rows(&mut scene);
+    plain_names(&mut scene);
+    check_scene(&scene)?;
     let glb = match catch_unwind(AssertUnwindSafe(|| {
         openskp::to_instanced_glb(&scene, &InstancedGlbOptions { textures: true })
     })) {
@@ -199,6 +215,55 @@ fn node_hidden(scene: &InstancedScene) -> Vec<bool> {
     let mut hidden = Vec::new();
     visit(&scene.scene_hierarchy, &mut hidden);
     hidden
+}
+
+/// The names of the scene's components, groups and meshes with each control character a
+/// space: Ketchup's names hold none, and a component named with one (0x7F, say) made the
+/// GLB import refuse the file as invalid GLB text (review 2026-11-12 P3).
+fn plain_names(scene: &mut InstancedScene) {
+    fn plain(name: &mut String) {
+        if name.chars().any(char::is_control) {
+            *name = name
+                .chars()
+                .map(|character| if character.is_control() { ' ' } else { character })
+                .collect();
+        }
+    }
+    fn visit(node: &mut InstancedNode) {
+        plain(&mut node.name);
+        plain(&mut node.definition_name);
+        node.children.iter_mut().for_each(visit);
+    }
+    visit(&mut scene.scene_hierarchy);
+    for resource in &mut scene.mesh_resources {
+        plain(&mut resource.definition_name);
+    }
+}
+
+/// Refuses, in SketchUp's terms, a scene whose GLB the import would refuse in GLB terms: one
+/// without faces, or with a placement that is no finite transform.
+fn check_scene(scene: &InstancedScene) -> Result<(), SkpError> {
+    fn placements(node: &InstancedNode) -> Result<(), SkpError> {
+        if node.matrix.iter().any(|value| !value.is_finite()) {
+            return Err(SkpError::Placement {
+                name: if node.name.is_empty() {
+                    node.definition_name.clone()
+                } else {
+                    node.name.clone()
+                },
+            });
+        }
+        node.children.iter().try_for_each(placements)
+    }
+    if scene
+        .mesh_resources
+        .iter()
+        .flat_map(|resource| &resource.primitives)
+        .all(|primitive| primitive.indices.is_empty())
+    {
+        return Err(SkpError::NoFaces);
+    }
+    placements(&scene.scene_hierarchy)
 }
 
 /// SketchUp's texture `v` runs up the picture from its bottom row, glTF's down from its top

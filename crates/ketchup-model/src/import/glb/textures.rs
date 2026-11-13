@@ -68,6 +68,108 @@ fn sniff(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
+/// Whether a picture can be partly transparent: a PNG with an alpha channel or a `tRNS`
+/// chunk before its pixels, or one whose chunks do not read; a JPEG never is.
+fn may_have_alpha(image: &GlbImage) -> bool {
+    if image.mime_type != "image/png" {
+        return false;
+    }
+    let mut rest = image.bytes.get(8..).unwrap_or(&[]);
+    while let Some((head, body)) = rest.split_first_chunk::<8>() {
+        let length = usize::try_from(u32::from_be_bytes([head[0], head[1], head[2], head[3]]))
+            .unwrap_or(usize::MAX);
+        let Some(data) = body.get(..length) else {
+            return true;
+        };
+        match &head[4..] {
+            b"IHDR" if data.get(9).is_none_or(|colour| matches!(colour, 4 | 6)) => return true,
+            b"tRNS" => return true,
+            b"IDAT" | b"IEND" => return false,
+            _ => {}
+        }
+        rest = body.get(length.saturating_add(4)..).unwrap_or(&[]);
+    }
+    true
+}
+
+/// Whether a material looks different from opaque: glTF's `alphaMode` with the base
+/// colour's alpha and, for `MASK`, its cutoff, through the picture's own alpha. Before,
+/// `MASK` was always a loss, and SketchUp writes it for every textured material (review
+/// 2026-11-12 P3), so every textured model said its transparency was ignored.
+pub(super) fn shows_transparency(
+    mode: Option<&str>,
+    cutoff: f64,
+    alpha: f64,
+    texture: Option<MaterialTexture>,
+    images: &[Option<GlbImage>],
+) -> bool {
+    let picture = texture.is_some_and(|texture| {
+        images
+            .get(texture.image)
+            .and_then(Option::as_ref)
+            .is_none_or(may_have_alpha)
+    });
+    match mode {
+        Some("BLEND") => alpha < 1.0 || picture,
+        Some("MASK") => alpha < cutoff || picture,
+        _ => false,
+    }
+}
+
+/// The place in `images` of a picture of one pixel of `colour`, added when not there yet:
+/// how a piece of a joined body keeps its own colour, as a body has one colour and each
+/// of its triangles may show a picture (review 2026-11-12 P3: a cube of two materials
+/// came in the first one's colour alone).
+pub(super) fn colour_picture(
+    colour: [u8; 3],
+    images: &mut Vec<Option<GlbImage>>,
+) -> Result<u32, GlbImportError> {
+    let pixels =
+        miniz_oxide::deflate::compress_to_vec_zlib(&[0, colour[0], colour[1], colour[2]], 6);
+    let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+    for (kind, data) in [
+        (b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0][..]),
+        (b"IDAT", pixels.as_slice()),
+        (b"IEND", &[][..]),
+    ] {
+        let length = u32::try_from(data.len())
+            .map_err(|_out_of_range: std::num::TryFromIntError| GlbImportError::InvalidGeometry)?;
+        bytes.extend(length.to_be_bytes());
+        let start = bytes.len();
+        bytes.extend(kind);
+        bytes.extend(data);
+        let crc = crc32(&bytes[start..]);
+        bytes.extend(crc.to_be_bytes());
+    }
+    let picture = Some(GlbImage {
+        bytes: Arc::new(bytes),
+        mime_type: "image/png",
+        blob: OnceLock::new(),
+    });
+    let place = match images.iter().position(|image| *image == picture) {
+        Some(place) => place,
+        None => {
+            images.push(picture);
+            images.len() - 1
+        }
+    };
+    u32::try_from(place)
+        .map_err(|_out_of_range: std::num::TryFromIntError| GlbImportError::InvalidReference)
+}
+
+/// PNG's CRC-32 of a chunk's type and data.
+fn crc32(bytes: &[u8]) -> u32 {
+    !bytes.iter().fold(u32::MAX, |crc, byte| {
+        (0..8).fold(crc ^ u32::from(*byte), |crc, _| {
+            if crc & 1 == 1 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            }
+        })
+    })
+}
+
 /// The GLB's images: each that is PNG or JPEG bytes of a buffer view, else `None`.
 pub(super) fn parse_images(
     root: &Map<String, Value>,
@@ -243,4 +345,64 @@ pub(super) fn textured_triangles(
             Ok(Some(TexturedTriangle { image, uv }))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn picture(mime_type: &'static str, bytes: Vec<u8>) -> Option<GlbImage> {
+        Some(GlbImage {
+            bytes: Arc::new(bytes),
+            mime_type,
+            blob: OnceLock::new(),
+        })
+    }
+
+    /// A PNG of `colour` type with its `chunks` before the pixels (the CRCs are not read).
+    fn png(colour: u8, chunks: &[&[u8; 4]]) -> Option<GlbImage> {
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        let mut chunk = |kind: &[u8; 4], data: &[u8]| {
+            bytes.extend(u32::try_from(data.len()).unwrap().to_be_bytes());
+            bytes.extend(kind);
+            bytes.extend(data);
+            bytes.extend([0; 4]);
+        };
+        chunk(b"IHDR", &[0, 0, 0, 1, 0, 0, 0, 1, 8, colour, 0, 0, 0]);
+        for kind in chunks {
+            chunk(kind, &[0, 0]);
+        }
+        chunk(b"IDAT", &[0; 6]);
+        chunk(b"IEND", &[]);
+        picture("image/png", bytes)
+    }
+
+    #[test]
+    fn a_cut_out_material_notes_its_transparency_only_when_it_can_cut_anything() {
+        let images = [
+            picture("image/jpeg", vec![0xff, 0xd8, 0xff, 0xe0]),
+            png(2, &[b"sRGB"]),
+            png(6, &[]),
+            png(3, &[b"PLTE", b"tRNS"]),
+            picture("image/png", b"\x89PNG\r\n\x1a\n\0\0".to_vec()),
+        ];
+        let shows = |mode, alpha, image| {
+            let texture = Some(MaterialTexture { image, set: 0 });
+            shows_transparency(Some(mode), 0.5, alpha, texture, &images)
+        };
+        // SketchUp's MASK on a photo or an opaque PNG cuts nothing.
+        assert!(!shows("MASK", 1.0, 0));
+        assert!(!shows("MASK", 1.0, 1));
+        assert!(!shows("BLEND", 1.0, 1));
+        // A picture with alpha, a palette with tRNS and an unreadable PNG may.
+        assert!(shows("MASK", 1.0, 2));
+        assert!(shows("MASK", 1.0, 3));
+        assert!(shows("MASK", 1.0, 4));
+        // The base colour's own alpha: below the cutoff the whole material is cut away.
+        assert!(shows("MASK", 0.4, 1));
+        assert!(shows("BLEND", 0.9, 1));
+        assert!(!shows_transparency(Some("MASK"), 0.5, 0.6, None, &images));
+        assert!(!shows_transparency(Some("OPAQUE"), 0.5, 0.2, None, &images));
+        assert!(!shows_transparency(None, 0.5, 0.2, None, &images));
+    }
 }

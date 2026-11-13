@@ -681,7 +681,26 @@ fn a_textured_face_shows_its_picture_repeating() {
     ));
     let not_png = PresentationTexture::decode(b"not a picture", "image/png");
     assert!(matches!(&not_png, Err(TextureError::Png(_))), "{not_png:?}");
-    assert!(std::error::Error::source(&not_png.unwrap_err()).is_some());
+    let not_png = not_png.unwrap_err();
+    assert!(std::error::Error::source(&not_png).is_some());
+    // The message says why the decoder gave up, not only that it did (review 2026-11-12 P3).
+    let reason = std::error::Error::source(&not_png).unwrap().to_string();
+    assert!(
+        not_png.to_string().ends_with(&format!(": {reason}")),
+        "{not_png}"
+    );
+    let not_jpeg = PresentationTexture::decode(b"not a picture", "image/jpeg").unwrap_err();
+    let reason = std::error::Error::source(&not_jpeg).unwrap().to_string();
+    assert!(
+        not_jpeg.to_string().ends_with(&format!(": {reason}")),
+        "{not_jpeg}"
+    );
+    let face = PresentationError::Texture {
+        blob: "wall.jpg".to_owned(),
+        source: not_jpeg,
+    };
+    assert!(face.to_string().contains("wall.jpg"), "{face}");
+    assert!(face.to_string().ends_with(&format!(": {reason}")), "{face}");
     assert!(matches!(
         PresentationTexture::decode(&checker_png(), "image/gif"),
         Err(TextureError::MediaType(_))

@@ -654,6 +654,17 @@ fn glb_joins_material_pieces_and_leaves_out_an_open_surface() {
         !codes.contains(&"glb_non_solid_pieces_skipped"),
         "{codes:?}"
     );
+    // The painted half keeps its colour, as a picture of one pixel (review 2026-11-12 P3:
+    // the box came all in wood).
+    let pictures = inspection.shown_images();
+    assert_eq!(pictures.len(), 1);
+    let paint = ketchup_manufacturing::presentation::PresentationTexture::decode(
+        &pictures[0],
+        "image/png",
+    )
+    .unwrap();
+    assert_eq!(paint.size(), [1, 1]);
+    assert_eq!(paint.rgba(), [243, 243, 243, 255]);
     let imported = DocumentStore::new();
     plan_glb_import(&imported.current(), &source, "two-materials.glb").unwrap();
 }
@@ -664,7 +675,8 @@ fn glb_joins_material_pieces_and_leaves_out_an_open_surface() {
 fn glb_imports_transparent_materials_and_skips_unknown_chunks() {
     let mut source = rewrite_glb_json(&sample_glb(), |document| {
         document["materials"] = serde_json::json!([
-            {"name": "glass", "alphaMode": "BLEND"},
+            {"name": "glass", "alphaMode": "BLEND",
+             "pbrMetallicRoughness": {"baseColorFactor": [1.0, 1.0, 1.0, 0.4]}},
             {"name": "leaves", "alphaMode": "MASK"}
         ]);
     });

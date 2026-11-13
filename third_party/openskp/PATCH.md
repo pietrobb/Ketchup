@@ -29,8 +29,11 @@ must cost a worker process, not the editor.
   import took as sheets (review 2026-11-10 SKP-400). Every face is now written once, on its
   front, drawn from both sides, in its front's material, or its back's when only the back is
   painted; `ketchup-skp` counts a back painted unlike its front as
-  `skp_back_materials_dropped`. Tests: `a_box_painted_on_its_outside_only_comes_as_one_surface`
-  and `a_face_painted_on_its_back_only_keeps_that_colour` in `ketchup-skp`.
+  `skp_back_materials_dropped`. A face painted on its back only is written reversed, as seen
+  from its back, so a reversed face of a box painted from outside faces out (review 2026-11-12
+  P3). Tests: `a_box_painted_on_its_outside_only_comes_as_one_surface`,
+  `a_face_painted_on_its_back_only_keeps_that_colour` and
+  `a_reversed_face_painted_from_outside_faces_out` in `ketchup-skp`.
 - `src/instanced_scene_build.rs` (`local_origin`), `src/face_groups.rs` (`whole_tiles_away`):
   positions and texture coordinates are `f32` in their definition's frame, so geometry far from
   that frame's origin lost its size: a 254 × 508 mm box 3 000 km away came as 250 × 500 mm
