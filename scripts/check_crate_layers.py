@@ -479,6 +479,10 @@ def hand_written_linear_algebra(counts, recorded=LINEAR_ALGEBRA):
 # lint off; both are counted per crate in production source and may only fall.
 NUMERIC_CAST = re.compile(r"\bas\s+(?:[ui](?:8|16|32|64|128|size)|f32|f64)\b")
 LINT_ALLOW = re.compile(r"#!?\[allow\(")
+# Each `unsafe` block, fn and impl is counted too: one allowance may cover any number of
+# them (review 2026-11-13 P3: four new blocks under one module-wide allow went uncounted).
+UNSAFE = re.compile(r"\bunsafe\b")
+STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
 CASTS_AND_ALLOWS = {
     "ketchup-analysis allows": 1,
     "ketchup-analysis casts": 6,
@@ -497,8 +501,9 @@ CASTS_AND_ALLOWS = {
     # name in a set's list is the folder the file system gives it), so 17 -> 18.
     # GetStdHandle/AttachConsole of the binary's console::attach_parent_console (feedback
     # 2026-11-10: the windowed release printed `--version` to no console), so 18 -> 19.
-    # Becoming another user under sudo moved to ketchup-user-files with its one module-wide
-    # allowance (review 2026-11-13 R1113-SEC-600..602, P3: it hid 4 unsafe blocks), so 19 -> 18.
+    # Becoming another user under sudo moved to ketchup-user-files, one allowance on each
+    # item (review 2026-11-13 R1113-SEC-600..602, P3: a module-wide one hid 4 unsafe blocks),
+    # so 19 -> 18.
     "ketchup-app allows": 18,
     "ketchup-app casts": 216,
     "ketchup-application allows": 9,
@@ -535,6 +540,15 @@ CASTS_AND_ALLOWS = {
     "ketchup-viewer-android casts": 2,
     "ketchup-viewer-web allows": 1,
     "ketchup-viewer-web casts": 1,
+    # `unsafe` blocks, fns and impls, counted since review 2026-11-13 P3: system calls of
+    # the app and the configuration under sudo, the OCCT bridge, Finder's open-file
+    # callback, the MCP server's checks of its token file and Android's FFI entry points.
+    "ketchup-app unsafe": 18,
+    "ketchup-exact unsafe": 1,
+    "ketchup-macos-open unsafe": 7,
+    "ketchup-mcp unsafe": 9,
+    "ketchup-user-files unsafe": 8,
+    "ketchup-viewer-android unsafe": 4,
 }
 
 
@@ -554,7 +568,7 @@ def production_lines(path):
 
 
 def cast_and_allow_counts(root):
-    """{"<crate> casts"|"<crate> allows": count} over production source."""
+    """{"<crate> casts"|"<crate> allows"|"<crate> unsafe": count} over production source."""
     counts = {}
     for path in package_files(root, "src/**/*.rs"):
         relative = path.relative_to(root)
@@ -563,8 +577,9 @@ def cast_and_allow_counts(root):
         crate = package_of(root, path)
         for line in production_lines(path):
             code = line.split("//", 1)[0]
-            for kind, pattern in (("casts", NUMERIC_CAST), ("allows", LINT_ALLOW)):
-                found = len(pattern.findall(code if kind == "casts" else line))
+            for kind, pattern in (("casts", NUMERIC_CAST), ("allows", LINT_ALLOW), ("unsafe", UNSAFE)):
+                searched = {"allows": line, "unsafe": STRING.sub('""', code)}.get(kind, code)
+                found = len(pattern.findall(searched))
                 if found:
                     counts[f"{crate} {kind}"] = counts.get(f"{crate} {kind}", 0) + found
     return counts
