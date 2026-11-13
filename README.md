@@ -238,7 +238,7 @@ With these, Ketchup could design a machine like its own CNC router end to end: f
 
 ## Build and run
 
-The supported development platform is **Windows x86-64** with Rust 1.97.0 and OCCT 8.0.1. See the [Windows toolchain guide](docs/toolchain/WINDOWS.md) for the pinned native environment.
+The supported development platforms are **Windows x86-64** and **macOS on Apple Silicon**, both with Rust 1.97.0 and OCCT 8.0.1. See the [Windows toolchain guide](docs/toolchain/WINDOWS.md) for the pinned native environment on Windows; building on a Mac is described below, after Linux.
 
 ```powershell
 cargo build --locked --release
