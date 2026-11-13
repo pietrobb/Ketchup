@@ -400,7 +400,7 @@ pub fn drawing_set_until(
         (Some(bounds), None) | (None, Some(bounds)) => bounds,
         (None, None) => return Err(ProjectDrawingError::Empty),
     };
-    let storey_table_issues = super::storey_table::check(&options.storeys, solids)?;
+    let storey_table_issues = super::storey_table::check(&options.storeys, solids, stop)?;
     stopped()?;
     let first_cut = options
         .plans

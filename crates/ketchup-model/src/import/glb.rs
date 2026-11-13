@@ -237,8 +237,6 @@ pub enum GlbImportError {
     InvalidText,
     InvalidSourceIdentity(ImportContractError),
     MalformedJson(String),
-    /// The JSON holds more values the import reads than an importable GLB can.
-    JsonTooLarge,
     InvalidReport(ImportContractError),
     RejectedByDocument(crate::document::CanonicalError),
     IdSpaceExhausted,
@@ -269,14 +267,6 @@ impl fmt::Display for GlbImportError {
             Self::MalformedJson(reason) => {
                 return write!(formatter, "GLB JSON document is malformed: {reason}");
             }
-            Self::JsonTooLarge => {
-                return write!(
-                    formatter,
-                    "GLB JSON holds more than {} values the import reads, those of some \
-                     {MAX_NODES} nodes",
-                    json::MAX_JSON_VALUES
-                );
-            }
             Self::InvalidReport(error) => {
                 return write!(formatter, "GLB import report is invalid: {error}");
             }
@@ -296,7 +286,11 @@ pub fn inspect_glb(source: &[u8]) -> Result<ParsedGlbScene, GlbImportError> {
     }
     let (json_bytes, binary) = parse_container(source)?;
     let json::GlbJson { root, counts } = json::read(json_bytes).map_err(|error| match error {
-        json::ReadError::TooLarge => GlbImportError::JsonTooLarge,
+        json::ReadError::TooLarge => too_large(
+            GlbMeasure::Description,
+            json::MAX_JSON_VALUES,
+            json::MAX_JSON_VALUES,
+        ),
         json::ReadError::NotObject => GlbImportError::InvalidJson,
         json::ReadError::Malformed(error) => GlbImportError::MalformedJson(error.to_string()),
     })?;
@@ -330,7 +324,7 @@ pub fn inspect_glb(source: &[u8]) -> Result<ParsedGlbScene, GlbImportError> {
     let materials = optional_array(root, "materials")?;
     let mut diagnostic_counts = BTreeMap::<&'static str, u32>::new();
     record_document_losses(&counts, &mut diagnostic_counts)?;
-    let images = textures::parse_images(root, binary, &buffer_views)?;
+    let mut images = textures::parse_images(root, binary, &buffer_views)?;
     let material_looks = parse_materials(root, materials, &images, &mut diagnostic_counts)?;
     textures::record_unshown(root, &material_looks, &mut diagnostic_counts)?;
     let (primitives, mesh_primitives, total_triangles) = parse_meshes(
@@ -340,6 +334,7 @@ pub fn inspect_glb(source: &[u8]) -> Result<ParsedGlbScene, GlbImportError> {
         &accessors,
         &material_looks,
         &selection.meshes,
+        &mut images,
         &mut diagnostic_counts,
     )?;
     let (mut nodes, traversal, instance_count) = parse_nodes(
@@ -803,6 +798,7 @@ fn parse_meshes(
     accessors: &[Accessor],
     material_looks: &[MaterialLook],
     selected_meshes: &BTreeSet<usize>,
+    images: &mut Vec<Option<GlbImage>>,
     diagnostics: &mut BTreeMap<&'static str, u32>,
 ) -> Result<ParsedMeshes, GlbImportError> {
     let meshes = array_required(root, "meshes")?;
@@ -939,7 +935,7 @@ fn parse_meshes(
             });
         }
         let origin_mm = recentre(&mut pieces)?;
-        for shell in closed_shells(&mesh_name, pieces, diagnostics)? {
+        for shell in closed_shells(&mesh_name, pieces, images, diagnostics)? {
             primitive_indices.push(parsed.len());
             parsed.push(ParsedPrimitive { origin_mm, ..shell });
         }
@@ -957,6 +953,7 @@ fn parse_meshes(
 fn closed_shells(
     mesh_name: &str,
     primitives: Vec<ParsedPrimitive>,
+    images: &mut Vec<Option<GlbImage>>,
     diagnostics: &mut BTreeMap<&'static str, u32>,
 ) -> Result<Vec<ParsedPrimitive>, GlbImportError> {
     let (mut shells, open): (Vec<_>, Vec<_>) = primitives.into_iter().partition(is_solid);
@@ -989,19 +986,18 @@ fn closed_shells(
             vertices_mm,
             triangles,
             color: first.color,
-            // The pieces keep their pictures: the triangles stay in the pieces' order.
-            look: open.iter().any(|piece| piece.look.is_some()).then(|| {
-                open.iter()
-                    .flat_map(|piece| match &piece.look {
-                        Some(look) => look.clone(),
-                        None => vec![None; piece.triangles.len()],
-                    })
-                    .collect()
-            }),
+            look: None,
             sheet: false,
             origin_mm: first.origin_mm,
         })
-        .filter(is_solid);
+        .filter(is_solid)
+        .map(|joined| {
+            Ok::<_, GlbImportError>(ParsedPrimitive {
+                look: joined_look(&open, first.color, images)?,
+                ..joined
+            })
+        })
+        .transpose()?;
     let count = |pieces: usize| {
         u32::try_from(pieces).map_err(|_out_of_range: std::num::TryFromIntError| {
             too_large(GlbMeasure::MeshParts, pieces, MAX_PRIMITIVES)
@@ -1039,6 +1035,44 @@ fn closed_shells(
     }
     shells.extend(sheets);
     Ok(shells)
+}
+
+/// The look of the body joined from `pieces`, its colour `color`: each piece keeps its
+/// picture, and a piece without one of another colour shows that colour as a picture of
+/// one pixel. The triangles stay in the pieces' order.
+fn joined_look(
+    pieces: &[ParsedPrimitive],
+    color: Option<[u8; 3]>,
+    images: &mut Vec<Option<GlbImage>>,
+) -> Result<Option<Vec<Option<TexturedTriangle>>>, GlbImportError> {
+    let painted = |piece: &ParsedPrimitive| piece.color.filter(|own| Some(*own) != color);
+    if pieces
+        .iter()
+        .all(|piece| piece.look.is_none() && painted(piece).is_none())
+    {
+        return Ok(None);
+    }
+    let mut look = Vec::new();
+    for piece in pieces {
+        match (&piece.look, painted(piece)) {
+            (Some(own), _) => look.extend_from_slice(own),
+            (None, Some(own)) => {
+                let image = textures::colour_picture(own, images)?;
+                look.extend(
+                    std::iter::repeat_n(
+                        TexturedTriangle {
+                            image,
+                            uv: [[0.5; 2]; 3],
+                        },
+                        piece.triangles.len(),
+                    )
+                    .map(Some),
+                );
+            }
+            (None, None) => look.extend(std::iter::repeat_n(None, piece.triangles.len())),
+        }
+    }
+    Ok(Some(look))
 }
 
 /// Moves the origin of a mesh lying beyond the model space to the centre of its pieces,
@@ -1843,15 +1877,21 @@ fn parse_materials(
         .iter()
         .map(|material| {
             let material = object(material)?;
-            // Transparency changes only how a solid looks, so a glass or
-            // cut-out material imports as an opaque colour with a note.
-            match material.get("alphaMode").map(Value::as_str) {
-                None | Some(Some("OPAQUE")) => {}
-                Some(Some("MASK" | "BLEND")) => {
-                    bump(diagnostics, "glb_material_transparency_ignored", 1)?;
-                }
+            let mode = match material.get("alphaMode").map(Value::as_str) {
+                None => None,
+                Some(Some(mode @ ("OPAQUE" | "MASK" | "BLEND"))) => Some(mode),
                 Some(_) => return Err(GlbImportError::UnsupportedFeature),
-            }
+            };
+            let cutoff = material
+                .get("alphaCutoff")
+                .map(|value| {
+                    value
+                        .as_f64()
+                        .filter(|cutoff| cutoff.is_finite() && *cutoff >= 0.0)
+                        .ok_or(GlbImportError::InvalidJson)
+                })
+                .transpose()?
+                .unwrap_or(0.5);
             if material
                 .get("doubleSided")
                 .is_some_and(|value| value != &Value::Bool(false))
@@ -1888,12 +1928,16 @@ fn parse_materials(
                 .map(|value| exact_number_array(value, 4))
                 .transpose()?
                 .unwrap_or_else(|| vec![1.0; 4]);
-            // Its alpha is the transparency counted above (or, opaque, ignored by glTF).
             if factor
                 .iter()
                 .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
             {
                 return Err(GlbImportError::UnsupportedFeature);
+            }
+            // Transparency changes only how a solid looks, so a glass or
+            // cut-out material imports as an opaque colour with a note.
+            if textures::shows_transparency(mode, cutoff, factor[3], texture, images) {
+                bump(diagnostics, "glb_material_transparency_ignored", 1)?;
             }
             Ok(MaterialLook {
                 color: Some([
@@ -2169,10 +2213,23 @@ mod json_tests {
             .as_array_mut()
             .unwrap()
             .extend(vec![serde_json::json!({}); json::MAX_JSON_VALUES]);
+        // Counted, with what to do, as any other model too large for one import (review
+        // 2026-11-12 P3: a SketchUp model of some 60 000 placements got a bare JSON error).
+        let refused = inspect_glb(&packed(&read, &binary)).unwrap_err();
         assert_eq!(
-            inspect_glb(&packed(&read, &binary)),
-            Err(GlbImportError::JsonTooLarge)
+            refused,
+            too_large(
+                GlbMeasure::Description,
+                json::MAX_JSON_VALUES,
+                json::MAX_JSON_VALUES
+            )
         );
+        let message = refused.to_string();
+        assert!(
+            message.contains("one import takes at most 1048576"),
+            "{message}"
+        );
+        assert!(message.contains("Purge Unused"), "{message}");
     }
 
     /// A glass material (a base colour with alpha below 1) imports as its opaque colour with

@@ -625,6 +625,7 @@ fn storey_problem(problem: StoreyTableProblem) -> Value {
         StoreyTableProblem::StructureAboveFloor => json!("structure_above_floor"),
         StoreyTableProblem::SameFloorAs(other) => json!({"same_floor_as": other}),
         StoreyTableProblem::OutsideModel => json!("outside_model"),
+        StoreyTableProblem::ThickBuildUp => json!("thick_build_up"),
         StoreyTableProblem::NoFloorInModel => json!("no_floor_in_model"),
     }
 }

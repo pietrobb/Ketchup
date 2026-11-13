@@ -57,6 +57,9 @@ def test_the_installer_lists_the_files_it_releases_and_nothing_else():
     call = script[script.index("write-checksums.ps1"):].split("\n", 1)[0]
     assets = script[script.index("$releaseAssets = @("):script.index("write-checksums.ps1")]
     assert "-Assets $releaseAssets" in call
-    for path in ["$setupPath", "$zipPath", "$viewerZipPath", "$examplesPath"]:
+    # Review 2026-11-12 P3: the macOS lines of the 0.3.3 sums were added by hand.
+    for path in ["$setupPath", "$zipPath", "$viewerZipPath", "$examplesPath", "$macPath"]:
         assert path in assets, path
     assert "$packageManifestPath" not in assets
+    assert "[string[]]$MacPackages" in script
+    assert '"Ketchup-$Version-macOS.dmg", "Ketchup-Viewer-$Version-macOS.dmg"' in script

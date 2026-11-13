@@ -237,9 +237,9 @@ impl fmt::Display for PresentationError {
                 "the image has {labels} labels, more than the limit of {limit}"
             ),
             Self::Font => write!(formatter, "the built-in label typeface cannot be read"),
-            Self::Texture { blob, .. } => write!(
+            Self::Texture { blob, source } => write!(
                 formatter,
-                "the picture {blob} on a textured face cannot be read"
+                "the picture {blob} on a textured face cannot be read: {source}"
             ),
             Self::TextureReference { triangle } => write!(
                 formatter,
