@@ -9,6 +9,7 @@ use super::{
 use ketchup_geometry::linalg::Vec3;
 use ketchup_tolerance::{APPROXIMATION, NEGLIGIBLE, ROUNDING};
 use std::f64::consts::FRAC_1_SQRT_2;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 mod annotate;
 
@@ -319,7 +320,8 @@ impl Frame<'_> {
         let point = self.point(at);
         let height = real(self.height);
         let pixels_per_mm = height * 0.5 / (f64::from(self.depth[at]) * self.camera.tan_y);
-        let reach = (radius * pixels_per_mm).clamp(1.5, height * 0.1);
+        // Not `clamp`: under 15 samples high its upper bound is below 1.5 and it would panic.
+        let reach = (radius * pixels_per_mm).min(height * 0.1).max(1.5);
         let (x, y) = (real(at % self.width), real(at / self.width));
         let mut occlusion = 0.0;
         for [dx, dy] in AO_OFFSETS {
@@ -450,9 +452,19 @@ impl<'a> Surfaces<'a> {
     }
 }
 
+/// `Err(Cancelled)` once `cancelled` is set.
+fn going_on(cancelled: &AtomicBool) -> Result<(), PresentationError> {
+    if cancelled.load(Ordering::Relaxed) {
+        Err(PresentationError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
 pub(super) fn render(
     scene: &PresentationScene,
     options: &PresentationOptions,
+    cancelled: &AtomicBool,
 ) -> Result<PresentationImage, PresentationError> {
     let size_error = |_out_of_range: std::num::TryFromIntError| PresentationError::Size {
         width: options.width,
@@ -475,6 +487,21 @@ pub(super) fn render(
         return Err(PresentationError::ViewDirection);
     }
     let diagonal = low.distance(high);
+    // A label much farther away than the model is large would shrink it to a speck in the
+    // frame (review 2026-11-12 R1112-IMG-503).
+    let reach = diagonal.max(1.0);
+    if let Some(label) = scene.labels.iter().position(|label| {
+        let point = Vec3::from(label.at_mm);
+        [
+            (point.x, low.x, high.x),
+            (point.y, low.y, high.y),
+            (point.z, low.z, high.z),
+        ]
+        .iter()
+        .any(|(at, low, high)| *at < low - reach || *at > high + reach)
+    }) {
+        return Err(PresentationError::LabelAway { label });
+    }
     let dimensions = if options.dimensions {
         annotate::dimensions(low, high, view_from)
     } else {
@@ -514,6 +541,7 @@ pub(super) fn render(
         triangle: vec![NO_TRIANGLE; width * height],
     };
     for &at in &opaque {
+        going_on(cancelled)?;
         let Some(projected) = frame.camera.triangle(surfaces.corners[at]) else {
             continue;
         };
@@ -540,9 +568,10 @@ pub(super) fn render(
         ground: low.z,
         ao_radius: low.distance(high) * AO_RADIUS,
         options,
+        cancelled,
     };
-    let mut colour = shading.opaque();
-    shading.see_through(&mut colour);
+    let mut colour = shading.opaque()?;
+    shading.see_through(&mut colour)?;
     if !dimensions.is_empty() || !scene.labels.is_empty() {
         let mut sheet = annotate::Sheet {
             colour: &mut colour,
@@ -552,12 +581,14 @@ pub(super) fn render(
         };
         let annotator = annotate::Annotator::new(&frame.camera, &sheet)?;
         for dimension in &dimensions {
-            annotator.dimension(&mut sheet, dimension, diagonal);
+            annotator.dimension(&mut sheet, dimension, diagonal, options.decimal_mark);
         }
+        let mut placed = Vec::with_capacity(scene.labels.len());
         for label in &scene.labels {
-            annotator.label(&mut sheet, label);
+            annotator.label(&mut sheet, label, &mut placed);
         }
     }
+    going_on(cancelled)?;
     Ok(downsample(options, factor, width, &colour))
 }
 
@@ -569,12 +600,13 @@ struct Shading<'a> {
     ground: f64,
     ao_radius: f64,
     options: &'a PresentationOptions,
+    cancelled: &'a AtomicBool,
 }
 
 impl Shading<'_> {
     /// Premultiplied RGBA of each sample: the opaque parts over the background and the shadow on
     /// the implied ground at the model's lowest point.
-    fn opaque(&self) -> Vec<[f32; 4]> {
+    fn opaque(&self) -> Result<Vec<[f32; 4]>, PresentationError> {
         let background = match self.options.background {
             Background::White => [1.0, 1.0, 1.0, 1.0],
             Background::Transparent => [0.0, 0.0, 0.0, 0.0],
@@ -586,8 +618,10 @@ impl Shading<'_> {
             ],
         };
         let frame = self.frame;
-        (0..frame.depth.len())
-            .map(|at| {
+        let mut colour = Vec::with_capacity(frame.depth.len());
+        for row in 0..frame.height {
+            going_on(self.cancelled)?;
+            colour.extend((row * frame.width..(row + 1) * frame.width).map(|at| {
                 let owner = frame.triangle[at];
                 let part = (owner != NO_TRIANGLE)
                     .then(|| usize::try_from(owner).ok())
@@ -610,8 +644,9 @@ impl Shading<'_> {
                     }
                 };
                 pixel.map(narrow)
-            })
-            .collect()
+            }));
+        }
+        Ok(colour)
     }
 
     fn ground_shadow(&self, at: usize) -> f64 {
@@ -651,7 +686,7 @@ impl Shading<'_> {
     }
 
     /// Blends the see-through parts, farthest first, over the samples they are in front of.
-    fn see_through(&self, colour: &mut [[f32; 4]]) {
+    fn see_through(&self, colour: &mut [[f32; 4]]) -> Result<(), PresentationError> {
         let frame = self.frame;
         let camera = &frame.camera;
         let mut layers = self
@@ -665,6 +700,7 @@ impl Shading<'_> {
             .collect::<Vec<_>>();
         layers.sort_by(|left, right| right.0.total_cmp(&left.0).then(left.1.cmp(&right.1)));
         for (_, at, projected) in layers {
+            going_on(self.cancelled)?;
             let alpha = f64::from(self.surfaces.colours[at][3]) / 255.0;
             raster(
                 frame.width,
@@ -686,6 +722,7 @@ impl Shading<'_> {
                 },
             );
         }
+        Ok(())
     }
 }
 

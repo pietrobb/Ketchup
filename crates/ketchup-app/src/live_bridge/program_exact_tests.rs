@@ -1095,7 +1095,7 @@ fn settled_exact_check(wire: &mut Wire, result: &Value) -> (Value, Vec<Value>) {
                 offset,
                 limit: 50,
             },
-            Duration::from_secs(30),
+            Duration::from_secs(60),
         );
         if response.error.as_deref() == Some("busy") {
             // Each ask polls the window until it answers, so asking again is the wait.

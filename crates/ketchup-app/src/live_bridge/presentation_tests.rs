@@ -151,6 +151,127 @@ fn a_client_adds_dimensions_part_names_and_its_own_labels_to_the_image() {
     assert_ne!(labelled, named);
 }
 
+/// R1112-IMG-500: `{"image":{"height":4}}` with the default corner shading closed the window.
+#[test]
+fn a_client_saves_an_image_only_a_few_pixels_high() {
+    let (mut app, mut bridge, directory) = window();
+    for (name, size) in [
+        ("four.png", json!({"height": 4})),
+        ("one.png", json!({"width": 1, "height": 1})),
+    ] {
+        let path = directory.path().join(name);
+        let answer = bridge
+            .execute(&mut app, presentation(&path, size), false)
+            .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+        assert_eq!(answer["exported"], true, "{answer}");
+        assert!(path.exists());
+    }
+}
+
+/// R1112-IMG-501: a size past the limit is the client's to change, so it is invalid_params,
+/// not export_failed asking to lower an edge smoothing no one can set.
+#[test]
+fn a_client_image_past_the_pixel_limit_is_invalid_params() {
+    let (mut app, mut bridge, directory) = window();
+    let path = directory.path().join("huge.png");
+    assert_eq!(
+        bridge.execute(
+            &mut app,
+            presentation(&path, json!({"width": 8192, "height": 8192})),
+            false
+        ),
+        Err("invalid_params")
+    );
+    assert!(!path.exists());
+}
+
+/// R1112-IMG-502: a client's image is made on a thread while the window keeps polling, as
+/// from the window, and one the client gives up on stops and writes nothing.
+#[test]
+fn a_clients_image_is_made_off_the_windows_thread_and_a_cancelled_one_writes_nothing() {
+    use crate::live_bridge::program_check::ProgramCheckJob;
+    use crate::live_bridge::program_dry_run::QueuedReply;
+    let (mut app, mut bridge, directory) = window();
+    let context = egui::Context::default();
+    let small = json!({"width": 64, "height": 48});
+    let start = |app: &mut KetchupApp, bridge: &mut LiveBridge, path: &Path| {
+        let (reply, answers) = mpsc::sync_channel(1);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let queued = QueuedReply {
+            id: 1,
+            reply,
+            cancelled: Arc::clone(&cancelled),
+        };
+        bridge.start_exchange_export(
+            app,
+            &context,
+            queued,
+            presentation(path, small.clone()),
+            false,
+        );
+        assert!(
+            matches!(
+                bridge.program_check_job,
+                Some(ProgramCheckJob::Presentation(_))
+            ),
+            "the image is a job: {}",
+            app.action_digest()
+        );
+        (answers, cancelled)
+    };
+
+    let made = directory.path().join("made.png");
+    let (answers, _) = start(&mut app, &mut bridge, &made);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let answer = loop {
+        bridge.poll_program_check_job(&mut app, &context);
+        if let Ok(answer) = answers.recv_timeout(Duration::from_millis(2)) {
+            break answer;
+        }
+        assert!(Instant::now() < deadline, "the image was never made");
+    };
+    assert!(answer.ok, "{answer:?}");
+    assert_eq!(pixels(&made).0, 64);
+
+    let given_up = directory.path().join("given-up.png");
+    let (answers, cancelled) = start(&mut app, &mut bridge, &given_up);
+    cancelled.store(true, Ordering::Release);
+    bridge.poll_program_check_job(&mut app, &context);
+    let answer = answers.try_recv().expect("answered in the same poll");
+    assert_eq!(answer.error.as_deref(), Some("request_cancelled"));
+    assert!(bridge.program_check_job.is_none());
+    assert!(!given_up.exists());
+}
+
+/// Review 2026-11-12 P3: `overwrite` was ignored for an image. With it the window asks the
+/// user, and only an agreed replacement is written.
+#[test]
+fn a_client_image_with_overwrite_replaces_a_file_once_the_user_agrees() {
+    let (app, mut bridge, directory) = window();
+    let dialogs = crate::dialogs::ScriptedFileDialogs::new()
+        .queue_refused_high_risk()
+        .queue_high_risk_approval(9);
+    let probe = dialogs.clone();
+    let mut app = app.with_dialogs(Box::new(dialogs));
+    let existing = directory.path().join("existing.png");
+    std::fs::write(&existing, b"the user's picture").unwrap();
+    let mut request = presentation(&existing, json!({"width": 32, "height": 24}));
+    if let Request::Export { overwrite, .. } = &mut request {
+        *overwrite = true;
+    }
+    assert_eq!(
+        bridge.execute(&mut app, request.clone(), false),
+        Err("export_declined")
+    );
+    assert_eq!(std::fs::read(&existing).unwrap(), b"the user's picture");
+    let answer = bridge
+        .execute(&mut app, request, false)
+        .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
+    assert_eq!(answer["exported"], true, "{answer}");
+    assert_eq!(pixels(&existing).0, 32);
+    assert_eq!(probe.high_risk_prompts().len(), 2);
+}
+
 #[test]
 fn a_client_presentation_never_replaces_a_file_and_names_what_it_cannot_draw() {
     let (mut app, mut bridge, directory) = window();
@@ -177,6 +298,16 @@ fn a_client_presentation_never_replaces_a_file_and_names_what_it_cannot_draw() {
         app.action_digest()
     );
     assert!(!unknown.exists());
+
+    // R1112-IMG-503: a label far from the model framed it as a speck and said OK.
+    let away = directory.path().join("away.png");
+    let mut image = small.clone();
+    image["labels"] = json!([{"text": "far", "at_mm": [1e12, 0, 0]}]);
+    assert_eq!(
+        bridge.execute(&mut app, presentation(&away, image), false),
+        Err("export_refused")
+    );
+    assert!(!away.exists());
 
     for wrong in [
         json!({"background": "#12345"}),

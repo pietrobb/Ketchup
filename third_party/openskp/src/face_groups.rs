@@ -251,6 +251,19 @@ fn compute_face_uv(
     ((u / q) / tile_w, (v / q) / tile_h)
 }
 
+/// Tiles past which a texture coordinate written as `f32` starts losing the picture's detail.
+const FAR_TILES: f64 = 1024.0;
+
+/// The whole tiles to take off every texture coordinate of a face whose first one is `uv`, so
+/// a face far from the origin keeps its picture in `f32` (Ketchup change, see PATCH.md): the
+/// texture repeats, so whole tiles off change nothing drawn. None for a face near the origin.
+fn whole_tiles_away((u, v): (f64, f64)) -> (f64, f64) {
+    if u.abs().max(v.abs()) <= FAR_TILES || !u.is_finite() || !v.is_finite() {
+        return (0.0, 0.0);
+    }
+    (u.floor(), v.floor())
+}
+
 fn loop_vertices(lp: &[CoEdge], b: &GeometryBuilder) -> Vec<EntityId> {
     let mut v: Vec<EntityId> = Vec::new();
     for c in lp {
@@ -311,6 +324,15 @@ pub fn build_local_face_groups(
                             tile_h: f64|
          -> Result<(), Error> {
             let inv = uv_transform.as_ref().map(invert_3x3);
+            let uv_at = |id: EntityId| {
+                b.vertices
+                    .get(&id)
+                    .map(|pos| compute_face_uv(pos, &xr, &yr, inv.as_ref(), tile_w, tile_h))
+            };
+            let tiles = triangles
+                .first()
+                .and_then(|triangle| uv_at(triangle[0]))
+                .map_or((0.0, 0.0), whole_tiles_away);
             let group = groups.entry(key).or_default();
             for &triangle in &triangles {
                 let mut triangle = triangle;
@@ -323,6 +345,7 @@ pub fn build_local_face_groups(
                         Error::out_of_range(format!("map::at: vertex {id} not found"))
                     })?;
                     let (u, v) = compute_face_uv(&pos, &xr, &yr, inv.as_ref(), tile_w, tile_h);
+                    let (u, v) = (u - tiles.0, v - tiles.1);
                     let index = *group.map.entry(vkey(id, u, v)).or_insert_with(|| {
                         group.verts.push(pos);
                         group.uvs.push([u as f32, v as f32]);

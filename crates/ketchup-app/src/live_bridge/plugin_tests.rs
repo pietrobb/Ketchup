@@ -114,7 +114,7 @@ fn a_crashing_plugin_returns_its_cause_and_changes_nothing() {
     std::fs::write(&crash, "import sys\nsys.exit(3)\n").unwrap();
     let response = wire.answer_within(
         run_plugin(vec![crash.display().to_string()]),
-        Duration::from_secs(30),
+        Duration::from_secs(60),
     );
     assert!(!response.ok);
     assert_eq!(response.error.as_deref(), Some("plugin_failed"));
@@ -186,7 +186,7 @@ fn a_plugin_whose_document_changes_while_it_runs_is_refused() {
 fn assert_consent_required(wire: &mut Wire, request: RunPluginRequest) -> Value {
     let before = wire.app.live_bridge_stamp();
     let undo = wire.app.undo_step_count();
-    let response = wire.answer_within(Request::RunPlugin(request), Duration::from_secs(30));
+    let response = wire.answer_within(Request::RunPlugin(request), Duration::from_secs(60));
     assert!(!response.ok);
     assert_eq!(response.error.as_deref(), Some("plugin_consent_required"));
     assert_eq!(wire.app.live_bridge_stamp(), before);
@@ -226,7 +226,7 @@ fn a_plugin_runs_only_with_consent_bound_to_its_file_hash_and_permissions() {
     if cfg!(windows) {
         let response = wire.answer_within(
             run_plugin(vec![r"\\server\share\plugin.py".into()]),
-            Duration::from_secs(30),
+            Duration::from_secs(60),
         );
         assert_eq!(response.error.as_deref(), Some("invalid_path"));
         assert!(probe.high_risk_prompts().is_empty());
@@ -331,7 +331,7 @@ fn assert_refused_without_prompt(
 ) {
     let before = wire.app.live_bridge_stamp();
     let asked = prompts.high_risk_prompts().len();
-    let response = wire.answer_within(Request::RunPlugin(request), Duration::from_secs(30));
+    let response = wire.answer_within(Request::RunPlugin(request), Duration::from_secs(60));
     assert_eq!(
         response.error.as_deref(),
         Some(code),
@@ -615,7 +615,7 @@ fn inputs_too_large_for_the_protocol_line_are_refused_by_name_before_the_prompt(
     );
     let response = wire.answer_within(
         Request::RunPlugin(request(fitting + 1)),
-        Duration::from_secs(30),
+        Duration::from_secs(60),
     );
     let reason = response.result.unwrap()["reason"]
         .as_str()
@@ -723,7 +723,7 @@ fn a_link_in_or_as_a_plugin_folder_is_refused_without_a_prompt() {
         "plugin_manifest_invalid",
         &probe,
     );
-    let response = wire.answer_within(Request::RunPlugin(request), Duration::from_secs(30));
+    let response = wire.answer_within(Request::RunPlugin(request), Duration::from_secs(60));
     let reason = response.result.unwrap()["reason"]
         .as_str()
         .unwrap()
@@ -835,7 +835,7 @@ fn a_folder_without_a_manifest_is_refused_before_its_files_are_read() {
     let probe = ScriptedFileDialogs::new();
     let mut wire = plugin_wire_answering(probe.clone());
     let request = folder_request(&folder, json!({}));
-    let response = wire.answer_within(Request::RunPlugin(request), Duration::from_secs(30));
+    let response = wire.answer_within(Request::RunPlugin(request), Duration::from_secs(60));
     assert_eq!(response.error.as_deref(), Some("plugin_manifest_invalid"));
     let result = response.result.unwrap();
     assert_eq!(

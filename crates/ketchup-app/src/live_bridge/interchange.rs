@@ -13,7 +13,8 @@ use crate::{ImportError, ImportFormat, ImportLengthUnit, KetchupApp};
 use ketchup_application::rejections::rejected;
 use ketchup_manufacturing::dxf_annotations::MAX_PLAN_SCALE;
 use ketchup_manufacturing::presentation::{
-    Background, MAX_LABEL_CHARS, MAX_PRESENTATION_LABELS, PresentationLabel, check_labels,
+    Background, MAX_LABEL_CHARS, MAX_PRESENTATION_LABELS, MAX_PRESENTATION_SAMPLES,
+    MAX_PRESENTATION_SIDE, PresentationLabel, check_labels, presentation_supersample,
 };
 use ketchup_model::import::DxfCodePage;
 use serde_json::{Value, json};
@@ -111,9 +112,13 @@ const EXPORT_FORMATS: [(&str, &[&str], Exporter); 16] = [
         &["zip"],
         KetchupApp::export_current_workshop_package_to,
     ),
-    // Without `image`, the picture File > Export shows first.
+    // Without `image`, the picture File > Export shows first; it stops with the client's request.
     ("presentation_png", &["png"], |app, path| {
-        app.export_presentation_image_to(path, &PresentationRequest::default())
+        let cancelled =
+            app.live.client_export.clone().ok_or_else(|| {
+                ExportError::failed("a presentation image here is a client's export")
+            })?;
+        app.export_presentation_image_to(path, &PresentationRequest::default(), &cancelled)
     }),
 ];
 
@@ -154,7 +159,7 @@ pub struct ImageLabel {
 }
 
 /// Which `image` field a client gave a value it cannot have, and that value.
-struct InvalidImage {
+pub(super) struct InvalidImage {
     reason: &'static str,
     details: Value,
 }
@@ -175,6 +180,20 @@ impl PresentationImage {
         options.background = background;
         options.width = self.width.unwrap_or(options.width);
         options.height = self.height.unwrap_or(options.height);
+        // Review 2026-11-12 R1112-IMG-501: a size the renderer refuses was export_failed,
+        // asking to lower an edge smoothing no one can set.
+        presentation_supersample(options.width, options.height, options.supersample).map_err(
+            |error| InvalidImage {
+                reason: "image.width × image.height is at most max_pixels, each side at most max_side; make the image smaller.",
+                details: json!({
+                    "width": options.width,
+                    "height": options.height,
+                    "max_side": MAX_PRESENTATION_SIDE,
+                    "max_pixels": MAX_PRESENTATION_SAMPLES,
+                    "refused": error.to_string(),
+                }),
+            },
+        )?;
         options.shadows = self.shadows.unwrap_or(options.shadows);
         options.ambient_occlusion = self.ambient_occlusion.unwrap_or(options.ambient_occlusion);
         options.outlines = self.outlines.unwrap_or(options.outlines);
@@ -205,6 +224,23 @@ impl PresentationImage {
         }
         request.opacity_percent = self.opacity_percent;
         Ok(request)
+    }
+}
+
+/// How a client's presentation image looks: as `image` says, or as the window shows first.
+pub(super) fn presentation_request(
+    image: Option<PresentationImage>,
+) -> Result<PresentationRequest, InvalidImage> {
+    image.map_or_else(
+        || Ok(PresentationRequest::default()),
+        PresentationImage::request,
+    )
+}
+
+impl InvalidImage {
+    /// The answer to a client's image that cannot be.
+    pub(super) fn refused(self) -> &'static str {
+        failure("invalid_params", self.reason, self.details)
     }
 }
 
@@ -240,7 +276,9 @@ pub(super) fn export_code(error: &ExportError) -> &'static str {
                     }
                     match cause.downcast_ref::<Rejection>()?.code() {
                         "side_effect.declined" => Some("export_declined"),
-                        "fabrication.mesh_body" | "presentation.material" => Some("export_refused"),
+                        "fabrication.mesh_body"
+                        | "presentation.material"
+                        | "presentation.image" => Some("export_refused"),
                         _ => None,
                     }
                 })
@@ -436,16 +474,18 @@ impl LiveBridge {
             exporter,
             overwrite,
         } = Self::export_target(app, request, ui_busy)?;
-        let presentation = image
-            .map(PresentationImage::request)
+        let presentation = (export_format == "presentation_png")
+            .then(|| presentation_request(image))
             .transpose()
-            .map_err(|invalid| failure("invalid_params", invalid.reason, invalid.details))?;
+            .map_err(InvalidImage::refused)?;
         Self::require_request_authority(cancelled)?;
         app.live.client_export = Some(Arc::clone(cancelled));
         app.live.client_overwrite = overwrite;
         let exported = match (drawing_scale, presentation) {
             (Some(scale), _) => app.export_current_plan_dxf_to(Path::new(&path), scale),
-            (None, Some(request)) => app.export_presentation_image_to(Path::new(&path), &request),
+            (None, Some(request)) => {
+                app.export_presentation_image_to(Path::new(&path), &request, cancelled)
+            }
             (None, None) => exporter(app, Path::new(&path)),
         };
         app.live.client_export = None;

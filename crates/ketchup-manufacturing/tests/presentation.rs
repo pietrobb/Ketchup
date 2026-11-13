@@ -4,9 +4,10 @@ use ketchup_manufacturing::presentation::{
     Background, MAX_LABEL_CHARS, MAX_PRESENTATION_LABELS, PresentationError, PresentationImage,
     PresentationLabel, PresentationOptions, PresentationScene, PresentationTexture,
     PresentationTriangle, TextureError, TriangleTexture, part_labels, presentation_scene,
-    render_presentation,
+    presentation_supersample, render_presentation, render_presentation_until,
 };
 use ketchup_model::exact_product::MeshExportSource;
+use std::sync::atomic::AtomicBool;
 
 const REFERENCE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -317,6 +318,26 @@ fn supersampling_smooths_the_outline_against_the_background() {
     assert!(partial(3) > 50);
 }
 
+/// R1112-IMG-500: an image only a few samples high still renders its corner shading instead of
+/// panicking on an empty clamp range.
+#[test]
+fn a_tiny_image_with_ambient_occlusion_renders() {
+    for (width, height, supersample) in [(1, 1, 1), (1, 5, 1), (20, 4, 1), (8, 4, 3), (20, 14, 1)] {
+        let image = render_presentation(
+            &box_on_slab(),
+            &PresentationOptions {
+                width,
+                height,
+                supersample,
+                ambient_occlusion: true,
+                ..PresentationOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!((image.width, image.height), (width, height));
+    }
+}
+
 #[test]
 fn invalid_requests_are_refused_with_their_reason() {
     let scene = box_on_slab();
@@ -341,7 +362,10 @@ fn invalid_requests_are_refused_with_their_reason() {
             height: 8000,
             ..small(Background::White)
         }),
-        PresentationError::TooManySamples { .. }
+        PresentationError::TooManyPixels {
+            pixels: 64_000_000,
+            ..
+        }
     ));
     assert!(matches!(
         refuse(PresentationOptions {
@@ -746,4 +770,126 @@ fn a_picture_on_a_face_stands_the_right_way_up() {
     };
     let seen = [(top, 1), (top, 3), (bottom, 1), (bottom, 3)].map(|(y, x)| colour(at(y, x)));
     assert_eq!(seen, ["green", "red", "white", "blue"]);
+}
+
+/// An image too large for its edge smoothing within the sample limit is smoothed less, so every
+/// size up to the limit in pixels can be made (review 2026-11-12 R1112-IMG-501: 2 560 × 1 440
+/// and 4 000 × 3 000 were refused, asking to lower a smoothing no one could set).
+#[test]
+fn a_large_image_is_smoothed_less_to_fit_the_sample_limit() {
+    assert_eq!(presentation_supersample(1920, 1080, 3).unwrap(), 3);
+    assert_eq!(presentation_supersample(2560, 1440, 3).unwrap(), 2);
+    assert_eq!(presentation_supersample(4000, 3000, 3).unwrap(), 1);
+    assert_eq!(presentation_supersample(8192, 2929, 3).unwrap(), 1);
+    assert_eq!(presentation_supersample(2560, 1440, 1).unwrap(), 1);
+    assert!(matches!(
+        presentation_supersample(8192, 2930, 3),
+        Err(PresentationError::TooManyPixels {
+            pixels: 24_002_560,
+            limit: 24_000_000
+        })
+    ));
+    let image = render_presentation(
+        &box_on_slab(),
+        &PresentationOptions {
+            width: 2400,
+            height: 40,
+            ..small(Background::White)
+        },
+    )
+    .unwrap();
+    assert_eq!((image.width, image.height), (2400, 40));
+}
+
+/// A set flag stops the image: whoever wanted it stopped waiting (review 2026-11-12
+/// R1112-IMG-502: a cancelled image kept rendering for seconds).
+#[test]
+fn a_cancelled_image_stops() {
+    let cancelled = AtomicBool::new(true);
+    assert!(matches!(
+        render_presentation_until(&box_on_slab(), &small(Background::White), &cancelled),
+        Err(PresentationError::Cancelled)
+    ));
+}
+
+/// A label far from the model is refused instead of framing a speck (review 2026-11-12
+/// R1112-IMG-503: one at 1e12 mm gave an image without the model), as a model as far as 1e300
+/// is, which said it had no surface.
+#[test]
+fn a_label_or_a_model_far_away_is_refused() {
+    for x in [1e12, 1.7e308, -2_000.0] {
+        let mut scene = box_on_slab();
+        scene.labels.push(PresentationLabel {
+            text: "far".into(),
+            at_mm: [x, 0.0, 0.0],
+        });
+        assert!(
+            matches!(
+                render_presentation(&scene, &annotated(Background::White)),
+                Err(PresentationError::LabelAway { label: 0 })
+            ),
+            "{x}"
+        );
+    }
+    let mut far = box_on_slab();
+    for triangle in &mut far.triangles {
+        for corner in &mut triangle.corners_mm {
+            corner[0] += 1e300;
+        }
+    }
+    assert!(matches!(
+        render_presentation(&far, &small(Background::White)),
+        Err(PresentationError::NonFiniteGeometry { triangle: 0 })
+    ));
+}
+
+/// Labels at one point are drawn one above another, not over one another, and a long one at
+/// the right edge of the model turns left to stay in the image (review 2026-11-12 P3).
+#[test]
+fn labels_keep_apart_and_inside_the_image() {
+    let options = annotated(Background::White);
+    let with = |labels: &[(&str, [f64; 3])]| {
+        let mut scene = box_on_slab();
+        scene.labels = labels
+            .iter()
+            .map(|(text, at_mm)| PresentationLabel {
+                text: (*text).into(),
+                at_mm: *at_mm,
+            })
+            .collect();
+        render_presentation(&scene, &options).unwrap()
+    };
+    let plain = with(&[]);
+    let top = [50.0, -50.0, 140.0];
+    let one = with(&[("Membrána", top)]);
+    let two = with(&[("Membrána", top), ("Membrána", top)]);
+    let darkened = |image: &PresentationImage| {
+        plain
+            .rgba
+            .chunks_exact(4)
+            .zip(image.rgba.chunks_exact(4))
+            .filter(|(before, after)| {
+                (0..3)
+                    .map(|c| i32::from(before[c]) - i32::from(after[c]))
+                    .sum::<i32>()
+                    > 150
+            })
+            .count()
+    };
+    assert!(
+        darkened(&two) * 10 > darkened(&one) * 17,
+        "{} pixels for two labels at one point, {} for one",
+        darkened(&two),
+        darkened(&one)
+    );
+    let long = "Membrána 2 mm, spodná vrstva";
+    let edge = with(&[(long, [200.0, 0.0, 20.0])]);
+    for y in 0..edge.height {
+        assert_eq!(
+            pixel(&edge, edge.width - 1, y),
+            pixel(&plain, plain.width - 1, y),
+            "row {y} of the last column"
+        );
+    }
+    assert!(changed(&plain, &edge) > 100);
 }

@@ -83,7 +83,7 @@ mod program_navigation;
 pub use program_access::{ReportSection, SourceEdit};
 pub use program_variant_export::CsvDecimal;
 mod mcp_config;
-pub(crate) use mcp_config::write_keeping_file;
+pub(crate) use mcp_config::{as_configuration_user, write_keeping_file};
 pub mod mcp_setup;
 mod measurement;
 mod plugin;
@@ -1734,7 +1734,7 @@ impl KetchupApp {
                     bridge.start_project_drawings_export(self, context, queued, request, ui_busy);
                     continue;
                 }
-                request if exchange_export::exchange_format(&request).is_some() => {
+                request if exchange_export::runs_as_job(&request) => {
                     let queued = program_dry_run::QueuedReply {
                         id,
                         reply,

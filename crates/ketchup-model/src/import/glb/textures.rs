@@ -10,16 +10,36 @@ use super::{
 use crate::document::TexturedTriangle;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// glTF's `REPEAT` wrap mode, the default and SketchUp's tiling.
 const REPEAT: u64 = 10_497;
 
 /// A picture of the GLB as its bytes.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub(super) struct GlbImage {
     pub(super) bytes: Arc<Vec<u8>>,
     pub(super) mime_type: &'static str,
+    /// The bytes' SHA-256, the blob they are kept as: made once, however many meshes
+    /// show the picture (review 2026-11-12 R1112-SKP-501: 1 000 meshes sharing a 16 MB
+    /// picture hashed it 1 000 times, 12.7 s).
+    blob: OnceLock<String>,
+}
+
+/// The same picture whether or not its blob was made yet.
+impl PartialEq for GlbImage {
+    fn eq(&self, other: &Self) -> bool {
+        self.bytes == other.bytes && self.mime_type == other.mime_type
+    }
+}
+
+impl Eq for GlbImage {}
+
+impl GlbImage {
+    pub(super) fn blob(&self) -> &str {
+        self.blob
+            .get_or_init(|| crate::graph::sha256_hex(&self.bytes))
+    }
 }
 
 /// What a material shows: its colour and, with a usable base colour texture, its image.
@@ -71,6 +91,7 @@ pub(super) fn parse_images(
             Ok(sniff(bytes).map(|mime_type| GlbImage {
                 bytes: Arc::new(bytes.to_vec()),
                 mime_type,
+                blob: OnceLock::new(),
             }))
         })
         .collect()

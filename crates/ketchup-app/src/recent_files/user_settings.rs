@@ -153,15 +153,18 @@ impl SettingsFile {
     }
 
     /// The lines of the file made by `change` from those in it, while it
-    /// waits for no other window.
+    /// waits for no other window. Under root all of it, the folder and the
+    /// files beside the settings too, is done as the user they belong to
+    /// (review 2026-11-12 R1112-SEC-500).
     fn rewrite(&self, change: impl FnOnce(Vec<String>) -> Vec<String>) -> io::Result<()> {
+        crate::live_bridge::as_configuration_user(|| self.rewrite_as_found(change))
+    }
+
+    /// [`Self::rewrite`] as this thread is.
+    fn rewrite_as_found(&self, change: impl FnOnce(Vec<String>) -> Vec<String>) -> io::Result<()> {
         let folder = self.path.parent().unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(folder)?;
-        let lock = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(self.path.with_extension("txt.lock"))?;
+        let lock = side_file(&self.path.with_extension("txt.lock"), false)?;
         take_turn(|| lock.try_lock(), || seen(&self.path), TURN_WAIT, TURN_CAP)?;
         let turns = turns_of(&self.path);
         // Told to the windows waiting: on FAT, HFS+ or SMB a save of the same
@@ -172,12 +175,19 @@ impl SettingsFile {
             .ok()
             .and_then(|text| text.trim().parse::<u64>().ok())
             .unwrap_or(0);
-        if let Err(error) = std::fs::write(&turns, turn.wrapping_add(1).to_string()) {
+        let counted = side_file(&turns, true).and_then(|mut file| {
+            io::Write::write_all(&mut file, turn.wrapping_add(1).to_string().as_bytes())
+        });
+        if let Err(error) = counted {
             ketchup_rejection::log!("the settings are saved without their turn counted: {error}");
         }
         let (lines, damaged) = self.read()?;
         if damaged {
-            std::fs::copy(&self.path, self.path.with_extension("txt.bad"))?;
+            let whole = std::fs::read(&self.path)?;
+            io::Write::write_all(
+                &mut side_file(&self.path.with_extension("txt.bad"), true)?,
+                &whole,
+            )?;
         }
         let lines = change(lines);
         let mut text = lines.join("\n");
@@ -197,6 +207,20 @@ impl SettingsFile {
     pub(crate) fn save_language(&self, tag: &str) -> io::Result<()> {
         self.replace(LANGUAGE, &[tag.to_owned()])
     }
+}
+
+/// Opens a file beside the settings (the lock, the turn, the damaged copy) to
+/// write, made its owner's only, and not through a symlink in its place (review
+/// 2026-11-12 R1112-SEC-500: one there was followed wherever it led).
+fn side_file(path: &Path, truncate: bool) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).write(true).truncate(truncate);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(path)
 }
 
 /// How long a save waits for another window saving the settings.
@@ -377,6 +401,38 @@ mod tests {
             damaged,
             "the damaged file is kept whole"
         );
+    }
+
+    /// Review 2026-11-12 R1112-SEC-500: a symlink in place of the turn, the
+    /// damaged copy or the lock beside the settings was followed, so a window
+    /// run as root wrote the settings' bytes into whatever file it led to.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_beside_the_settings_is_not_written_through() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join(FILE_NAME);
+        std::fs::write(&path, b"language=sk\nrecent=/M\xe9chenice.ketchup\n").unwrap();
+        let victim = |name: &str| {
+            let file = folder.path().join(name);
+            std::fs::write(&file, "kept").unwrap();
+            file
+        };
+        let (turn_victim, bad_victim) = (victim("turn victim"), victim("bad victim"));
+        std::os::unix::fs::symlink(&turn_victim, turns_of(&path)).unwrap();
+        std::os::unix::fs::symlink(&bad_victim, path.with_extension("txt.bad")).unwrap();
+        let settings = SettingsFile::at(path.clone());
+        settings.save(&[PathBuf::from("/c.ketchup")]).unwrap_err();
+        assert_eq!(std::fs::read_to_string(&turn_victim).unwrap(), "kept");
+        assert_eq!(std::fs::read_to_string(&bad_victim).unwrap(), "kept");
+
+        // Nor the lock, which the save is then refused.
+        std::fs::remove_file(path.with_extension("txt.bad")).unwrap();
+        let lock_victim = victim("lock victim");
+        std::fs::remove_file(&lock_victim).unwrap();
+        std::fs::remove_file(path.with_extension("txt.lock")).unwrap();
+        std::os::unix::fs::symlink(&lock_victim, path.with_extension("txt.lock")).unwrap();
+        settings.save(&[PathBuf::from("/c.ketchup")]).unwrap_err();
+        assert!(!lock_victim.exists());
     }
 
     /// A settings file that cannot be read is not written over.

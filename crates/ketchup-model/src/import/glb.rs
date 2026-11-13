@@ -1097,7 +1097,7 @@ fn mesh_look(
                 .and_then(Option::as_ref)
                 .ok_or(GlbImportError::InvalidReference)?;
             Ok(MeshImage {
-                blob: crate::graph::sha256_hex(&image.bytes),
+                blob: image.blob().to_owned(),
                 mime_type: image.mime_type.to_owned(),
             })
         })
@@ -2356,3 +2356,6 @@ mod placement_tests {
 
 #[cfg(test)]
 mod open_surface_tests;
+
+#[cfg(test)]
+mod shared_picture_tests;
