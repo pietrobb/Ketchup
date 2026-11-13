@@ -975,10 +975,10 @@ box(\"wall\"",
         )),
         &[],
     );
-    assert_eq!(braced_by(&rod), [("batten".to_owned(), 525.0, 525.0)]);
-    assert_eq!(issue_parts(&rod, "anchorage_small"), [["beam", "wall"]]);
-    // R1112 P3: "smaller in every direction" was untrue of a rod 5 900 mm long.
-    assert!(small(&rod), "{:?}", member(&rod, "beam"));
+    // Capability review 761 of R1113-PG-600: so slender a rod is no anchorage
+    // at all, and the beam is no longer held there.
+    assert_eq!(braced_by(&rod), Vec::<(String, f64, f64)>::new());
+    assert_ne!(member(&rod, "beam").status, "pass");
 
     // Review 2026-11-07 P3: one turned 45° to the beam was measured by its
     // height alone, its sides at 45° left out, so a slab 300 mm square was
@@ -1010,12 +1010,13 @@ rotate(\"wall\", axis = (0, 0, 1), angle = {angle}, pivot = (525, 1005, 2390))"
             )),
             &[],
         );
+        // Capability review 761: so slender a rod is no anchorage at all.
         assert_eq!(
-            issue_parts(&rod, "anchorage_small"),
-            [["beam", "wall"]],
-            "{angle}°: {:?}",
-            braced_by(&rod)
+            braced_by(&rod),
+            Vec::<(String, f64, f64)>::new(),
+            "{angle}°"
         );
+        assert_ne!(member(&rod, "beam").status, "pass", "{angle}°");
     }
 }
 

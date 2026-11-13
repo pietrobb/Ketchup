@@ -20,10 +20,31 @@ pub(super) struct Footing<'a> {
     /// The load-path members, none of which is ground for another.
     member: &'a [bool],
     grounded: Vec<bool>,
+    /// The parts too slender to hold anything sideways ([`slender`]).
+    slender: Vec<bool>,
     floor: f64,
     touching: Vec<Vec<usize>>,
     /// Answers by anchor, member and the parts kept apart.
     known: RefCell<BTreeMap<Asked, bool>>,
+    /// The slender parts each anchor's search met.
+    met_slender: RefCell<BTreeMap<usize, BTreeSet<usize>>>,
+}
+
+/// How many times its thinnest side a part may span and still hold sideways:
+/// about the slenderness 200 bracing members are kept under.
+const SPAN_PER_THICKNESS: f64 = 60.0;
+
+/// Whether `part` is too slender to hold anything sideways (capability review
+/// 761 of R1113-PG-600: a grounded rod 1 × 1 × 2 400 on the floor was ground,
+/// measured by its height across the member). A bar spans its length; a flat
+/// part, at least four times as wide as it is thick, is stiff in its own plane
+/// and spans its width.
+fn slender(part: &Part) -> bool {
+    let mut sides = part.obb().half.map(|half| 2.0 * half);
+    sides.sort_by(f64::total_cmp);
+    let [thin, middle, long] = sides;
+    let span = if middle >= 4.0 * thin { middle } else { long };
+    span > SPAN_PER_THICKNESS * thin
 }
 
 type Asked = (usize, usize, Vec<usize>);
@@ -76,17 +97,20 @@ impl<'a> Footing<'a> {
                 .iter()
                 .map(|part| names.contains(&part.name))
                 .collect(),
+            slender: parts.iter().map(slender).collect(),
             floor: model.floor_z_mm.unwrap_or(0.0),
             touching,
             known: RefCell::default(),
+            met_slender: RefCell::default(),
         }
     }
 
     /// Whether `anchor` stands on the ground through something besides
     /// `member` and the parts `apart` (the brace it holds, the sheets of its
     /// diaphragm): a path of parts touching face to face to a grounded part
-    /// standing on the floor, through no load-path member, each part on it but
-    /// the anchor as deep across `member` as the member (review 2026-11-13
+    /// standing on the floor, through no load-path member, no part on it
+    /// slender and each but the anchor as deep across `member` as the member
+    /// (review 2026-11-13
     /// R1113-PG-600: a 1 mm grounded nub, or a free rod on the floor, made an
     /// anchorage ground; PG-601: so did a second free member on its posts;
     /// PG-602: so did a grounded part standing on nothing modelled). Held up
@@ -104,8 +128,13 @@ impl<'a> Footing<'a> {
         let deep = depth(&self.parts[member], frame);
         let mut seen = BTreeSet::from([anchor]);
         let mut queue = vec![anchor];
+        let mut met = BTreeSet::new();
         let mut clear = false;
         while let Some(item) = queue.pop() {
+            if self.slender[item] {
+                met.insert(item);
+                continue;
+            }
             if self.grounded[item] && on_floor(&self.parts[item], self.floor) {
                 clear = true;
                 break;
@@ -117,6 +146,13 @@ impl<'a> Footing<'a> {
                     queue.push(next);
                 }
             }
+        }
+        if !clear {
+            self.met_slender
+                .borrow_mut()
+                .entry(anchor)
+                .or_default()
+                .extend(met);
         }
         self.known.borrow_mut().insert(key, clear);
         clear
@@ -154,6 +190,21 @@ impl<'a> Footing<'a> {
         if !held.is_empty() {
             why.push(format!(
                 "{held}: grounded, but reaches the floor only through {target}, another load_path() member{besides} or parts shallower across {target} than it is deep"
+            ));
+        }
+        let met = self.met_slender.borrow();
+        let mut thin: Vec<&str> = resting
+            .iter()
+            .filter_map(|anchor| met.get(anchor))
+            .flatten()
+            .map(|part| self.parts[*part].name.as_str())
+            .collect();
+        thin.sort_unstable();
+        thin.dedup();
+        if !thin.is_empty() {
+            why.push(format!(
+                "{} too slender to hold anything sideways, spanning over {SPAN_PER_THICKNESS} times its thinnest side",
+                thin.join(", ")
             ));
         }
         format!("{}, so it sways with {target}", why.join("; "))

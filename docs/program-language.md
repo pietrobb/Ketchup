@@ -232,7 +232,10 @@ member not verified. An anchorage holds only standing on the ground by a path
 of its own: parts touching face to face (not at an edge or a corner) from it to
 a grounded part standing on the floor, through no `load_path()` member, the
 brace or the diaphragm's own sheets, each part on the way as deep across the
-member as the member. A free part on the floor, a nub, a second beam on its
+member as the member and none of them, the anchorage and the grounded part
+included, slender: a bar no longer, a flat part (at least four times as wide as
+thick) no wider, than 60 times its thinnest side. A free part on the floor, a
+grounded rod, a nub, a second beam on its
 posts or a part resting on the member is no ground, and a grounded part
 standing on nothing modelled holds nothing, saying so. A brace holds the beam at its
 joint's `fasteners` that lie where the two parts touch, in any of their contacts

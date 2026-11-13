@@ -62,12 +62,13 @@ joint(\"block {x}\", \"beam\", kind = \"screw\")
 
 /// R1113-PG-600: a small grounded part touching the block (a 1 mm nub on its
 /// end, one meeting only its corner edge, a nub just under it), a free rod
-/// 1 x 1 x 2 400 standing on the floor under it, or a free part beside it with
-/// a grounded nub, made the block ground and the beam passed.
+/// 1 x 1 x 2 400 standing on the floor under it (grounded too: capability
+/// review 761), or a free part beside it with a grounded nub, made the block
+/// ground and the beam passed.
 #[test]
 fn a_small_or_free_part_touching_the_anchorage_is_no_ground() {
     type Beside = fn(i32) -> String;
-    let cases: [(&str, Beside); 5] = [
+    let cases: [(&str, Beside); 6] = [
         ("nub on its end", |x| {
             format!(
                 "box(\"nub {x}\", (1, 1, 1), at = ({}, 200, 2400), material = \"GL24h\", grounded = True)\n",
@@ -91,6 +92,12 @@ fn a_small_or_free_part_touching_the_anchorage_is_no_ground() {
                 x + 20
             )
         }),
+        ("grounded rod on the floor", |x| {
+            format!(
+                "box(\"rod {x}\", (1, 1, 2400), at = ({}, 200, 0), material = \"GL24h\", grounded = True)\n",
+                x + 20
+            )
+        }),
         ("free part with a grounded nub", |x| {
             format!(
                 "box(\"free {x}\", (50, 50, 50), at = ({}, 150, 2400), material = \"GL24h\")
@@ -110,6 +117,15 @@ box(\"nub {x}\", (1, 1, 1), at = ({}, 175, 2400), material = \"GL24h\", grounded
             "{case}: {:?}",
             ignored(&held)
         );
+        if case.starts_with("grounded rod") {
+            assert!(
+                ignored(&held)
+                    .iter()
+                    .any(|message| message.contains("rod 300") && message.contains("too slender")),
+                "{:?}",
+                ignored(&held)
+            );
+        }
     }
 
     // A grounded post standing on the floor under each block, beside the
