@@ -399,6 +399,10 @@ def fails_after(text: str, all_deadlines: list[re.Match], index: int) -> bool:
         if not FAILS_AFTER.search(statement):
             continue
         words = STRING.sub('""', statement)
+        if NOT_TIMED_OUT.search(words):
+            return True
+        if TIMEOUT_EXPECTED.search(words):
+            continue
         if PANICS.search(words):
             return True
         if TIMED_OUT.search(words) or (quiet and NOTHING.search(words)):
@@ -414,6 +418,14 @@ PANICS = re.compile(r"\b(?:panic|unreachable)!")
 STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
 # A statement asserting that the wait ran out: the deadline is then the point of the test.
 TIMED_OUT = re.compile(r"Timeout|TimedOut|timed_out|\.is_err\(\)|\.is_none\(\)")
+# A statement asserting that the wait did not run out, which a slow machine fails
+# (review 2026-11-13 P3): `!timed_out`, `!….is_err()`, `timed_out, false`.
+NOT_TIMED_OUT = re.compile(
+    r"(?<![\w!])!\s*[\w.()]*?(?:timed_out\b|\.is_err\(\)|\.is_none\(\))"
+    r"|\btimed_out\s*,\s*false\b|\bfalse\s*,\s*[\w.()]*?timed_out\b")
+# A match whose timeout arm does nothing: it panics on any other outcome, so it checks
+# that the wait ran out (review 2026-11-13 P3).
+TIMEOUT_EXPECTED = re.compile(r"\b(?:Timeout|TimedOut)\b\)*\s*=>\s*(?:\{\s*\}|\(\s*\))")
 # A statement asserting that nothing came: none, zero or empty.
 NOTHING = re.compile(
     r"\bassert_eq!\([^;]*,\s*(?:0|None|\[\]|vec!\[\]|Vec::new\(\))\s*(?:,[^;]*)?\)\s*$"

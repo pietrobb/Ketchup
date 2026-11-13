@@ -479,6 +479,30 @@ def test_a_timeout_named_in_a_message_or_a_quiet_wait_is_read_for_what_it_checks
     ]
 
 
+def test_a_deadline_is_read_by_which_way_its_test_fails(tmp_path):
+    # Review 2026-11-13 P3: `PANICS` counted a test that checks the wait timed out and
+    # panics on anything else, and `TIMED_OUT` let pass `assert!(!timed_out)`, which
+    # fails exactly when a slow machine runs out of time.
+    write(tmp_path, "crates/a/tests/timeout.rs", (
+        "fn timeout() {\n"
+        "    let expected = Instant::now() + Duration::from_millis(100);\n"
+        "    match wait(expected) { Err(Timeout) => {} other => panic!(\"{other:?}\") }\n"
+        "    let finished = Instant::now() + Duration::from_millis(100);\n"
+        "    let timed_out = poll_until(finished);\n"
+        "    assert!(!timed_out);\n"
+        "    let answered = Instant::now() + Duration::from_millis(100);\n"
+        "    assert!(!wait(answered).is_err());\n"
+        "    let flagged = Instant::now() + Duration::from_millis(100);\n"
+        "    assert_eq!(poll_until(flagged).timed_out, false);\n"
+        "    let late = Instant::now() + Duration::from_millis(100);\n"
+        "    assert!(poll_until(late).timed_out);\n"
+        "}\n"
+    ))
+    assert checker.violations(tmp_path) == [
+        f"crates/a/tests/timeout.rs:{line}" for line in (4, 7, 9)
+    ]
+
+
 def test_deadlines_of_waits_and_computed_durations_pass(tmp_path):
     write(tmp_path, "crates/a/tests/wait.rs", (
         "fn wait() {\n"
