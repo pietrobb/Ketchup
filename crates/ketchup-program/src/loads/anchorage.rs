@@ -25,6 +25,8 @@ pub(super) struct Footing<'a> {
     slender: Vec<bool>,
     floor: f64,
     touching: Vec<Vec<usize>>,
+    /// The pairs of parts, lesser index first, a fastening joint() ties.
+    joined: BTreeSet<(usize, usize)>,
     /// Answers by anchor, member and the parts kept apart.
     known: RefCell<BTreeMap<Asked, bool>>,
     /// The slender parts each anchor's search met.
@@ -82,6 +84,14 @@ impl<'a> Footing<'a> {
                 touching[right].push(left);
             }
         }
+        let index = |name: &str| parts.iter().position(|part| part.name == name);
+        let joined = model
+            .joints
+            .iter()
+            .filter(|joint| joint.fastens())
+            .filter_map(|joint| Some((index(&joint.parts[0])?, index(&joint.parts[1])?)))
+            .map(|(a, b)| (a.min(b), a.max(b)))
+            .collect();
         let names = model.grounded_parts();
         let floor = model.floor_z_mm.unwrap_or(0.0);
         Self {
@@ -95,6 +105,7 @@ impl<'a> Footing<'a> {
             slender: parts.iter().map(|part| slender(part, floor)).collect(),
             floor,
             touching,
+            joined,
             known: RefCell::default(),
             met_slender: RefCell::default(),
         }
@@ -102,8 +113,9 @@ impl<'a> Footing<'a> {
 
     /// Whether `anchor` stands on the ground through something besides
     /// `member` and the parts `apart` (the brace it holds, the sheets of its
-    /// diaphragm): a path of parts touching face to face to a grounded part
-    /// standing on the floor, through no load-path member, no part on it
+    /// diaphragm): a path of parts touching face to face, each pair fastened
+    /// or both grounded ([`Self::holds`]), to a grounded part standing on the
+    /// floor, through no load-path member, no part on it
     /// slender and each but the anchor as deep across `member` as the member
     /// (review 2026-11-13
     /// R1113-PG-600: a 1 mm grounded nub, or a free rod on the floor, made an
@@ -137,7 +149,11 @@ impl<'a> Footing<'a> {
             for &next in &self.touching[item] {
                 let kept =
                     next == member || self.member[next] || key.2.binary_search(&next).is_ok();
-                if !kept && depth(&self.parts[next], frame) >= deep && seen.insert(next) {
+                if !kept
+                    && self.holds(item, next)
+                    && depth(&self.parts[next], frame) >= deep
+                    && seen.insert(next)
+                {
                     queue.push(next);
                 }
             }
@@ -151,6 +167,14 @@ impl<'a> Footing<'a> {
         }
         self.known.borrow_mut().insert(key, clear);
         clear
+    }
+
+    /// Whether touching parts `a` and `b` hold each other sideways: a joint()
+    /// fastens them, or both are grounded. A free part only bearing on another
+    /// turns about it freely, as on the floor (PG-163; capability review 771:
+    /// a free post on a grounded slab was ground, on the bare floor not).
+    fn holds(&self, a: usize, b: usize) -> bool {
+        (self.grounded[a] && self.grounded[b]) || self.joined.contains(&(a.min(b), a.max(b)))
     }
 
     /// Whether the grounded `anchor` stands on nothing modelled: neither on

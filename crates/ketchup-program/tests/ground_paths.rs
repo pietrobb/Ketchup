@@ -174,16 +174,70 @@ rotate(\"under {x}\", axis = (0, 0, 1), angle = 1, pivot = ({}, 200, 0))\n",
     assert_eq!(checked(&turned, "beam").status, "pass");
 
     // So does a grounded wall the blocks are screwed to, through a free board
-    // between them as deep as the beam.
-    let walled = blocks(|x| {
-        let wall = if x == PLACES[0] { WALL } else { "" };
-        format!(
-            "{wall}box(\"board {x}\", (50, 750, 50), at = ({x}, 250, 2400), material = \"GL24h\")
-joint(\"board {x}\", \"block {x}\", kind = \"screw\")\n"
-        )
-    });
-    assert_eq!(ignored(&walled), Vec::<&str>::new());
-    assert_eq!(checked(&walled, "beam").status, "pass");
+    // between them as deep as the beam, screwed to both.
+    let walled = |to_wall: bool| {
+        blocks(|x| {
+            let wall = if x == PLACES[0] { WALL } else { "" };
+            let screwed = if to_wall {
+                format!("joint(\"board {x}\", \"wall\", kind = \"screw\")\n")
+            } else {
+                String::new()
+            };
+            format!(
+                "{wall}box(\"board {x}\", (50, 750, 50), at = ({x}, 250, 2400), material = \"GL24h\")
+joint(\"board {x}\", \"block {x}\", kind = \"screw\")
+{screwed}"
+            )
+        })
+    };
+    let screwed = walled(true);
+    assert_eq!(ignored(&screwed), Vec::<&str>::new());
+    assert_eq!(checked(&screwed, "beam").status, "pass");
+    // A free board only butting the wall holds nothing sideways (capability
+    // review 771).
+    let butting = walled(false);
+    assert_ne!(checked(&butting, "beam").status, "pass");
+    assert!(
+        ignored(&butting)
+            .iter()
+            .any(|message| message.contains("block 300")),
+        "{:?}",
+        ignored(&butting)
+    );
+}
+
+/// Capability review 771 (PG-163): a free stud under each block, joined to
+/// nothing, holds nothing sideways whether it stands on the bare floor or on a
+/// grounded slab lying on it. A grounded stud on the slab holds the beam.
+#[test]
+fn a_free_stud_is_no_ground_on_the_floor_or_on_a_grounded_slab() {
+    const SLAB: &str = "box(\"slab\", (5900, 400, 100), at = (0, 100, 0), material = \"GL24h\", grounded = True)\n";
+    let stud = |grounded: &str, slab: bool| {
+        blocks(|x| {
+            let (base, z, height) = if slab {
+                (if x == PLACES[0] { SLAB } else { "" }, 100, 2300)
+            } else {
+                ("", 0, 2400)
+            };
+            format!(
+                "{base}box(\"under {x}\", (50, 100, {height}), at = ({x}, 150, {z}), material = \"GL24h\"{grounded})\n"
+            )
+        })
+    };
+    for (case, slab) in [("on the floor", false), ("on a grounded slab", true)] {
+        let held = stud("", slab);
+        assert_ne!(checked(&held, "beam").status, "pass", "{case}");
+        assert!(
+            ignored(&held)
+                .iter()
+                .any(|message| message.contains("block 300")),
+            "{case}: {:?}",
+            ignored(&held)
+        );
+    }
+    let grounded = stud(", grounded = True", true);
+    assert_eq!(ignored(&grounded), Vec::<&str>::new());
+    assert_eq!(checked(&grounded, "beam").status, "pass");
 }
 
 /// Capability review 766: a grounded strip 1 x 40 x 2 400 standing on the floor
