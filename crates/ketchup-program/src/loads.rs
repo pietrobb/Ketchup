@@ -1561,7 +1561,7 @@ fn braces<'a>(
         .map(|part| grounded.contains(&part.name))
         .collect();
     let mut stray = Vec::new();
-    let footing = Footing::of(model);
+    let footing = Footing::of(model, member, frames);
     let looked = std::cell::RefCell::new(BTreeSet::new());
     let mut braced = braced_stretches(
         supports,
@@ -1804,16 +1804,15 @@ impl Diaphragms {
             .any(|(_, spot)| beyond_side(frame, &parts[held], *spot))
             && spread(&standing) >= deep;
         (!holds).then(|| {
-            let mut resting: Vec<&str> = spots
+            let resting: Vec<usize> = spots
                 .iter()
                 .filter(|spot| !standing.contains(spot))
-                .map(|(anchor, _)| parts[*anchor].name.as_str())
+                .map(|(anchor, _)| *anchor)
                 .collect();
-            resting.dedup();
             (
                 format!(
-                    "its anchors {} stand on nothing besides {target} and the diaphragm's own sheets: neither on the floor nor on a part reaching lower than they do, so it sways with {target}",
-                    resting.join(", ")
+                    "its anchors {}",
+                    footing.why_resting(&resting, target, ", the diaphragm's own sheets")
                 ),
                 format!(
                     "Anchor the diaphragm to a grounded part standing on the floor or on a part beside {target}."
@@ -1846,9 +1845,11 @@ fn anchored_diaphragms<'a>(
         fastened_at(model, frames, joined, faces, [a, b])
     };
     // Two sheets are tied where a fastener the joint names lies over their
-    // contact, or, when it names none, over a contact a fastener fits in: as
-    // long as the thinner sheet is thick, and half as wide (R1112-PG-504: two
-    // boards touching on 1 × 0.1 mm made a chain).
+    // contact, or, when it names none, where two fasteners fit: a fastener fits
+    // in a contact as long as the thinner sheet is thick, and half as wide
+    // (R1112-PG-504: two boards touching on 1 × 0.1 mm made a chain), and two
+    // in two such contacts or in one three times as long. One fastener is a
+    // hinge (review 2026-11-13 P3: one contact 22 × 11 mm made a chain).
     let sheets_tied = |faces: &mut ContactFaces<'a>, a: usize, b: usize| {
         if !fastened(a, b) {
             return false;
@@ -1861,16 +1862,21 @@ fn anchored_diaphragms<'a>(
             .flat_map(|part| part.obb().half)
             .fold(f64::INFINITY, f64::min)
             * 2.0;
-        faces.contacts(pair[0], pair[1]).into_iter().any(|contact| {
-            if fasteners.is_empty() {
-                let [u, v] = contact.size_mm;
-                u.max(v) >= thinnest && u.min(v) >= thinnest / 2.0
-            } else {
+        let contacts = faces.contacts(pair[0], pair[1]);
+        if fasteners.is_empty() {
+            let fits = contacts
+                .iter()
+                .map(|contact| contact.size_mm)
+                .filter(|[u, v]| u.max(*v) >= thinnest && u.min(*v) >= thinnest / 2.0)
+                .collect::<Vec<_>>();
+            fits.len() >= 2 || fits.iter().any(|[u, v]| u.max(*v) >= 3.0 * thinnest)
+        } else {
+            contacts.iter().any(|contact| {
                 fasteners
                     .iter()
                     .any(|point| over_contact(*point, &contact.points_mm, &across))
-            }
-        })
+            })
+        }
     };
     let mut ignored = Vec::new();
     let mut sheet_anchor: BTreeMap<usize, usize> = BTreeMap::new();
@@ -2242,7 +2248,8 @@ fn declared_bracing<'a>(
                     } else if is_grounded(by) && ties.is_empty() && !stands {
                         (
                             format!(
-                                "{brace} is grounded, but stands on nothing besides {target}: neither on the floor nor on a part reaching lower than it does, so it sways with {target}; it holds nothing"
+                                "{}; it holds nothing",
+                                footing.why_resting(&[by], target, "")
                             ),
                             format!(
                                 "Let {brace} stand on the floor or on a part beside {target}, or fasten it to a grounded part that does."
@@ -2269,7 +2276,7 @@ fn declared_bracing<'a>(
                     } else {
                         (
                             format!(
-                                "{brace} is not anchored: the grounded parts it is fastened to hold it nowhere they touch, in line with {target} or within its width, or stand on nothing besides {target}, where it sways with {target}; it holds nothing"
+                                "{brace} is not anchored: the grounded parts it is fastened to hold it nowhere they touch, in line with {target} or within its width, or reach the floor through nothing besides {target} or another load_path() member, where it sways with {target}; it holds nothing"
                             ),
                             format!(
                                 "Fasten {brace} where it touches a grounded part beside {target}, across {target} and beyond its side."

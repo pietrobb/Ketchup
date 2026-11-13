@@ -62,4 +62,40 @@ def test_the_installer_lists_the_files_it_releases_and_nothing_else():
         assert path in assets, path
     assert "$packageManifestPath" not in assets
     assert "[string[]]$MacPackages" in script
-    assert '"Ketchup-$Version-macOS.dmg", "Ketchup-Viewer-$Version-macOS.dmg"' in script
+    assert "Assert-MacPackages $Version $MacPackages" in script
+
+
+def test_a_file_named_twice_is_refused(tmp_path):
+    # Review 2026-11-13 P3: a package given twice gave two lines of the same file.
+    output = release_folder(tmp_path)
+    setup = output / "Ketchup-9.9.9-Setup.exe"
+    result = write(output, [setup, output / "Ketchup-9.9.9-Portable.zip", setup])
+    assert result.returncode != 0
+    assert "Ketchup-9.9.9-Setup.exe" in result.stderr and "twice" in result.stderr, result.stderr
+    assert not (output / "SHA256SUMS.txt").exists()
+
+
+def mac_packages(tmp_path, names):
+    packages = []
+    for name in names:
+        package = tmp_path / "mac" / name
+        package.parent.mkdir(exist_ok=True)
+        package.write_bytes(b"dmg")
+        packages.append(f"'{package.as_posix()}'")
+    helper = (WINDOWS / "MacPackages.ps1").as_posix()
+    return powershell(f". '{helper}'; Assert-MacPackages '9.9.9' @({','.join(packages)})")
+
+
+def test_the_macos_packages_are_both_or_none(tmp_path):
+    # Review 2026-11-13 P3: $MacPackages took one of the two packages, so a release
+    # could ship sums with the Viewer's line but not the app's.
+    app, viewer = "Ketchup-9.9.9-macOS.dmg", "Ketchup-Viewer-9.9.9-macOS.dmg"
+    assert mac_packages(tmp_path, []).returncode == 0
+    both = mac_packages(tmp_path, [app, viewer])
+    assert both.returncode == 0, both.stderr
+    for names in [[app], [viewer], [app, app], [app, viewer, viewer]]:
+        result = mac_packages(tmp_path, names)
+        assert result.returncode != 0, names
+        assert app in result.stderr and viewer in result.stderr, result.stderr
+    other = mac_packages(tmp_path, [app, "Ketchup-Viewer-9.9.8-macOS.dmg"])
+    assert other.returncode != 0 and "9.9.8" in other.stderr, other.stderr

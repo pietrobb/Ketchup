@@ -458,11 +458,11 @@ def test_a_timeout_named_in_a_message_or_a_quiet_wait_is_read_for_what_it_checks
         "    while !done() { assert!(Instant::now() < deadline, \"Timeout waiting for done\"); }\n"
         "    let late = Instant::now() + Duration::from_secs(2);\n"
         "    while !done() { if Instant::now() > late { panic!(\"Timeout: not done\"); } }\n"
-        "    let quiet = Instant::now() + Duration::from_millis(300);\n"
-        "    while Instant::now() < quiet { pump(); }\n"
+        "    let mut count = 0; let quiet = Instant::now() + Duration::from_millis(300);\n"
+        "    while Instant::now() < quiet { count += sent.try_iter().count(); }\n"
         "    assert_eq!(count, 0, \"nothing is sent\");\n"
-        "    let empty = Instant::now() + Duration::from_millis(300);\n"
-        "    while Instant::now() < empty { pump(); }\n"
+        "    let mut events = Vec::new(); let empty = Instant::now() + Duration::from_millis(300);\n"
+        "    while Instant::now() < empty { events.extend(sent.try_iter()); }\n"
         "    assert!(events.is_empty());\n"
         "    let counted = Instant::now() + Duration::from_millis(300);\n"
         "    while Instant::now() < counted { pump(); }\n"
@@ -476,6 +476,91 @@ def test_a_timeout_named_in_a_message_or_a_quiet_wait_is_read_for_what_it_checks
     ))
     assert checker.violations(tmp_path) == [
         f"crates/a/tests/quiet.rs:{line}" for line in (2, 4, 12, 15)
+    ]
+
+
+def test_a_quiet_wait_checks_only_what_it_gathered_from_nothing(tmp_path):
+    # Review 2026-11-13 P3: after a quiet wait any "nothing" passed, also a real budget:
+    # the work left, or a queue the wait never fills, is empty within 300 ms.
+    write(tmp_path, "crates/a/tests/settled.rs", (
+        "fn settled() {\n"
+        "    let mut count = 0; let quiet = Instant::now() + Duration::from_millis(300);\n"
+        "    while Instant::now() < quiet { count += sent.try_iter().count(); }\n"
+        "    assert_eq!(count, 0);\n"
+        "    let worked = Instant::now() + Duration::from_millis(300);\n"
+        "    while Instant::now() < worked { pump(); }\n"
+        "    assert_eq!(pending(), 0, \"the work finished within 300 ms\");\n"
+        "    let emptied = Instant::now() + Duration::from_millis(300);\n"
+        "    while Instant::now() < emptied { pump(); }\n"
+        "    assert!(queue.is_empty());\n"
+        "    let mut left = 3; let counted = Instant::now() + Duration::from_millis(300);\n"
+        "    while Instant::now() < counted { left -= done.try_iter().count(); }\n"
+        "    assert_eq!(left, 0);\n"
+        "    let mut seen = Vec::new(); let heard = Instant::now() + Duration::from_millis(300);\n"
+        "    while Instant::now() < heard { seen.extend(events.try_iter()); }\n"
+        "    assert!(seen.is_empty());\n"
+        "}\n"
+    ))
+    assert checker.violations(tmp_path) == [
+        f"crates/a/tests/settled.rs:{line}" for line in (5, 8, 11)
+    ]
+
+
+def test_generic_helpers_closures_and_scaled_or_renamed_times_are_read_too(tmp_path):
+    # Review 2026-11-13 P3: a helper with `->` in its generics, a closure, and a time
+    # scaled (`STEP * 4`) or renamed (`let patience = …`, `const B: Duration = A`) were
+    # not seen.
+    write(tmp_path, "crates/a/tests/shapes.rs", (
+        "const STEP: Duration = Duration::from_millis(250);\n"
+        "const SAME_STEP: Duration = STEP;\n"
+        "fn answer_within<F: Fn() -> bool>(ready: F, within: Duration) {\n"
+        "    assert!(poll_until(within, ready));\n"
+        "}\n"
+        "fn shapes() {\n"
+        "    answer_within(|| done(), Duration::from_secs(2));\n"
+        "    let reply = |time: Duration| replies.recv_timeout(time).unwrap();\n"
+        "    reply(Duration::from_millis(500));\n"
+        "    let bare = |time| replies.recv_timeout(time).expect(\"reply\");\n"
+        "    bare(STEP);\n"
+        "    replies.recv_timeout(STEP * 4).unwrap();\n"
+        "    replies.recv_timeout(Duration::from_secs(1) / 2).unwrap();\n"
+        "    let patience = Duration::from_millis(800);\n"
+        "    replies.recv_timeout(patience).unwrap();\n"
+        "    replies.recv_timeout(SAME_STEP).unwrap();\n"
+        "    let ends = Instant::now() + STEP.mul_f64(2.0);\n"
+        "    assert!(Instant::now() < ends);\n"
+        "    replies.recv_timeout(STEP * 400).unwrap();\n"
+        "    let generous = Duration::from_secs(90);\n"
+        "    reply(generous);\n"
+        "    answer_within(|| done(), Duration::from_secs(120));\n"
+        "}\n"
+    ))
+    assert checker.violations(tmp_path) == [
+        f"crates/a/tests/shapes.rs:{line}" for line in (7, 9, 11, 12, 13, 15, 16, 17)
+    ]
+
+
+def test_a_deadline_is_read_by_which_way_its_test_fails(tmp_path):
+    # Review 2026-11-13 P3: `PANICS` counted a test that checks the wait timed out and
+    # panics on anything else, and `TIMED_OUT` let pass `assert!(!timed_out)`, which
+    # fails exactly when a slow machine runs out of time.
+    write(tmp_path, "crates/a/tests/timeout.rs", (
+        "fn timeout() {\n"
+        "    let expected = Instant::now() + Duration::from_millis(100);\n"
+        "    match wait(expected) { Err(Timeout) => {} other => panic!(\"{other:?}\") }\n"
+        "    let finished = Instant::now() + Duration::from_millis(100);\n"
+        "    let timed_out = poll_until(finished);\n"
+        "    assert!(!timed_out);\n"
+        "    let answered = Instant::now() + Duration::from_millis(100);\n"
+        "    assert!(!wait(answered).is_err());\n"
+        "    let flagged = Instant::now() + Duration::from_millis(100);\n"
+        "    assert_eq!(poll_until(flagged).timed_out, false);\n"
+        "    let late = Instant::now() + Duration::from_millis(100);\n"
+        "    assert!(poll_until(late).timed_out);\n"
+        "}\n"
+    ))
+    assert checker.violations(tmp_path) == [
+        f"crates/a/tests/timeout.rs:{line}" for line in (4, 7, 9)
     ]
 
 

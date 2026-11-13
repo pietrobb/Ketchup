@@ -9,7 +9,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-# MIT, vendored unmodified in third_party/openskp (its PATCH.md says why).
+# MIT, vendored with Ketchup's changes in third_party/openskp (its PATCH.md lists them).
 openskp = { path = "../../third_party/openskp" }
 
 [dev-dependencies]

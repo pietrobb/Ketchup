@@ -70,15 +70,8 @@ if ([string]::IsNullOrWhiteSpace($InnoCompilerPath)) {
 if ([string]::IsNullOrWhiteSpace($SigningMetadataPath)) {
     $SigningMetadataPath = Join-Path $PSScriptRoot "signing\metadata.json"
 }
-$macNames = @("Ketchup-$Version-macOS.dmg", "Ketchup-Viewer-$Version-macOS.dmg")
-foreach ($package in $MacPackages) {
-    if (-not (Test-Path -LiteralPath $package -PathType Leaf)) {
-        throw "The macOS package $package does not exist."
-    }
-    if ($macNames -cnotcontains [IO.Path]::GetFileName($package)) {
-        throw "$package is not a macOS package of $Version; the release names them $($macNames -join ' and ')."
-    }
-}
+. (Join-Path $PSScriptRoot "MacPackages.ps1")
+Assert-MacPackages $Version $MacPackages
 
 $OutputDir = [IO.Path]::GetFullPath($OutputDir)
 $BinaryDir = [IO.Path]::GetFullPath($BinaryDir)

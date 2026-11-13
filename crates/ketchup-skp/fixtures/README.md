@@ -18,3 +18,8 @@ Written by Ketchup's own tests:
   twice, at x = 0 shown and at x = 100 hidden with SketchUp's Hide.
 - `outside_painted_box.skp`: `outside_painted_box()` of `src/tests.rs` (classic format): a box
   component painted red and blue on the outside only, its bottom also green on its back.
+- `inside_painted_box.skp`, `reversed_face_box.skp`: `painted_box(&[], Some([200, 30, 30]), true)`
+  and `painted_box(&[0], None, false)` of `src/tests.rs` written to a file (the writer stamps
+  each file, so the bytes differ run to run and are not compared): a box
+  component painted red 200, 30, 30 on the inside only, and one with its first face reversed and
+  nothing painted.

@@ -1,10 +1,11 @@
 //! Where an anchorage holds a member sideways from: across the member and
-//! beyond its side, standing on something besides the member (review
-//! 2026-11-12 R1112-PG-500, PG-501: grounded parts wider than the member, set
-//! aside on it, or sheets on its top anchoring a diaphragm, held up by the
-//! member alone, held it).
+//! beyond its side, standing on the ground through something besides the
+//! member (review 2026-11-12 R1112-PG-500, PG-501: grounded parts wider than
+//! the member, set aside on it, or sheets on its top anchoring a diaphragm,
+//! held up by the member alone, held it).
 
-use super::Frame;
+use super::{Frame, depth};
+use crate::frame::Obb;
 use crate::load_path::on_floor;
 use crate::model::{Part, ProgramModel};
 use ketchup_geometry::linalg::{self, cross, dot, sub};
@@ -12,20 +13,57 @@ use ketchup_model::tolerance::CONTACT_FIT_MM;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// What each part touches and where the floor lies: whether a grounded part
-/// stands on something besides the member it would anchor.
+/// What each part touches face to face and where the floor lies: whether an
+/// anchorage reaches the ground by a path of its own.
 pub(super) struct Footing<'a> {
     pub(super) parts: &'a [Part],
+    frames: &'a [Frame],
+    /// The load-path members, none of which is ground for another.
+    member: &'a [bool],
+    grounded: Vec<bool>,
+    /// The parts too slender to hold anything sideways ([`slender`]).
+    slender: Vec<bool>,
     floor: f64,
     touching: Vec<Vec<usize>>,
+    /// The pairs of parts, lesser index first, a fastening joint() ties.
+    joined: BTreeSet<(usize, usize)>,
     /// Answers by anchor, member and the parts kept apart.
     known: RefCell<BTreeMap<Asked, bool>>,
+    /// The slender parts each anchor's search met.
+    met_slender: RefCell<BTreeMap<usize, BTreeSet<usize>>>,
+}
+
+/// How many times its thinnest side a part may span and still hold sideways:
+/// about the slenderness 200 bracing members are kept under.
+const SPAN_PER_THICKNESS: f64 = 60.0;
+
+/// Whether `part` is too slender to hold anything sideways, in the horizontal.
+/// A part lying flat, its thinnest side the more upright, holds in its own
+/// plane, spanning its width in thicknesses and its length in widths; so does
+/// one standing on the floor along its whole length, a wall, held by it there
+/// and swaying over its height. Any other part holds across its thickness and
+/// spans its length in thicknesses, however wide (capability reviews 761, 763,
+/// 766 of R1113-PG-600: grounded rods and strips 1 × 1, 1 × 4 and 1 × 40 ×
+/// 2 400 standing on the floor were ground). Both measures agree on a square
+/// bar.
+fn slender(part: &Part, floor: f64) -> bool {
+    let upright = |axis: [f64; 3]| axis[2].abs() >= std::f64::consts::FRAC_1_SQRT_2;
+    let obb = part.obb();
+    let mut order = [0, 1, 2];
+    order.sort_by(|a, b| obb.half[*a].total_cmp(&obb.half[*b]));
+    let [thin, middle, long] = order.map(|axis| 2.0 * obb.half[axis]);
+    let walled = !upright(obb.axes[order[2]]) && on_floor(part, floor);
+    if upright(obb.axes[order[0]]) || walled {
+        middle > SPAN_PER_THICKNESS * thin || long > SPAN_PER_THICKNESS * middle
+    } else {
+        long > SPAN_PER_THICKNESS * thin
+    }
 }
 
 type Asked = (usize, usize, Vec<usize>);
 
 impl<'a> Footing<'a> {
-    pub(super) fn of(model: &'a ProgramModel) -> Self {
+    pub(super) fn of(model: &'a ProgramModel, member: &'a [bool], frames: &'a [Frame]) -> Self {
         let parts = &model.parts;
         let boxes: Vec<_> = parts.iter().map(Part::obb).collect();
         let bounds: Vec<_> = parts.iter().map(Part::world_bounds).collect();
@@ -38,7 +76,7 @@ impl<'a> Footing<'a> {
                     break;
                 }
                 if model.are_alternatives(&parts[left], &parts[right])
-                    || boxes[left].separation(&boxes[right]) > CONTACT_FIT_MM
+                    || !face_to_face(&boxes[left], &boxes[right])
                 {
                     continue;
                 }
@@ -46,22 +84,45 @@ impl<'a> Footing<'a> {
                 touching[right].push(left);
             }
         }
+        let index = |name: &str| parts.iter().position(|part| part.name == name);
+        let joined = model
+            .joints
+            .iter()
+            .filter(|joint| joint.fastens())
+            .filter_map(|joint| Some((index(&joint.parts[0])?, index(&joint.parts[1])?)))
+            .map(|(a, b)| (a.min(b), a.max(b)))
+            .collect();
+        let names = model.grounded_parts();
+        let floor = model.floor_z_mm.unwrap_or(0.0);
         Self {
             parts,
-            floor: model.floor_z_mm.unwrap_or(0.0),
+            frames,
+            member,
+            grounded: parts
+                .iter()
+                .map(|part| names.contains(&part.name))
+                .collect(),
+            slender: parts.iter().map(|part| slender(part, floor)).collect(),
+            floor,
             touching,
+            joined,
             known: RefCell::default(),
+            met_slender: RefCell::default(),
         }
     }
 
-    /// Whether `anchor` stands on something besides `member` and the parts
-    /// `apart` (the brace it holds, the sheets of its diaphragm): touching,
-    /// through other parts than those, the floor or a grounded part touching
-    /// none of them and resting on nothing. Held up by the member (on it, or on one of `apart`
-    /// reaching lower) and parts hanging from it, it sways with the member,
-    /// however far it reaches beyond its side; one resting on neither is taken
-    /// as declared (review 2026-11-06 P3: a grounded part under a brace beside
-    /// the member).
+    /// Whether `anchor` stands on the ground through something besides
+    /// `member` and the parts `apart` (the brace it holds, the sheets of its
+    /// diaphragm): a path of parts touching face to face, each pair fastened
+    /// or both grounded ([`Self::holds`]), to a grounded part standing on the
+    /// floor, through no load-path member, no part on it
+    /// slender and each but the anchor as deep across `member` as the member
+    /// (review 2026-11-13
+    /// R1113-PG-600: a 1 mm grounded nub, or a free rod on the floor, made an
+    /// anchorage ground; PG-601: so did a second free member on its posts;
+    /// PG-602: so did a grounded part standing on nothing modelled). Held up
+    /// by the member, by parts hanging from it or resting on it (capability
+    /// reviews 751, 758), it sways with the member.
     pub(super) fn stands_clear(&self, anchor: usize, member: usize, apart: &[usize]) -> bool {
         let mut apart = apart.to_vec();
         apart.sort_unstable();
@@ -70,40 +131,154 @@ impl<'a> Footing<'a> {
         if let Some(known) = self.known.borrow().get(&key) {
             return *known;
         }
-        let bottom = |item: usize| self.parts[item].world_bounds().0[2];
+        let frame = &self.frames[member];
+        let deep = depth(&self.parts[member], frame);
         let mut seen = BTreeSet::from([anchor]);
         let mut queue = vec![anchor];
+        let mut met = BTreeSet::new();
         let mut clear = false;
-        let mut rests = false;
         while let Some(item) = queue.pop() {
-            let mut held = false;
-            let mut lower = false;
-            for &next in &self.touching[item] {
-                let below = bottom(next) < bottom(item) - CONTACT_FIT_MM;
-                lower |= below;
-                let kept = next == member || key.2.binary_search(&next).is_ok();
-                if kept {
-                    held |= next == member || below;
-                } else if seen.insert(next) {
-                    queue.push(next);
-                }
+            if self.slender[item] {
+                met.insert(item);
+                continue;
             }
-            rests |= held;
-            // A part merely reaching lower, hanging from the anchor, carries
-            // it no more than the member does (capability review 751); a
-            // grounded one is ground only resting on nothing, held up by no
-            // part reaching lower, the anchor itself or one on it either
-            // (capability review 758: a grounded cap on the anchor).
-            let part = &self.parts[item];
-            if on_floor(part, self.floor) || (item != anchor && part.grounded && !held && !lower) {
+            if self.grounded[item] && on_floor(&self.parts[item], self.floor) {
                 clear = true;
                 break;
             }
+            for &next in &self.touching[item] {
+                let kept =
+                    next == member || self.member[next] || key.2.binary_search(&next).is_ok();
+                if !kept
+                    && self.holds(item, next)
+                    && depth(&self.parts[next], frame) >= deep
+                    && seen.insert(next)
+                {
+                    queue.push(next);
+                }
+            }
         }
-        let clear = clear || !rests;
+        if !clear {
+            self.met_slender
+                .borrow_mut()
+                .entry(anchor)
+                .or_default()
+                .extend(met);
+        }
         self.known.borrow_mut().insert(key, clear);
         clear
     }
+
+    /// Whether touching parts `a` and `b` hold each other sideways: a joint()
+    /// fastens them, or both are grounded. A free part only bearing on another
+    /// turns about it freely, as on the floor (PG-163; capability review 771:
+    /// a free post on a grounded slab was ground, on the bare floor not).
+    fn holds(&self, a: usize, b: usize) -> bool {
+        (self.grounded[a] && self.grounded[b]) || self.joined.contains(&(a.min(b), a.max(b)))
+    }
+
+    /// Whether the grounded `anchor` stands on nothing modelled: neither on
+    /// the floor nor on any part under it (R1113-PG-602).
+    pub(super) fn on_nothing(&self, anchor: usize) -> bool {
+        let (low, _) = self.parts[anchor].world_bounds();
+        !on_floor(&self.parts[anchor], self.floor)
+            && !self.touching[anchor]
+                .iter()
+                .any(|next| self.parts[*next].world_bounds().1[2] <= low[2] + CONTACT_FIT_MM)
+    }
+
+    /// Why the anchors `resting` hold nothing of `target`, standing on the
+    /// ground through nothing besides it and `besides`.
+    pub(super) fn why_resting(&self, resting: &[usize], target: &str, besides: &str) -> String {
+        let names = |floating: bool| {
+            let mut list: Vec<&str> = resting
+                .iter()
+                .filter(|anchor| self.on_nothing(**anchor) == floating)
+                .map(|anchor| self.parts[*anchor].name.as_str())
+                .collect();
+            list.dedup();
+            list.join(", ")
+        };
+        let (floating, held) = (names(true), names(false));
+        let mut why = Vec::new();
+        if !floating.is_empty() {
+            why.push(format!(
+                "{floating}: grounded but stands on nothing modelled, neither on the floor nor on a part under it"
+            ));
+        }
+        if !held.is_empty() {
+            why.push(format!(
+                "{held}: grounded, but reaches the floor only through {target}, another load_path() member{besides} or parts shallower across {target} than it is deep"
+            ));
+        }
+        let met = self.met_slender.borrow();
+        let mut thin: Vec<&str> = resting
+            .iter()
+            .filter_map(|anchor| met.get(anchor))
+            .flatten()
+            .map(|part| self.parts[*part].name.as_str())
+            .collect();
+        thin.sort_unstable();
+        thin.dedup();
+        if !thin.is_empty() {
+            why.push(format!(
+                "{} too slender to hold anything sideways, spanning over {SPAN_PER_THICKNESS} times its thinnest side",
+                thin.join(", ")
+            ));
+        }
+        format!("{}, so it sways with {target}", why.join("; "))
+    }
+}
+
+/// Whether boxes `a` and `b` hold each other: running into each other through
+/// a body, or meeting flat, a face of each against the other's, over a patch
+/// wider than a line either way, however either is turned. Parts meeting at an
+/// edge or a corner hold each other nowhere (R1113-PG-600; capability review
+/// 768: a grounded column turned 1°, meeting a block along its edge, was
+/// ground for it).
+fn face_to_face(a: &Obb, b: &Obb) -> bool {
+    let separation = a.separation(b);
+    if separation > CONTACT_FIT_MM {
+        return false;
+    }
+    if separation < -CONTACT_FIT_MM {
+        return true;
+    }
+    let radius = |obb: &Obb, skip: usize, direction: [f64; 3]| -> f64 {
+        (0..3)
+            .filter(|axis| *axis != skip)
+            .map(|axis| obb.half[axis] * dot(obb.axes[axis], direction).abs())
+            .sum()
+    };
+    let delta = sub(b.centre, a.centre);
+    (0..3).any(|i| {
+        let normal = a.axes[i];
+        (0..3).any(|j| {
+            // Flat against each other: the smaller face stays within the fit
+            // of the other's plane all over.
+            let tilt = radius(a, i, b.axes[j]).min(radius(b, j, normal));
+            if tilt > CONTACT_FIT_MM {
+                return false;
+            }
+            let gap = dot(delta, normal).abs() - a.half[i] - b.half[j];
+            if gap.abs() > CONTACT_FIT_MM {
+                return false;
+            }
+            // Their faces overlap wider than the fit along each side of
+            // either, in the plane between them.
+            let sides = (0..3)
+                .filter(|axis| *axis != i)
+                .map(|axis| a.axes[axis])
+                .chain((0..3).filter(|axis| *axis != j).filter_map(|axis| {
+                    let along = b.axes[axis];
+                    let level = dot(along, normal);
+                    linalg::normalize(std::array::from_fn(|n| along[n] - level * normal[n]))
+                }));
+            sides.into_iter().all(|side| {
+                radius(a, i, side) + radius(b, j, side) - dot(delta, side).abs() > CONTACT_FIT_MM
+            })
+        })
+    })
 }
 
 /// Whether an anchorage at `anchor` holds `point` of `member`, of `frame`,

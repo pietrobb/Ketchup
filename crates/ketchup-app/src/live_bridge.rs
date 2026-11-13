@@ -83,7 +83,7 @@ mod program_navigation;
 pub use program_access::{ReportSection, SourceEdit};
 pub use program_variant_export::CsvDecimal;
 mod mcp_config;
-pub(crate) use mcp_config::{as_configuration_user, write_keeping_file};
+pub(crate) use mcp_config::write_keeping_file;
 pub mod mcp_setup;
 mod measurement;
 mod plugin;
@@ -2907,7 +2907,7 @@ impl LiveBridge {
         request: Request,
         ui_busy: bool,
     ) -> Result<Value, &'static str> {
-        self.execute_authorized(app, request, ui_busy, &Arc::new(AtomicBool::new(false)))
+        tests::presentation::execute(self, app, request, ui_busy)
     }
 
     /// List, save or show saved views; none of them detaches the document's program.

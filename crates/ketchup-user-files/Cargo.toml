@@ -1,0 +1,25 @@
+[package]
+name = "ketchup-user-files"
+description = "Files of the user's own in their home, written under sudo as that user and never through a link"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3.23.0"
+
+[lints.rust]
+# Allowed only where marked: the calls that read and change this thread's user.
+unsafe_code = "deny"
+
+[lints.clippy]
+all = "deny"
+map_err_ignore = "deny"
+let_underscore_must_use = "deny"
+let_underscore_untyped = "deny"

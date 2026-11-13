@@ -112,13 +112,12 @@ const EXPORT_FORMATS: [(&str, &[&str], Exporter); 16] = [
         &["zip"],
         KetchupApp::export_current_workshop_package_to,
     ),
-    // Without `image`, the picture File > Export shows first; it stops with the client's request.
-    ("presentation_png", &["png"], |app, path| {
-        let cancelled =
-            app.live.client_export.clone().ok_or_else(|| {
-                ExportError::failed("a presentation image here is a client's export")
-            })?;
-        app.export_presentation_image_to(path, &PresentationRequest::default(), &cancelled)
+    // Made only as a job on a thread of its own (`exchange_export::presents`); review 2026-11-13
+    // P3: a synchronous copy here was taken by the tests alone.
+    ("presentation_png", &["png"], |_app, _path| {
+        Err(ExportError::failed(
+            "a presentation image is made on a thread of its own",
+        ))
     }),
 ];
 
@@ -460,13 +459,9 @@ impl LiveBridge {
         ui_busy: bool,
         cancelled: &Arc<AtomicBool>,
     ) -> Result<Value, &'static str> {
-        let (drawing_scale, image) = match &request {
-            Request::Export {
-                drawing_scale,
-                image,
-                ..
-            } => (*drawing_scale, image.clone()),
-            _ => (None, None),
+        let drawing_scale = match &request {
+            Request::Export { drawing_scale, .. } => *drawing_scale,
+            _ => None,
         };
         let ExportTarget {
             path,
@@ -474,19 +469,12 @@ impl LiveBridge {
             exporter,
             overwrite,
         } = Self::export_target(app, request, ui_busy)?;
-        let presentation = (export_format == "presentation_png")
-            .then(|| presentation_request(image))
-            .transpose()
-            .map_err(InvalidImage::refused)?;
         Self::require_request_authority(cancelled)?;
         app.live.client_export = Some(Arc::clone(cancelled));
         app.live.client_overwrite = overwrite;
-        let exported = match (drawing_scale, presentation) {
-            (Some(scale), _) => app.export_current_plan_dxf_to(Path::new(&path), scale),
-            (None, Some(request)) => {
-                app.export_presentation_image_to(Path::new(&path), &request, cancelled)
-            }
-            (None, None) => exporter(app, Path::new(&path)),
+        let exported = match drawing_scale {
+            Some(scale) => app.export_current_plan_dxf_to(Path::new(&path), scale),
+            None => exporter(app, Path::new(&path)),
         };
         app.live.client_export = None;
         app.live.client_overwrite = false;
