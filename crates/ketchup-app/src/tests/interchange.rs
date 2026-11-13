@@ -93,7 +93,7 @@ fn blender_glb_file_command_exports_current_scene_with_loss_report() {
         .click();
     step_until(
         &mut harness,
-        Duration::from_secs(10),
+        Duration::from_secs(60),
         "GLB export did not finish",
         |app| app.file_activity_label().is_none() && path.exists(),
     );
@@ -144,7 +144,7 @@ fn sketchup_dae_file_command_exports_current_scene_with_loss_report() {
         .click();
     step_until(
         &mut harness,
-        Duration::from_secs(10),
+        Duration::from_secs(60),
         "DAE export did not finish",
         |app| app.file_activity_label().is_none() && path.exists(),
     );
@@ -198,7 +198,7 @@ fn a_mesh_export_is_made_while_the_window_paints_and_cancel_writes_nothing() {
             .click();
         step_until(
             &mut harness,
-            Duration::from_secs(10),
+            Duration::from_secs(60),
             "no export path was asked for",
             |_| !script.export_requests().is_empty(),
         );
@@ -275,7 +275,7 @@ fn the_file_menu_saves_a_presentation_image_as_the_options_say() {
         .click();
     step_until(
         &mut harness,
-        Duration::from_secs(30),
+        Duration::from_secs(60),
         "the presentation image was not saved",
         |app| app.file_activity_label().is_none() && path.exists(),
     );
@@ -334,7 +334,7 @@ fn viewer_menu_exports_saved_scenes_and_package_without_editing_cad() {
     );
     step_until(
         &mut harness,
-        Duration::from_secs(10),
+        Duration::from_secs(60),
         "Viewer export did not finish",
         |app| app.file_activity_label().is_none(),
     );

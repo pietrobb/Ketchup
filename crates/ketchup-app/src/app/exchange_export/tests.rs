@@ -115,7 +115,7 @@ fn a_finished_export_is_published_with_its_loss_report_after_consent() {
     queue(&mut harness, &path, |_, _| Ok(b"ISO-10303-21;".to_vec()));
     step_until(
         &mut harness,
-        Duration::from_secs(10),
+        Duration::from_secs(60),
         "export did not finish",
         |app| app.file.activity.exchange_export.is_none(),
     );

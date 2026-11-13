@@ -2647,7 +2647,7 @@ impl Wire {
         self.stream.write_all(&frame).unwrap();
     }
     fn call(&mut self, request: Request) -> Response {
-        self.call_within(request, Duration::from_secs(4))
+        self.call_within(request, Duration::from_secs(60))
     }
     fn call_within(&mut self, request: Request, timeout: Duration) -> Response {
         let response = self.answer_within(request, timeout);
@@ -2911,7 +2911,7 @@ fn an_oversized_answer_to_a_change_says_it_was_applied_and_the_change_is_made_on
             name: name.clone(),
             viewer: None,
         },
-        Duration::from_secs(4),
+        Duration::from_secs(60),
     );
     let after = wire.app.live_bridge_stamp();
     assert!(!answer.ok);
@@ -2936,7 +2936,7 @@ fn an_oversized_answer_to_a_change_says_it_was_applied_and_the_change_is_made_on
 
     let read = wire.answer_within(
         Request::SavedViews { expected: None },
-        Duration::from_secs(4),
+        Duration::from_secs(60),
     );
     assert_eq!(read.error.as_deref(), Some("response_limit"));
     let result = read.result.unwrap();

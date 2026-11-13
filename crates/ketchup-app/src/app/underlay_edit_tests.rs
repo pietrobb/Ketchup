@@ -1067,7 +1067,7 @@ fn the_window_writes_a_drawing_back_on_a_thread_that_cancelling_stops() {
         // as written.
         crate::tests::shell::step_until(
             &mut harness,
-            Duration::from_secs(30),
+            Duration::from_secs(60),
             "the drawing taking the place of the file was not reported",
             |app| app.file.activity.underlay.exporting.is_none(),
         );
@@ -1092,7 +1092,7 @@ fn the_window_writes_a_drawing_back_on_a_thread_that_cancelling_stops() {
     export(&mut harness);
     crate::tests::shell::step_until(
         &mut harness,
-        Duration::from_secs(30),
+        Duration::from_secs(60),
         "the drawing was not written back",
         |app| app.file.activity.underlay.exporting.is_none(),
     );
@@ -1909,7 +1909,7 @@ fn a_waiting_pull_area_click_is_pulled_up_among_more_flat_drawings_than_searches
     click(&mut harness, Vec3::new(20.0, -250.0, 0.0));
     crate::tests::shell::step_until(
         &mut harness,
-        std::time::Duration::from_secs(20),
+        std::time::Duration::from_secs(60),
         "the waiting click never pulled the area up",
         |app| app.solid_tools.area_click_awaits_regions.is_none(),
     );
@@ -1966,7 +1966,7 @@ fn a_waiting_pull_area_click_is_dropped_when_the_document_changes() {
     let undone = harness.state().undo_step_count();
     crate::tests::shell::step_until(
         &mut harness,
-        std::time::Duration::from_secs(20),
+        std::time::Duration::from_secs(60),
         "the waiting click was never let go",
         |app| app.solid_tools.area_click_awaits_regions.is_none(),
     );

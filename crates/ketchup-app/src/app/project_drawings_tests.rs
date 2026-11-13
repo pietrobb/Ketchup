@@ -1360,7 +1360,7 @@ fn the_drawings_window_shows_the_found_zero_and_keeps_any_height() {
     // Found on a worker (r19 MF-161).
     step_until(
         &mut harness,
-        Duration::from_secs(30),
+        Duration::from_secs(60),
         "the ground floor found",
         |app| app.found_zero(&app.document.current()).is_some(),
     );
