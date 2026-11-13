@@ -897,15 +897,25 @@ fn issue_parts(report: &Report, kind: &str) -> Vec<Vec<String>> {
 }
 
 /// Review 2026-11-06 P3: a grounded block of 50 x 10 x 10 mm beside the beam
-/// braced it as firmly as a wall. It still does, but is reported.
+/// braced it as firmly as a wall. It is reported, and since R1112 P3 (it passed
+/// with the warning) the beam is not verified.
 #[test]
 fn a_beam_braced_from_an_anchorage_smaller_than_it_is_deep_is_reported() {
+    let small = |report: &Report| {
+        let beam = member(report, "beam");
+        beam.status == "not_verified"
+            && beam
+                .missing
+                .iter()
+                .any(|reason| reason.contains("smaller across it than it is deep"))
+    };
     let wall = report(&one_batten("", ""), &[]);
     assert_eq!(braced_by(&wall), [("batten".to_owned(), 525.0, 525.0)]);
     assert_eq!(
         issue_parts(&wall, "anchorage_small"),
         Vec::<Vec<String>>::new()
     );
+    assert!(!small(&wall), "{:?}", member(&wall, "beam"));
 
     let block = report(
         &one_batten("", "").replace(
@@ -916,6 +926,17 @@ fn a_beam_braced_from_an_anchorage_smaller_than_it_is_deep_is_reported() {
     );
     assert_eq!(braced_by(&block), [("batten".to_owned(), 525.0, 525.0)]);
     assert_eq!(issue_parts(&block, "anchorage_small"), [["beam", "wall"]]);
+    assert!(small(&block), "{:?}", member(&block, "beam"));
+    let issue = block
+        .issues
+        .iter()
+        .find(|issue| issue.kind == "anchorage_small")
+        .expect("the small anchorage is reported");
+    assert!(
+        issue.message.contains("measured across beam") && issue.message.contains("not verified"),
+        "{}",
+        issue.message
+    );
 
     // Review 2026-11-06 r23 P3: the first anchorage declared was taken, so a
     // block declared before the wall holding the same batten was reported.
@@ -946,6 +967,8 @@ box(\"wall\"",
     );
     assert_eq!(braced_by(&rod), [("batten".to_owned(), 525.0, 525.0)]);
     assert_eq!(issue_parts(&rod, "anchorage_small"), [["beam", "wall"]]);
+    // R1112 P3: "smaller in every direction" was untrue of a rod 5 900 mm long.
+    assert!(small(&rod), "{:?}", member(&rod, "beam"));
 
     // Review 2026-11-07 P3: one turned 45° to the beam was measured by its
     // height alone, its sides at 45° left out, so a slab 300 mm square was

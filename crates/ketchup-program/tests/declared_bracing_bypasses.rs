@@ -192,6 +192,30 @@ brace([\"beam\"], by = [\"lath\"], edge = \"top\", spacing = 10)
         ignored(&hung)
     );
 
+    // A grounded cap on each 420 mm block beside the beam, or two stacked, is
+    // held up by the block, which rests on the beam: it carries the block no
+    // more than the beam does (capability review 758 of R1112-PG-500).
+    for stack in [1, 2] {
+        let mut caps = String::new();
+        for x in PLACES {
+            for level in 0..stack {
+                caps.push_str(&format!(
+                    "box(\"cap {x} {level}\", (50, 50, 50), at = ({x}, 150, {}), material = \"GL24h\", grounded = True)\n",
+                    2450 + 50 * level
+                ));
+            }
+        }
+        let capped = blocks([50, 420, 50], -170, &caps);
+        assert_ne!(checked(&capped, "beam").status, "pass", "{stack} caps");
+        assert!(
+            ignored(&capped)
+                .iter()
+                .any(|message| message.contains("block 300")),
+            "{stack} caps: {:?}",
+            ignored(&capped)
+        );
+    }
+
     // The same 420 mm blocks a grounded post stands under, on the floor
     // beside the beam, hold it.
     let mut posts = String::new();

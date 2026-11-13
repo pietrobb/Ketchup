@@ -185,8 +185,9 @@ pub struct LoadReport {
     /// The area loads each part takes none of, standing on edge with no broad face up.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub edge_on: BTreeMap<String, Vec<String>>,
-    /// Members, each with the grounded part bracing it that is smaller in
-    /// every direction than the member is deep.
+    /// Members, each with the grounded part bracing it that measured across
+    /// the member is smaller than the member is deep; their checks are not
+    /// verified.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub small_anchorages: Vec<[String; 2]>,
     /// Joints of a kind the catalogue does not know ([`crate::joint_kind`]), each
@@ -338,7 +339,7 @@ impl LoadReport {
                 kind: ANCHORAGE_SMALL,
                 parts: vec![member.clone(), anchorage.clone()],
                 message: format!(
-                    "{member} is braced sideways from {anchorage}, which is smaller in every direction than {member} is deep; the check takes it to hold."
+                    "{member} is braced sideways from {anchorage}, which measured across {member} is smaller than {member} is deep; the check of {member} is not verified."
                 ),
                 where_mm: None,
                 hint: format!(
@@ -1581,9 +1582,9 @@ fn braces<'a>(
     let (ignored, chains) =
         declared_bracing(model, member, frames, joined, faces, &footing, &mut braced);
     // An anchorage smaller across the member than the member is deep (a 50 mm
-    // block beside a 400 mm beam) still braces it, but is reported (review
-    // 2026-11-06 P3; r23 P3: so is a rod 5 900 × 10 × 10 along it, measured
-    // along its length before).
+    // block beside a 400 mm beam) leaves the member not verified (review
+    // 2026-11-06 P3; r23 P3: so does a rod 5 900 × 10 × 10 along it, measured
+    // along its length before; R1112-PG-503: it passed with a warning).
     let small: BTreeSet<(usize, usize)> = braced
         .iter()
         .enumerate()
@@ -1844,6 +1845,33 @@ fn anchored_diaphragms<'a>(
     let tied_at = |faces: &mut ContactFaces<'a>, a: usize, b: usize| {
         fastened_at(model, frames, joined, faces, [a, b])
     };
+    // Two sheets are tied where a fastener the joint names lies over their
+    // contact, or, when it names none, over a contact a fastener fits in: as
+    // long as the thinner sheet is thick, and half as wide (R1112-PG-504: two
+    // boards touching on 1 × 0.1 mm made a chain).
+    let sheets_tied = |faces: &mut ContactFaces<'a>, a: usize, b: usize| {
+        if !fastened(a, b) {
+            return false;
+        }
+        let pair = [&parts[a], &parts[b]];
+        let fasteners = fasteners_between(model, &pair[0].name, &pair[1].name);
+        let across = |normal: [f64; 3]| reach_across(pair, normal);
+        let thinnest = pair
+            .iter()
+            .flat_map(|part| part.obb().half)
+            .fold(f64::INFINITY, f64::min)
+            * 2.0;
+        faces.contacts(pair[0], pair[1]).into_iter().any(|contact| {
+            if fasteners.is_empty() {
+                let [u, v] = contact.size_mm;
+                u.max(v) >= thinnest && u.min(v) >= thinnest / 2.0
+            } else {
+                fasteners
+                    .iter()
+                    .any(|point| over_contact(*point, &contact.points_mm, &across))
+            }
+        })
+    };
     let mut ignored = Vec::new();
     let mut sheet_anchor: BTreeMap<usize, usize> = BTreeMap::new();
     let mut chains: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
@@ -1925,7 +1953,7 @@ fn anchored_diaphragms<'a>(
         while let Some(sheet) = queue.pop() {
             let anchor = reached[&sheet];
             for &other in &sheets {
-                if !reached.contains_key(&other) && !tied_at(faces, sheet, other).is_empty() {
+                if !reached.contains_key(&other) && sheets_tied(faces, sheet, other) {
                     reached.insert(other, anchor);
                     queue.push(other);
                 }
@@ -2831,6 +2859,15 @@ pub(crate) fn loads_with<'a>(model: &'a ProgramModel, faces: &mut ContactFaces<'
     }
     report.stray_fasteners = stray;
     report.edge_on = own.edge_on;
+    for [member, anchorage] in &small_anchorages {
+        let reason =
+            format!("it is braced sideways from {anchorage}, smaller across it than it is deep");
+        if let Some(load) = report.members.iter_mut().find(|load| &load.part == member)
+            && !load.missing.contains(&reason)
+        {
+            load.missing.push(reason);
+        }
+    }
     report.small_anchorages = small_anchorages;
     report.ignored_bracing = ignored_bracing;
     let unknown: Vec<&Joint> = model
