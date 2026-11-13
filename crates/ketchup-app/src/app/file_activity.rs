@@ -513,7 +513,7 @@ mod tests {
     fn wait_for_open(harness: &mut Harness<'_, KetchupApp>) {
         step_until(
             harness,
-            Duration::from_secs(10),
+            Duration::from_secs(60),
             "open did not finish",
             |app| {
                 app.file.activity.opening.is_none()

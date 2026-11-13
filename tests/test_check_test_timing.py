@@ -406,6 +406,79 @@ def test_a_short_poll_the_test_relies_on_counts_however_it_is_written(tmp_path):
     ]
 
 
+def test_a_helper_whose_time_sets_a_deadline_it_asserts_is_a_budget_under_the_hang_floor(tmp_path):
+    # Review 2026-11-12 R1112-TST-500: `live_bridge/tests.rs` held some 90 calls to 4 s
+    # through `call_within(…, timeout)`, which sets `Instant::now() + timeout` and
+    # asserts it has not passed; `step_until` held 23 calls to 10-30 s so.
+    write(tmp_path, "crates/a/tests/harness/mod.rs", (
+        "impl Wire {\n"
+        "    fn call(&mut self, request: Request) -> Response {\n"
+        "        self.call_within(request, Duration::from_secs(4))\n"
+        "    }\n"
+        "    fn call_within(&mut self, request: Request, timeout: Duration) -> Response {\n"
+        "        let deadline = Instant::now() + timeout;\n"
+        "        loop {\n"
+        "            if let Ok(response) = self.rx.try_recv() { break response; }\n"
+        "            assert!(Instant::now() < deadline);\n"
+        "        }\n"
+        "    }\n"
+        "}\n"
+        "pub fn step_until(harness: &mut Harness, within: Duration, what: &str) {\n"
+        "    let deadline = Instant::now() + within;\n"
+        "    while !harness.done() {\n"
+        "        assert!(Instant::now() < deadline, \"{what}\");\n"
+        "    }\n"
+        "}\n"
+        "pub fn settle(harness: &mut Harness, within: Duration) {\n"
+        "    let deadline = Instant::now() + within;\n"
+        "    while Instant::now() < deadline && !harness.done() { harness.step(); }\n"
+        "}\n"
+    ))
+    write(tmp_path, "crates/a/tests/flow.rs", (
+        "fn flow() {\n"
+        "    step_until(&mut harness, Duration::from_secs(10), \"saved\");\n"
+        "    step_until(&mut harness, Duration::from_secs(60), \"saved\");\n"
+        "    wire.call_within(request, Duration::from_secs(120));\n"
+        "    settle(&mut harness, Duration::from_secs(1));\n"
+        "}\n"
+    ))
+    assert checker.violations(tmp_path) == [
+        "crates/a/tests/flow.rs:2",
+        "crates/a/tests/harness/mod.rs:3",
+    ]
+
+
+def test_a_timeout_named_in_a_message_or_a_quiet_wait_is_read_for_what_it_checks(tmp_path):
+    # Review 2026-11-12 P3: `TIMED_OUT` let pass any statement with "Timeout" in it,
+    # also `assert!(…, "Timeout waiting…")` and `panic!("Timeout…")`, while a wait for
+    # nothing to come, `assert_eq!(count, 0)` after it, counted as a budget.
+    write(tmp_path, "crates/a/tests/quiet.rs", (
+        "fn quiet() {\n"
+        "    let deadline = Instant::now() + Duration::from_secs(2);\n"
+        "    while !done() { assert!(Instant::now() < deadline, \"Timeout waiting for done\"); }\n"
+        "    let late = Instant::now() + Duration::from_secs(2);\n"
+        "    while !done() { if Instant::now() > late { panic!(\"Timeout: not done\"); } }\n"
+        "    let quiet = Instant::now() + Duration::from_millis(300);\n"
+        "    while Instant::now() < quiet { pump(); }\n"
+        "    assert_eq!(count, 0, \"nothing is sent\");\n"
+        "    let empty = Instant::now() + Duration::from_millis(300);\n"
+        "    while Instant::now() < empty { pump(); }\n"
+        "    assert!(events.is_empty());\n"
+        "    let counted = Instant::now() + Duration::from_millis(300);\n"
+        "    while Instant::now() < counted { pump(); }\n"
+        "    assert_eq!(count, 3);\n"
+        "    let drained = Instant::now() + Duration::from_secs(2);\n"
+        "    while Instant::now() < drained && pending() > 0 { pump(); }\n"
+        "    assert_eq!(pending(), 0);\n"
+        "    let timed = Instant::now() + Duration::from_millis(50);\n"
+        "    assert!(matches!(wait(timed), Err(Timeout)));\n"
+        "}\n"
+    ))
+    assert checker.violations(tmp_path) == [
+        f"crates/a/tests/quiet.rs:{line}" for line in (2, 4, 12, 15)
+    ]
+
+
 def test_deadlines_of_waits_and_computed_durations_pass(tmp_path):
     write(tmp_path, "crates/a/tests/wait.rs", (
         "fn wait() {\n"
