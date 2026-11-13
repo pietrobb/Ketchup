@@ -83,6 +83,26 @@ pub fn material_color(material: Option<&RawMaterial>) -> Option<FaceColorKey> {
     ])
 }
 
+/// A color key as glTF's `baseColorFactor`: red, green and blue linear, as glTF defines
+/// them, opacity as it is. Ketchup change (see PATCH.md): upstream wrote the sRGB bytes
+/// divided by 255, so every SketchUp colour came paler (review 2026-11-13 R1113-SKP-601).
+pub fn base_color_factor(color: FaceColorKey) -> [f64; 4] {
+    let linear = |channel: i32| {
+        let srgb = f64::from(channel.clamp(0, 255)) / 255.0;
+        if srgb <= 0.040_45 {
+            srgb / 12.92
+        } else {
+            ((srgb + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    [
+        linear(color[0]),
+        linear(color[1]),
+        linear(color[2]),
+        f64::from(color[3].clamp(0, 255)) / 255.0,
+    ]
+}
+
 /// The layer's color (or SketchUp's default grey), fully opaque.
 pub fn default_color(parsed: &RawParsed, layer: &str) -> FaceColorKey {
     let color = parsed
@@ -318,7 +338,6 @@ pub fn build_local_face_groups(
 
         let (xr, yr) = face_uv_basis(&f.normal);
         let mut add_side = |key: GroupKey,
-                            reverse: bool,
                             uv_transform: &Option<[f64; 9]>,
                             tile_w: f64,
                             tile_h: f64|
@@ -335,10 +354,6 @@ pub fn build_local_face_groups(
                 .map_or((0.0, 0.0), whole_tiles_away);
             let group = groups.entry(key).or_default();
             for &triangle in &triangles {
-                let mut triangle = triangle;
-                if reverse {
-                    triangle.swap(1, 2);
-                }
                 let mut indices = [0usize; 3];
                 for (slot, &id) in indices.iter_mut().zip(&triangle) {
                     let pos = *b.vertices.get(&id).ok_or_else(|| {
@@ -354,26 +369,25 @@ pub fn build_local_face_groups(
                     });
                     *slot = index;
                     for (sum, &axis) in group.normals[index].iter_mut().zip(&f.normal) {
-                        *sum += if reverse { -axis } else { axis };
+                        *sum += axis;
                     }
                 }
                 group.tris.push(indices);
             }
             Ok(())
         };
-        // Ketchup change (see PATCH.md): a face is one surface, written once on its front
+        // Ketchup change (see PATCH.md): a face is one surface, written once as its front
         // and drawn from both sides. Upstream writes a face whose sides differ twice, the
         // back as a reversed copy, so a solid painted on its outside only (SketchUp's paint
         // bucket) came with an inside-out second shell. The front's paint wins; a face
-        // painted on its back only keeps the back's and is written as seen from it, so a
-        // face of a box that SketchUp shows reversed, painted from outside, faces out
-        // (review 2026-11-12 P3: written as its front, it turned the box inside out at
-        // that face and the box came as no solid).
-        let (side_mat, color, uv_transform, reverse) = if front_mat.is_none() && back_mat.is_some()
-        {
-            (back_mat, back, &f.uv_transform_back, true)
+        // painted on its back only keeps the back's. Which way a face is wound is not taken
+        // from its paint: the importer turns a closed shell to face out by its geometry
+        // (review 2026-11-13 R1113-SKP-600: turned by its paint, a box painted from inside
+        // came inside out and as no solid).
+        let (side_mat, color, uv_transform) = if front_mat.is_none() && back_mat.is_some() {
+            (back_mat, back, &f.uv_transform_back)
         } else {
-            (front_mat, front, &f.uv_transform, false)
+            (front_mat, front, &f.uv_transform)
         };
         let (tw, th) = tile_size(side_mat);
         let key = GroupKey {
@@ -381,7 +395,7 @@ pub fn build_local_face_groups(
             double_sided: true,
             texture_index: (ctx.texture_index_for)(side_mat),
         };
-        add_side(key, reverse, uv_transform, tw, th)?;
+        add_side(key, uv_transform, tw, th)?;
     }
 
     Ok(groups)
