@@ -184,7 +184,7 @@ fn contradicted(
         {
             Some(StoreyTableProblem::SameFloorAs(*other))
         } else if floor < low[2] - NEAR_FLOOR_MM || floor > high[2] {
-            // A floor at the top is a roof terrace, its plan the roof seen from above
+            // A floor at the top is walked on, its plan the model's top seen from above
             // (review 2026-11-10 R1110-MF-401: it was refused).
             Some(StoreyTableProblem::OutsideModel)
         } else if build_up > i64::from(MAX_BUILD_UP_MM) {
