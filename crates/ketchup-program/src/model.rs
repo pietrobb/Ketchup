@@ -433,7 +433,7 @@ pub fn smallest_enclosing_rectangle(segments: &[ProgramProfileSegment]) -> ([f64
 }
 
 /// The convex hull of `points`, counter-clockwise (Andrew's monotone chain).
-fn convex_hull(mut points: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
+pub(crate) fn convex_hull(mut points: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
     points.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
     points.dedup();
     if points.len() < 3 {

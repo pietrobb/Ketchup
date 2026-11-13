@@ -282,6 +282,90 @@ fn a_standing_part_is_slender_by_its_height_over_its_thickness() {
     }
 }
 
+/// Review 2026-11-13 r95 R1113r95-PG-700: slenderness was measured part by
+/// part, so six pieces 7 x 7 x 400 stacked 2 400 mm high under each block,
+/// grounded or screwed into a chain with only the lowest grounded, held the
+/// beam while one rod 7 x 7 x 2 400 did not. A stack is as slender as the
+/// height it reaches over its thinnest piece; stacked posts 50 x 100 hold.
+#[test]
+fn stacked_short_pieces_are_as_slender_as_one_rod() {
+    let stacked = |section: (i32, i32), chained: bool| {
+        blocks(|x| {
+            let (mut pieces, mut joints) = (String::new(), String::new());
+            for level in 0..6 {
+                let grounded = if !chained || level == 0 {
+                    ", grounded = True"
+                } else {
+                    ""
+                };
+                pieces.push_str(&format!(
+                    "box(\"piece {x} {level}\", ({}, {}, 400), at = ({}, 200, {}), material = \"GL24h\"{grounded})\n",
+                    section.0,
+                    section.1,
+                    x,
+                    400 * level
+                ));
+                if chained {
+                    let above = if level == 5 {
+                        format!("block {x}")
+                    } else {
+                        format!("piece {x} {}", level + 1)
+                    };
+                    joints.push_str(&format!(
+                        "joint(\"piece {x} {level}\", \"{above}\", kind = \"screw\")\n"
+                    ));
+                }
+            }
+            pieces + &joints
+        })
+    };
+    for (case, chained) in [("grounded stack", false), ("screwed chain", true)] {
+        let held = stacked((7, 7), chained);
+        assert_ne!(checked(&held, "beam").status, "pass", "{case}");
+        assert!(
+            ignored(&held)
+                .iter()
+                .any(|message| message.contains("piece 300") && message.contains("too slender")),
+            "{case}: {:?}",
+            ignored(&held)
+        );
+    }
+    for chained in [false, true] {
+        let posts = stacked((50, 50), chained);
+        assert_eq!(ignored(&posts), Vec::<&str>::new(), "chained {chained}");
+        assert_eq!(checked(&posts, "beam").status, "pass", "chained {chained}");
+    }
+}
+
+/// R1113r95-PG-701: a grounded post 50 x 100 x 2 400 touching the block on a
+/// patch 2 x 2 or 0.05 x 0.05 mm, or with its corner sunk 0.05 mm into it,
+/// held the beam. Touching is meeting over a patch at least half the square
+/// of the thinner part's thinnest side.
+#[test]
+fn a_post_touching_the_anchorage_on_a_speck_is_no_ground() {
+    for (case, off, height) in [
+        ("patch 2 x 2", 48.0, 2400.0),
+        ("patch 0.05 x 0.05", 49.95, 2400.0),
+        ("corner sunk 0.05", 49.95, 2400.05),
+    ] {
+        let held = blocks(|x| {
+            format!(
+                "box(\"post {x}\", (50, 100, {height}), at = ({}, {}, 0), material = \"GL24h\", grounded = True)\n",
+                f64::from(x) + off,
+                200.0 + off
+            )
+        });
+        assert_ne!(checked(&held, "beam").status, "pass", "{case}");
+        assert!(
+            ignored(&held)
+                .iter()
+                .any(|message| message.contains("block 300")),
+            "{case}: {:?}",
+            ignored(&held)
+        );
+    }
+}
+
 /// A grounded wall beside [`BEAM`], a metre off it, standing on the floor up to
 /// the top of the blocks on the beam.
 const WALL: &str =

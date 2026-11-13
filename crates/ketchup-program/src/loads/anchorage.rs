@@ -5,9 +5,9 @@
 //! held up by the member alone, held it).
 
 use super::{Frame, depth};
-use crate::frame::Obb;
+use crate::frame::{Obb, intersection_vertices};
 use crate::load_path::on_floor;
-use crate::model::{Part, ProgramModel};
+use crate::model::{Part, ProgramModel, convex_hull};
 use ketchup_geometry::linalg::{self, cross, dot, sub};
 use ketchup_model::tolerance::CONTACT_FIT_MM;
 use std::cell::RefCell;
@@ -23,6 +23,9 @@ pub(super) struct Footing<'a> {
     grounded: Vec<bool>,
     /// The parts too slender to hold anything sideways ([`slender`]).
     slender: Vec<bool>,
+    /// Each part's lowest and highest level and its least width level
+    /// ([`Standing`]).
+    standing: Vec<Standing>,
     floor: f64,
     touching: Vec<Vec<usize>>,
     /// The pairs of parts, lesser index first, a fastening joint() ties.
@@ -57,6 +60,43 @@ fn slender(part: &Part, floor: f64) -> bool {
         middle > SPAN_PER_THICKNESS * thin || long > SPAN_PER_THICKNESS * middle
     } else {
         long > SPAN_PER_THICKNESS * thin
+    }
+}
+
+/// How a part stands: its lowest and highest level and its least width
+/// level, across its most upright side.
+#[derive(Clone, Copy)]
+struct Standing {
+    low: f64,
+    high: f64,
+    width: f64,
+}
+
+impl Standing {
+    fn of(part: &Part) -> Self {
+        let obb = part.obb();
+        let (low, high) = part.world_bounds();
+        let upright = (0..3)
+            .max_by(|a, b| obb.axes[*a][2].abs().total_cmp(&obb.axes[*b][2].abs()))
+            .unwrap_or(2);
+        let width = (0..3)
+            .filter(|axis| *axis != upright)
+            .map(|axis| 2.0 * obb.half[axis])
+            .fold(f64::INFINITY, f64::min);
+        Self {
+            low: low[2],
+            high: high[2],
+            width,
+        }
+    }
+
+    /// Whether, holding at level `top` sideways (where the anchorage meets
+    /// the member, its top or the anchorage's bottom), the part reaches from there
+    /// to its farther end over [`SPAN_PER_THICKNESS`] times its least width:
+    /// standing at the foot of a stack or chain, it bends under the height of
+    /// all of it, however short itself (R1113r95-PG-700).
+    fn too_far_from(self, top: f64) -> bool {
+        (top - self.low).max(self.high - top) > SPAN_PER_THICKNESS * self.width
     }
 }
 
@@ -103,6 +143,7 @@ impl<'a> Footing<'a> {
                 .map(|part| names.contains(&part.name))
                 .collect(),
             slender: parts.iter().map(|part| slender(part, floor)).collect(),
+            standing: parts.iter().map(Standing::of).collect(),
             floor,
             touching,
             joined,
@@ -115,8 +156,9 @@ impl<'a> Footing<'a> {
     /// `member` and the parts `apart` (the brace it holds, the sheets of its
     /// diaphragm): a path of parts touching face to face, each pair fastened
     /// or both grounded ([`Self::holds`]), to a grounded part standing on the
-    /// floor, through no load-path member, no part on it
-    /// slender and each but the anchor as deep across `member` as the member
+    /// floor, through no load-path member, no part on it slender, on its own
+    /// or as the foot of a stack ([`Standing::too_far_from`]), and each but
+    /// the anchor as deep across `member` as the member
     /// (review 2026-11-13
     /// R1113-PG-600: a 1 mm grounded nub, or a free rod on the floor, made an
     /// anchorage ground; PG-601: so did a second free member on its posts;
@@ -133,12 +175,16 @@ impl<'a> Footing<'a> {
         }
         let frame = &self.frames[member];
         let deep = depth(&self.parts[member], frame);
+        // Where the anchor holds the member: its top, or the anchor's bottom
+        // resting on it.
+        let (held, by) = (self.standing[member], self.standing[anchor]);
+        let top = held.high.min(by.high).max(by.low);
         let mut seen = BTreeSet::from([anchor]);
         let mut queue = vec![anchor];
         let mut met = BTreeSet::new();
         let mut clear = false;
         while let Some(item) = queue.pop() {
-            if self.slender[item] {
+            if self.slender[item] || self.standing[item].too_far_from(top) {
                 met.insert(item);
                 continue;
             }
@@ -222,7 +268,7 @@ impl<'a> Footing<'a> {
         thin.dedup();
         if !thin.is_empty() {
             why.push(format!(
-                "{} too slender to hold anything sideways, spanning over {SPAN_PER_THICKNESS} times its thinnest side",
+                "{} too slender to hold anything sideways, spanning, or reaching from where the anchorage holds to its farther end, over {SPAN_PER_THICKNESS} times its thinnest side",
                 thin.join(", ")
             ));
         }
@@ -230,55 +276,70 @@ impl<'a> Footing<'a> {
     }
 }
 
-/// Whether boxes `a` and `b` hold each other: running into each other through
-/// a body, or meeting flat, a face of each against the other's, over a patch
-/// wider than a line either way, however either is turned. Parts meeting at an
-/// edge or a corner hold each other nowhere (R1113-PG-600; capability review
-/// 768: a grounded column turned 1°, meeting a block along its edge, was
-/// ground for it).
+/// Whether boxes `a` and `b` hold each other: where they meet within the fit
+/// or run into each other, the region they share, seen across its thinnest
+/// way, covers at least half the square of the thinner part's thinnest side,
+/// however either is turned. Parts meeting at an edge, a corner, a speck or a
+/// corner sunk a little into the other hold each other nowhere (R1113-PG-600;
+/// capability review 768: a grounded column turned 1°, meeting a block along
+/// its edge, was ground for it; review 2026-11-13 r95 R1113r95-PG-701: so was
+/// one meeting it on a patch 2 x 2 or 0.05 x 0.05 mm, or sunk 0.05 mm into
+/// it at a corner).
 fn face_to_face(a: &Obb, b: &Obb) -> bool {
-    let separation = a.separation(b);
-    if separation > CONTACT_FIT_MM {
+    if a.separation(b) > CONTACT_FIT_MM {
         return false;
     }
-    if separation < -CONTACT_FIT_MM {
-        return true;
-    }
-    let radius = |obb: &Obb, skip: usize, direction: [f64; 3]| -> f64 {
-        (0..3)
-            .filter(|axis| *axis != skip)
-            .map(|axis| obb.half[axis] * dot(obb.axes[axis], direction).abs())
-            .sum()
+    let grown = Obb {
+        half: a.half.map(|half| half + CONTACT_FIT_MM),
+        ..*a
     };
-    let delta = sub(b.centre, a.centre);
-    (0..3).any(|i| {
-        let normal = a.axes[i];
-        (0..3).any(|j| {
-            // Flat against each other: the smaller face stays within the fit
-            // of the other's plane all over.
-            let tilt = radius(a, i, b.axes[j]).min(radius(b, j, normal));
-            if tilt > CONTACT_FIT_MM {
-                return false;
-            }
-            let gap = dot(delta, normal).abs() - a.half[i] - b.half[j];
-            if gap.abs() > CONTACT_FIT_MM {
-                return false;
-            }
-            // Their faces overlap wider than the fit along each side of
-            // either, in the plane between them.
-            let sides = (0..3)
-                .filter(|axis| *axis != i)
-                .map(|axis| a.axes[axis])
-                .chain((0..3).filter(|axis| *axis != j).filter_map(|axis| {
-                    let along = b.axes[axis];
-                    let level = dot(along, normal);
-                    linalg::normalize(std::array::from_fn(|n| along[n] - level * normal[n]))
-                }));
-            sides.into_iter().all(|side| {
-                radius(a, i, side) + radius(b, j, side) - dot(delta, side).abs() > CONTACT_FIT_MM
-            })
-        })
-    })
+    let shared = intersection_vertices(&[grown, *b], 1e-9);
+    let thinnest = a
+        .half
+        .into_iter()
+        .chain(b.half)
+        .fold(f64::INFINITY, f64::min)
+        * 2.0;
+    shared_area(&shared, a.axes.into_iter().chain(b.axes)) >= thinnest * thinnest / 2.0
+}
+
+/// The area of the convex region with corners `points`, seen along whichever
+/// of `directions` it is thinnest along.
+fn shared_area(points: &[[f64; 3]], directions: impl Iterator<Item = [f64; 3]>) -> f64 {
+    let extent = |direction: [f64; 3]| {
+        let (low, high) =
+            points
+                .iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), point| {
+                    let along = dot(*point, direction);
+                    (low.min(along), high.max(along))
+                });
+        high - low
+    };
+    let Some(across) = directions.min_by(|a, b| extent(*a).total_cmp(&extent(*b))) else {
+        return 0.0;
+    };
+    let other = if across[0].abs() < 0.9 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    let Some(u) = linalg::normalize(cross(across, other)) else {
+        return 0.0;
+    };
+    let v = cross(across, u);
+    let hull = convex_hull(
+        points
+            .iter()
+            .map(|point| [dot(*point, u), dot(*point, v)])
+            .collect(),
+    );
+    let twice: f64 = hull
+        .iter()
+        .zip(hull.iter().cycle().skip(1))
+        .map(|(p, q)| p[0] * q[1] - p[1] * q[0])
+        .sum();
+    twice.abs() / 2.0
 }
 
 /// Whether an anchorage at `anchor` holds `point` of `member`, of `frame`,
