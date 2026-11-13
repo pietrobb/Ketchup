@@ -6,7 +6,8 @@
 /// What a joint's kind says of how its parts join.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JointFastening {
-    /// A fastening the catalogue knows: a screw, a hanger, glue, a dowel.
+    /// A fastening the catalogue knows: a screw, a hanger, a structural adhesive,
+    /// a dowel.
     Fastens,
     /// The parts only meet: they neither hold each other down nor brace.
     Unfastened,
@@ -28,6 +29,8 @@ pub const UNFASTENED_JOINT_KINDS: &[&str] = &[
     "rests",
     "resting",
     "bearing only",
+    // Not a structural adhesive (EN 1995-1-1 3.6: EN 301, EN 15425; R1110 P3)
+    "contact adhesive",
     // Kinds of joints whose parts move (R1110-PG-405)
     "slide",
     "motion",
@@ -95,10 +98,8 @@ pub const FASTENING_JOINT_KINDS: &[&str] = &[
     "pin",
     "pins",
     "shelf pins",
-    "glue",
-    "glued",
-    "adhesive",
-    "contact adhesive",
+    "structural adhesive",
+    "structural glue",
     "hanger",
     "joist hanger",
     "connector",
@@ -140,8 +141,7 @@ pub const FASTENING_JOINT_KINDS: &[&str] = &[
     "svorníky",
     "kolík",
     "kolíky",
-    "lepidlo",
-    "lepené",
+    "konštrukčné lepidlo",
     "spojka",
     "krokvová spojka",
     "trámová botka",
@@ -159,7 +159,7 @@ pub const FASTENING_JOINT_KINDS: &[&str] = &[
     "hřebíky",
     "sponka",
     "kolíček",
-    "lepený",
+    "konstrukční lepidlo",
     "úhelník",
     "styčníková deska",
     "čep",
@@ -175,8 +175,7 @@ pub const FASTENING_JOINT_KINDS: &[&str] = &[
     "dübel",
     "duebel",
     "stabdübel",
-    "leim",
-    "geleimt",
+    "konstruktionsklebstoff",
     "verbinder",
     "balkenschuh",
     "sparrenpfettenanker",
@@ -209,13 +208,22 @@ const SIDE_WORDS: &[&str] = &[
     "aussen",
 ];
 
-/// Whether `word` qualifies a kind by size, product or side: it carries a digit
-/// other than 0 ("6x120", "80"), is one letter but "x" ("B") or names a side. A
-/// size of only zeros or a lone "x" says nothing of the fastener: "screw 0",
-/// "nail x" and "pin 0 x 0" fastened (R1110-PG-405).
-fn qualifier(word: &str) -> bool {
+/// Whether a word carries a size: a digit other than 0 ("6x120", "80", "M12").
+fn sized(word: &str) -> bool {
     word.chars().any(|c| matches!(c, '1'..='9'))
-        || (word.chars().count() == 1 && !matches!(word, "x" | "0"))
+}
+
+/// Whether `word` qualifies a kind by size, product or side: it carries a size,
+/// is one letter but "x" after a size ("80 B") or names a side. A size of only
+/// zeros or a lone "x" says nothing of the fastener: "screw 0", "nail x" and
+/// "pin 0 x 0" fastened (R1110-PG-405), and so did any one character after the
+/// kind itself: "screw y", "nail o", "screw ½" (R1112 P3).
+fn qualifier(word: &str, after: &str) -> bool {
+    sized(word)
+        || (sized(after)
+            && word.chars().count() == 1
+            && word.chars().all(|c| c.is_ascii_alphabetic())
+            && word != "x")
         || SIDE_WORDS.contains(&word)
 }
 
@@ -254,7 +262,7 @@ pub fn fastening(kind: &str) -> JointFastening {
         if let Some((length, fastening)) = longest_entry(&words[at..]) {
             found.push(fastening);
             at += length;
-        } else if at > 0 && qualifier(words[at]) {
+        } else if at > 0 && qualifier(words[at], words[at - 1]) {
             at += 1;
         } else {
             return JointFastening::Unknown;
@@ -339,8 +347,6 @@ mod tests {
         for kind in [
             "loose tenon",
             "Loose_Tenon",
-            "contact adhesive",
-            "contact-adhesive 2",
             "mortise and tenon",
             "angle bracket left",
             "nail plate 100x200",
@@ -368,6 +374,40 @@ mod tests {
             "vrut 6x120",
             "bolt M12",
             "dowel 8",
+        ] {
+            assert_eq!(fastening(kind), JointFastening::Fastens, "{kind}");
+        }
+    }
+
+    /// R1112 P3: "contact adhesive" and "glue" fastened, and so did a kind with
+    /// any one character after it.
+    #[test]
+    fn only_a_structural_adhesive_fastens_and_one_character_qualifies_only_a_size() {
+        for kind in ["contact adhesive", "contact-adhesive 2", "Contact_Adhesive"] {
+            assert_eq!(fastening(kind), JointFastening::Unfastened, "{kind}");
+        }
+        for kind in [
+            "glue",
+            "glued",
+            "adhesive",
+            "lepidlo",
+            "lepené",
+            "Leim",
+            "screw y",
+            "nail o",
+            "screw ½",
+            "vrut a",
+            "screw 0 B",
+        ] {
+            assert_eq!(fastening(kind), JointFastening::Unknown, "{kind}");
+        }
+        for kind in [
+            "structural adhesive",
+            "Structural_Glue 2",
+            "konštrukčné lepidlo",
+            "Konstruktionsklebstoff",
+            "Arunda 80 B",
+            "screw 1",
         ] {
             assert_eq!(fastening(kind), JointFastening::Fastens, "{kind}");
         }
