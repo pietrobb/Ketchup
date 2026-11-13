@@ -228,7 +228,13 @@ one across which the part's bearings lie farther apart than the part is long
 along it, leaves it not verified.
 A brace anchored to a grounded part smaller across the member than the member
 is deep, through a diaphragm too, is reported as `anchorage_small` and leaves the
-member not verified. A brace holds the beam at its
+member not verified. An anchorage holds only standing on the ground by a path
+of its own: parts touching face to face (not at an edge or a corner) from it to
+a grounded part standing on the floor, through no `load_path()` member, the
+brace or the diaphragm's own sheets, each part on the way as deep across the
+member as the member. A free part on the floor, a nub, a second beam on its
+posts or a part resting on the member is no ground, and a grounded part
+standing on nothing modelled holds nothing, saying so. A brace holds the beam at its
 joint's `fasteners` that lie where the two parts touch, in any of their contacts
 and no deeper from it than the thinner part is thick (others are reported as
 `fastener_off_contact` and hold nothing), or at the middle of each place they

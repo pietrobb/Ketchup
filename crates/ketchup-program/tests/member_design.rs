@@ -698,6 +698,14 @@ joint(\"batten\", \"beam\", kind = \"screw\"{beam_joint})
     )
 }
 
+/// `source` with a grounded stand on the floor beside the beam (y 800 - 1 400)
+/// up to the batten's underside less 10 mm, for an anchorage to stand on.
+fn stood(source: String) -> String {
+    format!(
+        "{source}box(\"stand\", (5900, 600, 2390), at = (0, 800, 0), material = \"GL24h\", grounded = True)\n"
+    )
+}
+
 /// PG-160 (review 2026-11-04 r19): a joint's fastener points were taken
 /// wherever they were. One batten across the beam at x = 500, its joint to the
 /// beam naming screws every 300 mm 5 m away (or along the beam's top where the
@@ -917,11 +925,13 @@ fn a_beam_braced_from_an_anchorage_smaller_than_it_is_deep_is_reported() {
     );
     assert!(!small(&wall), "{:?}", member(&wall, "beam"));
 
+    // Each small anchorage stands on a grounded stand on the floor: one
+    // standing on nothing modelled holds nothing (R1113-PG-602).
     let block = report(
-        &one_batten("", "").replace(
+        &stood(one_batten("", "").replace(
             "box(\"wall\", (5900, 100, 2400), at = (0, 1000, 0)",
             "box(\"wall\", (50, 10, 10), at = (500, 1000, 2390)",
-        ),
+        )),
         &[],
     );
     assert_eq!(braced_by(&block), [("batten".to_owned(), 525.0, 525.0)]);
@@ -959,10 +969,10 @@ box(\"wall\"",
 
     // And a rod 5 900 x 10 x 10 along the beam was measured along its length.
     let rod = report(
-        &one_batten("", "").replace(
+        &stood(one_batten("", "").replace(
             "box(\"wall\", (5900, 100, 2400), at = (0, 1000, 0)",
             "box(\"wall\", (5900, 10, 10), at = (0, 1000, 2390)",
-        ),
+        )),
         &[],
     );
     assert_eq!(braced_by(&rod), [("batten".to_owned(), 525.0, 525.0)]);
@@ -974,11 +984,11 @@ box(\"wall\"",
     // height alone, its sides at 45° left out, so a slab 300 mm square was
     // 10 mm across.
     let turned = report(
-        &one_batten("", "").replace(
+        &stood(one_batten("", "").replace(
             "box(\"wall\", (5900, 100, 2400), at = (0, 1000, 0), material = \"GL24h\", grounded = True)",
             "box(\"wall\", (300, 300, 10), at = (375, 900, 2390), material = \"GL24h\", grounded = True)
 rotate(\"wall\", axis = (0, 0, 1), angle = 45, pivot = (525, 1050, 2390))",
-        ),
+        )),
         &[],
     );
     assert_eq!(braced_by(&turned), [("batten".to_owned(), 525.0, 525.0)]);
@@ -991,13 +1001,13 @@ rotate(\"wall\", axis = (0, 0, 1), angle = 45, pivot = (525, 1050, 2390))",
     // length again, 5 900 · sin 4.2° = 432 mm across, deeper than the beam.
     for angle in [4.2, 20.0] {
         let rod = report(
-            &one_batten("", "").replace(
+            &stood(one_batten("", "").replace(
                 "box(\"wall\", (5900, 100, 2400), at = (0, 1000, 0), material = \"GL24h\", grounded = True)",
                 &format!(
                     "box(\"wall\", (5900, 10, 10), at = (0, 1000, 2390), material = \"GL24h\", grounded = True)
 rotate(\"wall\", axis = (0, 0, 1), angle = {angle}, pivot = (525, 1005, 2390))"
                 ),
-            ),
+            )),
             &[],
         );
         assert_eq!(

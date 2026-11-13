@@ -20,6 +20,7 @@ mod face_at;
 mod faces;
 mod fasteners;
 mod free_space;
+mod ground_paths;
 mod joint_links;
 mod joint_ratings;
 mod load_path;
