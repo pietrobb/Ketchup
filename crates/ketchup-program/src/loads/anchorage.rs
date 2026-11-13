@@ -88,7 +88,7 @@ impl<'a> Footing<'a> {
     /// standing on the floor, through no load-path member, each part on it but
     /// the anchor as deep across `member` as the member (review 2026-11-13
     /// R1113-PG-600: a 1 mm grounded nub, or a free rod on the floor, made an
-    /// anchorage ground; PG-601: so did a second free beam on its posts;
+    /// anchorage ground; PG-601: so did a second free member on its posts;
     /// PG-602: so did a grounded part standing on nothing modelled). Held up
     /// by the member, by parts hanging from it or resting on it (capability
     /// reviews 751, 758), it sways with the member.
