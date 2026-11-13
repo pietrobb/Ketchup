@@ -68,16 +68,23 @@ joint(\"block {x}\", \"beam\", kind = \"screw\")
 #[test]
 fn a_small_or_free_part_touching_the_anchorage_is_no_ground() {
     type Beside = fn(i32) -> String;
-    let cases: [(&str, Beside); 8] = [
+    let cases: [(&str, Beside); 9] = [
         ("nub on its end", |x| {
             format!(
                 "box(\"nub {x}\", (1, 1, 1), at = ({}, 200, 2400), material = \"GL24h\", grounded = True)\n",
                 x + 50
             )
         }),
-        ("part at its corner edge", |x| {
+        ("column on the floor at its corner edge", |x| {
             format!(
-                "box(\"corner {x}\", (50, 50, 50), at = ({}, 250, 2400), material = \"GL24h\", grounded = True)\n",
+                "box(\"col {x}\", (400, 400, 2450), at = ({}, 250, 0), material = \"GL24h\", grounded = True)\n",
+                x + 50
+            )
+        }),
+        ("column on the floor at its corner edge, turned 1°", |x| {
+            format!(
+                "box(\"col {x}\", (400, 400, 2450), at = ({0}, 250, 0), material = \"GL24h\", grounded = True)
+rotate(\"col {x}\", axis = (0, 0, 1), angle = 1, pivot = ({0}, 250, 0))\n",
                 x + 50
             )
         }),
@@ -153,6 +160,18 @@ box(\"nub {x}\", (1, 1, 1), at = ({}, 175, 2400), material = \"GL24h\", grounded
     });
     assert_eq!(ignored(&posts), Vec::<&str>::new());
     assert_eq!(checked(&posts, "beam").status, "pass");
+
+    // So does each post turned 1° about its middle, its top still flat
+    // against the block's bottom (capability review 768).
+    let turned = blocks(|x| {
+        format!(
+            "box(\"under {x}\", (50, 100, 2400), at = ({x}, 150, 0), material = \"GL24h\", grounded = True)
+rotate(\"under {x}\", axis = (0, 0, 1), angle = 1, pivot = ({}, 200, 0))\n",
+            x + 25
+        )
+    });
+    assert_eq!(ignored(&turned), Vec::<&str>::new());
+    assert_eq!(checked(&turned, "beam").status, "pass");
 
     // So does a grounded wall the blocks are screwed to, through a free board
     // between them as deep as the beam.

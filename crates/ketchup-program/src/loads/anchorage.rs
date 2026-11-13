@@ -5,6 +5,7 @@
 //! held up by the member alone, held it).
 
 use super::{Frame, depth};
+use crate::frame::Obb;
 use crate::load_path::on_floor;
 use crate::model::{Part, ProgramModel};
 use ketchup_geometry::linalg::{self, cross, dot, sub};
@@ -64,10 +65,6 @@ impl<'a> Footing<'a> {
         let parts = &model.parts;
         let boxes: Vec<_> = parts.iter().map(Part::obb).collect();
         let bounds: Vec<_> = parts.iter().map(Part::world_bounds).collect();
-        let square: Vec<bool> = boxes
-            .iter()
-            .map(|obb| obb.axes.iter().all(on_axis))
-            .collect();
         let mut order: Vec<usize> = (0..parts.len()).collect();
         order.sort_by(|a, b| bounds[*a].0[0].total_cmp(&bounds[*b].0[0]));
         let mut touching = vec![Vec::new(); parts.len()];
@@ -76,21 +73,8 @@ impl<'a> Footing<'a> {
                 if bounds[right].0[0] > bounds[left].1[0] + CONTACT_FIT_MM {
                     break;
                 }
-                // Parts meeting at an edge or a corner only hold each other
-                // nowhere (R1113-PG-600); boxes turned off the axes are taken
-                // as touching where their boxes meet.
-                let (a, b) = (bounds[left], bounds[right]);
-                let edge_only = square[left]
-                    && square[right]
-                    && (0..3)
-                        .filter(|axis| {
-                            a.1[*axis].min(b.1[*axis]) - a.0[*axis].max(b.0[*axis]) > CONTACT_FIT_MM
-                        })
-                        .count()
-                        < 2;
-                if edge_only
-                    || model.are_alternatives(&parts[left], &parts[right])
-                    || boxes[left].separation(&boxes[right]) > CONTACT_FIT_MM
+                if model.are_alternatives(&parts[left], &parts[right])
+                    || !face_to_face(&boxes[left], &boxes[right])
                 {
                     continue;
                 }
@@ -222,12 +206,55 @@ impl<'a> Footing<'a> {
     }
 }
 
-/// Whether `axis` runs along a world axis.
-fn on_axis(axis: &[f64; 3]) -> bool {
-    axis.iter()
-        .filter(|value| value.abs() > ketchup_tolerance::ROUNDING)
-        .count()
-        == 1
+/// Whether boxes `a` and `b` hold each other: running into each other through
+/// a body, or meeting flat, a face of each against the other's, over a patch
+/// wider than a line either way, however either is turned. Parts meeting at an
+/// edge or a corner hold each other nowhere (R1113-PG-600; capability review
+/// 768: a grounded column turned 1°, meeting a block along its edge, was
+/// ground for it).
+fn face_to_face(a: &Obb, b: &Obb) -> bool {
+    let separation = a.separation(b);
+    if separation > CONTACT_FIT_MM {
+        return false;
+    }
+    if separation < -CONTACT_FIT_MM {
+        return true;
+    }
+    let radius = |obb: &Obb, skip: usize, direction: [f64; 3]| -> f64 {
+        (0..3)
+            .filter(|axis| *axis != skip)
+            .map(|axis| obb.half[axis] * dot(obb.axes[axis], direction).abs())
+            .sum()
+    };
+    let delta = sub(b.centre, a.centre);
+    (0..3).any(|i| {
+        let normal = a.axes[i];
+        (0..3).any(|j| {
+            // Flat against each other: the smaller face stays within the fit
+            // of the other's plane all over.
+            let tilt = radius(a, i, b.axes[j]).min(radius(b, j, normal));
+            if tilt > CONTACT_FIT_MM {
+                return false;
+            }
+            let gap = dot(delta, normal).abs() - a.half[i] - b.half[j];
+            if gap.abs() > CONTACT_FIT_MM {
+                return false;
+            }
+            // Their faces overlap wider than the fit along each side of
+            // either, in the plane between them.
+            let sides = (0..3)
+                .filter(|axis| *axis != i)
+                .map(|axis| a.axes[axis])
+                .chain((0..3).filter(|axis| *axis != j).filter_map(|axis| {
+                    let along = b.axes[axis];
+                    let level = dot(along, normal);
+                    linalg::normalize(std::array::from_fn(|n| along[n] - level * normal[n]))
+                }));
+            sides.into_iter().all(|side| {
+                radius(a, i, side) + radius(b, j, side) - dot(delta, side).abs() > CONTACT_FIT_MM
+            })
+        })
+    })
 }
 
 /// Whether an anchorage at `anchor` holds `point` of `member`, of `frame`,
