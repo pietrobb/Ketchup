@@ -831,6 +831,46 @@ fn a_cancelled_image_stops() {
     ));
 }
 
+/// A cancel is seen while the shadows are worked out, not only after them (review 2026-11-13
+/// R1113-IMG-600: with 3 000 large overlapping triangles a cancel took 35.6 s). The flag is set
+/// first, and the shadows come before the first look at it after them.
+#[test]
+#[ignore = "perf: release timing budget, runs nightly"]
+fn perf_a_cancel_stops_the_shadows_of_many_large_triangles_within_a_second() {
+    let triangles = (0..3_000_u32)
+        .map(|layer| {
+            let z = f64::from(layer);
+            PresentationTriangle {
+                corners_mm: [
+                    [-5_000.0, -5_000.0, z],
+                    [5_000.0, -5_000.0, z],
+                    [0.0, 5_000.0, z],
+                ],
+                rgba: [150, 150, 150, 255],
+                texture: None,
+            }
+        })
+        .collect();
+    let scene = PresentationScene {
+        triangles,
+        labels: Vec::new(),
+        textures: Vec::new(),
+    };
+    let options = PresentationOptions {
+        shadows: true,
+        ..small(Background::White)
+    };
+    let asked = std::time::Instant::now();
+    let rendered = render_presentation_until(&scene, &options, &AtomicBool::new(true));
+    let waited = asked.elapsed();
+    assert!(
+        matches!(rendered, Err(PresentationError::Cancelled)),
+        "{:?}",
+        rendered.map(|image| (image.width, image.height))
+    );
+    assert!(waited < std::time::Duration::from_secs(1), "{waited:?}");
+}
+
 /// A label far from the model is refused instead of framing a speck (review 2026-11-12
 /// R1112-IMG-503: one at 1e12 mm gave an image without the model), as a model as far as 1e300
 /// is, which said it had no surface.

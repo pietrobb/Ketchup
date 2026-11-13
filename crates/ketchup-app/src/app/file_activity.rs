@@ -14,6 +14,8 @@ pub(crate) struct FileActivity {
     pub(super) drawing_export: Option<super::drawing_export_activity::DrawingExportTask>,
     pub(super) mesh_export: Option<super::mesh_export_activity::MeshExportTask>,
     pub(super) presentation_export: Option<super::presentation_export::PresentationTask>,
+    /// Held by the thread of the window's or a client's presentation image until it ends.
+    pub(crate) presentation_slot: super::presentation_export::PresentationSlot,
     /// File > Export > Presentation image: the options being chosen.
     pub(crate) presentation_dialog: Option<super::presentation_dialog::PresentationDialog>,
     pub(super) dwg_reading: Option<super::dwg_import::DwgReadTask>,

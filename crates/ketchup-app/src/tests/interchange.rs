@@ -268,8 +268,37 @@ fn the_file_menu_saves_a_presentation_image_as_the_options_say() {
         .expect("the options window is open")
         .request
         .options;
-    (options.width, options.height) = (160, 90);
+    // Review 2026-11-13 P3: the largest size offered was refused only after a file was chosen,
+    // and the refusal was not in the window.
+    (options.width, options.height) = (8192, 8192);
     let save = harness.state().catalog.text("presentation-save");
+    harness
+        .get_by_role_and_label(egui::accesskit::Role::Button, &save)
+        .click();
+    harness.run();
+    assert!(script.export_requests().is_empty(), "no file is asked for");
+    let refusal = harness
+        .state()
+        .file
+        .activity
+        .presentation_dialog
+        .as_ref()
+        .expect("the options window stays open")
+        .refusal
+        .clone()
+        .expect("it says why");
+    assert!(refusal.contains("limit"), "{refusal}");
+    assert!(harness.query_by_label_contains(&refusal).is_some());
+    let options = &mut harness
+        .state_mut()
+        .file
+        .activity
+        .presentation_dialog
+        .as_mut()
+        .unwrap()
+        .request
+        .options;
+    (options.width, options.height) = (160, 90);
     harness
         .get_by_role_and_label(egui::accesskit::Role::Button, &save)
         .click();

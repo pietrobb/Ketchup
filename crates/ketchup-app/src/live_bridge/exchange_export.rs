@@ -150,6 +150,8 @@ pub(super) struct PresentationJob {
     export_format: String,
     overwrite: bool,
     receiver: mpsc::Receiver<MadePresentation>,
+    /// The client was told `request_cancelled`; the job keeps its place until its thread ends.
+    answered: bool,
 }
 
 /// Whether `request` is a presentation image, which runs as a job.
@@ -172,10 +174,10 @@ impl LiveBridge {
             cancelled,
         } = queued;
         take_error_details();
-        if self.program_check_job.is_some() {
+        if self.program_check_job.is_some() || app.file.activity.presentation_slot.busy() {
             let busy = failure(
                 "busy",
-                "A program, geometry check, import or export is running.",
+                "A program, geometry check, import, export or presentation image is running.",
                 json!({}),
             );
             Self::reply(app, id, &reply, Err(busy));
@@ -216,6 +218,7 @@ impl LiveBridge {
                     export_format,
                     overwrite,
                     receiver,
+                    answered: false,
                 }));
                 context.request_repaint_after(Duration::from_millis(10));
             }
@@ -227,12 +230,13 @@ impl LiveBridge {
         &mut self,
         app: &mut KetchupApp,
         context: &egui::Context,
-        job: PresentationJob,
+        mut job: PresentationJob,
     ) {
-        // The thread sees the same flag and stops; nothing is written.
-        if job.cancelled.load(Ordering::Acquire) {
+        // The thread sees the same flag and stops; nothing is written. The client is answered
+        // at once, but the job keeps its place until the thread has ended (R1113-IMG-600).
+        if !job.answered && job.cancelled.load(Ordering::Acquire) {
             Self::reply(app, job.id, &job.reply, Err("request_cancelled"));
-            return;
+            job.answered = true;
         }
         let made = match job.receiver.try_recv() {
             Ok(made) => made,
@@ -247,6 +251,10 @@ impl LiveBridge {
                 ))
             }
         };
+        if job.answered {
+            context.request_repaint();
+            return;
+        }
         take_error_details();
         let written = app.finish_client_presentation(
             Path::new(&job.path),

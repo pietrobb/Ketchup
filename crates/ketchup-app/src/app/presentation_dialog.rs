@@ -2,9 +2,11 @@
 //! and how see-through the parts of each material of the visible model are. Save image… asks
 //! where and makes it.
 
-use super::presentation_export::PresentationRequest;
+use super::presentation_export::{PresentationRequest, presentation_refused};
 use crate::*;
-use ketchup_manufacturing::presentation::{Background, MAX_PRESENTATION_SIDE};
+use ketchup_manufacturing::presentation::{
+    Background, MAX_PRESENTATION_SIDE, presentation_supersample,
+};
 use ketchup_model::drawing::BomItems;
 
 /// What the user chose so far.
@@ -14,6 +16,8 @@ pub(crate) struct PresentationDialog {
     pub(crate) color: [u8; 3],
     /// Opacity in percent of each material of the visible parts, 100 = opaque.
     pub(crate) materials: BTreeMap<String, u8>,
+    /// Why the last Save image… made no image, shown until the next one.
+    pub(crate) refusal: Option<String>,
 }
 
 impl PresentationDialog {
@@ -63,6 +67,7 @@ impl KetchupApp {
             request: PresentationRequest::default(),
             color: [255, 255, 255],
             materials,
+            refusal: None,
         });
     }
 
@@ -80,16 +85,31 @@ impl KetchupApp {
             .resizable(false)
             .show(context, |ui| {
                 self.presentation_options(ui, &mut dialog);
+                if let Some(refusal) = &dialog.refusal {
+                    ui.colored_label(ui.visuals().error_fg_color, refusal);
+                }
                 ui.horizontal(|ui| {
                     save = ui.button(self.catalog.text("presentation-save")).clicked();
                     cancel = ui.button(self.catalog.text("dialog-cancel")).clicked();
                 });
             });
         if save {
-            if let Some(path) = self.choose_export_path("png") {
-                self.start_presentation_export(path, &dialog.request(), context);
+            // An image past the limits is refused before a file is chosen, and a refusal before
+            // the image starts stays in the dialog (review 2026-11-13 P3).
+            let options = &dialog.request.options;
+            let refused =
+                presentation_supersample(options.width, options.height, options.supersample)
+                    .map_err(presentation_refused)
+                    .and_then(|_| {
+                        let Some(path) = self.choose_export_path("png") else {
+                            return Ok(());
+                        };
+                        self.start_presentation_export(path, &dialog.request(), context)
+                    });
+            match refused {
+                Ok(()) => return,
+                Err(error) => dialog.refusal = Some(error.to_string()),
             }
-            return;
         }
         if open && !cancel {
             self.file.activity.presentation_dialog = Some(dialog);
