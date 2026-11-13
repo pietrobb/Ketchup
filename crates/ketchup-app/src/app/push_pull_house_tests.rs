@@ -28,12 +28,16 @@ pub(super) const RELEASE_BUDGET: Duration = Duration::from_millis(if cfg!(debug_
     1_000
 });
 
-/// From release to the committed part.
+/// From release to the committed part, held to it in the nightly perf tests.
 pub(super) const COMMIT_BUDGET: Duration = Duration::from_millis(if cfg!(debug_assertions) {
     20_000
 } else {
     5_000
 });
+
+/// How long a test waits for background work whose outcome it checks: only a hang
+/// runs out of it, so a loaded machine does not fail the test.
+pub(super) const PATIENCE: Duration = Duration::from_secs(600);
 
 pub(super) const START: Vec3 = Vec3::new(-2500.0, -2500.0, 0.0);
 pub(super) const END: Vec3 = Vec3::new(-1500.0, -1800.0, 0.0);
@@ -50,12 +54,9 @@ pub(super) fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
 
 pub(super) fn settle(harness: &mut Harness<'_, KetchupApp>) {
     harness.step();
-    step_until(
-        harness,
-        Duration::from_secs(600),
-        "exact evaluation never settled",
-        |app| app.exact.task.is_none() && app.push_pull.face_offset_evaluation.is_none(),
-    );
+    step_until(harness, PATIENCE, "exact evaluation never settled", |app| {
+        app.exact.task.is_none() && app.push_pull.face_offset_evaluation.is_none()
+    });
 }
 
 pub(super) fn event(harness: &mut Harness<'_, KetchupApp>, event: egui::Event) -> Duration {
@@ -171,8 +172,8 @@ pub(super) fn draw(harness: &mut Harness<'_, KetchupApp>, ellipse: bool) {
 
 /// Drags the face under `at` up by `PULL_STEPS * PULL_STEP_MM`, holds and
 /// releases it until it commits; the slowest drag frame, the slowest held
-/// frame and the release frame.
-pub(super) fn pull(harness: &mut Harness<'_, KetchupApp>, at: Vec3) -> [Duration; 3] {
+/// frame, the release frame and the time from release to commit.
+pub(super) fn pull(harness: &mut Harness<'_, KetchupApp>, at: Vec3) -> [Duration; 4] {
     harness.state_mut().dispatch_command(AppCommand::PushPull);
     harness.step();
     move_to(harness, at + Vec3::new(5.0, 5.0, 0.0));
@@ -202,21 +203,27 @@ pub(super) fn pull(harness: &mut Harness<'_, KetchupApp>, at: Vec3) -> [Duration
         .unwrap_or_default();
 
     let release = button(harness, last, false);
-    step_until(harness, COMMIT_BUDGET, "never committed", |app| {
+    let released = Instant::now();
+    step_until(harness, PATIENCE, "never committed", |app| {
         app.document_revision() != revision
     });
+    let committed = released.elapsed();
     settle(harness);
-    [slowest, held, release]
+    [slowest, held, release, committed]
 }
 
 /// [`pull`], and no frame of the drag, the held button or the release is slow.
 pub(super) fn perf_pull_within_budget(harness: &mut Harness<'_, KetchupApp>, at: Vec3) {
-    let [drag, held, release] = pull(harness, at);
+    let [drag, held, release, committed] = pull(harness, at);
     assert!(drag < FRAME_BUDGET, "slowest Push/Pull frame {drag:?}");
     assert!(held < RELEASE_BUDGET, "a held frame took {held:?}");
     assert!(
         release < RELEASE_BUDGET,
         "the release froze the window for {release:?}"
+    );
+    assert!(
+        committed < COMMIT_BUDGET,
+        "the pull committed {committed:?} after the release"
     );
 }
 
@@ -300,12 +307,12 @@ fn pulling_a_shape_while_the_house_is_being_evaluated_plans_without_waiting() {
         .unwrap();
     step_until(
         &mut harness,
-        FRAME_BUDGET * 4,
+        PATIENCE,
         "no preview after the evaluation",
         |app| app.has_drawn_shape_preview(),
     );
     button(&mut harness, last, false);
-    step_until(&mut harness, COMMIT_BUDGET, "never committed", |app| {
+    step_until(&mut harness, PATIENCE, "never committed", |app| {
         app.document_revision() != revision
     });
     let app = harness.state();

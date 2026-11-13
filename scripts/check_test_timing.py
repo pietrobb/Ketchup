@@ -86,14 +86,29 @@ MACRO = re.compile(r"\b(?:debug_)?assert_(lt|le|gt|ge)!\(")
 OPERATOR_FIRST = re.compile(r"^\s*(?:<=?|>=?)\s")
 LIMIT = re.compile(r"\bDuration::|\b[A-Z][A-Z0-9_]*(?:BUDGET|DEADLINE)\b")
 NOW = re.compile(r"^\s*(?:std::time::)?Instant::now\(\)\s*$")
-WAIT = re.compile(r"\.(?:recv_timeout|wait_timeout\w*|wait|next_event)\(\s*([^()]*(?:\([^()]*\))?)\s*\)")
+WAIT = re.compile(r"\.(?:recv_timeout|wait_timeout\w*|wait|next_event)\(\s*((?:[^()]|\([^()]*\))*?)\s*\)")
 DURATION = re.compile(
-    r"^(?:std::time::)?Duration::from_(secs|millis|micros|nanos)\((\d[\d_]*)\)$")
+    r"^(?:std::time::)?Duration::from_(secs|millis|micros|nanos)(?:_f32|_f64)?"
+    r"\((\d[\d_]*(?:\.\d+)?)\)$")
+# A time that depends on the build, `from_millis(if cfg!(debug_assertions) { 3_000 } else
+# { 400 })`: the shorter one counts.
+BUILD_DURATION = re.compile(
+    r"^(?:std::time::)?Duration::from_(secs|millis|micros|nanos)\(\s*if\s+cfg!\([^()]*\)\s*"
+    r"\{\s*(\d[\d_]*)\s*\}\s*else\s*\{\s*(\d[\d_]*)\s*\}\s*\)$")
+FACTOR = r"(\d[\d_]*(?:\.\d+)?)(?:_?(?:u32|u64|f32|f64))?"
+# A time times or divided by a number: `X * 4`, `X / 2`, `X.mul_f64(1.5)`, `X.div_f32(2.0)`.
+SCALED = re.compile(rf"^(.+?)\s*(?:([*/])\s*{FACTOR}|\.(mul|div)_f(?:32|64)\(\s*{FACTOR}\s*\))$")
+# A number times a time: `4 * X`.
+SCALING = re.compile(rf"^{FACTOR}\s*\*\s*(.+)$")
 DURATION_CONST = re.compile(r"\bconst\s+(\w+)\s*:\s*(?:std::time::)?Duration\s*=\s*([^;]+);")
 NOW_CALL = r"(?:std::time::)?Instant::now\(\)"
 BRACE = re.compile(r"[{}]")
 UNIT_MS = {"secs": 1_000, "millis": 1, "micros": 1e-3, "nanos": 1e-6}
-SIGNATURE = re.compile(r"\bfn\s+(\w+)\s*(?:<[^>{]*>)?\s*\(")
+# Generics may hold `->` and nested `<…>` (review 2026-11-13 P3: `<F: Fn() -> bool>`).
+SIGNATURE = re.compile(r"\bfn\s+(\w+)\s*(?:<(?:->|<[^<>{]*>|[^<>{])*>)?\s*\(")
+# A closure bound to a name, called like a function (review 2026-11-13 P3).
+CLOSURE = re.compile(r"\blet\s+(\w+)\s*=\s*(?:move\s+)?\|([^|]*)\|\s*")
+LET_TIME = re.compile(r"\blet\s+(?:mut\s+)?(\w+)\s*(?::\s*(?:std::time::)?Duration\s*)?=\s*([^;]+);")
 SELF = re.compile(r"^&?(?:'\w+\s+)?(?:mut\s+)?self\b")
 DURATION_PARAMETER = re.compile(r"^(?:mut\s+)?(\w+)\s*:\s*(?:std::time::)?Duration$")
 NUMBER_PARAMETER = re.compile(r"^(?:mut\s+)?(\w+)\s*:\s*(?:u8|u16|u32|u64|u128|usize)$")
@@ -160,13 +175,35 @@ def stored_measurements(text: str) -> re.Pattern | None:
 
 
 def milliseconds(expression: str, constants: dict[str, float]) -> float | None:
+    """The milliseconds of a `Duration` expression: a literal, a known name, or one of
+    them scaled by a number (`STEP * 4`, `2 * STEP`, `X / 2`, `X.mul_f64(1.5)`; review
+    2026-11-13 P3)."""
     expression = expression.strip()
+    while expression.startswith("&"):
+        expression = expression[1:].strip()
     if expression in constants:
         return constants[expression]
     duration = DURATION.match(expression)
     if duration:
-        return int(duration.group(2).replace("_", "")) * UNIT_MS[duration.group(1)]
-    return None
+        return float(duration.group(2).replace("_", "")) * UNIT_MS[duration.group(1)]
+    built = BUILD_DURATION.match(expression)
+    if built:
+        shorter = min(int(built.group(2).replace("_", "")), int(built.group(3).replace("_", "")))
+        return shorter * UNIT_MS[built.group(1)]
+    scaled = SCALED.match(expression)
+    if scaled:
+        time = scaled.group(1)
+        operator, factor = scaled.group(2) or scaled.group(4), scaled.group(3) or scaled.group(5)
+    else:
+        scaled = SCALING.match(expression)
+        if not scaled:
+            return None
+        factor, time, operator = scaled.group(1), scaled.group(2), "*"
+    value = milliseconds(time, constants)
+    if value is None:
+        return None
+    factor = float(factor.replace("_", ""))
+    return value * factor if operator in ("*", "mul") else value / factor if factor else None
 
 
 def arms(text: str, after: int) -> str:
@@ -182,13 +219,24 @@ def arms(text: str, after: int) -> str:
     return text[opening:]
 
 
-def duration_constants(text: str) -> dict[str, float]:
-    constants = {}
+def duration_constants(text: str) -> dict[str, float | None]:
+    """The `Duration` constants of `text`, also one named after another (review
+    2026-11-13 P3: `const B: Duration = A;`). One whose time is not read is `None`, so
+    that a constant of the same name in another file does not stand in for it."""
+    constants: dict[str, float | None] = {}
     for constant in DURATION_CONST.finditer(text):
-        value = milliseconds(constant.group(2), {})
-        if value is not None:
-            constants[constant.group(1)] = value
+        constants[constant.group(1)] = milliseconds(constant.group(2), constants)
     return constants
+
+
+def with_locals(text: str, at: int, constants: dict[str, float | None]) -> dict[str, float | None]:
+    """`constants` and the times its function names with `let` before `at`, the last of
+    each name (review 2026-11-13 P3: `let patience = …; recv_timeout(patience)`)."""
+    known = dict(constants)
+    functions = list(FUNCTION.finditer(text, 0, at))
+    for binding in LET_TIME.finditer(text, functions[-1].start() if functions else 0, at):
+        known[binding.group(1)] = milliseconds(binding.group(2), known)
+    return known
 
 
 def parenthesized(text: str, opening: int) -> tuple[str, int]:
@@ -226,6 +274,15 @@ def signatures(text: str) -> list[tuple[str, list[str], bool, str]]:
         method = bool(parameters) and bool(SELF.match(parameters[0]))
         found.append((signature.group(1), parameters[1:] if method else parameters, method,
                       arms(text, close)))
+    for closure in CLOSURE.finditer(text):
+        # An untyped parameter is read as a `Duration`: it is a helper only if it is
+        # waited on as one.
+        parameters = [item if ":" in item else f"{item}: Duration"
+                      for item in top_level_items(closure.group(2))]
+        after = closure.end()
+        end = text.find(";", after)
+        body = arms(text, after) if text.startswith("{", after) else text[after:end if end >= 0 else None]
+        found.append((closure.group(1), parameters, False, body))
     return found
 
 
@@ -315,7 +372,7 @@ def failing_helper_waits(text: str, helpers: dict[str, Helper],
             if enclosing and enclosing[-1].startswith("perf_"):
                 continue  # a perf_* function may hold the work to a budget
             if helper[2] is None:
-                value = milliseconds(argument, constants)
+                value = milliseconds(argument, with_locals(text, start, constants))
             else:
                 count = NUMBER.match(argument)
                 value = int(count.group(1).replace("_", "")) * helper[2] if count else None
@@ -329,7 +386,7 @@ def short_needed_waits(text: str) -> list[int]:
     constants = duration_constants(text)
     found = []
     for wait in WAIT.finditer(text):
-        value = milliseconds(wait.group(1), constants)
+        value = milliseconds(wait.group(1), with_locals(text, wait.start(), constants))
         if value is None:
             continue
         start = max(text.rfind(mark, 0, wait.start()) for mark in ";{}") + 1
@@ -372,7 +429,8 @@ def failing_deadlines(text: str, constants: dict[str, float]) -> list[int]:
     found = []
     all_deadlines = deadlines(text)
     for index, deadline in enumerate(all_deadlines):
-        value = milliseconds(deadline.group(2) or deadline.group(3), constants)
+        value = milliseconds(deadline.group(2) or deadline.group(3),
+                             with_locals(text, deadline.start(), constants))
         if value is None or value >= HANG_FLOOR_MS:
             continue
         if fails_after(text, all_deadlines, index):
@@ -393,8 +451,10 @@ def fails_after(text: str, all_deadlines: list[re.Match], index: int) -> bool:
     if index + 1 < len(all_deadlines):
         end = min(end, all_deadlines[index + 1].start())
     owned = text[deadline.end():end]
-    quiet = re.search(rf"\bwhile\s+{NOW_CALL}\s*<\s*{re.escape(deadline.group(1))}\s*\{{", owned)
-    quiet = bool(quiet) and not re.search(r"\b(?:break|return)\b", arms(owned, quiet.end() - 1))
+    poll = re.search(rf"\bwhile\s+{NOW_CALL}\s*<\s*{re.escape(deadline.group(1))}\s*\{{", owned)
+    loop = arms(owned, poll.end() - 1) if poll else ""
+    quiet = bool(poll) and not re.search(r"\b(?:break|return)\b", loop)
+    before = text[:deadline.end() + poll.start()] if poll else ""
     for statement in owned.split(";"):
         if not FAILS_AFTER.search(statement):
             continue
@@ -405,10 +465,27 @@ def fails_after(text: str, all_deadlines: list[re.Match], index: int) -> bool:
             continue
         if PANICS.search(words):
             return True
-        if TIMED_OUT.search(words) or (quiet and NOTHING.search(words)):
+        if TIMED_OUT.search(words) or (quiet and gathered_nothing(words, loop, before)):
             continue
         return True
     return False
+
+
+def gathered_nothing(statement: str, loop: str, before: str) -> bool:
+    """Whether `statement` asserts that nothing came of what the quiet wait `loop` gathers,
+    into a variable that `before` sets empty: only that is the point of the wait. That
+    the work left, or a queue the wait does not fill, is empty after it holds the work to
+    the wait's time (review 2026-11-13 P3: "the work finished within 300 ms")."""
+    if not NOTHING.search(statement):
+        return False
+    subject = SUBJECT.search(statement)
+    if not subject:
+        return False
+    name = re.escape(subject.group(1))
+    if not re.search(rf"\b{name}\s*(?:\+=|\.(?:push\w*|extend|insert|append)\(|=\s*Some\()", loop):
+        return False
+    started = list(re.finditer(rf"\blet\s+mut\s+{name}\s*(?::[^=;]+)?=\s*([^;]+);", before))
+    return bool(started) and bool(EMPTY.match(started[-1].group(1).strip()))
 
 
 START = re.compile(rf"\blet\s+(?:mut\s+)?(\w+)\s*(?::\s*[\w:]+)?\s*=\s*{NOW_CALL}\s*;")
@@ -430,6 +507,10 @@ TIMEOUT_EXPECTED = re.compile(r"\b(?:Timeout|TimedOut)\b\)*\s*=>\s*(?:\{\s*\}|\(
 NOTHING = re.compile(
     r"\bassert_eq!\([^;]*,\s*(?:0|None|\[\]|vec!\[\]|Vec::new\(\))\s*(?:,[^;]*)?\)\s*$"
     r"|\bassert!\(\s*[\w.()]*\.is_empty\(\)")
+# The variable such an assert checks: `count` of `assert_eq!(count, 0)`, `events` of
+# `assert!(events.is_empty())` or `assert_eq!(events.len(), 0)`; not a call.
+SUBJECT = re.compile(r"\bassert(?:_eq)?!\(\s*(\w+)\s*(?:,|\.is_empty\(\)|\.len\(\)\s*,)")
+EMPTY = re.compile(r"^(?:0\w*|None|vec!\[\]|\[\]|(?:[\w:]+::)?(?:new|default)\(\))$")
 
 
 def budgets(text: str, helpers: dict[str, Helper], constants: dict[str, float]) -> list[int]:
@@ -481,7 +562,7 @@ def violations(root: Path = ROOT) -> list[str]:
     # A helper counts wherever it is called, also from another file than its own.
     helpers = failing_wait_helpers([text for _, _, text in tests])
     constants = {name: value for _, _, text in tests
-                 for name, value in duration_constants(text).items()}
+                 for name, value in duration_constants(text).items() if value is not None}
     for relative, offset, text in tests:
         found += [f"{relative.as_posix()}:{offset + line}"
                   for line in budgets(text, helpers, constants)]
