@@ -232,6 +232,38 @@ fn a_box_painted_on_its_outside_only_comes_in_as_one_solid() {
     assert_eq!(back["count"], 1, "{back}");
 }
 
+/// A box painted red (200, 30, 30) on the inside only, and a box with one face SketchUp
+/// shows reversed and nothing painted, come in as one solid each, the first in the colour
+/// SketchUp shows. Before (review 2026-11-13 R1113-SKP-600), winding followed the paint and
+/// the first came as a sheet; the second, the most usual SketchUp case, as two; and every
+/// colour came paler, the red as 229, 96, 96 (SKP-601).
+#[test]
+fn a_box_wound_or_painted_any_way_comes_in_as_one_solid_in_its_colour() {
+    for (file, colour) in [
+        ("inside_painted_box.skp", Some([200, 30, 30])),
+        ("reversed_face_box.skp", None),
+    ] {
+        let (answer, snapshot, imported) = import_fixture(file);
+        assert_eq!(imported.len(), 1, "{file}: {answer}");
+        let kinds: Vec<_> = snapshot
+            .definition(imported[0].definition_id())
+            .unwrap()
+            .feature_ids()
+            .iter()
+            .filter_map(|id| snapshot.feature(*id))
+            .map(|feature| feature.kind().body_kind())
+            .collect();
+        assert_eq!(
+            kinds,
+            [Some(ketchup_model::document::BodyKind::Solid)],
+            "{file}: {answer}"
+        );
+        if colour.is_some() {
+            assert_eq!(imported[0].color(), colour, "{file}");
+        }
+    }
+}
+
 /// What needs a solid refuses an imported sheet by name: it is not made exact, and a
 /// check of made parts (collision, fabrication, mass) does not take it as a body.
 #[test]

@@ -731,7 +731,7 @@ fn a_box_painted_on_its_outside_only_comes_as_one_surface() {
 }
 
 /// A face unpainted on its front and painted on its back, as a face SketchUp shows reversed,
-/// keeps the back's colour.
+/// keeps the back's colour, written linear (R1113-SKP-601).
 #[test]
 fn a_face_painted_on_its_back_only_keeps_that_colour() {
     let mut builder = create();
@@ -758,7 +758,8 @@ fn a_face_painted_on_its_back_only_keeps_that_colour() {
         .iter()
         .map(|material| material["pbrMetallicRoughness"]["baseColorFactor"].clone())
         .collect();
-    let green = [30.0, 200.0, 30.0].map(|channel| channel / 255.0);
+    let green =
+        [30.0, 200.0, 30.0].map(|channel: f64| ((channel / 255.0 + 0.055) / 1.055).powf(2.4));
     assert_eq!(colours.len(), 1, "{colours:?}");
     for (channel, expected) in colours[0].as_array().unwrap().iter().zip(green) {
         assert!(
@@ -813,31 +814,26 @@ fn signed_volume(glb: &[u8]) -> f64 {
     volume
 }
 
-/// A box with one face SketchUp shows reversed (its back outside), painted from outside
-/// like the others: that face is painted on its back, and comes as seen from it, so the box
-/// faces out. Before (review 2026-11-12 P3) it was written as its front, inside out, and
-/// the box came as no solid and one loose surface.
-#[test]
-fn a_reversed_face_painted_from_outside_faces_out() {
+/// A box component whose faces `reversed` SketchUp shows reversed (their backs outside),
+/// each face painted with `paint` on the side `inside` names: its back for a face not
+/// reversed when painted from inside.
+fn painted_box(reversed: &[usize], paint: Option<[u8; 3]>, inside: bool) -> Vec<u8> {
     let mut builder = create();
-    let red = builder.add_material("Red", [200, 30, 30], None).unwrap();
-    let blue = builder.add_material("Blue", [30, 30, 200], None).unwrap();
+    let red = paint.map(|colour| builder.add_material("Red", colour, None).unwrap());
     let mut definition = builder
         .add_component_definition("Box", &DefinitionOptions::default())
         .unwrap();
     for (index, face) in BOX_FACES.iter().enumerate() {
         let mut face = *face;
-        let options = if index == 0 {
+        let turned = reversed.contains(&index);
+        if turned {
             face.reverse();
-            FaceOptions {
-                back_material: Some(blue),
-                ..FaceOptions::default()
-            }
-        } else {
-            FaceOptions {
-                material: Some(red),
-                ..FaceOptions::default()
-            }
+        }
+        let on_back = inside != turned;
+        let options = FaceOptions {
+            material: red.filter(|_| !on_back),
+            back_material: red.filter(|_| on_back),
+            ..FaceOptions::default()
         };
         definition.add_face(&face, &options).unwrap();
     }
@@ -845,14 +841,68 @@ fn a_reversed_face_painted_from_outside_faces_out() {
     builder
         .add_instance(definition, &InstanceOptions::default())
         .unwrap();
-    let model = skp_to_glb(&builder.to_bytes().unwrap(), LIMIT).unwrap();
-    assert!(model.left_out.is_empty(), "{:?}", model.left_out);
+    builder.to_bytes().unwrap()
+}
+
+/// A face is written wound as its front whichever side is painted: the GLB import turns a
+/// closed shell to face out by its geometry (review 2026-11-13 R1113-SKP-600). Before, a
+/// face painted on its back only was written reversed, so a box painted from inside came
+/// inside out, and as no solid.
+#[test]
+fn a_face_is_wound_as_its_front_whichever_side_is_painted() {
     let box_volume = 10.0 * 20.0 * 30.0 * METRES_PER_INCH.powi(3);
-    let volume = signed_volume(&model.glb);
-    assert!(
-        (volume - box_volume).abs() < box_volume * 1e-4,
-        "{volume} m³, the box is {box_volume} m³"
-    );
+    for inside in [false, true] {
+        let model = skp_to_glb(&painted_box(&[], Some([200, 30, 30]), inside), LIMIT).unwrap();
+        assert!(model.left_out.is_empty(), "{:?}", model.left_out);
+        let volume = signed_volume(&model.glb);
+        assert!(
+            (volume - box_volume).abs() < box_volume * 1e-4,
+            "inside {inside}: {volume} m³, the box is {box_volume} m³"
+        );
+    }
+}
+
+/// glTF's `baseColorFactor` is linear and a SketchUp colour sRGB: red 200, 30, 30 is written
+/// as its linear value (review 2026-11-13 R1113-SKP-601: written as 200 / 255, the GLB
+/// import, reading it as linear, made it 229, 96, 96).
+#[test]
+fn a_colour_is_written_linear() {
+    let model = skp_to_glb(&painted_box(&[], Some([200, 30, 30]), false), LIMIT).unwrap();
+    let document = gltf(&model.glb);
+    let factor = &document["materials"][0]["pbrMetallicRoughness"]["baseColorFactor"];
+    let linear = |srgb: f64| ((srgb / 255.0 + 0.055) / 1.055).powf(2.4);
+    for (channel, expected) in
+        factor
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip([linear(200.0), linear(30.0), linear(30.0), 1.0])
+    {
+        assert!(
+            (channel.as_f64().unwrap() - expected).abs() < 1e-6,
+            "{factor}"
+        );
+    }
+}
+
+/// Writes the fixtures of [`painted_box`] that `ketchup-app` imports (see
+/// `fixtures/README.md`), run once with `--ignored` when they change.
+#[test]
+#[ignore = "writes fixtures"]
+fn write_painted_box_fixtures() {
+    for (name, bytes) in [
+        (
+            "inside_painted_box.skp",
+            painted_box(&[], Some([200, 30, 30]), true),
+        ),
+        ("reversed_face_box.skp", painted_box(&[0], None, false)),
+    ] {
+        std::fs::write(
+            format!("{}/fixtures/{name}", env!("CARGO_MANIFEST_DIR")),
+            bytes,
+        )
+        .unwrap();
+    }
 }
 
 /// A box component named `name` placed at `translation`.

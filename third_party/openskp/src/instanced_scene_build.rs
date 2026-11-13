@@ -168,12 +168,8 @@ impl<'a> Instancer<'a> {
         }
         let idx = self.gltf_materials.len();
         let mut gm = GltfMaterial::default();
-        gm.pbr_metallic_roughness.base_color_factor = [
-            f64::from(key.color[0]) / 255.0,
-            f64::from(key.color[1]) / 255.0,
-            f64::from(key.color[2]) / 255.0,
-            f64::from(key.color[3]) / 255.0,
-        ];
+        gm.pbr_metallic_roughness.base_color_factor =
+            crate::face_groups::base_color_factor(key.color);
         gm.pbr_metallic_roughness.base_color_texture = key.texture_index;
         gm.double_sided = key.double_sided;
         self.gltf_materials.push(gm);
