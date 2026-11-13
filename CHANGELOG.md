@@ -5,6 +5,7 @@ What changed for users in each Ketchup release. The full notes, downloads, and c
 
 ## 0.3.3 — 2026-11-12
 
+- Kečup runs on a Mac: `Ketchup-0.3.3-macOS.dmg` holds Kečup and `Ketchup-Viewer-0.3.3-macOS.dmg` Kečup Viewer, each to drag into Applications. Kečup needs Apple Silicon (M1 or newer) and macOS 11 or later; the Viewer also runs on Intel Macs. Both are signed by CENTAURY Plus s.r.o. and notarized by Apple, so they open without a warning. The examples are the same `Ketchup-0.3.3-Examples.zip`, and `SHA256SUMS.txt` names the two packages too.
 - A SketchUp or GLB model too large for one import says what it has too many of, how many and the most one import takes, and what to do, for example "the model has at least 4000128 placed triangles; one import takes at most 4000000. Lower the segments of arcs and circles, or delete detailed parts such as plants and 3D text, then import again." Before, it said only that the GLB exceeds a "bounded envelope". A mesh without a primitive is refused as malformed glTF, not as too many meshes.
 - `--mcp-setup` under `sudo`, and the window run as root, write the configuration as the owner of the home it is found in. A link above its folder no longer leads the write elsewhere: `~/.config` made a link to a folder of root's was written as root, unchecked, and a link to another user's `.config` wrote that user's configuration. A settings save and Connect AI at the same moment no longer turn the window back to root in the middle of the other's write, and a write that fails midway leaves the window root again.
 

@@ -18,6 +18,11 @@ param(
     # Folder with the examples README.md links to a release download (tiny-house.ketchup);
     # with it the release also gets Ketchup-<version>-Examples.zip (build-examples-zip.ps1).
     [string]$DownloadedExamples,
+    # The release's macOS packages, Ketchup-<version>-macOS.dmg and
+    # Ketchup-Viewer-<version>-macOS.dmg as scripts/macos/build-app.sh and
+    # build-viewer-app.sh make them on a Mac; copied beside the others so
+    # the release checksums name them too (the 0.3.3 sums had their lines added by hand).
+    [string[]]$MacPackages = @(),
     [switch]$Sign,
     [switch]$SkipBuild
 )
@@ -64,6 +69,15 @@ if ([string]::IsNullOrWhiteSpace($InnoCompilerPath)) {
 }
 if ([string]::IsNullOrWhiteSpace($SigningMetadataPath)) {
     $SigningMetadataPath = Join-Path $PSScriptRoot "signing\metadata.json"
+}
+$macNames = @("Ketchup-$Version-macOS.dmg", "Ketchup-Viewer-$Version-macOS.dmg")
+foreach ($package in $MacPackages) {
+    if (-not (Test-Path -LiteralPath $package -PathType Leaf)) {
+        throw "The macOS package $package does not exist."
+    }
+    if ($macNames -cnotcontains [IO.Path]::GetFileName($package)) {
+        throw "$package is not a macOS package of $Version; the release names them $($macNames -join ' and ')."
+    }
 }
 
 $OutputDir = [IO.Path]::GetFullPath($OutputDir)
@@ -627,6 +641,13 @@ try {
 $releaseAssets = @($setupPath, $zipPath, $viewerZipPath)
 if (-not [string]::IsNullOrWhiteSpace($DownloadedExamples)) {
     $releaseAssets += $examplesPath
+}
+foreach ($package in $MacPackages) {
+    $macPath = Join-Path $OutputDir ([IO.Path]::GetFileName($package))
+    if ([IO.Path]::GetFullPath($package) -ne $macPath) {
+        Copy-Item -LiteralPath $package -Destination $macPath -Force
+    }
+    $releaseAssets += $macPath
 }
 & (Join-Path $PSScriptRoot "write-checksums.ps1") -OutputDir $OutputDir -Assets $releaseAssets
 
