@@ -168,6 +168,9 @@ pub(super) fn presentation_refused(error: PresentationError) -> ExportError {
         PresentationError::LabelText { .. } => {
             "Give each label text on one line, within the limit of characters."
         }
+        PresentationError::LabelLetter { .. } => {
+            "Write the label in Latin, Greek or Cyrillic letters or emoji; other scripts cannot be drawn yet."
+        }
         PresentationError::TooManyLabels { .. } => {
             "Turn off the part labels or name fewer labels; part labels count with yours."
         }
@@ -459,6 +462,10 @@ mod tests {
             PresentationError::LabelText {
                 label: 2,
                 limit: 200,
+            },
+            PresentationError::LabelLetter {
+                label: 1,
+                letter: '倉',
             },
             PresentationError::ViewDirection,
             PresentationError::Supersample { supersample: 9 },

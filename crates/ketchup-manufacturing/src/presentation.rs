@@ -158,6 +158,12 @@ pub enum PresentationError {
         label: usize,
         limit: usize,
     },
+    /// Label `label` has `letter`, which none of the built-in typefaces draws (review
+    /// 2026-11-13 P3: CJK and Arabic came out as empty boxes).
+    LabelLetter {
+        label: usize,
+        letter: char,
+    },
     /// The point of label `label` is not finite.
     LabelPoint {
         label: usize,
@@ -223,6 +229,11 @@ impl fmt::Display for PresentationError {
             Self::LabelText { label, limit } => write!(
                 formatter,
                 "label {label} is blank, has a line break or is longer than {limit} characters"
+            ),
+            Self::LabelLetter { label, letter } => write!(
+                formatter,
+                "label {label} has the letter {letter} (U+{:04X}), which the built-in typefaces cannot draw",
+                u32::from(*letter)
             ),
             Self::LabelPoint { label } => write!(
                 formatter,
@@ -381,12 +392,19 @@ pub fn part_labels(instances: &[MeshGlbInstance<'_>]) -> Vec<PresentationLabel> 
         let Some(name) = name else {
             continue;
         };
+        // A letter no built-in typeface draws is left out rather than refusing the image
+        // (review 2026-11-13 P3); a name of only such letters gets no label.
         let text = name
             .chars()
             .map(|letter| if letter.is_control() { ' ' } else { letter })
+            .filter(|letter| letter.is_whitespace() || raster::drawable(*letter))
             .take(MAX_LABEL_CHARS)
             .collect::<String>();
-        if labels.len() == MAX_PRESENTATION_LABELS || named.contains(&text) {
+        let text = text.trim().to_owned();
+        if text.chars().all(raster::unseen)
+            || labels.len() == MAX_PRESENTATION_LABELS
+            || named.contains(&text)
+        {
             continue;
         }
         let source = instance.source;
@@ -496,8 +514,9 @@ pub fn render_presentation_until(
     raster::render(scene, &options, cancelled, MAX_PRESENTATION_SAMPLES)
 }
 
-/// Refuses more than [`MAX_PRESENTATION_LABELS`] labels, a blank, multi-line or overlong text
-/// and a point that is not finite.
+/// Refuses more than [`MAX_PRESENTATION_LABELS`] labels, a blank, multi-line or overlong text,
+/// a letter the built-in typefaces do not draw and a point that is not finite. Zero-width
+/// letters alone are blank.
 pub fn check_labels(labels: &[PresentationLabel]) -> Result<(), PresentationError> {
     if labels.len() > MAX_PRESENTATION_LABELS {
         return Err(PresentationError::TooManyLabels {
@@ -506,7 +525,9 @@ pub fn check_labels(labels: &[PresentationLabel]) -> Result<(), PresentationErro
         });
     }
     for (label, PresentationLabel { text, at_mm }) in labels.iter().enumerate() {
-        if text.trim().is_empty()
+        if text
+            .chars()
+            .all(|letter| letter.is_whitespace() || raster::unseen(letter))
             || text.chars().any(char::is_control)
             || text.chars().count() > MAX_LABEL_CHARS
         {
@@ -514,6 +535,9 @@ pub fn check_labels(labels: &[PresentationLabel]) -> Result<(), PresentationErro
                 label,
                 limit: MAX_LABEL_CHARS,
             });
+        }
+        if let Some(letter) = raster::undrawable(text)? {
+            return Err(PresentationError::LabelLetter { label, letter });
         }
         if !at_mm.iter().all(|value| value.is_finite()) {
             return Err(PresentationError::LabelPoint { label });

@@ -579,6 +579,30 @@ fn part_labels_name_each_component_once_on_top_of_its_first_part() {
             at_mm: [5.0, 5.0, 10.0],
         }]
     );
+    // Review 2026-11-13 P3: letters no built-in typeface draws are left out of a part's name
+    // rather than drawn as boxes or refusing the image; a name of only such letters is skipped.
+    for (name, shown) in [
+        ("倉庫 Reusable beam", Some("Reusable beam")),
+        ("倉庫", None),
+    ] {
+        let mut renamed = occurrences.clone();
+        for occurrence in &mut renamed {
+            occurrence.definition_name = name.into();
+            occurrence.occurrence_name = String::new();
+        }
+        let instances = renamed
+            .iter()
+            .map(|occurrence| MeshGlbInstance {
+                source: MeshExportSource::Exact(&package),
+                occurrence,
+            })
+            .collect::<Vec<_>>();
+        let texts = part_labels(&instances)
+            .into_iter()
+            .map(|label| label.text)
+            .collect::<Vec<_>>();
+        assert_eq!(texts, shown.into_iter().collect::<Vec<_>>(), "{name}");
+    }
 }
 
 /// A 2 × 2 PNG: red and white squares.
@@ -956,4 +980,60 @@ fn labels_keep_apart_and_inside_the_image() {
         );
     }
     assert!(changed(&plain, &edge) > 100);
+}
+
+/// Review 2026-11-13 P3: a name longer than the room either side ran off the image; CJK,
+/// Arabic and emoji came out as the typeface's empty box; a label of a zero-width space alone
+/// passed. A long label is cut with an ellipsis, emoji are drawn from the built-in emoji
+/// typefaces, a letter no built-in typeface has is refused by name, and so is a label with
+/// nothing to see.
+#[test]
+fn labels_fit_the_image_and_show_only_letters_the_typefaces_draw() {
+    let options = annotated(Background::White);
+    let with = |text: &str, at_mm: [f64; 3]| {
+        let mut scene = box_on_slab();
+        scene.labels = vec![PresentationLabel {
+            text: text.into(),
+            at_mm,
+        }];
+        render_presentation(&scene, &options)
+    };
+    let plain = render_presentation(&box_on_slab(), &options).unwrap();
+    let long = "Membrána ".repeat(13);
+    for at_mm in [[0.0, 0.0, 140.0], [200.0, 0.0, 20.0], [-200.0, 0.0, 20.0]] {
+        let image = with(&long, at_mm).unwrap();
+        assert!(changed(&plain, &image) > 100);
+        for y in 0..image.height {
+            for x in [0, image.width - 1] {
+                assert_eq!(
+                    pixel(&image, x, y),
+                    pixel(&plain, x, y),
+                    "{at_mm:?} at {x}, {y}"
+                );
+            }
+        }
+    }
+    let smile = with("😀", [0.0, 0.0, 140.0]).unwrap();
+    let frown = with("👍", [0.0, 0.0, 140.0]).unwrap();
+    assert!(
+        changed(&smile, &frown) > 5,
+        "two emoji are two pictures, not one box"
+    );
+    assert!(
+        with("👍🏽 ❤️", [0.0, 0.0, 140.0]).is_ok(),
+        "joiners and selectors pass"
+    );
+    for (text, letter) in [("倉庫", '倉'), ("Membrána مستودع", 'م')] {
+        let refused = with(text, [0.0, 0.0, 140.0]).unwrap_err().to_string();
+        assert!(refused.contains(letter), "{text}: {refused}");
+    }
+    for text in ["\u{200B}", "\u{200D}\u{FE0F} "] {
+        assert!(
+            matches!(
+                with(text, [0.0, 0.0, 140.0]),
+                Err(PresentationError::LabelText { label: 0, .. })
+            ),
+            "{text:?}"
+        );
+    }
 }
