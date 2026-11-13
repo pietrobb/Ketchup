@@ -18,6 +18,11 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $folder = [IO.Path]::GetFullPath($OutputDir).TrimEnd('\', '/')
+# One line per file: a file given twice was summed twice (review 2026-11-13 P3).
+$twice = @($Assets | ForEach-Object { [IO.Path]::GetFileName($_) } | Group-Object | Where-Object Count -gt 1)
+if ($twice) {
+    throw "The release names $($twice.Name -join ', ') twice; SHA256SUMS.txt lists each file once."
+}
 $lines = foreach ($asset in $Assets) {
     $path = [IO.Path]::GetFullPath($asset)
     if ([IO.Path]::GetDirectoryName($path).TrimEnd('\', '/') -ne $folder) {
