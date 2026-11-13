@@ -555,6 +555,16 @@ jobs:
           cargo test --locked $CRATES --features ketchup-model/saved-files --no-fail-fast -- \
             --skip instanced_rendering::real_ten_thousand_occurrence_product_uses_one_scheduled_mesh_one_bvh_and_one_wgpu_draw \
             --skip instanced_rendering::garden_studio_hardware_gpu_camera_frames
+      # The two tests of writing the assistant's configuration under sudo run only
+      # as root, so CI skipped them (review 2026-11-13). The binary the step above
+      # built, run as root; both must have run.
+      - name: tests of the configuration as root
+        if: ${{ !cancelled() }}
+        run: |
+          test=$(cargo test --locked $CRATES --features ketchup-model/saved-files --no-run --message-format=json \
+            | jq -r 'select(.profile.test == true and .target.name == "ketchup_app" and (.target.kind | index("lib"))) | .executable')
+          sudo "$test" live_bridge::mcp_config::tests::under_sudo_ | tee "$RUNNER_TEMP/as-root.txt"
+          grep -q "test result: ok. 2 passed" "$RUNNER_TEMP/as-root.txt"
       - name: released versions read the files the tests wrote
         if: ${{ !cancelled() }}
         run: |

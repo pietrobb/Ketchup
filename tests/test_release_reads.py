@@ -129,7 +129,8 @@ def test_every_job_that_tests_its_crates_keeps_their_saved_files_for_the_release
     # Review 2026-10-29 proposal 5.4: the application tests save documents too.
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     runs = re.findall(r"cargo test --locked \$(?:env:)?CRATES[^\n]*", ci)
-    tests = [run for run in runs if "--ignored" not in run]
+    # A build with --no-run (for the tests run as root) saves nothing.
+    tests = [run for run in runs if "--ignored" not in run and "--no-run" not in run]
     # Crates without OCCT, and those with it on Windows and on Linux.
     assert len(tests) == 3
     assert all("--features ketchup-model/saved-files" in run for run in tests)
