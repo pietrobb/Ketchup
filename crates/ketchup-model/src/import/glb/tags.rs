@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{GlbImportError, ParsedNode, validate_text};
+use super::{GlbImportError, ParsedNode, display_name, validate_text};
 use crate::document::{CanonicalCommand, Snapshot, TagId};
 
 /// At most this many tags come with one GLB.
@@ -82,11 +82,13 @@ pub(super) fn plan_tags(
     {
         return Err(GlbImportError::InvalidReference);
     }
-    for tag in &tags.tags {
-        validate_text(&tag.name)?;
-        if tag.name.trim().is_empty() {
-            return Err(GlbImportError::InvalidText);
-        }
+    let names: Vec<String> = tags
+        .tags
+        .iter()
+        .map(|tag| display_name(&tag.name))
+        .collect();
+    for name in &names {
+        validate_text(name)?;
     }
 
     let mut existing: BTreeMap<&str, TagId> = BTreeMap::new();
@@ -108,11 +110,11 @@ pub(super) fn plan_tags(
             None => BTreeSet::new(),
         };
         if let Some(index) = tags.node_tags[*node] {
-            let tag = &tags.tags[index];
+            let name = &names[index];
             let id = match ids[index] {
                 Some(id) => id,
                 None => {
-                    let id = if let Some(id) = existing.get(tag.name.as_str()) {
+                    let id = if let Some(id) = existing.get(name.as_str()) {
                         *id
                     } else {
                         let id = TagId(next);
@@ -121,14 +123,14 @@ pub(super) fn plan_tags(
                             .ok_or(GlbImportError::IdSpaceExhausted)?;
                         planned.commands.push(CanonicalCommand::CreateTag {
                             id,
-                            name: tag.name.clone(),
-                            visible: tag.visible,
+                            name: name.clone(),
+                            visible: tags.tags[index].visible,
                         });
                         id
                     };
                     // Two tags of one name are one tag, as they are in the document.
-                    for (other, same) in tags.tags.iter().zip(ids.iter_mut()) {
-                        if other.name == tag.name {
+                    for (other, same) in names.iter().zip(ids.iter_mut()) {
+                        if other == name {
                             *same = Some(id);
                         }
                     }
@@ -345,6 +347,50 @@ mod tests {
             Some(GlbImportError::InvalidText)
         );
         assert_eq!(plan(&GlbNodeTags::default()), None);
+    }
+
+    /// A tag or a node named with a control character in the source file imports with the
+    /// character as a space, trimmed (review 2026-11-13 P3: "Walls\u{7f}" refused the whole
+    /// file as "invalid identity text").
+    #[test]
+    fn names_with_control_characters_import_without_them() {
+        let (mut json, binary) = super::super::json_tests::sample();
+        let first = usize::try_from(json["scenes"][0]["nodes"][0].as_u64().unwrap()).unwrap();
+        json["nodes"][first]["name"] = "Porch\u{1b}[0m".into();
+        let source = super::super::json_tests::packed(&json, &binary);
+        let scene = inspect_glb(&source).unwrap();
+        let mut node_tags = vec![None; scene.nodes.len()];
+        node_tags[first] = Some(0);
+        let tags = GlbNodeTags {
+            tags: vec![GlbTag {
+                name: "Walls\u{7f}".into(),
+                visible: true,
+            }],
+            node_tags,
+            hidden: Vec::new(),
+        };
+        let batch = plan_glb_import_tagged(
+            &DocumentStore::new().current(),
+            &source,
+            "s.glb",
+            &[],
+            &tags,
+        )
+        .unwrap();
+        let names: Vec<&str> = batch
+            .commands()
+            .iter()
+            .filter_map(|command| match command {
+                CanonicalCommand::CreateTag { name, .. }
+                | CanonicalCommand::CreateGroup { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(names.contains(&"Walls"), "{names:?}");
+        assert!(names.contains(&"Porch [0m"), "{names:?}");
+        assert!(names.iter().all(|name| !name.chars().any(char::is_control)));
+        let mut document = DocumentStore::new();
+        document.apply_batch(&batch).unwrap();
     }
 
     /// A node hidden in the source file (SketchUp's Hide on a component) imports its parts

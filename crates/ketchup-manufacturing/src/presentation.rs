@@ -25,10 +25,10 @@ pub use texture::{
 
 /// The longest side of a presentation image, in pixels.
 pub const MAX_PRESENTATION_SIDE: u32 = 8192;
-/// Supersampled pixels a render may hold (width × height × supersample²): 24 bytes each, about
-/// 580 MB at the limit. 1920 × 1080 with 3 × 3 smoothing or 3840 × 2160 without fit; a larger
-/// image is smoothed less to fit (review 2026-11-12 R1112-IMG-501), so this is also the most
-/// pixels an image has.
+/// Samples a render holds at once: 24 bytes each, about 580 MB at the limit. An image whose
+/// smoothed samples do not fit is made in bands of rows (review 2026-11-13 P3), and one too
+/// large even for that is smoothed less (review 2026-11-12 R1112-IMG-501). This is also the
+/// most pixels an image has.
 pub const MAX_PRESENTATION_SAMPLES: u64 = 24_000_000;
 /// Farthest a point of the model may lie from the origin along an axis, in millimetres (a
 /// million kilometres): past it the renderer's arithmetic overflows (review 2026-11-12 P3).
@@ -158,6 +158,12 @@ pub enum PresentationError {
         label: usize,
         limit: usize,
     },
+    /// Label `label` has `letter`, which none of the built-in typefaces draws (review
+    /// 2026-11-13 P3: CJK and Arabic came out as empty boxes).
+    LabelLetter {
+        label: usize,
+        letter: char,
+    },
     /// The point of label `label` is not finite.
     LabelPoint {
         label: usize,
@@ -223,6 +229,11 @@ impl fmt::Display for PresentationError {
             Self::LabelText { label, limit } => write!(
                 formatter,
                 "label {label} is blank, has a line break or is longer than {limit} characters"
+            ),
+            Self::LabelLetter { label, letter } => write!(
+                formatter,
+                "label {label} has the letter {letter} (U+{:04X}), which the built-in typefaces cannot draw",
+                u32::from(*letter)
             ),
             Self::LabelPoint { label } => write!(
                 formatter,
@@ -381,12 +392,19 @@ pub fn part_labels(instances: &[MeshGlbInstance<'_>]) -> Vec<PresentationLabel> 
         let Some(name) = name else {
             continue;
         };
+        // A letter no built-in typeface draws is left out rather than refusing the image
+        // (review 2026-11-13 P3); a name of only such letters gets no label.
         let text = name
             .chars()
             .map(|letter| if letter.is_control() { ' ' } else { letter })
+            .filter(|letter| letter.is_whitespace() || raster::drawable(*letter))
             .take(MAX_LABEL_CHARS)
             .collect::<String>();
-        if labels.len() == MAX_PRESENTATION_LABELS || named.contains(&text) {
+        let text = text.trim().to_owned();
+        if text.chars().all(raster::unseen)
+            || labels.len() == MAX_PRESENTATION_LABELS
+            || named.contains(&text)
+        {
             continue;
         }
         let source = instance.source;
@@ -412,7 +430,7 @@ pub fn part_labels(instances: &[MeshGlbInstance<'_>]) -> Vec<PresentationLabel> 
 }
 
 /// Samples per pixel side an image of `width` × `height` is rendered with: `supersample` when
-/// the image fits [`MAX_PRESENTATION_SAMPLES`] with them, else the most that fit. Refuses a size
+/// bands of its rows fit [`MAX_PRESENTATION_SAMPLES`] with them, else the most that fit. Refuses a size
 /// or smoothing out of range and an image of more pixels than the limit.
 pub fn presentation_supersample(
     width: u32,
@@ -438,9 +456,14 @@ pub fn presentation_supersample(
             limit: MAX_PRESENTATION_SAMPLES,
         });
     }
+    let fits = |factor: u32| {
+        let side = |pixels: u32| usize::try_from(pixels * factor).unwrap_or(usize::MAX);
+        let factor = usize::try_from(factor).unwrap_or(usize::MAX);
+        raster::band_rows(side(width), side(height), factor, MAX_PRESENTATION_SAMPLES).is_some()
+    };
     Ok((1..=supersample)
         .rev()
-        .find(|factor| pixels * u64::from(factor * factor) <= MAX_PRESENTATION_SAMPLES)
+        .find(|factor| fits(*factor))
         .unwrap_or(1))
 }
 
@@ -488,11 +511,12 @@ pub fn render_presentation_until(
         return Err(PresentationError::TextureReference { triangle });
     }
     check_labels(&scene.labels)?;
-    raster::render(scene, &options, cancelled)
+    raster::render(scene, &options, cancelled, MAX_PRESENTATION_SAMPLES)
 }
 
-/// Refuses more than [`MAX_PRESENTATION_LABELS`] labels, a blank, multi-line or overlong text
-/// and a point that is not finite.
+/// Refuses more than [`MAX_PRESENTATION_LABELS`] labels, a blank, multi-line or overlong text,
+/// a letter the built-in typefaces do not draw and a point that is not finite. Zero-width
+/// letters alone are blank.
 pub fn check_labels(labels: &[PresentationLabel]) -> Result<(), PresentationError> {
     if labels.len() > MAX_PRESENTATION_LABELS {
         return Err(PresentationError::TooManyLabels {
@@ -501,7 +525,9 @@ pub fn check_labels(labels: &[PresentationLabel]) -> Result<(), PresentationErro
         });
     }
     for (label, PresentationLabel { text, at_mm }) in labels.iter().enumerate() {
-        if text.trim().is_empty()
+        if text
+            .chars()
+            .all(|letter| letter.is_whitespace() || raster::unseen(letter))
             || text.chars().any(char::is_control)
             || text.chars().count() > MAX_LABEL_CHARS
         {
@@ -509,6 +535,9 @@ pub fn check_labels(labels: &[PresentationLabel]) -> Result<(), PresentationErro
                 label,
                 limit: MAX_LABEL_CHARS,
             });
+        }
+        if let Some(letter) = raster::undrawable(text)? {
+            return Err(PresentationError::LabelLetter { label, letter });
         }
         if !at_mm.iter().all(|value| value.is_finite()) {
             return Err(PresentationError::LabelPoint { label });

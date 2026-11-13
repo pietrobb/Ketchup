@@ -582,6 +582,10 @@ fn a_storey_height_as_build_up_is_reported_a_roof_terrace_taken_and_the_check_st
     terrace.push(cuboid("roof", [0.0, 0.0, 5454.0], [6000.0, 3000.0, 5654.0]));
     let table = [row(200, 200), row(2954, 2954), row(5654, 5654)];
     assert_eq!(issues(&terrace, &table), []);
+    // Its decking of 80 mm not modelled, the floor over the model's top
+    // (review 2026-11-13 P3: it was refused as outside the model).
+    let decked = [row(200, 200), row(2954, 2954), row(5734, 5654)];
+    assert_eq!(issues(&terrace, &decked), []);
     assert!(matches!(
         set(&terrace, &[row(200, 200), row(5655, 5655)], &never),
         Err(ProjectDrawingError::StoreyTable(StoreyTableError {

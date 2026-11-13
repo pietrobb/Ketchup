@@ -97,3 +97,7 @@ path = "tests/integration.rs"
 [[test]]
 name = "underlay_dxf_write_memory"
 path = "tests/underlay_dxf_write_memory.rs"
+
+[[test]]
+name = "texture_memory"
+path = "tests/texture_memory.rs"

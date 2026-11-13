@@ -73,6 +73,9 @@ impl KetchupApp {
         self.program_detach_warned = false;
         self.invalidate_pending_import_reviews();
         self.cancel_mesh_conversion();
+        // The pictures still queued are the old document's: dropping its cache leaves
+        // them undecoded (review 2026-11-13 R1113 P3).
+        self.render.cache = crate::renderer::DerivedRenderCache::default();
         self.tool_preview = None;
         self.drawings = crate::app_state::DrawingsState::default();
         // Its ids are of the document that goes; dropping its run stops it

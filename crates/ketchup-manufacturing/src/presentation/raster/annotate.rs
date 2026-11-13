@@ -3,7 +3,7 @@
 
 use super::{Camera, index, narrow, real};
 use crate::presentation::{PresentationError, PresentationLabel};
-use ab_glyph::{Font, FontRef, PxScale, ScaleFont, point};
+use ab_glyph::{Font, FontRef, GlyphId, PxScale, ScaleFont, point};
 use ketchup_geometry::linalg::Vec3;
 use ketchup_model::annotation::{DecimalMark, dimension_text_with};
 
@@ -93,11 +93,13 @@ pub(super) fn dimension_text(length_mm: f64, mark: DecimalMark) -> String {
     format!("{} mm", dimension_text_with(length_mm, mark))
 }
 
-/// Premultiplied RGBA samples the annotations are drawn into.
+/// Premultiplied RGBA samples the annotations are drawn into: the rows `own` of an image
+/// `width` × `height` samples.
 pub(super) struct Sheet<'a> {
     pub(super) colour: &'a mut [[f32; 4]],
     pub(super) width: usize,
     pub(super) height: usize,
+    pub(super) own: std::ops::Range<usize>,
     /// Samples per output pixel along each axis.
     pub(super) factor: usize,
 }
@@ -105,7 +107,10 @@ pub(super) struct Sheet<'a> {
 impl Sheet<'_> {
     /// Covers sample `(x, y)` by `cover` (0–1) of the opaque colour `rgb`.
     fn over(&mut self, x: usize, y: usize, rgb: [f64; 3], cover: f64) {
-        let Some(sample) = self.colour.get_mut(y * self.width + x) else {
+        let Some(row) = y.checked_sub(self.own.start) else {
+            return;
+        };
+        let Some(sample) = self.colour.get_mut(row * self.width + x) else {
             return;
         };
         let keep = 1.0 - cover;
@@ -125,12 +130,22 @@ impl Sheet<'_> {
         (from <= to).then(|| index(from)..=index(to))
     }
 
+    /// Rows `from`–`to` (sample space) of the sheet's own.
+    fn rows(&self, from: f64, to: f64) -> Option<std::ops::RangeInclusive<usize>> {
+        let rows = Self::span(from, to, self.height)?;
+        let (first, last) = (
+            (*rows.start()).max(self.own.start),
+            (*rows.end()).min(self.own.end.checked_sub(1)?),
+        );
+        (first <= last).then_some(first..=last)
+    }
+
     /// A line from `a` to `b` (sample space) `half_width` samples either side, with round ends.
     fn line(&mut self, a: Vec3, b: Vec3, half_width: f64, rgb: [f64; 3]) {
         let reach = half_width + 1.0;
         let (Some(columns), Some(rows)) = (
             Self::span(a.x.min(b.x) - reach, a.x.max(b.x) + reach, self.width),
-            Self::span(a.y.min(b.y) - reach, a.y.max(b.y) + reach, self.height),
+            self.rows(a.y.min(b.y) - reach, a.y.max(b.y) + reach),
         ) else {
             return;
         };
@@ -156,7 +171,7 @@ impl Sheet<'_> {
     fn rectangle(&mut self, low: Vec3, high: Vec3, rgb: [f64; 3], alpha: f64) {
         let (Some(columns), Some(rows)) = (
             Self::span(low.x, high.x - 1.0, self.width),
-            Self::span(low.y, high.y - 1.0, self.height),
+            self.rows(low.y, high.y - 1.0),
         ) else {
             return;
         };
@@ -168,10 +183,56 @@ impl Sheet<'_> {
     }
 }
 
+/// The built-in typefaces, each letter drawn by the first that has it: text, then the emoji
+/// of two (review 2026-11-13 P3: emoji were the text typeface's empty box).
+fn typefaces() -> Result<[FontRef<'static>; 3], PresentationError> {
+    let typeface = |bytes: &'static [u8]| {
+        FontRef::try_from_slice(bytes)
+            .map_err(|_unreadable: ab_glyph::InvalidFont| PresentationError::Font)
+    };
+    Ok([
+        typeface(epaint_default_fonts::UBUNTU_LIGHT)?,
+        typeface(epaint_default_fonts::NOTO_EMOJI_REGULAR)?,
+        typeface(epaint_default_fonts::EMOJI_ICON)?,
+    ])
+}
+
+/// A letter that is not drawn: a zero-width space or joiner, a variation selector or a skin
+/// tone, which only join or choose the look of the letters around them.
+pub(in crate::presentation) fn unseen(letter: char) -> bool {
+    matches!(
+        letter,
+        '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}' | '\u{1F3FB}'..='\u{1F3FF}'
+    )
+}
+
+/// The typeface and glyph that draw `letter`, `None` when no built-in typeface has it.
+fn glyph_of(typefaces: &[FontRef<'static>], letter: char) -> Option<(usize, GlyphId)> {
+    typefaces.iter().enumerate().find_map(|(typeface, font)| {
+        let glyph = font.glyph_id(letter);
+        (glyph.0 != 0).then_some((typeface, glyph))
+    })
+}
+
+/// Whether a built-in typeface draws `letter`, or it is [`unseen`]; `false` when the typefaces
+/// cannot be read, which the image then refuses with [`PresentationError::Font`].
+pub(in crate::presentation) fn drawable(letter: char) -> bool {
+    unseen(letter) || typefaces().is_ok_and(|typefaces| glyph_of(&typefaces, letter).is_some())
+}
+
+/// The first letter of `text` no built-in typeface draws (review 2026-11-13 P3: CJK and
+/// Arabic came out as empty boxes).
+pub(in crate::presentation) fn undrawable(text: &str) -> Result<Option<char>, PresentationError> {
+    let typefaces = typefaces()?;
+    Ok(text.chars().find(|letter| {
+        !letter.is_whitespace() && !unseen(*letter) && glyph_of(&typefaces, *letter).is_none()
+    }))
+}
+
 /// Draws the dimensions and labels; `camera` maps world points to sample space.
 pub(super) struct Annotator<'a> {
     camera: &'a Camera,
-    font: FontRef<'static>,
+    typefaces: [FontRef<'static>; 3],
     /// Text size and line half-width in samples.
     text: f64,
     stroke: f64,
@@ -179,13 +240,12 @@ pub(super) struct Annotator<'a> {
 
 impl<'a> Annotator<'a> {
     pub(super) fn new(camera: &'a Camera, sheet: &Sheet<'_>) -> Result<Self, PresentationError> {
-        let font = FontRef::try_from_slice(epaint_default_fonts::UBUNTU_LIGHT)
-            .map_err(|_unreadable: ab_glyph::InvalidFont| PresentationError::Font)?;
+        let typefaces = typefaces()?;
         let factor = real(sheet.factor);
         let output_height = real(sheet.height) / factor;
         Ok(Self {
             camera,
-            font,
+            typefaces,
             text: (output_height * TEXT_SHARE).max(TEXT_MIN_PX) * factor,
             stroke: (0.6 * factor).max(0.5),
         })
@@ -232,7 +292,8 @@ impl<'a> Annotator<'a> {
     /// Draws `label` with a leader from its point to its text. The text goes where it covers
     /// none of `placed`, the boxes of the texts drawn before, and to the left of its point when
     /// it would run off the image on the right (review 2026-11-12 P3: labels drew over one
-    /// another and long names ran off the image).
+    /// another and long names ran off the image). Text longer than the room on the wider side
+    /// is cut with an ellipsis (review 2026-11-13 P3).
     pub(super) fn label(
         &self,
         sheet: &mut Sheet<'_>,
@@ -244,7 +305,10 @@ impl<'a> Annotator<'a> {
         };
         let at = flat(at);
         let (rise, reach) = (self.text * 1.1, self.text * 0.7);
-        let width = self.measure(&label.text).1 + self.text * 0.5;
+        // The text starts `rise + reach` off its point, 0.2 text further, and its halo pads it.
+        let room = at.x.max(real(sheet.width) - at.x) - rise - reach - self.text;
+        let text = self.fitted(&label.text, room);
+        let width = self.measure(&text).1 + self.text * 0.5;
         let side = if at.x + rise + reach + width > real(sheet.width) && at.x - rise - reach > width
         {
             -1.0
@@ -280,26 +344,51 @@ impl<'a> Annotator<'a> {
         sheet.line(bend, end, self.stroke, INK);
         self.text_at(
             sheet,
-            &label.text,
+            &text,
             end + Vec3::new(side * self.text * 0.2, 0.0, 0.0),
             if side > 0.0 { 0.0 } else { 1.0 },
         );
     }
 
-    /// The glyphs of `text` with where each starts along its line, and how long the line is.
-    fn measure(&self, text: &str) -> (Vec<(ab_glyph::GlyphId, f64)>, f64) {
-        let scaled = self.font.as_scaled(PxScale::from(narrow(self.text)));
+    /// `text`, or as much of it as fits `room` samples with an ellipsis after it.
+    fn fitted(&self, text: &str, room: f64) -> String {
+        if self.measure(text).1 <= room {
+            return text.to_owned();
+        }
+        let letters = text.chars().collect::<Vec<_>>();
+        (0..letters.len())
+            .rev()
+            .map(|kept| {
+                let mut cut = letters[..kept].iter().collect::<String>();
+                cut.truncate(cut.trim_end().len());
+                cut.push('…');
+                cut
+            })
+            .find(|cut| self.measure(cut).1 <= room)
+            .unwrap_or_else(|| "…".to_owned())
+    }
+
+    /// The glyphs of `text`, each with its typeface and where it starts along the line, and how
+    /// long the line is. A letter no typeface has, refused before, takes no room.
+    fn measure(&self, text: &str) -> (Vec<(usize, GlyphId, f64)>, f64) {
+        let scale = PxScale::from(narrow(self.text));
         let mut advances = Vec::with_capacity(text.len());
         let mut caret = 0.0_f64;
-        let mut previous = None;
-        for letter in text.chars() {
-            let glyph = self.font.glyph_id(letter);
-            if let Some(previous) = previous {
+        let mut previous: Option<(usize, GlyphId)> = None;
+        for letter in text.chars().filter(|letter| !unseen(*letter)) {
+            let letter = if letter.is_whitespace() { ' ' } else { letter };
+            let Some((typeface, glyph)) = glyph_of(&self.typefaces, letter) else {
+                continue;
+            };
+            let scaled = self.typefaces[typeface].as_scaled(scale);
+            if let Some((before, previous)) = previous
+                && before == typeface
+            {
                 caret += f64::from(scaled.kern(previous, glyph));
             }
-            advances.push((glyph, caret));
+            advances.push((typeface, glyph, caret));
             caret += f64::from(scaled.h_advance(glyph));
-            previous = Some(glyph);
+            previous = Some((typeface, glyph));
         }
         (advances, caret)
     }
@@ -308,7 +397,7 @@ impl<'a> Annotator<'a> {
     /// 0.5 centres it there and 1 ends it there.
     fn text_at(&self, sheet: &mut Sheet<'_>, text: &str, anchor: Vec3, align: f64) {
         let scale = PxScale::from(narrow(self.text));
-        let scaled = self.font.as_scaled(scale);
+        let scaled = self.typefaces[0].as_scaled(scale);
         let (advances, caret) = self.measure(text);
         let ascent = f64::from(scaled.ascent());
         let descent = f64::from(scaled.descent());
@@ -321,10 +410,10 @@ impl<'a> Annotator<'a> {
             HALO,
             HALO_ALPHA,
         );
-        for (glyph, offset) in advances {
+        for (typeface, glyph, offset) in advances {
             let positioned = glyph
                 .with_scale_and_position(scale, point(narrow(left + offset), narrow(baseline)));
-            let Some(outline) = self.font.outline_glyph(positioned) else {
+            let Some(outline) = self.typefaces[typeface].outline_glyph(positioned) else {
                 continue;
             };
             let bounds = outline.px_bounds();

@@ -11,10 +11,14 @@ use ketchup_model::exact_product::{ExactBodyPackage, ExactResultRegistry};
 use ketchup_model::persistence::Blobs;
 use ketchup_rejection::{Reason, dropped};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use wgpu::util::DeviceExt as _;
 
 pub mod underlay;
+
+#[cfg(test)]
+mod picture_queue_tests;
 
 pub const RENDER_PLAN_SCHEMA_V1: &str = "ketchup.render-plan.v1";
 pub const RENDER_EVALUATOR_V1: &str = "ketchup.renderer.instanced.v1";
@@ -36,13 +40,51 @@ pub struct DerivedRenderCache {
     /// Pictures to decode, to the thread that decodes them one after another.
     decoder: Option<mpsc::Sender<PictureJob>>,
     /// Decoded pictures by blob, from that thread.
-    decoded: Option<mpsc::Receiver<(String, Option<Arc<RenderPicture>>)>>,
+    decoded: Option<mpsc::Receiver<DecodedPicture>>,
+    /// Set when the cache goes with its document: the thread decodes none of the
+    /// pictures still queued.
+    cancelled: Arc<AtomicBool>,
     hits: u64,
     misses: u64,
 }
 
+impl Drop for DerivedRenderCache {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+}
+
 /// A picture to decode and its bytes, if the document has them.
 type PictureJob = (MeshImage, Option<Arc<Vec<u8>>>);
+/// A decoded picture by its blob; `None` when it cannot be shown.
+type DecodedPicture = (String, Option<Arc<RenderPicture>>);
+
+/// Decodes the `jobs` one after another until they end or are `cancelled`. A picture
+/// whose decoding panics shows plain; the ones after it still decode.
+fn decode_pictures(
+    jobs: &mpsc::Receiver<PictureJob>,
+    sender: &mpsc::Sender<DecodedPicture>,
+    cancelled: &AtomicBool,
+    decode: impl Fn(&MeshImage, Option<&Vec<u8>>) -> Option<Arc<RenderPicture>>,
+) {
+    for (image, bytes) in jobs {
+        if cancelled.load(Ordering::Relaxed) {
+            return;
+        }
+        let picture = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            decode(&image, bytes.as_deref())
+        }))
+        .unwrap_or_else(|payload| {
+            ketchup_rejection::log!(
+                "the picture {} is shown as a plain face: its decoding broke: {}",
+                image.blob,
+                crate::bounded_parser::panic_message(payload.as_ref())
+            );
+            None
+        });
+        sender.deliver((image.blob, picture));
+    }
+}
 
 /// Where the decoding of a picture is.
 enum PictureState {
@@ -160,14 +202,10 @@ impl DerivedRenderCache {
     fn start_decoder(&mut self, job: PictureJob) -> std::io::Result<()> {
         let (decoder, jobs) = mpsc::channel::<PictureJob>();
         let (sender, decoded) = mpsc::channel();
+        let cancelled = Arc::clone(&self.cancelled);
         std::thread::Builder::new()
             .name("ketchup-pictures".into())
-            .spawn(move || {
-                for (image, bytes) in jobs {
-                    let picture = RenderPicture::decode(&image, bytes.as_deref());
-                    sender.deliver((image.blob, picture));
-                }
-            })?;
+            .spawn(move || decode_pictures(&jobs, &sender, &cancelled, RenderPicture::decode))?;
         // Cannot fail: the thread holds the receiver until this sender is dropped.
         dropped(decoder.send(job), Reason::NobodyWaiting);
         self.decoder = Some(decoder);

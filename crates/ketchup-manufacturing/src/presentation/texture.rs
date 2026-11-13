@@ -149,9 +149,21 @@ fn checked_size(width: u64, height: u64) -> Result<(usize, usize), TextureError>
     }
 }
 
+/// The colour of a pixel of grey, grey and alpha, RGB or RGBA.
+fn rgb_of(pixel: &[u8]) -> [u8; 3] {
+    match pixel {
+        [grey] | [grey, _] => [*grey; 3],
+        [r, g, b, ..] => [*r, *g, *b],
+        [] => [0; 3],
+    }
+}
+
 /// Averages a picture fed a row at a time from the top down by a whole factor to fit
-/// [`MAX_TEXTURE_SIDE`], keeping only one row of sums besides the result: the whole picture
-/// is never held (review 2026-11-12 R1112-SKP-500).
+/// [`MAX_TEXTURE_SIDE`], keeping only one row of sums besides the result: a PNG is never
+/// held whole (review 2026-11-12 R1112-SKP-500; an interlaced one, see
+/// [`reduce_interlaced`]). A JPEG is: its decoder gives no rows before the last, so one of
+/// [`MAX_SOURCE_PIXELS`] takes 3 bytes a pixel (192 MiB) while it is read, on the thread
+/// that reads pictures one at a time.
 struct Reducer {
     width: usize,
     height: usize,
@@ -190,13 +202,8 @@ impl Reducer {
             .take(self.width)
             .enumerate()
         {
-            let rgb = match pixel {
-                [grey] | [grey, _] => [*grey; 3],
-                [r, g, b, ..] => [*r, *g, *b],
-                [] => [0; 3],
-            };
             if let Some(sum) = self.sums.get_mut(column / self.factor) {
-                for (total, value) in sum.iter_mut().zip(rgb) {
+                for (total, value) in sum.iter_mut().zip(rgb_of(pixel)) {
                     *total += u64::from(value);
                 }
                 sum[3] += 1;
@@ -236,24 +243,94 @@ fn decode_png(bytes: &[u8]) -> Result<PresentationTexture, TextureError> {
     let (width, height) = reader.info().size();
     let (width, height) = checked_size(u64::from(width), u64::from(height))?;
     let channels = reader.output_color_type().0.samples();
-    let mut reducer = Reducer::new(width, height);
     if reader.info().interlaced {
-        // Its rows come in seven passes, so the whole frame is read first.
-        let mut buffer = vec![0; reader.output_buffer_size().ok_or(TextureError::Empty)?];
-        let frame = reader.next_frame(&mut buffer).map_err(TextureError::Png)?;
-        for row in buffer
-            .get(..frame.buffer_size())
-            .ok_or(TextureError::Empty)?
-            .chunks_exact(frame.line_size.max(1))
-        {
-            reducer.push(row, channels);
-        }
-    } else {
-        while let Some(row) = reader.next_row().map_err(TextureError::Png)? {
-            reducer.push(row.data(), channels);
-        }
+        return reduce_interlaced(&mut reader, width, height, channels);
+    }
+    let mut reducer = Reducer::new(width, height);
+    while let Some(row) = reader.next_row().map_err(TextureError::Png)? {
+        reducer.push(row.data(), channels);
     }
     reducer.finish()
+}
+
+/// The first column, first row, column step and row step of each Adam7 pass.
+const ADAM7_PASSES: [(usize, usize, usize, usize); 7] = [
+    (0, 0, 8, 8),
+    (4, 0, 8, 8),
+    (0, 4, 4, 8),
+    (2, 0, 4, 4),
+    (0, 2, 2, 4),
+    (1, 0, 2, 2),
+    (0, 1, 1, 2),
+];
+
+/// Averages an interlaced (Adam7) PNG of `width` × `height` into the blocks [`Reducer`]
+/// averages. Its rows come in seven passes, each of every so many pixels of every so many
+/// rows, so the sums of every block of the result are held rather than the picture
+/// (review 2026-11-13 R1113 P3: it was read whole, 200–400 MB at 8 192²).
+fn reduce_interlaced(
+    reader: &mut png::Reader<std::io::Cursor<&[u8]>>,
+    width: usize,
+    height: usize,
+    channels: usize,
+) -> Result<PresentationTexture, TextureError> {
+    let factor = width.max(height).div_ceil(MAX_TEXTURE_SIDE).max(1);
+    let columns = width.div_ceil(factor);
+    // Red, green, blue and count of each pixel of the result: at most 255 × 16² each.
+    let mut sums = vec![[0_u32; 4]; columns * height.div_ceil(factor)];
+    let full_width = reader.info().width;
+    // The passes that hold pixels of the picture, in the order its rows come.
+    let mut passes = (1_u8..)
+        .zip(ADAM7_PASSES)
+        .filter(|(_, (x, y, _, _))| *x < width && *y < height);
+    let mut pass = passes.next();
+    // The row within its pass, counted as the PNG counts it and as an index.
+    let (mut line, mut line_number, mut read) = (0, 0_u32, 0_usize);
+    while let Some(row) = reader.next_interlaced_row().map_err(TextureError::Png)? {
+        while let Some((_, (_, first_row, _, row_step))) = pass
+            && first_row + line * row_step >= height
+        {
+            pass = passes.next();
+            (line, line_number) = (0, 0);
+        }
+        let Some((number, (first_column, first_row, column_step, row_step))) = pass else {
+            return Err(TextureError::Empty);
+        };
+        let expected = png::Adam7Info::new(number, line_number, full_width);
+        if !matches!(row.interlace(), png::InterlaceInfo::Adam7(info) if *info == expected) {
+            return Err(TextureError::Empty);
+        }
+        let y = first_row + line * row_step;
+        for (index, pixel) in row.data().chunks_exact(channels.max(1)).enumerate() {
+            let x = first_column + index * column_step;
+            if x >= width {
+                break;
+            }
+            if let Some(sum) = sums.get_mut(y / factor * columns + x / factor) {
+                for (total, value) in sum.iter_mut().zip(rgb_of(pixel)) {
+                    *total += u32::from(value);
+                }
+                sum[3] += 1;
+                read += 1;
+            }
+        }
+        line += 1;
+        line_number += 1;
+    }
+    if read != width * height {
+        return Err(TextureError::Empty);
+    }
+    Ok(PresentationTexture {
+        width: columns,
+        height: sums.len() / columns.max(1),
+        rgb: sums
+            .iter()
+            .map(|[red, green, blue, count]| {
+                [red, green, blue]
+                    .map(|total| u8::try_from(total / (*count).max(1)).unwrap_or(u8::MAX))
+            })
+            .collect(),
+    })
 }
 
 fn decode_jpeg(bytes: &[u8]) -> Result<PresentationTexture, TextureError> {

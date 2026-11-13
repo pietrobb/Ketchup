@@ -57,7 +57,7 @@ mod dwg_import;
 #[path = "exchange_export_tests.rs"]
 mod exchange_export;
 #[path = "presentation_tests.rs"]
-mod presentation;
+pub(super) mod presentation;
 #[path = "product_integration_tests.rs"]
 mod product_integration;
 #[path = "program_access_tests.rs"]
