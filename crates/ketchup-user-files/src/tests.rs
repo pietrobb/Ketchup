@@ -98,9 +98,11 @@ fn under_sudo_a_users_folder_is_written_as_the_owner_of_its_base() {
         return;
     }
     let user = (65534, 65534);
-    let base = tempfile::tempdir().unwrap();
+    // Under sudo, macOS gives root a temporary folder only root can enter, so
+    // the user could reach neither folder and every refusal would be that one.
+    let base = tempfile::tempdir_in("/tmp").unwrap();
     std::os::unix::fs::chown(base.path(), Some(user.0), Some(user.1)).unwrap();
-    let root_only = tempfile::tempdir().unwrap();
+    let root_only = tempfile::tempdir_in("/tmp").unwrap();
     std::fs::set_permissions(root_only.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let linked = base.path().join("Ketchup");
     std::os::unix::fs::symlink(root_only.path(), &linked).unwrap();
