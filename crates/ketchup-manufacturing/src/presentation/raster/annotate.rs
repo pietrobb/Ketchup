@@ -5,6 +5,7 @@ use super::{Camera, index, narrow, real};
 use crate::presentation::{PresentationError, PresentationLabel};
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont, point};
 use ketchup_geometry::linalg::Vec3;
+use ketchup_model::annotation::{DecimalMark, dimension_text_with};
 
 const INK: [f64; 3] = [0.13, 0.13, 0.15];
 /// Light box behind text, so it reads over any part or background.
@@ -86,14 +87,10 @@ impl Dimension {
     }
 }
 
-/// A length as a dimension shows it: whole millimetres, or tenths when the length has them.
-pub(super) fn dimension_text(length_mm: f64) -> String {
-    let tenths = (length_mm * 10.0).round();
-    if tenths % 10.0 == 0.0 {
-        format!("{:.0} mm", tenths / 10.0)
-    } else {
-        format!("{:.1} mm", tenths / 10.0)
-    }
+/// A length as a dimension shows it: whole millimetres, or tenths when the length has them,
+/// with `mark` before them as the drawings write it (review 2026-11-12 P3).
+pub(super) fn dimension_text(length_mm: f64, mark: DecimalMark) -> String {
+    format!("{} mm", dimension_text_with(length_mm, mark))
 }
 
 /// Premultiplied RGBA samples the annotations are drawn into.
@@ -194,7 +191,13 @@ impl<'a> Annotator<'a> {
         })
     }
 
-    pub(super) fn dimension(&self, sheet: &mut Sheet<'_>, dimension: &Dimension, diagonal: f64) {
+    pub(super) fn dimension(
+        &self,
+        sheet: &mut Sheet<'_>,
+        dimension: &Dimension,
+        diagonal: f64,
+        mark: DecimalMark,
+    ) {
         let project = |point: Vec3| self.camera.project(point);
         let clear = dimension.outward * (diagonal * EXTENSION_CLEAR);
         let past = dimension.outward * (diagonal * EXTENSION_PAST);
@@ -220,35 +223,72 @@ impl<'a> Annotator<'a> {
         }
         self.text_at(
             sheet,
-            &dimension_text(dimension.length_mm),
+            &dimension_text(dimension.length_mm, mark),
             (a + b) * 0.5,
             0.5,
         );
     }
 
-    pub(super) fn label(&self, sheet: &mut Sheet<'_>, label: &PresentationLabel) {
+    /// Draws `label` with a leader from its point to its text. The text goes where it covers
+    /// none of `placed`, the boxes of the texts drawn before, and to the left of its point when
+    /// it would run off the image on the right (review 2026-11-12 P3: labels drew over one
+    /// another and long names ran off the image).
+    pub(super) fn label(
+        &self,
+        sheet: &mut Sheet<'_>,
+        label: &PresentationLabel,
+        placed: &mut Vec<[f64; 4]>,
+    ) {
         let Some(at) = self.camera.project(Vec3::from(label.at_mm)) else {
             return;
         };
         let at = flat(at);
-        let bend = at + Vec3::new(self.text * 1.1, -self.text * 1.1, 0.0);
-        let end = bend + Vec3::new(self.text * 0.5, 0.0, 0.0);
+        let (rise, reach) = (self.text * 1.1, self.text * 0.7);
+        let width = self.measure(&label.text).1 + self.text * 0.5;
+        let side = if at.x + rise + reach + width > real(sheet.width) && at.x - rise - reach > width
+        {
+            -1.0
+        } else {
+            1.0
+        };
+        let start = at.x + side * (rise + reach);
+        let (left, right) = if side > 0.0 {
+            (start, start + width)
+        } else {
+            (start - width, start)
+        };
+        let half = self.text * 0.75;
+        let box_at = |y: f64| [left, y - half, right, y + half];
+        let overlaps = |[l, t, r, b]: [f64; 4]| {
+            placed
+                .iter()
+                .any(|[pl, pt, pr, pb]| l < *pr && *pl < r && t < *pb && *pt < b)
+        };
+        let step = half * 2.0;
+        let rows = (0..24_u32).map(|row| at.y - rise - f64::from(row) * step);
+        let height = at.y - rise;
+        let y = rows
+            .clone()
+            .find(|y| *y - half >= 0.0 && !overlaps(box_at(*y)))
+            .or_else(|| rows.clone().find(|y| !overlaps(box_at(*y))))
+            .unwrap_or(height);
+        placed.push(box_at(y));
+        let bend = Vec3::new(at.x + side * rise, y, 0.0);
+        let end = bend + Vec3::new(side * self.text * 0.5, 0.0, 0.0);
         sheet.line(at, at, self.text * 0.12, INK);
         sheet.line(at, bend, self.stroke, INK);
         sheet.line(bend, end, self.stroke, INK);
         self.text_at(
             sheet,
             &label.text,
-            end + Vec3::new(self.text * 0.2, 0.0, 0.0),
-            0.0,
+            end + Vec3::new(side * self.text * 0.2, 0.0, 0.0),
+            if side > 0.0 { 0.0 } else { 1.0 },
         );
     }
 
-    /// `text` on a halo, vertically centred on `anchor`; `align` 0 starts it at the anchor,
-    /// 0.5 centres it there.
-    fn text_at(&self, sheet: &mut Sheet<'_>, text: &str, anchor: Vec3, align: f64) {
-        let scale = PxScale::from(narrow(self.text));
-        let scaled = self.font.as_scaled(scale);
+    /// The glyphs of `text` with where each starts along its line, and how long the line is.
+    fn measure(&self, text: &str) -> (Vec<(ab_glyph::GlyphId, f64)>, f64) {
+        let scaled = self.font.as_scaled(PxScale::from(narrow(self.text)));
         let mut advances = Vec::with_capacity(text.len());
         let mut caret = 0.0_f64;
         let mut previous = None;
@@ -261,6 +301,15 @@ impl<'a> Annotator<'a> {
             caret += f64::from(scaled.h_advance(glyph));
             previous = Some(glyph);
         }
+        (advances, caret)
+    }
+
+    /// `text` on a halo, vertically centred on `anchor`; `align` 0 starts it at the anchor,
+    /// 0.5 centres it there and 1 ends it there.
+    fn text_at(&self, sheet: &mut Sheet<'_>, text: &str, anchor: Vec3, align: f64) {
+        let scale = PxScale::from(narrow(self.text));
+        let scaled = self.font.as_scaled(scale);
+        let (advances, caret) = self.measure(text);
         let ascent = f64::from(scaled.ascent());
         let descent = f64::from(scaled.descent());
         let left = anchor.x - caret * align;
@@ -301,10 +350,11 @@ mod tests {
 
     #[test]
     fn a_dimension_reads_in_whole_millimetres_or_tenths() {
-        assert_eq!(dimension_text(1200.0), "1200 mm");
-        assert_eq!(dimension_text(1199.996), "1200 mm");
-        assert_eq!(dimension_text(12.5), "12.5 mm");
-        assert_eq!(dimension_text(0.04), "0 mm");
+        assert_eq!(dimension_text(1200.0, DecimalMark::Point), "1200 mm");
+        assert_eq!(dimension_text(1199.996, DecimalMark::Point), "1200 mm");
+        assert_eq!(dimension_text(12.5, DecimalMark::Point), "12.5 mm");
+        assert_eq!(dimension_text(12.5, DecimalMark::Comma), "12,5 mm");
+        assert_eq!(dimension_text(0.04, DecimalMark::Comma), "0 mm");
     }
 
     #[test]
