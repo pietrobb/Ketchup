@@ -19,7 +19,9 @@ use std::sync::atomic::AtomicBool;
 mod raster;
 mod texture;
 
-pub use texture::{MAX_SOURCE_SIDE, MAX_TEXTURE_SIDE, PresentationTexture, TextureError};
+pub use texture::{
+    MAX_SOURCE_PIXELS, MAX_SOURCE_SIDE, MAX_TEXTURE_SIDE, PresentationTexture, TextureError,
+};
 
 /// The longest side of a presentation image, in pixels.
 pub const MAX_PRESENTATION_SIDE: u32 = 8192;

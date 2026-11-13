@@ -1,3 +1,4 @@
+use crate::delivery::Deliver as _;
 use eframe::egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use ketchup_geometry::linalg;
 use ketchup_interaction::projection::CanonicalInteractionProjection;
@@ -8,8 +9,9 @@ use ketchup_model::document::{
 use ketchup_model::document::{MeshImage, MeshLook};
 use ketchup_model::exact_product::{ExactBodyPackage, ExactResultRegistry};
 use ketchup_model::persistence::Blobs;
+use ketchup_rejection::{Reason, dropped};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use wgpu::util::DeviceExt as _;
 
 pub mod underlay;
@@ -28,11 +30,30 @@ pub struct RenderCacheStats {
 #[derive(Default)]
 pub struct DerivedRenderCache {
     geometries: BTreeMap<String, Arc<RenderGeometry>>,
-    /// Decoded pictures by blob; `None` when the blob cannot be read as one.
-    pictures: BTreeMap<String, Option<Arc<RenderPicture>>>,
+    /// Pictures by blob, decoded on a thread of their own (review 2026-11-12 R1112-SKP-500:
+    /// a large one froze the window for seconds).
+    pictures: BTreeMap<String, PictureState>,
+    /// Pictures to decode, to the thread that decodes them one after another.
+    decoder: Option<mpsc::Sender<PictureJob>>,
+    /// Decoded pictures by blob, from that thread.
+    decoded: Option<mpsc::Receiver<(String, Option<Arc<RenderPicture>>)>>,
     hits: u64,
     misses: u64,
 }
+
+/// A picture to decode and its bytes, if the document has them.
+type PictureJob = (MeshImage, Option<Arc<Vec<u8>>>);
+
+/// Where the decoding of a picture is.
+enum PictureState {
+    Decoding,
+    /// `None` when the blob cannot be shown as a picture.
+    Decoded(Option<Arc<RenderPicture>>),
+}
+
+/// Marks the fingerprint of a geometry drawn without the picture it waits for, so the GPU
+/// keeps it apart from the one drawn with it.
+const AWAITING_PICTURE: &str = ":awaiting-picture";
 
 impl DerivedRenderCache {
     #[must_use]
@@ -44,36 +65,152 @@ impl DerivedRenderCache {
         }
     }
 
+    /// Takes the pictures decoded since; whether any was, so a plan drawn without them is
+    /// out of date.
+    pub(crate) fn receive_pictures(&mut self) -> bool {
+        let Some(decoded) = &self.decoded else {
+            return false;
+        };
+        let mut received = false;
+        loop {
+            match decoded.try_recv() {
+                Ok((blob, picture)) => {
+                    if let Some(state) = self.pictures.get_mut(&blob) {
+                        *state = PictureState::Decoded(picture);
+                        received = true;
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    // The thread is gone; what it had not decoded is shown plain.
+                    ketchup_rejection::log!("the thread that decodes pictures stopped");
+                    for state in self.pictures.values_mut() {
+                        if matches!(state, PictureState::Decoding) {
+                            *state = PictureState::Decoded(None);
+                            received = true;
+                        }
+                    }
+                    self.decoder = None;
+                    self.decoded = None;
+                    break;
+                }
+            }
+        }
+        received
+    }
+
+    /// Whether a picture is still being decoded.
+    pub(crate) fn decoding_pictures(&self) -> bool {
+        self.pictures
+            .values()
+            .any(|state| matches!(state, PictureState::Decoding))
+    }
+
+    /// Waits until every picture asked for is decoded.
+    #[cfg(test)]
+    pub(crate) fn wait_for_pictures(&mut self) {
+        while self.decoding_pictures() {
+            let Some(decoded) = &self.decoded else {
+                return;
+            };
+            match decoded.recv() {
+                Ok((blob, picture)) => {
+                    if let Some(state) = self.pictures.get_mut(&blob) {
+                        *state = PictureState::Decoded(picture);
+                    }
+                }
+                Err(mpsc::RecvError) => {
+                    self.receive_pictures();
+                }
+            }
+        }
+    }
+
+    /// The decoded picture `image` names; `None` while it is being decoded.
+    fn picture(&mut self, image: &MeshImage, blobs: &Blobs) -> Option<Option<Arc<RenderPicture>>> {
+        if let Some(state) = self.pictures.get(&image.blob) {
+            return match state {
+                PictureState::Decoding => None,
+                PictureState::Decoded(picture) => Some(picture.clone()),
+            };
+        }
+        let job = (image.clone(), blobs.get(&image.blob).cloned());
+        let sent = match &self.decoder {
+            Some(decoder) => decoder.send(job).map_err(|mpsc::SendError(job)| job),
+            None => Err(job),
+        };
+        if let Err(job) = sent
+            && let Err(error) = self.start_decoder(job)
+        {
+            // No thread to decode it on: shown in the face's own colour.
+            ketchup_rejection::log!(
+                "the picture {} is shown as a plain face: {error}",
+                image.blob
+            );
+            self.pictures
+                .insert(image.blob.clone(), PictureState::Decoded(None));
+            return Some(None);
+        }
+        self.pictures
+            .insert(image.blob.clone(), PictureState::Decoding);
+        None
+    }
+
+    /// Starts the thread that decodes pictures with `job` as its first.
+    fn start_decoder(&mut self, job: PictureJob) -> std::io::Result<()> {
+        let (decoder, jobs) = mpsc::channel::<PictureJob>();
+        let (sender, decoded) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("ketchup-pictures".into())
+            .spawn(move || {
+                for (image, bytes) in jobs {
+                    let picture = RenderPicture::decode(&image, bytes.as_deref());
+                    sender.deliver((image.blob, picture));
+                }
+            })?;
+        // Cannot fail: the thread holds the receiver until this sender is dropped.
+        dropped(decoder.send(job), Reason::NobodyWaiting);
+        self.decoder = Some(decoder);
+        self.decoded = Some(decoded);
+        Ok(())
+    }
+
     fn geometry(&mut self, source: GeometrySource, blobs: &Blobs) -> Arc<RenderGeometry> {
         if let Some(geometry) = self.geometries.get(&source.fingerprint) {
             self.hits += 1;
             return Arc::clone(geometry);
         }
-        let fingerprint = source.fingerprint.clone();
+        let mut fingerprint = source.fingerprint;
         let mut vertices = source.vertices;
+        let mut awaiting = false;
         let picture = source.picture.and_then(|image| {
-            let picture = self
-                .pictures
-                .entry(image.blob.clone())
-                .or_insert_with(|| RenderPicture::decode(&image, blobs))
-                .clone();
+            let picture = self.picture(&image, blobs).unwrap_or_else(|| {
+                awaiting = true;
+                None
+            });
             if picture.is_none() {
-                // Shown in the face's own colour instead.
+                // Shown in the face's own colour instead, for now or for good.
                 for vertex in &mut vertices {
                     vertex.picture[2] = 0.0;
                 }
             }
             picture
         });
+        self.misses += 1;
+        if awaiting {
+            // Built again with the picture once it is decoded.
+            fingerprint.push_str(AWAITING_PICTURE);
+        }
         let geometry = Arc::new(RenderGeometry {
-            fingerprint: source.fingerprint,
+            fingerprint: fingerprint.clone(),
             vertices,
             indices: source.indices,
             edge_vertices: source.edge_vertices,
             picture,
         });
-        self.geometries.insert(fingerprint, Arc::clone(&geometry));
-        self.misses += 1;
+        if !awaiting {
+            self.geometries.insert(fingerprint, Arc::clone(&geometry));
+        }
         geometry
     }
 }
@@ -107,10 +244,9 @@ pub struct RenderPicture {
 }
 
 impl RenderPicture {
-    /// The picture `image` names in `blobs`; `None`, said in the log, when it cannot be read.
-    fn decode(image: &MeshImage, blobs: &Blobs) -> Option<Arc<Self>> {
-        let decoded = blobs
-            .get(&image.blob)
+    /// The picture `image` names, of `bytes`; `None`, said in the log, when it cannot be read.
+    fn decode(image: &MeshImage, bytes: Option<&Vec<u8>>) -> Option<Arc<Self>> {
+        let decoded = bytes
             .ok_or(TextureError::Missing)
             .and_then(|bytes| PresentationTexture::decode(bytes, &image.mime_type));
         let picture = match decoded {
@@ -257,6 +393,7 @@ impl InstancedRenderPlan {
         blobs: &Blobs,
         cache: &mut DerivedRenderCache,
     ) -> Self {
+        cache.receive_pictures();
         let projection = CanonicalInteractionProjection::from_snapshot(snapshot);
         let colors = snapshot
             .scene_query()
@@ -349,7 +486,10 @@ impl InstancedRenderPlan {
                     .map(|picture| picture.blob.clone())
             })
             .collect::<BTreeSet<_>>();
-        cache.pictures.retain(|blob, _| shown.contains(blob));
+        // One being decoded is kept until it is: a plan drawn without it waits for it.
+        cache
+            .pictures
+            .retain(|blob, state| matches!(state, PictureState::Decoding) || shown.contains(blob));
         Self {
             id: next_plan_id(),
             document_id: snapshot.document_id(),
