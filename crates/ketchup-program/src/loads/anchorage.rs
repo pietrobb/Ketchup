@@ -38,13 +38,14 @@ const SPAN_PER_THICKNESS: f64 = 60.0;
 /// 761 of R1113-PG-600: a grounded rod 1 × 1 × 2 400 on the floor was ground,
 /// measured by its height across the member). A bar spans its length; a flat
 /// part, at least four times as wide as it is thick, is stiff in its own plane
-/// and spans its width.
+/// and spans its width, but only while its length spans no more than that many
+/// widths (capability review 763: a grounded strip 1 × 4 × 2 400 was ground).
 fn slender(part: &Part) -> bool {
     let mut sides = part.obb().half.map(|half| 2.0 * half);
     sides.sort_by(f64::total_cmp);
     let [thin, middle, long] = sides;
     let span = if middle >= 4.0 * thin { middle } else { long };
-    span > SPAN_PER_THICKNESS * thin
+    span > SPAN_PER_THICKNESS * thin || long > SPAN_PER_THICKNESS * middle
 }
 
 type Asked = (usize, usize, Vec<usize>);

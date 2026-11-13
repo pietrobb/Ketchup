@@ -68,7 +68,7 @@ joint(\"block {x}\", \"beam\", kind = \"screw\")
 #[test]
 fn a_small_or_free_part_touching_the_anchorage_is_no_ground() {
     type Beside = fn(i32) -> String;
-    let cases: [(&str, Beside); 6] = [
+    let cases: [(&str, Beside); 8] = [
         ("nub on its end", |x| {
             format!(
                 "box(\"nub {x}\", (1, 1, 1), at = ({}, 200, 2400), material = \"GL24h\", grounded = True)\n",
@@ -98,6 +98,18 @@ fn a_small_or_free_part_touching_the_anchorage_is_no_ground() {
                 x + 20
             )
         }),
+        ("grounded strip 1 x 4 on the floor", |x| {
+            format!(
+                "box(\"strip {x}\", (1, 4, 2400), at = ({}, 200, 0), material = \"GL24h\", grounded = True)\n",
+                x + 20
+            )
+        }),
+        ("grounded strip 5 x 20 on the floor", |x| {
+            format!(
+                "box(\"strip {x}\", (5, 20, 2400), at = ({}, 200, 0), material = \"GL24h\", grounded = True)\n",
+                x + 20
+            )
+        }),
         ("free part with a grounded nub", |x| {
             format!(
                 "box(\"free {x}\", (50, 50, 50), at = ({}, 150, 2400), material = \"GL24h\")
@@ -117,11 +129,15 @@ box(\"nub {x}\", (1, 1, 1), at = ({}, 175, 2400), material = \"GL24h\", grounded
             "{case}: {:?}",
             ignored(&held)
         );
-        if case.starts_with("grounded rod") {
+        if let Some(part) = ["rod", "strip"]
+            .into_iter()
+            .find(|part| case.starts_with(&format!("grounded {part}")))
+        {
             assert!(
                 ignored(&held)
                     .iter()
-                    .any(|message| message.contains("rod 300") && message.contains("too slender")),
+                    .any(|message| message.contains(&format!("{part} 300"))
+                        && message.contains("too slender")),
                 "{:?}",
                 ignored(&held)
             );
