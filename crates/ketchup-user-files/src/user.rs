@@ -274,6 +274,7 @@ impl Drop for Root {
 }
 
 /// What a call answering 0 when it is done did.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn done(answer: libc::c_int) -> io::Result<()> {
     if answer == 0 {
         Ok(())
