@@ -885,26 +885,6 @@ fn a_colour_is_written_linear() {
     }
 }
 
-/// Writes the fixtures of [`painted_box`] that `ketchup-app` imports (see
-/// `fixtures/README.md`), run once with `--ignored` when they change.
-#[test]
-#[ignore = "writes fixtures"]
-fn write_painted_box_fixtures() {
-    for (name, bytes) in [
-        (
-            "inside_painted_box.skp",
-            painted_box(&[], Some([200, 30, 30]), true),
-        ),
-        ("reversed_face_box.skp", painted_box(&[0], None, false)),
-    ] {
-        std::fs::write(
-            format!("{}/fixtures/{name}", env!("CARGO_MANIFEST_DIR")),
-            bytes,
-        )
-        .unwrap();
-    }
-}
-
 /// A box component named `name` placed at `translation`.
 fn named_box(name: &str, translation: [f64; 3]) -> Vec<u8> {
     let mut builder = create();

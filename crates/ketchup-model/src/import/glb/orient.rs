@@ -4,6 +4,7 @@
 //! followed the paint).
 
 use super::ParsedPrimitive;
+use ketchup_geometry::linalg;
 use std::collections::BTreeMap;
 
 /// Turns the triangles of `piece` so that each closed, orientable shell of it is wound
@@ -86,7 +87,8 @@ pub(super) fn turn_look(look: &mut [Option<super::TexturedTriangle>], turned: &[
 /// Six times the volume the triangles `shell` of `piece` enclose, wound as `turned`
 /// says, about the shell's first corner.
 fn volume(piece: &ParsedPrimitive, shell: &[usize], turned: &[Option<bool>]) -> f64 {
-    let corner = |index: u32| piece.vertices_mm[index as usize];
+    // The parser checked every index against the vertices.
+    let corner = |index: u32| piece.vertices_mm[usize::try_from(index).unwrap_or(usize::MAX)];
     let origin = corner(piece.triangles[shell[0]][0]);
     shell
         .iter()
@@ -97,13 +99,8 @@ fn volume(piece: &ParsedPrimitive, shell: &[usize], turned: &[Option<bool>]) -> 
             } else {
                 [a, b, c]
             };
-            let [p, q, r] = [a, b, c].map(|index| {
-                let point = corner(index);
-                std::array::from_fn::<f64, 3, _>(|axis| point[axis] - origin[axis])
-            });
-            p[0] * (q[1] * r[2] - q[2] * r[1])
-                + p[1] * (q[2] * r[0] - q[0] * r[2])
-                + p[2] * (q[0] * r[1] - q[1] * r[0])
+            let [p, q, r] = [a, b, c].map(|index| linalg::sub(corner(index), origin));
+            linalg::dot(p, linalg::cross(q, r))
         })
         .sum()
 }
