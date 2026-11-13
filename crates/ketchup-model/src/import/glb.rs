@@ -982,10 +982,20 @@ fn parse_meshes(
 /// sheet, such as one of degenerate triangles, is left out and counted.
 fn closed_shells(
     mesh_name: &str,
-    mut primitives: Vec<ParsedPrimitive>,
+    primitives: Vec<ParsedPrimitive>,
     images: &mut Vec<Option<GlbImage>>,
     diagnostics: &mut BTreeMap<&'static str, u32>,
 ) -> Result<Vec<ParsedPrimitive>, GlbImportError> {
+    let mut primitives: Vec<ParsedPrimitive> = primitives
+        .into_iter()
+        .flat_map(|piece| {
+            if piece.sheet {
+                vec![piece]
+            } else {
+                orient::split_closed(piece)
+            }
+        })
+        .collect();
     for piece in primitives.iter_mut().filter(|piece| !piece.sheet) {
         orient::face_out(piece);
     }
@@ -2573,6 +2583,9 @@ mod placement_tests {
 
 #[cfg(test)]
 mod open_surface_tests;
+
+#[cfg(test)]
+mod cavity_tests;
 
 #[cfg(test)]
 mod shared_picture_tests;
