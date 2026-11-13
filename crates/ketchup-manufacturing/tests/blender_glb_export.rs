@@ -658,11 +658,9 @@ fn glb_joins_material_pieces_and_leaves_out_an_open_surface() {
     // the box came all in wood).
     let pictures = inspection.shown_images();
     assert_eq!(pictures.len(), 1);
-    let paint = ketchup_manufacturing::presentation::PresentationTexture::decode(
-        &pictures[0],
-        "image/png",
-    )
-    .unwrap();
+    let paint =
+        ketchup_manufacturing::presentation::PresentationTexture::decode(&pictures[0], "image/png")
+            .unwrap();
     assert_eq!(paint.size(), [1, 1]);
     assert_eq!(paint.rgba(), [243, 243, 243, 255]);
     let imported = DocumentStore::new();

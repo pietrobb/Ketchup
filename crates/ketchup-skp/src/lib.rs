@@ -225,7 +225,13 @@ fn plain_names(scene: &mut InstancedScene) {
         if name.chars().any(char::is_control) {
             *name = name
                 .chars()
-                .map(|character| if character.is_control() { ' ' } else { character })
+                .map(|character| {
+                    if character.is_control() {
+                        ' '
+                    } else {
+                        character
+                    }
+                })
                 .collect();
         }
     }

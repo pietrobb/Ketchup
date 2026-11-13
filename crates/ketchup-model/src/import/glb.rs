@@ -1059,8 +1059,14 @@ fn joined_look(
             (None, Some(own)) => {
                 let image = textures::colour_picture(own, images)?;
                 look.extend(
-                    std::iter::repeat_n(TexturedTriangle { image, uv: [[0.5; 2]; 3] }, piece.triangles.len())
-                        .map(Some),
+                    std::iter::repeat_n(
+                        TexturedTriangle {
+                            image,
+                            uv: [[0.5; 2]; 3],
+                        },
+                        piece.triangles.len(),
+                    )
+                    .map(Some),
                 );
             }
             (None, None) => look.extend(std::iter::repeat_n(None, piece.triangles.len())),
@@ -2219,7 +2225,10 @@ mod json_tests {
             )
         );
         let message = refused.to_string();
-        assert!(message.contains("one import takes at most 1048576"), "{message}");
+        assert!(
+            message.contains("one import takes at most 1048576"),
+            "{message}"
+        );
         assert!(message.contains("Purge Unused"), "{message}");
     }
 

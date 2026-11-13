@@ -369,12 +369,12 @@ pub fn build_local_face_groups(
         // face of a box that SketchUp shows reversed, painted from outside, faces out
         // (review 2026-11-12 P3: written as its front, it turned the box inside out at
         // that face and the box came as no solid).
-        let (side_mat, color, uv_transform, reverse) =
-            if front_mat.is_none() && back_mat.is_some() {
-                (back_mat, back, &f.uv_transform_back, true)
-            } else {
-                (front_mat, front, &f.uv_transform, false)
-            };
+        let (side_mat, color, uv_transform, reverse) = if front_mat.is_none() && back_mat.is_some()
+        {
+            (back_mat, back, &f.uv_transform_back, true)
+        } else {
+            (front_mat, front, &f.uv_transform, false)
+        };
         let (tw, th) = tile_size(side_mat);
         let key = GroupKey {
             color,
