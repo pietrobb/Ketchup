@@ -200,7 +200,7 @@ fn typefaces() -> Result<[FontRef<'static>; 4], PresentationError> {
 
 /// `text` as it is drawn: composed (NFC), so a name written decomposed, as macOS writes
 /// it, draws as its letters do, and the diameter sign ⌀, which no built-in typeface has,
-/// as Ø (review 2026-11-13 r95 P3: "⌀8 dowel" refused the image, and "e" with a combining
+/// as Ø (review 2026-11-13 r95 P3: "⌀8 hole" refused the image, and "e" with a combining
 /// accent was refused for the accent).
 pub(in crate::presentation) fn shown(text: &str) -> String {
     use unicode_normalization::UnicodeNormalization;
