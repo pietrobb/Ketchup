@@ -2198,6 +2198,7 @@ file-filter-pdf = PDF drawing
 file-filter-png = PNG image
 presentation-title = Presentation image
 presentation-save = Save image…
+presentation-smoothed-less = Edges are smoothed with { $made } samples per pixel side instead of { $asked }: the image is too large for more.
 presentation-background = Background
 presentation-background-white = White
 presentation-background-transparent = Transparent

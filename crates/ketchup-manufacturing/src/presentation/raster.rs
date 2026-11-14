@@ -14,12 +14,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 mod annotate;
 
-pub(super) use annotate::{drawable, undrawable, unseen};
+pub(super) use annotate::{drawable, shown, undrawable, unseen};
 
 /// tan(15°): a 30° vertical field of view, a natural lens for buildings and room-sized objects.
 const TAN_HALF_FOV: f64 = 0.267_949_192_431_122_7;
 /// Share of the image the model may fill along its tighter side.
 const FRAME_FILL: f64 = 0.88;
+/// Most texels along a side of the shadow map.
 const SHADOW_MAP_SIDE: usize = 2048;
 const NO_TRIANGLE: u32 = u32::MAX;
 const AMBIENT: f64 = 0.40;
@@ -224,18 +225,24 @@ struct ShadowMap {
     v_axis: Vec3,
     origin: [f64; 2],
     texel: f64,
+    /// Texels along each side.
+    side: usize,
     nearest: Vec<f64>,
 }
 
 impl ShadowMap {
     /// The map of `triangles`, `None` when they cast no shadow. A cancel is seen before each
     /// triangle: one can cover the whole map, so thousands took a minute (review 2026-11-13
-    /// R1113-IMG-600).
+    /// R1113-IMG-600). The map has about as many texels along a side as the image has samples
+    /// along its longer one, 256 to [`SHADOW_MAP_SIDE`] (review 2026-11-13 r95 P3: a 1 × 1
+    /// image held a 32 MB map).
     fn new(
         sun: Vec3,
         triangles: &[[Vec3; 3]],
+        image_side: usize,
         cancelled: &AtomicBool,
     ) -> Result<Option<Self>, PresentationError> {
+        let side = image_side.next_power_of_two().clamp(256, SHADOW_MAP_SIDE);
         let Some((u_axis, v_axis)) = basis(sun) else {
             return Ok(None);
         };
@@ -254,24 +261,19 @@ impl ShadowMap {
             u_axis,
             v_axis,
             origin: [low.x - span * 0.02, low.y - span * 0.02],
-            texel: span / real(SHADOW_MAP_SIDE),
-            nearest: vec![f64::NEG_INFINITY; SHADOW_MAP_SIDE * SHADOW_MAP_SIDE],
+            texel: span / real(side),
+            side,
+            nearest: vec![f64::NEG_INFINITY; side * side],
         };
         for triangle in triangles {
             going_on(cancelled)?;
             let corners = triangle.map(|point| map.map_point(point));
             let nearest = &mut map.nearest;
-            raster(
-                SHADOW_MAP_SIDE,
-                0..SHADOW_MAP_SIDE,
-                corners,
-                false,
-                |at, depth| {
-                    if depth > nearest[at] {
-                        nearest[at] = depth;
-                    }
-                },
-            );
+            raster(side, 0..side, corners, false, |at, depth| {
+                if depth > nearest[at] {
+                    nearest[at] = depth;
+                }
+            });
         }
         Ok(Some(map))
     }
@@ -287,7 +289,7 @@ impl ShadowMap {
     /// Share of the sun a point with normal `normal` receives, 0–1, softened over 5 × 5 texels.
     fn lit(&self, point: Vec3, normal: Vec3) -> f64 {
         let mapped = self.map_point(point + normal * (self.texel * 1.5));
-        let side = real(SHADOW_MAP_SIDE);
+        let side = real(self.side);
         let mut lit = 0;
         for step_v in -2_i32..=2 {
             for step_u in -2_i32..=2 {
@@ -297,7 +299,7 @@ impl ShadowMap {
                     && v >= 0.0
                     && u < side
                     && v < side
-                    && self.nearest[index(v) * SHADOW_MAP_SIDE + index(u)] > mapped.z + self.texel;
+                    && self.nearest[index(v) * self.side + index(u)] > mapped.z + self.texel;
                 lit += i32::from(!blocked);
             }
         }
@@ -314,7 +316,10 @@ fn margin(height: usize) -> usize {
 /// Sample rows of its own each band of a `width` × `height` render with `factor` samples per
 /// pixel side shades within `budget` samples (depth, triangle and colour: 24 bytes each),
 /// counting the rows around it that it looks at: the whole height when it fits at once, else a
-/// multiple of `factor` at least as many as those rows. `None` when no band that large fits.
+/// multiple of `factor` at least a quarter as many as the rows on either side, so a band holds
+/// at most nine times the rows it shades. `None` when no band that large fits. Review
+/// 2026-11-13 r95 P3: a band as many rows as those around it left a 6 144 × 3 456 or 8 192 ×
+/// 2 929 image unsmoothed; with a quarter they get two samples per pixel side.
 pub(super) fn band_rows(width: usize, height: usize, factor: usize, budget: u64) -> Option<usize> {
     let fitting = budget / u64::try_from(width).unwrap_or(u64::MAX).max(1);
     let fitting = usize::try_from(fitting).unwrap_or(usize::MAX);
@@ -323,7 +328,7 @@ pub(super) fn band_rows(width: usize, height: usize, factor: usize, budget: u64)
     }
     let margin = margin(height);
     let own = fitting.checked_sub(2 * margin)? / factor * factor;
-    (own >= margin.max(factor)).then_some(own)
+    (own >= factor && own * 4 >= margin).then_some(own)
 }
 
 /// The opaque parts as seen from the camera over the sample rows `top`… of a band: nearest
@@ -586,6 +591,7 @@ pub(super) fn render(
                 .iter()
                 .map(|at| surfaces.corners[*at])
                 .collect::<Vec<_>>(),
+            width.max(height),
             cancelled,
         )?
     } else {
@@ -598,6 +604,8 @@ pub(super) fn render(
         }
     })?;
     let margin = margin(height);
+    let annotator = annotate::Annotator::new(&camera, height, factor)?;
+    let labels = annotator.place_labels(&scene.labels, width, cancelled)?;
     let mut rgba = Vec::with_capacity(width / factor * (height / factor) * 4);
     let mut first = 0;
     // Review 2026-11-13 P3: the whole smoothed image was held at once, so 4K and larger had no
@@ -648,21 +656,18 @@ pub(super) fn render(
         };
         let mut colour = shading.opaque()?;
         shading.see_through(&mut colour)?;
-        if !dimensions.is_empty() || !scene.labels.is_empty() {
+        if !dimensions.is_empty() || !labels.is_empty() {
             let mut sheet = annotate::Sheet {
                 colour: &mut colour,
                 width,
                 height,
                 own: own.clone(),
-                factor,
             };
-            let annotator = annotate::Annotator::new(&camera, &sheet)?;
             for dimension in &dimensions {
                 annotator.dimension(&mut sheet, dimension, diagonal, options.decimal_mark);
             }
-            let mut placed = Vec::with_capacity(scene.labels.len());
-            for label in &scene.labels {
-                annotator.label(&mut sheet, label, &mut placed);
+            for label in &labels {
+                annotator.label(&mut sheet, label);
             }
         }
         downsample(factor, width, &colour, &mut rgba);
@@ -944,8 +949,11 @@ mod tests {
                 .chunks_exact(4)
                 .any(|pixel| u16::from(pixel[2]) > u16::from(pixel[0]) + 40)
         );
-        // Too few samples for even one band and the rows it looks at.
-        assert!(band_rows(320, 240, 2, 320 * 60).is_none());
+        // A band of 10 own rows holds 60; one of 4 would hold 54, more than nine times it.
+        assert_eq!(band_rows(320, 240, 2, 320 * 60), Some(10));
+        assert!(band_rows(320, 240, 2, 320 * 55).is_none());
+        let narrow = render(&scene, &options, &going, 320 * 60).unwrap();
+        assert_eq!(narrow.rgba, whole.rgba);
     }
 
     /// R1113-IMG-600: the shadow map drew every triangle before anyone looked at the flag.
@@ -958,10 +966,30 @@ mod tests {
         ];
         let sun = Vec3::new(0.3, 0.2, 1.0).normalized().unwrap();
         assert!(matches!(
-            ShadowMap::new(sun, &[triangle], &AtomicBool::new(true)),
+            ShadowMap::new(sun, &[triangle], 5_760, &AtomicBool::new(true)),
             Err(PresentationError::Cancelled)
         ));
-        let map = ShadowMap::new(sun, &[triangle], &AtomicBool::new(false)).unwrap();
+        let map = ShadowMap::new(sun, &[triangle], 5_760, &AtomicBool::new(false)).unwrap();
         assert!(map.is_some_and(|map| map.nearest.iter().any(|depth| depth.is_finite())));
+    }
+
+    /// Review 2026-11-13 r95 P3: the shadow map was 2 048² texels, 32 MB, for any image, a
+    /// 1 × 1 one too. It has about as many texels along a side as the image has samples.
+    #[test]
+    fn the_shadow_map_is_as_fine_as_the_image() {
+        let triangle = [
+            Vec3::ZERO,
+            Vec3::new(1_000.0, 0.0, 0.0),
+            Vec3::new(0.0, 1_000.0, 0.0),
+        ];
+        let sun = Vec3::new(0.3, 0.2, 1.0).normalized().unwrap();
+        let side = |image_side| {
+            ShadowMap::new(sun, &[triangle], image_side, &AtomicBool::new(false))
+                .unwrap()
+                .map(|map| (map.side, map.nearest.len()))
+        };
+        assert_eq!(side(1), Some((256, 256 * 256)));
+        assert_eq!(side(300), Some((512, 512 * 512)));
+        assert_eq!(side(5_760), Some((2_048, 2_048 * 2_048)));
     }
 }

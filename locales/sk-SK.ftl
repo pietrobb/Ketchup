@@ -2115,6 +2115,7 @@ file-filter-pdf = PDF výkres
 file-filter-png = Obrázok PNG
 presentation-title = Prezentačný obrázok
 presentation-save = Uložiť obrázok…
+presentation-smoothed-less = Hrany sa vyhladia { $made } vzorkami na stranu pixela namiesto { $asked }: na viac je obrázok priveľký.
 presentation-background = Pozadie
 presentation-background-white = Biele
 presentation-background-transparent = Priehľadné

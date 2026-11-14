@@ -85,6 +85,21 @@ impl KetchupApp {
             .resizable(false)
             .show(context, |ui| {
                 self.presentation_options(ui, &mut dialog);
+                // A large image is smoothed less, and the dialog says so before it is made
+                // (review 2026-11-13 r95 P3: from about 6K it lost its smoothing silently).
+                let options = &dialog.request.options;
+                if let Ok(made) =
+                    presentation_supersample(options.width, options.height, options.supersample)
+                    && made < options.supersample
+                {
+                    ui.label(self.catalog.format(
+                        "presentation-smoothed-less",
+                        &BTreeMap::from([
+                            ("made", made.to_string()),
+                            ("asked", options.supersample.to_string()),
+                        ]),
+                    ));
+                }
                 if let Some(refusal) = &dialog.refusal {
                     ui.colored_label(ui.visuals().error_fg_color, refusal);
                 }

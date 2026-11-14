@@ -169,7 +169,7 @@ pub(super) fn presentation_refused(error: PresentationError) -> ExportError {
             "Give each label text on one line, within the limit of characters."
         }
         PresentationError::LabelLetter { .. } => {
-            "Write the label in Latin, Greek or Cyrillic letters or emoji; other scripts cannot be drawn yet."
+            "Write the label in Latin, Greek or Cyrillic letters, common symbols or emoji; other scripts cannot be drawn yet."
         }
         PresentationError::TooManyLabels { .. } => {
             "Turn off the part labels or name fewer labels; part labels count with yours."

@@ -38,7 +38,11 @@ pub(in crate::live_bridge) fn execute(
     };
     match answer.error {
         None => Ok(answer.result.unwrap_or(Value::Null)),
-        Some(code) => Err(code.leak()),
+        // The reply carried the cause; the tests read it as after any other refusal.
+        Some(code) => {
+            crate::live_bridge::restore_error_details(answer.result);
+            Err(code.leak())
+        }
     }
 }
 
@@ -106,6 +110,10 @@ fn a_client_saves_a_presentation_image_with_its_background_size_and_see_through_
         .execute(&mut app, presentation(&opaque, image), false)
         .unwrap_or_else(|code| panic!("{code}: {}", app.action_digest()));
     assert_eq!(answer["exported"], true, "{answer}");
+    // The answer says how smooth the edges were made, and only a smoothing below the one
+    // asked for comes with why (review 2026-11-13 r95 P3: it was lowered silently).
+    assert_eq!(answer["supersample"], 3, "{answer}");
+    assert!(answer.get("supersample_asked").is_none(), "{answer}");
     let (width, height, rgba) = pixels(&opaque);
     assert_eq!((width, height), (96, 64));
     assert_eq!(
@@ -435,6 +443,21 @@ fn a_client_presentation_never_replaces_a_file_and_names_what_it_cannot_draw() {
         );
         assert!(!target.exists());
     }
+    // Review 2026-11-13 r95 P3: a letter the image cannot draw got only the general advice
+    // about single-line texts; it gets the one the window gives.
+    let target = directory.path().join("script.png");
+    let mut image = small.clone();
+    image["labels"] = json!([{"text": "倉庫", "at_mm": [0, 0, 0]}]);
+    assert_eq!(
+        bridge.execute(&mut app, presentation(&target, image), false),
+        Err("invalid_params")
+    );
+    let cause = crate::live_bridge::take_error_details().unwrap();
+    assert!(
+        cause.to_string().contains("Latin, Greek or Cyrillic"),
+        "{cause}"
+    );
+    assert!(!target.exists());
     let mut not_an_image = presentation(&directory.path().join("model.glb"), small);
     if let Request::Export { export_format, .. } = &mut not_an_image {
         "glb".clone_into(export_format);
