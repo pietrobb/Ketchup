@@ -126,6 +126,181 @@ fn under_sudo_a_users_folder_is_written_as_the_owner_of_its_base() {
     assert!(!folder.is_running_users());
 }
 
+/// Review 2026-11-13 r95 R1113r95-SEC-700: the base's owner was read by one
+/// `stat` through the links. The user's `~/.config`, a link of theirs to a
+/// folder of root's, was root's, so root wrote there as root; swapped meanwhile
+/// for a folder of links, root followed them. Whoever could change a folder or
+/// link on the way holds it: the user, whom the system refuses root's folder.
+#[cfg(unix)]
+#[test]
+fn under_sudo_a_folder_reached_through_the_users_own_is_theirs() {
+    if effective_user() != 0 {
+        return;
+    }
+    let (user, other) = ((65534, 65534), (65533, 65533));
+    let mode = |path: &Path, mode| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    let home = tempfile::tempdir_in("/tmp").unwrap();
+    std::os::unix::fs::chown(home.path(), Some(user.0), Some(user.1)).unwrap();
+    let root_only = tempfile::tempdir_in("/tmp").unwrap();
+    mode(root_only.path(), 0o700);
+    let config = home.path().join(".config");
+    std::os::unix::fs::symlink(root_only.path(), &config).unwrap();
+    std::os::unix::fs::lchown(&config, Some(user.0), Some(user.1)).unwrap();
+    assert_eq!(user_of_home(&config).unwrap(), user);
+    assert_eq!(
+        holder(&config.join("Ketchup").join("settings.txt"), true).unwrap(),
+        user
+    );
+    // With `HOME=/root` it is refused; as the user, nothing is made in root's.
+    let refused = owner_of_base(&config, Some(root_only.path())).unwrap_err();
+    assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied, "{refused}");
+    let folder = UserFolder::at(config.clone(), config.join("Ketchup"));
+    folder
+        .as_owner(|| create_private_folder(folder.path()))
+        .unwrap_err();
+    assert!(!folder.is_running_users());
+    assert_eq!(std::fs::read_dir(root_only.path()).unwrap().count(), 0);
+    assert_eq!(effective_user(), 0);
+    // Root's own folder, reached through root's folders and links, is root's.
+    let roots = root_only.path().join("roots");
+    std::fs::create_dir(&roots).unwrap();
+    let link = root_only.path().join("link");
+    std::os::unix::fs::symlink(&roots, &link).unwrap();
+    assert_eq!(user_of_home(&link).unwrap().0, 0);
+
+    // A way through the folders of two users is refused.
+    let others = tempfile::tempdir_in("/tmp").unwrap();
+    std::os::unix::fs::chown(others.path(), Some(other.0), Some(other.1)).unwrap();
+    std::fs::remove_file(&config).unwrap();
+    std::os::unix::fs::symlink(others.path(), &config).unwrap();
+    std::os::unix::fs::lchown(&config, Some(user.0), Some(user.1)).unwrap();
+    let refused = user_of_home(&config).unwrap_err();
+    assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied, "{refused}");
+    assert!(
+        refused.to_string().contains("more than one user"),
+        "{refused}"
+    );
+
+    // So is one through a folder of root's anyone may write into, not sticky.
+    let open = tempfile::tempdir_in("/tmp").unwrap();
+    mode(open.path(), 0o777);
+    std::fs::create_dir(open.path().join("in")).unwrap();
+    let refused = user_of_home(&open.path().join("in")).unwrap_err();
+    assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied, "{refused}");
+    assert!(
+        refused
+            .to_string()
+            .contains(&*open.path().to_string_lossy()),
+        "{refused}"
+    );
+}
+
+/// Review 2026-11-13 r95 R1113r95-SEC-701: the AI clients' configuration was
+/// the user of `HOME`; with `sudo -E`, `HOME=/root` and `CLAUDE_CONFIG_DIR` the
+/// user's, root wrote there as root. The way to the file names the user, and a
+/// `HOME` of another's is refused.
+#[cfg(unix)]
+#[test]
+fn under_sudo_a_file_is_the_users_who_hold_the_way_to_it() {
+    if effective_user() != 0 {
+        return;
+    }
+    let user = (65534, 65534);
+    let theirs = tempfile::tempdir_in("/tmp").unwrap();
+    std::os::unix::fs::chown(theirs.path(), Some(user.0), Some(user.1)).unwrap();
+    let roots = tempfile::tempdir_in("/tmp").unwrap();
+    std::fs::set_permissions(roots.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let file = theirs.path().join(".claude").join(".claude.json");
+    assert_eq!(user_of_file_beside(&file, None).unwrap(), user);
+    assert_eq!(
+        user_of_file_beside(&file, Some(theirs.path())).unwrap(),
+        user
+    );
+    let refused = user_of_file_beside(&file, Some(roots.path())).unwrap_err();
+    assert_eq!(refused.kind(), io::ErrorKind::PermissionDenied, "{refused}");
+    // Root's own, in root's home, is root's.
+    let own = roots.path().join(".claude.json");
+    assert_eq!(user_of_file_beside(&own, Some(roots.path())).unwrap().0, 0);
+}
+
+/// R1113r95-SEC-700, the race: the user's `~/.config` swapped by rename between
+/// a link to a folder of root's and a link to a folder of theirs holding
+/// `Ketchup -> ` another of root's won 5 199 of 20 000 tries. Whichever it is
+/// when read, the way runs through the user's home, so the work is the user's
+/// and nothing of root's is made in root's folders: no try wins.
+#[cfg(unix)]
+#[test]
+fn under_sudo_a_folder_swapped_meanwhile_gets_nothing_of_roots() {
+    if effective_user() != 0 {
+        return;
+    }
+    let user = (65534, 65534);
+    let home = tempfile::tempdir_in("/tmp").unwrap();
+    std::os::unix::fs::chown(home.path(), Some(user.0), Some(user.1)).unwrap();
+    let (root_only, root_also) = (
+        tempfile::tempdir_in("/tmp").unwrap(),
+        tempfile::tempdir_in("/tmp").unwrap(),
+    );
+    for folder in [root_only.path(), root_also.path()] {
+        std::fs::set_permissions(folder, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    std::fs::create_dir(root_only.path().join("Ketchup")).unwrap();
+    let theirs = home.path().join("theirs");
+    std::fs::create_dir(&theirs).unwrap();
+    std::os::unix::fs::symlink(root_also.path(), theirs.join("Ketchup")).unwrap();
+    for path in [&theirs, &theirs.join("Ketchup")] {
+        std::os::unix::fs::lchown(path, Some(user.0), Some(user.1)).unwrap();
+    }
+    let config = home.path().join(".config");
+    let made = |name: &str, to: &Path| {
+        let link = home.path().join(name);
+        std::os::unix::fs::symlink(to, &link).unwrap();
+        std::os::unix::fs::lchown(&link, Some(user.0), Some(user.1)).unwrap();
+        link
+    };
+    std::fs::rename(made("to-root", root_only.path()), &config).unwrap();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let swapping = {
+        let (stop, home, config) = (stop.clone(), home.path().to_owned(), config.clone());
+        let (root_only, theirs) = (root_only.path().to_owned(), theirs.clone());
+        std::thread::spawn(move || {
+            let mut to_root = false;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let next = home.join("next");
+                std::os::unix::fs::symlink(if to_root { &root_only } else { &theirs }, &next)
+                    .unwrap();
+                std::os::unix::fs::lchown(&next, Some(65534), Some(65534)).unwrap();
+                std::fs::rename(&next, &config).unwrap();
+                to_root = !to_root;
+            }
+        })
+    };
+    let folder = UserFolder::at(config.clone(), config.join("Ketchup"));
+    let mut done = 0;
+    for _ in 0..20_000 {
+        let lock = folder.path().join("settings.txt.lock");
+        if folder
+            .as_owner_beside(None, || new_side_file(&lock).map(drop))
+            .is_ok()
+        {
+            done += 1;
+            std::fs::remove_file(&lock).ok();
+        }
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    swapping.join().unwrap();
+    let roots = |folder: &Path| std::fs::read_dir(folder).unwrap().count();
+    assert_eq!(
+        roots(&root_only.path().join("Ketchup")),
+        0,
+        "after {done} writes"
+    );
+    assert_eq!(roots(root_also.path()), 0, "after {done} writes");
+    assert_eq!(effective_user(), 0);
+}
+
 /// Review 2026-11-09 R1109-SEC-300: root alone can be another user; any other is
 /// refused it, says that rather than failing to be itself again (review
 /// 2026-11-13 P3), and writes nothing.
