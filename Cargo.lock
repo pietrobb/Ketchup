@@ -2646,6 +2646,7 @@ name = "ketchup-user-files"
 version = "0.3.4-dev"
 dependencies = [
  "libc",
+ "rustix 1.1.4",
  "tempfile",
 ]
 

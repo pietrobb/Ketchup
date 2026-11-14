@@ -223,16 +223,31 @@ pub fn holder_of_way(path: &Path) -> io::Result<(u32, u32)> {
 }
 
 /// [`user_of_home`] of `path`, up to the part of it there now when `partial`.
+///
+/// The way is walked through folders held open, each opened in the one before
+/// it without following a link and checked to be the folder just read there,
+/// so no name on it is looked up from the root a second time (review
+/// 2026-11-13 r95 R1113r95-SEC-700: `O_DIRECTORY|O_NOFOLLOW`, `fstat`, `openat`).
 #[cfg(unix)]
 fn holder(path: &Path, partial: bool) -> io::Result<(u32, u32)> {
-    use std::ffi::OsString;
-    use std::os::unix::fs::MetadataExt;
+    use rustix::fs::{AtFlags, FileType, Mode, OFlags, Stat};
+    use rustix::io::Errno;
+    use std::ffi::{OsStr, OsString};
+    use std::os::fd::OwnedFd;
+    use std::os::unix::ffi::OsStrExt;
     /// Links followed before the way counts as a loop, as the system's own.
     const MAX_LINKS: usize = 40;
+    /// A folder opened only to look up what it holds, not to read it.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    const LOOK_IN: OFlags = OFlags::PATH;
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    const LOOK_IN: OFlags = OFlags::RDONLY;
+    let folder_flags = LOOK_IN | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
     let unreadable = |error| HomeError::Unreadable {
         home: path.to_owned(),
         error,
     };
+    let failed = |errno: Errno| unreadable(errno.into());
     if !path.is_absolute() {
         return Err(unreadable(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -240,16 +255,22 @@ fn holder(path: &Path, partial: bool) -> io::Result<(u32, u32)> {
         ))
         .into());
     }
-    let shared = |metadata: &std::fs::Metadata| metadata.mode() & 0o022 != 0;
-    let sticky = |metadata: &std::fs::Metadata| metadata.mode() & 0o1000 != 0;
+    let shared = |stat: &Stat| stat.st_mode & 0o022 != 0;
+    let sticky = |stat: &Stat| stat.st_mode & 0o1000 != 0;
     let mut holders = std::collections::BTreeMap::<u32, u32>::new();
-    let mut hold = |metadata: &std::fs::Metadata| {
-        if metadata.uid() != 0 {
-            holders.insert(metadata.uid(), metadata.gid());
+    let mut hold = |stat: &Stat| {
+        if stat.st_uid != 0 {
+            holders.insert(stat.st_uid, stat.st_gid);
         }
     };
+    // The folder the way is in now, and those it passed through to get there.
+    let root = rustix::fs::open("/", folder_flags, Mode::empty()).map_err(failed)?;
+    let root_stat = rustix::fs::fstat(&root).map_err(failed)?;
+    let mut folder: (OwnedFd, Stat) = (root, root_stat);
+    let mut above: Vec<(OwnedFd, Stat)> = Vec::new();
+    // What the way ends in when that is no folder.
+    let mut file: Option<Stat> = None;
     let mut at = PathBuf::from("/");
-    let mut folder = std::fs::symlink_metadata(&at).map_err(unreadable)?;
     let mut pending: Vec<OsString> = path
         .components()
         .rev()
@@ -257,59 +278,87 @@ fn holder(path: &Path, partial: bool) -> io::Result<(u32, u32)> {
         .collect();
     let mut links = 0;
     while let Some(part) = pending.pop() {
-        match Path::new(&part).components().next() {
+        let component = Path::new(&part).components().next();
+        if file.is_some() && component.is_some() {
+            return Err(failed(Errno::NOTDIR).into());
+        }
+        match component {
             Some(std::path::Component::RootDir) => {
+                above.truncate(1);
+                if let Some(root) = above.pop() {
+                    folder = root;
+                }
                 at = PathBuf::from("/");
-                folder = std::fs::symlink_metadata(&at).map_err(unreadable)?;
                 continue;
             }
             Some(std::path::Component::ParentDir) => {
+                if let Some(up) = above.pop() {
+                    folder = up;
+                }
                 at.pop();
-                folder = std::fs::symlink_metadata(&at).map_err(unreadable)?;
                 continue;
             }
             Some(std::path::Component::Normal(_)) => {}
             _ => continue,
         }
-        let next = at.join(&part);
-        let found = match std::fs::symlink_metadata(&next) {
+        let found = match rustix::fs::statat(&folder.0, &part, AtFlags::SYMLINK_NOFOLLOW) {
             Ok(found) => found,
-            Err(error) if partial && error.kind() == io::ErrorKind::NotFound => break,
-            Err(error) => return Err(unreadable(error).into()),
+            Err(errno) if partial && errno == Errno::NOENT => break,
+            Err(errno) => return Err(failed(errno).into()),
         };
         // Who may put another entry in this one's place: the folder's owner,
         // anyone when it is shared, the entry's owner too when it is sticky.
-        hold(&folder);
-        if shared(&folder) {
-            if !sticky(&folder) {
+        hold(&folder.1);
+        if shared(&folder.1) {
+            if !sticky(&folder.1) {
                 return Err(HomeError::SharedWithOthers { home: at }.into());
             }
             hold(&found);
         }
-        if found.file_type().is_symlink() {
-            links += 1;
-            if links > MAX_LINKS {
-                return Err(unreadable(io::Error::other("too many links on the way")).into());
+        match FileType::from_raw_mode(found.st_mode) {
+            FileType::Symlink => {
+                links += 1;
+                if links > MAX_LINKS {
+                    return Err(unreadable(io::Error::other("too many links on the way")).into());
+                }
+                let to = rustix::fs::readlinkat(&folder.0, &part, Vec::new()).map_err(failed)?;
+                pending.extend(
+                    Path::new(OsStr::from_bytes(to.as_bytes()))
+                        .components()
+                        .rev()
+                        .map(|part| part.as_os_str().to_owned()),
+                );
             }
-            let to = std::fs::read_link(&next).map_err(unreadable)?;
-            pending.extend(
-                to.components()
-                    .rev()
-                    .map(|part| part.as_os_str().to_owned()),
-            );
-            continue;
+            FileType::Directory => {
+                let opened = rustix::fs::openat(&folder.0, &part, folder_flags, Mode::empty())
+                    .map_err(failed)?;
+                let stat = rustix::fs::fstat(&opened).map_err(failed)?;
+                // Another folder or a link put in its place since it was read.
+                if (stat.st_dev, stat.st_ino) != (found.st_dev, found.st_ino) {
+                    return Err(unreadable(io::Error::other(
+                        "a folder on the way changed while it was read",
+                    ))
+                    .into());
+                }
+                above.push(std::mem::replace(&mut folder, (opened, stat)));
+                at.push(&part);
+            }
+            _ => {
+                file = Some(found);
+                at.push(&part);
+            }
         }
-        at = next;
-        folder = found;
     }
-    // Who may change what the folder holds.
-    if shared(&folder) {
+    // Who may change what the way ends in.
+    let last = file.as_ref().unwrap_or(&folder.1);
+    if shared(last) {
         return Err(HomeError::SharedWithOthers { home: at }.into());
     }
-    hold(&folder);
+    hold(last);
+    let gid = last.st_gid;
     match holders.len() {
-        0 => Ok((0, folder.gid())),
-        1 => Ok(holders.into_iter().next().unwrap_or((0, folder.gid()))),
+        0 => Ok((0, gid)),
+        1 => Ok(holders.into_iter().next().unwrap_or((0, gid))),
         _ => Err(HomeError::ManyHolders {
             folder: path.to_owned(),
         }
