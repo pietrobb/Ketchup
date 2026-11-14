@@ -59,7 +59,9 @@ fn under_sudo_the_log_is_the_users_and_a_link_leads_it_nowhere() {
     }
     let user = (65534, 65534);
     let Some(home) = std::env::var_os(USERS_HOME).map(std::path::PathBuf::from) else {
-        let home = tempfile::tempdir().unwrap();
+        // Under sudo, macOS gives root a temporary folder only root can enter, so
+        // the user could reach no folder of their home in it.
+        let home = tempfile::tempdir_in("/tmp").unwrap();
         std::os::unix::fs::chown(home.path(), Some(user.0), Some(user.1)).unwrap();
         let name = "under_sudo_the_log_is_the_users_and_a_link_leads_it_nowhere";
         let run = std::process::Command::new(std::env::current_exe().unwrap())
@@ -78,7 +80,7 @@ fn under_sudo_the_log_is_the_users_and_a_link_leads_it_nowhere() {
         return;
     };
     // The user's link in place of their log folder, to a folder of root's.
-    let root_only = tempfile::tempdir().unwrap();
+    let root_only = tempfile::tempdir_in("/tmp").unwrap();
     std::fs::set_permissions(root_only.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let linked = home.join("Ketchup");
     std::os::unix::fs::symlink(root_only.path(), &linked).unwrap();
