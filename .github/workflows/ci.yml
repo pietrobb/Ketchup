@@ -737,7 +737,7 @@ jobs:
         run: |
           python -m pip install --quiet --require-hashes -r tests/requirements-ci.txt
           mv third_party/occt-install-r0-v1 "$RUNNER_TEMP/occt-out-of-reach"
-          python scripts/run_production_tests.py --packaged-app "$RUNNER_TEMP/macos-app/Kečup.app/Contents/MacOS/ketchup-app"
+          python scripts/run_production_tests.py --packaged-app "$RUNNER_TEMP/macos-app/Ketchup.app/Contents/MacOS/ketchup-app"
 
   fuzz:
     name: fuzzing of the document, Viewer package and import readers

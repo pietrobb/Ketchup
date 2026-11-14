@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds "Kečup.app" (Apple Silicon) and a .dmg with it: the desktop app, the
+# Builds "Ketchup.app" (Apple Silicon) and a .dmg with it: the desktop app, the
 # exact and program workers beside it and the pinned OCCT libraries in Contents/Frameworks,
 # registered for .ketchup documents. Needs OCCT from scripts/macos/build-occt.sh.
 #
@@ -24,7 +24,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-name="Kečup"
+name="Ketchup"
 app="$output/$name.app"
 dmg="$output/Ketchup-$version-macOS.dmg"
 occt="$repo/third_party/occt-install-r0-v1"
@@ -122,7 +122,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <key>CFBundleDocumentTypes</key>
     <array>
         <dict>
-            <key>CFBundleTypeName</key><string>Kečup Document</string>
+            <key>CFBundleTypeName</key><string>Ketchup Document</string>
             <key>CFBundleTypeRole</key><string>Editor</string>
             <key>LSHandlerRank</key><string>Owner</string>
             <key>LSItemContentTypes</key><array><string>sk.ketchup.document</string></array>
@@ -132,7 +132,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <array>
         <dict>
             <key>UTTypeIdentifier</key><string>sk.ketchup.document</string>
-            <key>UTTypeDescription</key><string>Kečup Document</string>
+            <key>UTTypeDescription</key><string>Ketchup Document</string>
             <key>UTTypeConformsTo</key><array><string>public.data</string><string>public.content</string></array>
             <key>UTTypeTagSpecification</key>
             <dict><key>public.filename-extension</key><array><string>ketchup</string></array></dict>

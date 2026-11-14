@@ -3,6 +3,10 @@
 What changed for users in each Ketchup release. The full notes, downloads, and checksums are on the
 [GitHub releases page](https://github.com/pietrobb/Ketchup/releases).
 
+## Unreleased
+
+- On a Mac the apps are named `Ketchup.app` and `Ketchup Viewer.app`, as the product; 0.3.3 installed them as `Kečup.app` and `Kečup Viewer.app`. They are the same apps to macOS (bundle identifiers and programs unchanged), so documents still open in them. Drag the new app into Applications and delete the old one. An AI client set up for `/Applications/Kečup.app` is then named when the window opens, and **Use this Ketchup** sets it up to start the new one.
+
 ## 0.3.3 — 2026-11-12
 
 - Kečup runs on a Mac: `Ketchup-0.3.3-macOS.dmg` holds Kečup and `Ketchup-Viewer-0.3.3-macOS.dmg` Kečup Viewer, each to drag into Applications. Kečup needs Apple Silicon (M1 or newer) and macOS 11 or later; the Viewer also runs on Intel Macs. Both are signed by CENTAURY Plus s.r.o. and notarized by Apple, so they open without a warning. The examples are the same `Ketchup-0.3.3-Examples.zip`, and `SHA256SUMS.txt` names the two packages too.
