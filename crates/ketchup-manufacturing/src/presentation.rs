@@ -393,15 +393,18 @@ pub fn part_labels(instances: &[MeshGlbInstance<'_>]) -> Vec<PresentationLabel> 
             continue;
         };
         // A letter no built-in typeface draws is left out rather than refusing the image
-        // (review 2026-11-13 P3); a name of only such letters gets no label.
-        let text = name
+        // (review 2026-11-13 P3); a name of only such letters, or of letters that show
+        // nothing and spaces, gets no label (r95 P3: "\u{200B} \u{200B}" refused the image).
+        let text = raster::shown(name)
             .chars()
             .map(|letter| if letter.is_control() { ' ' } else { letter })
             .filter(|letter| letter.is_whitespace() || raster::drawable(*letter))
             .take(MAX_LABEL_CHARS)
             .collect::<String>();
         let text = text.trim().to_owned();
-        if text.chars().all(raster::unseen)
+        if text
+            .chars()
+            .all(|letter| letter.is_whitespace() || raster::unseen(letter))
             || labels.len() == MAX_PRESENTATION_LABELS
             || named.contains(&text)
         {
@@ -536,7 +539,7 @@ pub fn check_labels(labels: &[PresentationLabel]) -> Result<(), PresentationErro
                 limit: MAX_LABEL_CHARS,
             });
         }
-        if let Some(letter) = raster::undrawable(text)? {
+        if let Some(letter) = raster::undrawable(&raster::shown(text))? {
             return Err(PresentationError::LabelLetter { label, letter });
         }
         if !at_mm.iter().all(|value| value.is_finite()) {

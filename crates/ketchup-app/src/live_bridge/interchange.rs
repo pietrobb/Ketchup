@@ -14,7 +14,8 @@ use ketchup_application::rejections::rejected;
 use ketchup_manufacturing::dxf_annotations::MAX_PLAN_SCALE;
 use ketchup_manufacturing::presentation::{
     Background, MAX_LABEL_CHARS, MAX_PRESENTATION_LABELS, MAX_PRESENTATION_SAMPLES,
-    MAX_PRESENTATION_SIDE, PresentationLabel, check_labels, presentation_supersample,
+    MAX_PRESENTATION_SIDE, PresentationError, PresentationLabel, check_labels,
+    presentation_supersample,
 };
 use ketchup_model::import::DxfCodePage;
 use serde_json::{Value, json};
@@ -203,8 +204,14 @@ impl PresentationImage {
             .into_iter()
             .map(|ImageLabel { text, at_mm }| PresentationLabel { text, at_mm })
             .collect();
+        // A letter the image cannot draw gets its own advice, as the window gives it (review
+        // 2026-11-13 r95 P3: the client was told only that labels are single-line texts).
         check_labels(&request.labels).map_err(|error| InvalidImage {
-            reason: "image.labels holds single-line texts at finite points, as many and as long as details allow.",
+            reason: if matches!(error, PresentationError::LabelLetter { .. }) {
+                "image.labels: write each label in Latin, Greek or Cyrillic letters, common symbols or emoji; other scripts cannot be drawn yet."
+            } else {
+                "image.labels holds single-line texts at finite points, as many and as long as details allow."
+            },
             details: json!({
                 "labels": error.to_string(),
                 "max_labels": MAX_PRESENTATION_LABELS,

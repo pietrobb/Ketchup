@@ -581,9 +581,13 @@ fn part_labels_name_each_component_once_on_top_of_its_first_part() {
     );
     // Review 2026-11-13 P3: letters no built-in typeface draws are left out of a part's name
     // rather than drawn as boxes or refusing the image; a name of only such letters is skipped.
+    // Review 2026-11-13 r95 P3: a name of only letters that show nothing and spaces refused
+    // the image; the diameter sign is kept as Ø rather than left out.
     for (name, shown) in [
         ("倉庫 Reusable beam", Some("Reusable beam")),
         ("倉庫", None),
+        ("\u{200B} \u{200B}", None),
+        ("Dowel ⌀8", Some("Dowel Ø8")),
     ] {
         let mut renamed = occurrences.clone();
         for occurrence in &mut renamed {
@@ -820,7 +824,8 @@ fn a_picture_on_a_face_stands_the_right_way_up() {
 /// and 4 000 × 3 000 were refused, asking to lower a smoothing no one could set).
 ///
 /// Review 2026-11-13 P3: 4K and larger had no smoothing at all, since the whole smoothed image
-/// had to fit at once; it is now made in bands of rows.
+/// had to fit at once; it is now made in bands of rows. Review 2026-11-13 r95 P3: a band had
+/// to shade as many rows as it looked at around it, so from about 6K there was none again.
 #[test]
 fn a_large_image_is_smoothed_less_to_fit_the_sample_limit() {
     assert_eq!(presentation_supersample(1920, 1080, 3).unwrap(), 3);
@@ -828,7 +833,9 @@ fn a_large_image_is_smoothed_less_to_fit_the_sample_limit() {
     assert_eq!(presentation_supersample(3840, 2160, 3).unwrap(), 3);
     assert_eq!(presentation_supersample(5120, 2880, 3).unwrap(), 2);
     assert_eq!(presentation_supersample(4000, 3000, 3).unwrap(), 2);
-    assert_eq!(presentation_supersample(8192, 2929, 3).unwrap(), 1);
+    // Review 2026-11-13 r95 P3: from about 6K these came unsmoothed, with nothing said.
+    assert_eq!(presentation_supersample(6144, 3456, 3).unwrap(), 2);
+    assert_eq!(presentation_supersample(8192, 2929, 3).unwrap(), 2);
     assert_eq!(presentation_supersample(2560, 1440, 1).unwrap(), 1);
     assert!(matches!(
         presentation_supersample(8192, 2930, 3),
@@ -1036,4 +1043,14 @@ fn labels_fit_the_image_and_show_only_letters_the_typefaces_draw() {
             "{text:?}"
         );
     }
+    // Review 2026-11-13 r95 P3: "⌀8 dowel" refused the image, primes and arrows were refused,
+    // and a name written decomposed, as macOS writes it, was refused for its accent.
+    for text in ["⌀8 dowel", "2′ 6″ → ← ↔ ∅", "Membra\u{301}na", "q\u{301}"] {
+        assert!(with(text, [0.0, 0.0, 140.0]).is_ok(), "{text:?}");
+    }
+    assert_eq!(
+        with("⌀8 dowel", [0.0, 0.0, 140.0]).unwrap().rgba,
+        with("Ø8 dowel", [0.0, 0.0, 140.0]).unwrap().rgba,
+        "the diameter sign is drawn as Ø"
+    );
 }

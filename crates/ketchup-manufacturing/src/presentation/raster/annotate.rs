@@ -1,11 +1,12 @@
 //! Dimensions and labels drawn over the rendered samples, before they are averaged into pixels,
 //! so their lines and letters are smoothed like the model's edges.
 
-use super::{Camera, index, narrow, real};
+use super::{Camera, going_on, index, narrow, real};
 use crate::presentation::{PresentationError, PresentationLabel};
 use ab_glyph::{Font, FontRef, GlyphId, PxScale, ScaleFont, point};
 use ketchup_geometry::linalg::Vec3;
 use ketchup_model::annotation::{DecimalMark, dimension_text_with};
+use std::sync::atomic::AtomicBool;
 
 const INK: [f64; 3] = [0.13, 0.13, 0.15];
 /// Light box behind text, so it reads over any part or background.
@@ -100,8 +101,6 @@ pub(super) struct Sheet<'a> {
     pub(super) width: usize,
     pub(super) height: usize,
     pub(super) own: std::ops::Range<usize>,
-    /// Samples per output pixel along each axis.
-    pub(super) factor: usize,
 }
 
 impl Sheet<'_> {
@@ -183,18 +182,31 @@ impl Sheet<'_> {
     }
 }
 
-/// The built-in typefaces, each letter drawn by the first that has it: text, then the emoji
-/// of two (review 2026-11-13 P3: emoji were the text typeface's empty box).
-fn typefaces() -> Result<[FontRef<'static>; 3], PresentationError> {
+/// The built-in typefaces, each letter drawn by the first that has it: text, then symbols,
+/// then the emoji of two (review 2026-11-13 P3: emoji were the text typeface's empty box;
+/// r95 P3: primes ′ ″, arrows and ∅ were refused in a label and left out of a part's name).
+fn typefaces() -> Result<[FontRef<'static>; 4], PresentationError> {
     let typeface = |bytes: &'static [u8]| {
         FontRef::try_from_slice(bytes)
             .map_err(|_unreadable: ab_glyph::InvalidFont| PresentationError::Font)
     };
     Ok([
         typeface(epaint_default_fonts::UBUNTU_LIGHT)?,
+        typeface(epaint_default_fonts::HACK_REGULAR)?,
         typeface(epaint_default_fonts::NOTO_EMOJI_REGULAR)?,
         typeface(epaint_default_fonts::EMOJI_ICON)?,
     ])
+}
+
+/// `text` as it is drawn: composed (NFC), so a name written decomposed, as macOS writes
+/// it, draws as its letters do, and the diameter sign ⌀, which no built-in typeface has,
+/// as Ø (review 2026-11-13 r95 P3: "⌀8 dowel" refused the image, and "e" with a combining
+/// accent was refused for the accent).
+pub(in crate::presentation) fn shown(text: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    text.nfc()
+        .map(|letter| if letter == '\u{2300}' { 'Ø' } else { letter })
+        .collect()
 }
 
 /// A letter that is not drawn: a zero-width space or joiner, a variation selector or a skin
@@ -232,17 +244,32 @@ pub(in crate::presentation) fn undrawable(text: &str) -> Result<Option<char>, Pr
 /// Draws the dimensions and labels; `camera` maps world points to sample space.
 pub(super) struct Annotator<'a> {
     camera: &'a Camera,
-    typefaces: [FontRef<'static>; 3],
+    typefaces: [FontRef<'static>; 4],
     /// Text size and line half-width in samples.
     text: f64,
     stroke: f64,
 }
 
+/// A label laid out once for the whole image: its point, the bend and end of its leader, its
+/// text as drawn and the side of the point the text is on (1 right, -1 left).
+pub(super) struct PlacedLabel {
+    at: Vec3,
+    bend: Vec3,
+    end: Vec3,
+    text: String,
+    side: f64,
+}
+
 impl<'a> Annotator<'a> {
-    pub(super) fn new(camera: &'a Camera, sheet: &Sheet<'_>) -> Result<Self, PresentationError> {
+    /// The annotator of an image `height` samples high with `factor` samples per pixel side.
+    pub(super) fn new(
+        camera: &'a Camera,
+        height: usize,
+        factor: usize,
+    ) -> Result<Self, PresentationError> {
         let typefaces = typefaces()?;
-        let factor = real(sheet.factor);
-        let output_height = real(sheet.height) / factor;
+        let factor = real(factor);
+        let output_height = real(height) / factor;
         Ok(Self {
             camera,
             typefaces,
@@ -289,27 +316,43 @@ impl<'a> Annotator<'a> {
         );
     }
 
-    /// Draws `label` with a leader from its point to its text. The text goes where it covers
-    /// none of `placed`, the boxes of the texts drawn before, and to the left of its point when
-    /// it would run off the image on the right (review 2026-11-12 P3: labels drew over one
+    /// Lays out `labels` once for an image `width` samples wide, seeing a cancel before each
+    /// (review 2026-11-13 r95 P3: every band laid them all out again, 200 labels at 4K added
+    /// 8 s, and nothing looked at the flag). A label whose point is behind the camera is left
+    /// out.
+    pub(super) fn place_labels(
+        &self,
+        labels: &[PresentationLabel],
+        width: usize,
+        cancelled: &AtomicBool,
+    ) -> Result<Vec<PlacedLabel>, PresentationError> {
+        let mut boxes = Vec::with_capacity(labels.len());
+        let mut placed = Vec::with_capacity(labels.len());
+        for label in labels {
+            going_on(cancelled)?;
+            placed.extend(self.place(label, width, &mut boxes));
+        }
+        Ok(placed)
+    }
+
+    /// Where `label` goes, with a leader from its point to its text. The text goes where it
+    /// covers none of `boxes`, those of the texts placed before, and to the left of its point
+    /// when it would run off the image on the right (review 2026-11-12 P3: labels drew over one
     /// another and long names ran off the image). Text longer than the room on the wider side
     /// is cut with an ellipsis (review 2026-11-13 P3).
-    pub(super) fn label(
+    fn place(
         &self,
-        sheet: &mut Sheet<'_>,
         label: &PresentationLabel,
-        placed: &mut Vec<[f64; 4]>,
-    ) {
-        let Some(at) = self.camera.project(Vec3::from(label.at_mm)) else {
-            return;
-        };
-        let at = flat(at);
+        image_width: usize,
+        boxes: &mut Vec<[f64; 4]>,
+    ) -> Option<PlacedLabel> {
+        let at = flat(self.camera.project(Vec3::from(label.at_mm))?);
         let (rise, reach) = (self.text * 1.1, self.text * 0.7);
         // The text starts `rise + reach` off its point, 0.2 text further, and its halo pads it.
-        let room = at.x.max(real(sheet.width) - at.x) - rise - reach - self.text;
-        let text = self.fitted(&label.text, room);
+        let room = at.x.max(real(image_width) - at.x) - rise - reach - self.text;
+        let text = self.fitted(&shown(&label.text), room);
         let width = self.measure(&text).1 + self.text * 0.5;
-        let side = if at.x + rise + reach + width > real(sheet.width) && at.x - rise - reach > width
+        let side = if at.x + rise + reach + width > real(image_width) && at.x - rise - reach > width
         {
             -1.0
         } else {
@@ -324,7 +367,7 @@ impl<'a> Annotator<'a> {
         let half = self.text * 0.75;
         let box_at = |y: f64| [left, y - half, right, y + half];
         let overlaps = |[l, t, r, b]: [f64; 4]| {
-            placed
+            boxes
                 .iter()
                 .any(|[pl, pt, pr, pb]| l < *pr && *pl < r && t < *pb && *pt < b)
         };
@@ -336,30 +379,51 @@ impl<'a> Annotator<'a> {
             .find(|y| *y - half >= 0.0 && !overlaps(box_at(*y)))
             .or_else(|| rows.clone().find(|y| !overlaps(box_at(*y))))
             .unwrap_or(height);
-        placed.push(box_at(y));
+        boxes.push(box_at(y));
         let bend = Vec3::new(at.x + side * rise, y, 0.0);
         let end = bend + Vec3::new(side * self.text * 0.5, 0.0, 0.0);
-        sheet.line(at, at, self.text * 0.12, INK);
-        sheet.line(at, bend, self.stroke, INK);
-        sheet.line(bend, end, self.stroke, INK);
+        Some(PlacedLabel {
+            at,
+            bend,
+            end,
+            text,
+            side,
+        })
+    }
+
+    /// Draws a label laid out by [`Self::place_labels`] over the sheet's rows.
+    pub(super) fn label(&self, sheet: &mut Sheet<'_>, label: &PlacedLabel) {
+        let PlacedLabel {
+            at,
+            bend,
+            end,
+            text,
+            side,
+        } = label;
+        sheet.line(*at, *at, self.text * 0.12, INK);
+        sheet.line(*at, *bend, self.stroke, INK);
+        sheet.line(*bend, *end, self.stroke, INK);
         self.text_at(
             sheet,
-            &text,
-            end + Vec3::new(side * self.text * 0.2, 0.0, 0.0),
-            if side > 0.0 { 0.0 } else { 1.0 },
+            text,
+            *end + Vec3::new(side * self.text * 0.2, 0.0, 0.0),
+            if *side > 0.0 { 0.0 } else { 1.0 },
         );
     }
 
-    /// `text`, or as much of it as fits `room` samples with an ellipsis after it.
+    /// `text`, or as many of its whole graphemes as fit `room` samples with an ellipsis after
+    /// them (review 2026-11-13 r95 P3: a cut between letters split a flag, a family emoji
+    /// joined by ZWJ or a letter from its accent).
     fn fitted(&self, text: &str, room: f64) -> String {
+        use unicode_segmentation::UnicodeSegmentation;
         if self.measure(text).1 <= room {
             return text.to_owned();
         }
-        let letters = text.chars().collect::<Vec<_>>();
-        (0..letters.len())
+        let graphemes = text.graphemes(true).collect::<Vec<_>>();
+        (0..graphemes.len())
             .rev()
             .map(|kept| {
-                let mut cut = letters[..kept].iter().collect::<String>();
+                let mut cut = graphemes[..kept].concat();
                 cut.truncate(cut.trim_end().len());
                 cut.push('…');
                 cut
@@ -468,5 +532,50 @@ mod tests {
             Vec3::new(-1.0, -1.6, 1.1),
         );
         assert_eq!(flat.len(), 2);
+    }
+
+    fn camera() -> Camera {
+        let corners = [Vec3::ZERO, Vec3::new(1_000.0, 1_000.0, 1_000.0)];
+        Camera::fit(&corners, Vec3::new(-1.0, -1.6, 1.1), 320, 240).unwrap()
+    }
+
+    /// Review 2026-11-13 r95 P3: the ellipsis cut between letters, splitting a letter from
+    /// the accent written after it.
+    #[test]
+    fn a_cut_label_keeps_whole_graphemes() {
+        let camera = camera();
+        let annotator = Annotator::new(&camera, 240, 1).unwrap();
+        // No letter q with an acute is composed, so each stays two letters.
+        let text = "q\u{301}".repeat(60);
+        let cut = annotator.fitted(&text, 80.0);
+        let kept = cut.strip_suffix('…').unwrap();
+        assert!(!kept.is_empty() && kept.len() < text.len(), "{cut:?}");
+        assert!(kept.ends_with('\u{301}'), "{cut:?}");
+        assert_eq!(kept.matches('q').count(), kept.matches('\u{301}').count());
+    }
+
+    /// Review 2026-11-13 r95 P3: labels were laid out again in every band without a look at
+    /// the cancel flag.
+    #[test]
+    fn labels_are_laid_out_once_and_see_a_cancel() {
+        let camera = camera();
+        let annotator = Annotator::new(&camera, 240, 1).unwrap();
+        let labels = vec![
+            PresentationLabel {
+                text: "Post".into(),
+                at_mm: [500.0, 500.0, 1_000.0],
+            };
+            3
+        ];
+        assert!(matches!(
+            annotator.place_labels(&labels, 320, &AtomicBool::new(true)),
+            Err(PresentationError::Cancelled)
+        ));
+        let placed = annotator
+            .place_labels(&labels, 320, &AtomicBool::new(false))
+            .unwrap();
+        assert_eq!(placed.len(), 3);
+        // The same point three times: each text moves up clear of the ones before.
+        assert!(placed[0].bend.y > placed[1].bend.y && placed[1].bend.y > placed[2].bend.y);
     }
 }
