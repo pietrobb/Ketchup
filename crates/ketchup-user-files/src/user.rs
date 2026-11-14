@@ -41,7 +41,7 @@ pub fn effective_group() -> u32 {
 /// started a thread that stays the user; or what `work` answers.
 pub fn as_user<T>(owner: (u32, u32), work: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
     // Declared first, so a panic in the work makes this thread root before it leaves.
-    let _inside = strays::Inside::enter();
+    let inside = strays::Inside::enter()?;
     let root = Root::of_this_thread()?;
     if let Err(error) = thread::become_user(owner) {
         // Root again after a change made only in part; macOS makes all or none.
@@ -58,7 +58,7 @@ pub fn as_user<T>(owner: (u32, u32), work: impl FnOnce() -> io::Result<T>) -> io
     let written = work();
     match (root.restore(), written) {
         (Ok(()), written) => {
-            strays::none_left(owner.0)?;
+            strays::none_left(&inside, owner.0)?;
             written
         }
         (Err(back), Ok(_)) => Err(not_root_again(back, Done::Worked)),
@@ -83,55 +83,62 @@ mod strays {
         INSIDE.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// This thread's id, from `/proc/thread-self`, a link to `<pid>/task/<tid>`.
-    fn this_thread() -> Option<libc::c_long> {
-        let link = std::fs::read_link("/proc/thread-self").ok()?;
-        link.file_name()?.to_str()?.parse().ok()
+    /// A thread's id from its name under `/proc`.
+    fn thread_id(name: &std::ffi::OsStr) -> io::Result<libc::c_long> {
+        let text = name.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("thread {name:?} in /proc"),
+            )
+        })?;
+        text.parse()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
+
+    /// This thread's id, from `/proc/thread-self`, a link to `<pid>/task/<tid>`. Linux
+    /// without /proc cannot tell the threads apart, so the work is not done there.
+    fn this_thread() -> io::Result<libc::c_long> {
+        let link = std::fs::read_link("/proc/thread-self")?;
+        thread_id(link.file_name().unwrap_or(link.as_os_str()))
     }
 
     /// This thread in [`INSIDE`] while it lives, a panic in the work included.
-    pub(super) struct Inside(Option<libc::c_long>);
+    pub(super) struct Inside(libc::c_long);
 
     impl Inside {
-        pub(super) fn enter() -> Self {
-            let thread = this_thread();
-            if let Some(thread) = thread {
-                inside().insert(thread);
-            }
-            Self(thread)
+        pub(super) fn enter() -> io::Result<Self> {
+            let thread = this_thread()?;
+            inside().insert(thread);
+            Ok(Self(thread))
         }
     }
 
     impl Drop for Inside {
         fn drop(&mut self) {
-            if let Some(thread) = self.0 {
-                inside().remove(&thread);
-            }
+            inside().remove(&self.0);
         }
     }
 
-    /// No thread outside [`INSIDE`] is `user`, the calling one root again. A process
-    /// that is `user` itself has every thread so.
-    pub(super) fn none_left(user: u32) -> io::Result<()> {
-        // Without /proc a thread is not known and nothing is refused.
-        if user == super::effective_user() || this_thread().is_none() {
+    /// No thread outside [`INSIDE`] is `user`, the calling one (`_this`) root again.
+    /// A process that is `user` itself has every thread so.
+    pub(super) fn none_left(_this: &Inside, user: u32) -> io::Result<()> {
+        if user == super::effective_user() {
             return Ok(());
         }
         let inside = inside();
-        let Ok(threads) = std::fs::read_dir("/proc/self/task") else {
-            return Ok(());
-        };
-        for thread in threads.flatten() {
-            let name = thread.file_name();
-            let Some(id) = name.to_str().and_then(|id| id.parse::<libc::c_long>().ok()) else {
-                continue;
-            };
+        for thread in std::fs::read_dir("/proc/self/task")? {
+            let thread = thread?;
+            let id = thread_id(&thread.file_name())?;
             if inside.contains(&id) {
                 continue;
             }
-            // A thread that ended meanwhile has no status left to read.
-            let Ok(status) = std::fs::read_to_string(thread.path().join("status")) else {
-                continue;
+            let status = match std::fs::read_to_string(thread.path().join("status")) {
+                Ok(status) => status,
+                // A thread that ended meanwhile has no status left to read.
+                Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
+                    continue;
+                }
+                Err(error) => return Err(error),
             };
             if effective_of(&status) == Some(user) {
                 return Err(io::Error::other(format!(
@@ -157,12 +164,12 @@ mod strays {
     pub(super) struct Inside;
 
     impl Inside {
-        pub(super) fn enter() -> Self {
-            Self
+        pub(super) fn enter() -> io::Result<Self> {
+            Ok(Self)
         }
     }
 
-    pub(super) fn none_left(_user: u32) -> io::Result<()> {
+    pub(super) fn none_left(_this: &Inside, _user: u32) -> io::Result<()> {
         Ok(())
     }
 }
