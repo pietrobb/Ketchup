@@ -7,6 +7,7 @@ the downloads failed on it.
 
 import hashlib
 import re
+import struct
 
 from test_release_version import WINDOWS, powershell
 
@@ -75,12 +76,32 @@ def test_a_file_named_twice_is_refused(tmp_path):
     assert not (output / "SHA256SUMS.txt").exists()
 
 
-def mac_packages(tmp_path, names):
+SIGNER = b"Developer ID Application: CENTAURY Plus s.r.o. (HGHK355YL8)"
+
+
+def disk_image(signer=SIGNER, ticket=b"s8ch\x01\x00\x00\x00ticket"):
+    """A disk image laid out as the 0.3.3 packages are: data, an embedded signature with
+    the CMS signature in slot 0x10000 and the stapled ticket in 0x10002, the `koly` trailer."""
+    data = b"\0" * 4096
+    slots = [(0x10000, b"0\x80cms " + signer)] + ([(0x10002, ticket)] if ticket is not None else [])
+    blobs, at = b"", 12 + 8 * len(slots)
+    index = b""
+    for slot, content in slots:
+        index += struct.pack(">II", slot, at + len(blobs))
+        blobs += struct.pack(">II", 0xFADE0B01, 8 + len(content)) + content
+    signature = struct.pack(">III", 0xFADE0CC0, 12 + len(index) + len(blobs), len(slots)) + index + blobs
+    trailer = bytearray(512)
+    trailer[:4] = b"koly"
+    trailer[0x128:0x138] = struct.pack(">QQ", len(data), len(signature))
+    return data + signature + bytes(trailer)
+
+
+def mac_packages(tmp_path, names, image=None):
     packages = []
     for name in names:
         package = tmp_path / "mac" / name
         package.parent.mkdir(exist_ok=True)
-        package.write_bytes(b"dmg")
+        package.write_bytes(disk_image() if image is None else image)
         packages.append(f"'{package.as_posix()}'")
     helper = (WINDOWS / "MacPackages.ps1").as_posix()
     return powershell(f". '{helper}'; Assert-MacPackages '9.9.9' @({','.join(packages)})")
@@ -99,3 +120,19 @@ def test_the_macos_packages_are_both_or_none(tmp_path):
         assert app in result.stderr and viewer in result.stderr, result.stderr
     other = mac_packages(tmp_path, [app, "Ketchup-Viewer-9.9.8-macOS.dmg"])
     assert other.returncode != 0 and "9.9.8" in other.stderr, other.stderr
+
+
+def test_a_macos_package_is_signed_by_us_and_its_notarization_stapled(tmp_path):
+    # Review 2026-11-13 r95 P3: notarization was only written down; nothing checked that
+    # the packages -MacPackages takes are notarized.
+    names = ["Ketchup-9.9.9-macOS.dmg", "Ketchup-Viewer-9.9.9-macOS.dmg"]
+    refused = [
+        ("no notarization ticket", disk_image(ticket=None)),
+        ("no notarization ticket", disk_image(ticket=b"\0" * 12)),
+        ("not signed with", disk_image(signer=b"Developer ID Application: Someone Else (AAAAAAAAAA)")),
+        ("not signed with", b"dmg"),
+    ]
+    for words, image in refused:
+        result = mac_packages(tmp_path, names, image)
+        assert result.returncode != 0, words
+        assert words in result.stderr and "Ketchup-9.9.9-macOS.dmg" in result.stderr, result.stderr

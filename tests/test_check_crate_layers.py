@@ -365,6 +365,24 @@ def test_unsafe_under_an_allow_already_counted_is_counted_itself(tmp_path):
     assert "limit 3" in checker.grown_casts_and_allows(counts, {"a allows": 1, "a unsafe": 3})[0]
 
 
+def test_unsafe_in_a_vendored_crate_is_counted_and_said_as_unsafe(tmp_path):
+    # Review 2026-11-13 r95 P3: the patched starlark and process-wrap went uncounted, and a
+    # grown count of unsafe code was answered with advice about casts.
+    vendored = tmp_path / "third_party" / "w" / "src"
+    vendored.mkdir(parents=True)
+    (vendored / "lib.rs").write_text(
+        "unsafe fn f() {}\nfn g() { unsafe { f() } }\n"
+        "#[cfg(test)]\nmod tests {\n    fn t() { unsafe { super::f() } }\n}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "third_party" / "w" / "tests").mkdir()
+    (tmp_path / "third_party" / "w" / "tests" / "t.rs").write_text("unsafe fn h() {}\n", encoding="utf-8")
+    counts = checker.cast_and_allow_counts(tmp_path)
+    assert counts == {"third_party/w unsafe": 2}
+    [grown] = checker.grown_casts_and_allows(counts, {"third_party/w unsafe": 1})
+    assert "limit 1" in grown and "safe Rust" in grown and "TryFrom" not in grown
+
+
 def test_workspace_casts_and_allows_only_fall():
     assert checker.grown_casts_and_allows(checker.cast_and_allow_counts(ROOT)) == []
 

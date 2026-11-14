@@ -283,7 +283,7 @@ scripts/macos/build-viewer-app.sh     # Kečup Viewer.app (arm64 + x86_64) and a
 
 Both app scripts write the third-party notices with `scripts/third_party_notices.py`, which needs Python 3 and cargo-about 0.9.2, the version CI pins (`cargo install cargo-about --version 0.9.2 --locked`); so do the Windows packages. Both sign ad hoc, for this Mac; `--sign "Developer ID Application: …"` signs for other Macs, and notarization is a separate step.
 
-Notarization is not scripted, as it needs the Apple developer account of CENTAURY Plus s.r.o.; whoever makes the release runs it on the Mac for each signed `.dmg`, before the Windows release script takes them with `-MacPackages` and sums them into `SHA256SUMS.txt` (stapling changes the file):
+Notarization is not scripted, as it needs the Apple developer account of CENTAURY Plus s.r.o.; whoever makes the release runs it on the Mac for each signed `.dmg`, before the Windows release script takes them with `-MacPackages` and sums them into `SHA256SUMS.txt` (stapling changes the file). That script refuses a `.dmg` not signed with the Developer ID of CENTAURY Plus s.r.o. or without its notarization ticket stapled:
 
 ```bash
 xcrun notarytool store-credentials ketchup-notary --apple-id <Apple ID> --team-id <team ID>   # once

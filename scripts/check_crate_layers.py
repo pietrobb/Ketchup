@@ -549,6 +549,11 @@ CASTS_AND_ALLOWS = {
     "ketchup-mcp unsafe": 9,
     "ketchup-user-files unsafe": 8,
     "ketchup-viewer-android unsafe": 4,
+    # The vendored crates the workspace patches in build into the release too (review
+    # 2026-11-13 r95 P3: the count saw none of them): starlark's value heap and
+    # process-wrap's process groups and job objects.
+    "third_party/process-wrap unsafe": 49,
+    "third_party/starlark unsafe": 596,
 }
 
 
@@ -582,6 +587,15 @@ def cast_and_allow_counts(root):
                 found = len(pattern.findall(searched))
                 if found:
                     counts[f"{crate} {kind}"] = counts.get(f"{crate} {kind}", 0) + found
+    for path in sorted((root / "third_party").glob("*/**/*.rs")):
+        relative = path.relative_to(root)
+        if is_test_module(relative) or "target" in relative.parts:
+            continue
+        key = f"third_party/{relative.parts[1]} unsafe"
+        for line in production_lines(path):
+            found = len(UNSAFE.findall(STRING.sub('""', line.split("//", 1)[0])))
+            if found:
+                counts[key] = counts.get(key, 0) + found
     return counts
 
 
@@ -590,10 +604,12 @@ def grown_casts_and_allows(counts, recorded=CASTS_AND_ALLOWS):
     for key in sorted(set(counts) | set(recorded)):
         found, allowed = counts.get(key, 0), recorded.get(key, 0)
         if found > allowed:
-            problems.append(
-                f"{key}: {found}, limit {allowed}; use From/TryFrom or a named conversion, "
-                "and fix the lint instead of allowing it"
+            remedy = (
+                "write it in safe Rust, or audit it and raise the limit saying why"
+                if key.endswith(" unsafe")
+                else "use From/TryFrom or a named conversion, and fix the lint instead of allowing it"
             )
+            problems.append(f"{key}: {found}, limit {allowed}; {remedy}")
         elif found < allowed:
             problems.append(f"{key}: fell to {found}; lower CASTS_AND_ALLOWS to it")
     return problems
