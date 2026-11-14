@@ -975,10 +975,19 @@ box(\"wall\"",
         )),
         &[],
     );
-    // Capability review 761 of R1113-PG-600: so slender a rod is no anchorage
-    // at all, and the beam is no longer held there.
-    assert_eq!(braced_by(&rod), Vec::<(String, f64, f64)>::new());
+    // Capability review 761 of R1113-PG-600: so slender a rod holds the beam
+    // nowhere; it anchors the batten far too flexibly to hold it sideways
+    // (review 2026-11-13 r95 structural point 1).
     assert_ne!(member(&rod, "beam").status, "pass");
+    assert!(
+        member(&rod, "beam")
+            .missing
+            .iter()
+            .any(|reason| reason.contains("batten holds its")
+                && reason.contains("too flexible or too slender")),
+        "{:?}",
+        member(&rod, "beam")
+    );
 
     // Review 2026-11-07 P3: one turned 45° to the beam was measured by its
     // height alone, its sides at 45° left out, so a slab 300 mm square was
@@ -1010,13 +1019,18 @@ rotate(\"wall\", axis = (0, 0, 1), angle = {angle}, pivot = (525, 1005, 2390))"
             )),
             &[],
         );
-        // Capability review 761: so slender a rod is no anchorage at all.
-        assert_eq!(
-            braced_by(&rod),
-            Vec::<(String, f64, f64)>::new(),
-            "{angle}°"
-        );
+        // Capability review 761: so slender a rod holds the beam nowhere,
+        // anchoring the batten far too flexibly.
         assert_ne!(member(&rod, "beam").status, "pass", "{angle}°");
+        assert!(
+            member(&rod, "beam")
+                .missing
+                .iter()
+                .any(|reason| reason.contains("batten holds its")
+                    && reason.contains("too flexible or too slender")),
+            "{angle}°: {:?}",
+            member(&rod, "beam")
+        );
     }
 }
 

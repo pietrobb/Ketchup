@@ -41,6 +41,9 @@ STANDARD_VALIDATORS = {
     "crates/ketchup-program/src/joint_kind.rs",
     "crates/ketchup-program/src/load_path.rs",
     "crates/ketchup-program/src/loads.rs",
+    # How a brace's path to the ground holds sideways, EN 1995-1-1 9.2.5.3 (R1113r95 point 1).
+    "crates/ketchup-program/src/loads/anchorage.rs",
+    "crates/ketchup-program/src/loads/anchorage/stiffness.rs",
     "crates/ketchup-program/src/member_check.rs",
     # STN/ČSN 73 0540-2 by the element a build-up separates (review 2026-11-08 §5.3).
     "crates/ketchup-program/src/thermal.rs",

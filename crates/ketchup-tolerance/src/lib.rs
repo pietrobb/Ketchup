@@ -75,6 +75,11 @@ pub const PICK_MATCH_MM: f64 = 0.001;
 /// it then goes straight into that support instead of loading the span.
 pub const LOAD_AT_SUPPORT_MM: f64 = 0.5;
 
+/// Share of a sideways force running along a part on a path to the ground (the cosine
+/// between them) at or below which the part carries none of it along its axis and
+/// nothing buckles it (R1113r95-PG-702..704).
+pub const ALONG_AXIS_NEGLIGIBLE: f64 = 1.0e-3;
+
 /// Chord error for material face boundaries used by planar contact queries, in mm.
 pub const BOUNDARY_CHORD_MM: f64 = 0.001;
 /// The largest distance between a curve in a part's CNC drawing and the lines drawn for it, in mm.
