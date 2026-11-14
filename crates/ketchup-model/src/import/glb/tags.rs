@@ -82,11 +82,7 @@ pub(super) fn plan_tags(
     {
         return Err(GlbImportError::InvalidReference);
     }
-    let names: Vec<String> = tags
-        .tags
-        .iter()
-        .map(|tag| display_name(&tag.name))
-        .collect();
+    let names = shown_names(&tags.tags);
     for name in &names {
         validate_text(name)?;
     }
@@ -142,6 +138,51 @@ pub(super) fn plan_tags(
         planned.by_node[*node] = carried;
     }
     Ok(planned)
+}
+
+/// The names the tags show in the document: as [`display_name`] shows them, "Tag 3" for a
+/// third that shows nothing, and "Walls (2)" for a second that shows only as another tag
+/// of a different name does (review 2026-11-13 r95 P3: a tag "\u{1}" refused the whole
+/// file, and "Walls\u{7}" and "Walls\u{8}" became one tag). Tags of one name stay one.
+fn shown_names(tags: &[GlbTag]) -> Vec<String> {
+    let shown: Vec<String> = tags
+        .iter()
+        .enumerate()
+        .map(|(index, tag)| {
+            let name = display_name(&tag.name);
+            if name.is_empty() {
+                let first = tags
+                    .iter()
+                    .position(|other| other.name == tag.name)
+                    .unwrap_or(index);
+                format!("Tag {}", first + 1)
+            } else {
+                name
+            }
+        })
+        .collect();
+    let wanted: BTreeSet<&str> = shown.iter().map(String::as_str).collect();
+    // Each name given, and the tag's own name it was given for.
+    let mut given: BTreeMap<String, &str> = BTreeMap::new();
+    let mut names = Vec::with_capacity(tags.len());
+    for (tag, name) in tags.iter().zip(&shown) {
+        let name = match given.get(name) {
+            Some(own) if *own != tag.name => {
+                let mut count = 2_usize;
+                loop {
+                    let other = format!("{name} ({count})");
+                    if !given.contains_key(&other) && !wanted.contains(other.as_str()) {
+                        break other;
+                    }
+                    count += 1;
+                }
+            }
+            _ => name.clone(),
+        };
+        given.entry(name.clone()).or_insert(&tag.name);
+        names.push(name);
+    }
+    names
 }
 
 #[cfg(test)]
@@ -333,20 +374,62 @@ mod tests {
             }),
             Some(GlbImportError::InvalidReference)
         );
-        let mut blank = vec![None; scene.nodes.len()];
-        blank[scene.traversal[0]] = Some(0);
-        assert_eq!(
-            plan(&GlbNodeTags {
-                tags: vec![GlbTag {
-                    name: "  ".into(),
-                    visible: true,
-                }],
-                node_tags: blank,
-                ..GlbNodeTags::default()
-            }),
-            Some(GlbImportError::InvalidText)
-        );
         assert_eq!(plan(&GlbNodeTags::default()), None);
+    }
+
+    /// Review 2026-11-13 r95 P3: a tag named only with control characters or spaces
+    /// refused the whole file, and two tags that differ only in a control character
+    /// became one. The first imports as "Tag <n>", as an unnamed node has a name, and
+    /// the second as "Walls (2)"; two tags of the very same name stay one.
+    #[test]
+    fn a_tag_that_shows_nothing_or_as_another_keeps_a_name_of_its_own() {
+        let tag = |name: &str| GlbTag {
+            name: name.into(),
+            visible: true,
+        };
+        assert_eq!(
+            shown_names(&[
+                tag("\u{1}"),
+                tag("  "),
+                tag("Walls\u{7}"),
+                tag("Walls\u{8}"),
+                tag("Walls (2)"),
+                tag("Walls\u{7}"),
+                tag("  "),
+            ]),
+            [
+                "Tag 1",
+                "Tag 2",
+                "Walls",
+                "Walls (3)",
+                "Walls (2)",
+                "Walls",
+                "Tag 2"
+            ]
+        );
+
+        let source = garden();
+        let scene = inspect_glb(&source).unwrap();
+        let mut node_tags = vec![None; scene.nodes.len()];
+        for (tag, node) in scene.traversal.iter().take(3).enumerate() {
+            node_tags[*node] = Some(tag);
+        }
+        let tags = GlbNodeTags {
+            tags: vec![tag("\u{1}"), tag("Walls\u{7}"), tag("Walls\u{8}")],
+            node_tags,
+            hidden: Vec::new(),
+        };
+        let mut document = DocumentStore::new();
+        let batch =
+            plan_glb_import_tagged(&document.current(), &source, "garden.glb", &[], &tags).unwrap();
+        document.apply_batch(&batch).unwrap();
+        let mut names: Vec<String> = document
+            .current()
+            .tags()
+            .map(|tag| tag.name().to_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["Tag 1", "Walls", "Walls (2)"]);
     }
 
     /// A tag or a node named with a control character in the source file imports with the
