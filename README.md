@@ -110,7 +110,7 @@ See [Connect your AI harness](#connect-your-ai-harness-mcp) below for the one-cl
 - Assemblies with mates, fixed, revolute, prismatic and helical joints, travel limits, gear, belt, chain, rack and lead-screw couplings, swept collision checks and motion studies. The [`hettich-quadro-v6-drawer.ketchup`](examples/hettich-quadro-v6-drawer.ketchup) example is a drawer on real runners you can open and pull.
 - Drawing sheets with front, top, right, isometric, auxiliary, section and detail views, associative dimensions with tolerances, notes and BOM balloons, exported as DXF or DWG.
 - Measurement of distances, volume, mass, centre of mass and moments of inertia, and a small linear-static FEA for a first look at stiffness.
-- Exchange: STEP and IGES in and out as exact geometry (STEP keeps assembly structure, names and colours), STL, 3MF, Blender GLB, COLLADA for SketchUp, and the `.kscene` SketchUp bridge.
+- Exchange: STEP and IGES in and out as exact geometry (STEP keeps assembly structure, names and colours), STL, 3MF, Blender GLB, SketchUp `.skp` files (read, 2013 and newer) without SketchUp installed, COLLADA for SketchUp, and the `.kscene` SketchUp bridge.
 
 ## Download and try it
 
@@ -120,7 +120,7 @@ See [Connect your AI harness](#connect-your-ai-harness-mcp) below for the one-cl
 
 Requires Windows 10 or 11 x64. The Visual C++ runtime comes with the programs (only the older 0.3.1 also needs the [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) for x64, 14.29 or later). The installer and the programs are signed by AEON GROUP spol. s r.o. No account, API key or Python is needed. What changed in each release is in [CHANGELOG.md](CHANGELOG.md).
 
-**On a Mac** (since 0.3.3): download **`Ketchup-0.3.3-macOS.dmg`** from the same release, open it and drag **Kečup** into Applications. **`Ketchup-Viewer-0.3.3-macOS.dmg`** holds **Kečup Viewer** the same way. Ketchup needs a Mac with Apple Silicon (M1 or newer) and macOS 11 or later; the Viewer also runs on Intel Macs. Both are signed by CENTAURY Plus s.r.o. and notarized by Apple, so they open without a warning. The examples are the same `Ketchup-0.3.3-Examples.zip`.
+**On a Mac** (since 0.3.3): download **`Ketchup-0.3.3-macOS.dmg`** from the same release, open it and drag **Ketchup** (the app `Kečup.app` in 0.3.3) into Applications. **`Ketchup-Viewer-0.3.3-macOS.dmg`** holds **Ketchup Viewer** the same way. Ketchup needs a Mac with Apple Silicon (M1 or newer) and macOS 11 or later; the Viewer also runs on Intel Macs. Both are signed by CENTAURY Plus s.r.o. and notarized by Apple, so they open without a warning. The examples are the same `Ketchup-0.3.3-Examples.zip`.
 
 ## Examples you can open right away
 
@@ -141,12 +141,12 @@ More programs you can run on an empty model are in [`examples/programs`](example
 
 ## Connect your AI harness (MCP)
 
-Your harness keeps its own model, account and subscription; Ketchup doesn't need an API key. `Ketchup.exe --mcp` runs an MCP server on stdio, and a connected harness works in the Ketchup window you have open. Besides modeling, it can import STEP, IGES, STL, DXF, DWG, GLB and SketchUp scene files, read a drawing as objects, closed regions (rooms) and parallel line pairs (wall thicknesses), edit it (remove, draw, move, trim, extend, offset), and export everything the window can, including project drawings as PDF.
+Your harness keeps its own model, account and subscription; Ketchup doesn't need an API key. `Ketchup.exe --mcp` runs an MCP server on stdio, and a connected harness works in the Ketchup window you have open. Besides modeling, it can import STEP, IGES, STL, DXF, DWG, GLB, SketchUp `.skp` and SketchUp scene files, read a drawing as objects, closed regions (rooms) and parallel line pairs (wall thicknesses), edit it (remove, draw, move, trim, extend, offset), and export everything the window can, including project drawings as PDF.
 
 Set it up once, in any of these ways:
 
 - **Installer:** keep *Connect your AI clients to Ketchup* checked on its last page.
-- **Window:** the **Connect AI** section of the side panel lists Claude Code, Codex, Claude Desktop and Supervisor. **Connect** writes this Ketchup into the client's own configuration (`.claude.json`, `.codex\config.toml`, `claude_desktop_config.json`, Supervisor's `skills\mcp_servers.json`), so it works even when the client's command is not on the window's PATH; **Use this Kečup** replaces an entry that starts another program, for example a deleted development build.
+- **Window:** the **Connect AI** section of the side panel lists Claude Code, Codex, Claude Desktop and Supervisor. **Connect** writes this Ketchup into the client's own configuration (`.claude.json`, `.codex\config.toml`, `claude_desktop_config.json`, Supervisor's `skills\mcp_servers.json`), so it works even when the client's command is not on the window's PATH; **Use this Ketchup** replaces an entry that starts another program, for example a deleted development build.
 - **Terminal:** `& "$env:LOCALAPPDATA\Programs\Ketchup\Ketchup.exe" --mcp-setup | Out-Host` sets up every client it finds and prints what each starts now.
 - **By hand**, with the default installation:
 
@@ -168,7 +168,7 @@ Other harnesses take the same command in their MCP configuration. Replace `<you>
 { "mcpServers": { "ketchup": { "command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\Ketchup\\Ketchup.exe", "args": ["--mcp"] } } }
 ```
 
-On a Mac, with Kečup in Applications, the command is the program inside the app:
+On a Mac, with Ketchup in Applications, the command is the program inside the app:
 
 ```sh
 claude mcp add --scope user ketchup -- "/Applications/Kečup.app/Contents/MacOS/ketchup-app" --mcp
@@ -214,10 +214,10 @@ Manual tools, rule programs, plugins and AI all change the model through one com
 Honest limits, so you know where it stands next to a mature mechanical CAD such as SolidWorks:
 
 - **Drawings for machined parts are not complete.** The drawing format holds angular, radius and diameter dimensions, datums and GD&T feature control frames, but no tool places them yet; linear dimensions with tolerances, notes and BOM balloons work. There are no automatic hole and thread callouts.
-- **No native SolidWorks, Parasolid or SketchUp `.skp` files.** Use STEP or IGES (exact) for CAD exchange and COLLADA or `.kscene` for SketchUp.
+- **No native SolidWorks or Parasolid files, and no writing of SketchUp `.skp`.** Use STEP or IGES (exact) for CAD exchange; SketchUp `.skp` files are read, and COLLADA or `.kscene` take a model back to SketchUp.
 - **No catalogue of standard mechanical parts** such as bearings, linear rails, ball screws or aluminium profiles. The program library has standard fasteners, dowels and hinges; other supplier parts come in as STEP.
 - **Simulation is basic.** Load paths, EC5 timber checks and a small linear-static FEA (trusses and tetrahedra, up to 4,096 elements) — not nonlinear, thermal, dynamic or fatigue analysis.
-- **CAM is limited.** Drilling programs for woodWOP, BTLx for timber, R12 DXF outlines for CNC routers and one reviewed ISO metric program; no general toolpath generation or post-processors for arbitrary machines. woodWOP contour milling and pockets are in progress.
+- **CAM is limited.** woodWOP programs that drill and mill rectangular blind pockets from the top, BTLx for timber, R12 DXF outlines for CNC routers and one reviewed ISO metric program; no general toolpath generation or post-processors for arbitrary machines. woodWOP has no contour milling, round pockets or through cuts yet.
 - **Exact operations are bounded.** Fillet, shell, sweep, loft and Booleans cover tested cases and fail with an explanation rather than produce doubtful geometry. Freeform surfacing is not there.
 - **Undo history lives in memory** for the session and reaches back 30 edits; Save writes only the current revision. A work-recovery copy keeps your edits and their Undo steps through a crash.
 - **One memory limit per kind of background job**, not for the whole window: several large imports and exports at once can use more memory than the computer has.
