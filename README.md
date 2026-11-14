@@ -168,10 +168,10 @@ Other harnesses take the same command in their MCP configuration. Replace `<you>
 { "mcpServers": { "ketchup": { "command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\Ketchup\\Ketchup.exe", "args": ["--mcp"] } } }
 ```
 
-On a Mac, with Ketchup in Applications, the command is the program inside the app:
+On a Mac, with Ketchup in Applications, the command is the program inside the app. In 0.3.3 the app is still named `Kečup.app`, so there the path starts with `/Applications/Kečup.app`:
 
 ```sh
-claude mcp add --scope user ketchup -- "/Applications/Kečup.app/Contents/MacOS/ketchup-app" --mcp
+claude mcp add --scope user ketchup -- "/Applications/Ketchup.app/Contents/MacOS/ketchup-app" --mcp
 ```
 
 Then start a new session of the harness and ask, for example, to *"open tiny-house.ketchup in Ketchup and make the house 1 m longer"*.
@@ -277,8 +277,8 @@ git clone https://github.com/Open-Cascade-SAS/OCCT.git third_party/occt-src
 git -C third_party/occt-src checkout b8f597c677811d1f9f4d8a97f5ae2825c0353a42
 scripts/macos/build-occt.sh
 cargo build --locked --release
-scripts/macos/build-app.sh            # Kečup.app and a .dmg in artifacts/macos-app/<version>
-scripts/macos/build-viewer-app.sh     # Kečup Viewer.app (arm64 + x86_64) and a .dmg
+scripts/macos/build-app.sh            # Ketchup.app and a .dmg in artifacts/macos-app/<version>
+scripts/macos/build-viewer-app.sh     # Ketchup Viewer.app (arm64 + x86_64) and a .dmg
 ```
 
 Both app scripts write the third-party notices with `scripts/third_party_notices.py`, which needs Python 3 and cargo-about 0.9.2, the version CI pins (`cargo install cargo-about --version 0.9.2 --locked`); so do the Windows packages. Both sign ad hoc, for this Mac; `--sign "Developer ID Application: …"` signs for other Macs, and notarization is a separate step.

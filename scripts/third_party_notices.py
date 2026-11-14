@@ -85,7 +85,7 @@ PACKAGES = {
         ("occt", "acadrust", "starlark", "core-math", "msvc-runtime"),
     ),
     "viewer": Package("Kecup Viewer", ("ketchup-viewer",), ()),
-    # Kecup.app carries the app and its workers; the Viewer is a .app of its own.
+    # Ketchup.app carries the app and its workers; the Viewer is a .app of its own.
     "ketchup-macos": Package(
         "Kecup",
         ("ketchup-app", "ketchup-scheduler"),
