@@ -216,12 +216,14 @@ brace([\"beam\"], by = [\"lath\"], edge = \"top\", spacing = 10)
         );
     }
 
-    // The same 420 mm blocks a grounded post stands under, on the floor
-    // beside the beam, hold it.
+    // The same 420 mm blocks a grounded post 100 x 160 stands under, on the
+    // floor beside the beam, hold it, stiff enough as a cantilever (review
+    // 2026-11-13 r95 structural point 1: one 50 x 100 is not).
     let mut posts = String::new();
     for x in PLACES {
         posts.push_str(&format!(
-            "box(\"under {x}\", (50, 100, 2400), at = ({x}, 150, 0), material = \"GL24h\", grounded = True)\n"
+            "box(\"under {x}\", (100, 160, 2400), at = ({}, 90, 0), material = \"GL24h\", grounded = True)\n",
+            x - 25
         ));
     }
     let held = blocks([50, 420, 50], -170, &posts);

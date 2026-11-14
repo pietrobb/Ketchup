@@ -17,7 +17,7 @@ use crate::continuous_span::{self, Piece};
 use crate::load_path::{joint_points, on_floor};
 use crate::model::{Joint, JointFastening, Part, ProgramModel, ProgramPartBody};
 use crate::validate::{Issue, Severity};
-use anchorage::{Footing, across_beyond, beyond_side, reaches_beyond};
+use anchorage::{Anchorage, Footing, across_beyond, beyond_side, reaches_beyond, weaker};
 use ketchup_geometry::linalg::{self, cross, dot, length, sub};
 use ketchup_model::tolerance::CONTACT_FIT_MM;
 use serde::{Deserialize, Serialize};
@@ -127,6 +127,28 @@ pub struct Brace {
     pub edge: String,
     pub from_mm: f64,
     pub to_mm: f64,
+    /// How its path to the ground holds the member sideways, the weakest of
+    /// the stretch; none for a sheet of a diaphragm, not worked out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchorage: Option<BraceAnchorage>,
+}
+
+/// How stiffly and up to what force a brace's path to the ground holds the
+/// member sideways (review 2026-11-13 r95 structural point 1), which the
+/// member's check holds against what EN 1995-1-1 9.2.5.3 asks of a brace.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct BraceAnchorage {
+    /// The part of the path, with the joint it leaves by, giving the most.
+    pub through: String,
+    /// The force across the member per millimetre it moves there, N/mm.
+    pub stiffness_n_mm: f64,
+    /// The largest force across the member before a part of the path
+    /// buckles, N; none where no part carries it along its length.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capacity_n: Option<f64>,
+    /// The part of the path that buckles first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub buckling_in: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -1256,6 +1278,10 @@ fn member_load(
         match merged.last_mut() {
             Some(last) if last.by == brace.by && last.top == brace.top && brace.from <= last.to => {
                 last.to = last.to.max(brace.to);
+                last.anchorage = match (last.anchorage, brace.anchorage) {
+                    (Some(a), Some(b)) => Some(weaker(a, b)),
+                    (a, b) => a.or(b),
+                };
             }
             _ => merged.push(brace),
         }
@@ -1287,6 +1313,7 @@ fn member_load(
                 edge: if brace.top { "top" } else { "bottom" }.to_owned(),
                 from_mm: round(brace.from),
                 to_mm: round(brace.to),
+                anchorage: brace.anchorage.map(|held| held.reported(parts)),
             })
             .collect(),
         missing: missing.into_iter().collect(),
@@ -1299,6 +1326,8 @@ struct Bracing {
     by: usize,
     /// The grounded part `by` ties the member to there.
     anchor: usize,
+    /// How the anchor holds the member there, where worked out.
+    anchorage: Option<Anchorage>,
     top: bool,
     from: f64,
     to: f64,
@@ -1428,6 +1457,7 @@ fn braced_stretches(
                     .map(|(at, anchor)| Bracing {
                         by: item,
                         anchor,
+                        anchorage: footing.anchorage(anchor, member_at, &[item]),
                         top,
                         from: at,
                         to: at,
@@ -1561,7 +1591,8 @@ fn braces<'a>(
         .map(|part| grounded.contains(&part.name))
         .collect();
     let mut stray = Vec::new();
-    let footing = Footing::of(model, member, frames);
+    let spanning = anchorage::spanning(parts, supports, |item| member[item] || anchorage[item]);
+    let footing = Footing::of(model, member, frames, spanning);
     let looked = std::cell::RefCell::new(BTreeSet::new());
     let mut braced = braced_stretches(
         supports,
@@ -2059,6 +2090,12 @@ fn declared_bracing<'a>(
             Bracing {
                 by,
                 anchor,
+                anchorage: (!sheet_anchor.contains_key(&by))
+                    .then(|| {
+                        let apart: &[usize] = if anchor == by { &[] } else { &[by] };
+                        footing.anchorage(anchor, held, apart)
+                    })
+                    .flatten(),
                 top,
                 from: along,
                 to: along,

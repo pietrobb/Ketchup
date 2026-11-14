@@ -22,6 +22,15 @@ fn checked<'a>(report: &'a Report, part: &str) -> &'a MemberCheck {
         .unwrap_or_else(|| panic!("{part} is not checked: {:?}", report.design.members))
 }
 
+/// Why `report` holds its beam nowhere a declaration says: the declarations
+/// it ignores, and the beam's own check (review 2026-11-13 r95 structural
+/// point 1: a path to the ground too flexible holds nothing there).
+fn refused(report: &Report) -> Vec<&str> {
+    let mut why = ignored(report);
+    why.extend(checked(report, "beam").missing.iter().map(String::as_str));
+    why
+}
+
 fn ignored(report: &Report) -> Vec<&str> {
     report
         .issues
@@ -130,32 +139,35 @@ box(\"nub {x}\", (1, 1, 1), at = ({}, 175, 2400), material = \"GL24h\", grounded
         let held = blocks(extra);
         assert_ne!(checked(&held, "beam").status, "pass", "{case}");
         assert!(
-            ignored(&held)
+            refused(&held)
                 .iter()
                 .any(|message| message.contains("block 300")),
             "{case}: {:?}",
-            ignored(&held)
+            refused(&held)
         );
         if let Some(part) = ["rod", "strip"]
             .into_iter()
             .find(|part| case.starts_with(&format!("grounded {part}")))
         {
             assert!(
-                ignored(&held)
+                refused(&held)
                     .iter()
                     .any(|message| message.contains(&format!("{part} 300"))
                         && message.contains("too slender")),
                 "{:?}",
-                ignored(&held)
+                refused(&held)
             );
         }
     }
 
-    // A grounded post standing on the floor under each block, beside the
-    // beam, holds it.
+    // A grounded post 100 x 160 standing on the floor under each block,
+    // beside the beam, holds it: as a cantilever 3 E I / L³ = 85 N/mm, over
+    // the 56 N/mm EN 1995-1-1 9.2.5.3 asks (review 2026-11-13 r95 structural
+    // point 1: a post 50 x 100 gave 10 N/mm and held it by a threshold).
     let posts = blocks(|x| {
         format!(
-            "box(\"under {x}\", (50, 100, 2400), at = ({x}, 150, 0), material = \"GL24h\", grounded = True)\n"
+            "box(\"under {x}\", (100, 160, 2400), at = ({}, 90, 0), material = \"GL24h\", grounded = True)\n",
+            x - 25
         )
     });
     assert_eq!(ignored(&posts), Vec::<&str>::new());
@@ -165,8 +177,9 @@ box(\"nub {x}\", (1, 1, 1), at = ({}, 175, 2400), material = \"GL24h\", grounded
     // against the block's bottom (capability review 768).
     let turned = blocks(|x| {
         format!(
-            "box(\"under {x}\", (50, 100, 2400), at = ({x}, 150, 0), material = \"GL24h\", grounded = True)
-rotate(\"under {x}\", axis = (0, 0, 1), angle = 1, pivot = ({}, 200, 0))\n",
+            "box(\"under {x}\", (100, 160, 2400), at = ({}, 90, 0), material = \"GL24h\", grounded = True)
+rotate(\"under {x}\", axis = (0, 0, 1), angle = 1, pivot = ({}, 170, 0))\n",
+            x - 25,
             x + 25
         )
     });
@@ -198,17 +211,18 @@ joint(\"board {x}\", \"block {x}\", kind = \"screw\")
     let butting = walled(false);
     assert_ne!(checked(&butting, "beam").status, "pass");
     assert!(
-        ignored(&butting)
+        refused(&butting)
             .iter()
             .any(|message| message.contains("block 300")),
         "{:?}",
-        ignored(&butting)
+        refused(&butting)
     );
 }
 
 /// Capability review 771 (PG-163): a free stud under each block, joined to
 /// nothing, holds nothing sideways whether it stands on the bare floor or on a
-/// grounded slab lying on it. A grounded stud on the slab holds the beam.
+/// grounded slab lying on it. A grounded stud 100 x 160 on the slab holds the
+/// beam.
 #[test]
 fn a_free_stud_is_no_ground_on_the_floor_or_on_a_grounded_slab() {
     const SLAB: &str = "box(\"slab\", (5900, 400, 100), at = (0, 100, 0), material = \"GL24h\", grounded = True)\n";
@@ -220,7 +234,8 @@ fn a_free_stud_is_no_ground_on_the_floor_or_on_a_grounded_slab() {
                 ("", 0, 2400)
             };
             format!(
-                "{base}box(\"under {x}\", (50, 100, {height}), at = ({x}, 150, {z}), material = \"GL24h\"{grounded})\n"
+                "{base}box(\"under {x}\", (100, 160, {height}), at = ({}, 100, {z}), material = \"GL24h\"{grounded})\n",
+                x - 25
             )
         })
     };
@@ -228,11 +243,11 @@ fn a_free_stud_is_no_ground_on_the_floor_or_on_a_grounded_slab() {
         let held = stud("", slab);
         assert_ne!(checked(&held, "beam").status, "pass", "{case}");
         assert!(
-            ignored(&held)
+            refused(&held)
                 .iter()
                 .any(|message| message.contains("block 300")),
             "{case}: {:?}",
-            ignored(&held)
+            refused(&held)
         );
     }
     let grounded = stud(", grounded = True", true);
@@ -242,9 +257,11 @@ fn a_free_stud_is_no_ground_on_the_floor_or_on_a_grounded_slab() {
 
 /// Capability review 766: a grounded strip 1 x 40 x 2 400 standing on the floor
 /// under each block was ground, its height measured against its width and not
-/// its thickness. Whatever its width, a part standing on its end more than 60
-/// times as tall as it is thick holds nothing sideways; one no more than that
-/// holds the beam.
+/// its thickness. A part standing on its end holds sideways as stiffly as it
+/// bends across the member: strips and posts too thin that way hold nothing, a
+/// post 100 x 160 deep across the member holds the beam, turned 160 x 100 not
+/// (review 2026-11-13 r95 structural point 1: 40 x 100 and 100 x 40 held it by
+/// a threshold of 60 times the thickness).
 #[test]
 fn a_standing_part_is_slender_by_its_height_over_its_thickness() {
     let standing = |(dx, dy): (i32, i32)| {
@@ -264,29 +281,32 @@ fn a_standing_part_is_slender_by_its_height_over_its_thickness() {
         (10, 40),
         (10, 100),
         (39, 100),
+        (40, 100),
+        (100, 40),
+        (160, 100),
     ] {
         let held = standing(section);
         assert_ne!(checked(&held, "beam").status, "pass", "{section:?}");
         assert!(
-            ignored(&held)
+            refused(&held)
                 .iter()
                 .any(|message| message.contains("strip 300") && message.contains("too slender")),
             "{section:?}: {:?}",
-            ignored(&held)
+            refused(&held)
         );
     }
-    for section in [(40, 100), (100, 40)] {
-        let held = standing(section);
-        assert_eq!(ignored(&held), Vec::<&str>::new(), "{section:?}");
-        assert_eq!(checked(&held, "beam").status, "pass", "{section:?}");
-    }
+    let held = standing((100, 160));
+    assert_eq!(ignored(&held), Vec::<&str>::new());
+    assert_eq!(checked(&held, "beam").status, "pass");
 }
 
 /// Review 2026-11-13 r95 R1113r95-PG-700: slenderness was measured part by
 /// part, so six pieces 7 x 7 x 400 stacked 2 400 mm high under each block,
 /// grounded or screwed into a chain with only the lowest grounded, held the
-/// beam while one rod 7 x 7 x 2 400 did not. A stack is as slender as the
-/// height it reaches over its thinnest piece; stacked posts 50 x 100 hold.
+/// beam while one rod 7 x 7 x 2 400 did not. A stack bends over the height
+/// it reaches as one post, its pieces screwed end on turning on them; grounded
+/// pieces 100 x 160 stacked hold (review 2026-11-13 r95 structural point 1:
+/// pieces 50 x 50, 1.3 N/mm as a cantilever, held it by a threshold).
 #[test]
 fn stacked_short_pieces_are_as_slender_as_one_rod() {
     let stacked = |section: (i32, i32), chained: bool| {
@@ -299,10 +319,11 @@ fn stacked_short_pieces_are_as_slender_as_one_rod() {
                     ""
                 };
                 pieces.push_str(&format!(
-                    "box(\"piece {x} {level}\", ({}, {}, 400), at = ({}, 200, {}), material = \"GL24h\"{grounded})\n",
+                    "box(\"piece {x} {level}\", ({}, {}, 400), at = ({}, {}, {}), material = \"GL24h\"{grounded})\n",
                     section.0,
                     section.1,
-                    x,
+                    x + 25 - section.0 / 2,
+                    250 - section.1,
                     400 * level
                 ));
                 if chained {
@@ -323,33 +344,33 @@ fn stacked_short_pieces_are_as_slender_as_one_rod() {
         let held = stacked((7, 7), chained);
         assert_ne!(checked(&held, "beam").status, "pass", "{case}");
         assert!(
-            ignored(&held)
+            refused(&held)
                 .iter()
-                .any(|message| message.contains("piece 300") && message.contains("too slender")),
+                .any(|message| message.contains("piece 300")
+                    && (message.contains("too slender") || message.contains("hinge"))),
             "{case}: {:?}",
-            ignored(&held)
+            refused(&held)
         );
     }
-    for chained in [false, true] {
-        let posts = stacked((50, 50), chained);
-        assert_eq!(ignored(&posts), Vec::<&str>::new(), "chained {chained}");
-        assert_eq!(checked(&posts, "beam").status, "pass", "chained {chained}");
-    }
+    let posts = stacked((100, 160), false);
+    assert_eq!(ignored(&posts), Vec::<&str>::new());
+    assert_eq!(checked(&posts, "beam").status, "pass");
 }
 
 /// Capability review 776 of R1113r95-PG-700: measured level by level, six
 /// grounded pieces 7 x 400 x 7 laid end to end sideways from the block's end
 /// to a grounded post held the beam while one rod 7 x 2 400 x 7 did not. A
 /// chain is as slender as the length of its path over each piece's width,
-/// whichever way it runs; a chain of pieces 50 x 400 x 50 holds.
+/// whichever way it runs: one of pieces 7 x 7 buckles as one rod, one of
+/// pieces 50 x 400 x 50 to a post 200 x 200 holds.
 #[test]
 fn a_sideways_chain_is_as_slender_as_one_rod() {
     let chain = |side: i32, pieces: i32| {
         blocks(|x| {
             let length = 2400 / pieces;
             let mut source = format!(
-                "box(\"post {x}\", (100, 100, 2450), at = ({}, 2650, 0), material = \"GL24h\", grounded = True)\n",
-                x - 25
+                "box(\"post {x}\", (200, 200, 2450), at = ({}, 2650, 0), material = \"GL24h\", grounded = True)\n",
+                x - 75
             );
             for k in 0..pieces {
                 source.push_str(&format!(
@@ -364,16 +385,150 @@ fn a_sideways_chain_is_as_slender_as_one_rod() {
         let held = chain(7, pieces);
         assert_ne!(checked(&held, "beam").status, "pass", "{case}");
         assert!(
-            ignored(&held)
+            refused(&held)
                 .iter()
                 .any(|message| message.contains("piece 300") && message.contains("too slender")),
             "{case}: {:?}",
-            ignored(&held)
+            refused(&held)
         );
     }
     let posts = chain(50, 6);
     assert_eq!(ignored(&posts), Vec::<&str>::new());
     assert_eq!(checked(&posts, "beam").status, "pass");
+}
+
+/// Review 2026-11-13 r95 R1113r95-PG-702: a free post 50 x 100 x 2 390 under
+/// each block, screwed to it and by one screw at its foot to a grounded plate
+/// 400 x 400 x 10, held the beam. One fastener is a hinge: the post turns about
+/// it and sways with the beam.
+#[test]
+fn a_free_post_on_one_screw_at_its_foot_is_a_hinge() {
+    let held = blocks(|x| {
+        format!(
+            "box(\"plate {x}\", (400, 400, 10), at = ({}, 0, 0), material = \"GL24h\", grounded = True)
+box(\"post {x}\", (50, 100, 2390), at = ({x}, 150, 10), material = \"GL24h\")
+joint(\"post {x}\", \"block {x}\", kind = \"screw\")
+joint(\"post {x}\", \"plate {x}\", kind = \"screw\", fasteners = [({}, 200, 10)])\n",
+            x - 175,
+            x + 25
+        )
+    });
+    assert_ne!(checked(&held, "beam").status, "pass");
+    assert!(
+        refused(&held)
+            .iter()
+            .any(|message| message.contains("block 300")),
+        "{:?}",
+        refused(&held)
+    );
+}
+
+/// R1113r95-PG-703: a grounded board 10 x 500 x 3 466 leaning 44° from the
+/// floor, its upper end in the block, was measured as a board lying flat and
+/// held the beam; at 46° it was too slender. Leaning, it bends across its
+/// thickness like any part standing.
+#[test]
+fn a_board_leaning_44_degrees_is_no_board_lying_flat() {
+    let held = blocks(|x| {
+        format!(
+            "box(\"board {x}\", (500, 3466, 10), at = ({0}, -773, 0), material = \"GL24h\", grounded = True)
+rotate(\"board {x}\", axis = (1, 0, 0), angle = -44, pivot = ({0}, 2693, 0))\n",
+            x - 225
+        )
+    });
+    assert_ne!(checked(&held, "beam").status, "pass");
+    assert!(
+        refused(&held)
+            .iter()
+            .any(|message| message.contains("block 300")),
+        "{:?}",
+        refused(&held)
+    );
+}
+
+/// R1113r95-PG-704: 60 times the thickness is the slenderness of a post held
+/// at both ends; a grounded post held only at the floor, its top by the block
+/// swaying with the beam, is a cantilever. A post 40 x 40 x 2 400 under each
+/// block, or one 50 x 50 x 2 900 screwed beside it, held the beam.
+#[test]
+fn a_post_held_only_at_the_floor_is_a_cantilever() {
+    let under = blocks(|x| {
+        format!(
+            "box(\"post {x}\", (40, 40, 2400), at = ({}, 200, 0), material = \"GL24h\", grounded = True)\n",
+            x + 5
+        )
+    });
+    let beside = blocks(|x| {
+        format!(
+            "box(\"post {x}\", (50, 50, 2900), at = ({}, 150, 0), material = \"GL24h\", grounded = True)
+joint(\"post {x}\", \"block {x}\", kind = \"screw\")\n",
+            x + 50
+        )
+    });
+    for (case, held) in [("40 x 40 under", under), ("50 x 50 beside", beside)] {
+        assert_ne!(checked(&held, "beam").status, "pass", "{case}");
+        assert!(
+            refused(&held)
+                .iter()
+                .any(|message| message.contains("block 300")),
+            "{case}: {:?}",
+            refused(&held)
+        );
+    }
+}
+
+/// R1113r95-PG-705: only load_path() members were kept off the path, so a
+/// second beam 120 x 400 outside it, screwed to its posts, was ground for laths
+/// on [`BEAM`] screwed to deep grounded blocks on it. A part spanning between
+/// its supports bends and sways like the member it would hold.
+#[test]
+fn a_second_beam_off_the_load_path_is_no_ground() {
+    let mut source = format!(
+        "{BEAM}box(\"post c\", (100, 120, 2000), at = (0, 1000, 0), material = \"GL24h\", grounded = True)
+box(\"post d\", (100, 120, 2000), at = (5800, 1000, 0), material = \"GL24h\", grounded = True)
+box(\"beam 2\", (5900, 120, 400), at = (0, 1000, 2000), material = \"GL24h\")
+joint(\"beam 2\", \"post c\", kind = \"screw\")
+joint(\"beam 2\", \"post d\", kind = \"screw\")
+"
+    );
+    for x in PLACES {
+        source.push_str(&format!(
+            "box(\"block {x}\", (50, 120, 400), at = ({x}, 1000, 2400), material = \"GL24h\", grounded = True)
+joint(\"block {x}\", \"beam 2\", kind = \"screw\")
+box(\"lath {x}\", (50, 1000, 50), at = ({x}, 0, 2400), material = \"GL24h\", tags = [\"lath\"])
+joint(\"lath {x}\", \"beam\", kind = \"screw\")
+joint(\"lath {x}\", \"block {x}\", kind = \"screw\")
+"
+        ));
+    }
+    source.push_str("brace([\"beam\"], by = [\"lath\"], edge = \"top\")\n");
+    let tied = report(&source);
+    assert_ne!(checked(&tied, "beam").status, "pass");
+    assert!(
+        refused(&tied)
+            .iter()
+            .any(|message| message.contains("lath 300")),
+        "{:?}",
+        refused(&tied)
+    );
+}
+
+/// Review 2026-11-13 r95 P3: every part on the path had to be as deep across
+/// the member as it, so grounded posts 200 x 200 on a grounded strip footing
+/// 5 900 x 300 x 100 on the floor were no ground, while the same strip 400 wide
+/// was. The footing ending the path on the floor holds however shallow.
+#[test]
+fn a_strip_footing_shallower_than_the_beam_is_ground() {
+    const STRIP: &str = "box(\"strip\", (5900, 300, 100), at = (0, 100, 0), material = \"GL24h\", grounded = True)\n";
+    let held = blocks(|x| {
+        format!(
+            "{}box(\"post {x}\", (200, 200, 2300), at = ({}, 100, 100), material = \"GL24h\", grounded = True)\n",
+            if x == PLACES[0] { STRIP } else { "" },
+            x - 75
+        )
+    });
+    assert_eq!(ignored(&held), Vec::<&str>::new());
+    assert_eq!(checked(&held, "beam").status, "pass");
 }
 
 /// R1113r95-PG-701: a grounded post 50 x 100 x 2 400 touching the block on a
@@ -396,11 +551,11 @@ fn a_post_touching_the_anchorage_on_a_speck_is_no_ground() {
         });
         assert_ne!(checked(&held, "beam").status, "pass", "{case}");
         assert!(
-            ignored(&held)
+            refused(&held)
                 .iter()
                 .any(|message| message.contains("block 300")),
             "{case}: {:?}",
-            ignored(&held)
+            refused(&held)
         );
     }
 }
@@ -461,11 +616,11 @@ joint(\"lath {x}\", \"block {x}\", kind = \"screw\")
     ));
     assert_ne!(checked(&tied, "beam").status, "pass");
     assert!(
-        ignored(&tied)
+        refused(&tied)
             .iter()
             .any(|message| message.contains("lath 300")),
         "{:?}",
-        ignored(&tied)
+        refused(&tied)
     );
 }
 
@@ -523,12 +678,12 @@ fn a_grounded_part_standing_on_nothing_is_no_ground() {
         let floating = gapped_deck(plate, y, z);
         assert_ne!(checked(&floating, "beam").status, "pass", "{plate:?}");
         assert!(
-            ignored(&floating)
+            refused(&floating)
                 .iter()
                 .any(|message| message.contains("plate 1")
                     && message.contains("stands on nothing modelled")),
             "{plate:?}: {:?}",
-            ignored(&floating)
+            refused(&floating)
         );
     }
 }
