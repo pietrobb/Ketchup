@@ -306,7 +306,7 @@ impl<'a> Baker<'a> {
         inherited: Option<FaceColorKey>,
     ) -> Result<Vec<InstanceNode>, SkpParseError> {
         let p = self.p;
-        let fallback = inherited.unwrap_or_else(|| default_color(p, layer));
+        let fallback = inherited.unwrap_or_else(default_color);
         let groups = {
             let textures = &mut self.textures;
             let mut texture_index_for = |m: Option<&_>| textures.index_for(m);

@@ -180,3 +180,25 @@ def test_the_reference_documents_what_kecup_writes_into_a_program():
     assert "without turning it into parts" not in readme
     for needed in ["Export drawing to DXF", "Pull drawing area up", "edit it (remove, draw"]:
         assert needed in readme, needed
+
+
+def test_the_patch_notes_of_vendored_code_name_tests_that_exist():
+    """Review 2026-11-13 r95 P3: `third_party/openskp/PATCH.md` named the test
+    `a_sketchup_colour_comes_into_the_document_as_it_is`, which no crate has. Each test a
+    patch note names in a crate of the repository is a test of that crate."""
+    named = re.compile(r"`([a-z][a-z0-9_]+)`(?:,| and)?(?:\s+`[a-z][a-z0-9_]+`(?:,| and)?)*\s+in\s+`(ketchup-[a-z0-9-]+)`")
+    missing = []
+    for note in sorted((ROOT / "third_party").glob("*/PATCH.md")):
+        text = note.read_text(encoding="utf-8")
+        for found in named.finditer(text):
+            crate = ROOT / "crates" / found.group(2)
+            names = re.findall(r"`([a-z][a-z0-9_]+)`", found.group(0))
+            sources = "\n".join(
+                path.read_text(encoding="utf-8", errors="ignore") for path in crate.rglob("*.rs")
+            )
+            missing += [
+                f"{note.parent.name}: {name} in {found.group(2)}"
+                for name in names
+                if f"fn {name}(" not in sources
+            ]
+    assert missing == []

@@ -103,19 +103,12 @@ pub fn base_color_factor(color: FaceColorKey) -> [f64; 4] {
     ]
 }
 
-/// The layer's color (or SketchUp's default grey), fully opaque.
-pub fn default_color(parsed: &RawParsed, layer: &str) -> FaceColorKey {
-    let color = parsed
-        .layer_colors
-        .get(layer)
-        .copied()
-        .unwrap_or([136, 136, 136]);
-    [
-        i32::from(color[0]),
-        i32::from(color[1]),
-        i32::from(color[2]),
-        255,
-    ]
+/// The colour of a face nothing paints: SketchUp's default material, the white front of
+/// its default style, fully opaque. Ketchup change (see PATCH.md): upstream took the
+/// colour of the face's tag, which SketchUp shows only with "Color by tag" on (review
+/// 2026-11-13 r95 P3: the 2013 and 2020 fixtures came red, 255, 84, 84).
+pub fn default_color() -> FaceColorKey {
+    [255, 255, 255, 255]
 }
 
 /// An image's MIME type from its magic bytes; `None` for anything glTF cannot

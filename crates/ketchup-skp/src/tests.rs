@@ -216,6 +216,30 @@ fn textured_box() -> Vec<u8> {
     builder.to_bytes().unwrap()
 }
 
+/// A texture SketchUp colours comes as its picture only, and that is counted (review
+/// 2026-11-13 r95 P3: a tinted texture came untinted and nothing said so). The writer
+/// makes no coloured texture, so the read file's material is marked as one.
+#[test]
+fn a_tinted_texture_is_counted_as_its_tint_left_out() {
+    let mut model = openskp::parse_skp(&textured_box(), &ParseOptions::default()).unwrap();
+    assert!(
+        left_out(&model)
+            .iter()
+            .all(|left_out| left_out.code != "skp_texture_tints_dropped")
+    );
+    for material in &mut model.materials {
+        material.colorized = true;
+    }
+    assert!(
+        left_out(&model).contains(&LeftOut {
+            code: "skp_texture_tints_dropped".into(),
+            count: 1,
+        }),
+        "{:?}",
+        left_out(&model)
+    );
+}
+
 /// Asserts that `glb` holds a PNG base-colour texture and that every mesh says where it lies.
 fn assert_textured(glb: &[u8]) {
     let document = gltf(glb);
@@ -882,6 +906,50 @@ fn a_colour_is_written_linear() {
             (channel.as_f64().unwrap() - expected).abs() < 1e-6,
             "{factor}"
         );
+    }
+}
+
+/// A box nothing paints, on a tag coloured red, comes in SketchUp's default white, as
+/// SketchUp shows it unless "Color by tag" is on (review 2026-11-13 r95 P3: it came in
+/// the tag's colour, so the 2013 and 2020 fixtures came red, 255, 84, 84).
+#[test]
+fn an_unpainted_face_comes_in_the_default_white_not_its_tags_colour() {
+    let mut builder = create();
+    let walls = builder
+        .add_layer(
+            "Walls",
+            &LayerOptions {
+                color: Some([255, 84, 84, 255]),
+                ..LayerOptions::default()
+            },
+        )
+        .unwrap();
+    let mut definition = builder
+        .add_component_definition("Box", &DefinitionOptions::default())
+        .unwrap();
+    for face in &BOX_FACES {
+        let options = FaceOptions {
+            layer: Some(walls),
+            ..FaceOptions::default()
+        };
+        definition.add_face(face, &options).unwrap();
+    }
+    let definition = definition.close().unwrap();
+    let options = InstanceOptions {
+        layer: Some(walls),
+        ..InstanceOptions::default()
+    };
+    builder.add_instance(definition, &options).unwrap();
+    for model in [builder.to_bytes().unwrap(), fixture("nesting_2013.skp")] {
+        let document = gltf(&skp_to_glb(&model, LIMIT).unwrap().glb);
+        for material in document["materials"].as_array().unwrap() {
+            // White is glTF's own default, so it may be left out.
+            let factor = &material["pbrMetallicRoughness"]["baseColorFactor"];
+            assert!(
+                factor.is_null() || *factor == serde_json::json!([1.0, 1.0, 1.0, 1.0]),
+                "{material}"
+            );
+        }
     }
 }
 

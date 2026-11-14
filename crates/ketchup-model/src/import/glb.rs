@@ -433,7 +433,7 @@ pub fn inspect_glb(source: &[u8]) -> Result<ParsedGlbScene, GlbImportError> {
                 ImportDiagnosticSeverity::Warning,
                 "glb_scene_moved_to_model_origin",
                 Some(format!(
-                    "scene centre ({}, {}, {}) m moved to the origin",
+                    "scene point ({}, {}, {}) m moved to the origin",
                     metres(shift.x),
                     metres(shift.y),
                     metres(shift.z)
@@ -1826,7 +1826,11 @@ fn place_nodes(
 }
 
 /// How far the whole scene moves so it lies in the model space: nowhere if it already
-/// does, else by its centre, to the millimetre, as a model drawn at its site needs.
+/// does, else along each axis it leaves the space on, by its centre there rounded to
+/// the coarsest whole kilometre, hundred, ten or one metre, or millimetre that keeps
+/// it within (review 2026-11-13 r95 P3: moving every axis by the exact centre lowered
+/// a building to the origin's height, and two files of one site, each moved by its
+/// own centre, no longer met).
 fn scene_shift(
     nodes: &[ParsedNode],
     traversal: &[usize],
@@ -1844,27 +1848,32 @@ fn scene_shift(
     ) else {
         return Ok(Vec3::ZERO);
     };
-    let reach = |centre: Vec3| {
-        [low - centre, high - centre]
+    /// The steps a shift is rounded to, coarsest first, in millimetres.
+    const STEPS_MM: [f64; 5] = [1_000_000.0, 100_000.0, 10_000.0, 1_000.0, 1.0];
+    let (low, high) = ([low.x, low.y, low.z], [high.x, high.y, high.z]);
+    let reach = |axis: usize, shift: f64| (low[axis] - shift).abs().max((high[axis] - shift).abs());
+    let mut shift = [0.0; 3];
+    let mut reach_mm = 0.0_f64;
+    for axis in 0..3 {
+        if reach(axis, 0.0) <= MAX_COORDINATE_MM {
+            reach_mm = reach_mm.max(reach(axis, 0.0));
+            continue;
+        }
+        let centre = f64::midpoint(low[axis], high[axis]);
+        let rounded = STEPS_MM
             .iter()
-            .flat_map(|corner| [corner.x.abs(), corner.y.abs(), corner.z.abs()])
-            .fold(0.0_f64, f64::max)
-    };
-    if reach(Vec3::ZERO) <= MAX_COORDINATE_MM {
-        return Ok(Vec3::ZERO);
+            .map(|step| (centre / step).round() * step)
+            .find(|shift| reach(axis, *shift) <= MAX_COORDINATE_MM)
+            .unwrap_or(centre.round());
+        shift[axis] = rounded;
+        reach_mm = reach_mm.max(reach(axis, rounded));
     }
-    let centre = Vec3::new(
-        f64::midpoint(low.x, high.x).round(),
-        f64::midpoint(low.y, high.y).round(),
-        f64::midpoint(low.z, high.z).round(),
-    );
-    let reach_mm = reach(centre);
     if reach_mm > MAX_COORDINATE_MM {
         return Err(GlbImportError::BeyondModelSpace {
             reach_mm: crate::whole_count(reach_mm.ceil()),
         });
     }
-    Ok(centre)
+    Ok(Vec3::new(shift[0], shift[1], shift[2]))
 }
 
 fn bounds(points: impl Iterator<Item = Vec3>) -> Option<(Vec3, Vec3)> {
@@ -2539,7 +2548,7 @@ mod placement_tests {
                 assert!((far - near).abs() <= 1, "{group}: {far} {near}");
             }
             assert!(
-                far.iter().flatten().all(|value| value.abs() <= 1_000),
+                far.iter().flatten().all(|value| value.abs() <= 500_000),
                 "{group}: {far:?}"
             );
             let scene = inspect_glb(&source).unwrap();
@@ -2551,7 +2560,7 @@ mod placement_tests {
             assert!(
                 moved
                     .subject()
-                    .is_some_and(|subject| subject.contains("4064")),
+                    .is_some_and(|subject| subject.contains("(4000.000, ")),
                 "{group}: {moved:?}"
             );
         }
@@ -2563,6 +2572,31 @@ mod placement_tests {
                 .iter()
                 .all(|diagnostic| diagnostic.code() != "glb_scene_moved_to_model_origin")
         );
+    }
+
+    /// Review 2026-11-13 r95 P3: a scene far from its origin along one axis moves along
+    /// that axis only, by a whole kilometre. A building 250 m up keeps its height, and
+    /// two files of one site, each far out, keep their distance. Before, every axis
+    /// moved by the scene's own centre: the building came down to 0 and the two files
+    /// landed on each other.
+    #[test]
+    fn a_far_scene_moves_only_along_the_axes_it_is_far_on_and_by_a_round_step() {
+        let lifted = placed_corners(&tetrahedron(
+            4_063.6,
+            serde_json::json!({"translation": [0.0, 250.0, 0.0]}),
+        ));
+        let lowest = lifted.iter().map(|corner| corner[2]).min().unwrap();
+        assert_eq!(lowest, 250_000, "{lifted:?}");
+
+        let here = placed_corners(&tetrahedron(4_063.6, serde_json::json!({})));
+        let there = placed_corners(&tetrahedron(4_163.6, serde_json::json!({})));
+        for (here, there) in here.iter().zip(&there) {
+            let apart = [0, 1, 2].map(|axis| there[axis] - here[axis]);
+            assert!(
+                (apart[0] - 100_000).abs() <= 1 && apart[1] == 0 && apart[2] == 0,
+                "{here:?} {there:?}"
+            );
+        }
     }
 
     /// A scene wider than the model space cannot move within it: it is refused with how

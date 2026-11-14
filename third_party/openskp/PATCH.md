@@ -39,7 +39,13 @@ must cost a worker process, not the editor.
   `src/instanced_scene_build.rs`: a material's `baseColorFactor` is written linear, as glTF defines it;
   upstream wrote the sRGB colour divided by 255, so every SketchUp colour came paler (review
   2026-11-13 R1113-SKP-601: red 200, 30, 30 as 229, 96, 96). Test:
-  `a_sketchup_colour_comes_into_the_document_as_it_is` in `ketchup-app`.
+  `a_box_wound_or_painted_any_way_comes_in_as_one_solid_in_its_colour` in `ketchup-app`.
+- `src/face_groups.rs` (`default_color`), used by `src/scene_build.rs` and
+  `src/instanced_scene_build.rs`: a face nothing paints comes in SketchUp's default material,
+  the white front of its default style; upstream gave it its tag's colour, which SketchUp shows
+  only with "Color by tag" on (review 2026-11-13 r95 P3: the 2013 and 2020 fixtures came red,
+  255, 84, 84). Test: `an_unpainted_face_comes_in_the_default_white_not_its_tags_colour` in
+  `ketchup-skp`.
 - `src/instanced_scene_build.rs` (`local_origin`), `src/face_groups.rs` (`whole_tiles_away`):
   positions and texture coordinates are `f32` in their definition's frame, so geometry far from
   that frame's origin lost its size: a 254 × 508 mm box 3 000 km away came as 250 × 500 mm
