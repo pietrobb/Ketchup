@@ -8,7 +8,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-ROOT_ONLY = re.compile(r"if effective_user\(\) != 0 \{")
+ROOT_ONLY = re.compile(r"if (?:ketchup_user_files::)?effective_user\(\) != 0 \{")
+# A part of a test run only as root (review 2026-11-13 r95 P3: the Viewer's
+# `== 0` branch was not found). Production code asks the same, so only in tests.
+ROOT_PART = re.compile(r"if (?:ketchup_user_files::)?effective_user\(\) == 0 \{")
 TEST = re.compile(r"\bfn (\w+)\(")
 AS_ROOT = re.compile(r'sudo "\$test"(?: ([\w:]+))?')
 
@@ -16,9 +19,14 @@ AS_ROOT = re.compile(r'sudo "\$test"(?: ([\w:]+))?')
 def root_only_tests():
     for path in sorted((ROOT / "crates").rglob("*.rs")):
         text = path.read_text(encoding="utf-8")
-        for found in ROOT_ONLY.finditer(text):
-            crate = path.relative_to(ROOT / "crates").parts[0]
-            yield crate, TEST.findall(text[: found.start()])[-1]
+        relative = path.relative_to(ROOT / "crates")
+        crate = relative.parts[0]
+        tests_from = 0 if "tests" in relative.parts or "tests" in path.stem else text.find("mod tests {")
+        found = list(ROOT_ONLY.finditer(text))
+        if tests_from >= 0:
+            found += [part for part in ROOT_PART.finditer(text) if part.start() > tests_from]
+        for each in found:
+            yield crate, TEST.findall(text[: each.start()])[-1]
 
 
 def runs_as_root(crate, test):

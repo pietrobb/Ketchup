@@ -30,15 +30,18 @@ pub fn effective_group() -> u32 {
 ///
 /// Only the calling thread becomes the user (review 2026-11-12 R1112-SEC-501:
 /// glibc's seteuid changes every thread). A thread `work` starts is that user too
-/// and stays so: `work` starts none.
+/// and stays so, so `work` starts none: on Linux one found still the user after
+/// is an error (review 2026-11-13 r95 P3: that was only written down).
 ///
 /// # Errors
 ///
 /// The thread cannot become `owner`, which is said rather than the failure to
 /// take back what it never gave up (review 2026-11-13 P3: macOS answered that);
-/// it cannot become root again, which is said with what `work` answered; or what
-/// `work` answers.
+/// it cannot become root again, which is said with what `work` answered; `work`
+/// started a thread that stays the user; or what `work` answers.
 pub fn as_user<T>(owner: (u32, u32), work: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+    // Declared first, so a panic in the work makes this thread root before it leaves.
+    let _inside = strays::Inside::enter();
     let root = Root::of_this_thread()?;
     if let Err(error) = thread::become_user(owner) {
         // Root again after a change made only in part; macOS makes all or none.
@@ -54,9 +57,113 @@ pub fn as_user<T>(owner: (u32, u32), work: impl FnOnce() -> io::Result<T>) -> io
     }
     let written = work();
     match (root.restore(), written) {
-        (Ok(()), written) => written,
+        (Ok(()), written) => {
+            strays::none_left(owner.0)?;
+            written
+        }
         (Err(back), Ok(_)) => Err(not_root_again(back, Done::Worked)),
         (Err(back), Err(error)) => Err(not_root_again(back, Done::Failed(error))),
+    }
+}
+
+/// The threads the work as a user started and left that user (Linux, which shows
+/// each thread's user in `/proc`).
+#[cfg(target_os = "linux")]
+mod strays {
+    use std::collections::BTreeSet;
+    use std::io;
+    use std::sync::{Mutex, MutexGuard, PoisonError};
+
+    /// The threads in [`super::as_user`] now. A thread joins before it becomes the
+    /// user and leaves after it is root again, so under the lock any other thread
+    /// that is not root was started by one that was the user.
+    static INSIDE: Mutex<BTreeSet<libc::c_long>> = Mutex::new(BTreeSet::new());
+
+    fn inside() -> MutexGuard<'static, BTreeSet<libc::c_long>> {
+        INSIDE.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// This thread's id, from `/proc/thread-self`, a link to `<pid>/task/<tid>`.
+    fn this_thread() -> Option<libc::c_long> {
+        let link = std::fs::read_link("/proc/thread-self").ok()?;
+        link.file_name()?.to_str()?.parse().ok()
+    }
+
+    /// This thread in [`INSIDE`] while it lives, a panic in the work included.
+    pub(super) struct Inside(Option<libc::c_long>);
+
+    impl Inside {
+        pub(super) fn enter() -> Self {
+            let thread = this_thread();
+            if let Some(thread) = thread {
+                inside().insert(thread);
+            }
+            Self(thread)
+        }
+    }
+
+    impl Drop for Inside {
+        fn drop(&mut self) {
+            if let Some(thread) = self.0 {
+                inside().remove(&thread);
+            }
+        }
+    }
+
+    /// No thread outside [`INSIDE`] is `user`, the calling one root again. A process
+    /// that is `user` itself has every thread so.
+    pub(super) fn none_left(user: u32) -> io::Result<()> {
+        // Without /proc a thread is not known and nothing is refused.
+        if user == super::effective_user() || this_thread().is_none() {
+            return Ok(());
+        }
+        let inside = inside();
+        let Ok(threads) = std::fs::read_dir("/proc/self/task") else {
+            return Ok(());
+        };
+        for thread in threads.flatten() {
+            let name = thread.file_name();
+            let Some(id) = name.to_str().and_then(|id| id.parse::<libc::c_long>().ok()) else {
+                continue;
+            };
+            if inside.contains(&id) {
+                continue;
+            }
+            // A thread that ended meanwhile has no status left to read.
+            let Ok(status) = std::fs::read_to_string(thread.path().join("status")) else {
+                continue;
+            };
+            if effective_of(&status) == Some(user) {
+                return Err(io::Error::other(format!(
+                    "the work as user {user} started thread {id}, which stays that user"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// The effective user of a `/proc/…/status`: the second of its `Uid:` line.
+    fn effective_of(status: &str) -> Option<u32> {
+        let uids = status.lines().find_map(|line| line.strip_prefix("Uid:"))?;
+        uids.split_whitespace().nth(1)?.parse().ok()
+    }
+}
+
+/// No way to tell a thread's user from another's here.
+#[cfg(not(target_os = "linux"))]
+mod strays {
+    use std::io;
+
+    pub(super) struct Inside;
+
+    impl Inside {
+        pub(super) fn enter() -> Self {
+            Self
+        }
+    }
+
+    pub(super) fn none_left(_user: u32) -> io::Result<()> {
+        Ok(())
     }
 }
 

@@ -397,6 +397,29 @@ fn becoming_another_user_is_the_calling_threads_alone() {
     roots.1.unwrap();
 }
 
+/// Review 2026-11-13 r95 P3: that the work as the user starts no thread, which would
+/// stay the user, was only written down. A thread it leaves behind is an error.
+#[cfg(target_os = "linux")]
+#[test]
+fn work_as_the_user_that_leaves_a_thread_behind_is_an_error() {
+    use std::sync::mpsc;
+    if effective_user() != 0 {
+        return;
+    }
+    let (release, held) = mpsc::channel::<()>();
+    let mut left = None;
+    // A user no other test is, whose writes this stray would refuse meanwhile.
+    let refused = as_user((65531, 65531), || {
+        left = Some(std::thread::spawn(move || held.recv().ok()));
+        Ok(())
+    })
+    .unwrap_err();
+    assert!(refused.to_string().contains("stays that user"), "{refused}");
+    assert_eq!(effective_user(), 0);
+    drop(release);
+    left.unwrap().join().unwrap();
+}
+
 /// Review 2026-11-12 P3: a home of root's that everyone may write into
 /// (`HOME=/tmp`) had root write there with the checks that read through links; a
 /// home not there answered a bare `NotFound`.
