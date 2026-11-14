@@ -564,6 +564,43 @@ def test_a_deadline_is_read_by_which_way_its_test_fails(tmp_path):
     ]
 
 
+def test_a_wait_checked_to_run_out_by_taking_its_error_is_no_budget(tmp_path):
+    # Review 2026-11-13 r95 P3: a test that takes the timeout's error with `unwrap_err`,
+    # `expect_err` or let-else `Err`, and inspects it, was flagged as a budget.
+    write(tmp_path, "crates/a/tests/ran_out.rs", (
+        "fn ran_out() {\n"
+        "    let late = Instant::now() + Duration::from_millis(100);\n"
+        "    let error = wait(late).unwrap_err();\n"
+        "    assert_eq!(error.kind(), ErrorKind::WouldBlock);\n"
+        "    let gone = Instant::now() + Duration::from_millis(100);\n"
+        "    let Err(error) = wait(gone) else { panic!(\"it answered\") };\n"
+        "    assert!(error.to_string().contains(\"gone\"));\n"
+        "    let over = Instant::now() + Duration::from_millis(100);\n"
+        "    assert!(matches!(wait(over).expect_err(\"ran out\").kind(), ErrorKind::WouldBlock));\n"
+        "    replies.recv_timeout(Duration::from_millis(250)).unwrap_err();\n"
+        "    let Err(_) = replies.recv_timeout(Duration::from_millis(250)) else { panic!() };\n"
+        "    let answered = Instant::now() + Duration::from_millis(100);\n"
+        "    assert_eq!(wait(answered).unwrap(), 1);\n"
+        "}\n"
+    ))
+    assert checker.violations(tmp_path) == ["crates/a/tests/ran_out.rs:12"]
+
+
+def test_a_closure_is_a_helper_only_in_the_file_that_binds_it(tmp_path):
+    # Review 2026-11-13 r95 P3: closures were counted by name in the whole repository.
+    write(tmp_path, "crates/a/tests/bound.rs", (
+        "fn bound() {\n"
+        "    let reply = |time: Duration| replies.recv_timeout(time).unwrap();\n"
+        "    reply(Duration::from_millis(500));\n"
+        "}\n"
+    ))
+    write(tmp_path, "crates/a/tests/other.rs", (
+        "fn reply(time: Duration) { sent.push(time); }\n"
+        "fn other() { reply(Duration::from_millis(500)); }\n"
+    ))
+    assert checker.violations(tmp_path) == ["crates/a/tests/bound.rs:3"]
+
+
 def test_deadlines_of_waits_and_computed_durations_pass(tmp_path):
     write(tmp_path, "crates/a/tests/wait.rs", (
         "fn wait() {\n"
