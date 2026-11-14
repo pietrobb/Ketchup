@@ -488,13 +488,8 @@ pub fn build_instanced_scene_raw(
     // Loose geometry drawn straight into the model becomes the root node's
     // own mesh (and curve) resource.
     let root_origin = local_origin(&p.root.builder);
-    let root_mesh_resource_id = inst.mesh_resource_for_builder(
-        &p.root.builder,
-        "ROOT_MODEL",
-        None,
-        None,
-        root_origin,
-    )?;
+    let root_mesh_resource_id =
+        inst.mesh_resource_for_builder(&p.root.builder, "ROOT_MODEL", None, None, root_origin)?;
     let root_curve_resource_id =
         inst.curve_resource_for(&p.root.builder, "ROOT_MODEL", None, "Layer0", root_origin);
     let mut root_matrix = IDENTITY_GLTF;
