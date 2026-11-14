@@ -168,7 +168,13 @@ Other harnesses take the same command in their MCP configuration. Replace `<you>
 { "mcpServers": { "ketchup": { "command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\Ketchup\\Ketchup.exe", "args": ["--mcp"] } } }
 ```
 
-On a Mac, with Ketchup in Applications, the command is the program inside the app. In 0.3.3 the app is still named `Kečup.app`, so there the path starts with `/Applications/Kečup.app`:
+On a Mac, with Ketchup in Applications, the command is the program inside the app. In 0.3.3, the release you can download now, the app is still named `Kečup.app`:
+
+```sh
+claude mcp add --scope user ketchup -- "/Applications/Kečup.app/Contents/MacOS/ketchup-app" --mcp
+```
+
+From the next release the app is named `Ketchup.app`, and the command is:
 
 ```sh
 claude mcp add --scope user ketchup -- "/Applications/Ketchup.app/Contents/MacOS/ketchup-app" --mcp
