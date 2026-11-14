@@ -1,3 +1,5 @@
+mod annotation_authoring;
+
 use ketchup_model::document::{
     BodyId, CanonicalCommand, CommandBatch, DefinitionId, Dimension, DocumentStore, FeatureId,
     FeatureKind, OccurrenceId, ProposalCommitError, Transform,

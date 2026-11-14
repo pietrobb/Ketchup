@@ -21,11 +21,11 @@ use std::f64::consts::TAU;
 use std::fmt;
 use std::sync::Arc;
 
+pub mod annotation;
 mod bom_item;
 mod polyline_curves;
 pub use bom_item::{BomItem, BomItems};
 pub use polyline_curves::ProjectedPolylineCurve;
-
 pub const ORTHOGRAPHIC_DRAWING_SCHEMA_V1: &str = "ketchup.orthographic-drawing.v1";
 pub const ORTHOGRAPHIC_DRAWING_SCHEMA_V2: &str = "ketchup.orthographic-drawing.v2";
 pub const ORTHOGRAPHIC_LINEWORK_SCHEMA_V2: &str = "ketchup.orthographic-linework.v2";
