@@ -7,6 +7,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fmt::Write;
 
+pub use crate::cam_region::{CamContourSide, CamRegion2d};
+
 pub const CAM_PLAN_SCHEMA_V1: &str = "ketchup.cam-plan.v1";
 pub const CAM_TOOLPATH_SCHEMA_V1: &str = "ketchup.cam-toolpath.v1";
 pub const CAM_SIMULATION_SCHEMA_V1: &str = "ketchup.cam-simulation.v1";
@@ -148,6 +150,22 @@ pub enum CamOperation {
     Drill {
         id: u64,
         points_mm: Vec<[f64; 2]>,
+        top_z_mm: f64,
+        bottom_z_mm: f64,
+    },
+    /// Clears `region` down to `bottom_z_mm`, keeping the cutter one radius off
+    /// its outer boundary and its islands.
+    RegionPocket {
+        id: u64,
+        region: CamRegion2d,
+        top_z_mm: f64,
+        bottom_z_mm: f64,
+    },
+    /// Runs the cutter along `region`'s boundary on `side`, offset by its radius.
+    RegionContour {
+        id: u64,
+        region: CamRegion2d,
+        side: CamContourSide,
         top_z_mm: f64,
         bottom_z_mm: f64,
     },
@@ -419,6 +437,7 @@ pub enum CamPlannerError {
     UnsafeRapidHeight,
     CuttingDepthExceedsFlute,
     UnsupportedTool,
+    UnsupportedRegion,
     StaleToolpath,
 }
 
@@ -444,6 +463,10 @@ impl std::fmt::Display for CamPlannerError {
             Self::UnsupportedTool => {
                 formatter.write_str("the selected CAM tool cannot execute this operation")
             }
+            Self::UnsupportedRegion => formatter.write_str(
+                "CAM region is not one planar face bounded by lines and circular arcs, \
+                 or the cutter does not fit in it",
+            ),
             Self::StaleToolpath => formatter.write_str(
                 "CAM toolpath is malformed or does not match the current plan and exact target",
             ),
@@ -952,6 +975,39 @@ impl CamToolpath {
                         }
                     }
                     CamOperationKind::Drill
+                }
+                CamOperation::RegionPocket {
+                    region,
+                    top_z_mm,
+                    bottom_z_mm,
+                    ..
+                } => {
+                    let paths = crate::cam_region::pocket_paths(
+                        region,
+                        plan.tool.diameter_mm * 0.5 + plan.cut_parameters.radial_allowance_mm,
+                        plan.tool.diameter_mm * plan.cut_parameters.stepover_ratio,
+                    )?;
+                    let bounds = [target_bounds, stock_bounds];
+                    let depths = [*top_z_mm, *bottom_z_mm];
+                    append_region_paths(&mut builder, plan, region, &paths, depths, bounds)?;
+                    CamOperationKind::Pocket
+                }
+                CamOperation::RegionContour {
+                    region,
+                    side,
+                    top_z_mm,
+                    bottom_z_mm,
+                    ..
+                } => {
+                    let paths = crate::cam_region::contour_paths(
+                        region,
+                        *side,
+                        plan.tool.diameter_mm * 0.5 + plan.cut_parameters.radial_allowance_mm,
+                    )?;
+                    let bounds = [target_bounds, stock_bounds];
+                    let depths = [*top_z_mm, *bottom_z_mm];
+                    append_region_paths(&mut builder, plan, region, &paths, depths, bounds)?;
+                    CamOperationKind::Contour
                 }
             };
             planned_operations.push(CamToolpathOperation {
@@ -1731,12 +1787,75 @@ fn append_raster(
     builder.retract()
 }
 
+/// Cuts every cutter-centre path of a region operation at each depth pass from
+/// `top` down to `bottom`, after checking the region lies on the target and
+/// the cutter stays in the stock.
+fn append_region_paths(
+    builder: &mut MotionBuilder,
+    plan: &CamPlan,
+    region: &CamRegion2d,
+    paths: &[CamPath2d],
+    [top, bottom]: [f64; 2],
+    [target_bounds, stock_bounds]: [[[f64; 3]; 2]; 2],
+) -> Result<(), CamPlannerError> {
+    if plan.tool.kind == CamToolKind::Drill {
+        return Err(CamPlannerError::UnsupportedTool);
+    }
+    let [low, high] = region.bounds()?;
+    validate_point(low, target_bounds)?;
+    validate_point(high, target_bounds)?;
+    validate_z_range(top, bottom, target_bounds)?;
+    let finished_z = bottom + plan.cut_parameters.axial_allowance_mm;
+    validate_z(finished_z, target_bounds)?;
+    validate_cut_depth(top, finished_z, plan.tool.flute_length_mm)?;
+    let radius = plan.tool.diameter_mm * 0.5;
+    let [low, high] = crate::cam_region::paths_bounds(paths)?;
+    validate_tool_rectangle(
+        [low[0] - radius, low[1] - radius],
+        [high[0] + radius, high[1] + radius],
+        stock_bounds,
+    )?;
+    for depth in depth_passes(top, finished_z, plan.cut_parameters.maximum_stepdown_mm)? {
+        for path in paths {
+            builder.rapid_to(path.start_mm)?;
+            builder.line(
+                CamMotionKind::Plunge,
+                [path.start_mm[0], path.start_mm[1], depth],
+                Some(plan.tool.plunge_mm_per_min),
+            )?;
+            for segment in &path.segments {
+                match segment {
+                    CamPathSegment2d::Line { to_mm } => builder.line(
+                        CamMotionKind::Cut,
+                        [to_mm[0], to_mm[1], depth],
+                        Some(plan.tool.feed_mm_per_min),
+                    )?,
+                    CamPathSegment2d::Arc {
+                        to_mm,
+                        center_mm,
+                        clockwise,
+                    } => builder.arc(
+                        [to_mm[0], to_mm[1], depth],
+                        [center_mm[0], center_mm[1], depth],
+                        *clockwise,
+                        plan.tool.feed_mm_per_min,
+                    )?,
+                }
+            }
+            builder.retract()?;
+        }
+    }
+    Ok(())
+}
+
 fn operation_id(operation: &CamOperation) -> u64 {
     match operation {
         CamOperation::Face { id, .. }
         | CamOperation::Pocket { id, .. }
         | CamOperation::Contour { id, .. }
-        | CamOperation::Drill { id, .. } => *id,
+        | CamOperation::Drill { id, .. }
+        | CamOperation::RegionPocket { id, .. }
+        | CamOperation::RegionContour { id, .. } => *id,
     }
 }
 
