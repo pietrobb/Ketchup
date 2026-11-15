@@ -242,7 +242,6 @@ crates/ketchup-model/src/document/planar_face.rs dropped_error 1
 crates/ketchup-model/src/document/scene_query.rs let_else_error 1
 crates/ketchup-model/src/document/snapshot.rs dropped_error 3
 crates/ketchup-model/src/document/store/commands/definitions_and_bodies.rs or_default 1
-crates/ketchup-model/src/drawing.rs or_default 1
 crates/ketchup-model/src/exact_brep_graph.rs dropped_error 2
 crates/ketchup-model/src/exact_brep_graph.rs stringified_variant 3
 crates/ketchup-model/src/exact_product.rs or_default 2

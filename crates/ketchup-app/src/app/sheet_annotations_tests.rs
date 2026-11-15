@@ -38,16 +38,11 @@ fn sheet_annotations_gui_places_datum_and_undoes() {
             .len(),
         1
     );
-    // Editing the sheet can start an exact refresh; wait for that task, not repaint silence.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while harness.state().exact.task.is_some() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "exact refresh never finished"
-        );
-        harness.run_steps(1);
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+    // Editing the sheet can start an exact refresh; replace it with one awaited on its
+    // result channel instead of polling frames.
+    drop(harness.state_mut().exact.task.take());
+    crate::drawn_shape::tests::evaluate_exact(harness.state_mut());
+    harness.run_steps(1);
     let drawing = harness.state().drawing_sheet_geometry(id).unwrap();
     assert_eq!(drawing.layout.datum_symbols[0].label, "A");
     assert!(!drawing.views[0].visible_lines.is_empty());
