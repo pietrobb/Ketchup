@@ -414,6 +414,19 @@ Use `component("bearing unit", [bearing_envelope("body", "6204")])` and
 `instance()` for repeated placements. Raceway, cage, ball and chamfer geometry
 are not specified by this library; use a supplier model when they are needed.
 
+`ball_screw_nut_dimensions(designation)` returns the DIN 69051-5 form B single
+flange nut dimensions of the [HIWIN Italy ground ballscrew catalogue](https://www.hiwin.it/images/download/documenti/ENG/catalogo%20viti.pdf),
+table 6.7 on page 51, for `R16-5T3-FSI` up to `R50-10K6-FSC`: screw diameter
+and lead, nut diameter and length, flange diameter, thickness and flats, and
+the bolt circle, hole diameter and hole pattern (type 1 with 6 holes or type 2
+with 8). Unlisted designations are refused as **not specified**; `raceway` and
+`mass_kg` remain `None`. `ball_screw_nut(name, designation, at=(0,0,0),
+axis=(0,0,1), tags=None)` creates the exact flange with its flats and mounting
+holes and the nut body, with `at` on the back face of the flange and `axis`
+pointing along the body. The bore is the nominal screw diameter, an envelope
+rather than the raceway; the g6 pilot tolerance, seals and greasing hole are
+not modelled. The nut is a purchased item in the BOM with its source.
+
 `stepper_motor_dimensions("17HS19-2004S1")` returns dimensions from the
 [STEPPERONLINE supplier drawing](https://www.omc-stepperonline.com/download/17HS19-2004S1.pdf),
 not dimensions inferred from the NEMA 17 frame designation. `stepper_motor(name,

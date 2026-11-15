@@ -321,7 +321,11 @@ pub(super) fn arcs_intersect(left: RegionArc, right: RegionArc) -> bool {
     let center_distance = distance2(left_center, right_center);
     let tolerance = left_radius.max(right_radius).max(1.0) * ACCUMULATED_ROUNDING;
     if center_distance <= tolerance && (left_radius - right_radius).abs() <= tolerance {
-        return true;
+        // Arcs of one circle share a point only where one's end lies on the other.
+        return point_on_arc(right.start, left)
+            || point_on_arc(right.end, left)
+            || point_on_arc(left.start, right)
+            || point_on_arc(left.end, right);
     }
     if center_distance > left_radius + right_radius + tolerance
         || center_distance < (left_radius - right_radius).abs() - tolerance

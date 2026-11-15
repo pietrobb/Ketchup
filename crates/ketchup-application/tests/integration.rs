@@ -28,6 +28,7 @@ mod rule_exact_assemblies;
 mod rule_exact_collisions;
 mod rule_exact_measurements;
 mod rule_program_annotations;
+mod rule_program_ball_screw_nuts;
 mod rule_program_bearings;
 mod rule_program_cabinet;
 mod rule_program_cabinet_height;

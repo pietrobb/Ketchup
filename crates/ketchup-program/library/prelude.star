@@ -2022,6 +2022,89 @@ def bearing_envelope(name, designation, at = (0, 0, 0), axis = (0, 0, 1), tags =
     cut(part, profile = _circle(dimensions["bore_mm"] / 2.0, "bore"), through = True, name = "bore")
     return _turn_onto(part, at, axis)
 
+#   ball_screw_nut_dimensions(designation) -> HIWIN DIN 69051-5 form B single flange nut
+#     dimensions; raceway and mass are None (not specified), unknown designations fail.
+#   ball_screw_nut(name, designation, at=(0,0,0), axis=(0,0,1), tags=None) -> purchased part.
+#     at = flange back face centre; axis points from the flange along the body. Flange with
+#     the two flats H1 and the printed type 1 (6) or type 2 (8) hole pattern, body at
+#     nominal D over pilot and body (g6 / -0.2..-0.3 not modelled), bore at nominal screw
+#     diameter as an envelope. Raceway, seals and greasing hole are not modelled.
+#     Example: c = component("drive nut", [ball_screw_nut("nut", "R16-5T3-FSI")])
+# HIWIN Italy ground ballscrew catalogue BS-IT-21-08, table 6.7 p.51, accessed 2026-11-15.
+# (screw d0, lead, D, L1 pilot, L2 length, type, H1 flats, D6 flange, L7 flange, D4 bolt
+#  circle, D5 hole, L11 greasing hole, greasing thread), nominal mm.
+_BALL_SCREW_NUT_SOURCE = "https://www.hiwin.it/images/download/documenti/ENG/catalogo%20viti.pdf table 6.7 p.51"
+_BALL_SCREW_NUT_DIMENSIONS = {
+    "R16-5T3-FSI": (16, 5, 28, 10, 40, 1, 40, 48, 10, 38, 5.5, 5, "M6x1P"),
+    "R20-5K4-FSC": (20, 5, 36, 10, 40, 1, 44, 58, 10, 47, 6.6, 5, "M6x1P"),
+    "R20-10K3-FSC": (20, 10, 36, 10, 48, 1, 44, 58, 10, 47, 6.6, 5, "M6x1P"),
+    "R25-5K4-FSC": (25, 5, 40, 10, 43, 1, 48, 62, 10, 51, 6.6, 5, "M6x1P"),
+    "R25-10K4-FSC": (25, 10, 40, 10, 60, 1, 48, 62, 10, 51, 6.6, 6, "M6x1P"),
+    "R32-5K5-FSC": (32, 5, 50, 10, 43, 1, 62, 80, 12, 65, 9, 6, "M6x1P"),
+    "R32-10K4-FSC": (32, 10, 50, 10, 63, 1, 62, 80, 12, 65, 9, 6, "M6x1P"),
+    "R32-10T5-FSI": (32, 10, 50, 10, 103, 1, 62, 80, 12, 65, 9, 6, "M6x1P"),
+    "R38-10K5-FSC": (38, 10, 63, 16, 80, 2, 70, 93, 14, 78, 9, 7, "M8x1P"),
+    "R38-20K4-FSC": (38, 20, 63, 25, 108, 2, 70, 93, 14, 78, 9, 7, "M8x1P"),
+    "R40-5K5-FSC": (40, 5, 63, 20, 45, 2, 70, 93, 14, 78, 9, 7, "M8x1P"),
+    "R50-5K6-FSC": (50, 5, 75, 20, 50, 2, 85, 110, 16, 93, 11, 8, "M8x1P"),
+    "R50-10K6-FSC": (50, 10, 75, 10, 90, 2, 85, 110, 16, 93, 11, 8, "M8x1P"),
+}
+# Hole angles from the flats' normal (local x), per the catalogue's type 1 / type 2 drawings.
+_BALL_SCREW_NUT_HOLE_ANGLES = {1: [45, 90, 135, 225, 270, 315], 2: [45, 75, 105, 135, 225, 255, 285, 315]}
+
+def ball_screw_nut_dimensions(designation):
+    """Published flange nut dimensions; absent raceway geometry is explicitly unspecified."""
+    if designation not in _BALL_SCREW_NUT_DIMENSIONS:
+        fail("ball_screw_nut_dimensions(): dimensions for %r are not specified; use %s or import a supplier model" %
+             (designation, ", ".join(sorted(_BALL_SCREW_NUT_DIMENSIONS.keys()))))
+    row = _BALL_SCREW_NUT_DIMENSIONS[designation]
+    keys = ["screw_mm", "lead_mm", "body_mm", "pilot_length_mm", "length_mm", "hole_pattern", "flats_mm",
+            "flange_mm", "flange_thickness_mm", "bolt_circle_mm", "hole_mm", "greasing_hole_mm", "greasing_thread"]
+    d = {keys[i]: row[i] for i in range(len(keys))}
+    d["raceway"] = None
+    d["mass_kg"] = None
+    d["source"] = _BALL_SCREW_NUT_SOURCE
+    return d
+
+def _circle_at(radius, center, name):
+    cx, cy = center
+    return [[name, (cx + radius, cy), (cx - radius, cy), {"center": (cx, cy)}],
+            [name + "_back", (cx - radius, cy), (cx + radius, cy), {"center": (cx, cy)}]]
+
+def ball_screw_nut(name, designation, at = (0, 0, 0), axis = (0, 0, 1), tags = None):
+    """A purchased DIN 69051 flange nut envelope with its published mounting holes."""
+    d = ball_screw_nut_dimensions(designation)
+    r = d["flange_mm"] / 2.0
+    h = d["flats_mm"] / 2.0
+    y = math.sqrt(r * r - h * h)
+    angles = _BALL_SCREW_NUT_HOLE_ANGLES[d["hole_pattern"]]
+    flange = extrude(name, profile = [
+        ["flat", (h, -y), (h, y)],
+        ["flange", (h, y), (-h, y), {"center": (0, 0)}],
+        ["flat_back", (-h, y), (-h, -y)],
+        ["flange_back", (-h, -y), (h, -y), {"center": (0, 0)}],
+    ], distance = d["flange_thickness_mm"], at = at, material = "unspecified", tags = tags, attributes = {
+        "designation": "HIWIN " + designation,
+        "standard": "DIN 69051-5 form B",
+        "source": d["source"],
+        "mount_holes": "type %d: %d x %s on %s" % (d["hole_pattern"], len(angles), d["hole_mm"], d["bolt_circle_mm"]),
+        "geometry_basis": "flange, flats and holes as catalogued; body at nominal D; bore at nominal screw diameter as envelope; raceway, seals and greasing hole not specified",
+        "mass_basis": "not specified; envelope volume is not nut material volume",
+        FABRICATION_ROLE: PURCHASED_ITEM,
+    })
+    pitch = d["bolt_circle_mm"] / 2.0
+    for i, angle in enumerate(angles):
+        a = math.radians(angle)
+        cut(flange, profile = _circle_at(d["hole_mm"] / 2.0, (pitch * math.cos(a), pitch * math.sin(a)), "hole%d" % (i + 1)),
+            through = True, name = "hole%d" % (i + 1))
+    cut(flange, profile = _circle(d["screw_mm"] / 2.0, "bore"), through = True, name = "bore")
+    body = extrude(name + "/body", profile = _circle(d["body_mm"] / 2.0, "body"),
+                   distance = d["length_mm"] - d["flange_thickness_mm"],
+                   at = (at[0], at[1], at[2] + d["flange_thickness_mm"]), tool = True)
+    cut(body, profile = _circle(d["screw_mm"] / 2.0, "bore"), through = True, name = "bore")
+    union(flange, body, name = "body")
+    return _turn_onto(flange, at, axis)
+
 #   stepper_motor_dimensions(designation) -> supplier dimensions, missing details None.
 #   stepper_motor(name, designation, at=(0,0,0), axis=(0,0,1), tags=None, mount_drill_depth=None) -> purchased part.
 #     at = rear housing centre; axis points towards the shaft. Known mounting features

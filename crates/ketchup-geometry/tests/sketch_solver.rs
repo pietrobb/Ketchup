@@ -477,6 +477,32 @@ fn a_circle_level_with_a_rounded_corner_joint_is_a_hole_only_inside_the_board() 
     assert_eq!(regions([50.0, 10.0]), [1], "circle inside the board");
 }
 
+/// A round flange with two parallel flats: two arcs of one circle joined by two
+/// lines. Its region is one plain loop, with no hole and no self-crossing.
+#[test]
+fn a_circle_cut_by_two_flats_is_one_region() {
+    let y = (24.0_f64 * 24.0 - 20.0 * 20.0).sqrt();
+    let arc = |id: u64, start_mm: [f64; 2], end_mm: [f64; 2]| SketchEntity::Arc {
+        id: SketchEntityId(id),
+        start_mm,
+        end_mm,
+        center_mm: [0.0, 0.0],
+        clockwise: false,
+    };
+    let flange = sketch(
+        vec![
+            line(1, [20.0, -y], [20.0, y]),
+            arc(2, [20.0, y], [-20.0, y]),
+            line(3, [-20.0, y], [-20.0, -y]),
+            arc(4, [-20.0, -y], [20.0, -y]),
+        ],
+        Vec::new(),
+    );
+    let regions = flange.solved_regions().unwrap();
+    assert_eq!(regions.len(), 1);
+    assert!(regions[0].holes.is_empty());
+}
+
 /// A 10 m arch is flattened with a tolerance relative to its size, so its pieces
 /// lie up to about 0.02 mm inside the curve. A loop touching the curve between
 /// two pieces still touches it, and one a millimetre away still does not.
