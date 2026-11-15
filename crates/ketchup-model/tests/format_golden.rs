@@ -1091,3 +1091,103 @@ fn no_optional_field_is_added_without_a_new_format_number() {
          (see the snapshot_codec module comment); list a field outside the document here"
     );
 }
+
+/// The format Save writes for a document with one sketch of `entities` and `constraints`.
+fn saved_format_of_a_sketch(
+    entities: Vec<ketchup_geometry::sketch::SketchEntity>,
+    constraints: Vec<ketchup_geometry::sketch::SketchConstraint>,
+) -> u16 {
+    use ketchup_geometry::sketch::{PrincipalPlane, SketchSpec, WorkplaneSpec};
+    let mut document = DocumentStore::new();
+    document
+        .apply_batch(&CommandBatch::new(vec![
+            CanonicalCommand::CreateDefinition {
+                id: DefinitionId(1),
+                name: "Sketch".into(),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(1),
+                definition_id: DefinitionId(1),
+                name: "XY".into(),
+                kind: FeatureKind::Workplane(WorkplaneSpec::principal(PrincipalPlane::Xy)),
+            },
+            CanonicalCommand::CreateFeature {
+                id: FeatureId(2),
+                definition_id: DefinitionId(1),
+                name: "Sketch".into(),
+                kind: FeatureKind::Sketch(SketchSpec {
+                    workplane: FeatureId(1),
+                    entities,
+                    constraints,
+                }),
+            },
+        ]))
+        .unwrap();
+    let snapshot = persistence::save(&document.current());
+    u16::from_le_bytes([snapshot[10], snapshot[11]])
+}
+
+/// PR #109 CI (release reads): Kečup 0.3.3 and every release before it took a sketch
+/// for damaged when it had no constraints and more than 512 unknowns, or two arcs of
+/// one circle, both of which a standard part's profile now draws; it opened its older
+/// `.recovery` instead and overwrote the file at its next Save. Such a sketch makes the
+/// file 114, which they refuse as newer; one they read stays 103.
+#[test]
+fn a_sketch_released_versions_take_for_damaged_needs_format_114() {
+    use ketchup_geometry::sketch::{
+        SketchConstraint, SketchConstraintId, SketchConstraintKind, SketchEntity, SketchEntityId,
+    };
+    let lines = |count: u64| {
+        (1..=count)
+            .map(|index| SketchEntity::Line {
+                id: SketchEntityId(index),
+                start_mm: [0.0, index as f64],
+                end_mm: [10.0, index as f64],
+            })
+            .collect::<Vec<_>>()
+    };
+    // Four unknowns a line: 128 lines are 512, the most a released version solves.
+    assert_eq!(saved_format_of_a_sketch(lines(128), Vec::new()), 103);
+    assert_eq!(saved_format_of_a_sketch(lines(129), Vec::new()), 114);
+    let horizontal = |entity| SketchConstraint {
+        id: SketchConstraintId(1),
+        kind: SketchConstraintKind::Horizontal {
+            entity: SketchEntityId(entity),
+        },
+    };
+    assert_eq!(saved_format_of_a_sketch(lines(3), vec![horizontal(1)]), 103);
+
+    let arc = |id, start_mm, end_mm| SketchEntity::Arc {
+        id: SketchEntityId(id),
+        start_mm,
+        end_mm,
+        center_mm: [0.0, 0.0],
+        clockwise: false,
+    };
+    assert_eq!(
+        saved_format_of_a_sketch(vec![arc(1, [10.0, 0.0], [0.0, 10.0])], Vec::new()),
+        103
+    );
+    assert_eq!(
+        saved_format_of_a_sketch(
+            vec![
+                arc(1, [10.0, 0.0], [0.0, 10.0]),
+                arc(2, [-10.0, 0.0], [0.0, -10.0]),
+            ],
+            Vec::new()
+        ),
+        114
+    );
+    // Two halves of one circle follow each other, and a released version reads them
+    // (examples/wardrobe-chair-table.ketchup).
+    assert_eq!(
+        saved_format_of_a_sketch(
+            vec![
+                arc(1, [10.0, 0.0], [-10.0, 0.0]),
+                arc(2, [-10.0, 0.0], [10.0, 0.0]),
+            ],
+            Vec::new()
+        ),
+        103
+    );
+}
