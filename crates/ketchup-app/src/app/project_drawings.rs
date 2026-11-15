@@ -9,7 +9,6 @@
 //! in the document.
 
 use crate::app::drawing_export_activity::DrawingExport;
-use crate::app::drawing_sheet_export::SheetFileFormat;
 use crate::*;
 use ketchup_application::threads::{
     CosmeticThreadBodyError, CosmeticThreadGraph, ThreadCylinder, cosmetic_thread_graph,
@@ -2364,18 +2363,7 @@ impl KetchupApp {
                     ui.label(self.catalog.text("drawings-document-sheets-none"));
                 }
                 for sheet in sheets {
-                    ui.horizontal(|ui| {
-                        ui.label(sheet.name());
-                        for format in SheetFileFormat::ALL {
-                            let label = match format {
-                                SheetFileFormat::Dxf => "drawings-export-sheet-dxf",
-                                SheetFileFormat::Dwg => "drawings-export-sheet-dwg",
-                            };
-                            if ui.button(self.catalog.text(label)).clicked() {
-                                export_sheet = Some((sheet.id(), format));
-                            }
-                        }
-                    });
+                    self.show_annotatable_sheet_row(ui, sheet, &mut export_sheet);
                 }
             });
         // Merely opening the window with the filled-in defaults changes

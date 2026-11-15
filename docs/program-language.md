@@ -151,6 +151,54 @@ what measures a box's sides from its minimum corner. A boolean leaves
 `push_pull`, `mirror`, `rotate` and `place`, so holes and pockets work in any
 order with them.
 
+## Exact drawing sheets
+
+`drawing_sheet(name, source=part_name, hole_callouts=False)` declares a sheet of one
+existing program part. `sheet_annotation(name, sheet=sheet_name, view="front", mark={...})`
+adds a typed mark to an already declared sheet. Names are unique per sheet. The library
+helpers in topic `sheet_annotations` provide the mark dictionaries and their defaults:
+
+- `sheet_angular(name, sheet, view, lines, arc_radius_page_mm=8, tolerance=None)`:
+  two visible line selectors and an arc radius in paper millimetres.
+- `sheet_radius(name, sheet, view, circle, leader_angle_degrees=45, offset_page_mm=8, tolerance=None)`
+  and `sheet_diameter(name, sheet, view, circle, leader_angle_degrees=45, offset_page_mm=8, tolerance=None)`:
+  one exact circular-edge selector, a leader angle and a paper offset.
+- `sheet_datum(name, sheet, view, line, label, offset_page_mm=[0, -8])`:
+  a datum symbol attached to one visible line.
+- `sheet_feature_control_frame(name, sheet, view, line, characteristic, tolerance_mm, offset_page_mm=[10, -12], datum_labels=[], diameter_zone=False, material_condition="None")`:
+  a GD&T frame, e.g. `characteristic="flatness"` or `"position"`. Referenced datum
+  labels must exist on the sheet; material condition is `"None"`, `"MaximumMaterial"`
+  or `"LeastMaterial"`. This declares a tolerance, not a geometric conformance check.
+
+Line selectors are `{"direction": [dx, dy], "through_mm": [x, y]}`; circle selectors
+are `{"center_mm": [x, y], "radius_mm": r}`. Coordinates are model millimetres in the
+projected view, not paper coordinates. A selector must match exactly one edge; for
+parallel lines, choose a point on the intended segment. `view` is `front`, `top`,
+`right`, `back`, `bottom` or `left`. Dimension `tolerance` is a symmetric deviation
+in degrees for angular dimensions and millimetres for radius/diameter dimensions.
+
+```python
+box("bracket", (40, 30, 10))
+drawing_sheet("Detail", source="bracket")
+sheet_datum("base", sheet="Detail", view="front",
+    line={"direction": [1, 0], "through_mm": [20, 0]}, label="A")
+sheet_angular("corner", sheet="Detail", view="front",
+    lines=[{"direction": [1, 0], "through_mm": [20, 0]},
+           {"direction": [0, 1], "through_mm": [0, 5]}], tolerance=0.5)
+```
+
+`hole_callouts=True` groups equal intact circular Pad/Boolean cuts and cosmetic
+metric threads, including quantities such as `4×`. Depth is the finished cylinder's
+axial span, not cutter travel or proof of a blind/through hole. Each callout has a
+leader to one of its holes in a sheet view that shows the hole as a circle; holes no
+view shows that way are refused. Threads require
+sufficient blind-hole runout; modeled threads, interrupted cylinders and unsupported
+cut provenance are refused rather than silently omitted. Reapplying the program
+regenerates its sheets; removing a declaration removes its sheet. Manual sheets are
+preserved and ambiguous name collisions are refused. Geometry and sheets publish in
+one Undo step and survive Save/Open. Export the resulting sheet as SVG, DXF or PDF
+from Drawings or MCP `file action=export_drawings` with its `sheet_id`.
+
 ## Library (Starlark, `crates/ketchup-program/library/prelude.star`)
 
 `board`, `dowels`, `groove`, `rabbet`, `hole_row`, `spread`, `divide`, `sum`,

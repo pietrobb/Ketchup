@@ -319,6 +319,8 @@ impl Tools {
                         "extrude",
                         "view",
                         "solid_from_views",
+                        "sheet",
+                        "annotate",
                     ],
                 )?;
                 // An export reads the source drawing again in the program worker; an

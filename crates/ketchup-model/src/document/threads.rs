@@ -108,6 +108,23 @@ impl Snapshot {
     pub fn tapped_hole(&self, id: FeatureId) -> Option<ThreadCylinder> {
         let thread = self.product.hole_threads.get(&id)?;
         let feature = self.feature(id)?;
+        let (start_mm, direction, surface_diameter_mm) = self.circular_cut_axis(id)?;
+        Some(ThreadCylinder {
+            definition_id: feature.definition_id(),
+            size: thread.size.clone(),
+            pitch_mm: thread.pitch_mm,
+            nominal_diameter_mm: metric_nominal_diameter(&thread.size)?,
+            surface_diameter_mm,
+            start_mm,
+            direction,
+            length_mm: thread.depth_mm,
+            internal: true,
+            modeled: self.hole_thread_is_modeled(id),
+        })
+    }
+
+    /// Circular cutter provenance, not a measurement of the finished bore.
+    pub(crate) fn circular_cut_axis(&self, id: FeatureId) -> Option<([f64; 3], [f64; 3], f64)> {
         let (pad, placement) = cut_pad(&self.product, id)?;
         if matches!(
             pad.operation,
@@ -128,18 +145,7 @@ impl Snapshot {
         );
         let direction =
             linalg::normalize(placement.transform_vector(pad.direction.vector(frame.normal)?))?;
-        Some(ThreadCylinder {
-            definition_id: feature.definition_id(),
-            size: thread.size.clone(),
-            pitch_mm: thread.pitch_mm,
-            nominal_diameter_mm: metric_nominal_diameter(&thread.size)?,
-            surface_diameter_mm: 2.0 * radius,
-            start_mm: placement.transform_point(start),
-            direction,
-            length_mm: thread.depth_mm,
-            internal: true,
-            modeled: self.hole_thread_is_modeled(id),
-        })
+        Some((placement.transform_point(start), direction, 2.0 * radius))
     }
 }
 

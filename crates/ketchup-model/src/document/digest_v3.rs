@@ -2269,6 +2269,14 @@ impl DigestV3 {
                 self.u64(coordinate.to_bits());
             }
             self.bytes(note.text_template().as_bytes());
+            if let Some(sources) = note.hole_callout_sources() {
+                self.bytes(b"generated-hole-callout");
+                self.length(sources.len());
+                for source in sources {
+                    self.u64(source.feature_id.0);
+                    self.bytes(source.instance_token.as_bytes());
+                }
+            }
         }
     }
 

@@ -2,6 +2,8 @@
 //! bridge on loopback that answer like Kečup and record what they received.
 #[path = "measurement_tests.rs"]
 mod measurement;
+#[path = "sheet_annotations_tests.rs"]
+mod sheet_annotations;
 use crate::{
     server::{Session, handle},
     tools::Tools,

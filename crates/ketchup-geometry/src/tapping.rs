@@ -78,6 +78,8 @@ pub enum TappedHoleMismatch {
 // The table and the drilled holes give finite lengths only.
 impl Eq for TappedHoleMismatch {}
 
+impl std::error::Error for TappedHoleMismatch {}
+
 impl fmt::Display for TappedHoleMismatch {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

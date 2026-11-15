@@ -406,12 +406,7 @@ fn files_for_released_versions_are_in_the_format_their_document_needs() {
         ("drawn-fill", SAVED_109, 109, DIGEST_109),
         ("chosen-code-page", SAVED_110, 110, DIGEST_110),
         ("mesh-sheet", SAVED_111, 111, DIGEST_111),
-        (
-            "textured-mesh",
-            GOLDEN,
-            persistence::CURRENT_SCHEMA,
-            DIGEST_112,
-        ),
+        ("textured-mesh", GOLDEN, 112, DIGEST_112),
     ] {
         let (document, container) = opened(path, schema, digest);
         files.push((name.to_owned(), document, container, schema));
@@ -815,7 +810,7 @@ fn a_format_111_document_with_a_textured_mesh_saves_the_golden() {
         saved, golden,
         "the saved form changed; see the module comment"
     );
-    let (reopened, container) = opened(GOLDEN, persistence::CURRENT_SCHEMA, DIGEST_112);
+    let (reopened, container) = opened(GOLDEN, 112, DIGEST_112);
     let current = reopened.current();
     let FeatureKind::MeshBody(mesh) = current.feature(FeatureId(9_002)).unwrap().kind() else {
         panic!("the textured sheet is a mesh body")
@@ -1002,6 +997,7 @@ const OPTIONAL_FIELDS: &[&str] = &[
     "document/entities.rs: section",
     "document/entities.rs: up",
     "document/revision.rs: variants",
+    "drawing.rs: generated_hole_callout", // Format 113.
     "exact_brep_graph.rs: chamfer_edge_sides",
     "exact_brep_graph.rs: crest_bits",
     "exact_brep_graph.rs: fillet_radius_stations",

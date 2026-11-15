@@ -18,7 +18,8 @@ pub fn plan_rule_model_batch(
         reconcile(&document.current(), &ProgramModel::default(), model, parts)?
     };
     let batch = crate::rule_support::append(document, model, None, batch)?;
-    crate::rule_motion::append_pose(document, model, batch)
+    let batch = crate::rule_motion::append_pose(document, model, batch)?;
+    crate::rule_sheets::append(document, &document.current(), model, None, batch)
 }
 
 pub(crate) fn reconcile(

@@ -260,6 +260,7 @@ fn has_effect(request: &Request) -> bool {
         | Request::MeasureFaces { .. }
         | Request::ValidateProgram { .. }
         | Request::SavedViews { .. }
+        | Request::DrawingSheet(_)
         | Request::UnderlaySnap { .. }
         | Request::UnderlayObjects { .. }
         | Request::UnderlayRegions { .. }
@@ -295,6 +296,7 @@ fn has_effect(request: &Request) -> bool {
         | Request::DrawingDiscardRefused(_)
         | Request::DrawingDraw { .. }
         | Request::DrawingRooms(_)
+        | Request::DrawingAnnotate(_)
         | Request::DrawingMove { .. }
         | Request::DrawingTrim { .. }
         | Request::DrawingExtend { .. }

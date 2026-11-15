@@ -54,6 +54,8 @@ impl DrawingExportTask {
             DrawingExport::Project(format) => set_export_key(format),
             DrawingExport::Sheet(_, SheetFileFormat::Dxf) => "drawings-export-sheet-dxf",
             DrawingExport::Sheet(_, SheetFileFormat::Dwg) => "drawings-export-sheet-dwg",
+            DrawingExport::Sheet(_, SheetFileFormat::Svg) => "drawings-export-sheet-svg",
+            DrawingExport::Sheet(_, SheetFileFormat::Pdf) => "drawings-export-sheet-pdf",
         }
     }
 }

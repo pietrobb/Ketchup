@@ -2290,6 +2290,8 @@ pub struct ProgramModel {
     /// Texts, dimensions, leaders and lines of the drawing; no parts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub annotations: Vec<ProgramAnnotation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drawing_sheets: Vec<crate::sheet::ProgramSheet>,
 }
 
 /// A drawing annotation the program declares, shown by the tags it names.

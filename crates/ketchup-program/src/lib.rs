@@ -40,6 +40,7 @@ mod opposing_holes;
 pub mod path;
 pub mod quote;
 pub mod relations;
+pub mod sheet;
 pub mod shop_drawing;
 pub mod site;
 pub mod source_edit;
