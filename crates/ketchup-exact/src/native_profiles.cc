@@ -75,7 +75,7 @@ std::unique_ptr<NativeOperationResult> offset_rectangle_native(
 std::unique_ptr<NativeOperationResult> offset_planar_profile_native(
     rust::Slice<const NativeSegment> segments, double distance) noexcept {
   return guarded([&] {
-    if (segments.size() < 2 || segments.size() > 64
+    if (segments.size() < 2 || segments.size() > tolerances().planar_profile_segments
         || !std::isfinite(distance)
         || std::abs(distance) > 100000.0) {
       return error_result(STATUS_INVALID_PARAMETER, "Planar offset payload is malformed");
@@ -533,7 +533,7 @@ std::unique_ptr<NativeOperationResult> offset_planar_region_native(
     }
     std::size_t declared_segments = 0;
     for (const std::uint32_t count : loop_segment_counts) {
-      if (count == 0 || count > 64) {
+      if (count == 0 || count > tolerances().planar_profile_segments) {
         return error_result(STATUS_INVALID_PARAMETER, "Planar region offset loop count is invalid");
       }
       declared_segments += count;

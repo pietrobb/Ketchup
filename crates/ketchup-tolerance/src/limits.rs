@@ -9,9 +9,11 @@
 /// 1e5 linear tolerances, so a feature this small is still unambiguous geometry.
 pub const MIN_LENGTH_MM: f64 = 0.01;
 
-/// Most segments in one curve chain: a sweep or slot path, one loop of a planar
-/// profile, a program path, the quarter turns of a helix.
+/// Most segments in a sweep or slot path, a program path, or the quarter turns of a helix.
 pub const PATH_SEGMENTS: usize = 64;
+
+/// Most segments in one planar profile loop, including its small corner arcs.
+pub const PLANAR_PROFILE_SEGMENTS: usize = 256;
 
 /// Most holes in one planar region.
 pub const REGION_HOLES: usize = 64;

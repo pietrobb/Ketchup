@@ -1825,6 +1825,17 @@ mod tests {
     fn planar_region_resource_limits_are_enforced() {
         let tolerance_mm = crate::tolerance::DEFAULT_LINEAR_TOLERANCE_MM;
         assert_eq!(limits::PATH_SEGMENTS, 64);
+        assert_eq!(
+            validate_geometry(
+                &loop_geometry(&boundary_loop(
+                    [0.0, 0.0],
+                    100.0,
+                    limits::PLANAR_PROFILE_SEGMENTS
+                )),
+                tolerance_mm
+            ),
+            Ok(limits::PLANAR_PROFILE_SEGMENTS)
+        );
         assert_eq!(limits::REGION_HOLES, 64);
         assert_eq!(limits::REGION_SEGMENTS, 4_096);
 
@@ -1851,7 +1862,11 @@ mod tests {
 
         assert_eq!(
             validate_geometry(
-                &loop_geometry(&boundary_loop([0.0, 0.0], 100.0, limits::PATH_SEGMENTS + 1)),
+                &loop_geometry(&boundary_loop(
+                    [0.0, 0.0],
+                    100.0,
+                    limits::PLANAR_PROFILE_SEGMENTS + 1
+                )),
                 tolerance_mm
             ),
             Err(ExactBRepGraphError::ResourceLimit),

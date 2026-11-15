@@ -402,6 +402,105 @@ and subtract a bar or rod cast into concrete from the concrete.
 anchors a timber beam to a reinforced footing with threaded rods, washers, nuts
 and bolts.
 
+`bearing_dimensions(designation)` supplies the published SKF mounting dimensions
+for `6000`, `6001`, `6004`, `6201` and `6204`, with bore, outside diameter and
+width in millimetres and a catalogue URL in `source`. Unlisted designations are refused as **not specified**; ball
+diameter and count remain `None`, not estimated from the outside dimensions.
+`bearing_envelope(name, designation, at=(0,0,0), axis=(0,0,1), tags=None)`
+creates an exact annular **mounting envelope**, seated at `at` along `axis`.
+It is a purchased item with its source and geometry limitation in the BOM,
+not a detailed bearing, material-volume model, mass estimate or load rating.
+Use `component("bearing unit", [bearing_envelope("body", "6204")])` and
+`instance()` for repeated placements. Raceway, cage, ball and chamfer geometry
+are not specified by this library; use a supplier model when they are needed.
+
+`stepper_motor_dimensions("17HS19-2004S1")` returns dimensions from the
+[STEPPERONLINE supplier drawing](https://www.omc-stepperonline.com/download/17HS19-2004S1.pdf),
+not dimensions inferred from the NEMA 17 frame designation. `stepper_motor(name,
+designation, at=(0,0,0), axis=(0,0,1), tags=None, mount_drill_depth=None)` builds the mounting geometry:
+a maximum 42.3 × 42.3 × 48 mm housing envelope, Ø22 × 2 mm pilot, Ø5 shaft
+extending 24 mm from the front with a 15 mm long flat (4.5 mm total thickness),
+and four blind M3 mounting holes on a 31 mm square. `at` is the centre of the
+**rear housing face**; `axis` points from the rear towards the output shaft.
+The holes use the library's M3 tap drill and a **cosmetic** thread at the drawing's
+minimum 4.5 mm threaded depth. The drill-bottom depth is **not specified**:
+`mount_drill_depth` must be supplied from verified information; otherwise the
+helper refuses to create the model. The existing blind-hole runout check still
+applies. The BOM labels this depth as caller-supplied, not supplier data.
+The same helpers accept `23HS22-2804S` (NEMA 23), from its
+[STEPPERONLINE drawing](https://www.omc-stepperonline.com/download/23HS22-2804S.pdf):
+a maximum 57.3 × 57.3 × 56 mm housing envelope, Ø38.1 × 1.6 mm pilot,
+Ø6.35 shaft extending 21 mm with a 15 mm flat (5.85 mm total thickness),
+and four **clearance** Ø5.2 mm holes on a 47.14 mm square, without threads.
+Their termination/flange thickness is not dimensioned: `mount_drill_depth`
+is required here too; the model does not assume holes through the whole motor.
+For both motors, supplied depth defines a blind cylindrical cut in the housing
+**envelope**, not a claim about the manufacturer's internal flange geometry.
+Nominal shaft/pilot values are used; this is not a tolerance-fit check.
+Unspecified housing corner cuts, recesses, internals, cable/connector geometry
+and mass are not modeled or estimated. The part's `geometry_basis`, `mass_basis`
+and drawing `source` travel into the hardware BOM. Unknown designations, including
+bare `NEMA17`/`NEMA23`, are refused; missing catalogue detail remains `None`.
+Use `component("drive", [stepper_motor("motor", "17HS19-2004S1",
+mount_drill_depth=verified_depth)])` with `instance()` for repeated drives;
+native Save/Open and exact STEP retain their
+placement and geometry. This is a dimensioned interface model, not a complete
+motor manufacturing model.
+
+`linear_rail_dimensions("MGNR12R")` returns HIWIN rail mounting dimensions from
+[MG catalogue table 3.81, page 4](https://www.lineairegeleiding.nl/wp-content/uploads/2023/09/Hiwin_MG.pdf):
+12 mm width, 8 mm height, Ø3.5 through holes with Ø6 × 4.5 mm counterbores at
+25 mm pitch, 35–2000 mm cut length, and 5–20 mm end distances. The raceway
+`section` remains `None`: the drawing does not dimension its curves.
+`linear_rail(name, designation, length, first_hole=None, section=None,
+section_source=None, top_face="top", at=(0,0,0), axis=(0,0,1), tags=None)`
+requires an explicitly supplied closed section and nonempty source reference,
+not an invented rectangular replacement. The caller is responsible for the
+section's fidelity; a source string is provenance, not independent certification.
+The section lies in local XY, x from −6 to +6 and y from 0 to 8; the named
+planar top face must point along +Y. Extrusion follows +Z from the base centre
+at the first cut end. `first_hole` is an explicit distance from that end; both
+end distances must satisfy the catalogue. Holes and counterbores are applied
+before placement along `axis`. The purchased-item BOM retains length, hole
+layout, catalogue source and caller's section source separately. A changed cut
+length recomputes the hole count. Use `component()`/`instance()` for repeats;
+Save/Open and STEP retain the exact supplied section and mounting cuts.
+This helper does not supply a verified raceway profile or a carriage model.
+
+`slot_profile_dimensions("Motedis-20x20-I5")` and
+`slot_profile(name, designation, length, at=(0,0,0), axis=(0,0,1), tags=None)`
+use the [Motedis supplier STEP](https://www.motedis.com/shop/products_files/Motedis_Profile%2020x20%20I-Type%20slot%205.zip)
+(P20_N5_I, dated 2012-11-22), not an approximate square with rectangular slots.
+The 20 × 20 mm section retains all 72 line/circle edges, slot lips, fillets and
+Ø4.3 mm bore; section area is about 181.93618 mm². STEP end-face coordinates
+are centred on XY and rounded to 1e-9 mm, without polygon tessellation.
+These are nominal CAD dimensions, not manufacturing tolerance guarantees.
+`length` must be positive; `at` is the centre of the first cut end and `axis`
+is the extrusion direction. Use `component()` and `instance()` for repeats.
+The purchased-item BOM carries designation, cut length and supplier source;
+Save/Open and exact STEP retain the section and placement. Other designations
+are rejected as unspecified, not scaled from this one. A planar profile loop may contain up to 256 segments;
+the independent path limit remains 64 and the total per planar region remains
+4096 segments. Sketches without constraints retain their validated coordinates
+without numerical solving (up to the existing 4096-entity limit); the solver's
+512-degree-of-freedom budget still applies to sketches with constraints.
+
+`slot_profile_dimensions("Motedis-30x30L-I6")` uses the separate
+[Motedis 019597 supplier STEP](https://www.motedis.com/shop/products_files/Motedis_019597.zip)
+(dated 2026-04-22), not a scaled 20 mm section. Its 30 × 30 mm outline retains
+120 line/circle edges, the Ø4.9 mm bore and all four corner cavities (eight
+edges each); net section area is about 335.18623 mm². The same cut-length,
+placement, component, BOM and STEP operations apply. These are nominal supplier
+CAD curves, not manufacturing tolerances or a claim of interchangeability
+with other suppliers' 30 mm profiles.
+
+`slot_profile_dimensions("Motedis-40x40L-I8")` uses the
+[Motedis 40x40L I-Type slot 8 supplier STEP](https://www.motedis.com/shop/products_files/40x40L%20I-Type%20slot%208.zip)
+(P40L_N8_I, dated 2013-03-20). Its 40 × 40 mm outline retains 112 line/circle
+edges, the Ø6.8 mm bore and all four corner cavities (eight edges each); net
+section area is about 657.09717 mm². Cut length, placement, components, BOM and
+STEP work as for the 20 and 30 mm sections; the same nominal-CAD caveat applies.
+
 Every made part needs a fabrication role (attribute `FABRICATION_ROLE`); the
 production export refuses a part without one and names it. The roles are
 `TIMBER_MEMBER` (a bar cut and machined from timber stock: BTLx and the bar

@@ -57,6 +57,53 @@ fn sketch(entities: Vec<SketchEntity>, constraints: Vec<SketchConstraintKind>) -
     }
 }
 
+#[test]
+fn unconstrained_geometry_does_not_consume_the_numerical_solver_budget() {
+    let entities = (1..=136)
+        .map(|id| line(id, [id as f64, 0.0], [id as f64, 1.0]))
+        .collect::<Vec<_>>();
+    let input = sketch(entities.clone(), vec![]);
+    let solved = input.solve_geometry().unwrap();
+    assert_eq!(solved.entities, entities);
+    assert_eq!(
+        solved.report.status,
+        SketchSolveStatus::UnderConstrained { remaining_dof: 544 }
+    );
+    assert_eq!(solved.report.entity_count, 136);
+    assert_eq!(solved.report.constraint_count, 0);
+    assert_eq!(solved.report.equation_count, 0);
+    assert_eq!(
+        solved.report.unconstrained_entity_ids,
+        entities.iter().map(SketchEntity::id).collect::<Vec<_>>()
+    );
+    let constrained = sketch(
+        entities,
+        vec![SketchConstraintKind::Vertical {
+            entity: SketchEntityId(1),
+        }],
+    );
+    assert_eq!(
+        constrained.solve_geometry(),
+        Err(SketchError::ResourceLimit)
+    );
+    let mut invalid = input.clone();
+    invalid.entities[0] = line(1, [f64::NAN, 0.0], [1.0, 1.0]);
+    assert!(invalid.solve_geometry().is_err());
+    let mut duplicate = input;
+    duplicate.entities[1] = duplicate.entities[0].clone();
+    assert_eq!(
+        duplicate.solve_geometry(),
+        Err(SketchError::EntitiesNotCanonical)
+    );
+    let oversized = sketch(
+        (1..=4097)
+            .map(|id| line(id, [id as f64, 0.0], [id as f64, 1.0]))
+            .collect(),
+        vec![],
+    );
+    assert_eq!(oversized.solve_geometry(), Err(SketchError::ResourceLimit));
+}
+
 /// A 100 x 50 rectangle anchored at `origin`, drawn roughly: every corner is
 /// off by up to 2 mm, so the solver has to move all of it.
 fn rough_rectangle(origin: [f64; 2]) -> SketchSpec {

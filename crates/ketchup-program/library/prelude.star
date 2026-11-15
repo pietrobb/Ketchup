@@ -1982,6 +1982,641 @@ def rebar(name, diameter, length, grade = "B500B", at = (0, 0, 0), axis = (0, 0,
                    })
     return _turn_onto(part, at, axis)
 
+#   bearing_dimensions(designation) -> published mounting dimensions and source;
+#     ball diameter/count are None (not specified), unknown designations fail.
+#   bearing_envelope(name, designation, at=(0,0,0), axis=(0,0,1), tags=None) -> part
+#     Exact annular mounting envelope ONLY, not bearing internals or material volume.
+#     Purchased item; no material density, mass or load rating is inferred.
+#     Example: c = component("bearing unit", [bearing_envelope("body", "6204")])
+#              instance("second bearing", c, at=(0,0,100))
+# SKF product dimension tables, accessed 2026-11-14. Values are nominal millimetres.
+_BEARING_MOUNTING_DIMENSIONS = {
+    "6000": (10, 26, 8, "https://www.skf.com/products/rolling-bearings/ball-bearings/deep-groove-ball-bearings/productid-6000"),
+    "6001": (12, 28, 8, "https://www.skf.com/au/products/rolling-bearings/ball-bearings/deep-groove-ball-bearings/productid-6001"),
+    "6201": (12, 32, 10, "https://www.skf.com/group/products/rolling-bearings/ball-bearings/deep-groove-ball-bearings/productid-6201"),
+    "6004": (20, 42, 12, "https://www.skf.com/sg/products/rolling-bearings/ball-bearings/deep-groove-ball-bearings/productid-6004"),
+    "6204": (20, 47, 14, "https://www.skf.com/group/products/rolling-bearings/ball-bearings/deep-groove-ball-bearings/productid-6204"),
+}
+
+def bearing_dimensions(designation):
+    """Published mounting dimensions; absent internal geometry is explicitly unspecified."""
+    if designation not in _BEARING_MOUNTING_DIMENSIONS:
+        fail("bearing_dimensions(): dimensions for %r are not specified; use %s or import a supplier model" %
+             (designation, ", ".join(sorted(_BEARING_MOUNTING_DIMENSIONS.keys()))))
+    bore, outside, width, source = _BEARING_MOUNTING_DIMENSIONS[designation]
+    return {"bore_mm": bore, "outside_mm": outside, "width_mm": width,
+            "ball_diameter_mm": None, "ball_count": None, "source": source}
+
+def bearing_envelope(name, designation, at = (0, 0, 0), axis = (0, 0, 1), tags = None):
+    """A purchased bearing's annular mounting envelope, not its internal solid geometry."""
+    dimensions = bearing_dimensions(designation)
+    part = extrude(name, profile = _circle(dimensions["outside_mm"] / 2.0, "outside"),
+                   distance = dimensions["width_mm"], at = at, material = "unspecified", tags = tags,
+                   attributes = {
+                       "designation": "SKF " + designation,
+                       "source": dimensions["source"],
+                       "geometry_basis": "mounting envelope only; internal geometry not specified",
+                       "mass_basis": "not specified; envelope volume is not bearing material volume",
+                       FABRICATION_ROLE: PURCHASED_ITEM,
+                   })
+    cut(part, profile = _circle(dimensions["bore_mm"] / 2.0, "bore"), through = True, name = "bore")
+    return _turn_onto(part, at, axis)
+
+#   stepper_motor_dimensions(designation) -> supplier dimensions, missing details None.
+#   stepper_motor(name, designation, at=(0,0,0), axis=(0,0,1), tags=None, mount_drill_depth=None) -> purchased part.
+#     at = rear housing centre; axis points towards the shaft. Known mounting features
+#     are exact, but the housing is a maximum envelope, threads cosmetic at minimum
+#     depth (17HS19); 23HS22 has clearance holes. Corners/recesses/internals/cables omitted; no mass inferred.
+#     mount_drill_depth is not in the drawing: supply a verified value or creation fails.
+#     Example (verified_depth is caller-supplied, not a catalogue default):
+#       c = component("drive", [stepper_motor("motor", "17HS19-2004S1", mount_drill_depth=verified_depth)])
+# STEPPERONLINE drawing dated 2020-10-30, accessed 2026-11-14; nominal mm unless max/min named.
+_STEPPER_MOTOR_DIMENSIONS = {
+    "17HS19-2004S1": {
+        "frame_max_mm": 42.3, "body_length_max_mm": 48, "mount_pitch_mm": 31,
+        "mount_thread": "M3", "mount_thread_depth_min_mm": 4.5,
+        "pilot_diameter_mm": 22, "pilot_height_mm": 2,
+        "shaft_diameter_mm": 5, "shaft_length_mm": 24,
+        "shaft_flat_thickness_mm": 4.5, "shaft_flat_length_mm": 15,
+        "housing_corner_mm": None, "mount_drill_depth_mm": None, "mass_kg": None,
+        "source": "https://www.omc-stepperonline.com/download/17HS19-2004S1.pdf",
+    },
+    "23HS22-2804S": {
+        "frame_max_mm": 57.3, "body_length_max_mm": 56, "mount_pitch_mm": 47.14,
+        "mount_thread": None, "mount_thread_depth_min_mm": None, "mount_hole_diameter_mm": 5.2,
+        "pilot_diameter_mm": 38.1, "pilot_height_mm": 1.6,
+        "shaft_diameter_mm": 6.35, "shaft_length_mm": 21,
+        "shaft_flat_thickness_mm": 5.85, "shaft_flat_length_mm": 15,
+        "housing_corner_mm": None, "mount_drill_depth_mm": None, "mass_kg": None,
+        "source": "https://www.omc-stepperonline.com/download/23HS22-2804S.pdf",
+    },
+}
+
+def stepper_motor_dimensions(designation):
+    """Dimensions of a specific supplier motor, not inferred from its NEMA frame size."""
+    if designation not in _STEPPER_MOTOR_DIMENSIONS:
+        fail("stepper_motor_dimensions(): dimensions for %r are not specified; use %s or import a supplier model" %
+             (designation, ", ".join(sorted(_STEPPER_MOTOR_DIMENSIONS.keys()))))
+    return dict(_STEPPER_MOTOR_DIMENSIONS[designation])
+
+def stepper_motor(name, designation, at = (0, 0, 0), axis = (0, 0, 1), tags = None, mount_drill_depth = None):
+    """Supplier mounting geometry; the unpublished drill-bottom depth must be supplied."""
+    d = stepper_motor_dimensions(designation)
+    if mount_drill_depth == None:
+        fail("stepper_motor(): mount_drill_depth is not specified by the supplier drawing; supply a verified drill depth, not the minimum thread depth")
+    half = d["frame_max_mm"] / 2.0
+    length = d["body_length_max_mm"]
+    part = extrude(name, profile = [(-half, -half), (half, -half), (half, half), (-half, half)],
+                   distance = length, at = at, material = "unspecified", tags = tags,
+                   attributes = {
+                       "designation": "STEPPERONLINE " + designation,
+                       "source": d["source"],
+                       "mount_drill_depth_mm": str(mount_drill_depth),
+                       "mount_drill_depth_basis": "caller-supplied; not specified by supplier drawing",
+                       "geometry_basis": "dimensioned pilot and D shaft; maximum housing envelope; %s; corners, recesses, internals and cables not specified" % ("clearance mounts with caller-supplied depth" if d["mount_thread"] == None else "cosmetic %s at minimum thread depth" % d["mount_thread"]),
+                       "mass_basis": "not specified; interface model volume is not motor material volume",
+                       FABRICATION_ROLE: PURCHASED_ITEM,
+                   })
+    pitch = d["mount_pitch_mm"] / 2.0
+    for x in [-pitch, pitch]:
+        for y in [-pitch, pitch]:
+            if d["mount_thread"] == None:
+                hole(part, "end", world = (at[0] + x, at[1] + y, at[2] + length),
+                     diameter = d["mount_hole_diameter_mm"], depth = mount_drill_depth)
+            else:
+                hole(part, "end", world = (at[0] + x, at[1] + y, at[2] + length),
+                     depth = mount_drill_depth,
+                     thread = (d["mount_thread"], d["mount_thread_depth_min_mm"]), modeled_thread = False)
+    pilot = extrude(name + "/pilot", profile = _circle(d["pilot_diameter_mm"] / 2.0, "pilot"),
+                    distance = d["pilot_height_mm"], at = (at[0], at[1], at[2] + length), tool = True)
+    union(part, pilot, name = "pilot")
+    radius = d["shaft_diameter_mm"] / 2.0
+    shaft = extrude(name + "/shaft", profile = _circle(radius, "shaft"),
+                    distance = d["shaft_length_mm"] - d["pilot_height_mm"],
+                    at = (at[0], at[1], at[2] + length + d["pilot_height_mm"]), tool = True)
+    flat = d["shaft_flat_thickness_mm"] - radius
+    cut(shaft, profile = [(-radius, flat), (radius, flat), (radius, radius), (-radius, radius)],
+        depth = d["shaft_flat_length_mm"], name = "flat")
+    union(part, shaft, name = "shaft")
+    return _turn_onto(part, at, axis)
+
+#   linear_rail_dimensions(designation) -> published rail mounting dimensions; section=None.
+#   linear_rail(name, designation, length, first_hole=None, section=None,
+#     section_source=None, top_face="top", at=(0,0,0), axis=(0,0,1), tags=None) -> part.
+#     A caller-supplied closed XY section, extruded along Z with catalogue mounting cuts.
+#     Section must span x=+-width/2, y=0..height; top_face points +Y at height.
+#     Both the section and its source are required; no invented raceway or box fallback.
+#     first_hole is the explicit distance from the first cut end; both ends are checked.
+#     Example: c = component("guide", [linear_rail("rail", "MGNR12R", 100,
+#       first_hole=10, section=verified_section, section_source=verified_source)])
+# HIWIN MG catalogue, ALMOTION copy, table 3.81 p.4, accessed 2026-11-14 (nominal mm).
+_LINEAR_RAIL_DIMENSIONS = {
+    "MGNR12R": {
+        "width_mm": 12, "height_mm": 8, "pitch_mm": 25,
+        "hole_diameter_mm": 3.5, "counterbore_diameter_mm": 6, "counterbore_depth_mm": 4.5,
+        "min_length_mm": 35, "max_length_mm": 2000, "min_end_mm": 5, "max_end_mm": 20,
+        "section": None,
+        "source": "https://www.lineairegeleiding.nl/wp-content/uploads/2023/09/Hiwin_MG.pdf table 3.81 p.4",
+    },
+}
+
+def linear_rail_dimensions(designation):
+    """Rail mounting dimensions only; the undimensioned raceway section remains None."""
+    if designation not in _LINEAR_RAIL_DIMENSIONS:
+        fail("linear_rail_dimensions(): dimensions for %r are not specified; use %s or supply a verified supplier model" %
+             (designation, ", ".join(sorted(_LINEAR_RAIL_DIMENSIONS.keys()))))
+    return dict(_LINEAR_RAIL_DIMENSIONS[designation])
+
+def linear_rail(name, designation, length, first_hole = None, section = None, section_source = None,
+                top_face = "top", at = (0, 0, 0), axis = (0, 0, 1), tags = None):
+    """Extrude a sourced caller section and drill the published counterbored mounting pattern."""
+    d = linear_rail_dimensions(designation)
+    if section == None:
+        fail("linear_rail(): section is not specified by the catalogue; supply a verified closed XY section, not a mounting envelope")
+    if type(section_source) != "string" or not section_source.strip():
+        fail("linear_rail(): section_source is not specified; cite the source of the caller-supplied section")
+    if first_hole == None:
+        fail("linear_rail(): first_hole is not specified; supply the distance from the first cut end")
+    if length < d["min_length_mm"] or length > d["max_length_mm"]:
+        fail("linear_rail(): length must be within the catalogue range %g..%g mm" % (d["min_length_mm"], d["max_length_mm"]))
+    count = int((length - first_hole - d["min_end_mm"]) // d["pitch_mm"]) + 1
+    last_end = length - first_hole - (count - 1) * d["pitch_mm"]
+    if count < 1 or min(first_hole, last_end) < d["min_end_mm"] or max(first_hole, last_end) > d["max_end_mm"]:
+        fail("linear_rail(): both end distances must be within %g..%g mm; change length or first_hole" % (d["min_end_mm"], d["max_end_mm"]))
+    part = extrude(name, profile = section, distance = length, at = at, material = "unspecified", tags = tags,
+                   attributes = {
+                       "designation": "HIWIN %s L=%g" % (designation, length),
+                       "source": d["source"], "section_source": section_source,
+                       "geometry_basis": "caller-supplied section; catalogue mounting holes, no inferred raceway geometry",
+                       "length_mm": "%g" % length, "first_hole_mm": "%g" % first_hole,
+                       "last_end_mm": "%g" % last_end, "mount_hole_count": str(count),
+                       FABRICATION_ROLE: PURCHASED_ITEM,
+                   })
+    info = part_info(part)
+    if (abs(info.local_min[0] + d["width_mm"] / 2.0) > 0.000001 or
+        abs(info.local_max[0] - d["width_mm"] / 2.0) > 0.000001 or
+        abs(info.local_min[1]) > 0.000001 or abs(info.local_max[1] - d["height_mm"]) > 0.000001):
+        fail("linear_rail(): section must span x=+-width/2 and y=0..height from the catalogue; correct the section datum or dimensions")
+    top = face(part, top_face)
+    if top.kind != "planar" or sum([abs(top.normal[i] - (0, 1, 0)[i]) for i in range(3)]) > 0.000001 or abs(top.origin[1] - at[1] - d["height_mm"]) > 0.000001:
+        fail("linear_rail(): top_face must be planar, at catalogue height, facing +Y; supply the correct section face name")
+    for i in range(count):
+        entry = (at[0], at[1] + d["height_mm"], at[2] + first_hole + i * d["pitch_mm"])
+        hole(part, top_face, world = entry, diameter = d["hole_diameter_mm"], depth = d["height_mm"], through = True)
+        hole(part, top_face, world = entry, diameter = d["counterbore_diameter_mm"], depth = d["counterbore_depth_mm"])
+    return _turn_onto(part, at, axis)
+
+#   slot_profile_dimensions(designation) -> supplier dimensions and STEP source.
+#   slot_profile(name, designation, length, at=(0,0,0), axis=(0,0,1), tags=None) -> part.
+#     Cut-to-length purchased profile; at is the first end's section centre.
+#     Example: component("frame member", [slot_profile("bar", "Motedis-20x20-I5", 500)])
+# Motedis P20_N5_I.stp, 2012-11-22, downloaded 2026-11-14 from the cited ZIP.
+# End face #2482: 72 line/circle edges, translated by (+3.375,+10) to centre XY;
+# coordinates rounded to 1e-9 mm. No polygon tessellation or inferred symmetry.
+# The inner wire is a circle of radius 2.15 mm. Nominal CAD, not a tolerance guarantee.
+_MOTEDIS_20_I5_SECTION = [
+    ['edge1', (4.528679657, 3.25588745), (3.65, 1.134567101), {'center': (6.65, 1.134567107), 'clockwise': False}],
+    ['edge2', (3.65, 1.134567101), (3.650000005, -1.134567118)],
+    ['edge3', (3.650000005, -1.134567118), (4.528679661, -3.255887455), {'center': (6.650000005, -1.134567112), 'clockwise': False}],
+    ['edge4', (4.528679661, -3.255887455), (6.868456692, -5.595664486)],
+    ['edge5', (6.868456692, -5.595664486), (8.199999981, -5.044121478), {'center': (7.419999981, -5.044121197), 'clockwise': False}],
+    ['edge6', (8.199999981, -5.044121478), (8.200000763, -2.874999892)],
+    ['edge7', (8.200000763, -2.874999892), (8.500000763, -2.575), {'center': (8.500000763, -2.875), 'clockwise': True}],
+    ['edge8', (8.500000763, -2.575), (9.2, -2.575)],
+    ['edge9', (9.2, -2.575), (10.0, -3.375), {'center': (9.2, -3.375), 'clockwise': True}],
+    ['edge10', (10.0, -3.375), (10.0, -8.0)],
+    ['edge11', (10.0, -8.0), (8.0, -10.0), {'center': (8.0, -8.0), 'clockwise': True}],
+    ['edge12', (8.0, -10.0), (3.375, -10.0)],
+    ['edge13', (3.375, -10.0), (2.575, -9.2), {'center': (3.375, -9.2), 'clockwise': True}],
+    ['edge14', (2.575, -9.2), (2.575, -8.500000763)],
+    ['edge15', (2.575, -8.500000763), (2.874999891, -8.200000763), {'center': (2.875, -8.500000763), 'clockwise': True}],
+    ['edge16', (2.874999891, -8.200000763), (5.044121474, -8.199999975)],
+    ['edge17', (5.044121474, -8.199999975), (5.59566448, -6.868456686), {'center': (5.044121191, -7.419999975), 'clockwise': False}],
+    ['edge18', (5.59566448, -6.868456686), (3.25588745, -4.528679657)],
+    ['edge19', (3.25588745, -4.528679657), (1.134567101, -3.65), {'center': (1.134567107, -6.65), 'clockwise': False}],
+    ['edge20', (1.134567101, -3.65), (-1.134567118, -3.650000005)],
+    ['edge21', (-1.134567118, -3.650000005), (-3.255887455, -4.528679661), {'center': (-1.134567112, -6.650000005), 'clockwise': False}],
+    ['edge22', (-3.255887455, -4.528679661), (-5.595664486, -6.868456692)],
+    ['edge23', (-5.595664486, -6.868456692), (-5.044121478, -8.199999981), {'center': (-5.044121197, -7.419999981), 'clockwise': False}],
+    ['edge24', (-5.044121478, -8.199999981), (-2.874999892, -8.200000763)],
+    ['edge25', (-2.874999892, -8.200000763), (-2.575, -8.500000763), {'center': (-2.875, -8.500000763), 'clockwise': True}],
+    ['edge26', (-2.575, -8.500000763), (-2.575, -9.2)],
+    ['edge27', (-2.575, -9.2), (-3.375, -10.0), {'center': (-3.375, -9.2), 'clockwise': True}],
+    ['edge28', (-3.375, -10.0), (-8.0, -10.0)],
+    ['edge29', (-8.0, -10.0), (-10.0, -8.0), {'center': (-8.0, -8.0), 'clockwise': True}],
+    ['edge30', (-10.0, -8.0), (-10.0, -3.375)],
+    ['edge31', (-10.0, -3.375), (-9.2, -2.575), {'center': (-9.2, -3.375), 'clockwise': True}],
+    ['edge32', (-9.2, -2.575), (-8.500000763, -2.575)],
+    ['edge33', (-8.500000763, -2.575), (-8.200000763, -2.874999891), {'center': (-8.500000763, -2.875), 'clockwise': True}],
+    ['edge34', (-8.200000763, -2.874999891), (-8.199999975, -5.044121474)],
+    ['edge35', (-8.199999975, -5.044121474), (-6.868456686, -5.59566448), {'center': (-7.419999975, -5.044121191), 'clockwise': False}],
+    ['edge36', (-6.868456686, -5.59566448), (-4.528679657, -3.25588745)],
+    ['edge37', (-4.528679657, -3.25588745), (-3.65, -1.134567101), {'center': (-6.65, -1.134567107), 'clockwise': False}],
+    ['edge38', (-3.65, -1.134567101), (-3.650000005, 1.134567118)],
+    ['edge39', (-3.650000005, 1.134567118), (-4.528679661, 3.255887455), {'center': (-6.650000005, 1.134567112), 'clockwise': False}],
+    ['edge40', (-4.528679661, 3.255887455), (-6.868456692, 5.595664486)],
+    ['edge41', (-6.868456692, 5.595664486), (-8.199999981, 5.044121478), {'center': (-7.419999981, 5.044121197), 'clockwise': False}],
+    ['edge42', (-8.199999981, 5.044121478), (-8.200000763, 2.874999892)],
+    ['edge43', (-8.200000763, 2.874999892), (-8.500000763, 2.575), {'center': (-8.500000763, 2.875), 'clockwise': True}],
+    ['edge44', (-8.500000763, 2.575), (-9.2, 2.575)],
+    ['edge45', (-9.2, 2.575), (-10.0, 3.375), {'center': (-9.2, 3.375), 'clockwise': True}],
+    ['edge46', (-10.0, 3.375), (-10.0, 8.0)],
+    ['edge47', (-10.0, 8.0), (-8.0, 10.0), {'center': (-8.0, 8.0), 'clockwise': True}],
+    ['edge48', (-8.0, 10.0), (-3.375, 10.0)],
+    ['edge49', (-3.375, 10.0), (-2.575, 9.2), {'center': (-3.375, 9.2), 'clockwise': True}],
+    ['edge50', (-2.575, 9.2), (-2.575, 8.500000763)],
+    ['edge51', (-2.575, 8.500000763), (-2.874999891, 8.200000763), {'center': (-2.875, 8.500000763), 'clockwise': True}],
+    ['edge52', (-2.874999891, 8.200000763), (-5.044121474, 8.199999975)],
+    ['edge53', (-5.044121474, 8.199999975), (-5.59566448, 6.868456686), {'center': (-5.044121191, 7.419999975), 'clockwise': False}],
+    ['edge54', (-5.59566448, 6.868456686), (-3.25588745, 4.528679657)],
+    ['edge55', (-3.25588745, 4.528679657), (-1.134567101, 3.65), {'center': (-1.134567107, 6.65), 'clockwise': False}],
+    ['edge56', (-1.134567101, 3.65), (1.134567118, 3.650000005)],
+    ['edge57', (1.134567118, 3.650000005), (3.255887455, 4.528679661), {'center': (1.134567112, 6.650000005), 'clockwise': False}],
+    ['edge58', (3.255887455, 4.528679661), (5.595664486, 6.868456692)],
+    ['edge59', (5.595664486, 6.868456692), (5.044121478, 8.199999981), {'center': (5.044121197, 7.419999981), 'clockwise': False}],
+    ['edge60', (5.044121478, 8.199999981), (2.874999892, 8.200000763)],
+    ['edge61', (2.874999892, 8.200000763), (2.575, 8.500000763), {'center': (2.875, 8.500000763), 'clockwise': True}],
+    ['edge62', (2.575, 8.500000763), (2.575, 9.2)],
+    ['edge63', (2.575, 9.2), (3.375, 10.0), {'center': (3.375, 9.2), 'clockwise': True}],
+    ['edge64', (3.375, 10.0), (8.0, 10.0)],
+    ['edge65', (8.0, 10.0), (10.0, 8.0), {'center': (8.0, 8.0), 'clockwise': True}],
+    ['edge66', (10.0, 8.0), (10.0, 3.375)],
+    ['edge67', (10.0, 3.375), (9.2, 2.575), {'center': (9.2, 3.375), 'clockwise': True}],
+    ['edge68', (9.2, 2.575), (8.500000763, 2.575)],
+    ['edge69', (8.500000763, 2.575), (8.200000763, 2.874999891), {'center': (8.500000763, 2.875), 'clockwise': True}],
+    ['edge70', (8.200000763, 2.874999891), (8.199999975, 5.044121474)],
+    ['edge71', (8.199999975, 5.044121474), (6.868456686, 5.59566448), {'center': (7.419999975, 5.044121191), 'clockwise': False}],
+    ['edge72', (6.868456686, 5.59566448), (4.528679657, 3.25588745)],
+]
+# Motedis 019597.stp, 2026-04-22, downloaded 2026-11-14 from the cited ZIP.
+# Face #3143: 120 outer edges, four 8-edge cavities and a radius 2.45 bore.
+# Translate (+4.175,+15) to centre XY; preserve each source line/arc, round 1e-9 mm.
+_MOTEDIS_30_I6_SECTION = [
+    ['edge1', (12.5, -8.225), (13.5, -7.225), {'center': (12.5, -7.225), 'clockwise': False}],
+    ['edge2', (13.5, -7.225), (13.5, -5.974999619)],
+    ['edge3', (13.5, -5.974999619), (13.2, -5.675), {'center': (13.2, -5.975), 'clockwise': False}],
+    ['edge4', (13.2, -5.675), (12.399999237, -5.675000381)],
+    ['edge5', (12.399999237, -5.675000381), (12.1, -5.375), {'center': (12.400000651, -5.37499973), 'clockwise': True}],
+    ['edge6', (12.1, -5.375), (12.1, -3.974999619)],
+    ['edge7', (12.1, -3.974999619), (12.9, -3.175), {'center': (12.9, -3.975), 'clockwise': True}],
+    ['edge8', (12.9, -3.175), (14.0, -3.175000381)],
+    ['edge9', (14.0, -3.175000381), (15.0, -4.175), {'center': (14.000000651, -4.17499973), 'clockwise': True}],
+    ['edge10', (15.0, -4.175), (15.0, -12.0)],
+    ['edge11', (15.0, -12.0), (12.0, -15.0), {'center': (12.0, -12.0), 'clockwise': True}],
+    ['edge12', (12.0, -15.0), (4.175000381, -15.0)],
+    ['edge13', (4.175000381, -15.0), (3.175, -14.0), {'center': (4.175, -14.0), 'clockwise': True}],
+    ['edge14', (3.175, -14.0), (3.175000381, -12.899999237)],
+    ['edge15', (3.175000381, -12.899999237), (3.975, -12.1), {'center': (3.97499973, -12.899999349), 'clockwise': True}],
+    ['edge16', (3.975, -12.1), (5.375000191, -12.1)],
+    ['edge17', (5.375000191, -12.1), (5.675, -12.4), {'center': (5.375, -12.4), 'clockwise': True}],
+    ['edge18', (5.675, -12.4), (5.675000381, -13.200000763)],
+    ['edge19', (5.675000381, -13.200000763), (5.975, -13.5), {'center': (5.97499973, -13.200000651), 'clockwise': False}],
+    ['edge20', (5.975, -13.5), (7.225000095, -13.5)],
+    ['edge21', (7.225000095, -13.5), (8.225, -12.5), {'center': (7.225, -12.5), 'clockwise': False}],
+    ['edge22', (8.225, -12.5), (8.225000095, -10.806854248)],
+    ['edge23', (8.225000095, -10.806854248), (7.34632034, -8.68553391), {'center': (5.224999441, -10.806854624), 'clockwise': False}],
+    ['edge24', (7.34632034, -8.68553391), (4.639466476, -5.978679656)],
+    ['edge25', (4.639466476, -5.978679656), (2.518146132, -5.1), {'center': (2.518146132, -8.1), 'clockwise': False}],
+    ['edge26', (2.518146132, -5.1), (-2.518146132, -5.1)],
+    ['edge27', (-2.518146132, -5.1), (-4.639466476, -5.978679656), {'center': (-2.518146132, -8.1), 'clockwise': False}],
+    ['edge28', (-4.639466476, -5.978679656), (-7.346320343, -8.685533524)],
+    ['edge29', (-7.346320343, -8.685533524), (-8.225, -10.80685425), {'center': (-5.224998224, -10.806854603), 'clockwise': False}],
+    ['edge30', (-8.225, -10.80685425), (-8.224999619, -12.5)],
+    ['edge31', (-8.224999619, -12.5), (-7.225, -13.5), {'center': (-7.22500027, -12.500000651), 'clockwise': False}],
+    ['edge32', (-7.225, -13.5), (-5.974999619, -13.5)],
+    ['edge33', (-5.974999619, -13.5), (-5.675, -13.2), {'center': (-5.975, -13.2), 'clockwise': False}],
+    ['edge34', (-5.675, -13.2), (-5.675000381, -12.399999237)],
+    ['edge35', (-5.675000381, -12.399999237), (-5.375, -12.1), {'center': (-5.37499973, -12.400000651), 'clockwise': True}],
+    ['edge36', (-5.375, -12.1), (-3.974999619, -12.1)],
+    ['edge37', (-3.974999619, -12.1), (-3.175, -12.9), {'center': (-3.975, -12.9), 'clockwise': True}],
+    ['edge38', (-3.175, -12.9), (-3.175000381, -14.0)],
+    ['edge39', (-3.175000381, -14.0), (-4.175, -15.0), {'center': (-4.17499973, -14.000000651), 'clockwise': True}],
+    ['edge40', (-4.175, -15.0), (-12.0, -15.0)],
+    ['edge41', (-12.0, -15.0), (-15.0, -12.0), {'center': (-12.0, -12.0), 'clockwise': True}],
+    ['edge42', (-15.0, -12.0), (-15.0, -4.175000381)],
+    ['edge43', (-15.0, -4.175000381), (-14.0, -3.175), {'center': (-14.0, -4.175), 'clockwise': True}],
+    ['edge44', (-14.0, -3.175), (-12.899999237, -3.175000381)],
+    ['edge45', (-12.899999237, -3.175000381), (-12.1, -3.975), {'center': (-12.899999349, -3.97499973), 'clockwise': True}],
+    ['edge46', (-12.1, -3.975), (-12.1, -5.375000191)],
+    ['edge47', (-12.1, -5.375000191), (-12.4, -5.675), {'center': (-12.4, -5.375), 'clockwise': True}],
+    ['edge48', (-12.4, -5.675), (-13.200000763, -5.675000381)],
+    ['edge49', (-13.200000763, -5.675000381), (-13.5, -5.975), {'center': (-13.200000651, -5.97499973), 'clockwise': False}],
+    ['edge50', (-13.5, -5.975), (-13.5, -7.225000095)],
+    ['edge51', (-13.5, -7.225000095), (-12.5, -8.225), {'center': (-12.5, -7.225), 'clockwise': False}],
+    ['edge52', (-12.5, -8.225), (-10.806854248, -8.225000095)],
+    ['edge53', (-10.806854248, -8.225000095), (-8.68553391, -7.34632034), {'center': (-10.806854624, -5.224999441), 'clockwise': False}],
+    ['edge54', (-8.68553391, -7.34632034), (-5.978679656, -4.639466476)],
+    ['edge55', (-5.978679656, -4.639466476), (-5.1, -2.518146132), {'center': (-8.1, -2.518146132), 'clockwise': False}],
+    ['edge56', (-5.1, -2.518146132), (-5.1, 2.518146132)],
+    ['edge57', (-5.1, 2.518146132), (-5.978679656, 4.639466476), {'center': (-8.1, 2.518146132), 'clockwise': False}],
+    ['edge58', (-5.978679656, 4.639466476), (-8.685533524, 7.346320343)],
+    ['edge59', (-8.685533524, 7.346320343), (-10.80685425, 8.225), {'center': (-10.806854603, 5.224998224), 'clockwise': False}],
+    ['edge60', (-10.80685425, 8.225), (-12.5, 8.224999619)],
+    ['edge61', (-12.5, 8.224999619), (-13.5, 7.225), {'center': (-12.500000651, 7.22500027), 'clockwise': False}],
+    ['edge62', (-13.5, 7.225), (-13.5, 5.974999619)],
+    ['edge63', (-13.5, 5.974999619), (-13.2, 5.675), {'center': (-13.2, 5.975), 'clockwise': False}],
+    ['edge64', (-13.2, 5.675), (-12.399999237, 5.675000381)],
+    ['edge65', (-12.399999237, 5.675000381), (-12.1, 5.375), {'center': (-12.400000651, 5.37499973), 'clockwise': True}],
+    ['edge66', (-12.1, 5.375), (-12.1, 3.974999619)],
+    ['edge67', (-12.1, 3.974999619), (-12.9, 3.175), {'center': (-12.9, 3.975), 'clockwise': True}],
+    ['edge68', (-12.9, 3.175), (-14.0, 3.175000381)],
+    ['edge69', (-14.0, 3.175000381), (-15.0, 4.175), {'center': (-14.000000651, 4.17499973), 'clockwise': True}],
+    ['edge70', (-15.0, 4.175), (-15.0, 12.0)],
+    ['edge71', (-15.0, 12.0), (-12.0, 15.0), {'center': (-12.0, 12.0), 'clockwise': True}],
+    ['edge72', (-12.0, 15.0), (-4.175000381, 15.0)],
+    ['edge73', (-4.175000381, 15.0), (-3.175, 14.0), {'center': (-4.175, 14.0), 'clockwise': True}],
+    ['edge74', (-3.175, 14.0), (-3.175000381, 12.899999237)],
+    ['edge75', (-3.175000381, 12.899999237), (-3.975, 12.1), {'center': (-3.97499973, 12.899999349), 'clockwise': True}],
+    ['edge76', (-3.975, 12.1), (-5.375000191, 12.1)],
+    ['edge77', (-5.375000191, 12.1), (-5.675, 12.4), {'center': (-5.375, 12.4), 'clockwise': True}],
+    ['edge78', (-5.675, 12.4), (-5.675000381, 13.200000763)],
+    ['edge79', (-5.675000381, 13.200000763), (-5.975, 13.5), {'center': (-5.97499973, 13.200000651), 'clockwise': False}],
+    ['edge80', (-5.975, 13.5), (-7.225000095, 13.5)],
+    ['edge81', (-7.225000095, 13.5), (-8.225, 12.5), {'center': (-7.225, 12.5), 'clockwise': False}],
+    ['edge82', (-8.225, 12.5), (-8.225000095, 10.806854248)],
+    ['edge83', (-8.225000095, 10.806854248), (-7.34632034, 8.68553391), {'center': (-5.224999441, 10.806854624), 'clockwise': False}],
+    ['edge84', (-7.34632034, 8.68553391), (-4.639466476, 5.978679656)],
+    ['edge85', (-4.639466476, 5.978679656), (-2.518146132, 5.1), {'center': (-2.518146132, 8.1), 'clockwise': False}],
+    ['edge86', (-2.518146132, 5.1), (2.518146132, 5.1)],
+    ['edge87', (2.518146132, 5.1), (4.639466476, 5.978679656), {'center': (2.518146132, 8.1), 'clockwise': False}],
+    ['edge88', (4.639466476, 5.978679656), (7.346320343, 8.685533524)],
+    ['edge89', (7.346320343, 8.685533524), (8.225, 10.80685425), {'center': (5.224998224, 10.806854603), 'clockwise': False}],
+    ['edge90', (8.225, 10.80685425), (8.224999619, 12.5)],
+    ['edge91', (8.224999619, 12.5), (7.225, 13.5), {'center': (7.22500027, 12.500000651), 'clockwise': False}],
+    ['edge92', (7.225, 13.5), (5.974999619, 13.5)],
+    ['edge93', (5.974999619, 13.5), (5.675, 13.2), {'center': (5.975, 13.2), 'clockwise': False}],
+    ['edge94', (5.675, 13.2), (5.675000381, 12.399999237)],
+    ['edge95', (5.675000381, 12.399999237), (5.375, 12.1), {'center': (5.37499973, 12.400000651), 'clockwise': True}],
+    ['edge96', (5.375, 12.1), (3.974999619, 12.1)],
+    ['edge97', (3.974999619, 12.1), (3.175, 12.9), {'center': (3.975, 12.9), 'clockwise': True}],
+    ['edge98', (3.175, 12.9), (3.175000381, 14.0)],
+    ['edge99', (3.175000381, 14.0), (4.175, 15.0), {'center': (4.17499973, 14.000000651), 'clockwise': True}],
+    ['edge100', (4.175, 15.0), (12.0, 15.0)],
+    ['edge101', (12.0, 15.0), (15.0, 12.0), {'center': (12.0, 12.0), 'clockwise': True}],
+    ['edge102', (15.0, 12.0), (15.0, 4.175000381)],
+    ['edge103', (15.0, 4.175000381), (14.0, 3.175), {'center': (14.0, 4.175), 'clockwise': True}],
+    ['edge104', (14.0, 3.175), (12.899999237, 3.175000381)],
+    ['edge105', (12.899999237, 3.175000381), (12.1, 3.975), {'center': (12.899999349, 3.97499973), 'clockwise': True}],
+    ['edge106', (12.1, 3.975), (12.1, 5.375000191)],
+    ['edge107', (12.1, 5.375000191), (12.4, 5.675), {'center': (12.4, 5.375), 'clockwise': True}],
+    ['edge108', (12.4, 5.675), (13.200000763, 5.675000381)],
+    ['edge109', (13.200000763, 5.675000381), (13.5, 5.975), {'center': (13.200000651, 5.97499973), 'clockwise': False}],
+    ['edge110', (13.5, 5.975), (13.5, 7.225000095)],
+    ['edge111', (13.5, 7.225000095), (12.5, 8.225), {'center': (12.5, 7.225), 'clockwise': False}],
+    ['edge112', (12.5, 8.225), (10.806854248, 8.225000095)],
+    ['edge113', (10.806854248, 8.225000095), (8.68553391, 7.34632034), {'center': (10.806854624, 5.224999441), 'clockwise': False}],
+    ['edge114', (8.68553391, 7.34632034), (5.978679656, 4.639466476)],
+    ['edge115', (5.978679656, 4.639466476), (5.1, 2.518146132), {'center': (8.1, 2.518146132), 'clockwise': False}],
+    ['edge116', (5.1, 2.518146132), (5.1, -2.518146132)],
+    ['edge117', (5.1, -2.518146132), (5.978679656, -4.639466476), {'center': (8.1, -2.518146132), 'clockwise': False}],
+    ['edge118', (5.978679656, -4.639466476), (8.685533524, -7.346320343)],
+    ['edge119', (8.685533524, -7.346320343), (10.80685425, -8.225), {'center': (10.806854603, -5.224998224), 'clockwise': False}],
+    ['edge120', (10.80685425, -8.225), (12.5, -8.225)],
+]
+_MOTEDIS_30_I6_HOLES = [
+    [
+        ['edge1', (13.5, -9.95), (13.2, -9.65), {'center': (13.2, -9.95), 'clockwise': False}],
+        ['edge2', (13.2, -9.65), (9.950000763, -9.649999619)],
+        ['edge3', (9.950000763, -9.649999619), (9.65, -9.95), {'center': (9.950000651, -9.95000027), 'clockwise': False}],
+        ['edge4', (9.65, -9.95), (9.649999619, -13.200000763)],
+        ['edge5', (9.649999619, -13.200000763), (9.95, -13.5), {'center': (9.95000027, -13.199999349), 'clockwise': False}],
+        ['edge6', (9.95, -13.5), (12.0, -13.5)],
+        ['edge7', (12.0, -13.5), (13.5, -12.0), {'center': (12.0, -12.0), 'clockwise': False}],
+        ['edge8', (13.5, -12.0), (13.5, -9.95)],
+    ],
+    [
+        ['edge1', (13.2, 9.65), (13.5, 9.95), {'center': (13.2, 9.95), 'clockwise': False}],
+        ['edge2', (13.5, 9.95), (13.5, 12.0)],
+        ['edge3', (13.5, 12.0), (12.0, 13.5), {'center': (12.0, 12.0), 'clockwise': False}],
+        ['edge4', (12.0, 13.5), (9.950000763, 13.5)],
+        ['edge5', (9.950000763, 13.5), (9.65, 13.2), {'center': (9.95, 13.2), 'clockwise': False}],
+        ['edge6', (9.65, 13.2), (9.649999619, 9.950000763)],
+        ['edge7', (9.649999619, 9.950000763), (9.95, 9.65), {'center': (9.95000027, 9.950000651), 'clockwise': False}],
+        ['edge8', (9.95, 9.65), (13.2, 9.65)],
+    ],
+    [
+        ['edge1', (-9.65, 13.2), (-9.95, 13.5), {'center': (-9.95, 13.2), 'clockwise': False}],
+        ['edge2', (-9.95, 13.5), (-12.0, 13.5)],
+        ['edge3', (-12.0, 13.5), (-13.5, 12.0), {'center': (-12.0, 12.0), 'clockwise': False}],
+        ['edge4', (-13.5, 12.0), (-13.5, 9.950000763)],
+        ['edge5', (-13.5, 9.950000763), (-13.2, 9.65), {'center': (-13.2, 9.95), 'clockwise': False}],
+        ['edge6', (-13.2, 9.65), (-9.949999809, 9.649999619)],
+        ['edge7', (-9.949999809, 9.649999619), (-9.65, 9.95), {'center': (-9.950000651, 9.95000027), 'clockwise': False}],
+        ['edge8', (-9.65, 9.95), (-9.65, 13.2)],
+    ],
+    [
+        ['edge1', (-9.95, -13.5), (-9.65, -13.2), {'center': (-9.95, -13.2), 'clockwise': False}],
+        ['edge2', (-9.65, -13.2), (-9.650000095, -9.950000763)],
+        ['edge3', (-9.650000095, -9.950000763), (-9.95, -9.65), {'center': (-9.949999933, -9.949999837), 'clockwise': False}],
+        ['edge4', (-9.95, -9.65), (-13.200000048, -9.649999619)],
+        ['edge5', (-13.200000048, -9.649999619), (-13.5, -9.95), {'center': (-13.199999349, -9.95000027), 'clockwise': False}],
+        ['edge6', (-13.5, -9.95), (-13.5, -12.0)],
+        ['edge7', (-13.5, -12.0), (-12.0, -13.5), {'center': (-12.0, -12.0), 'clockwise': False}],
+        ['edge8', (-12.0, -13.5), (-9.95, -13.5)],
+    ],
+]
+# Motedis P40L_N8_I.stp, 2013-03-20, downloaded 2026-11-15 from the cited ZIP.
+# Face #5037 (z=+150, normal +Z): 112 outer edges, four 8-edge cavities and a
+# radius 3.4 bore, already centred in XY. Each source line/arc kept, rounded 1e-9 mm;
+# cavity loops are traversed counter-clockwise like the 30 mm cavities.
+_MOTEDIS_40_I8_SECTION = [
+    ['edge1', (-20.0, 5.5), (-18.5, 4.0), {'center': (-18.5, 5.5), 'clockwise': False}],
+    ['edge2', (-18.5, 4.0), (-16.5, 4.0)],
+    ['edge3', (-16.5, 4.0), (-15.5, 5.0), {'center': (-16.5, 5.0), 'clockwise': False}],
+    ['edge4', (-15.5, 5.0), (-15.5, 6.5)],
+    ['edge5', (-15.5, 6.5), (-16.0, 7.0), {'center': (-16.0, 6.5), 'clockwise': False}],
+    ['edge6', (-16.0, 7.0), (-17.5, 7.0)],
+    ['edge7', (-17.5, 7.0), (-18.0, 7.5), {'center': (-17.5, 7.5), 'clockwise': True}],
+    ['edge8', (-18.0, 7.5), (-15.5, 10.0), {'center': (-15.5, 7.5), 'clockwise': True}],
+    ['edge9', (-15.5, 10.0), (-14.192388155, 10.0)],
+    ['edge10', (-14.192388155, 10.0), (-10.656854249, 8.535533906), {'center': (-14.192388155, 5.0), 'clockwise': True}],
+    ['edge11', (-10.656854249, 8.535533906), (-9.214466094, 7.093145751)],
+    ['edge12', (-9.214466094, 7.093145751), (-7.75, 3.557611845), {'center': (-12.75, 3.557611845), 'clockwise': True}],
+    ['edge13', (-7.75, 3.557611845), (-7.75, -3.557611845)],
+    ['edge14', (-7.75, -3.557611845), (-9.214466094, -7.093145751), {'center': (-12.75, -3.557611845), 'clockwise': True}],
+    ['edge15', (-9.214466094, -7.093145751), (-10.656854249, -8.535533906)],
+    ['edge16', (-10.656854249, -8.535533906), (-14.192388155, -10.0), {'center': (-14.192388155, -5.0), 'clockwise': True}],
+    ['edge17', (-14.192388155, -10.0), (-15.5, -10.0)],
+    ['edge18', (-15.5, -10.0), (-18.0, -7.5), {'center': (-15.5, -7.5), 'clockwise': True}],
+    ['edge19', (-18.0, -7.5), (-17.5, -7.0), {'center': (-17.5, -7.5), 'clockwise': True}],
+    ['edge20', (-17.5, -7.0), (-16.0, -7.0)],
+    ['edge21', (-16.0, -7.0), (-15.5, -6.5), {'center': (-16.0, -6.5), 'clockwise': False}],
+    ['edge22', (-15.5, -6.5), (-15.5, -5.0)],
+    ['edge23', (-15.5, -5.0), (-16.5, -4.0), {'center': (-16.5, -5.0), 'clockwise': False}],
+    ['edge24', (-16.5, -4.0), (-18.5, -4.0)],
+    ['edge25', (-18.5, -4.0), (-20.0, -5.5), {'center': (-18.5, -5.5), 'clockwise': False}],
+    ['edge26', (-20.0, -5.5), (-20.0, -16.0)],
+    ['edge27', (-20.0, -16.0), (-16.0, -20.0), {'center': (-16.0, -16.0), 'clockwise': False}],
+    ['edge28', (-16.0, -20.0), (-5.5, -20.0)],
+    ['edge29', (-5.5, -20.0), (-4.0, -18.5), {'center': (-5.5, -18.5), 'clockwise': False}],
+    ['edge30', (-4.0, -18.5), (-4.0, -16.5)],
+    ['edge31', (-4.0, -16.5), (-5.0, -15.5), {'center': (-5.0, -16.5), 'clockwise': False}],
+    ['edge32', (-5.0, -15.5), (-6.5, -15.5)],
+    ['edge33', (-6.5, -15.5), (-7.0, -16.0), {'center': (-6.5, -16.0), 'clockwise': False}],
+    ['edge34', (-7.0, -16.0), (-7.0, -17.5)],
+    ['edge35', (-7.0, -17.5), (-7.5, -18.0), {'center': (-7.5, -17.5), 'clockwise': True}],
+    ['edge36', (-7.5, -18.0), (-10.0, -15.5), {'center': (-7.5, -15.5), 'clockwise': True}],
+    ['edge37', (-10.0, -15.5), (-10.0, -14.192388155)],
+    ['edge38', (-10.0, -14.192388155), (-8.535533906, -10.656854249), {'center': (-5.0, -14.192388155), 'clockwise': True}],
+    ['edge39', (-8.535533906, -10.656854249), (-7.093145751, -9.214466094)],
+    ['edge40', (-7.093145751, -9.214466094), (-3.557611845, -7.75), {'center': (-3.557611845, -12.75), 'clockwise': True}],
+    ['edge41', (-3.557611845, -7.75), (3.557611845, -7.75)],
+    ['edge42', (3.557611845, -7.75), (7.093145751, -9.214466094), {'center': (3.557611845, -12.75), 'clockwise': True}],
+    ['edge43', (7.093145751, -9.214466094), (8.535533906, -10.656854249)],
+    ['edge44', (8.535533906, -10.656854249), (10.0, -14.192388155), {'center': (5.0, -14.192388155), 'clockwise': True}],
+    ['edge45', (10.0, -14.192388155), (10.0, -15.5)],
+    ['edge46', (10.0, -15.5), (7.5, -18.0), {'center': (7.5, -15.5), 'clockwise': True}],
+    ['edge47', (7.5, -18.0), (7.0, -17.5), {'center': (7.5, -17.5), 'clockwise': True}],
+    ['edge48', (7.0, -17.5), (7.0, -16.0)],
+    ['edge49', (7.0, -16.0), (6.5, -15.5), {'center': (6.5, -16.0), 'clockwise': False}],
+    ['edge50', (6.5, -15.5), (5.0, -15.5)],
+    ['edge51', (5.0, -15.5), (4.0, -16.5), {'center': (5.0, -16.5), 'clockwise': False}],
+    ['edge52', (4.0, -16.5), (4.0, -18.5)],
+    ['edge53', (4.0, -18.5), (5.5, -20.0), {'center': (5.5, -18.5), 'clockwise': False}],
+    ['edge54', (5.5, -20.0), (16.0, -20.0)],
+    ['edge55', (16.0, -20.0), (20.0, -16.0), {'center': (16.0, -16.0), 'clockwise': False}],
+    ['edge56', (20.0, -16.0), (20.0, -5.5)],
+    ['edge57', (20.0, -5.5), (18.5, -4.0), {'center': (18.5, -5.5), 'clockwise': False}],
+    ['edge58', (18.5, -4.0), (16.5, -4.0)],
+    ['edge59', (16.5, -4.0), (15.5, -5.0), {'center': (16.5, -5.0), 'clockwise': False}],
+    ['edge60', (15.5, -5.0), (15.5, -6.5)],
+    ['edge61', (15.5, -6.5), (16.0, -7.0), {'center': (16.0, -6.5), 'clockwise': False}],
+    ['edge62', (16.0, -7.0), (17.5, -7.0)],
+    ['edge63', (17.5, -7.0), (18.0, -7.5), {'center': (17.5, -7.5), 'clockwise': True}],
+    ['edge64', (18.0, -7.5), (15.5, -10.0), {'center': (15.5, -7.5), 'clockwise': True}],
+    ['edge65', (15.5, -10.0), (14.192388155, -10.0)],
+    ['edge66', (14.192388155, -10.0), (10.656854249, -8.535533906), {'center': (14.192388155, -5.0), 'clockwise': True}],
+    ['edge67', (10.656854249, -8.535533906), (9.214466094, -7.093145751)],
+    ['edge68', (9.214466094, -7.093145751), (7.75, -3.557611845), {'center': (12.75, -3.557611845), 'clockwise': True}],
+    ['edge69', (7.75, -3.557611845), (7.75, 3.557611845)],
+    ['edge70', (7.75, 3.557611845), (9.214466094, 7.093145751), {'center': (12.75, 3.557611845), 'clockwise': True}],
+    ['edge71', (9.214466094, 7.093145751), (10.656854249, 8.535533906)],
+    ['edge72', (10.656854249, 8.535533906), (14.192388155, 10.0), {'center': (14.192388155, 5.0), 'clockwise': True}],
+    ['edge73', (14.192388155, 10.0), (15.5, 10.0)],
+    ['edge74', (15.5, 10.0), (18.0, 7.5), {'center': (15.5, 7.5), 'clockwise': True}],
+    ['edge75', (18.0, 7.5), (17.5, 7.0), {'center': (17.5, 7.5), 'clockwise': True}],
+    ['edge76', (17.5, 7.0), (16.0, 7.0)],
+    ['edge77', (16.0, 7.0), (15.5, 6.5), {'center': (16.0, 6.5), 'clockwise': False}],
+    ['edge78', (15.5, 6.5), (15.5, 5.0)],
+    ['edge79', (15.5, 5.0), (16.5, 4.0), {'center': (16.5, 5.0), 'clockwise': False}],
+    ['edge80', (16.5, 4.0), (18.5, 4.0)],
+    ['edge81', (18.5, 4.0), (20.0, 5.5), {'center': (18.5, 5.5), 'clockwise': False}],
+    ['edge82', (20.0, 5.5), (20.0, 16.0)],
+    ['edge83', (20.0, 16.0), (16.0, 20.0), {'center': (16.0, 16.0), 'clockwise': False}],
+    ['edge84', (16.0, 20.0), (5.5, 20.0)],
+    ['edge85', (5.5, 20.0), (4.0, 18.5), {'center': (5.5, 18.5), 'clockwise': False}],
+    ['edge86', (4.0, 18.5), (4.0, 16.5)],
+    ['edge87', (4.0, 16.5), (5.0, 15.5), {'center': (5.0, 16.5), 'clockwise': False}],
+    ['edge88', (5.0, 15.5), (6.5, 15.5)],
+    ['edge89', (6.5, 15.5), (7.0, 16.0), {'center': (6.5, 16.0), 'clockwise': False}],
+    ['edge90', (7.0, 16.0), (7.0, 17.5)],
+    ['edge91', (7.0, 17.5), (7.5, 18.0), {'center': (7.5, 17.5), 'clockwise': True}],
+    ['edge92', (7.5, 18.0), (10.0, 15.5), {'center': (7.5, 15.5), 'clockwise': True}],
+    ['edge93', (10.0, 15.5), (10.0, 14.192388155)],
+    ['edge94', (10.0, 14.192388155), (8.535533906, 10.656854249), {'center': (5.0, 14.192388155), 'clockwise': True}],
+    ['edge95', (8.535533906, 10.656854249), (7.093145751, 9.214466094)],
+    ['edge96', (7.093145751, 9.214466094), (3.557611845, 7.75), {'center': (3.557611845, 12.75), 'clockwise': True}],
+    ['edge97', (3.557611845, 7.75), (-3.557611845, 7.75)],
+    ['edge98', (-3.557611845, 7.75), (-7.093145751, 9.214466094), {'center': (-3.557611845, 12.75), 'clockwise': True}],
+    ['edge99', (-7.093145751, 9.214466094), (-8.535533906, 10.656854249)],
+    ['edge100', (-8.535533906, 10.656854249), (-10.0, 14.192388155), {'center': (-5.0, 14.192388155), 'clockwise': True}],
+    ['edge101', (-10.0, 14.192388155), (-10.0, 15.5)],
+    ['edge102', (-10.0, 15.5), (-7.5, 18.0), {'center': (-7.5, 15.5), 'clockwise': True}],
+    ['edge103', (-7.5, 18.0), (-7.0, 17.5), {'center': (-7.5, 17.5), 'clockwise': True}],
+    ['edge104', (-7.0, 17.5), (-7.0, 16.0)],
+    ['edge105', (-7.0, 16.0), (-6.5, 15.5), {'center': (-6.5, 16.0), 'clockwise': False}],
+    ['edge106', (-6.5, 15.5), (-5.0, 15.5)],
+    ['edge107', (-5.0, 15.5), (-4.0, 16.5), {'center': (-5.0, 16.5), 'clockwise': False}],
+    ['edge108', (-4.0, 16.5), (-4.0, 18.5)],
+    ['edge109', (-4.0, 18.5), (-5.5, 20.0), {'center': (-5.5, 18.5), 'clockwise': False}],
+    ['edge110', (-5.5, 20.0), (-16.0, 20.0)],
+    ['edge111', (-16.0, 20.0), (-20.0, 16.0), {'center': (-16.0, 16.0), 'clockwise': False}],
+    ['edge112', (-20.0, 16.0), (-20.0, 5.5)],
+]
+_MOTEDIS_40_I8_HOLES = [
+    [
+        ['edge1', (11.8, -17.7), (12.3, -18.2), {'center': (12.3, -17.7), 'clockwise': False}],
+        ['edge2', (12.3, -18.2), (16.0, -18.2)],
+        ['edge3', (16.0, -18.2), (18.2, -16.0), {'center': (16.0, -16.0), 'clockwise': False}],
+        ['edge4', (18.2, -16.0), (18.2, -12.3)],
+        ['edge5', (18.2, -12.3), (17.7, -11.8), {'center': (17.7, -12.3), 'clockwise': False}],
+        ['edge6', (17.7, -11.8), (12.3, -11.8)],
+        ['edge7', (12.3, -11.8), (11.8, -12.3), {'center': (12.3, -12.3), 'clockwise': False}],
+        ['edge8', (11.8, -12.3), (11.8, -17.7)],
+    ],
+    [
+        ['edge1', (-17.7, -11.8), (-18.2, -12.3), {'center': (-17.7, -12.3), 'clockwise': False}],
+        ['edge2', (-18.2, -12.3), (-18.2, -16.0)],
+        ['edge3', (-18.2, -16.0), (-16.0, -18.2), {'center': (-16.0, -16.0), 'clockwise': False}],
+        ['edge4', (-16.0, -18.2), (-12.3, -18.2)],
+        ['edge5', (-12.3, -18.2), (-11.8, -17.7), {'center': (-12.3, -17.7), 'clockwise': False}],
+        ['edge6', (-11.8, -17.7), (-11.8, -12.3)],
+        ['edge7', (-11.8, -12.3), (-12.3, -11.8), {'center': (-12.3, -12.3), 'clockwise': False}],
+        ['edge8', (-12.3, -11.8), (-17.7, -11.8)],
+    ],
+    [
+        ['edge1', (-11.8, 17.7), (-12.3, 18.2), {'center': (-12.3, 17.7), 'clockwise': False}],
+        ['edge2', (-12.3, 18.2), (-16.0, 18.2)],
+        ['edge3', (-16.0, 18.2), (-18.2, 16.0), {'center': (-16.0, 16.0), 'clockwise': False}],
+        ['edge4', (-18.2, 16.0), (-18.2, 12.3)],
+        ['edge5', (-18.2, 12.3), (-17.7, 11.8), {'center': (-17.7, 12.3), 'clockwise': False}],
+        ['edge6', (-17.7, 11.8), (-12.3, 11.8)],
+        ['edge7', (-12.3, 11.8), (-11.8, 12.3), {'center': (-12.3, 12.3), 'clockwise': False}],
+        ['edge8', (-11.8, 12.3), (-11.8, 17.7)],
+    ],
+    [
+        ['edge1', (17.7, 11.8), (18.2, 12.3), {'center': (17.7, 12.3), 'clockwise': False}],
+        ['edge2', (18.2, 12.3), (18.2, 16.0)],
+        ['edge3', (18.2, 16.0), (16.0, 18.2), {'center': (16.0, 16.0), 'clockwise': False}],
+        ['edge4', (16.0, 18.2), (12.3, 18.2)],
+        ['edge5', (12.3, 18.2), (11.8, 17.7), {'center': (12.3, 17.7), 'clockwise': False}],
+        ['edge6', (11.8, 17.7), (11.8, 12.3)],
+        ['edge7', (11.8, 12.3), (12.3, 11.8), {'center': (12.3, 12.3), 'clockwise': False}],
+        ['edge8', (12.3, 11.8), (17.7, 11.8)],
+    ],
+]
+_SLOT_PROFILE_DIMENSIONS = {
+    "Motedis-40x40L-I8": {
+        "width_mm": 40, "height_mm": 40, "bore_mm": 6.8,
+        "source": "https://www.motedis.com/shop/products_files/40x40L%20I-Type%20slot%208.zip",
+    },
+    "Motedis-30x30L-I6": {
+        "width_mm": 30, "height_mm": 30, "bore_mm": 4.9,
+        "source": "https://www.motedis.com/shop/products_files/Motedis_019597.zip",
+    },
+    "Motedis-20x20-I5": {
+        "width_mm": 20, "height_mm": 20, "bore_mm": 4.3,
+        "source": "https://www.motedis.com/shop/products_files/Motedis_Profile%2020x20%20I-Type%20slot%205.zip",
+    },
+}
+
+def slot_profile_dimensions(designation):
+    """Dimensions of a specific supplier section, not a generic 2020 approximation."""
+    if designation not in _SLOT_PROFILE_DIMENSIONS:
+        fail("slot_profile_dimensions(): section for %r is not specified; use %s or supply verified supplier geometry" %
+             (designation, ", ".join(sorted(_SLOT_PROFILE_DIMENSIONS.keys()))))
+    return dict(_SLOT_PROFILE_DIMENSIONS[designation])
+
+def slot_profile(name, designation, length, at = (0, 0, 0), axis = (0, 0, 1), tags = None):
+    """Extrude the supplier's line/arc section with its bore to a positive cut length."""
+    d = slot_profile_dimensions(designation)
+    if length <= 0:
+        fail("slot_profile(): length must be positive; supply the cut length in millimetres")
+    sections = {"Motedis-20x20-I5": _MOTEDIS_20_I5_SECTION, "Motedis-30x30L-I6": _MOTEDIS_30_I6_SECTION,
+                "Motedis-40x40L-I8": _MOTEDIS_40_I8_SECTION}
+    part = extrude(name, profile = sections[designation], distance = length, at = at,
+                   material = "aluminium", tags = tags, attributes = {
+                       "designation": "%s L=%g" % (designation, length), "length_mm": "%g" % length,
+                       "source": d["source"], "geometry_basis": "supplier STEP line/arc section and bore; nominal CAD dimensions",
+                       FABRICATION_ROLE: PURCHASED_ITEM,
+                   })
+    cut(part, profile = _circle(d["bore_mm"] / 2.0, "bore"), through = True, name = "bore")
+    cavities = {"Motedis-20x20-I5": [], "Motedis-30x30L-I6": _MOTEDIS_30_I6_HOLES,
+                "Motedis-40x40L-I8": _MOTEDIS_40_I8_HOLES}
+    for i, section in enumerate(cavities[designation]):
+        cut(part, profile = section, through = True, name = "cavity%d" % (i + 1))
+    return _turn_onto(part, at, axis)
+
 #@topic intent: Stating intent that the check measures (expect_*)
 #
 #   check(condition, message, parts=[...], hint=, severity="error") returns the boolean condition.
