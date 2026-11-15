@@ -488,7 +488,9 @@ MGNR09R: 9 × 6.5 mm, Ø6 × 3.5 counterbores at 20 mm pitch, 30–1200 mm, ends
 5–15 mm. MGNR15R: 15 × 10 mm, Ø6 × 4.5 counterbores at 40 mm pitch,
 52–2000 mm, ends 6–34 mm. MGNR07R and smaller use M2 screws and are not
 included. The raceway
-`section` remains `None`: the drawing does not dimension its curves.
+`section` remains `None`: the drawing does not dimension its curves, and the
+[HIWIN terms of use](https://www.hiwinsupport.com/cad_download/) do not allow
+its CAD models to be published, so the library cannot ship the section.
 `linear_rail(name, designation, length, first_hole=None, section=None,
 section_source=None, top_face="top", at=(0,0,0), axis=(0,0,1), tags=None)`
 requires an explicitly supplied closed section and nonempty source reference,
