@@ -402,9 +402,13 @@ and subtract a bar or rod cast into concrete from the concrete.
 anchors a timber beam to a reinforced footing with threaded rods, washers, nuts
 and bolts.
 
-`bearing_dimensions(designation)` supplies the published SKF mounting dimensions
-for `6000`, `6001`, `6004`, `6201` and `6204`, with bore, outside diameter and
-width in millimetres and a catalogue URL in `source`. Unlisted designations are refused as **not specified**; ball
+`bearing_dimensions(designation)` supplies the published mounting dimensions of
+the deep-groove ball bearing series 60 and 62 from `6000`/`6200` (10 mm bore) to
+`6012`/`6212` (60 mm bore), with bore, outside diameter and width in
+millimetres, the `maker` whose catalogue gives them (SKF product pages for
+`6000`, `6001`, `6004`, `6201` and `6204`, the NSK bearing tables for the rest)
+and the catalogue URL and page in `source`. The BOM item is the maker and
+designation, for example `NSK 6206`. Unlisted designations are refused as **not specified**; ball
 diameter and count remain `None`, not estimated from the outside dimensions.
 `bearing_envelope(name, designation, at=(0,0,0), axis=(0,0,1), tags=None)`
 creates an exact annular **mounting envelope**, seated at `at` along `axis`.

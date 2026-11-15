@@ -16,6 +16,12 @@ fn bearing_envelopes_have_catalogue_bore_and_exact_annular_volume() {
         ("6004", 20.0, 42.0, 12.0),
         ("6201", 12.0, 32.0, 10.0),
         ("6204", 20.0, 47.0, 14.0),
+        ("6002", 15.0, 32.0, 9.0),
+        ("6009", 45.0, 75.0, 16.0),
+        ("6012", 60.0, 95.0, 18.0),
+        ("6200", 10.0, 30.0, 9.0),
+        ("6206", 30.0, 62.0, 16.0),
+        ("6212", 60.0, 110.0, 22.0),
     ] {
         let program = format!("bearing_envelope(\"bearing\", \"{designation}\")");
         assert_volume(
@@ -70,6 +76,34 @@ bearing_envelope("bearing", "6204")
     .to_string();
     assert!(error.contains("not specified"), "{error}");
     assert!(error.contains("6299"), "{error}");
+}
+
+#[test]
+fn bearing_catalogue_covers_series_60_and_62_up_to_60_mm_bore_with_cited_source() {
+    let mut checks = String::new();
+    for series in ["60", "62"] {
+        for size in 0..=12 {
+            checks.push_str(&format!(
+                "d = bearing_dimensions(\"{series}{size:02}\")\nif not d[\"source\"]:\n    fail(\"no source\")\n"
+            ));
+        }
+    }
+    checks.push_str(
+        r#"
+d = bearing_dimensions("6206")
+if (d["bore_mm"], d["outside_mm"], d["width_mm"]) != (30, 62, 16):
+    fail("wrong catalogue dimensions")
+if "nsk.com/" not in d["source"] or "C 022" not in d["source"]:
+    fail("catalogue page missing")
+bearing_envelope("bearing", "6206")
+"#,
+    );
+    let model = ketchup_program::run("series.star", &checks, &BTreeMap::new())
+        .unwrap()
+        .0
+        .model;
+    let bom = ketchup_program::bom::bom(&model);
+    assert_eq!(bom.hardware[0].item, "NSK 6206");
 }
 
 #[test]

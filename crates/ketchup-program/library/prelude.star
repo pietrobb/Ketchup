@@ -1989,13 +1989,37 @@ def rebar(name, diameter, length, grade = "B500B", at = (0, 0, 0), axis = (0, 0,
 #     Purchased item; no material density, mass or load rating is inferred.
 #     Example: c = component("bearing unit", [bearing_envelope("body", "6204")])
 #              instance("second bearing", c, at=(0,0,100))
-# SKF product dimension tables, accessed 2026-11-14. Values are nominal millimetres.
+# (bore d, outside D, width B, maker, source), nominal millimetres. SKF product dimension
+# tables accessed 2026-11-14; NSK "Rolling Bearings" catalogue E1103c part C, single-row deep
+# groove ball bearings, accessed 2026-11-15 (its values agree with every SKF row above).
+_NSK_BEARING_TABLES = "https://www.nsk.com/content/dam/nsk/common/catalogs/ctrgPdf/bearings/e1103c_partc.pdf"
 _BEARING_MOUNTING_DIMENSIONS = {
-    "6000": (10, 26, 8, "https://www.skf.com/products/rolling-bearings/ball-bearings/deep-groove-ball-bearings/productid-6000"),
-    "6001": (12, 28, 8, "https://www.skf.com/au/products/rolling-bearings/ball-bearings/deep-groove-ball-bearings/productid-6001"),
-    "6201": (12, 32, 10, "https://www.skf.com/group/products/rolling-bearings/ball-bearings/deep-groove-ball-bearings/productid-6201"),
-    "6004": (20, 42, 12, "https://www.skf.com/sg/products/rolling-bearings/ball-bearings/deep-groove-ball-bearings/productid-6004"),
-    "6204": (20, 47, 14, "https://www.skf.com/group/products/rolling-bearings/ball-bearings/deep-groove-ball-bearings/productid-6204"),
+    "6000": (10, 26, 8, "SKF", "https://www.skf.com/products/rolling-bearings/ball-bearings/deep-groove-ball-bearings/productid-6000"),
+    "6001": (12, 28, 8, "SKF", "https://www.skf.com/au/products/rolling-bearings/ball-bearings/deep-groove-ball-bearings/productid-6001"),
+    "6201": (12, 32, 10, "SKF", "https://www.skf.com/group/products/rolling-bearings/ball-bearings/deep-groove-ball-bearings/productid-6201"),
+    "6004": (20, 42, 12, "SKF", "https://www.skf.com/sg/products/rolling-bearings/ball-bearings/deep-groove-ball-bearings/productid-6004"),
+    "6204": (20, 47, 14, "SKF", "https://www.skf.com/group/products/rolling-bearings/ball-bearings/deep-groove-ball-bearings/productid-6204"),
+    "6200": (10, 30, 9, "NSK", _NSK_BEARING_TABLES + " p. C 020"),
+    "6002": (15, 32, 9, "NSK", _NSK_BEARING_TABLES + " p. C 020"),
+    "6202": (15, 35, 11, "NSK", _NSK_BEARING_TABLES + " p. C 020"),
+    "6003": (17, 35, 10, "NSK", _NSK_BEARING_TABLES + " p. C 020"),
+    "6203": (17, 40, 12, "NSK", _NSK_BEARING_TABLES + " p. C 020"),
+    "6005": (25, 47, 12, "NSK", _NSK_BEARING_TABLES + " p. C 022"),
+    "6205": (25, 52, 15, "NSK", _NSK_BEARING_TABLES + " p. C 022"),
+    "6006": (30, 55, 13, "NSK", _NSK_BEARING_TABLES + " p. C 022"),
+    "6206": (30, 62, 16, "NSK", _NSK_BEARING_TABLES + " p. C 022"),
+    "6007": (35, 62, 14, "NSK", _NSK_BEARING_TABLES + " p. C 024"),
+    "6207": (35, 72, 17, "NSK", _NSK_BEARING_TABLES + " p. C 024"),
+    "6008": (40, 68, 15, "NSK", _NSK_BEARING_TABLES + " p. C 024"),
+    "6208": (40, 80, 18, "NSK", _NSK_BEARING_TABLES + " p. C 024"),
+    "6009": (45, 75, 16, "NSK", _NSK_BEARING_TABLES + " p. C 024"),
+    "6209": (45, 85, 19, "NSK", _NSK_BEARING_TABLES + " p. C 024"),
+    "6010": (50, 80, 16, "NSK", _NSK_BEARING_TABLES + " p. C 026"),
+    "6210": (50, 90, 20, "NSK", _NSK_BEARING_TABLES + " p. C 026"),
+    "6011": (55, 90, 18, "NSK", _NSK_BEARING_TABLES + " p. C 026"),
+    "6211": (55, 100, 21, "NSK", _NSK_BEARING_TABLES + " p. C 026"),
+    "6012": (60, 95, 18, "NSK", _NSK_BEARING_TABLES + " p. C 026"),
+    "6212": (60, 110, 22, "NSK", _NSK_BEARING_TABLES + " p. C 026"),
 }
 
 def bearing_dimensions(designation):
@@ -2003,8 +2027,8 @@ def bearing_dimensions(designation):
     if designation not in _BEARING_MOUNTING_DIMENSIONS:
         fail("bearing_dimensions(): dimensions for %r are not specified; use %s or import a supplier model" %
              (designation, ", ".join(sorted(_BEARING_MOUNTING_DIMENSIONS.keys()))))
-    bore, outside, width, source = _BEARING_MOUNTING_DIMENSIONS[designation]
-    return {"bore_mm": bore, "outside_mm": outside, "width_mm": width,
+    bore, outside, width, maker, source = _BEARING_MOUNTING_DIMENSIONS[designation]
+    return {"bore_mm": bore, "outside_mm": outside, "width_mm": width, "maker": maker,
             "ball_diameter_mm": None, "ball_count": None, "source": source}
 
 def bearing_envelope(name, designation, at = (0, 0, 0), axis = (0, 0, 1), tags = None):
@@ -2013,7 +2037,7 @@ def bearing_envelope(name, designation, at = (0, 0, 0), axis = (0, 0, 1), tags =
     part = extrude(name, profile = _circle(dimensions["outside_mm"] / 2.0, "outside"),
                    distance = dimensions["width_mm"], at = at, material = "unspecified", tags = tags,
                    attributes = {
-                       "designation": "SKF " + designation,
+                       "designation": dimensions["maker"] + " " + designation,
                        "source": dimensions["source"],
                        "geometry_basis": "mounting envelope only; internal geometry not specified",
                        "mass_basis": "not specified; envelope volume is not bearing material volume",
