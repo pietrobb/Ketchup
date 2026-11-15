@@ -23,10 +23,14 @@ use std::sync::Arc;
 pub mod annotation;
 mod bom_item;
 mod digest;
+mod feature_control_frame;
 pub mod hole_callouts;
 mod polyline_curves;
 pub use bom_item::{BomItem, BomItems};
 pub(crate) use digest::{drawing_layout_digest, drawing_result_digest};
+pub use feature_control_frame::DrawingFeatureControlFrameCell;
+pub(crate) use feature_control_frame::FEATURE_CONTROL_FRAME_TEXT_HEIGHT_MM;
+use feature_control_frame::layout_feature_control_frames;
 pub use polyline_curves::ProjectedPolylineCurve;
 
 pub const ORTHOGRAPHIC_DRAWING_SCHEMA_V1: &str = "ketchup.orthographic-drawing.v1";
@@ -2098,11 +2102,12 @@ pub struct DrawingFeatureControlFrameLayout {
     pub diameter_zone: bool,
     pub material_condition: DrawingMaterialCondition,
     pub datum_references: Vec<DrawingDatumReference>,
+    /// The values joined with " | ", for reading; the sheet prints `cells`.
     pub label: String,
+    pub cells: Vec<DrawingFeatureControlFrameCell>,
     pub leader_line_mm: [[f64; 2]; 2],
     pub frame_bounds_mm: [[f64; 2]; 2],
     pub separator_x_mm: Vec<f64>,
-    pub text_position_mm: [f64; 2],
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -4138,95 +4143,6 @@ fn layout_datum_symbols(
                 leader_line_mm,
                 triangle_mm,
                 frame_bounds_mm,
-                text_position_mm,
-            })
-        })
-        .collect()
-}
-
-fn layout_feature_control_frames(
-    sheet: &DrawingSheet,
-    views: &[OrthographicView],
-    placements: &[DrawingViewPlacement],
-    border_bounds_mm: [[f64; 2]; 2],
-    drawing_min_y: f64,
-) -> Result<Vec<DrawingFeatureControlFrameLayout>, DrawingError> {
-    sheet
-        .feature_control_frames()
-        .iter()
-        .map(|frame| {
-            let anchor = annotation_source_anchor(
-                sheet,
-                views,
-                placements,
-                frame.view_stable_name(),
-                frame.source_line_id(),
-            )?;
-            let offset = frame.offset_page_mm();
-            let origin = [anchor[0] + offset[0], anchor[1] + offset[1]];
-            let tolerance = format_decimal_mm(frame.tolerance_mm());
-            let zone = if frame.diameter_zone() { "DIA " } else { "" };
-            let condition = match frame.material_condition() {
-                DrawingMaterialCondition::None => "",
-                DrawingMaterialCondition::MaximumMaterial => " MMC",
-                DrawingMaterialCondition::LeastMaterial => " LMC",
-                DrawingMaterialCondition::RegardlessOfFeatureSize => " RFS",
-            };
-            let mut cells = vec![
-                frame.characteristic().stable_name().to_ascii_uppercase(),
-                format!("{zone}{tolerance}{condition}"),
-            ];
-            cells.extend(frame.datum_references().iter().map(|reference| {
-                let suffix = match reference.material_condition() {
-                    DrawingMaterialCondition::None => "",
-                    DrawingMaterialCondition::MaximumMaterial => " MMC",
-                    DrawingMaterialCondition::LeastMaterial => " LMC",
-                    DrawingMaterialCondition::RegardlessOfFeatureSize => " RFS",
-                };
-                format!("{}{suffix}", reference.label())
-            }));
-            let cell_widths = cells
-                .iter()
-                .map(|cell| (cell.chars().count() as f64 * 2.2 + 3.0).max(8.0))
-                .collect::<Vec<_>>();
-            let width = cell_widths.iter().sum::<f64>();
-            let frame_bounds_mm = [origin, [origin[0] + width, origin[1] + 7.0]];
-            let mut running_x = origin[0];
-            let separator_x_mm = cell_widths
-                .iter()
-                .take(cell_widths.len().saturating_sub(1))
-                .map(|width| {
-                    running_x += width;
-                    running_x
-                })
-                .collect::<Vec<_>>();
-            let leader_line_mm = [anchor, [origin[0], origin[1] + 3.5]];
-            let text_position_mm = [origin[0] + 1.5, origin[1] + 2.0];
-            if leader_line_mm
-                .iter()
-                .chain(frame_bounds_mm.iter())
-                .chain([&text_position_mm])
-                .any(|point| !drawing_page_contains(*point, border_bounds_mm, drawing_min_y))
-                || separator_x_mm.iter().any(|x| !x.is_finite())
-            {
-                return Err(DrawingError::LayoutOverflow);
-            }
-            Ok(DrawingFeatureControlFrameLayout {
-                stable_frame_id: format!(
-                    "sheet-{}/feature-control-frame-{}",
-                    sheet.id().0,
-                    frame.id().0
-                ),
-                source_line_id: frame.source_line_id().to_owned(),
-                characteristic: frame.characteristic(),
-                tolerance_mm: frame.tolerance_mm(),
-                diameter_zone: frame.diameter_zone(),
-                material_condition: frame.material_condition(),
-                datum_references: frame.datum_references().to_vec(),
-                label: cells.join(" | "),
-                leader_line_mm,
-                frame_bounds_mm,
-                separator_x_mm,
                 text_position_mm,
             })
         })

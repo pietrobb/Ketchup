@@ -143,10 +143,15 @@ pub(crate) fn drawing_layout_digest(
             .leader_line_mm
             .iter()
             .chain(frame.frame_bounds_mm.iter())
-            .chain([&frame.text_position_mm])
             .flatten()
         {
             digest.update(coordinate.to_bits().to_le_bytes());
+        }
+        for cell in &frame.cells {
+            push_digest(&mut digest, cell.text.as_bytes());
+            for coordinate in cell.text_position_mm {
+                digest.update(coordinate.to_bits().to_le_bytes());
+            }
         }
         for separator in &frame.separator_x_mm {
             digest.update(separator.to_bits().to_le_bytes());

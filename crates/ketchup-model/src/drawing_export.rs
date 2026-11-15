@@ -5,8 +5,8 @@ use crate::drawing::{
     DRAWING_SHEET_LAYOUT_SCHEMA_V2, DrawingAngularDimensionLayout, DrawingBomBalloonLayout,
     DrawingCircularDimensionLayout, DrawingDatumSymbolLayout, DrawingFeatureControlFrameLayout,
     DrawingLinearDimensionLayout, DrawingSheetLayout, DrawingViewPlacement,
-    ORTHOGRAPHIC_LINEWORK_SCHEMA_V2, OrthographicDrawing, OrthographicView, ProjectedPolylineCurve,
-    drawing_layout_digest, drawing_result_digest,
+    FEATURE_CONTROL_FRAME_TEXT_HEIGHT_MM, ORTHOGRAPHIC_LINEWORK_SCHEMA_V2, OrthographicDrawing,
+    OrthographicView, ProjectedPolylineCurve, drawing_layout_digest, drawing_result_digest,
 };
 use crate::r12_text;
 use crate::sheet_pdf::{EmbeddedText, SheetFont};
@@ -28,7 +28,7 @@ const MAX_EXPORT_BYTES: usize = 64 * 1024 * 1024;
 const LINE_SPACING: f64 = 1.5;
 /// A generous glyph advance of the sheet's sans-serif font, in text heights,
 /// so a line measured with it is no shorter than in any reader.
-const GLYPH_WIDTH: f64 = 0.7;
+pub(crate) const GLYPH_WIDTH: f64 = 0.7;
 /// The title-block texts shrink in these steps until they fit its frame; at
 /// the last one a title is 2.4 mm and the other fields 1.8 mm high.
 const TITLE_BLOCK_SCALES: [f64; 5] = [1.0, 0.9, 0.8, 0.7, 0.6];
@@ -446,7 +446,11 @@ fn validate_annotations(
         + layout.angular_dimensions.len()
         + layout.circular_dimensions.len()
         + layout.datum_symbols.len()
-        + layout.feature_control_frames.len()
+        + layout
+            .feature_control_frames
+            .iter()
+            .map(|frame| frame.cells.len())
+            .sum::<usize>()
         + layout.bom_balloons.len()
         + layout.bom_rows.len()
         + layout.notes.len()
@@ -529,7 +533,11 @@ fn validate_annotations(
             || frame.tolerance_mm <= 0.0
             || !valid_text(&frame.label)
             || !valid_bounds(frame.frame_bounds_mm, page_size)
-            || !valid_point(frame.text_position_mm)
+            || frame.cells.len() != frame.separator_x_mm.len() + 1
+            || frame
+                .cells
+                .iter()
+                .any(|cell| !valid_text(&cell.text) || !valid_point(cell.text_position_mm))
             || frame
                 .leader_line_mm
                 .iter()
@@ -931,14 +939,16 @@ fn push_feature_control_frame(
             style: LineStyle::Dimension,
         });
     }
-    texts.push(PageText {
-        id: frame.stable_frame_id.clone(),
-        position: frame.text_position_mm,
-        lines: vec![frame.label.clone()],
-        height_mm: 3.0,
-        angle_deg: 0.0,
-        middle: false,
-    });
+    for (index, cell) in frame.cells.iter().enumerate() {
+        texts.push(PageText {
+            id: format!("{}/cell-{index}", frame.stable_frame_id),
+            position: cell.text_position_mm,
+            lines: vec![cell.text.clone()],
+            height_mm: FEATURE_CONTROL_FRAME_TEXT_HEIGHT_MM,
+            angle_deg: 0.0,
+            middle: false,
+        });
+    }
 }
 
 fn push_bom_balloon(

@@ -359,7 +359,36 @@ fn typed_gdt_datums_layout_export_and_tamper_fail_closed() {
     let exported = crate::drawing_export::export_drawing(&snapshot, &drawing).unwrap();
     let svg = std::str::from_utf8(exported.svg()).unwrap();
     assert!(svg.contains("sheet-12/datum-1/triangle-0"));
-    assert!(svg.contains("POSITION | DIA 0.1 MMC | A | B MMC"));
+    // Each value of the frame prints inside its own box, as wide as the
+    // sheet font makes it, with no '|' glyph beside the drawn dividers.
+    let frame = &drawing.layout.feature_control_frames[0];
+    let edges = std::iter::once(frame.frame_bounds_mm[0][0])
+        .chain(frame.separator_x_mm.iter().copied())
+        .chain([frame.frame_bounds_mm[1][0]])
+        .collect::<Vec<_>>();
+    let dxf = std::str::from_utf8(exported.dxf()).unwrap();
+    let cells = dxf_texts(dxf, "sheet-12/feature-control-frame-1");
+    assert_eq!(
+        cells.iter().map(|cell| cell.4.as_str()).collect::<Vec<_>>(),
+        ["POSITION", "DIA 0.1 MMC", "A", "B MMC"]
+    );
+    for ((id, x, _, height, value), box_edges) in cells.iter().zip(edges.windows(2)) {
+        // The sheet's generous advance (SVG, DXF readers) and the PDF's
+        // embedded font both keep the value inside its box.
+        let pdf_width = crate::sheet_pdf::SheetFont::standard().advance_em(value) * height;
+        let width = (value.chars().count() as f64 * 0.7 * height).max(pdf_width);
+        assert!(
+            box_edges[0] < *x && x + width < box_edges[1],
+            "{id} '{value}' spans {x}..{} mm, outside its box {box_edges:?}",
+            x + width
+        );
+    }
+    for line in svg
+        .lines()
+        .filter(|line| line.contains("feature-control-frame-1"))
+    {
+        assert!(!line.contains('|'), "{line}");
+    }
 
     let mut missing_source_views = views;
     missing_source_views[0].visible_lines.clear();

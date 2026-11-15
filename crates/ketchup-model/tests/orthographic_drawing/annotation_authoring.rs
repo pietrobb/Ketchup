@@ -63,11 +63,12 @@ fn annotations_are_appended_atomically_and_survive_export_undo_and_save() {
             .contains("R5 mm")
     );
     assert!(!exported.pdf().unwrap().is_empty());
-    assert!(
-        std::str::from_utf8(exported.dxf())
-            .unwrap()
-            .contains("PARALLELISM | 0.1 | A")
-    );
+    // The frame prints each value in its own box.
+    let dxf = std::str::from_utf8(exported.dxf()).unwrap();
+    for value in ["PARALLELISM", "0.1", "A"] {
+        assert!(dxf.contains(&format!("\n1\n{value}\n")), "{value}");
+    }
+    assert!(!dxf.contains("PARALLELISM |"));
     let undo = document.visible_undo_steps();
     document.commit_proposal(&edit).unwrap();
     assert_eq!(document.visible_undo_steps(), undo + 1);
