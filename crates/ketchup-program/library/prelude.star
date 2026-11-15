@@ -2249,6 +2249,69 @@ def linear_rail(name, designation, length, first_hole = None, section = None, se
         hole(part, top_face, world = entry, diameter = d["counterbore_diameter_mm"], depth = d["counterbore_depth_mm"])
     return _turn_onto(part, at, axis)
 
+#   linear_carriage_dimensions(designation) -> published block dimensions; raceway_section=None.
+#   linear_carriage(name, designation, at=(0,0,0), axis=(0,0,1), tags=None, mount_drill_depth=None) -> part.
+#     at = the rail datum (bottom centre, as linear_rail) under the block's first end; the block
+#     runs length L along axis. Envelope W x (H-H1) x L less the rail's W_R x H_R envelope;
+#     4 cosmetic M x l tapped mounts on top at B x C about the block centre.
+#     mount_drill_depth is not in the catalogue: supply a verified value or creation fails.
+#     Example: linear_carriage("block", "MGN12H", at=(0, 0, 20), mount_drill_depth=verified_depth)
+# HIWIN MG catalogue, ALMOTION copy, table 3.79 p.2, accessed 2026-11-15 (nominal mm).
+_LINEAR_CARRIAGE_SOURCE = "https://www.lineairegeleiding.nl/wp-content/uploads/2023/09/Hiwin_MG.pdf table 3.79 p.2"
+_LINEAR_CARRIAGE_DIMENSIONS = {
+    "MGN12C": {
+        "rail": "MGNR12R", "height_mm": 13, "clearance_mm": 3, "width_mm": 27, "length_mm": 34.7,
+        "hole_spacing_x_mm": 20, "hole_spacing_z_mm": 15, "mount_thread": "M3", "mount_thread_length_mm": 3.5,
+        "dynamic_load_n": 2840, "static_load_n": 3920, "mass_kg": 0.03,
+    },
+    "MGN12H": {
+        "rail": "MGNR12R", "height_mm": 13, "clearance_mm": 3, "width_mm": 27, "length_mm": 45.4,
+        "hole_spacing_x_mm": 20, "hole_spacing_z_mm": 20, "mount_thread": "M3", "mount_thread_length_mm": 3.5,
+        "dynamic_load_n": 3720, "static_load_n": 5880, "mass_kg": 0.05,
+    },
+}
+
+def linear_carriage_dimensions(designation):
+    """Block dimensions only; raceways and the drill-bottom depth remain None."""
+    if designation not in _LINEAR_CARRIAGE_DIMENSIONS:
+        fail("linear_carriage_dimensions(): dimensions for %r are not specified; use %s or supply a verified supplier model" %
+             (designation, ", ".join(sorted(_LINEAR_CARRIAGE_DIMENSIONS.keys()))))
+    d = dict(_LINEAR_CARRIAGE_DIMENSIONS[designation])
+    d.update({"raceway_section": None, "mount_drill_depth_mm": None, "source": _LINEAR_CARRIAGE_SOURCE})
+    return d
+
+def linear_carriage(name, designation, at = (0, 0, 0), axis = (0, 0, 1), tags = None, mount_drill_depth = None):
+    """Catalogue block envelope clearing its rail, with the published tapped mounting pattern."""
+    d = linear_carriage_dimensions(designation)
+    if mount_drill_depth == None:
+        fail("linear_carriage(): mount_drill_depth is not specified by the catalogue; supply a verified drill depth, not the thread length")
+    rail = linear_rail_dimensions(d["rail"])
+    w, rw = d["width_mm"] / 2.0, rail["width_mm"] / 2.0
+    y0, rh, top = d["clearance_mm"], rail["height_mm"], d["height_mm"]
+    section = [
+        ["left_foot", (-w, y0), (-rw, y0)], ["left_channel", (-rw, y0), (-rw, rh)],
+        ["channel_roof", (-rw, rh), (rw, rh)], ["right_channel", (rw, rh), (rw, y0)],
+        ["right_foot", (rw, y0), (w, y0)], ["right", (w, y0), (w, top)],
+        ["top", (w, top), (-w, top)], ["left", (-w, top), (-w, y0)],
+    ]
+    length = d["length_mm"]
+    part = extrude(name, profile = section, distance = length, at = at, material = "unspecified", tags = tags,
+                   attributes = {
+                       "designation": "HIWIN " + designation, "source": d["source"], "rail": d["rail"],
+                       "dynamic_load_n": "%g" % d["dynamic_load_n"], "static_load_n": "%g" % d["static_load_n"],
+                       "catalogue_mass_kg": "%g" % d["mass_kg"],
+                       "mount_drill_depth_mm": str(mount_drill_depth),
+                       "mount_drill_depth_basis": "caller-supplied; not specified by the catalogue",
+                       "geometry_basis": "catalogue block envelope less the rail envelope; cosmetic %s mounts; raceways, balls, end seals and lubrication port not specified" % d["mount_thread"],
+                       FABRICATION_ROLE: PURCHASED_ITEM,
+                   })
+    sx, sz = d["hole_spacing_x_mm"] / 2.0, d["hole_spacing_z_mm"] / 2.0
+    for x in [-sx, sx]:
+        for z in [length / 2.0 - sz, length / 2.0 + sz]:
+            hole(part, "top", world = (at[0] + x, at[1] + top, at[2] + z), depth = mount_drill_depth,
+                 thread = (d["mount_thread"], d["mount_thread_length_mm"]), modeled_thread = False)
+    return _turn_onto(part, at, axis)
+
 #   slot_profile_dimensions(designation) -> supplier dimensions and STEP source.
 #   slot_profile(name, designation, length, at=(0,0,0), axis=(0,0,1), tags=None) -> part.
 #     Cut-to-length purchased profile; at is the first end's section centre.

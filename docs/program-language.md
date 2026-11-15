@@ -478,7 +478,22 @@ before placement along `axis`. The purchased-item BOM retains length, hole
 layout, catalogue source and caller's section source separately. A changed cut
 length recomputes the hole count. Use `component()`/`instance()` for repeats;
 Save/Open and STEP retain the exact supplied section and mounting cuts.
-This helper does not supply a verified raceway profile or a carriage model.
+This helper does not supply a verified raceway profile.
+
+`linear_carriage_dimensions("MGN12C" | "MGN12H")` returns HIWIN block dimensions
+from [MG catalogue table 3.79, page 2](https://www.lineairegeleiding.nl/wp-content/uploads/2023/09/Hiwin_MG.pdf):
+height H 13, clearance H1 3, width W 27, length L 34.7 / 45.4, mounting
+pattern B 20 × C 15 / 20 with M3 × 3.5 threads, load ratings and catalogue
+weight. `raceway_section` and `mount_drill_depth_mm` remain `None`.
+`linear_carriage(name, designation, at=(0,0,0), axis=(0,0,1), tags=None,
+mount_drill_depth=None)` places the block on the `linear_rail` datum: `at` is
+the rail base centre under the block's first end and the block runs L along
+`axis`. The solid is the catalogue envelope W × (H − H1) × L less the rail's
+W_R × H_R envelope, so it never overlaps its rail. The four tapped mounts are
+cosmetic threads; the drill depth is not published, so a verified value must
+be supplied and must leave the DIN 76 tap runout. Raceways, balls, end seals and
+the lubrication port are not modelled; the BOM keeps the rail, ratings,
+catalogue weight and the caller-supplied drill depth with its basis.
 
 `slot_profile_dimensions("Motedis-20x20-I5")` and
 `slot_profile(name, designation, length, at=(0,0,0), axis=(0,0,1), tags=None)`

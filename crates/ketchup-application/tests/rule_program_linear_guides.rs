@@ -130,6 +130,172 @@ linear_rail("rail", "MGNR12R", 100, first_hole=10, section=section, section_sour
     }
 }
 
+fn carriage_volume(length: f64) -> f64 {
+    // Table 3.79: W 27 x (H 13 - H1 3) less the rail envelope 12 x (8 - 3); fixture drills 7 mm.
+    (27.0 * 10.0 - 12.0 * 5.0) * length - 4.0 * PI * 1.25 * 1.25 * 7.0
+}
+
+#[test]
+fn linear_carriage_uses_catalogue_block_dimensions_and_preserves_unknowns() {
+    let source = r#"
+d = linear_carriage_dimensions("MGN12H")
+if (d["height_mm"], d["clearance_mm"], d["width_mm"], d["length_mm"]) != (13, 3, 27, 45.4):
+    fail("wrong block envelope")
+if (d["hole_spacing_x_mm"], d["hole_spacing_z_mm"], d["mount_thread"], d["mount_thread_length_mm"]) != (20, 20, "M3", 3.5):
+    fail("wrong mounting pattern")
+if (d["rail"], d["dynamic_load_n"], d["static_load_n"], d["mass_kg"]) != ("MGNR12R", 3720, 5880, 0.05):
+    fail("wrong rail, ratings or weight")
+if d["raceway_section"] != None or d["mount_drill_depth_mm"] != None:
+    fail("undimensioned details must remain unspecified")
+if "Hiwin_MG.pdf" not in d["source"] or "3.79" not in d["source"]:
+    fail("missing catalogue citation")
+if linear_carriage_dimensions("MGN12C")["length_mm"] != 34.7 or linear_carriage_dimensions("MGN12C")["hole_spacing_z_mm"] != 15:
+    fail("wrong short block")
+linear_carriage("block", "MGN12H", at=(0,0,20), mount_drill_depth=7)
+"#;
+    let model = ketchup_program::run("carriage.star", source, &BTreeMap::new())
+        .unwrap()
+        .0
+        .model;
+    let holes = model.parts[0].holes().collect::<Vec<_>>();
+    assert_eq!(holes.len(), 4);
+    let mut entries = holes
+        .iter()
+        .map(|hole| {
+            assert_eq!(hole.diameter_mm, 2.5);
+            assert_eq!(hole.depth_mm, 7.0);
+            assert_eq!(hole.inward, [0.0, -1.0, 0.0]);
+            assert!(!hole.through);
+            hole.entry_mm.map(|value| (value * 1.0e6).round() / 1.0e6)
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    // Part-local: B 20 across, C 20 along about the block centre L/2 = 22.7.
+    assert_eq!(
+        entries,
+        [
+            [-10.0, 13.0, 12.7],
+            [-10.0, 13.0, 32.7],
+            [10.0, 13.0, 12.7],
+            [10.0, 13.0, 32.7]
+        ]
+    );
+    let bom = ketchup_program::bom::bom(&model);
+    assert!(bom.cut_list.is_empty());
+    assert_eq!(bom.hardware[0].item, "HIWIN MGN12H");
+    let attributes = &bom.hardware[0].attributes;
+    assert!(attributes["geometry_basis"].contains("envelope"));
+    assert!(attributes["geometry_basis"].contains("raceways"));
+    assert_eq!(attributes["rail"], "MGNR12R");
+    assert_eq!(attributes["catalogue_mass_kg"], "0.05");
+    assert!(attributes["mount_drill_depth_basis"].contains("caller-supplied"));
+    for (call, reason) in [
+        (
+            "linear_carriage('b','MGN12H')",
+            "mount_drill_depth is not specified",
+        ),
+        (
+            "linear_carriage('b','MGN12H',mount_drill_depth=4.5)",
+            "runout",
+        ),
+        (
+            "linear_carriage('b','MGN15H',mount_drill_depth=7)",
+            "not specified",
+        ),
+        ("linear_carriage_dimensions('MGN12')", "not specified"),
+    ] {
+        let error = ketchup_program::run("invalid-carriage.star", call, &BTreeMap::new())
+            .expect_err("unknown blocks or unpublished depths must fail")
+            .to_string();
+        assert!(error.contains(reason), "{error}");
+    }
+}
+
+#[test]
+fn linear_carriage_exact_envelope_clears_the_rail() {
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    for (designation, length) in [("MGN12C", 34.7), ("MGN12H", 45.4)] {
+        assert_volume(
+            volume(
+                &mut worker,
+                &format!("p = linear_carriage('block', '{designation}', mount_drill_depth=7)"),
+                "block",
+            ),
+            carriage_volume(length),
+        );
+    }
+}
+
+#[test]
+fn rail_and_carriage_component_keeps_bom_and_exact_step_after_save_open() {
+    let _turn = crate::integration_support::file_turn();
+    let source = format!(
+        "{SECTION}\nr=linear_rail('rail','MGNR12R',100,first_hole=10,section=section,section_source='synthetic test section')\nb=linear_carriage('block','MGN12H',at=(0,0,20),mount_drill_depth=7)\nc=component('guide',[r,b])\ninstance('second guide',c,at=(0,0,150))"
+    );
+    let model = ketchup_program::run("guide.star", &source, &BTreeMap::new())
+        .unwrap()
+        .0
+        .model;
+    let bom = ketchup_program::bom::bom(&model);
+    assert_eq!(bom.hardware.len(), 2);
+    assert!(bom.hardware.iter().all(|row| row.count == 2));
+    let mut document = session(&source).unwrap();
+    let before = document.snapshot();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("guide.ketchup");
+    document.save(&path, SaveOptions::default()).unwrap();
+    drop(document);
+    let reopened = DocumentSession::open(&path, SessionSettings::default()).unwrap();
+    let snapshot = reopened.snapshot();
+    assert_eq!(snapshot.scene_query(), before.scene_query());
+    assert_eq!(
+        snapshot.hole_threads().collect::<Vec<_>>(),
+        before.hole_threads().collect::<Vec<_>>()
+    );
+    let mut worker = worker();
+    let mut exported = Vec::new();
+    for part in snapshot.scene_query() {
+        let definition = snapshot.definition(part.definition_id).unwrap();
+        let Some(&tip) = definition.feature_ids().last() else {
+            continue;
+        };
+        let graph = ExactBRepGraph::from_snapshot(&snapshot, part.definition_id, tip).unwrap();
+        exported.push((
+            ExactBodyPackage::Graph(worker.evaluate_exact_brep_graph(&graph).unwrap()),
+            part.transform,
+        ));
+    }
+    assert_eq!(exported.len(), 4);
+    let step = dir.path().join("guide.step");
+    let bytes = worker
+        .export_current_model_step(&snapshot, &exported, &step)
+        .unwrap();
+    let imported = worker
+        .inspect_step_import_with_cancellation(
+            &step,
+            &ketchup_model::graph::sha256_hex(&bytes),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(imported.solid_count, 4);
+    assert_volume(
+        imported.volume_mm3,
+        2.0 * (expected_volume(100.0, 4.0) + carriage_volume(45.4)),
+    );
+    for (actual, expected) in imported
+        .bounds_mm
+        .into_iter()
+        .flatten()
+        .zip([-13.5, 0.0, 0.0, 13.5, 13.0, 250.0])
+    {
+        assert!(
+            (actual - expected).abs() < 1.0e-5,
+            "STEP bound {actual} != {expected}"
+        );
+    }
+}
+
 #[test]
 fn linear_rail_exact_section_and_holes_follow_cut_length() {
     let _turn = crate::integration_support::file_turn();
