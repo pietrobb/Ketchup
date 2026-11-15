@@ -479,17 +479,22 @@ native Save/Open and exact STEP retain their
 placement and geometry. This is a dimensioned interface model, not a complete
 motor manufacturing model.
 
-`linear_rail_dimensions("MGNR12R")` returns HIWIN rail mounting dimensions from
-[MG catalogue table 3.81, page 4](https://www.lineairegeleiding.nl/wp-content/uploads/2023/09/Hiwin_MG.pdf):
-12 mm width, 8 mm height, Ø3.5 through holes with Ø6 × 4.5 mm counterbores at
-25 mm pitch, 35–2000 mm cut length, and 5–20 mm end distances. The raceway
+`linear_rail_dimensions("MGNR09R" | "MGNR12R" | "MGNR15R")` returns HIWIN rail
+mounting dimensions from
+[MG catalogue table 3.81, page 4](https://www.lineairegeleiding.nl/wp-content/uploads/2023/09/Hiwin_MG.pdf).
+MGNR12R: 12 mm width, 8 mm height, Ø3.5 through holes with Ø6 × 4.5 mm
+counterbores at 25 mm pitch, 35–2000 mm cut length, and 5–20 mm end distances.
+MGNR09R: 9 × 6.5 mm, Ø6 × 3.5 counterbores at 20 mm pitch, 30–1200 mm, ends
+5–15 mm. MGNR15R: 15 × 10 mm, Ø6 × 4.5 counterbores at 40 mm pitch,
+52–2000 mm, ends 6–34 mm. MGNR07R and smaller use M2 screws and are not
+included. The raceway
 `section` remains `None`: the drawing does not dimension its curves.
 `linear_rail(name, designation, length, first_hole=None, section=None,
 section_source=None, top_face="top", at=(0,0,0), axis=(0,0,1), tags=None)`
 requires an explicitly supplied closed section and nonempty source reference,
 not an invented rectangular replacement. The caller is responsible for the
 section's fidelity; a source string is provenance, not independent certification.
-The section lies in local XY, x from −6 to +6 and y from 0 to 8; the named
+The section lies in local XY, x from −W_R/2 to +W_R/2 and y from 0 to H_R; the named
 planar top face must point along +Y. Extrusion follows +Z from the base centre
 at the first cut end. `first_hole` is an explicit distance from that end; both
 end distances must satisfy the catalogue. Holes and counterbores are applied
@@ -499,11 +504,13 @@ length recomputes the hole count. Use `component()`/`instance()` for repeats;
 Save/Open and STEP retain the exact supplied section and mounting cuts.
 This helper does not supply a verified raceway profile.
 
-`linear_carriage_dimensions("MGN12C" | "MGN12H")` returns HIWIN block dimensions
-from [MG catalogue table 3.79, page 2](https://www.lineairegeleiding.nl/wp-content/uploads/2023/09/Hiwin_MG.pdf):
-height H 13, clearance H1 3, width W 27, length L 34.7 / 45.4, mounting
-pattern B 20 × C 15 / 20 with M3 × 3.5 threads, load ratings and catalogue
-weight. `raceway_section` and `mount_drill_depth_mm` remain `None`.
+`linear_carriage_dimensions("MGN09C" | "MGN09H" | "MGN12C" | "MGN12H" |
+"MGN15C" | "MGN15H")` returns HIWIN block dimensions
+from [MG catalogue table 3.79, page 2](https://www.lineairegeleiding.nl/wp-content/uploads/2023/09/Hiwin_MG.pdf),
+for example MGN12: height H 13, clearance H1 3, width W 27, length L 34.7 / 45.4,
+mounting pattern B 20 × C 15 / 20 with M3 × 3.5 threads, load ratings and
+catalogue weight. MGN09 (H 10, W 20, L 28.9 / 39.9, M3 × 3) runs on MGNR09R
+and MGN15 (H 16, W 32, L 42.1 / 58.8, M3 × 4) on MGNR15R. `raceway_section` and `mount_drill_depth_mm` remain `None`.
 `linear_carriage(name, designation, at=(0,0,0), axis=(0,0,1), tags=None,
 mount_drill_depth=None)` places the block on the `linear_rail` datum: `at` is
 the rail base centre under the block's first end and the block runs L along

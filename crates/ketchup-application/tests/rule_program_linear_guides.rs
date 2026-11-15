@@ -132,7 +132,68 @@ linear_rail("rail", "MGNR12R", 100, first_hole=10, section=section, section_sour
 
 fn carriage_volume(length: f64) -> f64 {
     // Table 3.79: W 27 x (H 13 - H1 3) less the rail envelope 12 x (8 - 3); fixture drills 7 mm.
-    (27.0 * 10.0 - 12.0 * 5.0) * length - 4.0 * PI * 1.25 * 1.25 * 7.0
+    sized_carriage_volume([27.0, 13.0, 3.0, 12.0, 8.0], length)
+}
+
+/// [W, H, H1, W_R, H_R] of table 3.79/3.81; four M3 tap drills 7 mm deep.
+fn sized_carriage_volume([w, h, h1, rail_w, rail_h]: [f64; 5], length: f64) -> f64 {
+    (w * (h - h1) - rail_w * (rail_h - h1)) * length - 4.0 * PI * 1.25 * 1.25 * 7.0
+}
+
+#[test]
+fn mgn_catalogue_covers_sizes_9_and_15_with_their_rails() {
+    let source = r#"
+for size, block, rail in [
+    ("MGN09C", (10, 2, 20, 28.9, 15, 10, "M3", 3, 1860, 2550, 0.02), (9, 6.5, 20, 3.5, 6, 3.5, 30, 1200, 5, 15)),
+    ("MGN09H", (10, 2, 20, 39.9, 15, 16, "M3", 3, 2550, 4020, 0.03), (9, 6.5, 20, 3.5, 6, 3.5, 30, 1200, 5, 15)),
+    ("MGN15C", (16, 4, 32, 42.1, 25, 20, "M3", 4, 4610, 5590, 0.06), (15, 10, 40, 3.5, 6, 4.5, 52, 2000, 6, 34)),
+    ("MGN15H", (16, 4, 32, 58.8, 25, 25, "M3", 4, 6370, 9110, 0.09), (15, 10, 40, 3.5, 6, 4.5, 52, 2000, 6, 34)),
+]:
+    d = linear_carriage_dimensions(size)
+    got = (d["height_mm"], d["clearance_mm"], d["width_mm"], d["length_mm"], d["hole_spacing_x_mm"],
+           d["hole_spacing_z_mm"], d["mount_thread"], d["mount_thread_length_mm"], d["dynamic_load_n"],
+           d["static_load_n"], d["mass_kg"])
+    if got != block or "3.79" not in d["source"]:
+        fail("wrong block %s: %r" % (size, got))
+    r = linear_rail_dimensions(d["rail"])
+    got = (r["width_mm"], r["height_mm"], r["pitch_mm"], r["hole_diameter_mm"], r["counterbore_diameter_mm"],
+           r["counterbore_depth_mm"], r["min_length_mm"], r["max_length_mm"], r["min_end_mm"], r["max_end_mm"])
+    if got != rail or r["section"] != None or "3.81" not in r["source"]:
+        fail("wrong rail %s: %r" % (d["rail"], got))
+def box(w, h):  # synthetic envelope for hole layout only, NOT a raceway profile
+    return [["bottom", (-w, 0), (w, 0)], ["right", (w, 0), (w, h)], ["top", (w, h), (-w, h)], ["left", (-w, h), (-w, 0)]]
+linear_rail("rail15", "MGNR15R", 100, first_hole=10, section=box(7.5, 10), section_source="synthetic test section")
+linear_rail("rail9", "MGNR09R", 100, first_hole=10, section=box(4.5, 6.5), section_source="synthetic test section")
+"#;
+    let model = ketchup_program::run("mgn-sizes.star", source, &BTreeMap::new())
+        .unwrap()
+        .0
+        .model;
+    for (part, pitch, count, height) in [(0, 40.0, 3, 10.0), (1, 20.0, 5, 6.5)] {
+        let holes = model.parts[part].holes().collect::<Vec<_>>();
+        assert_eq!(holes.len(), 2 * count);
+        for (index, pair) in holes.chunks_exact(2).enumerate() {
+            assert_eq!(pair[0].entry_mm, [0.0, height, 10.0 + pitch * index as f64]);
+            assert_eq!(pair[0].depth_mm, height);
+        }
+    }
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    for (designation, envelope, length) in [
+        ("MGN09C", [20.0, 10.0, 2.0, 9.0, 6.5], 28.9),
+        ("MGN09H", [20.0, 10.0, 2.0, 9.0, 6.5], 39.9),
+        ("MGN15C", [32.0, 16.0, 4.0, 15.0, 10.0], 42.1),
+        ("MGN15H", [32.0, 16.0, 4.0, 15.0, 10.0], 58.8),
+    ] {
+        assert_volume(
+            volume(
+                &mut worker,
+                &format!("p = linear_carriage('block', '{designation}', mount_drill_depth=7)"),
+                "block",
+            ),
+            sized_carriage_volume(envelope, length),
+        );
+    }
 }
 
 #[test]
@@ -199,7 +260,7 @@ linear_carriage("block", "MGN12H", at=(0,0,20), mount_drill_depth=7)
             "runout",
         ),
         (
-            "linear_carriage('b','MGN15H',mount_drill_depth=7)",
+            "linear_carriage('b','MGN07H',mount_drill_depth=7)",
             "not specified",
         ),
         ("linear_carriage_dimensions('MGN12')", "not specified"),

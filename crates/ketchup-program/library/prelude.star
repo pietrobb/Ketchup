@@ -2307,10 +2307,24 @@ def stepper_motor(name, designation, at = (0, 0, 0), axis = (0, 0, 1), tags = No
 #       first_hole=10, section=verified_section, section_source=verified_source)])
 # HIWIN MG catalogue, ALMOTION copy, table 3.81 p.4, accessed 2026-11-14 (nominal mm).
 _LINEAR_RAIL_DIMENSIONS = {
+    "MGNR09R": {
+        "width_mm": 9, "height_mm": 6.5, "pitch_mm": 20,
+        "hole_diameter_mm": 3.5, "counterbore_diameter_mm": 6, "counterbore_depth_mm": 3.5,
+        "min_length_mm": 30, "max_length_mm": 1200, "min_end_mm": 5, "max_end_mm": 15,
+        "section": None,
+        "source": "https://www.lineairegeleiding.nl/wp-content/uploads/2023/09/Hiwin_MG.pdf table 3.81 p.4",
+    },
     "MGNR12R": {
         "width_mm": 12, "height_mm": 8, "pitch_mm": 25,
         "hole_diameter_mm": 3.5, "counterbore_diameter_mm": 6, "counterbore_depth_mm": 4.5,
         "min_length_mm": 35, "max_length_mm": 2000, "min_end_mm": 5, "max_end_mm": 20,
+        "section": None,
+        "source": "https://www.lineairegeleiding.nl/wp-content/uploads/2023/09/Hiwin_MG.pdf table 3.81 p.4",
+    },
+    "MGNR15R": {
+        "width_mm": 15, "height_mm": 10, "pitch_mm": 40,
+        "hole_diameter_mm": 3.5, "counterbore_diameter_mm": 6, "counterbore_depth_mm": 4.5,
+        "min_length_mm": 52, "max_length_mm": 2000, "min_end_mm": 6, "max_end_mm": 34,
         "section": None,
         "source": "https://www.lineairegeleiding.nl/wp-content/uploads/2023/09/Hiwin_MG.pdf table 3.81 p.4",
     },
@@ -2372,6 +2386,16 @@ def linear_rail(name, designation, length, first_hole = None, section = None, se
 # HIWIN MG catalogue, ALMOTION copy, table 3.79 p.2, accessed 2026-11-15 (nominal mm).
 _LINEAR_CARRIAGE_SOURCE = "https://www.lineairegeleiding.nl/wp-content/uploads/2023/09/Hiwin_MG.pdf table 3.79 p.2"
 _LINEAR_CARRIAGE_DIMENSIONS = {
+    "MGN09C": {
+        "rail": "MGNR09R", "height_mm": 10, "clearance_mm": 2, "width_mm": 20, "length_mm": 28.9,
+        "hole_spacing_x_mm": 15, "hole_spacing_z_mm": 10, "mount_thread": "M3", "mount_thread_length_mm": 3,
+        "dynamic_load_n": 1860, "static_load_n": 2550, "mass_kg": 0.02,
+    },
+    "MGN09H": {
+        "rail": "MGNR09R", "height_mm": 10, "clearance_mm": 2, "width_mm": 20, "length_mm": 39.9,
+        "hole_spacing_x_mm": 15, "hole_spacing_z_mm": 16, "mount_thread": "M3", "mount_thread_length_mm": 3,
+        "dynamic_load_n": 2550, "static_load_n": 4020, "mass_kg": 0.03,
+    },
     "MGN12C": {
         "rail": "MGNR12R", "height_mm": 13, "clearance_mm": 3, "width_mm": 27, "length_mm": 34.7,
         "hole_spacing_x_mm": 20, "hole_spacing_z_mm": 15, "mount_thread": "M3", "mount_thread_length_mm": 3.5,
@@ -2381,6 +2405,16 @@ _LINEAR_CARRIAGE_DIMENSIONS = {
         "rail": "MGNR12R", "height_mm": 13, "clearance_mm": 3, "width_mm": 27, "length_mm": 45.4,
         "hole_spacing_x_mm": 20, "hole_spacing_z_mm": 20, "mount_thread": "M3", "mount_thread_length_mm": 3.5,
         "dynamic_load_n": 3720, "static_load_n": 5880, "mass_kg": 0.05,
+    },
+    "MGN15C": {
+        "rail": "MGNR15R", "height_mm": 16, "clearance_mm": 4, "width_mm": 32, "length_mm": 42.1,
+        "hole_spacing_x_mm": 25, "hole_spacing_z_mm": 20, "mount_thread": "M3", "mount_thread_length_mm": 4,
+        "dynamic_load_n": 4610, "static_load_n": 5590, "mass_kg": 0.06,
+    },
+    "MGN15H": {
+        "rail": "MGNR15R", "height_mm": 16, "clearance_mm": 4, "width_mm": 32, "length_mm": 58.8,
+        "hole_spacing_x_mm": 25, "hole_spacing_z_mm": 25, "mount_thread": "M3", "mount_thread_length_mm": 4,
+        "dynamic_load_n": 6370, "static_load_n": 9110, "mass_kg": 0.09,
     },
 }
 
