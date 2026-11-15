@@ -2105,6 +2105,95 @@ def ball_screw_nut(name, designation, at = (0, 0, 0), axis = (0, 0, 1), tags = N
     union(flange, body, name = "body")
     return _turn_onto(flange, at, axis)
 
+#   ball_screw_shaft_dimensions(designation) -> HIWIN ground stock shaft for a table 6.7 nut:
+#     nominal, lead, ball, PCD, core diameter, stock lengths; raceway and mass None.
+#   ball_screw_shaft(name, designation, length, thread_length, thread_start=None, at=(0,0,0),
+#     axis=(0,0,1), tags=None) -> purchased part. at = start face centre, axis along the shaft.
+#     A ground cylinder at nominal diameter over the full length, as the stock shaft drawing;
+#     the thread zone thread_start..thread_start+thread_length (core diameter recorded) is an
+#     envelope: the helical raceway is not modelled. thread_start is not catalogued: supply it.
+#     Example: s = ball_screw_shaft("screw", "R16-5T3-FSI", length=500, thread_length=400, thread_start=50)
+# HIWIN Italy BS-IT-21-08 table 6.7 p.51 (ball, max shaft length, max thread length as printed;
+# R32-10T5-FSI prints a thread longer than the shaft) and table 6.5 pp.52-53 (PCD, core
+# diameter per nominal diameter and ball), accessed 2026-11-15.
+_BALL_SCREW_SHAFT_SOURCE = _BALL_SCREW_NUT_SOURCE + "; table 6.5 pp.52-53 PCD and core diameter"
+_BALL_SCREW_SHAFT_STOCK = {
+    "R16-5T3-FSI": (3.175, 1080, 1040),
+    "R20-5K4-FSC": (3.175, 1200, 1160),
+    "R20-10K3-FSC": (3, 1200, 1160),
+    "R25-5K4-FSC": (3.175, 1200, 1160),
+    "R25-10K4-FSC": (3.175, 1000, 960),
+    "R32-5K5-FSC": (3.175, 1500, 1430),
+    "R32-10K4-FSC": (3.969, 1500, 1430),
+    "R32-10T5-FSI": (6.35, 1500, 1730),
+    "R38-10K5-FSC": (6.35, 2000, 1930),
+    "R38-20K4-FSC": (6.35, 2500, 2400),
+    "R40-5K5-FSC": (3.175, 1500, 1430),
+    "R50-5K6-FSC": (3.175, 2500, 2375),
+    "R50-10K6-FSC": (6.35, 3000, 2875),
+}
+# (nominal diameter, ball) -> (PCD, core diameter).
+_BALL_SCREW_SHAFT_SECTIONS = {
+    (16, 3.175): (16.4, 13.124),
+    (20, 3): (21, 17.868),
+    (20, 3.175): (20.6, 17.324),
+    (25, 3.175): (25.6, 22.324),
+    (32, 3.175): (32.6, 29.324),
+    (32, 3.969): (32.8, 28.744),
+    (32, 6.35): (33.4, 26.91),
+    (38, 6.35): (39.4, 32.91),
+    (40, 3.175): (40.6, 37.324),
+    (50, 3.175): (50.6, 47.324),
+    (50, 6.35): (51.4, 44.91),
+}
+
+def ball_screw_shaft_dimensions(designation):
+    """Published stock shaft data; the raceway profile and mass are explicitly unspecified."""
+    if designation not in _BALL_SCREW_SHAFT_STOCK:
+        fail("ball_screw_shaft_dimensions(): dimensions for %r are not specified; use %s or import a supplier model" %
+             (designation, ", ".join(sorted(_BALL_SCREW_SHAFT_STOCK.keys()))))
+    nut = ball_screw_nut_dimensions(designation)
+    ball, max_length, max_thread = _BALL_SCREW_SHAFT_STOCK[designation]
+    pcd, core = _BALL_SCREW_SHAFT_SECTIONS[(nut["screw_mm"], ball)]
+    return {
+        "nominal_mm": nut["screw_mm"], "lead_mm": nut["lead_mm"], "ball_mm": ball,
+        "pcd_mm": pcd, "core_mm": core,
+        "max_length_mm": max_length, "max_thread_length_mm": max_thread,
+        "incomplete_thread_max_mm": 3,
+        "raceway": None, "mass_kg": None, "source": _BALL_SCREW_SHAFT_SOURCE,
+    }
+
+def _mm_text(value):
+    """A dimension as text without a trailing .0 on whole millimetres."""
+    return str(int(value)) if value == int(value) else "%g" % value
+
+def ball_screw_shaft(name, designation, length, thread_length, thread_start = None, at = (0, 0, 0),
+                     axis = (0, 0, 1), tags = None):
+    """A purchased ground stock shaft envelope with its catalogued thread data."""
+    d = ball_screw_shaft_dimensions(designation)
+    if thread_start == None:
+        fail("ball_screw_shaft(): thread_start is not specified by the catalogue; supply the distance from the start face")
+    if length <= 0 or length > d["max_length_mm"]:
+        fail("ball_screw_shaft(): length must be within 0..%g mm for stock %s" % (d["max_length_mm"], designation))
+    if thread_length <= 0 or thread_length > d["max_thread_length_mm"]:
+        fail("ball_screw_shaft(): thread_length must be within 0..%g mm for stock %s" % (d["max_thread_length_mm"], designation))
+    if thread_start < 0 or thread_start + thread_length > length:
+        fail("ball_screw_shaft(): the thread zone %g..%g mm must lie inside the shaft 0..%g mm" %
+             (thread_start, thread_start + thread_length, length))
+    part = extrude(name, profile = _circle(d["nominal_mm"] / 2.0, "shaft"), distance = length, at = at,
+                   material = "unspecified", tags = tags, attributes = {
+                       "designation": "HIWIN %s ground shaft L=%s" % (designation, _mm_text(length)),
+                       "source": d["source"],
+                       "lead_mm": _mm_text(d["lead_mm"]), "ball_mm": _mm_text(d["ball_mm"]),
+                       "pcd_mm": _mm_text(d["pcd_mm"]), "core_mm": _mm_text(d["core_mm"]),
+                       "thread_from_mm": _mm_text(thread_start),
+                       "thread_to_mm": _mm_text(thread_start + thread_length),
+                       "geometry_basis": "ground stock shaft at nominal diameter over the full length; thread zone is an envelope, helical raceway not modelled",
+                       "mass_basis": "not specified; envelope volume is not shaft material volume",
+                       FABRICATION_ROLE: PURCHASED_ITEM,
+                   })
+    return _turn_onto(part, at, axis)
+
 #   stepper_motor_dimensions(designation) -> supplier dimensions, missing details None.
 #   stepper_motor(name, designation, at=(0,0,0), axis=(0,0,1), tags=None, mount_drill_depth=None) -> purchased part.
 #     at = rear housing centre; axis points towards the shaft. Known mounting features

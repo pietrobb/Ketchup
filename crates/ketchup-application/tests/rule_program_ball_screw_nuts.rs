@@ -1,4 +1,4 @@
-//! Sourced DIN 69051 flange nut envelopes, not invented raceway geometry.
+//! Sourced DIN 69051 flange nut and ground stock shaft envelopes, not invented raceway geometry.
 use crate::operations_support::{assert_volume, session, volume, worker};
 use ketchup_application::{DocumentSession, SaveOptions, SessionSettings};
 use ketchup_model::{exact_brep_graph::ExactBRepGraph, exact_product::ExactBodyPackage};
@@ -176,6 +176,168 @@ instance("second nut", c, at=(0,0,100))
         .into_iter()
         .flatten()
         .zip([10.0, -4.0, 10.0, 50.0, 44.0, 150.0])
+    {
+        assert!(
+            (actual - expected).abs() < 1.0e-5,
+            "STEP bound {actual} != {expected}"
+        );
+    }
+}
+
+/// HIWIN Italy table 6.7 p.51 (stock rows) with PCD and core diameter from table 6.5 p.52.
+#[test]
+fn ball_screw_shafts_are_ground_stock_cylinders_with_catalogue_thread_data() {
+    let _turn = crate::integration_support::file_turn();
+    let mut worker = worker();
+    for (designation, length, thread, diameter) in [
+        ("R16-5T3-FSI", 500.0, 400.0, 16.0),
+        ("R32-10K4-FSC", 1500.0, 1430.0, 32.0),
+    ] {
+        let program = format!(
+            "ball_screw_shaft(\"screw\", \"{designation}\", length={length}, thread_length={thread}, thread_start=50)"
+        );
+        assert_volume(
+            volume(&mut worker, &program, "screw"),
+            PI * (diameter / 2.0_f64).powi(2) * length,
+        );
+    }
+}
+
+#[test]
+fn ball_screw_shaft_catalogue_limits_and_unknowns_are_explicit() {
+    let source = r#"
+d = ball_screw_shaft_dimensions("R32-10T5-FSI")
+if (d["nominal_mm"], d["lead_mm"], d["ball_mm"], d["pcd_mm"], d["core_mm"]) != (32, 10, 6.35, 33.4, 26.91):
+    fail("wrong shaft catalogue data")
+if (d["max_thread_length_mm"], d["max_length_mm"], d["incomplete_thread_max_mm"]) != (1730, 1500, 3):
+    fail("wrong stock lengths")
+if d["raceway"] != None or d["mass_kg"] != None:
+    fail("the raceway and mass must stay unspecified")
+if "table 6.7" not in d["source"] or "table 6.5" not in d["source"]:
+    fail("catalogue source missing")
+e = ball_screw_shaft_dimensions("R20-10K3-FSC")
+if (e["ball_mm"], e["pcd_mm"], e["core_mm"]) != (3, 21, 17.868):
+    fail("the 3 mm ball row must use its own PCD and core")
+ball_screw_shaft("screw", "R25-5K4-FSC", length=1200, thread_length=1160, thread_start=20)
+"#;
+    let model = ketchup_program::run("shafts.star", source, &BTreeMap::new())
+        .unwrap()
+        .0
+        .model;
+    let bom = ketchup_program::bom::bom(&model);
+    assert!(bom.cut_list.is_empty());
+    assert_eq!(bom.hardware.len(), 1);
+    assert_eq!(
+        bom.hardware[0].item,
+        "HIWIN R25-5K4-FSC ground shaft L=1200"
+    );
+    let attributes = &model.parts[0].attributes;
+    assert_eq!(attributes["thread_from_mm"], "20");
+    assert_eq!(attributes["thread_to_mm"], "1180");
+    assert_eq!(attributes["core_mm"], "22.324");
+    assert!(
+        attributes["geometry_basis"].contains("raceway not modelled"),
+        "{}",
+        attributes["geometry_basis"]
+    );
+    for (program, expected) in [
+        (
+            "ball_screw_shaft('s', 'R16-5T3-FSI', length=1081, thread_length=400, thread_start=50)",
+            "1080",
+        ),
+        (
+            "ball_screw_shaft('s', 'R16-5T3-FSI', length=1080, thread_length=1041, thread_start=0)",
+            "1040",
+        ),
+        (
+            "ball_screw_shaft('s', 'R16-5T3-FSI', length=500, thread_length=400, thread_start=101)",
+            "inside the shaft",
+        ),
+        (
+            "ball_screw_shaft('s', 'R16-5T3-FSI', length=500, thread_length=400)",
+            "not specified",
+        ),
+        (
+            "ball_screw_shaft('s', 'R12-4K3-FSC', length=500, thread_length=400, thread_start=50)",
+            "not specified",
+        ),
+    ] {
+        let error = ketchup_program::run("bad-shaft.star", program, &BTreeMap::new())
+            .expect_err(program)
+            .to_string();
+        assert!(error.contains(expected), "{program}: {error}");
+    }
+}
+
+#[test]
+fn ball_screw_shaft_and_nut_assembly_keeps_bom_and_exact_step_after_save_open() {
+    let _turn = crate::integration_support::file_turn();
+    let source = r#"
+s = ball_screw_shaft("screw", "R16-5T3-FSI", length=500, thread_length=400, thread_start=50, axis=(1,0,0))
+n = ball_screw_nut("nut", "R16-5T3-FSI", at=(100,0,0), axis=(1,0,0))
+c = component("screw drive", [s, n])
+instance("second drive", c, at=(0,0,100))
+"#;
+    let model = ketchup_program::run("drive.star", source, &BTreeMap::new())
+        .unwrap()
+        .0
+        .model;
+    let bom = ketchup_program::bom::bom(&model);
+    let items = bom
+        .hardware
+        .iter()
+        .map(|row| (row.item.as_str(), row.count))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        items,
+        [
+            ("HIWIN R16-5T3-FSI", 2),
+            ("HIWIN R16-5T3-FSI ground shaft L=500", 2)
+        ]
+    );
+    let mut session = session(source).unwrap();
+    let before = session.snapshot();
+    let directory = tempfile::tempdir().unwrap();
+    let native_path = directory.path().join("drive.ketchup");
+    session.save(&native_path, SaveOptions::default()).unwrap();
+    drop(session);
+    let reopened = DocumentSession::open(&native_path, SessionSettings::default()).unwrap();
+    let snapshot = reopened.snapshot();
+    assert_eq!(snapshot.scene_query(), before.scene_query());
+
+    let mut worker = worker();
+    let mut exported = Vec::new();
+    for part in snapshot.scene_query() {
+        let definition = snapshot.definition(part.definition_id).unwrap();
+        let Some(&tip) = definition.feature_ids().last() else {
+            continue;
+        };
+        let graph = ExactBRepGraph::from_snapshot(&snapshot, part.definition_id, tip).unwrap();
+        let package = worker.evaluate_exact_brep_graph(&graph).unwrap();
+        exported.push((ExactBodyPackage::Graph(package), part.transform));
+    }
+    assert_eq!(exported.len(), 4);
+    let step_path = directory.path().join("drive.step");
+    let bytes = worker
+        .export_current_model_step(&snapshot, &exported, &step_path)
+        .unwrap();
+    let imported = worker
+        .inspect_step_import_with_cancellation(
+            &step_path,
+            &ketchup_model::graph::sha256_hex(&bytes),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(imported.solid_count, 4);
+    let shaft = PI * 8.0_f64.powi(2) * 500.0;
+    assert_volume(imported.volume_mm3, 2.0 * (shaft + nut_volume(&R16)));
+    // Shaft along +x from 0 to 500; the nut flange (flats on world z) sets y and z; the
+    // instance repeats the drive 100 mm up.
+    for (actual, expected) in imported
+        .bounds_mm
+        .into_iter()
+        .flatten()
+        .zip([0.0, -24.0, -20.0, 500.0, 24.0, 120.0])
     {
         assert!(
             (actual - expected).abs() < 1.0e-5,

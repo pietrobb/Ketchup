@@ -427,6 +427,21 @@ pointing along the body. The bore is the nominal screw diameter, an envelope
 rather than the raceway; the g6 pilot tolerance, seals and greasing hole are
 not modelled. The nut is a purchased item in the BOM with its source.
 
+`ball_screw_shaft_dimensions(designation)` returns the ground stock shaft for
+the same table 6.7 designations: nominal diameter, lead, ball diameter, maximum
+shaft and thread length (as printed; the `R32-10T5-FSI` row prints a thread
+longer than the shaft), the 3 mm maximum incomplete thread, and the pitch
+circle and core diameters from table 6.5 on pages 52-53. `raceway` and
+`mass_kg` remain `None`. `ball_screw_shaft(name, designation, length,
+thread_length, thread_start=None, at=(0,0,0), axis=(0,0,1), tags=None)` creates
+the shaft as a cylinder at nominal diameter over its whole length, starting at
+`at` and running along `axis`, like the catalogue's stock shaft drawing. The
+thread zone, from `thread_start` over `thread_length`, is recorded with its
+core diameter, but the helical raceway is not modelled. `thread_start` is not
+in the catalogue, so it must be supplied. Lengths above the stock limits and a
+thread zone outside the shaft are refused. The shaft is a purchased item in the
+BOM named with its length, so a nut and its shaft can form one component.
+
 `stepper_motor_dimensions("17HS19-2004S1")` returns dimensions from the
 [STEPPERONLINE supplier drawing](https://www.omc-stepperonline.com/download/17HS19-2004S1.pdf),
 not dimensions inferred from the NEMA 17 frame designation. `stepper_motor(name,
